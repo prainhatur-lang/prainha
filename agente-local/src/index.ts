@@ -7,6 +7,24 @@ import { buscarPagamentos } from './firebird';
 import { enviarBatch } from './ingest';
 import { log } from './logger';
 
+// node-firebird tem um bug conhecido com Firebird 4 onde o detach gera um
+// callback async com 'pluginName' undefined, derrubando o processo. Como o
+// erro vem de um socket callback, nao da pra capturar com try/catch.
+// Estrategia: capturar uncaughtException, logar e seguir.
+process.on('uncaughtException', (err: Error) => {
+  if (err?.message?.includes('pluginName')) {
+    log.warn('node-firebird detach bug ignorado', { msg: err.message });
+    return;
+  }
+  log.error('uncaughtException', { msg: err.message, stack: err.stack });
+});
+
+process.on('unhandledRejection', (err: unknown) => {
+  log.error('unhandledRejection', { err: (err as Error)?.message });
+});
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function ciclo(cfg: Awaited<ReturnType<typeof loadConfig>>, checkpoint: Checkpoint) {
   const cp = checkpoint.get();
   log.info('iniciando ciclo', { ultimoCodigo: cp.ultimoCodigo });
@@ -42,7 +60,8 @@ async function ciclo(cfg: Awaited<ReturnType<typeof loadConfig>>, checkpoint: Ch
       log.info('ciclo terminou', { totalCiclo, ultimoCodigo: novoUltimo });
       return;
     }
-    // Senao, busca proximo lote sem esperar
+    // Delay minimo para o detach do firebird estabilizar
+    await sleep(100);
   }
 }
 
