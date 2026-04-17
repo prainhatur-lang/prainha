@@ -23,10 +23,10 @@ export interface PagamentoIngest {
   /** ID do pagamento no Consumer (PAGAMENTOS.CODIGO) */
   codigoExterno: number;
   codigoPedidoExterno: number | null;
-  formaPagamento: string;
+  formaPagamento: string | null;
   valor: number;
   percentualTaxa: number | null;
-  dataPagamento: string; // ISO
+  dataPagamento: string | null; // ISO
   dataCredito: string | null;
   nsuTransacao: string | null;
   numeroAutorizacaoCartao: string | null;

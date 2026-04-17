@@ -1,0 +1,16 @@
+{
+  "api": {
+    "url": "https://app.prainhabar.com",
+    "token": "agt_<TOKEN_DA_FILIAL>"
+  },
+  "firebird": {
+    "host": "192.168.10.59",
+    "port": 3050,
+    "database": "C:\\Users\\User\\AppData\\Local\\RAL Tecnologia\\CreateInstall\\consumer.fdb",
+    "user": "SYSDBA",
+    "password": "masterkey"
+  },
+  "intervalSeconds": 900,
+  "batchSize": 500,
+  "checkpointFile": "checkpoint.json"
+}

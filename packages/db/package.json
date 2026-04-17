@@ -14,6 +14,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "db:bootstrap": "tsx scripts/bootstrap.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
@@ -26,6 +27,7 @@
     "@types/node": "^22.10.2",
     "dotenv": "^16.4.7",
     "drizzle-kit": "^0.30.1",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
 }

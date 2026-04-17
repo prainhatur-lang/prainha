@@ -52,3 +52,8 @@ Thumbs.db
 
 # Drizzle
 drizzle/migrations_meta
+
+# Agente local (config + state local com secrets)
+agente-local/config.json
+agente-local/checkpoint.json
+agente-local/logs/

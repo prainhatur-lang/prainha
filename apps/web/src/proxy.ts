@@ -29,8 +29,10 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isAuthRoute = path.startsWith('/login') || path.startsWith('/auth');
-  const isPublicRoute = path === '/' || isAuthRoute;
+  const isAuthRoute = path.startsWith('/login') || path.startsWith('/auth') || path.startsWith('/signup');
+  // APIs tem auth propria (Bearer token, etc) - middleware nao deve interceptar
+  const isApiRoute = path.startsWith('/api/');
+  const isPublicRoute = path === '/' || isAuthRoute || isApiRoute;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
