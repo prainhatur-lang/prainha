@@ -44,7 +44,7 @@ export default async function SyncPage() {
       </header>
 
       <section className="mx-auto max-w-6xl px-6 py-10">
-        <div className="mb-8 flex items-end justify-between">
+        <div className="mb-8 flex items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Sincronização das filiais</h1>
             <p className="mt-1 text-sm text-slate-600">
@@ -54,7 +54,40 @@ export default async function SyncPage() {
               </span>
             </p>
           </div>
+          <a
+            href="https://github.com/prainhatur-lang/prainha/releases/latest/download/concilia-agente-windows.zip"
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Baixar agente (Windows)
+          </a>
         </div>
+
+        <details className="mb-8 rounded-xl border border-slate-200 bg-white p-5 text-sm shadow-sm">
+          <summary className="cursor-pointer font-medium text-slate-900">
+            Como instalar o agente em uma nova filial
+          </summary>
+          <ol className="mt-4 space-y-2 pl-5 text-slate-700 list-decimal">
+            <li>Na máquina Windows do restaurante (a mesma do Firebird ou outra na rede), baixe o ZIP acima.</li>
+            <li>Extraia tudo em uma pasta, por exemplo <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">C:\concilia-agente\</code>.</li>
+            <li>
+              Copie <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">config.example.json</code> para{' '}
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">config.json</code> e edite:
+              <ul className="mt-1 list-disc pl-5 text-slate-600">
+                <li><code>api.token</code> — copie do card da filial abaixo</li>
+                <li><code>firebird.host</code> — IP da máquina do Firebird (ex: 192.168.0.10)</li>
+                <li><code>firebird.database</code> — caminho completo do <code>consumer.fdb</code></li>
+                <li><code>firebird.password</code> — senha do SYSDBA</li>
+              </ul>
+            </li>
+            <li>Clique com botão direito em <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">install-service.bat</code> → Executar como Administrador.</li>
+            <li>Em até 15 min a filial aparece como <span className="font-medium text-emerald-700">online</span> aqui.</li>
+          </ol>
+        </details>
 
         {filiais.length === 0 ? (
           <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
