@@ -168,8 +168,10 @@ INSTALACAO RAPIDA
 
 2. Copie 'config.example.json' para 'config.json' e edite:
    - api.token: copie do painel concilia (Sincronizacao -> sua filial -> Token)
-   - firebird.host: IP da maquina onde roda o Firebird (ex: 192.168.0.10)
-   - firebird.database: caminho completo do consumer.fdb
+   - firebird.host: deixe 'localhost' (agente roda na mesma maquina do Firebird)
+   - firebird.database: caminho completo do consumer.fdb NESTA maquina
+     (ex: C:\\Users\\User\\AppData\\Local\\RAL Tecnologia\\CreateInstall\\CONSUMER.FDB)
+     IMPORTANTE: as barras devem ser duplas (\\\\) no JSON
    - firebird.password: senha do SYSDBA
 
 3. Clique com botao direito em 'install-service.bat' -> Executar como

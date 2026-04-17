@@ -79,8 +79,8 @@ export default async function SyncPage() {
               <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">config.json</code> e edite:
               <ul className="mt-1 list-disc pl-5 text-slate-600">
                 <li><code>api.token</code> — copie do card da filial abaixo</li>
-                <li><code>firebird.host</code> — IP da máquina do Firebird (ex: 192.168.0.10)</li>
-                <li><code>firebird.database</code> — caminho completo do <code>consumer.fdb</code></li>
+                <li><code>firebird.host</code> — deixe <code>localhost</code> (o agente roda na mesma máquina do Firebird)</li>
+                <li><code>firebird.database</code> — caminho completo do <code>consumer.fdb</code> nessa máquina (ex: <code>C:\\...\\CONSUMER.FDB</code>)</li>
                 <li><code>firebird.password</code> — senha do SYSDBA</li>
               </ul>
             </li>
