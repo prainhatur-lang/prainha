@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
+  "bin": "build/index.cjs",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc",
-    "build:exe-win": "tsx scripts/build-exe.ts",
+    "bundle": "tsx scripts/bundle.ts",
+    "package:win": "tsx scripts/package-win.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
@@ -19,7 +21,14 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@yao-pkg/pkg": "^6.5.1",
+    "esbuild": "^0.24.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "pkg": {
+    "scripts": "build/index.cjs",
+    "targets": ["node22-win-x64"],
+    "outputPath": "release"
   }
 }
