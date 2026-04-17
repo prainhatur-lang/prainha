@@ -19,9 +19,19 @@ export async function rodarConciliacao(opts: {
   dataInicio: string; // YYYY-MM-DD
   dataFim: string; // YYYY-MM-DD
 }): Promise<ConciliacaoResultado> {
-  const { filialId, dataInicio, dataFim } = opts;
+  const { filialId, dataFim } = opts;
+  let { dataInicio } = opts;
 
-  // 1. Cria registro de execucao
+  // 1. Aplica data de corte da filial (se houver)
+  const [fil] = await db
+    .select({ dataInicioConciliacao: schema.filial.dataInicioConciliacao })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const corte = fil?.dataInicioConciliacao ?? null;
+  if (corte && dataInicio < corte) dataInicio = corte;
+
+  // 2. Cria registro de execucao
   const [exec] = await db
     .insert(schema.execucaoConciliacao)
     .values({ filialId, status: 'EM_ANDAMENTO' })
@@ -29,7 +39,7 @@ export async function rodarConciliacao(opts: {
   const execId = exec!.id;
 
   try {
-    // 2. Carrega pagamentos do PDV no periodo
+    // 3. Carrega pagamentos do PDV no periodo
     const dtIni = new Date(dataInicio + 'T00:00:00');
     const dtFim = new Date(dataFim + 'T23:59:59');
 
@@ -49,7 +59,7 @@ export async function rodarConciliacao(opts: {
         ),
       );
 
-    // 3. Carrega vendas e recebiveis do adquirente para o periodo
+    // 4. Carrega vendas e recebiveis do adquirente para o periodo
     const vendas = await db
       .select({
         id: schema.vendaAdquirente.id,
@@ -89,7 +99,7 @@ export async function rodarConciliacao(opts: {
         ),
       );
 
-    // 4. Lancamentos do banco no mesmo range
+    // 5. Lancamentos do banco no mesmo range
     const lancamentos = await db
       .select({
         id: schema.lancamentoBanco.id,
@@ -114,7 +124,7 @@ export async function rodarConciliacao(opts: {
       return `${d}/${m}/${y}`;
     };
 
-    // 5. Roda engine
+    // 6. Roda engine
     const trace = traceCadeia({
       pagamentos: pagamentos.map((p) => ({
         id: p.id,
@@ -144,7 +154,7 @@ export async function rodarConciliacao(opts: {
       })),
     });
 
-    // 6. Persiste resultado por pagamento (upsert) + excecoes
+    // 7. Persiste resultado por pagamento (upsert) + excecoes
     let excecoesCriadas = 0;
     if (trace.items.length > 0) {
       // Limpa conciliacao_pagamento e excecoes antigas dos pagamentos do periodo
@@ -185,7 +195,7 @@ export async function rodarConciliacao(opts: {
       }
     }
 
-    // 7. Atualiza execucao
+    // 8. Atualiza execucao
     const valorTotal = pagamentos.reduce((s, p) => s + Number(p.valor), 0);
     const valorRastreado = trace.items
       .filter((it) => it.etapa === 'COMPLETO')

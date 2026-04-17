@@ -42,6 +42,9 @@ export default async function DashboardPage() {
               <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
                 Conciliação
               </Link>
+              <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
+                Exceções
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">

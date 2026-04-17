@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const organizacao = pgTable('organizacao', {
@@ -21,6 +21,8 @@ export const filial = pgTable(
     agenteToken: text('agente_token').notNull().unique(),
     /** Ultima vez que o agente local enviou dados */
     ultimoPing: timestamp('ultimo_ping', { withTimezone: true }),
+    /** Ignora pagamentos anteriores a esta data na conciliacao. Null = sem corte. */
+    dataInicioConciliacao: date('data_inicio_conciliacao'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

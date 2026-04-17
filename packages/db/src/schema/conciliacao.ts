@@ -45,8 +45,16 @@ export const excecao = pgTable(
     filialId: uuid('filial_id')
       .notNull()
       .references(() => filial.id, { onDelete: 'cascade' }),
-    /** referencia ao pagamento que gerou */
+    /** qual processo de conciliacao gerou: OPERADORA | BANCO */
+    processo: varchar('processo', { length: 20 }),
+    /** referencia ao pagamento que gerou (se aplicavel) */
     pagamentoId: uuid('pagamento_id').references(() => pagamento.id, { onDelete: 'cascade' }),
+    /** referencia a venda Cielo (quando excecao eh sobre a venda) */
+    vendaAdquirenteId: uuid('venda_adquirente_id'),
+    /** referencia a recebivel Cielo */
+    recebivelAdquirenteId: uuid('recebivel_adquirente_id'),
+    /** referencia a lancamento bancario */
+    lancamentoBancoId: uuid('lancamento_banco_id'),
     tipo: varchar('tipo', { length: 50 }).notNull(),
     severidade: varchar('severidade', { length: 20 }).notNull(),
     descricao: text('descricao').notNull(),
@@ -60,6 +68,7 @@ export const excecao = pgTable(
   (t) => ({
     filialIdx: index('excecao_filial_idx').on(t.filialId, t.detectadoEm),
     abertasIdx: index('excecao_abertas_idx').on(t.filialId).where(sql`aceita_em IS NULL`),
+    processoIdx: index('excecao_processo_idx').on(t.filialId, t.processo),
   }),
 );
 
@@ -71,15 +80,14 @@ export const execucaoConciliacao = pgTable('execucao_conciliacao', {
   filialId: uuid('filial_id')
     .notNull()
     .references(() => filial.id, { onDelete: 'cascade' }),
+  /** OPERADORA | BANCO | legado: null = trace antigo */
+  processo: varchar('processo', { length: 20 }),
+  /** periodo que foi conciliado */
+  dataInicio: timestamp('data_inicio', { withTimezone: true }),
+  dataFim: timestamp('data_fim', { withTimezone: true }),
   iniciadoEm: timestamp('iniciado_em', { withTimezone: true }).notNull().defaultNow(),
   finalizadoEm: timestamp('finalizado_em', { withTimezone: true }),
   status: varchar('status', { length: 20 }).notNull().default('EM_ANDAMENTO'),
-  resumo: jsonb('resumo').$type<{
-    totalPagamentos: number;
-    completos: number;
-    excecoes: number;
-    valorTotal: number;
-    valorRastreado: number;
-  }>(),
+  resumo: jsonb('resumo').$type<Record<string, unknown>>(),
   erro: text('erro'),
 });

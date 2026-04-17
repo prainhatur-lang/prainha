@@ -52,6 +52,9 @@ export default async function ConciliacaoPage() {
               <Link href="/conciliacao" className="font-medium text-slate-900">
                 Conciliação
               </Link>
+              <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
+                Exceções
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -68,7 +71,13 @@ export default async function ConciliacaoPage() {
         </p>
 
         <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
-          <ConciliacaoForm filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
+          <ConciliacaoForm
+            filiais={filiais.map((f) => ({
+              id: f.id,
+              nome: f.nome,
+              dataInicioConciliacao: f.dataInicioConciliacao,
+            }))}
+          />
 
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-base font-semibold text-slate-900">Últimas execuções</h2>

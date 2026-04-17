@@ -10,6 +10,8 @@ export interface FilialAcessivel {
   role: 'DONO' | 'GERENTE';
   ultimoPing: Date | null;
   agenteToken: string;
+  /** Data de corte da conciliacao (YYYY-MM-DD). Null = sem corte. */
+  dataInicioConciliacao: string | null;
 }
 
 /**
@@ -27,6 +29,7 @@ export async function filiaisDoUsuario(userId: string): Promise<FilialAcessivel[
       role: schema.usuarioFilial.role,
       ultimoPing: schema.filial.ultimoPing,
       agenteToken: schema.filial.agenteToken,
+      dataInicioConciliacao: schema.filial.dataInicioConciliacao,
     })
     .from(schema.usuarioFilial)
     .innerJoin(schema.filial, eq(schema.filial.id, schema.usuarioFilial.filialId))

@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Filial {
   id: string;
   nome: string;
+  dataInicioConciliacao: string | null;
 }
 
 interface Resultado {
@@ -30,12 +31,27 @@ function diasAtras(n: number) {
   d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
+function inicioPadrao(corte: string | null) {
+  const trintaDias = diasAtras(30);
+  return corte && corte > trintaDias ? corte : trintaDias;
+}
 
 export function ConciliacaoForm({ filiais }: { filiais: Filial[] }) {
   const router = useRouter();
   const [filialId, setFilialId] = useState(filiais[0]?.id ?? '');
-  const [dataInicio, setDataInicio] = useState(diasAtras(30));
+  const filialSelecionada = useMemo(
+    () => filiais.find((f) => f.id === filialId) ?? null,
+    [filialId, filiais],
+  );
+  const corte = filialSelecionada?.dataInicioConciliacao ?? null;
+  const [dataInicio, setDataInicio] = useState(inicioPadrao(corte));
   const [dataFim, setDataFim] = useState(hojeISO());
+
+  function onFilialChange(id: string) {
+    setFilialId(id);
+    const novoCorte = filiais.find((f) => f.id === id)?.dataInicioConciliacao ?? null;
+    if (novoCorte && dataInicio < novoCorte) setDataInicio(novoCorte);
+  }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Resultado | null>(null);
@@ -76,7 +92,7 @@ export function ConciliacaoForm({ filiais }: { filiais: Filial[] }) {
           </label>
           <select
             value={filialId}
-            onChange={(e) => setFilialId(e.target.value)}
+            onChange={(e) => onFilialChange(e.target.value)}
             className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
           >
             {filiais.map((f) => (
@@ -94,9 +110,15 @@ export function ConciliacaoForm({ filiais }: { filiais: Filial[] }) {
             <input
               type="date"
               value={dataInicio}
+              min={corte ?? undefined}
               onChange={(e) => setDataInicio(e.target.value)}
               className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
             />
+            {corte && (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Corte da filial: {corte.split('-').reverse().join('/')}
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">

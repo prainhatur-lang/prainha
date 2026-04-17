@@ -1,0 +1,214 @@
+// Engine de conciliacao OPERADORA: cruza PDV (Consumer) x Vendas Cielo.
+// Persiste execucao + excecoes com processo='OPERADORA'.
+
+import { db, schema } from '@concilia/db';
+import { matchPdvCielo } from '@concilia/conciliador/engine';
+import { and, eq, gte, lte, inArray } from 'drizzle-orm';
+
+const ADQUIRENTE_CIELO = 'CIELO';
+export const PROCESSO_OPERADORA = 'OPERADORA';
+
+/** Tipos de excecao do processo Operadora */
+export const TIPO_OPERADORA = {
+  PDV_SEM_CIELO: 'PDV_SEM_CIELO',
+  CIELO_SEM_PDV: 'CIELO_SEM_PDV',
+  DIVERGENCIA_VALOR: 'DIVERGENCIA_VALOR_OPERADORA',
+} as const;
+
+export interface OperadoraResumo {
+  conciliados: { qtd: number; valor: number };
+  divergenciaValor: { qtd: number; valor: number };
+  pdvSemCielo: { qtd: number; valor: number };
+  cieloSemPdv: { qtd: number; valor: number };
+}
+
+export interface OperadoraResultado {
+  execucaoId: string;
+  dataInicioEfetiva: string;
+  dataFimEfetiva: string;
+  resumo: OperadoraResumo;
+  excecoesCriadas: number;
+}
+
+export async function rodarConciliacaoOperadora(opts: {
+  filialId: string;
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string; // YYYY-MM-DD
+}): Promise<OperadoraResultado> {
+  const { filialId, dataFim } = opts;
+  let { dataInicio } = opts;
+
+  // Aplica corte da filial
+  const [fil] = await db
+    .select({ dataInicioConciliacao: schema.filial.dataInicioConciliacao })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const corte = fil?.dataInicioConciliacao ?? null;
+  if (corte && dataInicio < corte) dataInicio = corte;
+
+  // Cria execucao
+  const [exec] = await db
+    .insert(schema.execucaoConciliacao)
+    .values({
+      filialId,
+      processo: PROCESSO_OPERADORA,
+      dataInicio: new Date(dataInicio + 'T00:00:00'),
+      dataFim: new Date(dataFim + 'T23:59:59'),
+      status: 'EM_ANDAMENTO',
+    })
+    .returning({ id: schema.execucaoConciliacao.id });
+  const execId = exec!.id;
+
+  try {
+    const dtIni = new Date(dataInicio + 'T00:00:00');
+    const dtFim = new Date(dataFim + 'T23:59:59');
+
+    // Carrega pagamentos do PDV no periodo
+    const pagamentos = await db
+      .select({
+        id: schema.pagamento.id,
+        nsu: schema.pagamento.nsuTransacao,
+        valor: schema.pagamento.valor,
+        formaPagamento: schema.pagamento.formaPagamento,
+      })
+      .from(schema.pagamento)
+      .where(
+        and(
+          eq(schema.pagamento.filialId, filialId),
+          gte(schema.pagamento.dataPagamento, dtIni),
+          lte(schema.pagamento.dataPagamento, dtFim),
+        ),
+      );
+
+    // Carrega vendas Cielo do periodo
+    const vendas = await db
+      .select({
+        id: schema.vendaAdquirente.id,
+        nsu: schema.vendaAdquirente.nsu,
+        valorBruto: schema.vendaAdquirente.valorBruto,
+      })
+      .from(schema.vendaAdquirente)
+      .where(
+        and(
+          eq(schema.vendaAdquirente.filialId, filialId),
+          eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
+          gte(schema.vendaAdquirente.dataVenda, dataInicio),
+          lte(schema.vendaAdquirente.dataVenda, dataFim),
+        ),
+      );
+
+    // Roda matcher
+    const result = matchPdvCielo(
+      pagamentos.map((p) => ({
+        id: p.id,
+        nsu: p.nsu,
+        valor: Number(p.valor),
+        formaPagamento: p.formaPagamento ?? '',
+      })),
+      vendas.map((v) => ({ id: v.id, nsu: v.nsu, valorBruto: Number(v.valorBruto) })),
+    );
+
+    // Limpa excecoes anteriores do mesmo processo no periodo pra esta filial
+    await db
+      .delete(schema.excecao)
+      .where(
+        and(
+          eq(schema.excecao.filialId, filialId),
+          eq(schema.excecao.processo, PROCESSO_OPERADORA),
+          gte(schema.excecao.detectadoEm, dtIni),
+          lte(schema.excecao.detectadoEm, dtFim),
+        ),
+      );
+
+    // Monta excecoes
+    const novasExcecoes: Array<typeof schema.excecao.$inferInsert> = [];
+
+    for (const { pdv, cielo, diff } of result.divergenciaValor) {
+      novasExcecoes.push({
+        filialId,
+        processo: PROCESSO_OPERADORA,
+        pagamentoId: pdv.id,
+        vendaAdquirenteId: cielo.id ?? null,
+        tipo: TIPO_OPERADORA.DIVERGENCIA_VALOR,
+        severidade: 'MEDIA',
+        descricao: `PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
+        valor: String(pdv.valor),
+      });
+    }
+    for (const pdv of result.pdvSemCielo) {
+      novasExcecoes.push({
+        filialId,
+        processo: PROCESSO_OPERADORA,
+        pagamentoId: pdv.id,
+        tipo: TIPO_OPERADORA.PDV_SEM_CIELO,
+        severidade: 'ALTA',
+        descricao: `Pagamento do PDV (${pdv.formaPagamento || 'sem forma'}, NSU ${pdv.nsu ?? '—'}) sem venda correspondente na Cielo.`,
+        valor: String(pdv.valor),
+      });
+    }
+    for (const cielo of result.cieloSemPdv) {
+      novasExcecoes.push({
+        filialId,
+        processo: PROCESSO_OPERADORA,
+        vendaAdquirenteId: cielo.id ?? null,
+        tipo: TIPO_OPERADORA.CIELO_SEM_PDV,
+        severidade: 'ALTA',
+        descricao: `Venda na Cielo (NSU ${cielo.nsu}, R$ ${cielo.valorBruto.toFixed(2)}) sem pagamento no PDV.`,
+        valor: String(cielo.valorBruto),
+      });
+    }
+
+    if (novasExcecoes.length > 0) {
+      await db.insert(schema.excecao).values(novasExcecoes);
+    }
+
+    // Resumo
+    const sum = (arr: Array<{ valor: number }>) => arr.reduce((s, x) => s + x.valor, 0);
+    const resumo: OperadoraResumo = {
+      conciliados: {
+        qtd: result.matched.length,
+        valor: result.matched.reduce((s, m) => s + m.pdv.valor, 0),
+      },
+      divergenciaValor: {
+        qtd: result.divergenciaValor.length,
+        valor: result.divergenciaValor.reduce((s, m) => s + m.pdv.valor, 0),
+      },
+      pdvSemCielo: {
+        qtd: result.pdvSemCielo.length,
+        valor: sum(result.pdvSemCielo),
+      },
+      cieloSemPdv: {
+        qtd: result.cieloSemPdv.length,
+        valor: result.cieloSemPdv.reduce((s, v) => s + v.valorBruto, 0),
+      },
+    };
+
+    await db
+      .update(schema.execucaoConciliacao)
+      .set({
+        finalizadoEm: new Date(),
+        status: 'OK',
+        resumo: resumo as unknown as Record<string, unknown>,
+      })
+      .where(eq(schema.execucaoConciliacao.id, execId));
+
+    return {
+      execucaoId: execId,
+      dataInicioEfetiva: dataInicio,
+      dataFimEfetiva: dataFim,
+      resumo,
+      excecoesCriadas: novasExcecoes.length,
+    };
+  } catch (e) {
+    await db
+      .update(schema.execucaoConciliacao)
+      .set({
+        finalizadoEm: new Date(),
+        status: 'ERRO',
+        erro: (e as Error).message,
+      })
+      .where(eq(schema.execucaoConciliacao.id, execId));
+    throw e;
+  }
+}
