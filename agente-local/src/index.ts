@@ -64,7 +64,16 @@ async function ciclo(cfg: ReturnType<typeof loadConfig>, checkpoint: Checkpoint)
   let totalCiclo = 0;
   while (true) {
     const desde = checkpoint.get().ultimoCodigo;
-    const pagamentos = await buscarPagamentos(cfg, desde, cfg.batchSize);
+    let pagamentos: Awaited<ReturnType<typeof buscarPagamentos>>;
+    try {
+      pagamentos = await buscarPagamentos(cfg, desde, cfg.batchSize);
+    } catch (e: unknown) {
+      log.warn('falha em buscarPagamentos, abortando ciclo', {
+        err: (e as Error).message,
+        desde,
+      });
+      return;
+    }
     if (pagamentos.length === 0) {
       // envia heartbeat (batch vazio) so quando nada novo no primeiro fetch
       if (totalCiclo === 0) {

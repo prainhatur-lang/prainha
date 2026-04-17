@@ -45,6 +45,15 @@ interface PagamentoRow {
   FORMA: string | null;
 }
 
+/**
+ * Timeout de 60s para qualquer operacao Firebird.
+ * Necessario porque node-firebird tem bug com FB 4 onde
+ * Promises podem ficar penduradas indefinidamente apos
+ * o uncaughtException 'pluginName'. Timeout garante que
+ * o agente nunca trava.
+ */
+const TIMEOUT_MS = 60_000;
+
 export function buscarPagamentos(
   cfg: Config,
   desdeCodigo: number,
@@ -60,15 +69,25 @@ export function buscarPagamentos(
     pageSize: 4096,
   };
 
-  return new Promise<PagamentoIngest[]>((resolve, reject) => {
+  const inner = new Promise<PagamentoIngest[]>((resolve, reject) => {
+    let resolved = false;
+    const safeResolve = (v: PagamentoIngest[]) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(v);
+    };
+    const safeReject = (e: Error) => {
+      if (resolved) return;
+      resolved = true;
+      reject(e);
+    };
+
     Firebird.attach(opts, (err: Error | null, db: Firebird.Database) => {
-      if (err) return reject(err);
+      if (err) return safeReject(err);
       db.query(SQL, [limite, desdeCodigo], (e: Error | null, rows: PagamentoRow[]) => {
         if (e) {
-          db.detach(() => {
-            // ignora erro de detach apos query falhar
-          });
-          return reject(e);
+          try { db.detach(() => {}); } catch {}
+          return safeReject(e);
         }
         const out: PagamentoIngest[] = rows.map((r) => ({
           codigoExterno: r.CODIGO,
@@ -86,19 +105,18 @@ export function buscarPagamentos(
           codigoCredenciadoraCartao: r.CODIGOCREDENCIADORACARTAO,
           codigoContaCorrente: r.CODIGOCONTACORRENTE,
         }));
-        // Resolve PRIMEIRO: o detach do node-firebird tem bug com FB 4
-        // (uncaughtException com pluginName undefined) que pode deixar
-        // este Promise preso pra sempre. Resolvendo antes garantimos
-        // que o caller continua, mesmo que o detach exploda depois.
-        resolve(out);
-        try {
-          db.detach(() => {
-            // ignora qualquer erro - conexao sera GC-coletada
-          });
-        } catch {
-          // ignora erros sincronos no detach tambem
-        }
+        // Resolve PRIMEIRO antes do detach buggy do node-firebird (FB 4)
+        safeResolve(out);
+        try { db.detach(() => {}); } catch {}
       });
     });
   });
+
+  // Timeout para garantir que nunca trava (bug do node-firebird)
+  return Promise.race<PagamentoIngest[]>([
+    inner,
+    new Promise<PagamentoIngest[]>((_, reject) =>
+      setTimeout(() => reject(new Error(`firebird timeout (${TIMEOUT_MS}ms)`)), TIMEOUT_MS),
+    ),
+  ]);
 }
