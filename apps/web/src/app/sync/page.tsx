@@ -37,6 +37,9 @@ export default async function SyncPage() {
               <Link href="/upload" className="text-slate-600 hover:text-slate-900">
                 Upload
               </Link>
+              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
+                Conciliação
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">

@@ -1,11 +1,43 @@
 // Entrypoint do agente local. Roda em loop infinito, sincronizando
 // PAGAMENTOS do Firebird local com a API /api/ingest na nuvem.
 
+// BOOT TRACE absoluto - escreve antes de qualquer outra coisa para garantir
+// que pelo menos sabemos se o processo iniciou (debug NSSM/Service)
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+function bootTrace(msg: string) {
+  try {
+    // Tenta caminho absoluto baseado no diretorio do script
+    const dir = resolve(dirname(process.execPath), 'logs');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(
+      resolve(dir, 'boot-trace.log'),
+      `${new Date().toISOString()} | cwd=${process.cwd()} | execPath=${process.execPath} | argv=${JSON.stringify(process.argv)} | ${msg}\n`,
+    );
+  } catch (e) {
+    // Fallback: tenta C:\concilia-agente\logs
+    try {
+      mkdirSync('C:\\concilia-agente\\logs', { recursive: true });
+      appendFileSync(
+        'C:\\concilia-agente\\logs\\boot-trace.log',
+        `${new Date().toISOString()} | FALLBACK | err=${(e as Error).message} | ${msg}\n`,
+      );
+    } catch {
+      // Ignora se nem o fallback funcionar
+    }
+  }
+}
+
+bootTrace('BOOT 1 - antes de imports');
+
 import { loadConfig } from './config';
 import { Checkpoint } from './checkpoint';
 import { buscarPagamentos } from './firebird';
 import { enviarBatch } from './ingest';
 import { log } from './logger';
+
+bootTrace('BOOT 2 - imports OK');
 
 // node-firebird tem um bug conhecido com Firebird 4 onde o detach gera um
 // callback async com 'pluginName' undefined, derrubando o processo. Como o
@@ -25,7 +57,7 @@ process.on('unhandledRejection', (err: unknown) => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function ciclo(cfg: Awaited<ReturnType<typeof loadConfig>>, checkpoint: Checkpoint) {
+async function ciclo(cfg: ReturnType<typeof loadConfig>, checkpoint: Checkpoint) {
   const cp = checkpoint.get();
   log.info('iniciando ciclo', { ultimoCodigo: cp.ultimoCodigo });
 
@@ -66,7 +98,9 @@ async function ciclo(cfg: Awaited<ReturnType<typeof loadConfig>>, checkpoint: Ch
 }
 
 async function main() {
-  const cfg = await loadConfig();
+  // Boot marker: confirma que o processo iniciou de verdade
+  console.log('[boot] concilia-agente iniciando...');
+  const cfg = loadConfig();
   log.info('agente iniciado', {
     api: cfg.api.url,
     firebird: `${cfg.firebird.host}:${cfg.firebird.port}`,

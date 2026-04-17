@@ -39,6 +39,9 @@ export default async function DashboardPage() {
               <Link href="/upload" className="text-slate-600 hover:text-slate-900">
                 Upload
               </Link>
+              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
+                Conciliação
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -104,8 +107,8 @@ export default async function DashboardPage() {
           <h3 className="text-sm font-semibold text-slate-900">Roadmap</h3>
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <RoadmapCard title="Fase 1" desc="Agente local + ingestão" status="ok" />
-            <RoadmapCard title="Fase 2" desc="Upload Cielo + CNAB" status="atual" />
-            <RoadmapCard title="Fase 3" desc="Engine de conciliação" />
+            <RoadmapCard title="Fase 2" desc="Upload Cielo + CNAB" status="ok" />
+            <RoadmapCard title="Fase 3" desc="Engine de conciliação" status="atual" />
           </div>
         </div>
       </section>

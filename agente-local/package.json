@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "bundle": "tsx scripts/bundle.ts",
-    "package:win": "tsx scripts/package-win.ts",
+    "package:win": "tsx scripts/package-win-node.ts",
+    "package:win-pkg": "tsx scripts/package-win.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

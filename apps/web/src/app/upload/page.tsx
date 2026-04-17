@@ -45,7 +45,10 @@ export default async function UploadPage() {
                 Sincronização
               </Link>
               <Link href="/upload" className="font-medium text-slate-900">
-                Upload de arquivos
+                Upload
+              </Link>
+              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
+                Conciliação
               </Link>
             </nav>
           </div>

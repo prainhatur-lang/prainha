@@ -34,14 +34,7 @@ function configPath(): string {
   return resolve(process.cwd(), 'config.json');
 }
 
-let zod: typeof import('zod');
-async function loadZod() {
-  if (!zod) zod = await import('zod');
-  return zod;
-}
-
-export async function loadConfig(): Promise<Config> {
-  await loadZod(); // mantem o import vivo no bundle
+export function loadConfig(): Config {
   const path = configPath();
   let raw: string;
   try {
