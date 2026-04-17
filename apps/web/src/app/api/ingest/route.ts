@@ -11,6 +11,10 @@ import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq, sql as drizzleSql } from 'drizzle-orm';
 
+// Forca rota dinamica — nao pre-renderizar, sempre executa em runtime.
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 const PagamentoSchema = z.object({
   codigoExterno: z.number().int(),
   codigoPedidoExterno: z.number().int().nullable(),
