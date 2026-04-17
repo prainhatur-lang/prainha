@@ -12,6 +12,12 @@ import { sql as drizzleSql } from 'drizzle-orm';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
+/**
+ * Postgres tem limite de 65534 parametros por query.
+ * Com ~20 colunas por row, 1000 rows = 20k params (bem abaixo).
+ */
+const CHUNK_SIZE = 1000;
+
 function parseDateBR(s: string): string | null {
   if (!s || !/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return null;
   const [d, m, y] = s.split('/');
@@ -56,19 +62,24 @@ export async function processarCieloVendas(
     arquivoOrigem: storagePath,
   }));
 
-  // Insert ignorando duplicados (mesmo filial + adquirente + nsu)
-  const inseridos = await db
-    .insert(schema.vendaAdquirente)
-    .values(dados)
-    .onConflictDoNothing()
-    .returning({ id: schema.vendaAdquirente.id });
+  // Insert ignorando duplicados (mesmo filial + adquirente + nsu), em chunks
+  let inseridos = 0;
+  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
+    const chunk = dados.slice(i, i + CHUNK_SIZE);
+    const r = await db
+      .insert(schema.vendaAdquirente)
+      .values(chunk)
+      .onConflictDoNothing()
+      .returning({ id: schema.vendaAdquirente.id });
+    inseridos += r.length;
+  }
 
   const datas = rows.map((r) => parseDateBR(r.data)).filter(Boolean) as string[];
   datas.sort();
 
   return {
     registrosLidos: rows.length,
-    registrosInseridos: inseridos.length,
+    registrosInseridos: inseridos,
     totalBruto: rows.reduce((s, r) => s + r.valorBruto, 0),
     totalLiquido: rows.reduce((s, r) => s + (r.valorLiquido || 0), 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
@@ -102,18 +113,23 @@ export async function processarCieloRecebiveis(
     arquivoOrigem: storagePath,
   }));
 
-  const inseridos = await db
-    .insert(schema.recebivelAdquirente)
-    .values(dados)
-    .onConflictDoNothing()
-    .returning({ id: schema.recebivelAdquirente.id });
+  let inseridos = 0;
+  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
+    const chunk = dados.slice(i, i + CHUNK_SIZE);
+    const r = await db
+      .insert(schema.recebivelAdquirente)
+      .values(chunk)
+      .onConflictDoNothing()
+      .returning({ id: schema.recebivelAdquirente.id });
+    inseridos += r.length;
+  }
 
   const datas = rows.map((r) => parseDateBR(r.dataPagamento)).filter(Boolean) as string[];
   datas.sort();
 
   return {
     registrosLidos: rows.length,
-    registrosInseridos: inseridos.length,
+    registrosInseridos: inseridos,
     totalBruto: rows.reduce((s, r) => s + r.valorBruto, 0),
     totalLiquido: rows.reduce((s, r) => s + r.valorLiquido, 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
@@ -161,18 +177,23 @@ export async function processarCnab240Inter(
     arquivoOrigem: storagePath,
   }));
 
-  const inseridos = await db
-    .insert(schema.lancamentoBanco)
-    .values(dados)
-    .onConflictDoNothing()
-    .returning({ id: schema.lancamentoBanco.id });
+  let inseridos = 0;
+  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
+    const chunk = dados.slice(i, i + CHUNK_SIZE);
+    const r = await db
+      .insert(schema.lancamentoBanco)
+      .values(chunk)
+      .onConflictDoNothing()
+      .returning({ id: schema.lancamentoBanco.id });
+    inseridos += r.length;
+  }
 
   const datas = rows.map((r) => parseDateBR(r.dataMovimento)).filter(Boolean) as string[];
   datas.sort();
 
   return {
     registrosLidos: rows.length,
-    registrosInseridos: inseridos.length,
+    registrosInseridos: inseridos,
     totalCreditos: rows.filter((r) => r.tipo === 'C').reduce((s, r) => s + r.valor, 0),
     totalDebitos: rows.filter((r) => r.tipo === 'D').reduce((s, r) => s + r.valor, 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
