@@ -6,3 +6,4 @@ export * from './pdv';
 export * from './adquirente';
 export * from './banco';
 export * from './conciliacao';
+export * from './importacao';

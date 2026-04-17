@@ -36,6 +36,9 @@ export default async function DashboardPage() {
               <Link href="/sync" className="text-slate-600 hover:text-slate-900">
                 Sincronização
               </Link>
+              <Link href="/upload" className="text-slate-600 hover:text-slate-900">
+                Upload
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -100,8 +103,8 @@ export default async function DashboardPage() {
         <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h3 className="text-sm font-semibold text-slate-900">Roadmap</h3>
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <RoadmapCard title="Fase 1" desc="Agente local + ingestão" status="atual" />
-            <RoadmapCard title="Fase 2" desc="Upload Cielo + CNAB" />
+            <RoadmapCard title="Fase 1" desc="Agente local + ingestão" status="ok" />
+            <RoadmapCard title="Fase 2" desc="Upload Cielo + CNAB" status="atual" />
             <RoadmapCard title="Fase 3" desc="Engine de conciliação" />
           </div>
         </div>
@@ -133,16 +136,26 @@ function KpiCard({
 }
 
 function RoadmapCard({ title, desc, status }: { title: string; desc: string; status?: string }) {
+  const isAtual = status === 'atual';
+  const isOk = status === 'ok';
   return (
     <div
-      className={`rounded-lg border px-4 py-3 ${status === 'atual' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-slate-50'}`}
+      className={`rounded-lg border px-4 py-3 ${
+        isAtual
+          ? 'border-slate-900 bg-slate-900 text-white'
+          : isOk
+            ? 'border-emerald-200 bg-emerald-50'
+            : 'border-slate-200 bg-slate-50'
+      }`}
     >
       <p
-        className={`text-xs font-semibold uppercase tracking-wide ${status === 'atual' ? 'text-slate-300' : 'text-slate-500'}`}
+        className={`text-xs font-semibold uppercase tracking-wide ${
+          isAtual ? 'text-slate-300' : isOk ? 'text-emerald-700' : 'text-slate-500'
+        }`}
       >
-        {title} {status && <span className="ml-1 normal-case">({status})</span>}
+        {title} {status && <span className="ml-1 normal-case">({isOk ? '✓ pronto' : status})</span>}
       </p>
-      <p className={`mt-1 text-sm ${status === 'atual' ? 'text-white' : 'text-slate-700'}`}>{desc}</p>
+      <p className={`mt-1 text-sm ${isAtual ? 'text-white' : 'text-slate-700'}`}>{desc}</p>
     </div>
   );
 }
