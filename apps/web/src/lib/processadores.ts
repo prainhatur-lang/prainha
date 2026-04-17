@@ -202,17 +202,24 @@ export async function processarCnab240Inter(
 
 /** Heuristica: tenta detectar tipo do arquivo pelo conteudo. */
 export function detectarTipo(conteudo: Buffer): 'CIELO_VENDAS' | 'CIELO_RECEBIVEIS' | 'CNAB240_INTER' | null {
-  // Sniff primeiros 2KB
-  const sniff = conteudo.subarray(0, 2048).toString('latin1');
+  // Sniff primeiros 4KB (headers Cielo sao longos)
+  const sniff = conteudo.subarray(0, 4096).toString('latin1');
 
-  if (sniff.includes('Detalhado de vendas Cielo') || sniff.includes('Data da venda;Hora da venda;')) {
-    return 'CIELO_VENDAS';
-  }
+  // Recebiveis vem ANTES de Vendas porque o header de Recebiveis tambem contem
+  // "Data da venda;Hora da venda;" como colunas (junto com "Data de pagamento;...").
   if (
     sniff.includes('Receb') &&
-    (sniff.includes('Data de pagamento;Data do lan') || sniff.includes('eis Detalhado'))
+    (sniff.includes('eis Detalhado') ||
+      sniff.includes('Data de pagamento;Data do lan'))
   ) {
     return 'CIELO_RECEBIVEIS';
+  }
+  if (
+    sniff.includes('Detalhado de vendas Cielo') ||
+    sniff.includes('Detalhado de Vendas') ||
+    /^[\s\S]*?\nData da venda;Hora da venda;/m.test(sniff)
+  ) {
+    return 'CIELO_VENDAS';
   }
   // CNAB 240 Inter: linhas de 240 chars, comeca com 077 (banco Inter)
   const firstLine = conteudo.subarray(0, 250).toString('latin1').split(/\r?\n/)[0] ?? '';
