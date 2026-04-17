@@ -92,8 +92,10 @@ async function ciclo(cfg: ReturnType<typeof loadConfig>, checkpoint: Checkpoint)
       log.info('ciclo terminou', { totalCiclo, ultimoCodigo: novoUltimo });
       return;
     }
-    // Delay minimo para o detach do firebird estabilizar
-    await sleep(100);
+    // Delay minimo + setImmediate para isolar do detach buggy do node-firebird
+    // (uncaughtException do detach anterior precisa do tick do event loop)
+    await sleep(200);
+    await new Promise((r) => setImmediate(r));
   }
 }
 

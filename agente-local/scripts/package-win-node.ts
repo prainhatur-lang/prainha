@@ -82,12 +82,18 @@ copyFileSync(nssmPath, resolve(stageDir, 'nssm.exe'));
 copyFileSync(bundlePath, resolve(stageDir, 'agente.cjs'));
 copyFileSync(resolve(root, 'config.example.json'), resolve(stageDir, 'config.example.json'));
 
-// run.cmd: wrapper que executa node.exe agente.cjs com working dir certa
+// run.cmd: wrapper com auto-restart (se node.exe sair por qualquer motivo,
+// reinicia em 5s). Resolve crashes silenciosos do node-firebird sem perder
+// o agente.
 writeFileSync(
   resolve(stageDir, 'run.cmd'),
   `@echo off
 cd /d %~dp0
+:loop
 "%~dp0node.exe" "%~dp0agente.cjs"
+echo [run.cmd] node.exe encerrou em %DATE% %TIME% com exit code %ERRORLEVEL%, reiniciando em 5s...
+timeout /t 5 /nobreak >nul
+goto loop
 `,
   'utf8',
 );

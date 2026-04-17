@@ -86,13 +86,18 @@ export function buscarPagamentos(
           codigoCredenciadoraCartao: r.CODIGOCREDENCIADORACARTAO,
           codigoContaCorrente: r.CODIGOCONTACORRENTE,
         }));
-        db.detach((detachErr: Error | null) => {
-          if (detachErr) {
-            // node-firebird tem bug de pluginName no detach com FB 4 -
-            // ignoramos pois a query ja foi consumida com sucesso.
-          }
-          resolve(out);
-        });
+        // Resolve PRIMEIRO: o detach do node-firebird tem bug com FB 4
+        // (uncaughtException com pluginName undefined) que pode deixar
+        // este Promise preso pra sempre. Resolvendo antes garantimos
+        // que o caller continua, mesmo que o detach exploda depois.
+        resolve(out);
+        try {
+          db.detach(() => {
+            // ignora qualquer erro - conexao sera GC-coletada
+          });
+        } catch {
+          // ignora erros sincronos no detach tambem
+        }
       });
     });
   });
