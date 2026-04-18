@@ -142,6 +142,9 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
               <Link href="/conciliacao/recebiveis" className="font-medium text-slate-900">
                 Recebíveis
               </Link>
+              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">
+                Relatório
+              </Link>
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
               </Link>

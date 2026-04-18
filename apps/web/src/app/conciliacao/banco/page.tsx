@@ -140,6 +140,9 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
               <Link href="/conciliacao/banco" className="font-medium text-slate-900">
                 Banco
               </Link>
+              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">
+                Relatório
+              </Link>
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
               </Link>

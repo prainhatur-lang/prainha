@@ -103,6 +103,9 @@ export default async function ConciliacaoPage() {
               <Link href="/conciliacao" className="font-medium text-slate-900">
                 Conciliação
               </Link>
+              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">
+                Relatório
+              </Link>
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
               </Link>

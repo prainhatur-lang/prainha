@@ -50,6 +50,9 @@ export default async function UploadPage() {
               <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
                 Conciliação
               </Link>
+              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">
+                Relatório
+              </Link>
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
               </Link>
