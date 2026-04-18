@@ -62,7 +62,16 @@ export const vendaAdquirente = pgTable(
     importadoEm: timestamp('importado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    nsuFilialUnique: unique('venda_adq_filial_nsu_unique').on(t.filialId, t.adquirente, t.nsu),
+    // NSU nao eh unico sozinho: Cielo recicla NSU ao longo do tempo, e o mesmo
+    // NSU pode aparecer em dias diferentes. Usamos (NSU + data + autorizacao)
+    // como chave real da transacao.
+    nsuFilialUnique: unique('venda_adq_filial_nsu_unique').on(
+      t.filialId,
+      t.adquirente,
+      t.nsu,
+      t.dataVenda,
+      t.autorizacao,
+    ),
     nsuIdx: index('venda_adq_nsu_idx').on(t.nsu),
     dataIdx: index('venda_adq_data_idx').on(t.filialId, t.dataVenda),
   }),
@@ -95,7 +104,14 @@ export const recebivelAdquirente = pgTable(
     importadoEm: timestamp('importado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    nsuFilialUnique: unique('rec_adq_filial_nsu_unique').on(t.filialId, t.adquirente, t.nsu),
+    // Mesmo raciocinio que venda_adquirente: NSU recicla, precisa da data.
+    nsuFilialUnique: unique('rec_adq_filial_nsu_unique').on(
+      t.filialId,
+      t.adquirente,
+      t.nsu,
+      t.dataPagamento,
+      t.autorizacao,
+    ),
     nsuIdx: index('rec_adq_nsu_idx').on(t.nsu),
     dataPagIdx: index('rec_adq_data_pag_idx').on(t.filialId, t.dataPagamento),
   }),
