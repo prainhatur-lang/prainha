@@ -34,6 +34,8 @@ export interface MatchPdvCieloResult {
     diff: number;
     matchType: MatchType;
   }>;
+  /** Divergencia de valor: NSU bate OU proximidade por data+valor mas valor difere.
+   * Usuario aceita (vira match confirmado) ou rejeita (vira 2 excecoes separadas). */
   divergenciaValor: Array<{ pdv: PdvPagamento; cielo: CieloVenda; diff: number }>;
   pdvSemCielo: PdvPagamento[];
   cieloSemPdv: CieloVenda[];
@@ -237,6 +239,7 @@ export function matchPdvCielo(
     }
     if (melhor) {
       cieloMatchedSegundaPassada.add(melhor.c);
+      // Sem NSU + valor proximo → vira divergencia de valor (user aceita/rejeita).
       result.divergenciaValor.push({ pdv: p, cielo: melhor.c, diff: melhor.diff });
     } else {
       pdvFinal.push(p);

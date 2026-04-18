@@ -81,6 +81,8 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           vendaNsu: schema.vendaAdquirente.nsu,
           vendaDataVenda: schema.vendaAdquirente.dataVenda,
           vendaBandeira: schema.vendaAdquirente.bandeira,
+          pagamentoValor: schema.pagamento.valor,
+          vendaValorBruto: schema.vendaAdquirente.valorBruto,
         })
         .from(schema.excecao)
         .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
@@ -305,7 +307,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
             {/* Tabelas por tipo — com paginacao server-side */}
             <SecaoExcecoes
               titulo="Divergência de valor"
-              descricao="NSU bate, valor diferente. Pode ser gorjeta, desconto ou erro de digitação."
+              descricao="Valor difere entre PDV e Cielo (gorjeta, desconto, couvert, ou match sem NSU por proximidade). Aceite pra confirmar como match, ou rejeite pra separar em 2 exceções."
               tom="amber"
               excecoes={secaoDiv.rows}
               total={secaoDiv.total}
@@ -314,6 +316,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               sp={sp}
               tipo={TIPO_OPERADORA.DIVERGENCIA_VALOR}
               filialId={filialSelecionada.id}
+              acoesDivergencia
             />
             <SecaoExcecoes
               titulo="No PDV, sem match na Cielo"
@@ -410,6 +413,7 @@ function SecaoExcecoes({
   sp,
   tipo,
   filialId,
+  acoesDivergencia = false,
 }: {
   titulo: string;
   descricao: string;
@@ -425,6 +429,8 @@ function SecaoExcecoes({
     vendaNsu: string | null;
     vendaDataVenda: string | null;
     vendaBandeira: string | null;
+    pagamentoValor?: string | null;
+    vendaValorBruto?: string | null;
   }>;
   total: number;
   page: number;
@@ -432,6 +438,7 @@ function SecaoExcecoes({
   sp: SP;
   tipo: string;
   filialId: string;
+  acoesDivergencia?: boolean;
 }) {
   const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -479,7 +486,7 @@ function SecaoExcecoes({
           </thead>
           <tbody>
             {excecoes.map((e) => (
-              <ExcecaoRow key={e.id} excecao={e} />
+              <ExcecaoRow key={e.id} excecao={e} acoesDivergencia={acoesDivergencia} />
             ))}
           </tbody>
         </table>

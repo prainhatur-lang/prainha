@@ -125,6 +125,41 @@ export async function rodarConciliacaoBanco(opts: {
   const execId = exec!.id;
 
   try {
+    // Carrega mapeamento de pagamentos com divergencia ACEITA pelo usuario
+    // (ela indica "o valor correto eh o da Cielo, nao o do PDV").
+    const aceitasRows = await db
+      .select({
+        pagamentoId: schema.excecao.pagamentoId,
+        vendaValor: schema.vendaAdquirente.valorBruto,
+        vendaEc: schema.vendaAdquirente.codigoEstabelecimento,
+        vendaBandeira: schema.vendaAdquirente.bandeira,
+      })
+      .from(schema.excecao)
+      .innerJoin(
+        schema.vendaAdquirente,
+        eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+      )
+      .where(
+        and(
+          eq(schema.excecao.filialId, filialId),
+          eq(schema.excecao.tipo, 'DIVERGENCIA_VALOR_OPERADORA'),
+          isNotNull(schema.excecao.aceitaEm),
+        ),
+      );
+    const divergenciasAceitas = new Map<
+      string,
+      { valor: number; ec: string | null; bandeira: string | null }
+    >();
+    for (const a of aceitasRows) {
+      if (a.pagamentoId) {
+        divergenciasAceitas.set(a.pagamentoId, {
+          valor: Number(a.vendaValor),
+          ec: a.vendaEc,
+          bandeira: a.vendaBandeira,
+        });
+      }
+    }
+
     // Pagamentos com data_credito no periodo (exclui dinheiro etc). LEFT JOIN
     // com venda_adquirente pra pegar codigo_estabelecimento (EC) — usado pra
     // escolher qual taxa aplicar.
@@ -187,14 +222,16 @@ export async function rodarConciliacaoBanco(opts: {
       );
 
     // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida").
-    // Taxa aplicada por (EC + forma + bandeira): resolve o EC via join com Cielo,
-    // fallback pra default da filial, fallback pros defaults hardcoded.
+    // Se existir divergencia ACEITA, usa o valor/EC/bandeira da venda Cielo
+    // (user ja decidiu que o lado correto eh o da Cielo).
     const pseudoRecebiveis = liquidaveis.map((p) => {
+      const aceita = divergenciasAceitas.get(p.id);
       const forma = p.formaPagamento ?? '';
-      const bandeira = p.vendaBandeira ?? p.bandeiraMfe ?? null;
-      const taxasDoEc = resolverTaxas(taxasFilial, p.vendaEc);
+      const bandeira = aceita?.bandeira ?? p.vendaBandeira ?? p.bandeiraMfe ?? null;
+      const ec = aceita?.ec ?? p.vendaEc;
+      const taxasDoEc = resolverTaxas(taxasFilial, ec);
       const percent = obterTaxaPercent(taxasDoEc, forma, bandeira);
-      const bruto = Number(p.valor);
+      const bruto = aceita?.valor ?? Number(p.valor);
       const liquido = +(bruto * (1 - percent / 100)).toFixed(2);
       return {
         id: p.id,
