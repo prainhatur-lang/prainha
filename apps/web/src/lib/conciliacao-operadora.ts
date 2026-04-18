@@ -81,20 +81,29 @@ export async function rodarConciliacaoOperadora(opts: {
         ),
       );
 
-    // Carrega vendas Cielo do periodo
+    // Carrega vendas Cielo com janela de +-1 dia pra cobrir virada do dia
+    // (venda PDV 23:50 pode aparecer na Cielo no dia seguinte)
+    const dtIniCielo = new Date(dtIni);
+    dtIniCielo.setDate(dtIniCielo.getDate() - 1);
+    const dtFimCielo = new Date(dtFim);
+    dtFimCielo.setDate(dtFimCielo.getDate() + 1);
+    const dataInicioCielo = dtIniCielo.toISOString().slice(0, 10);
+    const dataFimCielo = dtFimCielo.toISOString().slice(0, 10);
+
     const vendas = await db
       .select({
         id: schema.vendaAdquirente.id,
         nsu: schema.vendaAdquirente.nsu,
         valorBruto: schema.vendaAdquirente.valorBruto,
+        dataVenda: schema.vendaAdquirente.dataVenda,
       })
       .from(schema.vendaAdquirente)
       .where(
         and(
           eq(schema.vendaAdquirente.filialId, filialId),
           eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
-          gte(schema.vendaAdquirente.dataVenda, dataInicio),
-          lte(schema.vendaAdquirente.dataVenda, dataFim),
+          gte(schema.vendaAdquirente.dataVenda, dataInicioCielo),
+          lte(schema.vendaAdquirente.dataVenda, dataFimCielo),
         ),
       );
 
@@ -147,7 +156,17 @@ export async function rodarConciliacaoOperadora(opts: {
         valor: String(pdv.valor),
       });
     }
-    for (const cielo of result.cieloSemPdv) {
+    // cieloSemPdv: so reporta as vendas cujo dataVenda esteja no range nominal.
+    // Vendas em D-1 e D+1 foram carregadas pra casar com PDV (virada de dia),
+    // mas se sobraram sem PDV pode ser venda de outro periodo.
+    const vendasPorId = new Map(vendas.map((v) => [v.id, v]));
+    const cieloSemPdvNoRange = result.cieloSemPdv.filter((c) => {
+      if (!c.id) return true;
+      const v = vendasPorId.get(c.id);
+      if (!v) return true;
+      return v.dataVenda >= dataInicio && v.dataVenda <= dataFim;
+    });
+    for (const cielo of cieloSemPdvNoRange) {
       novasExcecoes.push({
         filialId,
         processo: PROCESSO_OPERADORA,
@@ -179,8 +198,8 @@ export async function rodarConciliacaoOperadora(opts: {
         valor: sum(result.pdvSemCielo),
       },
       cieloSemPdv: {
-        qtd: result.cieloSemPdv.length,
-        valor: result.cieloSemPdv.reduce((s, v) => s + v.valorBruto, 0),
+        qtd: cieloSemPdvNoRange.length,
+        valor: cieloSemPdvNoRange.reduce((s, v) => s + v.valorBruto, 0),
       },
     };
 

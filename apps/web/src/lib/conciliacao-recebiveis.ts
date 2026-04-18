@@ -64,7 +64,15 @@ export async function rodarConciliacaoRecebiveis(opts: {
   const execId = exec!.id;
 
   try {
-    // Vendas Cielo no periodo (por data da venda)
+    // Vendas e Recebiveis sao conciliados pela DATA DA VENDA (mesmo evento).
+    // Janela +-1 dia cobre virada de dia (venda 23:50 pode cair no dia seguinte).
+    const dtIniAmp = new Date(dtIni);
+    dtIniAmp.setDate(dtIniAmp.getDate() - 1);
+    const dtFimAmp = new Date(dtFim);
+    dtFimAmp.setDate(dtFimAmp.getDate() + 1);
+    const dataInicioAmp = dtIniAmp.toISOString().slice(0, 10);
+    const dataFimAmp = dtFimAmp.toISOString().slice(0, 10);
+
     const vendas = await db
       .select({
         id: schema.vendaAdquirente.id,
@@ -72,22 +80,20 @@ export async function rodarConciliacaoRecebiveis(opts: {
         valorBruto: schema.vendaAdquirente.valorBruto,
         formaPagamento: schema.vendaAdquirente.formaPagamento,
         bandeira: schema.vendaAdquirente.bandeira,
+        dataVenda: schema.vendaAdquirente.dataVenda,
       })
       .from(schema.vendaAdquirente)
       .where(
         and(
           eq(schema.vendaAdquirente.filialId, filialId),
           eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
-          gte(schema.vendaAdquirente.dataVenda, dataInicio),
-          lte(schema.vendaAdquirente.dataVenda, dataFim),
+          gte(schema.vendaAdquirente.dataVenda, dataInicioAmp),
+          lte(schema.vendaAdquirente.dataVenda, dataFimAmp),
         ),
       );
 
-    // Recebiveis: janela ate +60 dias depois do dataFim (D+30 cartao e taxa + margem)
-    const dtFimRec = new Date(dtFim);
-    dtFimRec.setDate(dtFimRec.getDate() + 60);
-    const dataFimRec = dtFimRec.toISOString().slice(0, 10);
-
+    // Recebiveis filtrados pelo data_venda (ambos os lados alinhados pelo mesmo
+    // evento). Quando data_venda eh null, nao entra nessa conciliacao.
     const recebiveis = await db
       .select({
         id: schema.recebivelAdquirente.id,
@@ -103,16 +109,15 @@ export async function rodarConciliacaoRecebiveis(opts: {
         and(
           eq(schema.recebivelAdquirente.filialId, filialId),
           eq(schema.recebivelAdquirente.adquirente, ADQUIRENTE_CIELO),
-          // Filtra pelo data_venda do recebivel: so olha recebiveis cuja venda
-          // seja no periodo alvo (evita ruido de meses antigos/futuros).
-          gte(schema.recebivelAdquirente.dataPagamento, dataInicio),
-          lte(schema.recebivelAdquirente.dataPagamento, dataFimRec),
+          gte(schema.recebivelAdquirente.dataVenda, dataInicioAmp),
+          lte(schema.recebivelAdquirente.dataVenda, dataFimAmp),
         ),
       );
 
-    // Match por NSU
+    // Match por NSU em toda a janela ampliada; filtro por range nominal depois
     const vendasByNsu = new Map(vendas.map((v) => [v.nsu, v]));
     const recByNsu = new Map(recebiveis.map((r) => [r.nsu, r]));
+    const naRangeNominal = (d: string) => d >= dataInicio && d <= dataFim;
 
     const matched: Array<{
       venda: (typeof vendas)[number];
@@ -125,6 +130,7 @@ export async function rodarConciliacaoRecebiveis(opts: {
 
     const usados = new Set<string>();
     for (const v of vendas) {
+      if (!naRangeNominal(v.dataVenda)) continue; // venda em D-1/D+1 so serve pra matching cruzado
       const r = recByNsu.get(v.nsu);
       if (!r) {
         vendaSemAgenda.push(v);
@@ -136,6 +142,7 @@ export async function rodarConciliacaoRecebiveis(opts: {
       else divergencia.push({ venda: v, recebivel: r, diff });
     }
     for (const r of recebiveis) {
+      if (!r.dataVenda || !naRangeNominal(r.dataVenda)) continue;
       if (!usados.has(r.nsu) && !vendasByNsu.has(r.nsu)) agendaSemVenda.push(r);
     }
 
