@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { ExcecoesFiltros } from './filtros';
@@ -61,6 +61,11 @@ interface SP {
   severidade?: string;
   dataIni?: string;
   dataFim?: string;
+  /** Busca texto: aplica a NSU, numero do pedido e descricao */
+  q?: string;
+  valorMin?: string;
+  valorMax?: string;
+  forma?: string;
   page?: string;
 }
 
@@ -105,9 +110,31 @@ export default async function ExcecoesPage(props: {
   if (sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)) {
     whereBase.push(lte(schema.excecao.detectadoEm, new Date(sp.dataFim + 'T23:59:59')));
   }
+  if (sp.q && sp.q.trim()) {
+    const q = sp.q.trim();
+    const like = `%${q}%`;
+    const cond = or(
+      sql`${schema.pagamento.nsuTransacao} ILIKE ${like}`,
+      sql`${schema.pagamento.codigoPedidoExterno}::text = ${q}`,
+      sql`${schema.excecao.descricao} ILIKE ${like}`,
+    );
+    if (cond) whereBase.push(cond);
+  }
+  const vMin = Number(sp.valorMin);
+  if (sp.valorMin && Number.isFinite(vMin)) {
+    whereBase.push(gte(schema.excecao.valor, String(vMin)));
+  }
+  const vMax = Number(sp.valorMax);
+  if (sp.valorMax && Number.isFinite(vMax)) {
+    whereBase.push(lte(schema.excecao.valor, String(vMax)));
+  }
+  if (sp.forma && sp.forma.trim()) {
+    whereBase.push(eq(schema.pagamento.formaPagamento, sp.forma.trim()));
+  }
   whereBase.push(isNull(schema.excecao.aceitaEm));
 
-  // Contagens por tipo (sem filtro de tipo)
+  // Contagens por tipo (sem filtro de tipo). Join com pagamento pra filtros
+  // que referenciam campos do pagamento (forma, nsu, pedido).
   const contagens = await db
     .select({
       tipo: schema.excecao.tipo,
@@ -115,6 +142,7 @@ export default async function ExcecoesPage(props: {
       valor: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
     })
     .from(schema.excecao)
+    .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
     .where(and(...whereBase))
     .groupBy(schema.excecao.tipo);
 
@@ -131,6 +159,7 @@ export default async function ExcecoesPage(props: {
   const [totalFiltradoRow] = await db
     .select({ n: sql<number>`COUNT(*)::int` })
     .from(schema.excecao)
+    .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
     .where(and(...whereList));
   const totalFiltrado = Number(totalFiltradoRow?.n ?? 0);
 
