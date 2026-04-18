@@ -8,11 +8,12 @@ import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull } from 'drizz
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
 
-/** Formas que nao passam pela maquininha Cielo — nao entram na conciliacao.
- * Pix Manual: cliente escaneia QR direto pro banco, sem Cielo (NSU = null).
+/** Formas que nao passam pela Cielo — nao entram na conciliacao.
+ * Pix Online/Manual: passam pela Cielo LIO (tem valor bruto no arquivo Cielo),
+ * o matcher encontra por fallback data+valor mesmo sem NSU.
  * iFood Online: pagamento via iFood, fora do fluxo Cielo.
  * Dinheiro/Voucher: nao passa por adquirente. */
-const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher', 'Pix Manual', 'iFood Online'];
+const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher', 'iFood Online'];
 
 /** Tipos de excecao do processo Operadora */
 export const TIPO_OPERADORA = {
