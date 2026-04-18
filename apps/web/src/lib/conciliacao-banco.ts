@@ -4,7 +4,7 @@
 
 import { db, schema } from '@concilia/db';
 import { matchCieloBanco } from '@concilia/conciliador/engine';
-import { and, eq, gte, isNotNull, lte, ne, or } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
 
 export const PROCESSO_BANCO = 'BANCO';
 
@@ -140,15 +140,14 @@ export async function rodarConciliacaoBanco(opts: {
       })),
     );
 
-    // Limpa excecoes antigas
+    // Limpa excecoes abertas do mesmo processo pra esta filial
     await db
       .delete(schema.excecao)
       .where(
         and(
           eq(schema.excecao.filialId, filialId),
           eq(schema.excecao.processo, PROCESSO_BANCO),
-          gte(schema.excecao.detectadoEm, dtIni),
-          lte(schema.excecao.detectadoEm, dtFim),
+          isNull(schema.excecao.aceitaEm),
         ),
       );
 

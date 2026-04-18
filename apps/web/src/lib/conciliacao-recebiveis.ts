@@ -2,7 +2,7 @@
 // Responde "toda venda virou agenda?" e "toda agenda tem venda?".
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, lte } from 'drizzle-orm';
+import { and, eq, gte, isNull, lte } from 'drizzle-orm';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_RECEBIVEIS = 'RECEBIVEIS';
@@ -146,15 +146,14 @@ export async function rodarConciliacaoRecebiveis(opts: {
       if (!usados.has(r.nsu) && !vendasByNsu.has(r.nsu)) agendaSemVenda.push(r);
     }
 
-    // Limpa excecoes antigas do mesmo processo/periodo
+    // Limpa excecoes abertas do mesmo processo pra esta filial
     await db
       .delete(schema.excecao)
       .where(
         and(
           eq(schema.excecao.filialId, filialId),
           eq(schema.excecao.processo, PROCESSO_RECEBIVEIS),
-          gte(schema.excecao.detectadoEm, dtIni),
-          lte(schema.excecao.detectadoEm, dtFim),
+          isNull(schema.excecao.aceitaEm),
         ),
       );
 

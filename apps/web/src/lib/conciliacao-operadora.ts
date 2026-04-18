@@ -3,7 +3,7 @@
 
 import { db, schema } from '@concilia/db';
 import { matchPdvCielo } from '@concilia/conciliador/engine';
-import { and, eq, gte, lte, inArray, notInArray, isNotNull } from 'drizzle-orm';
+import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull } from 'drizzle-orm';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
@@ -143,15 +143,15 @@ export async function rodarConciliacaoOperadora(opts: {
       })),
     );
 
-    // Limpa excecoes anteriores do mesmo processo no periodo pra esta filial
+    // Limpa excecoes abertas do mesmo processo pra esta filial.
+    // (Cada execucao substitui o estado inteiro — nao acumula com rodadas anteriores.)
     await db
       .delete(schema.excecao)
       .where(
         and(
           eq(schema.excecao.filialId, filialId),
           eq(schema.excecao.processo, PROCESSO_OPERADORA),
-          gte(schema.excecao.detectadoEm, dtIni),
-          lte(schema.excecao.detectadoEm, dtFim),
+          isNull(schema.excecao.aceitaEm),
         ),
       );
 
