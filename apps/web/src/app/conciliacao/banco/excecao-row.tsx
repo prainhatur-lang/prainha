@@ -9,14 +9,16 @@ interface Props {
     id: string;
     valor: string | null;
     descricao: string;
-    recebivelDataPagamento: string | null;
+    recebivelDataPagamento: Date | string | null;
     lancamentoData: string | null;
   };
 }
 
-function isoToBr(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso + 'T00:00:00').toLocaleDateString('pt-BR');
+function formatarData(d: Date | string | null): string {
+  if (!d) return '—';
+  if (d instanceof Date) return d.toLocaleDateString('pt-BR');
+  // string YYYY-MM-DD
+  return new Date(d + 'T00:00:00').toLocaleDateString('pt-BR');
 }
 
 export function ExcecaoRowBanco({ excecao: e }: Props) {
@@ -26,7 +28,7 @@ export function ExcecaoRowBanco({ excecao: e }: Props) {
   const [obs, setObs] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
-  const data = isoToBr(e.recebivelDataPagamento ?? e.lancamentoData);
+  const data = formatarData(e.recebivelDataPagamento ?? e.lancamentoData);
 
   async function resolver() {
     setErr(null);

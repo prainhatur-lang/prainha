@@ -1,12 +1,11 @@
-// Engine de conciliacao BANCO: cruza Recebiveis Cielo x Lancamentos do banco.
-// Usa subset sum pra agrupar recebiveis por (data, forma) e achar creditos
-// do banco que somam o total liquido.
+// Engine de conciliacao BANCO: cruza pagamentos do PDV (pagamento.dataCredito)
+// com lancamentos do banco. Agrupa por (data_credito, forma Pix/Cartao),
+// subset sum pra achar creditos do banco que somam o total esperado.
 
 import { db, schema } from '@concilia/db';
 import { matchCieloBanco } from '@concilia/conciliador/engine';
-import { and, eq, gte, lte } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, lte, ne, or } from 'drizzle-orm';
 
-const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_BANCO = 'BANCO';
 
 export const TIPO_BANCO = {
@@ -28,14 +27,18 @@ export interface BancoResultado {
   excecoesCriadas: number;
 }
 
-function isoToBr(iso: string): string {
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
+function isoToBr(d: string | Date): string {
+  const iso = typeof d === 'string' ? d : d.toISOString().slice(0, 10);
+  const [y, m, day] = iso.split('-');
+  return `${day}/${m}/${y}`;
 }
+
+/** Formas de pagamento do PDV que nao entram na conciliacao bancaria. */
+const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood']);
 
 export async function rodarConciliacaoBanco(opts: {
   filialId: string;
-  dataInicio: string; // YYYY-MM-DD (data de pagamento dos recebiveis)
+  dataInicio: string; // YYYY-MM-DD — data de credito prevista
   dataFim: string;
 }): Promise<BancoResultado> {
   const { filialId, dataFim } = opts;
@@ -65,26 +68,35 @@ export async function rodarConciliacaoBanco(opts: {
   const execId = exec!.id;
 
   try {
-    // Recebiveis: data de pagamento no periodo
-    const recebiveis = await db
+    // Pagamentos com data_credito no periodo — so cartao/pix (exclui dinheiro)
+    const pagamentos = await db
       .select({
-        id: schema.recebivelAdquirente.id,
-        nsu: schema.recebivelAdquirente.nsu,
-        dataPagamento: schema.recebivelAdquirente.dataPagamento,
-        formaPagamento: schema.recebivelAdquirente.formaPagamento,
-        valorLiquido: schema.recebivelAdquirente.valorLiquido,
+        id: schema.pagamento.id,
+        formaPagamento: schema.pagamento.formaPagamento,
+        valor: schema.pagamento.valor,
+        dataPagamento: schema.pagamento.dataPagamento,
+        dataCredito: schema.pagamento.dataCredito,
+        nsu: schema.pagamento.nsuTransacao,
       })
-      .from(schema.recebivelAdquirente)
+      .from(schema.pagamento)
       .where(
         and(
-          eq(schema.recebivelAdquirente.filialId, filialId),
-          eq(schema.recebivelAdquirente.adquirente, ADQUIRENTE_CIELO),
-          gte(schema.recebivelAdquirente.dataPagamento, dataInicio),
-          lte(schema.recebivelAdquirente.dataPagamento, dataFim),
+          eq(schema.pagamento.filialId, filialId),
+          isNotNull(schema.pagamento.dataCredito),
+          gte(schema.pagamento.dataCredito, dtIni),
+          lte(schema.pagamento.dataCredito, dtFim),
+          or(
+            ...[...FORMAS_EXCLUIR].map((f) => ne(schema.pagamento.formaPagamento, f)),
+          ),
         ),
       );
 
-    // Lancamentos banco: mesmo range (data de movimento)
+    // Filtra em JS pra cobrir null/normalizacao
+    const liquidaveis = pagamentos.filter(
+      (p) => p.formaPagamento && !FORMAS_EXCLUIR.has(p.formaPagamento),
+    );
+
+    // Lancamentos banco no mesmo periodo (data_movimento)
     const lancamentos = await db
       .select({
         id: schema.lancamentoBanco.id,
@@ -103,14 +115,18 @@ export async function rodarConciliacaoBanco(opts: {
         ),
       );
 
+    // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida")
+    const pseudoRecebiveis = liquidaveis.map((p) => ({
+      id: p.id,
+      nsu: p.nsu ?? `PDV-${p.id}`,
+      dataPagamento: isoToBr(p.dataCredito!),
+      // Normaliza: Pix* -> Pix, resto -> nao-Pix (vira CARTAO no matcher)
+      formaPagamento: /pix/i.test(p.formaPagamento ?? '') ? 'Pix' : (p.formaPagamento ?? ''),
+      valorLiquido: Number(p.valor),
+    }));
+
     const result = matchCieloBanco(
-      recebiveis.map((r) => ({
-        id: r.id,
-        nsu: r.nsu,
-        dataPagamento: isoToBr(r.dataPagamento),
-        formaPagamento: r.formaPagamento ?? '',
-        valorLiquido: Number(r.valorLiquido),
-      })),
+      pseudoRecebiveis,
       lancamentos.map((l) => ({
         id: l.id,
         dataMovimento: isoToBr(l.dataMovimento),
@@ -135,33 +151,32 @@ export async function rodarConciliacaoBanco(opts: {
 
     const novas: Array<typeof schema.excecao.$inferInsert> = [];
 
-    // Grupos que nao bateram: uma excecao por grupo, com NSUs no detalhe
+    // Grupos (data, forma) que nao bateram no extrato
     for (const g of result.gruposSemMatch) {
-      const recebivesDoGrupo = recebiveis.filter(
-        (r) =>
-          isoToBr(r.dataPagamento) === g.dataPagamento &&
-          ((r.formaPagamento === 'Pix' ? 'PIX' : 'CARTAO') === g.tipo),
+      const pgsDoGrupo = liquidaveis.filter(
+        (p) =>
+          isoToBr(p.dataCredito!) === g.dataPagamento &&
+          (/pix/i.test(p.formaPagamento ?? '') ? 'PIX' : 'CARTAO') === g.tipo,
       );
       novas.push({
         filialId,
         processo: PROCESSO_BANCO,
         tipo: TIPO_BANCO.CIELO_NAO_PAGO,
         severidade: 'ALTA',
-        descricao: `Cielo prometeu R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento} mas não achei crédito correspondente no extrato.`,
+        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.`,
         valor: String(g.valorTotal),
-        // Referencia o primeiro recebivel do grupo (pra drill-down)
-        recebivelAdquirenteId: recebivesDoGrupo[0]?.id ?? null,
+        pagamentoId: pgsDoGrupo[0]?.id ?? null,
       });
     }
 
-    // Creditos do banco sobrando
+    // Creditos do banco sobrando (sem explicacao)
     for (const l of result.creditosSobrando) {
       novas.push({
         filialId,
         processo: PROCESSO_BANCO,
         tipo: TIPO_BANCO.CREDITO_SEM_CIELO,
         severidade: 'MEDIA',
-        descricao: `Crédito no banco de R$ ${l.valor.toFixed(2)} em ${l.dataMovimento} (${l.descricao}) sem recebível da Cielo correspondente.`,
+        descricao: `Crédito no banco de R$ ${l.valor.toFixed(2)} em ${l.dataMovimento} (${l.descricao}) sem origem nos pagamentos do PDV.`,
         valor: String(l.valor),
         lancamentoBancoId: l.id ?? null,
       });

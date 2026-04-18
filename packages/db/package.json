@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
+    "@supabase/supabase-js": "^2.103.3",
     "drizzle-orm": "^0.38.2",
     "postgres": "^3.4.5"
   },

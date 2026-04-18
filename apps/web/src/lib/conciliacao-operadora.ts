@@ -17,6 +17,8 @@ export const TIPO_OPERADORA = {
 
 export interface OperadoraResumo {
   conciliados: { qtd: number; valor: number };
+  conciliadosNsu: { qtd: number; valor: number };
+  conciliadosDataValor: { qtd: number; valor: number };
   divergenciaValor: { qtd: number; valor: number };
   pdvSemCielo: { qtd: number; valor: number };
   cieloSemPdv: { qtd: number; valor: number };
@@ -71,6 +73,7 @@ export async function rodarConciliacaoOperadora(opts: {
         nsu: schema.pagamento.nsuTransacao,
         valor: schema.pagamento.valor,
         formaPagamento: schema.pagamento.formaPagamento,
+        dataPagamento: schema.pagamento.dataPagamento,
       })
       .from(schema.pagamento)
       .where(
@@ -96,6 +99,7 @@ export async function rodarConciliacaoOperadora(opts: {
         nsu: schema.vendaAdquirente.nsu,
         valorBruto: schema.vendaAdquirente.valorBruto,
         dataVenda: schema.vendaAdquirente.dataVenda,
+        formaPagamento: schema.vendaAdquirente.formaPagamento,
       })
       .from(schema.vendaAdquirente)
       .where(
@@ -107,15 +111,22 @@ export async function rodarConciliacaoOperadora(opts: {
         ),
       );
 
-    // Roda matcher
+    // Roda matcher (NSU + fallback data+valor+forma)
     const result = matchPdvCielo(
       pagamentos.map((p) => ({
         id: p.id,
         nsu: p.nsu,
         valor: Number(p.valor),
         formaPagamento: p.formaPagamento ?? '',
+        dataPagamento: p.dataPagamento ? p.dataPagamento.toISOString().slice(0, 10) : undefined,
       })),
-      vendas.map((v) => ({ id: v.id, nsu: v.nsu, valorBruto: Number(v.valorBruto) })),
+      vendas.map((v) => ({
+        id: v.id,
+        nsu: v.nsu,
+        valorBruto: Number(v.valorBruto),
+        dataVenda: v.dataVenda,
+        formaPagamento: v.formaPagamento ?? '',
+      })),
     );
 
     // Limpa excecoes anteriores do mesmo processo no periodo pra esta filial
@@ -184,10 +195,20 @@ export async function rodarConciliacaoOperadora(opts: {
 
     // Resumo
     const sum = (arr: Array<{ valor: number }>) => arr.reduce((s, x) => s + x.valor, 0);
+    const matchedNsu = result.matched.filter((m) => m.matchType === 'NSU');
+    const matchedDV = result.matched.filter((m) => m.matchType === 'DATA_VALOR');
     const resumo: OperadoraResumo = {
       conciliados: {
         qtd: result.matched.length,
         valor: result.matched.reduce((s, m) => s + m.pdv.valor, 0),
+      },
+      conciliadosNsu: {
+        qtd: matchedNsu.length,
+        valor: matchedNsu.reduce((s, m) => s + m.pdv.valor, 0),
+      },
+      conciliadosDataValor: {
+        qtd: matchedDV.length,
+        valor: matchedDV.reduce((s, m) => s + m.pdv.valor, 0),
       },
       divergenciaValor: {
         qtd: result.divergenciaValor.length,

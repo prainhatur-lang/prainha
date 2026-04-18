@@ -52,17 +52,14 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
           descricao: schema.excecao.descricao,
           valor: schema.excecao.valor,
           detectadoEm: schema.excecao.detectadoEm,
-          recebivelNsu: schema.recebivelAdquirente.nsu,
-          recebivelDataPagamento: schema.recebivelAdquirente.dataPagamento,
-          recebivelFormaPagamento: schema.recebivelAdquirente.formaPagamento,
+          recebivelNsu: schema.pagamento.nsuTransacao,
+          recebivelDataPagamento: schema.pagamento.dataCredito,
+          recebivelFormaPagamento: schema.pagamento.formaPagamento,
           lancamentoData: schema.lancamentoBanco.dataMovimento,
           lancamentoDescricao: schema.lancamentoBanco.descricao,
         })
         .from(schema.excecao)
-        .leftJoin(
-          schema.recebivelAdquirente,
-          eq(schema.recebivelAdquirente.id, schema.excecao.recebivelAdquirenteId),
-        )
+        .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
         .leftJoin(
           schema.lancamentoBanco,
           eq(schema.lancamentoBanco.id, schema.excecao.lancamentoBancoId),
@@ -158,7 +155,7 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
       <section className="mx-auto max-w-7xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Conciliação Banco</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Cruza a agenda de recebíveis Cielo com os créditos no extrato bancário. Identifica Cielo que prometeu e não pagou, e créditos sem origem.
+          Cruza a agenda do PDV (cartão/Pix com data de crédito prevista) com os créditos no extrato bancário. Identifica pagamentos previstos que não caíram e créditos sem origem.
         </p>
 
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
@@ -246,7 +243,7 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
                 tom="emerald"
               />
               <ResumoCard
-                label="Cielo não pagou"
+                label="Previsto e não pago"
                 qtd={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].length}
                 valor={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].reduce(
                   (s, e) => s + Number(e.valor ?? 0),
@@ -255,7 +252,7 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
                 tom="rose"
               />
               <ResumoCard
-                label="Crédito sem Cielo"
+                label="Crédito sem origem"
                 qtd={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].length}
                 valor={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].reduce(
                   (s, e) => s + Number(e.valor ?? 0),
@@ -266,14 +263,14 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
             </div>
 
             <SecaoExcecoes
-              titulo="Cielo prometeu e não pagou"
-              descricao="Grupos de recebíveis (dia × tipo) que não acharam crédito correspondente no extrato."
+              titulo="Previsto no PDV e não pago no banco"
+              descricao="Grupos de pagamentos (dia × tipo Pix/Cartão) com crédito previsto que não bateu com lançamento no extrato."
               tom="rose"
               excecoes={porTipo[TIPO_BANCO.CIELO_NAO_PAGO]}
             />
             <SecaoExcecoes
-              titulo="Crédito no banco sem Cielo"
-              descricao="Créditos no extrato bancário que não foram consumidos por nenhum grupo de recebíveis."
+              titulo="Crédito no banco sem origem no PDV"
+              descricao="Créditos no extrato bancário que não foram consumidos por nenhum grupo de pagamentos previstos."
               tom="amber"
               excecoes={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO]}
             />
@@ -323,7 +320,7 @@ function SecaoExcecoes({
     valor: string | null;
     descricao: string;
     recebivelNsu: string | null;
-    recebivelDataPagamento: string | null;
+    recebivelDataPagamento: Date | string | null;
     recebivelFormaPagamento: string | null;
     lancamentoData: string | null;
     lancamentoDescricao: string | null;
