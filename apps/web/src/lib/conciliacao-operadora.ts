@@ -8,8 +8,11 @@ import { and, eq, gte, lte, inArray, notInArray, isNotNull } from 'drizzle-orm';
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
 
-/** Formas que nao passam pela Cielo — nao entram na conciliacao. */
-const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher'];
+/** Formas que nao passam pela maquininha Cielo — nao entram na conciliacao.
+ * Pix Manual: cliente escaneia QR direto pro banco, sem Cielo (NSU = null).
+ * iFood Online: pagamento via iFood, fora do fluxo Cielo.
+ * Dinheiro/Voucher: nao passa por adquirente. */
+const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher', 'Pix Manual', 'iFood Online'];
 
 /** Tipos de excecao do processo Operadora */
 export const TIPO_OPERADORA = {
