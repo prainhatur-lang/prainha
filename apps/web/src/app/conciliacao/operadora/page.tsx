@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { LogoutButton } from '../../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { OperadoraForm } from './form';
@@ -14,6 +14,16 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  pDiv?: string; // page de divergencia
+  pPdv?: string; // page de PDV sem Cielo
+  pCielo?: string; // page de Cielo sem PDV
+}
+
+const PAGE_SIZE = 50;
+
+function paginaAtual(raw: string | undefined): number {
+  const n = Number(raw ?? '0');
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 export default async function OperadoraPage(props: { searchParams: Promise<SP> }) {
@@ -26,7 +36,9 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
   const filialSelecionada =
-    (sp.filialId && filiais.find((f) => f.id === sp.filialId)) ?? filiais[0] ?? null;
+    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
+    filiais[0] ??
+    null;
 
   // Historico (todas filiais do usuario, processo OPERADORA)
   const filialIds = filiais.map((f) => f.id);
@@ -44,9 +56,18 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         .limit(10)
     : [];
 
-  // Excecoes abertas desta filial
-  const excecoesAbertas = filialSelecionada
-    ? await db
+  // Page por secao
+  const pageDiv = paginaAtual(sp.pDiv);
+  const pagePdv = paginaAtual(sp.pPdv);
+  const pageCielo = paginaAtual(sp.pCielo);
+
+  // Helper pra carregar uma secao paginada (count + rows)
+  async function carregarSecao(tipo: string, page: number) {
+    if (!filialSelecionada) {
+      return { rows: [] as Awaited<ReturnType<typeof queryRows>>, total: 0, totalValor: 0 };
+    }
+    async function queryRows() {
+      return db
         .select({
           id: schema.excecao.id,
           tipo: schema.excecao.tipo,
@@ -69,23 +90,41 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         )
         .where(
           and(
-            eq(schema.excecao.filialId, filialSelecionada.id),
+            eq(schema.excecao.filialId, filialSelecionada!.id),
             eq(schema.excecao.processo, PROCESSO_OPERADORA),
+            eq(schema.excecao.tipo, tipo),
             isNull(schema.excecao.aceitaEm),
           ),
         )
         .orderBy(desc(schema.excecao.detectadoEm))
-        .limit(500)
-    : [];
-
-  const porTipo = {
-    [TIPO_OPERADORA.DIVERGENCIA_VALOR]: [] as typeof excecoesAbertas,
-    [TIPO_OPERADORA.PDV_SEM_CIELO]: [] as typeof excecoesAbertas,
-    [TIPO_OPERADORA.CIELO_SEM_PDV]: [] as typeof excecoesAbertas,
-  };
-  for (const e of excecoesAbertas) {
-    if (porTipo[e.tipo as keyof typeof porTipo]) porTipo[e.tipo as keyof typeof porTipo].push(e);
+        .limit(PAGE_SIZE)
+        .offset(page * PAGE_SIZE);
+    }
+    const [rows, [totalRow]] = await Promise.all([
+      queryRows(),
+      db
+        .select({
+          n: sql<number>`COUNT(*)::int`,
+          v: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
+        })
+        .from(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, filialSelecionada.id),
+            eq(schema.excecao.processo, PROCESSO_OPERADORA),
+            eq(schema.excecao.tipo, tipo),
+            isNull(schema.excecao.aceitaEm),
+          ),
+        ),
+    ]);
+    return { rows, total: Number(totalRow?.n ?? 0), totalValor: Number(totalRow?.v ?? 0) };
   }
+
+  const [secaoDiv, secaoPdv, secaoCielo] = await Promise.all([
+    carregarSecao(TIPO_OPERADORA.DIVERGENCIA_VALOR, pageDiv),
+    carregarSecao(TIPO_OPERADORA.PDV_SEM_CIELO, pagePdv),
+    carregarSecao(TIPO_OPERADORA.CIELO_SEM_PDV, pageCielo),
+  ]);
 
   // Resumo do ultimo "OK" desta filial pra mostrar "Conciliados"
   const [ultimaOk] = filialSelecionada
@@ -242,51 +281,60 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               />
               <ResumoCard
                 label="Divergência de valor"
-                qtd={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR].length}
-                valor={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
+                qtd={secaoDiv.total}
+                valor={secaoDiv.totalValor}
                 tom="amber"
               />
               <ResumoCard
                 label="PDV sem Cielo"
-                qtd={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO].length}
-                valor={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
+                qtd={secaoPdv.total}
+                valor={secaoPdv.totalValor}
                 tom="rose"
               />
               <ResumoCard
                 label="Cielo sem PDV"
-                qtd={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV].length}
-                valor={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
+                qtd={secaoCielo.total}
+                valor={secaoCielo.totalValor}
                 tom="rose"
               />
             </div>
 
-            {/* Tabelas por tipo */}
+            {/* Tabelas por tipo — com paginacao server-side */}
             <SecaoExcecoes
               titulo="Divergência de valor"
               descricao="NSU bate, valor diferente. Pode ser gorjeta, desconto ou erro de digitação."
               tom="amber"
-              excecoes={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR]}
+              excecoes={secaoDiv.rows}
+              total={secaoDiv.total}
+              page={pageDiv}
+              pageParam="pDiv"
+              sp={sp}
+              tipo={TIPO_OPERADORA.DIVERGENCIA_VALOR}
+              filialId={filialSelecionada.id}
             />
             <SecaoExcecoes
               titulo="No PDV, sem match na Cielo"
               descricao="Pagamento registrado na loja que não apareceu no arquivo da Cielo."
               tom="rose"
-              excecoes={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO]}
+              excecoes={secaoPdv.rows}
+              total={secaoPdv.total}
+              page={pagePdv}
+              pageParam="pPdv"
+              sp={sp}
+              tipo={TIPO_OPERADORA.PDV_SEM_CIELO}
+              filialId={filialSelecionada.id}
             />
             <SecaoExcecoes
               titulo="Na Cielo, sem match no PDV"
               descricao="Venda no arquivo da Cielo que a loja não registrou."
               tom="rose"
-              excecoes={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV]}
+              excecoes={secaoCielo.rows}
+              total={secaoCielo.total}
+              page={pageCielo}
+              pageParam="pCielo"
+              sp={sp}
+              tipo={TIPO_OPERADORA.CIELO_SEM_PDV}
+              filialId={filialSelecionada.id}
             />
           </div>
         </div>
@@ -353,6 +401,12 @@ function SecaoExcecoes({
   descricao,
   tom,
   excecoes,
+  total,
+  page,
+  pageParam,
+  sp,
+  tipo,
+  filialId,
 }: {
   titulo: string;
   descricao: string;
@@ -369,15 +423,42 @@ function SecaoExcecoes({
     vendaDataVenda: string | null;
     vendaBandeira: string | null;
   }>;
+  total: number;
+  page: number;
+  pageParam: 'pDiv' | 'pPdv' | 'pCielo';
+  sp: SP;
+  tipo: string;
+  filialId: string;
 }) {
   const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
+  const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hrefComPagina = (p: number) => {
+    const qs = new URLSearchParams();
+    if (sp.filialId) qs.set('filialId', sp.filialId);
+    if (sp.pDiv) qs.set('pDiv', sp.pDiv);
+    if (sp.pPdv) qs.set('pPdv', sp.pPdv);
+    if (sp.pCielo) qs.set('pCielo', sp.pCielo);
+    if (p === 0) qs.delete(pageParam);
+    else qs.set(pageParam, String(p));
+    return `/conciliacao/operadora?${qs.toString()}`;
+  };
+  const filtroHref = `/excecoes?processo=OPERADORA&tipo=${tipo}&filialId=${filialId}`;
+
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-4 py-3">
-        <h3 className={`text-sm font-semibold ${corHeader}`}>
-          {titulo} <span className="font-normal text-slate-500">· {excecoes.length}</span>
-        </h3>
-        <p className="mt-0.5 text-xs text-slate-500">{descricao}</p>
+      <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
+        <div>
+          <h3 className={`text-sm font-semibold ${corHeader}`}>
+            {titulo} <span className="font-normal text-slate-500">· {int(total)}</span>
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-500">{descricao}</p>
+        </div>
+        <Link
+          href={filtroHref}
+          className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Filtros avançados →
+        </Link>
       </div>
       {excecoes.length === 0 ? (
         <p className="px-4 py-6 text-center text-xs text-slate-500">Nada a exibir.</p>
@@ -394,16 +475,40 @@ function SecaoExcecoes({
             </tr>
           </thead>
           <tbody>
-            {excecoes.slice(0, 50).map((e) => (
+            {excecoes.map((e) => (
               <ExcecaoRow key={e.id} excecao={e} />
             ))}
           </tbody>
         </table>
       )}
-      {excecoes.length > 50 && (
-        <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-center text-xs text-slate-500">
-          Mostrando 50 de {excecoes.length}. Use a página de Exceções pra ver todas.
-        </p>
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+          <span>
+            Página {page + 1} de {totalPaginas} · {int(total)} resultados
+          </span>
+          <div className="flex gap-2">
+            {page > 0 ? (
+              <Link
+                href={hrefComPagina(page - 1)}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 hover:bg-white"
+              >
+                ← Anterior
+              </Link>
+            ) : (
+              <span className="rounded-md border border-slate-200 px-2 py-1 text-slate-400">← Anterior</span>
+            )}
+            {page < totalPaginas - 1 ? (
+              <Link
+                href={hrefComPagina(page + 1)}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 hover:bg-white"
+              >
+                Próxima →
+              </Link>
+            ) : (
+              <span className="rounded-md border border-slate-200 px-2 py-1 text-slate-400">Próxima →</span>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
