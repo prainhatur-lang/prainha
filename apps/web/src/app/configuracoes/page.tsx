@@ -4,10 +4,98 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import type { TaxasFilial } from '@concilia/db/schema';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
 import { ConfiguracoesForm } from './form';
 import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
+import { brl, int } from '@/lib/format';
+
+interface AuditoriaRow {
+  ec: string;
+  forma: string;
+  bandeira: string;
+  qtd: number;
+  volume: number;
+  taxaReal: number;
+  taxaConfig: number;
+  diff: number;
+}
+
+function normalizarTexto(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').trim();
+}
+
+function resolverTaxaConfig(
+  taxas: TaxasFilial,
+  ec: string,
+  forma: string,
+  bandeira: string,
+): number {
+  const ecConf = taxas.ecs.find((e) => e.codigo === ec);
+  const base = ecConf ?? taxas.default;
+  const f = normalizarTexto(forma);
+  const b = normalizarTexto(bandeira);
+  if (f.includes('pix')) return Number(base.pix ?? TAXAS_DEFAULT.pix);
+  if (f.includes('debito')) {
+    const map = base.debito ?? TAXAS_DEFAULT.debito;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.debito.visa);
+  }
+  if (f.includes('credito')) {
+    const map = base.credito_a_vista ?? TAXAS_DEFAULT.credito_a_vista;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.credito_a_vista.visa);
+  }
+  return 0;
+}
+
+async function auditoriaFilial(filialId: string, taxas: TaxasFilial): Promise<AuditoriaRow[]> {
+  const rows = await db
+    .select({
+      ec: schema.vendaAdquirente.codigoEstabelecimento,
+      forma: schema.vendaAdquirente.formaPagamento,
+      bandeira: schema.vendaAdquirente.bandeira,
+      qtd: sql<number>`COUNT(*)::int`,
+      bruto: sql<string>`COALESCE(SUM(${schema.vendaAdquirente.valorBruto}), 0)::text`,
+      taxaTotal: sql<string>`COALESCE(SUM(${schema.vendaAdquirente.valorTaxa}), 0)::text`,
+    })
+    .from(schema.vendaAdquirente)
+    .where(
+      and(
+        eq(schema.vendaAdquirente.filialId, filialId),
+        eq(schema.vendaAdquirente.adquirente, 'CIELO'),
+      ),
+    )
+    .groupBy(
+      schema.vendaAdquirente.codigoEstabelecimento,
+      schema.vendaAdquirente.formaPagamento,
+      schema.vendaAdquirente.bandeira,
+    );
+
+  return rows
+    .map((r) => {
+      const bruto = Number(r.bruto);
+      const taxaTotal = Math.abs(Number(r.taxaTotal));
+      const taxaReal = bruto > 0 ? +(taxaTotal / bruto * 100).toFixed(3) : 0;
+      const taxaConfig = resolverTaxaConfig(
+        taxas,
+        r.ec ?? '',
+        r.forma ?? '',
+        r.bandeira ?? '',
+      );
+      return {
+        ec: r.ec ?? '(sem EC)',
+        forma: r.forma ?? '—',
+        bandeira: r.bandeira ?? '—',
+        qtd: Number(r.qtd),
+        volume: bruto,
+        taxaReal,
+        taxaConfig,
+        diff: +(taxaReal - taxaConfig).toFixed(3),
+      };
+    })
+    .sort((a, b) =>
+      a.ec.localeCompare(b.ec) || a.forma.localeCompare(b.forma) || a.bandeira.localeCompare(b.bandeira),
+    );
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -80,26 +168,99 @@ export default async function ConfiguracoesPage() {
         </p>
 
         <div className="mt-8 space-y-8">
-          {filialRows.map((f) => {
-            const taxas = (f.taxas as TaxasFilial | null) ?? taxasDefault;
-            return (
-              <div
-                key={f.id}
-                className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-              >
-                <h2 className="text-base font-semibold text-slate-900">{f.nome}</h2>
-                <p className="mt-0.5 text-xs text-slate-500">ID: {f.id}</p>
-                <div className="mt-5">
-                  <ConfiguracoesForm filialId={f.id} taxas={taxas} />
+          {await Promise.all(
+            filialRows.map(async (f) => {
+              const taxas = (f.taxas as TaxasFilial | null) ?? taxasDefault;
+              const auditoria = await auditoriaFilial(f.id, taxas);
+              return (
+                <div
+                  key={f.id}
+                  className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+                >
+                  <h2 className="text-base font-semibold text-slate-900">{f.nome}</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">ID: {f.id}</p>
+                  <div className="mt-5">
+                    <ConfiguracoesForm filialId={f.id} taxas={taxas} />
+                  </div>
+
+                  <div className="mt-8 border-t border-slate-200 pt-5">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Auditoria de taxas (dados reais do arquivo Cielo)
+                    </h3>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Taxa real = soma(valor_taxa) / soma(valor_bruto). Compara com o % configurado acima. Diff &gt; ±0,10% destacado.
+                    </p>
+                    <AuditoriaTabela rows={auditoria} />
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            }),
+          )}
           {filialRows.length === 0 && (
             <p className="text-sm text-slate-500">Nenhuma filial acessível.</p>
           )}
         </div>
       </section>
     </main>
+  );
+}
+
+function AuditoriaTabela({ rows }: { rows: AuditoriaRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="mt-3 rounded-md border border-dashed border-slate-300 px-4 py-4 text-center text-xs text-slate-500">
+        Sem vendas Cielo importadas pra essa filial.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-3 overflow-x-auto">
+      <table className="w-full border border-slate-200 text-xs">
+        <thead className="bg-slate-100 text-left">
+          <tr>
+            <th className="px-3 py-2 font-medium text-slate-700">EC</th>
+            <th className="px-3 py-2 font-medium text-slate-700">Forma</th>
+            <th className="px-3 py-2 font-medium text-slate-700">Bandeira</th>
+            <th className="px-3 py-2 text-right font-medium text-slate-700">Qtd</th>
+            <th className="px-3 py-2 text-right font-medium text-slate-700">Volume</th>
+            <th className="px-3 py-2 text-right font-medium text-slate-700">Real</th>
+            <th className="px-3 py-2 text-right font-medium text-slate-700">Config</th>
+            <th className="px-3 py-2 text-right font-medium text-slate-700">Diff</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const alerta = Math.abs(r.diff) > 0.1;
+            return (
+              <tr key={i} className="border-t border-slate-200">
+                <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{r.ec}</td>
+                <td className="px-3 py-2 text-slate-700">{r.forma}</td>
+                <td className="px-3 py-2 text-slate-700">{r.bandeira}</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-700">{int(r.qtd)}</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-700">{brl(r.volume)}</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-900">
+                  {r.taxaReal.toFixed(2)}%
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-slate-600">
+                  {r.taxaConfig.toFixed(2)}%
+                </td>
+                <td
+                  className={`px-3 py-2 text-right font-mono font-medium ${
+                    alerta
+                      ? r.diff > 0
+                        ? 'text-rose-700'
+                        : 'text-emerald-700'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  {r.diff > 0 ? '+' : ''}
+                  {r.diff.toFixed(2)}%
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
