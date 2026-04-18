@@ -3,10 +3,13 @@
 
 import { db, schema } from '@concilia/db';
 import { matchPdvCielo } from '@concilia/conciliador/engine';
-import { and, eq, gte, lte, inArray } from 'drizzle-orm';
+import { and, eq, gte, lte, inArray, notInArray, isNotNull } from 'drizzle-orm';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
+
+/** Formas que nao passam pela Cielo — nao entram na conciliacao. */
+const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher'];
 
 /** Tipos de excecao do processo Operadora */
 export const TIPO_OPERADORA = {
@@ -83,6 +86,8 @@ export async function rodarConciliacaoOperadora(opts: {
           eq(schema.pagamento.filialId, filialId),
           gte(schema.pagamento.dataPagamento, dtIni),
           lte(schema.pagamento.dataPagamento, dtFim),
+          isNotNull(schema.pagamento.formaPagamento),
+          notInArray(schema.pagamento.formaPagamento, FORMAS_EXCLUIR_OPERADORA),
         ),
       );
 
