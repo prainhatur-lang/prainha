@@ -167,34 +167,44 @@ export function matchPdvCielo(
   const pdvRestante: PdvPagamento[] = [];
   const cieloMatchedSegundaPassada = new Set<CieloVenda>();
 
+  const MAX_DIFF_CENTAVOS = 3; // tolera ate +-R$ 0,03 de diff entre PDV e Cielo
+
   for (const p of result.pdvSemCielo) {
     const cat = categoriaForma(p.formaPagamento);
     const valorKey = Math.round(p.valor * 100);
 
-    // tenta data exata, depois +-1, +-2, +-3 dias
+    // tenta data exata, depois +-1..3 dias, e pra cada dia tenta valor exato,
+    // depois +-1, +-2, +-3 centavos. Prioriza match mais apertado.
     const candidatos: CieloVenda[] = [];
     if (p.dataPagamento) {
-      const deltas: number[] = [0];
-      for (let i = 1; i <= MAX_DELTA_DIAS; i++) deltas.push(i, -i);
-      for (const deltaD of deltas) {
-        const d = new Date(p.dataPagamento + 'T00:00:00');
-        d.setDate(d.getDate() + deltaD);
-        const iso = d.toISOString().slice(0, 10);
-        const arr = cieloPorChave.get(`${iso}|${cat}|${valorKey}`) ?? [];
-        for (const c of arr) {
-          if (!cieloMatchedSegundaPassada.has(c) && datasProximas(p.dataPagamento, c.dataVenda)) {
-            candidatos.push(c);
+      const deltasDia: number[] = [0];
+      for (let i = 1; i <= MAX_DELTA_DIAS; i++) deltasDia.push(i, -i);
+      const deltasValor: number[] = [0];
+      for (let i = 1; i <= MAX_DIFF_CENTAVOS; i++) deltasValor.push(i, -i);
+      // ordem: (delta dia, delta valor) com delta valor variando mais rapido
+      outer: for (const dv of deltasValor) {
+        for (const dd of deltasDia) {
+          const d = new Date(p.dataPagamento + 'T00:00:00');
+          d.setDate(d.getDate() + dd);
+          const iso = d.toISOString().slice(0, 10);
+          const arr = cieloPorChave.get(`${iso}|${cat}|${valorKey + dv}`) ?? [];
+          for (const c of arr) {
+            if (!cieloMatchedSegundaPassada.has(c) && datasProximas(p.dataPagamento, c.dataVenda)) {
+              candidatos.push(c);
+            }
           }
+          if (candidatos.length > 0) break outer;
         }
       }
     }
 
-    // Pega o primeiro candidato disponivel (prioridade por delta=0, D+1, D-1, ...).
-    // Com N PDV e N Cielo mesmo (data,valor,forma) sem NSU, vao parear 1:1 em ordem.
+    // Pega o primeiro candidato disponivel. Com N PDV e N Cielo mesmo grupo sem NSU,
+    // pareiam 1:1 em ordem de delta mais proximo (dia exato + valor exato primeiro).
     if (candidatos.length >= 1) {
       const c = candidatos[0]!;
       cieloMatchedSegundaPassada.add(c);
-      result.matched.push({ pdv: p, cielo: c, diff: 0, matchType: 'DATA_VALOR' });
+      const diff = +(c.valorBruto - p.valor).toFixed(2);
+      result.matched.push({ pdv: p, cielo: c, diff, matchType: 'DATA_VALOR' });
     } else {
       pdvRestante.push(p);
     }
@@ -202,6 +212,38 @@ export function matchPdvCielo(
 
   result.pdvSemCielo = pdvRestante;
   result.cieloSemPdv = cieloSobrando.filter((v) => !cieloMatchedSegundaPassada.has(v));
+
+  // --- Passada 3: fallback "solto" — se ainda sobrou PDV e Cielo same day+forma
+  // com diff de valor ate 10%, marca como divergencia de valor (nao match). ---
+  const TOL_DIVERGENCIA = 0.10; // 10% de tolerancia
+  const pdvFinal: PdvPagamento[] = [];
+  for (const p of result.pdvSemCielo) {
+    const cat = categoriaForma(p.formaPagamento);
+    if (!p.dataPagamento) {
+      pdvFinal.push(p);
+      continue;
+    }
+    let melhor: { c: CieloVenda; diff: number } | null = null;
+    for (const v of result.cieloSemPdv) {
+      if (cieloMatchedSegundaPassada.has(v)) continue;
+      if (categoriaForma(v.formaPagamento) !== cat) continue;
+      if (!datasProximas(p.dataPagamento, v.dataVenda)) continue;
+      const diff = v.valorBruto - p.valor;
+      const denom = Math.max(Math.abs(p.valor), Math.abs(v.valorBruto), 0.01);
+      if (Math.abs(diff) / denom > TOL_DIVERGENCIA) continue;
+      if (!melhor || Math.abs(diff) < Math.abs(melhor.diff)) {
+        melhor = { c: v, diff: +diff.toFixed(2) };
+      }
+    }
+    if (melhor) {
+      cieloMatchedSegundaPassada.add(melhor.c);
+      result.divergenciaValor.push({ pdv: p, cielo: melhor.c, diff: melhor.diff });
+    } else {
+      pdvFinal.push(p);
+    }
+  }
+  result.pdvSemCielo = pdvFinal;
+  result.cieloSemPdv = result.cieloSemPdv.filter((v) => !cieloMatchedSegundaPassada.has(v));
 
   return result;
 }
