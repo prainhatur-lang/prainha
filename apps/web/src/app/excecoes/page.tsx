@@ -11,11 +11,25 @@ import { ExcecoesFiltros } from './filtros';
 export const dynamic = 'force-dynamic';
 
 const TIPOS = [
-  { valor: 'NAO_NA_CIELO_VENDA', label: 'Não chegou na Cielo' },
-  { valor: 'SEM_AGENDA_RECEBIVEL', label: 'Sem agenda recebível' },
-  { valor: 'NAO_PAGO_NO_BANCO', label: 'Cielo não pagou' },
-  { valor: 'DIVERGENCIA_VALOR', label: 'Divergência de valor' },
+  // Operadora
+  { valor: 'PDV_SEM_CIELO', label: 'PDV sem Cielo', processo: 'OPERADORA' },
+  { valor: 'CIELO_SEM_PDV', label: 'Cielo sem PDV', processo: 'OPERADORA' },
+  { valor: 'DIVERGENCIA_VALOR_OPERADORA', label: 'Divergência (operadora)', processo: 'OPERADORA' },
+  // Recebíveis
+  { valor: 'VENDA_SEM_AGENDA', label: 'Venda sem agenda', processo: 'RECEBIVEIS' },
+  { valor: 'AGENDA_SEM_VENDA', label: 'Agenda sem venda', processo: 'RECEBIVEIS' },
+  { valor: 'DIVERGENCIA_VALOR_RECEBIVEL', label: 'Divergência (recebível)', processo: 'RECEBIVEIS' },
+  // Banco
+  { valor: 'CIELO_NAO_PAGO', label: 'Cielo não pagou', processo: 'BANCO' },
+  { valor: 'CREDITO_SEM_CIELO', label: 'Crédito sem Cielo', processo: 'BANCO' },
 ] as const;
+
+const PROCESSOS = ['OPERADORA', 'RECEBIVEIS', 'BANCO'] as const;
+const PROCESSO_LABEL: Record<string, string> = {
+  OPERADORA: 'Operadora',
+  RECEBIVEIS: 'Recebíveis',
+  BANCO: 'Banco',
+};
 
 const SEVERIDADES = ['ALTA', 'MEDIA', 'BAIXA'] as const;
 
@@ -24,10 +38,14 @@ const TIPO_LABEL: Record<string, string> = Object.fromEntries(
 );
 
 const TIPO_COR: Record<string, string> = {
-  NAO_NA_CIELO_VENDA: 'border-rose-200 bg-rose-50 text-rose-700',
-  SEM_AGENDA_RECEBIVEL: 'border-amber-200 bg-amber-50 text-amber-700',
-  NAO_PAGO_NO_BANCO: 'border-rose-200 bg-rose-50 text-rose-700',
-  DIVERGENCIA_VALOR: 'border-amber-200 bg-amber-50 text-amber-700',
+  PDV_SEM_CIELO: 'border-rose-200 bg-rose-50 text-rose-700',
+  CIELO_SEM_PDV: 'border-rose-200 bg-rose-50 text-rose-700',
+  DIVERGENCIA_VALOR_OPERADORA: 'border-amber-200 bg-amber-50 text-amber-700',
+  VENDA_SEM_AGENDA: 'border-rose-200 bg-rose-50 text-rose-700',
+  AGENDA_SEM_VENDA: 'border-amber-200 bg-amber-50 text-amber-700',
+  DIVERGENCIA_VALOR_RECEBIVEL: 'border-amber-200 bg-amber-50 text-amber-700',
+  CIELO_NAO_PAGO: 'border-rose-200 bg-rose-50 text-rose-700',
+  CREDITO_SEM_CIELO: 'border-amber-200 bg-amber-50 text-amber-700',
 };
 
 const SEVERIDADE_COR: Record<string, string> = {
@@ -38,6 +56,7 @@ const SEVERIDADE_COR: Record<string, string> = {
 
 interface SP {
   filialId?: string;
+  processo?: string;
   tipo?: string;
   severidade?: string;
   dataIni?: string;
@@ -74,6 +93,9 @@ export default async function ExcecoesPage(props: {
   const page = Math.max(0, Number(sp.page ?? 0));
 
   const whereBase = [inArray(schema.excecao.filialId, filialFiltro)];
+  if (sp.processo && (PROCESSOS as readonly string[]).includes(sp.processo)) {
+    whereBase.push(eq(schema.excecao.processo, sp.processo));
+  }
   if (sp.severidade && (SEVERIDADES as readonly string[]).includes(sp.severidade)) {
     whereBase.push(eq(schema.excecao.severidade, sp.severidade));
   }
@@ -143,9 +165,9 @@ export default async function ExcecoesPage(props: {
         Pagamentos que não conseguiram fechar a cadeia PDV → Cielo → Banco.
       </p>
 
-      {/* Contadores por tipo */}
-      <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {TIPOS.map((t) => {
+      {/* Contadores por tipo (filtrado por processo se houver) */}
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {TIPOS.filter((t) => !sp.processo || t.processo === sp.processo).map((t) => {
           const c = contagemMap.get(t.valor);
           const qtd = Number(c?.qtd ?? 0);
           const valor = Number(c?.valor ?? 0);
@@ -155,17 +177,20 @@ export default async function ExcecoesPage(props: {
             <Link
               key={t.valor}
               href={href}
-              className={`rounded-xl border p-4 shadow-sm transition hover:shadow ${
+              className={`rounded-xl border p-3 shadow-sm transition hover:shadow ${
                 ativo
                   ? 'border-slate-900 bg-slate-900 text-white'
                   : 'border-slate-200 bg-white text-slate-900'
               }`}
             >
-              <p className={`text-xs font-medium uppercase tracking-wide ${ativo ? 'text-slate-300' : 'text-slate-500'}`}>
+              <p className={`text-[10px] font-medium uppercase tracking-wide ${ativo ? 'text-slate-400' : 'text-slate-400'}`}>
+                {PROCESSO_LABEL[t.processo]}
+              </p>
+              <p className={`mt-0.5 text-xs font-medium ${ativo ? 'text-slate-200' : 'text-slate-600'}`}>
                 {t.label}
               </p>
-              <p className="mt-1.5 text-2xl font-bold">{int(qtd)}</p>
-              <p className={`mt-0.5 text-xs ${ativo ? 'text-slate-300' : 'text-slate-500'}`}>
+              <p className="mt-1.5 text-xl font-bold">{int(qtd)}</p>
+              <p className={`text-[11px] ${ativo ? 'text-slate-300' : 'text-slate-500'}`}>
                 {brl(valor)}
               </p>
             </Link>

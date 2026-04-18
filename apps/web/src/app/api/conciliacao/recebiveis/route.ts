@@ -1,13 +1,13 @@
-// POST /api/conciliacao
+// POST /api/conciliacao/recebiveis
 // Body: { filialId, dataInicio, dataFim }
-// Roda a conciliacao e devolve o resumo.
+// Cruza Vendas Cielo x Recebiveis Cielo.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
-import { rodarConciliacao } from '@/lib/conciliacao';
+import { rodarConciliacaoRecebiveis } from '@/lib/conciliacao-recebiveis';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -29,10 +29,12 @@ export async function POST(req: Request) {
   const json = await req.json().catch(() => null);
   const parsed = Body.safeParse(json);
   if (!parsed.success) {
-    return NextResponse.json({ error: 'body invalido', details: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: 'body invalido', details: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
 
-  // RBAC
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
@@ -46,7 +48,7 @@ export async function POST(req: Request) {
   if (!link) return NextResponse.json({ error: 'sem acesso a esta filial' }, { status: 403 });
 
   try {
-    const r = await rodarConciliacao(parsed.data);
+    const r = await rodarConciliacaoRecebiveis(parsed.data);
     return NextResponse.json(r);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

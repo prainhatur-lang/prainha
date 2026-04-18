@@ -10,6 +10,7 @@ interface Filial {
 
 interface SP {
   filialId?: string;
+  processo?: string;
   tipo?: string;
   severidade?: string;
   dataIni?: string;
@@ -37,7 +38,17 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
   }
 
   const temFiltro =
-    sp.filialId || sp.tipo || sp.severidade || sp.dataIni || sp.dataFim;
+    sp.filialId || sp.processo || sp.tipo || sp.severidade || sp.dataIni || sp.dataFim;
+
+  function onProcessoChange(v: string) {
+    // trocar processo limpa tipo (que eh especifico do processo)
+    const qs = new URLSearchParams(params.toString());
+    if (v) qs.set('processo', v);
+    else qs.delete('processo');
+    qs.delete('tipo');
+    qs.delete('page');
+    startTransition(() => router.push(`/excecoes?${qs.toString()}`));
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -53,6 +64,18 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
             {f.nome}
           </option>
         ))}
+      </select>
+
+      <select
+        value={sp.processo ?? ''}
+        onChange={(e) => onProcessoChange(e.target.value)}
+        disabled={pending}
+        className="rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+      >
+        <option value="">Todos processos</option>
+        <option value="OPERADORA">Operadora</option>
+        <option value="RECEBIVEIS">Recebíveis</option>
+        <option value="BANCO">Banco</option>
       </select>
 
       <select

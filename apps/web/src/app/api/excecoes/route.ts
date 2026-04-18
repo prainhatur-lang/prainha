@@ -13,6 +13,7 @@ export const runtime = 'nodejs';
 
 const Query = z.object({
   filialId: z.string().uuid().optional(),
+  processo: z.enum(['OPERADORA', 'RECEBIVEIS', 'BANCO']).optional(),
   tipo: z.string().optional(),
   severidade: z.enum(['ALTA', 'MEDIA', 'BAIXA']).optional(),
   dataIni: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -57,6 +58,7 @@ export async function GET(req: Request) {
 
   // Monta where comum (tudo exceto filtro de tipo — usado pelas contagens)
   const whereBase = [inArray(schema.excecao.filialId, filialFiltro)];
+  if (q.processo) whereBase.push(eq(schema.excecao.processo, q.processo));
   if (q.severidade) whereBase.push(eq(schema.excecao.severidade, q.severidade));
   if (q.dataIni) whereBase.push(gte(schema.excecao.detectadoEm, new Date(q.dataIni + 'T00:00:00')));
   if (q.dataFim) whereBase.push(lte(schema.excecao.detectadoEm, new Date(q.dataFim + 'T23:59:59')));

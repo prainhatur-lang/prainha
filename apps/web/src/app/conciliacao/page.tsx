@@ -3,12 +3,43 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { desc, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
-import { ConciliacaoForm } from './form';
 import { brl, formatDateTime, int } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
+
+type Processo = 'OPERADORA' | 'RECEBIVEIS' | 'BANCO';
+
+const PROCESSOS: Array<{
+  processo: Processo;
+  titulo: string;
+  descricao: string;
+  href: string;
+  cor: string;
+}> = [
+  {
+    processo: 'OPERADORA',
+    titulo: 'Operadora',
+    descricao: 'PDV × Vendas Cielo. O que foi vendido na loja bate com o arquivo da Cielo?',
+    href: '/conciliacao/operadora',
+    cor: 'border-sky-200 bg-sky-50',
+  },
+  {
+    processo: 'RECEBIVEIS',
+    titulo: 'Recebíveis',
+    descricao: 'Vendas Cielo × Agenda. Toda venda gerou uma promessa de pagamento?',
+    href: '/conciliacao/recebiveis',
+    cor: 'border-violet-200 bg-violet-50',
+  },
+  {
+    processo: 'BANCO',
+    titulo: 'Banco',
+    descricao: 'Agenda × Extrato. A Cielo pagou o que prometeu no banco?',
+    href: '/conciliacao/banco',
+    cor: 'border-emerald-200 bg-emerald-50',
+  },
+];
 
 export default async function ConciliacaoPage() {
   const supabase = await createClient();
@@ -20,16 +51,36 @@ export default async function ConciliacaoPage() {
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
 
-  const execucoes = filialIds.length
-    ? await db
-        .select()
-        .from(schema.execucaoConciliacao)
-        .where(inArray(schema.execucaoConciliacao.filialId, filialIds))
-        .orderBy(desc(schema.execucaoConciliacao.iniciadoEm))
-        .limit(20)
-    : [];
+  // Ultima execucao de cada processo (agregado sobre todas filiais do usuario)
+  const ultimasPorProcesso = new Map<
+    Processo,
+    { iniciadoEm: Date; status: string; resumo: unknown; filialNome: string } | null
+  >();
 
-  const filMap = new Map(filiais.map((f) => [f.id, f.nome]));
+  for (const p of PROCESSOS) {
+    if (!filialIds.length) {
+      ultimasPorProcesso.set(p.processo, null);
+      continue;
+    }
+    const [row] = await db
+      .select({
+        iniciadoEm: schema.execucaoConciliacao.iniciadoEm,
+        status: schema.execucaoConciliacao.status,
+        resumo: schema.execucaoConciliacao.resumo,
+        filialNome: schema.filial.nome,
+      })
+      .from(schema.execucaoConciliacao)
+      .innerJoin(schema.filial, eq(schema.filial.id, schema.execucaoConciliacao.filialId))
+      .where(
+        and(
+          inArray(schema.execucaoConciliacao.filialId, filialIds),
+          eq(schema.execucaoConciliacao.processo, p.processo),
+        ),
+      )
+      .orderBy(desc(schema.execucaoConciliacao.iniciadoEm))
+      .limit(1);
+    ultimasPorProcesso.set(p.processo, row ?? null);
+  }
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -67,82 +118,110 @@ export default async function ConciliacaoPage() {
       <section className="mx-auto max-w-6xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Conciliação</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Cruza pagamentos do PDV com vendas Cielo e lançamentos do banco. Identifica o que ficou sem rastreamento.
+          Três conciliações em série: loja → operadora → agenda → banco. Cada etapa roda independente.
         </p>
 
-        <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
-          <ConciliacaoForm
-            filiais={filiais.map((f) => ({
-              id: f.id,
-              nome: f.nome,
-              dataInicioConciliacao: f.dataInicioConciliacao,
-            }))}
-          />
-
-          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-base font-semibold text-slate-900">Últimas execuções</h2>
-            {execucoes.length === 0 ? (
-              <p className="mt-4 text-sm text-slate-500">Nenhuma execução ainda.</p>
-            ) : (
-              <div className="mt-4 space-y-2">
-                {execucoes.map((e) => {
-                  const r = e.resumo as
-                    | {
-                        totalPagamentos: number;
-                        completos: number;
-                        excecoes: number;
-                        valorTotal: number;
-                        valorRastreado: number;
-                      }
-                    | null;
-                  const pct = r && r.valorTotal > 0 ? (r.valorRastreado / r.valorTotal) * 100 : 0;
-                  return (
-                    <div
-                      key={e.id}
-                      className="rounded-lg border border-slate-200 p-3 text-sm hover:bg-slate-50"
+        <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+          {PROCESSOS.map((p, idx) => {
+            const ultima = ultimasPorProcesso.get(p.processo) ?? null;
+            return (
+              <Link
+                key={p.processo}
+                href={p.href}
+                className={`group flex flex-col rounded-xl border p-5 shadow-sm transition hover:shadow-md ${p.cor}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="rounded-md bg-slate-900/10 px-2 py-0.5 text-[11px] font-medium tracking-wide text-slate-700">
+                    {idx + 1}
+                  </span>
+                  {ultima && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        ultima.status === 'OK'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : ultima.status === 'ERRO'
+                            ? 'bg-rose-100 text-rose-800'
+                            : 'bg-amber-100 text-amber-800'
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <p className="font-medium">{filMap.get(e.filialId) ?? e.filialId}</p>
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                            e.status === 'OK'
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : e.status === 'ERRO'
-                                ? 'border-rose-200 bg-rose-50 text-rose-700'
-                                : 'border-amber-200 bg-amber-50 text-amber-700'
-                          }`}
-                        >
-                          {e.status}
-                        </span>
-                      </div>
-                      {r && (
-                        <div className="mt-2 space-y-1 text-xs text-slate-600">
-                          <p>
-                            {int(r.totalPagamentos)} pagamentos · {int(r.completos)} OK · {int(r.excecoes)} exceções
-                          </p>
-                          <p>
-                            Rastreado: {brl(r.valorRastreado)} de {brl(r.valorTotal)} ({pct.toFixed(1)}%)
-                          </p>
-                          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                            <div
-                              className="h-full bg-emerald-500 transition-all"
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                      {e.erro && <p className="mt-2 text-xs text-rose-600">{e.erro}</p>}
-                      <p className="mt-1.5 text-[11px] text-slate-400">
-                        {formatDateTime(e.iniciadoEm)}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                      {ultima.status}
+                    </span>
+                  )}
+                </div>
+                <h2 className="mt-3 text-lg font-semibold text-slate-900 group-hover:underline">
+                  {p.titulo}
+                </h2>
+                <p className="mt-1 text-xs text-slate-600">{p.descricao}</p>
+
+                {ultima ? (
+                  <ResumoUltima processo={p.processo} resumo={ultima.resumo} />
+                ) : (
+                  <p className="mt-4 text-xs text-slate-500">Nenhuma execução ainda.</p>
+                )}
+
+                {ultima && (
+                  <p className="mt-3 text-[11px] text-slate-500">
+                    Última: {formatDateTime(ultima.iniciadoEm)} · {ultima.filialNome}
+                  </p>
+                )}
+              </Link>
+            );
+          })}
         </div>
       </section>
     </main>
   );
+}
+
+function ResumoUltima({ processo, resumo }: { processo: Processo; resumo: unknown }) {
+  if (!resumo || typeof resumo !== 'object') return null;
+  const r = resumo as Record<string, { qtd?: number; valor?: number }>;
+  const conciliados = r.conciliados;
+  if (processo === 'OPERADORA') {
+    const excs =
+      (r.divergenciaValor?.qtd ?? 0) + (r.pdvSemCielo?.qtd ?? 0) + (r.cieloSemPdv?.qtd ?? 0);
+    return (
+      <div className="mt-4 space-y-1 text-xs text-slate-700">
+        <p>
+          <span className="font-semibold">{int(conciliados?.qtd ?? 0)}</span> conciliados
+        </p>
+        <p>
+          <span className="font-semibold">{int(excs)}</span> exceções
+          <span className="ml-1 text-slate-500">({brl(somaValorExc(r, ['divergenciaValor', 'pdvSemCielo', 'cieloSemPdv']))})</span>
+        </p>
+      </div>
+    );
+  }
+  if (processo === 'RECEBIVEIS') {
+    const excs =
+      (r.divergenciaValor?.qtd ?? 0) + (r.vendaSemAgenda?.qtd ?? 0) + (r.agendaSemVenda?.qtd ?? 0);
+    return (
+      <div className="mt-4 space-y-1 text-xs text-slate-700">
+        <p>
+          <span className="font-semibold">{int(conciliados?.qtd ?? 0)}</span> conciliados
+        </p>
+        <p>
+          <span className="font-semibold">{int(excs)}</span> exceções
+          <span className="ml-1 text-slate-500">({brl(somaValorExc(r, ['divergenciaValor', 'vendaSemAgenda', 'agendaSemVenda']))})</span>
+        </p>
+      </div>
+    );
+  }
+  // BANCO
+  const excs = (r.cieloNaoPago?.qtd ?? 0) + (r.creditoSemCielo?.qtd ?? 0);
+  return (
+    <div className="mt-4 space-y-1 text-xs text-slate-700">
+      <p>
+        <span className="font-semibold">{int(conciliados?.qtd ?? 0)}</span> grupos conciliados
+      </p>
+      <p>
+        <span className="font-semibold">{int(excs)}</span> exceções
+        <span className="ml-1 text-slate-500">({brl(somaValorExc(r, ['cieloNaoPago', 'creditoSemCielo']))})</span>
+      </p>
+    </div>
+  );
+}
+
+function somaValorExc(r: Record<string, { valor?: number }>, keys: string[]): number {
+  return keys.reduce((s, k) => s + (r[k]?.valor ?? 0), 0);
 }

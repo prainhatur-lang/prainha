@@ -6,9 +6,9 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { LogoutButton } from '../../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
-import { OperadoraForm } from './form';
-import { ExcecaoRow } from './excecao-row';
-import { PROCESSO_OPERADORA, TIPO_OPERADORA } from '@/lib/conciliacao-operadora';
+import { BancoForm } from './form';
+import { ExcecaoRowBanco } from './excecao-row';
+import { PROCESSO_BANCO, TIPO_BANCO } from '@/lib/conciliacao-banco';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +16,7 @@ interface SP {
   filialId?: string;
 }
 
-export default async function OperadoraPage(props: { searchParams: Promise<SP> }) {
+export default async function BancoPage(props: { searchParams: Promise<SP> }) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -28,7 +28,6 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   const filialSelecionada =
     (sp.filialId && filiais.find((f) => f.id === sp.filialId)) ?? filiais[0] ?? null;
 
-  // Historico (todas filiais do usuario, processo OPERADORA)
   const filialIds = filiais.map((f) => f.id);
   const execucoes = filialIds.length
     ? await db
@@ -37,14 +36,13 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         .where(
           and(
             inArray(schema.execucaoConciliacao.filialId, filialIds),
-            eq(schema.execucaoConciliacao.processo, PROCESSO_OPERADORA),
+            eq(schema.execucaoConciliacao.processo, PROCESSO_BANCO),
           ),
         )
         .orderBy(desc(schema.execucaoConciliacao.iniciadoEm))
         .limit(10)
     : [];
 
-  // Excecoes abertas desta filial
   const excecoesAbertas = filialSelecionada
     ? await db
         .select({
@@ -54,23 +52,25 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           descricao: schema.excecao.descricao,
           valor: schema.excecao.valor,
           detectadoEm: schema.excecao.detectadoEm,
-          pagamentoNsu: schema.pagamento.nsuTransacao,
-          pagamentoFormaPagamento: schema.pagamento.formaPagamento,
-          pagamentoDataPagamento: schema.pagamento.dataPagamento,
-          vendaNsu: schema.vendaAdquirente.nsu,
-          vendaDataVenda: schema.vendaAdquirente.dataVenda,
-          vendaBandeira: schema.vendaAdquirente.bandeira,
+          recebivelNsu: schema.recebivelAdquirente.nsu,
+          recebivelDataPagamento: schema.recebivelAdquirente.dataPagamento,
+          recebivelFormaPagamento: schema.recebivelAdquirente.formaPagamento,
+          lancamentoData: schema.lancamentoBanco.dataMovimento,
+          lancamentoDescricao: schema.lancamentoBanco.descricao,
         })
         .from(schema.excecao)
-        .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
         .leftJoin(
-          schema.vendaAdquirente,
-          eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+          schema.recebivelAdquirente,
+          eq(schema.recebivelAdquirente.id, schema.excecao.recebivelAdquirenteId),
+        )
+        .leftJoin(
+          schema.lancamentoBanco,
+          eq(schema.lancamentoBanco.id, schema.excecao.lancamentoBancoId),
         )
         .where(
           and(
             eq(schema.excecao.filialId, filialSelecionada.id),
-            eq(schema.excecao.processo, PROCESSO_OPERADORA),
+            eq(schema.excecao.processo, PROCESSO_BANCO),
             isNull(schema.excecao.aceitaEm),
           ),
         )
@@ -79,15 +79,13 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
     : [];
 
   const porTipo = {
-    [TIPO_OPERADORA.DIVERGENCIA_VALOR]: [] as typeof excecoesAbertas,
-    [TIPO_OPERADORA.PDV_SEM_CIELO]: [] as typeof excecoesAbertas,
-    [TIPO_OPERADORA.CIELO_SEM_PDV]: [] as typeof excecoesAbertas,
+    [TIPO_BANCO.CIELO_NAO_PAGO]: [] as typeof excecoesAbertas,
+    [TIPO_BANCO.CREDITO_SEM_CIELO]: [] as typeof excecoesAbertas,
   };
   for (const e of excecoesAbertas) {
     if (porTipo[e.tipo as keyof typeof porTipo]) porTipo[e.tipo as keyof typeof porTipo].push(e);
   }
 
-  // Resumo do ultimo "OK" desta filial pra mostrar "Conciliados"
   const [ultimaOk] = filialSelecionada
     ? await db
         .select()
@@ -95,7 +93,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         .where(
           and(
             eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
-            eq(schema.execucaoConciliacao.processo, PROCESSO_OPERADORA),
+            eq(schema.execucaoConciliacao.processo, PROCESSO_BANCO),
             eq(schema.execucaoConciliacao.status, 'OK'),
           ),
         )
@@ -106,9 +104,8 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   const resumoUltima = (ultimaOk?.resumo as
     | {
         conciliados: { qtd: number; valor: number };
-        divergenciaValor: { qtd: number; valor: number };
-        pdvSemCielo: { qtd: number; valor: number };
-        cieloSemPdv: { qtd: number; valor: number };
+        cieloNaoPago: { qtd: number; valor: number };
+        creditoSemCielo: { qtd: number; valor: number };
       }
     | null
     | undefined) ?? null;
@@ -134,11 +131,14 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
                 Conciliação
               </Link>
-              <Link href="/conciliacao/operadora" className="font-medium text-slate-900">
+              <Link href="/conciliacao/operadora" className="text-slate-600 hover:text-slate-900">
                 Operadora
               </Link>
               <Link href="/conciliacao/recebiveis" className="text-slate-600 hover:text-slate-900">
                 Recebíveis
+              </Link>
+              <Link href="/conciliacao/banco" className="font-medium text-slate-900">
+                Banco
               </Link>
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
@@ -153,15 +153,14 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
       </header>
 
       <section className="mx-auto max-w-7xl px-6 py-10">
-        <h1 className="text-2xl font-bold text-slate-900">Conciliação Operadora</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Conciliação Banco</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Cruza os pagamentos da loja com o arquivo de Vendas da Cielo. O que não bate vira exceção.
+          Cruza a agenda de recebíveis Cielo com os créditos no extrato bancário. Identifica Cielo que prometeu e não pagou, e créditos sem origem.
         </p>
 
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
-          {/* Coluna esquerda: form + historico */}
           <div className="space-y-6">
-            <OperadoraForm
+            <BancoForm
               filiais={filiais.map((f) => ({
                 id: f.id,
                 nome: f.nome,
@@ -179,16 +178,12 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
                     const r = e.resumo as
                       | {
                           conciliados?: { qtd: number };
-                          divergenciaValor?: { qtd: number };
-                          pdvSemCielo?: { qtd: number };
-                          cieloSemPdv?: { qtd: number };
+                          cieloNaoPago?: { qtd: number };
+                          creditoSemCielo?: { qtd: number };
                         }
                       | null
                       | undefined;
-                    const excs =
-                      (r?.divergenciaValor?.qtd ?? 0) +
-                      (r?.pdvSemCielo?.qtd ?? 0) +
-                      (r?.cieloSemPdv?.qtd ?? 0);
+                    const excs = (r?.cieloNaoPago?.qtd ?? 0) + (r?.creditoSemCielo?.qtd ?? 0);
                     return (
                       <li key={e.id} className="rounded-lg border border-slate-200 p-2.5 text-xs">
                         <div className="flex items-center justify-between">
@@ -209,7 +204,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
                         </div>
                         {r && (
                           <p className="mt-1 text-slate-500">
-                            {int(r.conciliados?.qtd ?? 0)} conciliados · {int(excs)} exceções
+                            {int(r.conciliados?.qtd ?? 0)} grupos OK · {int(excs)} exceções
                           </p>
                         )}
                       </li>
@@ -220,103 +215,69 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
             </div>
           </div>
 
-          {/* Coluna direita: resultado */}
           <div className="space-y-6">
-            {filialSelecionada && (
-              <FilialSelector
-                filiais={filiais}
-                selecionada={filialSelecionada.id}
-              />
+            {filialSelecionada && filiais.length > 1 && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-slate-500">Filial:</span>
+                {filiais.map((f) => (
+                  <Link
+                    key={f.id}
+                    href={`/conciliacao/banco?filialId=${f.id}`}
+                    className={`rounded-md border px-3 py-1 text-xs ${
+                      f.id === filialSelecionada.id
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {f.nome}
+                  </Link>
+                ))}
+              </div>
             )}
 
-            {/* 4 cards de resumo */}
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <ResumoCard
-                label="Conciliados"
+                label="Grupos conciliados"
                 qtd={resumoUltima?.conciliados?.qtd ?? 0}
                 valor={resumoUltima?.conciliados?.valor ?? 0}
                 tom="emerald"
               />
               <ResumoCard
-                label="Divergência de valor"
-                qtd={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR].length}
-                valor={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR].reduce(
+                label="Cielo não pagou"
+                qtd={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].length}
+                valor={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].reduce(
+                  (s, e) => s + Number(e.valor ?? 0),
+                  0,
+                )}
+                tom="rose"
+              />
+              <ResumoCard
+                label="Crédito sem Cielo"
+                qtd={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].length}
+                valor={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].reduce(
                   (s, e) => s + Number(e.valor ?? 0),
                   0,
                 )}
                 tom="amber"
               />
-              <ResumoCard
-                label="PDV sem Cielo"
-                qtd={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO].length}
-                valor={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
-                tom="rose"
-              />
-              <ResumoCard
-                label="Cielo sem PDV"
-                qtd={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV].length}
-                valor={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
-                tom="rose"
-              />
             </div>
 
-            {/* Tabelas por tipo */}
             <SecaoExcecoes
-              titulo="Divergência de valor"
-              descricao="NSU bate, valor diferente. Pode ser gorjeta, desconto ou erro de digitação."
+              titulo="Cielo prometeu e não pagou"
+              descricao="Grupos de recebíveis (dia × tipo) que não acharam crédito correspondente no extrato."
+              tom="rose"
+              excecoes={porTipo[TIPO_BANCO.CIELO_NAO_PAGO]}
+            />
+            <SecaoExcecoes
+              titulo="Crédito no banco sem Cielo"
+              descricao="Créditos no extrato bancário que não foram consumidos por nenhum grupo de recebíveis."
               tom="amber"
-              excecoes={porTipo[TIPO_OPERADORA.DIVERGENCIA_VALOR]}
-            />
-            <SecaoExcecoes
-              titulo="No PDV, sem match na Cielo"
-              descricao="Pagamento registrado na loja que não apareceu no arquivo da Cielo."
-              tom="rose"
-              excecoes={porTipo[TIPO_OPERADORA.PDV_SEM_CIELO]}
-            />
-            <SecaoExcecoes
-              titulo="Na Cielo, sem match no PDV"
-              descricao="Venda no arquivo da Cielo que a loja não registrou."
-              tom="rose"
-              excecoes={porTipo[TIPO_OPERADORA.CIELO_SEM_PDV]}
+              excecoes={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO]}
             />
           </div>
         </div>
       </section>
     </main>
-  );
-}
-
-function FilialSelector({
-  filiais,
-  selecionada,
-}: {
-  filiais: { id: string; nome: string }[];
-  selecionada: string;
-}) {
-  if (filiais.length <= 1) return null;
-  return (
-    <div className="flex items-center gap-2 text-sm">
-      <span className="text-slate-500">Filial:</span>
-      {filiais.map((f) => (
-        <Link
-          key={f.id}
-          href={`/conciliacao/operadora?filialId=${f.id}`}
-          className={`rounded-md border px-3 py-1 text-xs ${
-            f.id === selecionada
-              ? 'border-slate-900 bg-slate-900 text-white'
-              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-          }`}
-        >
-          {f.nome}
-        </Link>
-      ))}
-    </div>
   );
 }
 
@@ -358,13 +319,11 @@ function SecaoExcecoes({
     id: string;
     valor: string | null;
     descricao: string;
-    detectadoEm: Date;
-    pagamentoNsu: string | null;
-    pagamentoFormaPagamento: string | null;
-    pagamentoDataPagamento: Date | null;
-    vendaNsu: string | null;
-    vendaDataVenda: string | null;
-    vendaBandeira: string | null;
+    recebivelNsu: string | null;
+    recebivelDataPagamento: string | null;
+    recebivelFormaPagamento: string | null;
+    lancamentoData: string | null;
+    lancamentoDescricao: string | null;
   }>;
 }) {
   const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
@@ -383,8 +342,6 @@ function SecaoExcecoes({
           <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-4 py-2">Data</th>
-              <th className="px-4 py-2">NSU</th>
-              <th className="px-4 py-2">Forma / Bandeira</th>
               <th className="px-4 py-2 text-right">Valor</th>
               <th className="px-4 py-2">Descrição</th>
               <th className="px-4 py-2 w-28"></th>
@@ -392,7 +349,7 @@ function SecaoExcecoes({
           </thead>
           <tbody>
             {excecoes.slice(0, 50).map((e) => (
-              <ExcecaoRow key={e.id} excecao={e} />
+              <ExcecaoRowBanco key={e.id} excecao={e} />
             ))}
           </tbody>
         </table>
