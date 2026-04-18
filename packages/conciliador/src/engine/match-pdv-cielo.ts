@@ -11,6 +11,8 @@ export interface PdvPagamento {
   dataPagamento?: string;
   /** Numero do pedido (Consumer.CODIGOPEDIDO). Aparece na descricao da excecao. */
   codigoPedidoExterno?: number | null;
+  /** Codigo de autorizacao do cartao — junto com NSU forma chave unica por transacao */
+  numeroAutorizacao?: string | null;
 }
 
 export interface CieloVenda {
@@ -20,9 +22,10 @@ export interface CieloVenda {
   /** ISO yyyy-mm-dd */
   dataVenda?: string;
   formaPagamento?: string;
+  autorizacao?: string | null;
 }
 
-export type MatchType = 'NSU' | 'DATA_VALOR';
+export type MatchType = 'NSU_AUTH' | 'NSU' | 'DATA_VALOR';
 
 export interface MatchPdvCieloResult {
   matched: Array<{
@@ -48,22 +51,36 @@ function categoriaForma(s: string | undefined | null): string {
   return 'Outros';
 }
 
+const MAX_DELTA_DIAS = 3;
+
 function datasProximas(a: string | undefined, b: string | undefined): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
-  // aceita +-1 dia (virada de dia no TEF)
+  // aceita +-N dias (virada de dia + fins de semana no TEF)
   const d1 = new Date(a + 'T00:00:00').getTime();
   const d2 = new Date(b + 'T00:00:00').getTime();
   const diffDias = Math.abs((d1 - d2) / 86_400_000);
-  return diffDias <= 1;
+  return diffDias <= MAX_DELTA_DIAS;
+}
+
+function norm(s: string | null | undefined): string {
+  return (s ?? '').trim().toUpperCase();
 }
 
 export function matchPdvCielo(
   pagamentos: PdvPagamento[],
   vendas: CieloVenda[],
 ): MatchPdvCieloResult {
-  const cieloByNsu = new Map<string, CieloVenda>();
-  for (const v of vendas) cieloByNsu.set(v.nsu, v);
+  // Chave forte: NSU + autorizacao. Chave fraca: NSU com multiplos candidatos.
+  const cieloByKey = new Map<string, CieloVenda>(); // nsu+auth → venda unica
+  const cieloByNsu = new Map<string, CieloVenda[]>(); // nsu → todas as vendas com esse NSU
+  for (const v of vendas) {
+    const auth = norm(v.autorizacao);
+    if (auth) cieloByKey.set(`${v.nsu}|${auth}`, v);
+    const arr = cieloByNsu.get(v.nsu) ?? [];
+    arr.push(v);
+    cieloByNsu.set(v.nsu, arr);
+  }
 
   const result: MatchPdvCieloResult = {
     matched: [],
@@ -71,30 +88,68 @@ export function matchPdvCielo(
     pdvSemCielo: [],
     cieloSemPdv: [],
   };
-  const cieloUsed = new Set<string>();
+  const cieloUsadas = new Set<CieloVenda>();
 
-  // --- Passada 1: NSU exato ---
-  for (const p of pagamentos) {
+  // Processa pagamentos em ordem cronologica pra que PDV mais antigo pegue a
+  // Cielo mais antiga em caso de NSU ambiguo.
+  const pagamentosOrdenados = [...pagamentos].sort((a, b) =>
+    (a.dataPagamento ?? '').localeCompare(b.dataPagamento ?? ''),
+  );
+
+  // --- Passada 1: match forte (NSU + autorizacao) e fraco (NSU unico) ---
+  for (const p of pagamentosOrdenados) {
     if (!p.nsu) {
       result.pdvSemCielo.push(p);
       continue;
     }
-    const c = cieloByNsu.get(p.nsu);
+
+    let c: CieloVenda | undefined;
+    let matchType: MatchType = 'NSU';
+
+    // 1a. NSU + autorizacao (se o PDV tiver auth)
+    const auth = norm(p.numeroAutorizacao);
+    if (auth) {
+      const cand = cieloByKey.get(`${p.nsu}|${auth}`);
+      if (cand && !cieloUsadas.has(cand)) {
+        c = cand;
+        matchType = 'NSU_AUTH';
+      }
+    }
+
+    // 1b. NSU so — mas so aceita se houver 1 candidato nao usado OU se um bater data+valor
+    if (!c) {
+      const arr = (cieloByNsu.get(p.nsu) ?? []).filter((v) => !cieloUsadas.has(v));
+      if (arr.length === 1) {
+        c = arr[0];
+        matchType = 'NSU';
+      } else if (arr.length > 1) {
+        // desambigua: prefere o que bate data E valor
+        const best =
+          arr.find((v) => v.dataVenda === p.dataPagamento && Math.abs(v.valorBruto - p.valor) < TOL) ??
+          arr.find((v) => v.dataVenda === p.dataPagamento);
+        if (best) {
+          c = best;
+          matchType = 'NSU';
+        }
+        // se ainda ambiguo, deixa pra fallback data+valor
+      }
+    }
+
     if (!c) {
       result.pdvSemCielo.push(p);
       continue;
     }
-    cieloUsed.add(c.nsu);
+
+    cieloUsadas.add(c);
     const diff = +(c.valorBruto - p.valor).toFixed(2);
     if (Math.abs(diff) < TOL) {
-      result.matched.push({ pdv: p, cielo: c, diff, matchType: 'NSU' });
+      result.matched.push({ pdv: p, cielo: c, diff, matchType });
     } else {
       result.divergenciaValor.push({ pdv: p, cielo: c, diff });
     }
   }
 
-  const cieloSobrando: CieloVenda[] = [];
-  for (const v of vendas) if (!cieloUsed.has(v.nsu)) cieloSobrando.push(v);
+  const cieloSobrando: CieloVenda[] = vendas.filter((v) => !cieloUsadas.has(v));
 
   // --- Passada 2: fallback por (data, valor, categoria de forma) ---
   // Indexa sobra da Cielo por chave. Se chave tem >1 candidato → ambiguo, pula.
@@ -116,10 +171,12 @@ export function matchPdvCielo(
     const cat = categoriaForma(p.formaPagamento);
     const valorKey = Math.round(p.valor * 100);
 
-    // tenta data exata, depois D-1 e D+1
+    // tenta data exata, depois +-1, +-2, +-3 dias
     const candidatos: CieloVenda[] = [];
     if (p.dataPagamento) {
-      for (const deltaD of [0, -1, 1]) {
+      const deltas: number[] = [0];
+      for (let i = 1; i <= MAX_DELTA_DIAS; i++) deltas.push(i, -i);
+      for (const deltaD of deltas) {
         const d = new Date(p.dataPagamento + 'T00:00:00');
         d.setDate(d.getDate() + deltaD);
         const iso = d.toISOString().slice(0, 10);

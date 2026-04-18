@@ -75,6 +75,7 @@ export async function rodarConciliacaoOperadora(opts: {
         formaPagamento: schema.pagamento.formaPagamento,
         dataPagamento: schema.pagamento.dataPagamento,
         codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
+        numeroAutorizacao: schema.pagamento.numeroAutorizacaoCartao,
       })
       .from(schema.pagamento)
       .where(
@@ -101,6 +102,7 @@ export async function rodarConciliacaoOperadora(opts: {
         valorBruto: schema.vendaAdquirente.valorBruto,
         dataVenda: schema.vendaAdquirente.dataVenda,
         formaPagamento: schema.vendaAdquirente.formaPagamento,
+        autorizacao: schema.vendaAdquirente.autorizacao,
       })
       .from(schema.vendaAdquirente)
       .where(
@@ -121,6 +123,7 @@ export async function rodarConciliacaoOperadora(opts: {
         formaPagamento: p.formaPagamento ?? '',
         dataPagamento: p.dataPagamento ? p.dataPagamento.toISOString().slice(0, 10) : undefined,
         codigoPedidoExterno: p.codigoPedidoExterno ?? null,
+        numeroAutorizacao: p.numeroAutorizacao ?? null,
       })),
       vendas.map((v) => ({
         id: v.id,
@@ -128,6 +131,7 @@ export async function rodarConciliacaoOperadora(opts: {
         valorBruto: Number(v.valorBruto),
         dataVenda: v.dataVenda,
         formaPagamento: v.formaPagamento ?? '',
+        autorizacao: v.autorizacao ?? null,
       })),
     );
 
@@ -200,7 +204,9 @@ export async function rodarConciliacaoOperadora(opts: {
 
     // Resumo
     const sum = (arr: Array<{ valor: number }>) => arr.reduce((s, x) => s + x.valor, 0);
-    const matchedNsu = result.matched.filter((m) => m.matchType === 'NSU');
+    const matchedNsu = result.matched.filter(
+      (m) => m.matchType === 'NSU' || m.matchType === 'NSU_AUTH',
+    );
     const matchedDV = result.matched.filter((m) => m.matchType === 'DATA_VALOR');
     const resumo: OperadoraResumo = {
       conciliados: {
