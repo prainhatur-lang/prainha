@@ -74,6 +74,7 @@ export async function rodarConciliacaoOperadora(opts: {
         valor: schema.pagamento.valor,
         formaPagamento: schema.pagamento.formaPagamento,
         dataPagamento: schema.pagamento.dataPagamento,
+        codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
       })
       .from(schema.pagamento)
       .where(
@@ -119,6 +120,7 @@ export async function rodarConciliacaoOperadora(opts: {
         valor: Number(p.valor),
         formaPagamento: p.formaPagamento ?? '',
         dataPagamento: p.dataPagamento ? p.dataPagamento.toISOString().slice(0, 10) : undefined,
+        codigoPedidoExterno: p.codigoPedidoExterno ?? null,
       })),
       vendas.map((v) => ({
         id: v.id,
@@ -144,6 +146,9 @@ export async function rodarConciliacaoOperadora(opts: {
     // Monta excecoes
     const novasExcecoes: Array<typeof schema.excecao.$inferInsert> = [];
 
+    const pedidoTxt = (p: { codigoPedidoExterno?: number | null }) =>
+      p.codigoPedidoExterno ? `Pedido #${p.codigoPedidoExterno}` : 'Pedido ?';
+
     for (const { pdv, cielo, diff } of result.divergenciaValor) {
       novasExcecoes.push({
         filialId,
@@ -152,7 +157,7 @@ export async function rodarConciliacaoOperadora(opts: {
         vendaAdquirenteId: cielo.id ?? null,
         tipo: TIPO_OPERADORA.DIVERGENCIA_VALOR,
         severidade: 'MEDIA',
-        descricao: `PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
+        descricao: `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
         valor: String(pdv.valor),
       });
     }
@@ -163,7 +168,7 @@ export async function rodarConciliacaoOperadora(opts: {
         pagamentoId: pdv.id,
         tipo: TIPO_OPERADORA.PDV_SEM_CIELO,
         severidade: 'ALTA',
-        descricao: `Pagamento do PDV (${pdv.formaPagamento || 'sem forma'}, NSU ${pdv.nsu ?? '—'}) sem venda correspondente na Cielo.`,
+        descricao: `${pedidoTxt(pdv)} — ${pdv.formaPagamento || 'sem forma'}, NSU ${pdv.nsu ?? '—'}, sem venda correspondente na Cielo.`,
         valor: String(pdv.valor),
       });
     }

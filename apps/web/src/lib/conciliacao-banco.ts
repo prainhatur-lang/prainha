@@ -77,6 +77,7 @@ export async function rodarConciliacaoBanco(opts: {
         dataPagamento: schema.pagamento.dataPagamento,
         dataCredito: schema.pagamento.dataCredito,
         nsu: schema.pagamento.nsuTransacao,
+        codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
       })
       .from(schema.pagamento)
       .where(
@@ -158,12 +159,19 @@ export async function rodarConciliacaoBanco(opts: {
           isoToBr(p.dataCredito!) === g.dataPagamento &&
           (/pix/i.test(p.formaPagamento ?? '') ? 'PIX' : 'CARTAO') === g.tipo,
       );
+      const pedidos = pgsDoGrupo
+        .map((p) => p.codigoPedidoExterno)
+        .filter((n): n is number => !!n)
+        .slice(0, 5);
+      const pedidosTxt = pedidos.length
+        ? ` Pedidos: ${pedidos.join(', ')}${pgsDoGrupo.length > pedidos.length ? ', ...' : ''}.`
+        : '';
       novas.push({
         filialId,
         processo: PROCESSO_BANCO,
         tipo: TIPO_BANCO.CIELO_NAO_PAGO,
         severidade: 'ALTA',
-        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.`,
+        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.${pedidosTxt}`,
         valor: String(g.valorTotal),
         pagamentoId: pgsDoGrupo[0]?.id ?? null,
       });

@@ -9,6 +9,8 @@ export interface PdvPagamento {
   formaPagamento: string;
   /** ISO yyyy-mm-dd — usado no fallback data+valor */
   dataPagamento?: string;
+  /** Numero do pedido (Consumer.CODIGOPEDIDO). Aparece na descricao da excecao. */
+  codigoPedidoExterno?: number | null;
 }
 
 export interface CieloVenda {
