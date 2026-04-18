@@ -189,8 +189,9 @@ export function matchPdvCielo(
       }
     }
 
-    // So aceita se for unico candidato (evita match ambiguo)
-    if (candidatos.length === 1) {
+    // Pega o primeiro candidato disponivel (prioridade por delta=0, D+1, D-1, ...).
+    // Com N PDV e N Cielo mesmo (data,valor,forma) sem NSU, vao parear 1:1 em ordem.
+    if (candidatos.length >= 1) {
       const c = candidatos[0]!;
       cieloMatchedSegundaPassada.add(c);
       result.matched.push({ pdv: p, cielo: c, diff: 0, matchType: 'DATA_VALOR' });
