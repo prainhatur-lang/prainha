@@ -1,5 +1,26 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+
+/** Percentuais de taxas Cielo por forma + bandeira. Usado pela engine Banco
+ * pra calcular valor liquido esperado no credito bancario. Todos em %. */
+export interface TaxasPorBandeira {
+  pix: number;
+  debito: Record<string, number>; // bandeira normalizada (visa, mastercard, elo, amex, diners) → %
+  credito_a_vista: Record<string, number>;
+}
+
+/** Config de um estabelecimento Cielo (EC) — pode ser TEF, Online, etc. */
+export interface EstabelecimentoConfig extends TaxasPorBandeira {
+  codigo: string; // EC, ex: "1115651924"
+  rotulo?: string; // nome amigavel
+  canal?: 'TEF' | 'ONLINE' | string;
+}
+
+/** Config de taxas da filial: lista de ECs + default pra casos nao mapeados. */
+export interface TaxasFilial {
+  ecs: EstabelecimentoConfig[];
+  default: TaxasPorBandeira;
+}
 
 export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -23,6 +44,8 @@ export const filial = pgTable(
     ultimoPing: timestamp('ultimo_ping', { withTimezone: true }),
     /** Ignora pagamentos anteriores a esta data na conciliacao. Null = sem corte. */
     dataInicioConciliacao: date('data_inicio_conciliacao'),
+    /** Taxas Cielo por forma + bandeira (null = usar defaults) */
+    taxas: jsonb('taxas').$type<TaxasFilial>(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

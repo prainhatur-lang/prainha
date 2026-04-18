@@ -36,9 +36,58 @@ function isoToBr(d: string | Date): string {
 /** Formas de pagamento do PDV que nao entram na conciliacao bancaria. */
 const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'iFood Online']);
 
-/** Taxa fixa Cielo Pix (0,49%) — PDV nao popula percentual_taxa pros Pix,
- * entao a gente desconta isso antes de comparar com o credito liquido no banco. */
-const TAXA_PIX_CIELO = 0.0049;
+import type { TaxasFilial, TaxasPorBandeira, EstabelecimentoConfig } from '@concilia/db/schema';
+
+/** Defaults de taxa Cielo (%) quando a filial nao tem config propria. */
+export const TAXAS_DEFAULT: TaxasPorBandeira = {
+  pix: 0.49,
+  debito: { visa: 0.90, mastercard: 0.90, elo: 1.45 },
+  credito_a_vista: { visa: 3.32, mastercard: 3.32, elo: 3.87, amex: 3.82, diners: 3.32 },
+};
+
+function normalizarBandeira(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim();
+}
+
+/** Escolhe o conjunto de taxas baseado no codigo_estabelecimento (EC).
+ * Fallback: taxas.default → TAXAS_DEFAULT hardcoded. */
+function resolverTaxas(
+  taxas: TaxasFilial | null | undefined,
+  ec: string | null | undefined,
+): TaxasPorBandeira {
+  if (taxas) {
+    if (ec && Array.isArray(taxas.ecs)) {
+      const match = taxas.ecs.find((e: EstabelecimentoConfig) => e.codigo === ec);
+      if (match) return match;
+    }
+    if (taxas.default) return taxas.default;
+  }
+  return TAXAS_DEFAULT;
+}
+
+function obterTaxaPercent(
+  t: TaxasPorBandeira,
+  forma: string,
+  bandeira: string | null | undefined,
+): number {
+  const f = forma.toLowerCase();
+  const b = normalizarBandeira(bandeira);
+  if (f.includes('pix')) return Number(t.pix ?? TAXAS_DEFAULT.pix);
+  if (f.includes('debito') || f.includes('débito')) {
+    const map = t.debito ?? TAXAS_DEFAULT.debito;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.debito.visa);
+  }
+  if (f.includes('credito') || f.includes('crédito')) {
+    const map = t.credito_a_vista ?? TAXAS_DEFAULT.credito_a_vista;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.credito_a_vista.visa);
+  }
+  return 0;
+}
 
 export async function rodarConciliacaoBanco(opts: {
   filialId: string;
@@ -49,12 +98,16 @@ export async function rodarConciliacaoBanco(opts: {
   let { dataInicio } = opts;
 
   const [fil] = await db
-    .select({ dataInicioConciliacao: schema.filial.dataInicioConciliacao })
+    .select({
+      dataInicioConciliacao: schema.filial.dataInicioConciliacao,
+      taxas: schema.filial.taxas,
+    })
     .from(schema.filial)
     .where(eq(schema.filial.id, filialId))
     .limit(1);
   const corte = fil?.dataInicioConciliacao ?? null;
   if (corte && dataInicio < corte) dataInicio = corte;
+  const taxasFilial = (fil?.taxas as TaxasFilial | null) ?? null;
 
   const dtIni = new Date(dataInicio + 'T00:00:00');
   const dtFim = new Date(dataFim + 'T23:59:59');
@@ -72,18 +125,31 @@ export async function rodarConciliacaoBanco(opts: {
   const execId = exec!.id;
 
   try {
-    // Pagamentos com data_credito no periodo — so cartao/pix (exclui dinheiro)
+    // Pagamentos com data_credito no periodo (exclui dinheiro etc). LEFT JOIN
+    // com venda_adquirente pra pegar codigo_estabelecimento (EC) — usado pra
+    // escolher qual taxa aplicar.
     const pagamentos = await db
       .select({
         id: schema.pagamento.id,
         formaPagamento: schema.pagamento.formaPagamento,
+        bandeiraMfe: schema.pagamento.bandeiraMfe,
         valor: schema.pagamento.valor,
         dataPagamento: schema.pagamento.dataPagamento,
         dataCredito: schema.pagamento.dataCredito,
         nsu: schema.pagamento.nsuTransacao,
         codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
+        // do match opcional com venda Cielo
+        vendaBandeira: schema.vendaAdquirente.bandeira,
+        vendaEc: schema.vendaAdquirente.codigoEstabelecimento,
       })
       .from(schema.pagamento)
+      .leftJoin(
+        schema.vendaAdquirente,
+        and(
+          eq(schema.vendaAdquirente.filialId, schema.pagamento.filialId),
+          eq(schema.vendaAdquirente.nsu, schema.pagamento.nsuTransacao),
+        ),
+      )
       .where(
         and(
           eq(schema.pagamento.filialId, filialId),
@@ -121,17 +187,20 @@ export async function rodarConciliacaoBanco(opts: {
       );
 
     // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida").
-    // Pix: aplicamos taxa fixa 0,49% porque o PDV nao grava taxa pros Pix
-    // mas a Cielo desconta no credito bancario.
+    // Taxa aplicada por (EC + forma + bandeira): resolve o EC via join com Cielo,
+    // fallback pra default da filial, fallback pros defaults hardcoded.
     const pseudoRecebiveis = liquidaveis.map((p) => {
-      const ehPix = /pix/i.test(p.formaPagamento ?? '');
+      const forma = p.formaPagamento ?? '';
+      const bandeira = p.vendaBandeira ?? p.bandeiraMfe ?? null;
+      const taxasDoEc = resolverTaxas(taxasFilial, p.vendaEc);
+      const percent = obterTaxaPercent(taxasDoEc, forma, bandeira);
       const bruto = Number(p.valor);
-      const liquido = ehPix ? +(bruto * (1 - TAXA_PIX_CIELO)).toFixed(2) : bruto;
+      const liquido = +(bruto * (1 - percent / 100)).toFixed(2);
       return {
         id: p.id,
         nsu: p.nsu ?? `PDV-${p.id}`,
         dataPagamento: isoToBr(p.dataCredito!),
-        formaPagamento: ehPix ? 'Pix' : (p.formaPagamento ?? ''),
+        formaPagamento: /pix/i.test(forma) ? 'Pix' : forma,
         valorLiquido: liquido,
       };
     });
