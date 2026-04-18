@@ -33,10 +33,12 @@ function isoToBr(d: string | Date): string {
   return `${day}/${m}/${y}`;
 }
 
-/** Formas de pagamento do PDV que nao entram na conciliacao bancaria.
- * Pix Manual cai direto no banco via QR, mas nao tem agenda previsivel
- * (cada transacao independente), entao nao da pra agrupar/bater em grupos. */
-const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'Pix Manual', 'iFood Online']);
+/** Formas de pagamento do PDV que nao entram na conciliacao bancaria. */
+const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'iFood Online']);
+
+/** Taxa fixa Cielo Pix (0,49%) — PDV nao popula percentual_taxa pros Pix,
+ * entao a gente desconta isso antes de comparar com o credito liquido no banco. */
+const TAXA_PIX_CIELO = 0.0049;
 
 export async function rodarConciliacaoBanco(opts: {
   filialId: string;
@@ -118,15 +120,21 @@ export async function rodarConciliacaoBanco(opts: {
         ),
       );
 
-    // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida")
-    const pseudoRecebiveis = liquidaveis.map((p) => ({
-      id: p.id,
-      nsu: p.nsu ?? `PDV-${p.id}`,
-      dataPagamento: isoToBr(p.dataCredito!),
-      // Normaliza: Pix* -> Pix, resto -> nao-Pix (vira CARTAO no matcher)
-      formaPagamento: /pix/i.test(p.formaPagamento ?? '') ? 'Pix' : (p.formaPagamento ?? ''),
-      valorLiquido: Number(p.valor),
-    }));
+    // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida").
+    // Pix: aplicamos taxa fixa 0,49% porque o PDV nao grava taxa pros Pix
+    // mas a Cielo desconta no credito bancario.
+    const pseudoRecebiveis = liquidaveis.map((p) => {
+      const ehPix = /pix/i.test(p.formaPagamento ?? '');
+      const bruto = Number(p.valor);
+      const liquido = ehPix ? +(bruto * (1 - TAXA_PIX_CIELO)).toFixed(2) : bruto;
+      return {
+        id: p.id,
+        nsu: p.nsu ?? `PDV-${p.id}`,
+        dataPagamento: isoToBr(p.dataCredito!),
+        formaPagamento: ehPix ? 'Pix' : (p.formaPagamento ?? ''),
+        valorLiquido: liquido,
+      };
+    });
 
     const result = matchCieloBanco(
       pseudoRecebiveis,
