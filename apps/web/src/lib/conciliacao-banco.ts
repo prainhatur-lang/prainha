@@ -33,8 +33,10 @@ function isoToBr(d: string | Date): string {
   return `${day}/${m}/${y}`;
 }
 
-/** Formas de pagamento do PDV que nao entram na conciliacao bancaria. */
-const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood']);
+/** Formas de pagamento do PDV que nao entram na conciliacao bancaria.
+ * Pix Manual cai direto no banco via QR, mas nao tem agenda previsivel
+ * (cada transacao independente), entao nao da pra agrupar/bater em grupos. */
+const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'Pix Manual', 'iFood Online']);
 
 export async function rodarConciliacaoBanco(opts: {
   filialId: string;
