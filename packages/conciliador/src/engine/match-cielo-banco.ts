@@ -50,10 +50,29 @@ const DESCRICOES_CREDITOS_ADQUIRENTE = [
   'TED RECEBIDA',
 ];
 
+export interface MatchCieloBancoOpts {
+  /** Janela de dias (±) em torno da data prevista pra procurar o credito no banco.
+   * Banco nao credita sab/dom/feriado — valor esperado cai 2-4 dias depois. Default 4. */
+  janelaDias?: number;
+}
+
+function addDias(iso: string, n: number): string {
+  // dd/mm/yyyy input
+  const [d, m, y] = iso.split('/');
+  const dt = new Date(Number(y), Number(m) - 1, Number(d));
+  dt.setDate(dt.getDate() + n);
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const yy = dt.getFullYear();
+  return `${dd}/${mm}/${yy}`;
+}
+
 export function matchCieloBanco(
   recebiveis: RecebivelInput[],
   lancamentos: LancamentoBancoInput[],
+  opts: MatchCieloBancoOpts = {},
 ): MatchCieloBancoResult {
+  const janela = Math.max(0, opts.janelaDias ?? 4);
   const nsusPagos = new Set<string>();
   const gruposCompletos: MatchCieloBancoResult['gruposCompletos'] = [];
   const gruposSemMatch: MatchCieloBancoResult['gruposSemMatch'] = [];
@@ -79,25 +98,42 @@ export function matchCieloBanco(
     credByDia.set(l.dataMovimento, arr);
   }
 
-  for (const [key, items] of recPorGrupo) {
+  // Set global de creditos ja consumidos por algum grupo
+  const usados = new Set<LancamentoBancoInput>();
+
+  // Processa grupos em ordem cronologica (mais antigo primeiro) pra nao
+  // "roubar" credito de um grupo mais velho
+  const grupos = [...recPorGrupo.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  for (const [key, items] of grupos) {
     const [dataPagamento, tipo] = key.split('|') as [string, 'PIX' | 'CARTAO'];
     const totalLiq = +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2);
-    const cands = credByDia.get(dataPagamento) ?? [];
-    const valores = cands.map((c) => c.valor);
 
+    // Coleta candidatos: mesmo dia primeiro, depois +1, -1, +2, -2, ... ate +-janela
+    const ordem: number[] = [0];
+    for (let d = 1; d <= janela; d++) {
+      ordem.push(d);
+      ordem.push(-d);
+    }
+    const candidatos: LancamentoBancoInput[] = [];
+    for (const delta of ordem) {
+      const dia = addDias(dataPagamento, delta);
+      const arr = credByDia.get(dia) ?? [];
+      for (const c of arr) if (!usados.has(c)) candidatos.push(c);
+    }
+
+    const valores = candidatos.map((c) => c.valor);
     const idxs = subsetSum(valores, totalLiq);
     if (idxs && idxs.length) {
       items.forEach((it) => nsusPagos.add(it.nsu));
-      const usados = idxs.map((i) => cands[i]!);
-      // Remove os usados desse dia
-      const restante = (credByDia.get(dataPagamento) ?? []).filter((c) => !usados.includes(c));
-      credByDia.set(dataPagamento, restante);
+      const consumidos = idxs.map((i) => candidatos[i]!);
+      consumidos.forEach((u) => usados.add(u));
       gruposCompletos.push({
         dataPagamento,
         tipo,
         qtdRecebiveis: items.length,
         valorTotal: totalLiq,
-        lancamentosBanco: usados,
+        lancamentosBanco: consumidos,
       });
     } else {
       gruposSemMatch.push({
@@ -109,7 +145,10 @@ export function matchCieloBanco(
     }
   }
 
-  const creditosSobrando = [...credByDia.values()].flat();
+  const creditosSobrando: LancamentoBancoInput[] = [];
+  for (const arr of credByDia.values()) {
+    for (const c of arr) if (!usados.has(c)) creditosSobrando.push(c);
+  }
 
   return { nsusPagos, gruposCompletos, gruposSemMatch, creditosSobrando };
 }
