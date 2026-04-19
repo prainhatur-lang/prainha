@@ -61,6 +61,9 @@ interface SP {
   severidade?: string;
   dataIni?: string;
   dataFim?: string;
+  /** Filtra pela data da TRANSACAO (pagamento.data_pagamento ou venda.data_venda).
+   * Formato YYYY-MM-DD, range de um dia. */
+  dataTrans?: string;
   /** Busca texto: aplica a NSU, numero do pedido e descricao */
   q?: string;
   valorMin?: string;
@@ -131,6 +134,16 @@ export default async function ExcecoesPage(props: {
   if (sp.forma && sp.forma.trim()) {
     whereBase.push(eq(schema.pagamento.formaPagamento, sp.forma.trim()));
   }
+  if (sp.dataTrans && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataTrans)) {
+    const d = sp.dataTrans;
+    const dIni = new Date(d + 'T00:00:00');
+    const dFim = new Date(d + 'T23:59:59');
+    const cond = or(
+      sql`${schema.pagamento.dataPagamento} BETWEEN ${dIni} AND ${dFim}`,
+      sql`${schema.vendaAdquirente.dataVenda} = ${d}`,
+    );
+    if (cond) whereBase.push(cond);
+  }
   whereBase.push(isNull(schema.excecao.aceitaEm));
 
   // Contagens por tipo (sem filtro de tipo). Join com pagamento pra filtros
@@ -143,6 +156,10 @@ export default async function ExcecoesPage(props: {
     })
     .from(schema.excecao)
     .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
+    .leftJoin(
+      schema.vendaAdquirente,
+      eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+    )
     .where(and(...whereBase))
     .groupBy(schema.excecao.tipo);
 
@@ -160,6 +177,10 @@ export default async function ExcecoesPage(props: {
     .select({ n: sql<number>`COUNT(*)::int` })
     .from(schema.excecao)
     .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
+    .leftJoin(
+      schema.vendaAdquirente,
+      eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+    )
     .where(and(...whereList));
   const totalFiltrado = Number(totalFiltradoRow?.n ?? 0);
 
@@ -179,6 +200,10 @@ export default async function ExcecoesPage(props: {
     })
     .from(schema.excecao)
     .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
+    .leftJoin(
+      schema.vendaAdquirente,
+      eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+    )
     .innerJoin(schema.filial, eq(schema.filial.id, schema.excecao.filialId))
     .where(and(...whereList))
     .orderBy(desc(schema.excecao.detectadoEm))

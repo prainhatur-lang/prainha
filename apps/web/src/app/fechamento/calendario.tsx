@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 interface Props {
@@ -113,12 +114,11 @@ export function Calendario({ mes, filialId, processo, isAdmin, diasFechados, sta
           const excs = stats[d];
           const temExc = excs && excs.qtd > 0;
           const ativa = selecao.has(d);
+          const hrefExc = `/excecoes?filialId=${filialId}&processo=${processo}&dataTrans=${d}`;
           return (
-            <button
+            <div
               key={d}
-              onClick={() => toggle(d)}
-              disabled={!isAdmin}
-              className={`flex h-16 flex-col items-center justify-center rounded-md border p-1 text-xs transition ${
+              className={`relative flex h-20 flex-col rounded-md border transition ${
                 ativa
                   ? 'border-sky-600 bg-sky-100'
                   : fechado
@@ -126,17 +126,35 @@ export function Calendario({ mes, filialId, processo, isAdmin, diasFechados, sta
                     : temExc
                       ? 'border-amber-300 bg-amber-50 text-amber-900'
                       : 'border-emerald-200 bg-emerald-50 text-emerald-800'
-              } ${isAdmin ? 'cursor-pointer hover:shadow' : 'cursor-default'}`}
+              }`}
             >
-              <span className="font-semibold">{d.slice(-2)}</span>
-              {fechado ? (
-                <span className="text-[10px]">🔒 fechado</span>
-              ) : temExc ? (
-                <span className="text-[10px]">⚠ {excs.qtd}</span>
-              ) : (
-                <span className="text-[10px]">✓</span>
+              <button
+                onClick={() => toggle(d)}
+                disabled={!isAdmin}
+                className={`flex flex-1 flex-col items-center justify-center p-1 text-xs ${
+                  isAdmin ? 'cursor-pointer hover:shadow' : 'cursor-default'
+                }`}
+                title={isAdmin ? 'Clique para selecionar' : ''}
+              >
+                <span className="font-semibold">{d.slice(-2)}</span>
+                {fechado ? (
+                  <span className="text-[10px]">🔒 fechado</span>
+                ) : temExc ? (
+                  <span className="text-[10px]">⚠ {excs.qtd}</span>
+                ) : (
+                  <span className="text-[10px]">✓</span>
+                )}
+              </button>
+              {temExc && (
+                <Link
+                  href={hrefExc}
+                  className="border-t border-amber-200 bg-white/60 py-0.5 text-center text-[10px] font-medium text-amber-900 hover:bg-white"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  Ver →
+                </Link>
               )}
-            </button>
+            </div>
           );
         })}
       </div>
