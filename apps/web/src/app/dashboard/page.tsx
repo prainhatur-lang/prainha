@@ -400,9 +400,11 @@ function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
     text: 'text-slate-900',
   };
   const pctDoTotal = total > 0 ? (cat.valorBruto / total) * 100 : 0;
+  const pctConciliado = cat.valorBruto > 0 ? (cat.valorConciliado / cat.valorBruto) * 100 : 0;
   const taxaMediaPct =
     cat.valorBrutoRastreado > 0 ? (cat.valorTaxa / cat.valorBrutoRastreado) * 100 : 0;
   const liquido = cat.valorBruto - cat.valorTaxa;
+  const ehDinheiro = cat.categoria === 'Dinheiro';
   return (
     <div className={`rounded-xl border p-5 shadow-sm ${cor.bg}`}>
       <div className="flex items-center justify-between">
@@ -417,7 +419,43 @@ function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
       </div>
 
       <div className="mt-4 space-y-1 border-t border-white/60 pt-3 text-xs">
-        <div className="flex justify-between">
+        {!ehDinheiro && (
+          <>
+            <div className="flex justify-between">
+              <span className="text-slate-600">Conciliado</span>
+              <span
+                className={`font-mono font-semibold ${
+                  pctConciliado >= 95
+                    ? 'text-emerald-700'
+                    : pctConciliado >= 80
+                      ? 'text-amber-700'
+                      : 'text-rose-700'
+                }`}
+              >
+                {pctConciliado.toFixed(1)}%
+              </span>
+            </div>
+            <div className="mb-1 h-1 overflow-hidden rounded-full bg-white/60">
+              <div
+                className={`h-full ${
+                  pctConciliado >= 95
+                    ? 'bg-emerald-500'
+                    : pctConciliado >= 80
+                      ? 'bg-amber-500'
+                      : 'bg-rose-500'
+                }`}
+                style={{ width: `${Math.min(100, pctConciliado)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[11px] text-slate-500">
+              <span>
+                {int(cat.qtdConciliada)} de {int(cat.qtd)} transações
+              </span>
+              <span>{brl(cat.valorBruto - cat.valorConciliado)} pendente</span>
+            </div>
+          </>
+        )}
+        <div className="flex justify-between pt-1">
           <span className="text-slate-600">Taxa média</span>
           <span className="font-mono font-medium text-slate-900">
             {taxaMediaPct > 0 ? `${taxaMediaPct.toFixed(2)}%` : '—'}
@@ -433,16 +471,6 @@ function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
           <span className="text-slate-600">Líquido estimado</span>
           <span className="font-mono font-medium text-emerald-700">{brl(liquido)}</span>
         </div>
-        {cat.qtdRastreada < cat.qtd && cat.qtdRastreada > 0 && (
-          <p className="mt-1 text-[10px] text-slate-500">
-            Taxa média baseada em {int(cat.qtdRastreada)} de {int(cat.qtd)} transações rastreadas.
-          </p>
-        )}
-        {cat.qtdRastreada === 0 && cat.qtd > 0 && (
-          <p className="mt-1 text-[10px] text-slate-500">
-            Sem vendas rastreadas — sem dados de taxa real.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -482,7 +510,10 @@ interface CategoriaStats {
   categoria: 'Pix' | 'Crédito' | 'Débito' | 'Dinheiro' | 'Outro';
   valorBruto: number;
   qtd: number;
-  // Dos matches com Cielo:
+  /** Valor PDV que bateu com Cielo (usado pra % conciliado). */
+  valorConciliado: number;
+  qtdConciliada: number;
+  /** Valor bruto das vendas Cielo matched (usado pra calcular taxa real). */
   valorBrutoRastreado: number;
   valorTaxa: number; // absoluto (>0)
   qtdRastreada: number;
@@ -632,12 +663,28 @@ async function carregarDados(
   }
   const recebidoPct = recebidoTotal > 0 ? (recebidoValor / recebidoTotal) * 100 : null;
 
-  // Agregado PDV por categoria (Pix / Crédito / Débito / Dinheiro / Outro)
+  // Agregado PDV por categoria (com flag "bateu com Cielo" pra calcular % conciliado)
   const pdvCat = await db
     .select({
       forma: schema.pagamento.formaPagamento,
       valor: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
       qtd: sql<number>`COUNT(*)::int`,
+      valorConciliado: sql<string>`
+        COALESCE(SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM venda_adquirente v
+          WHERE v.filial_id = ${schema.pagamento.filialId}
+            AND v.nsu = ${schema.pagamento.nsuTransacao}
+            AND v.data_venda BETWEEN ${isoIniCielo} AND ${isoFimCielo}
+        ) THEN ${schema.pagamento.valor} ELSE 0 END), 0)::text
+      `,
+      qtdConciliada: sql<number>`
+        COUNT(*) FILTER (WHERE EXISTS (
+          SELECT 1 FROM venda_adquirente v
+          WHERE v.filial_id = ${schema.pagamento.filialId}
+            AND v.nsu = ${schema.pagamento.nsuTransacao}
+            AND v.data_venda BETWEEN ${isoIniCielo} AND ${isoFimCielo}
+        ))::int
+      `,
     })
     .from(schema.pagamento)
     .where(
@@ -695,6 +742,8 @@ async function carregarDados(
         categoria: c,
         valorBruto: 0,
         qtd: 0,
+        valorConciliado: 0,
+        qtdConciliada: 0,
         valorBrutoRastreado: 0,
         valorTaxa: 0,
         qtdRastreada: 0,
@@ -707,6 +756,8 @@ async function carregarDados(
     const c = garantir(categoriaDe(p.forma));
     c.valorBruto += Number(p.valor);
     c.qtd += Number(p.qtd);
+    c.valorConciliado += Number(p.valorConciliado);
+    c.qtdConciliada += Number(p.qtdConciliada);
   }
   for (const v of cieloCatRows) {
     const c = garantir(categoriaDe(v.forma));
