@@ -221,9 +221,15 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
                 <span className="text-xs text-slate-500">Bruto total:</span>{' '}
                 <span className="font-mono font-semibold text-slate-900">{brl(dados.totais.bruto)}</span>
               </div>
-              <div>
+              <div className="flex items-center gap-1.5">
                 <span className="text-xs text-slate-500">Taxas descontadas:</span>{' '}
                 <span className="font-mono font-semibold text-rose-700">−{brl(dados.totais.taxa)}</span>
+                <span
+                  title="Soma real das taxas do arquivo Cielo (coluna 'Valor Taxa/Tarifa'), apenas das vendas que bateram por NSU com o PDV. Vendas ainda não rastreadas não entram neste número."
+                  className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-bold text-slate-500"
+                >
+                  i
+                </span>
               </div>
               <div>
                 <span className="text-xs text-slate-500">Líquido estimado:</span>{' '}
