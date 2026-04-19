@@ -543,7 +543,7 @@ interface DadosDashboard {
   recebidoValor: number;
   excecoesAbertas: { qtd: number; valor: number };
   serie: Array<{ dia: string; valor: number }>;
-  porForma: Array<{ forma: string; valor: number }>;
+  porForma: Array<{ forma: string; valor: number; taxa: number }>;
   categorias: CategoriaStats[];
   totais: {
     bruto: number;
