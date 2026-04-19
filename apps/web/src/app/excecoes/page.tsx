@@ -108,10 +108,20 @@ export default async function ExcecoesPage(props: {
     whereBase.push(eq(schema.excecao.severidade, sp.severidade));
   }
   if (sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni)) {
-    whereBase.push(gte(schema.excecao.detectadoEm, new Date(sp.dataIni + 'T00:00:00-03:00')));
+    const dIni = new Date(sp.dataIni + 'T00:00:00-03:00');
+    const cond = or(
+      sql`${schema.pagamento.dataPagamento} >= ${dIni}`,
+      sql`${schema.vendaAdquirente.dataVenda} >= ${sp.dataIni}`,
+    );
+    if (cond) whereBase.push(cond);
   }
   if (sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)) {
-    whereBase.push(lte(schema.excecao.detectadoEm, new Date(sp.dataFim + 'T23:59:59-03:00')));
+    const dFim = new Date(sp.dataFim + 'T23:59:59-03:00');
+    const cond = or(
+      sql`${schema.pagamento.dataPagamento} <= ${dFim}`,
+      sql`${schema.vendaAdquirente.dataVenda} <= ${sp.dataFim}`,
+    );
+    if (cond) whereBase.push(cond);
   }
   if (sp.q && sp.q.trim()) {
     const q = sp.q.trim();

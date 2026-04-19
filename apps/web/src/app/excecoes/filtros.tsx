@@ -69,6 +69,37 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
     startTransition(() => router.push('/excecoes'));
   }
 
+  function aplicarPeriodo(dias: number | null) {
+    const qs = new URLSearchParams(params.toString());
+    if (dias === null) {
+      qs.delete('dataIni');
+      qs.delete('dataFim');
+    } else {
+      const hoje = new Date();
+      const brNow = new Date(hoje.getTime() - 3 * 60 * 60 * 1000);
+      const fim = brNow.toISOString().slice(0, 10);
+      const brIni = new Date(brNow);
+      brIni.setUTCDate(brIni.getUTCDate() - dias);
+      const ini = brIni.toISOString().slice(0, 10);
+      qs.set('dataIni', ini);
+      qs.set('dataFim', fim);
+    }
+    qs.delete('page');
+    startTransition(() => router.push(`/excecoes?${qs.toString()}`));
+  }
+
+  const periodoAtivo = (dias: number | null) => {
+    if (dias === null) return !sp.dataIni && !sp.dataFim;
+    if (!sp.dataIni || !sp.dataFim) return false;
+    const hoje = new Date();
+    const brNow = new Date(hoje.getTime() - 3 * 60 * 60 * 1000);
+    const fim = brNow.toISOString().slice(0, 10);
+    const brIni = new Date(brNow);
+    brIni.setUTCDate(brIni.getUTCDate() - dias);
+    const ini = brIni.toISOString().slice(0, 10);
+    return sp.dataIni === ini && sp.dataFim === fim;
+  };
+
   function onProcessoChange(v: string) {
     const qs = new URLSearchParams(params.toString());
     if (v) qs.set('processo', v);
@@ -90,8 +121,40 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
     sp.valorMax ||
     sp.forma;
 
+  const PERIODOS: Array<{ label: string; dias: number | null }> = [
+    { label: 'Hoje', dias: 0 },
+    { label: '7d', dias: 7 },
+    { label: '30d', dias: 30 },
+    { label: '90d', dias: 90 },
+    { label: 'Tudo', dias: null },
+  ];
+
   return (
     <div className="flex flex-col gap-2 text-sm">
+      {/* Linha 0: pills de periodo */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          Período:
+        </span>
+        {PERIODOS.map((p) => {
+          const ativo = periodoAtivo(p.dias);
+          return (
+            <button
+              key={p.label}
+              onClick={() => aplicarPeriodo(p.dias)}
+              disabled={pending}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+                ativo
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Linha 1: filial, processo, severidade, forma */}
       <div className="flex flex-wrap items-center gap-2">
         <select
