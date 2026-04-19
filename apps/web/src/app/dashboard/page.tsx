@@ -257,7 +257,7 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Por forma de pagamento</h2>
                 <p className="text-xs text-slate-500">Todas as formas, incluindo dinheiro</p>
-                <div className="mt-4 space-y-1.5">
+                <div className="mt-4 space-y-2">
                   {dados.porForma.map((f) => {
                     const pct = dados.totais.bruto > 0 ? (f.valor / dados.totais.bruto) * 100 : 0;
                     return (
@@ -272,6 +272,11 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
                             style={{ width: `${pct}%` }}
                           />
                         </div>
+                        {f.taxa > 0 && (
+                          <p className="mt-0.5 text-[11px] text-rose-700">
+                            Taxa real descontada: <span className="font-mono">−{brl(f.taxa)}</span>
+                          </p>
+                        )}
                       </div>
                     );
                   })}
@@ -462,19 +467,27 @@ function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
           </>
         )}
         <div className="flex justify-between pt-1">
-          <span className="text-slate-600">Taxa média</span>
+          <span className="flex items-center gap-1 text-slate-600">
+            Taxa real
+            <span
+              title="% efetivo descontado no arquivo Cielo = soma(valor_taxa) / soma(valor_bruto) das vendas rastreadas."
+              className="inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-slate-300 bg-white/80 text-[9px] font-bold text-slate-500"
+            >
+              i
+            </span>
+          </span>
           <span className="font-mono font-medium text-slate-900">
             {taxaMediaPct > 0 ? `${taxaMediaPct.toFixed(2)}%` : '—'}
           </span>
         </div>
         <div className="flex justify-between">
-          <span className="text-slate-600">Valor da taxa</span>
+          <span className="text-slate-600">Descontado</span>
           <span className="font-mono font-medium text-rose-700">
             {cat.valorTaxa > 0 ? `−${brl(cat.valorTaxa)}` : '—'}
           </span>
         </div>
         <div className="flex justify-between border-t border-white/60 pt-1">
-          <span className="text-slate-600">Líquido estimado</span>
+          <span className="text-slate-600">Líquido</span>
           <span className="font-mono font-medium text-emerald-700">{brl(liquido)}</span>
         </div>
       </div>
@@ -483,25 +496,21 @@ function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
 }
 
 function GraficoBarras({ serie }: { serie: Array<{ dia: string; valor: number }> }) {
-  if (serie.length === 0) {
+  if (serie.length === 0 || serie.every((s) => s.valor === 0)) {
     return <p className="text-xs text-slate-500">Sem dados no período.</p>;
   }
   const max = Math.max(...serie.map((s) => s.valor));
   return (
     <div className="flex h-40 items-end gap-0.5 overflow-x-auto">
       {serie.map((s) => {
-        const h = max > 0 ? Math.max(2, (s.valor / max) * 100) : 0;
+        const h = max > 0 && s.valor > 0 ? Math.max(4, (s.valor / max) * 100) : 0;
         return (
           <div
             key={s.dia}
-            className="group relative flex min-w-[8px] flex-1 flex-col items-center"
             title={`${s.dia.split('-').reverse().join('/')}: ${brl(s.valor)}`}
-          >
-            <div
-              className="w-full rounded-t bg-sky-500 transition group-hover:bg-sky-600"
-              style={{ height: `${h}%` }}
-            />
-          </div>
+            style={{ height: `${h}%` }}
+            className="min-w-[8px] flex-1 rounded-t bg-sky-500 transition hover:bg-sky-600"
+          />
         );
       })}
     </div>
@@ -629,8 +638,41 @@ async function carregarDados(
       ),
     )
     .groupBy(schema.pagamento.formaPagamento);
+
+  // Taxa real por forma (via match Cielo × PDV)
+  const taxaPorForma = new Map<string, number>();
+  const taxaRows = await db
+    .select({
+      forma: sql<string>`COALESCE(${schema.pagamento.formaPagamento}, 'sem forma')`,
+      taxa: sql<string>`COALESCE(SUM(ABS(${schema.vendaAdquirente.valorTaxa})), 0)::text`,
+    })
+    .from(schema.vendaAdquirente)
+    .innerJoin(
+      schema.pagamento,
+      and(
+        eq(schema.pagamento.filialId, schema.vendaAdquirente.filialId),
+        eq(schema.pagamento.nsuTransacao, schema.vendaAdquirente.nsu),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .where(
+      and(
+        inArray(schema.vendaAdquirente.filialId, filialIds),
+        eq(schema.vendaAdquirente.adquirente, 'CIELO'),
+        gte(schema.vendaAdquirente.dataVenda, isoIniCielo),
+        lte(schema.vendaAdquirente.dataVenda, isoFimCielo),
+      ),
+    )
+    .groupBy(schema.pagamento.formaPagamento);
+  for (const r of taxaRows) taxaPorForma.set(r.forma, Number(r.taxa));
+
   const porForma = formaRows
-    .map((r) => ({ forma: r.forma, valor: Number(r.valor) }))
+    .map((r) => ({
+      forma: r.forma,
+      valor: Number(r.valor),
+      taxa: taxaPorForma.get(r.forma) ?? 0,
+    }))
     .sort((a, b) => b.valor - a.valor);
 
   // Exceções abertas
