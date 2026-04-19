@@ -1,59 +1,108 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
-import { filiaisDoUsuario, syncStats } from '@/lib/filiais';
-import { brl, int, relativeTime, statusFromPing } from '@/lib/format';
+import { filiaisDoUsuario } from '@/lib/filiais';
+import { db, schema } from '@concilia/db';
+import { and, desc, eq, gte, inArray, isNull, lte, ne, notInArray, sql } from 'drizzle-orm';
+import { brl, formatDateTime, int, relativeTime, statusFromPing } from '@/lib/format';
 import { LogoutButton } from './logout-button';
 
 export const dynamic = 'force-dynamic';
 
-export default async function DashboardPage() {
+interface SP {
+  filialId?: string;
+  periodo?: string;
+}
+
+type Periodo = '1m' | '3m' | '6m';
+const PERIODOS: Periodo[] = ['1m', '3m', '6m'];
+const PERIODO_LABEL: Record<Periodo, string> = {
+  '1m': '1 mês',
+  '3m': '3 meses',
+  '6m': '6 meses',
+};
+const PERIODO_MESES: Record<Periodo, number> = { '1m': 1, '3m': 3, '6m': 6 };
+
+function rangeDoPeriodo(p: Periodo): { dataInicio: string; dataFim: string; dtIni: Date; dtFim: Date } {
+  const dtFim = new Date();
+  dtFim.setHours(23, 59, 59, 999);
+  const dtIni = new Date(dtFim);
+  dtIni.setMonth(dtIni.getMonth() - PERIODO_MESES[p]);
+  dtIni.setHours(0, 0, 0, 0);
+  return {
+    dtIni,
+    dtFim,
+    dataInicio: dtIni.toISOString().slice(0, 10),
+    dataFim: dtFim.toISOString().slice(0, 10),
+  };
+}
+
+const FORMAS_OPERADORA = ['Dinheiro', 'Voucher', 'iFood Online'];
+
+export default async function DashboardPage(props: { searchParams: Promise<SP> }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
 
+  const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);
-  const statsList = await Promise.all(filiais.map((f) => syncStats(f.id)));
+  const filialIds = filiais.map((f) => f.id);
 
-  const totalPagamentos = statsList.reduce((s, x) => s + x.totalPagamentos, 0);
-  const totalValor = statsList.reduce((s, x) => s + Number(x.valorTotal), 0);
-  const filiaisOnline = filiais.filter((f) => statusFromPing(f.ultimoPing) === 'online').length;
+  const filialFiltro =
+    sp.filialId && filialIds.includes(sp.filialId) ? [sp.filialId] : filialIds;
+  const periodo: Periodo = (PERIODOS as readonly string[]).includes(sp.periodo ?? '')
+    ? (sp.periodo as Periodo)
+    : '1m';
+  const range = rangeDoPeriodo(periodo);
+
+  // ---- KPIs + dados de grafico ----
+  const dados = filialFiltro.length
+    ? await carregarDados(filialFiltro, range.dtIni, range.dtFim)
+    : null;
+
+  // ---- Ultimas execucoes por processo ----
+  const ultimasExec = filialIds.length
+    ? await db
+        .select()
+        .from(schema.execucaoConciliacao)
+        .where(
+          and(
+            inArray(schema.execucaoConciliacao.filialId, filialFiltro),
+            eq(schema.execucaoConciliacao.status, 'OK'),
+          ),
+        )
+        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
+        .limit(6)
+    : [];
+
+  const filialMap = new Map(filiais.map((f) => [f.id, f]));
+
+  const hrefFiltro = (novo: Partial<SP>) => {
+    const qs = new URLSearchParams();
+    const filialAtual = novo.filialId ?? sp.filialId;
+    const periodoAtual = novo.periodo ?? sp.periodo ?? periodo;
+    if (filialAtual) qs.set('filialId', filialAtual);
+    if (periodoAtual) qs.set('periodo', periodoAtual);
+    return `/dashboard?${qs.toString()}`;
+  };
 
   return (
     <main className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-6">
             <Link href="/dashboard" className="text-lg font-semibold text-slate-900">
               concilia
             </Link>
             <nav className="flex items-center gap-4 text-sm">
-              <Link href="/dashboard" className="font-medium text-slate-900">
-                Dashboard
-              </Link>
-              <Link href="/sync" className="text-slate-600 hover:text-slate-900">
-                Sincronização
-              </Link>
-              <Link href="/upload" className="text-slate-600 hover:text-slate-900">
-                Upload
-              </Link>
-              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">
-                Conciliação
-              </Link>
-              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">
-                Relatório
-              </Link>
-              <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
-                Exceções
-              </Link>
-              <Link href="/fechamento" className="text-slate-600 hover:text-slate-900">
-                Fechamento
-              </Link>
-              <Link href="/configuracoes" className="text-slate-600 hover:text-slate-900">
-                Configurações
-              </Link>
+              <Link href="/dashboard" className="font-medium text-slate-900">Dashboard</Link>
+              <Link href="/sync" className="text-slate-600 hover:text-slate-900">Sincronização</Link>
+              <Link href="/upload" className="text-slate-600 hover:text-slate-900">Upload</Link>
+              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">Conciliação</Link>
+              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">Relatório</Link>
+              <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">Exceções</Link>
+              <Link href="/fechamento" className="text-slate-600 hover:text-slate-900">Fechamento</Link>
+              <Link href="/configuracoes" className="text-slate-600 hover:text-slate-900">Configurações</Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -63,114 +112,418 @@ export default async function DashboardPage() {
         </div>
       </header>
 
-      <section className="mx-auto max-w-6xl px-6 py-10">
-        <h1 className="text-2xl font-bold text-slate-900">Visão geral</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Resumo das suas {filiais.length} {filiais.length === 1 ? 'filial' : 'filiais'}
-        </p>
-
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <KpiCard label="Pagamentos sincronizados" value={int(totalPagamentos)} />
-          <KpiCard label="Total movimentado" value={brl(totalValor)} />
-          <KpiCard
-            label="Filiais online"
-            value={`${filiaisOnline} / ${filiais.length}`}
-            tone={filiaisOnline === filiais.length ? 'green' : 'amber'}
-          />
-        </div>
-
-        <h2 className="mt-10 text-lg font-semibold text-slate-900">Filiais</h2>
-        <div className="mt-4 grid grid-cols-1 gap-3">
-          {filiais.map((f) => {
-            const s = statsList.find((x) => x.filialId === f.id)!;
-            const status = statusFromPing(f.ultimoPing);
-            return (
+      <section className="mx-auto max-w-7xl px-6 py-10">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Visão geral</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Últimos {PERIODO_LABEL[periodo]} — {range.dataInicio.split('-').reverse().join('/')} a{' '}
+              {range.dataFim.split('-').reverse().join('/')}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-500">Filial:</span>
+            <Link
+              href={hrefFiltro({ filialId: '' })}
+              className={`rounded-md border px-3 py-1 text-xs ${
+                !sp.filialId
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Todas
+            </Link>
+            {filiais.map((f) => (
               <Link
                 key={f.id}
-                href="/sync"
-                className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm transition hover:border-slate-300"
+                href={hrefFiltro({ filialId: f.id })}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  sp.filialId === f.id
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
               >
-                <div className="flex items-center gap-3">
-                  <span
-                    className={`h-2.5 w-2.5 rounded-full ${
-                      status === 'online'
-                        ? 'bg-emerald-500'
-                        : status === 'warn'
-                          ? 'bg-amber-500'
-                          : status === 'offline'
-                            ? 'bg-rose-500'
-                            : 'bg-slate-400'
-                    }`}
-                  />
-                  <div>
-                    <p className="font-medium text-slate-900">{f.nome}</p>
-                    <p className="text-xs text-slate-500">
-                      último ping {relativeTime(f.ultimoPing)} · {int(s.totalPagamentos)} pgtos · {brl(s.valorTotal)}
-                    </p>
-                  </div>
-                </div>
-                <span className="text-xs text-slate-400">→</span>
+                {f.nome.replace('Prainha Turismo - ', '')}
               </Link>
-            );
-          })}
-        </div>
-
-        <div className="mt-12 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-sm font-semibold text-slate-900">Roadmap</h3>
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <RoadmapCard title="Fase 1" desc="Agente local + ingestão" status="ok" />
-            <RoadmapCard title="Fase 2" desc="Upload Cielo + CNAB" status="ok" />
-            <RoadmapCard title="Fase 3" desc="Engine de conciliação" status="atual" />
+            ))}
+            <span className="ml-4 text-xs text-slate-500">Período:</span>
+            {PERIODOS.map((p) => (
+              <Link
+                key={p}
+                href={hrefFiltro({ periodo: p })}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  p === periodo
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {PERIODO_LABEL[p]}
+              </Link>
+            ))}
           </div>
         </div>
+
+        {!dados ? (
+          <p className="mt-10 text-sm text-slate-500">Nenhuma filial acessível.</p>
+        ) : (
+          <>
+            {/* KPIs */}
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiCard
+                label="Total vendido"
+                value={brl(dados.totalVendas)}
+                sub={`${int(dados.qtdVendas)} transações (s/ dinheiro)`}
+              />
+              <KpiCard
+                label="Rastreado na Cielo"
+                value={`${dados.pctRastreado.toFixed(1)}%`}
+                sub={`${brl(dados.valorRastreado)} de ${brl(dados.totalVendas)}`}
+                tone={dados.pctRastreado >= 95 ? 'green' : dados.pctRastreado >= 80 ? 'amber' : 'red'}
+              />
+              <KpiCard
+                label="Recebido no banco"
+                value={
+                  dados.recebidoPct != null ? `${dados.recebidoPct.toFixed(1)}%` : '—'
+                }
+                sub={
+                  dados.recebidoPct != null
+                    ? `${brl(dados.recebidoValor)} caíram`
+                    : 'Rode conciliação Banco'
+                }
+                tone={
+                  dados.recebidoPct == null
+                    ? 'slate'
+                    : dados.recebidoPct >= 95
+                      ? 'green'
+                      : 'amber'
+                }
+              />
+              <KpiCard
+                label="Exceções em aberto"
+                value={int(dados.excecoesAbertas.qtd)}
+                sub={brl(dados.excecoesAbertas.valor)}
+                tone={dados.excecoesAbertas.qtd === 0 ? 'green' : 'amber'}
+              />
+            </div>
+
+            {/* Chart + forma breakdown */}
+            <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Movimento diário</h2>
+                <p className="text-xs text-slate-500">Volume vendido por dia</p>
+                <div className="mt-4">
+                  <GraficoBarras serie={dados.serie} />
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Por forma de pagamento</h2>
+                <p className="text-xs text-slate-500">Incluindo dinheiro no total</p>
+                <div className="mt-4 space-y-2">
+                  {dados.porForma.map((f) => (
+                    <div key={f.forma} className="flex items-center justify-between text-sm">
+                      <span className="text-slate-700">{f.forma}</span>
+                      <span className="font-mono text-slate-900">{brl(f.valor)}</span>
+                    </div>
+                  ))}
+                  {dados.porForma.length === 0 && (
+                    <p className="text-xs text-slate-500">Sem dados no período.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Ultimas execucoes + filiais */}
+            <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Últimas execuções</h2>
+                {ultimasExec.length === 0 ? (
+                  <p className="mt-3 text-xs text-slate-500">Nenhuma execução ainda.</p>
+                ) : (
+                  <ul className="mt-3 space-y-2">
+                    {ultimasExec.map((e) => {
+                      const fil = filialMap.get(e.filialId);
+                      const proc = e.processo ?? 'legado';
+                      const procLabel =
+                        proc === 'OPERADORA'
+                          ? 'Operadora'
+                          : proc === 'RECEBIVEIS'
+                            ? 'Recebíveis'
+                            : proc === 'BANCO'
+                              ? 'Banco'
+                              : proc;
+                      return (
+                        <li
+                          key={e.id}
+                          className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-xs"
+                        >
+                          <div>
+                            <p className="font-medium text-slate-800">
+                              {procLabel} · {fil?.nome.replace('Prainha Turismo - ', '') ?? ''}
+                            </p>
+                            <p className="text-slate-500">{formatDateTime(e.finalizadoEm ?? e.iniciadoEm)}</p>
+                          </div>
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
+                            {e.status}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Filiais</h2>
+                <ul className="mt-3 space-y-2">
+                  {filiais.map((f) => {
+                    const status = statusFromPing(f.ultimoPing);
+                    return (
+                      <li
+                        key={f.id}
+                        className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`h-2 w-2 rounded-full ${
+                              status === 'online'
+                                ? 'bg-emerald-500'
+                                : status === 'warn'
+                                  ? 'bg-amber-500'
+                                  : status === 'offline'
+                                    ? 'bg-rose-500'
+                                    : 'bg-slate-400'
+                            }`}
+                          />
+                          <span className="font-medium text-slate-800">
+                            {f.nome.replace('Prainha Turismo - ', '')}
+                          </span>
+                        </div>
+                        <span className="text-slate-500">
+                          último ping {relativeTime(f.ultimoPing)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </div>
+          </>
+        )}
       </section>
     </main>
   );
 }
 
+// ---------------------------------------------------------------------------
+// KPI / gráfico
+// ---------------------------------------------------------------------------
+
 function KpiCard({
   label,
   value,
+  sub,
   tone = 'slate',
 }: {
   label: string;
   value: string;
-  tone?: 'slate' | 'green' | 'amber';
+  sub?: string;
+  tone?: 'slate' | 'green' | 'amber' | 'red';
 }) {
   const tones = {
     slate: 'bg-white border-slate-200',
     green: 'bg-emerald-50 border-emerald-200',
     amber: 'bg-amber-50 border-amber-200',
-  } as const;
+    red: 'bg-rose-50 border-rose-200',
+  };
   return (
-    <div className={`rounded-xl border p-5 shadow-sm ${tones[tone]}`}>
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-slate-900">{value}</p>
+    <div className={`rounded-xl border p-4 shadow-sm ${tones[tone]}`}>
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-600">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-slate-900">{value}</p>
+      {sub && <p className="mt-0.5 text-xs text-slate-500">{sub}</p>}
     </div>
   );
 }
 
-function RoadmapCard({ title, desc, status }: { title: string; desc: string; status?: string }) {
-  const isAtual = status === 'atual';
-  const isOk = status === 'ok';
+function GraficoBarras({ serie }: { serie: Array<{ dia: string; valor: number }> }) {
+  if (serie.length === 0) {
+    return <p className="text-xs text-slate-500">Sem dados no período.</p>;
+  }
+  const max = Math.max(...serie.map((s) => s.valor));
   return (
-    <div
-      className={`rounded-lg border px-4 py-3 ${
-        isAtual
-          ? 'border-slate-900 bg-slate-900 text-white'
-          : isOk
-            ? 'border-emerald-200 bg-emerald-50'
-            : 'border-slate-200 bg-slate-50'
-      }`}
-    >
-      <p
-        className={`text-xs font-semibold uppercase tracking-wide ${
-          isAtual ? 'text-slate-300' : isOk ? 'text-emerald-700' : 'text-slate-500'
-        }`}
-      >
-        {title} {status && <span className="ml-1 normal-case">({isOk ? '✓ pronto' : status})</span>}
-      </p>
-      <p className={`mt-1 text-sm ${isAtual ? 'text-white' : 'text-slate-700'}`}>{desc}</p>
+    <div className="flex h-40 items-end gap-0.5 overflow-x-auto">
+      {serie.map((s) => {
+        const h = max > 0 ? Math.max(2, (s.valor / max) * 100) : 0;
+        return (
+          <div
+            key={s.dia}
+            className="group relative flex min-w-[8px] flex-1 flex-col items-center"
+            title={`${s.dia.split('-').reverse().join('/')}: ${brl(s.valor)}`}
+          >
+            <div
+              className="w-full rounded-t bg-sky-500 transition group-hover:bg-sky-600"
+              style={{ height: `${h}%` }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+interface DadosDashboard {
+  totalVendas: number;
+  qtdVendas: number;
+  valorRastreado: number;
+  pctRastreado: number;
+  recebidoPct: number | null;
+  recebidoValor: number;
+  excecoesAbertas: { qtd: number; valor: number };
+  serie: Array<{ dia: string; valor: number }>;
+  porForma: Array<{ forma: string; valor: number }>;
+}
+
+async function carregarDados(
+  filialIds: string[],
+  dtIni: Date,
+  dtFim: Date,
+): Promise<DadosDashboard> {
+  const isoIni = dtIni.toISOString().slice(0, 10);
+  const isoFim = dtFim.toISOString().slice(0, 10);
+
+  // janela Cielo ±1 dia
+  const dtIniCielo = new Date(dtIni);
+  dtIniCielo.setDate(dtIniCielo.getDate() - 1);
+  const dtFimCielo = new Date(dtFim);
+  dtFimCielo.setDate(dtFimCielo.getDate() + 1);
+  const isoIniCielo = dtIniCielo.toISOString().slice(0, 10);
+  const isoFimCielo = dtFimCielo.toISOString().slice(0, 10);
+
+  const [totalRow] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+      qtd: sql<number>`COUNT(*)::int`,
+      rastreado: sql<string>`
+        COALESCE(SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM venda_adquirente v
+          WHERE v.filial_id = ${schema.pagamento.filialId}
+            AND v.nsu = ${schema.pagamento.nsuTransacao}
+            AND v.data_venda BETWEEN ${isoIniCielo} AND ${isoFimCielo}
+        ) THEN ${schema.pagamento.valor} ELSE 0 END), 0)::text
+      `,
+    })
+    .from(schema.pagamento)
+    .where(
+      and(
+        inArray(schema.pagamento.filialId, filialIds),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+        notInArray(schema.pagamento.formaPagamento, FORMAS_OPERADORA),
+        ne(schema.pagamento.formaPagamento, ''),
+      ),
+    );
+
+  const totalVendas = Number(totalRow?.total ?? 0);
+  const qtdVendas = Number(totalRow?.qtd ?? 0);
+  const valorRastreado = Number(totalRow?.rastreado ?? 0);
+  const pctRastreado = totalVendas > 0 ? (valorRastreado / totalVendas) * 100 : 0;
+
+  // Serie diária
+  const serieRows = await db
+    .select({
+      dia: sql<string>`TO_CHAR(${schema.pagamento.dataPagamento} AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD')`,
+      valor: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+    })
+    .from(schema.pagamento)
+    .where(
+      and(
+        inArray(schema.pagamento.filialId, filialIds),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .groupBy(sql`1`)
+    .orderBy(sql`1`);
+
+  const serieMap = new Map(serieRows.map((r) => [r.dia, Number(r.valor)]));
+  const serie: Array<{ dia: string; valor: number }> = [];
+  const cur = new Date(dtIni);
+  while (cur <= dtFim) {
+    const iso = cur.toISOString().slice(0, 10);
+    serie.push({ dia: iso, valor: serieMap.get(iso) ?? 0 });
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  // Por forma (todas, incluindo dinheiro — mostrar quadro completo)
+  const formaRows = await db
+    .select({
+      forma: sql<string>`COALESCE(${schema.pagamento.formaPagamento}, 'sem forma')`,
+      valor: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+    })
+    .from(schema.pagamento)
+    .where(
+      and(
+        inArray(schema.pagamento.filialId, filialIds),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .groupBy(schema.pagamento.formaPagamento);
+  const porForma = formaRows
+    .map((r) => ({ forma: r.forma, valor: Number(r.valor) }))
+    .sort((a, b) => b.valor - a.valor);
+
+  // Exceções abertas
+  const [excRow] = await db
+    .select({
+      qtd: sql<number>`COUNT(*)::int`,
+      valor: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
+    })
+    .from(schema.excecao)
+    .where(
+      and(
+        inArray(schema.excecao.filialId, filialIds),
+        isNull(schema.excecao.aceitaEm),
+      ),
+    );
+
+  // Recebido no banco: pega última execução Banco OK por filial e soma
+  let recebidoValor = 0;
+  let recebidoTotal = 0;
+  for (const fid of filialIds) {
+    const [row] = await db
+      .select()
+      .from(schema.execucaoConciliacao)
+      .where(
+        and(
+          eq(schema.execucaoConciliacao.filialId, fid),
+          eq(schema.execucaoConciliacao.processo, 'BANCO'),
+          eq(schema.execucaoConciliacao.status, 'OK'),
+        ),
+      )
+      .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
+      .limit(1);
+    const r = row?.resumo as { conciliados?: { valor: number }; cieloNaoPago?: { valor: number } } | undefined;
+    recebidoValor += Number(r?.conciliados?.valor ?? 0);
+    recebidoTotal += Number(r?.conciliados?.valor ?? 0) + Number(r?.cieloNaoPago?.valor ?? 0);
+  }
+  const recebidoPct = recebidoTotal > 0 ? (recebidoValor / recebidoTotal) * 100 : null;
+
+  return {
+    totalVendas,
+    qtdVendas,
+    valorRastreado,
+    pctRastreado,
+    recebidoPct,
+    recebidoValor,
+    excecoesAbertas: {
+      qtd: Number(excRow?.qtd ?? 0),
+      valor: Number(excRow?.valor ?? 0),
+    },
+    serie,
+    porForma,
+  };
 }
