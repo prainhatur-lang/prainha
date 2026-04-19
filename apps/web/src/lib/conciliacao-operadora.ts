@@ -3,7 +3,8 @@
 
 import { db, schema } from '@concilia/db';
 import { matchPdvCielo } from '@concilia/conciliador/engine';
-import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { diasFechados } from './fechamento';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
@@ -73,8 +74,11 @@ export async function rodarConciliacaoOperadora(opts: {
     const dtIni = new Date(dataInicio + 'T00:00:00');
     const dtFim = new Date(dataFim + 'T23:59:59');
 
+    // Dias com fechamento: nao reprocessa
+    const fechados = await diasFechados(filialId, PROCESSO_OPERADORA, dataInicio, dataFim);
+
     // Carrega pagamentos do PDV no periodo
-    const pagamentos = await db
+    const pagamentosRaw = await db
       .select({
         id: schema.pagamento.id,
         nsu: schema.pagamento.nsuTransacao,
@@ -94,6 +98,11 @@ export async function rodarConciliacaoOperadora(opts: {
           notInArray(schema.pagamento.formaPagamento, FORMAS_EXCLUIR_OPERADORA),
         ),
       );
+    const pagamentos = pagamentosRaw.filter((p) => {
+      if (!p.dataPagamento) return true;
+      const iso = p.dataPagamento.toISOString().slice(0, 10);
+      return !fechados.has(iso);
+    });
 
     // Carrega vendas Cielo com janela de +-1 dia pra cobrir virada do dia
     // (venda PDV 23:50 pode aparecer na Cielo no dia seguinte)
@@ -144,17 +153,31 @@ export async function rodarConciliacaoOperadora(opts: {
       })),
     );
 
-    // Limpa excecoes abertas do mesmo processo pra esta filial.
-    // (Cada execucao substitui o estado inteiro — nao acumula com rodadas anteriores.)
-    await db
-      .delete(schema.excecao)
-      .where(
-        and(
-          eq(schema.excecao.filialId, filialId),
-          eq(schema.excecao.processo, PROCESSO_OPERADORA),
-          isNull(schema.excecao.aceitaEm),
-        ),
-      );
+    // IDs de pagamentos e vendas em scope (nao fechados). Usado pra preservar
+    // excecoes de dias fechados ao limpar o estado.
+    const pagamentoIdsScope = pagamentos.map((p) => p.id);
+    const vendaIdsScope = vendas.filter((v) => !fechados.has(v.dataVenda)).map((v) => v.id);
+
+    // Limpa excecoes abertas SOMENTE dos itens em scope (preserva dias fechados).
+    if (pagamentoIdsScope.length || vendaIdsScope.length) {
+      const orConds = [];
+      if (pagamentoIdsScope.length) {
+        orConds.push(inArray(schema.excecao.pagamentoId, pagamentoIdsScope));
+      }
+      if (vendaIdsScope.length) {
+        orConds.push(inArray(schema.excecao.vendaAdquirenteId, vendaIdsScope));
+      }
+      await db
+        .delete(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, filialId),
+            eq(schema.excecao.processo, PROCESSO_OPERADORA),
+            isNull(schema.excecao.aceitaEm),
+            orConds.length === 1 ? orConds[0] : or(...orConds),
+          ),
+        );
+    }
 
     // Monta excecoes
     const novasExcecoes: Array<typeof schema.excecao.$inferInsert> = [];
@@ -193,6 +216,7 @@ export async function rodarConciliacaoOperadora(opts: {
       if (!c.id) return true;
       const v = vendasPorId.get(c.id);
       if (!v) return true;
+      if (fechados.has(v.dataVenda)) return false; // venda em dia fechado nao vira excecao
       return v.dataVenda >= dataInicio && v.dataVenda <= dataFim;
     });
     for (const cielo of cieloSemPdvNoRange) {

@@ -46,6 +46,9 @@ export default async function SyncPage() {
               <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">
                 Exceções
               </Link>
+              <Link href="/fechamento" className="text-slate-600 hover:text-slate-900">
+                Fechamento
+              </Link>
               <Link href="/configuracoes" className="text-slate-600 hover:text-slate-900">
                 Configurações
               </Link>

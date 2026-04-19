@@ -4,7 +4,7 @@
 
 import { db, schema } from '@concilia/db';
 import { matchCieloBanco } from '@concilia/conciliador/engine';
-import { and, eq, gte, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
 
 export const PROCESSO_BANCO = 'BANCO';
 
@@ -37,6 +37,7 @@ function isoToBr(d: string | Date): string {
 const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'iFood Online']);
 
 import type { TaxasFilial, TaxasPorBandeira, EstabelecimentoConfig } from '@concilia/db/schema';
+import { diasFechados } from './fechamento';
 
 /** Defaults de taxa Cielo (%) quando a filial nao tem config propria. */
 export const TAXAS_DEFAULT: TaxasPorBandeira = {
@@ -198,9 +199,14 @@ export async function rodarConciliacaoBanco(opts: {
       );
 
     // Filtra em JS pra cobrir null/normalizacao
-    const liquidaveis = pagamentos.filter(
-      (p) => p.formaPagamento && !FORMAS_EXCLUIR.has(p.formaPagamento),
-    );
+    // Filtra dias fechados (pelo data_pagamento do PDV).
+    const fechados = await diasFechados(filialId, PROCESSO_BANCO, dataInicio, dataFim);
+    const liquidaveis = pagamentos.filter((p) => {
+      if (!p.formaPagamento || FORMAS_EXCLUIR.has(p.formaPagamento)) return false;
+      if (!p.dataPagamento) return true;
+      const iso = p.dataPagamento.toISOString().slice(0, 10);
+      return !fechados.has(iso);
+    });
 
     // Lancamentos banco no mesmo periodo (data_movimento)
     const lancamentos = await db
@@ -254,16 +260,20 @@ export async function rodarConciliacaoBanco(opts: {
       })),
     );
 
-    // Limpa excecoes abertas do mesmo processo pra esta filial
-    await db
-      .delete(schema.excecao)
-      .where(
-        and(
-          eq(schema.excecao.filialId, filialId),
-          eq(schema.excecao.processo, PROCESSO_BANCO),
-          isNull(schema.excecao.aceitaEm),
-        ),
-      );
+    // Limpa excecoes abertas somente dos pagamentos em scope (preserva dias fechados).
+    const pagamentoIdsScope = liquidaveis.map((p) => p.id);
+    if (pagamentoIdsScope.length) {
+      await db
+        .delete(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, filialId),
+            eq(schema.excecao.processo, PROCESSO_BANCO),
+            isNull(schema.excecao.aceitaEm),
+            inArray(schema.excecao.pagamentoId, pagamentoIdsScope),
+          ),
+        );
+    }
 
     const novas: Array<typeof schema.excecao.$inferInsert> = [];
 

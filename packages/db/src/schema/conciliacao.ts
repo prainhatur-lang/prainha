@@ -1,5 +1,5 @@
 // Resultado das conciliacoes
-import { pgTable, uuid, varchar, timestamp, numeric, jsonb, index, text } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, numeric, jsonb, index, text, date } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 import { pagamento } from './pdv';
@@ -69,6 +69,32 @@ export const excecao = pgTable(
     filialIdx: index('excecao_filial_idx').on(t.filialId, t.detectadoEm),
     abertasIdx: index('excecao_abertas_idx').on(t.filialId).where(sql`aceita_em IS NULL`),
     processoIdx: index('excecao_processo_idx').on(t.filialId, t.processo),
+  }),
+);
+
+/**
+ * Fechamento de periodo: trava um dia/processo/filial. Apos fechar, o engine
+ * nao reprocessa pagamentos desse dia e as excecoes ficam read-only.
+ * Granularidade eh dia (um registro por dia). Soh DONO pode fechar/reabrir.
+ */
+export const fechamentoConciliacao = pgTable(
+  'fechamento_conciliacao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** OPERADORA | RECEBIVEIS | BANCO */
+    processo: varchar('processo', { length: 20 }).notNull(),
+    /** Dia trancado (data da transacao). */
+    data: date('data').notNull(),
+    fechadoEm: timestamp('fechado_em', { withTimezone: true }).notNull().defaultNow(),
+    fechadoPor: uuid('fechado_por'),
+    observacao: text('observacao'),
+  },
+  (t) => ({
+    uniq: index('fechamento_unique_idx').on(t.filialId, t.processo, t.data),
+    filialIdx: index('fechamento_filial_idx').on(t.filialId, t.processo),
   }),
 );
 

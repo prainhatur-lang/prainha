@@ -2,7 +2,8 @@
 // Responde "toda venda virou agenda?" e "toda agenda tem venda?".
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, isNull, lte } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { diasFechados } from './fechamento';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_RECEBIVEIS = 'RECEBIVEIS';
@@ -114,10 +115,13 @@ export async function rodarConciliacaoRecebiveis(opts: {
         ),
       );
 
+    // Dias com fechamento (por data_venda, que eh o "evento" na conciliacao Recebiveis)
+    const fechados = await diasFechados(filialId, PROCESSO_RECEBIVEIS, dataInicio, dataFim);
+
     // Match por NSU em toda a janela ampliada; filtro por range nominal depois
     const vendasByNsu = new Map(vendas.map((v) => [v.nsu, v]));
     const recByNsu = new Map(recebiveis.map((r) => [r.nsu, r]));
-    const naRangeNominal = (d: string) => d >= dataInicio && d <= dataFim;
+    const naRangeNominal = (d: string) => d >= dataInicio && d <= dataFim && !fechados.has(d);
 
     const matched: Array<{
       venda: (typeof vendas)[number];
@@ -146,16 +150,30 @@ export async function rodarConciliacaoRecebiveis(opts: {
       if (!usados.has(r.nsu) && !vendasByNsu.has(r.nsu)) agendaSemVenda.push(r);
     }
 
-    // Limpa excecoes abertas do mesmo processo pra esta filial
-    await db
-      .delete(schema.excecao)
-      .where(
-        and(
-          eq(schema.excecao.filialId, filialId),
-          eq(schema.excecao.processo, PROCESSO_RECEBIVEIS),
-          isNull(schema.excecao.aceitaEm),
-        ),
-      );
+    // Limpa excecoes abertas apenas dos itens em scope (preserva dias fechados).
+    const vendaIdsScope = vendas.filter((v) => naRangeNominal(v.dataVenda)).map((v) => v.id);
+    const recIdsScope = recebiveis
+      .filter((r) => r.dataVenda && naRangeNominal(r.dataVenda))
+      .map((r) => r.id);
+    if (vendaIdsScope.length || recIdsScope.length) {
+      const orConds = [];
+      if (vendaIdsScope.length) {
+        orConds.push(inArray(schema.excecao.vendaAdquirenteId, vendaIdsScope));
+      }
+      if (recIdsScope.length) {
+        orConds.push(inArray(schema.excecao.recebivelAdquirenteId, recIdsScope));
+      }
+      await db
+        .delete(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, filialId),
+            eq(schema.excecao.processo, PROCESSO_RECEBIVEIS),
+            isNull(schema.excecao.aceitaEm),
+            orConds.length === 1 ? orConds[0] : or(...orConds),
+          ),
+        );
+    }
 
     const novas: Array<typeof schema.excecao.$inferInsert> = [];
     for (const { venda, recebivel, diff } of divergencia) {
