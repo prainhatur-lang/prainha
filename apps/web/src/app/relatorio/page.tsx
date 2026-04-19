@@ -305,8 +305,8 @@ async function carregarDados(
   dataInicio: string,
   dataFim: string,
 ): Promise<DadosRelatorio> {
-  const dtIni = new Date(dataInicio + 'T00:00:00');
-  const dtFim = new Date(dataFim + 'T23:59:59');
+  const dtIni = new Date(dataInicio + 'T00:00:00-03:00');
+  const dtFim = new Date(dataFim + 'T23:59:59-03:00');
   // janela ±1 dia pro cruzamento NSU (virada do dia)
   const dtIniAmp = new Date(dtIni);
   dtIniAmp.setDate(dtIniAmp.getDate() - 1);

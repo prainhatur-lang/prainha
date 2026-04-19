@@ -110,8 +110,8 @@ export async function rodarConciliacaoBanco(opts: {
   if (corte && dataInicio < corte) dataInicio = corte;
   const taxasFilial = (fil?.taxas as TaxasFilial | null) ?? null;
 
-  const dtIni = new Date(dataInicio + 'T00:00:00');
-  const dtFim = new Date(dataFim + 'T23:59:59');
+  const dtIni = new Date(dataInicio + 'T00:00:00-03:00');
+  const dtFim = new Date(dataFim + 'T23:59:59-03:00');
 
   const [exec] = await db
     .insert(schema.execucaoConciliacao)

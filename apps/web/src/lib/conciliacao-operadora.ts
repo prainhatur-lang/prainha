@@ -63,16 +63,16 @@ export async function rodarConciliacaoOperadora(opts: {
     .values({
       filialId,
       processo: PROCESSO_OPERADORA,
-      dataInicio: new Date(dataInicio + 'T00:00:00'),
-      dataFim: new Date(dataFim + 'T23:59:59'),
+      dataInicio: new Date(dataInicio + 'T00:00:00-03:00'),
+      dataFim: new Date(dataFim + 'T23:59:59-03:00'),
       status: 'EM_ANDAMENTO',
     })
     .returning({ id: schema.execucaoConciliacao.id });
   const execId = exec!.id;
 
   try {
-    const dtIni = new Date(dataInicio + 'T00:00:00');
-    const dtFim = new Date(dataFim + 'T23:59:59');
+    const dtIni = new Date(dataInicio + 'T00:00:00-03:00');
+    const dtFim = new Date(dataFim + 'T23:59:59-03:00');
 
     // Dias com fechamento: nao reprocessa
     const fechados = await diasFechados(filialId, PROCESSO_OPERADORA, dataInicio, dataFim);

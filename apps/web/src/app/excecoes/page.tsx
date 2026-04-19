@@ -108,10 +108,10 @@ export default async function ExcecoesPage(props: {
     whereBase.push(eq(schema.excecao.severidade, sp.severidade));
   }
   if (sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni)) {
-    whereBase.push(gte(schema.excecao.detectadoEm, new Date(sp.dataIni + 'T00:00:00')));
+    whereBase.push(gte(schema.excecao.detectadoEm, new Date(sp.dataIni + 'T00:00:00-03:00')));
   }
   if (sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)) {
-    whereBase.push(lte(schema.excecao.detectadoEm, new Date(sp.dataFim + 'T23:59:59')));
+    whereBase.push(lte(schema.excecao.detectadoEm, new Date(sp.dataFim + 'T23:59:59-03:00')));
   }
   if (sp.q && sp.q.trim()) {
     const q = sp.q.trim();
@@ -136,8 +136,8 @@ export default async function ExcecoesPage(props: {
   }
   if (sp.dataTrans && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataTrans)) {
     const d = sp.dataTrans;
-    const dIni = new Date(d + 'T00:00:00');
-    const dFim = new Date(d + 'T23:59:59');
+    const dIni = new Date(d + 'T00:00:00-03:00');
+    const dFim = new Date(d + 'T23:59:59-03:00');
     const cond = or(
       sql`${schema.pagamento.dataPagamento} BETWEEN ${dIni} AND ${dFim}`,
       sql`${schema.vendaAdquirente.dataVenda} = ${d}`,

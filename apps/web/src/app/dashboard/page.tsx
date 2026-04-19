@@ -24,16 +24,18 @@ const PERIODO_LABEL: Record<Periodo, string> = {
 const PERIODO_MESES: Record<Periodo, number> = { '1m': 1, '3m': 3, '6m': 6 };
 
 function rangeDoPeriodo(p: Periodo): { dataInicio: string; dataFim: string; dtIni: Date; dtFim: Date } {
-  const dtFim = new Date();
-  dtFim.setHours(23, 59, 59, 999);
-  const dtIni = new Date(dtFim);
-  dtIni.setMonth(dtIni.getMonth() - PERIODO_MESES[p]);
-  dtIni.setHours(0, 0, 0, 0);
+  // "Hoje" em BRT (UTC-3)
+  const agora = new Date();
+  const brNow = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
+  const dataFim = brNow.toISOString().slice(0, 10);
+  const brIni = new Date(brNow);
+  brIni.setUTCMonth(brIni.getUTCMonth() - PERIODO_MESES[p]);
+  const dataInicio = brIni.toISOString().slice(0, 10);
   return {
-    dtIni,
-    dtFim,
-    dataInicio: dtIni.toISOString().slice(0, 10),
-    dataFim: dtFim.toISOString().slice(0, 10),
+    dataInicio,
+    dataFim,
+    dtIni: new Date(dataInicio + 'T00:00:00-03:00'),
+    dtFim: new Date(dataFim + 'T23:59:59-03:00'),
   };
 }
 

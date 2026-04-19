@@ -115,11 +115,11 @@ export default async function FechamentoPage(props: { searchParams: Promise<SP> 
             isNull(schema.excecao.aceitaEm),
             gte(
               schema.pagamento.dataPagamento,
-              new Date(ini + 'T00:00:00'),
+              new Date(ini + 'T00:00:00-03:00'),
             ),
             lte(
               schema.pagamento.dataPagamento,
-              new Date(fim + 'T23:59:59'),
+              new Date(fim + 'T23:59:59-03:00'),
             ),
           ),
         )

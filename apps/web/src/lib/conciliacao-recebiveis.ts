@@ -48,8 +48,8 @@ export async function rodarConciliacaoRecebiveis(opts: {
   const corte = fil?.dataInicioConciliacao ?? null;
   if (corte && dataInicio < corte) dataInicio = corte;
 
-  const dtIni = new Date(dataInicio + 'T00:00:00');
-  const dtFim = new Date(dataFim + 'T23:59:59');
+  const dtIni = new Date(dataInicio + 'T00:00:00-03:00');
+  const dtFim = new Date(dataFim + 'T23:59:59-03:00');
 
   // Cria execucao
   const [exec] = await db
