@@ -19,6 +19,8 @@ interface AuditoriaRow {
   taxaReal: number;
   taxaConfig: number;
   diff: number;
+  /** Impacto em R$: (taxa_real − taxa_config) × volume / 100. Positivo = cobrou a mais. */
+  diffValor: number;
 }
 
 function normalizarTexto(s: string): string {
@@ -81,6 +83,9 @@ async function auditoriaFilial(filialId: string, taxas: TaxasFilial): Promise<Au
         r.forma ?? '',
         r.bandeira ?? '',
       );
+      const diff = +(taxaReal - taxaConfig).toFixed(3);
+      // Impacto financeiro: (taxa real - contratada) × volume / 100
+      const diffValor = +((diff * bruto) / 100).toFixed(2);
       return {
         ec: r.ec ?? '(sem EC)',
         forma: r.forma ?? '—',
@@ -89,12 +94,11 @@ async function auditoriaFilial(filialId: string, taxas: TaxasFilial): Promise<Au
         volume: bruto,
         taxaReal,
         taxaConfig,
-        diff: +(taxaReal - taxaConfig).toFixed(3),
+        diff,
+        diffValor,
       };
     })
-    .sort((a, b) =>
-      a.ec.localeCompare(b.ec) || a.forma.localeCompare(b.forma) || a.bandeira.localeCompare(b.bandeira),
-    );
+    .sort((a, b) => Math.abs(b.diffValor) - Math.abs(a.diffValor));
 }
 
 export const dynamic = 'force-dynamic';
@@ -216,54 +220,89 @@ function AuditoriaTabela({ rows }: { rows: AuditoriaRow[] }) {
       </p>
     );
   }
+  const totalDiff = rows.reduce((s, r) => s + r.diffValor, 0);
+  const totalVolume = rows.reduce((s, r) => s + r.volume, 0);
   return (
-    <div className="mt-3 overflow-x-auto">
-      <table className="w-full border border-slate-200 text-xs">
-        <thead className="bg-slate-100 text-left">
-          <tr>
-            <th className="px-3 py-2 font-medium text-slate-700">EC</th>
-            <th className="px-3 py-2 font-medium text-slate-700">Forma</th>
-            <th className="px-3 py-2 font-medium text-slate-700">Bandeira</th>
-            <th className="px-3 py-2 text-right font-medium text-slate-700">Qtd</th>
-            <th className="px-3 py-2 text-right font-medium text-slate-700">Volume</th>
-            <th className="px-3 py-2 text-right font-medium text-slate-700">Real</th>
-            <th className="px-3 py-2 text-right font-medium text-slate-700">Config</th>
-            <th className="px-3 py-2 text-right font-medium text-slate-700">Diff</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const alerta = Math.abs(r.diff) > 0.1;
-            return (
-              <tr key={i} className="border-t border-slate-200">
-                <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{r.ec}</td>
-                <td className="px-3 py-2 text-slate-700">{r.forma}</td>
-                <td className="px-3 py-2 text-slate-700">{r.bandeira}</td>
-                <td className="px-3 py-2 text-right font-mono text-slate-700">{int(r.qtd)}</td>
-                <td className="px-3 py-2 text-right font-mono text-slate-700">{brl(r.volume)}</td>
-                <td className="px-3 py-2 text-right font-mono text-slate-900">
-                  {r.taxaReal.toFixed(2)}%
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-slate-600">
-                  {r.taxaConfig.toFixed(2)}%
-                </td>
-                <td
-                  className={`px-3 py-2 text-right font-mono font-medium ${
-                    alerta
-                      ? r.diff > 0
-                        ? 'text-rose-700'
-                        : 'text-emerald-700'
-                      : 'text-slate-400'
-                  }`}
-                >
-                  {r.diff > 0 ? '+' : ''}
-                  {r.diff.toFixed(2)}%
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="mt-3 space-y-3">
+      {/* Resumo financeiro */}
+      <div
+        className={`rounded-md border px-4 py-3 text-xs ${
+          Math.abs(totalDiff) < 1
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+            : totalDiff > 0
+              ? 'border-rose-200 bg-rose-50 text-rose-900'
+              : 'border-sky-200 bg-sky-50 text-sky-900'
+        }`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-semibold">
+            {Math.abs(totalDiff) < 1
+              ? '✓ Taxas cobradas conforme contratado'
+              : totalDiff > 0
+                ? '⚠ Cielo cobrou a MAIS que o contratado'
+                : '↓ Cielo cobrou a MENOS que o contratado'}
+          </span>
+          <span className="font-mono text-base font-bold">
+            {totalDiff > 0 ? '+' : ''}
+            {brl(totalDiff)}
+          </span>
+        </div>
+        <p className="mt-1 text-[11px] opacity-80">
+          Sobre volume de {brl(totalVolume)} · diferença efetiva{' '}
+          {totalVolume > 0 ? ((totalDiff / totalVolume) * 100).toFixed(3) : '0.000'}%
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full border border-slate-200 text-xs">
+          <thead className="bg-slate-100 text-left">
+            <tr>
+              <th className="px-3 py-2 font-medium text-slate-700">EC</th>
+              <th className="px-3 py-2 font-medium text-slate-700">Forma</th>
+              <th className="px-3 py-2 font-medium text-slate-700">Bandeira</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Qtd</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Volume</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Real</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Config</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Diff %</th>
+              <th className="px-3 py-2 text-right font-medium text-slate-700">Diff R$</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const alerta = Math.abs(r.diff) > 0.1;
+              const sinalValor = r.diffValor > 0 ? 'text-rose-700' : r.diffValor < 0 ? 'text-emerald-700' : 'text-slate-400';
+              return (
+                <tr key={i} className="border-t border-slate-200">
+                  <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{r.ec}</td>
+                  <td className="px-3 py-2 text-slate-700">{r.forma}</td>
+                  <td className="px-3 py-2 text-slate-700">{r.bandeira}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-700">{int(r.qtd)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-700">{brl(r.volume)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-900">
+                    {r.taxaReal.toFixed(2)}%
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-600">
+                    {r.taxaConfig.toFixed(2)}%
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono font-medium ${
+                      alerta ? (r.diff > 0 ? 'text-rose-700' : 'text-emerald-700') : 'text-slate-400'
+                    }`}
+                  >
+                    {r.diff > 0 ? '+' : ''}
+                    {r.diff.toFixed(2)}%
+                  </td>
+                  <td className={`px-3 py-2 text-right font-mono font-semibold ${sinalValor}`}>
+                    {r.diffValor > 0 ? '+' : ''}
+                    {brl(r.diffValor)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

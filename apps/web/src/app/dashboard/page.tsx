@@ -3,7 +3,9 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
+import type { TaxasFilial, TaxasPorBandeira } from '@concilia/db/schema';
 import { and, desc, eq, gte, inArray, isNull, lte, ne, notInArray, sql } from 'drizzle-orm';
+import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
 import { brl, formatDateTime, int, relativeTime, statusFromPing } from '@/lib/format';
 import { LogoutButton } from './logout-button';
 
@@ -246,6 +248,56 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
                 </div>
               )}
             </div>
+
+            {/* Auditoria taxa vs contratado */}
+            <Link
+              href="/configuracoes"
+              className={`mt-4 block rounded-xl border px-5 py-4 text-sm shadow-sm transition hover:shadow-md ${
+                Math.abs(dados.taxaVsContratado.diffValor) < 1
+                  ? 'border-emerald-200 bg-emerald-50'
+                  : dados.taxaVsContratado.diffValor > 0
+                    ? 'border-rose-200 bg-rose-50'
+                    : 'border-sky-200 bg-sky-50'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-600">
+                    Taxas vs contratado
+                  </p>
+                  <p className="mt-0.5 text-sm font-semibold text-slate-900">
+                    {Math.abs(dados.taxaVsContratado.diffValor) < 1
+                      ? '✓ Cielo cobrou conforme contrato'
+                      : dados.taxaVsContratado.diffValor > 0
+                        ? '⚠ Cielo cobrou a MAIS'
+                        : '↓ Cielo cobrou a MENOS'}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p
+                    className={`font-mono text-2xl font-bold ${
+                      Math.abs(dados.taxaVsContratado.diffValor) < 1
+                        ? 'text-emerald-700'
+                        : dados.taxaVsContratado.diffValor > 0
+                          ? 'text-rose-700'
+                          : 'text-sky-700'
+                    }`}
+                  >
+                    {dados.taxaVsContratado.diffValor > 0 ? '+' : ''}
+                    {brl(dados.taxaVsContratado.diffValor)}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Sobre {brl(dados.taxaVsContratado.volume)} rastreado
+                  </p>
+                </div>
+              </div>
+              {!dados.taxaVsContratado.temConfig && (
+                <p className="mt-2 text-[11px] text-amber-700">
+                  Taxas contratadas não configuradas — usando defaults. Configure em{' '}
+                  <span className="underline">Configurações</span> pra comparação real.
+                </p>
+              )}
+            </Link>
 
             {/* Chart + forma breakdown */}
             <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
@@ -552,6 +604,12 @@ interface DadosDashboard {
     taxa: number;
     liquido: number;
   };
+  /** Auditoria taxa real × contratado. Positivo = Cielo cobrou a mais. */
+  taxaVsContratado: {
+    diffValor: number;
+    volume: number;
+    temConfig: boolean;
+  };
 }
 
 async function carregarDados(
@@ -824,6 +882,9 @@ async function carregarDados(
   const totaisBruto = categorias.reduce((s, c) => s + c.valorBruto, 0);
   const totaisTaxa = categorias.reduce((s, c) => s + c.valorTaxa, 0);
 
+  // Auditoria taxa real × contratado
+  const taxaAuditoria = await computarDiffTaxa(filialIds, dtIni, dtFim);
+
   return {
     totalVendas,
     qtdVendas,
@@ -843,5 +904,99 @@ async function carregarDados(
       taxa: totaisTaxa,
       liquido: totaisBruto - totaisTaxa,
     },
+    taxaVsContratado: taxaAuditoria,
   };
+}
+
+function normalizarBandeira(s: string | null | undefined): string {
+  if (!s) return '';
+  return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').trim();
+}
+
+function resolverTaxaConfig(
+  taxas: TaxasFilial | null,
+  ec: string | null,
+  forma: string | null,
+  bandeira: string | null,
+): number {
+  const ecConf = taxas?.ecs?.find((e) => e.codigo === ec);
+  const base: TaxasPorBandeira = ecConf ?? taxas?.default ?? TAXAS_DEFAULT;
+  const f = (forma ?? '').toLowerCase();
+  const b = normalizarBandeira(bandeira);
+  if (f.includes('pix')) return Number(base.pix ?? TAXAS_DEFAULT.pix);
+  if (f.includes('débito') || f.includes('debito')) {
+    const map = base.debito ?? TAXAS_DEFAULT.debito;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.debito.visa);
+  }
+  if (f.includes('crédito') || f.includes('credito')) {
+    const map = base.credito_a_vista ?? TAXAS_DEFAULT.credito_a_vista;
+    return Number(map[b] ?? map['visa'] ?? TAXAS_DEFAULT.credito_a_vista.visa);
+  }
+  return 0;
+}
+
+async function computarDiffTaxa(
+  filialIds: string[],
+  dtIni: Date,
+  dtFim: Date,
+): Promise<{ diffValor: number; volume: number; temConfig: boolean }> {
+  // Carrega taxas por filial
+  const filiais = await db
+    .select({ id: schema.filial.id, taxas: schema.filial.taxas })
+    .from(schema.filial)
+    .where(inArray(schema.filial.id, filialIds));
+  const taxasMap = new Map<string, TaxasFilial | null>(
+    filiais.map((f) => [f.id, (f.taxas as TaxasFilial | null) ?? null]),
+  );
+  const temConfig = filiais.some((f) => f.taxas != null);
+
+  // Agrega vendas rastreadas por (filial, ec, forma, bandeira)
+  const rows = await db
+    .select({
+      filialId: schema.vendaAdquirente.filialId,
+      ec: schema.vendaAdquirente.codigoEstabelecimento,
+      forma: schema.vendaAdquirente.formaPagamento,
+      bandeira: schema.vendaAdquirente.bandeira,
+      bruto: sql<string>`COALESCE(SUM(${schema.vendaAdquirente.valorBruto}), 0)::text`,
+      taxaTotal: sql<string>`COALESCE(SUM(ABS(${schema.vendaAdquirente.valorTaxa})), 0)::text`,
+    })
+    .from(schema.vendaAdquirente)
+    .innerJoin(
+      schema.pagamento,
+      and(
+        eq(schema.pagamento.filialId, schema.vendaAdquirente.filialId),
+        eq(schema.pagamento.nsuTransacao, schema.vendaAdquirente.nsu),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .where(
+      and(
+        inArray(schema.vendaAdquirente.filialId, filialIds),
+        eq(schema.vendaAdquirente.adquirente, 'CIELO'),
+      ),
+    )
+    .groupBy(
+      schema.vendaAdquirente.filialId,
+      schema.vendaAdquirente.codigoEstabelecimento,
+      schema.vendaAdquirente.formaPagamento,
+      schema.vendaAdquirente.bandeira,
+    );
+
+  let diffValor = 0;
+  let volume = 0;
+  for (const r of rows) {
+    const bruto = Number(r.bruto);
+    const taxaReal = bruto > 0 ? (Number(r.taxaTotal) / bruto) * 100 : 0;
+    const taxaConfig = resolverTaxaConfig(
+      taxasMap.get(r.filialId) ?? null,
+      r.ec,
+      r.forma,
+      r.bandeira,
+    );
+    const diff = taxaReal - taxaConfig;
+    diffValor += (diff * bruto) / 100;
+    volume += bruto;
+  }
+  return { diffValor: +diffValor.toFixed(2), volume, temConfig };
 }
