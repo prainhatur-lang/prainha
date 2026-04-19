@@ -206,6 +206,39 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
               />
             </div>
 
+            {/* Composicao por categoria: Pix / Debito / Credito */}
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {dados.categorias
+                .filter((c) => c.categoria !== 'Dinheiro' && c.categoria !== 'Outro')
+                .map((c) => (
+                  <CategoriaCard key={c.categoria} cat={c} total={dados.totais.bruto} />
+                ))}
+            </div>
+
+            {/* Totais gerais */}
+            <div className="mt-4 flex flex-wrap gap-4 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm shadow-sm">
+              <div>
+                <span className="text-xs text-slate-500">Bruto total:</span>{' '}
+                <span className="font-mono font-semibold text-slate-900">{brl(dados.totais.bruto)}</span>
+              </div>
+              <div>
+                <span className="text-xs text-slate-500">Taxas descontadas:</span>{' '}
+                <span className="font-mono font-semibold text-rose-700">−{brl(dados.totais.taxa)}</span>
+              </div>
+              <div>
+                <span className="text-xs text-slate-500">Líquido estimado:</span>{' '}
+                <span className="font-mono font-semibold text-emerald-700">{brl(dados.totais.liquido)}</span>
+              </div>
+              {dados.totais.bruto > 0 && (
+                <div>
+                  <span className="text-xs text-slate-500">Taxa média efetiva:</span>{' '}
+                  <span className="font-mono font-semibold text-slate-900">
+                    {((dados.totais.taxa / dados.totais.bruto) * 100).toFixed(2)}%
+                  </span>
+                </div>
+              )}
+            </div>
+
             {/* Chart + forma breakdown */}
             <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -217,14 +250,25 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
               </div>
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Por forma de pagamento</h2>
-                <p className="text-xs text-slate-500">Incluindo dinheiro no total</p>
-                <div className="mt-4 space-y-2">
-                  {dados.porForma.map((f) => (
-                    <div key={f.forma} className="flex items-center justify-between text-sm">
-                      <span className="text-slate-700">{f.forma}</span>
-                      <span className="font-mono text-slate-900">{brl(f.valor)}</span>
-                    </div>
-                  ))}
+                <p className="text-xs text-slate-500">Todas as formas, incluindo dinheiro</p>
+                <div className="mt-4 space-y-1.5">
+                  {dados.porForma.map((f) => {
+                    const pct = dados.totais.bruto > 0 ? (f.valor / dados.totais.bruto) * 100 : 0;
+                    return (
+                      <div key={f.forma} className="text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-700">{f.forma}</span>
+                          <span className="font-mono text-slate-900">{brl(f.valor)}</span>
+                        </div>
+                        <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full bg-sky-500"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                   {dados.porForma.length === 0 && (
                     <p className="text-xs text-slate-500">Sem dados no período.</p>
                   )}
@@ -344,6 +388,66 @@ function KpiCard({
   );
 }
 
+function CategoriaCard({ cat, total }: { cat: CategoriaStats; total: number }) {
+  const cores: Record<string, { bg: string; accent: string; text: string }> = {
+    Pix: { bg: 'bg-emerald-50 border-emerald-200', accent: 'bg-emerald-500', text: 'text-emerald-900' },
+    Débito: { bg: 'bg-sky-50 border-sky-200', accent: 'bg-sky-500', text: 'text-sky-900' },
+    Crédito: { bg: 'bg-violet-50 border-violet-200', accent: 'bg-violet-500', text: 'text-violet-900' },
+  };
+  const cor = cores[cat.categoria] ?? {
+    bg: 'bg-slate-50 border-slate-200',
+    accent: 'bg-slate-500',
+    text: 'text-slate-900',
+  };
+  const pctDoTotal = total > 0 ? (cat.valorBruto / total) * 100 : 0;
+  const taxaMediaPct =
+    cat.valorBrutoRastreado > 0 ? (cat.valorTaxa / cat.valorBrutoRastreado) * 100 : 0;
+  const liquido = cat.valorBruto - cat.valorTaxa;
+  return (
+    <div className={`rounded-xl border p-5 shadow-sm ${cor.bg}`}>
+      <div className="flex items-center justify-between">
+        <h3 className={`text-base font-semibold ${cor.text}`}>{cat.categoria}</h3>
+        <span className={`text-xs font-medium ${cor.text}`}>{pctDoTotal.toFixed(1)}%</span>
+      </div>
+      <p className="mt-2 text-2xl font-bold text-slate-900">{brl(cat.valorBruto)}</p>
+      <p className="text-[11px] text-slate-500">{int(cat.qtd)} transações</p>
+
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/60">
+        <div className={`h-full ${cor.accent}`} style={{ width: `${pctDoTotal}%` }} />
+      </div>
+
+      <div className="mt-4 space-y-1 border-t border-white/60 pt-3 text-xs">
+        <div className="flex justify-between">
+          <span className="text-slate-600">Taxa média</span>
+          <span className="font-mono font-medium text-slate-900">
+            {taxaMediaPct > 0 ? `${taxaMediaPct.toFixed(2)}%` : '—'}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-600">Valor da taxa</span>
+          <span className="font-mono font-medium text-rose-700">
+            {cat.valorTaxa > 0 ? `−${brl(cat.valorTaxa)}` : '—'}
+          </span>
+        </div>
+        <div className="flex justify-between border-t border-white/60 pt-1">
+          <span className="text-slate-600">Líquido estimado</span>
+          <span className="font-mono font-medium text-emerald-700">{brl(liquido)}</span>
+        </div>
+        {cat.qtdRastreada < cat.qtd && cat.qtdRastreada > 0 && (
+          <p className="mt-1 text-[10px] text-slate-500">
+            Taxa média baseada em {int(cat.qtdRastreada)} de {int(cat.qtd)} transações rastreadas.
+          </p>
+        )}
+        {cat.qtdRastreada === 0 && cat.qtd > 0 && (
+          <p className="mt-1 text-[10px] text-slate-500">
+            Sem vendas rastreadas — sem dados de taxa real.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GraficoBarras({ serie }: { serie: Array<{ dia: string; valor: number }> }) {
   if (serie.length === 0) {
     return <p className="text-xs text-slate-500">Sem dados no período.</p>;
@@ -374,6 +478,16 @@ function GraficoBarras({ serie }: { serie: Array<{ dia: string; valor: number }>
 // Data loading
 // ---------------------------------------------------------------------------
 
+interface CategoriaStats {
+  categoria: 'Pix' | 'Crédito' | 'Débito' | 'Dinheiro' | 'Outro';
+  valorBruto: number;
+  qtd: number;
+  // Dos matches com Cielo:
+  valorBrutoRastreado: number;
+  valorTaxa: number; // absoluto (>0)
+  qtdRastreada: number;
+}
+
 interface DadosDashboard {
   totalVendas: number;
   qtdVendas: number;
@@ -384,6 +498,12 @@ interface DadosDashboard {
   excecoesAbertas: { qtd: number; valor: number };
   serie: Array<{ dia: string; valor: number }>;
   porForma: Array<{ forma: string; valor: number }>;
+  categorias: CategoriaStats[];
+  totais: {
+    bruto: number;
+    taxa: number;
+    liquido: number;
+  };
 }
 
 async function carregarDados(
@@ -512,6 +632,97 @@ async function carregarDados(
   }
   const recebidoPct = recebidoTotal > 0 ? (recebidoValor / recebidoTotal) * 100 : null;
 
+  // Agregado PDV por categoria (Pix / Crédito / Débito / Dinheiro / Outro)
+  const pdvCat = await db
+    .select({
+      forma: schema.pagamento.formaPagamento,
+      valor: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+      qtd: sql<number>`COUNT(*)::int`,
+    })
+    .from(schema.pagamento)
+    .where(
+      and(
+        inArray(schema.pagamento.filialId, filialIds),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .groupBy(schema.pagamento.formaPagamento);
+
+  // Agregado Cielo (valor_bruto + valor_taxa) das vendas que bateram NSU
+  // com algum pagamento do PDV no periodo
+  const cieloCatRows = await db
+    .select({
+      forma: schema.vendaAdquirente.formaPagamento,
+      bruto: sql<string>`COALESCE(SUM(${schema.vendaAdquirente.valorBruto}), 0)::text`,
+      taxa: sql<string>`COALESCE(SUM(${schema.vendaAdquirente.valorTaxa}), 0)::text`,
+      qtd: sql<number>`COUNT(*)::int`,
+    })
+    .from(schema.vendaAdquirente)
+    .innerJoin(
+      schema.pagamento,
+      and(
+        eq(schema.pagamento.filialId, schema.vendaAdquirente.filialId),
+        eq(schema.pagamento.nsuTransacao, schema.vendaAdquirente.nsu),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+      ),
+    )
+    .where(
+      and(
+        inArray(schema.vendaAdquirente.filialId, filialIds),
+        gte(schema.vendaAdquirente.dataVenda, isoIniCielo),
+        lte(schema.vendaAdquirente.dataVenda, isoFimCielo),
+      ),
+    )
+    .groupBy(schema.vendaAdquirente.formaPagamento);
+
+  function categoriaDe(f: string | null | undefined): CategoriaStats['categoria'] {
+    if (!f) return 'Outro';
+    const s = f.toLowerCase();
+    if (s.includes('pix')) return 'Pix';
+    if (s.includes('débito') || s.includes('debito')) return 'Débito';
+    if (s.includes('crédito') || s.includes('credito')) return 'Crédito';
+    if (s.includes('dinheiro')) return 'Dinheiro';
+    return 'Outro';
+  }
+
+  const catMap = new Map<CategoriaStats['categoria'], CategoriaStats>();
+  const garantir = (c: CategoriaStats['categoria']): CategoriaStats => {
+    let x = catMap.get(c);
+    if (!x) {
+      x = {
+        categoria: c,
+        valorBruto: 0,
+        qtd: 0,
+        valorBrutoRastreado: 0,
+        valorTaxa: 0,
+        qtdRastreada: 0,
+      };
+      catMap.set(c, x);
+    }
+    return x;
+  };
+  for (const p of pdvCat) {
+    const c = garantir(categoriaDe(p.forma));
+    c.valorBruto += Number(p.valor);
+    c.qtd += Number(p.qtd);
+  }
+  for (const v of cieloCatRows) {
+    const c = garantir(categoriaDe(v.forma));
+    c.valorBrutoRastreado += Number(v.bruto);
+    c.valorTaxa += Math.abs(Number(v.taxa));
+    c.qtdRastreada += Number(v.qtd);
+  }
+
+  const ordem: CategoriaStats['categoria'][] = ['Pix', 'Débito', 'Crédito', 'Dinheiro', 'Outro'];
+  const categorias = ordem
+    .map((c) => catMap.get(c))
+    .filter((x): x is CategoriaStats => !!x && (x.valorBruto > 0 || x.valorBrutoRastreado > 0));
+
+  const totaisBruto = categorias.reduce((s, c) => s + c.valorBruto, 0);
+  const totaisTaxa = categorias.reduce((s, c) => s + c.valorTaxa, 0);
+
   return {
     totalVendas,
     qtdVendas,
@@ -525,5 +736,11 @@ async function carregarDados(
     },
     serie,
     porForma,
+    categorias,
+    totais: {
+      bruto: totaisBruto,
+      taxa: totaisTaxa,
+      liquido: totaisBruto - totaisTaxa,
+    },
   };
 }
