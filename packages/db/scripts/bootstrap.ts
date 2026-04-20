@@ -24,6 +24,7 @@ const ORG = { nome: 'Prainha Turismo LTDA', cnpjRaiz: '33159574' };
 const FILIAIS = [
   { nome: 'Prainha Turismo - Filial 0002-47', cnpj: '33159574000247' },
   { nome: 'Prainha Turismo - Filial 0001-66', cnpj: '33159574000166' },
+  { nome: 'Prainha Mar - Filial 0003-28', cnpj: '33159574000328' },
 ];
 
 function genToken(): string {
