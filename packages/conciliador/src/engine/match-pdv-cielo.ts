@@ -218,17 +218,26 @@ export function matchPdvCielo(
   // --- Passada 3: fallback "solto" — se ainda sobrou PDV e Cielo same day+forma
   // com diff de valor ate 10%, marca como divergencia de valor (nao match).
   // Credito/Debito podem cross-matchar (operador pode ter errado a forma no PDV);
-  // Pix e Outros continuam estritos. Como vira divergencia (nao match), user revisa. ---
+  // Pix e Outros continuam estritos. Como vira divergencia (nao match), user revisa.
+  //
+  // Matching GLOBAL: enumera todos os pares (p, c) candidatos, ordena por
+  // (menor diff, mesma cat, data mais proxima) e aloca de forma gulosa. Isso
+  // evita que um PDV com diff grande (ex: 0.30) consuma uma Cielo que outro
+  // PDV casaria com diff 0. ---
   const TOL_DIVERGENCIA = 0.10; // 10% de tolerancia
-  const pdvFinal: PdvPagamento[] = [];
   const catsCartao = new Set(['Credito', 'Debito']);
-  for (const p of result.pdvSemCielo) {
+  type Candidato = {
+    pIdx: number;
+    c: CieloVenda;
+    diff: number;
+    sameCat: boolean;
+    deltaDias: number;
+  };
+  const candidatos: Candidato[] = [];
+  for (let i = 0; i < result.pdvSemCielo.length; i++) {
+    const p = result.pdvSemCielo[i]!;
+    if (!p.dataPagamento) continue;
     const cat = categoriaForma(p.formaPagamento);
-    if (!p.dataPagamento) {
-      pdvFinal.push(p);
-      continue;
-    }
-    let melhor: { c: CieloVenda; diff: number } | null = null;
     for (const v of result.cieloSemPdv) {
       if (cieloMatchedSegundaPassada.has(v)) continue;
       const catV = categoriaForma(v.formaPagamento);
@@ -236,29 +245,42 @@ export function matchPdvCielo(
         cat === catV || (catsCartao.has(cat) && catsCartao.has(catV));
       if (!catsCompat) continue;
       if (!datasProximas(p.dataPagamento, v.dataVenda)) continue;
-      const diff = v.valorBruto - p.valor;
+      const diff = +(v.valorBruto - p.valor).toFixed(2);
       const denom = Math.max(Math.abs(p.valor), Math.abs(v.valorBruto), 0.01);
       if (Math.abs(diff) / denom > TOL_DIVERGENCIA) continue;
-      // Prefere cat igual; desempata por menor diff
-      const catMatch = cat === catV ? 0 : 1;
-      const melhorCatMatch = melhor
-        ? cat === categoriaForma(melhor.c.formaPagamento) ? 0 : 1
-        : Infinity;
-      if (
-        !melhor ||
-        catMatch < melhorCatMatch ||
-        (catMatch === melhorCatMatch && Math.abs(diff) < Math.abs(melhor.diff))
-      ) {
-        melhor = { c: v, diff: +diff.toFixed(2) };
-      }
+      const deltaDias = v.dataVenda
+        ? Math.abs(
+            (new Date(p.dataPagamento + 'T00:00:00').getTime() -
+              new Date(v.dataVenda + 'T00:00:00').getTime()) /
+              86_400_000,
+          )
+        : 0;
+      candidatos.push({ pIdx: i, c: v, diff, sameCat: cat === catV, deltaDias });
     }
-    if (melhor) {
-      cieloMatchedSegundaPassada.add(melhor.c);
-      // Sem NSU + valor proximo → vira divergencia de valor (user aceita/rejeita).
-      result.divergenciaValor.push({ pdv: p, cielo: melhor.c, diff: melhor.diff });
-    } else {
-      pdvFinal.push(p);
-    }
+  }
+  // Ordena: menor abs(diff) primeiro; depois same-cat; depois delta dias
+  candidatos.sort((a, b) => {
+    const da = Math.abs(a.diff);
+    const db = Math.abs(b.diff);
+    if (da !== db) return da - db;
+    if (a.sameCat !== b.sameCat) return a.sameCat ? -1 : 1;
+    return a.deltaDias - b.deltaDias;
+  });
+  const pdvMatched = new Set<number>();
+  for (const cand of candidatos) {
+    if (pdvMatched.has(cand.pIdx)) continue;
+    if (cieloMatchedSegundaPassada.has(cand.c)) continue;
+    pdvMatched.add(cand.pIdx);
+    cieloMatchedSegundaPassada.add(cand.c);
+    result.divergenciaValor.push({
+      pdv: result.pdvSemCielo[cand.pIdx]!,
+      cielo: cand.c,
+      diff: cand.diff,
+    });
+  }
+  const pdvFinal: PdvPagamento[] = [];
+  for (let i = 0; i < result.pdvSemCielo.length; i++) {
+    if (!pdvMatched.has(i)) pdvFinal.push(result.pdvSemCielo[i]!);
   }
   result.pdvSemCielo = pdvFinal;
   result.cieloSemPdv = result.cieloSemPdv.filter((v) => !cieloMatchedSegundaPassada.has(v));
