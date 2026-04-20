@@ -216,9 +216,12 @@ export function matchPdvCielo(
   result.cieloSemPdv = cieloSobrando.filter((v) => !cieloMatchedSegundaPassada.has(v));
 
   // --- Passada 3: fallback "solto" — se ainda sobrou PDV e Cielo same day+forma
-  // com diff de valor ate 10%, marca como divergencia de valor (nao match). ---
+  // com diff de valor ate 10%, marca como divergencia de valor (nao match).
+  // Credito/Debito podem cross-matchar (operador pode ter errado a forma no PDV);
+  // Pix e Outros continuam estritos. Como vira divergencia (nao match), user revisa. ---
   const TOL_DIVERGENCIA = 0.10; // 10% de tolerancia
   const pdvFinal: PdvPagamento[] = [];
+  const catsCartao = new Set(['Credito', 'Debito']);
   for (const p of result.pdvSemCielo) {
     const cat = categoriaForma(p.formaPagamento);
     if (!p.dataPagamento) {
@@ -228,12 +231,24 @@ export function matchPdvCielo(
     let melhor: { c: CieloVenda; diff: number } | null = null;
     for (const v of result.cieloSemPdv) {
       if (cieloMatchedSegundaPassada.has(v)) continue;
-      if (categoriaForma(v.formaPagamento) !== cat) continue;
+      const catV = categoriaForma(v.formaPagamento);
+      const catsCompat =
+        cat === catV || (catsCartao.has(cat) && catsCartao.has(catV));
+      if (!catsCompat) continue;
       if (!datasProximas(p.dataPagamento, v.dataVenda)) continue;
       const diff = v.valorBruto - p.valor;
       const denom = Math.max(Math.abs(p.valor), Math.abs(v.valorBruto), 0.01);
       if (Math.abs(diff) / denom > TOL_DIVERGENCIA) continue;
-      if (!melhor || Math.abs(diff) < Math.abs(melhor.diff)) {
+      // Prefere cat igual; desempata por menor diff
+      const catMatch = cat === catV ? 0 : 1;
+      const melhorCatMatch = melhor
+        ? cat === categoriaForma(melhor.c.formaPagamento) ? 0 : 1
+        : Infinity;
+      if (
+        !melhor ||
+        catMatch < melhorCatMatch ||
+        (catMatch === melhorCatMatch && Math.abs(diff) < Math.abs(melhor.diff))
+      ) {
         melhor = { c: v, diff: +diff.toFixed(2) };
       }
     }
