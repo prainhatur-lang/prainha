@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { LogoutButton } from '../../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { OperadoraForm } from './form';
@@ -14,6 +14,8 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  dataInicio?: string;
+  dataFim?: string;
   pDiv?: string; // page de divergencia
   pPdv?: string; // page de PDV sem Cielo
   pCielo?: string; // page de Cielo sem PDV
@@ -61,11 +63,42 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   const pagePdv = paginaAtual(sp.pPdv);
   const pageCielo = paginaAtual(sp.pCielo);
 
+  // Filtro de data da transacao (se dataInicio/dataFim vieram na URL).
+  // Para DIVERGENCIA_VALOR e PDV_SEM_CIELO filtra por pagamento.dataPagamento.
+  // Para CIELO_SEM_PDV filtra por vendaAdquirente.dataVenda.
+  // Usa BRT (-03:00) para bater com a engine.
+  const dtIni = sp.dataInicio ? new Date(sp.dataInicio + 'T00:00:00-03:00') : null;
+  const dtFim = sp.dataFim ? new Date(sp.dataFim + 'T23:59:59-03:00') : null;
+
+  function filtroData(tipo: string) {
+    if (!dtIni || !dtFim) return undefined;
+    if (tipo === TIPO_OPERADORA.CIELO_SEM_PDV) {
+      // dataVenda e string YYYY-MM-DD
+      return and(
+        gte(schema.vendaAdquirente.dataVenda, sp.dataInicio!),
+        lte(schema.vendaAdquirente.dataVenda, sp.dataFim!),
+      );
+    }
+    // DIVERGENCIA_VALOR e PDV_SEM_CIELO usam pagamento.dataPagamento
+    return and(
+      gte(schema.pagamento.dataPagamento, dtIni),
+      lte(schema.pagamento.dataPagamento, dtFim),
+    );
+  }
+
   // Helper pra carregar uma secao paginada (count + rows)
   async function carregarSecao(tipo: string, page: number) {
     if (!filialSelecionada) {
       return { rows: [] as Awaited<ReturnType<typeof queryRows>>, total: 0, totalValor: 0 };
     }
+    const dataCond = filtroData(tipo);
+    const whereCond = and(
+      eq(schema.excecao.filialId, filialSelecionada!.id),
+      eq(schema.excecao.processo, PROCESSO_OPERADORA),
+      eq(schema.excecao.tipo, tipo),
+      isNull(schema.excecao.aceitaEm),
+      dataCond,
+    );
     async function queryRows() {
       return db
         .select({
@@ -90,35 +123,26 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           schema.vendaAdquirente,
           eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
         )
-        .where(
-          and(
-            eq(schema.excecao.filialId, filialSelecionada!.id),
-            eq(schema.excecao.processo, PROCESSO_OPERADORA),
-            eq(schema.excecao.tipo, tipo),
-            isNull(schema.excecao.aceitaEm),
-          ),
-        )
+        .where(whereCond)
         .orderBy(desc(schema.excecao.detectadoEm))
         .limit(PAGE_SIZE)
         .offset(page * PAGE_SIZE);
     }
-    const [rows, [totalRow]] = await Promise.all([
-      queryRows(),
-      db
+    async function queryTotal() {
+      return db
         .select({
           n: sql<number>`COUNT(*)::int`,
           v: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
         })
         .from(schema.excecao)
-        .where(
-          and(
-            eq(schema.excecao.filialId, filialSelecionada.id),
-            eq(schema.excecao.processo, PROCESSO_OPERADORA),
-            eq(schema.excecao.tipo, tipo),
-            isNull(schema.excecao.aceitaEm),
-          ),
-        ),
-    ]);
+        .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
+        .leftJoin(
+          schema.vendaAdquirente,
+          eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+        )
+        .where(whereCond);
+    }
+    const [rows, [totalRow]] = await Promise.all([queryRows(), queryTotal()]);
     return { rows, total: Number(totalRow?.n ?? 0), totalValor: Number(totalRow?.v ?? 0) };
   }
 
