@@ -107,10 +107,20 @@ REM Roda este arquivo como Administrador.
 setlocal
 set NAME=ConciliaAgente
 set DIR=%~dp0
-set NODE=%DIR%node.exe
-set SCRIPT=%DIR%agente.cjs
+REM Remove barra final (evita bug do "%DIR%" virar "...\\" e \\" escapar aspa)
+if "%DIR:~-1%"=="\\" set DIR=%DIR:~0,-1%
+set NODE=%DIR%\\node.exe
+set SCRIPT=%DIR%\\agente.cjs
 
-if not exist "%DIR%nssm.exe" (
+REM Verifica admin
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+  echo Erro: Rode este arquivo como Administrador.
+  pause
+  exit /b 1
+)
+
+if not exist "%DIR%\\nssm.exe" (
   echo Erro: nssm.exe nao encontrado em %DIR%
   pause
   exit /b 1
@@ -125,36 +135,39 @@ if not exist "%SCRIPT%" (
   pause
   exit /b 1
 )
-if not exist "%DIR%config.json" (
+if not exist "%DIR%\\config.json" (
   echo Erro: config.json nao encontrado em %DIR%
   echo Copie config.example.json para config.json e edite com seus dados.
   pause
   exit /b 1
 )
 
+REM Cria logs/ antes de configurar NSSM
+if not exist "%DIR%\\logs" mkdir "%DIR%\\logs"
+
 REM Remove servico existente (se houver) para reinstalar limpo
-"%DIR%nssm.exe" stop %NAME% 2>nul
-"%DIR%nssm.exe" remove %NAME% confirm 2>nul
+"%DIR%\\nssm.exe" stop %NAME% 2>nul
+"%DIR%\\nssm.exe" remove %NAME% confirm 2>nul
 
 echo Instalando servico %NAME%...
-"%DIR%nssm.exe" install %NAME% "%NODE%" "%SCRIPT%"
-"%DIR%nssm.exe" set %NAME% AppDirectory "%DIR%"
-"%DIR%nssm.exe" set %NAME% DisplayName "Concilia Agente Local"
-"%DIR%nssm.exe" set %NAME% Description "Sincroniza pagamentos do Consumer (Firebird) com o concilia"
-"%DIR%nssm.exe" set %NAME% Start SERVICE_AUTO_START
-"%DIR%nssm.exe" set %NAME% AppStdout "%DIR%logs\\stdout.log"
-"%DIR%nssm.exe" set %NAME% AppStderr "%DIR%logs\\stderr.log"
-"%DIR%nssm.exe" set %NAME% AppRotateFiles 1
-"%DIR%nssm.exe" set %NAME% AppRotateBytes 10485760
-
-if not exist "%DIR%logs" mkdir "%DIR%logs"
+"%DIR%\\nssm.exe" install %NAME% "%NODE%" "%SCRIPT%"
+"%DIR%\\nssm.exe" set %NAME% AppDirectory "%DIR%"
+"%DIR%\\nssm.exe" set %NAME% DisplayName "Concilia Agente Local"
+"%DIR%\\nssm.exe" set %NAME% Description "Sincroniza pagamentos do Consumer (Firebird) com o concilia"
+"%DIR%\\nssm.exe" set %NAME% Start SERVICE_AUTO_START
+"%DIR%\\nssm.exe" set %NAME% AppStdout "%DIR%\\logs\\stdout.log"
+"%DIR%\\nssm.exe" set %NAME% AppStderr "%DIR%\\logs\\stderr.log"
+"%DIR%\\nssm.exe" set %NAME% AppRotateFiles 1
+"%DIR%\\nssm.exe" set %NAME% AppRotateBytes 10485760
+"%DIR%\\nssm.exe" set %NAME% AppThrottle 0
+"%DIR%\\nssm.exe" set %NAME% AppExit Default Restart
 
 echo Iniciando servico...
-"%DIR%nssm.exe" start %NAME%
+"%DIR%\\nssm.exe" start %NAME%
 
 echo.
 echo Pronto! Servico %NAME% instalado e iniciado.
-echo Logs em %DIR%logs\\
+echo Logs em %DIR%\\logs\\
 echo.
 pause
 endlocal
@@ -205,14 +218,27 @@ INSTALACAO RAPIDA
      "database": "C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\RAL Tecnologia\\\\CreateInstall\\\\CONSUMER.FDB"
    - firebird.password: senha do SYSDBA
 
-3. (Opcional) Teste manual antes de instalar como service:
+3. IMPORTANTE - Firebird 4: registrar SYSDBA em Legacy_UserManager.
+   O driver node-firebird so fala Legacy_Auth, e instalacoes novas
+   do FB4 so criam SYSDBA em Srp256. Em CMD admin:
+
+   "C:\\Program Files\\Firebird\\Firebird_4_0\\gsec.exe" -user SYSDBA -password masterkey -display
+
+   Se NAO listar SYSDBA, adiciona:
+
+   "C:\\Program Files\\Firebird\\Firebird_4_0\\gsec.exe" -user SYSDBA -password masterkey -add SYSDBA -pw masterkey -admin yes
+
+   Sintoma de falta deste passo: log mostra "iniciando ciclo" seguido
+   de "node-firebird detach bug ignorado" e trava (timeout 60s).
+
+4. (Opcional) Teste manual antes de instalar como service:
    run.cmd
    (deve mostrar logs INFO no console; Ctrl+C para parar)
 
-4. Clique direito em 'install-service.bat' -> Executar como Administrador.
+5. Clique direito em 'install-service.bat' -> Executar como Administrador.
    O servico sera instalado e iniciado automaticamente.
 
-5. Verifique no painel concilia (https://app.prainhabar.com/sync):
+6. Verifique no painel concilia (https://app.prainhabar.com/sync):
    apos ~15 min a filial deve aparecer com 'online'.
 
 LOGS
