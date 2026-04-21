@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
 import { LogoutButton } from '../../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { RecebiveisForm } from './form';
@@ -14,6 +14,8 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  dataInicio?: string;
+  dataFim?: string;
 }
 
 export default async function RecebiveisPage(props: { searchParams: Promise<SP> }) {
@@ -42,6 +44,23 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
         .orderBy(desc(schema.execucaoConciliacao.iniciadoEm))
         .limit(10)
     : [];
+
+  // Filtro de data (se dataInicio/dataFim vieram na URL).
+  // Recebiveis sao conciliados pela data da VENDA — filtra por
+  // venda.dataVenda OU recebivel.dataVenda (VENDA_SEM_AGENDA linka venda,
+  // AGENDA_SEM_VENDA linka recebivel; DIVERGENCIA_VALOR linka os dois).
+  const filtroData = sp.dataInicio && sp.dataFim
+    ? or(
+        and(
+          gte(schema.vendaAdquirente.dataVenda, sp.dataInicio),
+          lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
+        ),
+        and(
+          gte(schema.recebivelAdquirente.dataVenda, sp.dataInicio),
+          lte(schema.recebivelAdquirente.dataVenda, sp.dataFim),
+        ),
+      )
+    : undefined;
 
   const excecoesAbertas = filialSelecionada
     ? await db
@@ -75,6 +94,7 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
             eq(schema.excecao.filialId, filialSelecionada.id),
             eq(schema.excecao.processo, PROCESSO_RECEBIVEIS),
             isNull(schema.excecao.aceitaEm),
+            filtroData,
           ),
         )
         .orderBy(desc(schema.excecao.detectadoEm))

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface Filial {
   id: string;
@@ -24,14 +24,18 @@ function inicioPadrao(corte: string | null) {
 
 export function RecebiveisForm({ filiais }: { filiais: Filial[] }) {
   const router = useRouter();
-  const [filialId, setFilialId] = useState(filiais[0]?.id ?? '');
+  const sp = useSearchParams();
+  const urlFilial = sp.get('filialId');
+  const urlIni = sp.get('dataInicio');
+  const urlFim = sp.get('dataFim');
+  const [filialId, setFilialId] = useState(urlFilial ?? filiais[0]?.id ?? '');
   const filialSelecionada = useMemo(
     () => filiais.find((f) => f.id === filialId) ?? null,
     [filialId, filiais],
   );
   const corte = filialSelecionada?.dataInicioConciliacao ?? null;
-  const [dataInicio, setDataInicio] = useState(inicioPadrao(corte));
-  const [dataFim, setDataFim] = useState(hojeISO());
+  const [dataInicio, setDataInicio] = useState(urlIni ?? inicioPadrao(corte));
+  const [dataFim, setDataFim] = useState(urlFim ?? hojeISO());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +57,8 @@ export function RecebiveisForm({ filiais }: { filiais: Filial[] }) {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      router.push(`/conciliacao/recebiveis?filialId=${filialId}`);
+      const qs = new URLSearchParams({ filialId, dataInicio, dataFim });
+      router.push(`/conciliacao/recebiveis?${qs.toString()}`);
       router.refresh();
     } catch (e) {
       setError((e as Error).message);
