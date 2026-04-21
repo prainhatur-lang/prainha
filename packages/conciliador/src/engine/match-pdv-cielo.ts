@@ -169,7 +169,8 @@ export function matchPdvCielo(
   const pdvRestante: PdvPagamento[] = [];
   const cieloMatchedSegundaPassada = new Set<CieloVenda>();
 
-  const MAX_DIFF_CENTAVOS = 3; // tolera ate +-R$ 0,03 de diff entre PDV e Cielo
+  const MAX_DIFF_CENTAVOS = 10; // tolera ate +-R$ 0,10 de diff entre PDV e Cielo
+  // (padrao frequente: Cielo arredonda .X0 -> .X9 adicionando R$ 0,09)
 
   for (const p of result.pdvSemCielo) {
     const cat = categoriaForma(p.formaPagamento);
@@ -272,11 +273,22 @@ export function matchPdvCielo(
     if (cieloMatchedSegundaPassada.has(cand.c)) continue;
     pdvMatched.add(cand.pIdx);
     cieloMatchedSegundaPassada.add(cand.c);
-    result.divergenciaValor.push({
-      pdv: result.pdvSemCielo[cand.pIdx]!,
-      cielo: cand.c,
-      diff: cand.diff,
-    });
+    // Se diff e' zero E mesma categoria, vira match direto (sem virar divergencia).
+    // Cobre casos onde PDV perdeu o NSU mas valor+data+forma batem exato.
+    if (Math.abs(cand.diff) < TOL && cand.sameCat) {
+      result.matched.push({
+        pdv: result.pdvSemCielo[cand.pIdx]!,
+        cielo: cand.c,
+        diff: cand.diff,
+        matchType: 'DATA_VALOR',
+      });
+    } else {
+      result.divergenciaValor.push({
+        pdv: result.pdvSemCielo[cand.pIdx]!,
+        cielo: cand.c,
+        diff: cand.diff,
+      });
+    }
   }
   const pdvFinal: PdvPagamento[] = [];
   for (let i = 0; i < result.pdvSemCielo.length; i++) {
