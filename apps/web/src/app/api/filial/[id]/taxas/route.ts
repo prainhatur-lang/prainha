@@ -17,10 +17,17 @@ const TaxasPorBandeiraSchema = z.object({
   credito_a_vista: z.record(z.string(), z.number().min(0).max(100)),
 });
 
+const PrazosSchema = z.object({
+  pix: z.number().int().min(0).max(365),
+  debito: z.number().int().min(0).max(365),
+  credito_a_vista: z.number().int().min(0).max(365),
+});
+
 const EstabelecimentoSchema = TaxasPorBandeiraSchema.extend({
   codigo: z.string().min(1).max(30),
   rotulo: z.string().max(100).optional(),
   canal: z.string().max(30).optional(),
+  prazos: PrazosSchema.optional(),
 });
 
 const Body = z.object({
