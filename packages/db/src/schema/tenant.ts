@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /** Percentuais de taxas Cielo por forma + bandeira. Usado pela engine Banco
@@ -57,6 +57,12 @@ export const filial = pgTable(
     dataInicioConciliacao: date('data_inicio_conciliacao'),
     /** Taxas Cielo por forma + bandeira (null = usar defaults) */
     taxas: jsonb('taxas').$type<TaxasFilial>(),
+    /** Valor max (em R$) de diff PDV vs Cielo que a conciliacao Operadora
+     *  aceita automaticamente quando a data eh exata. Acima disso vira
+     *  divergencia pra revisao manual. Default 0.90. */
+    toleranciaAutoAceite: numeric('tolerancia_auto_aceite', { precision: 10, scale: 2 })
+      .notNull()
+      .default('0.90'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

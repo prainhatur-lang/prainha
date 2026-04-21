@@ -26,15 +26,18 @@ function defaultBase(): TaxasPorBandeira {
 export function ConfiguracoesForm({
   filialId,
   taxas: taxasInicial,
+  toleranciaAutoAceite: tolInicial,
 }: {
   filialId: string;
   taxas: TaxasFilial;
+  toleranciaAutoAceite: number;
 }) {
   const router = useRouter();
   const [ecs, setEcs] = useState<EstabelecimentoConfig[]>(taxasInicial.ecs ?? []);
   const [defaultT, setDefaultT] = useState<TaxasPorBandeira>(
     taxasInicial.default ?? defaultBase(),
   );
+  const [tolAuto, setTolAuto] = useState<number>(tolInicial ?? 0.90);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
@@ -62,7 +65,7 @@ export function ConfiguracoesForm({
       const r = await fetch(`/api/filial/${filialId}/taxas`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ecs, default: defaultT }),
+        body: JSON.stringify({ ecs, default: defaultT, toleranciaAutoAceite: tolAuto }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -213,6 +216,30 @@ export function ConfiguracoesForm({
             ))}
           </div>
         )}
+      </div>
+
+      {/* Tolerancia auto-aceite */}
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <h3 className="text-sm font-semibold text-slate-800">Tolerância auto-aceite</h3>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Divergências PDV × Cielo com |diff| até esse valor E data exata são
+          aceitas automaticamente (comum em gorjeta, cashback, arredondamento).
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-xs text-slate-700">R$</span>
+          <input
+            type="number"
+            step="0.01"
+            min={0}
+            max={10}
+            value={tolAuto}
+            onChange={(e) => setTolAuto(Number(e.target.value) || 0)}
+            className="w-28 rounded-md border border-slate-300 px-2 py-1 text-right text-xs"
+          />
+          <span className="text-[11px] text-slate-500">
+            Default 0,90 (R$ 0,90). Acima vira divergência manual.
+          </span>
+        </div>
       </div>
 
       {/* Actions */}

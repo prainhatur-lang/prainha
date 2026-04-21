@@ -33,6 +33,7 @@ const EstabelecimentoSchema = TaxasPorBandeiraSchema.extend({
 const Body = z.object({
   ecs: z.array(EstabelecimentoSchema).max(20),
   default: TaxasPorBandeiraSchema,
+  toleranciaAutoAceite: z.number().min(0).max(10).optional(),
 });
 
 export async function PATCH(
@@ -69,9 +70,17 @@ export async function PATCH(
     );
   }
 
+  const { ecs, default: def, toleranciaAutoAceite } = parsed.data;
+  const setFields: { taxas: { ecs: typeof ecs; default: typeof def }; toleranciaAutoAceite?: string } = {
+    taxas: { ecs, default: def },
+  };
+  if (toleranciaAutoAceite !== undefined) {
+    setFields.toleranciaAutoAceite = toleranciaAutoAceite.toFixed(2);
+  }
+
   const [updated] = await db
     .update(schema.filial)
-    .set({ taxas: parsed.data })
+    .set(setFields)
     .where(eq(schema.filial.id, id))
     .returning({ id: schema.filial.id });
 

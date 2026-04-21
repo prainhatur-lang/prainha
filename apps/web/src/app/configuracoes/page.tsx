@@ -116,6 +116,7 @@ export default async function ConfiguracoesPage() {
           id: schema.filial.id,
           nome: schema.filial.nome,
           taxas: schema.filial.taxas,
+          toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
         })
         .from(schema.filial)
         .where(inArray(schema.filial.id, filialIds))
@@ -187,7 +188,11 @@ export default async function ConfiguracoesPage() {
                   <h2 className="text-base font-semibold text-slate-900">{f.nome}</h2>
                   <p className="mt-0.5 text-xs text-slate-500">ID: {f.id}</p>
                   <div className="mt-5">
-                    <ConfiguracoesForm filialId={f.id} taxas={taxas} />
+                    <ConfiguracoesForm
+                      filialId={f.id}
+                      taxas={taxas}
+                      toleranciaAutoAceite={Number(f.toleranciaAutoAceite ?? 0.90)}
+                    />
                   </div>
 
                   <div className="mt-8 border-t border-slate-200 pt-5">

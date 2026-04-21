@@ -56,14 +56,18 @@ export async function rodarConciliacaoOperadora(opts: {
   const { filialId, dataFim } = opts;
   let { dataInicio } = opts;
 
-  // Aplica corte da filial
+  // Aplica corte da filial + carrega tolerancia de auto-aceite
   const [fil] = await db
-    .select({ dataInicioConciliacao: schema.filial.dataInicioConciliacao })
+    .select({
+      dataInicioConciliacao: schema.filial.dataInicioConciliacao,
+      toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
+    })
     .from(schema.filial)
     .where(eq(schema.filial.id, filialId))
     .limit(1);
   const corte = fil?.dataInicioConciliacao ?? null;
   if (corte && dataInicio < corte) dataInicio = corte;
+  const tolAutoAceite = Number(fil?.toleranciaAutoAceite ?? 0.90);
 
   // Cria execucao
   const [exec] = await db
@@ -194,12 +198,12 @@ export async function rodarConciliacaoOperadora(opts: {
       p.codigoPedidoExterno ? `Pedido #${p.codigoPedidoExterno}` : 'Pedido ?';
 
     for (const { pdv, cielo, diff } of result.divergenciaValor) {
-      // Auto-aceita quando diff~=0 E data exata (forte sinal que e' o mesmo
-      // pagamento, mesmo com forma diferente). Cria registro com aceitaEm
-      // ja preenchido pra o rastreado do relatorio/dashboard contar como
-      // conciliado e o banco engine aplicar a forma da Cielo.
+      // Auto-aceita quando |diff| <= toleranciaAutoAceite (default R$ 0,90)
+      // E data exata. Cria registro com aceitaEm preenchido pra o rastreado
+      // contar como conciliado e o banco engine aplicar a forma da Cielo.
+      // Tolerancia configuravel por filial em /configuracoes.
       const autoAceita =
-        Math.abs(diff) < 0.01 &&
+        Math.abs(diff) <= tolAutoAceite &&
         pdv.dataPagamento === cielo.dataVenda;
       novasExcecoes.push({
         filialId,
