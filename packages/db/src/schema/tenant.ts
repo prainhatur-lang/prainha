@@ -9,11 +9,22 @@ export interface TaxasPorBandeira {
   credito_a_vista: Record<string, number>;
 }
 
-/** Config de um estabelecimento Cielo (EC) — pode ser TEF, Online, etc. */
+/** Prazos de liquidacao em dias corridos por forma. EC Online pode ter
+ * prazos maiores (D+30 padrao) ou antecipacao (D+1). */
+export interface PrazosLiquidacao {
+  pix: number; // dias (normal: 1)
+  debito: number; // dias (normal: 1)
+  credito_a_vista: number; // dias (normal: 30)
+}
+
+/** Config de um estabelecimento Cielo (EC) — pode ser TEF, Online, etc.
+ *  Cada EC pode ter taxas E prazos diferentes (TEF normalmente D+1/D+30,
+ *  Online pode ter antecipacao ou prazo maior). */
 export interface EstabelecimentoConfig extends TaxasPorBandeira {
   codigo: string; // EC, ex: "1115651924"
   rotulo?: string; // nome amigavel
   canal?: 'TEF' | 'ONLINE' | string;
+  prazos?: PrazosLiquidacao;
 }
 
 /** Config de taxas da filial: lista de ECs + default pra casos nao mapeados. */

@@ -147,6 +147,68 @@ export function ConfiguracoesForm({
                     }
                   />
                 </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-3">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-600">
+                    Prazo liquidação (dias corridos):
+                  </span>
+                  <label className="flex items-center gap-1 text-xs text-slate-700">
+                    Pix
+                    <input
+                      type="number"
+                      min={0}
+                      value={e.prazos?.pix ?? 0}
+                      onChange={(ev) =>
+                        updateEc(i, {
+                          prazos: {
+                            pix: Number(ev.target.value) || 0,
+                            debito: e.prazos?.debito ?? 1,
+                            credito_a_vista: e.prazos?.credito_a_vista ?? 30,
+                          },
+                        })
+                      }
+                      className="w-16 rounded-md border border-slate-300 px-2 py-1 text-right"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-slate-700">
+                    Débito
+                    <input
+                      type="number"
+                      min={0}
+                      value={e.prazos?.debito ?? 1}
+                      onChange={(ev) =>
+                        updateEc(i, {
+                          prazos: {
+                            pix: e.prazos?.pix ?? 0,
+                            debito: Number(ev.target.value) || 0,
+                            credito_a_vista: e.prazos?.credito_a_vista ?? 30,
+                          },
+                        })
+                      }
+                      className="w-16 rounded-md border border-slate-300 px-2 py-1 text-right"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-slate-700">
+                    Crédito à vista
+                    <input
+                      type="number"
+                      min={0}
+                      value={e.prazos?.credito_a_vista ?? 30}
+                      onChange={(ev) =>
+                        updateEc(i, {
+                          prazos: {
+                            pix: e.prazos?.pix ?? 0,
+                            debito: e.prazos?.debito ?? 1,
+                            credito_a_vista: Number(ev.target.value) || 0,
+                          },
+                        })
+                      }
+                      className="w-16 rounded-md border border-slate-300 px-2 py-1 text-right"
+                    />
+                  </label>
+                  <span className="text-[11px] text-slate-500">
+                    TEF: 1/1/30. Online: 0/2/43 (31 dias úteis ≈ 43 corridos).
+                  </span>
+                </div>
               </div>
             ))}
           </div>
