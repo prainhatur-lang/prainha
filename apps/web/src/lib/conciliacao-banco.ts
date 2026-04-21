@@ -134,6 +134,7 @@ export async function rodarConciliacaoBanco(opts: {
         vendaValor: schema.vendaAdquirente.valorBruto,
         vendaEc: schema.vendaAdquirente.codigoEstabelecimento,
         vendaBandeira: schema.vendaAdquirente.bandeira,
+        vendaForma: schema.vendaAdquirente.formaPagamento,
       })
       .from(schema.excecao)
       .innerJoin(
@@ -149,7 +150,7 @@ export async function rodarConciliacaoBanco(opts: {
       );
     const divergenciasAceitas = new Map<
       string,
-      { valor: number; ec: string | null; bandeira: string | null }
+      { valor: number; ec: string | null; bandeira: string | null; forma: string | null }
     >();
     for (const a of aceitasRows) {
       if (a.pagamentoId) {
@@ -157,6 +158,7 @@ export async function rodarConciliacaoBanco(opts: {
           valor: Number(a.vendaValor),
           ec: a.vendaEc,
           bandeira: a.vendaBandeira,
+          forma: a.vendaForma,
         });
       }
     }
@@ -228,11 +230,13 @@ export async function rodarConciliacaoBanco(opts: {
       );
 
     // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida").
-    // Se existir divergencia ACEITA, usa o valor/EC/bandeira da venda Cielo
-    // (user ja decidiu que o lado correto eh o da Cielo).
+    // Se existir divergencia ACEITA, usa o valor/EC/bandeira/FORMA da venda Cielo
+    // (user ja decidiu que o lado correto eh o da Cielo). Isso garante que a
+    // taxa aplicada eh a da forma real (ex: PDV digitou Credito mas cliente
+    // passou Debito — a taxa aplicada passa a ser a de Debito).
     const pseudoRecebiveis = liquidaveis.map((p) => {
       const aceita = divergenciasAceitas.get(p.id);
-      const forma = p.formaPagamento ?? '';
+      const forma = aceita?.forma ?? p.formaPagamento ?? '';
       const bandeira = aceita?.bandeira ?? p.vendaBandeira ?? p.bandeiraMfe ?? null;
       const ec = aceita?.ec ?? p.vendaEc;
       const taxasDoEc = resolverTaxas(taxasFilial, ec);
