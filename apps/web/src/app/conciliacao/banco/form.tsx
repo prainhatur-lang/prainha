@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Filial {
@@ -34,6 +34,31 @@ export function BancoForm({ filiais }: { filiais: Filial[] }) {
   const [dataFim, setDataFim] = useState(hojeISO());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!filialId || !dataInicio || !dataFim) return;
+    let cancelado = false;
+    const qs = new URLSearchParams({ filialId, processo: 'BANCO', dataInicio, dataFim });
+    fetch(`/api/conciliacao/status?${qs.toString()}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelado || !d?.temAnterior) {
+          if (!cancelado) setAviso(null);
+          return;
+        }
+        const quando = new Date(d.ultimaEm).toLocaleString('pt-BR');
+        const p = d.periodo;
+        const pTxt = p
+          ? ` (período ${p.inicio?.split('-').reverse().join('/')} a ${p.fim?.split('-').reverse().join('/')})`
+          : '';
+        setAviso(`Já rodada em ${quando}${pTxt}. Rodar de novo sobrescreve as exceções em aberto.`);
+      })
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+  }, [filialId, dataInicio, dataFim]);
 
   function onFilialChange(id: string) {
     setFilialId(id);
@@ -43,6 +68,7 @@ export function BancoForm({ filiais }: { filiais: Filial[] }) {
 
   async function rodar() {
     if (!filialId) return;
+    if (aviso && !confirm(`${aviso}\n\nDeseja sobrescrever?`)) return;
     setLoading(true);
     setError(null);
     try {
@@ -123,6 +149,12 @@ export function BancoForm({ filiais }: { filiais: Filial[] }) {
       >
         {loading ? 'Cruzando dados...' : 'Rodar conciliação'}
       </button>
+
+      {aviso && !error && (
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+          ⚠ {aviso}
+        </p>
+      )}
 
       {error && (
         <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
