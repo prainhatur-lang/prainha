@@ -151,7 +151,12 @@ export async function rodarConciliacaoOperadora(opts: {
         nsu: p.nsu,
         valor: Number(p.valor),
         formaPagamento: p.formaPagamento ?? '',
-        dataPagamento: p.dataPagamento ? p.dataPagamento.toISOString().slice(0, 10) : undefined,
+        // data em BRT (UTC-3) pra bater com venda_adquirente.dataVenda que e'
+        // registrada em horario local pela Cielo. Sem o -3h, pagamentos no
+        // final do dia BRT caem no dia seguinte UTC e o auto-aceita falha.
+        dataPagamento: p.dataPagamento
+          ? new Date(p.dataPagamento.getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10)
+          : undefined,
         codigoPedidoExterno: p.codigoPedidoExterno ?? null,
         numeroAutorizacao: p.numeroAutorizacao ?? null,
       })),
