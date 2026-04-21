@@ -118,9 +118,20 @@ export async function rodarConciliacaoRecebiveis(opts: {
     // Dias com fechamento (por data_venda, que eh o "evento" na conciliacao Recebiveis)
     const fechados = await diasFechados(filialId, PROCESSO_RECEBIVEIS, dataInicio, dataFim);
 
-    // Match por NSU em toda a janela ampliada; filtro por range nominal depois
-    const vendasByNsu = new Map(vendas.map((v) => [v.nsu, v]));
-    const recByNsu = new Map(recebiveis.map((r) => [r.nsu, r]));
+    // Match por (NSU + dataVenda) — Cielo REUSA NSU em transacoes diferentes,
+    // entao chave composta evita parear venda de 20/03 com recebivel de 29/03
+    // quando o mesmo NSU aparece nos dois. Como fallback, se o match por
+    // (NSU+data) nao achar, tenta (NSU+valor) pra cobrir virada de dia.
+    const keyNsuData = (nsu: string, dataVenda: string | null) =>
+      `${nsu}|${dataVenda ?? ''}`;
+    const recByNsuData = new Map<string, (typeof recebiveis)[number][]>();
+    for (const r of recebiveis) {
+      const k = keyNsuData(r.nsu, r.dataVenda);
+      const arr = recByNsuData.get(k) ?? [];
+      arr.push(r);
+      recByNsuData.set(k, arr);
+    }
+    const vendasByNsuData = new Set(vendas.map((v) => keyNsuData(v.nsu, v.dataVenda)));
     const naRangeNominal = (d: string) => d >= dataInicio && d <= dataFim && !fechados.has(d);
 
     const matched: Array<{
@@ -132,22 +143,34 @@ export async function rodarConciliacaoRecebiveis(opts: {
     const vendaSemAgenda: typeof vendas = [];
     const agendaSemVenda: typeof recebiveis = [];
 
-    const usados = new Set<string>();
+    const recUsados = new Set<string>(); // ids dos recebiveis ja matchados
     for (const v of vendas) {
       if (!naRangeNominal(v.dataVenda)) continue; // venda em D-1/D+1 so serve pra matching cruzado
-      const r = recByNsu.get(v.nsu);
+      // 1. Chave forte: NSU + dataVenda
+      const candidatos = (recByNsuData.get(keyNsuData(v.nsu, v.dataVenda)) ?? [])
+        .filter((r) => !recUsados.has(r.id));
+      // Desempata: prefere o que casa valor exato
+      let r = candidatos.find(
+        (x) => Math.abs(Number(x.valorBruto) - Number(v.valorBruto)) < TOL,
+      );
+      if (!r && candidatos.length > 0) r = candidatos[0];
+
       if (!r) {
         vendaSemAgenda.push(v);
         continue;
       }
-      usados.add(v.nsu);
+      recUsados.add(r.id);
       const diff = +(Number(r.valorBruto) - Number(v.valorBruto)).toFixed(2);
       if (Math.abs(diff) < TOL) matched.push({ venda: v, recebivel: r, diff });
       else divergencia.push({ venda: v, recebivel: r, diff });
     }
     for (const r of recebiveis) {
       if (!r.dataVenda || !naRangeNominal(r.dataVenda)) continue;
-      if (!usados.has(r.nsu) && !vendasByNsu.has(r.nsu)) agendaSemVenda.push(r);
+      if (recUsados.has(r.id)) continue;
+      // AgendaSemVenda: nao tem venda pra esse NSU+data em lugar nenhum
+      if (!vendasByNsuData.has(keyNsuData(r.nsu, r.dataVenda))) {
+        agendaSemVenda.push(r);
+      }
     }
 
     // Limpa excecoes abertas apenas dos itens em scope (preserva dias fechados).
