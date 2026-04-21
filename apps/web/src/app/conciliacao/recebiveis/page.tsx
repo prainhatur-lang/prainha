@@ -105,6 +105,7 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
     [TIPO_RECEBIVEIS.DIVERGENCIA_VALOR]: [] as typeof excecoesAbertas,
     [TIPO_RECEBIVEIS.VENDA_SEM_AGENDA]: [] as typeof excecoesAbertas,
     [TIPO_RECEBIVEIS.AGENDA_SEM_VENDA]: [] as typeof excecoesAbertas,
+    [TIPO_RECEBIVEIS.TARIFA_CIELO]: [] as typeof excecoesAbertas,
   };
   for (const e of excecoesAbertas) {
     if (porTipo[e.tipo as keyof typeof porTipo]) porTipo[e.tipo as keyof typeof porTipo].push(e);
@@ -131,6 +132,7 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
         divergenciaValor: { qtd: number; valor: number };
         vendaSemAgenda: { qtd: number; valor: number };
         agendaSemVenda: { qtd: number; valor: number };
+        tarifas?: { qtd: number; valor: number };
       }
     | null
     | undefined) ?? null;
@@ -270,7 +272,7 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
               <ResumoCard
                 label="Conciliados"
                 qtd={resumoUltima?.conciliados?.qtd ?? 0}
@@ -304,6 +306,15 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
                 )}
                 tom="amber"
               />
+              <ResumoCard
+                label="Tarifa/aluguel"
+                qtd={porTipo[TIPO_RECEBIVEIS.TARIFA_CIELO]?.length ?? 0}
+                valor={(porTipo[TIPO_RECEBIVEIS.TARIFA_CIELO] ?? []).reduce(
+                  (s, e) => s + Number(e.valor ?? 0),
+                  0,
+                )}
+                tom="slate"
+              />
             </div>
 
             <SecaoExcecoes
@@ -324,6 +335,14 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
               tom="amber"
               excecoes={porTipo[TIPO_RECEBIVEIS.AGENDA_SEM_VENDA]}
             />
+            {(porTipo[TIPO_RECEBIVEIS.TARIFA_CIELO]?.length ?? 0) > 0 && (
+              <SecaoExcecoes
+                titulo="Tarifa / aluguel Cielo"
+                descricao="Descontos administrativos da Cielo (aluguel LIO, tarifa, estorno) sem venda correspondente."
+                tom="slate"
+                excecoes={porTipo[TIPO_RECEBIVEIS.TARIFA_CIELO] ?? []}
+              />
+            )}
           </div>
         </div>
       </section>
@@ -340,12 +359,13 @@ function ResumoCard({
   label: string;
   qtd: number;
   valor: number;
-  tom: 'emerald' | 'amber' | 'rose';
+  tom: 'emerald' | 'amber' | 'rose' | 'slate';
 }) {
   const cor = {
     emerald: 'border-emerald-200 bg-emerald-50',
     amber: 'border-amber-200 bg-amber-50',
     rose: 'border-rose-200 bg-rose-50',
+    slate: 'border-slate-200 bg-slate-50',
   }[tom];
   return (
     <div className={`rounded-xl border p-4 ${cor}`}>
@@ -364,7 +384,7 @@ function SecaoExcecoes({
 }: {
   titulo: string;
   descricao: string;
-  tom: 'amber' | 'rose';
+  tom: 'amber' | 'rose' | 'slate';
   excecoes: Array<{
     id: string;
     valor: string | null;
@@ -379,7 +399,8 @@ function SecaoExcecoes({
     recebivelValorLiquido: string | null;
   }>;
 }) {
-  const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
+  const corHeader =
+    tom === 'rose' ? 'text-rose-700' : tom === 'slate' ? 'text-slate-700' : 'text-amber-700';
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-4 py-3">

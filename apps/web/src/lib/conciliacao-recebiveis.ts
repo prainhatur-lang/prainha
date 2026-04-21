@@ -12,6 +12,7 @@ export const TIPO_RECEBIVEIS = {
   VENDA_SEM_AGENDA: 'VENDA_SEM_AGENDA',
   AGENDA_SEM_VENDA: 'AGENDA_SEM_VENDA',
   DIVERGENCIA_VALOR: 'DIVERGENCIA_VALOR_RECEBIVEL',
+  TARIFA_CIELO: 'TARIFA_CIELO',
 } as const;
 
 export interface RecebiveisResumo {
@@ -19,6 +20,20 @@ export interface RecebiveisResumo {
   divergenciaValor: { qtd: number; valor: number };
   vendaSemAgenda: { qtd: number; valor: number };
   agendaSemVenda: { qtd: number; valor: number };
+  tarifas: { qtd: number; valor: number };
+}
+
+/** Detecta recebivel que e' tarifa/aluguel Cielo (nao tem venda correspondente).
+ *  Heuristica: valor negativo (estorno/debito) OU NSU vazio OU descricao contem
+ *  palavras-chave de tarifa. */
+function ehTarifa(r: {
+  nsu: string;
+  valorBruto: string | number;
+}): boolean {
+  const valor = Number(r.valorBruto);
+  if (valor < 0) return true; // debito da Cielo (aluguel LIO, tarifa, estorno)
+  if (!r.nsu || r.nsu.trim() === '') return true;
+  return false;
 }
 
 export interface RecebiveisResultado {
@@ -164,12 +179,19 @@ export async function rodarConciliacaoRecebiveis(opts: {
       if (Math.abs(diff) < TOL) matched.push({ venda: v, recebivel: r, diff });
       else divergencia.push({ venda: v, recebivel: r, diff });
     }
+    const tarifas: typeof recebiveis = [];
     for (const r of recebiveis) {
       if (!r.dataVenda || !naRangeNominal(r.dataVenda)) continue;
       if (recUsados.has(r.id)) continue;
-      // AgendaSemVenda: nao tem venda pra esse NSU+data em lugar nenhum
+      // AgendaSemVenda: nao tem venda pra esse NSU+data em lugar nenhum.
+      // Se o recebivel for tarifa/aluguel (valor negativo ou NSU vazio), vai
+      // pra categoria TARIFA_CIELO em vez de AGENDA_SEM_VENDA.
       if (!vendasByNsuData.has(keyNsuData(r.nsu, r.dataVenda))) {
-        agendaSemVenda.push(r);
+        if (ehTarifa(r)) {
+          tarifas.push(r);
+        } else {
+          agendaSemVenda.push(r);
+        }
       }
     }
 
@@ -233,6 +255,22 @@ export async function rodarConciliacaoRecebiveis(opts: {
         valor: String(r.valorBruto),
       });
     }
+    for (const r of tarifas) {
+      const valor = Number(r.valorBruto);
+      const dp = r.dataPagamento ?? r.dataVenda ?? '';
+      const descr = valor < 0
+        ? `Tarifa/aluguel Cielo: R$ ${valor.toFixed(2)} descontado em ${dp}.`
+        : `Ajuste Cielo sem NSU: R$ ${valor.toFixed(2)} em ${dp}.`;
+      novas.push({
+        filialId,
+        processo: PROCESSO_RECEBIVEIS,
+        recebivelAdquirenteId: r.id,
+        tipo: TIPO_RECEBIVEIS.TARIFA_CIELO,
+        severidade: 'BAIXA',
+        descricao: descr,
+        valor: String(r.valorBruto),
+      });
+    }
 
     const CHUNK = 1000;
     for (let i = 0; i < novas.length; i += CHUNK) {
@@ -255,6 +293,10 @@ export async function rodarConciliacaoRecebiveis(opts: {
       agendaSemVenda: {
         qtd: agendaSemVenda.length,
         valor: agendaSemVenda.reduce((s, r) => s + Number(r.valorBruto), 0),
+      },
+      tarifas: {
+        qtd: tarifas.length,
+        valor: tarifas.reduce((s, r) => s + Number(r.valorBruto), 0),
       },
     };
 
