@@ -13,8 +13,16 @@ export const PROCESSO_OPERADORA = 'OPERADORA';
  * Pix Online/Manual: passam pela Cielo LIO (tem valor bruto no arquivo Cielo),
  * o matcher encontra por fallback data+valor mesmo sem NSU.
  * iFood Online: pagamento via iFood, fora do fluxo Cielo.
- * Dinheiro/Voucher: nao passa por adquirente. */
-const FORMAS_EXCLUIR_OPERADORA = ['Dinheiro', 'Voucher', 'iFood Online'];
+ * Dinheiro/Voucher: nao passa por adquirente.
+ * Transferencia bancaria/Carteira Digital: pagamento direto no banco, fora da Cielo. */
+const FORMAS_EXCLUIR_OPERADORA = [
+  'Dinheiro',
+  'Voucher',
+  'iFood Online',
+  'Transferência bancária',
+  'Carteira Digital',
+  'Transferência bancária, Carteira Digital',
+];
 
 /** Tipos de excecao do processo Operadora */
 export const TIPO_OPERADORA = {
