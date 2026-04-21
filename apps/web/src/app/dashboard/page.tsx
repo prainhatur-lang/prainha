@@ -19,20 +19,35 @@ interface SP {
 type Periodo = '1m' | '3m' | '6m';
 const PERIODOS: Periodo[] = ['1m', '3m', '6m'];
 const PERIODO_LABEL: Record<Periodo, string> = {
-  '1m': '1 mês',
-  '3m': '3 meses',
-  '6m': '6 meses',
+  '1m': 'Mês anterior',
+  '3m': 'Últimos 3 meses',
+  '6m': 'Últimos 6 meses',
 };
 const PERIODO_MESES: Record<Periodo, number> = { '1m': 1, '3m': 3, '6m': 6 };
 
-function rangeDoPeriodo(p: Periodo): { dataInicio: string; dataFim: string; dtIni: Date; dtFim: Date } {
-  // "Hoje" em BRT (UTC-3)
+function rangeDoPeriodo(p: Periodo): {
+  dataInicio: string;
+  dataFim: string;
+  dtIni: Date;
+  dtFim: Date;
+} {
+  // Calendario BRT (UTC-3). Retorna meses FECHADOS: se hoje e' abril,
+  // "1m" = marco (1/3-31/3), "3m" = jan-mar, "6m" = out-mar.
   const agora = new Date();
   const brNow = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
-  const dataFim = brNow.toISOString().slice(0, 10);
-  const brIni = new Date(brNow);
-  brIni.setUTCMonth(brIni.getUTCMonth() - PERIODO_MESES[p]);
-  const dataInicio = brIni.toISOString().slice(0, 10);
+  const yearNow = brNow.getUTCFullYear();
+  const monthNow = brNow.getUTCMonth(); // 0-11
+
+  // Fim = ultimo dia do mes anterior
+  // Ultimo dia do mes anterior = dia 0 do mes atual
+  const fimUtc = new Date(Date.UTC(yearNow, monthNow, 0));
+  const dataFim = fimUtc.toISOString().slice(0, 10);
+
+  // Inicio = primeiro dia de (mes anterior - (N-1) meses)
+  const n = PERIODO_MESES[p];
+  const iniUtc = new Date(Date.UTC(yearNow, monthNow - n, 1));
+  const dataInicio = iniUtc.toISOString().slice(0, 10);
+
   return {
     dataInicio,
     dataFim,
