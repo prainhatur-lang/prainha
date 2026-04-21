@@ -27,8 +27,10 @@ export interface BancoResultado {
   excecoesCriadas: number;
 }
 
+import { dateToBrYmd } from './datas';
+
 function isoToBr(d: string | Date): string {
-  const iso = typeof d === 'string' ? d : d.toISOString().slice(0, 10);
+  const iso = typeof d === 'string' ? d : dateToBrYmd(d);
   const [y, m, day] = iso.split('-');
   return `${day}/${m}/${y}`;
 }
@@ -206,8 +208,7 @@ export async function rodarConciliacaoBanco(opts: {
     const liquidaveis = pagamentos.filter((p) => {
       if (!p.formaPagamento || FORMAS_EXCLUIR.has(p.formaPagamento)) return false;
       if (!p.dataPagamento) return true;
-      const iso = p.dataPagamento.toISOString().slice(0, 10);
-      return !fechados.has(iso);
+      return !fechados.has(dateToBrYmd(p.dataPagamento));
     });
 
     // Lancamentos banco no mesmo periodo (data_movimento)

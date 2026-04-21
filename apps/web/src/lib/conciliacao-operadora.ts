@@ -5,6 +5,7 @@ import { db, schema } from '@concilia/db';
 import { matchPdvCielo } from '@concilia/conciliador/engine';
 import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull, or } from 'drizzle-orm';
 import { diasFechados } from './fechamento';
+import { dateToBrYmd } from './datas';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
@@ -112,8 +113,7 @@ export async function rodarConciliacaoOperadora(opts: {
       );
     const pagamentos = pagamentosRaw.filter((p) => {
       if (!p.dataPagamento) return true;
-      const iso = p.dataPagamento.toISOString().slice(0, 10);
-      return !fechados.has(iso);
+      return !fechados.has(dateToBrYmd(p.dataPagamento));
     });
 
     // Carrega vendas Cielo com janela de +-1 dia pra cobrir virada do dia
@@ -151,12 +151,8 @@ export async function rodarConciliacaoOperadora(opts: {
         nsu: p.nsu,
         valor: Number(p.valor),
         formaPagamento: p.formaPagamento ?? '',
-        // data em BRT (UTC-3) pra bater com venda_adquirente.dataVenda que e'
-        // registrada em horario local pela Cielo. Sem o -3h, pagamentos no
-        // final do dia BRT caem no dia seguinte UTC e o auto-aceita falha.
-        dataPagamento: p.dataPagamento
-          ? new Date(p.dataPagamento.getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10)
-          : undefined,
+        // data em BRT pra bater com venda_adquirente.dataVenda (BRT).
+        dataPagamento: p.dataPagamento ? dateToBrYmd(p.dataPagamento) : undefined,
         codigoPedidoExterno: p.codigoPedidoExterno ?? null,
         numeroAutorizacao: p.numeroAutorizacao ?? null,
       })),

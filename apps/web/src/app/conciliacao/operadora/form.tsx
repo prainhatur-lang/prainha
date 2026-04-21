@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { hojeBr, diasAtrasBr } from '@/lib/datas';
 
 interface Filial {
   id: string;
@@ -9,16 +10,8 @@ interface Filial {
   dataInicioConciliacao: string | null;
 }
 
-function hojeISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-function diasAtras(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 function inicioPadrao(corte: string | null) {
-  const trintaDias = diasAtras(30);
+  const trintaDias = diasAtrasBr(30);
   return corte && corte > trintaDias ? corte : trintaDias;
 }
 
@@ -35,7 +28,7 @@ export function OperadoraForm({ filiais }: { filiais: Filial[] }) {
   );
   const corte = filialSelecionada?.dataInicioConciliacao ?? null;
   const [dataInicio, setDataInicio] = useState(urlIni ?? inicioPadrao(corte));
-  const [dataFim, setDataFim] = useState(urlFim ?? hojeISO());
+  const [dataFim, setDataFim] = useState(urlFim ?? hojeBr());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);

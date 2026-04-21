@@ -7,6 +7,7 @@ import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
 import { brl, int } from '@/lib/format';
 import { RelatorioForm } from './form';
+import { hojeBr, diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,15 +18,6 @@ interface SP {
 }
 
 const ADQUIRENTE_CIELO = 'CIELO';
-
-function hojeISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-function diasAtras(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 export default async function RelatorioPage(props: { searchParams: Promise<SP> }) {
   const supabase = await createClient();
@@ -43,10 +35,10 @@ export default async function RelatorioPage(props: { searchParams: Promise<SP> }
 
   const dataInicio = sp.dataInicio && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataInicio)
     ? sp.dataInicio
-    : diasAtras(30);
+    : diasAtrasBr(30);
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)
     ? sp.dataFim
-    : hojeISO();
+    : hojeBr();
 
   const dados = filialSelecionada
     ? await carregarDados(filialSelecionada.id, dataInicio, dataFim)
