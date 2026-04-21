@@ -273,8 +273,11 @@ export function matchPdvCielo(
     if (cieloMatchedSegundaPassada.has(cand.c)) continue;
     pdvMatched.add(cand.pIdx);
     cieloMatchedSegundaPassada.add(cand.c);
-    // Se diff e' zero E mesma categoria, vira match direto (sem virar divergencia).
+    // Se diff ~= 0 E categoria igual, vira match direto (nao vira divergencia).
     // Cobre casos onde PDV perdeu o NSU mas valor+data+forma batem exato.
+    // Casos cross-cat (Credito PDV x Debito Cielo) com diff=0 tambem indicam
+    // o mesmo pagamento, mas vao como divergencia pra a engine auto-aceita-los
+    // (a engine sabe criar o registro excecao pra rastreabilidade).
     if (Math.abs(cand.diff) < TOL && cand.sameCat) {
       result.matched.push({
         pdv: result.pdvSemCielo[cand.pIdx]!,

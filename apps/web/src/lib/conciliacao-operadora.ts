@@ -194,15 +194,28 @@ export async function rodarConciliacaoOperadora(opts: {
       p.codigoPedidoExterno ? `Pedido #${p.codigoPedidoExterno}` : 'Pedido ?';
 
     for (const { pdv, cielo, diff } of result.divergenciaValor) {
+      // Auto-aceita quando diff~=0 E data exata (forte sinal que e' o mesmo
+      // pagamento, mesmo com forma diferente). Cria registro com aceitaEm
+      // ja preenchido pra o rastreado do relatorio/dashboard contar como
+      // conciliado e o banco engine aplicar a forma da Cielo.
+      const autoAceita =
+        Math.abs(diff) < 0.01 &&
+        pdv.dataPagamento === cielo.dataVenda;
       novasExcecoes.push({
         filialId,
         processo: PROCESSO_OPERADORA,
         pagamentoId: pdv.id,
         vendaAdquirenteId: cielo.id ?? null,
         tipo: TIPO_OPERADORA.DIVERGENCIA_VALOR,
-        severidade: 'MEDIA',
-        descricao: `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
+        severidade: autoAceita ? 'BAIXA' : 'MEDIA',
+        descricao: autoAceita
+          ? `${pedidoTxt(pdv)} — Match automatico: PDV R$ ${pdv.valor.toFixed(2)} = Cielo R$ ${cielo.valorBruto.toFixed(2)} mesma data. Forma PDV: ${pdv.formaPagamento}, forma Cielo: ${cielo.formaPagamento ?? '?'}.`
+          : `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
         valor: String(pdv.valor),
+        aceitaEm: autoAceita ? new Date() : null,
+        observacao: autoAceita
+          ? 'Aceita automaticamente: valor e data batem exatos, forma divergente ajustada para usar a da Cielo.'
+          : null,
       });
     }
     for (const pdv of result.pdvSemCielo) {
