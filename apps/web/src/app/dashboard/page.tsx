@@ -638,6 +638,11 @@ async function carregarDados(
           WHERE v.filial_id = ${schema.pagamento.filialId}
             AND v.nsu = ${schema.pagamento.nsuTransacao}
             AND v.data_venda BETWEEN ${isoIniCielo} AND ${isoFimCielo}
+        ) OR EXISTS (
+          SELECT 1 FROM excecao e
+          WHERE e.pagamento_id = ${schema.pagamento.id}
+            AND e.venda_adquirente_id IS NOT NULL
+            AND e.aceita_em IS NOT NULL
         ) THEN ${schema.pagamento.valor} ELSE 0 END), 0)::text
       `,
     })

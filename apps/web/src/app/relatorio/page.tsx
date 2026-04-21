@@ -315,7 +315,10 @@ async function carregarDados(
   const isoIniAmp = dtIniAmp.toISOString().slice(0, 10);
   const isoFimAmp = dtFimAmp.toISOString().slice(0, 10);
 
-  // 1. Total PDV + rastreado (join por NSU com venda_adquirente)
+  // 1. Total PDV + rastreado.
+  // Rastreado = pagamento com NSU que tem venda Cielo correspondente
+  //   OU pagamento ligado a divergencia de valor aceita (sem NSU mas usuario
+  //   confirmou que pareia com a venda Cielo).
   const [pdvTotais] = await db
     .select({
       total: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
@@ -327,6 +330,11 @@ async function carregarDados(
             AND v.adquirente = ${ADQUIRENTE_CIELO}
             AND v.nsu = ${schema.pagamento.nsuTransacao}
             AND v.data_venda BETWEEN ${isoIniAmp} AND ${isoFimAmp}
+        ) OR EXISTS (
+          SELECT 1 FROM excecao e
+          WHERE e.pagamento_id = ${schema.pagamento.id}
+            AND e.venda_adquirente_id IS NOT NULL
+            AND e.aceita_em IS NOT NULL
         ) THEN ${schema.pagamento.valor} ELSE 0 END), 0)::text
       `,
       qtdRastreados: sql<number>`
@@ -336,6 +344,11 @@ async function carregarDados(
             AND v.adquirente = ${ADQUIRENTE_CIELO}
             AND v.nsu = ${schema.pagamento.nsuTransacao}
             AND v.data_venda BETWEEN ${isoIniAmp} AND ${isoFimAmp}
+        ) OR EXISTS (
+          SELECT 1 FROM excecao e
+          WHERE e.pagamento_id = ${schema.pagamento.id}
+            AND e.venda_adquirente_id IS NOT NULL
+            AND e.aceita_em IS NOT NULL
         ))::int
       `,
     })
