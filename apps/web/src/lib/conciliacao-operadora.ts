@@ -200,12 +200,19 @@ export async function rodarConciliacaoOperadora(opts: {
 
     for (const { pdv, cielo, diff } of result.divergenciaValor) {
       // Auto-aceita quando |diff| <= toleranciaAutoAceite (default R$ 0,90)
-      // E data exata. Cria registro com aceitaEm preenchido pra o rastreado
-      // contar como conciliado e o banco engine aplicar a forma da Cielo.
-      // Tolerancia configuravel por filial em /configuracoes.
-      const autoAceita =
-        Math.abs(diff) <= tolAutoAceite &&
-        pdv.dataPagamento === cielo.dataVenda;
+      // E delta de dias <= 1 (mesmo dia ou +-1 dia — Cielo as vezes registra
+      // a venda no dia anterior/posterior por fechamento de caixa / clock
+      // drift). Cria registro com aceitaEm preenchido pra o rastreado contar
+      // como conciliado e o banco engine aplicar a forma da Cielo.
+      const deltaDias =
+        pdv.dataPagamento && cielo.dataVenda
+          ? Math.abs(
+              (new Date(pdv.dataPagamento + 'T00:00:00').getTime() -
+                new Date(cielo.dataVenda + 'T00:00:00').getTime()) /
+                86_400_000,
+            )
+          : Infinity;
+      const autoAceita = Math.abs(diff) <= tolAutoAceite && deltaDias <= 1;
       novasExcecoes.push({
         filialId,
         processo: PROCESSO_OPERADORA,
