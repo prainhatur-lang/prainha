@@ -2,7 +2,7 @@
 // Match por (data, soma de creditos). Usa subset sum para encontrar
 // combinacoes de PIX que somam o total Cielo do dia.
 
-import { subsetSum } from './subset-sum';
+import { subsetSum, subsetSumMulti } from './subset-sum';
 
 export interface RecebivelInput {
   id?: string;
@@ -181,14 +181,8 @@ export function matchCieloBanco(
   }
 
   // --- Pass 3: Re-alocacao pra grupos restantes ---
-  // Pra cada grupo pendente:
-  //  1. Tenta subset sum usando TODOS os candidatos da janela (usados ou nao)
-  //  2. Se achar, identifica quais creditos do subset estao consumidos por
-  //     outros grupos (gruposCompletos)
-  //  3. Pra cada grupo afetado, tenta re-alocar SEM os creditos roubados
-  //  4. Se todos conseguirem re-alocar, aplica a transferencia
-  //
-  // Limita a 3 iteracoes pra evitar loop.
+  // Pra cada grupo pendente, tenta ATE 5 subsets candidatos (subsetSumMulti).
+  // Se o 1o nao permite realocar os grupos "roubados", tenta o 2o, 3o, etc.
   for (let iter = 0; iter < 3 && restantes.length > 0; iter++) {
     const sobram: typeof restantes = [];
     for (const [key, items] of restantes) {
@@ -197,15 +191,81 @@ export function matchCieloBanco(
 
       const todos = coletaCandidatos(dataPagamento, true);
       const valoresTodos = todos.map((c) => c.valor);
-      const idxs = subsetSum(valoresTodos, totalLiq);
-      if (!idxs || !idxs.length) {
+      const subsets = subsetSumMulti(valoresTodos, totalLiq, 0.05, 10);
+      if (subsets.length === 0) {
         sobram.push([key, items]);
         continue;
       }
-      const desejados = new Set(idxs.map((i) => todos[i]!));
-      const roubados = [...desejados].filter((c) => usados.has(c));
-      if (roubados.length === 0) {
-        // sem conflito — so aloca
+
+      let aplicou = false;
+      for (const idxs of subsets) {
+        if (aplicou) break;
+        const desejados = new Set(idxs.map((i) => todos[i]!));
+        const roubados = [...desejados].filter((c) => usados.has(c));
+
+        if (roubados.length === 0) {
+          // sem conflito — so aloca
+          desejados.forEach((c) => usados.add(c));
+          gruposCompletos.push({
+            dataPagamento,
+            tipo: key.split('|')[1] as 'PIX' | 'CARTAO',
+            qtdRecebiveis: items.length,
+            valorTotal: totalLiq,
+            lancamentosBanco: [...desejados],
+          });
+          items.forEach((it) => nsusPagos.add(it.nsu));
+          aplicou = true;
+          break;
+        }
+
+        // Identifica grupos afetados pelo roubo
+        type Afetado = { grupoIdx: number; perdidos: Set<LancamentoBancoInput> };
+        const afetados = new Map<number, Afetado>();
+        for (const c of roubados) {
+          const idx = gruposCompletos.findIndex((g) => g.lancamentosBanco.includes(c));
+          if (idx < 0) continue;
+          const existente = afetados.get(idx);
+          if (existente) existente.perdidos.add(c);
+          else afetados.set(idx, { grupoIdx: idx, perdidos: new Set([c]) });
+        }
+
+        // Tenta re-alocar cada grupo afetado sem os creditos roubados
+        const planoRealocacao: Array<{
+          grupoIdx: number;
+          novosCreditos: LancamentoBancoInput[];
+          creditosAntigos: LancamentoBancoInput[];
+        }> = [];
+        let podeRealocar = true;
+        const roubadosSet = new Set(roubados);
+        for (const [grupoIdx, { perdidos }] of afetados) {
+          const grupoAfetado = gruposCompletos[grupoIdx]!;
+          const naJanela = coletaCandidatos(grupoAfetado.dataPagamento, true);
+          const disponiveis = naJanela.filter((c) => {
+            if (roubadosSet.has(c)) return false;
+            if (!usados.has(c)) return true;
+            return grupoAfetado.lancamentosBanco.includes(c) && !perdidos.has(c);
+          });
+          const valoresDisp = disponiveis.map((c) => c.valor);
+          const novoIdxs = subsetSum(valoresDisp, grupoAfetado.valorTotal);
+          if (!novoIdxs || !novoIdxs.length) {
+            podeRealocar = false;
+            break;
+          }
+          planoRealocacao.push({
+            grupoIdx,
+            novosCreditos: novoIdxs.map((i) => disponiveis[i]!),
+            creditosAntigos: grupoAfetado.lancamentosBanco,
+          });
+        }
+
+        if (!podeRealocar) continue; // tenta proximo subset
+
+        // Aplica re-alocacao
+        for (const p of planoRealocacao) {
+          p.creditosAntigos.forEach((c) => usados.delete(c));
+          p.novosCreditos.forEach((c) => usados.add(c));
+          gruposCompletos[p.grupoIdx]!.lancamentosBanco = p.novosCreditos;
+        }
         desejados.forEach((c) => usados.add(c));
         gruposCompletos.push({
           dataPagamento,
@@ -215,75 +275,10 @@ export function matchCieloBanco(
           lancamentosBanco: [...desejados],
         });
         items.forEach((it) => nsusPagos.add(it.nsu));
-        continue;
+        aplicou = true;
       }
 
-      // Identifica grupos afetados pelo roubo
-      type Afetado = { grupoIdx: number; perdidos: Set<LancamentoBancoInput> };
-      const afetados = new Map<number, Afetado>();
-      for (const c of roubados) {
-        const idx = gruposCompletos.findIndex((g) => g.lancamentosBanco.includes(c));
-        if (idx < 0) continue;
-        const existente = afetados.get(idx);
-        if (existente) existente.perdidos.add(c);
-        else afetados.set(idx, { grupoIdx: idx, perdidos: new Set([c]) });
-      }
-
-      // Tenta re-alocar cada grupo afetado sem os creditos roubados
-      const planoRealocacao: Array<{
-        grupoIdx: number;
-        novosCreditos: LancamentoBancoInput[];
-        creditosAntigos: LancamentoBancoInput[];
-      }> = [];
-      let podeRealocar = true;
-      // Temporariamente marca creditos roubados como "nao disponiveis" pro plano
-      const roubadosSet = new Set(roubados);
-      for (const [grupoIdx, { perdidos }] of afetados) {
-        const grupoAfetado = gruposCompletos[grupoIdx]!;
-        // Candidatos pra re-alocar esse grupo: todos da janela menos roubados
-        // menos os ja consumidos por OUTROS grupos (diff do proprio grupo)
-        const naJanela = coletaCandidatos(grupoAfetado.dataPagamento, true);
-        const disponiveis = naJanela.filter((c) => {
-          if (roubadosSet.has(c)) return false;
-          // so nao-usados OU usados pelo proprio grupo (que vai ser desfeito)
-          if (!usados.has(c)) return true;
-          return grupoAfetado.lancamentosBanco.includes(c) && !perdidos.has(c);
-        });
-        const valoresDisp = disponiveis.map((c) => c.valor);
-        const novoIdxs = subsetSum(valoresDisp, grupoAfetado.valorTotal);
-        if (!novoIdxs || !novoIdxs.length) {
-          podeRealocar = false;
-          break;
-        }
-        const novos = novoIdxs.map((i) => disponiveis[i]!);
-        planoRealocacao.push({
-          grupoIdx,
-          novosCreditos: novos,
-          creditosAntigos: grupoAfetado.lancamentosBanco,
-        });
-      }
-
-      if (!podeRealocar) {
-        sobram.push([key, items]);
-        continue;
-      }
-
-      // Aplica re-alocacao: libera creditos antigos dos afetados, marca novos
-      for (const p of planoRealocacao) {
-        p.creditosAntigos.forEach((c) => usados.delete(c));
-        p.novosCreditos.forEach((c) => usados.add(c));
-        gruposCompletos[p.grupoIdx]!.lancamentosBanco = p.novosCreditos;
-      }
-      // Aloca o grupo pendente
-      desejados.forEach((c) => usados.add(c));
-      gruposCompletos.push({
-        dataPagamento,
-        tipo: key.split('|')[1] as 'PIX' | 'CARTAO',
-        qtdRecebiveis: items.length,
-        valorTotal: totalLiq,
-        lancamentosBanco: [...desejados],
-      });
-      items.forEach((it) => nsusPagos.add(it.nsu));
+      if (!aplicou) sobram.push([key, items]);
     }
     restantes.length = 0;
     restantes.push(...sobram);
