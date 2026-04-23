@@ -191,6 +191,46 @@ export default async function FechamentoPage(props: { searchParams: Promise<SP> 
           {!isAdmin && <span className="ml-2 text-amber-700">(Somente dono da filial pode fechar/reabrir)</span>}
         </p>
 
+        {/* KPIs do mes */}
+        {filialSelecionada && (() => {
+          const totalDias = primeiroUltimoDoMes(mes).fim.slice(-2);
+          const nDias = Number(totalDias);
+          const nFechados = diasFechadosSet.size;
+          const nComExcecao = Array.from(statsPorDia.entries())
+            .filter(([d, s]) => s.qtd > 0 && !diasFechadosSet.has(d)).length;
+          const valorExcecoes = Array.from(statsPorDia.entries())
+            .filter(([d]) => !diasFechadosSet.has(d))
+            .reduce((s, [, v]) => s + v.valor, 0);
+          const nOk = nDias - nFechados - nComExcecao;
+          const pctPronto = nDias > 0 ? Math.round((nFechados / nDias) * 100) : 0;
+          return (
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">Sem exceção</p>
+                <p className="mt-1 text-2xl font-bold text-emerald-900">{nOk}</p>
+                <p className="text-[10px] text-emerald-700">prontos pra fechar</p>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-amber-700">Com exceção</p>
+                <p className="mt-1 text-2xl font-bold text-amber-900">{nComExcecao}</p>
+                <p className="text-[10px] text-amber-700">
+                  R$ {valorExcecoes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-300 bg-slate-100 p-3">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-slate-600">Fechados</p>
+                <p className="mt-1 text-2xl font-bold text-slate-800">{nFechados}</p>
+                <p className="text-[10px] text-slate-600">🔒 travados</p>
+              </div>
+              <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-sky-700">Progresso</p>
+                <p className="mt-1 text-2xl font-bold text-sky-900">{pctPronto}%</p>
+                <p className="text-[10px] text-sky-700">{nFechados} de {nDias} dias</p>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Seletores */}
         <div className="mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center gap-2 text-sm">
