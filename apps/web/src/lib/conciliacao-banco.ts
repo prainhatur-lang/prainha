@@ -38,6 +38,8 @@ function isoToBr(d: string | Date): string {
 /** Formas de pagamento do PDV que nao entram na conciliacao bancaria. */
 const FORMAS_EXCLUIR = new Set(['Dinheiro', 'Voucher', 'iFood', 'iFood Online']);
 
+const ADQUIRENTE_CIELO = 'CIELO';
+
 import type { TaxasFilial, TaxasPorBandeira, EstabelecimentoConfig } from '@concilia/db/schema';
 import { diasFechados } from './fechamento';
 
@@ -165,51 +167,30 @@ export async function rodarConciliacaoBanco(opts: {
       }
     }
 
-    // Pagamentos com data_credito no periodo (exclui dinheiro etc). LEFT JOIN
-    // com venda_adquirente pra pegar codigo_estabelecimento (EC) — usado pra
-    // escolher qual taxa aplicar.
-    const pagamentos = await db
+    // Carrega recebíveis Cielo com data_pagamento no periodo — e' a fonte
+    // da verdade (valor liquido exato ja descontado pela Cielo + data real
+    // do credito). Evita usar data_credito do PDV (pode ser errada) e
+    // calculos de taxa (podem divergir do real).
+    const recebiveisCielo = await db
       .select({
-        id: schema.pagamento.id,
-        formaPagamento: schema.pagamento.formaPagamento,
-        bandeiraMfe: schema.pagamento.bandeiraMfe,
-        valor: schema.pagamento.valor,
-        dataPagamento: schema.pagamento.dataPagamento,
-        dataCredito: schema.pagamento.dataCredito,
-        nsu: schema.pagamento.nsuTransacao,
-        codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
-        // do match opcional com venda Cielo
-        vendaBandeira: schema.vendaAdquirente.bandeira,
-        vendaEc: schema.vendaAdquirente.codigoEstabelecimento,
+        id: schema.recebivelAdquirente.id,
+        nsu: schema.recebivelAdquirente.nsu,
+        valorLiquido: schema.recebivelAdquirente.valorLiquido,
+        dataPagamento: schema.recebivelAdquirente.dataPagamento,
+        formaPagamento: schema.recebivelAdquirente.formaPagamento,
       })
-      .from(schema.pagamento)
-      .leftJoin(
-        schema.vendaAdquirente,
-        and(
-          eq(schema.vendaAdquirente.filialId, schema.pagamento.filialId),
-          eq(schema.vendaAdquirente.nsu, schema.pagamento.nsuTransacao),
-        ),
-      )
+      .from(schema.recebivelAdquirente)
       .where(
         and(
-          eq(schema.pagamento.filialId, filialId),
-          isNotNull(schema.pagamento.dataCredito),
-          gte(schema.pagamento.dataCredito, dtIni),
-          lte(schema.pagamento.dataCredito, dtFim),
-          or(
-            ...[...FORMAS_EXCLUIR].map((f) => ne(schema.pagamento.formaPagamento, f)),
-          ),
+          eq(schema.recebivelAdquirente.filialId, filialId),
+          eq(schema.recebivelAdquirente.adquirente, ADQUIRENTE_CIELO),
+          gte(schema.recebivelAdquirente.dataPagamento, dataInicio),
+          lte(schema.recebivelAdquirente.dataPagamento, dataFim),
         ),
       );
 
-    // Filtra em JS pra cobrir null/normalizacao
-    // Filtra dias fechados (pelo data_pagamento do PDV).
+    // Filtra dias fechados (pelo data_pagamento do recebivel — dia do credito).
     const fechados = await diasFechados(filialId, PROCESSO_BANCO, dataInicio, dataFim);
-    const liquidaveis = pagamentos.filter((p) => {
-      if (!p.formaPagamento || FORMAS_EXCLUIR.has(p.formaPagamento)) return false;
-      if (!p.dataPagamento) return true;
-      return !fechados.has(dateToBrYmd(p.dataPagamento));
-    });
 
     // Lancamentos banco no mesmo periodo (data_movimento)
     const lancamentos = await db
@@ -230,28 +211,22 @@ export async function rodarConciliacaoBanco(opts: {
         ),
       );
 
-    // Mapeia pagamento -> formato esperado pelo matcher (uma "venda prometida").
-    // Se existir divergencia ACEITA, usa o valor/EC/bandeira/FORMA da venda Cielo
-    // (user ja decidiu que o lado correto eh o da Cielo). Isso garante que a
-    // taxa aplicada eh a da forma real (ex: PDV digitou Credito mas cliente
-    // passou Debito — a taxa aplicada passa a ser a de Debito).
-    const pseudoRecebiveis = liquidaveis.map((p) => {
-      const aceita = divergenciasAceitas.get(p.id);
-      const forma = aceita?.forma ?? p.formaPagamento ?? '';
-      const bandeira = aceita?.bandeira ?? p.vendaBandeira ?? p.bandeiraMfe ?? null;
-      const ec = aceita?.ec ?? p.vendaEc;
-      const taxasDoEc = resolverTaxas(taxasFilial, ec);
-      const percent = obterTaxaPercent(taxasDoEc, forma, bandeira);
-      const bruto = aceita?.valor ?? Number(p.valor);
-      const liquido = +(bruto * (1 - percent / 100)).toFixed(2);
-      return {
-        id: p.id,
-        nsu: p.nsu ?? `PDV-${p.id}`,
-        dataPagamento: isoToBr(p.dataCredito!),
-        formaPagamento: /pix/i.test(forma) ? 'Pix' : forma,
-        valorLiquido: liquido,
-      };
-    });
+    // Mapeia recebivel -> formato esperado pelo matcher. Filtra dias fechados.
+    // recebivel.dataPagamento ja vem como string YYYY-MM-DD do schema.
+    const pseudoRecebiveis = recebiveisCielo
+      .filter((r) => !fechados.has(r.dataPagamento))
+      .map((r) => {
+        const forma = r.formaPagamento ?? '';
+        const isPix = /pix/i.test(forma);
+        return {
+          id: r.id,
+          nsu: r.nsu,
+          dataPagamento: r.dataPagamento.split('-').reverse().join('/'), // YYYY-MM-DD -> DD/MM/YYYY
+          formaPagamento: isPix ? 'Pix' : forma,
+          valorLiquido: Number(r.valorLiquido),
+        };
+      });
+
 
     const result = matchCieloBanco(
       pseudoRecebiveis,
@@ -265,45 +240,32 @@ export async function rodarConciliacaoBanco(opts: {
       })),
     );
 
-    // Limpa excecoes abertas somente dos pagamentos em scope (preserva dias fechados).
-    const pagamentoIdsScope = liquidaveis.map((p) => p.id);
-    if (pagamentoIdsScope.length) {
-      await db
-        .delete(schema.excecao)
-        .where(
-          and(
-            eq(schema.excecao.filialId, filialId),
-            eq(schema.excecao.processo, PROCESSO_BANCO),
-            isNull(schema.excecao.aceitaEm),
-            inArray(schema.excecao.pagamentoId, pagamentoIdsScope),
-          ),
-        );
-    }
+    // Limpa excecoes abertas do processo BANCO no periodo (preserva dias fechados).
+    // Scope baseado em recebivel_adquirente.dataPagamento no range.
+    const recebivelIdsScope = recebiveisCielo
+      .filter((r) => !fechados.has(r.dataPagamento))
+      .map((r) => r.id);
+    await db
+      .delete(schema.excecao)
+      .where(
+        and(
+          eq(schema.excecao.filialId, filialId),
+          eq(schema.excecao.processo, PROCESSO_BANCO),
+          isNull(schema.excecao.aceitaEm),
+        ),
+      );
 
     const novas: Array<typeof schema.excecao.$inferInsert> = [];
 
     // Grupos (data, forma) que nao bateram no extrato
     for (const g of result.gruposSemMatch) {
-      const pgsDoGrupo = liquidaveis.filter(
-        (p) =>
-          isoToBr(p.dataCredito!) === g.dataPagamento &&
-          (/pix/i.test(p.formaPagamento ?? '') ? 'PIX' : 'CARTAO') === g.tipo,
-      );
-      const pedidos = pgsDoGrupo
-        .map((p) => p.codigoPedidoExterno)
-        .filter((n): n is number => !!n)
-        .slice(0, 5);
-      const pedidosTxt = pedidos.length
-        ? ` Pedidos: ${pedidos.join(', ')}${pgsDoGrupo.length > pedidos.length ? ', ...' : ''}.`
-        : '';
       novas.push({
         filialId,
         processo: PROCESSO_BANCO,
         tipo: TIPO_BANCO.CIELO_NAO_PAGO,
         severidade: 'ALTA',
-        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.${pedidosTxt}`,
+        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.`,
         valor: String(g.valorTotal),
-        pagamentoId: pgsDoGrupo[0]?.id ?? null,
       });
     }
 
