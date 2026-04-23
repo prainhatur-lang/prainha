@@ -12,6 +12,8 @@ interface Props {
     recebivelDataPagamento: Date | string | null;
     lancamentoData: string | null;
   };
+  /** Botao extra exibido antes do "Resolver" (ex: match manual). */
+  extraAction?: React.ReactNode;
 }
 
 function formatarData(d: Date | string | null): string {
@@ -21,7 +23,7 @@ function formatarData(d: Date | string | null): string {
   return new Date(d + 'T00:00:00').toLocaleDateString('pt-BR');
 }
 
-export function ExcecaoRowBanco({ excecao: e }: Props) {
+export function ExcecaoRowBanco({ excecao: e, extraAction }: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [resolvendo, setResolvendo] = useState(false);
@@ -82,12 +84,15 @@ export function ExcecaoRowBanco({ excecao: e }: Props) {
             {err && <span className="text-[10px] text-rose-600">{err}</span>}
           </div>
         ) : (
-          <button
-            onClick={() => setResolvendo(true)}
-            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-          >
-            Resolver
-          </button>
+          <div className="flex flex-col items-stretch gap-1">
+            {extraAction}
+            <button
+              onClick={() => setResolvendo(true)}
+              className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              Resolver
+            </button>
+          </div>
         )}
       </td>
     </tr>

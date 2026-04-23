@@ -8,6 +8,7 @@ import { LogoutButton } from '../../dashboard/logout-button';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { BancoForm } from './form';
 import { ExcecaoRowBanco } from './excecao-row';
+import { MatchManualBanco } from './match-manual';
 import { PROCESSO_BANCO, TIPO_BANCO } from '@/lib/conciliacao-banco';
 
 export const dynamic = 'force-dynamic';
@@ -279,6 +280,16 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
               descricao="Grupos (dia × Pix/Cartão) que a Cielo prometeu pagar mas não apareceram no extrato. Verifique se o arquivo de recebíveis Cielo está atualizado."
               tom="rose"
               excecoes={porTipo[TIPO_BANCO.CIELO_NAO_PAGO]}
+              creditosLivres={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].map((e) => ({
+                id: e.id,
+                dataLanc: e.lancamentoData
+                  ? (typeof e.lancamentoData === 'string'
+                      ? e.lancamentoData
+                      : new Date(e.lancamentoData as unknown as string).toISOString())
+                  : '',
+                valor: Number(e.valor ?? 0),
+                descricao: e.lancamentoDescricao ?? e.descricao ?? '',
+              }))}
             />
 
             {/* Créditos sem origem = movimentação bancária paralela (Pix direto de
@@ -342,6 +353,7 @@ function SecaoExcecoes({
   descricao,
   tom,
   excecoes,
+  creditosLivres,
 }: {
   titulo: string;
   descricao: string;
@@ -356,6 +368,7 @@ function SecaoExcecoes({
     lancamentoData: string | null;
     lancamentoDescricao: string | null;
   }>;
+  creditosLivres?: Array<{ id: string; dataLanc: string; valor: number; descricao: string }>;
 }) {
   const corHeader =
     tom === 'rose' ? 'text-rose-700' : tom === 'slate' ? 'text-slate-700' : 'text-amber-700';
@@ -381,7 +394,20 @@ function SecaoExcecoes({
           </thead>
           <tbody>
             {excecoes.slice(0, 50).map((e) => (
-              <ExcecaoRowBanco key={e.id} excecao={e} />
+              <ExcecaoRowBanco
+                key={e.id}
+                excecao={e}
+                extraAction={
+                  creditosLivres && Number(e.valor ?? 0) > 0 ? (
+                    <MatchManualBanco
+                      excecaoId={e.id}
+                      dataGrupo=""
+                      valorGrupo={Number(e.valor ?? 0)}
+                      creditosDisponiveis={creditosLivres}
+                    />
+                  ) : null
+                }
+              />
             ))}
           </tbody>
         </table>
