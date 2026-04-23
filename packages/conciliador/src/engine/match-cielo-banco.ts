@@ -101,48 +101,72 @@ export function matchCieloBanco(
   // Set global de creditos ja consumidos por algum grupo
   const usados = new Set<LancamentoBancoInput>();
 
-  // Processa grupos em ordem cronologica (mais antigo primeiro) pra nao
-  // "roubar" credito de um grupo mais velho
-  const grupos = [...recPorGrupo.entries()].sort(([a], [b]) => a.localeCompare(b));
+  // Processa grupos em ordem CRONOLOGICA real (nao lexicografica sobre
+  // DD/MM/YYYY que daria 01/01 -> 01/02 -> 01/03 -> 02/01). Converte pra
+  // YYYY-MM-DD antes de ordenar.
+  function keyCronologica(k: string): string {
+    const [dataBr] = k.split('|');
+    const [d, m, y] = dataBr!.split('/');
+    return `${y}-${m}-${d}`;
+  }
+  const grupos = [...recPorGrupo.entries()].sort(
+    ([a], [b]) => keyCronologica(a).localeCompare(keyCronologica(b)),
+  );
 
-  for (const [key, items] of grupos) {
+  // Processa em multiplos passes expandindo a janela gradualmente. Isso evita
+  // que grupo A com crédito no dia exato D seja preterido porque grupo B (de
+  // D-3) ja consumiu o crédito de D via subset maior. Garante que matches
+  // "mais proximos" da data original tenham prioridade.
+  const restantes = [...grupos];
+  for (let janelaAtual = 0; janelaAtual <= janela; janelaAtual++) {
+    const sobram: typeof restantes = [];
+    for (const [key, items] of restantes) {
+      const [dataPagamento, tipo] = key.split('|') as [string, 'PIX' | 'CARTAO'];
+      const totalLiq = +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2);
+
+      // Candidatos: janela atual (0, ±1, ±2... ±janelaAtual)
+      const ordem: number[] = [0];
+      for (let d = 1; d <= janelaAtual; d++) {
+        ordem.push(d);
+        ordem.push(-d);
+      }
+      const candidatos: LancamentoBancoInput[] = [];
+      for (const delta of ordem) {
+        const dia = addDias(dataPagamento, delta);
+        const arr = credByDia.get(dia) ?? [];
+        for (const c of arr) if (!usados.has(c)) candidatos.push(c);
+      }
+
+      const valores = candidatos.map((c) => c.valor);
+      const idxs = subsetSum(valores, totalLiq);
+      if (idxs && idxs.length) {
+        items.forEach((it) => nsusPagos.add(it.nsu));
+        const consumidos = idxs.map((i) => candidatos[i]!);
+        consumidos.forEach((u) => usados.add(u));
+        gruposCompletos.push({
+          dataPagamento,
+          tipo,
+          qtdRecebiveis: items.length,
+          valorTotal: totalLiq,
+          lancamentosBanco: consumidos,
+        });
+      } else {
+        sobram.push([key, items]);
+      }
+    }
+    restantes.length = 0;
+    restantes.push(...sobram);
+  }
+  // O que nao achou match ate a janela maxima
+  for (const [key, items] of restantes) {
     const [dataPagamento, tipo] = key.split('|') as [string, 'PIX' | 'CARTAO'];
     const totalLiq = +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2);
-
-    // Coleta candidatos: mesmo dia primeiro, depois +1, -1, +2, -2, ... ate +-janela
-    const ordem: number[] = [0];
-    for (let d = 1; d <= janela; d++) {
-      ordem.push(d);
-      ordem.push(-d);
-    }
-    const candidatos: LancamentoBancoInput[] = [];
-    for (const delta of ordem) {
-      const dia = addDias(dataPagamento, delta);
-      const arr = credByDia.get(dia) ?? [];
-      for (const c of arr) if (!usados.has(c)) candidatos.push(c);
-    }
-
-    const valores = candidatos.map((c) => c.valor);
-    const idxs = subsetSum(valores, totalLiq);
-    if (idxs && idxs.length) {
-      items.forEach((it) => nsusPagos.add(it.nsu));
-      const consumidos = idxs.map((i) => candidatos[i]!);
-      consumidos.forEach((u) => usados.add(u));
-      gruposCompletos.push({
-        dataPagamento,
-        tipo,
-        qtdRecebiveis: items.length,
-        valorTotal: totalLiq,
-        lancamentosBanco: consumidos,
-      });
-    } else {
-      gruposSemMatch.push({
-        dataPagamento,
-        tipo,
-        qtdRecebiveis: items.length,
-        valorTotal: totalLiq,
-      });
-    }
+    gruposSemMatch.push({
+      dataPagamento,
+      tipo,
+      qtdRecebiveis: items.length,
+      valorTotal: totalLiq,
+    });
   }
 
   const creditosSobrando: LancamentoBancoInput[] = [];
