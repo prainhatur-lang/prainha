@@ -157,14 +157,16 @@ export function matchCieloBanco(
     restantes.length = 0;
     restantes.push(...sobram);
   }
-  // Helper: coleta candidatos pra um grupo numa janela completa de N dias,
+  // Helper: coleta candidatos pra um grupo numa janela de N dias,
   // opcionalmente ignorando "usados" (pra tentar realocacao).
   function coletaCandidatos(
     dataPagamento: string,
     ignorarUsados = false,
+    janelaCustom: number | null = null,
   ): LancamentoBancoInput[] {
+    const j = janelaCustom ?? janela;
     const ordem: number[] = [0];
-    for (let d = 1; d <= janela; d++) {
+    for (let d = 1; d <= j; d++) {
       ordem.push(d);
       ordem.push(-d);
     }
@@ -179,17 +181,20 @@ export function matchCieloBanco(
     }
     return out;
   }
+  // Janela maior pro pass 3: permite encontrar subsets que Cielo eventualmente
+  // pagou em datas mais distantes (feriados prolongados, atrasos).
+  const janelaReloc = Math.min(janela + 3, 7);
 
   // --- Pass 3: Re-alocacao pra grupos restantes ---
-  // Pra cada grupo pendente, tenta ATE 5 subsets candidatos (subsetSumMulti).
-  // Se o 1o nao permite realocar os grupos "roubados", tenta o 2o, 3o, etc.
-  for (let iter = 0; iter < 3 && restantes.length > 0; iter++) {
+  // Pra cada grupo pendente, tenta ate 10 subsets candidatos. Se o 1o nao
+  // permite realocar os grupos "roubados", tenta o 2o, 3o, etc.
+  for (let iter = 0; iter < 5 && restantes.length > 0; iter++) {
     const sobram: typeof restantes = [];
     for (const [key, items] of restantes) {
       const [dataPagamento] = key.split('|') as [string, 'PIX' | 'CARTAO'];
       const totalLiq = +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2);
 
-      const todos = coletaCandidatos(dataPagamento, true);
+      const todos = coletaCandidatos(dataPagamento, true, janelaReloc);
       const valoresTodos = todos.map((c) => c.valor);
       const subsets = subsetSumMulti(valoresTodos, totalLiq, 0.05, 10);
       if (subsets.length === 0) {
@@ -239,7 +244,7 @@ export function matchCieloBanco(
         const roubadosSet = new Set(roubados);
         for (const [grupoIdx, { perdidos }] of afetados) {
           const grupoAfetado = gruposCompletos[grupoIdx]!;
-          const naJanela = coletaCandidatos(grupoAfetado.dataPagamento, true);
+          const naJanela = coletaCandidatos(grupoAfetado.dataPagamento, true, janelaReloc);
           const disponiveis = naJanela.filter((c) => {
             if (roubadosSet.has(c)) return false;
             if (!usados.has(c)) return true;
