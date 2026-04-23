@@ -241,45 +241,70 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <ResumoCard
-                label="Grupos conciliados"
-                qtd={resumoUltima?.conciliados?.qtd ?? 0}
-                valor={resumoUltima?.conciliados?.valor ?? 0}
-                tom="emerald"
-              />
-              <ResumoCard
-                label="Previsto e não pago"
-                qtd={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].length}
-                valor={porTipo[TIPO_BANCO.CIELO_NAO_PAGO].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
-                tom="rose"
-              />
-              <ResumoCard
-                label="Crédito sem origem"
-                qtd={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].length}
-                valor={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].reduce(
-                  (s, e) => s + Number(e.valor ?? 0),
-                  0,
-                )}
-                tom="amber"
-              />
-            </div>
+            {/* Métrica principal: % Cielo pago no banco */}
+            {(() => {
+              const okQtd = resumoUltima?.conciliados?.qtd ?? 0;
+              const okVal = resumoUltima?.conciliados?.valor ?? 0;
+              const pendQtd = porTipo[TIPO_BANCO.CIELO_NAO_PAGO].length;
+              const pendVal = porTipo[TIPO_BANCO.CIELO_NAO_PAGO].reduce(
+                (s, e) => s + Number(e.valor ?? 0),
+                0,
+              );
+              const totalPrevisto = okVal + pendVal;
+              const pct = totalPrevisto > 0 ? (okVal / totalPrevisto) * 100 : 0;
+              const cor =
+                pct >= 95 ? 'emerald' : pct >= 80 ? 'amber' : 'rose';
+              const bg = { emerald: 'bg-emerald-50 border-emerald-200', amber: 'bg-amber-50 border-amber-200', rose: 'bg-rose-50 border-rose-200' }[cor];
+              const txt = { emerald: 'text-emerald-700', amber: 'text-amber-700', rose: 'text-rose-700' }[cor];
+              return (
+                <div className={`rounded-xl border p-5 ${bg}`}>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-600">
+                    Cielo previu pagar → recebemos no banco
+                  </p>
+                  <div className="mt-2 flex items-baseline gap-3">
+                    <span className={`text-4xl font-bold ${txt}`}>{pct.toFixed(1)}%</span>
+                    <span className="text-sm text-slate-600">
+                      {brl(okVal)} de {brl(totalPrevisto)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">
+                    {int(okQtd)} grupos pagos · {int(pendQtd)} pendentes ({brl(pendVal)})
+                  </p>
+                </div>
+              );
+            })()}
 
             <SecaoExcecoes
-              titulo="Previsto no PDV e não pago no banco"
-              descricao="Grupos de pagamentos (dia × tipo Pix/Cartão) com crédito previsto que não bateu com lançamento no extrato."
+              titulo="Cielo previu e não pagou no banco"
+              descricao="Grupos (dia × Pix/Cartão) que a Cielo prometeu pagar mas não apareceram no extrato. Verifique se o arquivo de recebíveis Cielo está atualizado."
               tom="rose"
               excecoes={porTipo[TIPO_BANCO.CIELO_NAO_PAGO]}
             />
-            <SecaoExcecoes
-              titulo="Crédito no banco sem origem no PDV"
-              descricao="Créditos no extrato bancário que não foram consumidos por nenhum grupo de pagamentos previstos."
-              tom="amber"
-              excecoes={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO]}
-            />
+
+            {/* Créditos sem origem = movimentação bancária paralela (Pix direto de
+                cliente, TED, etc). Informativo — não é erro de conciliação. */}
+            <details className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <summary className="cursor-pointer border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Outros créditos no banco (fora do fluxo Cielo) ·{' '}
+                {int(porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].length)} — {brl(
+                  porTipo[TIPO_BANCO.CREDITO_SEM_CIELO].reduce(
+                    (s, e) => s + Number(e.valor ?? 0),
+                    0,
+                  ),
+                )}
+              </summary>
+              <div className="p-4">
+                <p className="mb-3 text-xs text-slate-600">
+                  Créditos no extrato que não vieram da Cielo: Pix direto de cliente, TED, transferência entre contas, etc. É receita paralela — não é erro de conciliação.
+                </p>
+                <SecaoExcecoes
+                  titulo=""
+                  descricao=""
+                  tom="slate"
+                  excecoes={porTipo[TIPO_BANCO.CREDITO_SEM_CIELO]}
+                />
+              </div>
+            </details>
           </div>
         </div>
       </section>
@@ -320,7 +345,7 @@ function SecaoExcecoes({
 }: {
   titulo: string;
   descricao: string;
-  tom: 'amber' | 'rose';
+  tom: 'amber' | 'rose' | 'slate';
   excecoes: Array<{
     id: string;
     valor: string | null;
@@ -332,7 +357,8 @@ function SecaoExcecoes({
     lancamentoDescricao: string | null;
   }>;
 }) {
-  const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
+  const corHeader =
+    tom === 'rose' ? 'text-rose-700' : tom === 'slate' ? 'text-slate-700' : 'text-amber-700';
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-4 py-3">
