@@ -211,10 +211,15 @@ export async function rodarConciliacaoBanco(opts: {
         ),
       );
 
-    // Mapeia recebivel -> formato esperado pelo matcher. Filtra dias fechados.
-    // recebivel.dataPagamento ja vem como string YYYY-MM-DD do schema.
+    // Mapeia recebivel -> formato esperado pelo matcher.
+    // EXCLUI:
+    //  - dias fechados (preserva fechamento)
+    //  - recebiveis com valor_liquido <= 0 (tarifas/aluguel Cielo — Cielo
+    //    desconta da agenda, nao deposita como credito no banco, entao nao
+    //    entra no matcher positivo).
     const pseudoRecebiveis = recebiveisCielo
       .filter((r) => !fechados.has(r.dataPagamento))
+      .filter((r) => Number(r.valorLiquido) > 0)
       .map((r) => {
         const forma = r.formaPagamento ?? '';
         const isPix = /pix/i.test(forma);
