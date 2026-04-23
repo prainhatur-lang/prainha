@@ -328,12 +328,24 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
               descricao="Venda autorizada na Cielo que não gerou entrada na agenda. Possível estorno ou chargeback."
               tom="rose"
               excecoes={porTipo[TIPO_RECEBIVEIS.VENDA_SEM_AGENDA]}
+              candidatosMatchManual={porTipo[TIPO_RECEBIVEIS.AGENDA_SEM_VENDA].map((x) => ({
+                id: x.id,
+                data: x.recebivelDataPagamento ?? '',
+                valor: Number(x.valor ?? 0),
+                descricao: `Recebível NSU ${x.recebivelNsu ?? '—'} ${x.recebivelFormaPagamento ?? ''}`,
+              }))}
             />
             <SecaoExcecoes
               titulo="Agenda sem venda"
               descricao="Recebível presente sem venda correspondente no arquivo de Vendas."
               tom="amber"
               excecoes={porTipo[TIPO_RECEBIVEIS.AGENDA_SEM_VENDA]}
+              candidatosMatchManual={porTipo[TIPO_RECEBIVEIS.VENDA_SEM_AGENDA].map((x) => ({
+                id: x.id,
+                data: x.vendaDataVenda ?? '',
+                valor: Number(x.valor ?? 0),
+                descricao: `Venda NSU ${x.vendaNsu ?? '—'} ${x.vendaBandeira ?? x.vendaFormaPagamento ?? ''}`,
+              }))}
             />
             {(porTipo[TIPO_RECEBIVEIS.TARIFA_CIELO]?.length ?? 0) > 0 && (
               <SecaoExcecoes
@@ -381,6 +393,7 @@ function SecaoExcecoes({
   descricao,
   tom,
   excecoes,
+  candidatosMatchManual,
 }: {
   titulo: string;
   descricao: string;
@@ -398,6 +411,7 @@ function SecaoExcecoes({
     recebivelFormaPagamento: string | null;
     recebivelValorLiquido: string | null;
   }>;
+  candidatosMatchManual?: Array<{ id: string; data: string; valor: number; descricao: string }>;
 }) {
   const corHeader =
     tom === 'rose' ? 'text-rose-700' : tom === 'slate' ? 'text-slate-700' : 'text-amber-700';
@@ -426,7 +440,11 @@ function SecaoExcecoes({
           </thead>
           <tbody>
             {excecoes.slice(0, 50).map((e) => (
-              <ExcecaoRowRecebiveis key={e.id} excecao={e} />
+              <ExcecaoRowRecebiveis
+                key={e.id}
+                excecao={e}
+                candidatosMatchManual={candidatosMatchManual}
+              />
             ))}
           </tbody>
         </table>

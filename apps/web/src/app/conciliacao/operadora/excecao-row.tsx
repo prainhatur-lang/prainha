@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
+import { MatchManualPicker, type CandidatoMatch } from '@/components/match-manual-picker';
 
 interface Props {
   excecao: {
@@ -21,9 +22,11 @@ interface Props {
   };
   /** Se true, mostra botoes Aceitar/Rejeitar em vez de Resolver. */
   acoesDivergencia?: boolean;
+  /** Candidatos pra match manual. Se passado, mostra o botao "Conciliar manual". */
+  candidatosMatchManual?: CandidatoMatch[];
 }
 
-export function ExcecaoRow({ excecao: e, acoesDivergencia = false }: Props) {
+export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMatchManual }: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [acao, setAcao] = useState<null | 'aceitar' | 'resolver'>(null);
@@ -146,12 +149,24 @@ export function ExcecaoRow({ excecao: e, acoesDivergencia = false }: Props) {
             {err && <span className="text-[10px] text-rose-600">{err}</span>}
           </div>
         ) : (
-          <button
-            onClick={() => setAcao('resolver')}
-            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-          >
-            Resolver
-          </button>
+          <div className="flex flex-col items-stretch gap-1">
+            {candidatosMatchManual && candidatosMatchManual.length > 0 && (
+              <MatchManualPicker
+                excecaoId={e.id}
+                valorPrincipal={Number(e.valor ?? 0)}
+                candidatos={candidatosMatchManual}
+                titulo="Match manual"
+                subtitulo="Selecione o par correspondente."
+                botaoLabel="Conciliar manual"
+              />
+            )}
+            <button
+              onClick={() => setAcao('resolver')}
+              className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              Resolver
+            </button>
+          </div>
         )}
       </td>
     </tr>

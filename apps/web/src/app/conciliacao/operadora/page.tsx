@@ -356,6 +356,12 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               sp={sp}
               tipo={TIPO_OPERADORA.PDV_SEM_CIELO}
               filialId={filialSelecionada.id}
+              candidatosMatchManual={secaoCielo.rows.map((e) => ({
+                id: e.id,
+                data: e.vendaDataVenda ?? '',
+                valor: Number(e.valor ?? 0),
+                descricao: `Cielo NSU ${e.vendaNsu ?? '—'} ${e.vendaBandeira ?? ''}`,
+              }))}
             />
             <SecaoExcecoes
               titulo="Na Cielo, sem match no PDV"
@@ -368,6 +374,14 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               sp={sp}
               tipo={TIPO_OPERADORA.CIELO_SEM_PDV}
               filialId={filialSelecionada.id}
+              candidatosMatchManual={secaoPdv.rows.map((e) => ({
+                id: e.id,
+                data: e.pagamentoDataPagamento
+                  ? new Date(e.pagamentoDataPagamento).toISOString()
+                  : '',
+                valor: Number(e.valor ?? 0),
+                descricao: `PDV ${e.pagamentoFormaPagamento ?? ''} NSU ${e.pagamentoNsu ?? '—'}`,
+              }))}
             />
           </div>
         </div>
@@ -441,6 +455,7 @@ function SecaoExcecoes({
   tipo,
   filialId,
   acoesDivergencia = false,
+  candidatosMatchManual,
 }: {
   titulo: string;
   descricao: string;
@@ -466,6 +481,7 @@ function SecaoExcecoes({
   tipo: string;
   filialId: string;
   acoesDivergencia?: boolean;
+  candidatosMatchManual?: Array<{ id: string; data: string; valor: number; descricao: string }>;
 }) {
   const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -513,7 +529,12 @@ function SecaoExcecoes({
           </thead>
           <tbody>
             {excecoes.map((e) => (
-              <ExcecaoRow key={e.id} excecao={e} acoesDivergencia={acoesDivergencia} />
+              <ExcecaoRow
+                key={e.id}
+                excecao={e}
+                acoesDivergencia={acoesDivergencia}
+                candidatosMatchManual={candidatosMatchManual}
+              />
             ))}
           </tbody>
         </table>

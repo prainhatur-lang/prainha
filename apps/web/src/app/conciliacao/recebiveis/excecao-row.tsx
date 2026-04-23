@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
+import { MatchManualPicker, type CandidatoMatch } from '@/components/match-manual-picker';
 
 interface Props {
   excecao: {
@@ -18,6 +19,7 @@ interface Props {
     recebivelFormaPagamento: string | null;
     recebivelValorLiquido: string | null;
   };
+  candidatosMatchManual?: CandidatoMatch[];
 }
 
 function isoToBr(iso: string | null): string {
@@ -25,7 +27,7 @@ function isoToBr(iso: string | null): string {
   return new Date(iso + 'T00:00:00').toLocaleDateString('pt-BR');
 }
 
-export function ExcecaoRowRecebiveis({ excecao: e }: Props) {
+export function ExcecaoRowRecebiveis({ excecao: e, candidatosMatchManual }: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [resolvendo, setResolvendo] = useState(false);
@@ -92,12 +94,24 @@ export function ExcecaoRowRecebiveis({ excecao: e }: Props) {
             {err && <span className="text-[10px] text-rose-600">{err}</span>}
           </div>
         ) : (
-          <button
-            onClick={() => setResolvendo(true)}
-            className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-          >
-            Resolver
-          </button>
+          <div className="flex flex-col items-stretch gap-1">
+            {candidatosMatchManual && candidatosMatchManual.length > 0 && (
+              <MatchManualPicker
+                excecaoId={e.id}
+                valorPrincipal={Number(e.valor ?? 0)}
+                candidatos={candidatosMatchManual}
+                titulo="Match manual"
+                subtitulo="Selecione o par correspondente."
+                botaoLabel="Conciliar manual"
+              />
+            )}
+            <button
+              onClick={() => setResolvendo(true)}
+              className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              Resolver
+            </button>
+          </div>
         )}
       </td>
     </tr>
