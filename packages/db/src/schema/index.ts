@@ -9,3 +9,4 @@ export * from './conciliacao';
 export * from './importacao';
 export * from './financeiro';
 export * from './vendas';
+export * from './notas';

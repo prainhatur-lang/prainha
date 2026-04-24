@@ -29,7 +29,7 @@ const BLOCOS: Bloco[] = [
       { icon: '💳', label: 'Contas a pagar', desc: 'Títulos em aberto, vencidos, pagos no mês', href: '/financeiro' },
       { icon: '💰', label: 'Contas a receber', desc: 'Saldo de conta corrente por cliente', href: '/financeiro/receber' },
       { icon: '📦', label: 'Pedidos / Vendas', desc: 'Histórico do PDV, ticket médio, top produtos', href: '/movimento/pedidos' },
-      { icon: '📥', label: 'Entrada de notas', desc: 'NF-e de fornecedores (SEFAZ A1)', href: '/movimento/entrada-notas', soon: true },
+      { icon: '📥', label: 'Entrada de notas', desc: 'Upload de XMLs de fornecedores (SEFAZ A1 em breve)', href: '/movimento/entrada-notas' },
     ],
   },
   {

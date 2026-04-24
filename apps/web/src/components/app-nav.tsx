@@ -32,7 +32,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Contas a pagar', href: '/financeiro' },
       { label: 'Contas a receber', href: '/financeiro/receber' },
       { label: 'Pedidos / Vendas', href: '/movimento/pedidos' },
-      { label: 'Entrada de notas', href: '/movimento/entrada-notas', soon: true },
+      { label: 'Entrada de notas', href: '/movimento/entrada-notas' },
     ],
   },
   {
