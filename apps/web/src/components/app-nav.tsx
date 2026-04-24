@@ -33,6 +33,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Contas a receber', href: '/financeiro/receber' },
       { label: 'Pedidos / Vendas', href: '/movimento/pedidos' },
       { label: 'Entrada de notas', href: '/movimento/entrada-notas' },
+      { label: 'Ordens de produção', href: '/movimento/producao' },
     ],
   },
   {
@@ -51,6 +52,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Dashboard analítico', href: '/dashboard' },
       { label: 'Relatório consolidado', href: '/relatorio' },
+      { label: 'Estoque', href: '/relatorios/estoque' },
       { label: 'DRE', href: '/relatorios/dre' },
       { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', soon: true },
     ],

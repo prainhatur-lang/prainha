@@ -1,0 +1,306 @@
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import { createClient } from '@/lib/supabase/server';
+import { filiaisDoUsuario } from '@/lib/filiais';
+import { db, schema } from '@concilia/db';
+import { and, count, desc, eq, gte, lte, sql, sum } from 'drizzle-orm';
+import { AppHeader } from '@/components/app-header';
+import { brl, int } from '@/lib/format';
+import { hojeBr, diasAtrasBr } from '@/lib/datas';
+import { NovaOpButton } from './nova-op';
+
+export const dynamic = 'force-dynamic';
+
+type StatusFiltro = 'TODAS' | 'RASCUNHO' | 'CONCLUIDA' | 'CANCELADA';
+
+interface SP {
+  filialId?: string;
+  status?: StatusFiltro;
+  dataIni?: string;
+  dataFim?: string;
+  page?: string;
+}
+
+const PAGE_SIZE = 50;
+
+const BADGE_STATUS: Record<string, { label: string; cls: string }> = {
+  RASCUNHO: { label: 'Rascunho', cls: 'bg-amber-100 text-amber-800' },
+  CONCLUIDA: { label: 'Concluída', cls: 'bg-emerald-100 text-emerald-800' },
+  CANCELADA: { label: 'Cancelada', cls: 'bg-rose-100 text-rose-800' },
+};
+
+export default async function ProducaoPage(props: { searchParams: Promise<SP> }) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const filiais = await filiaisDoUsuario(user.id);
+  const sp = await props.searchParams;
+  const filialSelecionada =
+    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
+    filiais[0] ??
+    null;
+  const status = (sp.status ?? 'TODAS') as StatusFiltro;
+  const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(90);
+  const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
+  const page = Math.max(0, Number(sp.page ?? '0') || 0);
+
+  if (!filialSelecionada) {
+    return (
+      <main className="min-h-screen bg-slate-50">
+        <AppHeader userEmail={user.email} />
+        <p className="mx-auto max-w-7xl px-6 py-10 text-sm text-slate-500">
+          Nenhuma filial disponível.
+        </p>
+      </main>
+    );
+  }
+
+  const dtIni = new Date(dataIni + 'T00:00:00-03:00');
+  const dtFim = new Date(dataFim + 'T23:59:59-03:00');
+
+  const where = and(
+    eq(schema.ordemProducao.filialId, filialSelecionada.id),
+    gte(schema.ordemProducao.dataHora, dtIni),
+    lte(schema.ordemProducao.dataHora, dtFim),
+    status !== 'TODAS' ? eq(schema.ordemProducao.status, status) : undefined,
+  );
+
+  const [stats] = await db
+    .select({ qtd: count(), custo: sum(schema.ordemProducao.custoTotalEntradas) })
+    .from(schema.ordemProducao)
+    .where(where);
+
+  const ops = await db
+    .select({
+      id: schema.ordemProducao.id,
+      descricao: schema.ordemProducao.descricao,
+      dataHora: schema.ordemProducao.dataHora,
+      status: schema.ordemProducao.status,
+      custoTotalEntradas: schema.ordemProducao.custoTotalEntradas,
+      divergenciaPercentual: schema.ordemProducao.divergenciaPercentual,
+      concluidaEm: schema.ordemProducao.concluidaEm,
+      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoEntrada} WHERE ${schema.ordemProducaoEntrada.ordemProducaoId} = ${schema.ordemProducao.id})`,
+      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoSaida} WHERE ${schema.ordemProducaoSaida.ordemProducaoId} = ${schema.ordemProducao.id})`,
+    })
+    .from(schema.ordemProducao)
+    .where(where)
+    .orderBy(desc(schema.ordemProducao.dataHora))
+    .limit(PAGE_SIZE)
+    .offset(page * PAGE_SIZE);
+
+  const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
+  const hrefPreserva = (override: Partial<SP>) => {
+    const qs = new URLSearchParams();
+    qs.set('filialId', filialSelecionada.id);
+    const nextStatus = override.status !== undefined ? override.status : status;
+    const nextPage = override.page !== undefined ? override.page : String(page);
+    if (dataIni) qs.set('dataIni', dataIni);
+    if (dataFim) qs.set('dataFim', dataFim);
+    if (nextStatus && nextStatus !== 'TODAS') qs.set('status', nextStatus);
+    if (nextPage && nextPage !== '0') qs.set('page', nextPage);
+    return `/movimento/producao?${qs.toString()}`;
+  };
+
+  return (
+    <main className="min-h-screen bg-slate-50">
+      <AppHeader userEmail={user.email} />
+
+      <section className="mx-auto max-w-7xl px-6 py-10">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Ordens de produção</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Transformação de insumos brutos em produtos. Ex: 3kg filé mignon →
+              2kg medalhão + 500g grelha + 300g aparas + 200g perda.
+            </p>
+          </div>
+          <NovaOpButton filialId={filialSelecionada.id} />
+        </div>
+
+        {filiais.length > 1 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-slate-500">Filial:</span>
+            {filiais.map((f) => (
+              <Link
+                key={f.id}
+                href={`/movimento/producao?filialId=${f.id}`}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  f.id === filialSelecionada.id
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {f.nome}
+              </Link>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              OPs no período
+            </p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">
+              {int(Number(stats?.qtd ?? 0))}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Custo total insumos
+            </p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">
+              {brl(Number(stats?.custo ?? 0))}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">Status:</span>
+          {(['TODAS', 'RASCUNHO', 'CONCLUIDA', 'CANCELADA'] as const).map((s) => (
+            <Link
+              key={s}
+              href={hrefPreserva({ status: s, page: '0' })}
+              className={`rounded-md border px-2.5 py-1 ${
+                status === s
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              {s === 'TODAS' ? 'Todas' : BADGE_STATUS[s]?.label ?? s}
+            </Link>
+          ))}
+        </div>
+
+        <form method="GET" className="mt-3 flex flex-wrap items-end gap-2">
+          <input type="hidden" name="filialId" value={filialSelecionada.id} />
+          {status !== 'TODAS' && <input type="hidden" name="status" value={status} />}
+          <label className="text-xs text-slate-600">
+            De
+            <input
+              type="date"
+              name="dataIni"
+              defaultValue={dataIni}
+              className="ml-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-slate-600">
+            Até
+            <input
+              type="date"
+              name="dataFim"
+              defaultValue={dataFim}
+              className="ml-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+          >
+            Filtrar
+          </button>
+        </form>
+
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2">Data</th>
+                <th className="px-4 py-2">Descrição</th>
+                <th className="px-4 py-2 text-center">Entradas</th>
+                <th className="px-4 py-2 text-center">Saídas</th>
+                <th className="px-4 py-2 text-right">Custo</th>
+                <th className="px-4 py-2 text-right">Diverg.</th>
+                <th className="px-4 py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ops.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-500">
+                    Nenhuma ordem de produção no período. Clique em "+ Nova OP" pra criar.
+                  </td>
+                </tr>
+              ) : (
+                ops.map((op) => {
+                  const badge = BADGE_STATUS[op.status] ?? { label: op.status, cls: 'bg-slate-100' };
+                  const div = op.divergenciaPercentual ? Number(op.divergenciaPercentual) : null;
+                  return (
+                    <tr key={op.id} className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-2 font-mono text-xs text-slate-700">
+                        {op.dataHora ? new Date(op.dataHora).toLocaleDateString('pt-BR') : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-xs">
+                        <Link
+                          href={`/movimento/producao/${op.id}`}
+                          className="text-slate-800 hover:text-slate-900 hover:underline"
+                        >
+                          {op.descricao ?? <span className="text-slate-400">(sem descrição)</span>}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-2 text-center font-mono text-xs text-slate-700">
+                        {op.qtdEntradas}
+                      </td>
+                      <td className="px-4 py-2 text-center font-mono text-xs text-slate-700">
+                        {op.qtdSaidas}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-xs font-medium">
+                        {op.custoTotalEntradas ? brl(op.custoTotalEntradas) : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-xs">
+                        {div !== null ? (
+                          <span
+                            className={
+                              Math.abs(div) < 1
+                                ? 'text-slate-500'
+                                : Math.abs(div) < 5
+                                  ? 'text-amber-700'
+                                  : 'text-rose-700'
+                            }
+                          >
+                            {div.toFixed(2)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>
+                          {badge.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+          {totalPag > 1 && (
+            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-xs">
+              <span className="text-slate-600">
+                Página {page + 1} de {totalPag} · {int(Number(stats?.qtd ?? 0))} total
+              </span>
+              <div className="flex gap-2">
+                {page > 0 ? (
+                  <Link href={hrefPreserva({ page: String(page - 1) })} className="rounded-md border border-slate-300 bg-white px-2 py-1">
+                    ← Anterior
+                  </Link>
+                ) : (
+                  <span className="rounded-md border border-slate-200 px-2 py-1 text-slate-400">← Anterior</span>
+                )}
+                {page < totalPag - 1 ? (
+                  <Link href={hrefPreserva({ page: String(page + 1) })} className="rounded-md border border-slate-300 bg-white px-2 py-1">
+                    Próxima →
+                  </Link>
+                ) : (
+                  <span className="rounded-md border border-slate-200 px-2 py-1 text-slate-400">Próxima →</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
