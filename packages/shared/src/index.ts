@@ -101,9 +101,38 @@ export interface ContaPagarIngest {
   versaoReg: number | null;
 }
 
+export interface ClienteIngest {
+  codigoExterno: number;
+  cpfOuCnpj: string | null;
+  nome: string | null;
+  email: string | null;
+  telefone: string | null;
+  dataDelete: string | null;
+  versaoReg: number | null;
+}
+
+export interface MovimentoContaCorrenteIngest {
+  codigoExterno: number;
+  codigoClienteExterno: number | null;
+  codigoPedidoExterno: number | null;
+  dataHora: string | null;
+  saldoInicial: number | null;
+  credito: number | null;
+  debito: number | null;
+  saldoFinal: number | null;
+  codigoPagamento: number | null;
+  codigoUsuario: number | null;
+  codigoContaEstornada: number | null;
+  observacao: string | null;
+  importado: string | null;
+  versaoReg: number | null;
+}
+
 export interface FinanceiroIngestBatch {
   fornecedores?: FornecedorIngest[];
   categorias?: CategoriaContaIngest[];
   contasBancarias?: ContaBancariaIngest[];
   contasPagar?: ContaPagarIngest[];
+  clientes?: ClienteIngest[];
+  movimentosContaCorrente?: MovimentoContaCorrenteIngest[];
 }

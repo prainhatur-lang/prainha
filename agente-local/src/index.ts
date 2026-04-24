@@ -39,6 +39,8 @@ import {
   buscarCategoriasContas,
   buscarContasBancarias,
   buscarContasPagar,
+  buscarClientes,
+  buscarMovimentosContaCorrente,
 } from './firebird';
 import { enviarBatch, enviarFinanceiro } from './ingest';
 import { log } from './logger';
@@ -126,7 +128,13 @@ async function cicloFinanceiro(
   const entidades: Array<{
     nome: EntidadeSync;
     fetch: () => Promise<Array<{ codigoExterno: number }>>;
-    key: 'fornecedores' | 'categorias' | 'contasBancarias' | 'contasPagar';
+    key:
+      | 'fornecedores'
+      | 'categorias'
+      | 'contasBancarias'
+      | 'contasPagar'
+      | 'clientes'
+      | 'movimentosContaCorrente';
   }> = [
     {
       nome: 'fornecedores',
@@ -148,6 +156,21 @@ async function cicloFinanceiro(
       nome: 'contasPagar',
       key: 'contasPagar',
       fetch: () => buscarContasPagar(cfg, checkpoint.getUltimoCodigo('contasPagar'), limite),
+    },
+    {
+      nome: 'clientes',
+      key: 'clientes',
+      fetch: () => buscarClientes(cfg, checkpoint.getUltimoCodigo('clientes'), limite),
+    },
+    {
+      nome: 'movimentosContaCorrente',
+      key: 'movimentosContaCorrente',
+      fetch: () =>
+        buscarMovimentosContaCorrente(
+          cfg,
+          checkpoint.getUltimoCodigo('movimentosContaCorrente'),
+          limite,
+        ),
     },
   ];
 

@@ -76,11 +76,40 @@ const ContaPagarSchema = z.object({
   versaoReg: z.number().int().nullable(),
 });
 
+const ClienteSchema = z.object({
+  codigoExterno: z.number().int(),
+  cpfOuCnpj: z.string().nullable(),
+  nome: z.string().nullable(),
+  email: z.string().nullable(),
+  telefone: z.string().nullable(),
+  dataDelete: z.string().nullable(),
+  versaoReg: z.number().int().nullable(),
+});
+
+const MovimentoContaCorrenteSchema = z.object({
+  codigoExterno: z.number().int(),
+  codigoClienteExterno: z.number().int().nullable(),
+  codigoPedidoExterno: z.number().int().nullable(),
+  dataHora: z.string().nullable(),
+  saldoInicial: z.number().nullable(),
+  credito: z.number().nullable(),
+  debito: z.number().nullable(),
+  saldoFinal: z.number().nullable(),
+  codigoPagamento: z.number().int().nullable(),
+  codigoUsuario: z.number().int().nullable(),
+  codigoContaEstornada: z.number().int().nullable(),
+  observacao: z.string().nullable(),
+  importado: z.string().nullable(),
+  versaoReg: z.number().int().nullable(),
+});
+
 const BodySchema = z.object({
   fornecedores: z.array(FornecedorSchema).max(2000).optional(),
   categorias: z.array(CategoriaSchema).max(2000).optional(),
   contasBancarias: z.array(ContaBancariaSchema).max(2000).optional(),
   contasPagar: z.array(ContaPagarSchema).max(2000).optional(),
+  clientes: z.array(ClienteSchema).max(2000).optional(),
+  movimentosContaCorrente: z.array(MovimentoContaCorrenteSchema).max(2000).optional(),
 });
 
 const CHUNK_SIZE = 500;
@@ -117,11 +146,20 @@ export async function POST(req: Request) {
     .set({ ultimoPing: new Date() })
     .where(eq(schema.filial.id, filial.id));
 
-  const { fornecedores, categorias, contasBancarias, contasPagar } = parsed.data;
+  const {
+    fornecedores,
+    categorias,
+    contasBancarias,
+    contasPagar,
+    clientes,
+    movimentosContaCorrente,
+  } = parsed.data;
   let fornecedoresRecebidos = 0;
   let categoriasRecebidas = 0;
   let contasBancariasRecebidas = 0;
   let contasPagarRecebidas = 0;
+  let clientesRecebidos = 0;
+  let movimentosRecebidos = 0;
 
   // --- Fornecedores ---
   if (fornecedores?.length) {
@@ -322,10 +360,106 @@ export async function POST(req: Request) {
     `);
   }
 
+  // --- Clientes ---
+  if (clientes?.length) {
+    const rows = clientes.map((c) => ({
+      filialId: filial.id,
+      codigoExterno: c.codigoExterno,
+      cpfOuCnpj: c.cpfOuCnpj?.replace(/\D/g, '').slice(0, 14) || null,
+      nome: c.nome,
+      email: c.email,
+      telefone: c.telefone,
+      dataDelete: c.dataDelete ? new Date(c.dataDelete) : null,
+      versaoReg: c.versaoReg,
+      sincronizadoEm: new Date(),
+    }));
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      await db
+        .insert(schema.cliente)
+        .values(rows.slice(i, i + CHUNK_SIZE))
+        .onConflictDoUpdate({
+          target: [schema.cliente.filialId, schema.cliente.codigoExterno],
+          set: {
+            cpfOuCnpj: drizzleSql`excluded.cpf_ou_cnpj`,
+            nome: drizzleSql`excluded.nome`,
+            email: drizzleSql`excluded.email`,
+            telefone: drizzleSql`excluded.telefone`,
+            dataDelete: drizzleSql`excluded.data_delete`,
+            versaoReg: drizzleSql`excluded.versao_reg`,
+            sincronizadoEm: drizzleSql`excluded.sincronizado_em`,
+          },
+        });
+    }
+    clientesRecebidos = rows.length;
+  }
+
+  // --- Movimentos conta corrente ---
+  if (movimentosContaCorrente?.length) {
+    const rows = movimentosContaCorrente.map((m) => ({
+      filialId: filial.id,
+      codigoExterno: m.codigoExterno,
+      codigoClienteExterno: m.codigoClienteExterno,
+      codigoPedidoExterno: m.codigoPedidoExterno,
+      dataHora: m.dataHora ? new Date(m.dataHora) : null,
+      saldoInicial: m.saldoInicial !== null ? String(m.saldoInicial) : null,
+      credito: m.credito !== null ? String(m.credito) : null,
+      debito: m.debito !== null ? String(m.debito) : null,
+      saldoFinal: m.saldoFinal !== null ? String(m.saldoFinal) : null,
+      codigoPagamento: m.codigoPagamento,
+      codigoUsuario: m.codigoUsuario,
+      codigoContaEstornada: m.codigoContaEstornada,
+      observacao: m.observacao,
+      importado: m.importado,
+      versaoReg: m.versaoReg,
+      sincronizadoEm: new Date(),
+    }));
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      await db
+        .insert(schema.movimentoContaCorrente)
+        .values(rows.slice(i, i + CHUNK_SIZE))
+        .onConflictDoUpdate({
+          target: [
+            schema.movimentoContaCorrente.filialId,
+            schema.movimentoContaCorrente.codigoExterno,
+          ],
+          set: {
+            codigoClienteExterno: drizzleSql`excluded.codigo_cliente_externo`,
+            codigoPedidoExterno: drizzleSql`excluded.codigo_pedido_externo`,
+            dataHora: drizzleSql`excluded.data_hora`,
+            saldoInicial: drizzleSql`excluded.saldo_inicial`,
+            credito: drizzleSql`excluded.credito`,
+            debito: drizzleSql`excluded.debito`,
+            saldoFinal: drizzleSql`excluded.saldo_final`,
+            codigoPagamento: drizzleSql`excluded.codigo_pagamento`,
+            codigoUsuario: drizzleSql`excluded.codigo_usuario`,
+            codigoContaEstornada: drizzleSql`excluded.codigo_conta_estornada`,
+            observacao: drizzleSql`excluded.observacao`,
+            importado: drizzleSql`excluded.importado`,
+            versaoReg: drizzleSql`excluded.versao_reg`,
+            sincronizadoEm: drizzleSql`excluded.sincronizado_em`,
+          },
+        });
+    }
+    movimentosRecebidos = rows.length;
+
+    // Resolve FK cliente_id apos insert
+    await db.execute(drizzleSql`
+      UPDATE movimento_conta_corrente mcc SET cliente_id = c.id
+      FROM cliente c
+      WHERE mcc.filial_id = ${filial.id}
+        AND mcc.filial_id = c.filial_id
+        AND mcc.codigo_cliente_externo = c.codigo_externo
+        AND mcc.cliente_id IS NULL
+        AND mcc.codigo_cliente_externo IS NOT NULL
+    `);
+  }
+
   return NextResponse.json({
     fornecedoresRecebidos,
     categoriasRecebidas,
     contasBancariasRecebidas,
     contasPagarRecebidas,
+    clientesRecebidos,
+    movimentosRecebidos,
   });
 }

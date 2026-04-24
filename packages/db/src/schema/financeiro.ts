@@ -75,6 +75,59 @@ export const contaBancariaConsumer = pgTable(
   }),
 );
 
+/** Cliente (espelha CRMCLIENTE / tabela equivalente). */
+export const cliente = pgTable(
+  'cliente',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    cpfOuCnpj: varchar('cpf_ou_cnpj', { length: 14 }),
+    nome: varchar('nome', { length: 200 }),
+    email: varchar('email', { length: 200 }),
+    telefone: varchar('telefone', { length: 30 }),
+    dataDelete: timestamp('data_delete', { withTimezone: true }),
+    versaoReg: integer('versao_reg'),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqCodigo: unique('uq_cliente_filial_codigo').on(t.filialId, t.codigoExterno),
+    cpfIdx: index('idx_cliente_cpf').on(t.filialId, t.cpfOuCnpj),
+  }),
+);
+
+/** Lançamento de conta corrente de cliente (espelha CONTACORRENTE).
+ *  Crédito = cliente passou a dever (venda fiado). Débito = cliente pagou.
+ *  Saldo > 0 = cliente deve. Contas a receber = clientes com saldo > 0. */
+export const movimentoContaCorrente = pgTable(
+  'movimento_conta_corrente',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    codigoClienteExterno: integer('codigo_cliente_externo'),
+    codigoPedidoExterno: integer('codigo_pedido_externo'),
+    clienteId: uuid('cliente_id').references(() => cliente.id, { onDelete: 'set null' }),
+    dataHora: timestamp('data_hora', { withTimezone: true }),
+    saldoInicial: numeric('saldo_inicial', { precision: 14, scale: 2 }),
+    credito: numeric('credito', { precision: 14, scale: 2 }),
+    debito: numeric('debito', { precision: 14, scale: 2 }),
+    saldoFinal: numeric('saldo_final', { precision: 14, scale: 2 }),
+    codigoPagamento: integer('codigo_pagamento'),
+    codigoUsuario: integer('codigo_usuario'),
+    codigoContaEstornada: integer('codigo_conta_estornada'),
+    observacao: text('observacao'),
+    importado: varchar('importado', { length: 10 }),
+    versaoReg: integer('versao_reg'),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqCodigo: unique('uq_mcc_filial_codigo').on(t.filialId, t.codigoExterno),
+    clienteIdx: index('idx_mcc_cliente').on(t.filialId, t.clienteId),
+    dataIdx: index('idx_mcc_data').on(t.filialId, t.dataHora),
+  }),
+);
+
 /** Conta a pagar (espelha CONTASPAGAR). */
 export const contaPagar = pgTable(
   'conta_pagar',

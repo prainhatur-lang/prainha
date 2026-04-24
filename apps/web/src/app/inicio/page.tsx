@@ -27,7 +27,7 @@ const BLOCOS: Bloco[] = [
     cor: 'sky',
     tiles: [
       { icon: '💳', label: 'Contas a pagar', desc: 'Títulos em aberto, vencidos, pagos no mês', href: '/financeiro' },
-      { icon: '💰', label: 'Contas a receber', desc: 'Clientes, vencimentos', href: '/financeiro/receber', soon: true },
+      { icon: '💰', label: 'Contas a receber', desc: 'Saldo de conta corrente por cliente', href: '/financeiro/receber' },
       { icon: '📦', label: 'Pedidos / Vendas', desc: 'PDV, iFood, delivery', href: '/movimento/pedidos', soon: true },
       { icon: '📥', label: 'Entrada de notas', desc: 'NF-e de fornecedores (SEFAZ A1)', href: '/movimento/entrada-notas', soon: true },
     ],

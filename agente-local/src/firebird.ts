@@ -8,6 +8,8 @@ import type {
   CategoriaContaIngest,
   ContaBancariaIngest,
   ContaPagarIngest,
+  ClienteIngest,
+  MovimentoContaCorrenteIngest,
 } from '@concilia/shared';
 
 import type { Config } from './config';
@@ -293,6 +295,91 @@ export async function buscarContasPagar(
     observacao: toStr(r.OBSERVACAO),
     dataCadastro: toIso(r.DATACADASTRO),
     dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+interface ClienteRow {
+  CODIGO: number;
+  CPFCNPJ: string | null;
+  CNPJCPF: string | null;
+  NOME: string | null;
+  EMAIL: string | null;
+  FONE: string | null;
+  TELEFONE: string | null;
+  CELULAR: string | null;
+  DATADELETE: Date | null;
+  VERSAOREG: number | null;
+}
+
+export async function buscarClientes(
+  cfg: Config,
+  desdeCodigo: number,
+  limite: number,
+): Promise<ClienteIngest[]> {
+  // Query defensiva: tenta colunas comuns. Se nao existirem, Firebird retorna erro e
+  // o ciclo pula essa entidade (best-effort no index.ts).
+  const sql = `
+    SELECT FIRST ? CODIGO, NOME, EMAIL,
+           CPFCNPJ, DATADELETE, VERSAOREG
+    FROM CRMCLIENTE WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<ClienteRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    cpfOuCnpj: toStr(r.CPFCNPJ ?? r.CNPJCPF),
+    nome: toStr(r.NOME),
+    email: toStr(r.EMAIL),
+    telefone: toStr(r.FONE ?? r.TELEFONE ?? r.CELULAR),
+    dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+interface MovimentoContaCorrenteRow {
+  CODIGO: number;
+  CODIGOCLIENTE: number | null;
+  CODIGOPEDIDO: number | null;
+  DATAHORA: Date | null;
+  SALDOINICIAL: number | null;
+  CREDITO: number | null;
+  DEBITO: number | null;
+  SALDOFINAL: number | null;
+  CODIGOPAGAMENTO: number | null;
+  CODIGOUSUARIO: number | null;
+  CODIGOCONTAESTORNADA: number | null;
+  OBSERVACAO: string | null;
+  IMPORTADO: string | null;
+  VERSAOREG: number | null;
+}
+
+export async function buscarMovimentosContaCorrente(
+  cfg: Config,
+  desdeCodigo: number,
+  limite: number,
+): Promise<MovimentoContaCorrenteIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, CODIGOCLIENTE, CODIGOPEDIDO, DATAHORA,
+           SALDOINICIAL, CREDITO, DEBITO, SALDOFINAL, CODIGOPAGAMENTO,
+           CODIGOUSUARIO, CODIGOCONTAESTORNADA, OBSERVACAO, IMPORTADO,
+           VERSAOREG
+    FROM CONTACORRENTE WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<MovimentoContaCorrenteRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    codigoClienteExterno: toNum(r.CODIGOCLIENTE),
+    codigoPedidoExterno: toNum(r.CODIGOPEDIDO),
+    dataHora: toIso(r.DATAHORA),
+    saldoInicial: toNum(r.SALDOINICIAL),
+    credito: toNum(r.CREDITO),
+    debito: toNum(r.DEBITO),
+    saldoFinal: toNum(r.SALDOFINAL),
+    codigoPagamento: toNum(r.CODIGOPAGAMENTO),
+    codigoUsuario: toNum(r.CODIGOUSUARIO),
+    codigoContaEstornada: toNum(r.CODIGOCONTAESTORNADA),
+    observacao: toStr(r.OBSERVACAO),
+    importado: toStr(r.IMPORTADO),
     versaoReg: toNum(r.VERSAOREG),
   }));
 }

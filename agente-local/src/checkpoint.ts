@@ -9,7 +9,9 @@ export type EntidadeSync =
   | 'fornecedores'
   | 'categorias'
   | 'contasBancarias'
-  | 'contasPagar';
+  | 'contasPagar'
+  | 'clientes'
+  | 'movimentosContaCorrente';
 
 export interface CheckpointData {
   /** Compat com versao antiga — ultimoCodigo de pagamentos. */
