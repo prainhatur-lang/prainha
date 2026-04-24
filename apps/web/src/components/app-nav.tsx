@@ -20,9 +20,9 @@ const GRUPOS: Grupo[] = [
     label: 'Cadastros',
     links: [
       { label: 'Filiais', href: '/sync' },
-      { label: 'Fornecedores', href: '/cadastros/fornecedores', soon: true },
+      { label: 'Fornecedores', href: '/cadastros/fornecedores' },
       { label: 'Clientes', href: '/cadastros/clientes', soon: true },
-      { label: 'Plano de contas', href: '/cadastros/plano-contas', soon: true },
+      { label: 'Plano de contas', href: '/cadastros/plano-contas' },
       { label: 'Produtos', href: '/cadastros/produtos', soon: true },
     ],
   },

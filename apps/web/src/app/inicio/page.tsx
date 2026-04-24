@@ -59,9 +59,9 @@ const BLOCOS: Bloco[] = [
     cor: 'amber',
     tiles: [
       { icon: '🏢', label: 'Filiais', desc: 'Dados, tokens do agente, status', href: '/sync' },
-      { icon: '🏭', label: 'Fornecedores', desc: 'Empresas que emitem NF pra você', href: '/cadastros/fornecedores', soon: true },
+      { icon: '🏭', label: 'Fornecedores', desc: 'Empresas que emitem NF pra você', href: '/cadastros/fornecedores' },
       { icon: '👥', label: 'Clientes', desc: 'Quem compra de você', href: '/cadastros/clientes', soon: true },
-      { icon: '📂', label: 'Plano de contas', desc: 'Categorias para DRE', href: '/cadastros/plano-contas', soon: true },
+      { icon: '📂', label: 'Plano de contas', desc: 'Categorias para DRE', href: '/cadastros/plano-contas' },
       { icon: '🛒', label: 'Produtos', desc: 'Itens vendidos, preços', href: '/cadastros/produtos', soon: true },
     ],
   },
