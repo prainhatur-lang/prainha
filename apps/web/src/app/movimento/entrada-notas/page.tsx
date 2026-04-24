@@ -365,15 +365,25 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                     </tr>
                   ) : (
                     notas.map((n) => (
-                      <tr key={n.id} className="border-t border-slate-100">
+                      <tr key={n.id} className="border-t border-slate-100 hover:bg-slate-50">
                         <td className="px-4 py-2 font-mono text-xs text-slate-700">
                           {n.dataEmissao ? new Date(n.dataEmissao).toLocaleDateString('pt-BR') : '—'}
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-slate-700">
-                          {n.numero ?? '—'}/{n.serie ?? '—'}
+                          <Link
+                            href={`/movimento/entrada-notas/${n.id}`}
+                            className="hover:text-slate-900 hover:underline"
+                          >
+                            {n.numero ?? '—'}/{n.serie ?? '—'}
+                          </Link>
                         </td>
                         <td className="px-4 py-2 text-xs text-slate-800">
-                          {n.emitNome ?? '—'}
+                          <Link
+                            href={`/movimento/entrada-notas/${n.id}`}
+                            className="hover:text-slate-900 hover:underline"
+                          >
+                            {n.emitNome ?? '—'}
+                          </Link>
                           {n.emitUf && (
                             <span className="ml-1 text-[10px] text-slate-400">{n.emitUf}</span>
                           )}
