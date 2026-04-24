@@ -200,31 +200,68 @@ export async function processarCnab240Inter(
   };
 }
 
-/** Heuristica: tenta detectar tipo do arquivo pelo conteudo. */
+/** Heuristica: tenta detectar tipo do arquivo pelo conteudo.
+ *  Robusto a diferentes encodings (latin1, utf-8, utf-8-bom) e variacoes
+ *  de titulo/header que a Cielo usa entre exports. */
 export function detectarTipo(conteudo: Buffer): 'CIELO_VENDAS' | 'CIELO_RECEBIVEIS' | 'CNAB240_INTER' | null {
-  // Sniff primeiros 4KB (headers Cielo sao longos)
-  const sniff = conteudo.subarray(0, 4096).toString('latin1');
+  // Remove BOM UTF-8 se presente
+  let buf = conteudo;
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    buf = buf.subarray(3);
+  }
 
-  // Recebiveis vem ANTES de Vendas porque o header de Recebiveis tambem contem
-  // "Data da venda;Hora da venda;" como colunas (junto com "Data de pagamento;...").
+  // Sniff nos primeiros 8KB em ambos encodings (headers Cielo variam)
+  const latin = buf.subarray(0, 8192).toString('latin1');
+  const utf8 = buf.subarray(0, 8192).toString('utf8');
+  // Tambem normalizado (sem acentos) pra match mais frouxo
+  const normalizar = (s: string) =>
+    s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const latinNorm = normalizar(latin);
+  const utf8Norm = normalizar(utf8);
+
+  const tem = (...padroes: string[]): boolean =>
+    padroes.some(
+      (p) =>
+        latin.includes(p) ||
+        utf8.includes(p) ||
+        latinNorm.includes(normalizar(p)) ||
+        utf8Norm.includes(normalizar(p)),
+    );
+
+  // --- RECEBIVEIS (antes de VENDAS porque o header de recebiveis tambem contem
+  //     'Data da venda;Hora da venda;' como colunas, junto com 'Data de pagamento') ---
   if (
-    sniff.includes('Receb') &&
-    (sniff.includes('eis Detalhado') ||
-      sniff.includes('Data de pagamento;Data do lan'))
+    tem(
+      'Data de pagamento;Data do lançamento',
+      'Data de pagamento;Data do lancamento',
+      'Recebíveis Detalhado',
+      'Recebiveis Detalhado',
+      'eis Detalhado Cielo',
+      'Previsao Pagamento',
+      'Recebiveis_cielo_detalhe',
+    )
   ) {
     return 'CIELO_RECEBIVEIS';
   }
+
+  // --- VENDAS ---
   if (
-    sniff.includes('Detalhado de vendas Cielo') ||
-    sniff.includes('Detalhado de Vendas') ||
-    /^[\s\S]*?\nData da venda;Hora da venda;/m.test(sniff)
+    tem(
+      'Detalhado de vendas Cielo',
+      'Detalhado de Vendas',
+      'Vendas_cielo_detalhe',
+    ) ||
+    /\nData da venda;Hora da venda;/.test(latin) ||
+    /\nData da venda;Hora da venda;/.test(utf8)
   ) {
     return 'CIELO_VENDAS';
   }
-  // CNAB 240 Inter: linhas de 240 chars, comeca com 077 (banco Inter)
-  const firstLine = conteudo.subarray(0, 250).toString('latin1').split(/\r?\n/)[0] ?? '';
+
+  // --- CNAB 240 Inter: linhas de 240 chars comecando com '077' ---
+  const firstLine = buf.subarray(0, 250).toString('latin1').split(/\r?\n/)[0] ?? '';
   if (firstLine.length >= 240 && firstLine.startsWith('077')) {
     return 'CNAB240_INTER';
   }
+
   return null;
 }

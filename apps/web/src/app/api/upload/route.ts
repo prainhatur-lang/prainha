@@ -20,6 +20,17 @@ const BUCKET = 'arquivos-importacao';
 const TIPOS_VALIDOS = ['CIELO_VENDAS', 'CIELO_RECEBIVEIS', 'CNAB240_INTER'] as const;
 type Tipo = (typeof TIPOS_VALIDOS)[number];
 
+function labelTipo(t: Tipo): string {
+  switch (t) {
+    case 'CIELO_VENDAS':
+      return 'Cielo - Vendas Detalhado';
+    case 'CIELO_RECEBIVEIS':
+      return 'Cielo - Recebíveis';
+    case 'CNAB240_INTER':
+      return 'CNAB 240 Inter';
+  }
+}
+
 export async function POST(req: Request) {
   // 1. Auth
   const supa = await createClient();
@@ -66,17 +77,37 @@ export async function POST(req: Request) {
   // 4. Le bytes
   const buf = Buffer.from(await file.arrayBuffer());
 
-  // 5. Detecta tipo (override pelo solicitado, se valido)
-  let tipo: Tipo | null = null;
+  // 5. Detecta tipo real do conteudo. Sempre roda, mesmo quando user selecionou
+  //    manualmente — assim corrigimos auto-matico se o usuario errou o dropdown
+  //    (ex: escolheu "Vendas Detalhado" mas subiu arquivo de "Recebiveis").
+  const tipoDetectado = detectarTipo(buf);
+  let tipoSolicitadoNormalizado: Tipo | null = null;
   if (tipoSolicitado && (TIPOS_VALIDOS as readonly string[]).includes(tipoSolicitado)) {
-    tipo = tipoSolicitado as Tipo;
-  } else {
-    tipo = detectarTipo(buf);
+    tipoSolicitadoNormalizado = tipoSolicitado as Tipo;
   }
+
+  let tipo: Tipo | null = null;
+  let avisoAutoCorrigido: string | null = null;
+
+  if (tipoDetectado) {
+    // Prioriza o tipo REAL detectado pelo conteudo
+    tipo = tipoDetectado;
+    if (
+      tipoSolicitadoNormalizado &&
+      tipoSolicitadoNormalizado !== tipoDetectado
+    ) {
+      avisoAutoCorrigido = `Voce selecionou "${labelTipo(tipoSolicitadoNormalizado)}" mas o arquivo e "${labelTipo(tipoDetectado)}". Processado como ${labelTipo(tipoDetectado)}.`;
+    }
+  } else if (tipoSolicitadoNormalizado) {
+    // Nao deu pra detectar mas user escolheu — tenta respeitar (pode falhar no parser)
+    tipo = tipoSolicitadoNormalizado;
+  }
+
   if (!tipo) {
     return NextResponse.json(
       {
-        error: 'nao foi possivel identificar o tipo do arquivo. Selecione manualmente.',
+        error:
+          'nao foi possivel identificar o tipo do arquivo. Confirme que eh o CSV original da Cielo (vendas ou recebiveis) ou o .RET CNAB 240 do Banco Inter.',
       },
       { status: 400 },
     );
@@ -139,6 +170,7 @@ export async function POST(req: Request) {
       tipo,
       status: 'OK',
       resumo,
+      aviso: avisoAutoCorrigido ?? undefined,
     });
   } catch (e: unknown) {
     const msg = (e as Error).message ?? 'erro desconhecido';

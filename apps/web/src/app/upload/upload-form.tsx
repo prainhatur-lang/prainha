@@ -22,6 +22,7 @@ interface UploadResult {
     periodo?: { de: string; ate: string };
     estabelecimentos?: string[];
   };
+  aviso?: string;
   erro?: string;
 }
 
@@ -72,7 +73,13 @@ export function UploadForm({ filiais }: { filiais: Filial[] }) {
         const r = await fetch('/api/upload', { method: 'POST', body: fd });
         const data = await r.json();
         if (r.ok) {
-          novos.push({ ok: true, arquivo: f.name, tipo: data.tipo, resumo: data.resumo });
+          novos.push({
+            ok: true,
+            arquivo: f.name,
+            tipo: data.tipo,
+            resumo: data.resumo,
+            aviso: data.aviso,
+          });
         } else {
           novos.push({ ok: false, arquivo: f.name, erro: data.error ?? `HTTP ${r.status}` });
         }
@@ -206,6 +213,11 @@ export function UploadForm({ filiais }: { filiais: Filial[] }) {
                   {r.tipo} — lidos {r.resumo.registrosLidos}, novos{' '}
                   {r.resumo.registrosInseridos}
                   {r.resumo.periodo && ` — período ${r.resumo.periodo.de} a ${r.resumo.periodo.ate}`}
+                </p>
+              )}
+              {r.aviso && (
+                <p className="mt-1 rounded bg-amber-100 px-2 py-1 text-[11px] text-amber-900">
+                  ⚠ {r.aviso}
                 </p>
               )}
               {r.erro && <p className="mt-1 text-xs">{r.erro}</p>}

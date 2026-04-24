@@ -19,12 +19,16 @@ export interface CieloVendaRow {
 const HEADER_PREFIX = 'Data da venda;Hora da venda;';
 
 export function parseCieloVendas(content: Buffer | string): CieloVendaRow[] {
-  const text =
-    typeof content === 'string' ? content : Buffer.from(content).toString('latin1');
+  const text = decodeCieloContent(content);
   const lines = text.split(/\r?\n/);
 
   const headerIdx = lines.findIndex((l) => l.startsWith(HEADER_PREFIX));
-  if (headerIdx === -1) throw new Error('Cabecalho do arquivo Vendas Cielo nao encontrado');
+  if (headerIdx === -1) {
+    throw new Error(
+      'Cabecalho do arquivo Vendas Cielo nao encontrado. ' +
+        'Verifique se o arquivo eh o CSV "Detalhado de Vendas" (nao confundir com "Recebiveis Detalhado").',
+    );
+  }
 
   const headers = lines[headerIdx]!.split(';');
   const idx = (name: string): number => {
@@ -82,4 +86,18 @@ function parseBrNumber(s: string | undefined): number {
   return parseFloat(cleaned);
 }
 
-export const _internal = { parseBrNumber };
+/** Decodifica CSV da Cielo lidando com BOM UTF-8 e escolhendo entre latin1 e utf-8
+ *  baseado em quem decodifica melhor (tem os acentos esperados sem mojibake). */
+function decodeCieloContent(content: Buffer | string): string {
+  if (typeof content === 'string') return content;
+  let buf: Buffer = content;
+  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    buf = buf.subarray(3);
+  }
+  const utf8 = buf.toString('utf8');
+  // Se o utf8 nao tem caracteres invalidos (U+FFFD), preferimos utf8
+  if (!utf8.includes('\uFFFD')) return utf8;
+  return buf.toString('latin1');
+}
+
+export const _internal = { parseBrNumber, decodeCieloContent };

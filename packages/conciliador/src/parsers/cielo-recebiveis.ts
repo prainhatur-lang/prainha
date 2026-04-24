@@ -2,7 +2,7 @@
 // Validado em /tmp/fbtest/conciliar2_mes.js contra dados reais.
 
 import { _internal } from './cielo-vendas';
-const { parseBrNumber } = _internal;
+const { parseBrNumber, decodeCieloContent } = _internal;
 
 export interface CieloRecebivelRow {
   dataPagamento: string; // dd/mm/yyyy
@@ -21,11 +21,16 @@ export interface CieloRecebivelRow {
 const HEADER_PREFIX = 'Data de pagamento;Data do lançamento;';
 
 export function parseCieloRecebiveis(content: Buffer | string): CieloRecebivelRow[] {
-  const text = typeof content === 'string' ? content : Buffer.from(content).toString('latin1');
+  const text = decodeCieloContent(content);
   const lines = text.split(/\r?\n/);
 
   const headerIdx = lines.findIndex((l) => l.startsWith(HEADER_PREFIX));
-  if (headerIdx === -1) throw new Error('Cabecalho do arquivo Recebiveis Cielo nao encontrado');
+  if (headerIdx === -1) {
+    throw new Error(
+      'Cabecalho do arquivo Recebiveis Cielo nao encontrado. ' +
+        'Verifique se o arquivo eh o CSV "Recebiveis Detalhado" (nao confundir com "Detalhado de Vendas").',
+    );
+  }
 
   const headers = lines[headerIdx]!.split(';');
   const idx = (name: string): number => {
