@@ -36,3 +36,74 @@ export interface PagamentoIngest {
   codigoCredenciadoraCartao: number | null;
   codigoContaCorrente: number | null;
 }
+
+// ---- Financeiro (espelho tabelas Consumer) ----
+
+export interface FornecedorIngest {
+  codigoExterno: number;
+  cnpjOuCpf: string | null;
+  nome: string | null;
+  razaoSocial: string | null;
+  endereco: string | null;
+  numero: string | null;
+  complemento: string | null;
+  bairro: string | null;
+  cidade: string | null;
+  uf: string | null;
+  cep: string | null;
+  email: string | null;
+  fonePrincipal: string | null;
+  foneSecundario: string | null;
+  rgOuIe: string | null;
+  dataDelete: string | null;
+  versaoReg: number | null;
+}
+
+export interface CategoriaContaIngest {
+  codigoExterno: number;
+  codigoPaiExterno: number | null;
+  codigoGrupoDreExterno: number | null;
+  descricao: string | null;
+  tipo: string | null;
+  excluidaEm: string | null;
+  versaoReg: number | null;
+}
+
+export interface ContaBancariaIngest {
+  codigoExterno: number;
+  descricao: string | null;
+  banco: string | null;
+  agencia: string | null;
+  conta: string | null;
+  dataDelete: string | null;
+  versaoReg: number | null;
+}
+
+export interface ContaPagarIngest {
+  codigoExterno: number;
+  codigoFornecedorExterno: number | null;
+  codigoCategoriaExterno: number | null;
+  codigoContaBancariaExterno: number | null;
+  parcela: number | null;
+  totalParcelas: number | null;
+  dataVencimento: string; // YYYY-MM-DD
+  valor: number;
+  dataPagamento: string | null;
+  descontos: number | null;
+  jurosMulta: number | null;
+  valorPago: number | null;
+  codigoReferencia: string | null;
+  competencia: string | null;
+  descricao: string | null;
+  observacao: string | null;
+  dataCadastro: string | null;
+  dataDelete: string | null;
+  versaoReg: number | null;
+}
+
+export interface FinanceiroIngestBatch {
+  fornecedores?: FornecedorIngest[];
+  categorias?: CategoriaContaIngest[];
+  contasBancarias?: ContaBancariaIngest[];
+  contasPagar?: ContaPagarIngest[];
+}

@@ -32,9 +32,15 @@ function bootTrace(msg: string) {
 bootTrace('BOOT 1 - antes de imports');
 
 import { loadConfig } from './config';
-import { Checkpoint } from './checkpoint';
-import { buscarPagamentos } from './firebird';
-import { enviarBatch } from './ingest';
+import { Checkpoint, type EntidadeSync } from './checkpoint';
+import {
+  buscarPagamentos,
+  buscarFornecedores,
+  buscarCategoriasContas,
+  buscarContasBancarias,
+  buscarContasPagar,
+} from './firebird';
+import { enviarBatch, enviarFinanceiro } from './ingest';
 import { log } from './logger';
 
 bootTrace('BOOT 2 - imports OK');
@@ -108,6 +114,73 @@ async function ciclo(cfg: ReturnType<typeof loadConfig>, checkpoint: Checkpoint)
   }
 }
 
+/** Ciclo financeiro — sincroniza Fornecedores, Categorias, Contas Bancarias
+ *  e Contas a Pagar do Consumer. Faz de forma best-effort: se alguma tabela
+ *  nao existir (erro Firebird), continua com as outras. */
+async function cicloFinanceiro(
+  cfg: ReturnType<typeof loadConfig>,
+  checkpoint: Checkpoint,
+): Promise<void> {
+  const limite = cfg.batchSize;
+
+  const entidades: Array<{
+    nome: EntidadeSync;
+    fetch: () => Promise<Array<{ codigoExterno: number }>>;
+    key: 'fornecedores' | 'categorias' | 'contasBancarias' | 'contasPagar';
+  }> = [
+    {
+      nome: 'fornecedores',
+      key: 'fornecedores',
+      fetch: () => buscarFornecedores(cfg, checkpoint.getUltimoCodigo('fornecedores'), limite),
+    },
+    {
+      nome: 'categorias',
+      key: 'categorias',
+      fetch: () => buscarCategoriasContas(cfg, checkpoint.getUltimoCodigo('categorias'), limite),
+    },
+    {
+      nome: 'contasBancarias',
+      key: 'contasBancarias',
+      fetch: () =>
+        buscarContasBancarias(cfg, checkpoint.getUltimoCodigo('contasBancarias'), limite),
+    },
+    {
+      nome: 'contasPagar',
+      key: 'contasPagar',
+      fetch: () => buscarContasPagar(cfg, checkpoint.getUltimoCodigo('contasPagar'), limite),
+    },
+  ];
+
+  for (const ent of entidades) {
+    try {
+      // loop enquanto vier batch cheio
+      for (;;) {
+        const items = await ent.fetch();
+        if (items.length === 0) break;
+        const batch = { [ent.key]: items };
+        await enviarFinanceiro(cfg, batch);
+        const ultimoCodigo = items.reduce(
+          (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+          checkpoint.getUltimoCodigo(ent.nome),
+        );
+        checkpoint.updateEntidade(ent.nome, ultimoCodigo, items.length);
+        log.info('financeiro batch ok', {
+          entidade: ent.nome,
+          qtd: items.length,
+          ultimo: ultimoCodigo,
+        });
+        if (items.length < limite) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch (e) {
+      log.warn('financeiro falhou pra entidade, segue', {
+        entidade: ent.nome,
+        err: (e as Error).message,
+      });
+    }
+  }
+}
+
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
   console.log('[boot] concilia-agente iniciando...');
@@ -126,6 +199,12 @@ async function main() {
       await ciclo(cfg, checkpoint);
     } catch (e: unknown) {
       log.error('ciclo falhou', { err: (e as Error).message });
+    }
+    // Ciclo financeiro (best effort, independente do pagamentos)
+    try {
+      await cicloFinanceiro(cfg, checkpoint);
+    } catch (e: unknown) {
+      log.error('ciclo financeiro falhou', { err: (e as Error).message });
     }
     // espera intervalo
     await new Promise((r) => setTimeout(r, cfg.intervalSeconds * 1000));

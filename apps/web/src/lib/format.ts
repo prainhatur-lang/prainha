@@ -28,6 +28,18 @@ export function relativeTime(date: Date | string | null): string {
   return d.toLocaleDateString('pt-BR');
 }
 
+/** Formata YYYY-MM-DD ou Date como DD/MM/YYYY. */
+export function formatDate(date: Date | string | null): string {
+  if (!date) return '—';
+  if (typeof date === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}/.test(date)) {
+      return date.slice(0, 10).split('-').reverse().join('/');
+    }
+    return new Date(date).toLocaleDateString('pt-BR');
+  }
+  return date.toLocaleDateString('pt-BR');
+}
+
 export function formatDateTime(date: Date | string | null): string {
   if (!date) return '—';
   const d = typeof date === 'string' ? new Date(date) : date;
