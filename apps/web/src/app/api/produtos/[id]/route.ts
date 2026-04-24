@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const UNIDADES = ['un', 'ml', 'g', 'kg', 'l'] as const;
-const TIPOS = ['VENDA_SIMPLES', 'VENDA_COMPOSTO', 'INSUMO'] as const;
+const TIPOS = ['VENDA_SIMPLES', 'INSUMO', 'COMPLEMENTO', 'COMBO', 'VARIANTE', 'SERVICO'] as const;
 
 const Body = z.object({
   nome: z.string().min(1).max(200).trim().optional(),

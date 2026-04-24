@@ -14,9 +14,12 @@ interface SP {
 }
 
 const BADGE_TIPO: Record<string, { label: string; cls: string }> = {
-  VENDA_SIMPLES: { label: 'Venda simples', cls: 'bg-slate-100 text-slate-700' },
-  VENDA_COMPOSTO: { label: 'Composto', cls: 'bg-violet-100 text-violet-800' },
+  VENDA_SIMPLES: { label: 'Produto', cls: 'bg-emerald-100 text-emerald-800' },
   INSUMO: { label: 'Insumo', cls: 'bg-sky-100 text-sky-800' },
+  COMPLEMENTO: { label: 'Complemento', cls: 'bg-amber-100 text-amber-800' },
+  COMBO: { label: 'Combo', cls: 'bg-violet-100 text-violet-800' },
+  VARIANTE: { label: 'Tamanho', cls: 'bg-indigo-100 text-indigo-800' },
+  SERVICO: { label: 'Serviço', cls: 'bg-slate-100 text-slate-700' },
 };
 
 export default async function ProdutoDetalhePage(props: {
