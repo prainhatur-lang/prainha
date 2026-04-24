@@ -150,6 +150,8 @@ export interface ProdutoIngest {
   cfop: string | null;
   cest: string | null;
   versaoReg: number | null;
+  /** ISO-8601 quando pausado (null = ativo). Vem do MIN(DATAPAUSADO) do PRODUTODETALHE */
+  dataPausado: string | null;
 }
 
 export interface PedidoIngest {

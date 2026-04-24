@@ -56,7 +56,9 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     null;
   const q = (sp.q ?? '').trim();
   const tipoFiltro = (sp.tipo ?? '').trim();
-  const statusFiltro = (sp.status ?? '').trim();
+  // Default: mostra só ativos. Precisa clicar 'Todos' explicitamente pra ver
+  // descontinuados/pausados.
+  const statusFiltro = sp.status === undefined ? 'ativo' : sp.status.trim();
   const fichaFiltro = (sp.ficha ?? '').trim();
   const estoqueFiltro = (sp.estoque ?? '').trim();
   const fornecedorFiltro = (sp.fornecedor ?? '').trim();
@@ -78,9 +80,11 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     tipoFiltro ? eq(schema.produto.tipo, tipoFiltro) : undefined,
     statusFiltro === 'descontinuado'
       ? eq(schema.produto.descontinuado, true)
-      : statusFiltro === 'ativo'
-        ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
-        : undefined,
+      : statusFiltro === 'pausado'
+        ? sql`${schema.produto.dataPausado} IS NOT NULL AND (${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
+        : statusFiltro === 'ativo'
+          ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false) AND ${schema.produto.dataPausado} IS NULL`
+          : undefined, // 'todos' ou qualquer outro: sem filtro
     fichaFiltro === 'com'
       ? sql`EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
       : fichaFiltro === 'sem'
@@ -119,6 +123,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       estoqueMinimo: schema.produto.estoqueMinimo,
       estoqueControlado: schema.produto.estoqueControlado,
       descontinuado: schema.produto.descontinuado,
+      dataPausado: schema.produto.dataPausado,
       itemPorKg: schema.produto.itemPorKg,
       tipo: schema.produto.tipo,
       unidadeEstoque: schema.produto.unidadeEstoque,
@@ -145,7 +150,8 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     const nextPage = override.page !== undefined ? override.page : String(page);
     if (nextQ) qs.set('q', nextQ);
     if (nextTipo) qs.set('tipo', nextTipo);
-    if (nextStatus) qs.set('status', nextStatus);
+    // Sempre seta status na URL pra ficar explicito qual filtro esta ativo
+    if (nextStatus && nextStatus !== 'ativo') qs.set('status', nextStatus);
     if (nextFicha) qs.set('ficha', nextFicha);
     if (nextEstoque) qs.set('estoque', nextEstoque);
     if (nextFornecedor) qs.set('fornecedor', nextFornecedor);
@@ -153,10 +159,11 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     return `/cadastros/produtos?${qs.toString()}`;
   };
 
+  // Filtro "ativo" eh default, nao conta como ativo
   const temFiltroAtivo =
     !!q ||
     !!tipoFiltro ||
-    !!statusFiltro ||
+    (!!statusFiltro && statusFiltro !== 'ativo') ||
     !!fichaFiltro ||
     !!estoqueFiltro ||
     !!fornecedorFiltro;
@@ -222,9 +229,10 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               Status
             </span>
             {[
-              { v: '', l: 'Todos' },
               { v: 'ativo', l: 'Ativos' },
+              { v: 'pausado', l: 'Pausados' },
               { v: 'descontinuado', l: 'Descontinuados' },
+              { v: 'todos', l: 'Todos' },
             ].map((o) => (
               <Link
                 key={o.v}
@@ -337,7 +345,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               href={`/cadastros/produtos?filialId=${filialSelecionada.id}`}
               className="text-xs text-slate-500 hover:text-slate-700"
             >
-              Limpar todos os filtros
+              Limpar filtros (volta pro default: Ativos)
             </Link>
           )}
         </form>
@@ -440,6 +448,13 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                         {p.descontinuado ? (
                           <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-800">
                             Descontinuado
+                          </span>
+                        ) : p.dataPausado ? (
+                          <span
+                            className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                            title={`Pausado desde ${new Date(p.dataPausado).toLocaleDateString('pt-BR')}`}
+                          >
+                            Pausado
                           </span>
                         ) : (
                           <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">

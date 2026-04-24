@@ -418,20 +418,40 @@ interface ProdutoRow {
   CFOP: string | null;
   CEST: string | null;
   VERSAOREG: number | null;
+  DATAPAUSADO: Date | string | null;
 }
 
+/** No Consumer, estoque/preco real ficam em PRODUTODETALHE (variacao).
+ *  A gente agrega por produto: soma ESTOQUEATUAL/ESTOQUEMINIMO de todos
+ *  os detalhes, usa MAX(PRECOVENDA) e MIN(PRECOCUSTO) pra consolidar.
+ *  DATAPAUSADO: usa MIN (se QUALQUER detalhe esta pausado, produto pausado).
+ *  ESTOQUECONTROLADO: BOOL OR (se algum detalhe controla, consideramos que controla).
+ */
 export async function buscarProdutos(
   cfg: Config,
   desdeCodigo: number,
   limite: number,
 ): Promise<ProdutoIngest[]> {
   const sql = `
-    SELECT FIRST ? CODIGO, NOME, DESCRICAO, CODIGOPERSONALIZADO, CODIGOETIQUETA,
-           PRECOVENDA, PRECOCUSTO, ESTOQUEATUAL, ESTOQUEMINIMO,
-           ESTOQUECONTROLADO, DESCONTINUADO, ITEMPORKG,
-           CODIGOUNIDADECOMERCIAL, CODIGOPRODUTOTIPO, CODIGOCOZINHA,
-           NCM, CFOP, CEST, VERSAOREG
-    FROM PRODUTOS WHERE CODIGO > ? ORDER BY CODIGO
+    SELECT FIRST ? p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
+           COALESCE(MAX(pd.PRECOVENDA), p.PRECOVENDA) AS PRECOVENDA,
+           COALESCE(MIN(CASE WHEN pd.PRECOCUSTO > 0 THEN pd.PRECOCUSTO END), p.PRECOCUSTO) AS PRECOCUSTO,
+           COALESCE(SUM(pd.ESTOQUEATUAL), p.ESTOQUEATUAL) AS ESTOQUEATUAL,
+           COALESCE(SUM(pd.ESTOQUEMINIMO), p.ESTOQUEMINIMO) AS ESTOQUEMINIMO,
+           COALESCE(MAX(pd.ESTOQUECONTROLADO), p.ESTOQUECONTROLADO) AS ESTOQUECONTROLADO,
+           p.DESCONTINUADO, p.ITEMPORKG,
+           p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
+           p.NCM, p.CFOP, p.CEST, p.VERSAOREG,
+           MIN(pd.DATAPAUSADO) AS DATAPAUSADO
+    FROM PRODUTOS p
+    LEFT JOIN PRODUTODETALHE pd ON pd.CODIGOPRODUTO = p.CODIGO
+    WHERE p.CODIGO > ?
+    GROUP BY p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
+             p.PRECOVENDA, p.PRECOCUSTO, p.ESTOQUEATUAL, p.ESTOQUEMINIMO,
+             p.ESTOQUECONTROLADO, p.DESCONTINUADO, p.ITEMPORKG,
+             p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
+             p.NCM, p.CFOP, p.CEST, p.VERSAOREG
+    ORDER BY p.CODIGO
   `;
   const rows = await executarQuery<ProdutoRow>(cfg, sql, [limite, desdeCodigo]);
   return rows.map((r) => ({
@@ -454,6 +474,10 @@ export async function buscarProdutos(
     cfop: toStr(r.CFOP),
     cest: toStr(r.CEST),
     versaoReg: toNum(r.VERSAOREG),
+    dataPausado:
+      r.DATAPAUSADO instanceof Date
+        ? r.DATAPAUSADO.toISOString()
+        : toStr(r.DATAPAUSADO),
   }));
 }
 

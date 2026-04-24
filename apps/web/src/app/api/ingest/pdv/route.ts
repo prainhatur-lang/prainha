@@ -31,6 +31,7 @@ const ProdutoSchema = z.object({
   cfop: z.string().nullable(),
   cest: z.string().nullable(),
   versaoReg: z.number().int().nullable(),
+  dataPausado: z.string().nullable().optional(),
 });
 
 const PedidoSchema = z.object({
@@ -203,6 +204,7 @@ export async function POST(req: Request) {
         unidadeEstoque: p.itemPorKg ? 'kg' : 'un',
         controlaEstoque: deriveControlaEstoque(tipo, p.estoqueControlado),
         criadoNaNuvem: false,
+        dataPausado: p.dataPausado ? new Date(p.dataPausado) : null,
         versaoReg: p.versaoReg,
         sincronizadoEm: new Date(),
       };
@@ -231,6 +233,7 @@ export async function POST(req: Request) {
             ncm: drizzleSql`excluded.ncm`,
             cfop: drizzleSql`excluded.cfop`,
             cest: drizzleSql`excluded.cest`,
+            dataPausado: drizzleSql`excluded.data_pausado`,
             versaoReg: drizzleSql`excluded.versao_reg`,
             sincronizadoEm: drizzleSql`excluded.sincronizado_em`,
           },

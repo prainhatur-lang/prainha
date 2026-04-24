@@ -49,6 +49,11 @@ export const produto = pgTable(
     estoqueMinimo: numeric('estoque_minimo', { precision: 14, scale: 3 }),
     estoqueControlado: boolean('estoque_controlado'),
     descontinuado: boolean('descontinuado'),
+    /** Data em que o produto foi pausado (null = nao pausado). Espelha
+     *  DATAPAUSADO do PRODUTODETALHE do Consumer. Pausado != Descontinuado:
+     *  pausa e temporario (ex: ruptura de estoque, falta de insumo); descontinuado
+     *  e definitivo. */
+    dataPausado: timestamp('data_pausado', { withTimezone: true }),
     itemPorKg: boolean('item_por_kg'),
     codigoUnidadeComercial: integer('codigo_unidade_comercial'),
     codigoProdutoTipo: integer('codigo_produto_tipo'),
