@@ -76,6 +76,9 @@ export async function POST(req: Request) {
       nfesResumoInseridas: acc.nfesResumoInseridas + r.nfesResumoInseridas,
       duplicadas: acc.duplicadas + r.duplicadas,
       eventosIgnorados: acc.eventosIgnorados + r.eventosIgnorados,
+      eventosCancelamentoAplicados:
+        acc.eventosCancelamentoAplicados + r.eventosCancelamentoAplicados,
+      eventosSemNota: acc.eventosSemNota + r.eventosSemNota,
       erros: acc.erros.concat(r.erros),
     }),
     {
@@ -85,6 +88,8 @@ export async function POST(req: Request) {
       nfesResumoInseridas: 0,
       duplicadas: 0,
       eventosIgnorados: 0,
+      eventosCancelamentoAplicados: 0,
+      eventosSemNota: 0,
       erros: [] as string[],
     },
   );

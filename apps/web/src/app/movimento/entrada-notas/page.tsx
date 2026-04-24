@@ -8,6 +8,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { UploadNotasForm } from './upload-form';
+import { ManifestarBtn } from './manifestar-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,8 +17,34 @@ interface SP {
   q?: string;
   dataIni?: string;
   dataFim?: string;
+  origem?: string;
   page?: string;
 }
+
+type OrigemFiltro = 'TODAS' | 'UPLOAD' | 'SEFAZ_DFE' | 'SEFAZ_DFE_RESUMO' | 'SEFAZ_DFE_RESUMO_CIENTE';
+
+const ORIGEM_LABEL: Record<string, { label: string; curto: string; cls: string }> = {
+  UPLOAD: {
+    label: 'Upload manual',
+    curto: 'Manual',
+    cls: 'bg-slate-100 text-slate-700',
+  },
+  SEFAZ_DFE: {
+    label: 'SEFAZ DF-e (completa)',
+    curto: 'SEFAZ',
+    cls: 'bg-sky-100 text-sky-800',
+  },
+  SEFAZ_DFE_RESUMO: {
+    label: 'SEFAZ DF-e (resumo — precisa ciência)',
+    curto: 'Resumo',
+    cls: 'bg-amber-100 text-amber-800',
+  },
+  SEFAZ_DFE_RESUMO_CIENTE: {
+    label: 'Ciência enviada — aguardando XML completo',
+    curto: 'Aguard.',
+    cls: 'bg-violet-100 text-violet-800',
+  },
+};
 
 const PAGE_SIZE = 50;
 
@@ -35,6 +62,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
   const q = (sp.q ?? '').trim();
   const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(90);
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
+  const origem = (sp.origem ?? 'TODAS') as OrigemFiltro;
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
 
   if (!filialSelecionada) {
@@ -55,6 +83,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     eq(schema.notaCompra.filialId, filialSelecionada.id),
     gte(schema.notaCompra.dataEmissao, dtIni),
     lte(schema.notaCompra.dataEmissao, dtFim),
+    origem !== 'TODAS' ? eq(schema.notaCompra.origemImportacao, origem) : undefined,
     q
       ? sql`(${ilike(schema.notaCompra.emitNome, `%${q}%`)} OR ${ilike(
           schema.notaCompra.emitCnpj,
@@ -62,6 +91,20 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
         )} OR ${ilike(schema.notaCompra.chave, `%${q.replace(/\D/g, '')}%`)})`
       : undefined,
   );
+
+  // Contador de resumos AINDA não manifestados (precisa ação manual).
+  // SEFAZ_DFE_RESUMO_CIENTE já foi manifestado — aguarda XML completo chegar na próxima consulta.
+  const [resumosPendentes] = await db
+    .select({ qtd: count() })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, filialSelecionada.id),
+        gte(schema.notaCompra.dataEmissao, dtIni),
+        lte(schema.notaCompra.dataEmissao, dtFim),
+        eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO'),
+      ),
+    );
 
   const [stats] = await db
     .select({
@@ -119,7 +162,18 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     if (q) qs.set('q', q);
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
+    if (origem !== 'TODAS') qs.set('origem', origem);
     if (p > 0) qs.set('page', String(p));
+    return `/movimento/entrada-notas?${qs.toString()}`;
+  };
+
+  const hrefOrigem = (o: OrigemFiltro) => {
+    const qs = new URLSearchParams();
+    qs.set('filialId', filialSelecionada.id);
+    if (q) qs.set('q', q);
+    if (dataIni) qs.set('dataIni', dataIni);
+    if (dataFim) qs.set('dataFim', dataFim);
+    if (o !== 'TODAS') qs.set('origem', o);
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
 
@@ -130,8 +184,29 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
       <section className="mx-auto max-w-7xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Entrada de notas fiscais</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Controle histórico de compras via upload de XML. SEFAZ automático (manifesto A1) vem na próxima fase.
+          Controle histórico de compras. Via upload de XML manual ou{' '}
+          <Link href="/configuracoes/certificados" className="text-sky-700 underline-offset-2 hover:underline">
+            SEFAZ automático (Distribuição DF-e)
+          </Link>
+          .
         </p>
+
+        {Number(resumosPendentes?.qtd ?? 0) > 0 && (
+          <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            <p className="font-semibold">
+              ⚠ {int(Number(resumosPendentes?.qtd ?? 0))} nota(s) estão como resumo
+            </p>
+            <p className="mt-1 text-amber-800">
+              A SEFAZ só devolve XML completo depois que você der ciência da operação. Enquanto isso,
+              você tem chave + fornecedor + valor, mas sem itens/impostos detalhados. Dar ciência
+              não compromete a empresa.{' '}
+              <Link href={hrefOrigem('SEFAZ_DFE_RESUMO')} className="underline">
+                Ver só os resumos →
+              </Link>
+            </p>
+            <ManifestarBtn filialId={filialSelecionada.id} />
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[380px_1fr]">
           {/* Coluna esquerda: upload + filtro */}
@@ -202,9 +277,35 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               </div>
             </div>
 
+            {/* Tabs de origem */}
+            <div className="flex flex-wrap items-center gap-1 text-xs">
+              <span className="mr-1 text-slate-500">Origem:</span>
+              {(['TODAS', 'UPLOAD', 'SEFAZ_DFE', 'SEFAZ_DFE_RESUMO', 'SEFAZ_DFE_RESUMO_CIENTE'] as const).map((o) => {
+                const ativo = o === origem;
+                const label =
+                  o === 'TODAS'
+                    ? 'Todas'
+                    : ORIGEM_LABEL[o]?.curto ?? o;
+                return (
+                  <Link
+                    key={o}
+                    href={hrefOrigem(o)}
+                    className={`rounded-md border px-2 py-1 ${
+                      ativo
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {label}
+                  </Link>
+                );
+              })}
+            </div>
+
             {/* Filtros */}
             <form method="GET" className="flex flex-wrap items-end gap-2">
               <input type="hidden" name="filialId" value={filialSelecionada.id} />
+              {origem !== 'TODAS' && <input type="hidden" name="origem" value={origem} />}
               <label className="text-xs text-slate-600">
                 Busca
                 <input
@@ -252,12 +353,13 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                     <th className="px-4 py-2">CNPJ</th>
                     <th className="px-4 py-2 text-right">Valor</th>
                     <th className="px-4 py-2">Situação</th>
+                    <th className="px-4 py-2">Origem</th>
                   </tr>
                 </thead>
                 <tbody>
                   {notas.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-500">
                         {q ? 'Nenhuma nota com esse filtro.' : 'Nenhuma nota no período. Faça upload de um XML pra começar.'}
                       </td>
                     </tr>
@@ -294,6 +396,26 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                           ) : (
                             <span className="text-[10px] text-slate-400">{n.situacao ?? '—'}</span>
                           )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {(() => {
+                            const cfg = ORIGEM_LABEL[n.origemImportacao ?? 'UPLOAD'];
+                            if (!cfg) {
+                              return (
+                                <span className="text-[10px] text-slate-400">
+                                  {n.origemImportacao ?? '—'}
+                                </span>
+                              );
+                            }
+                            return (
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cfg.cls}`}
+                                title={cfg.label}
+                              >
+                                {cfg.curto}
+                              </span>
+                            );
+                          })()}
                         </td>
                       </tr>
                     ))

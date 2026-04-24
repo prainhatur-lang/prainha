@@ -15,6 +15,7 @@
     "@concilia/shared": "workspace:*",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.47.10",
+    "@xmldom/xmldom": "^0.9.10",
     "drizzle-orm": "^0.38.2",
     "fast-xml-parser": "^5.7.1",
     "next": "16.2.4",
@@ -22,6 +23,7 @@
     "postgres": "^3.4.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "xml-crypto": "^6.1.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {

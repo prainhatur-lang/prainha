@@ -25,9 +25,13 @@ export interface ResumoConsulta {
   maxNsu: string;
   docsRecebidos: number;
   nfesCompletasInseridas: number;
+  /** Resumos que foram atualizados pra NFe completa (upgrade após ciência) */
+  nfesUpgradeResumoParaCompleta: number;
   nfesResumoInseridas: number;
   duplicadas: number;
   eventosIgnorados: number;
+  eventosCancelamentoAplicados: number;
+  eventosSemNota: number;
   erros: string[];
   /** Se maxNSU > ultNSU ainda há mais docs pra buscar (chame de novo) */
   temMais: boolean;
@@ -40,6 +44,81 @@ async function baixarPfx(path: string): Promise<Buffer> {
   if (!data) throw new Error('pfx nao encontrado no storage');
   const ab = await data.arrayBuffer();
   return Buffer.from(ab);
+}
+
+/** Extrai chave + tpEvento de um XML de evento (procEventoNFe OU resEvento). */
+function parseEvento(xml: string): {
+  chave: string;
+  tpEvento: string;
+  nProt: string | null;
+  dhEvento: string | null;
+} | null {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    removeNSPrefix: true,
+    parseTagValue: false,
+    trimValues: true,
+  });
+  const p = parser.parse(xml) as Record<string, unknown>;
+
+  // resEvento (resumo)
+  const resEv = p.resEvento as Record<string, unknown> | undefined;
+  if (resEv) {
+    const chave = String(resEv.chNFe ?? '').replace(/\D/g, '');
+    if (!/^\d{44}$/.test(chave)) return null;
+    return {
+      chave,
+      tpEvento: String(resEv.tpEvento ?? ''),
+      nProt: resEv.nProt ? String(resEv.nProt) : null,
+      dhEvento: resEv.dhEvento ? String(resEv.dhEvento) : null,
+    };
+  }
+
+  // procEventoNFe (evento completo)
+  const proc = p.procEventoNFe as Record<string, unknown> | undefined;
+  if (proc) {
+    const evento = proc.evento as Record<string, unknown> | undefined;
+    const inf = evento?.infEvento as Record<string, unknown> | undefined;
+    const chave = String(inf?.chNFe ?? '').replace(/\D/g, '');
+    if (!/^\d{44}$/.test(chave)) return null;
+    const ret = proc.retEvento as Record<string, unknown> | undefined;
+    const infRet = ret?.infEvento as Record<string, unknown> | undefined;
+    return {
+      chave,
+      tpEvento: String(inf?.tpEvento ?? ''),
+      nProt: infRet?.nProt ? String(infRet.nProt) : null,
+      dhEvento: inf?.dhEvento ? String(inf.dhEvento) : null,
+    };
+  }
+
+  return null;
+}
+
+/** Aplica um evento relevante (cancelamento) à nota_compra correspondente. */
+async function aplicarEvento(
+  filialId: string,
+  xml: string,
+): Promise<'APLICADO' | 'IGNORADO' | 'SEM_NOTA' | 'ERRO'> {
+  const ev = parseEvento(xml);
+  if (!ev) return 'ERRO';
+
+  // 110111 = cancelamento
+  if (ev.tpEvento === '110111') {
+    const r = await db
+      .update(schema.notaCompra)
+      .set({
+        situacao: 'CANCELADA',
+        protocoloAutorizacao: ev.nProt ?? undefined,
+      })
+      .where(
+        and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, ev.chave)),
+      )
+      .returning({ id: schema.notaCompra.id });
+    return r.length > 0 ? 'APLICADO' : 'SEM_NOTA';
+  }
+
+  // Outros eventos (ciência nossa, CCe, etc) ignoramos por ora
+  return 'IGNORADO';
 }
 
 /** Parse resNFe (resumo) — dados mínimos pra cadastrar stub. */
@@ -82,11 +161,14 @@ function parseResNFe(xml: string): {
   };
 }
 
-/** Dado uma NFe completa (procNFe decomprimido), faz upsert idempotente. */
+/** Dado uma NFe completa (procNFe decomprimido), faz upsert idempotente.
+ *  Se já existe como resumo (SEFAZ_DFE_RESUMO ou _CIENTE), atualiza com
+ *  dados completos (upgrade) em vez de marcar como duplicada.
+ */
 async function inserirNfeCompleta(
   filialId: string,
   xml: string,
-): Promise<'INSERIDA' | 'DUPLICADA' | 'ERRO'> {
+): Promise<'INSERIDA' | 'ATUALIZADA' | 'DUPLICADA' | 'ERRO'> {
   let nfe;
   try {
     nfe = parseNfeXml(xml);
@@ -95,13 +177,21 @@ async function inserirNfeCompleta(
   }
 
   const [existente] = await db
-    .select({ id: schema.notaCompra.id })
+    .select({
+      id: schema.notaCompra.id,
+      origemImportacao: schema.notaCompra.origemImportacao,
+    })
     .from(schema.notaCompra)
     .where(
       and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, nfe.chave)),
     )
     .limit(1);
-  if (existente) return 'DUPLICADA';
+
+  const ehResumo =
+    existente?.origemImportacao === 'SEFAZ_DFE_RESUMO' ||
+    existente?.origemImportacao === 'SEFAZ_DFE_RESUMO_CIENTE';
+
+  if (existente && !ehResumo) return 'DUPLICADA';
 
   let fornecedorId: string | null = null;
   if (nfe.emitCnpj) {
@@ -120,51 +210,69 @@ async function inserirNfeCompleta(
 
   const xmlHash = createHash('sha256').update(xml).digest('hex');
 
-  const [nova] = await db
-    .insert(schema.notaCompra)
-    .values({
-      filialId,
-      chave: nfe.chave,
-      modelo: nfe.modelo,
-      serie: nfe.serie,
-      numero: nfe.numero,
-      tipoOperacao: nfe.tipoOperacao,
-      naturezaOperacao: nfe.naturezaOperacao,
-      emitCnpj: nfe.emitCnpj,
-      emitNome: nfe.emitNome,
-      emitFantasia: nfe.emitFantasia,
-      emitIe: nfe.emitIe,
-      emitUf: nfe.emitUf,
-      emitCidade: nfe.emitCidade,
-      fornecedorId,
-      destCnpj: nfe.destCnpj,
-      destNome: nfe.destNome,
-      dataEmissao: nfe.dataEmissao ? new Date(nfe.dataEmissao) : null,
-      dataEntrada: nfe.dataEntrada ? new Date(nfe.dataEntrada) : null,
-      valorTotal: String(nfe.valorTotal),
-      valorProdutos: String(nfe.valorProdutos),
-      valorFrete: String(nfe.valorFrete),
-      valorSeguro: String(nfe.valorSeguro),
-      valorDesconto: String(nfe.valorDesconto),
-      valorOutros: String(nfe.valorOutros),
-      valorIcms: String(nfe.valorIcms),
-      valorIcmsSt: String(nfe.valorIcmsSt),
-      valorIpi: String(nfe.valorIpi),
-      valorPis: String(nfe.valorPis),
-      valorCofins: String(nfe.valorCofins),
-      situacao: nfe.situacao,
-      protocoloAutorizacao: nfe.protocoloAutorizacao,
-      dataAutorizacao: nfe.dataAutorizacao ? new Date(nfe.dataAutorizacao) : null,
-      xmlHash,
-      origemImportacao: 'SEFAZ_DFE',
-    })
-    .returning({ id: schema.notaCompra.id });
+  const valores = {
+    modelo: nfe.modelo,
+    serie: nfe.serie,
+    numero: nfe.numero,
+    tipoOperacao: nfe.tipoOperacao,
+    naturezaOperacao: nfe.naturezaOperacao,
+    emitCnpj: nfe.emitCnpj,
+    emitNome: nfe.emitNome,
+    emitFantasia: nfe.emitFantasia,
+    emitIe: nfe.emitIe,
+    emitUf: nfe.emitUf,
+    emitCidade: nfe.emitCidade,
+    fornecedorId,
+    destCnpj: nfe.destCnpj,
+    destNome: nfe.destNome,
+    dataEmissao: nfe.dataEmissao ? new Date(nfe.dataEmissao) : null,
+    dataEntrada: nfe.dataEntrada ? new Date(nfe.dataEntrada) : null,
+    valorTotal: String(nfe.valorTotal),
+    valorProdutos: String(nfe.valorProdutos),
+    valorFrete: String(nfe.valorFrete),
+    valorSeguro: String(nfe.valorSeguro),
+    valorDesconto: String(nfe.valorDesconto),
+    valorOutros: String(nfe.valorOutros),
+    valorIcms: String(nfe.valorIcms),
+    valorIcmsSt: String(nfe.valorIcmsSt),
+    valorIpi: String(nfe.valorIpi),
+    valorPis: String(nfe.valorPis),
+    valorCofins: String(nfe.valorCofins),
+    situacao: nfe.situacao,
+    protocoloAutorizacao: nfe.protocoloAutorizacao,
+    dataAutorizacao: nfe.dataAutorizacao ? new Date(nfe.dataAutorizacao) : null,
+    xmlHash,
+    origemImportacao: 'SEFAZ_DFE' as const,
+  };
 
-  if (nova && nfe.itens.length > 0) {
+  let notaCompraId: string;
+  let upgrade = false;
+
+  if (existente && ehResumo) {
+    // Upgrade: substitui resumo pela versão completa
+    await db
+      .update(schema.notaCompra)
+      .set({ ...valores, atualizadoEm: new Date() })
+      .where(eq(schema.notaCompra.id, existente.id));
+    notaCompraId = existente.id;
+    upgrade = true;
+    // Remove itens antigos (se por acaso existirem — resumo não cria)
+    await db
+      .delete(schema.notaCompraItem)
+      .where(eq(schema.notaCompraItem.notaCompraId, existente.id));
+  } else {
+    const [nova] = await db
+      .insert(schema.notaCompra)
+      .values({ filialId, chave: nfe.chave, ...valores })
+      .returning({ id: schema.notaCompra.id });
+    notaCompraId = nova!.id;
+  }
+
+  if (nfe.itens.length > 0) {
     await db.insert(schema.notaCompraItem).values(
       nfe.itens.map((it) => ({
         filialId,
-        notaCompraId: nova.id,
+        notaCompraId,
         numeroItem: it.numeroItem,
         codigoProdutoFornecedor: it.codigoProdutoFornecedor,
         ean: it.ean,
@@ -186,7 +294,7 @@ async function inserirNfeCompleta(
       })),
     );
   }
-  return 'INSERIDA';
+  return upgrade ? 'ATUALIZADA' : 'INSERIDA';
 }
 
 /** Insere um stub de NFe a partir do resumo (resNFe). */
@@ -296,9 +404,12 @@ export async function consultarEProcessar(opts: {
   });
 
   let nfesCompletasInseridas = 0;
+  let nfesUpgradeResumoParaCompleta = 0;
   let nfesResumoInseridas = 0;
   let duplicadas = 0;
   let eventosIgnorados = 0;
+  let eventosCancelamentoAplicados = 0;
+  let eventosSemNota = 0;
   const erros: string[] = [];
 
   for (const d of resp.docs) {
@@ -306,6 +417,7 @@ export async function consultarEProcessar(opts: {
       if (d.tipo === 'NFE_COMPLETA') {
         const r = await inserirNfeCompleta(opts.filialId, d.xml);
         if (r === 'INSERIDA') nfesCompletasInseridas++;
+        else if (r === 'ATUALIZADA') nfesUpgradeResumoParaCompleta++;
         else if (r === 'DUPLICADA') duplicadas++;
         else erros.push(`NSU ${d.nsu}: erro parse procNFe`);
       } else if (d.tipo === 'NFE_RESUMO') {
@@ -313,8 +425,12 @@ export async function consultarEProcessar(opts: {
         if (r === 'INSERIDA') nfesResumoInseridas++;
         else if (r === 'DUPLICADA') duplicadas++;
         else erros.push(`NSU ${d.nsu}: erro parse resNFe`);
+      } else if (d.tipo === 'EVENTO_COMPLETO' || d.tipo === 'EVENTO_RESUMO') {
+        const r = await aplicarEvento(opts.filialId, d.xml);
+        if (r === 'APLICADO') eventosCancelamentoAplicados++;
+        else if (r === 'SEM_NOTA') eventosSemNota++;
+        else eventosIgnorados++;
       } else {
-        // eventos (completos ou resumos) ignorados na v1
         eventosIgnorados++;
       }
     } catch (e) {
@@ -340,9 +456,12 @@ export async function consultarEProcessar(opts: {
     maxNsu: resp.maxNSU,
     docsRecebidos: resp.docs.length,
     nfesCompletasInseridas,
+    nfesUpgradeResumoParaCompleta,
     nfesResumoInseridas,
     duplicadas,
     eventosIgnorados,
+    eventosCancelamentoAplicados,
+    eventosSemNota,
     erros,
     temMais: resp.maxNSU > ultNsuDepois,
   };

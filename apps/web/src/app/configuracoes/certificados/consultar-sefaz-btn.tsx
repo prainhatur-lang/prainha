@@ -12,6 +12,8 @@ interface ResumoResp {
   nfesResumoInseridas?: number;
   duplicadas?: number;
   eventosIgnorados?: number;
+  eventosCancelamentoAplicados?: number;
+  eventosSemNota?: number;
   cStatFinal?: string | null;
   xMotivoFinal?: string | null;
   ultNsu?: string | null;
@@ -43,6 +45,8 @@ export function ConsultarSefazBtn({ filialId }: { filialId: string }) {
       if (d.nfesCompletasInseridas) partes.push(`${d.nfesCompletasInseridas} NFe completas`);
       if (d.nfesResumoInseridas) partes.push(`${d.nfesResumoInseridas} resumos`);
       if (d.duplicadas) partes.push(`${d.duplicadas} já existentes`);
+      if (d.eventosCancelamentoAplicados)
+        partes.push(`${d.eventosCancelamentoAplicados} cancelamentos`);
       if (d.eventosIgnorados) partes.push(`${d.eventosIgnorados} eventos ignorados`);
       const resumo = partes.length ? partes.join(', ') : 'nada novo';
       const sufixo = d.temMais ? ' (ainda há mais docs — clique novamente)' : '';
