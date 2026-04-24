@@ -11,7 +11,10 @@ export type EntidadeSync =
   | 'contasBancarias'
   | 'contasPagar'
   | 'clientes'
-  | 'movimentosContaCorrente';
+  | 'movimentosContaCorrente'
+  | 'produtos'
+  | 'pedidos'
+  | 'pedidoItens';
 
 export interface CheckpointData {
   /** Compat com versao antiga — ultimoCodigo de pagamentos. */

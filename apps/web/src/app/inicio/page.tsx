@@ -28,7 +28,7 @@ const BLOCOS: Bloco[] = [
     tiles: [
       { icon: '💳', label: 'Contas a pagar', desc: 'Títulos em aberto, vencidos, pagos no mês', href: '/financeiro' },
       { icon: '💰', label: 'Contas a receber', desc: 'Saldo de conta corrente por cliente', href: '/financeiro/receber' },
-      { icon: '📦', label: 'Pedidos / Vendas', desc: 'PDV, iFood, delivery', href: '/movimento/pedidos', soon: true },
+      { icon: '📦', label: 'Pedidos / Vendas', desc: 'Histórico do PDV, ticket médio, top produtos', href: '/movimento/pedidos' },
       { icon: '📥', label: 'Entrada de notas', desc: 'NF-e de fornecedores (SEFAZ A1)', href: '/movimento/entrada-notas', soon: true },
     ],
   },
@@ -62,7 +62,7 @@ const BLOCOS: Bloco[] = [
       { icon: '🏭', label: 'Fornecedores', desc: 'Empresas que emitem NF pra você', href: '/cadastros/fornecedores' },
       { icon: '👥', label: 'Clientes', desc: 'Quem compra de você', href: '/cadastros/clientes', soon: true },
       { icon: '📂', label: 'Plano de contas', desc: 'Categorias para DRE', href: '/cadastros/plano-contas' },
-      { icon: '🛒', label: 'Produtos', desc: 'Itens vendidos, preços', href: '/cadastros/produtos', soon: true },
+      { icon: '🛒', label: 'Produtos', desc: 'Cadastro, preço, margem, estoque', href: '/cadastros/produtos' },
     ],
   },
   {

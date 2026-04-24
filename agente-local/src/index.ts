@@ -41,8 +41,11 @@ import {
   buscarContasPagar,
   buscarClientes,
   buscarMovimentosContaCorrente,
+  buscarProdutos,
+  buscarPedidos,
+  buscarPedidoItens,
 } from './firebird';
-import { enviarBatch, enviarFinanceiro } from './ingest';
+import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
 import { log } from './logger';
 
 bootTrace('BOOT 2 - imports OK');
@@ -204,6 +207,62 @@ async function cicloFinanceiro(
   }
 }
 
+/** Ciclo PDV — Produtos, Pedidos, Itens de pedido. Best-effort. */
+async function cicloPdv(
+  cfg: ReturnType<typeof loadConfig>,
+  checkpoint: Checkpoint,
+): Promise<void> {
+  const limite = cfg.batchSize;
+  const entidades: Array<{
+    nome: EntidadeSync;
+    fetch: () => Promise<Array<{ codigoExterno: number }>>;
+    key: 'produtos' | 'pedidos' | 'pedidoItens';
+  }> = [
+    {
+      nome: 'produtos',
+      key: 'produtos',
+      fetch: () => buscarProdutos(cfg, checkpoint.getUltimoCodigo('produtos'), limite),
+    },
+    {
+      nome: 'pedidos',
+      key: 'pedidos',
+      fetch: () => buscarPedidos(cfg, checkpoint.getUltimoCodigo('pedidos'), limite),
+    },
+    {
+      nome: 'pedidoItens',
+      key: 'pedidoItens',
+      fetch: () => buscarPedidoItens(cfg, checkpoint.getUltimoCodigo('pedidoItens'), limite),
+    },
+  ];
+  for (const ent of entidades) {
+    try {
+      for (;;) {
+        const items = await ent.fetch();
+        if (items.length === 0) break;
+        const batch = { [ent.key]: items };
+        await enviarPdv(cfg, batch);
+        const ultimoCodigo = items.reduce(
+          (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+          checkpoint.getUltimoCodigo(ent.nome),
+        );
+        checkpoint.updateEntidade(ent.nome, ultimoCodigo, items.length);
+        log.info('pdv batch ok', {
+          entidade: ent.nome,
+          qtd: items.length,
+          ultimo: ultimoCodigo,
+        });
+        if (items.length < limite) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch (e) {
+      log.warn('pdv falhou pra entidade, segue', {
+        entidade: ent.nome,
+        err: (e as Error).message,
+      });
+    }
+  }
+}
+
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
   console.log('[boot] concilia-agente iniciando...');
@@ -228,6 +287,12 @@ async function main() {
       await cicloFinanceiro(cfg, checkpoint);
     } catch (e: unknown) {
       log.error('ciclo financeiro falhou', { err: (e as Error).message });
+    }
+    // Ciclo PDV (produtos + pedidos + itens)
+    try {
+      await cicloPdv(cfg, checkpoint);
+    } catch (e: unknown) {
+      log.error('ciclo pdv falhou', { err: (e as Error).message });
     }
     // espera intervalo
     await new Promise((r) => setTimeout(r, cfg.intervalSeconds * 1000));

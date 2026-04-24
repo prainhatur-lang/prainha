@@ -1,7 +1,8 @@
-// Cliente HTTP das APIs /api/ingest e /api/ingest/financeiro
+// Cliente HTTP das APIs de ingestao
 import type {
   PagamentoIngest,
   FinanceiroIngestBatch,
+  PdvIngestBatch,
 } from '@concilia/shared';
 import type { Config } from './config';
 
@@ -55,4 +56,30 @@ export async function enviarFinanceiro(
     throw new Error(`HTTP ${r.status} ${r.statusText} - ${txt.slice(0, 200)}`);
   }
   return (await r.json()) as FinanceiroIngestResponse;
+}
+
+export interface PdvIngestResponse {
+  produtosRecebidos: number;
+  pedidosRecebidos: number;
+  pedidoItensRecebidos: number;
+}
+
+export async function enviarPdv(
+  cfg: Config,
+  batch: PdvIngestBatch,
+): Promise<PdvIngestResponse> {
+  const url = `${cfg.api.url.replace(/\/$/, '')}/api/ingest/pdv`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.api.token}`,
+    },
+    body: JSON.stringify(batch),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status} ${r.statusText} - ${txt.slice(0, 200)}`);
+  }
+  return (await r.json()) as PdvIngestResponse;
 }

@@ -128,6 +128,91 @@ export interface MovimentoContaCorrenteIngest {
   versaoReg: number | null;
 }
 
+// ---- PDV / Vendas (espelho Consumer) ----
+
+export interface ProdutoIngest {
+  codigoExterno: number;
+  nome: string | null;
+  descricao: string | null;
+  codigoPersonalizado: string | null;
+  codigoEtiqueta: string | null;
+  precoVenda: number | null;
+  precoCusto: number | null;
+  estoqueAtual: number | null;
+  estoqueMinimo: number | null;
+  estoqueControlado: boolean | null;
+  descontinuado: boolean | null;
+  itemPorKg: boolean | null;
+  codigoUnidadeComercial: number | null;
+  codigoProdutoTipo: number | null;
+  codigoCozinha: number | null;
+  ncm: string | null;
+  cfop: string | null;
+  cest: string | null;
+  versaoReg: number | null;
+}
+
+export interface PedidoIngest {
+  codigoExterno: number;
+  numero: number | null;
+  senha: string | null;
+  codigoClienteContatoExterno: number | null;
+  codigoClienteFiadoExterno: number | null;
+  nomeCliente: string | null;
+  codigoColaborador: number | null;
+  codigoUsuarioCriador: number | null;
+  dataAbertura: string | null;
+  dataFechamento: string | null;
+  valorTotal: number | null;
+  valorTotalItens: number | null;
+  subtotalPago: number | null;
+  totalDesconto: number | null;
+  percentualDesconto: number | null;
+  totalAcrescimo: number | null;
+  totalServico: number | null;
+  percentualTaxaServico: number | null;
+  valorEntrega: number | null;
+  valorTroco: number | null;
+  valorIva: number | null;
+  quantidadePessoas: number | null;
+  notaEmitida: boolean | null;
+  tag: string | null;
+  codigoPedidoOrigem: number | null;
+  codigoCupom: number | null;
+  dataDelete: string | null;
+  versaoReg: number | null;
+}
+
+export interface PedidoItemIngest {
+  codigoExterno: number;
+  codigoPedidoExterno: number;
+  codigoProdutoExterno: number | null;
+  nomeProduto: string | null;
+  quantidade: number | null;
+  valorUnitario: number | null;
+  precoCusto: number | null;
+  valorItem: number | null;
+  valorComplemento: number | null;
+  valorFilho: number | null;
+  valorDesconto: number | null;
+  valorGorjeta: number | null;
+  valorTotal: number | null;
+  codigoPai: number | null;
+  codigoItemPedidoTipo: number | null;
+  codigoPagamento: number | null;
+  codigoColaborador: number | null;
+  dataHoraCadastro: string | null;
+  dataDelete: string | null;
+  detalhes: string | null;
+  versaoReg: number | null;
+}
+
+export interface PdvIngestBatch {
+  produtos?: ProdutoIngest[];
+  pedidos?: PedidoIngest[];
+  pedidoItens?: PedidoItemIngest[];
+}
+
 export interface FinanceiroIngestBatch {
   fornecedores?: FornecedorIngest[];
   categorias?: CategoriaContaIngest[];

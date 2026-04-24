@@ -10,6 +10,9 @@ import type {
   ContaPagarIngest,
   ClienteIngest,
   MovimentoContaCorrenteIngest,
+  ProdutoIngest,
+  PedidoIngest,
+  PedidoItemIngest,
 } from '@concilia/shared';
 
 import type { Config } from './config';
@@ -380,6 +383,228 @@ export async function buscarMovimentosContaCorrente(
     codigoContaEstornada: toNum(r.CODIGOCONTAESTORNADA),
     observacao: toStr(r.OBSERVACAO),
     importado: toStr(r.IMPORTADO),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+const toBool = (v: unknown): boolean | null => {
+  if (v == null) return null;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toUpperCase();
+  if (s === 'T' || s === 'S' || s === '1' || s === 'Y' || s === 'TRUE') return true;
+  if (s === 'F' || s === 'N' || s === '0' || s === 'FALSE') return false;
+  return null;
+};
+
+// --- Produtos ---
+
+interface ProdutoRow {
+  CODIGO: number;
+  NOME: string | null;
+  DESCRICAO: string | null;
+  CODIGOPERSONALIZADO: string | null;
+  CODIGOETIQUETA: string | null;
+  PRECOVENDA: number | null;
+  PRECOCUSTO: number | null;
+  ESTOQUEATUAL: number | null;
+  ESTOQUEMINIMO: number | null;
+  ESTOQUECONTROLADO: string | null;
+  DESCONTINUADO: string | null;
+  ITEMPORKG: string | null;
+  CODIGOUNIDADECOMERCIAL: number | null;
+  CODIGOPRODUTOTIPO: number | null;
+  CODIGOCOZINHA: number | null;
+  NCM: string | null;
+  CFOP: string | null;
+  CEST: string | null;
+  VERSAOREG: number | null;
+}
+
+export async function buscarProdutos(
+  cfg: Config,
+  desdeCodigo: number,
+  limite: number,
+): Promise<ProdutoIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, NOME, DESCRICAO, CODIGOPERSONALIZADO, CODIGOETIQUETA,
+           PRECOVENDA, PRECOCUSTO, ESTOQUEATUAL, ESTOQUEMINIMO,
+           ESTOQUECONTROLADO, DESCONTINUADO, ITEMPORKG,
+           CODIGOUNIDADECOMERCIAL, CODIGOPRODUTOTIPO, CODIGOCOZINHA,
+           NCM, CFOP, CEST, VERSAOREG
+    FROM PRODUTOS WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<ProdutoRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    nome: toStr(r.NOME),
+    descricao: toStr(r.DESCRICAO),
+    codigoPersonalizado: toStr(r.CODIGOPERSONALIZADO),
+    codigoEtiqueta: toStr(r.CODIGOETIQUETA),
+    precoVenda: toNum(r.PRECOVENDA),
+    precoCusto: toNum(r.PRECOCUSTO),
+    estoqueAtual: toNum(r.ESTOQUEATUAL),
+    estoqueMinimo: toNum(r.ESTOQUEMINIMO),
+    estoqueControlado: toBool(r.ESTOQUECONTROLADO),
+    descontinuado: toBool(r.DESCONTINUADO),
+    itemPorKg: toBool(r.ITEMPORKG),
+    codigoUnidadeComercial: toNum(r.CODIGOUNIDADECOMERCIAL),
+    codigoProdutoTipo: toNum(r.CODIGOPRODUTOTIPO),
+    codigoCozinha: toNum(r.CODIGOCOZINHA),
+    ncm: toStr(r.NCM),
+    cfop: toStr(r.CFOP),
+    cest: toStr(r.CEST),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+// --- Pedidos ---
+
+interface PedidoRow {
+  CODIGO: number;
+  NUMERO: number | null;
+  SENHA: string | null;
+  CODIGOCONTATOCLIENTE: number | null;
+  CODIGOCONTATOFIADO: number | null;
+  NOME: string | null;
+  CODIGOCOLABORADOR: number | null;
+  CODIGOUSUARIOCRIADOR: number | null;
+  DATAABERTURA: Date | null;
+  DATAFECHAMENTO: Date | null;
+  VALORTOTAL: number | null;
+  VALORTOTALITENS: number | null;
+  SUBTOTALPAGO: number | null;
+  TOTALDESCONTO: number | null;
+  PERCENTUALDESCONTO: number | null;
+  TOTALACRESCIMO: number | null;
+  TOTALSERVICO: number | null;
+  PERCENTUALTAXASERVICO: number | null;
+  VALORENTREGA: number | null;
+  VALORTROCO: number | null;
+  VALORIVA: number | null;
+  QUANTIDADEPESSOAS: number | null;
+  NOTAEMITIDA: string | null;
+  TAG: string | null;
+  CODIGOPEDIDOORIGEM: number | null;
+  CODIGOCUPOM: number | null;
+  DATADELETE: Date | null;
+  VERSAOREG: number | null;
+}
+
+export async function buscarPedidos(
+  cfg: Config,
+  desdeCodigo: number,
+  limite: number,
+): Promise<PedidoIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, NUMERO, SENHA,
+           CODIGOCONTATOCLIENTE, CODIGOCONTATOFIADO, NOME,
+           CODIGOCOLABORADOR, CODIGOUSUARIOCRIADOR,
+           DATAABERTURA, DATAFECHAMENTO,
+           VALORTOTAL, VALORTOTALITENS, SUBTOTALPAGO,
+           TOTALDESCONTO, PERCENTUALDESCONTO,
+           TOTALACRESCIMO, TOTALSERVICO, PERCENTUALTAXASERVICO,
+           VALORENTREGA, VALORTROCO, VALORIVA,
+           QUANTIDADEPESSOAS, NOTAEMITIDA, TAG,
+           CODIGOPEDIDOORIGEM, CODIGOCUPOM,
+           DATADELETE, VERSAOREG
+    FROM PEDIDOS WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<PedidoRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    numero: toNum(r.NUMERO),
+    senha: toStr(r.SENHA),
+    codigoClienteContatoExterno: toNum(r.CODIGOCONTATOCLIENTE),
+    codigoClienteFiadoExterno: toNum(r.CODIGOCONTATOFIADO),
+    nomeCliente: toStr(r.NOME),
+    codigoColaborador: toNum(r.CODIGOCOLABORADOR),
+    codigoUsuarioCriador: toNum(r.CODIGOUSUARIOCRIADOR),
+    dataAbertura: toIso(r.DATAABERTURA),
+    dataFechamento: toIso(r.DATAFECHAMENTO),
+    valorTotal: toNum(r.VALORTOTAL),
+    valorTotalItens: toNum(r.VALORTOTALITENS),
+    subtotalPago: toNum(r.SUBTOTALPAGO),
+    totalDesconto: toNum(r.TOTALDESCONTO),
+    percentualDesconto: toNum(r.PERCENTUALDESCONTO),
+    totalAcrescimo: toNum(r.TOTALACRESCIMO),
+    totalServico: toNum(r.TOTALSERVICO),
+    percentualTaxaServico: toNum(r.PERCENTUALTAXASERVICO),
+    valorEntrega: toNum(r.VALORENTREGA),
+    valorTroco: toNum(r.VALORTROCO),
+    valorIva: toNum(r.VALORIVA),
+    quantidadePessoas: toNum(r.QUANTIDADEPESSOAS),
+    notaEmitida: toBool(r.NOTAEMITIDA),
+    tag: toStr(r.TAG),
+    codigoPedidoOrigem: toNum(r.CODIGOPEDIDOORIGEM),
+    codigoCupom: toNum(r.CODIGOCUPOM),
+    dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+// --- Itens de pedido ---
+
+interface PedidoItemRow {
+  CODIGO: number;
+  CODIGOPEDIDO: number;
+  CODIGOPRODUTO: number | null;
+  NOMEPRODUTO: string | null;
+  QUANTIDADE: number | null;
+  VALORUNITARIO: number | null;
+  PRECOCUSTO: number | null;
+  VALORITEM: number | null;
+  VALORCOMPLEMENTO: number | null;
+  VALORFILHO: number | null;
+  VALORDESCONTO: number | null;
+  VALORGORJETA: number | null;
+  VALORTOTAL: number | null;
+  CODIGOPAI: number | null;
+  CODIGOITEMPEDIDOTIPO: number | null;
+  CODIGOPAGAMENTO: number | null;
+  CODIGOCOLABORADOR: number | null;
+  DATAHORACADASTRO: Date | null;
+  DATADELETE: Date | null;
+  DETALHES: string | null;
+  VERSAOREG: number | null;
+}
+
+export async function buscarPedidoItens(
+  cfg: Config,
+  desdeCodigo: number,
+  limite: number,
+): Promise<PedidoItemIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, CODIGOPEDIDO, CODIGOPRODUTO, NOMEPRODUTO,
+           QUANTIDADE, VALORUNITARIO, PRECOCUSTO,
+           VALORITEM, VALORCOMPLEMENTO, VALORFILHO,
+           VALORDESCONTO, VALORGORJETA, VALORTOTAL,
+           CODIGOPAI, CODIGOITEMPEDIDOTIPO, CODIGOPAGAMENTO,
+           CODIGOCOLABORADOR, DATAHORACADASTRO, DATADELETE,
+           DETALHES, VERSAOREG
+    FROM ITENSPEDIDO WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<PedidoItemRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    codigoPedidoExterno: r.CODIGOPEDIDO,
+    codigoProdutoExterno: toNum(r.CODIGOPRODUTO),
+    nomeProduto: toStr(r.NOMEPRODUTO),
+    quantidade: toNum(r.QUANTIDADE),
+    valorUnitario: toNum(r.VALORUNITARIO),
+    precoCusto: toNum(r.PRECOCUSTO),
+    valorItem: toNum(r.VALORITEM),
+    valorComplemento: toNum(r.VALORCOMPLEMENTO),
+    valorFilho: toNum(r.VALORFILHO),
+    valorDesconto: toNum(r.VALORDESCONTO),
+    valorGorjeta: toNum(r.VALORGORJETA),
+    valorTotal: toNum(r.VALORTOTAL),
+    codigoPai: toNum(r.CODIGOPAI),
+    codigoItemPedidoTipo: toNum(r.CODIGOITEMPEDIDOTIPO),
+    codigoPagamento: toNum(r.CODIGOPAGAMENTO),
+    codigoColaborador: toNum(r.CODIGOCOLABORADOR),
+    dataHoraCadastro: toIso(r.DATAHORACADASTRO),
+    dataDelete: toIso(r.DATADELETE),
+    detalhes: toStr(r.DETALHES),
     versaoReg: toNum(r.VERSAOREG),
   }));
 }

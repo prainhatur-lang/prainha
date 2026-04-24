@@ -23,7 +23,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Fornecedores', href: '/cadastros/fornecedores' },
       { label: 'Clientes', href: '/cadastros/clientes', soon: true },
       { label: 'Plano de contas', href: '/cadastros/plano-contas' },
-      { label: 'Produtos', href: '/cadastros/produtos', soon: true },
+      { label: 'Produtos', href: '/cadastros/produtos' },
     ],
   },
   {
@@ -31,7 +31,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Contas a pagar', href: '/financeiro' },
       { label: 'Contas a receber', href: '/financeiro/receber' },
-      { label: 'Pedidos / Vendas', href: '/movimento/pedidos', soon: true },
+      { label: 'Pedidos / Vendas', href: '/movimento/pedidos' },
       { label: 'Entrada de notas', href: '/movimento/entrada-notas', soon: true },
     ],
   },
