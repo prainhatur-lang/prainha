@@ -5,9 +5,12 @@ import { useRouter } from 'next/navigation';
 
 const UNIDADES = ['un', 'ml', 'g', 'kg', 'l'] as const;
 const TIPOS = [
-  { value: 'VENDA_SIMPLES', label: 'Venda simples' },
-  { value: 'VENDA_COMPOSTO', label: 'Venda composto' },
-  { value: 'INSUMO', label: 'Insumo' },
+  { value: 'VENDA_SIMPLES', label: 'Produto (venda)' },
+  { value: 'INSUMO', label: 'Insumo (só compra)' },
+  { value: 'COMPLEMENTO', label: 'Complemento' },
+  { value: 'COMBO', label: 'Combo' },
+  { value: 'VARIANTE', label: 'Produto por tamanho' },
+  { value: 'SERVICO', label: 'Serviço (sem estoque)' },
 ] as const;
 
 interface Produto {

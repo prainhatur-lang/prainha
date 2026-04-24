@@ -15,6 +15,10 @@ interface SP {
   filialId?: string;
   q?: string;
   tipo?: string;
+  status?: string; // 'ativo' | 'descontinuado' | ''
+  ficha?: string; // 'com' | 'sem' | ''
+  estoque?: string; // 'baixo' | 'zerado' | ''
+  fornecedor?: string; // 'sem' | ''
   page?: string;
 }
 
@@ -22,15 +26,21 @@ const PAGE_SIZE = 50;
 
 const TIPOS_FILTRO = [
   { value: '', label: 'Todos' },
-  { value: 'VENDA_SIMPLES', label: 'Venda simples' },
-  { value: 'VENDA_COMPOSTO', label: 'Composto' },
+  { value: 'VENDA_SIMPLES', label: 'Produto' },
   { value: 'INSUMO', label: 'Insumos' },
+  { value: 'COMPLEMENTO', label: 'Complementos' },
+  { value: 'COMBO', label: 'Combos' },
+  { value: 'VARIANTE', label: 'Com tamanho' },
+  { value: 'SERVICO', label: 'Serviços' },
 ] as const;
 
 const BADGE_TIPO: Record<string, { label: string; cls: string }> = {
-  VENDA_SIMPLES: { label: 'Simples', cls: 'bg-slate-100 text-slate-700' },
-  VENDA_COMPOSTO: { label: 'Composto', cls: 'bg-violet-100 text-violet-800' },
+  VENDA_SIMPLES: { label: 'Produto', cls: 'bg-emerald-100 text-emerald-800' },
   INSUMO: { label: 'Insumo', cls: 'bg-sky-100 text-sky-800' },
+  COMPLEMENTO: { label: 'Complemento', cls: 'bg-amber-100 text-amber-800' },
+  COMBO: { label: 'Combo', cls: 'bg-violet-100 text-violet-800' },
+  VARIANTE: { label: 'Tamanho', cls: 'bg-indigo-100 text-indigo-800' },
+  SERVICO: { label: 'Serviço', cls: 'bg-slate-100 text-slate-700' },
 };
 
 export default async function ProdutosPage(props: { searchParams: Promise<SP> }) {
@@ -46,6 +56,10 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     null;
   const q = (sp.q ?? '').trim();
   const tipoFiltro = (sp.tipo ?? '').trim();
+  const statusFiltro = (sp.status ?? '').trim();
+  const fichaFiltro = (sp.ficha ?? '').trim();
+  const estoqueFiltro = (sp.estoque ?? '').trim();
+  const fornecedorFiltro = (sp.fornecedor ?? '').trim();
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
 
   if (!filialSelecionada) {
@@ -62,6 +76,24 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
   const where = and(
     eq(schema.produto.filialId, filialSelecionada.id),
     tipoFiltro ? eq(schema.produto.tipo, tipoFiltro) : undefined,
+    statusFiltro === 'descontinuado'
+      ? eq(schema.produto.descontinuado, true)
+      : statusFiltro === 'ativo'
+        ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
+        : undefined,
+    fichaFiltro === 'com'
+      ? sql`EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
+      : fichaFiltro === 'sem'
+        ? sql`NOT EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
+        : undefined,
+    estoqueFiltro === 'zerado'
+      ? sql`COALESCE(${schema.produto.estoqueAtual}, 0) <= 0 AND ${schema.produto.controlaEstoque} = true`
+      : estoqueFiltro === 'baixo'
+        ? sql`COALESCE(${schema.produto.estoqueAtual}, 0) < COALESCE(${schema.produto.estoqueMinimo}, 0) AND ${schema.produto.controlaEstoque} = true AND COALESCE(${schema.produto.estoqueMinimo}, 0) > 0`
+        : undefined,
+    fornecedorFiltro === 'sem'
+      ? sql`NOT EXISTS (SELECT 1 FROM ${schema.produtoFornecedor} WHERE ${schema.produtoFornecedor.produtoId} = ${schema.produto.id})`
+      : undefined,
     q
       ? sql`(${ilike(schema.produto.nome, `%${q}%`)} OR ${ilike(
           schema.produto.descricao,
@@ -105,12 +137,29 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     qs.set('filialId', filialSelecionada.id);
     const nextQ = override.q !== undefined ? override.q : q;
     const nextTipo = override.tipo !== undefined ? override.tipo : tipoFiltro;
+    const nextStatus = override.status !== undefined ? override.status : statusFiltro;
+    const nextFicha = override.ficha !== undefined ? override.ficha : fichaFiltro;
+    const nextEstoque = override.estoque !== undefined ? override.estoque : estoqueFiltro;
+    const nextFornecedor =
+      override.fornecedor !== undefined ? override.fornecedor : fornecedorFiltro;
     const nextPage = override.page !== undefined ? override.page : String(page);
     if (nextQ) qs.set('q', nextQ);
     if (nextTipo) qs.set('tipo', nextTipo);
+    if (nextStatus) qs.set('status', nextStatus);
+    if (nextFicha) qs.set('ficha', nextFicha);
+    if (nextEstoque) qs.set('estoque', nextEstoque);
+    if (nextFornecedor) qs.set('fornecedor', nextFornecedor);
     if (nextPage && nextPage !== '0') qs.set('page', nextPage);
     return `/cadastros/produtos?${qs.toString()}`;
   };
+
+  const temFiltroAtivo =
+    !!q ||
+    !!tipoFiltro ||
+    !!statusFiltro ||
+    !!fichaFiltro ||
+    !!estoqueFiltro ||
+    !!fornecedorFiltro;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -146,26 +195,130 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
           </div>
         )}
 
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-slate-500">Tipo:</span>
-          {TIPOS_FILTRO.map((t) => (
-            <Link
-              key={t.value}
-              href={hrefPreserva({ tipo: t.value, page: '0' })}
-              className={`rounded-md border px-3 py-1 text-xs ${
-                tipoFiltro === t.value
-                  ? 'border-slate-900 bg-slate-900 text-white'
-                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-              }`}
-            >
-              {t.label}
-            </Link>
-          ))}
+        <div className="mt-4 space-y-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+          {/* Tipo */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Tipo
+            </span>
+            {TIPOS_FILTRO.map((t) => (
+              <Link
+                key={t.value}
+                href={hrefPreserva({ tipo: t.value, page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  tipoFiltro === t.value
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {t.label}
+              </Link>
+            ))}
+          </div>
+
+          {/* Status */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Status
+            </span>
+            {[
+              { v: '', l: 'Todos' },
+              { v: 'ativo', l: 'Ativos' },
+              { v: 'descontinuado', l: 'Descontinuados' },
+            ].map((o) => (
+              <Link
+                key={o.v}
+                href={hrefPreserva({ status: o.v, page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  statusFiltro === o.v
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {o.l}
+              </Link>
+            ))}
+          </div>
+
+          {/* Ficha técnica */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Receita
+            </span>
+            {[
+              { v: '', l: 'Qualquer' },
+              { v: 'com', l: 'Com ficha' },
+              { v: 'sem', l: 'Sem ficha' },
+            ].map((o) => (
+              <Link
+                key={o.v}
+                href={hrefPreserva({ ficha: o.v, page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  fichaFiltro === o.v
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {o.l}
+              </Link>
+            ))}
+          </div>
+
+          {/* Estoque */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Estoque
+            </span>
+            {[
+              { v: '', l: 'Todos' },
+              { v: 'baixo', l: '⚠ Abaixo do mínimo' },
+              { v: 'zerado', l: 'Zerado' },
+            ].map((o) => (
+              <Link
+                key={o.v}
+                href={hrefPreserva({ estoque: o.v, page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  estoqueFiltro === o.v
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {o.l}
+              </Link>
+            ))}
+          </div>
+
+          {/* Fornecedor */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Fornec.
+            </span>
+            {[
+              { v: '', l: 'Qualquer' },
+              { v: 'sem', l: 'Sem fornecedor mapeado' },
+            ].map((o) => (
+              <Link
+                key={o.v}
+                href={hrefPreserva({ fornecedor: o.v, page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  fornecedorFiltro === o.v
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {o.l}
+              </Link>
+            ))}
+          </div>
         </div>
 
-        <form method="GET" className="mt-4 flex items-center gap-2">
+        <form method="GET" className="mt-3 flex items-center gap-2">
           <input type="hidden" name="filialId" value={filialSelecionada.id} />
           {tipoFiltro && <input type="hidden" name="tipo" value={tipoFiltro} />}
+          {statusFiltro && <input type="hidden" name="status" value={statusFiltro} />}
+          {fichaFiltro && <input type="hidden" name="ficha" value={fichaFiltro} />}
+          {estoqueFiltro && <input type="hidden" name="estoque" value={estoqueFiltro} />}
+          {fornecedorFiltro && <input type="hidden" name="fornecedor" value={fornecedorFiltro} />}
           <input
             type="text"
             name="q"
@@ -179,12 +332,12 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
           >
             Buscar
           </button>
-          {q && (
+          {temFiltroAtivo && (
             <Link
-              href={hrefPreserva({ q: '', page: '0' })}
+              href={`/cadastros/produtos?filialId=${filialSelecionada.id}`}
               className="text-xs text-slate-500 hover:text-slate-700"
             >
-              Limpar busca
+              Limpar todos os filtros
             </Link>
           )}
         </form>
