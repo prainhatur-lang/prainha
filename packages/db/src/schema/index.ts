@@ -11,3 +11,4 @@ export * from './financeiro';
 export * from './vendas';
 export * from './notas';
 export * from './certificados';
+export * from './estoque';

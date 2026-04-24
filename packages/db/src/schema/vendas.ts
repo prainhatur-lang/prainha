@@ -14,13 +14,31 @@ import {
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
-/** Produto (espelha PRODUTOS do Consumer). */
+/** Produto (espelha PRODUTOS do Consumer + campos próprios do concilia).
+ *
+ *  Tipos (mapeia Consumer CODIGOPRODUTOTIPO):
+ *   - VENDA_SIMPLES (1 Produto): aparece no cardápio. Se tiver linhas em
+ *     ficha_tecnica, baixa os insumos. Caso contrário baixa o próprio estoque
+ *     (ex: lata de Coca = revenda direta).
+ *   - INSUMO (2): só compra, nunca no cardápio. Baixa via ficha_tecnica
+ *     quando outro produto composto é vendido.
+ *   - COMPLEMENTO (3): adicional (bacon, queijo extra). Igual VENDA_SIMPLES.
+ *   - COMBO (4): vários produtos com preço fechado. Ficha lista os filhos.
+ *   - VARIANTE (5 Produto por Tamanho): o pai do cardápio (ex: Pizza M).
+ *     No pedido, vem o pai + itens filhos (sabores) via codigoPai do
+ *     pedido_item. A ficha real fica no filho (Sabor Calabresa, etc.).
+ *   - SERVICO (6): taxa de entrega, couvert — não mexe estoque.
+ *
+ *  `unidadeEstoque` é a unidade do estoque interno (ml, g, un, kg).
+ *  Isso difere da `codigoUnidadeComercial` do Consumer, que é pra venda.
+ */
 export const produto = pgTable(
   'produto',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
-    codigoExterno: integer('codigo_externo').notNull(),
+    /** Null pra insumos criados direto na nuvem (não existem no Consumer). */
+    codigoExterno: integer('codigo_externo'),
     nome: varchar('nome', { length: 200 }),
     descricao: text('descricao'),
     codigoPersonalizado: varchar('codigo_personalizado', { length: 50 }),
@@ -38,12 +56,31 @@ export const produto = pgTable(
     ncm: varchar('ncm', { length: 10 }),
     cfop: varchar('cfop', { length: 10 }),
     cest: varchar('cest', { length: 10 }),
+
+    // ---- Campos próprios do concilia (gestão de estoque + ficha técnica) ----
+
+    /** Tipo do produto: VENDA_SIMPLES | VENDA_COMPOSTO | INSUMO */
+    tipo: varchar('tipo', { length: 20 }).notNull().default('VENDA_SIMPLES'),
+    /** Unidade de estoque (pra insumos e revenda): un, ml, g, kg, l */
+    unidadeEstoque: varchar('unidade_estoque', { length: 10 }).notNull().default('un'),
+    /** Se deve controlar estoque (entrada por compra / saída por venda ou ficha).
+     *  VENDA_SIMPLES: pode controlar ou não (revenda sim, composto filho sim).
+     *  VENDA_COMPOSTO: geralmente false (só os insumos controlam).
+     *  INSUMO: sempre true.
+     *  Default true. */
+    controlaEstoque: boolean('controla_estoque').notNull().default(true),
+    /** Criado só na nuvem (não veio do Consumer) — útil pra insumos. */
+    criadoNaNuvem: boolean('criado_na_nuvem').notNull().default(false),
+
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    // codigoExterno só é único quando não é null (insumos da nuvem têm null).
     uniqCodigo: unique('uq_produto_filial_codigo').on(t.filialId, t.codigoExterno),
     nomeIdx: index('idx_produto_nome').on(t.filialId, t.nome),
+    tipoIdx: index('idx_produto_tipo').on(t.filialId, t.tipo),
+    etiquetaIdx: index('idx_produto_etiqueta').on(t.filialId, t.codigoEtiqueta),
   }),
 );
 

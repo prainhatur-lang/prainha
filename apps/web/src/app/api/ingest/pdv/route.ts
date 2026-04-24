@@ -100,6 +100,46 @@ function toNumStr(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
 }
 
+/** Mapeia CODIGOPRODUTOTIPO do Consumer pro tipo da nuvem.
+ *  Valores do Consumer:
+ *   1 = Produto    -> VENDA_SIMPLES
+ *   2 = Insumo     -> INSUMO
+ *   3 = Complemento -> COMPLEMENTO
+ *   4 = Combo      -> COMBO
+ *   5 = Produto por Tamanho -> VARIANTE
+ *   6 = Serviço    -> SERVICO
+ *   null/outro    -> VENDA_SIMPLES (default)
+ */
+function mapearTipo(codigoProdutoTipo: number | null | undefined): string {
+  switch (codigoProdutoTipo) {
+    case 2:
+      return 'INSUMO';
+    case 3:
+      return 'COMPLEMENTO';
+    case 4:
+      return 'COMBO';
+    case 5:
+      return 'VARIANTE';
+    case 6:
+      return 'SERVICO';
+    case 1:
+    default:
+      return 'VENDA_SIMPLES';
+  }
+}
+
+/** Deriva controlaEstoque do tipo + flag do Consumer. */
+function deriveControlaEstoque(
+  tipo: string,
+  estoqueControladoConsumer: boolean | null | undefined,
+): boolean {
+  if (tipo === 'SERVICO') return false;
+  if (tipo === 'VARIANTE') return false; // o pai não baixa; os filhos sim
+  if (tipo === 'INSUMO') return true;
+  // VENDA_SIMPLES / COMPLEMENTO / COMBO: respeita o Consumer quando informado
+  return estoqueControladoConsumer ?? true;
+}
+
 export async function POST(req: Request) {
   const auth = req.headers.get('authorization');
   if (!auth?.startsWith('Bearer ')) {
@@ -137,29 +177,36 @@ export async function POST(req: Request) {
   let pedidoItensRecebidos = 0;
 
   if (produtos?.length) {
-    const rows = produtos.map((p) => ({
-      filialId: filial.id,
-      codigoExterno: p.codigoExterno,
-      nome: p.nome,
-      descricao: p.descricao,
-      codigoPersonalizado: p.codigoPersonalizado,
-      codigoEtiqueta: p.codigoEtiqueta,
-      precoVenda: toNumStr(p.precoVenda),
-      precoCusto: toNumStr(p.precoCusto),
-      estoqueAtual: toNumStr(p.estoqueAtual),
-      estoqueMinimo: toNumStr(p.estoqueMinimo),
-      estoqueControlado: p.estoqueControlado,
-      descontinuado: p.descontinuado,
-      itemPorKg: p.itemPorKg,
-      codigoUnidadeComercial: p.codigoUnidadeComercial,
-      codigoProdutoTipo: p.codigoProdutoTipo,
-      codigoCozinha: p.codigoCozinha,
-      ncm: p.ncm,
-      cfop: p.cfop,
-      cest: p.cest,
-      versaoReg: p.versaoReg,
-      sincronizadoEm: new Date(),
-    }));
+    const rows = produtos.map((p) => {
+      const tipo = mapearTipo(p.codigoProdutoTipo);
+      return {
+        filialId: filial.id,
+        codigoExterno: p.codigoExterno,
+        nome: p.nome,
+        descricao: p.descricao,
+        codigoPersonalizado: p.codigoPersonalizado,
+        codigoEtiqueta: p.codigoEtiqueta,
+        precoVenda: toNumStr(p.precoVenda),
+        precoCusto: toNumStr(p.precoCusto),
+        estoqueAtual: toNumStr(p.estoqueAtual),
+        estoqueMinimo: toNumStr(p.estoqueMinimo),
+        estoqueControlado: p.estoqueControlado,
+        descontinuado: p.descontinuado,
+        itemPorKg: p.itemPorKg,
+        codigoUnidadeComercial: p.codigoUnidadeComercial,
+        codigoProdutoTipo: p.codigoProdutoTipo,
+        codigoCozinha: p.codigoCozinha,
+        ncm: p.ncm,
+        cfop: p.cfop,
+        cest: p.cest,
+        tipo,
+        unidadeEstoque: p.itemPorKg ? 'kg' : 'un',
+        controlaEstoque: deriveControlaEstoque(tipo, p.estoqueControlado),
+        criadoNaNuvem: false,
+        versaoReg: p.versaoReg,
+        sincronizadoEm: new Date(),
+      };
+    });
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
       await db
         .insert(schema.produto)
