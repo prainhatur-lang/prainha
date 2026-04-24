@@ -51,7 +51,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Dashboard analítico', href: '/dashboard' },
       { label: 'Relatório consolidado', href: '/relatorio' },
-      { label: 'DRE', href: '/relatorios/dre', soon: true },
+      { label: 'DRE', href: '/relatorios/dre' },
       { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', soon: true },
     ],
   },

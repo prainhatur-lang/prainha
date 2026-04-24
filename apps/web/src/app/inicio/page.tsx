@@ -50,7 +50,7 @@ const BLOCOS: Bloco[] = [
     tiles: [
       { icon: '📊', label: 'Dashboard analítico', desc: 'KPIs de vendas, taxas, % rastreado', href: '/dashboard' },
       { icon: '📋', label: 'Relatório consolidado', desc: 'PDV → Cielo → banco', href: '/relatorio' },
-      { icon: '📈', label: 'DRE', desc: 'Demonstrativo de resultado', href: '/relatorios/dre', soon: true },
+      { icon: '📈', label: 'DRE', desc: 'Demonstrativo de resultado', href: '/relatorios/dre' },
       { icon: '🌊', label: 'Fluxo de caixa', desc: 'Entradas/saídas previstos vs realizados', href: '/relatorios/fluxo-caixa', soon: true },
     ],
   },
