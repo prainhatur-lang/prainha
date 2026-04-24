@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq, sql as drizzleSql } from 'drizzle-orm';
+import { processarBaixaEstoque } from './baixa-estoque';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -176,6 +177,8 @@ export async function POST(req: Request) {
   let produtosRecebidos = 0;
   let pedidosRecebidos = 0;
   let pedidoItensRecebidos = 0;
+  let estoqueBaixados = 0;
+  let estoqueRevertidos = 0;
 
   if (produtos?.length) {
     const rows = produtos.map((p) => {
@@ -393,7 +396,26 @@ export async function POST(req: Request) {
         AND pi.produto_id IS NULL
         AND pi.codigo_produto_externo IS NOT NULL
     `);
+
+    // Baixa automática de estoque pra os itens recém-ingeridos.
+    // Idempotente: não cria duplicado se o item já foi processado.
+    // Reverte se o item tiver sido deletado no Consumer.
+    try {
+      const codigosExternos = pedidoItens.map((it) => it.codigoExterno);
+      const r = await processarBaixaEstoque(filial.id, codigosExternos);
+      estoqueBaixados = r.baixados;
+      estoqueRevertidos = r.revertidos;
+    } catch (err) {
+      // Loga mas não quebra o ingest — baixa pode ser reprocessada em próxima rodada.
+      console.error('[ingest/pdv] falha ao processar baixa de estoque:', err);
+    }
   }
 
-  return NextResponse.json({ produtosRecebidos, pedidosRecebidos, pedidoItensRecebidos });
+  return NextResponse.json({
+    produtosRecebidos,
+    pedidosRecebidos,
+    pedidoItensRecebidos,
+    estoqueBaixados,
+    estoqueRevertidos,
+  });
 }
