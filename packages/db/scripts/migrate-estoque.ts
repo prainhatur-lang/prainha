@@ -71,11 +71,18 @@ async function main() {
         produto_id uuid NOT NULL REFERENCES produto(id) ON DELETE CASCADE,
         insumo_id uuid NOT NULL REFERENCES produto(id) ON DELETE RESTRICT,
         quantidade numeric(14, 4) NOT NULL,
+        baixa_estoque boolean NOT NULL DEFAULT true,
         observacao text,
         criado_em timestamptz NOT NULL DEFAULT now(),
         atualizado_em timestamptz NOT NULL DEFAULT now(),
         CONSTRAINT uq_ficha_prod_insumo UNIQUE (produto_id, insumo_id)
       )
+    `,
+  );
+  await run('coluna baixa_estoque (se tabela ja existia)', () =>
+    sql`
+      ALTER TABLE ficha_tecnica
+      ADD COLUMN IF NOT EXISTS baixa_estoque boolean NOT NULL DEFAULT true
     `,
   );
   await run('idx_ficha_produto', () =>

@@ -20,6 +20,7 @@ import {
   timestamp,
   varchar,
   numeric,
+  boolean,
   index,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -32,6 +33,11 @@ import { pedidoItem } from './vendas';
 
 /** Ficha técnica (BOM): produto composto → insumos com quantidade.
  *  A unidade da quantidade é a `unidadeEstoque` do insumo (ml, g, un).
+ *
+ *  Lógica final da baixa: uma linha gera SAIDA_FICHA_TECNICA apenas se
+ *  `baixaEstoque = true` E `insumo.controlaEstoque = true`. Isso permite:
+ *   - Flag por LINHA (ex: gelo decorativo desta receita específica não baixa)
+ *   - Flag por INSUMO (ex: água, insumos "infinitos" nunca baixam em nenhuma receita)
  */
 export const fichaTecnica = pgTable(
   'ficha_tecnica',
@@ -52,6 +58,9 @@ export const fichaTecnica = pgTable(
      *  Ex: 1 caipiroska = 50ml vodka → 50.
      *  Ex: 1 caixa de 12 cervejas = 12un lata → 12. */
     quantidade: numeric('quantidade', { precision: 14, scale: 4 }).notNull(),
+    /** Se esta linha específica gera movimento de estoque. Default true.
+     *  Útil pra desligar baixa só em receitas específicas (ex: decoração simbólica). */
+    baixaEstoque: boolean('baixa_estoque').notNull().default(true),
     /** Observação opcional (ex: "copo de 300ml", "decorar com casca de limão") */
     observacao: text('observacao'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
