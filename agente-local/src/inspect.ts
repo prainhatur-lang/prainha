@@ -1,7 +1,11 @@
 // Inspector do Firebird: conecta usando as mesmas credenciais do agente,
 // extrai lista de tabelas + colunas + amostras, grava JSON em disco.
 //
-// Uso: `node inspect.cjs` no diretório onde tem o config.json do agente.
+// Uso:
+//   node inspect.cjs              -> todas as tabelas de usuario
+//   node inspect.cjs PROD% VEND%  -> só tabelas que casam com os padrões (LIKE)
+//   node inspect.cjs --no-samples -> sem amostras de linha (mais rápido, só schema)
+//
 // Gera: firebird-inspect.json
 //
 // Envia o arquivo pro chat e pronto.
@@ -10,6 +14,26 @@ import Firebird from 'node-firebird';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadConfig, type Config } from './config';
+
+// Handler global pra erros de libs que escapam do callback (node-firebird faz isso).
+// Em vez de matar o processo, apenas loga e deixa o timeout chutar o reject.
+let pendingReject: ((e: Error) => void) | null = null;
+process.on('uncaughtException', (e) => {
+  console.log(`  [uncaughtException capturado]: ${e.message}`);
+  if (pendingReject) {
+    const r = pendingReject;
+    pendingReject = null;
+    r(e);
+  }
+});
+process.on('unhandledRejection', (e) => {
+  console.log(`  [unhandledRejection]: ${(e as Error)?.message ?? e}`);
+  if (pendingReject) {
+    const r = pendingReject;
+    pendingReject = null;
+    r(e as Error);
+  }
+});
 
 interface TabelaDump {
   nome: string;
@@ -41,23 +65,37 @@ function queryOne<T = Record<string, unknown>>(
     lowercase_keys: false,
     pageSize: 4096,
   };
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveP, rejectP) => {
     let done = false;
     const finish = (fn: () => void) => {
       if (done) return;
       done = true;
+      pendingReject = null;
       fn();
     };
-    Firebird.attach(opts, (err, db) => {
-      if (err) return finish(() => reject(err));
-      db.query(sql, params, (e, rows) => {
-        finish(() => (e ? reject(e) : resolve((rows as T[]) ?? [])));
+    // Registra como candidato pra receber uncaughtException
+    pendingReject = (e) => finish(() => rejectP(e));
+    try {
+      Firebird.attach(opts, (err, db) => {
+        if (err) return finish(() => rejectP(err));
         try {
-          db.detach(() => {});
-        } catch {}
+          db.query(sql, params, (e, rows) => {
+            finish(() => (e ? rejectP(e) : resolveP((rows as T[]) ?? [])));
+            try {
+              db.detach(() => {});
+            } catch {}
+          });
+        } catch (qerr) {
+          finish(() => rejectP(qerr as Error));
+          try {
+            db.detach(() => {});
+          } catch {}
+        }
       });
-    });
-    setTimeout(() => finish(() => reject(new Error('timeout 30s'))), 30_000);
+    } catch (aerr) {
+      finish(() => rejectP(aerr as Error));
+    }
+    setTimeout(() => finish(() => rejectP(new Error('timeout 15s'))), 15_000);
   });
 }
 
@@ -83,9 +121,16 @@ function normalizar(v: unknown): unknown {
 }
 
 async function main() {
+  // Parse args: padrões LIKE ou flags
+  const args = process.argv.slice(2);
+  const noSamples = args.includes('--no-samples');
+  const patterns = args.filter((a) => !a.startsWith('--'));
+
   console.log('carregando config...');
   const cfg = loadConfig();
   console.log(`  host=${cfg.firebird.host} db=${cfg.firebird.database}`);
+  if (patterns.length) console.log(`  filtrando por: ${patterns.join(', ')}`);
+  if (noSamples) console.log('  modo: SCHEMA ONLY (sem amostras)');
 
   console.log('\nlistando tabelas de usuário...');
   const tabelasRaw = await queryOne<{ RDB$RELATION_NAME: string }>(
@@ -96,8 +141,18 @@ async function main() {
        AND RDB$VIEW_BLR IS NULL
      ORDER BY RDB$RELATION_NAME`,
   );
-  const nomes = tabelasRaw.map((t) => String(t['RDB$RELATION_NAME']).trim());
-  console.log(`  encontradas ${nomes.length} tabelas`);
+  let nomes = tabelasRaw.map((t) => String(t['RDB$RELATION_NAME']).trim());
+
+  if (patterns.length > 0) {
+    const regexes = patterns.map((p) => {
+      // Converte SQL LIKE → regex: % vira .*, _ vira .
+      const r = p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.');
+      return new RegExp(`^${r}$`, 'i');
+    });
+    nomes = nomes.filter((n) => regexes.some((r) => r.test(n)));
+  }
+
+  console.log(`  ${nomes.length} tabelas pra processar (de ${tabelasRaw.length} totais)`);
 
   const tabelas: TabelaDump[] = [];
 
@@ -143,24 +198,34 @@ async function main() {
         nullable: c.NULLABLE !== '1' && c.NULLABLE !== 1,
       }));
 
-      // Total + amostra (só se tiver colunas)
+      // Total (tenta em query isolada — se quebrar, continua)
       if (dump.colunas.length > 0) {
-        const [cnt] = await queryOne<{ N: number }>(
-          cfg,
-          `SELECT COUNT(*) AS N FROM "${nome}"`,
-        );
-        dump.totalLinhas = Number(cnt?.N ?? 0);
-
-        if (dump.totalLinhas > 0) {
-          const sample = await queryOne(
+        try {
+          const [cnt] = await queryOne<{ N: number }>(
             cfg,
-            `SELECT FIRST 3 * FROM "${nome}"`,
+            `SELECT COUNT(*) AS N FROM "${nome}"`,
           );
-          dump.amostra = sample.map((r) => normalizar(r) as Record<string, unknown>);
+          dump.totalLinhas = Number(cnt?.N ?? 0);
+        } catch (e) {
+          dump.erro = `count falhou: ${(e as Error).message}`;
+        }
+
+        // Amostra (opcional, isolada — tabela quebrada só perde amostra)
+        if (!noSamples && dump.totalLinhas && dump.totalLinhas > 0) {
+          try {
+            const sample = await queryOne(cfg, `SELECT FIRST 3 * FROM "${nome}"`);
+            dump.amostra = sample.map((r) => normalizar(r) as Record<string, unknown>);
+          } catch (e) {
+            const msg = `amostra falhou: ${(e as Error).message}`;
+            dump.erro = dump.erro ? `${dump.erro}; ${msg}` : msg;
+          }
         }
       }
 
-      console.log(`${dump.colunas.length} cols, ${dump.totalLinhas ?? 0} linhas`);
+      const status = dump.erro ? `ERRO (${dump.erro.slice(0, 60)})` : 'OK';
+      console.log(
+        `${dump.colunas.length} cols, ${dump.totalLinhas ?? '?'} linhas — ${status}`,
+      );
     } catch (e) {
       dump.erro = (e as Error).message;
       console.log(`ERRO: ${dump.erro}`);
