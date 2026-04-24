@@ -2,15 +2,26 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { CertificadoUploadForm } from './upload-form';
+import { ConsultarSefazBtn } from './consultar-sefaz-btn';
 
 export const dynamic = 'force-dynamic';
 
 function formataData(d: string | null): string {
   if (!d) return '—';
   return d.split('-').reverse().join('/');
+}
+
+function formataDataHora(d: Date | null): string {
+  if (!d) return '—';
+  const dt = typeof d === 'string' ? new Date(d) : d;
+  return new Intl.DateTimeFormat('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+    timeZone: 'America/Sao_Paulo',
+  }).format(dt);
 }
 
 function diasAteFim(validadeFim: string | null): number | null {
@@ -142,6 +153,19 @@ export default async function CertificadosPage() {
                         )}
                       </div>
                     </div>
+                    {c.ativo && !expirado && (
+                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                        <div className="text-[11px] text-slate-600">
+                          <p>
+                            <span className="font-medium text-slate-700">
+                              Última consulta SEFAZ:
+                            </span>{' '}
+                            {formataDataHora(c.ultimaConsultaSefaz)}
+                          </p>
+                        </div>
+                        <ConsultarSefazBtn filialId={c.filialId} />
+                      </div>
+                    )}
                   </div>
                 );
               })}
