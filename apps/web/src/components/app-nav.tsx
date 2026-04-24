@@ -59,6 +59,7 @@ const GRUPOS: Grupo[] = [
     label: 'Configurações',
     links: [
       { label: 'Filial / Taxas', href: '/configuracoes' },
+      { label: 'Certificados A1', href: '/configuracoes/certificados' },
       { label: 'Sincronização (agentes)', href: '/sync' },
       { label: 'Usuários', href: '/configuracoes/usuarios', soon: true },
     ],
