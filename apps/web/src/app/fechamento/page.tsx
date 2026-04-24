@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
-import { LogoutButton } from '../dashboard/logout-button';
+import { AppHeader } from '@/components/app-header';
 import { Calendario } from './calendario';
 
 export const dynamic = 'force-dynamic';
@@ -160,29 +160,7 @@ export default async function FechamentoPage(props: { searchParams: Promise<SP> 
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-6">
-            <Link href="/dashboard" className="text-lg font-semibold text-slate-900">
-              concilia
-            </Link>
-            <nav className="flex items-center gap-4 text-sm">
-              <Link href="/dashboard" className="text-slate-600 hover:text-slate-900">Dashboard</Link>
-              <Link href="/sync" className="text-slate-600 hover:text-slate-900">Sincronização</Link>
-              <Link href="/upload" className="text-slate-600 hover:text-slate-900">Upload</Link>
-              <Link href="/conciliacao" className="text-slate-600 hover:text-slate-900">Conciliação</Link>
-              <Link href="/relatorio" className="text-slate-600 hover:text-slate-900">Relatório</Link>
-              <Link href="/excecoes" className="text-slate-600 hover:text-slate-900">Exceções</Link>
-              <Link href="/fechamento" className="font-medium text-slate-900">Fechamento</Link>
-              <Link href="/configuracoes" className="text-slate-600 hover:text-slate-900">Configurações</Link>
-            </nav>
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-500">{user.email}</span>
-            <LogoutButton />
-          </div>
-        </div>
-      </header>
+      <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-5xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Fechamento de período</h1>
