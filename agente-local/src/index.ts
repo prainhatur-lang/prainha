@@ -51,19 +51,35 @@ import { log } from './logger';
 bootTrace('BOOT 2 - imports OK');
 
 // node-firebird tem um bug conhecido com Firebird 4 onde o detach gera um
-// callback async com 'pluginName' undefined, derrubando o processo. Como o
-// erro vem de um socket callback, nao da pra capturar com try/catch.
-// Estrategia: capturar uncaughtException, logar e seguir.
+// callback async com 'pluginName' undefined, derrubando o processo.
+//
+// O tratamento ANTIGO era "ignorar e seguir" — mas isso deixava a Promise
+// de buscarPagamentos pendurada pra sempre, travando o agente silenciosamente
+// (log mostrava "node-firebird detach bug ignorado" e depois silencio eterno).
+//
+// Estrategia NOVA: log do erro e exit(1). O run.cmd tem loop de auto-restart
+// em 5s, entao o agente volta limpo sem intervencao humana.
 process.on('uncaughtException', (err: Error) => {
   if (err?.message?.includes('pluginName')) {
-    log.warn('node-firebird detach bug ignorado', { msg: err.message });
-    return;
+    log.warn('node-firebird pluginName bug — reiniciando processo em 1s', {
+      msg: err.message,
+    });
+  } else {
+    log.error('uncaughtException — reiniciando processo em 1s', {
+      msg: err.message,
+      stack: err.stack,
+    });
   }
-  log.error('uncaughtException', { msg: err.message, stack: err.stack });
+  // Pequeno delay pra garantir que o log foi flushed pro disco antes do exit
+  setTimeout(() => process.exit(1), 1000);
 });
 
 process.on('unhandledRejection', (err: unknown) => {
-  log.error('unhandledRejection', { err: (err as Error)?.message });
+  log.error('unhandledRejection — reiniciando processo em 1s', {
+    err: (err as Error)?.message,
+    stack: (err as Error)?.stack,
+  });
+  setTimeout(() => process.exit(1), 1000);
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -263,6 +279,24 @@ async function cicloPdv(
   }
 }
 
+/** Envolve uma Promise num timeout. Se estourar, rejeita com Error.
+ *  Essencial porque node-firebird as vezes trava em estados de conexao ruim
+ *  sem lancar erro nem resolver — a Promise fica pendurada pra sempre. */
+function comTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout ${ms / 1000}s em ${label}`)), ms);
+    p.then((v) => {
+      clearTimeout(t);
+      resolve(v);
+    }).catch((e) => {
+      clearTimeout(t);
+      reject(e);
+    });
+  });
+}
+
+const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso e travamento
+
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
   console.log('[boot] concilia-agente iniciando...');
@@ -278,21 +312,37 @@ async function main() {
   // Loop infinito
   for (;;) {
     try {
-      await ciclo(cfg, checkpoint);
+      await comTimeout(ciclo(cfg, checkpoint), CICLO_TIMEOUT_MS, 'ciclo pagamentos');
     } catch (e: unknown) {
-      log.error('ciclo falhou', { err: (e as Error).message });
+      log.error('ciclo pagamentos falhou', { err: (e as Error).message });
+      // Se timeout, reinicia — driver provavelmente travou
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
     }
     // Ciclo financeiro (best effort, independente do pagamentos)
     try {
-      await cicloFinanceiro(cfg, checkpoint);
+      await comTimeout(cicloFinanceiro(cfg, checkpoint), CICLO_TIMEOUT_MS, 'ciclo financeiro');
     } catch (e: unknown) {
       log.error('ciclo financeiro falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo financeiro travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
     }
     // Ciclo PDV (produtos + pedidos + itens)
     try {
-      await cicloPdv(cfg, checkpoint);
+      await comTimeout(cicloPdv(cfg, checkpoint), CICLO_TIMEOUT_MS, 'ciclo pdv');
     } catch (e: unknown) {
       log.error('ciclo pdv falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo pdv travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
     }
     // espera intervalo
     await new Promise((r) => setTimeout(r, cfg.intervalSeconds * 1000));

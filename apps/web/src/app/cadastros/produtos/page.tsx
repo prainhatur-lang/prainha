@@ -230,7 +230,12 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                         {p.codigoPersonalizado || p.codigoExterno || (p.criadoNaNuvem ? '—' : '')}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-800">
-                        {p.nome ?? `#${p.codigoExterno}`}
+                        <Link
+                          href={`/cadastros/produtos/${p.id}`}
+                          className="hover:text-slate-900 hover:underline"
+                        >
+                          {p.nome ?? `#${p.codigoExterno}`}
+                        </Link>
                         {p.criadoNaNuvem && (
                           <span className="ml-1.5 rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500">
                             nuvem
