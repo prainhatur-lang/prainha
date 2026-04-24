@@ -1,14 +1,24 @@
-// Inspector do Firebird: conecta usando as mesmas credenciais do agente,
-// extrai lista de tabelas + colunas + amostras, grava JSON em disco.
+// Inspector do Firebird: conecta usando as credenciais do config.json do agente
+// (ou via flags CLI), extrai lista de tabelas + colunas + amostras, grava JSON.
 //
 // Uso:
-//   node inspect.cjs              -> todas as tabelas de usuario
-//   node inspect.cjs PROD% VEND%  -> só tabelas que casam com os padrões (LIKE)
-//   node inspect.cjs --no-samples -> sem amostras de linha (mais rápido, só schema)
+//   node inspect.cjs                              -> todas as tabelas
+//   node inspect.cjs PROD% VEND%                  -> só padrões LIKE
+//   node inspect.cjs --no-samples                 -> só schema (mais rápido)
 //
-// Gera: firebird-inspect.json
+// Flags de conexão (sobrescrevem config.json):
+//   --host 192.168.10.59
+//   --port 3050
+//   --path "C:\caminho\para\db.fdb"
+//   --user SYSDBA
+//   --password masterkey
+//   --output "C:\saida.json"
 //
-// Envia o arquivo pro chat e pronto.
+// Exemplo apontando pro banco de backup sem mexer no config do agente:
+//   node inspect.cjs PRODUTOS PRODUTODETALHE PRODUTOFICHA ITENSPEDIDO ^
+//     --host 192.168.10.59 ^
+//     --path "C:\Program Files (x86)\RAL Tecnologia\Consumer\Arquivos\CONSUMER.FDB" ^
+//     --password masterkey
 
 import Firebird from 'node-firebird';
 import { writeFileSync } from 'node:fs';
@@ -120,15 +130,85 @@ function normalizar(v: unknown): unknown {
   return v;
 }
 
-async function main() {
-  // Parse args: padrões LIKE ou flags
-  const args = process.argv.slice(2);
-  const noSamples = args.includes('--no-samples');
-  const patterns = args.filter((a) => !a.startsWith('--'));
+/** Flags com valor: --key value (consome próximo arg).
+ *  Flags boolean: --no-samples, --help (não consome).
+ *  Tudo que não for flag é padrão LIKE de tabela. */
+function parseArgs(argv: string[]): {
+  patterns: string[];
+  flags: Record<string, string | boolean>;
+} {
+  const FLAGS_COM_VALOR = new Set([
+    'host',
+    'port',
+    'path',
+    'database',
+    'user',
+    'password',
+    'output',
+  ]);
+  const flags: Record<string, string | boolean> = {};
+  const patterns: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      if (FLAGS_COM_VALOR.has(key) && i + 1 < argv.length && !argv[i + 1]!.startsWith('--')) {
+        flags[key] = argv[i + 1]!;
+        i++;
+      } else {
+        flags[key] = true;
+      }
+    } else {
+      patterns.push(a);
+    }
+  }
+  return { patterns, flags };
+}
 
-  console.log('carregando config...');
-  const cfg = loadConfig();
-  console.log(`  host=${cfg.firebird.host} db=${cfg.firebird.database}`);
+async function main() {
+  const { patterns, flags } = parseArgs(process.argv.slice(2));
+  const noSamples = flags['no-samples'] === true;
+  const outputPath = (flags.output as string) || resolve(process.cwd(), 'firebird-inspect.json');
+
+  // Config: tenta loadConfig do config.json, mas permite override total via CLI.
+  // Se passar --host/--path/--user/--password sem config.json, funciona.
+  let cfg: Config;
+  try {
+    cfg = loadConfig();
+  } catch (e) {
+    if (!flags.host && !flags.path && !flags.database) {
+      throw e;
+    }
+    // config.json indisponível — monta stub a partir das flags
+    cfg = {
+      api: { url: 'http://stub', token: 'agt_stub' },
+      firebird: {
+        host: (flags.host as string) || 'localhost',
+        port: flags.port ? Number(flags.port) : 3050,
+        database: (flags.path || flags.database || '') as string,
+        user: (flags.user as string) || 'SYSDBA',
+        password: (flags.password as string) || 'masterkey',
+      },
+      intervalSeconds: 900,
+      batchSize: 500,
+      checkpointFile: 'checkpoint.json',
+    };
+  }
+
+  // Aplica overrides de CLI por cima do config.json (útil pra apontar pro backup
+  // sem ter que mexer no config.json que o agente usa)
+  if (flags.host) cfg.firebird.host = flags.host as string;
+  if (flags.port) cfg.firebird.port = Number(flags.port);
+  if (flags.path || flags.database) {
+    cfg.firebird.database = (flags.path || flags.database) as string;
+  }
+  if (flags.user) cfg.firebird.user = flags.user as string;
+  if (flags.password) cfg.firebird.password = flags.password as string;
+
+  console.log('configuração:');
+  console.log(`  host=${cfg.firebird.host}:${cfg.firebird.port}`);
+  console.log(`  db=${cfg.firebird.database}`);
+  console.log(`  user=${cfg.firebird.user}`);
   if (patterns.length) console.log(`  filtrando por: ${patterns.join(', ')}`);
   if (noSamples) console.log('  modo: SCHEMA ONLY (sem amostras)');
 
@@ -242,12 +322,11 @@ async function main() {
     tabelas,
   };
 
-  const path = resolve(process.cwd(), 'firebird-inspect.json');
-  writeFileSync(path, JSON.stringify(out, null, 2), 'utf8');
+  writeFileSync(outputPath, JSON.stringify(out, null, 2), 'utf8');
 
-  console.log(`\n✓ ${tabelas.length} tabelas dumpadas em ${path}`);
+  console.log(`\n✓ ${tabelas.length} tabelas dumpadas em ${outputPath}`);
   console.log(`  tamanho: ${Math.round(Buffer.byteLength(JSON.stringify(out)) / 1024)}KB`);
-  console.log('\nEnvie o arquivo firebird-inspect.json no chat.');
+  console.log(`\nEnvie o arquivo no chat.`);
 }
 
 // Mapeia tipos numéricos do Firebird pra string legível
