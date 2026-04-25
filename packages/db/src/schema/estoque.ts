@@ -143,6 +143,10 @@ export const ordemProducao = pgTable(
     divergenciaPercentual: numeric('divergencia_percentual', { precision: 8, scale: 4 }),
     /** Custo total das entradas (soma). Computado na conclusão. */
     custoTotalEntradas: numeric('custo_total_entradas', { precision: 14, scale: 2 }),
+    /** Nome do cozinheiro/responsável que executou o porcionamento.
+     *  Texto livre — cozinheiro normalmente não tem login. Usado pra análise
+     *  comparativa de perda entre profissionais que fazem o mesmo corte. */
+    responsavel: varchar('responsavel', { length: 100 }),
     observacao: text('observacao'),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),

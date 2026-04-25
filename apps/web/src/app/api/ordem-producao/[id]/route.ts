@@ -12,6 +12,7 @@ export const runtime = 'nodejs';
 
 const Body = z.object({
   descricao: z.string().max(200).nullable().optional(),
+  responsavel: z.string().max(100).nullable().optional(),
   observacao: z.string().max(1000).nullable().optional(),
   dataHora: z.string().datetime().optional(),
 });
@@ -72,6 +73,7 @@ export async function PATCH(
 
   const set: Record<string, unknown> = {};
   if (parsed.data.descricao !== undefined) set.descricao = parsed.data.descricao;
+  if (parsed.data.responsavel !== undefined) set.responsavel = parsed.data.responsavel;
   if (parsed.data.observacao !== undefined) set.observacao = parsed.data.observacao;
   if (parsed.data.dataHora !== undefined) set.dataHora = new Date(parsed.data.dataHora);
 

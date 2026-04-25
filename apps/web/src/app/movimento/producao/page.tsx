@@ -93,6 +93,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     .select({
       id: schema.ordemProducao.id,
       descricao: schema.ordemProducao.descricao,
+      responsavel: schema.ordemProducao.responsavel,
       dataHora: schema.ordemProducao.dataHora,
       status: schema.ordemProducao.status,
       custoTotalEntradas: schema.ordemProducao.custoTotalEntradas,
@@ -256,6 +257,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
               <tr>
                 <th className="px-4 py-2">Data</th>
                 <th className="px-4 py-2">Descrição</th>
+                <th className="px-4 py-2">Responsável</th>
                 <th className="px-4 py-2 text-center">Entradas</th>
                 <th className="px-4 py-2 text-center">Saídas</th>
                 <th className="px-4 py-2 text-right">Custo</th>
@@ -266,7 +268,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
             <tbody>
               {ops.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-500">
+                  <td colSpan={8} className="px-4 py-8 text-center text-xs text-slate-500">
                     Nenhuma ordem de produção no período. Clique em "+ Nova OP" pra criar.
                   </td>
                 </tr>
@@ -286,6 +288,11 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
                         >
                           {op.descricao ?? <span className="text-slate-400">(sem descrição)</span>}
                         </Link>
+                      </td>
+                      <td className="px-4 py-2 text-xs text-slate-700">
+                        {op.responsavel ?? (
+                          <span className="text-slate-400 italic">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-center font-mono text-xs text-slate-700">
                         {op.qtdEntradas}

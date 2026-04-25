@@ -122,6 +122,7 @@ export default async function OpDetalhePage(props: {
           op={{
             id: op.id,
             descricao: op.descricao,
+            responsavel: op.responsavel,
             observacao: op.observacao,
             status: op.status,
             dataHora: op.dataHora ? op.dataHora.toISOString() : null,

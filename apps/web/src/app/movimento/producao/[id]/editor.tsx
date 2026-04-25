@@ -8,6 +8,7 @@ import { brl } from '@/lib/format';
 interface Op {
   id: string;
   descricao: string | null;
+  responsavel: string | null;
   observacao: string | null;
   status: string;
   dataHora: string | null;
@@ -165,7 +166,7 @@ export function EditorProducao({
   return (
     <>
       <div className="mt-2 flex items-start justify-between gap-4">
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-bold text-slate-900">
             {op.descricao ?? 'Ordem de produção'}
           </h1>
@@ -190,6 +191,11 @@ export function EditorProducao({
               </span>
             )}
           </div>
+          <ResponsavelEditor
+            opId={op.id}
+            editavel={editavel}
+            valorInicial={op.responsavel}
+          />
         </div>
         <div className="flex items-center gap-2 print:hidden">
           <button
@@ -415,6 +421,114 @@ export function EditorProducao({
         valorInicial={op.observacao}
       />
     </>
+  );
+}
+
+function ResponsavelEditor({
+  opId,
+  editavel,
+  valorInicial,
+}: {
+  opId: string;
+  editavel: boolean;
+  valorInicial: string | null;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(valorInicial ?? '');
+  const [salvando, setSalvando] = useState(false);
+  const [_pending, start] = useTransition();
+
+  async function salvar() {
+    const valorLimpo = valor.trim();
+    if ((valorInicial ?? '') === valorLimpo) {
+      setEditando(false);
+      return;
+    }
+    setSalvando(true);
+    try {
+      const r = await fetch(`/api/ordem-producao/${opId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ responsavel: valorLimpo || null }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Erro: ${d.error ?? r.status}`);
+        return;
+      }
+      setEditando(false);
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (!editavel && !valorInicial) return null;
+
+  if (editando) {
+    return (
+      <div className="mt-2 flex items-center gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          Responsável
+        </span>
+        <input
+          type="text"
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setValor(valorInicial ?? '');
+              setEditando(false);
+            }
+            if (e.key === 'Enter') salvar();
+          }}
+          maxLength={100}
+          autoFocus
+          placeholder="Nome do cozinheiro"
+          className="rounded-md border border-slate-300 px-2 py-0.5 text-xs"
+        />
+        <button
+          type="button"
+          onClick={salvar}
+          disabled={salvando}
+          className="rounded border border-slate-900 bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+        >
+          {salvando ? '...' : 'Salvar'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setValor(valorInicial ?? '');
+            setEditando(false);
+          }}
+          disabled={salvando}
+          className="text-[10px] text-slate-500 hover:text-slate-700"
+        >
+          cancelar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        Responsável
+      </span>
+      <span className={valorInicial ? 'font-medium text-slate-800' : 'italic text-slate-400'}>
+        {valorInicial ?? 'Não informado'}
+      </span>
+      {editavel && (
+        <button
+          type="button"
+          onClick={() => setEditando(true)}
+          className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 print:hidden"
+        >
+          {valorInicial ? 'editar' : '+ informar'}
+        </button>
+      )}
+    </div>
   );
 }
 
