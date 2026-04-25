@@ -8,6 +8,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { OperadoraForm } from './form';
 import { ExcecaoRow } from './excecao-row';
+import { AceitarTodosBtn } from './aceitar-todos';
 import { PROCESSO_OPERADORA, TIPO_OPERADORA } from '@/lib/conciliacao-operadora';
 import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliacao';
 
@@ -559,12 +560,17 @@ function SecaoExcecoes({
           </h3>
           <p className="mt-0.5 text-xs text-slate-500">{descricao}</p>
         </div>
-        <Link
-          href={filtroHref}
-          className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-        >
-          Filtros avançados →
-        </Link>
+        <div className="flex items-center gap-2">
+          {acoesDivergencia && total > 0 && (
+            <AceitarTodosBtn filialId={filialId} tipo={tipo} qtd={total} />
+          )}
+          <Link
+            href={filtroHref}
+            className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Filtros avançados →
+          </Link>
+        </div>
       </div>
       {excecoes.length === 0 ? (
         <p className="px-4 py-6 text-center text-xs text-slate-500">Nada a exibir.</p>
