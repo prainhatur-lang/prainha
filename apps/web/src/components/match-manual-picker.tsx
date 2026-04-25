@@ -40,8 +40,54 @@ export function MatchManualPicker({
   const [aberto, setAberto] = useState(false);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [obs, setObs] = useState('');
+  const [busca, setBusca] = useState('');
   const [erro, setErro] = useState<string | null>(null);
   const [pending, start] = useTransition();
+
+  // Filtro de candidatos por NSU/autorização/valor/descrição/data.
+  // Suporta:
+  //  - "414,70" ou "414.70" → casa por valor (com tolerância de 1 centavo)
+  //  - "20/04" ou "20/04/2026" → casa por data (DD/MM ou DD/MM/YYYY)
+  //  - qualquer texto → busca substring na descrição
+  const candidatosFiltrados = useMemo(() => {
+    const b = busca.trim();
+    if (!b) return candidatos;
+    const bLower = b.toLowerCase();
+
+    // Tenta interpretar como número
+    const numMatch = b.match(/^[\d.,]+$/);
+    let valorBuscado: number | null = null;
+    if (numMatch) {
+      const n = Number(b.replace(/\./g, '').replace(',', '.'));
+      if (Number.isFinite(n)) valorBuscado = Math.abs(n);
+    }
+
+    // Tenta interpretar como data DD/MM ou DD/MM/YYYY
+    const dataMatch = b.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    let dataBuscadaParcial: string | null = null;
+    if (dataMatch) {
+      const [, dd, mm, yyyy] = dataMatch;
+      const ddPad = dd!.padStart(2, '0');
+      const mmPad = mm!.padStart(2, '0');
+      dataBuscadaParcial = yyyy ? `${ddPad}/${mmPad}/${yyyy.padStart(4, '20'.slice(0, 4 - yyyy.length) + yyyy)}` : `${ddPad}/${mmPad}/`;
+    }
+
+    return candidatos.filter((c) => {
+      if (valorBuscado !== null) {
+        if (Math.abs(Math.abs(c.valor) - valorBuscado) <= 0.01) return true;
+      }
+      if (dataBuscadaParcial !== null) {
+        const dataIso = c.data.slice(0, 10);
+        const dataBr = /^\d{4}-\d{2}-\d{2}/.test(dataIso)
+          ? dataIso.split('-').reverse().join('/')
+          : dataIso;
+        if (dataBr.startsWith(dataBuscadaParcial)) return true;
+      }
+      // Match em descrição (case-insensitive, substring)
+      if (c.descricao.toLowerCase().includes(bLower)) return true;
+      return false;
+    });
+  }, [busca, candidatos]);
 
   const soma = useMemo(
     () =>
@@ -112,9 +158,28 @@ export function MatchManualPicker({
           </button>
         </div>
 
-        <div className="mt-4 max-h-72 overflow-auto rounded-lg border border-slate-200">
+        <div className="mt-4">
+          <input
+            type="text"
+            placeholder="Buscar por NSU, autorização, valor (414,70), data (20/04)..."
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+          />
+          {busca && (
+            <p className="mt-1 text-[10px] text-slate-500">
+              Mostrando {candidatosFiltrados.length} de {candidatos.length} candidatos
+            </p>
+          )}
+        </div>
+
+        <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200">
           {candidatos.length === 0 ? (
             <p className="p-3 text-xs text-slate-500">Nenhum candidato disponível.</p>
+          ) : candidatosFiltrados.length === 0 ? (
+            <p className="p-3 text-xs text-slate-500">
+              Nenhum candidato bate com a busca. Limpe o filtro ou ajuste o termo.
+            </p>
           ) : (
             <table className="w-full text-xs">
               <thead className="bg-slate-50 text-left font-medium text-slate-600">
@@ -126,7 +191,7 @@ export function MatchManualPicker({
                 </tr>
               </thead>
               <tbody>
-                {candidatos.map((c) => {
+                {candidatosFiltrados.map((c) => {
                   const marcado = sel.has(c.id);
                   return (
                     <tr

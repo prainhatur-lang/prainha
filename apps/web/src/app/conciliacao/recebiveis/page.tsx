@@ -9,6 +9,7 @@ import { brl, formatDateTime, int } from '@/lib/format';
 import { RecebiveisForm } from './form';
 import { ExcecaoRowRecebiveis } from './excecao-row';
 import { PROCESSO_RECEBIVEIS, TIPO_RECEBIVEIS } from '@/lib/conciliacao-recebiveis';
+import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliacao';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,19 +46,42 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
         .limit(10)
     : [];
 
-  // Filtro de data (se dataInicio/dataFim vieram na URL).
+  // Resumo da última execução OK (precisa ANTES pra usar como default do filtro).
+  const [ultimaOk] = filialSelecionada
+    ? await db
+        .select()
+        .from(schema.execucaoConciliacao)
+        .where(
+          and(
+            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
+            eq(schema.execucaoConciliacao.processo, PROCESSO_RECEBIVEIS),
+            eq(schema.execucaoConciliacao.status, 'OK'),
+          ),
+        )
+        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
+        .limit(1)
+    : [];
+
+  const isoDate = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+  const ultimaInicioIso = isoDate(ultimaOk?.dataInicio);
+  const ultimaFimIso = isoDate(ultimaOk?.dataFim);
+
+  // Filtro de visualização. Default = período da última execução OK; SP sobrescreve.
   // Recebiveis sao conciliados pela data da VENDA — filtra por
   // venda.dataVenda OU recebivel.dataVenda (VENDA_SEM_AGENDA linka venda,
   // AGENDA_SEM_VENDA linka recebivel; DIVERGENCIA_VALOR linka os dois).
-  const filtroData = sp.dataInicio && sp.dataFim
+  const dataInicioEfetiva = sp.dataInicio ?? ultimaInicioIso;
+  const dataFimEfetiva = sp.dataFim ?? ultimaFimIso;
+  const filtroExplicito = !!(sp.dataInicio || sp.dataFim);
+  const filtroData = dataInicioEfetiva && dataFimEfetiva
     ? or(
         and(
-          gte(schema.vendaAdquirente.dataVenda, sp.dataInicio),
-          lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
+          gte(schema.vendaAdquirente.dataVenda, dataInicioEfetiva),
+          lte(schema.vendaAdquirente.dataVenda, dataFimEfetiva),
         ),
         and(
-          gte(schema.recebivelAdquirente.dataVenda, sp.dataInicio),
-          lte(schema.recebivelAdquirente.dataVenda, sp.dataFim),
+          gte(schema.recebivelAdquirente.dataVenda, dataInicioEfetiva),
+          lte(schema.recebivelAdquirente.dataVenda, dataFimEfetiva),
         ),
       )
     : undefined;
@@ -110,21 +134,6 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
   for (const e of excecoesAbertas) {
     if (porTipo[e.tipo as keyof typeof porTipo]) porTipo[e.tipo as keyof typeof porTipo].push(e);
   }
-
-  const [ultimaOk] = filialSelecionada
-    ? await db
-        .select()
-        .from(schema.execucaoConciliacao)
-        .where(
-          and(
-            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
-            eq(schema.execucaoConciliacao.processo, PROCESSO_RECEBIVEIS),
-            eq(schema.execucaoConciliacao.status, 'OK'),
-          ),
-        )
-        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
-        .limit(1)
-    : [];
 
   const resumoUltima = (ultimaOk?.resumo as
     | {
@@ -226,6 +235,18 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
                   </Link>
                 ))}
               </div>
+            )}
+
+            {filialSelecionada && (
+              <FiltroPeriodoConciliacao
+                basePath="/conciliacao/recebiveis"
+                filialId={filialSelecionada.id}
+                dataInicio={dataInicioEfetiva}
+                dataFim={dataFimEfetiva}
+                filtroExplicito={filtroExplicito}
+                ultimaInicio={ultimaInicioIso}
+                ultimaFim={ultimaFimIso}
+              />
             )}
 
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">

@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { EditorProducao } from './editor';
 
@@ -75,7 +75,9 @@ export default async function OpDetalhePage(props: {
     .where(eq(schema.ordemProducaoSaida.ordemProducaoId, id))
     .orderBy(asc(schema.ordemProducaoSaida.tipo), asc(schema.produto.nome));
 
-  // Produtos disponíveis pra entradas: INSUMO ou VENDA_SIMPLES que controlam estoque
+  // Produtos disponíveis pra OP: insumos e revenda controlando estoque, ativos
+  // (não descontinuados nem pausados). Exclui SERVICO/VARIANTE/COMBO porque
+  // não fazem sentido em transformação.
   const produtosDisponiveis = await db
     .select({
       id: schema.produto.id,
@@ -89,19 +91,27 @@ export default async function OpDetalhePage(props: {
       and(
         eq(schema.produto.filialId, op.filialId),
         eq(schema.produto.controlaEstoque, true),
+        inArray(schema.produto.tipo, ['INSUMO', 'VENDA_SIMPLES', 'COMPLEMENTO']),
+        or(
+          isNull(schema.produto.descontinuado),
+          eq(schema.produto.descontinuado, false),
+        ),
+        isNull(schema.produto.dataPausado),
       ),
     )
-    .orderBy(asc(schema.produto.nome))
+    .orderBy(sql`${schema.produto.tipo} = 'INSUMO' DESC`, asc(schema.produto.nome))
     .limit(5000);
 
   const badge = BADGE_STATUS[op.status] ?? { label: op.status, cls: 'bg-slate-100' };
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <AppHeader userEmail={user.email} />
+    <main className="min-h-screen bg-slate-50 print:bg-white">
+      <div className="print:hidden">
+        <AppHeader userEmail={user.email} />
+      </div>
 
-      <section className="mx-auto max-w-6xl px-6 py-10">
-        <nav className="text-xs text-slate-500">
+      <section className="mx-auto max-w-6xl px-6 py-10 print:py-4">
+        <nav className="text-xs text-slate-500 print:hidden">
           <Link href="/movimento/producao" className="hover:text-slate-800">
             ← Ordens de produção
           </Link>

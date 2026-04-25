@@ -180,31 +180,41 @@ export function EditorProducao({
             )}
           </div>
         </div>
-        {editavel && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={cancelar}
-              disabled={loading !== null || pending}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-            >
-              {loading === 'cancelar' ? 'Cancelando...' : 'Cancelar OP'}
-            </button>
-            <button
-              type="button"
-              onClick={concluir}
-              disabled={
-                loading !== null ||
-                pending ||
-                entradas.length === 0 ||
-                saidas.length === 0
-              }
-              className="rounded-lg border border-emerald-700 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading === 'concluir' ? 'Concluindo...' : '✓ Concluir OP'}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 print:hidden">
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+            title="Imprimir ficha de produção (sem botões/menus)"
+          >
+            🖨 Imprimir
+          </button>
+          {editavel && (
+            <>
+              <button
+                type="button"
+                onClick={cancelar}
+                disabled={loading !== null || pending}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {loading === 'cancelar' ? 'Cancelando...' : 'Cancelar OP'}
+              </button>
+              <button
+                type="button"
+                onClick={concluir}
+                disabled={
+                  loading !== null ||
+                  pending ||
+                  entradas.length === 0 ||
+                  saidas.length === 0
+                }
+                className="rounded-lg border border-emerald-700 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loading === 'concluir' ? 'Concluindo...' : '✓ Concluir OP'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {msg && (
@@ -271,11 +281,13 @@ export function EditorProducao({
             </p>
           </div>
           {editavel && (
-            <AdicionarLinhaBtn
-              tipo="entrada"
-              opId={op.id}
-              produtosDisponiveis={produtosDisponiveis}
-            />
+            <div className="print:hidden">
+              <AdicionarLinhaBtn
+                tipo="entrada"
+                opId={op.id}
+                produtosDisponiveis={produtosDisponiveis}
+              />
+            </div>
           )}
         </div>
         <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -287,7 +299,7 @@ export function EditorProducao({
                 <th className="px-4 py-2">Un.</th>
                 <th className="px-4 py-2 text-right">Unit.</th>
                 <th className="px-4 py-2 text-right">Total</th>
-                {editavel && <th className="px-4 py-2"></th>}
+                {editavel && <th className="px-4 py-2 print:hidden"></th>}
               </tr>
             </thead>
             <tbody>
@@ -323,11 +335,13 @@ export function EditorProducao({
             </p>
           </div>
           {editavel && (
-            <AdicionarLinhaBtn
-              tipo="saida"
-              opId={op.id}
-              produtosDisponiveis={produtosDisponiveis}
-            />
+            <div className="print:hidden">
+              <AdicionarLinhaBtn
+                tipo="saida"
+                opId={op.id}
+                produtosDisponiveis={produtosDisponiveis}
+              />
+            </div>
           )}
         </div>
         <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -340,7 +354,7 @@ export function EditorProducao({
                 <th className="px-4 py-2">Un.</th>
                 <th className="px-4 py-2 text-right">Custo unit.</th>
                 <th className="px-4 py-2 text-right">Total</th>
-                {editavel && <th className="px-4 py-2"></th>}
+                {editavel && <th className="px-4 py-2 print:hidden"></th>}
               </tr>
             </thead>
             <tbody>
@@ -370,15 +384,135 @@ export function EditorProducao({
         </div>
       </div>
 
-      {op.observacao && (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+      <ObservacaoEditor
+        opId={op.id}
+        editavel={editavel}
+        valorInicial={op.observacao}
+      />
+    </>
+  );
+}
+
+function ObservacaoEditor({
+  opId,
+  editavel,
+  valorInicial,
+}: {
+  opId: string;
+  editavel: boolean;
+  valorInicial: string | null;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(valorInicial ?? '');
+  const [salvando, setSalvando] = useState(false);
+  const [_pending, start] = useTransition();
+
+  async function salvar() {
+    const valorLimpo = valor.trim();
+    if ((valorInicial ?? '') === valorLimpo) {
+      setEditando(false);
+      return;
+    }
+    setSalvando(true);
+    try {
+      const r = await fetch(`/api/ordem-producao/${opId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ observacao: valorLimpo || null }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Erro: ${d.error ?? r.status}`);
+        return;
+      }
+      setEditando(false);
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (!editavel && !valorInicial) return null;
+
+  if (editando) {
+    return (
+      <div className="mt-6 rounded-lg border border-slate-300 bg-white p-3">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+          Observação
+        </p>
+        <textarea
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setValor(valorInicial ?? '');
+              setEditando(false);
+            }
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              salvar();
+            }
+          }}
+          rows={3}
+          maxLength={1000}
+          autoFocus
+          placeholder="Notas da produção (responsável, observações, lote...)"
+          className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-xs"
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-[10px] text-slate-400">
+            {valor.length}/1000 · Esc cancela · ⌘+Enter salva
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setValor(valorInicial ?? '');
+                setEditando(false);
+              }}
+              disabled={salvando}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={salvar}
+              disabled={salvando}
+              className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {salvando ? 'Salvando...' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-6 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
           <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
             Observação
           </p>
-          <p className="mt-1 whitespace-pre-wrap">{op.observacao}</p>
+          {valorInicial ? (
+            <p className="mt-1 whitespace-pre-wrap">{valorInicial}</p>
+          ) : (
+            <p className="mt-1 text-slate-400 italic">Sem observação</p>
+          )}
         </div>
-      )}
-    </>
+        {editavel && (
+          <button
+            type="button"
+            onClick={() => setEditando(true)}
+            className="shrink-0 rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+          >
+            {valorInicial ? 'Editar' : '+ adicionar'}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -533,7 +667,7 @@ function LinhaEntradaRow({
         {brl(Number(linha.valorTotal ?? 0))}
       </td>
       {editavel && (
-        <td className="px-4 py-2 text-right">
+        <td className="px-4 py-2 text-right print:hidden">
           <button
             type="button"
             onClick={onDelete}
@@ -668,7 +802,7 @@ function LinhaSaidaRow({
         )}
       </td>
       {editavel && (
-        <td className="px-4 py-2 text-right">
+        <td className="px-4 py-2 text-right print:hidden">
           <button
             type="button"
             onClick={onDelete}

@@ -3,18 +3,21 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { BancoForm } from './form';
 import { ExcecaoRowBanco } from './excecao-row';
 import { MatchManualBanco } from './match-manual';
 import { PROCESSO_BANCO, TIPO_BANCO } from '@/lib/conciliacao-banco';
+import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliacao';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  dataInicio?: string;
+  dataFim?: string;
 }
 
 export default async function BancoPage(props: { searchParams: Promise<SP> }) {
@@ -44,6 +47,46 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
         .limit(10)
     : [];
 
+  // Resumo da última execução OK (precisa ANTES pra usar como default do filtro).
+  const [ultimaOk] = filialSelecionada
+    ? await db
+        .select()
+        .from(schema.execucaoConciliacao)
+        .where(
+          and(
+            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
+            eq(schema.execucaoConciliacao.processo, PROCESSO_BANCO),
+            eq(schema.execucaoConciliacao.status, 'OK'),
+          ),
+        )
+        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
+        .limit(1)
+    : [];
+
+  const isoDate = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+  const ultimaInicioIso = isoDate(ultimaOk?.dataInicio);
+  const ultimaFimIso = isoDate(ultimaOk?.dataFim);
+
+  // Filtro de visualização: default = período da última execução OK.
+  // Banco filtra por (pagamento.dataCredito) OR (lancamentoBanco.dataMovimento).
+  const dataInicioEfetiva = sp.dataInicio ?? ultimaInicioIso;
+  const dataFimEfetiva = sp.dataFim ?? ultimaFimIso;
+  const filtroExplicito = !!(sp.dataInicio || sp.dataFim);
+  const dtIni = dataInicioEfetiva ? new Date(dataInicioEfetiva + 'T00:00:00-03:00') : null;
+  const dtFim = dataFimEfetiva ? new Date(dataFimEfetiva + 'T23:59:59-03:00') : null;
+  const filtroData = dtIni && dtFim && dataInicioEfetiva && dataFimEfetiva
+    ? or(
+        and(
+          gte(schema.pagamento.dataCredito, dtIni),
+          lte(schema.pagamento.dataCredito, dtFim),
+        ),
+        and(
+          gte(schema.lancamentoBanco.dataMovimento, dataInicioEfetiva),
+          lte(schema.lancamentoBanco.dataMovimento, dataFimEfetiva),
+        ),
+      )
+    : undefined;
+
   const excecoesAbertas = filialSelecionada
     ? await db
         .select({
@@ -70,6 +113,7 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
             eq(schema.excecao.filialId, filialSelecionada.id),
             eq(schema.excecao.processo, PROCESSO_BANCO),
             isNull(schema.excecao.aceitaEm),
+            filtroData,
           ),
         )
         .orderBy(desc(schema.excecao.detectadoEm))
@@ -83,21 +127,6 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
   for (const e of excecoesAbertas) {
     if (porTipo[e.tipo as keyof typeof porTipo]) porTipo[e.tipo as keyof typeof porTipo].push(e);
   }
-
-  const [ultimaOk] = filialSelecionada
-    ? await db
-        .select()
-        .from(schema.execucaoConciliacao)
-        .where(
-          and(
-            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
-            eq(schema.execucaoConciliacao.processo, PROCESSO_BANCO),
-            eq(schema.execucaoConciliacao.status, 'OK'),
-          ),
-        )
-        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
-        .limit(1)
-    : [];
 
   const resumoUltima = (ultimaOk?.resumo as
     | {
@@ -193,6 +222,18 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
                   </Link>
                 ))}
               </div>
+            )}
+
+            {filialSelecionada && (
+              <FiltroPeriodoConciliacao
+                basePath="/conciliacao/banco"
+                filialId={filialSelecionada.id}
+                dataInicio={dataInicioEfetiva}
+                dataFim={dataFimEfetiva}
+                filtroExplicito={filtroExplicito}
+                ultimaInicio={ultimaInicioIso}
+                ultimaFim={ultimaFimIso}
+              />
             )}
 
             {/* Métrica principal: % Cielo pago no banco */}

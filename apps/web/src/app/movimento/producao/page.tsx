@@ -71,6 +71,24 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     .from(schema.ordemProducao)
     .where(where);
 
+  // KPI: comprometido em rascunho — soma valor das entradas em OPs RASCUNHO
+  // (não filtra por período, pra garantir visibilidade total de pendências).
+  const [rascunhoStats] = await db.execute<{ qtd: number; valor: string }>(sql`
+    SELECT
+      COUNT(DISTINCT op.id)::int AS qtd,
+      COALESCE(
+        SUM(
+          COALESCE(${schema.ordemProducaoEntrada.valorTotal}, 0)
+        ),
+        0
+      )::text AS valor
+    FROM ${schema.ordemProducao} op
+    LEFT JOIN ${schema.ordemProducaoEntrada}
+      ON ${schema.ordemProducaoEntrada.ordemProducaoId} = op.id
+    WHERE op.filial_id = ${filialSelecionada.id}
+      AND op.status = 'RASCUNHO'
+  `);
+
   const ops = await db
     .select({
       id: schema.ordemProducao.id,
@@ -154,6 +172,36 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
               {brl(Number(stats?.custo ?? 0))}
             </p>
           </div>
+          <Link
+            href={hrefPreserva({ status: 'RASCUNHO', page: '0' })}
+            className={`rounded-xl border p-4 transition ${
+              Number(rascunhoStats?.qtd ?? 0) > 0
+                ? 'border-amber-300 bg-amber-50 hover:bg-amber-100'
+                : 'border-slate-200 bg-white hover:bg-slate-50'
+            }`}
+          >
+            <p
+              className={`text-[11px] font-medium uppercase tracking-wide ${
+                Number(rascunhoStats?.qtd ?? 0) > 0 ? 'text-amber-700' : 'text-slate-500'
+              }`}
+            >
+              Comprometido em rascunho
+            </p>
+            <p
+              className={`mt-1 text-2xl font-bold ${
+                Number(rascunhoStats?.qtd ?? 0) > 0 ? 'text-amber-900' : 'text-slate-900'
+              }`}
+            >
+              {brl(Number(rascunhoStats?.valor ?? 0))}
+            </p>
+            <p
+              className={`mt-0.5 text-[10px] ${
+                Number(rascunhoStats?.qtd ?? 0) > 0 ? 'text-amber-700' : 'text-slate-500'
+              }`}
+            >
+              {int(Number(rascunhoStats?.qtd ?? 0))} OP(s) abertas — clique pra filtrar
+            </p>
+          </Link>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">

@@ -9,6 +9,7 @@ import { brl, formatDateTime, int } from '@/lib/format';
 import { OperadoraForm } from './form';
 import { ExcecaoRow } from './excecao-row';
 import { PROCESSO_OPERADORA, TIPO_OPERADORA } from '@/lib/conciliacao-operadora';
+import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliacao';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,20 +64,46 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   const pagePdv = paginaAtual(sp.pPdv);
   const pageCielo = paginaAtual(sp.pCielo);
 
-  // Filtro de data da transacao (se dataInicio/dataFim vieram na URL).
-  // Para DIVERGENCIA_VALOR e PDV_SEM_CIELO filtra por pagamento.dataPagamento.
-  // Para CIELO_SEM_PDV filtra por vendaAdquirente.dataVenda.
+  // Resumo da última execução OK (precisa carregar antes pra usar o período como
+  // default do filtro de visualização quando o usuário não explicitar dataInicio/Fim).
+  const [ultimaOk] = filialSelecionada
+    ? await db
+        .select()
+        .from(schema.execucaoConciliacao)
+        .where(
+          and(
+            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
+            eq(schema.execucaoConciliacao.processo, PROCESSO_OPERADORA),
+            eq(schema.execucaoConciliacao.status, 'OK'),
+          ),
+        )
+        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
+        .limit(1)
+    : [];
+
+  const isoDate = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+  const ultimaInicioIso = isoDate(ultimaOk?.dataInicio);
+  const ultimaFimIso = isoDate(ultimaOk?.dataFim);
+
+  // Filtro de data da transacao para a VISUALIZAÇÃO (independente do "rodar conciliação").
+  // Default = período da última execução OK (se houver).
+  // - SP.dataInicio/dataFim sobrescrevem o default.
+  // - Para DIVERGENCIA_VALOR e PDV_SEM_CIELO filtra por pagamento.dataPagamento.
+  // - Para CIELO_SEM_PDV filtra por vendaAdquirente.dataVenda.
   // Usa BRT (-03:00) para bater com a engine.
-  const dtIni = sp.dataInicio ? new Date(sp.dataInicio + 'T00:00:00-03:00') : null;
-  const dtFim = sp.dataFim ? new Date(sp.dataFim + 'T23:59:59-03:00') : null;
+  const dataInicioEfetiva = sp.dataInicio ?? ultimaInicioIso;
+  const dataFimEfetiva = sp.dataFim ?? ultimaFimIso;
+  const filtroExplicito = !!(sp.dataInicio || sp.dataFim);
+  const dtIni = dataInicioEfetiva ? new Date(dataInicioEfetiva + 'T00:00:00-03:00') : null;
+  const dtFim = dataFimEfetiva ? new Date(dataFimEfetiva + 'T23:59:59-03:00') : null;
 
   function filtroData(tipo: string) {
     if (!dtIni || !dtFim) return undefined;
     if (tipo === TIPO_OPERADORA.CIELO_SEM_PDV) {
-      // dataVenda e string YYYY-MM-DD
+      // dataVenda é string YYYY-MM-DD
       return and(
-        gte(schema.vendaAdquirente.dataVenda, sp.dataInicio!),
-        lte(schema.vendaAdquirente.dataVenda, sp.dataFim!),
+        gte(schema.vendaAdquirente.dataVenda, dataInicioEfetiva!),
+        lte(schema.vendaAdquirente.dataVenda, dataFimEfetiva!),
       );
     }
     // DIVERGENCIA_VALOR e PDV_SEM_CIELO usam pagamento.dataPagamento
@@ -151,22 +178,6 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
     carregarSecao(TIPO_OPERADORA.PDV_SEM_CIELO, pagePdv),
     carregarSecao(TIPO_OPERADORA.CIELO_SEM_PDV, pageCielo),
   ]);
-
-  // Resumo do ultimo "OK" desta filial pra mostrar "Conciliados"
-  const [ultimaOk] = filialSelecionada
-    ? await db
-        .select()
-        .from(schema.execucaoConciliacao)
-        .where(
-          and(
-            eq(schema.execucaoConciliacao.filialId, filialSelecionada.id),
-            eq(schema.execucaoConciliacao.processo, PROCESSO_OPERADORA),
-            eq(schema.execucaoConciliacao.status, 'OK'),
-          ),
-        )
-        .orderBy(desc(schema.execucaoConciliacao.finalizadoEm))
-        .limit(1)
-    : [];
 
   const resumoUltima = (ultimaOk?.resumo as
     | {
@@ -259,6 +270,16 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               />
             )}
 
+            <FiltroPeriodoConciliacao
+              basePath="/conciliacao/operadora"
+              filialId={filialSelecionada.id}
+              dataInicio={dataInicioEfetiva}
+              dataFim={dataFimEfetiva}
+              filtroExplicito={filtroExplicito}
+              ultimaInicio={ultimaInicioIso}
+              ultimaFim={ultimaFimIso}
+            />
+
             {/* 4 cards de resumo */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <ResumoCard
@@ -266,24 +287,28 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
                 qtd={resumoUltima?.conciliados?.qtd ?? 0}
                 valor={resumoUltima?.conciliados?.valor ?? 0}
                 tom="emerald"
+                hint="último OK"
               />
               <ResumoCard
                 label="Divergência de valor"
                 qtd={secaoDiv.total}
                 valor={secaoDiv.totalValor}
                 tom="amber"
+                hint={filtroExplicito ? 'no filtro' : undefined}
               />
               <ResumoCard
                 label="PDV sem Cielo"
                 qtd={secaoPdv.total}
                 valor={secaoPdv.totalValor}
                 tom="rose"
+                hint={filtroExplicito ? 'no filtro' : undefined}
               />
               <ResumoCard
                 label="Cielo sem PDV"
                 qtd={secaoCielo.total}
                 valor={secaoCielo.totalValor}
                 tom="rose"
+                hint={filtroExplicito ? 'no filtro' : undefined}
               />
             </div>
 
@@ -379,11 +404,13 @@ function ResumoCard({
   qtd,
   valor,
   tom,
+  hint,
 }: {
   label: string;
   qtd: number;
   valor: number;
   tom: 'emerald' | 'amber' | 'rose';
+  hint?: string;
 }) {
   const cor = {
     emerald: 'border-emerald-200 bg-emerald-50',
@@ -392,7 +419,14 @@ function ResumoCard({
   }[tom];
   return (
     <div className={`rounded-xl border p-4 ${cor}`}>
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-600">{label}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-600">{label}</p>
+        {hint && (
+          <span className="rounded bg-white/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-500">
+            {hint}
+          </span>
+        )}
+      </div>
       <p className="mt-1.5 text-2xl font-bold text-slate-900">{int(qtd)}</p>
       <p className="mt-0.5 text-xs text-slate-600">{brl(valor)}</p>
     </div>
@@ -444,6 +478,8 @@ function SecaoExcecoes({
   const hrefComPagina = (p: number) => {
     const qs = new URLSearchParams();
     if (sp.filialId) qs.set('filialId', sp.filialId);
+    if (sp.dataInicio) qs.set('dataInicio', sp.dataInicio);
+    if (sp.dataFim) qs.set('dataFim', sp.dataFim);
     if (sp.pDiv) qs.set('pDiv', sp.pDiv);
     if (sp.pPdv) qs.set('pPdv', sp.pPdv);
     if (sp.pCielo) qs.set('pCielo', sp.pCielo);
