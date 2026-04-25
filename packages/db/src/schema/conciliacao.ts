@@ -177,6 +177,54 @@ export const matchPdvBanco = pgTable(
 );
 
 /**
+ * Sugestao de match cross-route: quando o garcom registrou Pix Online
+ * (canal ADQUIRENTE) mas o pagamento na verdade caiu como PIX direto no
+ * banco (canal DIRETO seria o correto), ou vice-versa.
+ *
+ * Geradas pelo engine cross-route. **Nunca viram match silencioso** — o
+ * usuario precisa aceitar manualmente. Isso preserva visibilidade do erro
+ * de cadastro do garcom (input pra retreinamento).
+ *
+ * Sugestao tem 1 pagamento e 1 contraparte (banco OU cielo, nunca os dois).
+ */
+export const sugestaoCrossRoute = pgTable(
+  'sugestao_cross_route',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    pagamentoId: uuid('pagamento_id')
+      .notNull()
+      .references(() => pagamento.id, { onDelete: 'cascade' })
+      .unique(),
+    /** PDV_ADQUIRENTE_PARA_BANCO (canal=ADQUIRENTE pode ser DIRETO)
+     *  | PDV_DIRETO_PARA_CIELO   (canal=DIRETO pode ser ADQUIRENTE) */
+    tipo: varchar('tipo', { length: 30 }).notNull(),
+    /** FK pra lancamento_banco, set quando tipo=PDV_ADQUIRENTE_PARA_BANCO */
+    lancamentoBancoId: uuid('lancamento_banco_id'),
+    /** FK pra venda_adquirente, set quando tipo=PDV_DIRETO_PARA_CIELO */
+    vendaAdquirenteId: uuid('venda_adquirente_id'),
+    /** 1=alta confianca (data exata + valor exato), 2=media (data ±1d) */
+    score: numeric('score', { precision: 2, scale: 0 }).notNull(),
+    /** texto explicando como casou (ex: "Mesma data e valor exato") */
+    motivo: text('motivo'),
+    /** Quando o user rejeitou. Null = aberta. */
+    rejeitadoEm: timestamp('rejeitado_em', { withTimezone: true }),
+    rejeitadoPor: uuid('rejeitado_por'),
+    /** Quando o user aceitou (vira match real e sugestao some). */
+    aceitoEm: timestamp('aceito_em', { withTimezone: true }),
+    aceitoPor: uuid('aceito_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('sugestao_cross_route_filial_idx').on(t.filialId),
+    abertasIdx: index('sugestao_cross_route_abertas_idx').on(t.filialId)
+      .where(sql`aceito_em IS NULL AND rejeitado_em IS NULL`),
+  }),
+);
+
+/**
  * Cada execucao do job de conciliacao gera um relatorio.
  */
 export const execucaoConciliacao = pgTable('execucao_conciliacao', {
