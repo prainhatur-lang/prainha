@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.91.1",
     "@concilia/conciliador": "workspace:*",
     "@concilia/db": "workspace:*",
     "@concilia/shared": "workspace:*",
@@ -21,6 +20,7 @@
     "fast-xml-parser": "^5.7.1",
     "next": "16.2.4",
     "node-forge": "^1.4.0",
+    "openai": "^6.34.0",
     "postgres": "^3.4.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",

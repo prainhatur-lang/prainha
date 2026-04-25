@@ -1,11 +1,11 @@
-// OCR de boleto via Claude Vision.
+// OCR de boleto via OpenAI gpt-4o-mini.
 // Recebe imagem (URL publica do Storage) e extrai data de vencimento + valor.
 // Retorna confianca pra UI dar feedback ao user (alta/media/baixa/erro).
 //
-// Custo: ~$0.005 por boleto com Claude Sonnet (input ~1500 tokens da imagem
-// + 100 do prompt, output ~80 tokens JSON).
+// Custo: ~\$0.0003 por boleto (gpt-4o-mini eh ~12x mais barato que Sonnet).
+// Volume estimado pra 100 NFes/mes com 3 boletos cada: ~R\$ 0,60/mes.
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 export interface ResultadoOcr {
   dataVencimento: string | null; // YYYY-MM-DD
@@ -32,61 +32,43 @@ Responda APENAS com um JSON valido nesse formato (sem markdown, sem texto antes/
 {"dataVencimento":"YYYY-MM-DD"|null,"valor":number|null,"confianca":"alta"|"media"|"baixa"|"erro","observacao":string|null}`;
 
 export async function extrairDadosBoleto(imageUrl: string): Promise<ResultadoOcr> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return {
       dataVencimento: null,
       valor: null,
       confianca: 'erro',
-      observacao: 'OCR desabilitado: ANTHROPIC_API_KEY nao configurada',
+      observacao: 'OCR desabilitado: OPENAI_API_KEY nao configurada',
     };
   }
 
   try {
-    const client = new Anthropic({ apiKey });
+    const client = new OpenAI({ apiKey });
 
-    // Baixa a imagem e converte pra base64 (Claude aceita URL OU base64;
-    // base64 evita problemas de rede entre Claude e nosso Storage).
-    const imgResp = await fetch(imageUrl);
-    if (!imgResp.ok) {
-      return {
-        dataVencimento: null,
-        valor: null,
-        confianca: 'erro',
-        observacao: `falha baixando imagem: HTTP ${imgResp.status}`,
-      };
-    }
-    const buffer = Buffer.from(await imgResp.arrayBuffer());
-    const base64 = buffer.toString('base64');
-
-    // Detecta media type pelo magic number (basico)
-    let mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' = 'image/jpeg';
-    if (buffer[0] === 0x89 && buffer[1] === 0x50) mediaType = 'image/png';
-    else if (buffer[0] === 0x47 && buffer[1] === 0x49) mediaType = 'image/gif';
-    else if (
-      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
-    ) mediaType = 'image/webp';
-
-    const resp = await client.messages.create({
-      model: 'claude-sonnet-4-5',
+    // GPT-4o aceita URL diretamente (faz fetch da imagem). Mais simples que
+    // base64. Storage do Supabase eh publico — nada a esconder.
+    const resp = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
       max_tokens: 300,
+      // response_format JSON garante que sai JSON valido (nao precisa parsear
+      // markdown). Disponivel em gpt-4o-mini desde 2024.
+      response_format: { type: 'json_object' },
       messages: [
         {
           role: 'user',
           content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: mediaType, data: base64 },
-            },
             { type: 'text', text: PROMPT },
+            {
+              type: 'image_url',
+              image_url: { url: imageUrl, detail: 'high' },
+            },
           ],
         },
       ],
     });
 
-    // Extrai texto da resposta
-    const textBlock = resp.content.find((b) => b.type === 'text');
-    if (!textBlock || textBlock.type !== 'text') {
+    const text = resp.choices[0]?.message?.content;
+    if (!text) {
       return {
         dataVencimento: null,
         valor: null,
@@ -95,12 +77,7 @@ export async function extrairDadosBoleto(imageUrl: string): Promise<ResultadoOcr
       };
     }
 
-    // Parse JSON. Tenta limpar markdown se vier com ```
-    let jsonStr = textBlock.text.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-    }
-    const parsed = JSON.parse(jsonStr) as Partial<ResultadoOcr>;
+    const parsed = JSON.parse(text) as Partial<ResultadoOcr>;
 
     // Sanitiza
     const data = parsed.dataVencimento;
