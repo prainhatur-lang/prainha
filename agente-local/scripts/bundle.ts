@@ -2,12 +2,14 @@
 // pkg nao roda ESM bem, entao geramos CJS.
 
 import { build } from 'esbuild';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const outdir = resolve(root, 'build');
 mkdirSync(outdir, { recursive: true });
+
+const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as { version: string };
 
 await build({
   entryPoints: [resolve(root, 'src/index.ts')],
@@ -19,8 +21,11 @@ await build({
   minify: false,
   sourcemap: false,
   external: [],
+  define: {
+    __AGENT_VERSION__: JSON.stringify(pkg.version),
+  },
   banner: {
-    js: '/* concilia agente local - bundle gerado por esbuild */',
+    js: `/* concilia agente local v${pkg.version} - bundle gerado por esbuild */`,
   },
   logLevel: 'info',
 });

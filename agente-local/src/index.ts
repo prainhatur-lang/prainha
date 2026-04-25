@@ -47,6 +47,7 @@ import {
 } from './firebird';
 import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
 import { log } from './logger';
+import { startAutoUpdate, __agentVersion } from './auto-update';
 
 bootTrace('BOOT 2 - imports OK');
 
@@ -299,13 +300,16 @@ const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso 
 
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
-  console.log('[boot] concilia-agente iniciando...');
+  console.log(`[boot] concilia-agente v${__agentVersion} iniciando...`);
   const cfg = loadConfig();
   log.info('agente iniciado', {
+    versao: __agentVersion,
     api: cfg.api.url,
     firebird: `${cfg.firebird.host}:${cfg.firebird.port}`,
     intervalo: `${cfg.intervalSeconds}s`,
   });
+
+  startAutoUpdate();
 
   const checkpoint = new Checkpoint(cfg.checkpointFile);
 
