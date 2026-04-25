@@ -237,6 +237,32 @@ export async function rodarConciliacaoOperadora(opts: {
         );
     }
 
+    // Limpa excecoes STALE de pagamentos/vendas que JA tem match firme.
+    // Cobre o caso onde uma rodada anterior gerou excecao, depois um aceite
+    // manual ou nova rodada gerou match firme, mas a excecao continuou
+    // aberta (engine v2 nao incluia firmes no scope da limpeza acima).
+    const idsPagFirmesArr = [...idsPagFirmes];
+    const idsVendaFirmesArr = [...idsVendaFirmes];
+    if (idsPagFirmesArr.length > 0 || idsVendaFirmesArr.length > 0) {
+      const orStaleConds = [];
+      if (idsPagFirmesArr.length > 0) {
+        orStaleConds.push(inArray(schema.excecao.pagamentoId, idsPagFirmesArr));
+      }
+      if (idsVendaFirmesArr.length > 0) {
+        orStaleConds.push(inArray(schema.excecao.vendaAdquirenteId, idsVendaFirmesArr));
+      }
+      await db
+        .delete(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, filialId),
+            eq(schema.excecao.processo, PROCESSO_OPERADORA),
+            isNull(schema.excecao.aceitaEm),
+            orStaleConds.length === 1 ? orStaleConds[0] : or(...orStaleConds),
+          ),
+        );
+    }
+
     // Monta excecoes
     const novasExcecoes: Array<typeof schema.excecao.$inferInsert> = [];
 
