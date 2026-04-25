@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
 
@@ -54,8 +55,12 @@ export function BotoesCabecalho({
       : `Excluir esta nota?\n\nA nota ainda nao foi lancada — so o registro vai sumir. Apos excluir, voce pode re-importar o XML.`;
     if (!confirm(aviso)) return;
 
-    setLoading('excluir');
-    setMsg(null);
+    // flushSync forca o paint imediato do estado loading pra dar feedback
+    // visual antes do fetch (que pode levar varios segundos).
+    flushSync(() => {
+      setLoading('excluir');
+      setMsg(null);
+    });
     try {
       const r = await fetch(`/api/nota-compra/${notaId}`, { method: 'DELETE' });
       const d = await r.json().catch(() => ({}));
@@ -83,8 +88,10 @@ export function BotoesCabecalho({
   }
 
   async function matchAuto() {
-    setLoading('match');
-    setMsg(null);
+    flushSync(() => {
+      setLoading('match');
+      setMsg(null);
+    });
     try {
       const r = await fetch(`/api/nota-compra/${notaId}/match-auto`, { method: 'POST' });
       const d = await r.json().catch(() => ({}));
@@ -281,8 +288,12 @@ function ModalLancar({
   }
 
   async function confirmar() {
-    setLoading(true);
-    setErro(null);
+    // flushSync forca pintar "Lançando..." e desabilitar o botao
+    // imediatamente, em vez de esperar o fetch voltar (3-5s).
+    flushSync(() => {
+      setLoading(true);
+      setErro(null);
+    });
     try {
       // 1. Lança no estoque (cria contas a pagar a partir das duplicatas do XML, se houver)
       const rEstoque = await fetch(`/api/nota-compra/${notaId}/lancar-estoque`, {
