@@ -24,6 +24,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Clientes', href: '/cadastros/clientes', soon: true },
       { label: 'Plano de contas', href: '/cadastros/plano-contas' },
       { label: 'Produtos', href: '/cadastros/produtos' },
+      { label: 'Templates de produção', href: '/cadastros/templates-producao' },
     ],
   },
   {

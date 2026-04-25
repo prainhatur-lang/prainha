@@ -21,6 +21,7 @@ import {
   varchar,
   numeric,
   boolean,
+  integer,
   index,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -233,6 +234,71 @@ export const ordemProducaoSaida = pgTable(
   (t) => ({
     opIdx: index('idx_op_saida_op').on(t.ordemProducaoId),
     produtoIdx: index('idx_op_saida_produto').on(t.produtoId),
+  }),
+);
+
+/** Template de Ordem de Produção: receita reusável pra produções recorrentes.
+ *  Ex: "Desossa Filé Mignon" — sempre 1 entrada de filé bruto + 4 saídas
+ *  (lâmina/cabeça/aparas/perda). Quando criar uma OP a partir do template,
+ *  o sistema preenche entradas e saídas com as quantidades-padrão
+ *  (proporcionais), e o user só ajusta a qtd da entrada principal e o sistema
+ *  escala o resto. */
+export const templateOp = pgTable(
+  'template_op',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 200 }).notNull(),
+    descricaoPadrao: varchar('descricao_padrao', { length: 200 }),
+    observacao: text('observacao'),
+    ativo: boolean('ativo').notNull().default(true),
+    /** Vezes que esse template foi usado pra criar OP. Pra ordenar autocomplete. */
+    vezesUsado: integer('vezes_usado').notNull().default(0),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqNome: unique('uq_tpl_op_nome').on(t.filialId, t.nome),
+    ativoIdx: index('idx_tpl_op_ativo').on(t.filialId, t.ativo),
+  }),
+);
+
+export const templateOpEntrada = pgTable(
+  'template_op_entrada',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => templateOp.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id')
+      .notNull()
+      .references(() => produto.id, { onDelete: 'restrict' }),
+    /** Quantidade-padrão. Quando o user cria OP, pode ajustar e o sistema
+     *  escala TODAS as saídas proporcionalmente. */
+    quantidadePadrao: numeric('quantidade_padrao', { precision: 14, scale: 4 }).notNull(),
+  },
+  (t) => ({
+    tplIdx: index('idx_tpl_entrada_tpl').on(t.templateId),
+  }),
+);
+
+export const templateOpSaida = pgTable(
+  'template_op_saida',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => templateOp.id, { onDelete: 'cascade' }),
+    /** PRODUTO ou PERDA */
+    tipo: varchar('tipo', { length: 10 }).notNull().default('PRODUTO'),
+    produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'restrict' }),
+    quantidadePadrao: numeric('quantidade_padrao', { precision: 14, scale: 4 }).notNull(),
+    pesoRelativo: numeric('peso_relativo', { precision: 8, scale: 4 }).notNull().default('1'),
+    observacao: text('observacao'),
+  },
+  (t) => ({
+    tplIdx: index('idx_tpl_saida_tpl').on(t.templateId),
   }),
 );
 

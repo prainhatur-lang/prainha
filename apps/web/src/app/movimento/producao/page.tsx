@@ -76,6 +76,22 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     .from(schema.ordemProducao)
     .where(where);
 
+  // Templates ativos pra o botão "Nova OP a partir de template"
+  const templates = await db
+    .select({
+      id: schema.templateOp.id,
+      nome: schema.templateOp.nome,
+      vezesUsado: schema.templateOp.vezesUsado,
+    })
+    .from(schema.templateOp)
+    .where(
+      and(
+        eq(schema.templateOp.filialId, filialSelecionada.id),
+        eq(schema.templateOp.ativo, true),
+      ),
+    )
+    .orderBy(desc(schema.templateOp.vezesUsado), schema.templateOp.nome);
+
   // Lista de cozinheiros pro filtro (apenas com OPs no período pra evitar
   // poluição de cadastros antigos sem uso recente)
   const cozinheirosFiltro = await db.execute<{ nome: string; qtd: number }>(sql`
@@ -156,7 +172,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
               2kg medalhão + 500g grelha + 300g aparas + 200g perda.
             </p>
           </div>
-          <NovaOpButton filialId={filialSelecionada.id} />
+          <NovaOpButton filialId={filialSelecionada.id} templates={templates} />
         </div>
 
         {filiais.length > 1 && (
