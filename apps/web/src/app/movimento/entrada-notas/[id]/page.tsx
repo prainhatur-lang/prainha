@@ -7,6 +7,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
 import { BotoesCabecalho } from './botoes-cabecalho';
+import { VincularFornecedorBtn } from './vincular-fornecedor';
 
 export const dynamic = 'force-dynamic';
 
@@ -114,6 +115,20 @@ export default async function NotaDetalhePage(props: {
     .from(schema.notaCompraDuplicata)
     .where(eq(schema.notaCompraDuplicata.notaCompraId, id))
     .orderBy(asc(schema.notaCompraDuplicata.dataVencimento));
+
+  // Fornecedores da filial (pra vincular caso a nota nao tenha)
+  const fornecedoresDaFilial = nota.fornecedorId
+    ? []
+    : await db
+        .select({
+          id: schema.fornecedor.id,
+          nome: schema.fornecedor.nome,
+          cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
+        })
+        .from(schema.fornecedor)
+        .where(eq(schema.fornecedor.filialId, nota.filialId))
+        .orderBy(asc(schema.fornecedor.nome))
+        .limit(2000);
 
   // Categorias do plano de contas (DESPESA) pra escolher ao lancar
   const categorias = await db
@@ -229,6 +244,38 @@ export default async function NotaDetalhePage(props: {
             temFornecedor={nota.fornecedorId != null}
           />
         </div>
+
+        {/* Card de aviso quando a nota nao tem fornecedor vinculado.
+            Sem fornecedor, nao da pra criar contas a pagar (financeiro). */}
+        {!nota.fornecedorId && (
+          <div className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-900">
+                ⚠ Esta nota não tem fornecedor vinculado
+              </p>
+              <p className="mt-1 text-xs text-amber-800">
+                O CNPJ <span className="font-mono">
+                  {nota.emitCnpj ? maskCnpj(nota.emitCnpj) : '—'}
+                </span> ({nota.emitNome ?? '—'}) não bate com nenhum fornecedor cadastrado nesta filial.
+                Sem fornecedor, o estoque pode ser lançado, mas não dá pra criar contas a pagar.
+                Vincule um existente ou crie a partir dos dados da NFe.
+              </p>
+            </div>
+            <VincularFornecedorBtn
+              notaId={id}
+              filialId={nota.filialId}
+              fornecedoresDisponiveis={fornecedoresDaFilial.map((f) => ({
+                id: f.id,
+                nome: f.nome ?? '(sem nome)',
+                cnpjOuCpf: f.cnpjOuCpf,
+              }))}
+              emitCnpj={nota.emitCnpj}
+              emitNome={nota.emitNome}
+              emitUf={nota.emitUf}
+              emitCidade={nota.emitCidade}
+            />
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-3 gap-3">
           <div className="rounded-xl border border-slate-200 bg-white p-4">

@@ -24,13 +24,16 @@ export const categoriaConta = pgTable(
   }),
 );
 
-/** Fornecedor (espelha FORNECEDORES). */
+/** Fornecedor (espelha FORNECEDORES).
+ *  codigoExterno NULL = criado na nuvem (manualmente ou auto-criado a partir
+ *  da NFe). Quando o agente sincronizar e achar match por CNPJ, faz UPDATE
+ *  pra preencher o codigoExterno em vez de duplicar. */
 export const fornecedor = pgTable(
   'fornecedor',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
-    codigoExterno: integer('codigo_externo').notNull(),
+    codigoExterno: integer('codigo_externo'),
     cnpjOuCpf: varchar('cnpj_ou_cpf', { length: 14 }),
     nome: varchar('nome', { length: 200 }),
     razaoSocial: varchar('razao_social', { length: 200 }),
