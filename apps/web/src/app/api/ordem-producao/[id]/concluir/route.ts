@@ -21,7 +21,8 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { aplicarMpmEntrada, aplicarSaida } from '@/lib/custo-medio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -97,8 +98,14 @@ export async function POST(
     );
   }
 
-  // 1) Custo total das entradas. Se preco_unitario da entrada for null,
-  //    cai pra produto.preco_custo; se também null, 0.
+  // 1) Custo total das entradas. Prioridade do preço unitário:
+  //    1º) preco_unitario da própria linha de entrada (se user editou)
+  //    2º) produto.preco_custo CORRENTE (custo médio do estoque atual)
+  //    3º) 0
+  //
+  //    A escolha 2 garante que a OP consume o filé pelo CUSTO REAL DO
+  //    ESTOQUE no momento da conclusão (que é o MPM atualizado pela última
+  //    NFe + frete rateado), não o "último custo de compra".
   let custoTotal = 0;
   const qtdTotalEntradas = entradas.reduce((s, e) => s + Number(e.quantidade ?? 0), 0);
 
@@ -129,6 +136,8 @@ export async function POST(
   const dataMov = op.dataHora ?? new Date();
 
   // 3) Grava movimento_estoque pra cada entrada (SAIDA_PRODUCAO).
+  //    Saída usa o custo médio CORRENTE do produto (não muda o custo,
+  //    só decrementa saldo).
   for (const e of entradas) {
     const qtd = Number(e.quantidade ?? 0);
     const preco =
@@ -149,12 +158,7 @@ export async function POST(
       criadoPor: user.id,
     });
 
-    await db
-      .update(schema.produto)
-      .set({
-        estoqueAtual: sql`COALESCE(${schema.produto.estoqueAtual}, 0) - ${qtd.toFixed(4)}`,
-      })
-      .where(eq(schema.produto.id, e.produtoId));
+    await aplicarSaida({ produtoId: e.produtoId, qtdSaida: qtd });
 
     // Atualiza valor_total/preco_unitario da linha de entrada na OP
     await db
@@ -169,6 +173,8 @@ export async function POST(
   // 4) Grava saidas: ENTRADA_PRODUCAO pras tipo=PRODUTO, nada de movimento
   //    pras PERDA (mas ainda grava custoRateado=0 na linha pra UI).
   //    custo unit = pesoRelativo × (custoTotal / unidadesPesoUtil).
+  //    O produto destino recebe o novo estoque via MPM (mistura com saldo
+  //    anterior, se houver).
   const custoPorUnidadePeso = unidadesPesoUtil > 0 ? custoTotal / unidadesPesoUtil : 0;
   for (const s of saidas) {
     const qtd = Number(s.quantidade ?? 0);
@@ -200,13 +206,13 @@ export async function POST(
         criadoPor: user.id,
       });
 
-      await db
-        .update(schema.produto)
-        .set({
-          estoqueAtual: sql`COALESCE(${schema.produto.estoqueAtual}, 0) + ${qtd.toFixed(4)}`,
-          precoCusto: custoUnit.toFixed(4),
-        })
-        .where(eq(schema.produto.id, s.produtoId));
+      // MPM: se Lâmina já tinha estoque a R$X/kg e agora entra mais
+      // a R$Y/kg, o custo passa a ser média ponderada
+      await aplicarMpmEntrada({
+        produtoId: s.produtoId,
+        qtdEntrada: qtd,
+        custoEntrada: custoUnit,
+      });
     }
   }
 

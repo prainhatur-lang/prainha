@@ -95,6 +95,18 @@ export default async function NotaDetalhePage(props: {
   const todosLancados = lancados === totalItens && totalItens > 0;
   const algumLancado = lancados > 0;
 
+  // Fator de rateio: distribui frete/outros/desconto pelos itens
+  const valorTotalNota = Number(nota.valorTotal ?? 0);
+  const valorProdutos = Number(nota.valorProdutos ?? 0);
+  const valorFrete = Number(nota.valorFrete ?? 0);
+  const valorSeguro = Number(nota.valorSeguro ?? 0);
+  const valorOutros = Number(nota.valorOutros ?? 0);
+  const valorDesconto = Number(nota.valorDesconto ?? 0);
+  const totalDespesas = valorFrete + valorSeguro + valorOutros - valorDesconto;
+  const fatorRateio =
+    valorProdutos > 0 && valorTotalNota > 0 ? valorTotalNota / valorProdutos : 1;
+  const temRateio = Math.abs(fatorRateio - 1) > 0.0001;
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -197,6 +209,68 @@ export default async function NotaDetalhePage(props: {
             </p>
           </div>
         </div>
+
+        {/* Breakdown de valores e fator de rateio */}
+        {(temRateio || valorFrete > 0 || valorDesconto > 0) && (
+          <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50 p-4">
+            <h3 className="text-sm font-semibold text-sky-900">
+              Composição do custo
+            </h3>
+            <p className="mt-0.5 text-[11px] text-sky-800">
+              Frete e outras despesas são rateados proporcionalmente pelos itens
+              ao lançar no estoque. O custo médio (MPM) do produto absorve essa
+              distribuição automaticamente.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                  Produtos
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-900">
+                  {brl(valorProdutos)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                  Frete + outros
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-900">
+                  {brl(totalDespesas)}
+                </p>
+                {(valorFrete > 0 || valorSeguro > 0 || valorOutros > 0 || valorDesconto > 0) && (
+                  <p className="mt-0.5 text-[9px] text-slate-500">
+                    {valorFrete > 0 && `frete ${brl(valorFrete)} · `}
+                    {valorSeguro > 0 && `seguro ${brl(valorSeguro)} · `}
+                    {valorOutros > 0 && `outros ${brl(valorOutros)} · `}
+                    {valorDesconto > 0 && `−desconto ${brl(valorDesconto)}`}
+                  </p>
+                )}
+              </div>
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                  Total NFe
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-900">
+                  {brl(valorTotalNota)}
+                </p>
+              </div>
+              <div>
+                <p
+                  className="text-[10px] font-medium uppercase tracking-wide text-sky-700"
+                  title="Multiplicador aplicado ao valor de cada item pra incluir o frete proporcionalmente"
+                >
+                  Fator de rateio
+                </p>
+                <p className="mt-0.5 font-mono font-semibold text-slate-900">
+                  ×{fatorRateio.toFixed(4)}
+                </p>
+                <p className="mt-0.5 text-[9px] text-slate-500">
+                  +{((fatorRateio - 1) * 100).toFixed(2)}% no custo
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
