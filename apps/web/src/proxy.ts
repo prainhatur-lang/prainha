@@ -36,8 +36,16 @@ export async function proxy(request: NextRequest) {
   // token (sem login). Cozinheiro nao tem conta no sistema.
   const isOpPublica = path.startsWith('/op/');
   const isCozinheiroPublico = path.startsWith('/cozinheiro/');
+  // /nota-boleto/[token] eh pagina mobile pra enviar foto do boleto da NFe
+  // (compartilhada via WhatsApp/SMS, sem login).
+  const isNotaBoletoPublico = path.startsWith('/nota-boleto/');
   const isPublicRoute =
-    path === '/' || isAuthRoute || isApiRoute || isOpPublica || isCozinheiroPublico;
+    path === '/' ||
+    isAuthRoute ||
+    isApiRoute ||
+    isOpPublica ||
+    isCozinheiroPublico ||
+    isNotaBoletoPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
