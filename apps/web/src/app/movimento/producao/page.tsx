@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, count, desc, eq, gte, lte, sql, sum } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -11,7 +11,7 @@ import { NovaOpButton } from './nova-op';
 
 export const dynamic = 'force-dynamic';
 
-type StatusFiltro = 'TODAS' | 'RASCUNHO' | 'CONCLUIDA' | 'CANCELADA';
+type StatusFiltro = 'TODAS' | 'RASCUNHO' | 'PRA_REVISAR' | 'CONCLUIDA' | 'CANCELADA';
 
 interface SP {
   filialId?: string;
@@ -65,7 +65,16 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     eq(schema.ordemProducao.filialId, filialSelecionada.id),
     gte(schema.ordemProducao.dataHora, dtIni),
     lte(schema.ordemProducao.dataHora, dtFim),
-    status !== 'TODAS' ? eq(schema.ordemProducao.status, status) : undefined,
+    // PRA_REVISAR = RASCUNHO + cozinheiro marcou pronta. Esse é um sub-filtro
+    // virtual (não é status real no banco).
+    status === 'PRA_REVISAR'
+      ? and(
+          eq(schema.ordemProducao.status, 'RASCUNHO'),
+          isNotNull(schema.ordemProducao.marcadaProntaEm),
+        )
+      : status !== 'TODAS'
+        ? eq(schema.ordemProducao.status, status)
+        : undefined,
     responsavelFiltro
       ? eq(schema.ordemProducao.responsavel, responsavelFiltro)
       : undefined,
@@ -124,6 +133,18 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
       AND op.status = 'RASCUNHO'
   `);
 
+  // KPI: OPs aguardando revisão — RASCUNHO + cozinheiro marcou pronta
+  const [revisaoStats] = await db
+    .select({ qtd: count() })
+    .from(schema.ordemProducao)
+    .where(
+      and(
+        eq(schema.ordemProducao.filialId, filialSelecionada.id),
+        eq(schema.ordemProducao.status, 'RASCUNHO'),
+        isNotNull(schema.ordemProducao.marcadaProntaEm),
+      ),
+    );
+
   const ops = await db
     .select({
       id: schema.ordemProducao.id,
@@ -134,6 +155,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
       custoTotalEntradas: schema.ordemProducao.custoTotalEntradas,
       divergenciaPercentual: schema.ordemProducao.divergenciaPercentual,
       concluidaEm: schema.ordemProducao.concluidaEm,
+      marcadaProntaEm: schema.ordemProducao.marcadaProntaEm,
       qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoEntrada} WHERE ${schema.ordemProducaoEntrada.ordemProducaoId} = ${schema.ordemProducao.id})`,
       qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoSaida} WHERE ${schema.ordemProducaoSaida.ordemProducaoId} = ${schema.ordemProducao.id})`,
     })
@@ -194,7 +216,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
           </div>
         )}
 
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
               OPs no período
@@ -211,6 +233,36 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
               {brl(Number(stats?.custo ?? 0))}
             </p>
           </div>
+          <Link
+            href={hrefPreserva({ status: 'PRA_REVISAR', page: '0' })}
+            className={`rounded-xl border p-4 transition ${
+              Number(revisaoStats?.qtd ?? 0) > 0
+                ? 'border-emerald-400 bg-emerald-50 hover:bg-emerald-100'
+                : 'border-slate-200 bg-white hover:bg-slate-50'
+            }`}
+          >
+            <p
+              className={`text-[11px] font-medium uppercase tracking-wide ${
+                Number(revisaoStats?.qtd ?? 0) > 0 ? 'text-emerald-700' : 'text-slate-500'
+              }`}
+            >
+              ⏳ Aguardando revisão
+            </p>
+            <p
+              className={`mt-1 text-2xl font-bold ${
+                Number(revisaoStats?.qtd ?? 0) > 0 ? 'text-emerald-900' : 'text-slate-900'
+              }`}
+            >
+              {int(Number(revisaoStats?.qtd ?? 0))}
+            </p>
+            <p
+              className={`mt-0.5 text-[10px] ${
+                Number(revisaoStats?.qtd ?? 0) > 0 ? 'text-emerald-700' : 'text-slate-500'
+              }`}
+            >
+              cozinheiro marcou pronta — revise e conclua
+            </p>
+          </Link>
           <Link
             href={hrefPreserva({ status: 'RASCUNHO', page: '0' })}
             className={`rounded-xl border p-4 transition ${
@@ -238,26 +290,40 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
                 Number(rascunhoStats?.qtd ?? 0) > 0 ? 'text-amber-700' : 'text-slate-500'
               }`}
             >
-              {int(Number(rascunhoStats?.qtd ?? 0))} OP(s) abertas — clique pra filtrar
+              {int(Number(rascunhoStats?.qtd ?? 0))} OP(s) abertas
             </p>
           </Link>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Status:</span>
-          {(['TODAS', 'RASCUNHO', 'CONCLUIDA', 'CANCELADA'] as const).map((s) => (
-            <Link
-              key={s}
-              href={hrefPreserva({ status: s, page: '0' })}
-              className={`rounded-md border px-2.5 py-1 ${
-                status === s
-                  ? 'border-slate-900 bg-slate-900 text-white'
-                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-              }`}
-            >
-              {s === 'TODAS' ? 'Todas' : BADGE_STATUS[s]?.label ?? s}
-            </Link>
-          ))}
+          {(['TODAS', 'RASCUNHO', 'PRA_REVISAR', 'CONCLUIDA', 'CANCELADA'] as const).map((s) => {
+            const label =
+              s === 'TODAS'
+                ? 'Todas'
+                : s === 'PRA_REVISAR'
+                  ? '⏳ Pra revisar'
+                  : BADGE_STATUS[s]?.label ?? s;
+            const ehRevisar = s === 'PRA_REVISAR';
+            const ativo = status === s;
+            return (
+              <Link
+                key={s}
+                href={hrefPreserva({ status: s, page: '0' })}
+                className={`rounded-md border px-2.5 py-1 ${
+                  ativo
+                    ? ehRevisar
+                      ? 'border-emerald-700 bg-emerald-700 text-white'
+                      : 'border-slate-900 bg-slate-900 text-white'
+                    : ehRevisar
+                      ? 'border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </Link>
+            );
+          })}
         </div>
 
         {cozinheirosFiltro.length > 0 && (
@@ -349,6 +415,8 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
                 ops.map((op) => {
                   const badge = BADGE_STATUS[op.status] ?? { label: op.status, cls: 'bg-slate-100' };
                   const div = op.divergenciaPercentual ? Number(op.divergenciaPercentual) : null;
+                  const aguardandoRevisao =
+                    op.status === 'RASCUNHO' && op.marcadaProntaEm;
                   return (
                     <tr key={op.id} className="border-t border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">
@@ -394,9 +462,20 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
                         )}
                       </td>
                       <td className="px-4 py-2">
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>
-                          {badge.label}
-                        </span>
+                        {aguardandoRevisao ? (
+                          <span
+                            className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800"
+                            title={`Marcada pronta em ${op.marcadaProntaEm ? new Date(op.marcadaProntaEm).toLocaleString('pt-BR') : ''}`}
+                          >
+                            ⏳ Pra revisar
+                          </span>
+                        ) : (
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}
+                          >
+                            {badge.label}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );

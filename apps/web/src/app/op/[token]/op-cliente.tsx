@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { comprimirImagem, formatBytes } from '@/lib/comprimir-imagem';
 
 interface Op {
   id: string;
@@ -418,28 +419,43 @@ function FotosSection({
 }) {
   const router = useRouter();
   const [enviando, setEnviando] = useState(false);
+  const [statusUpload, setStatusUpload] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [_pending, start] = useTransition();
   const [zoom, setZoom] = useState<Foto | null>(null);
 
   async function uploadFile(file: File) {
-    if (file.size > 10 * 1024 * 1024) {
-      setErro('Foto muito grande (máx 10MB)');
-      return;
-    }
     setEnviando(true);
     setErro(null);
+    setStatusUpload('Otimizando foto...');
     try {
-      const fd = new FormData();
-      fd.append('arquivo', file);
-      fd.append('tipo', tipo);
-      const r = await fetch(`/api/op/${token}/foto`, { method: 'POST', body: fd });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        setErro(d.error ?? `HTTP ${r.status}`);
+      // Comprime no client antes de subir (máx 1600px, JPEG q 0.85)
+      const r = await comprimirImagem(file);
+      const arquivoFinal = r.arquivo;
+
+      if (arquivoFinal.size > 10 * 1024 * 1024) {
+        setErro(`Foto muito grande mesmo após otimizar (${formatBytes(arquivoFinal.size)}). Tente outra.`);
         return;
       }
+
+      const stats = r.comprimido
+        ? `${formatBytes(r.originalBytes)} → ${formatBytes(r.novosBytes)}`
+        : formatBytes(r.originalBytes);
+      setStatusUpload(`Enviando... (${stats})`);
+
+      const fd = new FormData();
+      fd.append('arquivo', arquivoFinal);
+      fd.append('tipo', tipo);
+      const resp = await fetch(`/api/op/${token}/foto`, { method: 'POST', body: fd });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setErro(d.error ?? `HTTP ${resp.status}`);
+        return;
+      }
+      setStatusUpload(null);
       start(() => router.refresh());
+    } catch (e) {
+      setErro((e as Error).message);
     } finally {
       setEnviando(false);
     }
@@ -519,7 +535,9 @@ function FotosSection({
             }`}
           >
             {enviando ? (
-              <span className="text-xs">Enviando...</span>
+              <span className="px-2 text-[10px] leading-tight">
+                {statusUpload ?? 'Enviando...'}
+              </span>
             ) : (
               <>
                 <span className="text-3xl">📷</span>

@@ -4,6 +4,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useRef, useEffect } from 'react';
 
+interface Notificacoes {
+  opsAguardandoRevisao: number;
+}
+
 interface LinkItem {
   label: string;
   href: string;
@@ -78,6 +82,7 @@ const GRUPOS: Grupo[] = [
 export function AppNav() {
   const pathname = usePathname();
   const [aberto, setAberto] = useState<string | null>(null);
+  const [notif, setNotif] = useState<Notificacoes>({ opsAguardandoRevisao: 0 });
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -87,6 +92,30 @@ export function AppNav() {
     window.addEventListener('click', handleClickFora);
     return () => window.removeEventListener('click', handleClickFora);
   }, []);
+
+  // Polling de notificações a cada 60s
+  useEffect(() => {
+    let cancelado = false;
+    async function carregar() {
+      try {
+        const r = await fetch('/api/notificacoes', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = (await r.json()) as Notificacoes;
+        if (!cancelado) setNotif(d);
+      } catch {
+        // silencioso — falha não bloqueia uso do app
+      }
+    }
+    carregar();
+    const id = setInterval(carregar, 60_000);
+    return () => {
+      cancelado = true;
+      clearInterval(id);
+    };
+  }, [pathname]);
+
+  // Badge total no grupo Movimentação (ordens de produção pra revisar)
+  const totalRevisar = notif.opsAguardandoRevisao;
 
   const grupoAtivo = GRUPOS.find((g) =>
     g.links.some((l) => !l.soon && pathname.startsWith(l.href) && l.href !== '/'),
@@ -113,12 +142,14 @@ export function AppNav() {
       {GRUPOS.map((g) => {
         const isAtivo = grupoAtivo?.label === g.label;
         const isAberto = aberto === g.label;
+        const ehMovimentacao = g.label === 'Movimentação';
+        const mostrarBadgeGrupo = ehMovimentacao && totalRevisar > 0;
         return (
           <div key={g.label} className="relative">
             <button
               type="button"
               onClick={() => setAberto(isAberto ? null : g.label)}
-              className={`rounded-md px-2.5 py-1 ${
+              className={`relative rounded-md px-2.5 py-1 ${
                 isAtivo
                   ? 'text-slate-900 font-medium'
                   : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -126,11 +157,21 @@ export function AppNav() {
             >
               {g.label}
               <span className="ml-1 text-xs text-slate-400">▾</span>
+              {mostrarBadgeGrupo && (
+                <span
+                  className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-bold text-white shadow"
+                  title={`${totalRevisar} OP(s) aguardando revisão`}
+                >
+                  {totalRevisar > 99 ? '99+' : totalRevisar}
+                </span>
+              )}
             </button>
             {isAberto && (
               <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
                 {g.links.map((l) => {
                   const isRotaAtual = !l.soon && pathname === l.href;
+                  const ehProducao = l.href === '/movimento/producao';
+                  const mostrarBadgeLink = ehProducao && totalRevisar > 0;
                   return (
                     <Link
                       key={l.href}
@@ -151,6 +192,11 @@ export function AppNav() {
                       {l.soon && (
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-slate-500">
                           em breve
+                        </span>
+                      )}
+                      {mostrarBadgeLink && (
+                        <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[9px] font-bold text-white">
+                          ⏳ {totalRevisar}
                         </span>
                       )}
                     </Link>
