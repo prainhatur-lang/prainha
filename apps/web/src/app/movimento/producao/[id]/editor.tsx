@@ -4,6 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
+import { EnviarCozinheiroBtn } from './enviar-cozinheiro';
 
 interface Op {
   id: string;
@@ -15,6 +16,8 @@ interface Op {
   concluidaEm: string | null;
   custoTotalEntradas: string | null;
   divergenciaPercentual: string | null;
+  enviadaEm: string | null;
+  marcadaProntaEm: string | null;
 }
 
 interface LinhaEntrada {
@@ -204,6 +207,13 @@ export function EditorProducao({
           />
         </div>
         <div className="flex items-center gap-2 print:hidden">
+          {editavel && (
+            <EnviarCozinheiroBtn
+              opId={op.id}
+              responsavel={op.responsavel}
+              descricao={op.descricao}
+            />
+          )}
           <button
             type="button"
             onClick={() => window.print()}
@@ -247,6 +257,36 @@ export function EditorProducao({
           }`}
         >
           {msg.texto}
+        </div>
+      )}
+
+      {/* Banner: cozinheiro marcou como pronta */}
+      {editavel && op.marcadaProntaEm && (
+        <div className="mt-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-4 print:hidden">
+          <p className="text-sm font-bold text-amber-900">
+            ⏳ Cozinheiro marcou como pronta
+          </p>
+          <p className="mt-1 text-xs text-amber-800">
+            {op.responsavel ? <strong>{op.responsavel}</strong> : 'O cozinheiro'}{' '}
+            sinalizou que terminou em{' '}
+            <span className="font-mono">
+              {new Date(op.marcadaProntaEm).toLocaleString('pt-BR')}
+            </span>
+            . Revise as quantidades e clique em <strong>✓ Concluir OP</strong> pra
+            gerar os movimentos de estoque.
+          </p>
+        </div>
+      )}
+
+      {editavel && op.enviadaEm && !op.marcadaProntaEm && (
+        <div className="mt-4 rounded-xl border border-sky-300 bg-sky-50 p-3 print:hidden">
+          <p className="text-xs text-sky-900">
+            📱 Enviada pro cozinheiro em{' '}
+            <span className="font-mono">
+              {new Date(op.enviadaEm).toLocaleString('pt-BR')}
+            </span>
+            . Aguardando ele marcar como pronta.
+          </p>
         </div>
       )}
 

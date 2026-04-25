@@ -172,6 +172,13 @@ export const ordemProducao = pgTable(
      *  comparativa de perda entre profissionais que fazem o mesmo corte. */
     responsavel: varchar('responsavel', { length: 100 }),
     observacao: text('observacao'),
+    /** Token público pra cozinheiro acessar a OP via /op/[token] sem login.
+     *  Gerado por crypto.randomBytes(32). Único por OP. */
+    tokenPublico: varchar('token_publico', { length: 64 }).unique(),
+    /** Quando o gestor gerou/compartilhou o link com o cozinheiro */
+    enviadaEm: timestamp('enviada_em', { withTimezone: true }),
+    /** Quando o cozinheiro sinalizou "pronto" (não conclui — só notifica gestor) */
+    marcadaProntaEm: timestamp('marcada_pronta_em', { withTimezone: true }),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     concluidaEm: timestamp('concluida_em', { withTimezone: true }),

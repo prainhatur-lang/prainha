@@ -145,6 +145,8 @@ export default async function OpDetalhePage(props: {
             concluidaEm: op.concluidaEm ? op.concluidaEm.toISOString() : null,
             custoTotalEntradas: op.custoTotalEntradas,
             divergenciaPercentual: op.divergenciaPercentual,
+            enviadaEm: op.enviadaEm ? op.enviadaEm.toISOString() : null,
+            marcadaProntaEm: op.marcadaProntaEm ? op.marcadaProntaEm.toISOString() : null,
           }}
           badge={badge}
           entradas={entradas.map((e) => ({

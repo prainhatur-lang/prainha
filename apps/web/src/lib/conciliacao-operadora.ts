@@ -257,21 +257,38 @@ export async function rodarConciliacaoOperadora(opts: {
             )
           : Infinity;
       const autoAceita = Math.abs(diff) <= tolAutoAceite && deltaDias <= 1;
+
+      // Caso especial: diff exato R$ 0 + mesma data + forma de pagamento diferente
+      // entre PDV e Cielo. Engine cai aqui via passada 3 (matching solto cross-cat).
+      // Não é divergência de VALOR — é divergência de CATEGORIA DE FORMA. Tipica
+      // causa: garçom apertou Crédito no PDV mas era Débito (ou vice-versa).
+      const valorBate = Math.abs(diff) < 0.01;
+      const formasDiferem =
+        (pdv.formaPagamento ?? '').trim().toLowerCase() !==
+        (cielo.formaPagamento ?? '').trim().toLowerCase();
+      const ehFormaDivergente = valorBate && formasDiferem && deltaDias <= 1;
+
       novasExcecoes.push({
         filialId,
         processo: PROCESSO_OPERADORA,
         pagamentoId: pdv.id,
         vendaAdquirenteId: cielo.id ?? null,
         tipo: TIPO_OPERADORA.DIVERGENCIA_VALOR,
-        severidade: autoAceita ? 'BAIXA' : 'MEDIA',
-        descricao: autoAceita
-          ? `${pedidoTxt(pdv)} — Match automatico: PDV R$ ${pdv.valor.toFixed(2)} = Cielo R$ ${cielo.valorBruto.toFixed(2)} mesma data. Forma PDV: ${pdv.formaPagamento}, forma Cielo: ${cielo.formaPagamento ?? '?'}.`
-          : `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
+        severidade: ehFormaDivergente ? 'BAIXA' : autoAceita ? 'BAIXA' : 'MEDIA',
+        descricao: ehFormaDivergente
+          ? `${pedidoTxt(pdv)} — Forma divergente: PDV "${pdv.formaPagamento}" vs Cielo "${cielo.formaPagamento ?? '?'}" (valor R$ ${pdv.valor.toFixed(2)} confere exato). Provavel erro de cadastro do garçom.`
+          : autoAceita
+            ? `${pedidoTxt(pdv)} — Match automatico: PDV R$ ${pdv.valor.toFixed(2)} = Cielo R$ ${cielo.valorBruto.toFixed(2)} mesma data. Forma PDV: ${pdv.formaPagamento}, forma Cielo: ${cielo.formaPagamento ?? '?'}.`
+            : `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
         valor: String(pdv.valor),
-        aceitaEm: autoAceita ? new Date() : null,
-        observacao: autoAceita
-          ? 'Aceita automaticamente: valor e data batem exatos, forma divergente ajustada para usar a da Cielo.'
-          : null,
+        // Forma divergente NAO auto-aceita (precisa user revisar pra saber se
+        // foi mesmo erro de cadastro ou dois pagamentos distintos coincidindo).
+        aceitaEm: autoAceita && !ehFormaDivergente ? new Date() : null,
+        observacao: ehFormaDivergente
+          ? 'Valor e data conferem exatos. Diferença é só na categoria da forma — confirme manualmente se é o mesmo pagamento.'
+          : autoAceita
+            ? 'Aceita automaticamente: valor e data batem exatos, forma divergente ajustada para usar a da Cielo.'
+            : null,
       });
     }
     for (const pdv of result.pdvSemCielo) {
