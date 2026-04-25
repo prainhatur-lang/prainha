@@ -102,6 +102,19 @@ function toNumStr(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
 }
 
+/** Trunca string nullable pra evitar 500 em varchar com tamanho fixo. */
+function truncar(v: string | null | undefined, max: number): string | null {
+  if (v == null) return null;
+  return v.length > max ? v.slice(0, max) : v;
+}
+
+/** Converte string ISO em Date, ou null se invalida. Evita "Invalid Date" indo pro PG. */
+function toDate(v: string | null | undefined): Date | null {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /** Mapeia CODIGOPRODUTOTIPO do Consumer pro tipo da nuvem.
  *  Valores do Consumer:
  *   1 = Produto    -> VENDA_SIMPLES
@@ -143,6 +156,20 @@ function deriveControlaEstoque(
 }
 
 export async function POST(req: Request) {
+  try {
+    return await handle(req);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error('[ingest/pdv] erro nao tratado:', msg, stack);
+    return NextResponse.json(
+      { error: 'internal', message: msg.slice(0, 500) },
+      { status: 500 },
+    );
+  }
+}
+
+async function handle(req: Request) {
   const auth = req.headers.get('authorization');
   if (!auth?.startsWith('Bearer ')) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -186,10 +213,10 @@ export async function POST(req: Request) {
       return {
         filialId: filial.id,
         codigoExterno: p.codigoExterno,
-        nome: p.nome,
+        nome: truncar(p.nome, 200),
         descricao: p.descricao,
-        codigoPersonalizado: p.codigoPersonalizado,
-        codigoEtiqueta: p.codigoEtiqueta,
+        codigoPersonalizado: truncar(p.codigoPersonalizado, 50),
+        codigoEtiqueta: truncar(p.codigoEtiqueta, 50),
         precoVenda: toNumStr(p.precoVenda),
         precoCusto: toNumStr(p.precoCusto),
         estoqueAtual: toNumStr(p.estoqueAtual),
@@ -200,14 +227,14 @@ export async function POST(req: Request) {
         codigoUnidadeComercial: p.codigoUnidadeComercial,
         codigoProdutoTipo: p.codigoProdutoTipo,
         codigoCozinha: p.codigoCozinha,
-        ncm: p.ncm,
-        cfop: p.cfop,
-        cest: p.cest,
+        ncm: truncar(p.ncm, 10),
+        cfop: truncar(p.cfop, 10),
+        cest: truncar(p.cest, 10),
         tipo,
         unidadeEstoque: p.itemPorKg ? 'kg' : 'un',
         controlaEstoque: deriveControlaEstoque(tipo, p.estoqueControlado),
         criadoNaNuvem: false,
-        dataPausado: p.dataPausado ? new Date(p.dataPausado) : null,
+        dataPausado: toDate(p.dataPausado),
         versaoReg: p.versaoReg,
         sincronizadoEm: new Date(),
       };
@@ -257,14 +284,14 @@ export async function POST(req: Request) {
       filialId: filial.id,
       codigoExterno: p.codigoExterno,
       numero: p.numero,
-      senha: p.senha,
+      senha: truncar(p.senha, 30),
       codigoClienteContatoExterno: p.codigoClienteContatoExterno,
       codigoClienteFiadoExterno: p.codigoClienteFiadoExterno,
-      nomeCliente: p.nomeCliente,
+      nomeCliente: truncar(p.nomeCliente, 200),
       codigoColaborador: p.codigoColaborador,
       codigoUsuarioCriador: p.codigoUsuarioCriador,
-      dataAbertura: p.dataAbertura ? new Date(p.dataAbertura) : null,
-      dataFechamento: p.dataFechamento ? new Date(p.dataFechamento) : null,
+      dataAbertura: toDate(p.dataAbertura),
+      dataFechamento: toDate(p.dataFechamento),
       valorTotal: toNumStr(p.valorTotal),
       valorTotalItens: toNumStr(p.valorTotalItens),
       subtotalPago: toNumStr(p.subtotalPago),
@@ -278,10 +305,10 @@ export async function POST(req: Request) {
       valorIva: toNumStr(p.valorIva),
       quantidadePessoas: p.quantidadePessoas,
       notaEmitida: p.notaEmitida,
-      tag: p.tag,
+      tag: truncar(p.tag, 100),
       codigoPedidoOrigem: p.codigoPedidoOrigem,
       codigoCupom: p.codigoCupom,
-      dataDelete: p.dataDelete ? new Date(p.dataDelete) : null,
+      dataDelete: toDate(p.dataDelete),
       versaoReg: p.versaoReg,
       sincronizadoEm: new Date(),
     }));
@@ -332,7 +359,7 @@ export async function POST(req: Request) {
       codigoExterno: it.codigoExterno,
       codigoPedidoExterno: it.codigoPedidoExterno,
       codigoProdutoExterno: it.codigoProdutoExterno,
-      nomeProduto: it.nomeProduto,
+      nomeProduto: truncar(it.nomeProduto, 200),
       quantidade: toNumStr(it.quantidade),
       valorUnitario: toNumStr(it.valorUnitario),
       precoCusto: toNumStr(it.precoCusto),
@@ -346,8 +373,8 @@ export async function POST(req: Request) {
       codigoItemPedidoTipo: it.codigoItemPedidoTipo,
       codigoPagamento: it.codigoPagamento,
       codigoColaborador: it.codigoColaborador,
-      dataHoraCadastro: it.dataHoraCadastro ? new Date(it.dataHoraCadastro) : null,
-      dataDelete: it.dataDelete ? new Date(it.dataDelete) : null,
+      dataHoraCadastro: toDate(it.dataHoraCadastro),
+      dataDelete: toDate(it.dataDelete),
       detalhes: it.detalhes,
       versaoReg: it.versaoReg,
       sincronizadoEm: new Date(),
