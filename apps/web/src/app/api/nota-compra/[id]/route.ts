@@ -132,8 +132,33 @@ export async function DELETE(
     }
   }
 
+  // Verifica contas a pagar criadas pela nota: bloqueia se alguma ja foi paga.
+  const contasNfe = await db
+    .select({
+      id: schema.contaPagar.id,
+      valor: schema.contaPagar.valor,
+      dataPagamento: schema.contaPagar.dataPagamento,
+      parcela: schema.contaPagar.parcela,
+    })
+    .from(schema.contaPagar)
+    .where(
+      and(
+        eq(schema.contaPagar.notaCompraId, id),
+        eq(schema.contaPagar.origem, 'NFE'),
+      ),
+    );
+  const pagas = contasNfe.filter((c) => c.dataPagamento != null);
+  if (pagas.length > 0) {
+    return NextResponse.json(
+      {
+        error: `${pagas.length} conta(s) a pagar dessa nota ja foram pagas. Estorne o pagamento antes de excluir a nota.`,
+        contasPagas: pagas.map((c) => ({ parcela: c.parcela, valor: Number(c.valor) })),
+      },
+      { status: 409 },
+    );
+  }
+
   // Reversao: subtrai estoque + apaga movimentos.
-  // Faz produto a produto pra ficar legivel; volume eh sempre baixo (1 nota).
   for (const [produtoId, qtd] of qtdPorProduto.entries()) {
     await db
       .update(schema.produto)
@@ -150,7 +175,19 @@ export async function DELETE(
       .where(inArray(schema.movimentoEstoque.id, movIds));
   }
 
-  // Deleta a nota — cascade apaga notaCompraItem.
+  // Apaga as contas a pagar nao pagas dessa nota
+  if (contasNfe.length > 0) {
+    await db
+      .delete(schema.contaPagar)
+      .where(
+        and(
+          eq(schema.contaPagar.notaCompraId, id),
+          eq(schema.contaPagar.origem, 'NFE'),
+        ),
+      );
+  }
+
+  // Deleta a nota — cascade apaga notaCompraItem e nota_compra_duplicata.
   await db.delete(schema.notaCompra).where(eq(schema.notaCompra.id, id));
 
   return NextResponse.json({
@@ -159,5 +196,6 @@ export async function DELETE(
     numero: nota.numero,
     movimentosRevertidos: movimentos.length,
     produtosAjustados: qtdPorProduto.size,
+    contasPagarRemovidas: contasNfe.length,
   });
 }

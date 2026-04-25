@@ -128,13 +128,23 @@ export const movimentoContaCorrente = pgTable(
   }),
 );
 
-/** Conta a pagar (espelha CONTASPAGAR). */
+/** Conta a pagar.
+ *  Origens possiveis (campo `origem`):
+ *  - 'CONSUMER': vem do agente sincronizando CONTASPAGAR do Firebird local.
+ *    `codigoExterno` eh obrigatorio (PK do Consumer) e unico por filial.
+ *  - 'NFE': criada automaticamente ao lancar uma NFe de entrada no estoque,
+ *    a partir das duplicatas (<cobr><dup>) do XML. `codigoExterno` eh NULL
+ *    inicialmente; se o caixa lancar a mesma duplicata no Consumer, o agente
+ *    faz match (mesmo fornecedor + vencimento + valor) e UPDATE pra preencher
+ *    o codigoExterno em vez de criar duplicada.
+ *  - 'MANUAL': lancada direto na nuvem pelo gestor (futuro). */
 export const contaPagar = pgTable(
   'conta_pagar',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
-    codigoExterno: integer('codigo_externo').notNull(),
+    /** PK do Consumer. NULL pra origens NFE/MANUAL ate o agente fazer match. */
+    codigoExterno: integer('codigo_externo'),
     codigoFornecedorExterno: integer('codigo_fornecedor_externo'),
     codigoCategoriaExterno: integer('codigo_categoria_externo'),
     codigoContaBancariaExterno: integer('codigo_conta_bancaria_externo'),
@@ -154,14 +164,25 @@ export const contaPagar = pgTable(
     competencia: varchar('competencia', { length: 7 }),
     descricao: text('descricao'),
     observacao: text('observacao'),
+    /** CONSUMER | NFE | MANUAL. Default CONSUMER pra compatibilidade com agente. */
+    origem: varchar('origem', { length: 20 }).notNull().default('CONSUMER'),
+    /** Se origem='NFE', aponta pra nota que gerou. Cascade no DELETE da nota. */
+    notaCompraId: uuid('nota_compra_id'),
     dataCadastro: timestamp('data_cadastro', { withTimezone: true }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    // Unica por filial+codigoExterno SO quando codigoExterno nao eh NULL.
+    // Implementado como partial unique index na migration; o `unique` aqui
+    // e suficiente porque PG trata NULLs como distintos no unique padrao
+    // (cada NULL e unico) — entao multiplas NFE/MANUAL com codigoExterno=NULL
+    // coexistem sem conflito.
     uniqCodigo: unique('uq_conta_pagar_filial_codigo').on(t.filialId, t.codigoExterno),
     vencIdx: index('idx_conta_pagar_venc').on(t.filialId, t.dataVencimento),
     pagamentoIdx: index('idx_conta_pagar_pgto').on(t.filialId, t.dataPagamento),
+    notaIdx: index('idx_conta_pagar_nota').on(t.notaCompraId),
+    origemIdx: index('idx_conta_pagar_origem').on(t.filialId, t.origem),
   }),
 );

@@ -102,6 +102,38 @@ export default async function NotaDetalhePage(props: {
     .orderBy(asc(schema.produto.nome))
     .limit(5000);
 
+  // Duplicatas extraidas do XML — exibidas pra user revisar antes de lancar
+  const duplicatas = await db
+    .select({
+      id: schema.notaCompraDuplicata.id,
+      numero: schema.notaCompraDuplicata.numero,
+      dataVencimento: schema.notaCompraDuplicata.dataVencimento,
+      valor: schema.notaCompraDuplicata.valor,
+      contaPagarId: schema.notaCompraDuplicata.contaPagarId,
+    })
+    .from(schema.notaCompraDuplicata)
+    .where(eq(schema.notaCompraDuplicata.notaCompraId, id))
+    .orderBy(asc(schema.notaCompraDuplicata.dataVencimento));
+
+  // Categorias do plano de contas (DESPESA) pra escolher ao lancar
+  const categorias = await db
+    .select({
+      id: schema.categoriaConta.id,
+      descricao: schema.categoriaConta.descricao,
+      tipo: schema.categoriaConta.tipo,
+      codigoExterno: schema.categoriaConta.codigoExterno,
+    })
+    .from(schema.categoriaConta)
+    .where(
+      and(
+        eq(schema.categoriaConta.filialId, nota.filialId),
+        // Filtra so DESPESA (compra eh despesa). Inclui null pra nao perder
+        // categorias sem tipo classificado.
+      ),
+    )
+    .orderBy(asc(schema.categoriaConta.descricao))
+    .limit(2000);
+
   const totalItens = itens.length;
   const mapeados = itens.filter((i) => i.produtoId).length;
   const lancados = itens.filter((i) => idsLancados.has(i.id)).length;
@@ -182,6 +214,19 @@ export default async function NotaDetalhePage(props: {
             mapeados={mapeados}
             lancados={lancados}
             canLancar={mapeados > 0 && !todosLancados && nota.situacao !== 'CANCELADA' && nota.situacao !== 'DENEGADA'}
+            duplicatas={duplicatas.map((d) => ({
+              id: d.id,
+              numero: d.numero,
+              dataVencimento: d.dataVencimento,
+              valor: d.valor,
+              jaCriadaContaPagar: d.contaPagarId != null,
+            }))}
+            categorias={categorias.map((c) => ({
+              id: c.id,
+              descricao: c.descricao ?? `(sem descrição) ${c.codigoExterno}`,
+              tipo: c.tipo,
+            }))}
+            temFornecedor={nota.fornecedorId != null}
           />
         </div>
 

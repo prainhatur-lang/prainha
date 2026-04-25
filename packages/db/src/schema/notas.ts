@@ -84,6 +84,31 @@ export const notaCompra = pgTable(
   }),
 );
 
+/** Duplicatas (parcelas de cobranca) extraidas do XML da NFe.
+ *  Vem de <cobr><dup>. Cada linha vira (potencialmente) uma conta_pagar
+ *  ao lancar a nota no estoque. Pode estar vazia se a NFe e a vista. */
+export const notaCompraDuplicata = pgTable(
+  'nota_compra_duplicata',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    notaCompraId: uuid('nota_compra_id')
+      .notNull()
+      .references(() => notaCompra.id, { onDelete: 'cascade' }),
+    /** Numero da duplicata como vem na NFe ('001', '002', ou nDup arbitrario) */
+    numero: varchar('numero', { length: 30 }),
+    dataVencimento: date('data_vencimento').notNull(),
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    /** Quando a duplicata vira conta_pagar (lancar-estoque), guardamos
+     *  o id pra evitar duplicacao em re-lancamentos. */
+    contaPagarId: uuid('conta_pagar_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    notaIdx: index('idx_nota_dup_nota').on(t.notaCompraId),
+  }),
+);
+
 /** Itens da NF-e de entrada. */
 export const notaCompraItem = pgTable(
   'nota_compra_item',

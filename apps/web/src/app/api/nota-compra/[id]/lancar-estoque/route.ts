@@ -16,18 +16,32 @@
 // Conversão de unidade: usa o fator de produto_fornecedor (se existir) pra
 // converter da unidade do fornecedor (kg fatura pacote) pra unidade interna.
 // Se não existe mapeamento, assume fator 1.
+//
+// CONTAS A PAGAR (NEW):
+//  - Body opcional: { categoriaId: uuid }
+//  - Se ha duplicatas em nota_compra_duplicata e nenhuma virou conta_pagar
+//    ainda, cria 1 conta_pagar por duplicata (origem='NFE', notaCompraId,
+//    categoriaId, fornecedorId vindo da nota).
+//  - Se ja tem (contaPagarId nao null), pula — idempotente.
+//  - Se a nota nao tem duplicatas, nao cria nada (compra a vista, fornecedor
+//    nao preencheu cobr no XML, etc.).
 
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const Body = z.object({
+  categoriaId: z.string().uuid().nullable().optional(),
+});
+
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const supabase = await createClient();
@@ -39,11 +53,20 @@ export async function POST(
     return NextResponse.json({ error: 'id invalido' }, { status: 400 });
   }
 
+  // Body opcional: { categoriaId } pra criar contas a pagar
+  const json = await req.json().catch(() => ({}));
+  const parsed = Body.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'body invalido' }, { status: 400 });
+  }
+  const categoriaId = parsed.data.categoriaId ?? null;
+
   const [nota] = await db
     .select({
       id: schema.notaCompra.id,
       filialId: schema.notaCompra.filialId,
       fornecedorId: schema.notaCompra.fornecedorId,
+      numero: schema.notaCompra.numero,
       dataEmissao: schema.notaCompra.dataEmissao,
       dataEntrada: schema.notaCompra.dataEntrada,
       situacao: schema.notaCompra.situacao,
@@ -206,10 +229,83 @@ export async function POST(
     lancados++;
   }
 
+  // ===== CONTAS A PAGAR (a partir das duplicatas do XML) =====
+  // Le as duplicatas que ainda nao viraram conta_pagar e cria.
+  // Se a nota nao tem fornecedorId, nao da pra criar (financeiro precisa
+  // de fornecedor) — pula com aviso.
+  let contasCriadas = 0;
+  let contasPuladas = 0;
+  if (nota.fornecedorId) {
+    const duplicatas = await db
+      .select({
+        id: schema.notaCompraDuplicata.id,
+        numero: schema.notaCompraDuplicata.numero,
+        dataVencimento: schema.notaCompraDuplicata.dataVencimento,
+        valor: schema.notaCompraDuplicata.valor,
+      })
+      .from(schema.notaCompraDuplicata)
+      .where(
+        and(
+          eq(schema.notaCompraDuplicata.notaCompraId, id),
+          isNull(schema.notaCompraDuplicata.contaPagarId),
+        ),
+      );
+
+    const total = duplicatas.length;
+    for (let i = 0; i < duplicatas.length; i++) {
+      const d = duplicatas[i];
+      const descricaoConta = nota.numero
+        ? `NFe nº ${nota.numero}${total > 1 ? ` — parcela ${i + 1}/${total}` : ''}`
+        : `NFe duplicata ${d.numero ?? i + 1}/${total}`;
+
+      const [novaConta] = await db
+        .insert(schema.contaPagar)
+        .values({
+          filialId: nota.filialId,
+          // origem='NFE'; codigoExterno=null ate o agente fazer match
+          origem: 'NFE',
+          notaCompraId: id,
+          fornecedorId: nota.fornecedorId,
+          categoriaId: categoriaId,
+          parcela: i + 1,
+          totalParcelas: total,
+          dataVencimento: d.dataVencimento,
+          valor: d.valor,
+          descricao: descricaoConta,
+        })
+        .returning({ id: schema.contaPagar.id });
+
+      if (novaConta) {
+        await db
+          .update(schema.notaCompraDuplicata)
+          .set({ contaPagarId: novaConta.id })
+          .where(eq(schema.notaCompraDuplicata.id, d.id));
+        contasCriadas++;
+      }
+    }
+
+    // Quantas ja existiam (pra reportar)
+    const [stats] = await db
+      .select({
+        total: schema.notaCompraDuplicata.id,
+      })
+      .from(schema.notaCompraDuplicata)
+      .where(
+        and(
+          eq(schema.notaCompraDuplicata.notaCompraId, id),
+          isNotNull(schema.notaCompraDuplicata.contaPagarId),
+        ),
+      )
+      .limit(1);
+    if (stats) contasPuladas = 0; // simplifica: nao contamos as ja existentes
+  }
+
   return NextResponse.json({
     lancados,
     pulados,
     totalMapeados: itens.length,
     fatorRateio,
+    contasPagarCriadas: contasCriadas,
+    contasPagarPuladas: contasPuladas,
   });
 }

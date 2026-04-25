@@ -9,7 +9,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
-import { eq, sql as drizzleSql } from 'drizzle-orm';
+import { and, eq, isNull, sql as drizzleSql } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -284,6 +284,13 @@ export async function POST(req: Request) {
   }
 
   // --- Contas a pagar ---
+  // DEDUPE com NFe-origem: antes de inserir cada conta vinda do Consumer, tenta
+  // "reivindicar" uma conta_pagar criada por NFe que case com fornecedor +
+  // dataVencimento + valor (centavo de tolerancia) e ainda nao tem codigoExterno.
+  // Se casar, a NFe-row absorve os metadados Consumer (codigoExterno, dataPagamento,
+  // etc.) sem mudar origem='NFE' — a NFe continua sendo a fonte da verdade,
+  // e ganhamos o link com o registro do Consumer pra reconciliar pagamentos.
+  let contasPagarReivindicadas = 0;
   if (contasPagar?.length) {
     const rows = contasPagar.map((cp) => ({
       filialId: filial.id,
@@ -308,10 +315,61 @@ export async function POST(req: Request) {
       versaoReg: cp.versaoReg,
       sincronizadoEm: new Date(),
     }));
-    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+
+    // Pre-pass: tenta reivindicar NFe orfas. Linhas reivindicadas saem do batch
+    // e ja foram atualizadas in-place; o resto vai pro upsert normal.
+    const rowsParaInserir: typeof rows = [];
+    for (const r of rows) {
+      // Sem codigoFornecedorExterno nao da pra fazer match (fornecedor eh chave)
+      if (r.codigoFornecedorExterno == null) {
+        rowsParaInserir.push(r);
+        continue;
+      }
+      const claimed = await db
+        .update(schema.contaPagar)
+        .set({
+          codigoExterno: r.codigoExterno,
+          codigoFornecedorExterno: r.codigoFornecedorExterno,
+          codigoCategoriaExterno: r.codigoCategoriaExterno,
+          codigoContaBancariaExterno: r.codigoContaBancariaExterno,
+          dataPagamento: r.dataPagamento,
+          descontos: r.descontos,
+          jurosMulta: r.jurosMulta,
+          valorPago: r.valorPago,
+          codigoReferencia: r.codigoReferencia,
+          competencia: r.competencia,
+          observacao: r.observacao,
+          versaoReg: r.versaoReg,
+          sincronizadoEm: r.sincronizadoEm,
+          // origem MANTEM 'NFE' — NFe segue como fonte de verdade. parcela/total
+          // e descricao tambem ficam — vieram do XML e sao mais confiaveis.
+        })
+        .where(
+          and(
+            eq(schema.contaPagar.filialId, filial.id),
+            eq(schema.contaPagar.origem, 'NFE'),
+            isNull(schema.contaPagar.codigoExterno),
+            eq(schema.contaPagar.dataVencimento, r.dataVencimento),
+            drizzleSql`ABS(${schema.contaPagar.valor} - ${r.valor}::numeric) < 0.01`,
+            drizzleSql`${schema.contaPagar.fornecedorId} IN (
+              SELECT id FROM fornecedor
+              WHERE filial_id = ${filial.id}
+                AND codigo_externo = ${r.codigoFornecedorExterno}
+            )`,
+          ),
+        )
+        .returning({ id: schema.contaPagar.id });
+      if (claimed.length > 0) {
+        contasPagarReivindicadas++;
+      } else {
+        rowsParaInserir.push(r);
+      }
+    }
+
+    for (let i = 0; i < rowsParaInserir.length; i += CHUNK_SIZE) {
       await db
         .insert(schema.contaPagar)
-        .values(rows.slice(i, i + CHUNK_SIZE))
+        .values(rowsParaInserir.slice(i, i + CHUNK_SIZE))
         .onConflictDoUpdate({
           target: [schema.contaPagar.filialId, schema.contaPagar.codigoExterno],
           set: {
@@ -459,6 +517,7 @@ export async function POST(req: Request) {
     categoriasRecebidas,
     contasBancariasRecebidas,
     contasPagarRecebidas,
+    contasPagarReivindicadas,
     clientesRecebidos,
     movimentosRecebidos,
   });

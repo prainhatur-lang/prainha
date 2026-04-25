@@ -167,6 +167,23 @@ export async function POST(req: Request) {
     await db.insert(schema.notaCompraItem).values(itens);
   }
 
+  // Insere duplicatas (parcelas) — usadas depois pra criar conta_pagar
+  // ao lancar a nota no estoque. Filtra invalidas.
+  if (nfe.duplicatas.length > 0) {
+    const dups = nfe.duplicatas
+      .filter((d) => d.vencimento != null && d.valor > 0)
+      .map((d) => ({
+        filialId,
+        notaCompraId,
+        numero: d.numero,
+        dataVencimento: d.vencimento as string, // yyyy-mm-dd da NFe
+        valor: String(d.valor),
+      }));
+    if (dups.length > 0) {
+      await db.insert(schema.notaCompraDuplicata).values(dups);
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     id: notaCompraId,
@@ -174,5 +191,6 @@ export async function POST(req: Request) {
     emitNome: nfe.emitNome,
     valorTotal: nfe.valorTotal,
     qtdItens: nfe.itens.length,
+    qtdDuplicatas: nfe.duplicatas.length,
   });
 }

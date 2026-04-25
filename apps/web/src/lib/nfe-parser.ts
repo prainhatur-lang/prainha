@@ -44,6 +44,19 @@ export interface NfeParseada {
   dataAutorizacao: string | null;
 
   itens: NfeItemParseado[];
+  /** Duplicatas (parcelas) extraidas de <cobr><dup>. Vazio se a NFe nao
+   *  tem <cobr> (compra a vista, ou fornecedor nao preencheu). */
+  duplicatas: NfeDuplicata[];
+}
+
+/** Uma parcela do boleto/duplicata extraida do XML. */
+export interface NfeDuplicata {
+  /** Numero da duplicata (ex: '001', '002') */
+  numero: string | null;
+  /** Vencimento ISO yyyy-mm-dd */
+  vencimento: string | null;
+  /** Valor da parcela */
+  valor: number;
 }
 
 export interface NfeItemParseado {
@@ -197,6 +210,29 @@ export function parseNfeXml(xml: string): NfeParseada {
     };
   });
 
+  // Duplicatas (cobranca / parcelas). Estrutura no XML:
+  //   <cobr>
+  //     <fat> nFat / vOrig / vLiq </fat>
+  //     <dup> nDup / dVenc / vDup </dup>   (uma por parcela)
+  //   </cobr>
+  // Pode nao existir (compra a vista) — nesse caso retornamos array vazio.
+  const cobr = inf.cobr as Record<string, unknown> | undefined;
+  let duplicatas: NfeDuplicata[] = [];
+  if (cobr) {
+    const dup = cobr.dup;
+    const dupArr = Array.isArray(dup) ? dup : dup ? [dup] : [];
+    duplicatas = dupArr
+      .map((d) => {
+        const r = d as Record<string, unknown>;
+        return {
+          numero: nullableS(r.nDup),
+          vencimento: nullableS(r.dVenc),
+          valor: nullableN(r.vDup) ?? 0,
+        };
+      })
+      .filter((d) => d.valor > 0 && d.vencimento != null);
+  }
+
   // Situação via protocolo
   let situacao: string | null = null;
   let protocolo: string | null = null;
@@ -250,5 +286,6 @@ export function parseNfeXml(xml: string): NfeParseada {
     dataAutorizacao,
 
     itens,
+    duplicatas,
   };
 }

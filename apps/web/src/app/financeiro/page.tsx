@@ -115,6 +115,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           fornecedorCnpj: schema.fornecedor.cnpjOuCpf,
           categoriaDescricao: schema.categoriaConta.descricao,
           categoriaTipo: schema.categoriaConta.tipo,
+          origem: schema.contaPagar.origem,
+          notaCompraId: schema.contaPagar.notaCompraId,
         })
         .from(schema.contaPagar)
         .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -306,11 +308,39 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                             {venc}
                           </td>
                           <td className="px-4 py-2 text-xs text-slate-800">
-                            {c.fornecedorNome ?? (
-                              <span className="text-slate-400">sem fornecedor</span>
+                            <div className="flex items-center gap-1.5">
+                              <span>
+                                {c.fornecedorNome ?? (
+                                  <span className="text-slate-400">sem fornecedor</span>
+                                )}
+                              </span>
+                              {c.origem === 'NFE' && (
+                                <span
+                                  className="rounded bg-violet-100 px-1 py-0.5 text-[9px] font-medium text-violet-800"
+                                  title={
+                                    c.notaCompraId
+                                      ? 'Originada de uma NFe lançada no estoque'
+                                      : 'Origem NFe'
+                                  }
+                                >
+                                  NFe
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-2 text-xs text-slate-600">
+                            {c.notaCompraId ? (
+                              <a
+                                href={`/movimento/entrada-notas/${c.notaCompraId}`}
+                                className="text-violet-700 hover:underline"
+                                title="Ver a nota de origem"
+                              >
+                                {c.descricao ?? '—'}
+                              </a>
+                            ) : (
+                              c.descricao ?? '—'
                             )}
                           </td>
-                          <td className="px-4 py-2 text-xs text-slate-600">{c.descricao ?? '—'}</td>
                           <td className="px-4 py-2 text-xs text-slate-600">
                             {c.categoriaDescricao ?? '—'}
                           </td>
