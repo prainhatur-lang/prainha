@@ -163,6 +163,7 @@ export async function rodarConciliacaoOperadora(opts: {
         valorBruto: schema.vendaAdquirente.valorBruto,
         dataVenda: schema.vendaAdquirente.dataVenda,
         formaPagamento: schema.vendaAdquirente.formaPagamento,
+        bandeira: schema.vendaAdquirente.bandeira,
         autorizacao: schema.vendaAdquirente.autorizacao,
       })
       .from(schema.vendaAdquirente)
@@ -327,6 +328,67 @@ export async function rodarConciliacaoOperadora(opts: {
 
     if (novasExcecoes.length > 0) {
       await db.insert(schema.excecao).values(novasExcecoes);
+    }
+
+    // Propaga forma+bandeira da Cielo pro pagamento.formaEfetiva quando:
+    //  1) Match firme (nivel 1-3) onde forma do PDV difere da da Cielo
+    //     (engine resolveu via NSU mas garcom errou categoria)
+    //  2) Auto-aceita com formas diferentes (rodarConciliacaoOperadora setou aceitaEm)
+    // Pra divergencia manual NAO setamos aqui — o user aceita via API e a
+    // popular acontece no PATCH /api/excecoes/[id].
+    const vendasPorIdLookup = new Map(vendasRaw.map((v) => [v.id, v]));
+    const updatesEfetivas: Array<{
+      pagamentoId: string;
+      forma: string | null;
+      bandeira: string | null;
+    }> = [];
+    for (const m of result.matched) {
+      if (!m.cielo.id) continue;
+      const v = vendasPorIdLookup.get(m.cielo.id);
+      if (!v) continue;
+      const formaPdv = (m.pdv.formaPagamento ?? '').trim().toLowerCase();
+      const formaCielo = (v.formaPagamento ?? '').trim().toLowerCase();
+      if (formaPdv === formaCielo) continue;
+      updatesEfetivas.push({
+        pagamentoId: m.pdv.id,
+        forma: v.formaPagamento ?? null,
+        bandeira: v.bandeira ?? null,
+      });
+    }
+    // Auto-aceitas (non-form-divergent) tambem marcam — a engine ja decidiu
+    // que e o mesmo pagamento pelo valor, vale propagar a forma.
+    for (const { pdv, cielo, diff } of result.divergenciaValor) {
+      if (!cielo.id) continue;
+      const valorBate = Math.abs(diff) < 0.01;
+      const deltaDias =
+        pdv.dataPagamento && cielo.dataVenda
+          ? Math.abs(
+              (new Date(pdv.dataPagamento + 'T00:00:00').getTime() -
+                new Date(cielo.dataVenda + 'T00:00:00').getTime()) /
+                86_400_000,
+            )
+          : Infinity;
+      const formasDiferem =
+        (pdv.formaPagamento ?? '').trim().toLowerCase() !==
+        (cielo.formaPagamento ?? '').trim().toLowerCase();
+      const ehFormaDivergente = valorBate && formasDiferem && deltaDias <= 1;
+      const autoAceita = Math.abs(diff) <= tolAutoAceite && deltaDias <= 1;
+      if (autoAceita && !ehFormaDivergente && formasDiferem) {
+        const v = vendasPorIdLookup.get(cielo.id);
+        if (v) {
+          updatesEfetivas.push({
+            pagamentoId: pdv.id,
+            forma: v.formaPagamento ?? null,
+            bandeira: v.bandeira ?? null,
+          });
+        }
+      }
+    }
+    for (const u of updatesEfetivas) {
+      await db
+        .update(schema.pagamento)
+        .set({ formaEfetiva: u.forma, bandeiraEfetiva: u.bandeira })
+        .where(eq(schema.pagamento.id, u.pagamentoId));
     }
 
     // Persiste matches novos em match_pdv_cielo. Niveis 1-3 sao firmes;

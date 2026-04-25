@@ -41,6 +41,12 @@ export const pagamento = pgTable(
     nroParcela: smallint('nro_parcela'),
     codigoCredenciadoraCartao: smallint('codigo_credenciadora_cartao'),
     codigoContaCorrente: integer('codigo_conta_corrente'),
+    /** Forma efetiva (forma como a Cielo registrou). Setada quando a divergencia
+     *  de forma e aceita pelo user OU automaticamente em divergencias com diff=0.
+     *  Quando null, usar formaPagamento (default = forma do PDV). */
+    formaEfetiva: varchar('forma_efetiva', { length: 255 }),
+    /** Bandeira efetiva (bandeira como a Cielo registrou). Mesma logica de formaEfetiva. */
+    bandeiraEfetiva: varchar('bandeira_efetiva', { length: 50 }),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
     /** quando o agente local detectou update */
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }),

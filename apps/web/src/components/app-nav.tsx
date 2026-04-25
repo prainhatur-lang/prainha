@@ -25,6 +25,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Plano de contas', href: '/cadastros/plano-contas' },
       { label: 'Produtos', href: '/cadastros/produtos' },
       { label: 'Templates de produção', href: '/cadastros/templates-producao' },
+      { label: 'Cozinheiros', href: '/cadastros/colaboradores' },
     ],
   },
   {

@@ -140,6 +140,10 @@ export const colaborador = pgTable(
     /** Categoria livre — COZINHA / SALAO / PRODUCAO / etc. Default 'COZINHA'. */
     tipo: varchar('tipo', { length: 20 }).notNull().default('COZINHA'),
     ativo: boolean('ativo').notNull().default(true),
+    /** Token permanente pra acessar painel pessoal /cozinheiro/[token].
+     *  Cozinheiro salva o link no celular dele uma vez, depois acessa todas
+     *  as OPs atribuídas a ele. Gerado por crypto.randomBytes(32). */
+    tokenAcesso: varchar('token_acesso', { length: 64 }).unique(),
     /** Atualizada toda vez que o nome aparece numa OP (pra ordenar autocomplete). */
     ultimaAtividadeEm: timestamp('ultima_atividade_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
@@ -147,6 +151,33 @@ export const colaborador = pgTable(
   (t) => ({
     uniqNome: unique('uq_colab_filial_nome').on(t.filialId, t.nome),
     tipoIdx: index('idx_colab_tipo').on(t.filialId, t.tipo),
+  }),
+);
+
+/** Fotos enviadas pelo cozinheiro durante a execução da OP.
+ *  Tipo ENTRADA = foto do material recebido antes de processar.
+ *  Tipo SAIDA = foto do produto final / cortes prontos.
+ *  Útil pra auditoria: gestor revisa antes de concluir. */
+export const ordemProducaoFoto = pgTable(
+  'ordem_producao_foto',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    ordemProducaoId: uuid('ordem_producao_id')
+      .notNull()
+      .references(() => ordemProducao.id, { onDelete: 'cascade' }),
+    tipo: varchar('tipo', { length: 10 }).notNull(),
+    /** Path no Supabase Storage. Bucket: producao-fotos */
+    storagePath: text('storage_path').notNull(),
+    /** URL pública (cache). Pode ser regenerada via storage.getPublicUrl */
+    url: text('url'),
+    observacao: text('observacao'),
+    /** Token do cozinheiro que enviou (rastreabilidade) */
+    enviadaPorToken: varchar('enviada_por_token', { length: 64 }),
+    enviadaEm: timestamp('enviada_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    opIdx: index('idx_op_foto_op').on(t.ordemProducaoId),
+    tipoIdx: index('idx_op_foto_tipo').on(t.ordemProducaoId, t.tipo),
   }),
 );
 

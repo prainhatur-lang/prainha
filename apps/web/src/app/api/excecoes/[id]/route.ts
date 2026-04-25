@@ -1,6 +1,10 @@
 // PATCH /api/excecoes/[id]
 // Body: { observacao?: string }
 // Marca excecao como aceita/resolvida (aceita_em = now).
+// Quando a excecao e DIVERGENCIA_VALOR de OPERADORA com vendaAdquirente
+// vinculada, propaga forma + bandeira da Cielo pra pagamento.formaEfetiva
+// e pagamento.bandeiraEfetiva (corrige caso garcom errou categoria no PDV
+// — taxa correta sera aplicada em auditoria/dashboard com a forma da Cielo).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -35,7 +39,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   // RBAC: verifica que a excecao pertence a uma filial do usuario
   const [exc] = await db
-    .select({ id: schema.excecao.id, filialId: schema.excecao.filialId })
+    .select({
+      id: schema.excecao.id,
+      filialId: schema.excecao.filialId,
+      tipo: schema.excecao.tipo,
+      processo: schema.excecao.processo,
+      pagamentoId: schema.excecao.pagamentoId,
+      vendaAdquirenteId: schema.excecao.vendaAdquirenteId,
+    })
     .from(schema.excecao)
     .where(eq(schema.excecao.id, id))
     .limit(1);
@@ -62,6 +73,36 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     })
     .where(eq(schema.excecao.id, id))
     .returning({ id: schema.excecao.id, aceitaEm: schema.excecao.aceitaEm });
+
+  // Propaga forma+bandeira da Cielo pro pagamento quando aceitar divergencia
+  // OPERADORA com venda vinculada. Cobre o caso "garcom marcou Debito mas era
+  // Credito" — auditoria de taxa e dashboard ja usam vendaAdquirente.formaPagamento,
+  // mas relatorios baseados em pagamento.formaPagamento agora sabem usar
+  // formaEfetiva/bandeiraEfetiva quando setadas.
+  if (
+    exc.processo === 'OPERADORA' &&
+    exc.tipo === 'DIVERGENCIA_VALOR' &&
+    exc.pagamentoId &&
+    exc.vendaAdquirenteId
+  ) {
+    const [venda] = await db
+      .select({
+        formaPagamento: schema.vendaAdquirente.formaPagamento,
+        bandeira: schema.vendaAdquirente.bandeira,
+      })
+      .from(schema.vendaAdquirente)
+      .where(eq(schema.vendaAdquirente.id, exc.vendaAdquirenteId))
+      .limit(1);
+    if (venda) {
+      await db
+        .update(schema.pagamento)
+        .set({
+          formaEfetiva: venda.formaPagamento ?? null,
+          bandeiraEfetiva: venda.bandeira ?? null,
+        })
+        .where(eq(schema.pagamento.id, exc.pagamentoId));
+    }
+  }
 
   return NextResponse.json(updated);
 }

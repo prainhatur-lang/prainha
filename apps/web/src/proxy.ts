@@ -32,9 +32,12 @@ export async function proxy(request: NextRequest) {
   const isAuthRoute = path.startsWith('/login') || path.startsWith('/auth') || path.startsWith('/signup');
   // APIs tem auth propria (Bearer token, etc) - middleware nao deve interceptar
   const isApiRoute = path.startsWith('/api/');
-  // /op/[token] eh acesso publico do cozinheiro via link com token (sem login)
+  // /op/[token] e /cozinheiro/[token] sao acessos publicos via link com
+  // token (sem login). Cozinheiro nao tem conta no sistema.
   const isOpPublica = path.startsWith('/op/');
-  const isPublicRoute = path === '/' || isAuthRoute || isApiRoute || isOpPublica;
+  const isCozinheiroPublico = path.startsWith('/cozinheiro/');
+  const isPublicRoute =
+    path === '/' || isAuthRoute || isApiRoute || isOpPublica || isCozinheiroPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
