@@ -7,6 +7,7 @@ import {
   parseCieloVendas,
   parseCieloRecebiveis,
   parseCnab240Inter,
+  extrairIdentificacaoCnab,
 } from '@concilia/conciliador/parsers';
 import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
 
@@ -121,6 +122,73 @@ export async function validarEcsContraFilial(
   }
 
   return { conflitos, novos, jaConhecidos };
+}
+
+/**
+ * Valida que o arquivo CNAB pertence à filial selecionada.
+ * Compara CNPJ do header arquivo com filial.cnpj.
+ *
+ * Se diferir → retorna conflito (caller bloqueia upload).
+ * Se conta+agência já tiver sido vista em outra filial → retorna conflito também.
+ */
+export async function validarCnabContraFilial(
+  filialId: string,
+  conteudo: Buffer,
+): Promise<{
+  conflito: { tipo: 'CNPJ' | 'CONTA'; mensagem: string } | null;
+  inscricaoArquivo: string | null;
+  agencia: string | null;
+  conta: string | null;
+}> {
+  const id = extrairIdentificacaoCnab(conteudo);
+  if (!id.inscricao) {
+    return { conflito: null, inscricaoArquivo: null, agencia: null, conta: null };
+  }
+
+  // Compara CNPJ com a filial
+  const [filial] = await db
+    .select({ id: schema.filial.id, nome: schema.filial.nome, cnpj: schema.filial.cnpj })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+
+  if (filial?.cnpj) {
+    const cnpjFilial = filial.cnpj.replace(/\D/g, '');
+    const cnpjArquivo = id.inscricao.replace(/\D/g, '');
+    if (cnpjFilial && cnpjArquivo && cnpjFilial !== cnpjArquivo) {
+      // Tenta achar qual filial o CNPJ pertence
+      const [filialDoArquivo] = await db
+        .select({ id: schema.filial.id, nome: schema.filial.nome })
+        .from(schema.filial)
+        .where(eq(schema.filial.cnpj, cnpjArquivo))
+        .limit(1);
+
+      const ondeBate = filialDoArquivo
+        ? `filial "${filialDoArquivo.nome}"`
+        : `outro CNPJ (${formatarCnpj(cnpjArquivo)})`;
+      return {
+        conflito: {
+          tipo: 'CNPJ',
+          mensagem: `CNPJ do arquivo (${formatarCnpj(cnpjArquivo)}) não bate com o da filial "${filial.nome}" (${formatarCnpj(cnpjFilial)}). Este arquivo pertence a ${ondeBate}.`,
+        },
+        inscricaoArquivo: id.inscricao,
+        agencia: id.agencia,
+        conta: id.conta,
+      };
+    }
+  }
+
+  return {
+    conflito: null,
+    inscricaoArquivo: id.inscricao,
+    agencia: id.agencia,
+    conta: id.conta,
+  };
+}
+
+function formatarCnpj(cnpj: string): string {
+  const c = cnpj.padStart(14, '0');
+  return `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12, 14)}`;
 }
 
 /** Processa Vendas Detalhado Cielo */

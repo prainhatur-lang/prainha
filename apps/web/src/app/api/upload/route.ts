@@ -12,6 +12,7 @@ import {
   detectarTipo,
   extrairEcsCielo,
   validarEcsContraFilial,
+  validarCnabContraFilial,
 } from '@/lib/processadores';
 
 export const dynamic = 'force-dynamic';
@@ -113,6 +114,24 @@ export async function POST(req: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // 5a. Validação de CNPJ (pra arquivo CNAB do banco).
+  // Compara CNPJ do header arquivo com filial.cnpj. Bloqueia se diferir.
+  if (tipo === 'CNAB240_INTER') {
+    const v = await validarCnabContraFilial(filialId, buf);
+    if (v.conflito) {
+      return NextResponse.json(
+        {
+          error: v.conflito.mensagem,
+          tipoConflito: v.conflito.tipo,
+          inscricaoArquivo: v.inscricaoArquivo,
+          agencia: v.agencia,
+          conta: v.conta,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   // 5b. Validação de EC (apenas pra arquivos Cielo).
