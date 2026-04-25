@@ -70,6 +70,7 @@ const GRUPOS: Grupo[] = [
   {
     label: 'Configurações',
     links: [
+      { label: 'Diagnóstico do sistema', href: '/diagnostico' },
       { label: 'Filial / Taxas', href: '/configuracoes' },
       { label: 'Formas de pagamento', href: '/configuracoes/formas-pagamento' },
       { label: 'Certificados A1', href: '/configuracoes/certificados' },
