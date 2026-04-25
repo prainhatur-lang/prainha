@@ -168,6 +168,10 @@ export const contaPagar = pgTable(
     origem: varchar('origem', { length: 20 }).notNull().default('CONSUMER'),
     /** Se origem='NFE', aponta pra nota que gerou. Cascade no DELETE da nota. */
     notaCompraId: uuid('nota_compra_id'),
+    /** Path do boleto digitalizado no Supabase Storage (bucket producao-fotos
+     *  com prefixo nfe-boletos/). Pode ser anexado no momento do lancamento
+     *  ou depois via foto enviada pelo celular (token publico da nota). */
+    boletoStoragePath: text('boleto_storage_path'),
     dataCadastro: timestamp('data_cadastro', { withTimezone: true }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),

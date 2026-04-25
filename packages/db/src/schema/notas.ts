@@ -72,6 +72,11 @@ export const notaCompra = pgTable(
     xmlStoragePath: text('xml_storage_path'),
     xmlHash: varchar('xml_hash', { length: 64 }),
 
+    // Boleto: quando a NFe nao traz <cobr><dup> (compra a vista, ou
+    // fornecedor nao preencheu), o user pode anexar um boleto digitalizado
+    // OU gerar um token publico pra enviar foto depois pelo celular.
+    boletoTokenPublico: varchar('boleto_token_publico', { length: 64 }).unique(),
+
     // Metadata
     origemImportacao: varchar('origem_importacao', { length: 20 }).default('UPLOAD'), // UPLOAD | SEFAZ_MANIFESTO
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
