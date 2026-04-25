@@ -18,8 +18,44 @@ export function BotoesCabecalho({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [loading, setLoading] = useState<'match' | 'lancar' | null>(null);
+  const [loading, setLoading] = useState<'match' | 'lancar' | 'excluir' | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
+
+  async function excluir() {
+    const aviso = lancados > 0
+      ? `Excluir esta nota?\n\nVai REVERTER ${lancados} lancamento(s) no estoque (subtrai a quantidade do saldo) e apagar a nota.\n\nApos excluir, voce pode re-importar o XML pra refazer.`
+      : `Excluir esta nota?\n\nA nota ainda nao foi lancada — so o registro vai sumir. Apos excluir, voce pode re-importar o XML.`;
+    if (!confirm(aviso)) return;
+
+    setLoading('excluir');
+    setMsg(null);
+    try {
+      const r = await fetch(`/api/nota-compra/${notaId}`, { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // Erro especifico de estoque negativo: mostra os produtos
+        if (r.status === 409 && Array.isArray(d.conflitos)) {
+          const lista = d.conflitos
+            .map((c: { nome: string; atual: number; aReverter: number }) =>
+              `• ${c.nome}: estoque ${c.atual} < ${c.aReverter} a reverter`)
+            .join('\n');
+          setMsg({
+            tipo: 'erro',
+            texto: `Nao da pra reverter (estoque ja foi consumido):\n${lista}\n\nFaca um ajuste manual no estoque antes.`,
+          });
+        } else {
+          setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
+        }
+        return;
+      }
+      // Sucesso → volta pra listagem
+      router.push('/movimento/entrada-notas');
+    } catch (err) {
+      setMsg({ tipo: 'erro', texto: (err as Error).message });
+    } finally {
+      setLoading(null);
+    }
+  }
 
   async function matchAuto() {
     setLoading('match');
@@ -78,6 +114,19 @@ export function BotoesCabecalho({
       <div className="flex items-center gap-2">
         <button
           type="button"
+          onClick={excluir}
+          disabled={loading !== null || pending}
+          className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+          title={
+            lancados > 0
+              ? 'Reverte os lançamentos no estoque e apaga a nota — você pode re-importar o XML pra refazer'
+              : 'Apaga a nota — você pode re-importar o XML pra refazer'
+          }
+        >
+          {loading === 'excluir' ? 'Excluindo...' : '🗑 Excluir nota'}
+        </button>
+        <button
+          type="button"
           onClick={matchAuto}
           disabled={loading !== null || pending || totalItens === mapeados}
           className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
@@ -96,7 +145,7 @@ export function BotoesCabecalho({
       </div>
       {msg && (
         <div
-          className={`rounded px-2 py-1 text-[11px] ${
+          className={`max-w-md whitespace-pre-line rounded px-2 py-1 text-[11px] ${
             msg.tipo === 'ok'
               ? 'bg-emerald-50 text-emerald-800'
               : 'bg-rose-50 text-rose-800'
