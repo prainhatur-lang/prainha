@@ -22,6 +22,7 @@ interface Produto {
   estoqueMinimo: string | null;
   descontinuado: boolean | null;
   criadoNaNuvem: boolean;
+  estoqueAtual?: string | null;
 }
 
 export function EditarProdutoButton({ produto }: { produto: Produto }) {
@@ -41,6 +42,28 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
   function fechar() {
     setAberto(false);
     setErro(null);
+  }
+
+  async function excluir() {
+    const saldo = Number(produto.estoqueAtual ?? 0);
+    const aviso = saldo !== 0
+      ? `Excluir "${produto.nome}"?\n\nO saldo atual e ${saldo} — ajuste pra zero antes de tentar deletar.`
+      : `Excluir "${produto.nome}" definitivamente?\n\nSo funciona se o produto nao tiver movimentos historicos nem estiver em ficha tecnica.`;
+    if (!confirm(aviso)) return;
+
+    setErro(null);
+    try {
+      const r = await fetch(`/api/produtos/${produto.id}`, { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      fechar();
+      start(() => router.refresh());
+    } catch (err) {
+      setErro((err as Error).message);
+    }
   }
 
   async function enviar(e: React.FormEvent) {
@@ -204,21 +227,36 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
               </div>
             )}
 
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={fechar}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={pending}
-                className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-              >
-                {pending ? 'Salvando...' : 'Salvar'}
-              </button>
+            <div className="flex items-center justify-between gap-2">
+              {produto.criadoNaNuvem ? (
+                <button
+                  type="button"
+                  onClick={excluir}
+                  disabled={pending}
+                  className="text-[11px] text-rose-600 hover:text-rose-800 hover:underline disabled:opacity-50"
+                  title="So funciona com saldo 0 e sem movimentos historicos"
+                >
+                  Excluir produto
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={fechar}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={pending}
+                  className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {pending ? 'Salvando...' : 'Salvar'}
+                </button>
+              </div>
             </div>
           </form>
         </div>

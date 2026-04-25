@@ -473,6 +473,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             estoqueMinimo: p.estoqueMinimo,
                             descontinuado: p.descontinuado,
                             criadoNaNuvem: p.criadoNaNuvem,
+                            estoqueAtual: p.estoqueAtual,
                           }}
                         />
                       </td>

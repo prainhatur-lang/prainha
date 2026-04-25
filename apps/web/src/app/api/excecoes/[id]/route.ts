@@ -79,9 +79,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // Credito" — auditoria de taxa e dashboard ja usam vendaAdquirente.formaPagamento,
   // mas relatorios baseados em pagamento.formaPagamento agora sabem usar
   // formaEfetiva/bandeiraEfetiva quando setadas.
+  // Tipo no banco e 'DIVERGENCIA_VALOR_OPERADORA' (com sufixo).
   if (
     exc.processo === 'OPERADORA' &&
-    exc.tipo === 'DIVERGENCIA_VALOR' &&
+    exc.tipo === 'DIVERGENCIA_VALOR_OPERADORA' &&
     exc.pagamentoId &&
     exc.vendaAdquirenteId
   ) {
@@ -89,6 +90,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       .select({
         formaPagamento: schema.vendaAdquirente.formaPagamento,
         bandeira: schema.vendaAdquirente.bandeira,
+        valorBruto: schema.vendaAdquirente.valorBruto,
       })
       .from(schema.vendaAdquirente)
       .where(eq(schema.vendaAdquirente.id, exc.vendaAdquirenteId))
@@ -101,6 +103,45 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           bandeiraEfetiva: venda.bandeira ?? null,
         })
         .where(eq(schema.pagamento.id, exc.pagamentoId));
+
+      // Persiste match firme manual em match_pdv_cielo. Sem isso a engine
+      // reroda e gera divergencia de novo (vimos no banco varias linhas
+      // duplicadas pro mesmo pedido). Como manual, NUNCA e auto-revogavel.
+      const [pag] = await db
+        .select({ valor: schema.pagamento.valor })
+        .from(schema.pagamento)
+        .where(eq(schema.pagamento.id, exc.pagamentoId))
+        .limit(1);
+      const diff = pag
+        ? +(Number(venda.valorBruto) - Number(pag.valor)).toFixed(2)
+        : 0;
+      await db
+        .insert(schema.matchPdvCielo)
+        .values({
+          filialId: exc.filialId,
+          pagamentoId: exc.pagamentoId,
+          vendaAdquirenteId: exc.vendaAdquirenteId,
+          nivelMatch: '1',
+          criadoPor: user.id,
+          diffValor: diff.toFixed(2),
+          observacao:
+            'Aceito de divergencia OPERADORA: forma/bandeira da Cielo aplicadas como efetivas.',
+        })
+        .onConflictDoNothing({ target: [schema.matchPdvCielo.pagamentoId] });
+
+      // Limpa excecoes abertas duplicadas pro mesmo pagamento (a engine
+      // recriou a cada rodada antes do match firme existir). Mantem a atual
+      // (que acabamos de aceitar).
+      await db
+        .delete(schema.excecao)
+        .where(
+          and(
+            eq(schema.excecao.filialId, exc.filialId),
+            eq(schema.excecao.pagamentoId, exc.pagamentoId),
+            eq(schema.excecao.tipo, 'DIVERGENCIA_VALOR_OPERADORA'),
+            isNull(schema.excecao.aceitaEm),
+          ),
+        );
     }
   }
 
