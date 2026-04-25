@@ -76,6 +76,19 @@ export default async function OpDetalhePage(props: {
     .where(eq(schema.ordemProducaoSaida.ordemProducaoId, id))
     .orderBy(asc(schema.ordemProducaoSaida.tipo), asc(schema.produto.nome));
 
+  // Fotos que o cozinheiro enviou
+  const fotos = await db
+    .select({
+      id: schema.ordemProducaoFoto.id,
+      tipo: schema.ordemProducaoFoto.tipo,
+      url: schema.ordemProducaoFoto.url,
+      observacao: schema.ordemProducaoFoto.observacao,
+      enviadaEm: schema.ordemProducaoFoto.enviadaEm,
+    })
+    .from(schema.ordemProducaoFoto)
+    .where(eq(schema.ordemProducaoFoto.ordemProducaoId, op.id))
+    .orderBy(asc(schema.ordemProducaoFoto.enviadaEm));
+
   // Colaboradores ativos (cozinheiros) pra autocomplete do responsável
   const colaboradores = await db
     .select({
@@ -179,6 +192,13 @@ export default async function OpDetalhePage(props: {
           }))}
           colaboradores={colaboradores.map((c) => c.nome)}
           filialId={op.filialId}
+          fotos={fotos.map((f) => ({
+            id: f.id,
+            tipo: f.tipo,
+            url: f.url,
+            observacao: f.observacao,
+            enviadaEm: f.enviadaEm ? f.enviadaEm.toISOString() : null,
+          }))}
         />
       </section>
     </main>

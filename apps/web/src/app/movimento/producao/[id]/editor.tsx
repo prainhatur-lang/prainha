@@ -51,6 +51,14 @@ interface ProdutoOpcao {
   precoCusto: string | null;
 }
 
+interface FotoOp {
+  id: string;
+  tipo: string;
+  url: string | null;
+  observacao: string | null;
+  enviadaEm: string | null;
+}
+
 export function EditorProducao({
   op,
   badge,
@@ -59,6 +67,7 @@ export function EditorProducao({
   produtosDisponiveis,
   colaboradores,
   filialId,
+  fotos,
 }: {
   op: Op;
   badge: { label: string; cls: string };
@@ -67,6 +76,7 @@ export function EditorProducao({
   produtosDisponiveis: ProdutoOpcao[];
   colaboradores: string[];
   filialId: string;
+  fotos: FotoOp[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -290,6 +300,9 @@ export function EditorProducao({
         </div>
       )}
 
+      {/* Galerias de fotos do cozinheiro */}
+      {fotos.length > 0 && <FotosViewer fotos={fotos} />}
+
       {/* Balanço em tempo real */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         <CardKpi label="Qtd entradas" valor={qtdEntradas} precisao={3} />
@@ -467,6 +480,110 @@ export function EditorProducao({
         valorInicial={op.observacao}
       />
     </>
+  );
+}
+
+function FotosViewer({ fotos }: { fotos: FotoOp[] }) {
+  const [zoom, setZoom] = useState<FotoOp | null>(null);
+  const entradas = fotos.filter((f) => f.tipo === 'ENTRADA');
+  const saidas = fotos.filter((f) => f.tipo === 'SAIDA');
+
+  return (
+    <div className="mt-4 space-y-3 rounded-xl border border-violet-200 bg-violet-50 p-4 print:hidden">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-violet-900">
+          📷 Fotos do cozinheiro
+        </h3>
+        <span className="text-[10px] text-violet-700">
+          {fotos.length} foto{fotos.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      {entradas.length > 0 && (
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-violet-700">
+            Material recebido ({entradas.length})
+          </p>
+          <div className="mt-1 grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {entradas.map((f) =>
+              f.url ? (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setZoom(f)}
+                  className="aspect-square overflow-hidden rounded-lg border border-violet-300 bg-white"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={f.url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                </button>
+              ) : null,
+            )}
+          </div>
+        </div>
+      )}
+
+      {saidas.length > 0 && (
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-violet-700">
+            Produtos prontos ({saidas.length})
+          </p>
+          <div className="mt-1 grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {saidas.map((f) =>
+              f.url ? (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setZoom(f)}
+                  className="aspect-square overflow-hidden rounded-lg border border-violet-300 bg-white"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={f.url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                </button>
+              ) : null,
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox */}
+      {zoom && zoom.url && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setZoom(null)}
+        >
+          <div className="flex max-h-full max-w-full flex-col items-center gap-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={zoom.url}
+              alt=""
+              className="max-h-[85vh] max-w-full rounded-lg object-contain"
+            />
+            <p className="text-xs text-white">
+              {zoom.tipo === 'ENTRADA' ? 'Material recebido' : 'Produto pronto'}
+              {zoom.enviadaEm &&
+                ` · ${new Date(zoom.enviadaEm).toLocaleString('pt-BR')}`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setZoom(null)}
+            className="absolute right-4 top-4 rounded-full bg-white/20 px-3 py-1.5 text-sm text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -59,6 +59,19 @@ export default async function OpPublicaPage(props: {
     .where(eq(schema.ordemProducaoSaida.ordemProducaoId, op.id))
     .orderBy(asc(schema.ordemProducaoSaida.tipo), asc(schema.produto.nome));
 
+  // Fotos da OP
+  const fotos = await db
+    .select({
+      id: schema.ordemProducaoFoto.id,
+      tipo: schema.ordemProducaoFoto.tipo,
+      url: schema.ordemProducaoFoto.url,
+      observacao: schema.ordemProducaoFoto.observacao,
+      enviadaEm: schema.ordemProducaoFoto.enviadaEm,
+    })
+    .from(schema.ordemProducaoFoto)
+    .where(eq(schema.ordemProducaoFoto.ordemProducaoId, op.id))
+    .orderBy(asc(schema.ordemProducaoFoto.enviadaEm));
+
   // Produtos pra adicionar saídas extras (limitado pra mobile)
   const produtos = await db
     .select({
@@ -109,6 +122,13 @@ export default async function OpPublicaPage(props: {
           id: p.id,
           nome: p.nome ?? '(sem nome)',
           unidade: p.unidade,
+        }))}
+        fotos={fotos.map((f) => ({
+          id: f.id,
+          tipo: f.tipo,
+          url: f.url,
+          observacao: f.observacao,
+          enviadaEm: f.enviadaEm ? f.enviadaEm.toISOString() : null,
         }))}
       />
     </main>

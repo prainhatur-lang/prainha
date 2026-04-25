@@ -37,18 +37,28 @@ interface ProdutoOpcao {
   unidade: string;
 }
 
+interface Foto {
+  id: string;
+  tipo: string;
+  url: string | null;
+  observacao: string | null;
+  enviadaEm: string | null;
+}
+
 export function CozinheiroOp({
   token,
   op,
   entradas,
   saidas,
   produtos,
+  fotos,
 }: {
   token: string;
   op: Op;
   entradas: LinhaEntrada[];
   saidas: LinhaSaida[];
   produtos: ProdutoOpcao[];
+  fotos: Foto[];
 }) {
   const editavel = op.status === 'RASCUNHO' && !op.marcadaProntaEm;
   const router = useRouter();
@@ -128,6 +138,16 @@ export function CozinheiroOp({
           )}
         </div>
       </div>
+
+      {/* Fotos da entrada (material recebido) */}
+      <FotosSection
+        token={token}
+        tipo="ENTRADA"
+        editavel={editavel}
+        fotos={fotos.filter((f) => f.tipo === 'ENTRADA')}
+        titulo="📷 Foto do material recebido"
+        descricao="Tire uma foto do que você recebeu antes de começar."
+      />
 
       {/* Entradas — instruções */}
       <section className="mt-5">
@@ -219,6 +239,16 @@ export function CozinheiroOp({
           )}
         </div>
       </section>
+
+      {/* Fotos da saída (produto pronto) */}
+      <FotosSection
+        token={token}
+        tipo="SAIDA"
+        editavel={editavel}
+        fotos={fotos.filter((f) => f.tipo === 'SAIDA')}
+        titulo="📷 Foto dos produtos prontos"
+        descricao="Tire uma foto do que você produziu — cortes, embalagens, etiquetas."
+      />
 
       {/* CTA — Marcar pronta */}
       {editavel && (
@@ -368,6 +398,174 @@ function SaidaRow({
         </div>
       )}
     </div>
+  );
+}
+
+function FotosSection({
+  token,
+  tipo,
+  editavel,
+  fotos,
+  titulo,
+  descricao,
+}: {
+  token: string;
+  tipo: 'ENTRADA' | 'SAIDA';
+  editavel: boolean;
+  fotos: Foto[];
+  titulo: string;
+  descricao: string;
+}) {
+  const router = useRouter();
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [_pending, start] = useTransition();
+  const [zoom, setZoom] = useState<Foto | null>(null);
+
+  async function uploadFile(file: File) {
+    if (file.size > 10 * 1024 * 1024) {
+      setErro('Foto muito grande (máx 10MB)');
+      return;
+    }
+    setEnviando(true);
+    setErro(null);
+    try {
+      const fd = new FormData();
+      fd.append('arquivo', file);
+      fd.append('tipo', tipo);
+      const r = await fetch(`/api/op/${token}/foto`, { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      start(() => router.refresh());
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) uploadFile(file);
+    e.target.value = ''; // reset pra permitir mesma foto de novo
+  }
+
+  async function deletar(fotoId: string) {
+    if (!confirm('Remover foto?')) return;
+    const r = await fetch(`/api/op/${token}/foto/${fotoId}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(`Erro: ${d.error ?? r.status}`);
+      return;
+    }
+    start(() => router.refresh());
+  }
+
+  if (!editavel && fotos.length === 0) return null;
+
+  return (
+    <section className="mt-5">
+      <div className="flex items-end justify-between">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-slate-700">
+            {titulo}
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">{descricao}</p>
+        </div>
+      </div>
+
+      {/* Galeria + botão de adicionar */}
+      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
+        {fotos.map((f) =>
+          f.url ? (
+            <div
+              key={f.id}
+              className="relative aspect-square overflow-hidden rounded-xl border-2 border-slate-200 bg-slate-100"
+            >
+              <button
+                type="button"
+                onClick={() => setZoom(f)}
+                className="block h-full w-full"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={f.url}
+                  alt={f.observacao ?? ''}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              </button>
+              {editavel && (
+                <button
+                  type="button"
+                  onClick={() => deletar(f.id)}
+                  className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-medium text-white shadow"
+                  aria-label="Remover foto"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ) : null,
+        )}
+
+        {editavel && (
+          <label
+            className={`relative flex aspect-square cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed text-center ${
+              enviando
+                ? 'border-slate-300 bg-slate-50 text-slate-400'
+                : 'border-emerald-500 bg-emerald-50 text-emerald-800 active:bg-emerald-100'
+            }`}
+          >
+            {enviando ? (
+              <span className="text-xs">Enviando...</span>
+            ) : (
+              <>
+                <span className="text-3xl">📷</span>
+                <span className="mt-1 text-[11px] font-medium">Tirar foto</span>
+              </>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={onChange}
+              disabled={enviando}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            />
+          </label>
+        )}
+      </div>
+
+      {erro && (
+        <div className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">
+          {erro}
+        </div>
+      )}
+
+      {/* Lightbox simples */}
+      {zoom && zoom.url && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setZoom(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={zoom.url}
+            alt={zoom.observacao ?? ''}
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
+          <button
+            type="button"
+            onClick={() => setZoom(null)}
+            className="absolute right-4 top-4 rounded-full bg-white/20 px-3 py-1.5 text-sm text-white"
+          >
+            ✕ Fechar
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 
