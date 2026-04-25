@@ -209,15 +209,30 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         )
     : [{ qtdRevogaveis: 0 }];
 
-  const resumoUltima = (ultimaOk?.resumo as
-    | {
-        conciliados: { qtd: number; valor: number };
-        divergenciaValor: { qtd: number; valor: number };
-        pdvSemCielo: { qtd: number; valor: number };
-        cieloSemPdv: { qtd: number; valor: number };
-      }
-    | null
-    | undefined) ?? null;
+  // Total acumulado de matches firmes da filial no período do filtro.
+  // Conta TODOS os matches persistidos (não apenas os da última rodada).
+  // Filtra pela data_pagamento do PDV pra respeitar o filtro de visualização.
+  const [{ qtdMatchesPeriodo, valorMatchesPeriodo, qtdMatchesRevogaveisPeriodo }] =
+    filialSelecionada && dtIni && dtFim
+      ? await db
+          .select({
+            qtdMatchesPeriodo: sql<number>`COUNT(*)::int`,
+            valorMatchesPeriodo: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+            qtdMatchesRevogaveisPeriodo: sql<number>`COUNT(*) FILTER (WHERE ${schema.matchPdvCielo.autoRevogavel} IS NOT NULL)::int`,
+          })
+          .from(schema.matchPdvCielo)
+          .innerJoin(
+            schema.pagamento,
+            eq(schema.pagamento.id, schema.matchPdvCielo.pagamentoId),
+          )
+          .where(
+            and(
+              eq(schema.matchPdvCielo.filialId, filialSelecionada.id),
+              gte(schema.pagamento.dataPagamento, dtIni),
+              lte(schema.pagamento.dataPagamento, dtFim),
+            ),
+          )
+      : [{ qtdMatchesPeriodo: 0, valorMatchesPeriodo: '0', qtdMatchesRevogaveisPeriodo: 0 }];
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -346,10 +361,14 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <ResumoCard
                 label="Conciliados"
-                qtd={resumoUltima?.conciliados?.qtd ?? 0}
-                valor={resumoUltima?.conciliados?.valor ?? 0}
+                qtd={Number(qtdMatchesPeriodo)}
+                valor={Number(valorMatchesPeriodo)}
                 tom="emerald"
-                hint="último OK"
+                hint={
+                  Number(qtdMatchesRevogaveisPeriodo) > 0
+                    ? `${Number(qtdMatchesRevogaveisPeriodo)} por proximidade`
+                    : 'no filtro'
+                }
               />
               <ResumoCard
                 label="Divergência de valor"
