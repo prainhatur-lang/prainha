@@ -53,6 +53,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Dashboard analítico', href: '/dashboard' },
       { label: 'Relatório consolidado', href: '/relatorio' },
       { label: 'Estoque', href: '/relatorios/estoque' },
+      { label: 'Movimentos de estoque', href: '/relatorios/movimentos' },
       { label: 'DRE', href: '/relatorios/dre' },
       { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', soon: true },
     ],
@@ -61,6 +62,7 @@ const GRUPOS: Grupo[] = [
     label: 'Configurações',
     links: [
       { label: 'Filial / Taxas', href: '/configuracoes' },
+      { label: 'Formas de pagamento', href: '/configuracoes/formas-pagamento' },
       { label: 'Certificados A1', href: '/configuracoes/certificados' },
       { label: 'Sincronização (agentes)', href: '/sync' },
       { label: 'Usuários', href: '/configuracoes/usuarios', soon: true },

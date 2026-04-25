@@ -224,8 +224,15 @@ export async function POST(req: Request) {
             codigoPersonalizado: drizzleSql`excluded.codigo_personalizado`,
             codigoEtiqueta: drizzleSql`excluded.codigo_etiqueta`,
             precoVenda: drizzleSql`excluded.preco_venda`,
-            precoCusto: drizzleSql`excluded.preco_custo`,
-            estoqueAtual: drizzleSql`excluded.estoque_atual`,
+            // ATENCAO: NAO sobrescrever precoCusto e estoqueAtual no UPDATE.
+            // Esses dois campos sao gerenciados na nuvem via movimento_estoque
+            // (ENTRADA_COMPRA da NFe, ENTRADA/SAIDA_PRODUCAO de OPs, SAIDA_VENDA
+            // / SAIDA_FICHA_TECNICA das vendas, ajustes manuais). Se sobrescre-
+            // vessemos com o valor do Consumer, teriamos dupla contagem (porque
+            // o Consumer ja considera as vendas no proprio saldo, e a baixa
+            // automatica na nuvem subtrai de novo).
+            // O estoque inicial vem so na primeira sync (INSERT), depois eh
+            // imutavel pra essa rota — o que se atualiza eh metadata.
             estoqueMinimo: drizzleSql`excluded.estoque_minimo`,
             estoqueControlado: drizzleSql`excluded.estoque_controlado`,
             descontinuado: drizzleSql`excluded.descontinuado`,
