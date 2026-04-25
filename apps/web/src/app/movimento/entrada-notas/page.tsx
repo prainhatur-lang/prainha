@@ -60,7 +60,10 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     filiais[0] ??
     null;
   const q = (sp.q ?? '').trim();
-  const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(90);
+  // Filtro padrao 365 dias — cobre praticamente todas as NFes do ano fiscal.
+  // 90 dias era curto demais: notas atrasadas (Manifesto SEFAZ, fornecedor que
+  // demorou pra entregar, NFe de devolucao antiga) sumiam da grade.
+  const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(365);
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
   const origem = (sp.origem ?? 'TODAS') as OrigemFiltro;
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
