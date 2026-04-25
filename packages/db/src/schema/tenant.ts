@@ -33,6 +33,33 @@ export interface TaxasFilial {
   default: TaxasPorBandeira;
 }
 
+/** Parametros das engines de conciliacao por filial. Cada engine consulta os
+ *  defaults do codigo se algum campo for null/undefined aqui. */
+export interface ParametrosConciliacao {
+  pdvCielo?: {
+    /** Janela de proximidade em dias corridos pro fallback data+valor (default 3). */
+    janelaProximidadeDias?: number;
+    /** Tolerancia absoluta R$ no match por proximidade (default 0.10). */
+    toleranciaAbsoluta?: number;
+    /** Tolerancia percentual no match por proximidade (default 0.01 = 1%). Aplica
+     *  quando max(toleranciaAbsoluta, valor*toleranciaPercentual). */
+    toleranciaPercentual?: number;
+    /** Tolerancia de divergencia entre PDV e Cielo aceita pelo engine (default 0.10 = 10%). */
+    toleranciaDivergencia?: number;
+  };
+  pdvBancoDireto?: {
+    /** Janela em dias uteis nivel 1 (default 1). */
+    janelaNivel1DiasUteis?: number;
+    /** Janela em dias uteis nivel 2 (default 2). */
+    janelaNivel2DiasUteis?: number;
+    /** Regex case-insensitive pra descricao banco no nivel 1 (default
+     *  "pix|ted|doc|transfer[êe]ncia"). */
+    descricaoRegex?: string;
+    /** Tolerancia de valor (default 0.01). */
+    toleranciaValor?: number;
+  };
+}
+
 export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   nome: varchar('nome', { length: 200 }).notNull(),

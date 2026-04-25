@@ -43,6 +43,25 @@ export interface MatchPdvCieloResult {
 
 const TOL = 0.01;
 
+export interface ParamsMatchPdvCielo {
+  /** Janela de proximidade em dias corridos (default 3). */
+  janelaProximidadeDias: number;
+  /** Tolerancia absoluta em R$ (default 0.10). Junto com toleranciaPercentual,
+   *  o engine aceita diff <= max(absoluta, valor*percentual). */
+  toleranciaAbsoluta: number;
+  /** Tolerancia percentual decimal (default 0.01 = 1%). */
+  toleranciaPercentual: number;
+  /** Tolerancia maxima de divergencia em pareamento solto (default 0.10 = 10%). */
+  toleranciaDivergencia: number;
+}
+
+const PARAMS_DEFAULT: ParamsMatchPdvCielo = {
+  janelaProximidadeDias: 3,
+  toleranciaAbsoluta: 0.1,
+  toleranciaPercentual: 0.01,
+  toleranciaDivergencia: 0.1,
+};
+
 /** Categoriza forma em {Debito, Credito, Pix, Outros} pra usar no fallback. */
 function categoriaForma(s: string | undefined | null): string {
   if (!s) return 'Outros';
@@ -53,16 +72,17 @@ function categoriaForma(s: string | undefined | null): string {
   return 'Outros';
 }
 
-const MAX_DELTA_DIAS = 3;
-
-function datasProximas(a: string | undefined, b: string | undefined): boolean {
+function datasProximas(
+  a: string | undefined,
+  b: string | undefined,
+  janela: number,
+): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
-  // aceita +-N dias (virada de dia + fins de semana no TEF)
   const d1 = new Date(a + 'T00:00:00').getTime();
   const d2 = new Date(b + 'T00:00:00').getTime();
   const diffDias = Math.abs((d1 - d2) / 86_400_000);
-  return diffDias <= MAX_DELTA_DIAS;
+  return diffDias <= janela;
 }
 
 function norm(s: string | null | undefined): string {
@@ -72,7 +92,11 @@ function norm(s: string | null | undefined): string {
 export function matchPdvCielo(
   pagamentos: PdvPagamento[],
   vendas: CieloVenda[],
+  params: Partial<ParamsMatchPdvCielo> = {},
 ): MatchPdvCieloResult {
+  const cfg: ParamsMatchPdvCielo = { ...PARAMS_DEFAULT, ...params };
+  const MAX_DIFF_CENTAVOS = Math.round(cfg.toleranciaAbsoluta * 100);
+  const TOL_DIVERGENCIA = cfg.toleranciaDivergencia;
   // Chave forte: NSU + autorizacao. Chave fraca: NSU com multiplos candidatos.
   const cieloByKey = new Map<string, CieloVenda>(); // nsu+auth → venda unica
   const cieloByNsu = new Map<string, CieloVenda[]>(); // nsu → todas as vendas com esse NSU
@@ -169,21 +193,27 @@ export function matchPdvCielo(
   const pdvRestante: PdvPagamento[] = [];
   const cieloMatchedSegundaPassada = new Set<CieloVenda>();
 
-  const MAX_DIFF_CENTAVOS = 10; // tolera ate +-R$ 0,10 de diff entre PDV e Cielo
-  // (padrao frequente: Cielo arredonda .X0 -> .X9 adicionando R$ 0,09)
-
   for (const p of result.pdvSemCielo) {
     const cat = categoriaForma(p.formaPagamento);
     const valorKey = Math.round(p.valor * 100);
 
-    // tenta data exata, depois +-1..3 dias, e pra cada dia tenta valor exato,
-    // depois +-1, +-2, +-3 centavos. Prioriza match mais apertado.
+    // Tolerancia de valor pra essa transacao: max(absoluta, valor*percentual).
+    // Ex: ticket R$ 5 com toleranciaAbs=0.10 e perc=0.01 → max(0.10, 0.05) = 0.10
+    // Ticket R$ 500 com mesmas configs → max(0.10, 5.00) = 5.00
+    const tolValor = Math.max(
+      cfg.toleranciaAbsoluta,
+      Math.abs(p.valor) * cfg.toleranciaPercentual,
+    );
+    const tolCentavos = Math.max(MAX_DIFF_CENTAVOS, Math.round(tolValor * 100));
+
+    // tenta data exata, depois +-1..janela dias, e pra cada dia tenta valor
+    // exato, depois +-1..tolCentavos centavos. Prioriza match mais apertado.
     const candidatos: CieloVenda[] = [];
     if (p.dataPagamento) {
       const deltasDia: number[] = [0];
-      for (let i = 1; i <= MAX_DELTA_DIAS; i++) deltasDia.push(i, -i);
+      for (let i = 1; i <= cfg.janelaProximidadeDias; i++) deltasDia.push(i, -i);
       const deltasValor: number[] = [0];
-      for (let i = 1; i <= MAX_DIFF_CENTAVOS; i++) deltasValor.push(i, -i);
+      for (let i = 1; i <= tolCentavos; i++) deltasValor.push(i, -i);
       // ordem: (delta dia, delta valor) com delta valor variando mais rapido
       outer: for (const dv of deltasValor) {
         for (const dd of deltasDia) {
@@ -192,7 +222,10 @@ export function matchPdvCielo(
           const iso = d.toISOString().slice(0, 10);
           const arr = cieloPorChave.get(`${iso}|${cat}|${valorKey + dv}`) ?? [];
           for (const c of arr) {
-            if (!cieloMatchedSegundaPassada.has(c) && datasProximas(p.dataPagamento, c.dataVenda)) {
+            if (
+              !cieloMatchedSegundaPassada.has(c) &&
+              datasProximas(p.dataPagamento, c.dataVenda, cfg.janelaProximidadeDias)
+            ) {
               candidatos.push(c);
             }
           }
@@ -225,7 +258,6 @@ export function matchPdvCielo(
   // (menor diff, mesma cat, data mais proxima) e aloca de forma gulosa. Isso
   // evita que um PDV com diff grande (ex: 0.30) consuma uma Cielo que outro
   // PDV casaria com diff 0. ---
-  const TOL_DIVERGENCIA = 0.10; // 10% de tolerancia
   const catsCartao = new Set(['Credito', 'Debito']);
   type Candidato = {
     pIdx: number;
@@ -245,7 +277,7 @@ export function matchPdvCielo(
       const catsCompat =
         cat === catV || (catsCartao.has(cat) && catsCartao.has(catV));
       if (!catsCompat) continue;
-      if (!datasProximas(p.dataPagamento, v.dataVenda)) continue;
+      if (!datasProximas(p.dataPagamento, v.dataVenda, cfg.janelaProximidadeDias)) continue;
       const diff = +(v.valorBruto - p.valor).toFixed(2);
       const denom = Math.max(Math.abs(p.valor), Math.abs(v.valorBruto), 0.01);
       if (Math.abs(diff) / denom > TOL_DIVERGENCIA) continue;

@@ -6,6 +6,7 @@ import { matchPdvCielo } from '@concilia/conciliador/engine';
 import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull, or } from 'drizzle-orm';
 import { diasFechados } from './fechamento';
 import { dateToBrYmd } from './datas';
+import { resolverParametros } from './conciliacao-params';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 export const PROCESSO_OPERADORA = 'OPERADORA';
@@ -57,11 +58,12 @@ export async function rodarConciliacaoOperadora(opts: {
   const { filialId, dataFim } = opts;
   let { dataInicio } = opts;
 
-  // Aplica corte da filial + carrega tolerancia de auto-aceite
+  // Aplica corte da filial + carrega tolerancia de auto-aceite + parametros customizados
   const [fil] = await db
     .select({
       dataInicioConciliacao: schema.filial.dataInicioConciliacao,
       toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
+      parametrosConciliacao: schema.filial.parametrosConciliacao,
     })
     .from(schema.filial)
     .where(eq(schema.filial.id, filialId))
@@ -69,6 +71,7 @@ export async function rodarConciliacaoOperadora(opts: {
   const corte = fil?.dataInicioConciliacao ?? null;
   if (corte && dataInicio < corte) dataInicio = corte;
   const tolAutoAceite = Number(fil?.toleranciaAutoAceite ?? 0.90);
+  const params = resolverParametros(fil?.parametrosConciliacao);
 
   // Cria execucao
   const [exec] = await db
@@ -164,6 +167,7 @@ export async function rodarConciliacaoOperadora(opts: {
         formaPagamento: v.formaPagamento ?? '',
         autorizacao: v.autorizacao ?? null,
       })),
+      params.pdvCielo,
     );
 
     // IDs de pagamentos e vendas em scope (nao fechados). Usado pra preservar

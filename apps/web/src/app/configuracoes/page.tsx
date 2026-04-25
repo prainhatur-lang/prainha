@@ -6,6 +6,7 @@ import type { TaxasFilial } from '@concilia/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ConfiguracoesForm } from './form';
+import { ParametrosForm } from './parametros-form';
 import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
 import { brl, int } from '@/lib/format';
 
@@ -116,6 +117,7 @@ export default async function ConfiguracoesPage() {
           nome: schema.filial.nome,
           taxas: schema.filial.taxas,
           toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
+          parametrosConciliacao: schema.filial.parametrosConciliacao,
         })
         .from(schema.filial)
         .where(inArray(schema.filial.id, filialIds))
@@ -154,6 +156,21 @@ export default async function ConfiguracoesPage() {
                       taxas={taxas}
                       toleranciaAutoAceite={Number(f.toleranciaAutoAceite ?? 0.90)}
                     />
+                  </div>
+
+                  <div className="mt-8 border-t border-slate-200 pt-5">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Parâmetros de conciliação
+                    </h3>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Tunings das engines por filial. Aplica na próxima execução.
+                    </p>
+                    <div className="mt-4">
+                      <ParametrosForm
+                        filialId={f.id}
+                        parametros={f.parametrosConciliacao ?? null}
+                      />
+                    </div>
                   </div>
 
                   <div className="mt-8 border-t border-slate-200 pt-5">

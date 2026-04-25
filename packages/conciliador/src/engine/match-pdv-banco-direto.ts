@@ -5,19 +5,20 @@
 // Cascata fase 1 (sem E2E ID — fase 2 vira quando o agente extrair E2E
 // de SOLICITACAOPAGAMENTO.IDENDTOEND do Consumer):
 //
-//  1) Valor exato + Data D ou D±1 dia util + descricao banco contem
-//     "PIX/TED/DOC/PIX RECEBIDO" -> match firme
-//  2) Valor exato + Data ±2 dias uteis + categoria PIX/transferencia
-//     -> match auto_revogavel (sugestao)
+//  1) Valor exato + Data D ou D±janelaNivel1 dias uteis + descricao banco
+//     bate descricaoRegex -> match firme
+//  2) Valor exato + Data ±janelaNivel2 dias uteis -> match auto_revogavel
+//     (sugestao)
 //  3) Sobra -> exceção
+//
+// Parametros (ParamsMatchPdvBanco) sao tipicamente vindos de
+// filial.parametros_conciliacao (com defaults aplicados pelo caller).
 //
 // Garantias:
 //  - 1:1: cada pagamento casa com no maximo 1 lancamento e vice-versa
 //  - Determinismo: ordenacao estavel por (data, valor, id)
 //  - Idempotente: pagamentos/lancamentos com match ja persistido nao
 //    aparecem nas listas de entrada (caller filtra antes)
-
-const TOL = 0.01;
 
 export interface PdvDireto {
   id: string;
@@ -51,7 +52,19 @@ export interface MatchPdvBancoResult {
   bancoSemPdv: BancoCredito[];
 }
 
-const RE_DESC_DIRETA = /\b(pix|ted|doc|transfer[êe]ncia|transferencia)\b/i;
+export interface ParamsMatchPdvBanco {
+  janelaNivel1DiasUteis: number;
+  janelaNivel2DiasUteis: number;
+  descricaoRegex: string;
+  toleranciaValor: number;
+}
+
+const PARAMS_DEFAULT: ParamsMatchPdvBanco = {
+  janelaNivel1DiasUteis: 1,
+  janelaNivel2DiasUteis: 2,
+  descricaoRegex: 'pix|ted|doc|transfer[êe]ncia|transferencia',
+  toleranciaValor: 0.01,
+};
 
 /** Adiciona N dias úteis a uma data ISO. Considera sábado/domingo. */
 function addDiasUteis(iso: string, n: number): string {
@@ -79,7 +92,10 @@ function janelaDiasUteis(base: string, n: number): string[] {
 export function matchPdvBancoDireto(
   pagamentos: PdvDireto[],
   creditos: BancoCredito[],
+  params: Partial<ParamsMatchPdvBanco> = {},
 ): MatchPdvBancoResult {
+  const cfg: ParamsMatchPdvBanco = { ...PARAMS_DEFAULT, ...params };
+  const reDesc = new RegExp(`\\b(${cfg.descricaoRegex})\\b`, 'i');
   const result: MatchPdvBancoResult = {
     matched: [],
     pdvSemBanco: [],
@@ -111,17 +127,17 @@ export function matchPdvBancoDireto(
       const arr = bancoIndex.get(`${data}|${valorKey}`) ?? [];
       for (const c of arr) {
         if (bancoUsado.has(c.id)) continue;
-        if (Math.abs(c.valor - pdv.valor) > TOL) continue;
-        if (requerDescricaoDireta && !RE_DESC_DIRETA.test(c.descricao)) continue;
+        if (Math.abs(c.valor - pdv.valor) > cfg.toleranciaValor) continue;
+        if (requerDescricaoDireta && !reDesc.test(c.descricao)) continue;
         return c;
       }
     }
     return null;
   }
 
-  // --- Nivel 1: data D ou D±1 dia util + valor exato + descricao "PIX/TED/DOC" ---
+  // --- Nivel 1: data D ou D±janelaNivel1 dia util + valor + descricao ---
   for (const p of pdvOrdenados) {
-    const janela = janelaDiasUteis(p.data, 1);
+    const janela = janelaDiasUteis(p.data, cfg.janelaNivel1DiasUteis);
     const c = pegarCandidato(p, janela, true);
     if (c) {
       bancoUsado.add(c.id);
@@ -129,10 +145,10 @@ export function matchPdvBancoDireto(
     }
   }
 
-  // --- Nivel 2: data ±2 dias uteis + valor exato (descricao opcional) ---
+  // --- Nivel 2: data ±janelaNivel2 dias uteis + valor (descricao opcional) ---
   for (const p of pdvOrdenados) {
     if (result.matched.some((m) => m.pdv.id === p.id)) continue;
-    const janela = janelaDiasUteis(p.data, 2);
+    const janela = janelaDiasUteis(p.data, cfg.janelaNivel2DiasUteis);
     const c = pegarCandidato(p, janela, false);
     if (c) {
       bancoUsado.add(c.id);

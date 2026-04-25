@@ -13,6 +13,7 @@ import {
   type PdvDireto,
   type BancoCredito,
 } from '@concilia/conciliador';
+import { resolverParametros } from '@/lib/conciliacao-params';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -51,6 +52,14 @@ export async function POST(req: Request) {
     )
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+
+  // Carrega parametros customizados da filial (com fallback pros defaults)
+  const [filialRow] = await db
+    .select({ parametrosConciliacao: schema.filial.parametrosConciliacao })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const params = resolverParametros(filialRow?.parametrosConciliacao);
 
   const dtIni = new Date(dataInicio + 'T00:00:00-03:00');
   const dtFim = new Date(dataFim + 'T23:59:59-03:00');
@@ -138,8 +147,8 @@ export async function POST(req: Request) {
     descricao: c.descricao ?? '',
   }));
 
-  // 4) Roda engine
-  const resultado = matchPdvBancoDireto(pdv, banco);
+  // 4) Roda engine com parametros da filial
+  const resultado = matchPdvBancoDireto(pdv, banco, params.pdvBancoDireto);
 
   // 5) Persiste matches
   if (resultado.matched.length > 0) {
