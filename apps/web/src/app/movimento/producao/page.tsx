@@ -16,6 +16,7 @@ type StatusFiltro = 'TODAS' | 'RASCUNHO' | 'CONCLUIDA' | 'CANCELADA';
 interface SP {
   filialId?: string;
   status?: StatusFiltro;
+  responsavel?: string;
   dataIni?: string;
   dataFim?: string;
   page?: string;
@@ -41,6 +42,7 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     filiais[0] ??
     null;
   const status = (sp.status ?? 'TODAS') as StatusFiltro;
+  const responsavelFiltro = (sp.responsavel ?? '').trim();
   const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(90);
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
@@ -64,12 +66,29 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     gte(schema.ordemProducao.dataHora, dtIni),
     lte(schema.ordemProducao.dataHora, dtFim),
     status !== 'TODAS' ? eq(schema.ordemProducao.status, status) : undefined,
+    responsavelFiltro
+      ? eq(schema.ordemProducao.responsavel, responsavelFiltro)
+      : undefined,
   );
 
   const [stats] = await db
     .select({ qtd: count(), custo: sum(schema.ordemProducao.custoTotalEntradas) })
     .from(schema.ordemProducao)
     .where(where);
+
+  // Lista de cozinheiros pro filtro (apenas com OPs no período pra evitar
+  // poluição de cadastros antigos sem uso recente)
+  const cozinheirosFiltro = await db.execute<{ nome: string; qtd: number }>(sql`
+    SELECT responsavel AS nome, COUNT(*)::int AS qtd
+    FROM ${schema.ordemProducao}
+    WHERE filial_id = ${filialSelecionada.id}
+      AND data_hora >= ${dtIni.toISOString()}
+      AND data_hora <= ${dtFim.toISOString()}
+      AND responsavel IS NOT NULL
+      AND TRIM(responsavel) <> ''
+    GROUP BY responsavel
+    ORDER BY qtd DESC, responsavel ASC
+  `);
 
   // KPI: comprometido em rascunho — soma valor das entradas em OPs RASCUNHO
   // (não filtra por período, pra garantir visibilidade total de pendências).
@@ -113,10 +132,13 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
     const qs = new URLSearchParams();
     qs.set('filialId', filialSelecionada.id);
     const nextStatus = override.status !== undefined ? override.status : status;
+    const nextResp =
+      override.responsavel !== undefined ? override.responsavel : responsavelFiltro;
     const nextPage = override.page !== undefined ? override.page : String(page);
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
     if (nextStatus && nextStatus !== 'TODAS') qs.set('status', nextStatus);
+    if (nextResp) qs.set('responsavel', nextResp);
     if (nextPage && nextPage !== '0') qs.set('page', nextPage);
     return `/movimento/producao?${qs.toString()}`;
   };
@@ -221,6 +243,41 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
             </Link>
           ))}
         </div>
+
+        {cozinheirosFiltro.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-500">Cozinheiro:</span>
+            <Link
+              href={hrefPreserva({ responsavel: '', page: '0' })}
+              className={`rounded-md border px-2.5 py-1 ${
+                !responsavelFiltro
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Todos
+            </Link>
+            {cozinheirosFiltro.slice(0, 8).map((c) => (
+              <Link
+                key={c.nome}
+                href={hrefPreserva({ responsavel: c.nome, page: '0' })}
+                className={`rounded-md border px-2.5 py-1 ${
+                  responsavelFiltro === c.nome
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {c.nome}
+                <span className="ml-1 text-[10px] opacity-60">{c.qtd}</span>
+              </Link>
+            ))}
+            {cozinheirosFiltro.length > 8 && (
+              <span className="text-[10px] text-slate-400">
+                +{cozinheirosFiltro.length - 8}
+              </span>
+            )}
+          </div>
+        )}
 
         <form method="GET" className="mt-3 flex flex-wrap items-end gap-2">
           <input type="hidden" name="filialId" value={filialSelecionada.id} />

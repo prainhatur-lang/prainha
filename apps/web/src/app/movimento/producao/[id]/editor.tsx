@@ -54,12 +54,16 @@ export function EditorProducao({
   entradas,
   saidas,
   produtosDisponiveis,
+  colaboradores,
+  filialId,
 }: {
   op: Op;
   badge: { label: string; cls: string };
   entradas: LinhaEntrada[];
   saidas: LinhaSaida[];
   produtosDisponiveis: ProdutoOpcao[];
+  colaboradores: string[];
+  filialId: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -195,6 +199,8 @@ export function EditorProducao({
             opId={op.id}
             editavel={editavel}
             valorInicial={op.responsavel}
+            colaboradores={colaboradores}
+            filialId={filialId}
           />
         </div>
         <div className="flex items-center gap-2 print:hidden">
@@ -428,25 +434,58 @@ function ResponsavelEditor({
   opId,
   editavel,
   valorInicial,
+  colaboradores,
+  filialId,
 }: {
   opId: string;
   editavel: boolean;
   valorInicial: string | null;
+  colaboradores: string[];
+  filialId: string;
 }) {
   const router = useRouter();
   const [editando, setEditando] = useState(false);
   const [valor, setValor] = useState(valorInicial ?? '');
   const [salvando, setSalvando] = useState(false);
+  const [destacado, setDestacado] = useState(0);
   const [_pending, start] = useTransition();
 
-  async function salvar() {
-    const valorLimpo = valor.trim();
+  const sugestoes = useMemo(() => {
+    const q = valor.trim().toLowerCase();
+    if (!q) return colaboradores.slice(0, 8);
+    return colaboradores
+      .filter((c) => c.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [valor, colaboradores]);
+
+  const exato = colaboradores.some((c) => c.toLowerCase() === valor.trim().toLowerCase());
+  const podeAdicionar = valor.trim().length > 0 && !exato;
+
+  async function salvar(nomeOverride?: string) {
+    const valorLimpo = (nomeOverride ?? valor).trim();
     if ((valorInicial ?? '') === valorLimpo) {
       setEditando(false);
       return;
     }
     setSalvando(true);
     try {
+      // Se nome novo (não tá na lista), cadastra primeiro
+      if (
+        valorLimpo &&
+        !colaboradores.some((c) => c.toLowerCase() === valorLimpo.toLowerCase())
+      ) {
+        const novo = await fetch('/api/colaborador', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ filialId, nome: valorLimpo, tipo: 'COZINHA' }),
+        });
+        if (!novo.ok) {
+          const d = await novo.json().catch(() => ({}));
+          alert(`Erro ao cadastrar colaborador: ${d.error ?? novo.status}`);
+          return;
+        }
+      }
+
       const r = await fetch(`/api/ordem-producao/${opId}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -464,49 +503,100 @@ function ResponsavelEditor({
     }
   }
 
+  function escolherSugestao(nome: string) {
+    setValor(nome);
+    salvar(nome);
+  }
+
   if (!editavel && !valorInicial) return null;
 
   if (editando) {
     return (
-      <div className="mt-2 flex items-center gap-2">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-          Responsável
-        </span>
-        <input
-          type="text"
-          value={valor}
-          onChange={(e) => setValor(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
+      <div className="relative mt-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Responsável
+          </span>
+          <input
+            type="text"
+            value={valor}
+            onChange={(e) => {
+              setValor(e.target.value);
+              setDestacado(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setValor(valorInicial ?? '');
+                setEditando(false);
+              }
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setDestacado(Math.min(destacado + 1, sugestoes.length - 1));
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setDestacado(Math.max(destacado - 1, 0));
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (sugestoes[destacado] && !exato) {
+                  escolherSugestao(sugestoes[destacado]);
+                } else {
+                  salvar();
+                }
+              }
+            }}
+            maxLength={100}
+            autoFocus
+            placeholder="Nome do cozinheiro"
+            className="w-56 rounded-md border border-slate-300 px-2 py-0.5 text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => salvar()}
+            disabled={salvando || !valor.trim()}
+            className="rounded border border-slate-900 bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            {salvando ? '...' : 'Salvar'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               setValor(valorInicial ?? '');
               setEditando(false);
-            }
-            if (e.key === 'Enter') salvar();
-          }}
-          maxLength={100}
-          autoFocus
-          placeholder="Nome do cozinheiro"
-          className="rounded-md border border-slate-300 px-2 py-0.5 text-xs"
-        />
-        <button
-          type="button"
-          onClick={salvar}
-          disabled={salvando}
-          className="rounded border border-slate-900 bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-        >
-          {salvando ? '...' : 'Salvar'}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setValor(valorInicial ?? '');
-            setEditando(false);
-          }}
-          disabled={salvando}
-          className="text-[10px] text-slate-500 hover:text-slate-700"
-        >
-          cancelar
-        </button>
+            }}
+            disabled={salvando}
+            className="text-[10px] text-slate-500 hover:text-slate-700"
+          >
+            cancelar
+          </button>
+        </div>
+        {(sugestoes.length > 0 || podeAdicionar) && (
+          <div className="absolute left-24 top-full z-20 mt-1 max-h-56 w-56 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+            {sugestoes.map((s, i) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => escolherSugestao(s)}
+                onMouseEnter={() => setDestacado(i)}
+                className={`block w-full px-3 py-1.5 text-left text-xs ${
+                  i === destacado ? 'bg-slate-100' : 'hover:bg-slate-50'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+            {podeAdicionar && (
+              <button
+                type="button"
+                onClick={() => salvar()}
+                className="block w-full border-t border-slate-100 bg-emerald-50 px-3 py-1.5 text-left text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+              >
+                + cadastrar &ldquo;{valor.trim()}&rdquo;
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }

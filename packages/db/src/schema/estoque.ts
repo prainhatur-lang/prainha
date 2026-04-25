@@ -126,6 +126,29 @@ export const produtoFornecedor = pgTable(
   }),
 );
 
+/** Colaborador (cozinheiro, açougueiro, garçom, etc). Texto cadastrado uma
+ *  vez e reusado nas OPs. Não tem login na nuvem — só nome pra rastreabilidade.
+ *  Os 'responsavel' livres das OPs antigas continuam funcionando, mas novos
+ *  usam essa tabela via autocomplete. */
+export const colaborador = pgTable(
+  'colaborador',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 100 }).notNull(),
+    /** Categoria livre — COZINHA / SALAO / PRODUCAO / etc. Default 'COZINHA'. */
+    tipo: varchar('tipo', { length: 20 }).notNull().default('COZINHA'),
+    ativo: boolean('ativo').notNull().default(true),
+    /** Atualizada toda vez que o nome aparece numa OP (pra ordenar autocomplete). */
+    ultimaAtividadeEm: timestamp('ultima_atividade_em', { withTimezone: true }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqNome: unique('uq_colab_filial_nome').on(t.filialId, t.nome),
+    tipoIdx: index('idx_colab_tipo').on(t.filialId, t.tipo),
+  }),
+);
+
 /** Ordem de produção: transformação de insumos. Ex: 3kg Filé Mignon Bruto →
  *  2kg Medalhão + 500g Filé Grelha + 300g Aparas + 500g Perda.
  *  O custo total das entradas se redistribui proporcionalmente entre as

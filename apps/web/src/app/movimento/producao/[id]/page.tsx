@@ -76,6 +76,22 @@ export default async function OpDetalhePage(props: {
     .where(eq(schema.ordemProducaoSaida.ordemProducaoId, id))
     .orderBy(asc(schema.ordemProducaoSaida.tipo), asc(schema.produto.nome));
 
+  // Colaboradores ativos (cozinheiros) pra autocomplete do responsável
+  const colaboradores = await db
+    .select({
+      id: schema.colaborador.id,
+      nome: schema.colaborador.nome,
+    })
+    .from(schema.colaborador)
+    .where(
+      and(
+        eq(schema.colaborador.filialId, op.filialId),
+        eq(schema.colaborador.ativo, true),
+        eq(schema.colaborador.tipo, 'COZINHA'),
+      ),
+    )
+    .orderBy(asc(schema.colaborador.nome));
+
   // Produtos disponíveis pra OP: insumos e revenda controlando estoque, ativos
   // (não descontinuados nem pausados). Exclui SERVICO/VARIANTE/COMBO porque
   // não fazem sentido em transformação.
@@ -159,6 +175,8 @@ export default async function OpDetalhePage(props: {
             unidade: p.unidade,
             precoCusto: p.precoCusto,
           }))}
+          colaboradores={colaboradores.map((c) => c.nome)}
+          filialId={op.filialId}
         />
       </section>
     </main>
