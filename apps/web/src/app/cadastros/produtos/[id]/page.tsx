@@ -2,15 +2,16 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { AbaFicha } from './aba-ficha';
 import { AbaFornecedores } from './aba-fornecedores';
+import { AbaSaldo } from './aba-saldo';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
-  aba?: 'ficha' | 'fornecedores';
+  aba?: 'ficha' | 'fornecedores' | 'saldo';
 }
 
 const BADGE_TIPO: Record<string, { label: string; cls: string }> = {
@@ -34,7 +35,12 @@ export default async function ProdutoDetalhePage(props: {
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
   const sp = await props.searchParams;
-  const aba = sp.aba === 'fornecedores' ? 'fornecedores' : 'ficha';
+  const aba: 'ficha' | 'fornecedores' | 'saldo' =
+    sp.aba === 'fornecedores'
+      ? 'fornecedores'
+      : sp.aba === 'saldo'
+        ? 'saldo'
+        : 'ficha';
 
   const [produto] = await db
     .select()
@@ -139,8 +145,32 @@ export default async function ProdutoDetalhePage(props: {
     .orderBy(asc(schema.fornecedor.nome))
     .limit(1000);
 
-  const hrefAba = (a: 'ficha' | 'fornecedores') =>
-    `/cadastros/produtos/${id}${a === 'fornecedores' ? '?aba=fornecedores' : ''}`;
+  // Movimentos do produto (pra histórico de custo + log)
+  const movimentos =
+    aba === 'saldo'
+      ? await db
+          .select({
+            id: schema.movimentoEstoque.id,
+            tipo: schema.movimentoEstoque.tipo,
+            quantidade: schema.movimentoEstoque.quantidade,
+            precoUnitario: schema.movimentoEstoque.precoUnitario,
+            valorTotal: schema.movimentoEstoque.valorTotal,
+            dataHora: schema.movimentoEstoque.dataHora,
+            observacao: schema.movimentoEstoque.observacao,
+            notaCompraItemId: schema.movimentoEstoque.notaCompraItemId,
+            ordemProducaoId: schema.movimentoEstoque.ordemProducaoId,
+            pedidoItemId: schema.movimentoEstoque.pedidoItemId,
+          })
+          .from(schema.movimentoEstoque)
+          .where(eq(schema.movimentoEstoque.produtoId, id))
+          .orderBy(desc(schema.movimentoEstoque.dataHora), desc(schema.movimentoEstoque.criadoEm))
+          .limit(200)
+      : [];
+
+  const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo') => {
+    const qs = a === 'ficha' ? '' : `?aba=${a}`;
+    return `/cadastros/produtos/${id}${qs}`;
+  };
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -217,11 +247,44 @@ export default async function ProdutoDetalhePage(props: {
                 {fornecedoresRows.length}
               </span>
             </Link>
+            {produto.controlaEstoque && (
+              <Link
+                href={hrefAba('saldo')}
+                className={`rounded-t-lg border-b-2 px-4 py-2 text-sm ${
+                  aba === 'saldo'
+                    ? 'border-slate-900 font-medium text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Saldo & Custo
+              </Link>
+            )}
           </div>
         </div>
 
         <div className="mt-6">
-          {aba === 'ficha' ? (
+          {aba === 'saldo' ? (
+            <AbaSaldo
+              produtoId={id}
+              produtoNome={produto.nome ?? `#${produto.codigoExterno}`}
+              unidadeEstoque={produto.unidadeEstoque}
+              estoqueAtual={produto.estoqueAtual}
+              estoqueMinimo={produto.estoqueMinimo}
+              precoCusto={produto.precoCusto}
+              movimentos={movimentos.map((m) => ({
+                id: m.id,
+                tipo: m.tipo,
+                quantidade: m.quantidade,
+                precoUnitario: m.precoUnitario,
+                valorTotal: m.valorTotal,
+                dataHora: m.dataHora ? m.dataHora.toISOString() : null,
+                observacao: m.observacao,
+                notaCompraItemId: m.notaCompraItemId,
+                ordemProducaoId: m.ordemProducaoId,
+                pedidoItemId: m.pedidoItemId,
+              }))}
+            />
+          ) : aba === 'ficha' ? (
             <AbaFicha
               produtoId={id}
               produtoTipo={produto.tipo}
