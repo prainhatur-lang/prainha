@@ -1,5 +1,5 @@
 // Resultado das conciliacoes
-import { pgTable, uuid, varchar, timestamp, numeric, jsonb, index, text, date } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, numeric, jsonb, index, text, date, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 import { pagamento } from './pdv';
@@ -95,6 +95,45 @@ export const fechamentoConciliacao = pgTable(
   (t) => ({
     uniq: index('fechamento_unique_idx').on(t.filialId, t.processo, t.data),
     filialIdx: index('fechamento_filial_idx').on(t.filialId, t.processo),
+  }),
+);
+
+/**
+ * Mapeamento de forma de pagamento (texto vindo do Consumer) → canal de
+ * liquidação. Determina por qual fluxo o pagamento deve ser conciliado:
+ *
+ *  - ADQUIRENTE: PDV → Cielo → Banco (cartões, Pix maquininha, voucher)
+ *  - DIRETO:     PDV → Banco          (Pix Manual, TED, DOC)
+ *  - CAIXA:      PDV → Conferência caixa (dinheiro)
+ *  - INTERNA:    PDV → Contas a receber (fiado, vale-funcionário)
+ *
+ * Uma linha por (filialId, formaPagamento). O texto vem exatamente como
+ * aparece em pagamento.formaPagamento. O agente local pode criar entries
+ * automaticamente (com canal sugerido por heurística) e o usuário ajusta
+ * em /configuracoes/formas-pagamento.
+ */
+export const formaPagamentoCanal = pgTable(
+  'forma_pagamento_canal',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    formaPagamento: varchar('forma_pagamento', { length: 255 }).notNull(),
+    /** ADQUIRENTE | DIRETO | CAIXA | INTERNA */
+    canal: varchar('canal', { length: 20 }).notNull().default('ADQUIRENTE'),
+    /** True quando foi setado por heurística (vs editado pelo user) */
+    sugerido: timestamp('sugerido_em', { withTimezone: true }),
+    confirmadoPor: uuid('confirmado_por'),
+    confirmadoEm: timestamp('confirmado_em', { withTimezone: true }),
+    observacao: text('observacao'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique('forma_pagamento_canal_unique').on(t.filialId, t.formaPagamento),
+    filialIdx: index('forma_pagamento_canal_filial_idx').on(t.filialId),
+    canalIdx: index('forma_pagamento_canal_canal_idx').on(t.filialId, t.canal),
   }),
 );
 

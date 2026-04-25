@@ -179,6 +179,20 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
     carregarSecao(TIPO_OPERADORA.CIELO_SEM_PDV, pageCielo),
   ]);
 
+  // Conta quantas formas de pagamento da filial ainda não foram confirmadas
+  // (canal foi sugerido por heurística mas user nunca confirmou).
+  const [{ qtdNaoConfirmadas }] = filialSelecionada
+    ? await db
+        .select({ qtdNaoConfirmadas: sql<number>`COUNT(*)::int` })
+        .from(schema.formaPagamentoCanal)
+        .where(
+          and(
+            eq(schema.formaPagamentoCanal.filialId, filialSelecionada.id),
+            sql`${schema.formaPagamentoCanal.confirmadoEm} IS NULL`,
+          ),
+        )
+    : [{ qtdNaoConfirmadas: 0 }];
+
   const resumoUltima = (ultimaOk?.resumo as
     | {
         conciliados: { qtd: number; valor: number };
@@ -202,6 +216,25 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
           {/* Coluna esquerda: form + historico */}
           <div className="space-y-6">
+            {Number(qtdNaoConfirmadas) > 0 && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                <p className="font-semibold">
+                  ⚠ {Number(qtdNaoConfirmadas)} forma(s) de pagamento sem
+                  classificação confirmada
+                </p>
+                <p className="mt-1 text-amber-800">
+                  A engine usa o canal sugerido por heurística — confirme em{' '}
+                  <Link
+                    href="/configuracoes/formas-pagamento"
+                    className="underline underline-offset-2"
+                  >
+                    Formas de pagamento
+                  </Link>{' '}
+                  pra a conciliação ficar mais precisa.
+                </p>
+              </div>
+            )}
+
             <OperadoraForm
               filiais={filiais.map((f) => ({
                 id: f.id,

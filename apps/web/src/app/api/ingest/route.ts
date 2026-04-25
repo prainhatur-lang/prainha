@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq, sql as drizzleSql } from 'drizzle-orm';
+import { sugerirCanal } from '@/lib/canal-liquidacao';
 
 // Forca rota dinamica — nao pre-renderizar, sempre executa em runtime.
 export const dynamic = 'force-dynamic';
@@ -119,6 +120,31 @@ export async function POST(req: Request) {
         atualizadoEm: drizzleSql`excluded.atualizado_em`,
       },
     });
+
+  // Auto-cria entries em forma_pagamento_canal pra cada forma nova vista nesse
+  // batch. ON CONFLICT DO NOTHING garante que nunca sobrescreve uma classificação
+  // já confirmada pelo usuário. Canal sugerido pela heurística (regex).
+  const formasDistintas = Array.from(
+    new Set(
+      pagamentos
+        .map((p) => (p.formaPagamento ?? '').trim())
+        .filter((f): f is string => f.length > 0),
+    ),
+  );
+  if (formasDistintas.length > 0) {
+    const canalRows = formasDistintas.map((forma) => ({
+      filialId: filial.id,
+      formaPagamento: forma,
+      canal: sugerirCanal(forma),
+      sugerido: new Date(),
+    }));
+    await db
+      .insert(schema.formaPagamentoCanal)
+      .values(canalRows)
+      .onConflictDoNothing({
+        target: [schema.formaPagamentoCanal.filialId, schema.formaPagamentoCanal.formaPagamento],
+      });
+  }
 
   // 6. Atualiza sincronizacao
   const ultimoCodigo = pagamentos.reduce((max, p) => Math.max(max, p.codigoExterno), 0);
