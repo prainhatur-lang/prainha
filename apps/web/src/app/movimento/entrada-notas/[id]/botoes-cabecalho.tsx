@@ -19,6 +19,16 @@ interface Categoria {
   tipo: string | null;
 }
 
+interface BoletoPendente {
+  id: string;
+  storagePath: string;
+  url: string;
+  dataVencimento: string | null;
+  valor: number | null;
+  confianca: string | null;
+  observacao: string | null;
+}
+
 export function BotoesCabecalho({
   notaId,
   totalItens,
@@ -209,42 +219,65 @@ function ModalLancar({
   const [boletoStoragePath, setBoletoStoragePath] = useState<string | null>(null);
   const [boletoUploadando, setBoletoUploadando] = useState(false);
   const [tokenCelular, setTokenCelular] = useState<string | null>(null);
-  const [boletoCelularRecebido, setBoletoCelularRecebido] = useState<{
-    storagePath: string;
-    url: string;
+  // Lista de boletos pendentes (varios fotos = varias parcelas) com OCR
+  const [boletosCelular, setBoletosCelular] = useState<BoletoPendente[]>([]);
+  const [statusBoletos, setStatusBoletos] = useState<{
+    totalLido: number;
+    totalNFe: number;
+    falta: number;
+    fechouTotal: boolean;
   } | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Polling: enquanto user esta na opcao "celular" e ja gerou token, fica
-  // verificando a cada 4s se o boleto foi enviado pelo celular. Para quando
-  // detectar.
+  // verificando a cada 4s os boletos pendentes (com OCR ja processado).
+  // Atualiza UI em tempo real conforme o user envia fotos pelo celular.
   useEffect(() => {
-    if (modoSemDup !== 'celular' || !tokenCelular || boletoCelularRecebido) return;
+    if (modoSemDup !== 'celular' || !tokenCelular) return;
 
     let cancelado = false;
     async function verificar() {
       try {
-        const r = await fetch(`/api/nota-compra/${notaId}/boleto-pendente`, {
+        const r = await fetch(`/api/nota-compra/${notaId}/boletos-pendentes`, {
           cache: 'no-store',
         });
         if (!r.ok) return;
         const d = await r.json();
-        if (!cancelado && d.pendente) {
-          setBoletoCelularRecebido({ storagePath: d.storagePath, url: d.url });
-        }
+        if (cancelado) return;
+        setBoletosCelular(d.boletos);
+        setStatusBoletos({
+          totalLido: d.totalLido,
+          totalNFe: d.totalNFe,
+          falta: d.falta,
+          fechouTotal: d.fechouTotal,
+        });
       } catch {
         // silencioso
       }
     }
-    // Verifica imediato e depois a cada 4s
     verificar();
     const id = setInterval(verificar, 4000);
     return () => {
       cancelado = true;
       clearInterval(id);
     };
-  }, [modoSemDup, tokenCelular, boletoCelularRecebido, notaId]);
+  }, [modoSemDup, tokenCelular, notaId]);
+
+  // Auto-fill: quando boletos chegam com OCR valido, popula o form de parcelas.
+  // Mantém o que o user ja editou — so substitui se ainda esta vazio.
+  useEffect(() => {
+    if (boletosCelular.length === 0) return;
+    const novasPar: ParcelaForm[] = boletosCelular
+      .filter((b) => b.dataVencimento && b.valor != null)
+      .map((b) => ({
+        dataVencimento: b.dataVencimento ?? '',
+        valor: String(b.valor ?? '').replace('.', ','),
+      }));
+    if (novasPar.length > 0) {
+      setParcelas(novasPar);
+    }
+  }, [boletosCelular]);
 
   const opcoesCategoria = useMemo(
     () => categorias.filter((c) => c.tipo === 'DESPESA' || c.tipo == null),
@@ -465,7 +498,8 @@ function ModalLancar({
             {modoSemDup === 'celular' && tokenCelular && (
               <LinkCelular
                 token={tokenCelular}
-                boletoRecebido={boletoCelularRecebido}
+                boletos={boletosCelular}
+                status={statusBoletos}
               />
             )}
 
@@ -569,10 +603,17 @@ function ButaoModoSemDup({
 
 function LinkCelular({
   token,
-  boletoRecebido,
+  boletos,
+  status,
 }: {
   token: string;
-  boletoRecebido: { storagePath: string; url: string } | null;
+  boletos: BoletoPendente[];
+  status: {
+    totalLido: number;
+    totalNFe: number;
+    falta: number;
+    fechouTotal: boolean;
+  } | null;
 }) {
   const [copiado, setCopiado] = useState(false);
   const url = typeof window !== 'undefined'
@@ -584,65 +625,121 @@ function LinkCelular({
     setTimeout(() => setCopiado(false), 2000);
   }
 
-  // Quando o boleto chega, troca o card pelo preview
-  if (boletoRecebido) {
-    const ehImagem = /\.(jpe?g|png|webp|heic)$/i.test(boletoRecebido.storagePath);
+  // Sem boletos ainda — mostra link
+  if (boletos.length === 0) {
     return (
-      <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-2.5">
-        <p className="text-[11px] font-semibold text-emerald-900">
-          ✓ Boleto recebido pelo celular!
+      <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+        <p className="text-[10px] font-medium text-slate-700">
+          📱 Abra esse link no celular pra tirar a foto:
         </p>
-        <div className="mt-2 flex gap-2">
-          {ehImagem ? (
-            <a href={boletoRecebido.url} target="_blank" rel="noopener noreferrer">
-              <img
-                src={boletoRecebido.url}
-                alt="boleto"
-                className="h-20 w-20 rounded border border-emerald-200 object-cover"
-              />
-            </a>
-          ) : (
-            <a
-              href={boletoRecebido.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded border border-emerald-200 bg-white px-3 py-2 text-[10px] text-emerald-800 hover:bg-emerald-50"
-            >
-              📄 Abrir PDF
-            </a>
-          )}
-          <p className="text-[10px] text-emerald-800">
-            Vai ser anexado às contas a pagar quando você confirmar o lançamento.
-          </p>
+        <div className="mt-1.5 flex items-center gap-2">
+          <input
+            type="text"
+            readOnly
+            value={url}
+            className="flex-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px]"
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+          />
+          <button
+            type="button"
+            onClick={copiar}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] hover:bg-slate-50"
+          >
+            {copiado ? '✓' : 'Copiar'}
+          </button>
         </div>
+        <p className="mt-1 text-[9px] text-slate-500">
+          Cada foto que chegar é lida automaticamente (vencimento + valor).
+          O total vai sendo somado até bater com o valor da NFe.
+        </p>
       </div>
     );
   }
 
+  // Tem boletos — mostra lista + status
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-      <p className="text-[10px] font-medium text-slate-700">
-        📱 Abra esse link no celular pra tirar a foto:
-      </p>
-      <div className="mt-1.5 flex items-center gap-2">
-        <input
-          type="text"
-          readOnly
-          value={url}
-          className="flex-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px]"
-          onClick={(e) => (e.target as HTMLInputElement).select()}
-        />
-        <button
-          type="button"
-          onClick={copiar}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] hover:bg-slate-50"
-        >
-          {copiado ? '✓' : 'Copiar'}
-        </button>
+    <div className="space-y-2">
+      <div
+        className={`rounded-lg border p-2.5 ${
+          status?.fechouTotal
+            ? 'border-emerald-300 bg-emerald-50'
+            : 'border-amber-300 bg-amber-50'
+        }`}
+      >
+        <p className="text-[11px] font-semibold">
+          {status?.fechouTotal
+            ? '✓ Total fechado!'
+            : `⚠ Falta ${status ? brl(status.falta) : '—'}`}
+        </p>
+        {status && status.totalNFe > 0 && (
+          <>
+            <p className="mt-0.5 font-mono text-[10px]">
+              Lido <span className="font-semibold">{brl(status.totalLido)}</span> /{' '}
+              {brl(status.totalNFe)}
+            </p>
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/60">
+              <div
+                className={`h-full transition-all ${
+                  status.fechouTotal ? 'bg-emerald-600' : 'bg-amber-600'
+                }`}
+                style={{
+                  width: `${Math.min(100, (status.totalLido / status.totalNFe) * 100)}%`,
+                }}
+              />
+            </div>
+          </>
+        )}
+        {!status?.fechouTotal && (
+          <p className="mt-1 text-[9px] text-amber-700">
+            Esperando próxima(s) foto(s) pelo celular…
+          </p>
+        )}
       </div>
-      <p className="mt-1 text-[9px] text-slate-500">
-        Aguardando envio… esta tela atualiza sozinha quando a foto chegar.
-      </p>
+
+      {/* Grid de thumbnails dos boletos lidos */}
+      <div className="grid grid-cols-2 gap-2">
+        {boletos.map((b, i) => (
+          <BoletoCard key={b.id} numero={i + 1} boleto={b} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BoletoCard({ numero, boleto }: { numero: number; boleto: BoletoPendente }) {
+  const ehImagem = /\.(jpe?g|png|webp|heic)$/i.test(boleto.storagePath);
+  const corBg =
+    boleto.confianca === 'alta'
+      ? 'border-emerald-200 bg-white'
+      : boleto.confianca === 'media'
+        ? 'border-amber-200 bg-white'
+        : 'border-rose-200 bg-rose-50';
+  return (
+    <div className={`flex gap-2 rounded border ${corBg} p-1.5`}>
+      {ehImagem && (
+        <a href={boleto.url} target="_blank" rel="noopener noreferrer">
+          <img
+            src={boleto.url}
+            alt={`boleto ${numero}`}
+            className="h-12 w-12 rounded object-cover"
+          />
+        </a>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] font-medium text-slate-700">Boleto {numero}</p>
+        {boleto.valor != null ? (
+          <p className="font-mono text-[11px] font-semibold text-slate-900">
+            {brl(boleto.valor)}
+          </p>
+        ) : (
+          <p className="text-[9px] text-rose-700">não lido</p>
+        )}
+        {boleto.dataVencimento && (
+          <p className="font-mono text-[9px] text-slate-600">
+            {new Date(boleto.dataVencimento + 'T00:00').toLocaleDateString('pt-BR')}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

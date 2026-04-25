@@ -1,26 +1,27 @@
 // POST /api/nota-boleto/[token]/upload — upload publico de boleto via token.
 // Usado pela pagina mobile /nota-boleto/[token] (sem login).
 //
-// Resolve a nota pelo token, salva arquivo no Storage, e:
-//  1. Anexa o storagePath em TODAS as conta_pagar com origem='NFE' dessa nota
-//     que estao sem boleto (atualizacao em massa).
-//  2. Se ainda nao tem nenhuma conta_pagar (user vai criar parcelas depois),
-//     guarda o path em uma observacao temporaria? Ou nada — proximo POST de
-//     parcelas-manuais consulta este path? Por simplicidade, gravamos a primeira
-//     foto no campo... Hmm.
-//
-// Decisao: salvar sempre no Storage e retornar storagePath. O PC, ao criar
-// parcelas-manuais depois, ja recebe o storagePath via uma rota auxiliar
-// (GET /api/nota-compra/[id]/boleto-pendente) que retorna o ultimo upload.
+// Fluxo:
+// 1. Salva arquivo no Storage (bucket producao-fotos, prefixo nfe-boletos/).
+// 2. Insere linha em nota_compra_boleto_pendente.
+// 3. Chama OCR (Claude Vision) pra extrair vencimento + valor — atualiza
+//    a linha com o resultado.
+// 4. Soma valores ja extraidos (deste boleto + anteriores da mesma nota).
+// 5. Retorna pro mobile:
+//      - dados extraidos
+//      - total acumulado vs total da NFe
+//      - falta R$ X (precisa mais boleto?) ou ✓ tudo fechado.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { randomBytes } from 'node:crypto';
+import { extrairDadosBoleto } from '@/lib/ocr-boleto';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 30; // OCR pode levar 5-10s
 
 const BUCKET = 'producao-fotos';
 const MAX_SIZE = 10 * 1024 * 1024;
@@ -33,6 +34,7 @@ const MIMES_OK = new Set([
   'image/heic',
   'image/heif',
 ]);
+const TOLERANCIA_CENTAVO = 0.01;
 
 function extOf(mime: string): string {
   if (mime.includes('pdf')) return 'pdf';
@@ -55,6 +57,7 @@ export async function POST(
     .select({
       id: schema.notaCompra.id,
       filialId: schema.notaCompra.filialId,
+      valorTotal: schema.notaCompra.valorTotal,
     })
     .from(schema.notaCompra)
     .where(eq(schema.notaCompra.boletoTokenPublico, token))
@@ -83,6 +86,7 @@ export async function POST(
     );
   }
 
+  // 1. Upload no Storage
   const ext = extOf(arquivo.type);
   const random = randomBytes(8).toString('hex');
   const ts = Date.now();
@@ -101,32 +105,59 @@ export async function POST(
     );
   }
 
-  // 1. Anexa em TODAS as conta_pagar JA EXISTENTES dessa nota sem boleto
-  //    (caso o user ja tenha lancado e so depois mandou foto)
-  await db
-    .update(schema.contaPagar)
-    .set({ boletoStoragePath: storagePath })
-    .where(
-      and(
-        eq(schema.contaPagar.notaCompraId, nota.id),
-        eq(schema.contaPagar.origem, 'NFE'),
-        isNull(schema.contaPagar.boletoStoragePath),
-      ),
-    );
+  // 2. Insere row em boletos pendentes (sem OCR ainda)
+  const [pendente] = await db
+    .insert(schema.notaCompraBoletoPendente)
+    .values({
+      filialId: nota.filialId,
+      notaCompraId: nota.id,
+      storagePath,
+    })
+    .returning({ id: schema.notaCompraBoletoPendente.id });
 
-  // 2. Salva tambem na nota.boletoPendentePath. Isso eh o caso comum:
-  //    user esta no PC com modal aberto, manda link pro celular, sobe foto
-  //    ANTES de clicar Confirmar. Ainda nao existe conta_pagar pra atualizar.
-  //    Quando o user confirmar, /parcelas-manuais le esse campo.
-  await db
-    .update(schema.notaCompra)
-    .set({ boletoPendentePath: storagePath })
-    .where(eq(schema.notaCompra.id, nota.id));
-
+  // 3. OCR — so funciona pra imagem (PDF nao). Best-effort: erro nao quebra upload.
   const { data: pub } = supa.storage.from(BUCKET).getPublicUrl(storagePath);
+  const ehImagem = arquivo.type.startsWith('image/');
+  let ocrResult = null;
+  if (ehImagem && pendente) {
+    ocrResult = await extrairDadosBoleto(pub.publicUrl);
+    await db
+      .update(schema.notaCompraBoletoPendente)
+      .set({
+        dataVencimentoExtraida: ocrResult.dataVencimento,
+        valorExtraido: ocrResult.valor != null ? String(ocrResult.valor) : null,
+        confiancaOcr: ocrResult.confianca,
+        observacaoOcr: ocrResult.observacao,
+      })
+      .where(eq(schema.notaCompraBoletoPendente.id, pendente.id));
+  }
+
+  // 4. Soma valores extraidos de todos os pendentes da nota
+  const [agregado] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(${schema.notaCompraBoletoPendente.valorExtraido}), 0)::text`,
+      qtd: sql<number>`COUNT(*)::int`,
+    })
+    .from(schema.notaCompraBoletoPendente)
+    .where(eq(schema.notaCompraBoletoPendente.notaCompraId, nota.id));
+
+  const totalLido = Number(agregado?.total ?? 0);
+  const totalNFe = Number(nota.valorTotal ?? 0);
+  const falta = Math.max(0, totalNFe - totalLido);
+  const fechouTotal =
+    totalNFe > 0 ? Math.abs(totalNFe - totalLido) <= TOLERANCIA_CENTAVO : false;
+
   return NextResponse.json({
     storagePath,
     url: pub.publicUrl,
     tamanhoBytes: arquivo.size,
+    ocr: ocrResult,
+    boletos: {
+      qtd: agregado?.qtd ?? 0,
+      totalLido,
+      totalNFe,
+      falta,
+      fechouTotal,
+    },
   });
 }

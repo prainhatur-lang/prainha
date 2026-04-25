@@ -93,6 +93,38 @@ export const notaCompra = pgTable(
   }),
 );
 
+/** Boletos enviados pelo celular (ou anexados pelo PC) ANTES do user
+ *  confirmar o lancamento da nota. Cada upload gera 1 linha com OCR
+ *  automatico via Claude Vision (data de vencimento + valor extraidos).
+ *  Quando o user confirma, viram conta_pagar com origem='NFE'.
+ *
+ *  Multiplos boletos por nota: o user pode mandar varias fotos quando
+ *  a NFe parcela em multiplos boletos. O sistema soma os valores e
+ *  pede mais ate fechar com o total da NFe (com tolerancia de centavo). */
+export const notaCompraBoletoPendente = pgTable(
+  'nota_compra_boleto_pendente',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    notaCompraId: uuid('nota_compra_id')
+      .notNull()
+      .references(() => notaCompra.id, { onDelete: 'cascade' }),
+    storagePath: text('storage_path').notNull(),
+    /** Data extraida pelo OCR (yyyy-mm-dd) ou null se nao reconhecido */
+    dataVencimentoExtraida: date('data_vencimento_extraida'),
+    /** Valor extraido pelo OCR ou null se nao reconhecido */
+    valorExtraido: numeric('valor_extraido', { precision: 14, scale: 2 }),
+    /** alta | media | baixa | erro */
+    confiancaOcr: varchar('confianca_ocr', { length: 10 }),
+    /** Mensagem livre do OCR (ex: "boleto borrado, ilegivel" ou aviso) */
+    observacaoOcr: text('observacao_ocr'),
+    enviadoEm: timestamp('enviado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    notaIdx: index('idx_nota_bol_pend_nota').on(t.notaCompraId),
+  }),
+);
+
 /** Duplicatas (parcelas de cobranca) extraidas do XML da NFe.
  *  Vem de <cobr><dup>. Cada linha vira (potencialmente) uma conta_pagar
  *  ao lancar a nota no estoque. Pode estar vazia se a NFe e a vista. */

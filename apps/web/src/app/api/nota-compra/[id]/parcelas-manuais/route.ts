@@ -111,9 +111,40 @@ export async function POST(
 
   const { categoriaId, parcelas, boletoStoragePath } = parsed.data;
   const total = parcelas.length;
-  // Se o body nao trouxe o path (modo "celular"), usa o que veio do upload
-  // mobile salvo na nota.
-  const boletoFinal = boletoStoragePath ?? nota.boletoPendentePath ?? null;
+
+  // Carrega boletos pendentes (enviados pelo celular com OCR). Se houver,
+  // tenta casar 1-pra-1 com as parcelas (pela ordem ou por valor proximo)
+  // pra anexar cada parcela ao seu proprio boleto.
+  const pendentes = await db
+    .select({
+      id: schema.notaCompraBoletoPendente.id,
+      storagePath: schema.notaCompraBoletoPendente.storagePath,
+      dataVencimento: schema.notaCompraBoletoPendente.dataVencimentoExtraida,
+      valor: schema.notaCompraBoletoPendente.valorExtraido,
+    })
+    .from(schema.notaCompraBoletoPendente)
+    .where(eq(schema.notaCompraBoletoPendente.notaCompraId, id));
+
+  // Pra cada parcela, tenta achar o boleto cujo (data, valor) bate mais.
+  // Fallback: usa boletoStoragePath do body OU nota.boletoPendentePath legacy.
+  function casarBoleto(
+    p: { dataVencimento: string; valor: number },
+  ): string | null {
+    // 1. Match exato por data + valor (com tolerancia)
+    const match = pendentes.find(
+      (b) =>
+        b.dataVencimento === p.dataVencimento &&
+        b.valor != null &&
+        Math.abs(Number(b.valor) - p.valor) < 0.01,
+    );
+    if (match) return match.storagePath;
+    // 2. Match por data so
+    const byData = pendentes.find((b) => b.dataVencimento === p.dataVencimento);
+    if (byData) return byData.storagePath;
+    return null;
+  }
+
+  const boletoFallback = boletoStoragePath ?? nota.boletoPendentePath ?? null;
 
   const criadas: { id: string }[] = [];
   for (let i = 0; i < parcelas.length; i++) {
@@ -121,6 +152,7 @@ export async function POST(
     const descricao = nota.numero
       ? `NFe nº ${nota.numero}${total > 1 ? ` — parcela ${i + 1}/${total}` : ''}`
       : `NFe parcela ${i + 1}/${total}`;
+    const boletoDaParcela = casarBoleto(p) ?? boletoFallback;
     const [novo] = await db
       .insert(schema.contaPagar)
       .values({
@@ -134,13 +166,18 @@ export async function POST(
         dataVencimento: p.dataVencimento,
         valor: String(p.valor),
         descricao,
-        boletoStoragePath: boletoFinal,
+        boletoStoragePath: boletoDaParcela,
       })
       .returning({ id: schema.contaPagar.id });
     if (novo) criadas.push(novo);
   }
 
-  // Limpa o pendente — ja foi consumido. Evita reaproveitar em re-lancamentos.
+  // Limpa pendentes — viraram conta_pagar
+  if (pendentes.length > 0) {
+    await db
+      .delete(schema.notaCompraBoletoPendente)
+      .where(eq(schema.notaCompraBoletoPendente.notaCompraId, id));
+  }
   if (nota.boletoPendentePath) {
     await db
       .update(schema.notaCompra)
@@ -151,6 +188,6 @@ export async function POST(
   return NextResponse.json({
     ok: true,
     contasCriadas: criadas.length,
-    boletoAnexado: boletoFinal != null,
+    boletosAnexados: pendentes.length,
   });
 }
