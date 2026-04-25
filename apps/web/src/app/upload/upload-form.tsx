@@ -64,28 +64,50 @@ export function UploadForm({ filiais }: { filiais: Filial[] }) {
     setUploading(true);
     const novos: UploadResult[] = [];
 
+    const filialNome = filiais.find((x) => x.id === filialId)?.nome ?? 'esta filial';
     for (const f of files) {
-      const fd = new FormData();
-      fd.append('arquivo', f);
-      fd.append('filialId', filialId);
-      if (tipo) fd.append('tipo', tipo);
-      try {
-        const r = await fetch('/api/upload', { method: 'POST', body: fd });
-        const data = await r.json();
-        if (r.ok) {
-          novos.push({
-            ok: true,
-            arquivo: f.name,
-            tipo: data.tipo,
-            resumo: data.resumo,
-            aviso: data.aviso,
-          });
-        } else {
-          novos.push({ ok: false, arquivo: f.name, erro: data.error ?? `HTTP ${r.status}` });
+      let confirmarEcsNovos = false;
+      let resultado: UploadResult | null = null;
+
+      // Loop pra suportar reenvio quando o backend pedir confirmação de EC novo.
+      for (let tentativa = 0; tentativa < 2 && !resultado; tentativa++) {
+        const fd = new FormData();
+        fd.append('arquivo', f);
+        fd.append('filialId', filialId);
+        if (tipo) fd.append('tipo', tipo);
+        if (confirmarEcsNovos) fd.append('confirmarEcsNovos', 'true');
+        try {
+          const r = await fetch('/api/upload', { method: 'POST', body: fd });
+          const data = await r.json();
+          if (r.ok) {
+            resultado = {
+              ok: true,
+              arquivo: f.name,
+              tipo: data.tipo,
+              resumo: data.resumo,
+              aviso: data.aviso,
+            };
+          } else if (r.status === 422 && data.error === 'EC_NOVO_REQUER_CONFIRMACAO') {
+            const ok = window.confirm(
+              `${data.mensagem}\n\nFilial selecionada: ${filialNome}.\n\nClique OK pra continuar ou Cancelar pra voltar e mudar de filial.`,
+            );
+            if (ok) {
+              confirmarEcsNovos = true;
+              continue;
+            }
+            resultado = { ok: false, arquivo: f.name, erro: 'Cancelado pelo usuário (EC novo)' };
+          } else {
+            resultado = {
+              ok: false,
+              arquivo: f.name,
+              erro: data.error ?? `HTTP ${r.status}`,
+            };
+          }
+        } catch (e) {
+          resultado = { ok: false, arquivo: f.name, erro: (e as Error).message };
         }
-      } catch (e) {
-        novos.push({ ok: false, arquivo: f.name, erro: (e as Error).message });
       }
+      if (resultado) novos.push(resultado);
     }
 
     setResults((prev) => [...novos, ...prev]);

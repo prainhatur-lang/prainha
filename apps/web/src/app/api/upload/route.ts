@@ -10,6 +10,8 @@ import {
   processarCieloRecebiveis,
   processarCnab240Inter,
   detectarTipo,
+  extrairEcsCielo,
+  validarEcsContraFilial,
 } from '@/lib/processadores';
 
 export const dynamic = 'force-dynamic';
@@ -111,6 +113,40 @@ export async function POST(req: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // 5b. Validação de EC (apenas pra arquivos Cielo).
+  // Bloqueia upload cruzado (EC pertence a outra filial) e pede confirmação
+  // explícita pra ECs novos (ainda nunca vistos nessa filial).
+  // O frontend reenvia o request com confirmarEcsNovos=true depois de o user clicar OK.
+  if (tipo === 'CIELO_VENDAS' || tipo === 'CIELO_RECEBIVEIS') {
+    const ecs = extrairEcsCielo(buf, tipo);
+    if (ecs.length > 0) {
+      const validacao = await validarEcsContraFilial(filialId, ecs);
+      if (validacao.conflitos.length > 0) {
+        const c = validacao.conflitos[0]!;
+        return NextResponse.json(
+          {
+            error: `Este arquivo é do EC ${c.ec}, que pertence à filial "${c.filialNome}". Selecione a filial correta antes de subir.`,
+            ecConflito: c,
+            ecsNoArquivo: ecs,
+          },
+          { status: 409 },
+        );
+      }
+      const confirmou = form.get('confirmarEcsNovos')?.toString() === 'true';
+      if (validacao.novos.length > 0 && !confirmou) {
+        return NextResponse.json(
+          {
+            error: 'EC_NOVO_REQUER_CONFIRMACAO',
+            mensagem: `Este arquivo tem ${validacao.novos.length === 1 ? 'um EC novo' : `${validacao.novos.length} ECs novos`} pra esta filial: ${validacao.novos.join(', ')}. Confirma que ${validacao.novos.length === 1 ? 'pertence' : 'pertencem'} à filial selecionada?`,
+            ecsNovos: validacao.novos,
+            ecsJaConhecidos: validacao.jaConhecidos,
+          },
+          { status: 422 },
+        );
+      }
+    }
   }
 
   // 6. Sobe pro Storage

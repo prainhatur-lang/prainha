@@ -8,7 +8,7 @@ import {
   parseCieloRecebiveis,
   parseCnab240Inter,
 } from '@concilia/conciliador/parsers';
-import { sql as drizzleSql } from 'drizzle-orm';
+import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
@@ -33,6 +33,94 @@ export interface ResumoProcessamento {
   totalDebitos?: number;
   periodo?: { de: string; ate: string };
   estabelecimentos?: string[];
+}
+
+/**
+ * Extrai ECs únicos de um arquivo Cielo (Vendas ou Recebíveis) sem inserir
+ * nada. Usado pra validar antes do processamento que o EC do arquivo
+ * pertence à filial selecionada.
+ */
+export function extrairEcsCielo(
+  conteudo: Buffer,
+  tipo: 'CIELO_VENDAS' | 'CIELO_RECEBIVEIS',
+): string[] {
+  const rows = tipo === 'CIELO_VENDAS' ? parseCieloVendas(conteudo) : parseCieloRecebiveis(conteudo);
+  const ecs = new Set<string>();
+  for (const r of rows) {
+    const ec = r.estabelecimento?.trim();
+    if (ec) ecs.add(ec);
+  }
+  return [...ecs];
+}
+
+/**
+ * Verifica se algum dos ECs do arquivo já está cadastrado em OUTRA filial
+ * (via venda_adquirente.codigo_estabelecimento) — bloqueio pra evitar upload
+ * cruzado. Também retorna os ECs novos pra essa filial (precisam confirmação).
+ */
+export async function validarEcsContraFilial(
+  filialId: string,
+  ecs: string[],
+): Promise<{
+  conflitos: Array<{ ec: string; filialId: string; filialNome: string }>;
+  novos: string[];
+  jaConhecidos: string[];
+}> {
+  if (ecs.length === 0) {
+    return { conflitos: [], novos: [], jaConhecidos: [] };
+  }
+  // Busca em vendaAdquirente todos registros com esses ECs
+  const linhas = await db
+    .select({
+      ec: schema.vendaAdquirente.codigoEstabelecimento,
+      filialId: schema.vendaAdquirente.filialId,
+      filialNome: schema.filial.nome,
+    })
+    .from(schema.vendaAdquirente)
+    .innerJoin(schema.filial, eq(schema.filial.id, schema.vendaAdquirente.filialId))
+    .where(
+      and(
+        eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
+        inArray(schema.vendaAdquirente.codigoEstabelecimento, ecs),
+      ),
+    )
+    .groupBy(
+      schema.vendaAdquirente.codigoEstabelecimento,
+      schema.vendaAdquirente.filialId,
+      schema.filial.nome,
+    );
+
+  const porEc = new Map<string, Set<{ filialId: string; filialNome: string }>>();
+  for (const l of linhas) {
+    if (!l.ec) continue;
+    const set = porEc.get(l.ec) ?? new Set();
+    set.add({ filialId: l.filialId, filialNome: l.filialNome });
+    porEc.set(l.ec, set);
+  }
+
+  const conflitos: Array<{ ec: string; filialId: string; filialNome: string }> = [];
+  const novos: string[] = [];
+  const jaConhecidos: string[] = [];
+
+  for (const ec of ecs) {
+    const filiais = porEc.get(ec);
+    if (!filiais || filiais.size === 0) {
+      novos.push(ec);
+      continue;
+    }
+    const filiaisArr = [...filiais];
+    const naFilialAtual = filiaisArr.some((f) => f.filialId === filialId);
+    const emOutraFilial = filiaisArr.find((f) => f.filialId !== filialId);
+    if (naFilialAtual) {
+      jaConhecidos.push(ec);
+    } else if (emOutraFilial) {
+      conflitos.push({ ec, filialId: emOutraFilial.filialId, filialNome: emOutraFilial.filialNome });
+    } else {
+      novos.push(ec);
+    }
+  }
+
+  return { conflitos, novos, jaConhecidos };
 }
 
 /** Processa Vendas Detalhado Cielo */
