@@ -50,33 +50,36 @@ import { log } from './logger';
 
 bootTrace('BOOT 2 - imports OK');
 
-// node-firebird tem um bug conhecido com Firebird 4 onde o detach gera um
-// callback async com 'pluginName' undefined, derrubando o processo.
+// node-firebird tem um bug com Firebird 4 onde o detach gera callback async
+// com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
+// erro vem so na hora de fechar a conexao. Logo, ignorar eh seguro.
 //
-// O tratamento ANTIGO era "ignorar e seguir" — mas isso deixava a Promise
-// de buscarPagamentos pendurada pra sempre, travando o agente silenciosamente
-// (log mostrava "node-firebird detach bug ignorado" e depois silencio eterno).
+// Pra detectar travamento REAL (driver nao respondendo), o ciclo principal
+// usa comTimeout(10min). Se estourar, mata o processo (run.cmd reinicia).
 //
-// Estrategia NOVA: log do erro e exit(1). O run.cmd tem loop de auto-restart
-// em 5s, entao o agente volta limpo sem intervencao humana.
+// Erros nao-pluginName fora do contexto de ciclo (raros) tambem matam.
 process.on('uncaughtException', (err: Error) => {
   if (err?.message?.includes('pluginName')) {
-    log.warn('node-firebird pluginName bug — reiniciando processo em 1s', {
+    log.warn('node-firebird pluginName bug ignorado (apos ciclo)', {
       msg: err.message,
     });
-  } else {
-    log.error('uncaughtException — reiniciando processo em 1s', {
-      msg: err.message,
-      stack: err.stack,
-    });
+    return;
   }
-  // Pequeno delay pra garantir que o log foi flushed pro disco antes do exit
+  log.error('uncaughtException — reiniciando processo em 1s', {
+    msg: err.message,
+    stack: err.stack,
+  });
   setTimeout(() => process.exit(1), 1000);
 });
 
 process.on('unhandledRejection', (err: unknown) => {
+  const msg = (err as Error)?.message ?? String(err);
+  if (msg.includes('pluginName')) {
+    log.warn('node-firebird pluginName bug ignorado (rejection)', { msg });
+    return;
+  }
   log.error('unhandledRejection — reiniciando processo em 1s', {
-    err: (err as Error)?.message,
+    err: msg,
     stack: (err as Error)?.stack,
   });
   setTimeout(() => process.exit(1), 1000);

@@ -124,6 +124,65 @@ const toNum = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// Cache de colunas por tabela (preenchido on-demand)
+const cacheColunas = new Map<string, Set<string>>();
+
+/** Descobre quais das colunas pedidas existem na tabela (case-insensitive).
+ *  Retorna Set com as que existem. Cacheia por sessão.
+ *  Usado pra montar SELECTs dinâmicos em tabelas com schema variável
+ *  entre versões do Consumer. */
+async function colunasExistentes(
+  cfg: Config,
+  tabela: string,
+  pedidas: string[],
+): Promise<Set<string>> {
+  const tabUpper = tabela.toUpperCase();
+  let cache = cacheColunas.get(tabUpper);
+  if (!cache) {
+    try {
+      const rows = await executarQuery<{ NOME: string }>(
+        cfg,
+        `SELECT TRIM(RDB$FIELD_NAME) AS NOME
+         FROM RDB$RELATION_FIELDS
+         WHERE RDB$RELATION_NAME = ?`,
+        [tabUpper],
+      );
+      cache = new Set(rows.map((r) => String(r.NOME).trim().toUpperCase()));
+    } catch {
+      cache = new Set();
+    }
+    cacheColunas.set(tabUpper, cache);
+  }
+  const set = new Set<string>();
+  for (const c of pedidas) {
+    if (cache.has(c.toUpperCase())) set.add(c.toUpperCase());
+  }
+  return set;
+}
+
+/** Monta SELECT só com as colunas que existem na tabela.
+ *  Colunas faltantes vêm como NULL no resultado. */
+async function selectFlexivel(
+  cfg: Config,
+  tabela: string,
+  colunas: string[],
+  whereOrderLimit: string,
+  params: unknown[],
+): Promise<Record<string, unknown>[]> {
+  const existem = await colunasExistentes(cfg, tabela, colunas);
+  if (existem.size === 0) {
+    // Tabela não existe ou sem nenhuma coluna conhecida
+    return [];
+  }
+  const proj = colunas
+    .map((c) => (existem.has(c.toUpperCase()) ? c : `NULL AS ${c}`))
+    .join(', ');
+  const sql = `SELECT ${proj} FROM ${tabela} ${whereOrderLimit}`;
+  // FIRST ? só permitido no início do SELECT — a função recebe a lista
+  // sem FIRST e o caller usa whereOrderLimit pra adicionar
+  return executarQuery(cfg, sql, params);
+}
+
 // --- Financeiro ---
 
 interface FornecedorRow {
@@ -226,12 +285,15 @@ export async function buscarContasBancarias(
   desdeCodigo: number,
   limite: number,
 ): Promise<ContaBancariaIngest[]> {
-  const sql = `
-    SELECT FIRST ? CODIGO, DESCRICAO, BANCO, AGENCIA, CONTA,
-           DATADELETE, VERSAOREG
-    FROM CONTASBANCARIAS WHERE CODIGO > ? ORDER BY CODIGO
-  `;
-  const rows = await executarQuery<ContaBancariaRow>(cfg, sql, [limite, desdeCodigo]);
+  // Schema flexível: descobre quais colunas existem (varia entre versões
+  // do Consumer). Colunas faltantes viram NULL.
+  const rows = (await selectFlexivel(
+    cfg,
+    'CONTASBANCARIAS',
+    ['CODIGO', 'DESCRICAO', 'BANCO', 'AGENCIA', 'CONTA', 'DATADELETE', 'VERSAOREG'],
+    'WHERE CODIGO > ? ORDER BY CODIGO ROWS ?',
+    [desdeCodigo, limite],
+  )) as unknown as ContaBancariaRow[];
   return rows.map((r) => ({
     codigoExterno: r.CODIGO,
     descricao: toStr(r.DESCRICAO),
@@ -320,18 +382,32 @@ export async function buscarClientes(
   desdeCodigo: number,
   limite: number,
 ): Promise<ClienteIngest[]> {
-  // Query defensiva: tenta colunas comuns. Se nao existirem, Firebird retorna erro e
-  // o ciclo pula essa entidade (best-effort no index.ts).
-  const sql = `
-    SELECT FIRST ? CODIGO, NOME, EMAIL,
-           CPFCNPJ, DATADELETE, VERSAOREG
-    FROM CRMCLIENTE WHERE CODIGO > ? ORDER BY CODIGO
-  `;
-  const rows = await executarQuery<ClienteRow>(cfg, sql, [limite, desdeCodigo]);
+  // Schema flexível: tenta variantes comuns de nome de colunas (NOME vs
+  // NOMECLIENTE, CPFCNPJ vs CNPJCPF, FONE vs TELEFONE vs CELULAR).
+  // Colunas faltantes viram NULL — sem erro -206.
+  const rows = (await selectFlexivel(
+    cfg,
+    'CRMCLIENTE',
+    [
+      'CODIGO',
+      'NOME',
+      'NOMECLIENTE',
+      'EMAIL',
+      'CPFCNPJ',
+      'CNPJCPF',
+      'FONE',
+      'TELEFONE',
+      'CELULAR',
+      'DATADELETE',
+      'VERSAOREG',
+    ],
+    'WHERE CODIGO > ? ORDER BY CODIGO ROWS ?',
+    [desdeCodigo, limite],
+  )) as unknown as (ClienteRow & { NOMECLIENTE?: string | null })[];
   return rows.map((r) => ({
     codigoExterno: r.CODIGO,
     cpfOuCnpj: toStr(r.CPFCNPJ ?? r.CNPJCPF),
-    nome: toStr(r.NOME),
+    nome: toStr(r.NOME ?? r.NOMECLIENTE),
     email: toStr(r.EMAIL),
     telefone: toStr(r.FONE ?? r.TELEFONE ?? r.CELULAR),
     dataDelete: toIso(r.DATADELETE),
