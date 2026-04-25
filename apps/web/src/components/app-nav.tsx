@@ -42,6 +42,7 @@ const GRUPOS: Grupo[] = [
       { label: 'PDV × Cielo (Operadora)', href: '/conciliacao/operadora' },
       { label: 'Cielo × Agenda (Recebíveis)', href: '/conciliacao/recebiveis' },
       { label: 'Agenda × Banco', href: '/conciliacao/banco' },
+      { label: 'PDV × Banco direto', href: '/conciliacao/pdv-banco-direto' },
       { label: 'Upload de arquivos', href: '/upload' },
       { label: 'Exceções', href: '/excecoes' },
       { label: 'Fechamento', href: '/fechamento' },

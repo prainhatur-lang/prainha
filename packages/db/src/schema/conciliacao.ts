@@ -138,6 +138,45 @@ export const formaPagamentoCanal = pgTable(
 );
 
 /**
+ * Match persistido entre pagamento PDV (canal=DIRETO) e lancamento_banco
+ * (crédito direto na conta — Pix Manual, TED, DOC). 1:1, com origem do
+ * match (auto vs manual) pra garantir que rodadas seguintes do engine
+ * nao reembaralhem decisoes ja tomadas.
+ *
+ * Vs match cielo: aqui nao tem NSU pra conferir, entao matches AUTO de
+ * niveis 2+ ficam marcados como auto_revogavel — quando aparece
+ * evidencia mais forte (ex: E2E ID na fase 2), o auto-revogavel pode
+ * quebrar e o forte assume.
+ */
+export const matchPdvBanco = pgTable(
+  'match_pdv_banco',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    pagamentoId: uuid('pagamento_id')
+      .notNull()
+      .references(() => pagamento.id, { onDelete: 'cascade' })
+      .unique(),
+    /** FK pra lancamento_banco. Sem reference cruzada pra evitar circular. */
+    lancamentoBancoId: uuid('lancamento_banco_id').notNull().unique(),
+    /** 1 = data D ou D±1 + valor exato; 2 = data ±2d uteis + valor exato */
+    nivelMatch: numeric('nivel_match', { precision: 2, scale: 0 }).notNull(),
+    /** 'AUTO' ou user_id (uuid em string) */
+    criadoPor: varchar('criado_por', { length: 50 }).notNull().default('AUTO'),
+    /** True quando match foi por proximidade (nivel 2+) e pode ser
+     *  desfeito quando aparecer evidencia mais forte */
+    autoRevogavel: timestamp('auto_revogavel_ate', { withTimezone: true }),
+    observacao: text('observacao'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('match_pdv_banco_filial_idx').on(t.filialId),
+  }),
+);
+
+/**
  * Cada execucao do job de conciliacao gera um relatorio.
  */
 export const execucaoConciliacao = pgTable('execucao_conciliacao', {
