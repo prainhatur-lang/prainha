@@ -50,6 +50,11 @@ import { log } from './logger';
 
 bootTrace('BOOT 2 - imports OK');
 
+// Versao do agente — bater junto com package.json. Aparece no boot log
+// (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
+// verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
+const AGENTE_VERSAO = '0.5.3';
+
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
 // erro vem so na hora de fechar a conexao. Logo, ignorar eh seguro.
@@ -302,9 +307,10 @@ const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso 
 
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
-  console.log('[boot] concilia-agente iniciando...');
+  console.log(`[boot] concilia-agente v${AGENTE_VERSAO} iniciando...`);
   const cfg = loadConfig();
   log.info('agente iniciado', {
+    versao: AGENTE_VERSAO,
     api: cfg.api.url,
     firebird: `${cfg.firebird.host}:${cfg.firebird.port}`,
     intervalo: `${cfg.intervalSeconds}s`,
