@@ -93,6 +93,33 @@ export async function rodarConciliacaoOperadora(opts: {
     // Dias com fechamento: nao reprocessa
     const fechados = await diasFechados(filialId, PROCESSO_OPERADORA, dataInicio, dataFim);
 
+    // Carrega matches persistidos da filial. Firmes (manual OR nivel 1-3) nao
+    // sao re-processados — pagamento e venda saem do input do engine. Os
+    // auto-revogaveis (nivel 4-5) ENTRAM no engine: podem ser fortalecidos
+    // por NSU em rodada futura. Antes de rodar engine, removemos os auto-
+    // revogaveis no scope pra eles serem regerados (consistencia).
+    const matchesExistentes = await db
+      .select({
+        id: schema.matchPdvCielo.id,
+        pagamentoId: schema.matchPdvCielo.pagamentoId,
+        vendaAdquirenteId: schema.matchPdvCielo.vendaAdquirenteId,
+        nivelMatch: schema.matchPdvCielo.nivelMatch,
+        criadoPor: schema.matchPdvCielo.criadoPor,
+        autoRevogavel: schema.matchPdvCielo.autoRevogavel,
+      })
+      .from(schema.matchPdvCielo)
+      .where(eq(schema.matchPdvCielo.filialId, filialId));
+
+    const isFirme = (m: { nivelMatch: string; criadoPor: string; autoRevogavel: Date | null }) =>
+      m.criadoPor !== 'AUTO' || (Number(m.nivelMatch) <= 3 && !m.autoRevogavel);
+
+    const idsPagFirmes = new Set(
+      matchesExistentes.filter(isFirme).map((m) => m.pagamentoId),
+    );
+    const idsVendaFirmes = new Set(
+      matchesExistentes.filter(isFirme).map((m) => m.vendaAdquirenteId),
+    );
+
     // Carrega pagamentos do PDV no periodo
     const pagamentosRaw = await db
       .select({
@@ -115,6 +142,7 @@ export async function rodarConciliacaoOperadora(opts: {
         ),
       );
     const pagamentos = pagamentosRaw.filter((p) => {
+      if (idsPagFirmes.has(p.id)) return false;
       if (!p.dataPagamento) return true;
       return !fechados.has(dateToBrYmd(p.dataPagamento));
     });
@@ -128,7 +156,7 @@ export async function rodarConciliacaoOperadora(opts: {
     const dataInicioCielo = dtIniCielo.toISOString().slice(0, 10);
     const dataFimCielo = dtFimCielo.toISOString().slice(0, 10);
 
-    const vendas = await db
+    const vendasRaw = await db
       .select({
         id: schema.vendaAdquirente.id,
         nsu: schema.vendaAdquirente.nsu,
@@ -146,6 +174,18 @@ export async function rodarConciliacaoOperadora(opts: {
           lte(schema.vendaAdquirente.dataVenda, dataFimCielo),
         ),
       );
+    const vendas = vendasRaw.filter((v) => !idsVendaFirmes.has(v.id));
+
+    // Apaga matches AUTO auto-revogaveis no scope — vao ser regerados pelo engine.
+    // NUNCA toca em manuais ou firmes (idsPagFirmes / idsVendaFirmes ja filtrados acima).
+    const idsRevogaveis = matchesExistentes
+      .filter((m) => m.criadoPor === 'AUTO' && m.autoRevogavel)
+      .map((m) => m.id);
+    if (idsRevogaveis.length > 0) {
+      await db
+        .delete(schema.matchPdvCielo)
+        .where(inArray(schema.matchPdvCielo.id, idsRevogaveis));
+    }
 
     // Roda matcher (NSU + fallback data+valor+forma)
     const result = matchPdvCielo(
@@ -270,6 +310,29 @@ export async function rodarConciliacaoOperadora(opts: {
 
     if (novasExcecoes.length > 0) {
       await db.insert(schema.excecao).values(novasExcecoes);
+    }
+
+    // Persiste matches novos em match_pdv_cielo. Niveis 1-3 sao firmes;
+    // 4-5 sao auto_revogavel (podem ser quebrados em rodada futura quando
+    // aparecer NSU). Cada nivel da engine entra como tal.
+    const matchesPersistir = result.matched.map((m) => {
+      const nivel = m.nivel;
+      const revogavel = nivel >= 4;
+      return {
+        filialId,
+        pagamentoId: m.pdv.id,
+        vendaAdquirenteId: m.cielo.id!,
+        nivelMatch: String(nivel),
+        autoRevogavel: revogavel ? new Date() : null,
+        criadoPor: 'AUTO',
+        diffValor: m.diff.toFixed(2),
+      };
+    }).filter((row) => row.vendaAdquirenteId);
+    if (matchesPersistir.length > 0) {
+      await db
+        .insert(schema.matchPdvCielo)
+        .values(matchesPersistir)
+        .onConflictDoNothing({ target: [schema.matchPdvCielo.pagamentoId] });
     }
 
     // Resumo

@@ -27,12 +27,20 @@ export interface CieloVenda {
 
 export type MatchType = 'NSU_AUTH' | 'NSU' | 'DATA_VALOR';
 
+/** Nivel da cascata (1=mais forte, 5=mais fraco/auto-revogavel).
+ *  Vide doc da tabela match_pdv_cielo. */
+export type NivelMatchCielo = 1 | 2 | 3 | 4 | 5;
+
 export interface MatchPdvCieloResult {
   matched: Array<{
     pdv: PdvPagamento;
     cielo: CieloVenda;
     diff: number;
     matchType: MatchType;
+    /** Nivel da cascata onde o match foi feito (1-5). Niveis 4-5 sao
+     *  auto_revogavel: podem ser quebrados quando aparecer evidencia mais
+     *  forte (ex: NSU bate em rodada futura). */
+    nivel: NivelMatchCielo;
   }>;
   /** Divergencia de valor: NSU bate OU proximidade por data+valor mas valor difere.
    * Usuario aceita (vira match confirmado) ou rejeita (vira 2 excecoes separadas). */
@@ -168,8 +176,10 @@ export function matchPdvCielo(
 
     cieloUsadas.add(c);
     const diff = +(c.valorBruto - p.valor).toFixed(2);
+    // NSU_AUTH (forte) -> nivel 1; NSU sozinho -> nivel 2.
+    const nivel: NivelMatchCielo = matchType === 'NSU_AUTH' ? 1 : 2;
     if (Math.abs(diff) < TOL) {
-      result.matched.push({ pdv: p, cielo: c, diff, matchType });
+      result.matched.push({ pdv: p, cielo: c, diff, matchType, nivel });
     } else {
       result.divergenciaValor.push({ pdv: p, cielo: c, diff });
     }
@@ -240,7 +250,12 @@ export function matchPdvCielo(
       const c = candidatos[0]!;
       cieloMatchedSegundaPassada.add(c);
       const diff = +(c.valorBruto - p.valor).toFixed(2);
-      result.matched.push({ pdv: p, cielo: c, diff, matchType: 'DATA_VALOR' });
+      // Nivel 3: data exata + valor exato + categoria forma (limpo).
+      // Nivel 5: dia diferente OU valor com tolerancia (auto-revogavel).
+      const dataExata = p.dataPagamento === c.dataVenda;
+      const valorExato = Math.abs(diff) < TOL;
+      const nivel: NivelMatchCielo = dataExata && valorExato ? 3 : 5;
+      result.matched.push({ pdv: p, cielo: c, diff, matchType: 'DATA_VALOR', nivel });
     } else {
       pdvRestante.push(p);
     }
@@ -311,11 +326,14 @@ export function matchPdvCielo(
     // o mesmo pagamento, mas vao como divergencia pra a engine auto-aceita-los
     // (a engine sabe criar o registro excecao pra rastreabilidade).
     if (Math.abs(cand.diff) < TOL && cand.sameCat) {
+      // Passada 3 (matching solto): mesma cat + diff zero. Nivel 5 — auto-revogavel,
+      // pode ser quebrado por NSU em rodada futura.
       result.matched.push({
         pdv: result.pdvSemCielo[cand.pIdx]!,
         cielo: cand.c,
         diff: cand.diff,
         matchType: 'DATA_VALOR',
+        nivel: 5,
       });
     } else {
       result.divergenciaValor.push({

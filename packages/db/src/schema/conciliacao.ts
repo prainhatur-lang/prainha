@@ -138,6 +138,55 @@ export const formaPagamentoCanal = pgTable(
 );
 
 /**
+ * Match persistido entre pagamento PDV (canal=ADQUIRENTE) e venda_adquirente
+ * (Cielo). 1:1, com nivel da cascata e flag de auto-revogavel.
+ *
+ * Nivel:
+ *  1 = NSU + Autorizacao batem (chave forte, max confianca)
+ *  2 = Apenas NSU bate, candidato unico (alta confianca)
+ *  3 = Data exata + Valor exato + categoria forma (alta confianca)
+ *  4 = Data exata + Valor dentro de tolerancia (vira divergencia, nao match silencioso)
+ *  5 = Data +-1 dia util + Valor exato (auto-revogavel: pode quebrar quando
+ *      aparecer evidencia mais forte numa rodada futura)
+ *
+ * Persistir matches resolve o nao-determinismo: proxima rodada filtra os ja
+ * casados e nao reembaralha. Matches manuais (criadoPor != 'AUTO') nunca
+ * sao auto-revogados.
+ */
+export const matchPdvCielo = pgTable(
+  'match_pdv_cielo',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    pagamentoId: uuid('pagamento_id')
+      .notNull()
+      .references(() => pagamento.id, { onDelete: 'cascade' })
+      .unique(),
+    /** FK pra venda_adquirente — sem reference cruzada pra evitar circular. */
+    vendaAdquirenteId: uuid('venda_adquirente_id').notNull().unique(),
+    /** 1-5 (vide doc da tabela) */
+    nivelMatch: numeric('nivel_match', { precision: 2, scale: 0 }).notNull(),
+    /** True quando match nivel 4-5 (proximidade). Pode ser auto-quebrado quando
+     *  aparecer evidencia mais forte (NSU bate em outro par na rodada seguinte). */
+    autoRevogavel: timestamp('auto_revogavel_ate', { withTimezone: true }),
+    /** 'AUTO' ou user_id (uuid em string). Manual NUNCA e auto-revogado. */
+    criadoPor: varchar('criado_por', { length: 50 }).notNull().default('AUTO'),
+    /** Diff de valor em R$ entre PDV e Cielo no momento do match (positivo = Cielo > PDV) */
+    diffValor: numeric('diff_valor', { precision: 14, scale: 2 }),
+    observacao: text('observacao'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('match_pdv_cielo_filial_idx').on(t.filialId),
+    revogaveisIdx: index('match_pdv_cielo_revogaveis_idx')
+      .on(t.filialId)
+      .where(sql`auto_revogavel_ate IS NOT NULL`),
+  }),
+);
+
+/**
  * Match persistido entre pagamento PDV (canal=DIRETO) e lancamento_banco
  * (crédito direto na conta — Pix Manual, TED, DOC). 1:1, com origem do
  * match (auto vs manual) pra garantir que rodadas seguintes do engine

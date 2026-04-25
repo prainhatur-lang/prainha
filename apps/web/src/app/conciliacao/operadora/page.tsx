@@ -193,6 +193,21 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         )
     : [{ qtdNaoConfirmadas: 0 }];
 
+  // Conta matches auto-revogaveis (niveis 4-5) — sao matches de proximidade
+  // que podem quebrar quando aparecer NSU em rodada futura. Util pro user
+  // saber que parte dos matches "firmes na UI" sao na verdade fragiles.
+  const [{ qtdRevogaveis }] = filialSelecionada
+    ? await db
+        .select({ qtdRevogaveis: sql<number>`COUNT(*)::int` })
+        .from(schema.matchPdvCielo)
+        .where(
+          and(
+            eq(schema.matchPdvCielo.filialId, filialSelecionada.id),
+            sql`${schema.matchPdvCielo.autoRevogavel} IS NOT NULL`,
+          ),
+        )
+    : [{ qtdRevogaveis: 0 }];
+
   const resumoUltima = (ultimaOk?.resumo as
     | {
         conciliados: { qtd: number; valor: number };
@@ -216,6 +231,19 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
           {/* Coluna esquerda: form + historico */}
           <div className="space-y-6">
+            {Number(qtdRevogaveis) > 0 && (
+              <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+                <p className="font-semibold">
+                  ℹ {Number(qtdRevogaveis)} match(es) por proximidade (auto-revogáveis)
+                </p>
+                <p className="mt-1 text-sky-800">
+                  Casados sem NSU — podem ser quebrados na próxima rodada se
+                  aparecer um NSU mais forte. Conferir uma vez e aceitar manualmente
+                  pra travar.
+                </p>
+              </div>
+            )}
+
             {Number(qtdNaoConfirmadas) > 0 && (
               <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
                 <p className="font-semibold">
