@@ -33,6 +33,7 @@ interface LinhaSaida {
   produtoNome: string | null;
   produtoUnidade: string | null;
   quantidade: string | null;
+  pesoRelativo: string | null;
   custoRateado: string | null;
   valorTotal: string | null;
   observacao: string | null;
@@ -74,7 +75,17 @@ export function EditorProducao({
   const qtdSaidasPerda = saidasPerda.reduce((s, r) => s + Number(r.quantidade ?? 0), 0);
   const qtdSaidas = qtdSaidasProduto + qtdSaidasPerda;
   const divergencia = qtdEntradas > 0 ? ((qtdEntradas - qtdSaidas) / qtdEntradas) * 100 : 0;
+  // Soma de unidades-peso (qtd × pesoRelativo) só pras saídas PRODUTO.
+  // É o denominador do rateio. Perdas absorvem custo automaticamente.
+  const unidadesPesoUtil = saidasProduto.reduce(
+    (s, r) => s + Number(r.quantidade ?? 0) * Number(r.pesoRelativo ?? 1),
+    0,
+  );
+  // Custo por unidade-peso. Cortes nobres (peso>1) absorvem mais.
+  const custoPorUnidadePeso = unidadesPesoUtil > 0 ? valorEntradas / unidadesPesoUtil : 0;
+  // Custo médio simples (pra hint quando todos os pesos = 1)
   const custoUnitarioUtil = qtdSaidasProduto > 0 ? valorEntradas / qtdSaidasProduto : 0;
+  const todosPesoUm = saidasProduto.every((s) => Number(s.pesoRelativo ?? 1) === 1);
 
   async function patchOp(body: Record<string, unknown>) {
     const r = await fetch(`/api/ordem-producao/${op.id}`, {
@@ -330,8 +341,15 @@ export function EditorProducao({
           <div>
             <h2 className="text-sm font-semibold text-slate-900">Saídas (produtos + perdas)</h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Produtos gerados (entram no estoque) e perdas (descarte, resfriamento,
-              aparas). Custo se rateia proporcionalmente entre as saídas úteis.
+              Produtos gerados (entram no estoque) e perdas (descarte, aparas).
+              Custo total das entradas se distribui pelas <strong>unidades-peso</strong>{' '}
+              das saídas úteis: peso 3 = corte 3× mais caro que peso 1. Perda absorve
+              custo automaticamente.
+              {!todosPesoUm && qtdSaidasProduto > 0 && custoPorUnidadePeso > 0 && (
+                <span className="ml-1 text-slate-700">
+                  Custo/unidade-peso ≈ <strong>{brl(custoPorUnidadePeso)}</strong>.
+                </span>
+              )}
             </p>
           </div>
           {editavel && (
@@ -352,6 +370,7 @@ export function EditorProducao({
                 <th className="px-4 py-2">Produto</th>
                 <th className="px-4 py-2 text-right">Qtd</th>
                 <th className="px-4 py-2">Un.</th>
+                <th className="px-4 py-2 text-right" title="Peso relativo no rateio. Maior = corte mais nobre.">Peso</th>
                 <th className="px-4 py-2 text-right">Custo unit.</th>
                 <th className="px-4 py-2 text-right">Total</th>
                 {editavel && <th className="px-4 py-2 print:hidden"></th>}
@@ -360,24 +379,30 @@ export function EditorProducao({
             <tbody>
               {saidas.length === 0 ? (
                 <tr>
-                  <td colSpan={editavel ? 7 : 6} className="px-4 py-4 text-center text-xs text-slate-500">
+                  <td colSpan={editavel ? 8 : 7} className="px-4 py-4 text-center text-xs text-slate-500">
                     Nenhuma saída. Adicione pelo menos uma pra concluir.
                   </td>
                 </tr>
               ) : (
-                saidas.map((s) => (
-                  <LinhaSaidaRow
-                    key={s.id}
-                    linha={s}
-                    editavel={editavel}
-                    custoPreviaUnit={
-                      s.tipo === 'PRODUTO' && !op.concluidaEm ? custoUnitarioUtil : null
-                    }
-                    onDelete={() =>
-                      deletarLinha('saida', s.id, s.produtoNome ?? `(perda ${s.id.slice(0, 6)})`)
-                    }
-                  />
-                ))
+                saidas.map((s) => {
+                  const peso = Number(s.pesoRelativo ?? 1);
+                  // Custo previa: qtd*peso*custoPorUnidadePeso quando OP em rascunho
+                  const custoPreviaUnit =
+                    s.tipo === 'PRODUTO' && !op.concluidaEm
+                      ? peso * custoPorUnidadePeso
+                      : null;
+                  return (
+                    <LinhaSaidaRow
+                      key={s.id}
+                      linha={s}
+                      editavel={editavel}
+                      custoPreviaUnit={custoPreviaUnit}
+                      onDelete={() =>
+                        deletarLinha('saida', s.id, s.produtoNome ?? `(perda ${s.id.slice(0, 6)})`)
+                      }
+                    />
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -695,7 +720,9 @@ function LinhaSaidaRow({
   const router = useRouter();
   const [_pending, start] = useTransition();
   const [editQtd, setEditQtd] = useState(false);
+  const [editPeso, setEditPeso] = useState(false);
   const [qtd, setQtd] = useState(String(Number(linha.quantidade ?? 0)));
+  const [peso, setPeso] = useState(String(Number(linha.pesoRelativo ?? 1)));
 
   async function salvar(body: Record<string, unknown>) {
     const r = await fetch(`/api/ordem-producao-saida/${linha.id}`, {
@@ -710,6 +737,8 @@ function LinhaSaidaRow({
     }
     start(() => router.refresh());
   }
+
+  const pesoNum = Number(linha.pesoRelativo ?? 1);
 
   const custoUnit =
     linha.custoRateado !== null
@@ -787,6 +816,43 @@ function LinhaSaidaRow({
       <td className="px-4 py-2 font-mono text-xs text-slate-500">
         {linha.produtoUnidade || '—'}
       </td>
+      <td className="px-4 py-2 text-right font-mono text-xs">
+        {linha.tipo === 'PERDA' ? (
+          <span className="text-slate-300">—</span>
+        ) : editavel && editPeso ? (
+          <input
+            type="text"
+            value={peso}
+            onChange={(e) => setPeso(e.target.value)}
+            onBlur={async () => {
+              const n = Number(peso.replace(',', '.'));
+              if (Number.isFinite(n) && n > 0 && n !== pesoNum) {
+                await salvar({ pesoRelativo: n });
+              }
+              setEditPeso(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              if (e.key === 'Escape') {
+                setPeso(String(pesoNum));
+                setEditPeso(false);
+              }
+            }}
+            autoFocus
+            className="w-16 rounded border border-slate-300 px-1 py-0.5 text-right text-xs"
+          />
+        ) : (
+          <button
+            type="button"
+            disabled={!editavel}
+            onClick={() => setEditPeso(true)}
+            className={`${editavel ? 'hover:bg-slate-50 px-1' : ''} ${pesoNum === 1 ? 'text-slate-400' : 'font-semibold text-slate-700'}`}
+            title={pesoNum === 1 ? 'Sem rateio diferenciado' : `Absorve ${pesoNum}× o custo médio`}
+          >
+            {pesoNum.toFixed(pesoNum === Math.round(pesoNum) ? 0 : 2)}
+          </button>
+        )}
+      </td>
       <td className={`px-4 py-2 text-right font-mono text-xs ${previa ? 'italic text-slate-400' : ''}`}>
         {linha.tipo === 'PERDA' && !linha.custoRateado ? (
           <span className="text-slate-300">—</span>
@@ -832,6 +898,7 @@ function AdicionarLinhaBtn({
   const [quantidade, setQuantidade] = useState('');
   const [precoUnit, setPrecoUnit] = useState('');
   const [tipoSaida, setTipoSaida] = useState<'PRODUTO' | 'PERDA'>('PRODUTO');
+  const [pesoRel, setPesoRel] = useState('1');
   const [observacao, setObservacao] = useState('');
   const [_pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
@@ -852,6 +919,7 @@ function AdicionarLinhaBtn({
     setQuantidade('');
     setPrecoUnit('');
     setTipoSaida('PRODUTO');
+    setPesoRel('1');
     setObservacao('');
     setErro(null);
   }
@@ -889,6 +957,12 @@ function AdicionarLinhaBtn({
           return;
         }
         body.produtoId = produtoId;
+        const p = Number((pesoRel || '1').replace(',', '.'));
+        if (!Number.isFinite(p) || p <= 0) {
+          setErro('Peso relativo inválido');
+          return;
+        }
+        body.pesoRelativo = p;
       } else {
         body.produtoId = produtoId || null;
         if (observacao.trim()) body.observacao = observacao.trim();
@@ -1044,6 +1118,27 @@ function AdicionarLinhaBtn({
                     placeholder={escolhido?.precoCusto ? String(Number(escolhido.precoCusto)) : '0'}
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                   />
+                </div>
+              )}
+              {tipo === 'saida' && tipoSaida === 'PRODUTO' && (
+                <div className="w-32">
+                  <label
+                    className="block text-[11px] font-medium uppercase tracking-wide text-slate-500"
+                    title="Maior = corte mais nobre, absorve mais custo. Exemplo: lâmina 3, cabeça 1, aparas 0.5"
+                  >
+                    Peso relativo
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={pesoRel}
+                    onChange={(e) => setPesoRel(e.target.value)}
+                    placeholder="1"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    1 = corte comum · 3 = nobre · 0.5 = popular
+                  </p>
                 </div>
               )}
             </div>

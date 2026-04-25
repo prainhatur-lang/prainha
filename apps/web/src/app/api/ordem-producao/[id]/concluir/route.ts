@@ -3,13 +3,18 @@
 // grava movimento_estoque (SAIDA_PRODUCAO nas entradas + ENTRADA_PRODUCAO
 // nas saídas PRODUTO), atualiza produto.estoqueAtual, seta status=CONCLUIDA.
 //
-// Regras de rateio:
+// Rateio por UNIDADES-PESO (qtd × pesoRelativo):
 //  - C = soma dos valor_total das entradas (cada entrada já tem preco_unitario;
-//    se entrada.preco for null, usa produto.preco_custo; se também null, assume 0)
-//  - Saídas úteis (tipo=PRODUTO) recebem custo proporcional à quantidade.
-//    Perdas (tipo=PERDA) ficam com custoRateado=0 mas sua quantidade entra no
-//    cálculo da divergência.
-//  - Se sum(qty saídas PRODUTO) = 0, só perdas, grava custo 0 em todos e segue.
+//    se entrada.preco for null, usa produto.preco_custo; se também null, 0).
+//  - U = sum(qtd × pesoRelativo) das saídas tipo=PRODUTO. Perdas excluídas
+//    do denominador → seu custo é AUTOMATICAMENTE absorvido pelos cortes úteis.
+//  - custo por unidade-peso = C / U
+//  - custo unit do corte = pesoRelativo × custo_por_unidade_peso
+//  - Cortes nobres (peso>1) absorvem proporcionalmente mais; populares
+//    (peso<1) absorvem menos.
+//  - Se U = 0, todas as saídas são perda — grava custo 0 e segue.
+//  - Se todas as saídas têm pesoRelativo=1 (default), o resultado equivale
+//    ao rateio puro por quantidade.
 //
 // Idempotente-ish: retorna 400 se OP já estiver CONCLUIDA.
 
@@ -106,9 +111,14 @@ export async function POST(
     custoTotal += qtd * preco;
   }
 
-  // 2) Rateio proporcional à quantidade das saidas PRODUTO.
+  // 2) Rateio por UNIDADES-PESO das saidas PRODUTO. Perdas absorvem custo
+  //    automaticamente (não entram no denominador). Cortes nobres (peso>1)
+  //    absorvem mais; populares (peso<1) absorvem menos.
   const saidasUteis = saidas.filter((s) => s.tipo === 'PRODUTO');
-  const qtdUtil = saidasUteis.reduce((s, r) => s + Number(r.quantidade ?? 0), 0);
+  const unidadesPesoUtil = saidasUteis.reduce(
+    (s, r) => s + Number(r.quantidade ?? 0) * Number(r.pesoRelativo ?? 1),
+    0,
+  );
   const qtdTotalSaidas = saidas.reduce((s, r) => s + Number(r.quantidade ?? 0), 0);
 
   const divergenciaPerc =
@@ -158,11 +168,14 @@ export async function POST(
 
   // 4) Grava saidas: ENTRADA_PRODUCAO pras tipo=PRODUTO, nada de movimento
   //    pras PERDA (mas ainda grava custoRateado=0 na linha pra UI).
+  //    custo unit = pesoRelativo × (custoTotal / unidadesPesoUtil).
+  const custoPorUnidadePeso = unidadesPesoUtil > 0 ? custoTotal / unidadesPesoUtil : 0;
   for (const s of saidas) {
     const qtd = Number(s.quantidade ?? 0);
+    const peso = Number(s.pesoRelativo ?? 1);
     let custoUnit = 0;
-    if (s.tipo === 'PRODUTO' && qtdUtil > 0) {
-      custoUnit = custoTotal / qtdUtil;
+    if (s.tipo === 'PRODUTO' && custoPorUnidadePeso > 0) {
+      custoUnit = peso * custoPorUnidadePeso;
     }
     const valor = qtd * custoUnit;
 

@@ -177,7 +177,12 @@ export const ordemProducaoEntrada = pgTable(
 );
 
 /** Insumos que SAEM da produção (são gerados) + PERDAS.
- *  Perda entra com tipo='PERDA' e não gera estoque, mas consome custo. */
+ *  Perda entra com tipo='PERDA' e não gera estoque (e absorve seu próprio
+ *  custo proporcionalmente nos cortes úteis: o denominador do rateio é
+ *  só sum(qtd*peso) das saídas PRODUTO).
+ *
+ *  Peso relativo: cortes nobres têm peso > 1, populares < 1. Ex: filé mignon:
+ *  lâmina peso 3, cabeça peso 1, aparas peso 0.5. Default 1 (rateio só por qtd). */
 export const ordemProducaoSaida = pgTable(
   'ordem_producao_saida',
   {
@@ -190,6 +195,9 @@ export const ordemProducaoSaida = pgTable(
     /** null se for PERDA sem material identificado (pode também ser PRODUTO com produto_id) */
     produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'restrict' }),
     quantidade: numeric('quantidade', { precision: 14, scale: 4 }).notNull(),
+    /** Peso relativo no rateio. Default 1 = todos iguais. Maior = corte mais nobre,
+     *  absorve proporcionalmente mais custo. Só faz efeito em saídas tipo PRODUTO. */
+    pesoRelativo: numeric('peso_relativo', { precision: 8, scale: 4 }).notNull().default('1'),
     /** Custo unitário rateado (calculado ao concluir a OP). null enquanto RASCUNHO. */
     custoRateado: numeric('custo_rateado', { precision: 14, scale: 6 }),
     valorTotal: numeric('valor_total', { precision: 14, scale: 2 }),

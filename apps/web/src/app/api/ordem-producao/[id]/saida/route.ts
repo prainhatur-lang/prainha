@@ -16,6 +16,9 @@ const Body = z.object({
   tipo: z.enum(['PRODUTO', 'PERDA']),
   produtoId: z.string().uuid().nullable().optional(),
   quantidade: z.number().positive(),
+  /** Peso relativo no rateio (default 1). Maior = corte mais nobre,
+   *  absorve mais custo. Só faz efeito em saídas tipo PRODUTO. */
+  pesoRelativo: z.number().positive().max(100).optional(),
   observacao: z.string().max(500).nullable().optional(),
 });
 
@@ -93,6 +96,7 @@ export async function POST(
       tipo: parsed.data.tipo,
       produtoId: parsed.data.produtoId ?? null,
       quantidade: parsed.data.quantidade.toFixed(4),
+      pesoRelativo: (parsed.data.pesoRelativo ?? 1).toFixed(4),
       observacao: parsed.data.observacao ?? null,
     })
     .returning({ id: schema.ordemProducaoSaida.id });

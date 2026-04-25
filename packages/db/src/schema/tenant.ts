@@ -63,6 +63,10 @@ export const filial = pgTable(
     toleranciaAutoAceite: numeric('tolerancia_auto_aceite', { precision: 10, scale: 2 })
       .notNull()
       .default('0.90'),
+    /** Parametros customizaveis por filial pra cada engine de conciliacao.
+     *  Quando null/vazio, engine usa defaults do codigo (lib/conciliacao-params).
+     *  Schema: ver type ParametrosConciliacao. */
+    parametrosConciliacao: jsonb('parametros_conciliacao').$type<ParametrosConciliacao>(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
