@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition, useMemo } from 'react';
+import { useState, useTransition, useMemo, useEffect } from 'react';
 import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
@@ -209,8 +209,42 @@ function ModalLancar({
   const [boletoStoragePath, setBoletoStoragePath] = useState<string | null>(null);
   const [boletoUploadando, setBoletoUploadando] = useState(false);
   const [tokenCelular, setTokenCelular] = useState<string | null>(null);
+  const [boletoCelularRecebido, setBoletoCelularRecebido] = useState<{
+    storagePath: string;
+    url: string;
+  } | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Polling: enquanto user esta na opcao "celular" e ja gerou token, fica
+  // verificando a cada 4s se o boleto foi enviado pelo celular. Para quando
+  // detectar.
+  useEffect(() => {
+    if (modoSemDup !== 'celular' || !tokenCelular || boletoCelularRecebido) return;
+
+    let cancelado = false;
+    async function verificar() {
+      try {
+        const r = await fetch(`/api/nota-compra/${notaId}/boleto-pendente`, {
+          cache: 'no-store',
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelado && d.pendente) {
+          setBoletoCelularRecebido({ storagePath: d.storagePath, url: d.url });
+        }
+      } catch {
+        // silencioso
+      }
+    }
+    // Verifica imediato e depois a cada 4s
+    verificar();
+    const id = setInterval(verificar, 4000);
+    return () => {
+      cancelado = true;
+      clearInterval(id);
+    };
+  }, [modoSemDup, tokenCelular, boletoCelularRecebido, notaId]);
 
   const opcoesCategoria = useMemo(
     () => categorias.filter((c) => c.tipo === 'DESPESA' || c.tipo == null),
@@ -429,7 +463,10 @@ function ModalLancar({
             </div>
 
             {modoSemDup === 'celular' && tokenCelular && (
-              <LinkCelular token={tokenCelular} />
+              <LinkCelular
+                token={tokenCelular}
+                boletoRecebido={boletoCelularRecebido}
+              />
             )}
 
             {(modoSemDup === 'manual' || modoSemDup === 'celular') && (
@@ -530,7 +567,13 @@ function ButaoModoSemDup({
   );
 }
 
-function LinkCelular({ token }: { token: string }) {
+function LinkCelular({
+  token,
+  boletoRecebido,
+}: {
+  token: string;
+  boletoRecebido: { storagePath: string; url: string } | null;
+}) {
   const [copiado, setCopiado] = useState(false);
   const url = typeof window !== 'undefined'
     ? `${window.location.origin}/nota-boleto/${token}`
@@ -540,6 +583,42 @@ function LinkCelular({ token }: { token: string }) {
     setCopiado(true);
     setTimeout(() => setCopiado(false), 2000);
   }
+
+  // Quando o boleto chega, troca o card pelo preview
+  if (boletoRecebido) {
+    const ehImagem = /\.(jpe?g|png|webp|heic)$/i.test(boletoRecebido.storagePath);
+    return (
+      <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-2.5">
+        <p className="text-[11px] font-semibold text-emerald-900">
+          ✓ Boleto recebido pelo celular!
+        </p>
+        <div className="mt-2 flex gap-2">
+          {ehImagem ? (
+            <a href={boletoRecebido.url} target="_blank" rel="noopener noreferrer">
+              <img
+                src={boletoRecebido.url}
+                alt="boleto"
+                className="h-20 w-20 rounded border border-emerald-200 object-cover"
+              />
+            </a>
+          ) : (
+            <a
+              href={boletoRecebido.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded border border-emerald-200 bg-white px-3 py-2 text-[10px] text-emerald-800 hover:bg-emerald-50"
+            >
+              📄 Abrir PDF
+            </a>
+          )}
+          <p className="text-[10px] text-emerald-800">
+            Vai ser anexado às contas a pagar quando você confirmar o lançamento.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-2.5">
       <p className="text-[10px] font-medium text-slate-700">
@@ -562,7 +641,7 @@ function LinkCelular({ token }: { token: string }) {
         </button>
       </div>
       <p className="mt-1 text-[9px] text-slate-500">
-        O envio fica anexado às contas a pagar dessa nota automaticamente.
+        Aguardando envio… esta tela atualiza sozinha quando a foto chegar.
       </p>
     </div>
   );

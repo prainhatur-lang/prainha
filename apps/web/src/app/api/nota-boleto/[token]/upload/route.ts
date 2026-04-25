@@ -101,7 +101,8 @@ export async function POST(
     );
   }
 
-  // Anexa em TODAS as conta_pagar dessa nota que ainda nao tem boleto
+  // 1. Anexa em TODAS as conta_pagar JA EXISTENTES dessa nota sem boleto
+  //    (caso o user ja tenha lancado e so depois mandou foto)
   await db
     .update(schema.contaPagar)
     .set({ boletoStoragePath: storagePath })
@@ -112,6 +113,15 @@ export async function POST(
         isNull(schema.contaPagar.boletoStoragePath),
       ),
     );
+
+  // 2. Salva tambem na nota.boletoPendentePath. Isso eh o caso comum:
+  //    user esta no PC com modal aberto, manda link pro celular, sobe foto
+  //    ANTES de clicar Confirmar. Ainda nao existe conta_pagar pra atualizar.
+  //    Quando o user confirmar, /parcelas-manuais le esse campo.
+  await db
+    .update(schema.notaCompra)
+    .set({ boletoPendentePath: storagePath })
+    .where(eq(schema.notaCompra.id, nota.id));
 
   const { data: pub } = supa.storage.from(BUCKET).getPublicUrl(storagePath);
   return NextResponse.json({

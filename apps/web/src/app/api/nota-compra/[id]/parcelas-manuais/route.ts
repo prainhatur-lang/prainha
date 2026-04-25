@@ -64,6 +64,7 @@ export async function POST(
       filialId: schema.notaCompra.filialId,
       fornecedorId: schema.notaCompra.fornecedorId,
       numero: schema.notaCompra.numero,
+      boletoPendentePath: schema.notaCompra.boletoPendentePath,
     })
     .from(schema.notaCompra)
     .where(eq(schema.notaCompra.id, id))
@@ -110,6 +111,9 @@ export async function POST(
 
   const { categoriaId, parcelas, boletoStoragePath } = parsed.data;
   const total = parcelas.length;
+  // Se o body nao trouxe o path (modo "celular"), usa o que veio do upload
+  // mobile salvo na nota.
+  const boletoFinal = boletoStoragePath ?? nota.boletoPendentePath ?? null;
 
   const criadas: { id: string }[] = [];
   for (let i = 0; i < parcelas.length; i++) {
@@ -130,14 +134,23 @@ export async function POST(
         dataVencimento: p.dataVencimento,
         valor: String(p.valor),
         descricao,
-        boletoStoragePath: boletoStoragePath ?? null,
+        boletoStoragePath: boletoFinal,
       })
       .returning({ id: schema.contaPagar.id });
     if (novo) criadas.push(novo);
   }
 
+  // Limpa o pendente — ja foi consumido. Evita reaproveitar em re-lancamentos.
+  if (nota.boletoPendentePath) {
+    await db
+      .update(schema.notaCompra)
+      .set({ boletoPendentePath: null })
+      .where(eq(schema.notaCompra.id, id));
+  }
+
   return NextResponse.json({
     ok: true,
     contasCriadas: criadas.length,
+    boletoAnexado: boletoFinal != null,
   });
 }

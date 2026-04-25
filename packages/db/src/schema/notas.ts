@@ -76,6 +76,10 @@ export const notaCompra = pgTable(
     // fornecedor nao preencheu), o user pode anexar um boleto digitalizado
     // OU gerar um token publico pra enviar foto depois pelo celular.
     boletoTokenPublico: varchar('boleto_token_publico', { length: 64 }).unique(),
+    /** Path do ultimo upload de boleto pelo celular antes de criar conta_pagar.
+     *  Ao clicar Confirmar lancamento, esse path eh transferido pra
+     *  conta_pagar.boleto_storage_path e este campo eh limpo. */
+    boletoPendentePath: text('boleto_pendente_path'),
 
     // Metadata
     origemImportacao: varchar('origem_importacao', { length: 20 }).default('UPLOAD'), // UPLOAD | SEFAZ_MANIFESTO
