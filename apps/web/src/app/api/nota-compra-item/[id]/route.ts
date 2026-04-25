@@ -1,11 +1,15 @@
 // PATCH /api/nota-compra-item/[id]
 // Opera o mapeamento do item ↔ produto interno. Body pode ser uma de duas formas:
-//  1) { produtoId }  — vincula item ao produto existente
-//  2) { produtoId: null }  — desvincula
+//  1) { produtoId, fator? }  — vincula item ao produto existente
+//  2) { produtoId: null }    — desvincula
 // Quando vincula, se a nota tem fornecedorId, atualiza/cria o mapeamento em
 // produto_fornecedor (upsert) gravando codigo + ean + descricao + unidade
-// vindo do item, pra o match-auto pegar automaticamente nas próximas notas
-// desse fornecedor.
+// + fator de conversao vindo do request, pra o match-auto pegar automatica-
+// mente nas proximas notas desse fornecedor.
+//
+// O fator de conversao traduz a unidade do fornecedor pra unidade interna:
+// ex: NFe vem com 2 UN do "OLEO 15,8L"; produto interno e em LITROS, fator=15.8
+// → na hora de lancar, qtdInterna = 2 * 15.8 = 31.6 L.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -18,6 +22,7 @@ export const runtime = 'nodejs';
 
 const Body = z.object({
   produtoId: z.string().uuid().nullable(),
+  fator: z.number().positive().optional(),
 });
 
 export async function PATCH(
@@ -80,7 +85,8 @@ export async function PATCH(
     );
   }
 
-  const { produtoId } = parsed.data;
+  const { produtoId, fator } = parsed.data;
+  const fatorStr = fator != null ? String(fator) : null;
 
   if (produtoId) {
     const [prod] = await db
@@ -130,15 +136,23 @@ export async function PATCH(
             ean: item.ean,
             descricaoFornecedor: item.descricao,
             unidadeFornecedor: item.unidade,
-            fatorConversao: '1',
+            fatorConversao: fatorStr ?? '1',
           });
         } catch {
           // Conflito de unique (ex: mesmo código mapeado pra outro produto).
           // Ignora — o usuário pode resolver manualmente em /cadastros/produtos/[id].
         }
+      } else if (fatorStr != null) {
+        // Ja existia o vinculo do produto com o fornecedor; o usuario quer
+        // ajustar o fator nesse momento (ex: na 1a vez vinculou com fator
+        // errado). Atualiza pra valer no proximo lancamento.
+        await db
+          .update(schema.produtoFornecedor)
+          .set({ fatorConversao: fatorStr })
+          .where(eq(schema.produtoFornecedor.id, existente.id));
       }
     }
   }
 
-  return NextResponse.json({ id, produtoId });
+  return NextResponse.json({ id, produtoId, fator: fatorStr ?? null });
 }

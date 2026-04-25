@@ -54,9 +54,23 @@ export default async function NotaDetalhePage(props: {
       produtoNome: schema.produto.nome,
       produtoTipo: schema.produto.tipo,
       produtoUnidade: schema.produto.unidadeEstoque,
+      // Vinculo fornecedor↔produto pra exibir/editar o fator de conversao.
+      // Se a nota tem fornecedorId E o item esta vinculado ao produto, o leftJoin
+      // pega o fator atual; senao, vem null e a UI mostra o default.
+      produtoFornecedorId: schema.produtoFornecedor.id,
+      fatorConversao: schema.produtoFornecedor.fatorConversao,
     })
     .from(schema.notaCompraItem)
     .leftJoin(schema.produto, eq(schema.produto.id, schema.notaCompraItem.produtoId))
+    .leftJoin(
+      schema.produtoFornecedor,
+      and(
+        eq(schema.produtoFornecedor.produtoId, schema.notaCompraItem.produtoId),
+        nota.fornecedorId
+          ? eq(schema.produtoFornecedor.fornecedorId, nota.fornecedorId)
+          : sql`false`,
+      ),
+    )
     .where(eq(schema.notaCompraItem.notaCompraId, id))
     .orderBy(asc(schema.notaCompraItem.numeroItem));
 
@@ -312,6 +326,8 @@ export default async function NotaDetalhePage(props: {
                       produtoNome: it.produtoNome,
                       produtoTipo: it.produtoTipo,
                       produtoUnidade: it.produtoUnidade,
+                      produtoFornecedorId: it.produtoFornecedorId,
+                      fatorConversao: it.fatorConversao,
                       lancado: idsLancados.has(it.id),
                     }}
                     produtosDisponiveis={produtosDisponiveis.map((p) => ({
