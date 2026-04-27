@@ -168,6 +168,33 @@ export function EditorProducao({
     }
   }
 
+  async function duplicar() {
+    const novoResp = prompt(
+      'Responsável da nova OP (deixe em branco pra preencher depois):',
+      '',
+    );
+    // null = user clicou Cancelar; '' = user clicou OK sem digitar
+    if (novoResp === null) return;
+    setLoading('duplicar');
+    setMsg(null);
+    try {
+      const r = await fetch(`/api/ordem-producao/${op.id}/duplicar`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ responsavel: novoResp.trim() || null }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
+        return;
+      }
+      // Vai direto pra OP nova
+      router.push(`/movimento/producao/${d.id}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
   async function deletarLinha(tipo: 'entrada' | 'saida', id: string, nome: string) {
     if (!confirm(`Remover "${nome}"?`)) return;
     const rota = tipo === 'entrada' ? 'ordem-producao-entrada' : 'ordem-producao-saida';
@@ -224,6 +251,15 @@ export function EditorProducao({
               descricao={op.descricao}
             />
           )}
+          <button
+            type="button"
+            onClick={duplicar}
+            disabled={loading !== null || pending}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            title="Cria uma OP nova com as mesmas entradas e saídas — útil pra dividir trabalho entre cozinheiros"
+          >
+            {loading === 'duplicar' ? 'Duplicando...' : '⧉ Duplicar'}
+          </button>
           <button
             type="button"
             onClick={() => window.print()}
