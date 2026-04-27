@@ -11,6 +11,7 @@ interface Op {
   responsavel: string | null;
   status: string;
   marcadaProntaEm: string | null;
+  marcadaProntaPor: string | null;
   concluidaEm: string | null;
 }
 
@@ -71,6 +72,7 @@ export function CozinheiroOp({
   saidas,
   produtos,
   fotos,
+  sugestoesNomes,
 }: {
   token: string;
   op: Op;
@@ -78,24 +80,30 @@ export function CozinheiroOp({
   saidas: LinhaSaida[];
   produtos: ProdutoOpcao[];
   fotos: Foto[];
+  sugestoesNomes: string[];
 }) {
   const editavel = op.status === 'RASCUNHO' && !op.marcadaProntaEm;
   const router = useRouter();
   const [_pending, start] = useTransition();
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [modalProntaAberto, setModalProntaAberto] = useState(false);
 
-  async function marcarPronta() {
-    if (!confirm('Marcar como pronta? O gestor vai revisar e concluir.')) return;
+  async function confirmarPronta(nome: string) {
     setLoading(true);
     setErro(null);
     try {
-      const r = await fetch(`/api/op/${token}/marcar-pronta`, { method: 'POST' });
+      const r = await fetch(`/api/op/${token}/marcar-pronta`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nome: nome || null }),
+      });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
         setErro(d.error ?? `HTTP ${r.status}`);
         return;
       }
+      setModalProntaAberto(false);
       start(() => router.refresh());
     } finally {
       setLoading(false);
@@ -376,7 +384,7 @@ export function CozinheiroOp({
         <div className="mt-6 sticky bottom-4">
           <button
             type="button"
-            onClick={marcarPronta}
+            onClick={() => setModalProntaAberto(true)}
             disabled={loading}
             className="w-full rounded-2xl bg-emerald-600 px-6 py-4 text-base font-bold text-white shadow-lg hover:bg-emerald-700 disabled:opacity-50"
           >
@@ -392,6 +400,151 @@ export function CozinheiroOp({
           )}
         </div>
       )}
+
+      {modalProntaAberto && (
+        <ModalQuemMarcouPronta
+          sugestoes={sugestoesNomes}
+          responsavelOp={op.responsavel}
+          loading={loading}
+          onConfirmar={confirmarPronta}
+          onFechar={() => setModalProntaAberto(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalQuemMarcouPronta({
+  sugestoes,
+  responsavelOp,
+  loading,
+  onConfirmar,
+  onFechar,
+}: {
+  sugestoes: string[];
+  responsavelOp: string | null;
+  loading: boolean;
+  onConfirmar: (nome: string) => void;
+  onFechar: () => void;
+}) {
+  // Se a OP tem responsavel "Maria, Joao", oferece os 2 como botoes
+  const responsaveisDaOp = (responsavelOp ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const [nome, setNome] = useState('');
+
+  // Sugestoes priorizadas: responsaveis da OP primeiro, depois colaboradores ativos
+  const opcoesPrioritarias = Array.from(new Set(responsaveisDaOp));
+  const opcoesOutras = sugestoes.filter((s) => !opcoesPrioritarias.includes(s));
+
+  function escolher(n: string) {
+    onConfirmar(n);
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 sm:items-center"
+      onClick={onFechar}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md space-y-4 rounded-t-2xl border border-slate-200 bg-white p-5 sm:rounded-2xl"
+      >
+        <div>
+          <h2 className="text-base font-bold text-slate-900">
+            Quem está marcando como pronta?
+          </h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Pra registrar quem fechou a OP. O gestor vê depois.
+          </p>
+        </div>
+
+        {opcoesPrioritarias.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Responsável da OP
+            </p>
+            <div className="space-y-2">
+              {opcoesPrioritarias.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => escolher(n)}
+                  disabled={loading}
+                  className="block w-full rounded-xl bg-emerald-600 px-4 py-3 text-left text-base font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Sou {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {opcoesOutras.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Outros cozinheiros
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {opcoesOutras.slice(0, 8).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => escolher(n)}
+                  disabled={loading}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Ou digite o nome
+          </p>
+          <div className="mt-1 flex gap-2">
+            <input
+              type="text"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Seu nome"
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base"
+            />
+            <button
+              type="button"
+              onClick={() => nome.trim() && escolher(nome.trim())}
+              disabled={loading || !nome.trim()}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+
+        <div className="flex justify-between border-t border-slate-100 pt-3">
+          <button
+            type="button"
+            onClick={() => escolher('')}
+            disabled={loading}
+            className="text-xs text-slate-500 hover:underline"
+          >
+            Pular (sem registrar nome)
+          </button>
+          <button
+            type="button"
+            onClick={onFechar}
+            disabled={loading}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

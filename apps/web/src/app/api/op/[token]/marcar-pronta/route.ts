@@ -1,21 +1,35 @@
 // POST /api/op/[token]/marcar-pronta
 // Cozinheiro sinaliza que terminou a OP (não conclui — só notifica gestor).
+// Body opcional: { nome: string } — quem está marcando, registrado pra
+// rastreabilidade quando varios cozinheiros editam a mesma OP.
 
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const Body = z.object({
+  nome: z.string().max(100).nullable().optional(),
+});
+
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ token: string }> },
 ) {
   const { token } = await params;
   if (!token || token.length < 20) {
     return NextResponse.json({ error: 'token invalido' }, { status: 400 });
   }
+
+  const json = await req.json().catch(() => ({}));
+  const parsed = Body.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'body invalido' }, { status: 400 });
+  }
+  const nome = parsed.data.nome?.trim() || null;
 
   const [op] = await db
     .select({
@@ -36,7 +50,10 @@ export async function POST(
 
   await db
     .update(schema.ordemProducao)
-    .set({ marcadaProntaEm: new Date() })
+    .set({
+      marcadaProntaEm: new Date(),
+      marcadaProntaPor: nome,
+    })
     .where(eq(schema.ordemProducao.id, op.id));
 
   return NextResponse.json({ ok: true });

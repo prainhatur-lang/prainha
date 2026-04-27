@@ -18,6 +18,7 @@ interface Op {
   divergenciaPercentual: string | null;
   enviadaEm: string | null;
   marcadaProntaEm: string | null;
+  marcadaProntaPor: string | null;
 }
 
 interface LinhaEntrada {
@@ -313,7 +314,23 @@ export function EditorProducao({
             ⏳ Cozinheiro marcou como pronta
           </p>
           <p className="mt-1 text-xs text-amber-800">
-            {op.responsavel ? <strong>{op.responsavel}</strong> : 'O cozinheiro'}{' '}
+            {op.marcadaProntaPor ? (
+              <>
+                <strong>{op.marcadaProntaPor}</strong>
+                {op.responsavel &&
+                  op.responsavel !== op.marcadaProntaPor &&
+                  !op.responsavel.includes(op.marcadaProntaPor) && (
+                    <span className="text-amber-700">
+                      {' '}
+                      (responsável: {op.responsavel})
+                    </span>
+                  )}
+              </>
+            ) : op.responsavel ? (
+              <strong>{op.responsavel}</strong>
+            ) : (
+              'O cozinheiro'
+            )}{' '}
             sinalizou que terminou em{' '}
             <span className="font-mono">
               {new Date(op.marcadaProntaEm).toLocaleString('pt-BR')}

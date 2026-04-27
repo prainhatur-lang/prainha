@@ -210,6 +210,9 @@ export const ordemProducao = pgTable(
     enviadaEm: timestamp('enviada_em', { withTimezone: true }),
     /** Quando o cozinheiro sinalizou "pronto" (não conclui — só notifica gestor) */
     marcadaProntaEm: timestamp('marcada_pronta_em', { withTimezone: true }),
+    /** Quem (cozinheiro) marcou como pronta. Texto livre — quando varios
+     *  cozinheiros editam a mesma OP, registra quem foi o ultimo a fechar. */
+    marcadaProntaPor: varchar('marcada_pronta_por', { length: 100 }),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     concluidaEm: timestamp('concluida_em', { withTimezone: true }),

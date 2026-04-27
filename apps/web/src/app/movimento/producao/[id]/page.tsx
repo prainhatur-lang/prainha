@@ -160,6 +160,7 @@ export default async function OpDetalhePage(props: {
             divergenciaPercentual: op.divergenciaPercentual,
             enviadaEm: op.enviadaEm ? op.enviadaEm.toISOString() : null,
             marcadaProntaEm: op.marcadaProntaEm ? op.marcadaProntaEm.toISOString() : null,
+            marcadaProntaPor: op.marcadaProntaPor,
           }}
           badge={badge}
           entradas={entradas.map((e) => ({

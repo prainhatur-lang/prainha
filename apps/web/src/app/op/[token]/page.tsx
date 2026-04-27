@@ -3,7 +3,7 @@
 
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { CozinheiroOp } from './op-cliente';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +23,7 @@ export default async function OpPublicaPage(props: {
       status: schema.ordemProducao.status,
       enviadaEm: schema.ordemProducao.enviadaEm,
       marcadaProntaEm: schema.ordemProducao.marcadaProntaEm,
+      marcadaProntaPor: schema.ordemProducao.marcadaProntaPor,
       concluidaEm: schema.ordemProducao.concluidaEm,
       filialId: schema.ordemProducao.filialId,
     })
@@ -90,6 +91,22 @@ export default async function OpPublicaPage(props: {
     ['INSUMO', 'VENDA_SIMPLES', 'COMPLEMENTO'].includes(p.tipo),
   );
 
+  // Colaboradores ativos da filial — sugestao no modal "marcar como pronta"
+  const colaboradoresLista = await db
+    .select({ nome: schema.colaborador.nome })
+    .from(schema.colaborador)
+    .where(
+      and(
+        eq(schema.colaborador.filialId, op.filialId),
+        eq(schema.colaborador.ativo, true),
+      ),
+    )
+    .orderBy(asc(schema.colaborador.nome))
+    .limit(50);
+  const sugestoesNomes = colaboradoresLista
+    .map((c) => c.nome)
+    .filter((n): n is string => Boolean(n));
+
   return (
     <main className="min-h-screen bg-slate-100">
       <CozinheiroOp
@@ -101,6 +118,7 @@ export default async function OpPublicaPage(props: {
           responsavel: op.responsavel,
           status: op.status,
           marcadaProntaEm: op.marcadaProntaEm ? op.marcadaProntaEm.toISOString() : null,
+          marcadaProntaPor: op.marcadaProntaPor,
           concluidaEm: op.concluidaEm ? op.concluidaEm.toISOString() : null,
         }}
         entradas={entradas.map((e) => ({
@@ -132,6 +150,7 @@ export default async function OpPublicaPage(props: {
           observacao: f.observacao,
           enviadaEm: f.enviadaEm ? f.enviadaEm.toISOString() : null,
         }))}
+        sugestoesNomes={sugestoesNomes}
       />
     </main>
   );
