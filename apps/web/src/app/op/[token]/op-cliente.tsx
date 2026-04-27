@@ -17,6 +17,7 @@ interface Op {
 
 interface LinhaEntrada {
   id: string;
+  produtoId: string;
   produtoNome: string;
   produtoUnidade: string;
   quantidade: string;
@@ -214,35 +215,31 @@ export function CozinheiroOp({
         descricao="Tire uma foto do que você recebeu antes de começar."
       />
 
-      {/* Entradas — instruções */}
+      {/* Entradas — quanto pegou */}
       <section className="mt-5">
-        <h2 className="text-sm font-bold uppercase tracking-wide text-slate-700">
-          🥩 Vai usar
-        </h2>
-        <p className="mt-0.5 text-xs text-slate-500">
-          O gestor reservou esses insumos pra essa produção.
-        </p>
-        <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="flex items-end justify-between">
+          <div>
+            <h2 className="text-sm font-bold uppercase tracking-wide text-slate-700">
+              🥩 Vai usar
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Informe quanto de cada insumo você pegou pra essa produção.
+            </p>
+          </div>
+          {editavel && (
+            <AdicionarEntradaBtn token={token} produtos={produtos} />
+          )}
+        </div>
+        <div className="mt-2 space-y-2">
           {entradas.length === 0 ? (
-            <p className="px-4 py-6 text-center text-sm text-slate-500">
-              Nenhum insumo reservado.
+            <p className="rounded-xl border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
+              {editavel
+                ? 'Adicione o que pegou no estoque (filé, etc.)'
+                : 'Nenhum insumo registrado.'}
             </p>
           ) : (
             entradas.map((e) => (
-              <div
-                key={e.id}
-                className="flex items-center justify-between border-b border-slate-100 px-4 py-3 last:border-b-0"
-              >
-                <span className="text-base font-medium text-slate-900">
-                  {e.produtoNome}
-                </span>
-                <span className="font-mono text-base font-bold text-slate-700">
-                  {Number(e.quantidade)}{' '}
-                  <span className="text-xs font-normal text-slate-500">
-                    {e.produtoUnidade}
-                  </span>
-                </span>
-              </div>
+              <EntradaRow key={e.id} token={token} entrada={e} editavel={editavel} />
             ))
           )}
         </div>
@@ -546,6 +543,300 @@ function ModalQuemMarcouPronta({
         </div>
       </div>
     </div>
+  );
+}
+
+function EntradaRow({
+  token,
+  entrada,
+  editavel,
+}: {
+  token: string;
+  entrada: LinhaEntrada;
+  editavel: boolean;
+}) {
+  const router = useRouter();
+  const [_pending, start] = useTransition();
+  const [editando, setEditando] = useState(false);
+  const [qtd, setQtd] = useState(String(Number(entrada.quantidade)));
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    const n = Number(qtd.replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) {
+      alert('Quantidade inválida');
+      return;
+    }
+    if (n === Number(entrada.quantidade)) {
+      setEditando(false);
+      return;
+    }
+    setSalvando(true);
+    try {
+      const r = await fetch(`/api/op/${token}/entrada/${entrada.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ quantidade: n }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Erro: ${d.error ?? r.status}`);
+        return;
+      }
+      setEditando(false);
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function remover() {
+    if (!confirm(`Remover "${entrada.produtoNome}"?`)) return;
+    setSalvando(true);
+    try {
+      const r = await fetch(`/api/op/${token}/entrada/${entrada.id}`, {
+        method: 'DELETE',
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Erro: ${d.error ?? r.status}`);
+        return;
+      }
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border-2 border-slate-200 bg-white p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 flex-1 truncate text-base font-medium text-slate-900">
+          {entrada.produtoNome}
+        </span>
+        <div className="text-right">
+          {editando ? (
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={qtd}
+                onChange={(e) => setQtd(e.target.value)}
+                autoFocus
+                className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-base"
+              />
+              <span className="text-xs text-slate-500">{entrada.produtoUnidade}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setQtd(String(Number(entrada.quantidade)));
+                  setEditando(false);
+                }}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600"
+              >
+                ✕
+              </button>
+              <button
+                type="button"
+                onClick={salvar}
+                disabled={salvando}
+                className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white"
+              >
+                {salvando ? '...' : 'OK'}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => editavel && setEditando(true)}
+              disabled={!editavel}
+              className={`text-right ${editavel ? 'rounded-lg hover:bg-slate-100' : ''} px-2 py-1`}
+            >
+              <p className="font-mono text-xl font-bold text-slate-900">
+                {Number(entrada.quantidade)}
+              </p>
+              <p className="text-[10px] text-slate-500">{entrada.produtoUnidade}</p>
+            </button>
+          )}
+        </div>
+      </div>
+      {editavel && !editando && (
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={remover}
+            className="text-[10px] text-rose-600 hover:underline"
+          >
+            remover
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdicionarEntradaBtn({
+  token,
+  produtos,
+}: {
+  token: string;
+  produtos: ProdutoOpcao[];
+}) {
+  const router = useRouter();
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const [produtoId, setProdutoId] = useState('');
+  const [qtd, setQtd] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [_pending, start] = useTransition();
+
+  const escolhido = produtos.find((p) => p.id === produtoId);
+
+  const opcoes = useMemo(() => {
+    const b = busca.trim().toLowerCase();
+    return produtos
+      .filter((p) => (b ? p.nome.toLowerCase().includes(b) : true))
+      .slice(0, 20);
+  }, [produtos, busca]);
+
+  function fechar() {
+    setAberto(false);
+    setBusca('');
+    setProdutoId('');
+    setQtd('');
+    setErro(null);
+  }
+
+  async function enviar(e: React.FormEvent) {
+    e.preventDefault();
+    if (!produtoId) {
+      setErro('Selecione um produto');
+      return;
+    }
+    const n = Number(qtd.replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) {
+      setErro('Quantidade inválida');
+      return;
+    }
+    setSalvando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/op/${token}/entrada`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ produtoId, quantidade: n }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      fechar();
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setAberto(true)}
+        className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+      >
+        + Adicionar
+      </button>
+
+      {aberto && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 sm:items-center"
+          onClick={fechar}
+        >
+          <form
+            onSubmit={enviar}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md space-y-4 rounded-t-2xl border border-slate-200 bg-white p-5 sm:rounded-2xl"
+          >
+            <h2 className="text-base font-bold text-slate-900">
+              Adicionar insumo
+            </h2>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600">
+                Item *
+              </label>
+              <input
+                type="text"
+                value={busca}
+                onChange={(e) => {
+                  setBusca(e.target.value);
+                  setProdutoId('');
+                }}
+                placeholder="Buscar (ex: filé)..."
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+              />
+              {busca.trim() && !produtoId && opcoes.length > 0 && (
+                <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                  {opcoes.map((o) => (
+                    <button
+                      type="button"
+                      key={o.id}
+                      onClick={() => {
+                        setProdutoId(o.id);
+                        setBusca(o.nome);
+                      }}
+                      className="flex w-full items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-50"
+                    >
+                      <span className="text-slate-800">{o.nome}</span>
+                      <span className="font-mono text-xs text-slate-500">{o.unidade}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600">
+                Quantidade {escolhido ? `(${escolhido.unidade})` : ''} *
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={qtd}
+                onChange={(e) => setQtd(e.target.value)}
+                placeholder="0"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+              />
+            </div>
+
+            {erro && (
+              <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">
+                {erro}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={fechar}
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={salvando}
+                className="flex-1 rounded-lg bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {salvando ? 'Salvando...' : 'Adicionar'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
   );
 }
 

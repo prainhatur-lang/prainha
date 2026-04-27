@@ -35,6 +35,7 @@ export default async function OpPublicaPage(props: {
   const entradas = await db
     .select({
       id: schema.ordemProducaoEntrada.id,
+      produtoId: schema.ordemProducaoEntrada.produtoId,
       produtoNome: schema.produto.nome,
       produtoUnidade: schema.produto.unidadeEstoque,
       quantidade: schema.ordemProducaoEntrada.quantidade,
@@ -123,6 +124,7 @@ export default async function OpPublicaPage(props: {
         }}
         entradas={entradas.map((e) => ({
           id: e.id,
+          produtoId: e.produtoId,
           produtoNome: e.produtoNome ?? '',
           produtoUnidade: e.produtoUnidade,
           quantidade: e.quantidade,
