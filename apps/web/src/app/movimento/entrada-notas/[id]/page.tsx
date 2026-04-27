@@ -89,7 +89,7 @@ export default async function NotaDetalhePage(props: {
     );
   const idsLancados = new Set(itensLancadosRows.map((r) => r.itemId).filter(Boolean) as string[]);
 
-  // Produtos disponíveis pra vincular (mesma filial)
+  // Produtos disponíveis pra vincular (mesma filial, sem descontinuados)
   const produtosDisponiveis = await db
     .select({
       id: schema.produto.id,
@@ -99,7 +99,12 @@ export default async function NotaDetalhePage(props: {
       codigoPersonalizado: schema.produto.codigoPersonalizado,
     })
     .from(schema.produto)
-    .where(eq(schema.produto.filialId, nota.filialId))
+    .where(
+      and(
+        eq(schema.produto.filialId, nota.filialId),
+        sql`${schema.produto.descontinuado} IS NOT TRUE`,
+      ),
+    )
     .orderBy(asc(schema.produto.nome))
     .limit(5000);
 

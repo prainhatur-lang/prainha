@@ -3,7 +3,7 @@
 
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { CozinheiroOp } from './op-cliente';
 
 export const dynamic = 'force-dynamic';
@@ -75,7 +75,8 @@ export default async function OpPublicaPage(props: {
     .where(eq(schema.ordemProducaoFoto.ordemProducaoId, op.id))
     .orderBy(asc(schema.ordemProducaoFoto.enviadaEm));
 
-  // Produtos pra adicionar saídas extras (limitado pra mobile)
+  // Produtos pra adicionar saídas extras (limitado pra mobile).
+  // Exclui descontinuados — pausados ainda aparecem (rupturas curtas).
   const produtos = await db
     .select({
       id: schema.produto.id,
@@ -84,7 +85,12 @@ export default async function OpPublicaPage(props: {
       unidade: schema.produto.unidadeEstoque,
     })
     .from(schema.produto)
-    .where(eq(schema.produto.filialId, op.filialId))
+    .where(
+      and(
+        eq(schema.produto.filialId, op.filialId),
+        sql`${schema.produto.descontinuado} IS NOT TRUE`,
+      ),
+    )
     .orderBy(asc(schema.produto.nome))
     .limit(2000);
 
