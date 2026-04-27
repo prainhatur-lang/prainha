@@ -264,6 +264,12 @@ export const ordemProducaoSaida = pgTable(
     /** Peso relativo no rateio. Default 1 = todos iguais. Maior = corte mais nobre,
      *  absorve proporcionalmente mais custo. Só faz efeito em saídas tipo PRODUTO. */
     pesoRelativo: numeric('peso_relativo', { precision: 8, scale: 4 }).notNull().default('1'),
+    /** Peso ABSOLUTO total da saída em kg. Usado pra fechar a OP quando a
+     *  entrada é em kg mas o produto saída é em un (ex: 15 file chateau ≈ 3.75kg).
+     *  Sem isso, o gestor não sabe se sobrou material ou se houve perda
+     *  não declarada. Opcional quando produto.unidadeEstoque já é kg/g
+     *  (sistema deriva da quantidade). */
+    pesoTotalKg: numeric('peso_total_kg', { precision: 14, scale: 4 }),
     /** Custo unitário rateado (calculado ao concluir a OP). null enquanto RASCUNHO. */
     custoRateado: numeric('custo_rateado', { precision: 14, scale: 6 }),
     valorTotal: numeric('valor_total', { precision: 14, scale: 2 }),

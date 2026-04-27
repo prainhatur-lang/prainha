@@ -13,6 +13,9 @@ const Body = z.object({
   produtoId: z.string().uuid().nullable().optional(),
   quantidade: z.number().positive(),
   pesoRelativo: z.number().positive().max(100).optional(),
+  /** Peso absoluto em kg — usado pra fechar a OP por peso quando o
+   *  produto eh em un mas a entrada eh em kg. Opcional. */
+  pesoTotalKg: z.number().positive().optional(),
   observacao: z.string().max(500).nullable().optional(),
 });
 
@@ -78,6 +81,8 @@ export async function POST(
       produtoId: parsed.data.produtoId ?? null,
       quantidade: parsed.data.quantidade.toFixed(4),
       pesoRelativo: (parsed.data.pesoRelativo ?? 1).toFixed(4),
+      pesoTotalKg:
+        parsed.data.pesoTotalKg != null ? parsed.data.pesoTotalKg.toFixed(4) : null,
       observacao: parsed.data.observacao ?? null,
     })
     .returning({ id: schema.ordemProducaoSaida.id });

@@ -29,7 +29,25 @@ interface LinhaSaida {
   produtoUnidade: string | null;
   quantidade: string;
   pesoRelativo: string;
+  pesoTotalKg: string | null;
   observacao: string | null;
+}
+
+const TOLERANCIA_DIVERG = 0.05; // 5%
+
+/** Converte qualquer unidade pra kg.
+ *  - kg: como está
+ *  - g: dividido por 1000
+ *  - un/l/ml: usa pesoTotalKg se preenchido, senão NaN (nao da pra contar) */
+function quantidadeEmKg(
+  quantidade: number,
+  unidade: string | null,
+  pesoTotalKg: number | null,
+): number {
+  const u = (unidade ?? '').toLowerCase();
+  if (u === 'kg') return quantidade;
+  if (u === 'g') return quantidade / 1000;
+  return pesoTotalKg ?? NaN;
 }
 
 interface ProdutoOpcao {
@@ -102,6 +120,44 @@ export function CozinheiroOp({
 
   const saidasProd = saidas.filter((s) => s.tipo === 'PRODUTO');
   const saidasPerda = saidas.filter((s) => s.tipo === 'PERDA');
+
+  // ===== RECONCILIAÇÃO POR PESO =====
+  // Soma entrada em kg (cada linha com sua unidade)
+  const entradaKg = entradas.reduce((acc, e) => {
+    const kg = quantidadeEmKg(Number(e.quantidade), e.produtoUnidade, null);
+    return Number.isFinite(kg) ? acc + kg : acc;
+  }, 0);
+
+  // Soma saídas (produto) em kg — usa pesoTotalKg quando produto é em un
+  const saidaProdKg = saidasProd.reduce((acc, s) => {
+    const kg = quantidadeEmKg(
+      Number(s.quantidade),
+      s.produtoUnidade,
+      s.pesoTotalKg ? Number(s.pesoTotalKg) : null,
+    );
+    return Number.isFinite(kg) ? acc + kg : acc;
+  }, 0);
+
+  const perdaKg = saidasPerda.reduce((acc, s) => {
+    const kg = quantidadeEmKg(
+      Number(s.quantidade),
+      s.produtoUnidade,
+      s.pesoTotalKg ? Number(s.pesoTotalKg) : null,
+    );
+    return Number.isFinite(kg) ? acc + kg : acc;
+  }, 0);
+
+  const totalSaidaKg = saidaProdKg + perdaKg;
+  const divergKg = entradaKg - totalSaidaKg;
+  const divergPct = entradaKg > 0 ? Math.abs(divergKg) / entradaKg : 0;
+  const fechouOk = entradaKg > 0 && divergPct <= TOLERANCIA_DIVERG;
+  const algumaSaidaSemPeso = saidasProd
+    .concat(saidasPerda)
+    .some(
+      (s) =>
+        !['kg', 'g'].includes((s.produtoUnidade ?? '').toLowerCase()) &&
+        !s.pesoTotalKg,
+    );
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-6">
@@ -183,6 +239,70 @@ export function CozinheiroOp({
           )}
         </div>
       </section>
+
+      {/* Painel de fechamento por peso (só faz sentido se entrada tem peso) */}
+      {entradaKg > 0 && (saidasProd.length > 0 || saidasPerda.length > 0) && (
+        <section
+          className={`mt-5 rounded-2xl border-2 p-4 ${
+            algumaSaidaSemPeso
+              ? 'border-slate-200 bg-slate-50'
+              : fechouOk
+                ? 'border-emerald-300 bg-emerald-50'
+                : divergPct < 0.10
+                  ? 'border-amber-300 bg-amber-50'
+                  : 'border-rose-300 bg-rose-50'
+          }`}
+        >
+          <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700">
+            ⚖ Fechamento por peso
+          </h3>
+          {algumaSaidaSemPeso ? (
+            <p className="mt-1 text-[11px] text-slate-700">
+              ⚠ Algum produto saída está em <span className="font-mono">un</span> sem
+              peso informado. Edite a saída pra preencher o peso e a OP fechar.
+            </p>
+          ) : (
+            <>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px]">
+                <div>
+                  <div className="text-slate-500">Entrada</div>
+                  <div className="font-mono text-base font-bold text-slate-900">
+                    {entradaKg.toFixed(2)} kg
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Produzido</div>
+                  <div className="font-mono text-base font-bold text-slate-900">
+                    {saidaProdKg.toFixed(2)} kg
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Perda</div>
+                  <div className="font-mono text-base font-bold text-slate-900">
+                    {perdaKg.toFixed(2)} kg
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 border-t border-slate-200 pt-2 text-center">
+                {fechouOk ? (
+                  <p className="text-sm font-bold text-emerald-800">
+                    ✓ Fechou ({(divergPct * 100).toFixed(1)}% divergência)
+                  </p>
+                ) : (
+                  <p
+                    className={`text-sm font-bold ${
+                      divergPct < 0.10 ? 'text-amber-800' : 'text-rose-800'
+                    }`}
+                  >
+                    {divergKg > 0 ? '↑' : '↓'} {Math.abs(divergKg).toFixed(2)} kg
+                    {' '}({(divergPct * 100).toFixed(1)}% — tolerância 5%)
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {/* Saídas — produtos gerados */}
       <section className="mt-6">
@@ -291,8 +411,14 @@ function SaidaRow({
   const [_pending, start] = useTransition();
   const [editando, setEditando] = useState(false);
   const [qtd, setQtd] = useState(String(Number(saida.quantidade)));
+  const [pesoKg, setPesoKg] = useState(
+    saida.pesoTotalKg ? String(Number(saida.pesoTotalKg)) : '',
+  );
   const [salvando, setSalvando] = useState(false);
   const ehPerda = saida.tipo === 'PERDA';
+  const precisaPeso = !['kg', 'g'].includes(
+    (saida.produtoUnidade ?? '').toLowerCase(),
+  );
 
   async function salvar() {
     const n = Number(qtd.replace(',', '.'));
@@ -300,16 +426,32 @@ function SaidaRow({
       alert('Quantidade inválida');
       return;
     }
-    if (n === Number(saida.quantidade)) {
+    let pesoNum: number | null | undefined;
+    if (precisaPeso) {
+      pesoNum = pesoKg.trim() ? Number(pesoKg.replace(',', '.')) : NaN;
+      if (!Number.isFinite(pesoNum) || pesoNum <= 0) {
+        alert('Peso em kg inválido — necessário pra fechar a OP');
+        return;
+      }
+    } else {
+      pesoNum = undefined; // nao envia
+    }
+    const qtdMudou = n !== Number(saida.quantidade);
+    const pesoMudou =
+      pesoNum !== undefined && pesoNum !== Number(saida.pesoTotalKg ?? 0);
+    if (!qtdMudou && !pesoMudou) {
       setEditando(false);
       return;
     }
     setSalvando(true);
     try {
+      const body: Record<string, unknown> = {};
+      if (qtdMudou) body.quantidade = n;
+      if (pesoNum !== undefined) body.pesoTotalKg = pesoNum;
       const r = await fetch(`/api/op/${token}/saida/${saida.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ quantidade: n }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -346,31 +488,56 @@ function SaidaRow({
         </div>
         <div className="text-right">
           {editando ? (
-            <div className="flex items-center gap-1">
-              <input
-                type="text"
-                inputMode="decimal"
-                value={qtd}
-                onChange={(e) => setQtd(e.target.value)}
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') salvar();
-                  if (e.key === 'Escape') {
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={qtd}
+                  onChange={(e) => setQtd(e.target.value)}
+                  autoFocus
+                  className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-base"
+                />
+                <span className="text-xs text-slate-500">
+                  {saida.produtoUnidade}
+                </span>
+              </div>
+              {precisaPeso && (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={pesoKg}
+                    onChange={(e) => setPesoKg(e.target.value)}
+                    placeholder="peso"
+                    className="w-20 rounded-md border border-amber-300 px-2 py-1 text-right text-base"
+                  />
+                  <span className="text-xs text-slate-500">kg</span>
+                </div>
+              )}
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
                     setQtd(String(Number(saida.quantidade)));
+                    setPesoKg(
+                      saida.pesoTotalKg ? String(Number(saida.pesoTotalKg)) : '',
+                    );
                     setEditando(false);
-                  }
-                }}
-                className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-base"
-              />
-              <span className="text-xs text-slate-500">{saida.produtoUnidade}</span>
-              <button
-                type="button"
-                onClick={salvar}
-                disabled={salvando}
-                className="ml-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white"
-              >
-                {salvando ? '...' : 'OK'}
-              </button>
+                  }}
+                  className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600"
+                >
+                  ✕
+                </button>
+                <button
+                  type="button"
+                  onClick={salvar}
+                  disabled={salvando}
+                  className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white"
+                >
+                  {salvando ? '...' : 'OK'}
+                </button>
+              </div>
             </div>
           ) : (
             <button
@@ -383,6 +550,20 @@ function SaidaRow({
                 {Number(saida.quantidade)}
               </p>
               <p className="text-[10px] text-slate-500">{saida.produtoUnidade}</p>
+              {saida.pesoTotalKg && Number(saida.pesoTotalKg) > 0 && (
+                <p className="mt-0.5 font-mono text-[10px] text-slate-600">
+                  ={Number(saida.pesoTotalKg).toFixed(2)} kg
+                </p>
+              )}
+              {!saida.pesoTotalKg &&
+                !['kg', 'g'].includes(
+                  (saida.produtoUnidade ?? '').toLowerCase(),
+                ) &&
+                editavel && (
+                  <p className="mt-0.5 text-[9px] font-medium text-amber-700">
+                    ⚠ falta peso
+                  </p>
+                )}
             </button>
           )}
         </div>
@@ -600,12 +781,16 @@ function AdicionarSaidaBtn({
   const [busca, setBusca] = useState('');
   const [produtoId, setProdutoId] = useState('');
   const [qtd, setQtd] = useState('');
+  const [pesoKg, setPesoKg] = useState(''); // peso total em kg quando produto é em un
   const [observacao, setObservacao] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [_pending, start] = useTransition();
 
   const escolhido = produtos.find((p) => p.id === produtoId);
+  // Pede peso explicito so quando unidade nao eh kg/g (i.e. 'un', 'l', 'ml')
+  const precisaPeso =
+    !!escolhido && !['kg', 'g'].includes(escolhido.unidade.toLowerCase());
 
   const opcoes = useMemo(() => {
     const b = busca.trim().toLowerCase();
@@ -620,6 +805,7 @@ function AdicionarSaidaBtn({
     setBusca('');
     setProdutoId('');
     setQtd('');
+    setPesoKg('');
     setObservacao('');
     setErro(null);
   }
@@ -635,6 +821,14 @@ function AdicionarSaidaBtn({
       setErro('Selecione um produto');
       return;
     }
+    let pesoNum: number | null = null;
+    if (precisaPeso) {
+      pesoNum = pesoKg.trim() ? Number(pesoKg.replace(',', '.')) : NaN;
+      if (!Number.isFinite(pesoNum) || pesoNum <= 0) {
+        setErro('Peso em kg inválido — necessário pra fechar a OP');
+        return;
+      }
+    }
     setSalvando(true);
     setErro(null);
     try {
@@ -645,6 +839,7 @@ function AdicionarSaidaBtn({
         body.produtoId = produtoId || null;
         if (observacao.trim()) body.observacao = observacao.trim();
       }
+      if (pesoNum != null) body.pesoTotalKg = pesoNum;
       const r = await fetch(`/api/op/${token}/saida`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -758,6 +953,41 @@ function AdicionarSaidaBtn({
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
               />
             </div>
+
+            {/* Peso total em kg — pedido quando produto eh em un/l/ml,
+                pra que o sistema consiga fechar a OP comparando entrada
+                em kg com saida em kg + perda em kg. */}
+            {precisaPeso && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600">
+                  Peso total (kg) *
+                </label>
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  Quanto pesa, no total, essa quantidade de{' '}
+                  {escolhido?.unidade}? Ex: 15 file chateau ≈ 3,75 kg.
+                </p>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={pesoKg}
+                  onChange={(e) => setPesoKg(e.target.value)}
+                  placeholder="0,00"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                />
+                {qtd.trim() && pesoKg.trim() && (
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    ≈{' '}
+                    <span className="font-mono font-medium">
+                      {(
+                        Number(pesoKg.replace(',', '.')) /
+                          Number(qtd.replace(',', '.')) || 0
+                      ).toFixed(3)}
+                    </span>{' '}
+                    kg por {escolhido?.unidade}
+                  </p>
+                )}
+              </div>
+            )}
 
             {tipo === 'PERDA' && (
               <div>

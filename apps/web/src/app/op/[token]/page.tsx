@@ -52,6 +52,7 @@ export default async function OpPublicaPage(props: {
       produtoUnidade: schema.produto.unidadeEstoque,
       quantidade: schema.ordemProducaoSaida.quantidade,
       pesoRelativo: schema.ordemProducaoSaida.pesoRelativo,
+      pesoTotalKg: schema.ordemProducaoSaida.pesoTotalKg,
       observacao: schema.ordemProducaoSaida.observacao,
     })
     .from(schema.ordemProducaoSaida)
@@ -116,6 +117,7 @@ export default async function OpPublicaPage(props: {
           produtoUnidade: s.produtoUnidade,
           quantidade: s.quantidade,
           pesoRelativo: s.pesoRelativo,
+          pesoTotalKg: s.pesoTotalKg,
           observacao: s.observacao,
         }))}
         produtos={produtosUteis.map((p) => ({
