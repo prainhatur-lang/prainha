@@ -9,7 +9,7 @@ import { EditorProducao } from './editor';
 export const dynamic = 'force-dynamic';
 
 const BADGE_STATUS: Record<string, { label: string; cls: string }> = {
-  RASCUNHO: { label: 'Rascunho', cls: 'bg-amber-100 text-amber-800' },
+  RASCUNHO: { label: 'Em aberto', cls: 'bg-amber-100 text-amber-800' },
   CONCLUIDA: { label: 'Concluída', cls: 'bg-emerald-100 text-emerald-800' },
   CANCELADA: { label: 'Cancelada', cls: 'bg-rose-100 text-rose-800' },
 };

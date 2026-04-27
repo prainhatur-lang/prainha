@@ -541,7 +541,7 @@ function CardFilial({ saude: s }: { saude: SaudeFilial }) {
           </p>
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
             {s.producao.rascunhos > 0 && (
-              <span className="text-amber-700">{s.producao.rascunhos} rascunhos</span>
+              <span className="text-amber-700">{s.producao.rascunhos} em aberto</span>
             )}
             {s.producao.aguardandoRevisao > 0 && (
               <span className="font-medium text-emerald-700">

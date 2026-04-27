@@ -604,7 +604,9 @@ function SecaoExcecoes({
             <AceitarTodosBtn
               filialId={filialId}
               tipo={tipo}
-              qtd={total}
+              qtdTotal={total}
+              qtdBaixa={porSeveridade?.BAIXA ?? 0}
+              qtdMedia={porSeveridade?.MEDIA ?? 0}
             />
           )}
           <Link
