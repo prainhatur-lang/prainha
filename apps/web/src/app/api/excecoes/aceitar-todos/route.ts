@@ -1,6 +1,8 @@
 // POST /api/excecoes/aceitar-todos
-// Body: { filialId, tipo, processo? }
+// Body: { filialId, tipo, processo?, severidade? }
 // Aceita em batch todas as exceções ABERTAS do tipo informado.
+// Filtra opcionalmente por severidade (BAIXA = forma divergente / autoAceita,
+// MEDIA = diff fora de tolerancia pequena, ALTA = orfa).
 // Pra DIVERGENCIA_VALOR_OPERADORA: popula formaEfetiva/bandeiraEfetiva +
 // cria match_pdv_cielo manual + remove duplicatas.
 
@@ -8,7 +10,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,6 +20,7 @@ const Body = z.object({
   filialId: z.string().uuid(),
   tipo: z.string().min(1).max(50),
   processo: z.string().min(1).max(20).optional(),
+  severidade: z.enum(['BAIXA', 'MEDIA', 'ALTA']).optional(),
 });
 
 export async function POST(req: Request) {
@@ -33,7 +36,7 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const { filialId, tipo, processo } = parsed.data;
+  const { filialId, tipo, processo, severidade } = parsed.data;
 
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
@@ -63,6 +66,7 @@ export async function POST(req: Request) {
         eq(schema.excecao.filialId, filialId),
         eq(schema.excecao.tipo, tipo),
         processo ? eq(schema.excecao.processo, processo) : undefined,
+        severidade ? eq(schema.excecao.severidade, severidade) : undefined,
         isNull(schema.excecao.aceitaEm),
       ),
     );

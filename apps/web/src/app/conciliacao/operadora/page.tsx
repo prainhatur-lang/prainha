@@ -117,7 +117,12 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
   // Helper pra carregar uma secao paginada (count + rows)
   async function carregarSecao(tipo: string, page: number) {
     if (!filialSelecionada) {
-      return { rows: [] as Awaited<ReturnType<typeof queryRows>>, total: 0, totalValor: 0 };
+      return {
+        rows: [] as Awaited<ReturnType<typeof queryRows>>,
+        total: 0,
+        totalValor: 0,
+        porSeveridade: { BAIXA: 0, MEDIA: 0, ALTA: 0 },
+      };
     }
     const dataCond = filtroData(tipo);
     const whereCond = and(
@@ -161,6 +166,9 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         .select({
           n: sql<number>`COUNT(*)::int`,
           v: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
+          nBaixa: sql<number>`COUNT(*) FILTER (WHERE ${schema.excecao.severidade} = 'BAIXA')::int`,
+          nMedia: sql<number>`COUNT(*) FILTER (WHERE ${schema.excecao.severidade} = 'MEDIA')::int`,
+          nAlta: sql<number>`COUNT(*) FILTER (WHERE ${schema.excecao.severidade} = 'ALTA')::int`,
         })
         .from(schema.excecao)
         .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
@@ -171,7 +179,16 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
         .where(whereCond);
     }
     const [rows, [totalRow]] = await Promise.all([queryRows(), queryTotal()]);
-    return { rows, total: Number(totalRow?.n ?? 0), totalValor: Number(totalRow?.v ?? 0) };
+    return {
+      rows,
+      total: Number(totalRow?.n ?? 0),
+      totalValor: Number(totalRow?.v ?? 0),
+      porSeveridade: {
+        BAIXA: Number(totalRow?.nBaixa ?? 0),
+        MEDIA: Number(totalRow?.nMedia ?? 0),
+        ALTA: Number(totalRow?.nAlta ?? 0),
+      },
+    };
   }
 
   const [secaoDiv, secaoPdv, secaoCielo] = await Promise.all([
@@ -406,6 +423,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               tipo={TIPO_OPERADORA.DIVERGENCIA_VALOR}
               filialId={filialSelecionada.id}
               acoesDivergencia
+              porSeveridade={secaoDiv.porSeveridade}
             />
             <SecaoExcecoes
               titulo="No PDV, sem match na Cielo"
@@ -527,6 +545,7 @@ function SecaoExcecoes({
   filialId,
   acoesDivergencia = false,
   candidatosMatchManual,
+  porSeveridade,
 }: {
   titulo: string;
   descricao: string;
@@ -553,6 +572,7 @@ function SecaoExcecoes({
   filialId: string;
   acoesDivergencia?: boolean;
   candidatosMatchManual?: Array<{ id: string; data: string; valor: number; descricao: string }>;
+  porSeveridade?: { BAIXA: number; MEDIA: number; ALTA: number };
 }) {
   const corHeader = tom === 'rose' ? 'text-rose-700' : 'text-amber-700';
   const totalPaginas = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -581,7 +601,11 @@ function SecaoExcecoes({
         </div>
         <div className="flex items-center gap-2">
           {acoesDivergencia && total > 0 && (
-            <AceitarTodosBtn filialId={filialId} tipo={tipo} qtd={total} />
+            <AceitarTodosBtn
+              filialId={filialId}
+              tipo={tipo}
+              qtd={total}
+            />
           )}
           <Link
             href={filtroHref}

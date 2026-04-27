@@ -12,15 +12,14 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* O app foi desenhado em light mode (branco/slate). Detecção automática
+   de dark mode quebrava texto em inputs/dropdowns (texto branco em fundo
+   branco). Forçamos light. Se algum dia houver dark mode, tem que ser
+   feature explícita com classe dark: em todos os componentes. */
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  color-scheme: light;
 }

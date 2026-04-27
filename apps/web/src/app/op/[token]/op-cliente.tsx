@@ -40,14 +40,15 @@ const TOLERANCIA_DIVERG = 0.05; // 5%
 /** Converte qualquer unidade pra kg.
  *  - kg: como está
  *  - g: dividido por 1000
- *  - un/l/ml: usa pesoTotalKg se preenchido, senão NaN (nao da pra contar) */
+ *  - un/l/ml: usa pesoTotalKg se preenchido, senão NaN (nao da pra contar)
+ *  - sem unidade (ex: PERDA sem produto): assume que quantidade ja eh kg */
 function quantidadeEmKg(
   quantidade: number,
   unidade: string | null,
   pesoTotalKg: number | null,
 ): number {
   const u = (unidade ?? '').toLowerCase();
-  if (u === 'kg') return quantidade;
+  if (u === 'kg' || u === '') return quantidade;
   if (u === 'g') return quantidade / 1000;
   return pesoTotalKg ?? NaN;
 }
@@ -162,11 +163,15 @@ export function CozinheiroOp({
   const fechouOk = entradaKg > 0 && divergPct <= TOLERANCIA_DIVERG;
   const algumaSaidaSemPeso = saidasProd
     .concat(saidasPerda)
-    .some(
-      (s) =>
-        !['kg', 'g'].includes((s.produtoUnidade ?? '').toLowerCase()) &&
-        !s.pesoTotalKg,
-    );
+    .some((s) => {
+      const u = (s.produtoUnidade ?? '').toLowerCase();
+      // PERDA sem produto (sem unidade) usa quantidade como kg — nao falta peso
+      if (u === '' && s.tipo === 'PERDA') return false;
+      // kg/g: quantidade ja eh peso
+      if (['kg', 'g'].includes(u)) return false;
+      // un/l/ml sem peso: falta peso
+      return !s.pesoTotalKg;
+    });
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-6">
@@ -510,7 +515,7 @@ function ModalQuemMarcouPronta({
               value={nome}
               onChange={(e) => setNome(e.target.value)}
               placeholder="Seu nome"
-              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base"
+              className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
             />
             <button
               type="button"
@@ -775,7 +780,7 @@ function AdicionarEntradaBtn({
                   setProdutoId('');
                 }}
                 placeholder="Buscar (ex: filé)..."
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
               />
               {busca.trim() && !produtoId && opcoes.length > 0 && (
                 <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
@@ -807,7 +812,7 @@ function AdicionarEntradaBtn({
                 value={qtd}
                 onChange={(e) => setQtd(e.target.value)}
                 placeholder="0"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
               />
             </div>
 
@@ -1232,9 +1237,20 @@ function AdicionarSaidaBtn({
   const [_pending, start] = useTransition();
 
   const escolhido = produtos.find((p) => p.id === produtoId);
-  // Pede peso explicito so quando unidade nao eh kg/g (i.e. 'un', 'l', 'ml')
+  // Quando precisa pedir peso explicito (campo extra "Peso total kg"):
+  //  - PRODUTO em un/l/ml: sempre (pra fechar o painel por peso)
+  //  - PERDA com produto em un/l/ml: idem
+  //  - PERDA SEM produto: a quantidade EH o peso em kg, nao precisa campo extra
+  //  - kg/g: a quantidade ja vira kg automatico, nao precisa campo extra
   const precisaPeso =
     !!escolhido && !['kg', 'g'].includes(escolhido.unidade.toLowerCase());
+
+  // Pra PERDA sem produto, vamos rotular o input "Quantidade" como "Peso (kg)"
+  // pra deixar claro que eh peso absoluto.
+  const ehPerdaSemProduto = tipo === 'PERDA' && !produtoId;
+  const labelQtd = ehPerdaSemProduto
+    ? 'Peso (kg) *'
+    : `Quantidade ${escolhido ? `(${escolhido.unidade})` : ''} *`;
 
   const opcoes = useMemo(() => {
     const b = busca.trim().toLowerCase();
@@ -1362,7 +1378,7 @@ function AdicionarSaidaBtn({
                   setProdutoId('');
                 }}
                 placeholder="Buscar..."
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
               />
               {busca.trim() && !produtoId && opcoes.length > 0 && (
                 <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
@@ -1386,16 +1402,21 @@ function AdicionarSaidaBtn({
 
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Quantidade {escolhido ? `(${escolhido.unidade})` : ''} *
+                {labelQtd}
               </label>
               <input
                 type="text"
                 inputMode="decimal"
                 value={qtd}
                 onChange={(e) => setQtd(e.target.value)}
-                placeholder="0"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                placeholder={ehPerdaSemProduto ? '0,00' : '0'}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
               />
+              {ehPerdaSemProduto && (
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Ex: 2,5 kg de aparas/gordura. Entra na conta de fechamento.
+                </p>
+              )}
             </div>
 
             {/* Peso total em kg — pedido quando produto eh em un/l/ml,
@@ -1416,7 +1437,7 @@ function AdicionarSaidaBtn({
                   value={pesoKg}
                   onChange={(e) => setPesoKg(e.target.value)}
                   placeholder="0,00"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
                 />
                 {qtd.trim() && pesoKg.trim() && (
                   <p className="mt-1 text-[10px] text-slate-500">
@@ -1443,7 +1464,7 @@ function AdicionarSaidaBtn({
                   value={observacao}
                   onChange={(e) => setObservacao(e.target.value)}
                   placeholder="Ex: gordura, aparas, vencido"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base"
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900"
                 />
               </div>
             )}
