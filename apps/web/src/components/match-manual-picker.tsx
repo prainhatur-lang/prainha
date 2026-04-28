@@ -44,6 +44,19 @@ export function MatchManualPicker({
   const [erro, setErro] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
+  // Ordena candidatos por proximidade de valor (mais perto primeiro) +
+  // proximidade de data como tiebreaker. Ajuda a escanear pares plausíveis
+  // sem ter que ler 200 linhas — o que mais faz sentido sobe pro topo.
+  const candidatosOrdenados = useMemo(() => {
+    const alvoValor = Math.abs(valorPrincipal);
+    return [...candidatos].sort((a, b) => {
+      const dValA = Math.abs(Math.abs(a.valor) - alvoValor);
+      const dValB = Math.abs(Math.abs(b.valor) - alvoValor);
+      if (dValA !== dValB) return dValA - dValB;
+      return a.data.localeCompare(b.data);
+    });
+  }, [candidatos, valorPrincipal]);
+
   // Filtro de candidatos por NSU/autorização/valor/descrição/data.
   // Suporta:
   //  - "414,70" ou "414.70" → casa por valor (com tolerância de 1 centavo)
@@ -51,7 +64,7 @@ export function MatchManualPicker({
   //  - qualquer texto → busca substring na descrição
   const candidatosFiltrados = useMemo(() => {
     const b = busca.trim();
-    if (!b) return candidatos;
+    if (!b) return candidatosOrdenados;
     const bLower = b.toLowerCase();
 
     // Tenta interpretar como número
@@ -72,7 +85,7 @@ export function MatchManualPicker({
       dataBuscadaParcial = yyyy ? `${ddPad}/${mmPad}/${yyyy.padStart(4, '20'.slice(0, 4 - yyyy.length) + yyyy)}` : `${ddPad}/${mmPad}/`;
     }
 
-    return candidatos.filter((c) => {
+    return candidatosOrdenados.filter((c) => {
       if (valorBuscado !== null) {
         if (Math.abs(Math.abs(c.valor) - valorBuscado) <= 0.01) return true;
       }
@@ -87,7 +100,7 @@ export function MatchManualPicker({
       if (c.descricao.toLowerCase().includes(bLower)) return true;
       return false;
     });
-  }, [busca, candidatos]);
+  }, [busca, candidatosOrdenados]);
 
   const soma = useMemo(
     () =>
@@ -202,17 +215,31 @@ export function MatchManualPicker({
             </p>
           ) : (
             <table className="w-full text-xs">
-              <thead className="bg-slate-50 text-left font-medium text-slate-600">
+              <thead className="sticky top-0 bg-slate-50 text-left font-medium text-slate-600">
                 <tr>
                   <th className="px-3 py-2 w-8"></th>
                   <th className="px-3 py-2">Data</th>
                   <th className="px-3 py-2 text-right">Valor</th>
+                  <th className="px-3 py-2 text-right">Diff</th>
                   <th className="px-3 py-2">Descrição</th>
                 </tr>
               </thead>
               <tbody>
                 {candidatosFiltrados.map((c) => {
                   const marcado = sel.has(c.id);
+                  // Diff individual deste candidato vs valor alvo (independente
+                  // de outros que estejam marcados). Ajuda a identificar pares
+                  // plausiveis de relance.
+                  const diffCand = +(Math.abs(c.valor) - Math.abs(valorPrincipal)).toFixed(2);
+                  const pctCand = Math.abs(valorPrincipal) > 0
+                    ? Math.abs(diffCand / valorPrincipal) * 100
+                    : 0;
+                  const corDiff =
+                    Math.abs(diffCand) <= 0.10
+                      ? 'text-emerald-700'
+                      : pctCand < 1
+                        ? 'text-amber-700'
+                        : 'text-rose-700';
                   return (
                     <tr
                       key={c.id}
@@ -235,7 +262,15 @@ export function MatchManualPicker({
                       <td className="px-3 py-2 text-right font-mono font-medium text-slate-900">
                         {brl(c.valor)}
                       </td>
-                      <td className="px-3 py-2 text-slate-600">{c.descricao}</td>
+                      <td className={`px-3 py-2 text-right font-mono ${corDiff}`}>
+                        {diffCand >= 0 ? '+' : ''}
+                        {brl(diffCand)}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">
+                        <span className="block max-w-xs truncate" title={c.descricao}>
+                          {c.descricao}
+                        </span>
+                      </td>
                     </tr>
                   );
                 })}

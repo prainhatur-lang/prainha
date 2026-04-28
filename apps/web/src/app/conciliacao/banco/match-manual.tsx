@@ -38,6 +38,17 @@ export function MatchManualBanco({
   const [erro, setErro] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
+  // Ordena creditos por proximidade de valor (tiebreaker: data) — facilita
+  // achar o credito certo sem rolar lista enorme.
+  const creditosOrdenados = useMemo(() => {
+    return [...creditosDisponiveis].sort((a, b) => {
+      const dValA = Math.abs(a.valor - valorGrupo);
+      const dValB = Math.abs(b.valor - valorGrupo);
+      if (dValA !== dValB) return dValA - dValB;
+      return a.dataLanc.localeCompare(b.dataLanc);
+    });
+  }, [creditosDisponiveis, valorGrupo]);
+
   const soma = useMemo(
     () =>
       [...sel].reduce((s, id) => {
@@ -129,17 +140,29 @@ export function MatchManualBanco({
             </p>
           ) : (
             <table className="w-full text-xs">
-              <thead className="bg-slate-50 text-left font-medium text-slate-600">
+              <thead className="sticky top-0 bg-slate-50 text-left font-medium text-slate-600">
                 <tr>
                   <th className="px-3 py-2 w-8"></th>
                   <th className="px-3 py-2">Data</th>
                   <th className="px-3 py-2 text-right">Valor</th>
+                  <th className="px-3 py-2 text-right">Diff</th>
                   <th className="px-3 py-2">Descrição</th>
                 </tr>
               </thead>
               <tbody>
-                {creditosDisponiveis.map((c) => {
+                {creditosOrdenados.map((c) => {
                   const marcado = sel.has(c.id);
+                  // Diff individual deste credito vs grupo
+                  const diffCand = +(c.valor - valorGrupo).toFixed(2);
+                  const pctCand = valorGrupo > 0
+                    ? Math.abs(diffCand / valorGrupo) * 100
+                    : 0;
+                  const corDiff =
+                    Math.abs(diffCand) <= 0.10
+                      ? 'text-emerald-700'
+                      : pctCand < 1
+                        ? 'text-amber-700'
+                        : 'text-rose-700';
                   return (
                     <tr
                       key={c.id}
@@ -162,7 +185,15 @@ export function MatchManualBanco({
                       <td className="px-3 py-2 text-right font-mono font-medium text-slate-900">
                         {brl(c.valor)}
                       </td>
-                      <td className="px-3 py-2 text-slate-600">{c.descricao}</td>
+                      <td className={`px-3 py-2 text-right font-mono ${corDiff}`}>
+                        {diffCand >= 0 ? '+' : ''}
+                        {brl(diffCand)}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">
+                        <span className="block max-w-xs truncate" title={c.descricao}>
+                          {c.descricao}
+                        </span>
+                      </td>
                     </tr>
                   );
                 })}
@@ -186,13 +217,23 @@ export function MatchManualBanco({
             <span className="text-slate-600">Diferença:</span>
             <span
               className={`font-mono font-semibold ${
-                bate ? 'text-emerald-700' : 'text-rose-700'
+                bate ? 'text-emerald-700' : pctDiff < 1 ? 'text-amber-700' : 'text-rose-700'
               }`}
             >
               {diff >= 0 ? '+' : ''}
               {brl(diff)}
+              {pctDiff > 0 && (
+                <span className="ml-1 text-[10px]">({pctDiff.toFixed(2)}%)</span>
+              )}
             </span>
           </div>
+          {!bate && Math.abs(pctDiff - 0.49) < 0.05 && (
+            <p className="mt-1.5 rounded bg-amber-100 p-1.5 text-[10px] text-amber-900">
+              ℹ Diff bate exato com taxa Cielo Pix (0,49%) — venda passou pela
+              maquininha mas foi marcada como Pix Manual no PDV (forma errada
+              do garçom).
+            </p>
+          )}
         </div>
 
         <input
