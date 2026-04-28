@@ -21,6 +21,7 @@ interface LinhaEntrada {
   produtoNome: string;
   produtoUnidade: string;
   quantidade: string;
+  pesoTotalKg: string | null;
 }
 
 interface LinhaSaida {
@@ -134,7 +135,11 @@ export function CozinheiroOp({
   // ===== RECONCILIAÇÃO POR PESO =====
   // Soma entrada em kg (cada linha com sua unidade)
   const entradaKg = entradas.reduce((acc, e) => {
-    const kg = quantidadeEmKg(Number(e.quantidade), e.produtoUnidade, null);
+    const kg = quantidadeEmKg(
+      Number(e.quantidade),
+      e.produtoUnidade,
+      e.pesoTotalKg ? Number(e.pesoTotalKg) : null,
+    );
     return Number.isFinite(kg) ? acc + kg : acc;
   }, 0);
 
@@ -563,8 +568,15 @@ function EntradaRow({
   const router = useRouter();
   const [_pending, start] = useTransition();
   const [editando, setEditando] = useState(false);
+  const [editandoPeso, setEditandoPeso] = useState(false);
   const [qtd, setQtd] = useState(String(Number(entrada.quantidade)));
+  const [pesoKg, setPesoKg] = useState(
+    entrada.pesoTotalKg ? String(Number(entrada.pesoTotalKg)) : '',
+  );
   const [salvando, setSalvando] = useState(false);
+
+  const unidLow = (entrada.produtoUnidade ?? '').toLowerCase();
+  const ehKgG = unidLow === 'kg' || unidLow === 'g';
 
   async function salvar() {
     const n = Number(qtd.replace(',', '.'));
@@ -589,6 +601,37 @@ function EntradaRow({
         return;
       }
       setEditando(false);
+      start(() => router.refresh());
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function salvarPeso() {
+    const txt = pesoKg.trim();
+    const n = txt ? Number(txt.replace(',', '.')) : null;
+    if (n !== null && (!Number.isFinite(n) || n <= 0)) {
+      alert('Peso inválido');
+      return;
+    }
+    const atual = entrada.pesoTotalKg ? Number(entrada.pesoTotalKg) : null;
+    if (n === atual) {
+      setEditandoPeso(false);
+      return;
+    }
+    setSalvando(true);
+    try {
+      const r = await fetch(`/api/op/${token}/entrada/${entrada.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pesoTotalKg: n }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Erro: ${d.error ?? r.status}`);
+        return;
+      }
+      setEditandoPeso(false);
       start(() => router.refresh());
     } finally {
       setSalvando(false);
@@ -665,7 +708,65 @@ function EntradaRow({
           )}
         </div>
       </div>
-      {editavel && !editando && (
+
+      {/* Peso (kg) — só pra produtos em un/l/ml. Pra kg/g, peso = qtd. */}
+      {!ehKgG && !editando && (
+        <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">
+            ⚖ Peso (kg) {editavel ? '— pesa na balança' : ''}
+          </span>
+          {editandoPeso ? (
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={pesoKg}
+                onChange={(e) => setPesoKg(e.target.value)}
+                placeholder="kg"
+                autoFocus
+                className="w-20 rounded-md border border-slate-300 px-2 py-1 text-right text-base"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setPesoKg(entrada.pesoTotalKg ? String(Number(entrada.pesoTotalKg)) : '');
+                  setEditandoPeso(false);
+                }}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600"
+              >
+                ✕
+              </button>
+              <button
+                type="button"
+                onClick={salvarPeso}
+                disabled={salvando}
+                className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white"
+              >
+                {salvando ? '...' : 'OK'}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => editavel && setEditandoPeso(true)}
+              disabled={!editavel}
+              className={`px-2 py-1 ${editavel ? 'rounded-lg hover:bg-slate-100' : ''}`}
+            >
+              {entrada.pesoTotalKg && Number(entrada.pesoTotalKg) > 0 ? (
+                <span className="font-mono text-base font-bold text-slate-900">
+                  {Number(entrada.pesoTotalKg).toFixed(2)} kg
+                </span>
+              ) : editavel ? (
+                <span className="text-xs text-amber-700">⚠ pesar</span>
+              ) : (
+                <span className="text-xs text-slate-400">—</span>
+              )}
+            </button>
+          )}
+        </div>
+      )}
+
+      {editavel && !editando && !editandoPeso && (
         <div className="mt-2 flex justify-end">
           <button
             type="button"

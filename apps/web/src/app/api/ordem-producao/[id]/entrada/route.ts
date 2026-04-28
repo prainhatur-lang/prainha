@@ -70,7 +70,6 @@ export async function POST(
       id: schema.produto.id,
       filialId: schema.produto.filialId,
       precoCusto: schema.produto.precoCusto,
-      pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
     })
     .from(schema.produto)
     .where(eq(schema.produto.id, parsed.data.produtoId))
@@ -88,13 +87,8 @@ export async function POST(
         : 0;
   const valor = parsed.data.quantidade * preco;
 
-  // Auto-fill peso (kg) quando produto tem pesoUnitarioPadraoKg cadastrado.
-  // Ex: file vendido em un mas com 1 un = 1 kg → entrada 20 un = 20 kg auto.
-  let pesoTotalKg: string | null = null;
-  const pesoUn = prod.pesoUnitarioPadraoKg ? Number(prod.pesoUnitarioPadraoKg) : 0;
-  if (pesoUn > 0) {
-    pesoTotalKg = (parsed.data.quantidade * pesoUn).toFixed(3);
-  }
+  // pesoTotalKg fica null aqui — gestor preenche manualmente apos pesar
+  // (peso real pode diferir de qtd × pesoUnitarioPadrao).
 
   const [created] = await db
     .insert(schema.ordemProducaoEntrada)
@@ -104,7 +98,6 @@ export async function POST(
       quantidade: parsed.data.quantidade.toFixed(4),
       precoUnitario: preco.toFixed(6),
       valorTotal: valor.toFixed(2),
-      pesoTotalKg,
     })
     .returning({ id: schema.ordemProducaoEntrada.id });
 

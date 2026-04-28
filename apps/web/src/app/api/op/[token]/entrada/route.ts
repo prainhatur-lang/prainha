@@ -53,14 +53,12 @@ export async function POST(
     );
   }
 
-  // Carrega o produto pra validar filial + pegar custo + peso unitario padrao
+  // Carrega o produto pra validar filial + pegar custo
   const [prod] = await db
     .select({
       id: schema.produto.id,
       filialId: schema.produto.filialId,
-      unidadeEstoque: schema.produto.unidadeEstoque,
       precoCusto: schema.produto.precoCusto,
-      pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
     })
     .from(schema.produto)
     .where(eq(schema.produto.id, parsed.data.produtoId))
@@ -73,13 +71,9 @@ export async function POST(
   const precoUnit = Number(prod.precoCusto ?? 0);
   const valorTotal = precoUnit * parsed.data.quantidade;
 
-  // Auto-fill peso total kg quando produto tem pesoUnitarioPadraoKg
-  // (ex: file vendido em un mas com peso por un = 1 kg → 20 un = 20 kg)
-  let pesoTotalKg: string | null = null;
-  const pesoUn = prod.pesoUnitarioPadraoKg ? Number(prod.pesoUnitarioPadraoKg) : 0;
-  if (pesoUn > 0) {
-    pesoTotalKg = (parsed.data.quantidade * pesoUn).toFixed(3);
-  }
+  // NAO faz auto-fill de pesoTotalKg na entrada — o cozinheiro pesa na balanca
+  // o quanto pegou de fato (pode ser diferente de qtd × pesoUnitarioPadrao).
+  // O campo pesoUnitarioPadraoKg do produto eh so info de cadastro.
 
   const [created] = await db
     .insert(schema.ordemProducaoEntrada)
@@ -89,7 +83,6 @@ export async function POST(
       quantidade: parsed.data.quantidade.toFixed(4),
       precoUnitario: precoUnit > 0 ? precoUnit.toFixed(6) : null,
       valorTotal: precoUnit > 0 ? valorTotal.toFixed(2) : null,
-      pesoTotalKg,
     })
     .returning({ id: schema.ordemProducaoEntrada.id });
 

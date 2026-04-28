@@ -39,6 +39,7 @@ export default async function OpPublicaPage(props: {
       produtoNome: schema.produto.nome,
       produtoUnidade: schema.produto.unidadeEstoque,
       quantidade: schema.ordemProducaoEntrada.quantidade,
+      pesoTotalKg: schema.ordemProducaoEntrada.pesoTotalKg,
     })
     .from(schema.ordemProducaoEntrada)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.ordemProducaoEntrada.produtoId))
@@ -134,6 +135,7 @@ export default async function OpPublicaPage(props: {
           produtoNome: e.produtoNome ?? '',
           produtoUnidade: e.produtoUnidade,
           quantidade: e.quantidade,
+          pesoTotalKg: e.pesoTotalKg,
         }))}
         saidas={saidas.map((s) => ({
           id: s.id,

@@ -45,9 +45,15 @@ async function carregar(token: string, entradaId: string) {
   return { status: 200 as const, linha };
 }
 
-const Body = z.object({
-  quantidade: z.number().positive(),
-});
+const Body = z
+  .object({
+    quantidade: z.number().positive().optional(),
+    pesoTotalKg: z.number().positive().nullable().optional(),
+  })
+  .refine(
+    (d) => d.quantidade !== undefined || d.pesoTotalKg !== undefined,
+    { message: 'informe quantidade ou pesoTotalKg' },
+  );
 
 export async function PATCH(
   req: Request,
@@ -68,16 +74,22 @@ export async function PATCH(
     );
   }
 
-  const precoUnit = Number(check.linha.precoCusto ?? 0);
-  const valorTotal = precoUnit * parsed.data.quantidade;
+  const set: Record<string, unknown> = {};
+  if (parsed.data.quantidade !== undefined) {
+    const precoUnit = Number(check.linha.precoCusto ?? 0);
+    const valorTotal = precoUnit * parsed.data.quantidade;
+    set.quantidade = parsed.data.quantidade.toFixed(4);
+    set.precoUnitario = precoUnit > 0 ? precoUnit.toFixed(6) : null;
+    set.valorTotal = precoUnit > 0 ? valorTotal.toFixed(2) : null;
+  }
+  if (parsed.data.pesoTotalKg !== undefined) {
+    set.pesoTotalKg =
+      parsed.data.pesoTotalKg !== null ? parsed.data.pesoTotalKg.toFixed(3) : null;
+  }
 
   await db
     .update(schema.ordemProducaoEntrada)
-    .set({
-      quantidade: parsed.data.quantidade.toFixed(4),
-      precoUnitario: precoUnit > 0 ? precoUnit.toFixed(6) : null,
-      valorTotal: precoUnit > 0 ? valorTotal.toFixed(2) : null,
-    })
+    .set(set)
     .where(eq(schema.ordemProducaoEntrada.id, entradaId));
 
   return NextResponse.json({ ok: true });
