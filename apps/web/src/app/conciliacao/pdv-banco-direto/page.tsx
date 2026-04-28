@@ -8,6 +8,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int, maskCnpj } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { FormRodar } from './form';
+import { MatchManualPdvBancoDireto } from './match-manual';
 import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliacao';
 
 export const dynamic = 'force-dynamic';
@@ -436,6 +437,7 @@ export default async function PdvBancoDiretoPage(props: {
                       <th className="px-3 py-2">Pedido</th>
                       <th className="px-3 py-2">Forma</th>
                       <th className="px-3 py-2 text-right">Valor</th>
+                      <th className="px-3 py-2 w-32"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -443,7 +445,9 @@ export default async function PdvBancoDiretoPage(props: {
                       <tr key={p.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 font-mono text-xs text-slate-700">
                           {p.dataPagamento
-                            ? new Date(p.dataPagamento).toLocaleDateString('pt-BR')
+                            ? new Date(p.dataPagamento).toLocaleDateString('pt-BR', {
+                                timeZone: 'America/Sao_Paulo',
+                              })
                             : '—'}
                         </td>
                         <td className="px-3 py-2 font-mono text-xs text-slate-600">
@@ -454,6 +458,27 @@ export default async function PdvBancoDiretoPage(props: {
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-xs font-medium">
                           {brl(p.valor)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <MatchManualPdvBancoDireto
+                            pagamentoId={p.id}
+                            pagamentoValor={Number(p.valor)}
+                            pagamentoData={
+                              p.dataPagamento
+                                ? new Date(p.dataPagamento).toLocaleDateString('pt-BR', {
+                                    timeZone: 'America/Sao_Paulo',
+                                  })
+                                : '—'
+                            }
+                            pagamentoForma={p.formaPagamento ?? '—'}
+                            pedidoExterno={p.codigoPedido}
+                            creditosDisponiveis={bancoSemPdv.map((b) => ({
+                              id: b.id,
+                              data: b.dataMovimento ?? '',
+                              valor: Number(b.valor),
+                              descricao: b.descricao ?? '',
+                            }))}
+                          />
                         </td>
                       </tr>
                     ))}
