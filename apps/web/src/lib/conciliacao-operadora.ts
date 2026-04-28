@@ -410,11 +410,19 @@ export async function rodarConciliacaoOperadora(opts: {
         }
       }
     }
-    for (const u of updatesEfetivas) {
-      await db
-        .update(schema.pagamento)
-        .set({ formaEfetiva: u.forma, bandeiraEfetiva: u.bandeira })
-        .where(eq(schema.pagamento.id, u.pagamentoId));
+    // Batched parallel updates pra evitar N+1 sequencial (gargalo: 1.5k pagamentos
+    // × 10ms/query = 15s). Vercel maxDuration=60s, qualquer engine grande estourava.
+    // Limita 50 em paralelo pra nao saturar pool de conexao.
+    const BATCH = 50;
+    for (let i = 0; i < updatesEfetivas.length; i += BATCH) {
+      await Promise.all(
+        updatesEfetivas.slice(i, i + BATCH).map((u) =>
+          db
+            .update(schema.pagamento)
+            .set({ formaEfetiva: u.forma, bandeiraEfetiva: u.bandeira })
+            .where(eq(schema.pagamento.id, u.pagamentoId)),
+        ),
+      );
     }
 
     // Persiste matches novos em match_pdv_cielo. Niveis 1-3 sao firmes;
