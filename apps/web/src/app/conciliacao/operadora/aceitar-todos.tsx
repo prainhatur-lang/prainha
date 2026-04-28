@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState, useTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
+import { AceitarModal } from './aceitar-modal';
+import type { Motivo } from './motivos';
 
 interface Props {
   filialId: string;
@@ -34,6 +37,8 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [aberto, setAberto] = useState(false);
+  // Quando um filtro foi escolhido, abre o modal de motivo. null = sem modal.
+  const [modalFiltro, setModalFiltro] = useState<Filtro | undefined>(undefined);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,29 +57,19 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
     };
   }, [aberto]);
 
-  async function aceitar(filtro: Filtro) {
-    const chave = filtro ?? 'TODAS';
+  function abrirModal(filtro: Filtro) {
     const qtd = filtro === 'BAIXA' ? qtdBaixa : filtro === 'MEDIA' ? qtdMedia : qtdTotal;
     if (qtd === 0) {
       setMsg('Nenhuma exceção neste filtro.');
       return;
     }
-    if (
-      !confirm(
-        `Aceitar ${qtd} divergência(s) de ${LABELS[chave]}?\n\n` +
-          `${DESCRICOES[chave]}\n\n` +
-          `Pra cada uma, sistema:\n` +
-          `• Marca como aceita\n` +
-          `• Aplica forma/bandeira da Cielo como efetiva\n` +
-          `• Cria match firme manual (não volta a ser exceção)\n\n` +
-          `Não pode ser desfeito facilmente. Continuar?`,
-      )
-    ) {
-      return;
-    }
+    setAberto(false);
+    setModalFiltro(filtro);
+  }
+
+  async function confirmar(motivo: Motivo | null, observacao: string) {
     setLoading(true);
     setMsg(null);
-    setAberto(false);
     try {
       const r = await fetch('/api/excecoes/aceitar-todos', {
         method: 'POST',
@@ -83,7 +78,9 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
           filialId,
           tipo,
           processo: 'OPERADORA',
-          ...(filtro ? { severidade: filtro } : {}),
+          ...(modalFiltro ? { severidade: modalFiltro } : {}),
+          ...(motivo ? { motivo } : {}),
+          ...(observacao ? { observacao } : {}),
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -92,6 +89,7 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
         return;
       }
       setMsg(`✓ ${d.aceitas} aceitas (${d.comFormaEfetiva} com correção de forma)`);
+      setModalFiltro(undefined);
       start(() => router.refresh());
     } finally {
       setLoading(false);
@@ -117,7 +115,7 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
 
           <button
             type="button"
-            onClick={() => aceitar('BAIXA')}
+            onClick={() => abrirModal('BAIXA')}
             disabled={qtdBaixa === 0}
             className="block w-full px-3 py-2 text-left hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -134,7 +132,7 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
 
           <button
             type="button"
-            onClick={() => aceitar('MEDIA')}
+            onClick={() => abrirModal('MEDIA')}
             disabled={qtdMedia === 0}
             className="block w-full border-t border-slate-100 px-3 py-2 text-left hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -151,7 +149,7 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
 
           <button
             type="button"
-            onClick={() => aceitar(null)}
+            onClick={() => abrirModal(null)}
             disabled={qtdTotal === 0}
             className="block w-full border-t border-slate-100 px-3 py-2 text-left hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -169,6 +167,20 @@ export function AceitarTodosBtn({ filialId, tipo, qtdTotal, qtdBaixa, qtdMedia }
       )}
 
       {msg && <span className="text-[10px] text-slate-600">{msg}</span>}
+
+      {modalFiltro !== undefined && typeof window !== 'undefined' &&
+        createPortal(
+          <AceitarModal
+            titulo={`Aceitar ${
+              modalFiltro === 'BAIXA' ? qtdBaixa : modalFiltro === 'MEDIA' ? qtdMedia : qtdTotal
+            } divergência(s) — ${LABELS[modalFiltro ?? 'TODAS']}`}
+            subtitulo={DESCRICOES[modalFiltro ?? 'TODAS']}
+            loading={loading}
+            onCancel={() => setModalFiltro(undefined)}
+            onConfirm={confirmar}
+          />,
+          document.body,
+        )}
     </div>
   );
 }

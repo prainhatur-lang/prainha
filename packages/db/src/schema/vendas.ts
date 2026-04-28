@@ -55,6 +55,12 @@ export const produto = pgTable(
      *  e definitivo. */
     dataPausado: timestamp('data_pausado', { withTimezone: true }),
     itemPorKg: boolean('item_por_kg'),
+    /** Peso em kg de 1 unidade do produto. Usado quando produto eh vendido
+     *  em un mas comprado/medido em kg (ex: 1 un de file = 1 kg).
+     *  Permite conversao automatica entre as duas unidades em entradas de
+     *  OP, ingest de NFe, e baixa de estoque. Null = nao tem conversao
+     *  (1 un = 1 un, sem peso definido). */
+    pesoUnitarioPadraoKg: numeric('peso_unitario_padrao_kg', { precision: 14, scale: 4 }),
     codigoUnidadeComercial: integer('codigo_unidade_comercial'),
     codigoProdutoTipo: integer('codigo_produto_tipo'),
     codigoCozinha: integer('codigo_cozinha'),

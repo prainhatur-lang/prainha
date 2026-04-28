@@ -25,30 +25,33 @@ export function relativeTime(date: Date | string | null): string {
   if (h < 24) return `há ${h}h`;
   const d2 = Math.floor(h / 24);
   if (d2 < 30) return `há ${d2}d`;
-  return d.toLocaleDateString('pt-BR');
+  return d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 }
 
-/** Formata YYYY-MM-DD ou Date como DD/MM/YYYY. */
+/** Formata YYYY-MM-DD ou Date como DD/MM/YYYY (sempre em BRT). */
 export function formatDate(date: Date | string | null): string {
   if (!date) return '—';
   if (typeof date === 'string') {
     if (/^\d{4}-\d{2}-\d{2}/.test(date)) {
       return date.slice(0, 10).split('-').reverse().join('/');
     }
-    return new Date(date).toLocaleDateString('pt-BR');
+    return new Date(date).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   }
-  return date.toLocaleDateString('pt-BR');
+  return date.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 }
 
 export function formatDateTime(date: Date | string | null): string {
   if (!date) return '—';
   const d = typeof date === 'string' ? new Date(date) : date;
+  // timeZone forçado pra BRT — sem isso, render server-side na Vercel (UTC)
+  // mostra horario errado em produção. Bug recorrente.
   return d.toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: 'America/Sao_Paulo',
   });
 }
 

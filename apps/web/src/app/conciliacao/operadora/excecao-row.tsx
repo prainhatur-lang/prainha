@@ -1,9 +1,12 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
 import { MatchManualPicker, type CandidatoMatch } from '@/components/match-manual-picker';
+import { AceitarModal } from './aceitar-modal';
+import type { Motivo } from './motivos';
 
 interface Props {
   excecao: {
@@ -29,31 +32,40 @@ interface Props {
 export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMatchManual }: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [acao, setAcao] = useState<null | 'aceitar' | 'resolver'>(null);
-  const [obs, setObs] = useState('');
+  const [modalAberto, setModalAberto] = useState<null | 'aceitar' | 'resolver'>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const nsu = e.pagamentoNsu ?? e.vendaNsu ?? '—';
   const data = e.pagamentoDataPagamento
-    ? new Date(e.pagamentoDataPagamento).toLocaleDateString('pt-BR')
+    ? new Date(e.pagamentoDataPagamento).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
     : e.vendaDataVenda
-      ? new Date(e.vendaDataVenda + 'T00:00:00').toLocaleDateString('pt-BR')
+      ? new Date(e.vendaDataVenda + 'T00:00:00-03:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
       : '—';
   const forma = e.pagamentoFormaPagamento ?? e.vendaBandeira ?? '—';
 
-  async function aceitarOuResolver() {
+  async function aceitar(motivo: Motivo | null, observacao: string) {
     setErr(null);
-    const r = await fetch(`/api/excecoes/${e.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(obs ? { observacao: obs } : {}),
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      setErr(j.error || `HTTP ${r.status}`);
-      return;
+    setSubmitting(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (observacao) body.observacao = observacao;
+      if (motivo) body.motivo = motivo;
+      const r = await fetch(`/api/excecoes/${e.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setErr(j.error || `HTTP ${r.status}`);
+        return;
+      }
+      setModalAberto(null);
+      start(() => router.refresh());
+    } finally {
+      setSubmitting(false);
     }
-    start(() => router.refresh());
   }
 
   async function rejeitar() {
@@ -103,38 +115,10 @@ export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMat
       </td>
       <td className="px-4 py-2 text-xs text-slate-600">{e.descricao}</td>
       <td className="px-4 py-2">
-        {acao ? (
-          <div className="flex flex-col gap-1">
-            <input
-              type="text"
-              placeholder="Observação (opcional)"
-              value={obs}
-              onChange={(ev) => setObs(ev.target.value)}
-              className="rounded border border-slate-300 px-2 py-1 text-xs"
-              autoFocus
-            />
-            <div className="flex gap-1">
-              <button
-                onClick={aceitarOuResolver}
-                disabled={pending}
-                className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
-              >
-                Confirmar
-              </button>
-              <button
-                onClick={() => setAcao(null)}
-                disabled={pending}
-                className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-            </div>
-            {err && <span className="text-[10px] text-rose-600">{err}</span>}
-          </div>
-        ) : acoesDivergencia ? (
+        {acoesDivergencia ? (
           <div className="flex flex-col gap-1">
             <button
-              onClick={() => setAcao('aceitar')}
+              onClick={() => setModalAberto('aceitar')}
               className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700"
             >
               Aceitar valor
@@ -161,14 +145,34 @@ export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMat
               />
             )}
             <button
-              onClick={() => setAcao('resolver')}
+              onClick={() => setModalAberto('resolver')}
               className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
             >
               Resolver
             </button>
+            {err && <span className="text-[10px] text-rose-600">{err}</span>}
           </div>
         )}
       </td>
+      {modalAberto && typeof window !== 'undefined' &&
+        createPortal(
+          <AceitarModal
+            titulo={
+              acoesDivergencia
+                ? 'Aceitar divergência de valor'
+                : 'Resolver exceção'
+            }
+            subtitulo={
+              acoesDivergencia
+                ? 'Aplicar forma/bandeira da Cielo no PDV e marcar como conciliado.'
+                : e.descricao
+            }
+            loading={submitting}
+            onCancel={() => setModalAberto(null)}
+            onConfirm={aceitar}
+          />,
+          document.body,
+        )}
     </tr>
   );
 }

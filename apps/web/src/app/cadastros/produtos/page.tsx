@@ -129,6 +129,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       unidadeEstoque: schema.produto.unidadeEstoque,
       controlaEstoque: schema.produto.controlaEstoque,
       criadoNaNuvem: schema.produto.criadoNaNuvem,
+      pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
     })
     .from(schema.produto)
     .where(where)
@@ -474,6 +475,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             descontinuado: p.descontinuado,
                             criadoNaNuvem: p.criadoNaNuvem,
                             estoqueAtual: p.estoqueAtual,
+                            pesoUnitarioPadraoKg: p.pesoUnitarioPadraoKg,
                           }}
                         />
                       </td>

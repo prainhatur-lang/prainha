@@ -63,6 +63,11 @@ export const excecao = pgTable(
     /** se foi reconhecida pelo usuario */
     aceitaEm: timestamp('aceita_em', { withTimezone: true }),
     aceitaPor: uuid('aceita_por'),
+    /** Motivo categorizado quando aceita. Ajuda a rastrear padroes (ex: quanto
+     *  R$/mes passa fora do TEF, qual maquininha vive desconectada).
+     *  Valores: FORA_DO_TEF, VENDA_DA_CASA, GORJETA, DESCONTO_OU_AJUSTE,
+     *  ESTORNO, AUDITORIA_PENDENTE, OUTRO. */
+    motivo: varchar('motivo', { length: 30 }),
     observacao: text('observacao'),
   },
   (t) => ({

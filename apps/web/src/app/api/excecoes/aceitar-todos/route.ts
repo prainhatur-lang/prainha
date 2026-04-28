@@ -16,11 +16,22 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+const MOTIVOS = [
+  'FORA_DO_TEF',
+  'VENDA_DA_CASA',
+  'GORJETA',
+  'DESCONTO_OU_AJUSTE',
+  'ESTORNO',
+  'AUDITORIA_PENDENTE',
+  'OUTRO',
+] as const;
+
 const Body = z.object({
   filialId: z.string().uuid(),
   tipo: z.string().min(1).max(50),
   processo: z.string().min(1).max(20).optional(),
   severidade: z.enum(['BAIXA', 'MEDIA', 'ALTA']).optional(),
+  motivo: z.enum(MOTIVOS).optional(),
 });
 
 export async function POST(req: Request) {
@@ -36,7 +47,7 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const { filialId, tipo, processo, severidade } = parsed.data;
+  const { filialId, tipo, processo, severidade, motivo } = parsed.data;
 
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
@@ -82,7 +93,11 @@ export async function POST(req: Request) {
     // Marca como aceita
     await db
       .update(schema.excecao)
-      .set({ aceitaEm: new Date(), aceitaPor: user.id })
+      .set({
+        aceitaEm: new Date(),
+        aceitaPor: user.id,
+        ...(motivo ? { motivo } : {}),
+      })
       .where(eq(schema.excecao.id, exc.id));
     aceitas++;
 

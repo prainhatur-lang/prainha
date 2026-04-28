@@ -15,8 +15,19 @@ import { and, eq, isNull } from 'drizzle-orm';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const MOTIVOS = [
+  'FORA_DO_TEF',
+  'VENDA_DA_CASA',
+  'GORJETA',
+  'DESCONTO_OU_AJUSTE',
+  'ESTORNO',
+  'AUDITORIA_PENDENTE',
+  'OUTRO',
+] as const;
+
 const Body = z.object({
   observacao: z.string().max(500).optional(),
+  motivo: z.enum(MOTIVOS).optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -70,6 +81,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       aceitaEm: new Date(),
       aceitaPor: user.id,
       observacao: parsed.data.observacao ?? null,
+      motivo: parsed.data.motivo ?? null,
     })
     .where(eq(schema.excecao.id, id))
     .returning({ id: schema.excecao.id, aceitaEm: schema.excecao.aceitaEm });

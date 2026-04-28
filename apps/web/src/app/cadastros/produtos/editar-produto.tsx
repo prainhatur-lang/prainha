@@ -23,6 +23,7 @@ interface Produto {
   descontinuado: boolean | null;
   criadoNaNuvem: boolean;
   estoqueAtual?: string | null;
+  pesoUnitarioPadraoKg?: string | null;
 }
 
 export function EditarProdutoButton({ produto }: { produto: Produto }) {
@@ -36,6 +37,9 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
     produto.estoqueMinimo ? String(Number(produto.estoqueMinimo)) : '',
   );
   const [descontinuado, setDescontinuado] = useState(produto.descontinuado ?? false);
+  const [pesoUn, setPesoUn] = useState(
+    produto.pesoUnitarioPadraoKg ? String(Number(produto.pesoUnitarioPadraoKg)) : '',
+  );
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -85,6 +89,17 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
       return;
     }
     if (minNovo !== minAtual) body.estoqueMinimo = minNovo;
+
+    // Peso unitario padrao (kg por un) — null pra limpar
+    const pesoUnAtual = produto.pesoUnitarioPadraoKg
+      ? Number(produto.pesoUnitarioPadraoKg)
+      : null;
+    const pesoUnNovo = pesoUn.trim() ? Number(pesoUn.replace(',', '.')) : null;
+    if (pesoUnNovo !== null && (!Number.isFinite(pesoUnNovo) || pesoUnNovo <= 0)) {
+      setErro('Peso unitário inválido (precisa ser positivo)');
+      return;
+    }
+    if (pesoUnNovo !== pesoUnAtual) body.pesoUnitarioPadraoKg = pesoUnNovo;
 
     if (Object.keys(body).length === 0) {
       fechar();
@@ -202,6 +217,29 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
               />
             </div>
+
+            {/* Peso unitario padrao — relevante quando produto eh em un mas
+                comprado por kg (ex: file vendido em un mas comprado em kg) */}
+            {unidade === 'un' && (
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Peso por unidade (kg)
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={pesoUn}
+                  onChange={(e) => setPesoUn(e.target.value)}
+                  placeholder="ex: 1.0 (1 un = 1 kg)"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                />
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Use quando você compra por kg mas vende por un (ex: filé:
+                  comprado em kg, virou 1 un = 1 kg). Permite reconciliação
+                  automática nas OPs e NFes.
+                </p>
+              </div>
+            )}
 
             <label className="flex items-center gap-2 text-xs text-slate-700">
               <input
