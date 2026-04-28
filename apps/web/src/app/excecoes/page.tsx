@@ -110,16 +110,16 @@ export default async function ExcecoesPage(props: {
   if (sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni)) {
     const dIni = new Date(sp.dataIni + 'T00:00:00-03:00');
     const cond = or(
-      sql`${schema.pagamento.dataPagamento} >= ${dIni}`,
-      sql`${schema.vendaAdquirente.dataVenda} >= ${sp.dataIni}`,
+      gte(schema.pagamento.dataPagamento, dIni),
+      gte(schema.vendaAdquirente.dataVenda, sp.dataIni),
     );
     if (cond) whereBase.push(cond);
   }
   if (sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)) {
     const dFim = new Date(sp.dataFim + 'T23:59:59-03:00');
     const cond = or(
-      sql`${schema.pagamento.dataPagamento} <= ${dFim}`,
-      sql`${schema.vendaAdquirente.dataVenda} <= ${sp.dataFim}`,
+      lte(schema.pagamento.dataPagamento, dFim),
+      lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
     );
     if (cond) whereBase.push(cond);
   }
@@ -148,9 +148,15 @@ export default async function ExcecoesPage(props: {
     const d = sp.dataTrans;
     const dIni = new Date(d + 'T00:00:00-03:00');
     const dFim = new Date(d + 'T23:59:59-03:00');
+    // Usa helpers do drizzle (gte/lte/eq) em vez de sql`` template — drizzle
+    // faz binding correto pro tipo da coluna (timestamp tz vs date). O BETWEEN
+    // com 2 Date binders manuais via sql`` quebrou o SSR em prod.
     const cond = or(
-      sql`${schema.pagamento.dataPagamento} BETWEEN ${dIni} AND ${dFim}`,
-      sql`${schema.vendaAdquirente.dataVenda} = ${d}`,
+      and(
+        gte(schema.pagamento.dataPagamento, dIni),
+        lte(schema.pagamento.dataPagamento, dFim),
+      ),
+      eq(schema.vendaAdquirente.dataVenda, d),
     );
     if (cond) whereBase.push(cond);
   }
