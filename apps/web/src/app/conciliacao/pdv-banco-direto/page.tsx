@@ -206,6 +206,38 @@ export default async function PdvBancoDiretoPage(props: {
         .limit(100)
     : [];
 
+  // Universo broader pra match manual: TODOS os creditos sem match no
+  // periodo, sem filtro de descricao. Necessario pq Pix que passou pela
+  // maquininha Cielo cai no extrato como "CRED LIQUIDO CIELO" (nao bate
+  // regex pix|ted|doc) — sem isso o modal de match manual fica vazio.
+  const creditosLivresParaMatch = dtIni && dtFim && dataInicioEfetiva && dataFimEfetiva
+    ? await db
+        .select({
+          id: schema.lancamentoBanco.id,
+          valor: schema.lancamentoBanco.valor,
+          dataMovimento: schema.lancamentoBanco.dataMovimento,
+          descricao: schema.lancamentoBanco.descricao,
+        })
+        .from(schema.lancamentoBanco)
+        .innerJoin(
+          schema.contaBancaria,
+          eq(schema.contaBancaria.id, schema.lancamentoBanco.contaBancariaId),
+        )
+        .where(
+          and(
+            eq(schema.contaBancaria.filialId, filialSelecionada.id),
+            eq(schema.lancamentoBanco.tipo, 'C'),
+            gte(schema.lancamentoBanco.dataMovimento, dataInicioEfetiva),
+            lte(schema.lancamentoBanco.dataMovimento, dataFimEfetiva),
+            idsLanCasados.length > 0
+              ? notInArray(schema.lancamentoBanco.id, idsLanCasados)
+              : undefined,
+          ),
+        )
+        .orderBy(desc(schema.lancamentoBanco.dataMovimento))
+        .limit(2000)
+    : [];
+
   const totalPdvSemBancoValor = pdvSemBanco.reduce((s, p) => s + Number(p.valor), 0);
   const totalBancoSemPdvValor = bancoSemPdv.reduce((s, b) => s + Number(b.valor), 0);
 
@@ -472,7 +504,7 @@ export default async function PdvBancoDiretoPage(props: {
                             }
                             pagamentoForma={p.formaPagamento ?? '—'}
                             pedidoExterno={p.codigoPedido}
-                            creditosDisponiveis={bancoSemPdv.map((b) => ({
+                            creditosDisponiveis={creditosLivresParaMatch.map((b) => ({
                               id: b.id,
                               data: b.dataMovimento ?? '',
                               valor: Number(b.valor),
