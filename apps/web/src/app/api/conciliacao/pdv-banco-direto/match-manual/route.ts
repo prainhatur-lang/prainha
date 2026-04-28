@@ -10,7 +10,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -104,5 +104,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, diff });
+  // Limpa excecoes OPERADORA abertas pro mesmo pagamento — quando um
+  // pagamento foi originalmente classificado ADQUIRENTE (gerou PDV_SEM_CIELO)
+  // e dps reclassificado pra DIRETO, a excecao antiga ficava residual.
+  // Aceita ela automaticamente com motivo OUTRO + observacao explicando.
+  const excecoesAceitas = await db
+    .update(schema.excecao)
+    .set({
+      aceitaEm: new Date(),
+      aceitaPor: user.id,
+      motivo: 'OUTRO',
+      observacao: 'Auto-aceito: pagamento casado via PDV-Banco-Direto (canal DIRETO).',
+    })
+    .where(
+      and(
+        eq(schema.excecao.pagamentoId, pagamentoId),
+        eq(schema.excecao.processo, 'OPERADORA'),
+        isNull(schema.excecao.aceitaEm),
+      ),
+    )
+    .returning({ id: schema.excecao.id });
+
+  return NextResponse.json({
+    ok: true,
+    diff,
+    excecoesOperadoraLimpas: excecoesAceitas.length,
+  });
 }

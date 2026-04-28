@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, isNull, lte, notInArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lte, notInArray, sql } from 'drizzle-orm';
 import {
   matchPdvBancoDireto,
   type PdvDireto,
@@ -151,6 +151,7 @@ export async function POST(req: Request) {
   const resultado = matchPdvBancoDireto(pdv, banco, params.pdvBancoDireto);
 
   // 5) Persiste matches
+  let excecoesOperadoraLimpas = 0;
   if (resultado.matched.length > 0) {
     const linhas = resultado.matched.map((m) => ({
       filialId,
@@ -165,6 +166,30 @@ export async function POST(req: Request) {
       .onConflictDoNothing({
         target: [schema.matchPdvBanco.pagamentoId],
       });
+
+    // Limpa excecoes OPERADORA abertas dos pagamentos que foram casados
+    // aqui (pagamento foi reclassificado de ADQUIRENTE pra DIRETO depois
+    // que a excecao Operadora foi gerada — agora deve fechar o ciclo).
+    const pagamentoIdsCasados = resultado.matched.map((m) => m.pdv.id);
+    if (pagamentoIdsCasados.length > 0) {
+      const limpas = await db
+        .update(schema.excecao)
+        .set({
+          aceitaEm: new Date(),
+          motivo: 'OUTRO',
+          observacao:
+            'Auto-aceito pela engine PDV-Banco-Direto: pagamento foi casado no canal DIRETO (reclassificacao de canal).',
+        })
+        .where(
+          and(
+            inArray(schema.excecao.pagamentoId, pagamentoIdsCasados),
+            eq(schema.excecao.processo, 'OPERADORA'),
+            isNull(schema.excecao.aceitaEm),
+          ),
+        )
+        .returning({ id: schema.excecao.id });
+      excecoesOperadoraLimpas = limpas.length;
+    }
   }
 
   // 6) Registra execucao
@@ -195,6 +220,7 @@ export async function POST(req: Request) {
       valorMatched: resultado.matched.reduce((s, m) => s + m.pdv.valor, 0),
       valorPdvSemBanco: resultado.pdvSemBanco.reduce((s, p) => s + p.valor, 0),
       valorBancoSemPdv: resultado.bancoSemPdv.reduce((s, b) => s + b.valor, 0),
+      excecoesOperadoraLimpas,
     },
   });
 
@@ -207,5 +233,6 @@ export async function POST(req: Request) {
     bancoSemPdv,
     totalPdv,
     totalBanco,
+    excecoesOperadoraLimpas,
   });
 }
