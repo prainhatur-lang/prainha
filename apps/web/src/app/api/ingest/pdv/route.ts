@@ -424,10 +424,11 @@ async function handle(req: Request) {
       versaoReg: it.versaoReg,
       sincronizadoEm: new Date(),
     }));
-    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-      await db
+    // Mesma estrategia de retry-1-a-1 do bloco de pedidos.
+    const inserirItem = (chunk: typeof rows) =>
+      db
         .insert(schema.pedidoItem)
-        .values(rows.slice(i, i + CHUNK_SIZE))
+        .values(chunk)
         .onConflictDoUpdate({
           target: [schema.pedidoItem.filialId, schema.pedidoItem.codigoExterno],
           set: {
@@ -454,8 +455,42 @@ async function handle(req: Request) {
             sincronizadoEm: drizzleSql`excluded.sincronizado_em`,
           },
         });
+
+    let itensFalhados = 0;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + CHUNK_SIZE);
+      try {
+        await inserirItem(chunk);
+      } catch (err) {
+        const msgBatch = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[ingest/pdv] batch de ${chunk.length} pedidoItens falhou (${msgBatch.slice(0, 200)}). Tentando 1 a 1...`,
+        );
+        for (const row of chunk) {
+          try {
+            await inserirItem([row]);
+          } catch (errRow) {
+            itensFalhados++;
+            const msgRow = errRow instanceof Error ? errRow.message : String(errRow);
+            console.error(
+              `[ingest/pdv] item codigo=${row.codigoExterno} (pedido=${row.codigoPedidoExterno}) falhou: ${msgRow.slice(0, 200)}`,
+              {
+                quantidade: row.quantidade,
+                valorUnitario: row.valorUnitario,
+                precoCusto: row.precoCusto,
+                valorItem: row.valorItem,
+                valorTotal: row.valorTotal,
+                valorGorjeta: row.valorGorjeta,
+              },
+            );
+          }
+        }
+      }
     }
-    pedidoItensRecebidos = rows.length;
+    pedidoItensRecebidos = rows.length - itensFalhados;
+    if (itensFalhados > 0) {
+      console.warn(`[ingest/pdv] ${itensFalhados} de ${rows.length} itens foram pulados por erro`);
+    }
 
     // Resolve FKs pedido_id + produto_id
     await db.execute(drizzleSql`
