@@ -252,11 +252,14 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           )
       : [{ qtdMatchesPeriodo: 0, valorMatchesPeriodo: '0', qtdMatchesRevogaveisPeriodo: 0 }];
 
-  // Excecoes aceitas (PDV_SEM_CIELO, CIELO_SEM_PDV, DIVERGENCIA) cujo lado
-  // PDV ou venda_adquirente caia no periodo do filtro. Sao "conciliados
-  // resolvidos manualmente" e devem entrar no card Conciliados junto com
-  // as matches firmes. Excluimos as que ja estao em match_pdv_cielo (uma
-  // divergencia aceita gera match firme tambem) pra nao dupla-contar.
+  // Excecoes aceitas (PDV_SEM_CIELO, CIELO_SEM_PDV, DIVERGENCIA) que foram
+  // ACEITAS no periodo do filtro. Filtra por aceita_em — alinha com a
+  // semantica do card 'Aceitas no periodo · por motivo' (auditoria de
+  // "o que aceitei nesse periodo X"). Antes filtrava por data_pagamento
+  // mas isso descartava aceitas de transacoes antigas (caso comum: user
+  // aceita historicos pra zerar exceções) → discrepancia entre os 2 cards.
+  // Excluimos as que ja estao em match_pdv_cielo pra nao dupla-contar
+  // (divergencia aceita gera match firme tambem).
   const [{ qtdAceitasPeriodo, valorAceitasPeriodo }] =
     filialSelecionada && dtIni && dtFim
       ? await db
@@ -265,26 +268,12 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
             valorAceitasPeriodo: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
           })
           .from(schema.excecao)
-          .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
-          .leftJoin(
-            schema.vendaAdquirente,
-            eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
-          )
           .where(
             and(
               eq(schema.excecao.filialId, filialSelecionada.id),
               eq(schema.excecao.processo, PROCESSO_OPERADORA),
-              sql`${schema.excecao.aceitaEm} IS NOT NULL`,
-              or(
-                and(
-                  gte(schema.pagamento.dataPagamento, dtIni),
-                  lte(schema.pagamento.dataPagamento, dtFim),
-                ),
-                and(
-                  gte(schema.vendaAdquirente.dataVenda, dataInicioEfetiva ?? '1900-01-01'),
-                  lte(schema.vendaAdquirente.dataVenda, dataFimEfetiva ?? '2999-12-31'),
-                ),
-              ),
+              gte(schema.excecao.aceitaEm, dtIni),
+              lte(schema.excecao.aceitaEm, dtFim),
               sql`NOT EXISTS (
                 SELECT 1 FROM match_pdv_cielo m
                 WHERE (m.pagamento_id = ${schema.excecao.pagamentoId}
@@ -456,16 +445,19 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
                 if (aceitas) qs.set('aceitas', 'true');
                 return `/excecoes?${qs.toString()}`;
               };
-              // Conciliados nao e' excecao — leva pra /financeiro/pagamentos
-              // com filtro de status casado.
+              // Conciliados = matches firmes + excecoes aceitas no periodo.
+              // Como nao tem 1 tela que mostra ambos, preferimos /excecoes
+              // filtrado em aceitas=true (auditoria: o que foi aceito).
+              // Pra ver matches firmes, link 'Filtros avancados →' das secoes.
               const hrefConciliados = (() => {
                 const qs = new URLSearchParams({
                   filialId: filialSelecionada.id,
-                  status: 'qualquer-casado',
+                  processo: 'OPERADORA',
+                  aceitas: 'true',
                 });
                 if (dataInicioEfetiva) qs.set('dataIni', dataInicioEfetiva);
                 if (dataFimEfetiva) qs.set('dataFim', dataFimEfetiva);
-                return `/financeiro/pagamentos?${qs.toString()}`;
+                return `/excecoes?${qs.toString()}`;
               })();
               return (
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
