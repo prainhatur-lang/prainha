@@ -440,43 +440,76 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
               ultimaFim={ultimaFimIso}
             />
 
-            {/* 4 cards de resumo */}
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <ResumoCard
-                label="Conciliados"
-                qtd={Number(qtdMatchesPeriodo) + Number(qtdAceitasPeriodo)}
-                valor={Number(valorMatchesPeriodo) + Number(valorAceitasPeriodo)}
-                tom="emerald"
-                hint={
-                  Number(qtdAceitasPeriodo) > 0
-                    ? `${Number(qtdMatchesPeriodo)} firme + ${Number(qtdAceitasPeriodo)} aceita`
-                    : Number(qtdMatchesRevogaveisPeriodo) > 0
-                      ? `${Number(qtdMatchesRevogaveisPeriodo)} por proximidade`
-                      : 'no filtro'
-                }
-              />
-              <ResumoCard
-                label="Divergência de valor"
-                qtd={secaoDiv.total}
-                valor={secaoDiv.totalValor}
-                tom="amber"
-                hint={filtroExplicito ? 'no filtro' : undefined}
-              />
-              <ResumoCard
-                label="PDV sem Cielo"
-                qtd={secaoPdv.total}
-                valor={secaoPdv.totalValor}
-                tom="rose"
-                hint={filtroExplicito ? 'no filtro' : undefined}
-              />
-              <ResumoCard
-                label="Cielo sem PDV"
-                qtd={secaoCielo.total}
-                valor={secaoCielo.totalValor}
-                tom="rose"
-                hint={filtroExplicito ? 'no filtro' : undefined}
-              />
-            </div>
+            {/* 4 cards de resumo — clicáveis, levam pra /excecoes ou
+                /financeiro/pagamentos com filtro pre-aplicado. Inclui
+                periodo do filtro de visualizacao do dashboard. */}
+            {(() => {
+              const baseQs = new URLSearchParams({
+                processo: 'OPERADORA',
+                filialId: filialSelecionada.id,
+              });
+              if (dataInicioEfetiva) baseQs.set('dataIni', dataInicioEfetiva);
+              if (dataFimEfetiva) baseQs.set('dataFim', dataFimEfetiva);
+              const hrefExcecao = (tipo: string, aceitas?: boolean) => {
+                const qs = new URLSearchParams(baseQs);
+                qs.set('tipo', tipo);
+                if (aceitas) qs.set('aceitas', 'true');
+                return `/excecoes?${qs.toString()}`;
+              };
+              // Conciliados nao e' excecao — leva pra /financeiro/pagamentos
+              // com filtro de status casado.
+              const hrefConciliados = (() => {
+                const qs = new URLSearchParams({
+                  filialId: filialSelecionada.id,
+                  status: 'qualquer-casado',
+                });
+                if (dataInicioEfetiva) qs.set('dataIni', dataInicioEfetiva);
+                if (dataFimEfetiva) qs.set('dataFim', dataFimEfetiva);
+                return `/financeiro/pagamentos?${qs.toString()}`;
+              })();
+              return (
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <ResumoCard
+                    label="Conciliados"
+                    qtd={Number(qtdMatchesPeriodo) + Number(qtdAceitasPeriodo)}
+                    valor={Number(valorMatchesPeriodo) + Number(valorAceitasPeriodo)}
+                    tom="emerald"
+                    href={hrefConciliados}
+                    hint={
+                      Number(qtdAceitasPeriodo) > 0
+                        ? `${Number(qtdMatchesPeriodo)} firme + ${Number(qtdAceitasPeriodo)} aceita`
+                        : Number(qtdMatchesRevogaveisPeriodo) > 0
+                          ? `${Number(qtdMatchesRevogaveisPeriodo)} por proximidade`
+                          : 'no filtro'
+                    }
+                  />
+                  <ResumoCard
+                    label="Divergência de valor"
+                    qtd={secaoDiv.total}
+                    valor={secaoDiv.totalValor}
+                    tom="amber"
+                    href={hrefExcecao('DIVERGENCIA_VALOR_OPERADORA')}
+                    hint={filtroExplicito ? 'no filtro' : undefined}
+                  />
+                  <ResumoCard
+                    label="PDV sem Cielo"
+                    qtd={secaoPdv.total}
+                    valor={secaoPdv.totalValor}
+                    tom="rose"
+                    href={hrefExcecao('PDV_SEM_CIELO')}
+                    hint={filtroExplicito ? 'no filtro' : undefined}
+                  />
+                  <ResumoCard
+                    label="Cielo sem PDV"
+                    qtd={secaoCielo.total}
+                    valor={secaoCielo.totalValor}
+                    tom="rose"
+                    href={hrefExcecao('CIELO_SEM_PDV')}
+                    hint={filtroExplicito ? 'no filtro' : undefined}
+                  />
+                </div>
+              );
+            })()}
 
             {aceitasPorMotivo.length > 0 && (
               <AceitasPorMotivoCard
@@ -652,20 +685,23 @@ function ResumoCard({
   valor,
   tom,
   hint,
+  href,
 }: {
   label: string;
   qtd: number;
   valor: number;
   tom: 'emerald' | 'amber' | 'rose';
   hint?: string;
+  /** Quando passado, vira Link clicavel pra /excecoes filtrado. */
+  href?: string;
 }) {
   const cor = {
     emerald: 'border-emerald-200 bg-emerald-50',
     amber: 'border-amber-200 bg-amber-50',
     rose: 'border-rose-200 bg-rose-50',
   }[tom];
-  return (
-    <div className={`rounded-xl border p-4 ${cor}`}>
+  const conteudo = (
+    <>
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium uppercase tracking-wide text-slate-600">{label}</p>
         {hint && (
@@ -676,8 +712,16 @@ function ResumoCard({
       </div>
       <p className="mt-1.5 text-2xl font-bold text-slate-900">{int(qtd)}</p>
       <p className="mt-0.5 text-xs text-slate-600">{brl(valor)}</p>
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <Link href={href} className={`block rounded-xl border p-4 transition hover:shadow-sm hover:border-slate-400 ${cor}`}>
+        {conteudo}
+      </Link>
+    );
+  }
+  return <div className={`rounded-xl border p-4 ${cor}`}>{conteudo}</div>;
 }
 
 function SecaoExcecoes({
@@ -736,7 +780,17 @@ function SecaoExcecoes({
     else qs.set(pageParam, String(p));
     return `/conciliacao/operadora?${qs.toString()}`;
   };
-  const filtroHref = `/excecoes?processo=OPERADORA&tipo=${tipo}&filialId=${filialId}`;
+  // Mantem o periodo do dashboard ao navegar pra /excecoes — sem isso o
+  // filtro de visualização zerava na transição. /excecoes usa dataIni/dataFim
+  // (sem o "cio"), entao convertemos.
+  const filtroQs = new URLSearchParams({
+    processo: 'OPERADORA',
+    tipo,
+    filialId,
+  });
+  if (sp.dataInicio) filtroQs.set('dataIni', sp.dataInicio);
+  if (sp.dataFim) filtroQs.set('dataFim', sp.dataFim);
+  const filtroHref = `/excecoes?${filtroQs.toString()}`;
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
