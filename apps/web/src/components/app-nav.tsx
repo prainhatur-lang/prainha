@@ -37,6 +37,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Contas a pagar', href: '/financeiro' },
       { label: 'Contas a receber', href: '/financeiro/receber' },
+      { label: 'Pagamentos (PDV)', href: '/financeiro/pagamentos' },
       { label: 'Pedidos / Vendas', href: '/movimento/pedidos' },
       { label: 'Entrada de notas', href: '/movimento/entrada-notas' },
       { label: 'Ordens de produção', href: '/movimento/producao' },
