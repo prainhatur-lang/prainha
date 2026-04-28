@@ -7,6 +7,7 @@ import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { ExcecoesFiltros } from './filtros';
+import { MOTIVO_LABEL } from '../conciliacao/operadora/motivos';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,6 +71,10 @@ interface SP {
   valorMax?: string;
   forma?: string;
   page?: string;
+  /** Filtra por motivo da aceitacao (FORA_DO_TEF, FORMA_ERRADA_GARCOM, etc). */
+  motivo?: string;
+  /** 'true' = mostrar APENAS as ja aceitas. 'false'/undefined = padrao (so abertas). */
+  aceitas?: string;
 }
 
 const PAGE_SIZE = 50;
@@ -151,6 +156,9 @@ export default async function ExcecoesPage(props: {
   if (sp.forma && sp.forma.trim()) {
     whereBase.push(eq(schema.pagamento.formaPagamento, sp.forma.trim()));
   }
+  if (sp.motivo && sp.motivo.trim()) {
+    whereBase.push(eq(schema.excecao.motivo, sp.motivo.trim()));
+  }
   if (sp.dataTrans && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataTrans)) {
     const d = sp.dataTrans;
     const dIni = new Date(d + 'T00:00:00-03:00');
@@ -169,7 +177,13 @@ export default async function ExcecoesPage(props: {
     );
     if (cond) whereBase.push(cond);
   }
-  whereBase.push(isNull(schema.excecao.aceitaEm));
+  // Filtro de status: 'true' mostra APENAS aceitas, default mostra so abertas.
+  // Util pro fluxo "ver o que ja aceitei com determinado motivo".
+  if (sp.aceitas === 'true') {
+    whereBase.push(sql`${schema.excecao.aceitaEm} IS NOT NULL`);
+  } else {
+    whereBase.push(isNull(schema.excecao.aceitaEm));
+  }
 
   // Contagens por tipo (sem filtro de tipo). Join com pagamento pra filtros
   // que referenciam campos do pagamento (forma, nsu, pedido).
@@ -234,6 +248,9 @@ export default async function ExcecoesPage(props: {
       descricao: schema.excecao.descricao,
       valor: schema.excecao.valor,
       detectadoEm: schema.excecao.detectadoEm,
+      motivo: schema.excecao.motivo,
+      aceitaEm: schema.excecao.aceitaEm,
+      observacao: schema.excecao.observacao,
       pagamentoNsu: schema.pagamento.nsuTransacao,
       pagamentoFormaPagamento: schema.pagamento.formaPagamento,
       pagamentoDataPagamento: schema.pagamento.dataPagamento,
@@ -336,13 +353,14 @@ export default async function ExcecoesPage(props: {
               <th className="px-4 py-3 text-right">Valor</th>
               <th className="px-4 py-3">Tipo</th>
               <th className="px-4 py-3">Severidade</th>
-              <th className="px-4 py-3">Detectado em</th>
+              <th className="px-4 py-3">Motivo / Obs</th>
+              <th className="px-4 py-3">{sp.aceitas === 'true' ? 'Aceita em' : 'Detectado em'}</th>
             </tr>
           </thead>
           <tbody>
             {excecoes.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-sm text-slate-500">
+                <td colSpan={9} className="px-4 py-12 text-center text-sm text-slate-500">
                   Nenhuma exceção com os filtros atuais.
                 </td>
               </tr>
@@ -398,8 +416,29 @@ export default async function ExcecoesPage(props: {
                       {e.severidade}
                     </span>
                   </td>
+                  <td className="px-4 py-2.5 text-xs">
+                    {e.motivo ? (
+                      <span
+                        className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800"
+                        title={e.observacao ?? ''}
+                      >
+                        {MOTIVO_LABEL[e.motivo as keyof typeof MOTIVO_LABEL] ?? e.motivo}
+                      </span>
+                    ) : e.observacao ? (
+                      <span
+                        className="text-[11px] text-slate-500"
+                        title={e.observacao}
+                      >
+                        {e.observacao.length > 30
+                          ? e.observacao.slice(0, 30) + '…'
+                          : e.observacao}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-xs text-slate-500">
-                    {formatDateTime(e.detectadoEm)}
+                    {formatDateTime(e.aceitaEm ?? e.detectadoEm)}
                   </td>
                 </tr>
               ))
