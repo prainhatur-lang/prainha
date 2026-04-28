@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { OperadoraForm } from './form';
@@ -252,6 +252,48 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           )
       : [{ qtdMatchesPeriodo: 0, valorMatchesPeriodo: '0', qtdMatchesRevogaveisPeriodo: 0 }];
 
+  // Excecoes aceitas (PDV_SEM_CIELO, CIELO_SEM_PDV, DIVERGENCIA) cujo lado
+  // PDV ou venda_adquirente caia no periodo do filtro. Sao "conciliados
+  // resolvidos manualmente" e devem entrar no card Conciliados junto com
+  // as matches firmes. Excluimos as que ja estao em match_pdv_cielo (uma
+  // divergencia aceita gera match firme tambem) pra nao dupla-contar.
+  const [{ qtdAceitasPeriodo, valorAceitasPeriodo }] =
+    filialSelecionada && dtIni && dtFim
+      ? await db
+          .select({
+            qtdAceitasPeriodo: sql<number>`COUNT(*)::int`,
+            valorAceitasPeriodo: sql<string>`COALESCE(SUM(${schema.excecao.valor}), 0)::text`,
+          })
+          .from(schema.excecao)
+          .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
+          .leftJoin(
+            schema.vendaAdquirente,
+            eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+          )
+          .where(
+            and(
+              eq(schema.excecao.filialId, filialSelecionada.id),
+              eq(schema.excecao.processo, PROCESSO_OPERADORA),
+              sql`${schema.excecao.aceitaEm} IS NOT NULL`,
+              or(
+                and(
+                  gte(schema.pagamento.dataPagamento, dtIni),
+                  lte(schema.pagamento.dataPagamento, dtFim),
+                ),
+                and(
+                  gte(schema.vendaAdquirente.dataVenda, dataInicioEfetiva ?? '1900-01-01'),
+                  lte(schema.vendaAdquirente.dataVenda, dataFimEfetiva ?? '2999-12-31'),
+                ),
+              ),
+              sql`NOT EXISTS (
+                SELECT 1 FROM match_pdv_cielo m
+                WHERE (m.pagamento_id = ${schema.excecao.pagamentoId}
+                   OR m.venda_adquirente_id = ${schema.excecao.vendaAdquirenteId})
+              )`,
+            ),
+          )
+      : [{ qtdAceitasPeriodo: 0, valorAceitasPeriodo: '0' }];
+
   // Agregado de exceções aceitas por motivo no período do filtro.
   // Permite identificar padrões: quanto $$ por mês passa fora do TEF,
   // quantas vendas da casa a Tabuara registra, etc.
@@ -402,13 +444,15 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <ResumoCard
                 label="Conciliados"
-                qtd={Number(qtdMatchesPeriodo)}
-                valor={Number(valorMatchesPeriodo)}
+                qtd={Number(qtdMatchesPeriodo) + Number(qtdAceitasPeriodo)}
+                valor={Number(valorMatchesPeriodo) + Number(valorAceitasPeriodo)}
                 tom="emerald"
                 hint={
-                  Number(qtdMatchesRevogaveisPeriodo) > 0
-                    ? `${Number(qtdMatchesRevogaveisPeriodo)} por proximidade`
-                    : 'no filtro'
+                  Number(qtdAceitasPeriodo) > 0
+                    ? `${Number(qtdMatchesPeriodo)} firme + ${Number(qtdAceitasPeriodo)} aceita`
+                    : Number(qtdMatchesRevogaveisPeriodo) > 0
+                      ? `${Number(qtdMatchesRevogaveisPeriodo)} por proximidade`
+                      : 'no filtro'
                 }
               />
               <ResumoCard
