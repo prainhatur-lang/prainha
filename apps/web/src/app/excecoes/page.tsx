@@ -112,28 +112,42 @@ export default async function ExcecoesPage(props: {
   if (sp.severidade && (SEVERIDADES as readonly string[]).includes(sp.severidade)) {
     whereBase.push(eq(schema.excecao.severidade, sp.severidade));
   }
+  // Filtro de data: comportamento difere conforme aceitas vs abertas.
+  // - Abertas (default): filtra pela data da TRANSACAO (pagamento/venda/recebivel/lancamento)
+  //   porque o user quer ver "exceções pendentes do periodo X".
+  // - Aceitas: filtra por aceita_em (quando aceitou), porque transacoes podem
+  //   ser de meses atras mas ele quer "o que aceitei no periodo X" (auditoria).
+  const filtroPorAceita = sp.aceitas === 'true';
   if (sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni)) {
     const dIni = new Date(sp.dataIni + 'T00:00:00-03:00');
-    // Considera as 4 origens possiveis: pagamento (PDV), venda_adquirente
-    // (Cielo Vendas), recebivel_adquirente (Cielo Recebiveis), lancamento_banco
-    // (CNAB). Sem isso, AGENDA_SEM_VENDA e CREDITO_SEM_CIELO bypassam o filtro.
-    const cond = or(
-      gte(schema.pagamento.dataPagamento, dIni),
-      gte(schema.vendaAdquirente.dataVenda, sp.dataIni),
-      gte(schema.recebivelAdquirente.dataPagamento, sp.dataIni),
-      gte(schema.lancamentoBanco.dataMovimento, sp.dataIni),
-    );
-    if (cond) whereBase.push(cond);
+    if (filtroPorAceita) {
+      whereBase.push(gte(schema.excecao.aceitaEm, dIni));
+    } else {
+      // Considera as 4 origens possiveis: pagamento (PDV), venda_adquirente
+      // (Cielo Vendas), recebivel_adquirente (Cielo Recebiveis), lancamento_banco
+      // (CNAB). Sem isso, AGENDA_SEM_VENDA e CREDITO_SEM_CIELO bypassam o filtro.
+      const cond = or(
+        gte(schema.pagamento.dataPagamento, dIni),
+        gte(schema.vendaAdquirente.dataVenda, sp.dataIni),
+        gte(schema.recebivelAdquirente.dataPagamento, sp.dataIni),
+        gte(schema.lancamentoBanco.dataMovimento, sp.dataIni),
+      );
+      if (cond) whereBase.push(cond);
+    }
   }
   if (sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim)) {
     const dFim = new Date(sp.dataFim + 'T23:59:59-03:00');
-    const cond = or(
-      lte(schema.pagamento.dataPagamento, dFim),
-      lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
-      lte(schema.recebivelAdquirente.dataPagamento, sp.dataFim),
-      lte(schema.lancamentoBanco.dataMovimento, sp.dataFim),
-    );
-    if (cond) whereBase.push(cond);
+    if (filtroPorAceita) {
+      whereBase.push(lte(schema.excecao.aceitaEm, dFim));
+    } else {
+      const cond = or(
+        lte(schema.pagamento.dataPagamento, dFim),
+        lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
+        lte(schema.recebivelAdquirente.dataPagamento, sp.dataFim),
+        lte(schema.lancamentoBanco.dataMovimento, sp.dataFim),
+      );
+      if (cond) whereBase.push(cond);
+    }
   }
   if (sp.q && sp.q.trim()) {
     const q = sp.q.trim();
@@ -327,8 +341,9 @@ export default async function ExcecoesPage(props: {
       {/* Resumo total + filtros */}
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="text-sm text-slate-600">
-          <span className="font-medium text-slate-900">{int(totalQtd)}</span> exceções abertas ·{' '}
-          {brl(totalValor)} em risco
+          <span className="font-medium text-slate-900">{int(totalQtd)}</span>{' '}
+          {sp.aceitas === 'true' ? 'exceções aceitas' : 'exceções abertas'} ·{' '}
+          {brl(totalValor)}{sp.aceitas === 'true' ? '' : ' em risco'}
           {sp.tipo && (
             <span className="ml-2 text-slate-500">
               · filtrando por <span className="font-medium text-slate-700">{TIPO_LABEL[sp.tipo]}</span>
