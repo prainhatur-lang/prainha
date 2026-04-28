@@ -17,6 +17,7 @@ export const runtime = 'nodejs';
 
 const MOTIVOS = [
   'FORA_DO_TEF',
+  'FORMA_ERRADA_GARCOM',
   'VENDA_DA_CASA',
   'GORJETA',
   'DESCONTO_OU_AJUSTE',

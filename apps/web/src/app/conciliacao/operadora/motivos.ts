@@ -4,6 +4,7 @@
 
 export const MOTIVOS = [
   'FORA_DO_TEF',
+  'FORMA_ERRADA_GARCOM',
   'VENDA_DA_CASA',
   'GORJETA',
   'DESCONTO_OU_AJUSTE',
@@ -16,6 +17,7 @@ export type Motivo = (typeof MOTIVOS)[number];
 
 export const MOTIVO_LABEL: Record<Motivo, string> = {
   FORA_DO_TEF: 'Fora do TEF',
+  FORMA_ERRADA_GARCOM: 'Forma errada (garçom)',
   VENDA_DA_CASA: 'Venda da casa',
   GORJETA: 'Gorjeta',
   DESCONTO_OU_AJUSTE: 'Desconto / ajuste',
@@ -26,6 +28,7 @@ export const MOTIVO_LABEL: Record<Motivo, string> = {
 
 export const MOTIVO_DESCRICAO: Record<Motivo, string> = {
   FORA_DO_TEF: 'Pagamento standalone na maquininha sem integração com Consumer (TEF caiu, garçom passou cartão direto).',
+  FORMA_ERRADA_GARCOM: 'Garçom marcou forma errada no PDV (ex: "Pix Manual" mas passou na maquininha Cielo, "Crédito" mas era Débito). Casa por valor próximo no canal correto.',
   VENDA_DA_CASA: 'Venda direta sem fechamento de pedido no Consumer (cortesia, ajuste manual).',
   GORJETA: 'Cielo recebeu valor maior por gorjeta agregada que não foi lançada como pagamento separado no PDV.',
   DESCONTO_OU_AJUSTE: 'PDV registrou valor diferente da Cielo por desconto/ajuste manual aplicado em uma das pontas.',
