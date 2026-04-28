@@ -39,9 +39,29 @@ interface LinhaSaida {
   produtoUnidade: string | null;
   quantidade: string | null;
   pesoRelativo: string | null;
+  pesoTotalKg: string | null;
   custoRateado: string | null;
   valorTotal: string | null;
   observacao: string | null;
+}
+
+/** Converte uma linha de entrada/saida pra kg pra reconciliacao por peso.
+ *  - kg/g: usa quantidade direto (g convertido)
+ *  - un/l/ml com produto: usa pesoTotalKg
+ *  - PERDA livre (sem produto): assume quantidade ja eh kg
+ *  - sem peso preenchido: NaN (nao conta no fechamento) */
+function quantidadeEmKg(opts: {
+  quantidade: number;
+  unidade: string | null;
+  pesoTotalKg: number | null;
+  ehPerdaLivre: boolean;
+}): number {
+  const { quantidade, unidade, pesoTotalKg, ehPerdaLivre } = opts;
+  if (ehPerdaLivre) return quantidade;
+  const u = (unidade ?? '').toLowerCase();
+  if (u === 'kg') return quantidade;
+  if (u === 'g') return quantidade / 1000;
+  return pesoTotalKg ?? NaN;
 }
 
 interface ProdutoOpcao {
@@ -93,7 +113,60 @@ export function EditorProducao({
   const qtdSaidasProduto = saidasProduto.reduce((s, r) => s + Number(r.quantidade ?? 0), 0);
   const qtdSaidasPerda = saidasPerda.reduce((s, r) => s + Number(r.quantidade ?? 0), 0);
   const qtdSaidas = qtdSaidasProduto + qtdSaidasPerda;
-  const divergencia = qtdEntradas > 0 ? ((qtdEntradas - qtdSaidas) / qtdEntradas) * 100 : 0;
+
+  // Reconciliacao em KG (mais robusta que comparar quantidades quando ha
+  // mistura de unidades — ex: entrada 20kg de file vs saida 100un de isca).
+  const kgEntradas = entradas.reduce((acc, e) => {
+    const v = quantidadeEmKg({
+      quantidade: Number(e.quantidade ?? 0),
+      unidade: e.produtoUnidade,
+      pesoTotalKg: null,
+      ehPerdaLivre: false,
+    });
+    return acc + (Number.isFinite(v) ? v : 0);
+  }, 0);
+  const kgSaidasProduto = saidasProduto.reduce((acc, s) => {
+    const v = quantidadeEmKg({
+      quantidade: Number(s.quantidade ?? 0),
+      unidade: s.produtoUnidade,
+      pesoTotalKg: s.pesoTotalKg ? Number(s.pesoTotalKg) : null,
+      ehPerdaLivre: false,
+    });
+    return acc + (Number.isFinite(v) ? v : 0);
+  }, 0);
+  const kgSaidasPerda = saidasPerda.reduce((acc, s) => {
+    const v = quantidadeEmKg({
+      quantidade: Number(s.quantidade ?? 0),
+      unidade: s.produtoUnidade,
+      pesoTotalKg: s.pesoTotalKg ? Number(s.pesoTotalKg) : null,
+      ehPerdaLivre: !s.produtoId,
+    });
+    return acc + (Number.isFinite(v) ? v : 0);
+  }, 0);
+  const kgSaidasTotal = kgSaidasProduto + kgSaidasPerda;
+
+  // Detecta se ha alguma saida em un/l/ml SEM peso (produto) — nesse caso
+  // nao da pra reconciliar por peso confiavel; cai no comparativo de quantidade.
+  const temSaidaSemPeso = [...saidasProduto, ...saidasPerda].some((s) => {
+    const u = (s.produtoUnidade ?? '').toLowerCase();
+    if (u === 'kg' || u === 'g') return false;
+    if (s.tipo === 'PERDA' && !s.produtoId) return false; // perda livre = kg
+    return !s.pesoTotalKg || Number(s.pesoTotalKg) <= 0;
+  });
+
+  // Modo de reconciliacao:
+  //  - 'peso' quando todas as saidas tem peso ou sao kg/g/perda livre
+  //  - 'quantidade' fallback quando faltam pesos
+  const modoReconciliacao: 'peso' | 'quantidade' = temSaidaSemPeso
+    ? 'quantidade'
+    : 'peso';
+
+  const divergenciaPesoKg = kgEntradas > 0 ? kgEntradas - kgSaidasTotal : 0;
+  const divergenciaPesoPct = kgEntradas > 0 ? (divergenciaPesoKg / kgEntradas) * 100 : 0;
+  const divergenciaQtdPct =
+    qtdEntradas > 0 ? ((qtdEntradas - qtdSaidas) / qtdEntradas) * 100 : 0;
+  const divergencia =
+    modoReconciliacao === 'peso' ? divergenciaPesoPct : divergenciaQtdPct;
   // Soma de unidades-peso (qtd × pesoRelativo) só pras saídas PRODUTO.
   // É o denominador do rateio. Perdas absorvem custo automaticamente.
   const unidadesPesoUtil = saidasProduto.reduce(
@@ -361,10 +434,15 @@ export function EditorProducao({
         <CardKpi label="Qtd entradas" valor={qtdEntradas} precisao={3} />
         <CardKpi label="Qtd saídas" valor={qtdSaidas} precisao={3} hint={`${qtdSaidasProduto} úteis + ${qtdSaidasPerda} perdas`} />
         <CardKpi
-          label="Divergência"
+          label={modoReconciliacao === 'peso' ? 'Divergência (peso)' : 'Divergência (qtd)'}
           valor={divergencia}
           precisao={2}
           sufixo="%"
+          hint={
+            modoReconciliacao === 'peso'
+              ? `${kgEntradas.toFixed(2)} kg → ${kgSaidasTotal.toFixed(2)} kg`
+              : 'preencha pesos pra fechar'
+          }
           highlight={
             Math.abs(divergencia) < 1
               ? 'ok'
