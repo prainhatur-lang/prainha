@@ -138,7 +138,19 @@ export default async function PdvBancoDiretoPage(props: {
     .where(eq(schema.matchPdvBanco.filialId, filialSelecionada.id));
   const idsCasados = matchesIds.map((m) => m.id);
 
-  const pdvSemBanco = dtIni && dtFim
+  // Filtros do query (compartilhados entre lista paginada e count total).
+  const pdvSemBancoWhere = dtIni && dtFim
+    ? and(
+        eq(schema.pagamento.filialId, filialSelecionada.id),
+        gte(schema.pagamento.dataPagamento, dtIni),
+        lte(schema.pagamento.dataPagamento, dtFim),
+        idsCasados.length > 0
+          ? notInArray(schema.pagamento.id, idsCasados)
+          : undefined,
+      )
+    : undefined;
+
+  const pdvSemBanco = pdvSemBancoWhere
     ? await db
         .select({
           id: schema.pagamento.id,
@@ -156,19 +168,30 @@ export default async function PdvBancoDiretoPage(props: {
             eq(schema.formaPagamentoCanal.canal, 'DIRETO'),
           ),
         )
-        .where(
-          and(
-            eq(schema.pagamento.filialId, filialSelecionada.id),
-            gte(schema.pagamento.dataPagamento, dtIni),
-            lte(schema.pagamento.dataPagamento, dtFim),
-            idsCasados.length > 0
-              ? notInArray(schema.pagamento.id, idsCasados)
-              : undefined,
-          ),
-        )
+        .where(pdvSemBancoWhere)
         .orderBy(desc(schema.pagamento.dataPagamento))
         .limit(100)
     : [];
+
+  // Total real (sem limit) pra mostrar no card. A lista acima eh limitada
+  // a 100 entradas pra UX, mas o card tem que refletir o total.
+  const pdvSemBancoTotal = pdvSemBancoWhere
+    ? await db
+        .select({
+          n: sql<number>`COUNT(*)::int`,
+          v: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+        })
+        .from(schema.pagamento)
+        .innerJoin(
+          schema.formaPagamentoCanal,
+          and(
+            eq(schema.formaPagamentoCanal.filialId, filialSelecionada.id),
+            eq(schema.formaPagamentoCanal.formaPagamento, schema.pagamento.formaPagamento),
+            eq(schema.formaPagamentoCanal.canal, 'DIRETO'),
+          ),
+        )
+        .where(pdvSemBancoWhere)
+    : [{ n: 0, v: '0' }];
 
   // Banco sem PDV (créditos PIX/TED/DOC sem origem) — heurística por descrição
   const matchesBancoIds = await db
@@ -177,7 +200,20 @@ export default async function PdvBancoDiretoPage(props: {
     .where(eq(schema.matchPdvBanco.filialId, filialSelecionada.id));
   const idsLanCasados = matchesBancoIds.map((m) => m.id);
 
-  const bancoSemPdv = dtIni && dtFim && dataInicioEfetiva && dataFimEfetiva
+  const bancoSemPdvWhere = dtIni && dtFim && dataInicioEfetiva && dataFimEfetiva
+    ? and(
+        eq(schema.contaBancaria.filialId, filialSelecionada.id),
+        eq(schema.lancamentoBanco.tipo, 'C'),
+        gte(schema.lancamentoBanco.dataMovimento, dataInicioEfetiva),
+        lte(schema.lancamentoBanco.dataMovimento, dataFimEfetiva),
+        sql`(${schema.lancamentoBanco.descricao} ~* '\\b(pix|ted|doc|transfer[êe]ncia)\\b')`,
+        idsLanCasados.length > 0
+          ? notInArray(schema.lancamentoBanco.id, idsLanCasados)
+          : undefined,
+      )
+    : undefined;
+
+  const bancoSemPdv = bancoSemPdvWhere
     ? await db
         .select({
           id: schema.lancamentoBanco.id,
@@ -190,21 +226,24 @@ export default async function PdvBancoDiretoPage(props: {
           schema.contaBancaria,
           eq(schema.contaBancaria.id, schema.lancamentoBanco.contaBancariaId),
         )
-        .where(
-          and(
-            eq(schema.contaBancaria.filialId, filialSelecionada.id),
-            eq(schema.lancamentoBanco.tipo, 'C'),
-            gte(schema.lancamentoBanco.dataMovimento, dataInicioEfetiva),
-            lte(schema.lancamentoBanco.dataMovimento, dataFimEfetiva),
-            sql`(${schema.lancamentoBanco.descricao} ~* '\\b(pix|ted|doc|transfer[êe]ncia)\\b')`,
-            idsLanCasados.length > 0
-              ? notInArray(schema.lancamentoBanco.id, idsLanCasados)
-              : undefined,
-          ),
-        )
+        .where(bancoSemPdvWhere)
         .orderBy(desc(schema.lancamentoBanco.dataMovimento))
         .limit(100)
     : [];
+
+  const bancoSemPdvTotal = bancoSemPdvWhere
+    ? await db
+        .select({
+          n: sql<number>`COUNT(*)::int`,
+          v: sql<string>`COALESCE(SUM(${schema.lancamentoBanco.valor}), 0)::text`,
+        })
+        .from(schema.lancamentoBanco)
+        .innerJoin(
+          schema.contaBancaria,
+          eq(schema.contaBancaria.id, schema.lancamentoBanco.contaBancariaId),
+        )
+        .where(bancoSemPdvWhere)
+    : [{ n: 0, v: '0' }];
 
   // Universo broader pra match manual: TODOS os creditos sem match no
   // periodo, sem filtro de descricao. Necessario pq Pix que passou pela
@@ -238,8 +277,11 @@ export default async function PdvBancoDiretoPage(props: {
         .limit(2000)
     : [];
 
-  const totalPdvSemBancoValor = pdvSemBanco.reduce((s, p) => s + Number(p.valor), 0);
-  const totalBancoSemPdvValor = bancoSemPdv.reduce((s, b) => s + Number(b.valor), 0);
+  // Card usa o total real (sem limit). Lista limitada usada so pra UI.
+  const totalPdvSemBancoQtd = Number(pdvSemBancoTotal[0]?.n ?? 0);
+  const totalPdvSemBancoValor = Number(pdvSemBancoTotal[0]?.v ?? 0);
+  const totalBancoSemPdvQtd = Number(bancoSemPdvTotal[0]?.n ?? 0);
+  const totalBancoSemPdvValor = Number(bancoSemPdvTotal[0]?.v ?? 0);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -356,7 +398,7 @@ export default async function PdvBancoDiretoPage(props: {
                   PDV sem Banco
                 </p>
                 <p className="mt-1.5 text-2xl font-bold text-slate-900">
-                  {int(pdvSemBanco.length)}
+                  {int(totalPdvSemBancoQtd)}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-600">{brl(totalPdvSemBancoValor)}</p>
               </div>
@@ -365,7 +407,7 @@ export default async function PdvBancoDiretoPage(props: {
                   Banco sem PDV
                 </p>
                 <p className="mt-1.5 text-2xl font-bold text-slate-900">
-                  {int(bancoSemPdv.length)}
+                  {int(totalBancoSemPdvQtd)}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-600">{brl(totalBancoSemPdvValor)}</p>
               </div>
@@ -448,7 +490,7 @@ export default async function PdvBancoDiretoPage(props: {
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-200 px-4 py-3">
                 <h3 className="text-sm font-semibold text-rose-700">
-                  PDV sem Banco <span className="font-normal text-slate-500">· {pdvSemBanco.length}</span>
+                  PDV sem Banco <span className="font-normal text-slate-500">· {int(totalPdvSemBancoQtd)}{totalPdvSemBancoQtd > pdvSemBanco.length ? ` (mostrando ${pdvSemBanco.length})` : ''}</span>
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500">
                   Pagamentos canal DIRETO no PDV que não casaram com nenhum
@@ -522,7 +564,7 @@ export default async function PdvBancoDiretoPage(props: {
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-200 px-4 py-3">
                 <h3 className="text-sm font-semibold text-rose-700">
-                  Banco sem PDV <span className="font-normal text-slate-500">· {bancoSemPdv.length}</span>
+                  Banco sem PDV <span className="font-normal text-slate-500">· {int(totalBancoSemPdvQtd)}{totalBancoSemPdvQtd > bancoSemPdv.length ? ` (mostrando ${bancoSemPdv.length})` : ''}</span>
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500">
                   Créditos PIX/TED/DOC no banco que não bateram com nenhum
