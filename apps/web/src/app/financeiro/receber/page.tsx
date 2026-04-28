@@ -86,6 +86,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
           : null;
       return {
         key: s.clienteId ?? `ext-${s.codigoClienteExterno}`,
+        clienteId: s.clienteId ?? c?.id ?? null,
         nome: c?.nome ?? (s.codigoClienteExterno ? `Cliente #${s.codigoClienteExterno}` : 'Sem cliente'),
         cpf: c?.cpfOuCnpj ?? null,
         saldo,
@@ -218,47 +219,78 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                 <th className="px-4 py-2 text-right">Saldo</th>
                 <th className="px-4 py-2 text-right">Movs</th>
                 <th className="px-4 py-2">Último movimento</th>
+                <th className="px-4 py-2 w-24"></th>
               </tr>
             </thead>
             <tbody>
               {linhas.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-xs text-slate-500">
                     {saldos.length === 0
                       ? 'Aguardando sincronização do agente.'
                       : 'Nenhum cliente nesse filtro.'}
                   </td>
                 </tr>
               ) : (
-                linhas.slice(0, 500).map((l) => (
-                  <tr key={l.key} className="border-t border-slate-100">
-                    <td className="px-4 py-2 text-xs text-slate-800">{l.nome}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-600">{l.cpf ?? '—'}</td>
-                    <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
-                      {brl(l.totalCredito)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
-                      {brl(l.totalDebito)}
-                    </td>
-                    <td
-                      className={`px-4 py-2 text-right font-mono text-sm font-medium ${
-                        l.saldo > 0.01
-                          ? 'text-rose-700'
-                          : l.saldo < -0.01
-                            ? 'text-emerald-700'
-                            : 'text-slate-500'
+                linhas.slice(0, 500).map((l) => {
+                  // Linha clicavel quando temos clienteId real (caso codigo
+                  // externo sem cliente vinculado, nao da pra navegar ainda).
+                  const linkHref = l.clienteId
+                    ? `/financeiro/receber/${l.clienteId}?filialId=${filialSelecionada.id}`
+                    : null;
+                  return (
+                    <tr
+                      key={l.key}
+                      className={`border-t border-slate-100 ${
+                        linkHref ? 'cursor-pointer hover:bg-slate-50' : ''
                       }`}
                     >
-                      {brl(l.saldo)}
-                    </td>
-                    <td className="px-4 py-2 text-right text-xs text-slate-500">{int(l.qtd)}</td>
-                    <td className="px-4 py-2 text-xs text-slate-600">
-                      {l.ultimoMov
-                        ? new Date(l.ultimoMov).toLocaleDateString('pt-BR')
-                        : '—'}
-                    </td>
-                  </tr>
-                ))
+                      <td className="px-4 py-2 text-xs text-slate-800">
+                        {linkHref ? (
+                          <Link href={linkHref} className="hover:underline">
+                            {l.nome}
+                          </Link>
+                        ) : (
+                          l.nome
+                        )}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-600">{l.cpf ?? '—'}</td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                        {brl(l.totalCredito)}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                        {brl(l.totalDebito)}
+                      </td>
+                      <td
+                        className={`px-4 py-2 text-right font-mono text-sm font-medium ${
+                          l.saldo > 0.01
+                            ? 'text-rose-700'
+                            : l.saldo < -0.01
+                              ? 'text-emerald-700'
+                              : 'text-slate-500'
+                        }`}
+                      >
+                        {brl(l.saldo)}
+                      </td>
+                      <td className="px-4 py-2 text-right text-xs text-slate-500">{int(l.qtd)}</td>
+                      <td className="px-4 py-2 text-xs text-slate-600">
+                        {l.ultimoMov
+                          ? new Date(l.ultimoMov).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+                          : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        {linkHref && (
+                          <Link
+                            href={linkHref}
+                            className="rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50"
+                          >
+                            Detalhe →
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
