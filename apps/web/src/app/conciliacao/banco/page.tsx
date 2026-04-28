@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { BancoForm } from './form';
@@ -87,6 +87,18 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
       )
     : undefined;
 
+  // Lancamentos do banco que ja casaram via PDV-Banco-Direto. Quando o user
+  // concilia manual no /conciliacao/pdv-banco-direto, o credito fica linkado
+  // mas a excecao CREDITO_SEM_CIELO antiga continua na tabela. Filtramos
+  // aqui pra nao mostrar 2x o mesmo credito.
+  const lancamentosCasadosDireto = filialSelecionada
+    ? await db
+        .select({ id: schema.matchPdvBanco.lancamentoBancoId })
+        .from(schema.matchPdvBanco)
+        .where(eq(schema.matchPdvBanco.filialId, filialSelecionada.id))
+    : [];
+  const idsLancCasadosDireto = lancamentosCasadosDireto.map((l) => l.id);
+
   const excecoesAbertas = filialSelecionada
     ? await db
         .select({
@@ -101,6 +113,7 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
           recebivelFormaPagamento: schema.pagamento.formaPagamento,
           lancamentoData: schema.lancamentoBanco.dataMovimento,
           lancamentoDescricao: schema.lancamentoBanco.descricao,
+          lancamentoBancoId: schema.excecao.lancamentoBancoId,
         })
         .from(schema.excecao)
         .leftJoin(schema.pagamento, eq(schema.pagamento.id, schema.excecao.pagamentoId))
@@ -114,6 +127,15 @@ export default async function BancoPage(props: { searchParams: Promise<SP> }) {
             eq(schema.excecao.processo, PROCESSO_BANCO),
             isNull(schema.excecao.aceitaEm),
             filtroData,
+            // Excluir excecoes cujo lancamento ja foi casado em match_pdv_banco
+            // (via /conciliacao/pdv-banco-direto). Sem isso o credito aparecia
+            // 2x: no card "Outros creditos" e como casado em PDV-Banco-Direto.
+            idsLancCasadosDireto.length > 0
+              ? or(
+                  isNull(schema.excecao.lancamentoBancoId),
+                  notInArray(schema.excecao.lancamentoBancoId, idsLancCasadosDireto),
+                )
+              : undefined,
           ),
         )
         .orderBy(desc(schema.excecao.detectadoEm))
