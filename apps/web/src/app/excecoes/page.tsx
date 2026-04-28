@@ -109,9 +109,14 @@ export default async function ExcecoesPage(props: {
   }
   if (sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni)) {
     const dIni = new Date(sp.dataIni + 'T00:00:00-03:00');
+    // Considera as 4 origens possiveis: pagamento (PDV), venda_adquirente
+    // (Cielo Vendas), recebivel_adquirente (Cielo Recebiveis), lancamento_banco
+    // (CNAB). Sem isso, AGENDA_SEM_VENDA e CREDITO_SEM_CIELO bypassam o filtro.
     const cond = or(
       gte(schema.pagamento.dataPagamento, dIni),
       gte(schema.vendaAdquirente.dataVenda, sp.dataIni),
+      gte(schema.recebivelAdquirente.dataPagamento, sp.dataIni),
+      gte(schema.lancamentoBanco.dataMovimento, sp.dataIni),
     );
     if (cond) whereBase.push(cond);
   }
@@ -120,6 +125,8 @@ export default async function ExcecoesPage(props: {
     const cond = or(
       lte(schema.pagamento.dataPagamento, dFim),
       lte(schema.vendaAdquirente.dataVenda, sp.dataFim),
+      lte(schema.recebivelAdquirente.dataPagamento, sp.dataFim),
+      lte(schema.lancamentoBanco.dataMovimento, sp.dataFim),
     );
     if (cond) whereBase.push(cond);
   }
@@ -157,6 +164,8 @@ export default async function ExcecoesPage(props: {
         lte(schema.pagamento.dataPagamento, dFim),
       ),
       eq(schema.vendaAdquirente.dataVenda, d),
+      eq(schema.recebivelAdquirente.dataPagamento, d),
+      eq(schema.lancamentoBanco.dataMovimento, d),
     );
     if (cond) whereBase.push(cond);
   }
@@ -175,6 +184,14 @@ export default async function ExcecoesPage(props: {
     .leftJoin(
       schema.vendaAdquirente,
       eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+    )
+    .leftJoin(
+      schema.recebivelAdquirente,
+      eq(schema.recebivelAdquirente.id, schema.excecao.recebivelAdquirenteId),
+    )
+    .leftJoin(
+      schema.lancamentoBanco,
+      eq(schema.lancamentoBanco.id, schema.excecao.lancamentoBancoId),
     )
     .where(and(...whereBase))
     .groupBy(schema.excecao.tipo);
@@ -197,6 +214,14 @@ export default async function ExcecoesPage(props: {
       schema.vendaAdquirente,
       eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
     )
+    .leftJoin(
+      schema.recebivelAdquirente,
+      eq(schema.recebivelAdquirente.id, schema.excecao.recebivelAdquirenteId),
+    )
+    .leftJoin(
+      schema.lancamentoBanco,
+      eq(schema.lancamentoBanco.id, schema.excecao.lancamentoBancoId),
+    )
     .where(and(...whereList));
   const totalFiltrado = Number(totalFiltradoRow?.n ?? 0);
 
@@ -212,6 +237,12 @@ export default async function ExcecoesPage(props: {
       pagamentoNsu: schema.pagamento.nsuTransacao,
       pagamentoFormaPagamento: schema.pagamento.formaPagamento,
       pagamentoDataPagamento: schema.pagamento.dataPagamento,
+      vendaDataVenda: schema.vendaAdquirente.dataVenda,
+      vendaNsu: schema.vendaAdquirente.nsu,
+      vendaForma: schema.vendaAdquirente.formaPagamento,
+      recebivelDataPagamento: schema.recebivelAdquirente.dataPagamento,
+      recebivelNsu: schema.recebivelAdquirente.nsu,
+      lancamentoData: schema.lancamentoBanco.dataMovimento,
       filialNome: schema.filial.nome,
     })
     .from(schema.excecao)
@@ -219,6 +250,14 @@ export default async function ExcecoesPage(props: {
     .leftJoin(
       schema.vendaAdquirente,
       eq(schema.vendaAdquirente.id, schema.excecao.vendaAdquirenteId),
+    )
+    .leftJoin(
+      schema.recebivelAdquirente,
+      eq(schema.recebivelAdquirente.id, schema.excecao.recebivelAdquirenteId),
+    )
+    .leftJoin(
+      schema.lancamentoBanco,
+      eq(schema.lancamentoBanco.id, schema.excecao.lancamentoBancoId),
     )
     .innerJoin(schema.filial, eq(schema.filial.id, schema.excecao.filialId))
     .where(and(...whereList))
@@ -291,7 +330,7 @@ export default async function ExcecoesPage(props: {
           <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-4 py-3">Filial</th>
-              <th className="px-4 py-3">Data pgto</th>
+              <th className="px-4 py-3">Data</th>
               <th className="px-4 py-3">NSU</th>
               <th className="px-4 py-3">Forma</th>
               <th className="px-4 py-3 text-right">Valor</th>
@@ -312,15 +351,31 @@ export default async function ExcecoesPage(props: {
                 <tr key={e.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                   <td className="px-4 py-2.5 text-xs text-slate-600">{e.filialNome}</td>
                   <td className="px-4 py-2.5 font-mono text-xs text-slate-700">
-                    {e.pagamentoDataPagamento
-                      ? new Date(e.pagamentoDataPagamento).toLocaleDateString('pt-BR')
-                      : '—'}
+                    {(() => {
+                      // Fallback de data por tipo de excecao. Cada tipo tem
+                      // a data relevante numa tabela diferente.
+                      const dataIso =
+                        e.pagamentoDataPagamento
+                          ? new Date(e.pagamentoDataPagamento)
+                              .toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+                          : e.vendaDataVenda
+                            ? new Date(e.vendaDataVenda + 'T00:00:00-03:00')
+                                .toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+                            : e.recebivelDataPagamento
+                              ? new Date(e.recebivelDataPagamento + 'T00:00:00-03:00')
+                                  .toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+                              : e.lancamentoData
+                                ? new Date(e.lancamentoData + 'T00:00:00-03:00')
+                                    .toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+                                : '—';
+                      return dataIso;
+                    })()}
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-slate-700">
-                    {e.pagamentoNsu ?? '—'}
+                    {e.pagamentoNsu ?? e.vendaNsu ?? e.recebivelNsu ?? '—'}
                   </td>
                   <td className="px-4 py-2.5 text-xs text-slate-700">
-                    {e.pagamentoFormaPagamento ?? '—'}
+                    {e.pagamentoFormaPagamento ?? e.vendaForma ?? '—'}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-sm font-medium text-slate-900">
                     {brl(e.valor)}
