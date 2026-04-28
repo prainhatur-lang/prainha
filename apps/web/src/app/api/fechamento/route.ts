@@ -1,13 +1,19 @@
-// POST /api/fechamento — fecha range de dias (admin-only)
-// Body: { filialId, processo, dataInicio, dataFim, observacao? }
-// DELETE /api/fechamento?filialId=...&processo=...&dataInicio=...&dataFim=...
-//   reabre o range (admin-only)
+// POST /api/fechamento — fecha dias selecionados (admin-only)
+// Body novo: { filialId, processo, datas: string[], observacao? }
+// Body legado: { filialId, processo, dataInicio, dataFim, observacao? } — aceita
+//   por compatibilidade, mas internamente expande pra range completo (use datas[]).
+// DELETE /api/fechamento?filialId=...&processo=...&datas=YYYY-MM-DD,YYYY-MM-DD
+//   reabre apenas os dias listados.
+//
+// Bug historico (corrigido aqui): o frontend mandava range [primeiro, ultimo] da
+// selecao mas o backend fechava TODOS os dias intermediarios. Quando user
+// selecionava 5, 13, 20, fechavam 16 dias. Agora o frontend manda lista exata.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, lte } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,8 +23,11 @@ const PROCESSOS = ['OPERADORA', 'RECEBIVEIS', 'BANCO'] as const;
 const Body = z.object({
   filialId: z.string().uuid(),
   processo: z.enum(PROCESSOS),
-  dataInicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  dataFim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // Formato preferido: lista exata de dias selecionados.
+  datas: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(366).optional(),
+  // Formato legado (range) — gera todos os dias intermediarios.
+  dataInicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dataFim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   observacao: z.string().max(500).optional(),
 });
 
@@ -60,16 +69,28 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const { filialId, processo, dataInicio, dataFim, observacao } = parsed.data;
+  const { filialId, processo, datas, dataInicio, dataFim, observacao } = parsed.data;
 
   const admin = await verificarAdmin(user.id, filialId);
   if (!admin) return NextResponse.json({ error: 'apenas DONO pode fechar' }, { status: 403 });
 
-  if (dataFim < dataInicio) {
-    return NextResponse.json({ error: 'dataFim < dataInicio' }, { status: 400 });
+  // Resolve a lista efetiva de dias. Preferencia: datas[] (exato).
+  // Fallback: range dataInicio..dataFim (compat legado).
+  let dias: string[];
+  if (datas && datas.length > 0) {
+    dias = [...new Set(datas)].sort(); // dedupe + sort determinista
+  } else if (dataInicio && dataFim) {
+    if (dataFim < dataInicio) {
+      return NextResponse.json({ error: 'dataFim < dataInicio' }, { status: 400 });
+    }
+    dias = listarDias(dataInicio, dataFim);
+  } else {
+    return NextResponse.json(
+      { error: 'envie datas[] ou dataInicio+dataFim' },
+      { status: 400 },
+    );
   }
 
-  const dias = listarDias(dataInicio, dataFim);
   const values = dias.map((data) => ({
     filialId,
     processo,
@@ -92,6 +113,7 @@ export async function DELETE(req: Request) {
   const u = new URL(req.url);
   const filialId = u.searchParams.get('filialId') ?? '';
   const processo = u.searchParams.get('processo') ?? '';
+  const datasParam = u.searchParams.get('datas') ?? ''; // CSV: 2026-04-05,2026-04-13
   const dataInicio = u.searchParams.get('dataInicio') ?? '';
   const dataFim = u.searchParams.get('dataFim') ?? '';
 
@@ -101,8 +123,28 @@ export async function DELETE(req: Request) {
   if (!(PROCESSOS as readonly string[]).includes(processo)) {
     return NextResponse.json({ error: 'processo invalido' }, { status: 400 });
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
-    return NextResponse.json({ error: 'datas invalidas' }, { status: 400 });
+
+  // Resolve dias: preferencia pra ?datas=YYYY-MM-DD,YYYY-MM-DD (exato).
+  // Fallback: range ?dataInicio=...&dataFim=... (compat legado).
+  let diasFiltro: string[] = [];
+  if (datasParam) {
+    diasFiltro = datasParam
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+    if (diasFiltro.length === 0) {
+      return NextResponse.json({ error: 'datas invalidas' }, { status: 400 });
+    }
+  } else if (
+    /^\d{4}-\d{2}-\d{2}$/.test(dataInicio) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(dataFim)
+  ) {
+    diasFiltro = listarDias(dataInicio, dataFim);
+  } else {
+    return NextResponse.json(
+      { error: 'envie datas=YYYY-MM-DD,... ou dataInicio+dataFim' },
+      { status: 400 },
+    );
   }
 
   const admin = await verificarAdmin(user.id, filialId);
@@ -114,8 +156,7 @@ export async function DELETE(req: Request) {
       and(
         eq(schema.fechamentoConciliacao.filialId, filialId),
         eq(schema.fechamentoConciliacao.processo, processo),
-        gte(schema.fechamentoConciliacao.data, dataInicio),
-        lte(schema.fechamentoConciliacao.data, dataFim),
+        inArray(schema.fechamentoConciliacao.data, diasFiltro),
       ),
     )
     .returning({ id: schema.fechamentoConciliacao.id });

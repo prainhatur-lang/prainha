@@ -84,14 +84,15 @@ export function Calendario({ mes, filialId, processo, isAdmin, diasFechados, sta
     setLoading(true);
     setErro(null);
     try {
+      // Envia lista exata em vez de range — backend antigo fechava intermediarios
+      // (bug grave que travava 16 dias quando user selecionava 3 nao-consecutivos).
       const r = await fetch('/api/fechamento', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filialId,
           processo,
-          dataInicio: sorted[0],
-          dataFim: sorted[sorted.length - 1],
+          datas: sorted,
         }),
       });
       const data = await r.json();
@@ -114,8 +115,7 @@ export function Calendario({ mes, filialId, processo, isAdmin, diasFechados, sta
       const qs = new URLSearchParams({
         filialId,
         processo,
-        dataInicio: sorted[0]!,
-        dataFim: sorted[sorted.length - 1]!,
+        datas: sorted.join(','),
       });
       const r = await fetch(`/api/fechamento?${qs.toString()}`, { method: 'DELETE' });
       const data = await r.json();
