@@ -52,6 +52,7 @@ export default async function OpDetalhePage(props: {
       quantidade: schema.ordemProducaoEntrada.quantidade,
       precoUnitario: schema.ordemProducaoEntrada.precoUnitario,
       valorTotal: schema.ordemProducaoEntrada.valorTotal,
+      pesoTotalKg: schema.ordemProducaoEntrada.pesoTotalKg,
     })
     .from(schema.ordemProducaoEntrada)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.ordemProducaoEntrada.produtoId))
@@ -172,6 +173,7 @@ export default async function OpDetalhePage(props: {
             quantidade: e.quantidade,
             precoUnitario: e.precoUnitario,
             valorTotal: e.valorTotal,
+            pesoTotalKg: e.pesoTotalKg,
           }))}
           saidas={saidas.map((s) => ({
             id: s.id,

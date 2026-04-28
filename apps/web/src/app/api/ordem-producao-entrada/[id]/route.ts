@@ -13,6 +13,7 @@ export const runtime = 'nodejs';
 const Body = z.object({
   quantidade: z.number().positive().optional(),
   precoUnitario: z.number().min(0).optional(),
+  pesoTotalKg: z.number().positive().nullable().optional(),
 });
 
 async function carregarLinha(id: string, userId: string) {
@@ -90,6 +91,9 @@ export async function PATCH(
   const set: Record<string, unknown> = { valorTotal: valor.toFixed(2) };
   if (parsed.data.quantidade !== undefined) set.quantidade = parsed.data.quantidade.toFixed(4);
   if (parsed.data.precoUnitario !== undefined) set.precoUnitario = parsed.data.precoUnitario.toFixed(6);
+  if (parsed.data.pesoTotalKg !== undefined) {
+    set.pesoTotalKg = parsed.data.pesoTotalKg !== null ? parsed.data.pesoTotalKg.toFixed(3) : null;
+  }
 
   await db
     .update(schema.ordemProducaoEntrada)

@@ -238,6 +238,10 @@ export const ordemProducaoEntrada = pgTable(
     /** Custo unitário do insumo no momento (pega do último preço de compra) */
     precoUnitario: numeric('preco_unitario', { precision: 14, scale: 6 }),
     valorTotal: numeric('valor_total', { precision: 14, scale: 2 }),
+    /** Peso total em kg da entrada — necessario quando produto eh em un/l/ml
+     *  pra reconciliacao por peso fechar. Quando produto eh em kg/g, este
+     *  campo eh redundante (peso = quantidade). */
+    pesoTotalKg: numeric('peso_total_kg', { precision: 14, scale: 3 }),
   },
   (t) => ({
     opIdx: index('idx_op_entrada_op').on(t.ordemProducaoId),

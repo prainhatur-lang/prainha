@@ -29,6 +29,7 @@ interface LinhaEntrada {
   quantidade: string | null;
   precoUnitario: string | null;
   valorTotal: string | null;
+  pesoTotalKg: string | null;
 }
 
 interface LinhaSaida {
@@ -120,7 +121,7 @@ export function EditorProducao({
     const v = quantidadeEmKg({
       quantidade: Number(e.quantidade ?? 0),
       unidade: e.produtoUnidade,
-      pesoTotalKg: null,
+      pesoTotalKg: e.pesoTotalKg ? Number(e.pesoTotalKg) : null,
       ehPerdaLivre: false,
     });
     return acc + (Number.isFinite(v) ? v : 0);
@@ -145,8 +146,13 @@ export function EditorProducao({
   }, 0);
   const kgSaidasTotal = kgSaidasProduto + kgSaidasPerda;
 
-  // Detecta se ha alguma saida em un/l/ml SEM peso (produto) — nesse caso
+  // Detecta se ha entrada/saida em un/l/ml SEM peso preenchido — nesse caso
   // nao da pra reconciliar por peso confiavel; cai no comparativo de quantidade.
+  const temEntradaSemPeso = entradas.some((e) => {
+    const u = (e.produtoUnidade ?? '').toLowerCase();
+    if (u === 'kg' || u === 'g') return false;
+    return !e.pesoTotalKg || Number(e.pesoTotalKg) <= 0;
+  });
   const temSaidaSemPeso = [...saidasProduto, ...saidasPerda].some((s) => {
     const u = (s.produtoUnidade ?? '').toLowerCase();
     if (u === 'kg' || u === 'g') return false;
@@ -155,11 +161,10 @@ export function EditorProducao({
   });
 
   // Modo de reconciliacao:
-  //  - 'peso' quando todas as saidas tem peso ou sao kg/g/perda livre
-  //  - 'quantidade' fallback quando faltam pesos
-  const modoReconciliacao: 'peso' | 'quantidade' = temSaidaSemPeso
-    ? 'quantidade'
-    : 'peso';
+  //  - 'peso' quando todas linhas tem peso (entrada e saida)
+  //  - 'quantidade' fallback quando faltam pesos em alguma ponta
+  const modoReconciliacao: 'peso' | 'quantidade' =
+    temEntradaSemPeso || temSaidaSemPeso ? 'quantidade' : 'peso';
 
   const divergenciaPesoKg = kgEntradas > 0 ? kgEntradas - kgSaidasTotal : 0;
   const divergenciaPesoPct = kgEntradas > 0 ? (divergenciaPesoKg / kgEntradas) * 100 : 0;
@@ -441,7 +446,9 @@ export function EditorProducao({
           hint={
             modoReconciliacao === 'peso'
               ? `${kgEntradas.toFixed(2)} kg → ${kgSaidasTotal.toFixed(2)} kg`
-              : 'preencha pesos pra fechar'
+              : temEntradaSemPeso
+                ? '⚠ entrada em un sem kg — fechamento por qtd não bate'
+                : 'preencha pesos das saídas pra fechar'
           }
           highlight={
             Math.abs(divergencia) < 1
@@ -504,6 +511,7 @@ export function EditorProducao({
                 <th className="px-4 py-2">Produto</th>
                 <th className="px-4 py-2 text-right">Qtd</th>
                 <th className="px-4 py-2">Un.</th>
+                <th className="px-4 py-2 text-right">Peso (kg)</th>
                 <th className="px-4 py-2 text-right">Unit.</th>
                 <th className="px-4 py-2 text-right">Total</th>
                 {editavel && <th className="px-4 py-2 print:hidden"></th>}
@@ -512,7 +520,7 @@ export function EditorProducao({
             <tbody>
               {entradas.length === 0 ? (
                 <tr>
-                  <td colSpan={editavel ? 6 : 5} className="px-4 py-4 text-center text-xs text-slate-500">
+                  <td colSpan={editavel ? 7 : 6} className="px-4 py-4 text-center text-xs text-slate-500">
                     Nenhuma entrada. Adicione pelo menos uma pra concluir.
                   </td>
                 </tr>
@@ -1084,8 +1092,14 @@ function LinhaEntradaRow({
   const [_pending, start] = useTransition();
   const [editQtd, setEditQtd] = useState(false);
   const [editPreco, setEditPreco] = useState(false);
+  const [editPeso, setEditPeso] = useState(false);
   const [qtd, setQtd] = useState(String(Number(linha.quantidade ?? 0)));
   const [preco, setPreco] = useState(String(Number(linha.precoUnitario ?? 0)));
+  const [peso, setPeso] = useState(
+    linha.pesoTotalKg ? String(Number(linha.pesoTotalKg)) : '',
+  );
+  const unidLow = (linha.produtoUnidade ?? '').toLowerCase();
+  const ehKgG = unidLow === 'kg' || unidLow === 'g';
 
   async function salvar(body: Record<string, unknown>) {
     const r = await fetch(`/api/ordem-producao-entrada/${linha.id}`, {
@@ -1146,6 +1160,53 @@ function LinhaEntradaRow({
         )}
       </td>
       <td className="px-4 py-2 font-mono text-xs text-slate-500">{linha.produtoUnidade}</td>
+      <td className="px-4 py-2 text-right font-mono text-xs">
+        {ehKgG ? (
+          <span className="text-slate-400">
+            {Number(linha.quantidade ?? 0).toFixed(unidLow === 'g' ? 0 : 2)}
+            {unidLow === 'g' ? 'g' : ''}
+          </span>
+        ) : editavel && editPeso ? (
+          <input
+            type="text"
+            value={peso}
+            onChange={(e) => setPeso(e.target.value)}
+            onBlur={async () => {
+              const n = peso.trim() ? Number(peso.replace(',', '.')) : null;
+              const atual = linha.pesoTotalKg ? Number(linha.pesoTotalKg) : null;
+              if (n !== atual && (n === null || (Number.isFinite(n) && n > 0))) {
+                await salvar({ pesoTotalKg: n });
+              }
+              setEditPeso(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              if (e.key === 'Escape') {
+                setPeso(linha.pesoTotalKg ? String(Number(linha.pesoTotalKg)) : '');
+                setEditPeso(false);
+              }
+            }}
+            placeholder="kg"
+            autoFocus
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right text-xs"
+          />
+        ) : (
+          <button
+            type="button"
+            disabled={!editavel}
+            onClick={() => setEditPeso(true)}
+            className={editavel ? 'hover:bg-slate-50 px-1' : ''}
+          >
+            {linha.pesoTotalKg && Number(linha.pesoTotalKg) > 0 ? (
+              <span className="text-slate-700">{Number(linha.pesoTotalKg).toFixed(2)}</span>
+            ) : editavel ? (
+              <span className="text-amber-700">⚠ falta</span>
+            ) : (
+              <span className="text-slate-400">—</span>
+            )}
+          </button>
+        )}
+      </td>
       <td className="px-4 py-2 text-right font-mono text-xs">
         {editavel && editPreco ? (
           <input
