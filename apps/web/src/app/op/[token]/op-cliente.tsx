@@ -865,9 +865,13 @@ function SaidaRow({
   );
   const [salvando, setSalvando] = useState(false);
   const ehPerda = saida.tipo === 'PERDA';
-  const precisaPeso = !['kg', 'g'].includes(
-    (saida.produtoUnidade ?? '').toLowerCase(),
-  );
+  // PERDA sem produto vinculado (texto livre tipo "pele", "aparas") →
+  // a quantidade ja eh tratada como kg no painel de fechamento. Nao precisa
+  // pedir peso adicional.
+  const ehPerdaLivre = ehPerda && !saida.produtoId;
+  const precisaPeso = ehPerdaLivre
+    ? false
+    : !['kg', 'g'].includes((saida.produtoUnidade ?? '').toLowerCase());
 
   async function salvar() {
     const n = Number(qtd.replace(',', '.'));
@@ -998,21 +1002,20 @@ function SaidaRow({
               <p className="font-mono text-xl font-bold text-slate-900">
                 {Number(saida.quantidade)}
               </p>
-              <p className="text-[10px] text-slate-500">{saida.produtoUnidade}</p>
+              <p className="text-[10px] text-slate-500">
+                {/* PERDA livre: qtd vai como kg direto */}
+                {ehPerdaLivre ? 'kg' : saida.produtoUnidade}
+              </p>
               {saida.pesoTotalKg && Number(saida.pesoTotalKg) > 0 && (
                 <p className="mt-0.5 font-mono text-[10px] text-slate-600">
                   ={Number(saida.pesoTotalKg).toFixed(2)} kg
                 </p>
               )}
-              {!saida.pesoTotalKg &&
-                !['kg', 'g'].includes(
-                  (saida.produtoUnidade ?? '').toLowerCase(),
-                ) &&
-                editavel && (
-                  <p className="mt-0.5 text-[9px] font-medium text-amber-700">
-                    ⚠ falta peso
-                  </p>
-                )}
+              {!saida.pesoTotalKg && precisaPeso && editavel && (
+                <p className="mt-0.5 text-[9px] font-medium text-amber-700">
+                  ⚠ falta peso
+                </p>
+              )}
             </button>
           )}
         </div>
