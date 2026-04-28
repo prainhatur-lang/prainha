@@ -98,7 +98,13 @@ export function MatchManualPicker({
     [sel, candidatos],
   );
   const diff = +(soma - Math.abs(valorPrincipal)).toFixed(2);
+  // Indicador visual: bate = diff <= R$ 0,10 (verde no card)
+  // Mas o botao NAO fica disabled por isso — match manual e responsabilidade
+  // do user (ex: garcom errou forma e Cielo cobrou taxa, gerando diff legitimo).
   const bate = Math.abs(diff) <= 0.10;
+  const pctDiff = Math.abs(valorPrincipal) > 0
+    ? Math.abs(diff / valorPrincipal) * 100
+    : 0;
 
   function toggle(id: string) {
     const n = new Set(sel);
@@ -108,7 +114,17 @@ export function MatchManualPicker({
   }
 
   async function aplicar() {
-    if (!bate || sel.size === 0) return;
+    if (sel.size === 0) return;
+    // Diff > R$ 1 e > 1% — pede confirmacao explicita pra evitar match acidental.
+    if (Math.abs(diff) > 1 && pctDiff > 1) {
+      const ok = confirm(
+        `Diferenca de ${diff >= 0 ? '+' : ''}${diff.toFixed(2).replace('.', ',')} (${pctDiff.toFixed(2)}%) — fora da tolerancia tipica.\n\n` +
+          `Pode ser: taxa Cielo, garcom errou forma, ou outra coisa.\n` +
+          `Recomendado preencher uma observacao explicando.\n\n` +
+          `Conciliar mesmo assim?`,
+      );
+      if (!ok) return;
+    }
     setErro(null);
     try {
       const r = await fetch('/api/excecoes/match-manual', {
@@ -237,11 +253,25 @@ export function MatchManualPicker({
           </div>
           <div className="mt-1 flex justify-between border-t border-slate-200 pt-1">
             <span className="text-slate-600">Diferença:</span>
-            <span className={`font-mono font-semibold ${bate ? 'text-emerald-700' : 'text-rose-700'}`}>
+            <span
+              className={`font-mono font-semibold ${
+                bate ? 'text-emerald-700' : pctDiff < 1 ? 'text-amber-700' : 'text-rose-700'
+              }`}
+            >
               {diff >= 0 ? '+' : ''}
               {brl(diff)}
+              {pctDiff > 0 && (
+                <span className="ml-1 text-[10px]">({pctDiff.toFixed(2)}%)</span>
+              )}
             </span>
           </div>
+          {!bate && Math.abs(pctDiff - 0.49) < 0.05 && (
+            <p className="mt-1.5 rounded bg-amber-100 p-1.5 text-[10px] text-amber-900">
+              ℹ Diff bate exato com taxa Cielo Pix (0,49%) — provavelmente
+              garçom marcou forma errada (passou pela maquininha como
+              &quot;Pix Manual&quot;).
+            </p>
+          )}
         </div>
 
         <input
@@ -262,7 +292,7 @@ export function MatchManualPicker({
           </button>
           <button
             onClick={aplicar}
-            disabled={!bate || sel.size === 0 || pending}
+            disabled={sel.size === 0 || pending}
             className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {pending ? 'Aplicando...' : 'Conciliar'}

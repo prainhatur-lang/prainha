@@ -47,7 +47,11 @@ export function MatchManualBanco({
     [sel, creditosDisponiveis],
   );
   const diff = +(soma - valorGrupo).toFixed(2);
+  // Indicador visual: bate = diff <= R$ 0,10 (verde no card).
+  // Botao NAO fica disabled por isso — match manual e responsabilidade
+  // do user (assumiu que a soma corresponde ao grupo apesar de diff).
   const bate = Math.abs(diff) <= 0.10;
+  const pctDiff = valorGrupo > 0 ? Math.abs(diff / valorGrupo) * 100 : 0;
 
   function toggle(id: string) {
     const n = new Set(sel);
@@ -57,7 +61,14 @@ export function MatchManualBanco({
   }
 
   async function aplicar() {
-    if (!bate || sel.size === 0) return;
+    if (sel.size === 0) return;
+    if (Math.abs(diff) > 1 && pctDiff > 1) {
+      const ok = confirm(
+        `Diferenca de ${diff >= 0 ? '+' : ''}${diff.toFixed(2).replace('.', ',')} (${pctDiff.toFixed(2)}%) — fora da tolerancia tipica.\n\n` +
+          `Conciliar mesmo assim? Recomendado preencher observacao.`,
+      );
+      if (!ok) return;
+    }
     setErro(null);
     try {
       const r = await fetch('/api/conciliacao/banco/match-manual', {
@@ -202,7 +213,7 @@ export function MatchManualBanco({
           </button>
           <button
             onClick={aplicar}
-            disabled={!bate || sel.size === 0 || pending}
+            disabled={sel.size === 0 || pending}
             className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {pending ? 'Aplicando...' : 'Conciliar'}
