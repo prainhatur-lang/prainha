@@ -341,16 +341,15 @@ export default async function PdvBancoDiretoPage(props: {
                   Casados
                 </p>
                 <p className="mt-1.5 text-2xl font-bold text-slate-900">
-                  {int(resumoUltima?.matched ?? matches.length)}
+                  {int(matches.length)}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-600">
-                  {brl(resumoUltima?.valorMatched ?? matches.reduce((s, m) => s + Number(m.pagamentoValor ?? 0), 0))}
+                  {brl(matches.reduce((s, m) => s + Number(m.pagamentoValor ?? 0), 0))}
                 </p>
-                {resumoUltima && (
-                  <p className="mt-1 text-[10px] text-slate-500">
-                    {resumoUltima.matchedNivel1} firme · {resumoUltima.matchedNivel2} sugestão
-                  </p>
-                )}
+                <p className="mt-1 text-[10px] text-slate-500">
+                  {matches.filter((m) => Number(m.nivelMatch) === 1).length} firme ·{' '}
+                  {matches.filter((m) => Number(m.nivelMatch) !== 1).length} sugestão
+                </p>
               </div>
               <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-600">
