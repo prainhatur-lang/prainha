@@ -115,15 +115,18 @@ export function MatchManualPicker({
 
   async function aplicar() {
     if (sel.size === 0) return;
-    // Diff > R$ 1 e > 1% — pede confirmacao explicita pra evitar match acidental.
-    if (Math.abs(diff) > 1 && pctDiff > 1) {
+    // Diff > R$ 0,10 — pede confirmacao explicita e seta flag pro backend
+    // aceitar fora da tolerancia. Sem flag o backend rejeita com 422.
+    let forcarAceiteForaTolerancia = false;
+    if (Math.abs(diff) > 0.10) {
       const ok = confirm(
-        `Diferenca de ${diff >= 0 ? '+' : ''}${diff.toFixed(2).replace('.', ',')} (${pctDiff.toFixed(2)}%) — fora da tolerancia tipica.\n\n` +
+        `Diferenca de ${diff >= 0 ? '+' : ''}${diff.toFixed(2).replace('.', ',')} (${pctDiff.toFixed(2)}%) — fora da tolerancia (R$ 0,10).\n\n` +
           `Pode ser: taxa Cielo, garcom errou forma, ou outra coisa.\n` +
           `Recomendado preencher uma observacao explicando.\n\n` +
           `Conciliar mesmo assim?`,
       );
       if (!ok) return;
+      forcarAceiteForaTolerancia = true;
     }
     setErro(null);
     try {
@@ -134,10 +137,11 @@ export function MatchManualPicker({
           excecaoId,
           pariaIds: [...sel],
           observacao: obs || undefined,
+          ...(forcarAceiteForaTolerancia ? { forcarAceiteForaTolerancia: true } : {}),
         }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(j.mensagem || j.error || `HTTP ${r.status}`);
       setAberto(false);
       start(() => router.refresh());
     } catch (e) {

@@ -1,10 +1,13 @@
 // POST /api/excecoes/match-manual
-// Body: { excecaoId: string, pariaIds: string[], observacao?: string }
+// Body: { excecaoId: string, pariaIds: string[], observacao?: string,
+//         forcarAceiteForaTolerancia?: boolean }
 //
 // Concilia manualmente qualquer excecao com N outras excecoes "pariadas"
 // (tipicamente um lado "sem par" com o lado oposto). Valida que a soma
 // dos valores dos parias bate com o valor da excecao principal (tol 10 cent).
-// Marca todas as N+1 excecoes como aceitas.
+// Quando diff excede a tolerancia, retorna 422 e o frontend deve confirmar
+// com o user e reenviar com forcarAceiteForaTolerancia=true.
+// Marca todas as N+1 excecoes como aceitas (inclui o diff na observacao).
 //
 // Usado pelos 3 processos (OPERADORA, RECEBIVEIS, BANCO). A logica nao
 // depende do tipo — apenas valida soma.
@@ -22,6 +25,7 @@ const Body = z.object({
   excecaoId: z.string().uuid(),
   pariaIds: z.array(z.string().uuid()).min(1).max(100),
   observacao: z.string().max(500).optional(),
+  forcarAceiteForaTolerancia: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -39,7 +43,7 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const { excecaoId, pariaIds, observacao } = parsed.data;
+  const { excecaoId, pariaIds, observacao, forcarAceiteForaTolerancia } = parsed.data;
 
   // Exceção principal
   const excPrincipal = await db
@@ -112,24 +116,36 @@ export async function POST(req: Request) {
     0,
   );
   const diff = Math.abs(valorPrincipal - somaParias);
-  if (diff > 0.10) {
+  const pctDiff = valorPrincipal > 0 ? (diff / valorPrincipal) * 100 : 0;
+  // Quando diff > R$ 0,10, exige que o user tenha confirmado explicitamente
+  // (forcarAceiteForaTolerancia=true). Frontend mostra confirm() antes de
+  // reenviar a requisicao com a flag. Sem flag, retorna 422 com detalhes.
+  if (diff > 0.10 && !forcarAceiteForaTolerancia) {
     return NextResponse.json(
       {
-        error: `soma das excecoes pariadas (R$ ${somaParias.toFixed(2)}) nao bate com valor (R$ ${valorPrincipal.toFixed(2)}). Diff R$ ${diff.toFixed(2)} excede tolerancia R$ 0,10.`,
+        error: 'DIFF_FORA_DE_TOLERANCIA',
+        mensagem: `Soma das excecoes pareadas (R$ ${somaParias.toFixed(2)}) nao bate com valor (R$ ${valorPrincipal.toFixed(2)}). Diff R$ ${diff.toFixed(2)} (${pctDiff.toFixed(2)}%) excede tolerancia R$ 0,10. Reenvie com forcarAceiteForaTolerancia=true se confirmar.`,
+        valorPrincipal,
+        somaParias,
+        diff,
+        pctDiff,
       },
-      { status: 400 },
+      { status: 422 },
     );
   }
 
   // Marca todas como aceitas
   const now = new Date();
   const obsExtra = observacao ? ` Obs: ${observacao}` : '';
+  const diffNota = diff > 0.10
+    ? ` Diff R$ ${diff.toFixed(2)} (${pctDiff.toFixed(2)}%) — match com diff fora de tolerancia, aceito pelo user.`
+    : '';
   await db
     .update(schema.excecao)
     .set({
       aceitaEm: now,
       aceitaPor: user.id,
-      observacao: `Match manual: linkado a ${excParias.length} outra(s) excecao(oes) somando R$ ${somaParias.toFixed(2)}.${obsExtra}`,
+      observacao: `Match manual: linkado a ${excParias.length} outra(s) excecao(oes) somando R$ ${somaParias.toFixed(2)}.${diffNota}${obsExtra}`,
     })
     .where(eq(schema.excecao.id, excecaoId));
   await db
@@ -137,7 +153,7 @@ export async function POST(req: Request) {
     .set({
       aceitaEm: now,
       aceitaPor: user.id,
-      observacao: `Match manual: linkado a excecao principal (R$ ${valorPrincipal.toFixed(2)}, id ${excecaoId.slice(0, 8)}).${obsExtra}`,
+      observacao: `Match manual: linkado a excecao principal (R$ ${valorPrincipal.toFixed(2)}, id ${excecaoId.slice(0, 8)}).${diffNota}${obsExtra}`,
     })
     .where(inArray(schema.excecao.id, pariaIds));
 
