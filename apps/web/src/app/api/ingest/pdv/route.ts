@@ -312,10 +312,14 @@ async function handle(req: Request) {
       versaoReg: p.versaoReg,
       sincronizadoEm: new Date(),
     }));
-    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-      await db
+    // Quando o batch da overflow ou outro erro de coluna, o Postgres rejeita
+    // o batch inteiro sem dizer qual row. Pra debugar, em caso de erro
+    // re-executamos de 1 em 1 pra identificar exatamente qual codigoExterno
+    // e qual valor estourou. Loga e segue (resto do batch ainda entra).
+    const inserirPedido = (chunk: typeof rows) =>
+      db
         .insert(schema.pedido)
-        .values(rows.slice(i, i + CHUNK_SIZE))
+        .values(chunk)
         .onConflictDoUpdate({
           target: [schema.pedido.filialId, schema.pedido.codigoExterno],
           set: {
@@ -349,8 +353,49 @@ async function handle(req: Request) {
             sincronizadoEm: drizzleSql`excluded.sincronizado_em`,
           },
         });
+
+    let pedidosFalhados = 0;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + CHUNK_SIZE);
+      try {
+        await inserirPedido(chunk);
+      } catch (err) {
+        const msgBatch = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[ingest/pdv] batch de ${chunk.length} pedidos falhou (${msgBatch.slice(0, 200)}). Tentando 1 a 1 pra isolar...`,
+        );
+        // Fallback: insere 1 a 1, loga qual codigo + valores numericos da row
+        for (const row of chunk) {
+          try {
+            await inserirPedido([row]);
+          } catch (errRow) {
+            pedidosFalhados++;
+            const msgRow = errRow instanceof Error ? errRow.message : String(errRow);
+            console.error(
+              `[ingest/pdv] pedido codigo=${row.codigoExterno} falhou: ${msgRow.slice(0, 200)}`,
+              {
+                valorTotal: row.valorTotal,
+                valorTotalItens: row.valorTotalItens,
+                subtotalPago: row.subtotalPago,
+                totalDesconto: row.totalDesconto,
+                percentualDesconto: row.percentualDesconto,
+                totalAcrescimo: row.totalAcrescimo,
+                totalServico: row.totalServico,
+                percentualTaxaServico: row.percentualTaxaServico,
+                valorEntrega: row.valorEntrega,
+                valorTroco: row.valorTroco,
+                valorIva: row.valorIva,
+              },
+            );
+            // Continua — proximo pedido pode ser ok
+          }
+        }
+      }
     }
-    pedidosRecebidos = rows.length;
+    pedidosRecebidos = rows.length - pedidosFalhados;
+    if (pedidosFalhados > 0) {
+      console.warn(`[ingest/pdv] ${pedidosFalhados} de ${rows.length} pedidos foram pulados por erro`);
+    }
   }
 
   if (pedidoItens?.length) {

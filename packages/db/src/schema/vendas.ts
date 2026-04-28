@@ -115,10 +115,13 @@ export const pedido = pgTable(
     valorTotalItens: numeric('valor_total_itens', { precision: 14, scale: 2 }),
     subtotalPago: numeric('subtotal_pago', { precision: 14, scale: 2 }),
     totalDesconto: numeric('total_desconto', { precision: 14, scale: 2 }),
-    percentualDesconto: numeric('percentual_desconto', { precision: 8, scale: 4 }),
+    // numeric(8,4) estourava em 10000.0000 — alguns Consumer mandam o
+    // percentual em base 10000 (10000 = 100%) ou valores anomalos.
+    // Ampliamos pra (14,4) pra acomodar qualquer base sem rejeitar.
+    percentualDesconto: numeric('percentual_desconto', { precision: 14, scale: 4 }),
     totalAcrescimo: numeric('total_acrescimo', { precision: 14, scale: 2 }),
     totalServico: numeric('total_servico', { precision: 14, scale: 2 }),
-    percentualTaxaServico: numeric('percentual_taxa_servico', { precision: 8, scale: 4 }),
+    percentualTaxaServico: numeric('percentual_taxa_servico', { precision: 14, scale: 4 }),
     valorEntrega: numeric('valor_entrega', { precision: 14, scale: 2 }),
     valorTroco: numeric('valor_troco', { precision: 14, scale: 2 }),
     valorIva: numeric('valor_iva', { precision: 14, scale: 2 }),
