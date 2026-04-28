@@ -5,7 +5,7 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
-  title: 'concilia',
+  title: 'Prainha Bar — Concilia',
   description: 'Conciliação financeira ponta-a-ponta para restaurantes',
 };
 
