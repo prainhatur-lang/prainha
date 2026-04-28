@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
+import { MOTIVOS, MOTIVO_LABEL } from '../conciliacao/operadora/motivos';
 
 interface Filial {
   id: string;
@@ -20,6 +21,8 @@ interface SP {
   valorMax?: string;
   forma?: string;
   page?: string;
+  motivo?: string;
+  aceitas?: string;
 }
 
 const FORMAS = [
@@ -119,7 +122,9 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
     sp.q ||
     sp.valorMin ||
     sp.valorMax ||
-    sp.forma;
+    sp.forma ||
+    sp.motivo ||
+    sp.aceitas;
 
   const PERIODOS: Array<{ label: string; dias: number | null }> = [
     { label: 'Hoje', dias: 0 },
@@ -208,6 +213,36 @@ export function ExcecoesFiltros({ filiais, sp }: { filiais: Filial[]; sp: SP }) 
             </option>
           ))}
         </select>
+
+        {/* Toggle status: abertas (default) vs aceitas. Quando aceitas=true,
+            o filtro motivo fica visivel (so faz sentido em aceitas). */}
+        <select
+          value={sp.aceitas === 'true' ? 'aceitas' : 'abertas'}
+          onChange={(e) =>
+            updateParam('aceitas', e.target.value === 'aceitas' ? 'true' : '')
+          }
+          disabled={pending}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+        >
+          <option value="abertas">Abertas</option>
+          <option value="aceitas">✓ Aceitas</option>
+        </select>
+
+        {sp.aceitas === 'true' && (
+          <select
+            value={sp.motivo ?? ''}
+            onChange={(e) => updateParam('motivo', e.target.value)}
+            disabled={pending}
+            className="rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+          >
+            <option value="">Todo motivo</option>
+            {MOTIVOS.map((m) => (
+              <option key={m} value={m}>
+                {MOTIVO_LABEL[m]}
+              </option>
+            ))}
+          </select>
+        )}
 
         <input
           type="date"
