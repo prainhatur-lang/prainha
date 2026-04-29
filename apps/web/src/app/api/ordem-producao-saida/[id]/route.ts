@@ -15,6 +15,7 @@ const Body = z.object({
   tipo: z.enum(['PRODUTO', 'PERDA']).optional(),
   produtoId: z.string().uuid().nullable().optional(),
   pesoRelativo: z.number().positive().max(100).optional(),
+  pesoTotalKg: z.number().positive().nullable().optional(),
   observacao: z.string().max(500).nullable().optional(),
 });
 
@@ -78,6 +79,10 @@ export async function PATCH(
   if (parsed.data.produtoId !== undefined) set.produtoId = parsed.data.produtoId;
   if (parsed.data.pesoRelativo !== undefined)
     set.pesoRelativo = parsed.data.pesoRelativo.toFixed(4);
+  if (parsed.data.pesoTotalKg !== undefined) {
+    set.pesoTotalKg =
+      parsed.data.pesoTotalKg !== null ? parsed.data.pesoTotalKg.toFixed(3) : null;
+  }
   if (parsed.data.observacao !== undefined) set.observacao = parsed.data.observacao;
 
   if (Object.keys(set).length === 0) {

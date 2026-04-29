@@ -574,7 +574,7 @@ export function EditorProducao({
                 <th className="px-4 py-2">Produto</th>
                 <th className="px-4 py-2 text-right">Qtd</th>
                 <th className="px-4 py-2">Un.</th>
-                <th className="px-4 py-2 text-right" title="Peso relativo no rateio. Maior = corte mais nobre.">Peso</th>
+                <th className="px-4 py-2 text-right" title="Peso total real em kg, pesado na balança. Necessário pra fechar OP em peso.">Peso (kg)</th>
                 <th className="px-4 py-2 text-right">Custo unit.</th>
                 <th className="px-4 py-2 text-right">Total</th>
                 {editavel && <th className="px-4 py-2 print:hidden"></th>}
@@ -1275,7 +1275,9 @@ function LinhaSaidaRow({
   const [editQtd, setEditQtd] = useState(false);
   const [editPeso, setEditPeso] = useState(false);
   const [qtd, setQtd] = useState(String(Number(linha.quantidade ?? 0)));
-  const [peso, setPeso] = useState(String(Number(linha.pesoRelativo ?? 1)));
+  const [peso, setPeso] = useState(
+    linha.pesoTotalKg ? String(Number(linha.pesoTotalKg)) : '',
+  );
 
   async function salvar(body: Record<string, unknown>) {
     const r = await fetch(`/api/ordem-producao-saida/${linha.id}`, {
@@ -1291,7 +1293,13 @@ function LinhaSaidaRow({
     start(() => router.refresh());
   }
 
-  const pesoNum = Number(linha.pesoRelativo ?? 1);
+  // Pra PERDA livre (sem produto): qtd ja eh em kg.
+  // Pra produto em kg/g: peso = qtd.
+  // Pra produto em un/l/ml: precisa pesoTotalKg pesado na balanca.
+  const ehPerdaLivre = linha.tipo === 'PERDA' && !linha.produtoId;
+  const unidLow = (linha.produtoUnidade ?? '').toLowerCase();
+  const ehKgG = unidLow === 'kg' || unidLow === 'g';
+  const pesoTotalKgNum = linha.pesoTotalKg ? Number(linha.pesoTotalKg) : null;
 
   const custoUnit =
     linha.custoRateado !== null
@@ -1367,42 +1375,58 @@ function LinhaSaidaRow({
         )}
       </td>
       <td className="px-4 py-2 font-mono text-xs text-slate-500">
-        {linha.produtoUnidade || '—'}
+        {/* Perda livre: trata qtd como kg */}
+        {ehPerdaLivre ? 'kg' : linha.produtoUnidade || '—'}
       </td>
       <td className="px-4 py-2 text-right font-mono text-xs">
-        {linha.tipo === 'PERDA' ? (
-          <span className="text-slate-300">—</span>
+        {ehPerdaLivre ? (
+          // Perda livre: peso = qtd (em kg). Read-only, redundante.
+          <span className="text-slate-700">{Number(linha.quantidade ?? 0).toFixed(2)}</span>
+        ) : ehKgG ? (
+          // Produto em kg/g: peso = qtd na unidade do produto
+          <span className="text-slate-400">
+            {Number(linha.quantidade ?? 0).toFixed(unidLow === 'g' ? 0 : 2)}
+            {unidLow === 'g' ? 'g' : ''}
+          </span>
         ) : editavel && editPeso ? (
           <input
             type="text"
             value={peso}
             onChange={(e) => setPeso(e.target.value)}
             onBlur={async () => {
-              const n = Number(peso.replace(',', '.'));
-              if (Number.isFinite(n) && n > 0 && n !== pesoNum) {
-                await salvar({ pesoRelativo: n });
+              const txt = peso.trim();
+              const n = txt ? Number(txt.replace(',', '.')) : null;
+              if (n !== pesoTotalKgNum && (n === null || (Number.isFinite(n) && n > 0))) {
+                await salvar({ pesoTotalKg: n });
               }
               setEditPeso(false);
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
               if (e.key === 'Escape') {
-                setPeso(String(pesoNum));
+                setPeso(linha.pesoTotalKg ? String(Number(linha.pesoTotalKg)) : '');
                 setEditPeso(false);
               }
             }}
+            placeholder="kg"
             autoFocus
-            className="w-16 rounded border border-slate-300 px-1 py-0.5 text-right text-xs"
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right text-xs"
           />
         ) : (
           <button
             type="button"
             disabled={!editavel}
             onClick={() => setEditPeso(true)}
-            className={`${editavel ? 'hover:bg-slate-50 px-1' : ''} ${pesoNum === 1 ? 'text-slate-400' : 'font-semibold text-slate-700'}`}
-            title={pesoNum === 1 ? 'Sem rateio diferenciado' : `Absorve ${pesoNum}× o custo médio`}
+            className={editavel ? 'hover:bg-slate-50 px-1' : ''}
+            title="Peso total (kg) pesado na balança"
           >
-            {pesoNum.toFixed(pesoNum === Math.round(pesoNum) ? 0 : 2)}
+            {pesoTotalKgNum !== null && pesoTotalKgNum > 0 ? (
+              <span className="font-semibold text-slate-700">{pesoTotalKgNum.toFixed(2)}</span>
+            ) : editavel ? (
+              <span className="text-amber-700">⚠ pesar</span>
+            ) : (
+              <span className="text-slate-300">—</span>
+            )}
           </button>
         )}
       </td>
