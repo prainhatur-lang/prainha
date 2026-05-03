@@ -174,24 +174,28 @@ ON CONFLICT (filial_id, ano, mes, forma_pagamento) DO UPDATE SET
 
 
 -- 2.3) fechamento_mensal_produto (top 100 produtos do mes)
+-- IMPORTANTE: JOIN via filial_id + codigo_pedido_externo (em vez de pi.pedido_id)
+-- porque so ~24% dos itens historicos tem pedido_id (FK) resolvido pelo agente.
+-- Itens com codigo_pedido_externo + filial sempre estao populados.
 WITH ranked AS (
   SELECT
     pi.filial_id,
     EXTRACT(YEAR FROM ped.data_fechamento)::int AS ano,
     EXTRACT(MONTH FROM ped.data_fechamento)::int AS mes,
     pi.codigo_produto_externo,
-    -- Pega o nome mais usado naquele mes (workaround sem MODE())
     (ARRAY_AGG(pi.nome_produto ORDER BY pi.codigo_externo DESC))[1] AS nome_produto,
-    SUM(pi.quantidade) AS qtd,
-    SUM(pi.valor_total) AS valor_total,
+    COALESCE(SUM(pi.quantidade), 0) AS qtd,
+    COALESCE(SUM(pi.valor_total), 0) AS valor_total,
     ROW_NUMBER() OVER (
       PARTITION BY pi.filial_id,
                    EXTRACT(YEAR FROM ped.data_fechamento),
                    EXTRACT(MONTH FROM ped.data_fechamento)
-      ORDER BY SUM(pi.valor_total) DESC NULLS LAST
+      ORDER BY COALESCE(SUM(pi.valor_total), 0) DESC NULLS LAST
     ) AS posicao
   FROM pedido_item pi
-  INNER JOIN pedido ped ON ped.id = pi.pedido_id
+  INNER JOIN pedido ped
+    ON ped.filial_id = pi.filial_id
+   AND ped.codigo_externo = pi.codigo_pedido_externo
   WHERE pi.data_delete IS NULL
     AND ped.data_delete IS NULL
     AND ped.data_fechamento < '2025-10-01'
