@@ -174,16 +174,18 @@ ON CONFLICT (filial_id, ano, mes, forma_pagamento) DO UPDATE SET
 
 
 -- 2.3) fechamento_mensal_produto (top 100 produtos do mes)
--- IMPORTANTE: JOIN via filial_id + codigo_pedido_externo (em vez de pi.pedido_id)
+-- IMPORTANTE: agrupa por NOME do produto (nao por codigo_produto_externo) —
+-- agente nao populou codigo_produto_externo na tabela pedido_item historica
+-- (todos null), mas nome_produto esta populado.
+-- E tambem JOIN via filial_id + codigo_pedido_externo (em vez de pi.pedido_id)
 -- porque so ~24% dos itens historicos tem pedido_id (FK) resolvido pelo agente.
--- Itens com codigo_pedido_externo + filial sempre estao populados.
 WITH ranked AS (
   SELECT
     pi.filial_id,
     EXTRACT(YEAR FROM ped.data_fechamento)::int AS ano,
     EXTRACT(MONTH FROM ped.data_fechamento)::int AS mes,
-    pi.codigo_produto_externo,
-    (ARRAY_AGG(pi.nome_produto ORDER BY pi.codigo_externo DESC))[1] AS nome_produto,
+    pi.nome_produto,
+    MAX(pi.codigo_produto_externo) AS codigo_produto_externo,
     COALESCE(SUM(pi.quantidade), 0) AS qtd,
     COALESCE(SUM(pi.valor_total), 0) AS valor_total,
     ROW_NUMBER() OVER (
@@ -199,10 +201,11 @@ WITH ranked AS (
   WHERE pi.data_delete IS NULL
     AND ped.data_delete IS NULL
     AND ped.data_fechamento < '2025-10-01'
+    AND pi.nome_produto IS NOT NULL
   GROUP BY pi.filial_id,
            EXTRACT(YEAR FROM ped.data_fechamento),
            EXTRACT(MONTH FROM ped.data_fechamento),
-           pi.codigo_produto_externo
+           pi.nome_produto
 )
 INSERT INTO fechamento_mensal_produto (
   filial_id, ano, mes, posicao, codigo_produto_externo, nome_produto, qtd, valor_total
