@@ -85,6 +85,40 @@ CREATE INDEX IF NOT EXISTS idx_fech_mes_colab_filial ON fechamento_mensal_colabo
 -- Pode rodar quantas vezes quiser — o ON CONFLICT atualiza.
 
 -- 2.1) fechamento_mensal (totais por mes)
+WITH ped_agg AS (
+  SELECT
+    filial_id,
+    EXTRACT(YEAR FROM data_fechamento)::int AS ano,
+    EXTRACT(MONTH FROM data_fechamento)::int AS mes,
+    COALESCE(SUM(valor_total), 0) AS total_vendas,
+    COALESCE(SUM(valor_total_itens), 0) AS total_itens,
+    COUNT(*) AS qtd_pedidos,
+    COALESCE(SUM(quantidade_pessoas), 0)::int AS qtd_pessoas,
+    CASE WHEN COUNT(*) > 0 THEN COALESCE(SUM(valor_total), 0) / COUNT(*) ELSE 0 END AS ticket_medio,
+    COALESCE(SUM(total_desconto), 0) AS total_desconto,
+    COALESCE(SUM(total_acrescimo), 0) AS total_acrescimo,
+    COALESCE(SUM(total_servico), 0) AS total_servico,
+    COALESCE(SUM(valor_entrega), 0) AS total_entrega
+  FROM pedido
+  WHERE data_delete IS NULL
+    AND data_fechamento < '2025-10-01'
+  GROUP BY filial_id,
+           EXTRACT(YEAR FROM data_fechamento),
+           EXTRACT(MONTH FROM data_fechamento)
+),
+pag_agg AS (
+  SELECT
+    filial_id,
+    EXTRACT(YEAR FROM data_pagamento)::int AS ano,
+    EXTRACT(MONTH FROM data_pagamento)::int AS mes,
+    COALESCE(SUM(valor), 0) AS total_pagamentos,
+    COUNT(*)::int AS qtd_pagamentos
+  FROM pagamento
+  WHERE data_pagamento < '2025-10-01'
+  GROUP BY filial_id,
+           EXTRACT(YEAR FROM data_pagamento),
+           EXTRACT(MONTH FROM data_pagamento)
+)
 INSERT INTO fechamento_mensal (
   filial_id, ano, mes,
   total_vendas, total_itens, qtd_pedidos, qtd_pessoas, ticket_medio,
@@ -92,37 +126,17 @@ INSERT INTO fechamento_mensal (
   total_pagamentos, qtd_pagamentos
 )
 SELECT
-  ped.filial_id,
-  EXTRACT(YEAR FROM ped.data_fechamento)::int AS ano,
-  EXTRACT(MONTH FROM ped.data_fechamento)::int AS mes,
-  COALESCE(SUM(ped.valor_total), 0) AS total_vendas,
-  COALESCE(SUM(ped.valor_total_itens), 0) AS total_itens,
-  COUNT(*) AS qtd_pedidos,
-  COALESCE(SUM(ped.quantidade_pessoas), 0)::int AS qtd_pessoas,
-  CASE WHEN COUNT(*) > 0 THEN COALESCE(SUM(ped.valor_total), 0) / COUNT(*) ELSE 0 END AS ticket_medio,
-  COALESCE(SUM(ped.total_desconto), 0) AS total_desconto,
-  COALESCE(SUM(ped.total_acrescimo), 0) AS total_acrescimo,
-  COALESCE(SUM(ped.total_servico), 0) AS total_servico,
-  COALESCE(SUM(ped.valor_entrega), 0) AS total_entrega,
-  -- Pagamentos do mes (independente do pedido)
-  (
-    SELECT COALESCE(SUM(p.valor), 0)
-    FROM pagamento p
-    WHERE p.filial_id = ped.filial_id
-      AND EXTRACT(YEAR FROM p.data_pagamento) = EXTRACT(YEAR FROM ped.data_fechamento)
-      AND EXTRACT(MONTH FROM p.data_pagamento) = EXTRACT(MONTH FROM ped.data_fechamento)
-  ) AS total_pagamentos,
-  (
-    SELECT COUNT(*)
-    FROM pagamento p
-    WHERE p.filial_id = ped.filial_id
-      AND EXTRACT(YEAR FROM p.data_pagamento) = EXTRACT(YEAR FROM ped.data_fechamento)
-      AND EXTRACT(MONTH FROM p.data_pagamento) = EXTRACT(MONTH FROM ped.data_fechamento)
-  )::int AS qtd_pagamentos
-FROM pedido ped
-WHERE ped.data_delete IS NULL
-  AND ped.data_fechamento < '2025-10-01'
-GROUP BY ped.filial_id, EXTRACT(YEAR FROM ped.data_fechamento), EXTRACT(MONTH FROM ped.data_fechamento)
+  ped.filial_id, ped.ano, ped.mes,
+  ped.total_vendas, ped.total_itens, ped.qtd_pedidos, ped.qtd_pessoas,
+  ped.ticket_medio,
+  ped.total_desconto, ped.total_acrescimo, ped.total_servico, ped.total_entrega,
+  COALESCE(pag.total_pagamentos, 0),
+  COALESCE(pag.qtd_pagamentos, 0)
+FROM ped_agg ped
+LEFT JOIN pag_agg pag
+  ON pag.filial_id = ped.filial_id
+ AND pag.ano = ped.ano
+ AND pag.mes = ped.mes
 ON CONFLICT (filial_id, ano, mes) DO UPDATE SET
   total_vendas = EXCLUDED.total_vendas,
   total_itens = EXCLUDED.total_itens,
