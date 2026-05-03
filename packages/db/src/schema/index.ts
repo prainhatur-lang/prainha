@@ -12,3 +12,4 @@ export * from './vendas';
 export * from './notas';
 export * from './certificados';
 export * from './estoque';
+export * from './fechamento-mensal';

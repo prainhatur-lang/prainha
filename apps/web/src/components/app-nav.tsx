@@ -65,6 +65,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Movimentos de estoque', href: '/relatorios/movimentos' },
       { label: 'Produção (perda por cozinheiro)', href: '/relatorios/producao' },
       { label: 'DRE', href: '/relatorios/dre' },
+      { label: 'Fechamento mensal (histórico)', href: '/relatorios/fechamento-mensal' },
       { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', soon: true },
     ],
   },
