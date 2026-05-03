@@ -280,7 +280,14 @@ function ModalLancar({
   }, [boletosCelular]);
 
   const opcoesCategoria = useMemo(
-    () => categorias.filter((c) => c.tipo === 'DESPESA' || c.tipo == null),
+    // Aceita varios formatos de tipo: 'DESPESA' (esperado), 'P' (Pagar — vem
+    // do Consumer sem normalizacao), null (categoria criada na nuvem sem
+    // tipo). 'RECEITA'/'R' ficam de fora — categoria de receber nao serve
+    // pra contabilizar despesa de NFe.
+    () => categorias.filter((c) => {
+      const t = c.tipo;
+      return t == null || t === 'DESPESA' || t === 'P';
+    }),
     [categorias],
   );
 
