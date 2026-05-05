@@ -14,3 +14,4 @@ export * from './certificados';
 export * from './estoque';
 export * from './fechamento-mensal';
 export * from './compras';
+export * from './cotacao';

@@ -17,6 +17,7 @@
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "db:list-insumos": "tsx scripts/list-insumos.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
+    "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
     "seed:compras": "tsx scripts/seed-compras.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
