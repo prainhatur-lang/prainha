@@ -1,0 +1,26 @@
+categoria,item_canonico,unidade_catalogo,marcas_aceitas,produto_concilia_nome,produto_concilia_tipo,produto_concilia_unidade,produto_concilia_preco_custo,produto_concilia_id,score
+Limpeza,Detergente neutro,cx,,Deyergente neutro Lisa 2l,INSUMO,un,1.2000,63e8b4a4-8f6f-4ff2-84e5-25bab47141fb,1.00
+Limpeza,Álcool,L,,Alcool,INSUMO,un,4.4300,ea0b3400-eaae-4ef6-821b-767c1e5a97b2,1.20
+Confeitaria,Creme de leite fresco,un,,Creme de Leite industrial 1 l,INSUMO,un,9.0700,6ced2016-6beb-4162-9c46-3efb48c2df24,1.00
+Confeitaria,Leite condensado,cx,Natville,Leite condensado Betania,INSUMO,un,3.6300,60fb28e0-e358-4d6c-82f7-58196099c83d,0.87
+Refrigeração,Manteiga,balde,,Manteiga com Sal,INSUMO,kg,80.0000,063c5523-dec3-4a8e-9537-a5ad14365443,1.00
+Refrigeração,Shoyu,L,,shoyu,INSUMO,un,12.0000,11182722-4b57-4a3f-9539-016bd8ad2db6,1.20
+Refrigeração,Leite,cx,Natville,Leite,INSUMO,un,3.4615,7303f92f-7a2e-4df2-a81e-a06bb45fad74,1.20
+Proteína,Camarão tigre,kg,,Camarão 18/24,INSUMO,un,0.0000,1ebbe43e-3aa6-428f-8f6d-0f41b9cecff0,1.00
+Proteína,Picanha,kg,,Picanha argentina KG,INSUMO,kg,0.0000,b75de0ef-0b19-44c4-a57e-6ee11e4326a0,0.70
+Proteína,Polvo G,kg,,polvo,INSUMO,kg,40.0000,f659ebf4-af73-45ae-967c-e18fb5272a45,1.20
+Proteína,Lagosta,kg,,Lagosta,INSUMO,kg,0.0000,cd53e1fb-4a03-4145-bcf8-2e9264e93d4b,1.20
+Proteína,Filé mignon,kg,,Filé,INSUMO,kg,65.0000,4433f794-3b04-44b6-a76d-4388812bf927,0.70
+Proteína,Queijo coalho,pç,Natville,Queijo Coalho,INSUMO,kg,29.6300,ea1a5dbf-e631-4702-b7d0-23dd357ea2d5,1.20
+Estoque seco,Açúcar branco,fardo,,Acucar Branco sucre,INSUMO,un,0.3600,276365f4-ed43-44c4-b59a-8f88b90800de,0.87
+Estoque seco,Arroz branco,fardo,Tio Urbano|Camil|Tio João,ARROZ BRANCO KIARROZ,INSUMO,kg,3.9700,2abcc1b1-84e3-4991-802c-7a2323967250,0.87
+Estoque seco,Arroz arbóreo,cx,,arroz arboreo,INSUMO,un,11.0000,1e24dba8-bf53-4c18-bd39-738bd9a88dee,1.20
+Estoque seco,Azeite extra virgem,galão,,Azeite de Oliva,INSUMO,un,15.5600,c9431e35-653a-4fa4-9856-48d01fe9de45,1.00
+Hortifruti,Tomate maduro,cx,,Tomate,INSUMO,kg,0.0000,ec4afe48-53d1-41b6-9858-2556e5cb430c,0.70
+Hortifruti,Cebola branca,kg,,Cebola,INSUMO,kg,3.9866,54ddde93-5c6d-4c5e-b587-f4514597f156,0.70
+Bebidas - Refrigerantes,Água tônica zero,pack,,Fys Tonica Zero,VENDA_SIMPLES,un,0.0000,7cd0d7f6-da23-43c5-9364-8f805165ba8b,1.00
+Bebidas - Refrigerantes,Água tônica,pack,,Fys Tonica,VENDA_SIMPLES,un,0.0000,4a8b837e-88dc-481b-bc00-f4499d40ab9d,1.00
+Bebidas - Refrigerantes,Sprite zero,pack,Sprite,Sprite Zero,VENDA_SIMPLES,un,0.0000,95da7d8d-90f0-4e64-81d9-adf2262cf632,1.20
+Bebidas - Cervejas,Baden Witbier,cx,Baden,Baden Baden witbier,VENDA_SIMPLES,un,0.0000,35fb29a0-a5cd-4bd0-a974-b4e57cfc1938,1.20
+Bebidas - Cervejas,Stella Artois sem glúten,un,Stella Artois,Stella Artois 600 ml,VENDA_SIMPLES,un,0.0000,9b6766ed-4c1b-4a26-9862-07cd2a0c7fd1,1.00
+Bebidas - Cervejas,Heineken,un,Heineken,Heineken 600ml,VENDA_SIMPLES,un,0.0000,51af94a5-62e7-44ec-9105-bcf73c37809f,0.70

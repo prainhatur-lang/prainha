@@ -1,0 +1,90 @@
+categoria,item_canonico,unidade_catalogo,marcas_aceitas,ja_existe_como
+Limpeza,Luva sem pó,cx,,Agua sem gas [VENDA_SIMPLES]
+Limpeza,Fibraço,un,,
+Limpeza,Vassoura,un,,
+Limpeza,Papel higiênico,fardo,,CANUDO PAPEL [INSUMO]
+Limpeza,Bucha,un,,
+Limpeza,Luva de látex,un,,
+Confeitaria,Pão baguete,un,,Pao Hamburguer Australiano [VENDA_SIMPLES] || Pao Hamburguer Brioche [VENDA_SIMPLES]
+Confeitaria,Pão fundie,un,,Pao Hamburguer Australiano [VENDA_SIMPLES] || Pao Hamburguer Brioche [VENDA_SIMPLES]
+Confeitaria,Pão rondó,un,,Pao Hamburguer Australiano [VENDA_SIMPLES] || Pao Hamburguer Brioche [VENDA_SIMPLES]
+Confeitaria,Pão ciabata,pct,,Pao Hamburguer Australiano [VENDA_SIMPLES] || Pao Hamburguer Brioche [VENDA_SIMPLES]
+Confeitaria,Pão de forma brioche sem corte,un,,Pao Hamburguer Brioche [VENDA_SIMPLES]
+Confeitaria,Doce de leite,kg,,Leite [INSUMO] || PETIT GATEU DOCE DE LEITE [INSUMO] || Sorvete Doce de Leite mini bombom [VENDA_SIMPLES]
+Confeitaria,Fermento biológico,un,,
+Confeitaria,Polpa de maracujá fresca,kg,Pomar|Frutas,
+Confeitaria,Polpa de mangaba,kg,Pomar|Frutas,
+Confeitaria,Massa folhada de rolo,un,,
+Confeitaria,Leite Ninho,pct,Nestlé,Leite [INSUMO] || Creme de Leite industrial 1 l [INSUMO] || Leite condensado Betania [INSUMO]
+Confeitaria,Chocolate meio amargo,kg,Sicão|Genuine|Callebaut,Chocolate [INSUMO]
+Confeitaria,Chocolate em pó 70%,kg,,Chocolate [INSUMO] || PETIT GATEU CHOCOLATE [INSUMO] || Sorvete Tablito 3 Chocolate [VENDA_SIMPLES]
+Confeitaria,Biscoito Maizena,pct,,Biscoito de Mel [INSUMO]
+Confeitaria,Sorvete de tapioca,un,Moniere,Sorvete Chicabon [VENDA_SIMPLES] || Sorvete Cornetto MM's [VENDA_SIMPLES]
+Confeitaria,Sorvete de creme,L,Moniere,Sorvete de creme [VENDA_SIMPLES] || Sorvete Chicabon [VENDA_SIMPLES] || Sorvete Cornetto MM's [VENDA_SIMPLES]
+Confeitaria,Cereja fresca,g,,
+Confeitaria,Frutas vermelhas frescas,kg,,
+Confeitaria,Molho de ostra,garrafa,,Ostra [INSUMO] || File ao molho exclusivo [INSUMO]
+Refrigeração,Mussarela,pç,,
+Refrigeração,Creme de leite Leco,cx,Leco,Leite [INSUMO] || Creme de Leite industrial 1 l [INSUMO] || Sorvete de creme [VENDA_SIMPLES]
+Refrigeração,Alcaparras,balde,,
+Refrigeração,Batata palito,kg,,Batata Frita [INSUMO] || Batata ondulada [INSUMO] || Batata corte caseiro [INSUMO]
+Proteína,Pé de galinha,kg,,
+Proteína,Camarão cinza com rabo,kg,,Camarão 18/24 [INSUMO] || Bolinho de peixe recheado com camarao 1 unid [VENDA_SIMPLES]
+Proteína,Lula,kg,,
+Proteína,Costelinha suína,kg,,
+Proteína,Charque,kg,,
+Proteína,Salmão,lâmina,,FILE SALMAO [INSUMO] || Salmao papelote [INSUMO] || Salmao Porcao [INSUMO]
+Estoque seco,Bifum,pct,,
+Estoque seco,Penne De Luca,pct,De Luca,
+Estoque seco,Massa negra,un,,Massa Mago 200g [INSUMO]
+Estoque seco,Espeto de bambu tipo golfe,pct,,
+Estoque seco,Fumaça líquida,garrafa,,
+Estoque seco,Fumaça em pó,un,,
+Estoque seco,Páprica defumada,g,,
+Estoque seco,Lemon pepper,g,,
+Estoque seco,Papel alumínio,un,,CANUDO PAPEL [INSUMO]
+Estoque seco,Xerém de castanha,kg,,
+Estoque seco,Óleo de girassol,fardo,,"Óleo de Soja [INSUMO] || OLEO ALGODAO LIZA 15,8L [INSUMO] || OLEO ALGODAO LIZA 15,8L [INSUMO]"
+Estoque seco,Damasco,kg,,
+Estoque seco,Funghi,kg,,
+Estoque seco,Tapioca granulada média,kg,,
+Estoque seco,Macarrão funcionário,fardo,,
+Estoque seco,Café,pct,,T CAFE FAMILIA [VENDA_SIMPLES] || Cafe Nespresso Capriccio [INSUMO] || Café Nespresso Istanbul [INSUMO]
+Hortifruti,Tomilho,maço,,
+Hortifruti,Tomate cereja,caixinha,,Tomate [INSUMO]
+Hortifruti,Cenoura,kg,,
+Hortifruti,Banana da terra,dz,,
+Hortifruti,Brócolis,cx,,
+Hortifruti,Coentro,maço,,
+Hortifruti,Salsa,maço,,
+Hortifruti,Batata bolinha,kg,,Batata Frita [INSUMO] || Batata ondulada [INSUMO] || Batata corte caseiro [INSUMO]
+Hortifruti,Batata inglesa,kg,,Batata Frita [INSUMO] || Batata ondulada [INSUMO] || Batata corte caseiro [INSUMO]
+Hortifruti,Cebola roxa,kg,,Cebola [INSUMO]
+Hortifruti,Cebolinha,maço,,
+Hortifruti,Alho poró,un,,
+Hortifruti,Alface roxa,un,,Alface [INSUMO]
+Hortifruti,Alface americana,un,,Alface [INSUMO]
+Hortifruti,Alface crespa,un,,Alface [INSUMO]
+Hortifruti,Shitake,un,,
+Hortifruti,Shimeji,un,,
+Utensílios,Saco de porcionamento médio,pct,,
+Utensílios,Saco de porcionamento grande,pct,,
+Utensílios,Pote 1000ml,pct,,
+Utensílios,Pote 1500ml,pct,,
+Utensílios,Plástico filme grande,un,,
+Utensílios,Plástico filme médio,un,,
+Utensílios,Espátula de silicone,un,,
+Utensílios,Fouet,un,,
+Utensílios,Mangueira saída de água p/ forno,un,,
+Bebidas - Refrigerantes,Coca-cola zero vidro 290ml (KS),cx,Coca-Cola,Coca-cola Vidro 200 ml [VENDA_SIMPLES] || Refrigerante COCA COLA 2 L [INSUMO] || Refrigerante COCA KS 290ML [INSUMO]
+Bebidas - Refrigerantes,Coca-cola vidro 290ml (KS),cx,Coca-Cola,Coca-cola Vidro 200 ml [VENDA_SIMPLES] || Refrigerante COCA COLA 2 L [INSUMO] || Refrigerante COCA KS 290ML [INSUMO]
+Bebidas - Refrigerantes,Coca-cola zero lata 350ml,un,Coca-Cola,Refrigerante Coca Lata 350ml [INSUMO] || Refrigerante Coca Lata Zero [INSUMO] || Refrigerante COCA COLA 2 L [INSUMO]
+Bebidas - Refrigerantes,Coca-cola lata 350ml,un,Coca-Cola,Refrigerante Coca Lata 350ml [INSUMO] || Refrigerante COCA COLA 2 L [INSUMO] || Refrigerante Coca Lata Zero [INSUMO]
+Bebidas - Refrigerantes,Guaraná zero,pack,,Refrigerante Guarana Zero [INSUMO] || Fys Guarana [VENDA_SIMPLES] || Sprite Zero [VENDA_SIMPLES]
+Bebidas - Refrigerantes,Schweppes citrus,pack,Schweppes,Schweppes Citrus [INSUMO] || Agua Tonica Schweppes [INSUMO]
+Bebidas - Cervejas,Baden Gold,cx,Baden,Cerveja Baden Baden gold [INSUMO] || Baden Baden witbier [VENDA_SIMPLES]
+Bebidas - Destilados,Paragon RUE Berry,un,Paragon,
+Bebidas - Destilados,Licor Bananinha,un,,Licor Laranja [INSUMO] || Licor limoncello [INSUMO] || Licor Menta [INSUMO]
+Bebidas - Destilados,Aperol,un,Aperol,Aperol 750 ml [INSUMO]
+Bebidas - Destilados,Cachaça Ypióca,un,Ypióca,Cachaca Ypioca Ouro 965 ml [INSUMO] || Cachaca Ypioca Prata 965 ml [INSUMO] || Cachaca Ypioca Reserva 965 ml [INSUMO]
+Bebidas - Destilados,Cointreau,un,Cointreau,Licor Cointreau 700 ml [INSUMO]
