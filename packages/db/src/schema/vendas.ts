@@ -80,6 +80,12 @@ export const produto = pgTable(
      *  INSUMO: sempre true.
      *  Default true. */
     controlaEstoque: boolean('controla_estoque').notNull().default(true),
+    /** Categoria do modulo de Compras/Cotacao (Confeitaria, Estoque seco,
+     *  Hortifruti, Limpeza, Proteina, Refrigeracao, Utensilios, Bebidas - *).
+     *  Independente da categoria fiscal/cardapio — usado pra agrupar a UI da
+     *  cotacao e pra rotear cotacao pro fornecedor que cobre cada categoria.
+     *  Null pra produtos que nao entram no fluxo de cotacao. */
+    categoriaCompras: varchar('categoria_compras', { length: 50 }),
     /** Criado só na nuvem (não veio do Consumer) — útil pra insumos. */
     criadoNaNuvem: boolean('criado_na_nuvem').notNull().default(false),
 

@@ -16,6 +16,7 @@
     "db:studio": "drizzle-kit studio",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "db:list-insumos": "tsx scripts/list-insumos.ts",
+    "migrate:compras": "tsx scripts/migrate-compras.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },

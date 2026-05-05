@@ -60,3 +60,6 @@ agente-local/logs/
 agente-local/build/
 agente-local/release/
 agente-local/.cache/
+
+# Output de scripts read-only de exploração
+insumos-atual.csv
