@@ -44,6 +44,14 @@ const GRUPOS: Grupo[] = [
     ],
   },
   {
+    label: 'Compras',
+    links: [
+      { label: 'Cotações', href: '/cotacao' },
+      { label: 'Pedidos de compra', href: '/compras/pedidos' },
+      { label: 'Reconciliação produto × fornecedor', href: '/compras/reconciliacao' },
+    ],
+  },
+  {
     label: 'Conciliação',
     links: [
       { label: 'PDV × Cielo (Operadora)', href: '/conciliacao/operadora' },
