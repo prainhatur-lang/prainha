@@ -45,28 +45,38 @@ async function main() {
     sql`CREATE INDEX IF NOT EXISTS idx_fornecedor_ativo_compras ON fornecedor (filial_id, ativo_compras) WHERE ativo_compras = true`,
   );
 
-  console.log('\n[2] Inferindo ativo_compras do historico');
-  // Quais categorias_conta tem nome compativel com compras de produtos/insumos
-  const categorias = await sql<Array<{ id: string; descricao: string; filial_id: string }>>`
-    SELECT id, descricao, filial_id FROM categoria_conta
+  console.log('\n[2] Inferindo ativo_compras + categoria_compras do historico');
+  // Estrategia: usar a hierarquia do plano de contas. No Consumer existe um
+  // grupo pai "Fornecedores" com filhos (Aquisicao de Material, Aquisicao de
+  // Produtos Acabados, Aquisicao de Insumos, Entrega). Pegamos todos os filhos
+  // dessa categoria pai por filial.
+  const categoriasPai = await sql<Array<{ id: string; codigo_externo: number; filial_id: string }>>`
+    SELECT id, codigo_externo, filial_id FROM categoria_conta
     WHERE excluida_em IS NULL
-      AND (
-        lower(descricao) LIKE '%produto%' OR
-        lower(descricao) LIKE '%insumo%' OR
-        lower(descricao) LIKE '%alimento%' OR
-        lower(descricao) LIKE '%merc%' OR
-        lower(descricao) LIKE '%hortifruti%' OR
-        lower(descricao) LIKE '%bebida%'
-      )
+      AND lower(descricao) LIKE '%fornecedor%'
+      AND codigo_pai_externo IS NULL
   `;
-  console.log(`  ${categorias.length} categorias compativeis encontradas:`);
-  for (const c of categorias) console.log(`    - ${c.descricao}`);
+  console.log(`  ${categoriasPai.length} categorias-pai 'Fornecedores' encontradas (uma por filial)`);
 
-  if (categorias.length === 0) {
-    console.log('\n  Nenhuma categoria compativel — nada a inferir.');
+  // Filhas dessas categorias-pai
+  const filhas = categoriasPai.length === 0
+    ? []
+    : await sql<Array<{ id: string; descricao: string; filial_id: string }>>`
+        SELECT id, descricao, filial_id FROM categoria_conta
+        WHERE excluida_em IS NULL
+          AND filial_id = ANY(${categoriasPai.map((c) => c.filial_id)}::uuid[])
+          AND codigo_pai_externo = ANY(${categoriasPai.map((c) => c.codigo_externo)}::integer[])
+      `;
+  console.log(`  ${filhas.length} subcategorias filhas:`);
+  for (const f of filhas) console.log(`    - ${f.descricao}`);
+
+  if (filhas.length === 0) {
+    console.log('\n  Nenhuma subcategoria de Fornecedores encontrada — nada a inferir.');
   } else {
-    const ids = categorias.map((c) => c.id);
-    const result = await run('UPDATE fornecedor SET ativo_compras=true WHERE tem conta_pagar nessas categorias', async () => {
+    const ids = filhas.map((c) => c.id);
+
+    // Marca ativo_compras=true em fornecedores com pelo menos 1 conta_pagar nessas subcategorias
+    const ativos = await run('marcar ativo_compras=true', async () => {
       return sql`
         UPDATE fornecedor
         SET ativo_compras = true
@@ -79,7 +89,37 @@ async function main() {
         RETURNING id
       `;
     });
-    console.log(`  ${result.length} fornecedores marcados como ativo_compras=true`);
+    console.log(`  ${ativos.length} fornecedores marcados como ativo_compras=true`);
+
+    // Calcula a subcategoria mais usada por fornecedor (pra preencher categoria_compras)
+    await run('calcular categoria_compras dominante por fornecedor', async () => {
+      return sql`
+        WITH cont_por_forn_cat AS (
+          SELECT
+            cp.fornecedor_id,
+            cc.descricao,
+            COUNT(*) AS qtd
+          FROM conta_pagar cp
+          JOIN categoria_conta cc ON cc.id = cp.categoria_id
+          WHERE cp.fornecedor_id IS NOT NULL
+            AND cp.categoria_id = ANY(${ids}::uuid[])
+          GROUP BY cp.fornecedor_id, cc.descricao
+        ),
+        ranked AS (
+          SELECT
+            fornecedor_id,
+            descricao,
+            ROW_NUMBER() OVER (PARTITION BY fornecedor_id ORDER BY qtd DESC, descricao ASC) AS rn
+          FROM cont_por_forn_cat
+        )
+        UPDATE fornecedor f
+        SET categoria_compras = r.descricao
+        FROM ranked r
+        WHERE f.id = r.fornecedor_id
+          AND r.rn = 1
+          AND (f.categoria_compras IS NULL OR f.categoria_compras = '')
+      `;
+    });
   }
 
   console.log('\nMigration concluida.');
