@@ -24,6 +24,64 @@ interface ItemSelecionado {
   observacao: string;
 }
 
+function renderItem(
+  p: Produto,
+  itens: Record<string, ItemSelecionado>,
+  toggleProduto: (p: Produto) => void,
+  setQuantidade: (id: string, valor: string) => void,
+) {
+  const sel = itens[p.id];
+  const tipoBadge =
+    p.tipo === 'INSUMO'
+      ? 'bg-sky-100 text-sky-800'
+      : 'bg-emerald-100 text-emerald-800';
+  const tipoLabel = p.tipo === 'INSUMO' ? 'Insumo' : 'Produto';
+  return (
+    <div
+      key={p.id}
+      className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
+        sel ? 'bg-amber-50' : 'hover:bg-slate-50'
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={!!sel}
+        onChange={() => toggleProduto(p)}
+        className="h-3.5 w-3.5"
+      />
+      <button type="button" onClick={() => toggleProduto(p)} className="flex-1 text-left">
+        <span className={`mr-2 rounded px-1 py-0.5 text-[9px] font-medium ${tipoBadge}`}>
+          {tipoLabel}
+        </span>
+        <span className="font-medium text-slate-800">{p.nome}</span>
+        <span className="ml-2 text-[10px] text-slate-400">/{p.unidade}</span>
+        {p.marcasAceitas.length > 0 && (
+          <span className="ml-2 inline-flex flex-wrap items-center gap-1">
+            {p.marcasAceitas.map((m) => (
+              <span
+                key={m}
+                className="rounded bg-sky-50 px-1.5 py-0.5 text-[9px] font-medium text-sky-800 ring-1 ring-sky-200"
+              >
+                {m}
+              </span>
+            ))}
+          </span>
+        )}
+      </button>
+      {sel && (
+        <input
+          type="text"
+          inputMode="decimal"
+          placeholder={`qtd em ${p.unidade}`}
+          value={sel.quantidade}
+          onChange={(e) => setQuantidade(p.id, e.target.value)}
+          className="w-24 rounded border border-slate-200 px-2 py-0.5 text-xs"
+        />
+      )}
+    </div>
+  );
+}
+
 export function NovaCotacaoForm(props: {
   filialId: string;
   produtos: Produto[];
@@ -48,14 +106,22 @@ export function NovaCotacaoForm(props: {
     );
   }, [filtro, props.produtos]);
 
-  const porCategoria = useMemo(() => {
-    const grupos: Record<string, Produto[]> = {};
+  // Separa em 2 grandes grupos: Insumos (matéria-prima da cozinha) e
+  // Produtos de revenda (bebidas latas/garrafas). Dentro de cada grupo,
+  // sub-agrupa por categoria do catalogo (Confeitaria, Bebidas - Refri, etc.).
+  const porTipoECategoria = useMemo(() => {
+    const insumos: Record<string, Produto[]> = {};
+    const produtos: Record<string, Produto[]> = {};
     for (const p of produtosFiltrados) {
+      const bucket = p.tipo === 'INSUMO' ? insumos : produtos;
       const cat = p.categoria;
-      if (!grupos[cat]) grupos[cat] = [];
-      grupos[cat].push(p);
+      if (!bucket[cat]) bucket[cat] = [];
+      bucket[cat].push(p);
     }
-    return Object.entries(grupos).sort(([a], [b]) => a.localeCompare(b));
+    return {
+      insumos: Object.entries(insumos).sort(([a], [b]) => a.localeCompare(b)),
+      produtos: Object.entries(produtos).sort(([a], [b]) => a.localeCompare(b)),
+    };
   }, [produtosFiltrados]);
 
   const categoriasForn = useMemo(() => {
@@ -164,67 +230,42 @@ export function NovaCotacaoForm(props: {
           onChange={(e) => setFiltro(e.target.value)}
           className="mb-3 w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm"
         />
-        <div className="max-h-96 overflow-y-auto rounded-md border border-slate-100">
-          {porCategoria.length === 0 ? (
+        <div className="max-h-[28rem] overflow-y-auto rounded-md border border-slate-100">
+          {porTipoECategoria.insumos.length === 0 && porTipoECategoria.produtos.length === 0 ? (
             <p className="p-3 text-xs text-slate-500">Nenhum produto encontrado.</p>
           ) : (
-            porCategoria.map(([cat, lista]) => (
-              <div key={cat} className="border-b border-slate-100 last:border-b-0">
-                <div className="bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                  {cat}
-                </div>
-                {lista.map((p) => {
-                  const sel = itens[p.id];
-                  return (
-                    <div
-                      key={p.id}
-                      className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
-                        sel ? 'bg-emerald-50' : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!!sel}
-                        onChange={() => toggleProduto(p)}
-                        className="h-3.5 w-3.5"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => toggleProduto(p)}
-                        className="flex-1 text-left"
-                      >
-                        <span className="font-medium text-slate-800">{p.nome}</span>
-                        <span className="ml-2 text-[10px] text-slate-400">
-                          [{p.tipo} / {p.unidade}]
-                        </span>
-                        {p.marcasAceitas.length > 0 && (
-                          <span className="ml-2 inline-flex flex-wrap items-center gap-1">
-                            {p.marcasAceitas.map((m) => (
-                              <span
-                                key={m}
-                                className="rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-medium text-sky-800"
-                              >
-                                {m}
-                              </span>
-                            ))}
-                          </span>
-                        )}
-                      </button>
-                      {sel && (
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder={`qtd em ${p.unidade}`}
-                          value={sel.quantidade}
-                          onChange={(e) => setQuantidade(p.id, e.target.value)}
-                          className="w-24 rounded border border-slate-200 px-2 py-0.5 text-xs"
-                        />
-                      )}
+            <>
+              {porTipoECategoria.insumos.length > 0 && (
+                <>
+                  <div className="border-b border-sky-200 bg-sky-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-sky-900">
+                    Insumos · matéria-prima da cozinha
+                  </div>
+                  {porTipoECategoria.insumos.map(([cat, lista]) => (
+                    <div key={cat} className="border-b border-slate-100 last:border-b-0">
+                      <div className="bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        {cat}
+                      </div>
+                      {lista.map((p) => renderItem(p, itens, toggleProduto, setQuantidade))}
                     </div>
-                  );
-                })}
-              </div>
-            ))
+                  ))}
+                </>
+              )}
+              {porTipoECategoria.produtos.length > 0 && (
+                <>
+                  <div className="border-b border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-900">
+                    Produtos · revenda direta (entra 1, sai 1)
+                  </div>
+                  {porTipoECategoria.produtos.map(([cat, lista]) => (
+                    <div key={cat} className="border-b border-slate-100 last:border-b-0">
+                      <div className="bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        {cat}
+                      </div>
+                      {lista.map((p) => renderItem(p, itens, toggleProduto, setQuantidade))}
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
           )}
         </div>
       </section>
