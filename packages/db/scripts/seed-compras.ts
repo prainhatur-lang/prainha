@@ -83,7 +83,12 @@ function unidadeEstoquePadrao(item: Record<string, string>): string {
 }
 
 function tipoEsperado(categoria: string): 'INSUMO' | 'VENDA_SIMPLES' {
-  return categoria.startsWith('Bebidas') ? 'VENDA_SIMPLES' : 'INSUMO';
+  // Destilados/licores: garrafa abre, dose em drink → INSUMO (ficha tecnica)
+  if (categoria === 'Bebidas - Destilados') return 'INSUMO';
+  // Refrigerantes/cervejas/aguas: compra unidade fechada, vende fechada → VENDA_SIMPLES
+  if (categoria.startsWith('Bebidas')) return 'VENDA_SIMPLES';
+  // Cozinha/limpeza/utensilios/hortifruti = matéria-prima
+  return 'INSUMO';
 }
 
 async function run<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -153,9 +158,15 @@ async function processarFilial(
         LIMIT 1
       `;
       if (existente.length > 0) {
-        // Mesmo se ja existe, garante categoria_compras
+        // Mesmo se ja existe, garante categoria_compras.
+        // E se o produto foi criado pelo seed (criado_na_nuvem=true), atualiza
+        // tambem tipo pra refletir mudancas na regra de classificacao
+        // (ex: Destilados que viraram INSUMO).
         await sql`
-          UPDATE produto SET categoria_compras = ${catItem.categoria}
+          UPDATE produto SET
+            categoria_compras = ${catItem.categoria},
+            tipo = CASE WHEN criado_na_nuvem = true THEN ${tipo} ELSE tipo END,
+            unidade_estoque = CASE WHEN criado_na_nuvem = true THEN ${unidade} ELSE unidade_estoque END
           WHERE id = ${existente[0].id}
         `;
         pulados++;

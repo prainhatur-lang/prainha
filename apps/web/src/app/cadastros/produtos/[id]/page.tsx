@@ -8,6 +8,7 @@ import { AbaFicha } from './aba-ficha';
 import { AbaFornecedores } from './aba-fornecedores';
 import { AbaSaldo } from './aba-saldo';
 import { AbaMarcas } from './aba-marcas';
+import { TrocarTipoButton } from './trocar-tipo';
 
 export const dynamic = 'force-dynamic';
 
@@ -218,6 +219,7 @@ export default async function ProdutoDetalhePage(props: {
               <span className={`rounded px-1.5 py-0.5 font-medium ${badge.cls}`}>
                 {badge.label}
               </span>
+              <TrocarTipoButton produtoId={id} tipoAtual={produto.tipo} />
               <span className="text-slate-500">
                 Unidade: <span className="font-mono">{produto.unidadeEstoque}</span>
               </span>
