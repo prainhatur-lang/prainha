@@ -58,7 +58,9 @@ async function main() {
   `;
   console.log(`  ${categoriasPai.length} categorias-pai 'Fornecedores' encontradas (uma por filial)`);
 
-  // Filhas dessas categorias-pai
+  // Filhas dessas categorias-pai — filtra so as relacionadas a compras
+  // (Aquisicao de *, Insumos *). Ignora Banda/DJ/Festa/Motoboy/Ifood/Seguro/etc
+  // que tambem sao filhas mas nao sao fornecedores de cotacao.
   const filhas = categoriasPai.length === 0
     ? []
     : await sql<Array<{ id: string; descricao: string; filial_id: string }>>`
@@ -66,8 +68,12 @@ async function main() {
         WHERE excluida_em IS NULL
           AND filial_id = ANY(${categoriasPai.map((c) => c.filial_id)}::uuid[])
           AND codigo_pai_externo = ANY(${categoriasPai.map((c) => c.codigo_externo)}::integer[])
+          AND (
+            lower(descricao) LIKE '%aquisi%' OR
+            lower(descricao) LIKE '%insumo%'
+          )
       `;
-  console.log(`  ${filhas.length} subcategorias filhas:`);
+  console.log(`  ${filhas.length} subcategorias filhas (filtro: aquisi/insumo):`);
   for (const f of filhas) console.log(`    - ${f.descricao}`);
 
   if (filhas.length === 0) {
@@ -75,8 +81,21 @@ async function main() {
   } else {
     const ids = filhas.map((c) => c.id);
 
+    // Reset: desmarca todos primeiro (limpa execucoes anteriores com criterio
+    // mais frouxo). Idempotencia preservada: depois reseta + re-detecta.
+    // Os 10 fornecedores do seed:fornecedores serao re-marcados quando seed rodar.
+    const desmarcados = await run('reset: ativo_compras=false em todos', async () => {
+      return sql`
+        UPDATE fornecedor
+        SET ativo_compras = false
+        WHERE ativo_compras = true
+        RETURNING id
+      `;
+    });
+    console.log(`  ${desmarcados.length} fornecedores desmarcados (reset)`);
+
     // Marca ativo_compras=true em fornecedores com pelo menos 1 conta_pagar nessas subcategorias
-    const ativos = await run('marcar ativo_compras=true', async () => {
+    const ativos = await run('marcar ativo_compras=true (subcategorias compras)', async () => {
       return sql`
         UPDATE fornecedor
         SET ativo_compras = true
