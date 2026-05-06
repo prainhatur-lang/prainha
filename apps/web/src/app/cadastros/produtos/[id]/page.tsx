@@ -7,11 +7,12 @@ import { AppHeader } from '@/components/app-header';
 import { AbaFicha } from './aba-ficha';
 import { AbaFornecedores } from './aba-fornecedores';
 import { AbaSaldo } from './aba-saldo';
+import { AbaMarcas } from './aba-marcas';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
-  aba?: 'ficha' | 'fornecedores' | 'saldo';
+  aba?: 'ficha' | 'fornecedores' | 'saldo' | 'marcas';
 }
 
 const BADGE_TIPO: Record<string, { label: string; cls: string }> = {
@@ -35,12 +36,14 @@ export default async function ProdutoDetalhePage(props: {
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
   const sp = await props.searchParams;
-  const aba: 'ficha' | 'fornecedores' | 'saldo' =
+  const aba: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' =
     sp.aba === 'fornecedores'
       ? 'fornecedores'
       : sp.aba === 'saldo'
         ? 'saldo'
-        : 'ficha';
+        : sp.aba === 'marcas'
+          ? 'marcas'
+          : 'ficha';
 
   const [produto] = await db
     .select()
@@ -167,10 +170,33 @@ export default async function ProdutoDetalhePage(props: {
           .limit(200)
       : [];
 
-  const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo') => {
+  const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas') => {
     const qs = a === 'ficha' ? '' : `?aba=${a}`;
     return `/cadastros/produtos/${id}${qs}`;
   };
+
+  // Carrega marcas aceitas + marcas disponiveis pra autocomplete
+  const marcasAceitasRows = await db
+    .select({
+      id: schema.produtoMarcaAceita.id,
+      marcaId: schema.marca.id,
+      marcaNome: schema.marca.nome,
+    })
+    .from(schema.produtoMarcaAceita)
+    .innerJoin(schema.marca, eq(schema.marca.id, schema.produtoMarcaAceita.marcaId))
+    .where(eq(schema.produtoMarcaAceita.produtoId, id))
+    .orderBy(asc(schema.marca.nome));
+
+  const marcasDisponiveisRows = produto.filialId
+    ? await db
+        .select({
+          id: schema.marca.id,
+          nome: schema.marca.nome,
+        })
+        .from(schema.marca)
+        .where(and(eq(schema.marca.filialId, produto.filialId), eq(schema.marca.ativa, true)))
+        .orderBy(asc(schema.marca.nome))
+    : [];
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -259,6 +285,19 @@ export default async function ProdutoDetalhePage(props: {
                 Saldo & Custo
               </Link>
             )}
+            <Link
+              href={hrefAba('marcas')}
+              className={`rounded-t-lg border-b-2 px-4 py-2 text-sm ${
+                aba === 'marcas'
+                  ? 'border-slate-900 font-medium text-slate-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Marcas aceitas
+              <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                {marcasAceitasRows.length}
+              </span>
+            </Link>
           </div>
         </div>
 
@@ -313,6 +352,17 @@ export default async function ProdutoDetalhePage(props: {
                   tipo: i.tipo,
                   unidade: i.unidade,
                 }))}
+            />
+          ) : aba === 'marcas' ? (
+            <AbaMarcas
+              produtoId={id}
+              produtoNome={produto.nome ?? `#${produto.codigoExterno}`}
+              marcasAceitas={marcasAceitasRows.map((m) => ({
+                id: m.id,
+                marcaId: m.marcaId,
+                marcaNome: m.marcaNome,
+              }))}
+              marcasDisponiveis={marcasDisponiveisRows}
             />
           ) : (
             <AbaFornecedores

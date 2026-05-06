@@ -9,6 +9,7 @@ interface Produto {
   tipo: string;
   categoria: string;
   unidade: string;
+  marcasAceitas: string[];
 }
 
 interface Fornecedor {
@@ -196,6 +197,18 @@ export function NovaCotacaoForm(props: {
                         <span className="ml-2 text-[10px] text-slate-400">
                           [{p.tipo} / {p.unidade}]
                         </span>
+                        {p.marcasAceitas.length > 0 && (
+                          <span className="ml-2 inline-flex flex-wrap items-center gap-1">
+                            {p.marcasAceitas.map((m) => (
+                              <span
+                                key={m}
+                                className="rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-medium text-sky-800"
+                              >
+                                {m}
+                              </span>
+                            ))}
+                          </span>
+                        )}
                       </button>
                       {sel && (
                         <input
