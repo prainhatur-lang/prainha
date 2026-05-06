@@ -52,15 +52,21 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
     )
     .orderBy(asc(schema.produto.categoriaCompras), asc(schema.produto.nome));
 
-  // Pega fornecedores (todos da filial — futuramente filtrar por categoria)
+  // Pega só fornecedores ativos pra compras (filtra os 300+ legados/garcons)
   const fornecedores = await db
     .select({
       id: schema.fornecedor.id,
       nome: schema.fornecedor.nome,
+      categoria: schema.fornecedor.categoriaCompras,
     })
     .from(schema.fornecedor)
-    .where(eq(schema.fornecedor.filialId, filial.id))
-    .orderBy(asc(schema.fornecedor.nome));
+    .where(
+      and(
+        eq(schema.fornecedor.filialId, filial.id),
+        eq(schema.fornecedor.ativoCompras, true),
+      ),
+    )
+    .orderBy(asc(schema.fornecedor.categoriaCompras), asc(schema.fornecedor.nome));
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -86,6 +92,7 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
             fornecedores={fornecedores.map((f) => ({
               ...f,
               nome: f.nome ?? '(sem nome)',
+              categoria: f.categoria ?? 'Outros',
             }))}
           />
         )}

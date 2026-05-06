@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, index, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -48,6 +48,14 @@ export const fornecedor = pgTable(
     fonePrincipal: varchar('fone_principal', { length: 30 }),
     foneSecundario: varchar('fone_secundario', { length: 30 }),
     rgOuIe: varchar('rg_ou_ie', { length: 30 }),
+    /** Flag pra cotacao: true = aparece como opção na tela de Nova Cotacao.
+     *  Falso (default) ignora os 300+ fornecedores legados/garcons/etc do PDV.
+     *  Pode ser inferido do historico (categoria_conta da conta_pagar) ou
+     *  marcado manualmente. */
+    ativoCompras: boolean('ativo_compras').notNull().default(false),
+    /** Categoria livre pro modulo de compras (Bebidas, Alimentos, Limpeza,
+     *  Laticinios, etc). Permite agrupar fornecedores na UI. Null = sem categoria. */
+    categoriaCompras: varchar('categoria_compras', { length: 50 }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

@@ -14,6 +14,7 @@ interface Produto {
 interface Fornecedor {
   id: string;
   nome: string;
+  categoria: string;
 }
 
 interface ItemSelecionado {
@@ -35,6 +36,8 @@ export function NovaCotacaoForm(props: {
   const [duracaoHoras, setDuracaoHoras] = useState('4');
   const [observacao, setObservacao] = useState('');
   const [filtro, setFiltro] = useState('');
+  const [filtroForn, setFiltroForn] = useState('');
+  const [categoriaFornFiltro, setCategoriaFornFiltro] = useState('');
 
   const produtosFiltrados = useMemo(() => {
     if (!filtro.trim()) return props.produtos;
@@ -53,6 +56,21 @@ export function NovaCotacaoForm(props: {
     }
     return Object.entries(grupos).sort(([a], [b]) => a.localeCompare(b));
   }, [produtosFiltrados]);
+
+  const categoriasForn = useMemo(() => {
+    return Array.from(new Set(props.fornecedores.map((f) => f.categoria))).sort();
+  }, [props.fornecedores]);
+
+  const fornecedoresFiltrados = useMemo(() => {
+    return props.fornecedores.filter((f) => {
+      if (categoriaFornFiltro && f.categoria !== categoriaFornFiltro) return false;
+      if (filtroForn.trim()) {
+        const q = filtroForn.toLowerCase();
+        if (!f.nome.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+  }, [props.fornecedores, filtroForn, categoriaFornFiltro]);
 
   function toggleProduto(p: Produto) {
     setItens((prev) => {
@@ -208,33 +226,61 @@ export function NovaCotacaoForm(props: {
         </div>
         {props.fornecedores.length === 0 ? (
           <p className="text-xs text-slate-500">
-            Nenhum fornecedor cadastrado. Cadastre primeiro em{' '}
+            Nenhum fornecedor marcado como <strong>ativo pra compras</strong>. Rode{' '}
+            <code>pnpm --filter @concilia/db seed:fornecedores</code> ou marque os fornecedores em{' '}
             <a href="/cadastros/fornecedores" className="text-sky-600 hover:underline">
               Cadastros · Fornecedores
             </a>
             .
           </p>
         ) : (
-          <div className="grid grid-cols-2 gap-1 md:grid-cols-3">
-            {props.fornecedores.map((f) => (
-              <label
-                key={f.id}
-                className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-xs ${
-                  fornecedoresSelecionados.has(f.id)
-                    ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
+          <>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                placeholder="Buscar fornecedor..."
+                value={filtroForn}
+                onChange={(e) => setFiltroForn(e.target.value)}
+                className="flex-1 rounded-md border border-slate-200 px-3 py-1 text-xs"
+              />
+              <select
+                value={categoriaFornFiltro}
+                onChange={(e) => setCategoriaFornFiltro(e.target.value)}
+                className="rounded-md border border-slate-200 px-2 py-1 text-xs"
               >
-                <input
-                  type="checkbox"
-                  checked={fornecedoresSelecionados.has(f.id)}
-                  onChange={() => toggleFornecedor(f.id)}
-                  className="h-3.5 w-3.5"
-                />
-                {f.nome}
-              </label>
-            ))}
-          </div>
+                <option value="">Todas categorias</option>
+                {categoriasForn.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
+              {fornecedoresFiltrados.map((f) => (
+                <label
+                  key={f.id}
+                  className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-xs ${
+                    fornecedoresSelecionados.has(f.id)
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={fornecedoresSelecionados.has(f.id)}
+                    onChange={() => toggleFornecedor(f.id)}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span className="flex-1">{f.nome}</span>
+                  <span className="text-[10px] text-slate-400">{f.categoria}</span>
+                </label>
+              ))}
+              {fornecedoresFiltrados.length === 0 && (
+                <p className="col-span-full p-2 text-xs text-slate-400">
+                  Nenhum fornecedor com esse filtro.
+                </p>
+              )}
+            </div>
+          </>
         )}
       </section>
 

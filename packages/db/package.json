@@ -18,7 +18,9 @@
     "db:list-insumos": "tsx scripts/list-insumos.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
+    "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",
     "seed:compras": "tsx scripts/seed-compras.ts",
+    "seed:fornecedores": "tsx scripts/seed-fornecedores.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
