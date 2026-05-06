@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, not, ilike } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { NovaCotacaoForm } from './nova-cotacao';
 
@@ -64,6 +64,9 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
       and(
         eq(schema.fornecedor.filialId, filial.id),
         eq(schema.fornecedor.ativoCompras, true),
+        isNull(schema.fornecedor.dataDelete),
+        not(ilike(schema.fornecedor.nome, '%*excluído%')),
+        not(ilike(schema.fornecedor.nome, '%excluido%')),
       ),
     )
     .orderBy(asc(schema.fornecedor.categoriaCompras), asc(schema.fornecedor.nome));

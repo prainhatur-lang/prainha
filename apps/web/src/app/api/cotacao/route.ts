@@ -6,7 +6,7 @@ import { NextResponse } from 'next/server';
 import { randomBytes } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, max, sql as drz } from 'drizzle-orm';
+import { and, eq, inArray, max } from 'drizzle-orm';
 
 interface Body {
   filialId: string;
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
     .where(
       and(
         eq(schema.produto.filialId, body.filialId),
-        drz`${schema.produto.id} = ANY(${produtoIds}::uuid[])`,
+        inArray(schema.produto.id, produtoIds),
       ),
     );
   const unidadePorProduto = new Map(produtos.map((p) => [p.id, p.unidade]));
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
     .where(
       and(
         eq(schema.produtoMarcaAceita.filialId, body.filialId),
-        drz`${schema.produtoMarcaAceita.produtoId} = ANY(${produtoIds}::uuid[])`,
+        inArray(schema.produtoMarcaAceita.produtoId, produtoIds),
       ),
     );
   const marcasPorProduto = new Map<string, string[]>();
