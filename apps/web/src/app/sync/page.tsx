@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario, syncStats } from '@/lib/filiais';
 import { brl, formatDateTime, int, maskCnpj, relativeTime, statusFromPing } from '@/lib/format';
 import { AppHeader } from '@/components/app-header';
+import { VERSAO_RELEASE } from '../api/agente-release/route';
 
 // Sempre executa em runtime (nao prerender) - Supabase + DB
 export const dynamic = 'force-dynamic';
@@ -33,39 +34,31 @@ export default async function SyncPage() {
               </span>
             </p>
           </div>
-          <a
-            href="https://github.com/prainhatur-lang/prainha/releases/latest/download/concilia-agente-windows.zip"
-            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            Baixar agente (Windows)
-          </a>
+          <span className="text-xs text-slate-500">Versão atual: <strong>v{VERSAO_RELEASE}</strong></span>
         </div>
 
-        <details className="mb-8 rounded-xl border border-slate-200 bg-white p-5 text-sm shadow-sm">
-          <summary className="cursor-pointer font-medium text-slate-900">
-            Como instalar o agente em uma nova filial
+        <details className="mb-8 rounded-xl border border-blue-200 bg-blue-50 p-5 text-sm shadow-sm" open>
+          <summary className="cursor-pointer font-semibold text-blue-900">
+            🚀 Como instalar/atualizar o agente em 1 clique
           </summary>
           <ol className="mt-4 space-y-2 pl-5 text-slate-700 list-decimal">
-            <li>Na máquina Windows do restaurante (a mesma do Firebird ou outra na rede), baixe o ZIP acima.</li>
-            <li>Extraia tudo em uma pasta, por exemplo <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">C:\concilia-agente\</code>.</li>
             <li>
-              Copie <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">config.example.json</code> para{' '}
-              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">config.json</code> e edite:
-              <ul className="mt-1 list-disc pl-5 text-slate-600">
-                <li><code>api.token</code> — copie do card da filial abaixo</li>
-                <li><code>firebird.host</code> — deixe <code>localhost</code> (o agente roda na mesma máquina do Firebird)</li>
-                <li><code>firebird.database</code> — caminho completo do <code>consumer.fdb</code> nessa máquina (ex: <code>C:\\...\\CONSUMER.FDB</code>)</li>
-                <li><code>firebird.password</code> — senha do SYSDBA</li>
-              </ul>
+              Em cada card de filial abaixo, clique em <strong>📦 Baixar instalador</strong> —
+              baixa um arquivo <code className="rounded bg-white px-1.5 py-0.5 text-xs">.bat</code> com o token da filial já embutido.
             </li>
-            <li>Clique com botão direito em <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">install-service.bat</code> → Executar como Administrador.</li>
-            <li>Em até 15 min a filial aparece como <span className="font-medium text-emerald-700">online</span> aqui.</li>
+            <li>
+              Conecta no PC da filial via Chrome Remote Desktop e copia o <code>.bat</code> pra lá (Downloads, Desktop, etc).
+            </li>
+            <li>
+              <strong>Duplo-clique no .bat</strong> → aceita o UAC (privilégio de Admin) → espera ~1 min.
+            </li>
+            <li>
+              Em até 15 min a filial aparece como <span className="font-medium text-emerald-700">online</span> aqui.
+            </li>
           </ol>
+          <p className="mt-3 text-xs text-blue-800">
+            O instalador é idempotente — funciona pra <strong>instalar do zero</strong>, <strong>atualizar versão</strong> ou <strong>reparar instalação quebrada</strong>. Preserva checkpoint do sync.
+          </p>
         </details>
 
         {filiais.length === 0 ? (
@@ -149,9 +142,28 @@ function FilialCard({
         </div>
       )}
 
-      <details className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="mt-6 flex items-center gap-2">
+        <a
+          href={`/api/agente-release/instalar.bat?filial=${filial.id}`}
+          download
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700"
+          title="Baixa um .bat com o token da filial embutido. Duplo-clique no PC pra instalar/atualizar."
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Baixar instalador
+        </a>
+        <span className="text-xs text-slate-500">
+          .bat com token. Duplo-clique no PC da filial.
+        </span>
+      </div>
+
+      <details className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <summary className="cursor-pointer text-xs font-medium text-slate-700">
-          Token do agente (configurar no Windows)
+          Token do agente (raw — só pra debug)
         </summary>
         <pre className="mt-2 overflow-x-auto rounded bg-white p-2 font-mono text-[11px] text-slate-700">
           {filial.agenteToken}
