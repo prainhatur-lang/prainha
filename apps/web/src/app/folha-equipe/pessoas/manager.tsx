@@ -601,7 +601,11 @@ function VincularClienteModal({
   onError: (msg: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
-  const [busca, setBusca] = useState(pessoa.fornecedorNome.split(' ').slice(0, 2).join(' '));
+  // Busca inicial: se tem CPF, busca pelo CPF (mais preciso). Senão pelo nome.
+  const buscaInicial = pessoa.fornecedorCpf
+    ? pessoa.fornecedorCpf
+    : pessoa.fornecedorNome.split(' ').slice(0, 2).join(' ');
+  const [busca, setBusca] = useState(buscaInicial);
   const [resultados, setResultados] = useState<ClienteSearchResult[]>([]);
   const [buscando, setBuscando] = useState(false);
   const [selecionado, setSelecionado] = useState<string | null>(null);
@@ -624,7 +628,7 @@ function VincularClienteModal({
 
   // Busca inicial automática (1x ao montar)
   useEffect(() => {
-    buscar(busca);
+    buscar(buscaInicial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
