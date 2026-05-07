@@ -17,7 +17,10 @@ import type {
 
 import type { Config } from './config';
 
-/** Timeout + attach+query+detach genérico. Retorna linhas tipadas como T. */
+/** Timeout + attach+query+detach genérico. Retorna linhas tipadas como T.
+ *  USA AUTOCOMMIT IMPLICITO — bom pra SELECT. NAO USAR pra INSERT/UPDATE/DELETE
+ *  pois node-firebird pode nao commitar antes do detach. Pra writes, use
+ *  executarWrite() abaixo. */
 function executarQuery<T = Record<string, unknown>>(
   cfg: Config,
   sql: string,
@@ -63,6 +66,74 @@ function executarQuery<T = Record<string, unknown>>(
   return Promise.race<T[]>([
     inner,
     new Promise<T[]>((_, reject) =>
+      setTimeout(() => reject(new Error(`firebird timeout (${TIMEOUT_MS}ms)`)), TIMEOUT_MS),
+    ),
+  ]);
+}
+
+/** Executa write (INSERT/UPDATE/DELETE) DENTRO de transaction explícita com
+ *  commit. Sem isso, node-firebird descarta a operação no detach() —
+ *  bug confirmado em produção (v0.5.10 com baixar_fiado: INSERT executou
+ *  mas RETURNING veio vazio e mudança não persistiu). Retorna o resultado
+ *  da query (RETURNING ... vem como objeto único, não array). */
+function executarWrite<T = Record<string, unknown>>(
+  cfg: Config,
+  sql: string,
+  params: unknown[],
+): Promise<T | null> {
+  const opts: Firebird.Options = {
+    host: cfg.firebird.host,
+    port: cfg.firebird.port,
+    database: cfg.firebird.database,
+    user: cfg.firebird.user,
+    password: cfg.firebird.password,
+    lowercase_keys: false,
+    pageSize: 4096,
+  };
+  const inner = new Promise<T | null>((resolve, reject) => {
+    let resolved = false;
+    const safeResolve = (v: T | null) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(v);
+    };
+    const safeReject = (e: Error) => {
+      if (resolved) return;
+      resolved = true;
+      reject(e);
+    };
+    Firebird.attach(opts, (err, db) => {
+      if (err) return safeReject(err);
+      const cleanup = () => {
+        try {
+          db.detach(() => {});
+        } catch {}
+      };
+      db.transaction(Firebird.ISOLATION_READ_COMMITTED, (txErr, tx) => {
+        if (txErr) {
+          cleanup();
+          return safeReject(txErr);
+        }
+        // node-firebird: tx.query pra DML retorna objeto unico (com RETURNING)
+        // ou undefined (sem RETURNING). Tipagem do pacote nao reflete isso
+        // entao tratamos como unknown.
+        tx.query(sql, params, (qErr, result: unknown) => {
+          if (qErr) {
+            tx.rollback(() => cleanup());
+            return safeReject(qErr);
+          }
+          tx.commit((cErr) => {
+            cleanup();
+            if (cErr) return safeReject(cErr);
+            safeResolve((result as T) ?? null);
+          });
+        });
+      });
+    });
+  });
+  return Promise.race<T | null>([
+    inner,
+    new Promise<T | null>((_, reject) =>
       setTimeout(() => reject(new Error(`firebird timeout (${TIMEOUT_MS}ms)`)), TIMEOUT_MS),
     ),
   ]);
@@ -949,7 +1020,8 @@ export async function baixarFiado(
     return { saldoAnterior, saldoNovo: saldoAnterior, codigo: null };
   }
 
-  // 2) INSERT da baixa
+  // 2) INSERT da baixa — DENTRO de transaction com commit (executarWrite).
+  // SEM isso, node-firebird nao persiste o INSERT (bug v0.5.10).
   const obsLimpa = observacao.slice(0, 200); // VARCHAR(200)
   const sql = `
     INSERT INTO CONTACORRENTE
@@ -960,17 +1032,19 @@ export async function baixarFiado(
        0, ?, 'N', 1, 1)
     RETURNING CODIGO
   `;
-  const ins = await executarQuery<{ CODIGO: number }>(cfg, sql, [
-    codigoCliente,
-    saldoAnterior,
-    saldoAnterior,
-    obsLimpa,
-  ]);
-  return {
-    saldoAnterior,
-    saldoNovo: 0,
-    codigo: ins[0]?.CODIGO ?? null,
-  };
+  const ins = await executarWrite<{ CODIGO: number } | { CODIGO: number }[]>(
+    cfg,
+    sql,
+    [codigoCliente, saldoAnterior, saldoAnterior, obsLimpa],
+  );
+  // RETURNING em node-firebird as vezes vem como objeto unico, as vezes como array
+  const codigo =
+    ins == null
+      ? null
+      : Array.isArray(ins)
+        ? (ins[0]?.CODIGO ?? null)
+        : ((ins as { CODIGO: number }).CODIGO ?? null);
+  return { saldoAnterior, saldoNovo: 0, codigo };
 }
 
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }
@@ -986,8 +1060,8 @@ export async function executarUpdate(
   const setSql = cols.map((c) => `${c} = ?`).join(', ');
   const params = [...cols.map((c) => campos[c]), whereCodigo];
   const sql = `UPDATE ${tabela} SET ${setSql} WHERE CODIGO = ?`;
-  // executarQuery retorna rows; UPDATE em FB retorna nada — basta nao lancar.
-  await executarQuery(cfg, sql, params);
+  // UPDATE precisa de transaction com commit explicito (mesmo bug do INSERT).
+  await executarWrite(cfg, sql, params);
   return { afetados: 1 };
 }
 
