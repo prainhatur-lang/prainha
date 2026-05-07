@@ -82,6 +82,9 @@ const ClienteSchema = z.object({
   nome: z.string().nullable(),
   email: z.string().nullable(),
   telefone: z.string().nullable(),
+  saldoAtualContaCorrente: z.number().nullable().optional(),
+  limiteCreditoContaCorrente: z.number().nullable().optional(),
+  arquivarFiado: z.boolean().nullable().optional(),
   dataDelete: z.string().nullable(),
   versaoReg: z.number().int().nullable(),
 });
@@ -427,6 +430,15 @@ export async function POST(req: Request) {
       nome: c.nome,
       email: c.email,
       telefone: c.telefone,
+      saldoAtualContaCorrente:
+        c.saldoAtualContaCorrente !== null && c.saldoAtualContaCorrente !== undefined
+          ? String(c.saldoAtualContaCorrente)
+          : null,
+      limiteCreditoContaCorrente:
+        c.limiteCreditoContaCorrente !== null && c.limiteCreditoContaCorrente !== undefined
+          ? String(c.limiteCreditoContaCorrente)
+          : null,
+      arquivarFiado: c.arquivarFiado,
       dataDelete: c.dataDelete ? new Date(c.dataDelete) : null,
       versaoReg: c.versaoReg,
       sincronizadoEm: new Date(),
@@ -442,6 +454,9 @@ export async function POST(req: Request) {
             nome: drizzleSql`excluded.nome`,
             email: drizzleSql`excluded.email`,
             telefone: drizzleSql`excluded.telefone`,
+            saldoAtualContaCorrente: drizzleSql`excluded.saldo_atual_conta_corrente`,
+            limiteCreditoContaCorrente: drizzleSql`excluded.limite_credito_conta_corrente`,
+            arquivarFiado: drizzleSql`excluded.arquivar_fiado`,
             dataDelete: drizzleSql`excluded.data_delete`,
             versaoReg: drizzleSql`excluded.versao_reg`,
             sincronizadoEm: drizzleSql`excluded.sincronizado_em`,

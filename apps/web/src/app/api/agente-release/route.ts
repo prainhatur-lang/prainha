@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '0.5.7';
+export const VERSAO_RELEASE = '0.5.8';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
+      'v0.5.8: Cliente agora traz saldo do fiado (SALDOATUALCONTACORRENTE), limite de credito e flag arquivar_fiado. Vai permitir abater o fiado do garcom direto na comissao da folha automaticamente.',
       'v0.5.7: Cliente agora le da tabela CONTATOS (era CRMCLIENTE — que eh apenas analytics, sem cadastro). Resolve o bug que deixava nome/CPF/email/telefone NULL pra TODOS os 31k clientes da Prainha. Tambem usa colunas reais (CNPJOUCPF, FONEPRINCIPAL, FONECELULAR, FONERECADOS).',
       'v0.5.6: Refetch total de FORNECEDORES a cada ciclo — captura updates como CPF/CNPJ adicionado depois do cadastro, nome alterado, endereco corrigido. Mesmo padrao da v0.5.5 (cliente).',
       'v0.5.5: Refetch total de CRMCLIENTE a cada ciclo — captura updates como CPF adicionado depois do cadastro, nome corrigido, etc. Resolve bug do auto-vinculo cliente↔fornecedor na folha.',

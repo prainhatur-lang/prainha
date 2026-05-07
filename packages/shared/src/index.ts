@@ -107,6 +107,12 @@ export interface ClienteIngest {
   nome: string | null;
   email: string | null;
   telefone: string | null;
+  /** Saldo atual da conta corrente (fiado). > 0 = cliente deve. */
+  saldoAtualContaCorrente: number | null;
+  /** Limite de credito de fiado. */
+  limiteCreditoContaCorrente: number | null;
+  /** S = arquivar (Consumer oculta de contacorrente). */
+  arquivarFiado: boolean | null;
   dataDelete: string | null;
   versaoReg: number | null;
 }

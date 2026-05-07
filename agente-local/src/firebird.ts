@@ -460,6 +460,9 @@ async function buscarClientesPorTabela(
       'FONE',
       'TELEFONE',
       'CELULAR',
+      'SALDOATUALCONTACORRENTE',
+      'LIMITECREDITOCONTACORRENTE',
+      'ARQUIVARFIADO',
       'DATADELETE',
       'VERSAOREG',
     ],
@@ -472,6 +475,9 @@ async function buscarClientesPorTabela(
       FONEPRINCIPAL?: string | null;
       FONECELULAR?: string | null;
       FONERECADOS?: string | null;
+      SALDOATUALCONTACORRENTE?: number | string | null;
+      LIMITECREDITOCONTACORRENTE?: number | string | null;
+      ARQUIVARFIADO?: string | null;
     }
   >;
   return rows.map((r) => ({
@@ -482,6 +488,10 @@ async function buscarClientesPorTabela(
     telefone: toStr(
       r.FONEPRINCIPAL ?? r.FONECELULAR ?? r.FONERECADOS ?? r.FONE ?? r.TELEFONE ?? r.CELULAR,
     ),
+    saldoAtualContaCorrente: toNum(r.SALDOATUALCONTACORRENTE),
+    limiteCreditoContaCorrente: toNum(r.LIMITECREDITOCONTACORRENTE),
+    arquivarFiado:
+      r.ARQUIVARFIADO === 'S' ? true : r.ARQUIVARFIADO === 'N' ? false : null,
     dataDelete: toIso(r.DATADELETE),
     versaoReg: toNum(r.VERSAOREG),
   }));

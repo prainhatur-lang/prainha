@@ -86,7 +86,7 @@ export const contaBancariaConsumer = pgTable(
   }),
 );
 
-/** Cliente (espelha CRMCLIENTE / tabela equivalente). */
+/** Cliente (espelha CONTATOS — antes lia CRMCLIENTE incorretamente). */
 export const cliente = pgTable(
   'cliente',
   {
@@ -97,6 +97,15 @@ export const cliente = pgTable(
     nome: varchar('nome', { length: 200 }),
     email: varchar('email', { length: 200 }),
     telefone: varchar('telefone', { length: 30 }),
+    /** Saldo atual da conta corrente (FIADO). > 0 = cliente deve.
+     *  Espelha CONTATOS.SALDOATUALCONTACORRENTE — atualizado pelo Consumer
+     *  quando cliente abre/quita fiado. Usado pra calcular desconto na
+     *  folha (saldo do garcom-cliente abate da comissao). */
+    saldoAtualContaCorrente: numeric('saldo_atual_conta_corrente', { precision: 14, scale: 2 }),
+    limiteCreditoContaCorrente: numeric('limite_credito_conta_corrente', { precision: 14, scale: 2 }),
+    /** Se true, o Consumer arquivou esse cliente (oculta da contacorrente
+     *  e bloqueia novos fiados). */
+    arquivarFiado: boolean('arquivar_fiado'),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
