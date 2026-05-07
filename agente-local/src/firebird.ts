@@ -917,6 +917,62 @@ export async function buscarPedidoItensJanela(
 
 // --- Updates (write-back) ---
 
+/** Lança baixa de fiado em CONTACORRENTE pra zerar o saldo de um cliente.
+ *  Le saldo atual do cliente, faz INSERT com DEBITO=saldo, SALDOFINAL=0.
+ *
+ *  - CODIGO: gerado via GEN_CONTACORRENTE_ID
+ *  - DATAHORA: CURRENT_TIMESTAMP
+ *  - SALDOINICIAL: saldo lido (proximo valor pra integridade)
+ *  - CREDITO: NULL (baixa eh DEBITO)
+ *  - DEBITO: saldo atual
+ *  - SALDOFINAL: 0
+ *  - OBSERVACAO: passada (ex: "Compensado folha 27/04 a 03/05")
+ *  - IMPORTADO: 'N'
+ *  - VERSAOREG/VERSAOSINC: 1 (Consumer talvez sobrescreva via trigger UPD)
+ *
+ *  Retorna { saldoAnterior, saldoNovo }. Se saldoAnterior=0, faz nada. */
+export async function baixarFiado(
+  cfg: Config,
+  codigoCliente: number,
+  observacao: string,
+): Promise<{ saldoAnterior: number; saldoNovo: number; codigo: number | null }> {
+  // 1) Le saldo atual (ultima linha de CONTACORRENTE pra esse cliente)
+  const ultimo = await executarQuery<{ SALDOFINAL: number | string | null }>(
+    cfg,
+    `SELECT FIRST 1 SALDOFINAL FROM CONTACORRENTE
+     WHERE CODIGOCLIENTE = ?
+     ORDER BY CODIGO DESC`,
+    [codigoCliente],
+  );
+  const saldoAnterior = Number(ultimo[0]?.SALDOFINAL ?? 0);
+  if (saldoAnterior <= 0) {
+    return { saldoAnterior, saldoNovo: saldoAnterior, codigo: null };
+  }
+
+  // 2) INSERT da baixa
+  const obsLimpa = observacao.slice(0, 200); // VARCHAR(200)
+  const sql = `
+    INSERT INTO CONTACORRENTE
+      (CODIGO, CODIGOCLIENTE, DATAHORA, SALDOINICIAL, CREDITO, DEBITO,
+       SALDOFINAL, OBSERVACAO, IMPORTADO, VERSAOREG, VERSAOSINC)
+    VALUES
+      (GEN_ID(GEN_CONTACORRENTE_ID, 1), ?, CURRENT_TIMESTAMP, ?, NULL, ?,
+       0, ?, 'N', 1, 1)
+    RETURNING CODIGO
+  `;
+  const ins = await executarQuery<{ CODIGO: number }>(cfg, sql, [
+    codigoCliente,
+    saldoAnterior,
+    saldoAnterior,
+    obsLimpa,
+  ]);
+  return {
+    saldoAnterior,
+    saldoNovo: 0,
+    codigo: ins[0]?.CODIGO ?? null,
+  };
+}
+
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }
  *  e WHERE codigo. Retorna numero de linhas afetadas (0 ou 1 normalmente). */
 export async function executarUpdate(

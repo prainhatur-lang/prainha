@@ -49,6 +49,7 @@ import {
   buscarClientesJanela,
   buscarFornecedoresJanela,
   executarUpdate,
+  baixarFiado,
 } from './firebird';
 import {
   enviarBatch,
@@ -64,7 +65,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.5.9';
+const AGENTE_VERSAO = '0.5.10';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -436,35 +437,44 @@ async function cicloComandos(
     try {
       await reportarComando(cfg, cmd.id, 'executando');
 
-      const tabela =
-        cmd.tipo === 'atualizar_fornecedor'
-          ? 'FORNECEDORES'
-          : cmd.tipo === 'atualizar_cliente'
-            ? 'CONTATOS'
-            : null;
-      if (!tabela) {
-        await reportarComando(cfg, cmd.id, 'erro', { msg: `tipo ${cmd.tipo} desconhecido` });
+      // Tipo 1+2: UPDATE em FORNECEDORES ou CONTATOS
+      if (cmd.tipo === 'atualizar_fornecedor' || cmd.tipo === 'atualizar_cliente') {
+        const tabela = cmd.tipo === 'atualizar_fornecedor' ? 'FORNECEDORES' : 'CONTATOS';
+        const camposFB: Record<string, string | number | null> = {};
+        for (const [k, v] of Object.entries(cmd.payload.campos ?? {})) {
+          const col = COL_MAP[k];
+          if (col) camposFB[col] = v;
+        }
+        if (Object.keys(camposFB).length === 0) {
+          await reportarComando(cfg, cmd.id, 'erro', { msg: 'sem campos validos' });
+          continue;
+        }
+        const r = await executarUpdate(cfg, tabela, camposFB, cmd.payload.codigoExterno);
+        await reportarComando(cfg, cmd.id, 'sucesso', {
+          afetados: r.afetados,
+          tabela,
+          codigo: cmd.payload.codigoExterno,
+          campos: camposFB,
+        });
+        log.info('comando ok', { id: cmd.id, tipo: cmd.tipo });
         continue;
       }
 
-      const camposFB: Record<string, string | number | null> = {};
-      for (const [k, v] of Object.entries(cmd.payload.campos ?? {})) {
-        const col = COL_MAP[k];
-        if (col) camposFB[col] = v;
-      }
-      if (Object.keys(camposFB).length === 0) {
-        await reportarComando(cfg, cmd.id, 'erro', { msg: 'sem campos validos' });
+      // Tipo 3: BAIXAR FIADO — INSERT em CONTACORRENTE pra zerar saldo do cliente.
+      // payload = { codigoCliente, observacao }. Sistema le saldo atual via
+      // SELECT no proprio Firebird (mais confiavel que vir no payload).
+      if (cmd.tipo === 'baixar_fiado') {
+        const codCliente = (cmd.payload as unknown as { codigoCliente: number }).codigoCliente;
+        const obs =
+          (cmd.payload as unknown as { observacao?: string }).observacao ??
+          'Compensado em folha';
+        const r = await baixarFiado(cfg, codCliente, obs);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        log.info('comando ok', { id: cmd.id, tipo: cmd.tipo, ...r });
         continue;
       }
 
-      const r = await executarUpdate(cfg, tabela, camposFB, cmd.payload.codigoExterno);
-      await reportarComando(cfg, cmd.id, 'sucesso', {
-        afetados: r.afetados,
-        tabela,
-        codigo: cmd.payload.codigoExterno,
-        campos: camposFB,
-      });
-      log.info('comando ok', { id: cmd.id, tipo: cmd.tipo });
+      await reportarComando(cfg, cmd.id, 'erro', { msg: `tipo ${cmd.tipo} desconhecido` });
     } catch (e) {
       log.warn('comando falhou', { id: cmd.id, err: (e as Error).message });
       try {

@@ -86,6 +86,36 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
     });
   }
 
+  async function baixarFiadosNoConsumer() {
+    if (
+      !confirm(
+        'Vai criar comandos pro agente ZERAR o saldo de fiado dos garçons no Consumer Rede.\n\n' +
+          'Use isso depois de aplicar os fiados como desconto na folha — pra que próxima semana ' +
+          'o saldo comece do zero.\n\nContinuar?',
+      )
+    )
+      return;
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/baixar-fiados`, {
+        method: 'POST',
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.comandos === 0) {
+          setMsg({ tipo: 'ok', texto: data.msg ?? 'Nenhum saldo a baixar.' });
+        } else {
+          setMsg({
+            tipo: 'ok',
+            texto: `${data.comandos} comando(s) criado(s). Agente vai executar no próximo ciclo (~15min).`,
+          });
+        }
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
+    });
+  }
+
   async function adicionarAjuste() {
     if (!formFornecedor || !formValor) return;
     setMsg(null);
@@ -169,15 +199,26 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
             💰 Ajustes (descontos / acréscimos)
           </h2>
           {aberta && (
-            <button
-              type="button"
-              onClick={puxarFiados}
-              disabled={pending}
-              className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
-              title="Lê o saldo atual de fiado de cada cliente vinculado e cria desconto automático"
-            >
-              ⤓ Puxar fiados
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={puxarFiados}
+                disabled={pending}
+                className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                title="Lê o saldo atual de fiado de cada cliente vinculado e cria desconto automático na folha"
+              >
+                ⤓ Puxar fiados
+              </button>
+              <button
+                type="button"
+                onClick={baixarFiadosNoConsumer}
+                disabled={pending}
+                className="rounded-md border border-purple-300 bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-50"
+                title="Cria comandos pro agente lançar baixa em CONTACORRENTE no Consumer (zera saldo dos garçons)"
+              >
+                📤 Baixar fiados no Consumer
+              </button>
+            </div>
           )}
         </div>
 
