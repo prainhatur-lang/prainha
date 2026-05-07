@@ -71,11 +71,79 @@ function executarQuery<T = Record<string, unknown>>(
   ]);
 }
 
-/** Executa write (INSERT/UPDATE/DELETE) DENTRO de transaction explícita com
- *  commit. Sem isso, node-firebird descarta a operação no detach() —
- *  bug confirmado em produção (v0.5.10 com baixar_fiado: INSERT executou
- *  mas RETURNING veio vazio e mudança não persistiu). Retorna o resultado
- *  da query (RETURNING ... vem como objeto único, não array). */
+/** Executa multiplas writes (INSERT/UPDATE/DELETE) DENTRO da MESMA
+ *  transaction com commit no final. Atomico: todas commitam ou todas
+ *  rollback. Retorna array com resultado de cada query (RETURNING vem
+ *  como objeto único; sem RETURNING vem null/undefined). */
+function executarWrites(
+  cfg: Config,
+  queries: Array<{ sql: string; params: unknown[] }>,
+): Promise<unknown[]> {
+  const opts: Firebird.Options = {
+    host: cfg.firebird.host,
+    port: cfg.firebird.port,
+    database: cfg.firebird.database,
+    user: cfg.firebird.user,
+    password: cfg.firebird.password,
+    lowercase_keys: false,
+    pageSize: 4096,
+  };
+  const inner = new Promise<unknown[]>((resolve, reject) => {
+    let resolved = false;
+    const safeResolve = (v: unknown[]) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(v);
+    };
+    const safeReject = (e: Error) => {
+      if (resolved) return;
+      resolved = true;
+      reject(e);
+    };
+    Firebird.attach(opts, (err, db) => {
+      if (err) return safeReject(err);
+      const cleanup = () => {
+        try {
+          db.detach(() => {});
+        } catch {}
+      };
+      db.transaction(Firebird.ISOLATION_READ_COMMITTED, (txErr, tx) => {
+        if (txErr) {
+          cleanup();
+          return safeReject(txErr);
+        }
+        const resultados: unknown[] = [];
+        const next = (i: number) => {
+          if (i >= queries.length) {
+            tx.commit((cErr) => {
+              cleanup();
+              if (cErr) return safeReject(cErr);
+              safeResolve(resultados);
+            });
+            return;
+          }
+          const q = queries[i]!;
+          tx.query(q.sql, q.params, (qErr, result: unknown) => {
+            if (qErr) {
+              tx.rollback(() => cleanup());
+              return safeReject(qErr);
+            }
+            resultados.push(result ?? null);
+            next(i + 1);
+          });
+        };
+        next(0);
+      });
+    });
+  });
+  const timeout = new Promise<unknown[]>((_, reject) =>
+    setTimeout(() => reject(new Error(`firebird timeout (${TIMEOUT_MS}ms)`)), TIMEOUT_MS),
+  );
+  return Promise.race([inner, timeout]);
+}
+
+/** Executa UMA write (INSERT/UPDATE/DELETE) com commit explícito. Retorna
+ *  o resultado da query (RETURNING vem como objeto único). */
 function executarWrite<T = Record<string, unknown>>(
   cfg: Config,
   sql: string,
@@ -1020,10 +1088,15 @@ export async function baixarFiado(
     return { saldoAnterior, saldoNovo: saldoAnterior, codigo: null };
   }
 
-  // 2) INSERT da baixa — DENTRO de transaction com commit (executarWrite).
-  // SEM isso, node-firebird nao persiste o INSERT (bug v0.5.10).
+  // 2) Numa unica transaction: INSERT no extrato + UPDATE no cache do cliente.
+  // O Consumer Rede mantem 2 fontes do saldo:
+  //   - CONTACORRENTE (extrato linha-a-linha) — INSERT zera o saldo da linha
+  //   - CONTATOS.SALDOATUALCONTACORRENTE (cache denormalizado) — Consumer
+  //     atualiza esse campo via codigo da app dele, NAO via trigger no
+  //     INSERT externo. Sem o UPDATE explicito aqui, a UI do Consumer
+  //     continua mostrando o cliente como devedor mesmo apos a baixa.
   const obsLimpa = observacao.slice(0, 200); // VARCHAR(200)
-  const sql = `
+  const sqlInsert = `
     INSERT INTO CONTACORRENTE
       (CODIGO, CODIGOCLIENTE, DATAHORA, SALDOINICIAL, CREDITO, DEBITO,
        SALDOFINAL, OBSERVACAO, IMPORTADO, VERSAOREG, VERSAOSINC)
@@ -1032,18 +1105,19 @@ export async function baixarFiado(
        0, ?, 'N', 1, 1)
     RETURNING CODIGO
   `;
-  const ins = await executarWrite<{ CODIGO: number } | { CODIGO: number }[]>(
-    cfg,
-    sql,
-    [codigoCliente, saldoAnterior, saldoAnterior, obsLimpa],
-  );
+  const sqlUpdate = `UPDATE CONTATOS SET SALDOATUALCONTACORRENTE = 0 WHERE CODIGO = ?`;
+  const resultados = await executarWrites(cfg, [
+    { sql: sqlInsert, params: [codigoCliente, saldoAnterior, saldoAnterior, obsLimpa] },
+    { sql: sqlUpdate, params: [codigoCliente] },
+  ]);
   // RETURNING em node-firebird as vezes vem como objeto unico, as vezes como array
+  const ins = resultados[0];
   const codigo =
     ins == null
       ? null
       : Array.isArray(ins)
-        ? (ins[0]?.CODIGO ?? null)
-        : ((ins as { CODIGO: number }).CODIGO ?? null);
+        ? ((ins[0] as { CODIGO?: number })?.CODIGO ?? null)
+        : ((ins as { CODIGO?: number }).CODIGO ?? null);
   return { saldoAnterior, saldoNovo: 0, codigo };
 }
 

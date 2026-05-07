@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '0.5.11';
+export const VERSAO_RELEASE = '0.5.12';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
+      'v0.5.12: baixar_fiado agora atualiza tambem CONTATOS.SALDOATUALCONTACORRENTE=0 na MESMA transaction do INSERT em CONTACORRENTE. Sem isso, a UI do Consumer Rede continuava mostrando o cliente como devedor mesmo apos a baixa (Consumer mantem 2 fontes do saldo: extrato em CONTACORRENTE + cache em CONTATOS).',
       'v0.5.11: Fix CRITICO — INSERT/UPDATE no Firebird agora usam transaction com commit explicito. Sem isso, node-firebird descartava a operação no detach() (autocommit so funciona pra SELECT). Bug fez baixar_fiado v0.5.10 retornar sucesso mas nao persistir a baixa.',
       'v0.5.10: Comando baixar_fiado — agente lança baixa em CONTACORRENTE do Consumer (DEBITO=saldo, SALDOFINAL=0) pra zerar fiado do garçom apos compensar na folha. Botão "📤 Baixar fiados no Consumer" na tela da folha cria os comandos.',
       'v0.5.9: WRITE-BACK no Consumer Rede via fila de comandos. Permite editar nome/CPF do FORNECEDOR ou do CLIENTE pelo painel — agente pega na proxima rodada e faz UPDATE no Firebird. Util pra padronizar nome (ex: deixar igual ao do espelho de ponto) sem mexer no Consumer manualmente.',
