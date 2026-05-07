@@ -105,9 +105,12 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
         if (data.comandos === 0) {
           setMsg({ tipo: 'ok', texto: data.msg ?? 'Nenhum saldo a baixar.' });
         } else {
+          const sufixo = data.ignorados
+            ? ` (${data.ignorados} já estavam na fila — ignorados).`
+            : '';
           setMsg({
             tipo: 'ok',
-            texto: `${data.comandos} comando(s) criado(s). Agente vai executar no próximo ciclo (~15min).`,
+            texto: `${data.comandos} comando(s) criado(s)${sufixo} Agente vai executar no próximo ciclo (~15min).`,
           });
         }
       } else {
