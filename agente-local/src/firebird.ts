@@ -420,26 +420,43 @@ interface ClienteRow {
 
 /** Re-busca TODOS os clientes existentes (com paginacao por CODIGO).
  *  Captura updates pos-criacao (CPF adicionado depois, nome corrigido,
- *  etc) que o cursor incremental por CODIGO perdia. CRMCLIENTE eh
- *  pequeno o suficiente pra refetchar tudo (~ algumas centenas em geral).
- *  Faz UPSERT no banco. */
+ *  etc) que o cursor incremental por CODIGO perdia. Faz UPSERT no banco.
+ *
+ *  Tabela real = CONTATOS (~31k linhas — paginar de 1k em 1k). A tabela
+ *  CRMCLIENTE existe mas eh so analytics (ticket medio, etc), nao tem
+ *  cadastro. Mantemos CRMCLIENTE como fallback pra compat com versoes
+ *  antigas do Consumer. */
 export async function buscarClientesJanela(
   cfg: Config,
   desdeCodigoNaJanela: number,
   limite: number,
 ): Promise<ClienteIngest[]> {
-  // Sem filtro de data — clientes nao tem DATA_ALTERACAO confiavel; refetch
-  // total com paginacao mantem o banco fresco.
+  return buscarClientesPorTabela(cfg, 'CONTATOS', desdeCodigoNaJanela, limite);
+}
+
+async function buscarClientesPorTabela(
+  cfg: Config,
+  tabela: string,
+  desdeCodigo: number,
+  limite: number,
+): Promise<ClienteIngest[]> {
+  // selectFlexivel filtra colunas existentes. Lista uniao de variantes
+  // conhecidas (CONTATOS usa CNPJOUCPF/FONEPRINCIPAL/FONECELULAR;
+  // CRMCLIENTE/legado pode usar CPFCNPJ/FONE/TELEFONE/CELULAR).
   const rows = (await selectFlexivel(
     cfg,
-    'CRMCLIENTE',
+    tabela,
     [
       'CODIGO',
       'NOME',
       'NOMECLIENTE',
       'EMAIL',
+      'CNPJOUCPF',
       'CPFCNPJ',
       'CNPJCPF',
+      'FONEPRINCIPAL',
+      'FONECELULAR',
+      'FONERECADOS',
       'FONE',
       'TELEFONE',
       'CELULAR',
@@ -447,14 +464,24 @@ export async function buscarClientesJanela(
       'VERSAOREG',
     ],
     'WHERE CODIGO > ? ORDER BY CODIGO ROWS ?',
-    [desdeCodigoNaJanela, limite],
-  )) as unknown as (ClienteRow & { NOMECLIENTE?: string | null })[];
+    [desdeCodigo, limite],
+  )) as unknown as Array<
+    ClienteRow & {
+      NOMECLIENTE?: string | null;
+      CNPJOUCPF?: string | null;
+      FONEPRINCIPAL?: string | null;
+      FONECELULAR?: string | null;
+      FONERECADOS?: string | null;
+    }
+  >;
   return rows.map((r) => ({
     codigoExterno: r.CODIGO,
-    cpfOuCnpj: toStr(r.CPFCNPJ ?? r.CNPJCPF),
+    cpfOuCnpj: toStr(r.CNPJOUCPF ?? r.CPFCNPJ ?? r.CNPJCPF),
     nome: toStr(r.NOME ?? r.NOMECLIENTE),
     email: toStr(r.EMAIL),
-    telefone: toStr(r.FONE ?? r.TELEFONE ?? r.CELULAR),
+    telefone: toStr(
+      r.FONEPRINCIPAL ?? r.FONECELULAR ?? r.FONERECADOS ?? r.FONE ?? r.TELEFONE ?? r.CELULAR,
+    ),
     dataDelete: toIso(r.DATADELETE),
     versaoReg: toNum(r.VERSAOREG),
   }));
@@ -465,37 +492,7 @@ export async function buscarClientes(
   desdeCodigo: number,
   limite: number,
 ): Promise<ClienteIngest[]> {
-  // Schema flexível: tenta variantes comuns de nome de colunas (NOME vs
-  // NOMECLIENTE, CPFCNPJ vs CNPJCPF, FONE vs TELEFONE vs CELULAR).
-  // Colunas faltantes viram NULL — sem erro -206.
-  const rows = (await selectFlexivel(
-    cfg,
-    'CRMCLIENTE',
-    [
-      'CODIGO',
-      'NOME',
-      'NOMECLIENTE',
-      'EMAIL',
-      'CPFCNPJ',
-      'CNPJCPF',
-      'FONE',
-      'TELEFONE',
-      'CELULAR',
-      'DATADELETE',
-      'VERSAOREG',
-    ],
-    'WHERE CODIGO > ? ORDER BY CODIGO ROWS ?',
-    [desdeCodigo, limite],
-  )) as unknown as (ClienteRow & { NOMECLIENTE?: string | null })[];
-  return rows.map((r) => ({
-    codigoExterno: r.CODIGO,
-    cpfOuCnpj: toStr(r.CPFCNPJ ?? r.CNPJCPF),
-    nome: toStr(r.NOME ?? r.NOMECLIENTE),
-    email: toStr(r.EMAIL),
-    telefone: toStr(r.FONE ?? r.TELEFONE ?? r.CELULAR),
-    dataDelete: toIso(r.DATADELETE),
-    versaoReg: toNum(r.VERSAOREG),
-  }));
+  return buscarClientesPorTabela(cfg, 'CONTATOS', desdeCodigo, limite);
 }
 
 interface MovimentoContaCorrenteRow {
