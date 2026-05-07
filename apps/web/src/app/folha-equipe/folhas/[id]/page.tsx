@@ -8,6 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
+import { UploadEspelho } from './upload-espelho';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,6 +84,19 @@ export default async function FolhaDetalhePage(props: {
         eq(schema.fornecedorFolha.ativo, true),
       ),
     );
+
+  // Horas trabalhadas por pessoa por dia (salvas pelo upload do espelho)
+  const horasRows = await db
+    .select()
+    .from(schema.folhaHoras)
+    .where(eq(schema.folhaHoras.folhaSemanaId, folha.id));
+  // Map: fornecedorId -> { 'YYYY-MM-DD': totalMin }
+  const horasPorPessoa = new Map<string, Record<string, number>>();
+  for (const h of horasRows) {
+    const cur = horasPorPessoa.get(h.fornecedorId) ?? {};
+    cur[h.dia] = h.totalMin;
+    horasPorPessoa.set(h.fornecedorId, cur);
+  }
 
   const config = folha.configSnapshot as {
     ppEmpresa?: string | number;
@@ -202,17 +216,24 @@ export default async function FolhaDetalhePage(props: {
           </div>
         </section>
 
-        {/* Pessoas vinculadas */}
+        {/* Upload do espelho de ponto */}
+        {folha.status === 'aberta' && (
+          <div className="mb-6">
+            <UploadEspelho folhaId={folha.id} />
+          </div>
+        )}
+
+        {/* Pessoas vinculadas + horas */}
         <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-base font-semibold text-slate-900">
-              Pessoas vinculadas ({pessoas.length})
+              Pessoas e horas ({pessoas.length})
             </h2>
             <Link
               href={`/folha-equipe/pessoas?filialId=${folha.filialId}`}
               className="text-xs text-blue-600 hover:underline"
             >
-              Gerenciar →
+              Gerenciar pessoas →
             </Link>
           </div>
           {pessoas.length === 0 ? (
@@ -220,38 +241,68 @@ export default async function FolhaDetalhePage(props: {
               Nenhuma pessoa vinculada à folha.
             </p>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium text-slate-500">Nome</th>
-                  <th className="px-3 py-2 text-left font-medium text-slate-500">Papel</th>
-                  <th className="px-3 py-2 text-left font-medium text-slate-500">Cliente</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-500">Saldo fiado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pessoas.map((p) => (
-                  <tr key={p.fornecedorId} className="border-t border-slate-100">
-                    <td className="px-3 py-2 font-medium text-slate-900">{p.nome}</td>
-                    <td className="px-3 py-2 text-xs">
-                      {p.papel === 'funcionario' && '👤 Funcionário'}
-                      {p.papel === 'diarista' && '⏰ Diarista'}
-                      {p.papel === 'gerente' && '⭐ Gerente'}
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {p.clienteId ? (
-                        <span className="text-emerald-700">✓ vinculado</span>
-                      ) : (
-                        <span className="text-amber-700">— sem vínculo</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-xs">
-                      {p.saldoFiado ? brl(Number(p.saldoFiado)) : '—'}
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
+                    <th className="px-2 py-2 text-left font-medium text-slate-500">Papel</th>
+                    {dias.map((d) => (
+                      <th key={d} className="px-2 py-2 text-center font-medium text-slate-500">
+                        <div className="text-[10px] uppercase">{nomeDia(d)}</div>
+                        <div className="text-[10px] text-slate-400">{d.slice(8)}/{d.slice(5, 7)}</div>
+                      </th>
+                    ))}
+                    <th className="px-2 py-2 text-right font-medium text-slate-500">Total</th>
+                    <th className="px-2 py-2 text-right font-medium text-slate-500">Fiado</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {pessoas.map((p) => {
+                    const horas = horasPorPessoa.get(p.fornecedorId) ?? {};
+                    const totalMin = Object.values(horas).reduce((a, b) => a + b, 0);
+                    return (
+                      <tr key={p.fornecedorId} className="border-t border-slate-100">
+                        <td className="px-2 py-2">
+                          <div className="font-medium text-slate-900">{p.nome}</div>
+                          {p.clienteId ? (
+                            <div className="text-[10px] text-emerald-700">✓ cliente</div>
+                          ) : (
+                            <div className="text-[10px] text-amber-700">⚠ sem cliente</div>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-xs">
+                          {p.papel === 'funcionario' && '👤'}
+                          {p.papel === 'diarista' && '⏰'}
+                          {p.papel === 'gerente' && '⭐'}
+                        </td>
+                        {dias.map((d) => {
+                          const min = horas[d] ?? 0;
+                          return (
+                            <td
+                              key={d}
+                              className={`px-2 py-2 text-center font-mono text-xs ${
+                                min > 0 ? 'text-slate-700' : 'text-slate-300'
+                              }`}
+                            >
+                              {min > 0 ? fmtHM(min) : '—'}
+                            </td>
+                          );
+                        })}
+                        <td className="px-2 py-2 text-right font-mono font-semibold">
+                          {totalMin > 0 ? fmtHM(totalMin) : '—'}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs text-amber-700">
+                          {p.saldoFiado && Number(p.saldoFiado) > 0
+                            ? brl(Number(p.saldoFiado))
+                            : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
 
@@ -279,4 +330,10 @@ function brl(n: number): string {
 function formatBr(iso: string): string {
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
+}
+
+function fmtHM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${h}h${String(m).padStart(2, '0')}`;
 }
