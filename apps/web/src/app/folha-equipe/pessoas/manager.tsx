@@ -140,9 +140,14 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                     </td>
                     <td className="px-5 py-3 text-xs">
                       {p.clienteId ? (
-                        <span className="text-emerald-700">
+                        <button
+                          type="button"
+                          onClick={() => setVinculandoCliente(p)}
+                          className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-emerald-700 hover:bg-emerald-100"
+                          title="Clique pra trocar ou desvincular"
+                        >
                           ✓ {p.clienteNome ?? 'vinculado'}
-                        </span>
+                        </button>
                       ) : (
                         <button
                           type="button"
@@ -486,6 +491,19 @@ function VincularClienteModal({
     });
   }
 
+  function desvincular() {
+    if (!confirm(`Desvincular cliente de ${pessoa.fornecedorNome}?`)) return;
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/cliente', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fornecedorId: pessoa.fornecedorId, clienteId: null }),
+      });
+      if (r.ok) onSaved('Cliente desvinculado ✓');
+      else onError(await r.text());
+    });
+  }
+
   function criarCliente() {
     startTransition(async () => {
       const r = await fetch('/api/folha-equipe/pessoas/criar-cliente', {
@@ -515,6 +533,21 @@ function VincularClienteModal({
           <p className="mt-1 text-xs text-slate-500">
             Busque o cliente correspondente no PDV. CPF do fornecedor: {fmtCpf(pessoa.fornecedorCpf)}
           </p>
+          {pessoa.clienteId && (
+            <div className="mt-2 flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs">
+              <span className="text-emerald-800">
+                Atualmente vinculado a: <strong>{pessoa.clienteNome ?? '(cliente)'}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={desvincular}
+                disabled={pending}
+                className="rounded border border-rose-300 bg-white px-2 py-0.5 text-rose-700 hover:bg-rose-50"
+              >
+                ✗ Desvincular
+              </button>
+            </div>
+          )}
         </header>
 
         <div className="flex-1 overflow-auto px-6 py-4">
