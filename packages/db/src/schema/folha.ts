@@ -33,7 +33,7 @@ import {
 import { sql } from 'drizzle-orm';
 
 import { filial } from './tenant';
-import { fornecedor, categoriaConta } from './financeiro';
+import { fornecedor, categoriaConta, cliente } from './financeiro';
 
 /** Satelite 1:1 com `fornecedor`. So existe pra fornecedores que recebem
  *  folha (garcons, diaristas, gerentes). Outros fornecedores nao tem
@@ -44,6 +44,11 @@ export const fornecedorFolha = pgTable(
     fornecedorId: uuid('fornecedor_id')
       .primaryKey()
       .references(() => fornecedor.id, { onDelete: 'cascade' }),
+    /** Cliente correspondente no PDV (mesmo CPF). Usado pra ler o saldo
+     *  de fiado em `movimento_conta_corrente` e abater como desconto na
+     *  comissao. NULL = pessoa nao tem cadastro como cliente — fiado
+     *  fica manual. Vinculo automatico via CPF (com fallback fuzzy nome). */
+    clienteId: uuid('cliente_id').references(() => cliente.id, { onDelete: 'set null' }),
     /** Papel pra calculo da folha. */
     papel: varchar('papel', { length: 20 }).notNull(), // funcionario|diarista|gerente
     /** Pra papel='gerente': como remunera. */

@@ -6,6 +6,7 @@
 -- ============================================================
 CREATE TABLE "fornecedor_folha" (
   "fornecedor_id"                UUID PRIMARY KEY REFERENCES "fornecedor"("id") ON DELETE CASCADE,
+  "cliente_id"                   UUID REFERENCES "cliente"("id") ON DELETE SET NULL,
   "papel"                        VARCHAR(20) NOT NULL,
   "gerente_modelo"               VARCHAR(20),
   "gerente_valor_fixo_dia"       NUMERIC(10, 2),
