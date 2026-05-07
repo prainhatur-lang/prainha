@@ -107,13 +107,14 @@ export default async function FolhaDetalhePage(props: {
     .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
 
   // Comandos baixar_fiado recentes (24h) — usado pra mostrar a coluna Fiado
-  // como "📤 lançado" assim que o usuario clica, mesmo antes do agente rodar.
-  // Status sucesso entra pra cobrir o gap entre o agente lançar a baixa em
-  // CONTACORRENTE e o próximo reimport de cliente zerar o saldo (~15min).
+  // como "baixando" / "baixado" sem esperar o reimport zerar o saldo.
+  // sucesso entra pra cobrir o gap entre o agente lançar e o reimport (~15min).
   const comandosFiado = await db
     .select({
       codigo: sql<number>`(payload->>'codigoCliente')::int`,
       status: schema.agenteComando.status,
+      resultado: schema.agenteComando.resultado,
+      finalizadoEm: schema.agenteComando.finalizadoEm,
     })
     .from(schema.agenteComando)
     .where(
@@ -124,8 +125,19 @@ export default async function FolhaDetalhePage(props: {
         gte(schema.agenteComando.criadoEm, sql`now() - interval '24 hours'`),
       ),
     );
-  const codigosBaixando = new Map<number, string>();
-  for (const c of comandosFiado) codigosBaixando.set(c.codigo, c.status);
+  type FiadoInfo = {
+    status: string;
+    resultado: { saldoAnterior?: number; saldoNovo?: number; codigo?: number | null } | null;
+    finalizadoEm: Date | null;
+  };
+  const fiadoPorCodigo = new Map<number, FiadoInfo>();
+  for (const c of comandosFiado) {
+    fiadoPorCodigo.set(c.codigo, {
+      status: c.status,
+      resultado: c.resultado as FiadoInfo['resultado'],
+      finalizadoEm: c.finalizadoEm,
+    });
+  }
 
   const config = folha.configSnapshot as {
     ppEmpresa?: string | number;
@@ -323,22 +335,21 @@ export default async function FolhaDetalhePage(props: {
                         </td>
                         <td className="px-2 py-2 text-right font-mono text-xs">
                           {(() => {
-                            const cmdStatus = p.clienteCodigoExterno
-                              ? codigosBaixando.get(p.clienteCodigoExterno)
+                            const info = p.clienteCodigoExterno
+                              ? fiadoPorCodigo.get(p.clienteCodigoExterno)
                               : undefined;
                             const temSaldo = p.saldoFiado && Number(p.saldoFiado) > 0;
-                            if (cmdStatus && temSaldo) {
-                              const label =
-                                cmdStatus === 'pendente'
-                                  ? '📤 lançando'
-                                  : cmdStatus === 'executando'
-                                    ? '⏳ baixando'
-                                    : '✓ baixado';
+                            if (info && temSaldo) {
+                              const isDone = info.status === 'sucesso';
+                              const label = isDone ? '✓ baixado' : '📤 baixando';
+                              const r = info.resultado;
+                              const tooltip = isDone
+                                ? r?.codigo
+                                  ? `Validado pelo agente — baixa de ${brl(Number(r.saldoAnterior ?? 0))} (CONTACORRENTE #${r.codigo}). Saldo zera no próximo sync (~15min).`
+                                  : 'Validado pelo agente. Saldo zera no próximo sync (~15min).'
+                                : 'Comando enviado — agente vai processar no próximo ciclo (~15min).';
                               return (
-                                <span
-                                  className="text-emerald-700"
-                                  title={`Comando ${cmdStatus} — saldo zera no próximo sync do agente`}
-                                >
+                                <span className="text-emerald-700" title={tooltip}>
                                   {label}
                                 </span>
                               );
