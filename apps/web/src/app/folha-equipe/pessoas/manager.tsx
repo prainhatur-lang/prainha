@@ -72,14 +72,17 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
           <h2 className="text-base font-semibold text-slate-900">
             Pessoas vinculadas ({pessoas.length})
           </h2>
-          <button
-            type="button"
-            onClick={() => setAdicionando(true)}
-            disabled={candidatos.length === 0}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-          >
-            ➕ Adicionar pessoa
-          </button>
+          <div className="flex items-center gap-2">
+            <AutoVincularButton filialId={filialId} pessoas={pessoas} />
+            <button
+              type="button"
+              onClick={() => setAdicionando(true)}
+              disabled={candidatos.length === 0}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              ➕ Adicionar pessoa
+            </button>
+          </div>
         </header>
 
         {pessoas.length === 0 ? (
@@ -209,6 +212,56 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
           onError={(texto) => setMsg({ tipo: 'erro', texto })}
         />
       )}
+    </div>
+  );
+}
+
+// --------- Auto-vincular por CPF ---------
+function AutoVincularButton({
+  filialId,
+  pessoas,
+}: {
+  filialId: string;
+  pessoas: Pessoa[];
+}) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Conta pessoas pendentes (sem cliente vinculado mas com CPF no fornecedor)
+  const pendentes = pessoas.filter((p) => !p.clienteId && p.fornecedorCpf);
+  if (pendentes.length === 0) return null;
+
+  function rodar() {
+    setMsg(null);
+    start(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/auto-vincular', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setMsg(`${data.vinculados}/${data.total} vinculadas por CPF`);
+        setTimeout(() => router.refresh(), 1000);
+      } else {
+        setMsg('Erro: ' + (await r.text()));
+      }
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {msg && <span className="text-xs text-emerald-700">{msg}</span>}
+      <button
+        type="button"
+        onClick={rodar}
+        disabled={pending}
+        title={`Tenta vincular as ${pendentes.length} pessoas pendentes (com CPF) ao cliente do mesmo CPF`}
+        className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+      >
+        {pending ? '...' : `🔄 Auto-vincular por CPF (${pendentes.length})`}
+      </button>
     </div>
   );
 }
