@@ -377,6 +377,48 @@ interface ClienteRow {
   VERSAOREG: number | null;
 }
 
+/** Re-busca TODOS os clientes existentes (com paginacao por CODIGO).
+ *  Captura updates pos-criacao (CPF adicionado depois, nome corrigido,
+ *  etc) que o cursor incremental por CODIGO perdia. CRMCLIENTE eh
+ *  pequeno o suficiente pra refetchar tudo (~ algumas centenas em geral).
+ *  Faz UPSERT no banco. */
+export async function buscarClientesJanela(
+  cfg: Config,
+  desdeCodigoNaJanela: number,
+  limite: number,
+): Promise<ClienteIngest[]> {
+  // Sem filtro de data — clientes nao tem DATA_ALTERACAO confiavel; refetch
+  // total com paginacao mantem o banco fresco.
+  const rows = (await selectFlexivel(
+    cfg,
+    'CRMCLIENTE',
+    [
+      'CODIGO',
+      'NOME',
+      'NOMECLIENTE',
+      'EMAIL',
+      'CPFCNPJ',
+      'CNPJCPF',
+      'FONE',
+      'TELEFONE',
+      'CELULAR',
+      'DATADELETE',
+      'VERSAOREG',
+    ],
+    'WHERE CODIGO > ? ORDER BY CODIGO ROWS ?',
+    [desdeCodigoNaJanela, limite],
+  )) as unknown as (ClienteRow & { NOMECLIENTE?: string | null })[];
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    cpfOuCnpj: toStr(r.CPFCNPJ ?? r.CNPJCPF),
+    nome: toStr(r.NOME ?? r.NOMECLIENTE),
+    email: toStr(r.EMAIL),
+    telefone: toStr(r.FONE ?? r.TELEFONE ?? r.CELULAR),
+    dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
 export async function buscarClientes(
   cfg: Config,
   desdeCodigo: number,

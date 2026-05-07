@@ -46,6 +46,7 @@ import {
   buscarPedidoItens,
   buscarPedidosJanela,
   buscarPedidoItensJanela,
+  buscarClientesJanela,
 } from './firebird';
 import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
 import { log } from './logger';
@@ -55,7 +56,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.5.4';
+const AGENTE_VERSAO = '0.5.5';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -345,6 +346,31 @@ async function cicloPdvRefetch(
     log.info('refetch itens ok', { dias, total: totalItens });
   } catch (e) {
     log.warn('refetch itens falhou', { err: (e as Error).message });
+  }
+
+  // Clientes — refetch TOTAL (sem janela) pra capturar updates como
+  // CPF adicionado depois do cadastro, nome corrigido, etc. CRMCLIENTE
+  // costuma ser pequeno (centenas) e o cursor incremental por CODIGO
+  // perdia atualizacoes em registros existentes.
+  try {
+    let desde = 0;
+    let totalClientes = 0;
+    for (;;) {
+      const items = await buscarClientesJanela(cfg, desde, limite);
+      if (items.length === 0) break;
+      await enviarFinanceiro(cfg, { clientes: items });
+      desde = items.reduce(
+        (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+        desde,
+      );
+      totalClientes += items.length;
+      log.info('refetch clientes batch', { qtd: items.length, ultimo: desde });
+      if (items.length < limite) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    log.info('refetch clientes ok', { total: totalClientes });
+  } catch (e) {
+    log.warn('refetch clientes falhou', { err: (e as Error).message });
   }
 }
 

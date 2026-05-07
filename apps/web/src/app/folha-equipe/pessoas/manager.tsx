@@ -48,6 +48,7 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
   const router = useRouter();
   const [editando, setEditando] = useState<string | null>(null);
   const [adicionando, setAdicionando] = useState(false);
+  const [vinculandoCliente, setVinculandoCliente] = useState<Pessoa | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
 
   return (
@@ -135,9 +136,18 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                     </td>
                     <td className="px-5 py-3 text-xs">
                       {p.clienteId ? (
-                        <span className="text-emerald-700">✓ {p.clienteNome}</span>
+                        <span className="text-emerald-700">
+                          ✓ {p.clienteNome ?? 'vinculado'}
+                        </span>
                       ) : (
-                        <span className="text-amber-700">⚠ sem cliente — fiado manual</span>
+                        <button
+                          type="button"
+                          onClick={() => setVinculandoCliente(p)}
+                          className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 hover:bg-amber-100"
+                          title="Buscar e vincular cliente manualmente"
+                        >
+                          ⚠ Vincular cliente
+                        </button>
                       )}
                     </td>
                     <td className="px-5 py-3">
@@ -183,6 +193,20 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
         <p className="text-xs text-slate-500">
           Sem candidatos restantes — todos os fornecedores com histórico de comissão/diária já estão vinculados.
         </p>
+      )}
+
+      {vinculandoCliente && (
+        <VincularClienteModal
+          filialId={filialId}
+          pessoa={vinculandoCliente}
+          onClose={() => setVinculandoCliente(null)}
+          onSaved={(texto) => {
+            setVinculandoCliente(null);
+            setMsg({ tipo: 'ok', texto });
+            router.refresh();
+          }}
+          onError={(texto) => setMsg({ tipo: 'erro', texto })}
+        />
       )}
     </div>
   );
@@ -343,6 +367,172 @@ function PessoaEditRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+// --------- Modal: vincular cliente manualmente ---------
+interface ClienteSearchResult {
+  id: string;
+  nome: string | null;
+  cpf: string | null;
+  codigoExterno: number | null;
+}
+
+function VincularClienteModal({
+  filialId,
+  pessoa,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  filialId: string;
+  pessoa: Pessoa;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [busca, setBusca] = useState(pessoa.fornecedorNome.split(' ').slice(0, 2).join(' '));
+  const [resultados, setResultados] = useState<ClienteSearchResult[]>([]);
+  const [buscando, setBuscando] = useState(false);
+  const [selecionado, setSelecionado] = useState<string | null>(null);
+
+  async function buscar(q: string) {
+    if (q.trim().length < 2) {
+      setResultados([]);
+      return;
+    }
+    setBuscando(true);
+    try {
+      const r = await fetch(
+        `/api/folha-equipe/pessoas/buscar-cliente?filialId=${filialId}&q=${encodeURIComponent(q)}`,
+      );
+      if (r.ok) setResultados(await r.json());
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  // Busca inicial automática
+  useState(() => {
+    buscar(busca);
+    return undefined;
+  });
+
+  function vincular() {
+    if (!selecionado) return;
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/cliente', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fornecedorId: pessoa.fornecedorId, clienteId: selecionado }),
+      });
+      if (r.ok) onSaved('Cliente vinculado ✓');
+      else onError(await r.text());
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="max-h-[85vh] w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-xl flex flex-col">
+        <header className="border-b border-slate-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-slate-900">
+            Vincular cliente — {pessoa.fornecedorNome}
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Busque o cliente correspondente no PDV. CPF do fornecedor: {fmtCpf(pessoa.fornecedorCpf)}
+          </p>
+        </header>
+
+        <div className="flex-1 overflow-auto px-6 py-4">
+          <input
+            type="text"
+            placeholder="Nome ou CPF do cliente..."
+            value={busca}
+            onChange={(e) => {
+              setBusca(e.target.value);
+              buscar(e.target.value);
+            }}
+            autoFocus
+            className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+          />
+
+          {buscando && <p className="text-xs text-slate-500">Buscando...</p>}
+
+          {!buscando && resultados.length === 0 && busca.length >= 2 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              <p className="mb-2 font-semibold">Nenhum cliente encontrado.</p>
+              <p className="text-xs">
+                Possíveis causas:
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-xs space-y-1">
+                <li>O cliente ainda não existe no Consumer (PDV) — cadastre lá primeiro</li>
+                <li>
+                  O cliente existe mas o agente local ainda não sincronizou a versão atualizada (bug
+                  conhecido — agente só pega clientes novos por código incremental, atualizações
+                  não voltam até a próxima janela de refetch)
+                </li>
+              </ul>
+              <p className="mt-2 text-xs">
+                Solução temporária: deixe sem cliente vinculado por agora; vou consertar o sync de
+                clientes na v0.5.5 do agente. O fiado fica entrada manual nessa folha.
+              </p>
+            </div>
+          )}
+
+          {resultados.length > 0 && (
+            <ul className="divide-y divide-slate-100 rounded-md border border-slate-200">
+              {resultados.map((c) => {
+                const sel = selecionado === c.id;
+                const cpfMatch = c.cpf && c.cpf === pessoa.fornecedorCpf;
+                return (
+                  <li
+                    key={c.id}
+                    onClick={() => setSelecionado(c.id)}
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer ${
+                      sel ? 'bg-blue-50' : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <input type="radio" checked={sel} readOnly className="h-4 w-4" />
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-slate-900">{c.nome ?? '(sem nome)'}</div>
+                      <div className="text-xs text-slate-500">
+                        CPF {fmtCpf(c.cpf)}
+                        {c.codigoExterno && ` · cód ${c.codigoExterno}`}
+                        {cpfMatch && (
+                          <span className="ml-2 text-emerald-600 font-medium">✓ CPF bate</span>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <footer className="border-t border-slate-200 px-6 py-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={vincular}
+            disabled={pending || !selecionado}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-slate-400"
+          >
+            {pending ? 'Vinculando...' : 'Vincular'}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
