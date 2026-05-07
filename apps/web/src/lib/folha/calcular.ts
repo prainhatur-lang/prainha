@@ -51,12 +51,16 @@ export interface ResultadoCalculo {
   totalEmpresa: number;
   /** Soma comissao + gerente. */
   totalEquipe: number;
-  /** Soma de tudo a pagar (bruto). */
+  /** Soma de tudo a pagar (bruto, ja incluindo gratificacoes que vem dos
+   *  acrescimos manuais e bonus fixo). */
   totalBruto: number;
   /** Total liquido (bruto - descontos). */
   totalLiquido: number;
-  /** Total descontos (fiados). */
+  /** Total descontos (fiados + descontos manuais). */
   totalDescontos: number;
+  /** Total acrescimos (gratificacoes geradas a partir dos acrescimos manuais
+   *  + bonus fixo semanal — incluso em totalBruto). */
+  totalAcrescimos: number;
   /** Aviso por pessoa, se calculou algo estranho (ex: gerente sem horas). */
   avisos: string[];
 }
@@ -297,6 +301,9 @@ export function calcularFolha(args: {
 
   const totalBruto = lancamentos.reduce((s, l) => s + l.valorBruto, 0);
   const totalLiquido = lancamentos.reduce((s, l) => s + l.valorLiquido, 0);
+  const totalAcrescimos = lancamentos
+    .filter((l) => l.tipo === 'gratificacao')
+    .reduce((s, l) => s + l.valorBruto, 0);
 
   return {
     lancamentos,
@@ -305,6 +312,7 @@ export function calcularFolha(args: {
     totalBruto: round2(totalBruto),
     totalLiquido: round2(totalLiquido),
     totalDescontos: round2(totalDescontos),
+    totalAcrescimos: round2(totalAcrescimos),
     avisos,
   };
 }

@@ -37,6 +37,7 @@ interface Resultado {
   totalBruto: number;
   totalLiquido: number;
   totalDescontos: number;
+  totalAcrescimos: number;
   totalEmpresa: number;
   avisos: string[];
 }
@@ -380,7 +381,7 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
           <p className="text-xs text-slate-500">Calculando...</p>
         ) : (
           <>
-            <div className="mb-4 grid grid-cols-4 gap-3 rounded bg-slate-50 p-3">
+            <div className="mb-4 grid grid-cols-5 gap-3 rounded bg-slate-50 p-3">
               <Box label="Empresa fica" valor={brl(resultado.totalEmpresa)} cor="text-slate-600" />
               <Box
                 label="Bruto a pagar"
@@ -388,7 +389,12 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
                 cor="text-slate-700"
               />
               <Box
-                label="Descontos"
+                label="↑ Acréscimos"
+                valor={brl(resultado.totalAcrescimos)}
+                cor="text-emerald-700"
+              />
+              <Box
+                label="↓ Descontos"
                 valor={brl(resultado.totalDescontos)}
                 cor="text-rose-700"
               />
@@ -411,7 +417,8 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
                     <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
                     <th className="px-2 py-2 text-left font-medium text-slate-500">Tipo</th>
                     <th className="px-2 py-2 text-right font-medium text-slate-500">Bruto</th>
-                    <th className="px-2 py-2 text-right font-medium text-slate-500">Desconto</th>
+                    <th className="px-2 py-2 text-right font-medium text-slate-500">↑ Acréscimo</th>
+                    <th className="px-2 py-2 text-right font-medium text-slate-500">↓ Desconto</th>
                     <th className="px-2 py-2 text-right font-medium text-slate-500">Líquido</th>
                     <th className="px-2 py-2 text-left font-medium text-slate-500">Detalhe</th>
                   </tr>
@@ -429,6 +436,9 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
                         {l.tipo === 'transporte' && '🚗 Transporte'}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono">{brl(l.valorBruto)}</td>
+                      <td className="px-2 py-1.5 text-right font-mono text-emerald-700">
+                        {l.tipo === 'gratificacao' && l.valorBruto > 0 ? brl(l.valorBruto) : '—'}
+                      </td>
                       <td className="px-2 py-1.5 text-right font-mono text-rose-700">
                         {l.desconto > 0 ? brl(l.desconto) : '—'}
                       </td>
