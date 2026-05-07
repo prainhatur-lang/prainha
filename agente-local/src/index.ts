@@ -44,6 +44,8 @@ import {
   buscarProdutos,
   buscarPedidos,
   buscarPedidoItens,
+  buscarPedidosJanela,
+  buscarPedidoItensJanela,
 } from './firebird';
 import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
 import { log } from './logger';
@@ -53,7 +55,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.5.3';
+const AGENTE_VERSAO = '0.5.4';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -287,6 +289,65 @@ async function cicloPdv(
   }
 }
 
+/** Re-busca PEDIDOS e ITENSPEDIDO abertos nos ultimos N dias e UPSERT.
+ *  O cursor por CODIGO captura pedidos novos uma unica vez, mas Consumer
+ *  atualiza VALOR_TOTAL/DATAFECHAMENTO/TOTALSERVICO depois (mesa fica aberta
+ *  e o cliente vai consumindo). Esse loop garante que o snapshot do banco
+ *  fique sempre fresco pro fechamento da semana — paga o custo de re-fetchar
+ *  ~200 pedidos por ciclo, sem alterar o checkpoint. */
+async function cicloPdvRefetch(
+  cfg: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  const dias = cfg.refetchJanelaDias;
+  if (dias <= 0) return;
+  const limite = cfg.batchSize;
+  log.info('iniciando refetch janela', { dias });
+
+  // Pedidos da janela
+  try {
+    let desde = 0;
+    let totalPedidos = 0;
+    for (;;) {
+      const items = await buscarPedidosJanela(cfg, dias, desde, limite);
+      if (items.length === 0) break;
+      await enviarPdv(cfg, { pedidos: items });
+      desde = items.reduce(
+        (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+        desde,
+      );
+      totalPedidos += items.length;
+      log.info('refetch pedidos batch', { qtd: items.length, ultimo: desde });
+      if (items.length < limite) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    log.info('refetch pedidos ok', { dias, total: totalPedidos });
+  } catch (e) {
+    log.warn('refetch pedidos falhou', { err: (e as Error).message });
+  }
+
+  // Itens da janela
+  try {
+    let desde = 0;
+    let totalItens = 0;
+    for (;;) {
+      const items = await buscarPedidoItensJanela(cfg, dias, desde, limite);
+      if (items.length === 0) break;
+      await enviarPdv(cfg, { pedidoItens: items });
+      desde = items.reduce(
+        (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+        desde,
+      );
+      totalItens += items.length;
+      log.info('refetch itens batch', { qtd: items.length, ultimo: desde });
+      if (items.length < limite) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    log.info('refetch itens ok', { dias, total: totalItens });
+  } catch (e) {
+    log.warn('refetch itens falhou', { err: (e as Error).message });
+  }
+}
+
 /** Envolve uma Promise num timeout. Se estourar, rejeita com Error.
  *  Essencial porque node-firebird as vezes trava em estados de conexao ruim
  *  sem lancar erro nem resolver — a Promise fica pendurada pra sempre. */
@@ -349,6 +410,19 @@ async function main() {
       log.error('ciclo pdv falhou', { err: (e as Error).message });
       if ((e as Error).message?.includes('timeout')) {
         log.error('ciclo pdv travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
+    }
+    // Refetch PDV — pedidos/itens da ultima semana sao re-buscados e UPSERT.
+    // Garante que data_fechamento/valor_total/total_servico fiquem frescos
+    // mesmo apos snapshot inicial baixo.
+    try {
+      await comTimeout(cicloPdvRefetch(cfg), CICLO_TIMEOUT_MS, 'ciclo pdv refetch');
+    } catch (e: unknown) {
+      log.error('ciclo pdv refetch falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo pdv refetch travou — reiniciando processo');
         setTimeout(() => process.exit(1), 1000);
         return;
       }

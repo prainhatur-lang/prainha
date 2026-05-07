@@ -192,6 +192,7 @@ async function main() {
       intervalSeconds: 900,
       batchSize: 500,
       checkpointFile: 'checkpoint.json',
+      refetchJanelaDias: 7,
     };
   }
 

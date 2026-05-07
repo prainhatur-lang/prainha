@@ -23,6 +23,12 @@ const ConfigSchema = z.object({
   batchSize: z.number().int().min(1).max(2000).default(500),
   /** Caminho do arquivo de checkpoint local. */
   checkpointFile: z.string().default('checkpoint.json'),
+  /** Janela de re-sincronizacao de PEDIDOS/ITENSPEDIDO em dias.
+   *  Pedidos abertos dentro dessa janela sao re-buscados a cada ciclo
+   *  e UPSERT no banco — captura updates pos-criacao (data_fechamento,
+   *  valor_total, total_servico) que o cursor incremental por CODIGO
+   *  perdia. Default 7 dias = uma semana operacional. */
+  refetchJanelaDias: z.number().int().min(0).max(60).default(7),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -642,6 +642,70 @@ export async function buscarPedidos(
   }));
 }
 
+/** Re-busca pedidos abertos nos ultimos `diasAtras` dias, paginando por CODIGO.
+ *  Usado pra capturar updates pos-criacao (data_fechamento, valor_total,
+ *  total_servico) que o cursor incremental por CODIGO perdia.
+ *  Faz UPSERT no banco — pedidos ja existentes sao sobrescritos. */
+export async function buscarPedidosJanela(
+  cfg: Config,
+  diasAtras: number,
+  desdeCodigoNaJanela: number,
+  limite: number,
+): Promise<PedidoIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, NUMERO, SENHA,
+           CODIGOCONTATOCLIENTE, CODIGOCONTATOFIADO, NOME,
+           CODIGOCOLABORADOR, CODIGOUSUARIOCRIADOR,
+           DATAABERTURA, DATAFECHAMENTO,
+           VALORTOTAL, VALORTOTALITENS, SUBTOTALPAGO,
+           TOTALDESCONTO, PERCENTUALDESCONTO,
+           TOTALACRESCIMO, TOTALSERVICO, PERCENTUALTAXASERVICO,
+           VALORENTREGA, VALORTROCO, VALORIVA,
+           QUANTIDADEPESSOAS, NOTAEMITIDA, TAG,
+           CODIGOPEDIDOORIGEM, CODIGOCUPOM,
+           DATADELETE, VERSAOREG
+    FROM PEDIDOS
+    WHERE DATAABERTURA >= DATEADD(? DAY TO CURRENT_TIMESTAMP)
+      AND CODIGO > ?
+    ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<PedidoRow>(cfg, sql, [
+    limite,
+    -diasAtras,
+    desdeCodigoNaJanela,
+  ]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    numero: toNum(r.NUMERO),
+    senha: toStr(r.SENHA),
+    codigoClienteContatoExterno: toNum(r.CODIGOCONTATOCLIENTE),
+    codigoClienteFiadoExterno: toNum(r.CODIGOCONTATOFIADO),
+    nomeCliente: toStr(r.NOME),
+    codigoColaborador: toNum(r.CODIGOCOLABORADOR),
+    codigoUsuarioCriador: toNum(r.CODIGOUSUARIOCRIADOR),
+    dataAbertura: toIso(r.DATAABERTURA),
+    dataFechamento: toIso(r.DATAFECHAMENTO),
+    valorTotal: toNum(r.VALORTOTAL),
+    valorTotalItens: toNum(r.VALORTOTALITENS),
+    subtotalPago: toNum(r.SUBTOTALPAGO),
+    totalDesconto: toNum(r.TOTALDESCONTO),
+    percentualDesconto: toNum(r.PERCENTUALDESCONTO),
+    totalAcrescimo: toNum(r.TOTALACRESCIMO),
+    totalServico: toNum(r.TOTALSERVICO),
+    percentualTaxaServico: toNum(r.PERCENTUALTAXASERVICO),
+    valorEntrega: toNum(r.VALORENTREGA),
+    valorTroco: toNum(r.VALORTROCO),
+    valorIva: toNum(r.VALORIVA),
+    quantidadePessoas: toNum(r.QUANTIDADEPESSOAS),
+    notaEmitida: toBool(r.NOTAEMITIDA),
+    tag: toStr(r.TAG),
+    codigoPedidoOrigem: toNum(r.CODIGOPEDIDOORIGEM),
+    codigoCupom: toNum(r.CODIGOCUPOM),
+    dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
 // --- Itens de pedido ---
 
 interface PedidoItemRow {
@@ -684,6 +748,58 @@ export async function buscarPedidoItens(
     FROM ITENSPEDIDO WHERE CODIGO > ? ORDER BY CODIGO
   `;
   const rows = await executarQuery<PedidoItemRow>(cfg, sql, [limite, desdeCodigo]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    codigoPedidoExterno: r.CODIGOPEDIDO,
+    codigoProdutoExterno: toNum(r.CODIGOPRODUTO),
+    nomeProduto: toStr(r.NOMEPRODUTO),
+    quantidade: toNum(r.QUANTIDADE),
+    valorUnitario: toNum(r.VALORUNITARIO),
+    precoCusto: toNum(r.PRECOCUSTO),
+    valorItem: toNum(r.VALORITEM),
+    valorComplemento: toNum(r.VALORCOMPLEMENTO),
+    valorFilho: toNum(r.VALORFILHO),
+    valorDesconto: toNum(r.VALORDESCONTO),
+    valorGorjeta: toNum(r.VALORGORJETA),
+    valorTotal: toNum(r.VALORTOTAL),
+    codigoPai: toNum(r.CODIGOPAI),
+    codigoItemPedidoTipo: toNum(r.CODIGOITEMPEDIDOTIPO),
+    codigoPagamento: toNum(r.CODIGOPAGAMENTO),
+    codigoColaborador: toNum(r.CODIGOCOLABORADOR),
+    dataHoraCadastro: toIso(r.DATAHORACADASTRO),
+    dataDelete: toIso(r.DATADELETE),
+    detalhes: toStr(r.DETALHES),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
+/** Re-busca itens de pedidos abertos nos ultimos `diasAtras` dias.
+ *  JOIN com PEDIDOS pra filtrar pela DATAABERTURA do pedido pai. */
+export async function buscarPedidoItensJanela(
+  cfg: Config,
+  diasAtras: number,
+  desdeCodigoNaJanela: number,
+  limite: number,
+): Promise<PedidoItemIngest[]> {
+  const sql = `
+    SELECT FIRST ? i.CODIGO, i.CODIGOPEDIDO, i.CODIGOPRODUTO, i.NOMEPRODUTO,
+           i.QUANTIDADE, i.VALORUNITARIO, i.PRECOCUSTO,
+           i.VALORITEM, i.VALORCOMPLEMENTO, i.VALORFILHO,
+           i.VALORDESCONTO, i.VALORGORJETA, i.VALORTOTAL,
+           i.CODIGOPAI, i.CODIGOITEMPEDIDOTIPO, i.CODIGOPAGAMENTO,
+           i.CODIGOCOLABORADOR, i.DATAHORACADASTRO, i.DATADELETE,
+           i.DETALHES, i.VERSAOREG
+    FROM ITENSPEDIDO i
+    INNER JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+    WHERE p.DATAABERTURA >= DATEADD(? DAY TO CURRENT_TIMESTAMP)
+      AND i.CODIGO > ?
+    ORDER BY i.CODIGO
+  `;
+  const rows = await executarQuery<PedidoItemRow>(cfg, sql, [
+    limite,
+    -diasAtras,
+    desdeCodigoNaJanela,
+  ]);
   return rows.map((r) => ({
     codigoExterno: r.CODIGO,
     codigoPedidoExterno: r.CODIGOPEDIDO,
