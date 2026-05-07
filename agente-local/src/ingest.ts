@@ -6,6 +6,47 @@ import type {
 } from '@concilia/shared';
 import type { Config } from './config';
 
+export interface AgenteComando {
+  id: string;
+  tipo: string; // 'atualizar_fornecedor' | 'atualizar_cliente'
+  payload: {
+    codigoExterno: number;
+    campos: Record<string, string | number | null>;
+  };
+  status: string;
+}
+
+export async function buscarComandosPendentes(cfg: Config): Promise<AgenteComando[]> {
+  const url = `${cfg.api.url.replace(/\/$/, '')}/api/agente/comandos`;
+  const r = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${cfg.api.token}` },
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status} - ${txt.slice(0, 200)}`);
+  }
+  const data = (await r.json()) as { comandos: AgenteComando[] };
+  return data.comandos ?? [];
+}
+
+export async function reportarComando(
+  cfg: Config,
+  id: string,
+  status: 'executando' | 'sucesso' | 'erro',
+  resultado?: unknown,
+): Promise<void> {
+  const url = `${cfg.api.url.replace(/\/$/, '')}/api/agente/comandos`;
+  await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.api.token}`,
+    },
+    body: JSON.stringify({ id, status, resultado }),
+  });
+}
+
 export interface IngestResponse {
   recebidos: number;
   ultimoCodigoExterno: number | null;

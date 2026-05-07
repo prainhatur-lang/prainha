@@ -915,6 +915,26 @@ export async function buscarPedidoItensJanela(
   }));
 }
 
+// --- Updates (write-back) ---
+
+/** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }
+ *  e WHERE codigo. Retorna numero de linhas afetadas (0 ou 1 normalmente). */
+export async function executarUpdate(
+  cfg: Config,
+  tabela: string,
+  campos: Record<string, string | number | null>,
+  whereCodigo: number,
+): Promise<{ afetados: number }> {
+  const cols = Object.keys(campos);
+  if (cols.length === 0) return { afetados: 0 };
+  const setSql = cols.map((c) => `${c} = ?`).join(', ');
+  const params = [...cols.map((c) => campos[c]), whereCodigo];
+  const sql = `UPDATE ${tabela} SET ${setSql} WHERE CODIGO = ?`;
+  // executarQuery retorna rows; UPDATE em FB retorna nada — basta nao lancar.
+  await executarQuery(cfg, sql, params);
+  return { afetados: 1 };
+}
+
 // --- Pagamentos (existente) ---
 
 export function buscarPagamentos(

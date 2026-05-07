@@ -50,6 +50,7 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
   const [editando, setEditando] = useState<string | null>(null);
   const [adicionando, setAdicionando] = useState(false);
   const [vinculandoCliente, setVinculandoCliente] = useState<Pessoa | null>(null);
+  const [editandoConsumer, setEditandoConsumer] = useState<Pessoa | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
 
   return (
@@ -169,6 +170,14 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                     <td className="px-5 py-3 text-right">
                       <button
                         type="button"
+                        onClick={() => setEditandoConsumer(p)}
+                        className="mr-3 text-xs text-purple-600 hover:underline"
+                        title="Atualizar nome/CPF no Consumer Rede (write-back)"
+                      >
+                        ✏ Consumer
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setEditando(p.fornecedorId)}
                         className="text-xs text-blue-600 hover:underline"
                       >
@@ -213,6 +222,18 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
             setVinculandoCliente(null);
             setMsg({ tipo: 'ok', texto });
             router.refresh();
+          }}
+          onError={(texto) => setMsg({ tipo: 'erro', texto })}
+        />
+      )}
+
+      {editandoConsumer && (
+        <EditarConsumerModal
+          pessoa={editandoConsumer}
+          onClose={() => setEditandoConsumer(null)}
+          onSaved={(texto) => {
+            setEditandoConsumer(null);
+            setMsg({ tipo: 'ok', texto });
           }}
           onError={(texto) => setMsg({ tipo: 'erro', texto })}
         />
@@ -426,6 +447,135 @@ function PessoaEditRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+// --------- Modal: editar fornecedor + cliente no Consumer (write-back) ---------
+function EditarConsumerModal({
+  pessoa,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  pessoa: Pessoa;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [nome, setNome] = useState(pessoa.fornecedorNome);
+  const [cpf, setCpf] = useState(pessoa.fornecedorCpf);
+  const [alvo, setAlvo] = useState<'fornecedor' | 'cliente' | 'ambos'>('ambos');
+
+  const dirty = nome !== pessoa.fornecedorNome || cpf !== pessoa.fornecedorCpf;
+
+  function salvar() {
+    if (!dirty) return;
+    const campos: { nome?: string; cnpjOuCpf?: string } = {};
+    if (nome !== pessoa.fornecedorNome) campos.nome = nome.trim();
+    if (cpf !== pessoa.fornecedorCpf) campos.cnpjOuCpf = cpf.replace(/\D/g, '');
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/atualizar-no-consumer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fornecedorId: pessoa.fornecedorId,
+          alvo: pessoa.clienteId ? alvo : 'fornecedor',
+          campos,
+        }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const ids = Object.keys(data.ids ?? {});
+        onSaved(
+          `Comando(s) criado(s): ${ids.join(', ') || 'nenhum'}. ` +
+            `O agente vai executar no Consumer no próximo ciclo (~15 min).`,
+        );
+      } else {
+        onError(await r.text());
+      }
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+        <header className="border-b border-slate-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-slate-900">
+            Atualizar no Consumer Rede
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Cria comando pro agente local executar UPDATE no Firebird. Depois
+            que executar (~1 ciclo do agente), os dados sincronizam de volta.
+          </p>
+        </header>
+
+        <div className="space-y-3 px-6 py-4">
+          <label className="block">
+            <span className="block text-xs font-medium text-slate-600">Nome</span>
+            <input
+              type="text"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="block text-xs font-medium text-slate-600">CPF/CNPJ (só dígitos)</span>
+            <input
+              type="text"
+              value={cpf}
+              onChange={(e) => setCpf(e.target.value)}
+              placeholder="11 dígitos pra CPF"
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm font-mono"
+            />
+          </label>
+
+          {pessoa.clienteId && (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
+              <p className="mb-2 font-medium">Atualizar onde:</p>
+              <div className="space-y-1">
+                {(['fornecedor', 'cliente', 'ambos'] as const).map((a) => (
+                  <label key={a} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      checked={alvo === a}
+                      onChange={() => setAlvo(a)}
+                    />
+                    <span>
+                      {a === 'fornecedor' && 'Só Fornecedor (cadastro de salários)'}
+                      {a === 'cliente' && 'Só Cliente (cadastro do fiado)'}
+                      {a === 'ambos' && 'Ambos (recomendado — mantém sincronizado)'}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-slate-200 px-6 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={salvar}
+            disabled={pending || !dirty}
+            className="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:bg-slate-400"
+          >
+            {pending ? 'Enviando...' : 'Atualizar no Consumer'}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 

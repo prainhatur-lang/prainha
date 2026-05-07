@@ -109,6 +109,31 @@ export const usuario = pgTable('usuario', {
   criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Comandos pendentes pro agente local executar no Firebird (write-back).
+ *  Tipos suportados:
+ *  - 'atualizar_fornecedor': payload = { codigoExterno, campos: { nome?, cnpjOuCpf?, ... } }
+ *  - 'atualizar_cliente':    payload = { codigoExterno, campos: { nome?, cnpjOuCpf?, ... } }
+ *
+ *  Status: pendente -> executando -> sucesso/erro */
+export const agenteComando = pgTable(
+  'agente_comando',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    tipo: varchar('tipo', { length: 50 }).notNull(),
+    payload: jsonb('payload').notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('pendente'), // pendente|executando|sucesso|erro
+    resultado: jsonb('resultado'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    iniciadoEm: timestamp('iniciado_em', { withTimezone: true }),
+    finalizadoEm: timestamp('finalizado_em', { withTimezone: true }),
+  },
+  (t) => ({
+    pendIdx: index('idx_agente_comando_pend').on(t.filialId, t.status),
+  }),
+);
+
 /** Acesso de usuarios a filiais. Role DONO ve todas, GERENTE ve as listadas. */
 export const usuarioFilial = pgTable(
   'usuario_filial',

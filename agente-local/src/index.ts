@@ -48,8 +48,15 @@ import {
   buscarPedidoItensJanela,
   buscarClientesJanela,
   buscarFornecedoresJanela,
+  executarUpdate,
 } from './firebird';
-import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
+import {
+  enviarBatch,
+  enviarFinanceiro,
+  enviarPdv,
+  buscarComandosPendentes,
+  reportarComando,
+} from './ingest';
 import { log } from './logger';
 
 bootTrace('BOOT 2 - imports OK');
@@ -57,7 +64,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.5.8';
+const AGENTE_VERSAO = '0.5.9';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -399,6 +406,74 @@ async function cicloPdvRefetch(
   }
 }
 
+/** Processa comandos pendentes do servidor (write-back no Firebird).
+ *  Tipos suportados:
+ *  - 'atualizar_fornecedor': UPDATE FORNECEDORES SET ... WHERE CODIGO = ?
+ *  - 'atualizar_cliente':    UPDATE CONTATOS SET ... WHERE CODIGO = ?
+ *
+ *  Mapeia chaves do JSON pra colunas do Firebird:
+ *    nome -> NOME
+ *    cnpjOuCpf -> CNPJOUCPF (FORNECEDORES tem essa coluna; CONTATOS tambem) */
+async function cicloComandos(
+  cfg: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  let comandos: Awaited<ReturnType<typeof buscarComandosPendentes>>;
+  try {
+    comandos = await buscarComandosPendentes(cfg);
+  } catch (e) {
+    log.warn('falha buscando comandos', { err: (e as Error).message });
+    return;
+  }
+  if (comandos.length === 0) return;
+  log.info('processando comandos', { qtd: comandos.length });
+
+  const COL_MAP: Record<string, string> = {
+    nome: 'NOME',
+    cnpjOuCpf: 'CNPJOUCPF',
+  };
+
+  for (const cmd of comandos) {
+    try {
+      await reportarComando(cfg, cmd.id, 'executando');
+
+      const tabela =
+        cmd.tipo === 'atualizar_fornecedor'
+          ? 'FORNECEDORES'
+          : cmd.tipo === 'atualizar_cliente'
+            ? 'CONTATOS'
+            : null;
+      if (!tabela) {
+        await reportarComando(cfg, cmd.id, 'erro', { msg: `tipo ${cmd.tipo} desconhecido` });
+        continue;
+      }
+
+      const camposFB: Record<string, string | number | null> = {};
+      for (const [k, v] of Object.entries(cmd.payload.campos ?? {})) {
+        const col = COL_MAP[k];
+        if (col) camposFB[col] = v;
+      }
+      if (Object.keys(camposFB).length === 0) {
+        await reportarComando(cfg, cmd.id, 'erro', { msg: 'sem campos validos' });
+        continue;
+      }
+
+      const r = await executarUpdate(cfg, tabela, camposFB, cmd.payload.codigoExterno);
+      await reportarComando(cfg, cmd.id, 'sucesso', {
+        afetados: r.afetados,
+        tabela,
+        codigo: cmd.payload.codigoExterno,
+        campos: camposFB,
+      });
+      log.info('comando ok', { id: cmd.id, tipo: cmd.tipo });
+    } catch (e) {
+      log.warn('comando falhou', { id: cmd.id, err: (e as Error).message });
+      try {
+        await reportarComando(cfg, cmd.id, 'erro', { msg: (e as Error).message });
+      } catch {}
+    }
+  }
+}
+
 /** Envolve uma Promise num timeout. Se estourar, rejeita com Error.
  *  Essencial porque node-firebird as vezes trava em estados de conexao ruim
  *  sem lancar erro nem resolver — a Promise fica pendurada pra sempre. */
@@ -461,6 +536,18 @@ async function main() {
       log.error('ciclo pdv falhou', { err: (e as Error).message });
       if ((e as Error).message?.includes('timeout')) {
         log.error('ciclo pdv travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
+    }
+    // Comandos do servidor (write-back) — executa antes do refetch pra
+    // alterações apareçam no banco do concilia ja na proxima sincronizacao
+    try {
+      await comTimeout(cicloComandos(cfg), CICLO_TIMEOUT_MS, 'ciclo comandos');
+    } catch (e: unknown) {
+      log.error('ciclo comandos falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo comandos travou — reiniciando processo');
         setTimeout(() => process.exit(1), 1000);
         return;
       }
