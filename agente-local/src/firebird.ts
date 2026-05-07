@@ -1057,17 +1057,27 @@ export async function buscarPedidoItensJanela(
 // --- Updates (write-back) ---
 
 /** Lança baixa de fiado em CONTACORRENTE pra zerar o saldo de um cliente.
- *  Le saldo atual do cliente, faz INSERT com DEBITO=saldo, SALDOFINAL=0.
+ *  Le saldo atual do cliente, faz INSERT com CREDITO=saldo, SALDOFINAL=0
+ *  (baixa eh PAGAMENTO, entao usa CREDITO — nao DEBITO).
+ *
+ *  Convenção do Consumer Rede (validada lendo a tela Conta Corrente):
+ *  - Fiado/divida: linha com DEBITO=valor, CREDITO=NULL → coluna "Fiado" positivo
+ *  - Pagamento:   linha com CREDITO=valor, DEBITO=NULL → coluna "Pago" negativo
+ *  Saldo do cliente = sum(DEBITO) - sum(CREDITO). Pra zerar, somar CREDITO.
+ *
+ *  Bug v0.5.10-v0.5.12: usavamos DEBITO=valor — Consumer mostrava a linha como
+ *  "Pagamento" pelo SALDOFINAL menor, mas saldo total nao reduzia (porque
+ *  somava como divida no campo errado).
  *
  *  - CODIGO: gerado via GEN_CONTACORRENTE_ID
  *  - DATAHORA: CURRENT_TIMESTAMP
  *  - SALDOINICIAL: saldo lido (proximo valor pra integridade)
- *  - CREDITO: NULL (baixa eh DEBITO)
- *  - DEBITO: saldo atual
+ *  - CREDITO: saldo atual (pagamento)
+ *  - DEBITO: NULL
  *  - SALDOFINAL: 0
  *  - OBSERVACAO: passada (ex: "Compensado folha 27/04 a 03/05")
- *  - IMPORTADO: 'N'
- *  - VERSAOREG/VERSAOSINC: 1 (Consumer talvez sobrescreva via trigger UPD)
+ *  - IMPORTADO: 'S' (já considerada importada — entra no calculo do saldo)
+ *  - VERSAOREG/VERSAOSINC: 1
  *
  *  Retorna { saldoAnterior, saldoNovo }. Se saldoAnterior=0, faz nada. */
 export async function baixarFiado(
@@ -1101,8 +1111,8 @@ export async function baixarFiado(
       (CODIGO, CODIGOCLIENTE, DATAHORA, SALDOINICIAL, CREDITO, DEBITO,
        SALDOFINAL, OBSERVACAO, IMPORTADO, VERSAOREG, VERSAOSINC)
     VALUES
-      (GEN_ID(GEN_CONTACORRENTE_ID, 1), ?, CURRENT_TIMESTAMP, ?, NULL, ?,
-       0, ?, 'N', 1, 1)
+      (GEN_ID(GEN_CONTACORRENTE_ID, 1), ?, CURRENT_TIMESTAMP, ?, ?, NULL,
+       0, ?, 'S', 1, 1)
     RETURNING CODIGO
   `;
   const sqlUpdate = `UPDATE CONTATOS SET SALDOATUALCONTACORRENTE = 0 WHERE CODIGO = ?`;
