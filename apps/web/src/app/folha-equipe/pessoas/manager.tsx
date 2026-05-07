@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Pessoa {
@@ -413,11 +413,11 @@ function VincularClienteModal({
     }
   }
 
-  // Busca inicial automática
-  useState(() => {
+  // Busca inicial automática (1x ao montar)
+  useEffect(() => {
     buscar(busca);
-    return undefined;
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function vincular() {
     if (!selecionado) return;
@@ -428,6 +428,22 @@ function VincularClienteModal({
         body: JSON.stringify({ fornecedorId: pessoa.fornecedorId, clienteId: selecionado }),
       });
       if (r.ok) onSaved('Cliente vinculado ✓');
+      else onError(await r.text());
+    });
+  }
+
+  function criarCliente() {
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/criar-cliente', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fornecedorId: pessoa.fornecedorId,
+          nome: pessoa.fornecedorNome,
+          cpf: pessoa.fornecedorCpf,
+        }),
+      });
+      if (r.ok) onSaved(`Cliente criado e vinculado a ${pessoa.fornecedorNome} ✓`);
       else onError(await r.text());
     });
   }
@@ -463,23 +479,30 @@ function VincularClienteModal({
           {buscando && <p className="text-xs text-slate-500">Buscando...</p>}
 
           {!buscando && resultados.length === 0 && busca.length >= 2 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              <p className="mb-2 font-semibold">Nenhum cliente encontrado.</p>
-              <p className="text-xs">
-                Possíveis causas:
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm">
+              <p className="mb-2 font-semibold text-amber-800">Nenhum cliente encontrado.</p>
+              <p className="text-xs text-amber-700">
+                Pode ser que o cliente já exista no Consumer mas o agente local ainda não tenha
+                sincronizado (sync atualiza só cliente novo, atualizações esperam o refetch da v0.5.5).
               </p>
-              <ul className="mt-1 list-disc pl-5 text-xs space-y-1">
-                <li>O cliente ainda não existe no Consumer (PDV) — cadastre lá primeiro</li>
-                <li>
-                  O cliente existe mas o agente local ainda não sincronizou a versão atualizada (bug
-                  conhecido — agente só pega clientes novos por código incremental, atualizações
-                  não voltam até a próxima janela de refetch)
-                </li>
-              </ul>
-              <p className="mt-2 text-xs">
-                Solução temporária: deixe sem cliente vinculado por agora; vou consertar o sync de
-                clientes na v0.5.5 do agente. O fiado fica entrada manual nessa folha.
-              </p>
+              <div className="mt-3 rounded border border-blue-200 bg-blue-50 p-3">
+                <p className="mb-2 text-xs font-semibold text-blue-900">
+                  Cadastrar diretamente no concilia (sem esperar o Consumer):
+                </p>
+                <button
+                  type="button"
+                  onClick={() => criarCliente()}
+                  disabled={pending}
+                  className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-slate-400"
+                >
+                  ➕ Criar cliente &quot;{pessoa.fornecedorNome}&quot; com CPF{' '}
+                  {fmtCpf(pessoa.fornecedorCpf)}
+                </button>
+                <p className="mt-2 text-xs text-blue-800">
+                  Cria um registro de cliente no concilia (sem código do Consumer) e vincula imediatamente.
+                  Quando o agente v0.5.5 sincronizar a versão final do Consumer, vai casar por CPF.
+                </p>
+              </div>
             </div>
           )}
 
