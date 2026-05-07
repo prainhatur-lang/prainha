@@ -183,6 +183,12 @@ export const contaPagar = pgTable(
      *  com prefixo nfe-boletos/). Pode ser anexado no momento do lancamento
      *  ou depois via foto enviada pelo celular (token publico da nota). */
     boletoStoragePath: text('boleto_storage_path'),
+    /** Se origem='FOLHA', aponta pra folha semanal que gerou. Permite
+     *  reverter (cancelar todas as contas geradas pela folha) e auditar.
+     *  FK eh declarada na tabela folha_semana via referencia inversa
+     *  (vide schema/folha.ts) — usamos uuid raw aqui pra evitar ciclo
+     *  de imports entre financeiro.ts e folha.ts. */
+    folhaSemanaId: uuid('folha_semana_id'),
     dataCadastro: timestamp('data_cadastro', { withTimezone: true }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),

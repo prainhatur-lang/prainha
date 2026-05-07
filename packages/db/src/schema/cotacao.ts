@@ -255,7 +255,7 @@ export const pedidoCompraItem = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    pedidoIdx: index('idx_pedido_item_pedido').on(t.pedidoCompraId),
-    produtoIdx: index('idx_pedido_item_produto').on(t.produtoId),
+    pedidoIdx: index('idx_pedido_compra_item_pedido').on(t.pedidoCompraId),
+    produtoIdx: index('idx_pedido_compra_item_produto').on(t.produtoId),
   }),
 );
