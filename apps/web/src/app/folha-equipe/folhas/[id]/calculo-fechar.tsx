@@ -113,6 +113,7 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
             texto: `${data.comandos} comando(s) criado(s)${sufixo} Agente vai executar no próximo ciclo (~15min).`,
           });
         }
+        router.refresh();
       } else {
         setMsg({ tipo: 'erro', texto: await r.text() });
       }

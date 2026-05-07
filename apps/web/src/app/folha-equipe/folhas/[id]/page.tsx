@@ -5,7 +5,7 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
@@ -72,6 +72,7 @@ export default async function FolhaDetalhePage(props: {
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       saldoFiado: schema.cliente.saldoAtualContaCorrente,
+      clienteCodigoExterno: schema.cliente.codigoExterno,
     })
     .from(schema.fornecedorFolha)
     .innerJoin(
@@ -104,6 +105,27 @@ export default async function FolhaDetalhePage(props: {
     .select()
     .from(schema.folhaAjuste)
     .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
+
+  // Comandos baixar_fiado recentes (24h) — usado pra mostrar a coluna Fiado
+  // como "📤 lançado" assim que o usuario clica, mesmo antes do agente rodar.
+  // Status sucesso entra pra cobrir o gap entre o agente lançar a baixa em
+  // CONTACORRENTE e o próximo reimport de cliente zerar o saldo (~15min).
+  const comandosFiado = await db
+    .select({
+      codigo: sql<number>`(payload->>'codigoCliente')::int`,
+      status: schema.agenteComando.status,
+    })
+    .from(schema.agenteComando)
+    .where(
+      and(
+        eq(schema.agenteComando.filialId, folha.filialId),
+        eq(schema.agenteComando.tipo, 'baixar_fiado'),
+        inArray(schema.agenteComando.status, ['pendente', 'executando', 'sucesso']),
+        gte(schema.agenteComando.criadoEm, sql`now() - interval '24 hours'`),
+      ),
+    );
+  const codigosBaixando = new Map<number, string>();
+  for (const c of comandosFiado) codigosBaixando.set(c.codigo, c.status);
 
   const config = folha.configSnapshot as {
     ppEmpresa?: string | number;
@@ -299,10 +321,34 @@ export default async function FolhaDetalhePage(props: {
                         <td className="px-2 py-2 text-right font-mono font-semibold">
                           {totalMin > 0 ? fmtHM(totalMin) : '—'}
                         </td>
-                        <td className="px-2 py-2 text-right font-mono text-xs text-amber-700">
-                          {p.saldoFiado && Number(p.saldoFiado) > 0
-                            ? brl(Number(p.saldoFiado))
-                            : '—'}
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {(() => {
+                            const cmdStatus = p.clienteCodigoExterno
+                              ? codigosBaixando.get(p.clienteCodigoExterno)
+                              : undefined;
+                            const temSaldo = p.saldoFiado && Number(p.saldoFiado) > 0;
+                            if (cmdStatus && temSaldo) {
+                              const label =
+                                cmdStatus === 'pendente'
+                                  ? '📤 lançando'
+                                  : cmdStatus === 'executando'
+                                    ? '⏳ baixando'
+                                    : '✓ baixado';
+                              return (
+                                <span
+                                  className="text-emerald-700"
+                                  title={`Comando ${cmdStatus} — saldo zera no próximo sync do agente`}
+                                >
+                                  {label}
+                                </span>
+                              );
+                            }
+                            return temSaldo ? (
+                              <span className="text-amber-700">{brl(Number(p.saldoFiado))}</span>
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            );
+                          })()}
                         </td>
                       </tr>
                     );
