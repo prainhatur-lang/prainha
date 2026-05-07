@@ -205,6 +205,47 @@ interface FornecedorRow {
   VERSAOREG: number | null;
 }
 
+/** Re-busca TODOS os fornecedores existentes (com paginacao por CODIGO).
+ *  Captura updates pos-criacao (CPF/CNPJ adicionado depois, nome mudado,
+ *  endereco corrigido, etc) que o cursor incremental por CODIGO perdia.
+ *  FORNECEDORES costuma ter centenas/poucos milhares de linhas — refetch
+ *  total a cada ciclo eh viavel. UPSERT no banco. */
+export async function buscarFornecedoresJanela(
+  cfg: Config,
+  desdeCodigoNaJanela: number,
+  limite: number,
+): Promise<FornecedorIngest[]> {
+  const sql = `
+    SELECT FIRST ? CODIGO, CNPJOUCPF, NOME, RAZAOSOCIAL, ENDERECO,
+           NUMERO, COMPLEMENTO, BAIRRO, CIDADE, UF, CEP, EMAIL,
+           FONEPRINCIPAL, FONESECUNDARIO, RGOUIE, DATADELETE, VERSAOREG
+    FROM FORNECEDORES WHERE CODIGO > ? ORDER BY CODIGO
+  `;
+  const rows = await executarQuery<FornecedorRow>(cfg, sql, [
+    limite,
+    desdeCodigoNaJanela,
+  ]);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    cnpjOuCpf: toStr(r.CNPJOUCPF),
+    nome: toStr(r.NOME),
+    razaoSocial: toStr(r.RAZAOSOCIAL),
+    endereco: toStr(r.ENDERECO),
+    numero: toStr(r.NUMERO),
+    complemento: toStr(r.COMPLEMENTO),
+    bairro: toStr(r.BAIRRO),
+    cidade: toStr(r.CIDADE),
+    uf: toStr(r.UF),
+    cep: toStr(r.CEP),
+    email: toStr(r.EMAIL),
+    fonePrincipal: toStr(r.FONEPRINCIPAL),
+    foneSecundario: toStr(r.FONESECUNDARIO),
+    rgOuIe: toStr(r.RGOUIE),
+    dataDelete: toIso(r.DATADELETE),
+    versaoReg: toNum(r.VERSAOREG),
+  }));
+}
+
 export async function buscarFornecedores(
   cfg: Config,
   desdeCodigo: number,

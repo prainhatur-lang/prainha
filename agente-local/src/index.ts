@@ -47,6 +47,7 @@ import {
   buscarPedidosJanela,
   buscarPedidoItensJanela,
   buscarClientesJanela,
+  buscarFornecedoresJanela,
 } from './firebird';
 import { enviarBatch, enviarFinanceiro, enviarPdv } from './ingest';
 import { log } from './logger';
@@ -56,7 +57,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.5.5';
+const AGENTE_VERSAO = '0.5.6';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -371,6 +372,30 @@ async function cicloPdvRefetch(
     log.info('refetch clientes ok', { total: totalClientes });
   } catch (e) {
     log.warn('refetch clientes falhou', { err: (e as Error).message });
+  }
+
+  // Fornecedores — mesmo padrao do cliente. CPF/CNPJ adicionados depois
+  // do cadastro, nome alterado, etc. precisam voltar pro banco. Tabela
+  // FORNECEDORES costuma ter centenas a poucos milhares de linhas.
+  try {
+    let desde = 0;
+    let totalFornecedores = 0;
+    for (;;) {
+      const items = await buscarFornecedoresJanela(cfg, desde, limite);
+      if (items.length === 0) break;
+      await enviarFinanceiro(cfg, { fornecedores: items });
+      desde = items.reduce(
+        (m, p) => (p.codigoExterno > m ? p.codigoExterno : m),
+        desde,
+      );
+      totalFornecedores += items.length;
+      log.info('refetch fornecedores batch', { qtd: items.length, ultimo: desde });
+      if (items.length < limite) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    log.info('refetch fornecedores ok', { total: totalFornecedores });
+  } catch (e) {
+    log.warn('refetch fornecedores falhou', { err: (e as Error).message });
   }
 }
 
