@@ -9,6 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
+import { CalculoFechar } from './calculo-fechar';
 
 export const dynamic = 'force-dynamic';
 
@@ -97,6 +98,12 @@ export default async function FolhaDetalhePage(props: {
     cur[h.dia] = h.totalMin;
     horasPorPessoa.set(h.fornecedorId, cur);
   }
+
+  // Ajustes (descontos/acréscimos) já lançados nessa folha
+  const ajustes = await db
+    .select()
+    .from(schema.folhaAjuste)
+    .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
 
   const config = folha.configSnapshot as {
     ppEmpresa?: string | number;
@@ -306,18 +313,26 @@ export default async function FolhaDetalhePage(props: {
           )}
         </section>
 
-        {/* Próximos passos */}
-        <section className="rounded-xl border border-blue-200 bg-blue-50 p-5">
-          <h2 className="mb-2 text-base font-semibold text-blue-900">
-            Próximos passos (em desenvolvimento)
-          </h2>
-          <ol className="ml-5 list-decimal space-y-1 text-sm text-blue-900">
-            <li>📥 Upload do espelho de ponto (XLSX da Stelanto) — preencher horas por pessoa por dia</li>
-            <li>💰 Lançar acréscimos/descontos (auto-puxa fiado do cliente)</li>
-            <li>🧮 Cálculo automático da folha (rateio do 10% + diária + transporte)</li>
-            <li>✅ Botão &quot;Fechar folha&quot; — gera N <code>conta_pagar</code> automaticamente</li>
-          </ol>
-        </section>
+        {/* Cálculo + ajustes + fechar */}
+        <CalculoFechar
+          folhaId={folha.id}
+          status={folha.status}
+          pessoas={pessoas.map((p) => ({
+            fornecedorId: p.fornecedorId,
+            nome: p.nome ?? '(sem nome)',
+            papel: p.papel,
+            saldoFiado: p.saldoFiado ? Number(p.saldoFiado) : null,
+            clienteId: p.clienteId,
+          }))}
+          ajustesIniciais={ajustes.map((a) => ({
+            id: a.id,
+            fornecedorId: a.fornecedorId,
+            tipo: a.tipo as 'desconto' | 'acrescimo',
+            valor: a.valor,
+            descricao: a.descricao,
+            origem: a.origem,
+          }))}
+        />
       </section>
     </main>
   );

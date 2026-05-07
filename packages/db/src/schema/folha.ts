@@ -131,6 +131,32 @@ export const folhaSemana = pgTable(
   }),
 );
 
+/** Ajuste manual (acrescimo/desconto) por pessoa numa folha. Usado pra
+ *  registrar fiados, gratificacoes, abatimentos antes de fechar a folha.
+ *  Quando a folha fecha, esses valores entram nos lancamentos do conta_pagar
+ *  (descontos abatem comissao; acrescimos viram lancamento de Gratificacao). */
+export const folhaAjuste = pgTable(
+  'folha_ajuste',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    folhaSemanaId: uuid('folha_semana_id')
+      .notNull()
+      .references(() => folhaSemana.id, { onDelete: 'cascade' }),
+    fornecedorId: uuid('fornecedor_id')
+      .notNull()
+      .references(() => fornecedor.id, { onDelete: 'cascade' }),
+    tipo: varchar('tipo', { length: 20 }).notNull(), // acrescimo|desconto
+    valor: numeric('valor', { precision: 10, scale: 2 }).notNull(),
+    descricao: varchar('descricao', { length: 200 }),
+    /** 'manual' | 'fiado_auto' (puxado de cliente.saldo_atual_conta_corrente) */
+    origem: varchar('origem', { length: 20 }).notNull().default('manual'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pessoaIdx: index('idx_folha_ajuste_folha').on(t.folhaSemanaId, t.fornecedorId),
+  }),
+);
+
 /** Horas trabalhadas por fornecedor (pessoa) por dia.
  *  Vem do upload do espelho de ponto OU input manual. Guardado em
  *  minutos pra precisao. */
