@@ -7,6 +7,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ConfiguracoesForm } from './form';
 import { ParametrosForm } from './parametros-form';
+import { FolhaPpForm } from './folha-pp-form';
 import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
 import { brl, int } from '@/lib/format';
 
@@ -143,6 +144,16 @@ export default async function ConfiguracoesPage() {
             filialRows.map(async (f) => {
               const taxas = (f.taxas as TaxasFilial | null) ?? taxasDefault;
               const auditoria = await auditoriaFilial(f.id, taxas);
+              // Config da folha (pp empresa/gerente/funcionarios)
+              const [folhaCfg] = await db
+                .select({
+                  ppEmpresa: schema.folhaConfig.ppEmpresa,
+                  ppGerente: schema.folhaConfig.ppGerente,
+                  ppFuncionarios: schema.folhaConfig.ppFuncionarios,
+                })
+                .from(schema.folhaConfig)
+                .where(eq(schema.folhaConfig.filialId, f.id))
+                .limit(1);
               return (
                 <div
                   key={f.id}
@@ -171,6 +182,18 @@ export default async function ConfiguracoesPage() {
                         parametros={f.parametrosConciliacao ?? null}
                       />
                     </div>
+                  </div>
+
+                  <div className="mt-8 border-t border-slate-200 pt-5">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Folha de pagamento — divisão dos 10%
+                    </h3>
+                    <FolhaPpForm
+                      filialId={f.id}
+                      ppEmpresa={Number(folhaCfg?.ppEmpresa ?? 1)}
+                      ppGerente={Number(folhaCfg?.ppGerente ?? 1)}
+                      ppFuncionarios={Number(folhaCfg?.ppFuncionarios ?? 8)}
+                    />
                   </div>
 
                   <div className="mt-8 border-t border-slate-200 pt-5">
