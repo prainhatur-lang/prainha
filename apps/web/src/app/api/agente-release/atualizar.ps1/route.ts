@@ -59,6 +59,27 @@ try {
   exit 1
 }
 
+# 3b. Valida que o download eh um bundle de verdade (pelo menos 100 KB) e nao
+#     uma pagina HTML de redirect/erro. Detecta caso o middleware do Vercel
+#     redirecione pra login ou retorne 404.
+$tamanhoMinKB = 100
+if ($Tamanho -lt ($tamanhoMinKB * 1024)) {
+  Write-Host "[ERRO] Download invalido — $([math]::Round($Tamanho/1KB,1)) KB (esperado >= $tamanhoMinKB KB)." -ForegroundColor Red
+  Write-Host "       Provavel HTML de redirect/erro. Conteudo capturado:" -ForegroundColor Red
+  Get-Content $Tmp -TotalCount 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "       $_" -ForegroundColor Gray }
+  Remove-Item $Tmp -Force
+  Write-Host "       Servico NAO foi alterado. Tente novamente em alguns minutos." -ForegroundColor Yellow
+  exit 1
+}
+
+# 3c. Valida que comeca com '#!' ou '"use strict"' ou outro padrao de JS valido
+$primeirasLinhas = Get-Content $Tmp -TotalCount 3 -Raw -ErrorAction SilentlyContinue
+if ($primeirasLinhas -match '<html|<!DOCTYPE|^<') {
+  Write-Host "[ERRO] Download retornou HTML em vez do bundle JS." -ForegroundColor Red
+  Remove-Item $Tmp -Force
+  exit 1
+}
+
 # 4. Strip BOM no config.json (precaucao)
 $cfgPath = "$Pasta\\config.json"
 if (Test-Path $cfgPath) {

@@ -39,13 +39,17 @@ export async function proxy(request: NextRequest) {
   // /nota-boleto/[token] eh pagina mobile pra enviar foto do boleto da NFe
   // (compartilhada via WhatsApp/SMS, sem login).
   const isNotaBoletoPublico = path.startsWith('/nota-boleto/');
+  // /agente-release/* sao bundles do agente local baixados pelo PowerShell
+  // direto do PC da filial (.ps1 atualizador) — sem sessao do navegador.
+  const isAgenteRelease = path.startsWith('/agente-release/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
     isApiRoute ||
     isOpPublica ||
     isCozinheiroPublico ||
-    isNotaBoletoPublico;
+    isNotaBoletoPublico ||
+    isAgenteRelease;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
