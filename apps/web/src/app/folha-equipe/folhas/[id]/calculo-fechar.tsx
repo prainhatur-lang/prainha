@@ -8,6 +8,7 @@ interface Pessoa {
   nome: string;
   papel: string;
   saldoFiado: number | null;
+  bonusFixoSemanal: number | null;
   clienteId: string | null;
 }
 
@@ -226,60 +227,97 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
           )}
         </div>
 
-        {ajustes.length === 0 ? (
-          <p className="text-xs text-slate-500">Nenhum ajuste lançado.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs">
-              <tr>
-                <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
-                <th className="px-2 py-2 text-left font-medium text-slate-500">Tipo</th>
-                <th className="px-2 py-2 text-right font-medium text-slate-500">Valor</th>
-                <th className="px-2 py-2 text-left font-medium text-slate-500">Descrição</th>
-                <th className="px-2 py-2 text-left font-medium text-slate-500">Origem</th>
-                {aberta && <th className="px-2 py-2"></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {ajustes.map((a) => {
-                const p = pessoas.find((x) => x.fornecedorId === a.fornecedorId);
-                return (
-                  <tr key={a.id} className="border-t border-slate-100">
-                    <td className="px-2 py-1.5">{p?.nome ?? '?'}</td>
+        {(() => {
+          const pessoasComBonus = pessoas.filter(
+            (p) => p.bonusFixoSemanal != null && p.bonusFixoSemanal > 0,
+          );
+          const totalLinhas = ajustes.length + pessoasComBonus.length;
+          if (totalLinhas === 0) {
+            return <p className="text-xs text-slate-500">Nenhum ajuste lançado.</p>;
+          }
+          return (
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs">
+                <tr>
+                  <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
+                  <th className="px-2 py-2 text-left font-medium text-slate-500">Tipo</th>
+                  <th className="px-2 py-2 text-right font-medium text-slate-500">Valor</th>
+                  <th className="px-2 py-2 text-left font-medium text-slate-500">Descrição</th>
+                  <th className="px-2 py-2 text-left font-medium text-slate-500">Origem</th>
+                  {aberta && <th className="px-2 py-2"></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Bônus fixo do cadastro (read-only — vem do cadastro da pessoa) */}
+                {pessoasComBonus.map((p) => (
+                  <tr key={`bonus-${p.fornecedorId}`} className="border-t border-slate-100 bg-emerald-50/40">
+                    <td className="px-2 py-1.5">{p.nome}</td>
                     <td className="px-2 py-1.5">
-                      {a.tipo === 'desconto' ? (
-                        <span className="text-rose-700">↓ desconto</span>
-                      ) : (
-                        <span className="text-emerald-700">↑ acréscimo</span>
-                      )}
+                      <span className="text-emerald-700">↑ acréscimo</span>
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono">
-                      {brl(Number(a.valor))}
+                      {brl(Number(p.bonusFixoSemanal))}
                     </td>
                     <td className="px-2 py-1.5 text-xs text-slate-600">
-                      {a.descricao ?? '—'}
+                      Bônus fixo semanal
                     </td>
-                    <td className="px-2 py-1.5 text-xs text-slate-500">
-                      {a.origem === 'fiado_auto' ? '🤖 fiado auto' : '✍ manual'}
+                    <td className="px-2 py-1.5 text-xs text-emerald-700">
+                      💰 cadastro
                     </td>
                     {aberta && (
                       <td className="px-2 py-1.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => removerAjuste(a.id)}
-                          disabled={pending}
-                          className="text-xs text-rose-600 hover:underline"
+                        <a
+                          href="/folha-equipe/pessoas"
+                          className="text-xs text-slate-500 hover:underline"
+                          title="Pra mudar/remover, edita o cadastro da pessoa"
                         >
-                          remover
-                        </button>
+                          editar cadastro
+                        </a>
                       </td>
                     )}
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+                ))}
+                {/* Ajustes manuais ou fiado_auto da folha */}
+                {ajustes.map((a) => {
+                  const p = pessoas.find((x) => x.fornecedorId === a.fornecedorId);
+                  return (
+                    <tr key={a.id} className="border-t border-slate-100">
+                      <td className="px-2 py-1.5">{p?.nome ?? '?'}</td>
+                      <td className="px-2 py-1.5">
+                        {a.tipo === 'desconto' ? (
+                          <span className="text-rose-700">↓ desconto</span>
+                        ) : (
+                          <span className="text-emerald-700">↑ acréscimo</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono">
+                        {brl(Number(a.valor))}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-600">
+                        {a.descricao ?? '—'}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-500">
+                        {a.origem === 'fiado_auto' ? '🤖 fiado auto' : '✍ manual'}
+                      </td>
+                      {aberta && (
+                        <td className="px-2 py-1.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => removerAjuste(a.id)}
+                            disabled={pending}
+                            className="text-xs text-rose-600 hover:underline"
+                          >
+                            remover
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          );
+        })()}
 
         {/* Form adicionar */}
         {aberta && (

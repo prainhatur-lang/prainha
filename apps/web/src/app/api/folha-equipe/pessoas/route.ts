@@ -88,6 +88,7 @@ const PutBody = z.object({
   gerenteModelo: z.enum(['1pp_dos_10pct', 'fixo_por_dia']).nullable(),
   gerenteValorFixoDia: z.number().nullable(),
   diaristaTaxaHoraOverride: z.number().nullable(),
+  bonusFixoSemanal: z.number().nullable().optional(),
   ativo: z.boolean(),
 });
 
@@ -136,6 +137,8 @@ export async function PUT(req: NextRequest) {
         body.gerenteValorFixoDia !== null ? String(body.gerenteValorFixoDia) : null,
       diaristaTaxaHoraOverride:
         body.diaristaTaxaHoraOverride !== null ? String(body.diaristaTaxaHoraOverride) : null,
+      bonusFixoSemanal:
+        body.bonusFixoSemanal != null ? String(body.bonusFixoSemanal) : null,
       ativo: body.ativo,
       atualizadoEm: new Date(),
     })

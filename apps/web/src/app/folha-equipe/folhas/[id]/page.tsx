@@ -69,6 +69,7 @@ export default async function FolhaDetalhePage(props: {
       papel: schema.fornecedorFolha.papel,
       ativo: schema.fornecedorFolha.ativo,
       clienteId: schema.fornecedorFolha.clienteId,
+      bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       saldoFiado: schema.cliente.saldoAtualContaCorrente,
@@ -379,6 +380,7 @@ export default async function FolhaDetalhePage(props: {
             nome: p.nome ?? '(sem nome)',
             papel: p.papel,
             saldoFiado: p.saldoFiado ? Number(p.saldoFiado) : null,
+            bonusFixoSemanal: p.bonusFixoSemanal ? Number(p.bonusFixoSemanal) : null,
             clienteId: p.clienteId,
           }))}
           ajustesIniciais={ajustes.map((a) => ({

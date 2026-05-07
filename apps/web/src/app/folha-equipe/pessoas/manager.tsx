@@ -9,6 +9,7 @@ interface Pessoa {
   gerenteModelo: string | null;
   gerenteValorFixoDia: number | null;
   diaristaTaxaHoraOverride: number | null;
+  bonusFixoSemanal: number | null;
   ativo: boolean;
   clienteId: string | null;
   fornecedorNome: string;
@@ -137,6 +138,11 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                       )}
                       {p.papel === 'diarista' && p.diaristaTaxaHoraOverride !== null && (
                         <span className="ml-2 text-xs text-slate-500">· R${p.diaristaTaxaHoraOverride}/h</span>
+                      )}
+                      {p.bonusFixoSemanal != null && p.bonusFixoSemanal > 0 && (
+                        <span className="ml-2 text-xs text-emerald-700" title="Bônus fixo semanal">
+                          · 💰 R${p.bonusFixoSemanal.toFixed(2)}/sem
+                        </span>
                       )}
                     </td>
                     <td className="px-5 py-3 text-xs">
@@ -312,6 +318,8 @@ function PessoaEditRow({
     pessoa.diaristaTaxaHoraOverride ?? 0,
   );
   const [usaOverride, setUsaOverride] = useState(pessoa.diaristaTaxaHoraOverride !== null);
+  const [usaBonusFixo, setUsaBonusFixo] = useState(pessoa.bonusFixoSemanal != null);
+  const [bonusFixoSemanal, setBonusFixoSemanal] = useState(pessoa.bonusFixoSemanal ?? 0);
   const [ativo, setAtivo] = useState(pessoa.ativo);
 
   function salvar() {
@@ -327,6 +335,7 @@ function PessoaEditRow({
             papel === 'gerente' && gerenteModelo === 'fixo_por_dia' ? gerenteValorFixoDia : null,
           diaristaTaxaHoraOverride:
             papel === 'diarista' && usaOverride ? diaristaTaxaHoraOverride : null,
+          bonusFixoSemanal: usaBonusFixo && bonusFixoSemanal > 0 ? bonusFixoSemanal : null,
           ativo,
         }),
       });
@@ -426,6 +435,33 @@ function PessoaEditRow({
               )}
             </div>
           )}
+
+          <div className="col-span-2 border-t border-slate-200 pt-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={usaBonusFixo}
+                onChange={(e) => setUsaBonusFixo(e.target.checked)}
+                className="h-4 w-4"
+              />
+              💰 Bônus fixo semanal (entra como acréscimo automático em toda folha)
+            </label>
+            {usaBonusFixo && (
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-slate-500">R$</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={bonusFixoSemanal}
+                  onChange={(e) => setBonusFixoSemanal(Number(e.target.value))}
+                  placeholder="ex: 50.00"
+                  className="w-48 rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+                <span className="text-xs text-slate-500">por semana</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="mt-4 flex gap-2">

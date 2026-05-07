@@ -58,6 +58,11 @@ export const fornecedorFolha = pgTable(
     /** Override da taxa diarista pra essa pessoa especifica (opcional).
      *  Se null, usa o padrao da filial (folha_config.taxa_diarista_hora). */
     diaristaTaxaHoraOverride: numeric('diarista_taxa_hora_override', { precision: 10, scale: 2 }),
+    /** Bônus fixo semanal (opcional). Quando preenchido, entra como
+     *  acréscimo automático em toda folha desse fornecedor — sem precisar
+     *  lançar manualmente cada semana. Útil pra gerentes/fiscais/etc com
+     *  bônus recorrente. NULL = sem bônus fixo. */
+    bonusFixoSemanal: numeric('bonus_fixo_semanal', { precision: 10, scale: 2 }),
     /** Codigo do colaborador no Consumer (PEDIDOS.CODIGOCOLABORADOR) — pra
      *  vincular automaticamente a comissao gerada via PDV (Consumer ja
      *  atribui o garcom ao pedido). */

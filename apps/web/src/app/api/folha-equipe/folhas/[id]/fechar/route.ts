@@ -69,6 +69,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       gerenteModelo: schema.fornecedorFolha.gerenteModelo,
       gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
       diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
+      bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       nome: schema.fornecedor.nome,
     })
     .from(schema.fornecedorFolha)
@@ -114,6 +115,18 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       descricao: a.descricao ?? undefined,
     });
     ajustesMap.set(a.fornecedorId, cur);
+  }
+  // Injeta bonus fixo semanal como acrescimo automatico (vem do cadastro)
+  for (const p of pessoasRows) {
+    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
+      const cur = ajustesMap.get(p.fornecedorId) ?? [];
+      cur.push({
+        tipo: 'acrescimo',
+        valor: Number(p.bonusFixoSemanal),
+        descricao: '💰 Bônus fixo semanal (cadastro)',
+      });
+      ajustesMap.set(p.fornecedorId, cur);
+    }
   }
 
   const cfg: ConfigFolha = {
