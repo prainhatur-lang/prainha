@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, exists, inArray, isNotNull, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { PessoasManager } from './manager';
 
@@ -63,50 +63,37 @@ export default async function FolhaPessoasPage(props: { searchParams: Promise<SP
     .where(eq(schema.fornecedor.filialId, filialSelecionada.id))
     .orderBy(asc(schema.fornecedor.nome));
 
-  // Fornecedores candidatos a virar "pessoa folha":
-  //  - tem CPF (11 digitos)
-  //  - tiveram conta_pagar com categoria de Comissao / Diaria / Salario / Gratificacao
-  //  - ainda NAO estao na fornecedor_folha
+  // Fornecedores candidatos: TODOS os ativos da filial, exceto os ja
+  // cadastrados. Marca quais tem CPF e historico de folha pra ajudar
+  // o user a identificar quem realmente recebe folha vs outros tipos
+  // (locador, fornecedor de produto, etc). Filtro visual fica na UI.
   const jaCadastradosIds = new Set(pessoasFolha.map((p) => p.fornecedorId));
-  const candidatos = await db
+  const candidatosRaw = await db
     .select({
       id: schema.fornecedor.id,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
+      temHistoricoFolha: sql<boolean>`EXISTS (
+        SELECT 1 FROM ${schema.contaPagar} cp
+        JOIN ${schema.categoriaConta} cc ON cc.id = cp.categoria_id
+        WHERE cp.fornecedor_id = ${schema.fornecedor.id}
+          AND (
+            cc.descricao ILIKE '%comiss%' OR cc.descricao ILIKE '%diaria%'
+            OR cc.descricao ILIKE '%diári%' OR cc.descricao ILIKE '%salar%'
+            OR cc.descricao ILIKE '%gratif%'
+          )
+      )`,
     })
     .from(schema.fornecedor)
     .where(
       and(
         eq(schema.fornecedor.filialId, filialSelecionada.id),
-        isNotNull(schema.fornecedor.cnpjOuCpf),
-        sql`length(${schema.fornecedor.cnpjOuCpf}) = 11`,
-        // tem ao menos uma conta_pagar com categoria que parece de folha
-        exists(
-          db
-            .select({ x: sql<number>`1` })
-            .from(schema.contaPagar)
-            .innerJoin(
-              schema.categoriaConta,
-              eq(schema.categoriaConta.id, schema.contaPagar.categoriaId),
-            )
-            .where(
-              and(
-                eq(schema.contaPagar.fornecedorId, schema.fornecedor.id),
-                or(
-                  ilike(schema.categoriaConta.descricao, '%comiss%'),
-                  ilike(schema.categoriaConta.descricao, '%diaria%'),
-                  ilike(schema.categoriaConta.descricao, '%diári%'),
-                  ilike(schema.categoriaConta.descricao, '%salar%'),
-                  ilike(schema.categoriaConta.descricao, '%gratif%'),
-                ),
-              ),
-            ),
-        ),
+        sql`${schema.fornecedor.dataDelete} IS NULL`,
       ),
     )
     .orderBy(asc(schema.fornecedor.nome));
 
-  const candidatosFiltered = candidatos.filter((c) => !jaCadastradosIds.has(c.id));
+  const candidatosFiltered = candidatosRaw.filter((c) => !jaCadastradosIds.has(c.id));
 
   // Pra cada candidato, busca o cliente correspondente por CPF (auto-vinculo)
   const cpfsCandidatos = candidatosFiltered.map((c) => c.cpf!).filter(Boolean);
@@ -189,6 +176,7 @@ export default async function FolhaPessoasPage(props: { searchParams: Promise<SP
               fornecedorCpf: c.cpf ?? '',
               clienteIdSugerido: cli?.id ?? null,
               clienteNomeSugerido: cli?.nome ?? null,
+              temHistoricoFolha: !!c.temHistoricoFolha,
             };
           })}
         />

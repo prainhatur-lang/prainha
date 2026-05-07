@@ -23,6 +23,7 @@ interface Candidato {
   fornecedorCpf: string;
   clienteIdSugerido: string | null;
   clienteNomeSugerido: string | null;
+  temHistoricoFolha: boolean;
 }
 
 interface Props {
@@ -578,13 +579,15 @@ function AdicionarModal({
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
   const [papelDefault, setPapelDefault] = useState('funcionario');
 
+  const [soComFolha, setSoComFolha] = useState(true);
+  const candidatosBase = soComFolha ? candidatos.filter((c) => c.temHistoricoFolha) : candidatos;
   const filtrados = busca
-    ? candidatos.filter(
+    ? candidatosBase.filter(
         (c) =>
           c.fornecedorNome.toLowerCase().includes(busca.toLowerCase()) ||
           c.fornecedorCpf.includes(busca),
       )
-    : candidatos;
+    : candidatosBase;
 
   function toggle(id: string) {
     const s = new Set(selecionados);
@@ -656,6 +659,16 @@ function AdicionarModal({
             </select>
           </div>
 
+          <label className="mb-3 flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={soComFolha}
+              onChange={(e) => setSoComFolha(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Só mostrar fornecedores com histórico de folha (comissão/diária no contas a pagar)
+          </label>
+
           {filtrados.length === 0 ? (
             <p className="py-8 text-center text-sm text-slate-500">
               Nenhum candidato encontrado.
@@ -681,14 +694,24 @@ function AdicionarModal({
                     />
                     <div className="flex-1">
                       <div className="text-sm font-medium text-slate-900">{c.fornecedorNome}</div>
-                      <div className="text-xs text-slate-500">CPF {fmtCpf(c.fornecedorCpf)}</div>
+                      <div className="text-xs text-slate-500">
+                        {c.fornecedorCpf
+                          ? <>CPF {fmtCpf(c.fornecedorCpf)}</>
+                          : <span className="text-amber-700">⚠ sem CPF</span>
+                        }
+                        {!c.temHistoricoFolha && (
+                          <span className="ml-2 text-slate-400">· sem histórico de folha</span>
+                        )}
+                      </div>
                     </div>
                     {c.clienteIdSugerido ? (
                       <span className="text-xs text-emerald-700">
-                        ✓ vinculado a cliente: {c.clienteNomeSugerido}
+                        ✓ cliente: {c.clienteNomeSugerido}
                       </span>
-                    ) : (
+                    ) : c.fornecedorCpf ? (
                       <span className="text-xs text-amber-700">⚠ sem cliente</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
                     )}
                   </li>
                 );
