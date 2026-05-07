@@ -67,31 +67,53 @@ export default async function FolhaPessoasPage(props: { searchParams: Promise<SP
   // cadastrados. Marca quais tem CPF e historico de folha pra ajudar
   // o user a identificar quem realmente recebe folha vs outros tipos
   // (locador, fornecedor de produto, etc). Filtro visual fica na UI.
+  //
+  // Query em 2 etapas (rapido) em vez de subquery correlacionada (timeout
+  // em filiais com 2k fornecedores):
+  //  1. Lista todos os fornecedores ativos da filial
+  //  2. Lista IDs dos que tem historico de folha (DISTINCT)
+  //  3. Combina via Set lookup em JS
   const jaCadastradosIds = new Set(pessoasFolha.map((p) => p.fornecedorId));
-  const candidatosRaw = await db
-    .select({
-      id: schema.fornecedor.id,
-      nome: schema.fornecedor.nome,
-      cpf: schema.fornecedor.cnpjOuCpf,
-      temHistoricoFolha: sql<boolean>`EXISTS (
-        SELECT 1 FROM ${schema.contaPagar} cp
-        JOIN ${schema.categoriaConta} cc ON cc.id = cp.categoria_id
-        WHERE cp.fornecedor_id = ${schema.fornecedor.id}
-          AND (
-            cc.descricao ILIKE '%comiss%' OR cc.descricao ILIKE '%diaria%'
-            OR cc.descricao ILIKE '%diári%' OR cc.descricao ILIKE '%salar%'
-            OR cc.descricao ILIKE '%gratif%'
-          )
-      )`,
-    })
-    .from(schema.fornecedor)
-    .where(
-      and(
-        eq(schema.fornecedor.filialId, filialSelecionada.id),
-        sql`${schema.fornecedor.dataDelete} IS NULL`,
+  const [fornecedoresAtivos, idsComHistoricoFolha] = await Promise.all([
+    db
+      .select({
+        id: schema.fornecedor.id,
+        nome: schema.fornecedor.nome,
+        cpf: schema.fornecedor.cnpjOuCpf,
+      })
+      .from(schema.fornecedor)
+      .where(
+        and(
+          eq(schema.fornecedor.filialId, filialSelecionada.id),
+          sql`${schema.fornecedor.dataDelete} IS NULL`,
+        ),
+      )
+      .orderBy(asc(schema.fornecedor.nome)),
+    db
+      .selectDistinct({ fornecedorId: schema.contaPagar.fornecedorId })
+      .from(schema.contaPagar)
+      .innerJoin(
+        schema.categoriaConta,
+        eq(schema.categoriaConta.id, schema.contaPagar.categoriaId),
+      )
+      .where(
+        and(
+          eq(schema.contaPagar.filialId, filialSelecionada.id),
+          sql`(${schema.categoriaConta.descricao} ILIKE '%comiss%'
+            OR ${schema.categoriaConta.descricao} ILIKE '%diaria%'
+            OR ${schema.categoriaConta.descricao} ILIKE '%diári%'
+            OR ${schema.categoriaConta.descricao} ILIKE '%salar%'
+            OR ${schema.categoriaConta.descricao} ILIKE '%gratif%')`,
+        ),
       ),
-    )
-    .orderBy(asc(schema.fornecedor.nome));
+  ]);
+  const setHistorico = new Set(
+    idsComHistoricoFolha.map((r) => r.fornecedorId).filter((x): x is string => !!x),
+  );
+  const candidatosRaw = fornecedoresAtivos.map((f) => ({
+    ...f,
+    temHistoricoFolha: setHistorico.has(f.id),
+  }));
 
   const candidatosFiltered = candidatosRaw.filter((c) => !jaCadastradosIds.has(c.id));
 
