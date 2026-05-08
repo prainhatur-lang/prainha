@@ -3,15 +3,20 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
+import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
   filtro?: 'devem' | 'credor' | 'zerado' | 'todos';
+  /** Filtra clientes com último movimento dentro do periodo. Se vazio
+   *  (default), nao filtra por data — mostra todos. */
+  dataIni?: string;
+  dataFim?: string;
 }
 
 export default async function ContasReceberPage(props: { searchParams: Promise<SP> }) {
@@ -26,6 +31,9 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     filiais[0] ??
     null;
   const filtro = sp.filtro ?? 'devem';
+  const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : null;
+  const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : null;
+  const filtroDataAtivo = !!(dataIni && dataFim);
 
   if (!filialSelecionada) {
     return (
@@ -38,8 +46,11 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     );
   }
 
-  // Saldo por cliente: soma credito - soma debito dos movimentos
-  // Credito aumenta divida do cliente; debito reduz (pagamento).
+  // Saldo por cliente: soma credito - soma debito dos movimentos. Saldo
+  // sempre considera TODO o historico (saldo verdadeiro do cliente). Se
+  // tiver filtro de data, ele filtra apenas QUAIS clientes aparecem na
+  // lista (clientes com mov no periodo) — saldo continua all-time pra
+  // refletir o que esta em aberto.
   const saldos = await db
     .select({
       clienteId: schema.movimentoContaCorrente.clienteId,
@@ -57,6 +68,32 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
       schema.movimentoContaCorrente.clienteId,
       schema.movimentoContaCorrente.codigoClienteExterno,
     );
+
+  // Quando ha filtro de data ativo, busca tambem o set de clientes que
+  // tiveram movimento no periodo (so pra restringir a lista da UI).
+  const clientesNoPeriodo = filtroDataAtivo
+    ? new Set(
+        (
+          await db
+            .select({
+              clienteId: schema.movimentoContaCorrente.clienteId,
+              codigoClienteExterno: schema.movimentoContaCorrente.codigoClienteExterno,
+            })
+            .from(schema.movimentoContaCorrente)
+            .where(
+              and(
+                eq(schema.movimentoContaCorrente.filialId, filialSelecionada.id),
+                sql`${schema.movimentoContaCorrente.dataHora} >= ${brDateStart(dataIni!).toISOString()}`,
+                sql`${schema.movimentoContaCorrente.dataHora} <= ${brDateEnd(dataFim!).toISOString()}`,
+              ),
+            )
+            .groupBy(
+              schema.movimentoContaCorrente.clienteId,
+              schema.movimentoContaCorrente.codigoClienteExterno,
+            )
+        ).map((r) => r.clienteId ?? `ext-${r.codigoClienteExterno}`),
+      )
+    : null;
 
   // Pega nomes dos clientes
   const clientesRaw = await db
@@ -97,6 +134,8 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
       };
     })
     .filter((l) => {
+      // Filtro de data: so clientes com movimento no periodo
+      if (clientesNoPeriodo && !clientesNoPeriodo.has(l.key)) return false;
       if (filtro === 'devem') return l.saldo > 0.01;
       if (filtro === 'credor') return l.saldo < -0.01;
       if (filtro === 'zerado') return Math.abs(l.saldo) <= 0.01;
@@ -116,12 +155,18 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
   }, 0);
   const qtdCredor = saldos.filter((r) => Number(r.saldo) < -0.01).length;
 
-  const href = (f: NonNullable<SP['filtro']>) => {
+  function href(next: Partial<SP>): string {
     const qs = new URLSearchParams();
-    qs.set('filialId', filialSelecionada.id);
+    qs.set('filialId', filialSelecionada!.id);
+    const f = next.filtro ?? filtro;
     if (f !== 'devem') qs.set('filtro', f);
+    const di = next.dataIni !== undefined ? next.dataIni : dataIni;
+    const df = next.dataFim !== undefined ? next.dataFim : dataFim;
+    if (di) qs.set('dataIni', di);
+    if (df) qs.set('dataFim', df);
     return `/financeiro/receber?${qs.toString()}`;
-  };
+  }
+  const hojeStr = hojeBr();
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -156,7 +201,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
         {/* KPIs */}
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <Link
-            href={href('devem')}
+            href={href({ filtro: 'devem' })}
             className="rounded-xl border border-rose-200 bg-rose-50 p-4 hover:shadow-sm"
           >
             <p className="text-[11px] font-medium uppercase tracking-wide text-rose-700">
@@ -166,7 +211,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
             <p className="text-xs text-rose-700">{brl(totalDevem)}</p>
           </Link>
           <Link
-            href={href('credor')}
+            href={href({ filtro: 'credor' })}
             className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 hover:shadow-sm"
           >
             <p className="text-[11px] font-medium uppercase tracking-wide text-emerald-700">
@@ -186,26 +231,113 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
           </div>
         </div>
 
-        {/* Pills */}
-        <div className="mt-6 flex flex-wrap items-center gap-2 text-xs">
-          {([
-            ['devem', 'Devendo'],
-            ['credor', 'Credores'],
-            ['zerado', 'Zerados'],
-            ['todos', 'Todos'],
-          ] as Array<[NonNullable<SP['filtro']>, string]>).map(([k, label]) => (
-            <Link
-              key={k}
-              href={href(k)}
-              className={`rounded-md border px-3 py-1 ${
-                filtro === k
-                  ? 'border-slate-900 bg-slate-900 text-white'
-                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-              }`}
+        {/* Filtro de data — mov no periodo */}
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <form
+            action="/financeiro/receber"
+            method="GET"
+            className="flex flex-wrap items-end gap-3"
+          >
+            <input type="hidden" name="filialId" value={filialSelecionada.id} />
+            {filtro !== 'devem' && (
+              <input type="hidden" name="filtro" value={filtro} />
+            )}
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Movimento entre
+              </label>
+              <input
+                type="date"
+                name="dataIni"
+                defaultValue={dataIni ?? ''}
+                className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Até
+              </label>
+              <input
+                type="date"
+                name="dataFim"
+                defaultValue={dataFim ?? ''}
+                className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+              />
+            </div>
+            <button
+              type="submit"
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
             >
-              {label}
-            </Link>
-          ))}
+              Aplicar
+            </button>
+            {filtroDataAtivo && (
+              <Link
+                href={href({ dataIni: '', dataFim: '' })}
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                Limpar
+              </Link>
+            )}
+            <div className="ml-auto flex items-center gap-1">
+              <span className="text-[11px] uppercase text-slate-500 mr-1">Atalhos:</span>
+              <Link
+                href={href({ dataIni: hojeStr, dataFim: hojeStr })}
+                className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+              >
+                Hoje
+              </Link>
+              <Link
+                href={href({ dataIni: diasAtrasBr(7), dataFim: hojeStr })}
+                className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+              >
+                7d
+              </Link>
+              <Link
+                href={href({ dataIni: diasAtrasBr(30), dataFim: hojeStr })}
+                className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+              >
+                30d
+              </Link>
+              <Link
+                href={href({
+                  dataIni: hojeStr.slice(0, 7) + '-01',
+                  dataFim: hojeStr,
+                })}
+                className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+              >
+                Este mês
+              </Link>
+            </div>
+          </form>
+
+          {/* Pills de saldo (filtro secundario) */}
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-500">Saldo:</span>
+            {(
+              [
+                ['devem', 'Devendo'],
+                ['credor', 'Credores'],
+                ['zerado', 'Zerados'],
+                ['todos', 'Todos'],
+              ] as Array<[NonNullable<SP['filtro']>, string]>
+            ).map(([k, label]) => (
+              <Link
+                key={k}
+                href={href({ filtro: k })}
+                className={`rounded-md border px-3 py-1 ${
+                  filtro === k
+                    ? k === 'devem'
+                      ? 'border-rose-700 bg-rose-700 text-white'
+                      : k === 'credor'
+                        ? 'border-emerald-700 bg-emerald-700 text-white'
+                        : 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </Link>
+            ))}
+          </div>
         </div>
 
         <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">

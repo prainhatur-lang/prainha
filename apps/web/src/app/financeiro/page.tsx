@@ -3,20 +3,30 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, desc, eq, gte, isNull, lte, sql, sum } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
 import { AppNav } from '@/components/app-nav';
 import { brl, formatDate, int } from '@/lib/format';
-import { hojeBr, diasAtrasBr } from '@/lib/datas';
+import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
+type TipoData = 'vencimento' | 'pagamento' | 'lancamento';
+type StatusFiltro = 'todas' | 'aberto' | 'pago' | 'atrasado';
+
 interface SP {
   filialId?: string;
-  status?: 'todas' | 'abertas' | 'vencidas' | 'pagas' | 'hoje';
+  tipoData?: TipoData;
   dataIni?: string;
   dataFim?: string;
+  status?: StatusFiltro;
 }
+
+const TIPOS_DATA: { value: TipoData; label: string; coluna: string }[] = [
+  { value: 'vencimento', label: 'Vencimento', coluna: 'data_vencimento' },
+  { value: 'pagamento', label: 'Pagamento', coluna: 'data_pagamento' },
+  { value: 'lancamento', label: 'Lançamento', coluna: 'data_cadastro' },
+];
 
 export default async function FinanceiroPage(props: { searchParams: Promise<SP> }) {
   const supabase = await createClient();
@@ -31,16 +41,26 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
     (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
     filiais[0] ??
     null;
-  const status = sp.status ?? 'abertas';
-  const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(30);
-  const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
 
-  const filialIds = filiais.map((f) => f.id);
+  const tipoData: TipoData = (['vencimento', 'pagamento', 'lancamento'] as const).includes(
+    sp.tipoData as TipoData,
+  )
+    ? (sp.tipoData as TipoData)
+    : 'vencimento';
+  const status: StatusFiltro = (['todas', 'aberto', 'pago', 'atrasado'] as const).includes(
+    sp.status as StatusFiltro,
+  )
+    ? (sp.status as StatusFiltro)
+    : 'todas';
+  const dataIni =
+    sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(30);
+  const dataFim =
+    sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : diasAtrasBr(-30); // ate 30 dias adiante
 
-  // KPIs: abertas, vencidas, pagas no mes, fluxo proximos 30 dias
   const hoje = hojeBr();
-  const em30 = diasAtrasBr(-30); // "diasAtras(-30)" = daqui a 30 dias em BRT
 
+  // KPIs ficam fixos (independem do filtro principal — sao informativos
+  // sobre o estado total da filial).
   const kpis = filialSelecionada
     ? await (async () => {
         const baseWhere = and(
@@ -67,7 +87,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
               sql`${schema.contaPagar.dataVencimento} < ${hoje}`,
             ),
           );
-        const [proxima30] = await db
+        const [vencehoje] = await db
           .select({
             qtd: count(),
             total: sum(schema.contaPagar.valor),
@@ -77,11 +97,14 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             and(
               baseWhere,
               isNull(schema.contaPagar.dataPagamento),
-              gte(schema.contaPagar.dataVencimento, hoje),
-              lte(schema.contaPagar.dataVencimento, em30),
+              eq(schema.contaPagar.dataVencimento, hoje),
             ),
           );
-        const [pagasMes] = await db
+        // Pagas no periodo do filtro (so se tipoData=pagamento; senao usa
+        // ultimos 30 dias como referencia de "pagas recentes")
+        const periodoIni = tipoData === 'pagamento' ? dataIni : diasAtrasBr(30);
+        const periodoFim = tipoData === 'pagamento' ? dataFim : hoje;
+        const [pagas] = await db
           .select({
             qtd: count(),
             total: sum(schema.contaPagar.valorPago),
@@ -90,15 +113,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           .where(
             and(
               baseWhere,
-              gte(schema.contaPagar.dataPagamento, dataIni),
-              lte(schema.contaPagar.dataPagamento, dataFim),
+              gte(schema.contaPagar.dataPagamento, periodoIni),
+              lte(schema.contaPagar.dataPagamento, periodoFim),
             ),
           );
-        return { emAberto, vencidas, proxima30, pagasMes };
+        return { emAberto, vencidas, vencehoje, pagas };
       })()
     : null;
 
-  // Lista de contas
+  // Lista filtrada por tipo+periodo+status
   const contas = filialSelecionada
     ? await db
         .select({
@@ -107,6 +130,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           parcela: schema.contaPagar.parcela,
           totalParcelas: schema.contaPagar.totalParcelas,
           dataVencimento: schema.contaPagar.dataVencimento,
+          dataCadastro: schema.contaPagar.dataCadastro,
           valor: schema.contaPagar.valor,
           dataPagamento: schema.contaPagar.dataPagamento,
           valorPago: schema.contaPagar.valorPago,
@@ -130,55 +154,68 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
               eq(schema.contaPagar.filialId, filialSelecionada.id),
               isNull(schema.contaPagar.dataDelete),
             );
-            if (status === 'abertas') {
-              return and(base, isNull(schema.contaPagar.dataPagamento));
+
+            // Filtro de data — sempre aplicado, varia a coluna
+            let dataFilter;
+            if (tipoData === 'vencimento') {
+              dataFilter = and(
+                gte(schema.contaPagar.dataVencimento, dataIni),
+                lte(schema.contaPagar.dataVencimento, dataFim),
+              );
+            } else if (tipoData === 'pagamento') {
+              dataFilter = and(
+                isNotNull(schema.contaPagar.dataPagamento),
+                gte(schema.contaPagar.dataPagamento, dataIni),
+                lte(schema.contaPagar.dataPagamento, dataFim),
+              );
+            } else {
+              // lancamento — coluna timestamp, compara com brDateStart/End
+              dataFilter = and(
+                isNotNull(schema.contaPagar.dataCadastro),
+                gte(schema.contaPagar.dataCadastro, brDateStart(dataIni)),
+                lte(schema.contaPagar.dataCadastro, brDateEnd(dataFim)),
+              );
             }
-            if (status === 'vencidas') {
-              return and(
-                base,
+
+            // Filtro de status secundario
+            let statusFilter;
+            if (status === 'aberto') {
+              statusFilter = isNull(schema.contaPagar.dataPagamento);
+            } else if (status === 'pago') {
+              statusFilter = isNotNull(schema.contaPagar.dataPagamento);
+            } else if (status === 'atrasado') {
+              statusFilter = and(
                 isNull(schema.contaPagar.dataPagamento),
                 sql`${schema.contaPagar.dataVencimento} < ${hoje}`,
               );
             }
-            if (status === 'pagas') {
-              return and(
-                base,
-                gte(schema.contaPagar.dataPagamento, dataIni),
-                lte(schema.contaPagar.dataPagamento, dataFim),
-              );
-            }
-            if (status === 'hoje') {
-              return and(
-                base,
-                isNull(schema.contaPagar.dataPagamento),
-                eq(schema.contaPagar.dataVencimento, hoje),
-              );
-            }
-            return base;
+
+            return and(base, dataFilter, statusFilter);
           })(),
         )
-        // Ordenacao por status: abertas/vencidas/hoje mostram o que vence
-        // primeiro (mais urgente). 'pagas' mostra os pagamentos mais recentes.
-        // Bug pre-fix: estava DESC sempre, e contas com venc absurdo (parcelas
-        // ate 2050) empurravam contas reais (FOLHA, vencimentos da semana)
-        // pra fora dos primeiros 200 resultados.
+        // Ordena pela data principal do filtro (mais recentes primeiro pra
+        // pagamento/lancamento, mais urgentes primeiro pra vencimento)
         .orderBy(
-          status === 'pagas'
-            ? desc(schema.contaPagar.dataPagamento)
-            : asc(schema.contaPagar.dataVencimento),
+          tipoData === 'vencimento'
+            ? asc(schema.contaPagar.dataVencimento)
+            : tipoData === 'pagamento'
+              ? desc(schema.contaPagar.dataPagamento)
+              : desc(schema.contaPagar.dataCadastro),
         )
         .limit(500)
     : [];
 
-  const href = (next: Partial<SP>) => {
+  function href(next: Partial<SP>): string {
     const qs = new URLSearchParams();
     if (filialSelecionada) qs.set('filialId', filialSelecionada.id);
+    const t = next.tipoData ?? tipoData;
+    if (t !== 'vencimento') qs.set('tipoData', t);
+    qs.set('dataIni', next.dataIni ?? dataIni);
+    qs.set('dataFim', next.dataFim ?? dataFim);
     const s = next.status ?? status;
-    if (s !== 'abertas') qs.set('status', s);
-    if (dataIni && s === 'pagas') qs.set('dataIni', dataIni);
-    if (dataFim && s === 'pagas') qs.set('dataFim', dataFim);
+    if (s !== 'todas') qs.set('status', s);
     return `/financeiro?${qs.toString()}`;
-  };
+  }
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -200,7 +237,9 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
       <section className="mx-auto max-w-7xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Financeiro — Contas a pagar</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Lançamentos sincronizados do Consumer. Dados atualizam a cada ciclo do agente.
+          Filtre por período de vencimento, pagamento ou lançamento. Cores na
+          tabela: <span className="text-emerald-700 font-medium">verde</span> = pago,{' '}
+          <span className="text-rose-700 font-medium">vermelho</span> = atrasado.
         </p>
 
         {/* Filial selector */}
@@ -230,55 +269,161 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             {/* KPIs */}
             <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <KpiCard
-                label="Em aberto"
+                label="Em aberto (total)"
                 qtd={Number(kpis?.emAberto?.qtd ?? 0)}
                 valor={Number(kpis?.emAberto?.total ?? 0)}
                 tom="slate"
-                href={href({ status: 'abertas' })}
+                href={href({ status: 'aberto', tipoData: 'vencimento' })}
               />
               <KpiCard
-                label="Vencidas"
+                label="Atrasadas"
                 qtd={Number(kpis?.vencidas?.qtd ?? 0)}
                 valor={Number(kpis?.vencidas?.total ?? 0)}
                 tom="rose"
-                href={href({ status: 'vencidas' })}
+                href={href({ status: 'atrasado', tipoData: 'vencimento' })}
               />
               <KpiCard
-                label="Próximos 30 dias"
-                qtd={Number(kpis?.proxima30?.qtd ?? 0)}
-                valor={Number(kpis?.proxima30?.total ?? 0)}
+                label="Vence hoje"
+                qtd={Number(kpis?.vencehoje?.qtd ?? 0)}
+                valor={Number(kpis?.vencehoje?.total ?? 0)}
                 tom="amber"
+                href={href({
+                  tipoData: 'vencimento',
+                  dataIni: hoje,
+                  dataFim: hoje,
+                  status: 'aberto',
+                })}
               />
               <KpiCard
-                label="Pagas no período"
-                qtd={Number(kpis?.pagasMes?.qtd ?? 0)}
-                valor={Number(kpis?.pagasMes?.total ?? 0)}
+                label={
+                  tipoData === 'pagamento' ? 'Pagas no período' : 'Pagas (últimos 30d)'
+                }
+                qtd={Number(kpis?.pagas?.qtd ?? 0)}
+                valor={Number(kpis?.pagas?.total ?? 0)}
                 tom="emerald"
-                href={href({ status: 'pagas' })}
+                href={href({ tipoData: 'pagamento', status: 'pago' })}
               />
             </div>
 
-            {/* Pills status */}
-            <div className="mt-6 flex flex-wrap items-center gap-2 text-xs">
-              {([
-                ['abertas', 'Em aberto'],
-                ['vencidas', 'Vencidas'],
-                ['hoje', 'Vence hoje'],
-                ['pagas', 'Pagas'],
-                ['todas', 'Todas'],
-              ] as Array<[NonNullable<SP['status']>, string]>).map(([k, label]) => (
-                <Link
-                  key={k}
-                  href={href({ status: k })}
-                  className={`rounded-md border px-3 py-1 ${
-                    status === k
-                      ? 'border-slate-900 bg-slate-900 text-white'
-                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  {label}
-                </Link>
-              ))}
+            {/* Filtro de data — principal */}
+            <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                    Tipo de data
+                  </label>
+                  <div className="mt-1 flex gap-1">
+                    {TIPOS_DATA.map((t) => (
+                      <Link
+                        key={t.value}
+                        href={href({ tipoData: t.value })}
+                        className={`rounded-md border px-3 py-1.5 text-xs ${
+                          tipoData === t.value
+                            ? 'border-slate-900 bg-slate-900 text-white'
+                            : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {t.label}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+
+                <form action="/financeiro" method="GET" className="flex items-end gap-2">
+                  {filialSelecionada && (
+                    <input type="hidden" name="filialId" value={filialSelecionada.id} />
+                  )}
+                  <input type="hidden" name="tipoData" value={tipoData} />
+                  {status !== 'todas' && (
+                    <input type="hidden" name="status" value={status} />
+                  )}
+                  <div>
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      De
+                    </label>
+                    <input
+                      type="date"
+                      name="dataIni"
+                      defaultValue={dataIni}
+                      className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Até
+                    </label>
+                    <input
+                      type="date"
+                      name="dataFim"
+                      defaultValue={dataFim}
+                      className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                  >
+                    Aplicar
+                  </button>
+                </form>
+
+                {/* Presets rapidos */}
+                <div className="ml-auto flex flex-wrap items-center gap-1">
+                  <span className="text-[11px] uppercase text-slate-500 mr-1">Atalhos:</span>
+                  <PresetLink href={href({ dataIni: hoje, dataFim: hoje })} label="Hoje" />
+                  <PresetLink
+                    href={href({ dataIni: diasAtrasBr(7), dataFim: hoje })}
+                    label="7d"
+                  />
+                  <PresetLink
+                    href={href({ dataIni: diasAtrasBr(30), dataFim: hoje })}
+                    label="30d"
+                  />
+                  <PresetLink
+                    href={href({
+                      dataIni: hoje.slice(0, 7) + '-01',
+                      dataFim: hoje,
+                    })}
+                    label="Este mês"
+                  />
+                  <PresetLink
+                    href={href({
+                      dataIni: hoje,
+                      dataFim: diasAtrasBr(-30),
+                    })}
+                    label="Próx 30d"
+                  />
+                </div>
+              </div>
+
+              {/* Pills de status secundario */}
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-500">Status:</span>
+                {(
+                  [
+                    ['todas', 'Todas'],
+                    ['aberto', 'Em aberto'],
+                    ['pago', 'Pago'],
+                    ['atrasado', 'Atrasado'],
+                  ] as Array<[StatusFiltro, string]>
+                ).map(([k, label]) => (
+                  <Link
+                    key={k}
+                    href={href({ status: k })}
+                    className={`rounded-md border px-3 py-1 ${
+                      status === k
+                        ? k === 'pago'
+                          ? 'border-emerald-700 bg-emerald-700 text-white'
+                          : k === 'atrasado'
+                            ? 'border-rose-700 bg-rose-700 text-white'
+                            : 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {label}
+                  </Link>
+                ))}
+              </div>
             </div>
 
             {/* Tabela */}
@@ -286,7 +431,9 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>
+                    <th className="px-4 py-2 w-2"></th>
                     <th className="px-4 py-2">Vencimento</th>
+                    <th className="px-4 py-2">Lançado em</th>
                     <th className="px-4 py-2">Fornecedor</th>
                     <th className="px-4 py-2">Descrição</th>
                     <th className="px-4 py-2">Categoria</th>
@@ -298,7 +445,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 <tbody>
                   {contas.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500">
+                      <td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-500">
                         Nenhuma conta nesse filtro.
                       </td>
                     </tr>
@@ -306,15 +453,40 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                     contas.map((c) => {
                       const venc = formatDate(c.dataVencimento);
                       const pgto = c.dataPagamento ? formatDate(c.dataPagamento) : '—';
-                      const vencida = !c.dataPagamento && c.dataVencimento < hoje;
+                      const lanc = c.dataCadastro
+                        ? new Date(c.dataCadastro).toLocaleDateString('pt-BR', {
+                            timeZone: 'America/Sao_Paulo',
+                          })
+                        : '—';
+                      const pago = !!c.dataPagamento;
+                      const atrasado = !pago && c.dataVencimento < hoje;
+                      const rowBg = pago
+                        ? 'bg-emerald-50/40'
+                        : atrasado
+                          ? 'bg-rose-50/40'
+                          : '';
+                      const stripe = pago
+                        ? 'bg-emerald-500'
+                        : atrasado
+                          ? 'bg-rose-500'
+                          : 'bg-slate-200';
                       return (
-                        <tr key={c.id} className="border-t border-slate-100">
+                        <tr
+                          key={c.id}
+                          className={`border-t border-slate-100 ${rowBg}`}
+                        >
+                          <td className="px-0 py-2">
+                            <div className={`h-full w-1 ${stripe}`} style={{ minHeight: '2.25rem' }} />
+                          </td>
                           <td
                             className={`px-4 py-2 font-mono text-xs ${
-                              vencida ? 'text-rose-700' : 'text-slate-700'
+                              atrasado ? 'text-rose-700 font-medium' : 'text-slate-700'
                             }`}
                           >
                             {venc}
+                          </td>
+                          <td className="px-4 py-2 font-mono text-[11px] text-slate-500">
+                            {lanc}
                           </td>
                           <td className="px-4 py-2 text-xs text-slate-800">
                             <div className="flex items-center gap-1.5">
@@ -333,6 +505,14 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                                   }
                                 >
                                   NFe
+                                </span>
+                              )}
+                              {c.origem === 'FOLHA' && (
+                                <span
+                                  className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800"
+                                  title="Lançamento gerado pelo fechamento da folha semanal"
+                                >
+                                  FOLHA
                                 </span>
                               )}
                             </div>
@@ -358,18 +538,26 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                               ? `${c.parcela}/${c.totalParcelas}`
                               : '—'}
                           </td>
-                          <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
+                          <td
+                            className={`px-4 py-2 text-right font-mono text-sm font-medium ${
+                              pago ? 'text-emerald-700' : 'text-slate-900'
+                            }`}
+                          >
                             {brl(c.valor)}
                           </td>
                           <td className="px-4 py-2 text-xs">
-                            {c.dataPagamento ? (
-                              <span className="text-emerald-700">
-                                {pgto} · {brl(c.valorPago)}
+                            {pago ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-emerald-800">
+                                ✓ {pgto} · {brl(c.valorPago)}
                               </span>
-                            ) : vencida ? (
-                              <span className="text-rose-700">vencida</span>
+                            ) : atrasado ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-rose-100 px-2 py-0.5 text-rose-800">
+                                ⚠ atrasada
+                              </span>
                             ) : (
-                              <span className="text-slate-500">aberta</span>
+                              <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-slate-700">
+                                aberta
+                              </span>
                             )}
                           </td>
                         </tr>
@@ -378,9 +566,9 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                   )}
                 </tbody>
               </table>
-              {contas.length >= 200 && (
+              {contas.length >= 500 && (
                 <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-center text-xs text-slate-500">
-                  Mostrando 200. Use filtros pra refinar.
+                  Mostrando 500. Refine o período pra ver mais.
                 </p>
               )}
             </div>
@@ -418,4 +606,15 @@ function KpiCard({
     </div>
   );
   return href ? <Link href={href}>{inner}</Link> : inner;
+}
+
+function PresetLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+    >
+      {label}
+    </Link>
+  );
 }
