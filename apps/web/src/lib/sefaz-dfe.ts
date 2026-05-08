@@ -16,6 +16,7 @@
 import { request } from 'node:https';
 import { gunzipSync } from 'node:zlib';
 import { XMLParser } from 'fast-xml-parser';
+import { extrairPem } from '@/lib/sefaz-evento';
 
 const URL_PROD = 'https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx';
 const URL_HOM = 'https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx';
@@ -117,12 +118,15 @@ function montarEnvelope(opts: {
   );
 }
 
-/** POST SOAP via mTLS. Retorna o body bruto. */
+/** POST SOAP via mTLS. Retorna o body bruto.
+ *  Usa cert+key PEM (extraídos com node-forge) em vez de pfx direto, pra
+ *  contornar erro 'Unsupported PKCS12 PFX data' no OpenSSL 3 que rejeita
+ *  PFX com algoritmos PBES2/AES (comum em ACs brasileiras modernas). */
 function postSoap(opts: {
   url: string;
   body: string;
-  pfx: Buffer;
-  senha: string;
+  certPem: string;
+  keyPem: string;
 }): Promise<{ status: number; body: string }> {
   const u = new URL(opts.url);
   return new Promise((resolve, reject) => {
@@ -132,9 +136,8 @@ function postSoap(opts: {
         hostname: u.hostname,
         port: u.port || 443,
         path: u.pathname,
-        pfx: opts.pfx,
-        passphrase: opts.senha,
-        // Alguns certificados A1 mais antigos usam algoritmos legados
+        cert: opts.certPem,
+        key: opts.keyPem,
         minVersion: 'TLSv1.2',
         headers: {
           'Content-Type': 'application/soap+xml; charset=utf-8',
@@ -238,11 +241,14 @@ export async function consultarDistribuicao(input: ConsultaDFeInput): Promise<Co
     ultimoNsu: padNsu(input.ultimoNsu),
   });
 
+  // Extrai cert+key PEM do PFX via node-forge (workaround OpenSSL 3 + PBES2)
+  const pem = extrairPem(input.pfxBytes, input.senhaPfx);
+
   const { status, body } = await postSoap({
     url,
     body: envelope,
-    pfx: input.pfxBytes,
-    senha: input.senhaPfx,
+    certPem: pem.certPem,
+    keyPem: pem.privateKeyPem,
   });
 
   if (status !== 200) {

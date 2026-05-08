@@ -155,8 +155,8 @@ function assinarEvento(envEventoXml: string, pem: PemCert): string {
 function postSoapEvento(opts: {
   url: string;
   envEventoAssinado: string;
-  pfxBytes: Buffer;
-  senhaPfx: string;
+  certPem: string;
+  keyPem: string;
 }): Promise<{ status: number; body: string }> {
   // SOAP envelope wrapping
   const envelope =
@@ -177,8 +177,8 @@ function postSoapEvento(opts: {
         hostname: u.hostname,
         port: u.port || 443,
         path: u.pathname,
-        pfx: opts.pfxBytes,
-        passphrase: opts.senhaPfx,
+        cert: opts.certPem,
+        key: opts.keyPem,
         minVersion: 'TLSv1.2',
         headers: {
           'Content-Type': 'application/soap+xml; charset=utf-8',
@@ -246,8 +246,8 @@ export async function enviarEventosManifestacao(opts: {
     const { status, body } = await postSoapEvento({
       url: tpAmb === 1 ? URL_EVENTO_PROD : URL_EVENTO_HOM,
       envEventoAssinado: envAssinado,
-      pfxBytes: opts.pfxBytes,
-      senhaPfx: opts.senhaPfx,
+      certPem: pem.certPem,
+      keyPem: pem.privateKeyPem,
     });
 
     respostas.push(body);
