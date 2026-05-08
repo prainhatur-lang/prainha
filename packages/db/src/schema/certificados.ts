@@ -36,6 +36,10 @@ export const certificadoFilial = pgTable(
     nomeArquivo: varchar('nome_arquivo', { length: 200 }),
     /** Se este e' o certificado ativo pra SEFAZ (so 1 por filial) */
     ativo: boolean('ativo').notNull().default(true),
+    /** Se true, esse cert pode ser usado por TODAS as filiais da mesma
+     *  organizacao (mesmo cnpj_raiz). Util quando upa o cert da matriz e
+     *  quer usar pras 3 filiais da Prainha sem replicar upload. */
+    compartilharOrganizacao: boolean('compartilhar_organizacao').notNull().default(false),
     /** NSU ultimo retornado pela distribuicao DF-e — checkpoint */
     ultimoNsu: varchar('ultimo_nsu', { length: 15 }),
     ultimaConsultaSefaz: timestamp('ultima_consulta_sefaz', { withTimezone: true }),

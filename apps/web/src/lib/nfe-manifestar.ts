@@ -13,6 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
+import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 import {
   enviarEventosManifestacao,
   CSTAT_EVENTO_OK,
@@ -68,27 +69,10 @@ export async function manifestarPendentes(opts: {
     };
   }
 
-  // Busca cert ativo
-  const [row] = await db
-    .select({
-      pfxStoragePath: schema.certificadoFilial.pfxStoragePath,
-      senhaCifrada: schema.certificadoFilial.senhaCifrada,
-      cnpjCertificado: schema.certificadoFilial.cnpjCertificado,
-      filialCnpj: schema.filial.cnpj,
-    })
-    .from(schema.certificadoFilial)
-    .innerJoin(schema.filial, eq(schema.filial.id, schema.certificadoFilial.filialId))
-    .where(
-      and(
-        eq(schema.certificadoFilial.filialId, opts.filialId),
-        eq(schema.certificadoFilial.ativo, true),
-      ),
-    )
-    .limit(1);
-
-  if (!row) throw new Error('filial sem certificado A1 ativo');
+  // Busca cert ativo (proprio ou compartilhado da mesma org)
+  const row = await findActiveCertForFilial(opts.filialId);
+  if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
   const cnpj = row.filialCnpj;
-  if (!cnpj) throw new Error('filial sem CNPJ');
 
   const pfxBytes = await baixarPfx(row.pfxStoragePath);
   const senhaPfx = decifrarSenha(row.senhaCifrada);

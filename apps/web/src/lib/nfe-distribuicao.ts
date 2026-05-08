@@ -12,6 +12,7 @@ import { and, eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
+import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 import { consultarDistribuicao, UF_CODIGO } from '@/lib/sefaz-dfe';
 import { parseNfeXml } from '@/lib/nfe-parser';
 import { XMLParser } from 'fast-xml-parser';
@@ -363,32 +364,11 @@ export async function consultarEProcessar(opts: {
   const cUF = UF_CODIGO[uf];
   if (!cUF) throw new Error(`UF invalida: ${uf}`);
 
-  // Busca cert ativo + CNPJ da filial
-  const [row] = await db
-    .select({
-      certId: schema.certificadoFilial.id,
-      pfxStoragePath: schema.certificadoFilial.pfxStoragePath,
-      senhaCifrada: schema.certificadoFilial.senhaCifrada,
-      ultimoNsu: schema.certificadoFilial.ultimoNsu,
-      cnpjCertificado: schema.certificadoFilial.cnpjCertificado,
-      filialCnpj: schema.filial.cnpj,
-      filialId: schema.filial.id,
-    })
-    .from(schema.certificadoFilial)
-    .innerJoin(schema.filial, eq(schema.filial.id, schema.certificadoFilial.filialId))
-    .where(
-      and(
-        eq(schema.certificadoFilial.filialId, opts.filialId),
-        eq(schema.certificadoFilial.ativo, true),
-      ),
-    )
-    .limit(1);
-
-  if (!row) throw new Error('filial sem certificado A1 ativo');
+  // Busca cert ativo (proprio da filial OU compartilhado de outra filial da mesma org)
+  const row = await findActiveCertForFilial(opts.filialId);
+  if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
 
   const cnpjConsulta = row.filialCnpj;
-  if (!cnpjConsulta) throw new Error('filial sem CNPJ cadastrado');
-
   const pfxBytes = await baixarPfx(row.pfxStoragePath);
   const senhaPfx = decifrarSenha(row.senhaCifrada);
 

@@ -18,6 +18,7 @@ export function CertificadoUploadForm({
   const [filialId, setFilialId] = useState(filiais[0]?.id ?? '');
   const [senha, setSenha] = useState('');
   const [arquivo, setArquivo] = useState<File | null>(null);
+  const [compartilhar, setCompartilhar] = useState(true);
   const [pending, start] = useTransition();
   const [mensagem, setMensagem] = useState<
     { tipo: 'ok' | 'erro'; texto: string } | null
@@ -32,6 +33,7 @@ export function CertificadoUploadForm({
       form.set('filialId', filialId);
       form.set('senha', senha);
       form.set('pfx', arquivo);
+      form.set('compartilharOrganizacao', compartilhar ? '1' : '0');
       const r = await fetch('/api/certificados/upload', {
         method: 'POST',
         body: form,
@@ -121,6 +123,24 @@ export function CertificadoUploadForm({
           className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
       </div>
+
+      <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+        <input
+          type="checkbox"
+          checked={compartilhar}
+          onChange={(e) => setCompartilhar(e.target.checked)}
+          disabled={pending}
+          className="mt-0.5 h-3.5 w-3.5"
+        />
+        <span>
+          <strong>Usar este certificado pra todas as filiais da mesma organização</strong>
+          <span className="mt-0.5 block text-[11px] text-slate-500">
+            Cert da matriz autentica todas filiais do mesmo CNPJ raiz na SEFAZ. Marca isso pra
+            evitar precisar fazer upload do mesmo .pfx pra cada filial. Se desmarcar, vai valer
+            só pra filial selecionada acima.
+          </span>
+        </span>
+      </label>
 
       <div className="flex items-center gap-3">
         <button

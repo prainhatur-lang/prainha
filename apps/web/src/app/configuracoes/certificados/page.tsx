@@ -52,6 +52,7 @@ export default async function CertificadosPage() {
           ativo: schema.certificadoFilial.ativo,
           uploadadoEm: schema.certificadoFilial.uploadadoEm,
           ultimaConsultaSefaz: schema.certificadoFilial.ultimaConsultaSefaz,
+          compartilharOrganizacao: schema.certificadoFilial.compartilharOrganizacao,
         })
         .from(schema.certificadoFilial)
         .where(inArray(schema.certificadoFilial.filialId, filialIds))
@@ -68,7 +69,12 @@ export default async function CertificadosPage() {
         <h1 className="text-2xl font-bold text-slate-900">Certificados A1</h1>
         <p className="mt-1 text-sm text-slate-600">
           Certificados digitais A1 (.pfx) usados pra consultar SEFAZ automaticamente.
-          Um certificado ativo por filial. Usado pra manifestação de NF-e e distribuição DF-e.
+          Manifestação de NF-e + distribuição DF-e (puxa XMLs emitidos contra seu CNPJ a cada 12h).
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          Cert da matriz pode ser <strong>compartilhado</strong> com todas as filiais da mesma
+          organização (mesmo CNPJ raiz) — basta marcar o checkbox no upload abaixo. Não precisa
+          replicar o mesmo .pfx em cada filial.
         </p>
 
         <div className="mt-6">
@@ -109,13 +115,22 @@ export default async function CertificadosPage() {
                           <h3 className="text-sm font-semibold text-slate-900">
                             {f?.nome ?? 'Filial'}
                           </h3>
-                          {c.ativo ? (
+                          {c.ativo && (
                             <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
                               ATIVO
                             </span>
-                          ) : (
+                          )}
+                          {!c.ativo && (
                             <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
                               INATIVO
+                            </span>
+                          )}
+                          {c.compartilharOrganizacao && (
+                            <span
+                              className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800"
+                              title="Cert vale pra todas as filiais da mesma organização"
+                            >
+                              COMPARTILHADO
                             </span>
                           )}
                         </div>

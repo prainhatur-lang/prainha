@@ -12,6 +12,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { consultarEProcessar } from '@/lib/nfe-distribuicao';
 import { manifestarPendentes } from '@/lib/nfe-manifestar';
+import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,15 +25,32 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  // Busca todas filiais com cert ativo + não expirado
+  // Estratégia: pra cada FILIAL, verifica se ela tem cert disponivel (proprio
+  // ou compartilhado de outra filial da mesma org). Se sim, processa.
+  // Isso permite que 1 cert da matriz atenda todas as filiais do mesmo cnpj_raiz.
   const hoje = new Date().toISOString().slice(0, 10);
-  const certs = await db
+
+  // Busca todas as filiais ativas
+  const filiais = await db
     .select({
-      filialId: schema.certificadoFilial.filialId,
-      validadeFim: schema.certificadoFilial.validadeFim,
+      filialId: schema.filial.id,
+      organizacaoId: schema.filial.organizacaoId,
     })
-    .from(schema.certificadoFilial)
-    .where(eq(schema.certificadoFilial.ativo, true));
+    .from(schema.filial);
+
+  // Resolve cert pra cada filial e filtra as que tem cert disponivel + nao expirado
+  const certs: Array<{ filialId: string; validadeFim: string | null }> = [];
+  for (const f of filiais) {
+    const resolvido = await findActiveCertForFilial(f.filialId);
+    if (!resolvido) continue;
+    // Pega validade do cert resolvido
+    const [c] = await db
+      .select({ validadeFim: schema.certificadoFilial.validadeFim })
+      .from(schema.certificadoFilial)
+      .where(eq(schema.certificadoFilial.id, resolvido.certId))
+      .limit(1);
+    certs.push({ filialId: f.filialId, validadeFim: c?.validadeFim ?? null });
+  }
 
   const resultados: Array<{
     filialId: string;

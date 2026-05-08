@@ -33,6 +33,7 @@ export async function POST(req: Request) {
   const filialId = form.get('filialId') as string | null;
   const senha = form.get('senha') as string | null;
   const file = form.get('pfx');
+  const compartilharOrganizacao = form.get('compartilharOrganizacao') === '1';
 
   if (!filialId || !/^[0-9a-f-]{36}$/i.test(filialId)) {
     return NextResponse.json({ error: 'filialId invalido' }, { status: 400 });
@@ -142,6 +143,7 @@ export async function POST(req: Request) {
       validadeFim: info.validadeFim.toISOString().slice(0, 10),
       nomeArquivo: file.name,
       ativo: true,
+      compartilharOrganizacao,
       uploadadoPor: user.id,
     })
     .returning({ id: schema.certificadoFilial.id });

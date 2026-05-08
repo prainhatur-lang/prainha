@@ -19,6 +19,7 @@
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
     "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",
+    "migrate:cert-compartilhar": "tsx scripts/migrate-cert-compartilhar.ts",
     "migrate:fornecedor-bancarios": "tsx scripts/migrate-fornecedor-bancarios.ts",
     "seed:compras": "tsx scripts/seed-compras.ts",
     "seed:fornecedores": "tsx scripts/seed-fornecedores.ts",
