@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, count, desc, eq, gte, isNull, lte, sql, sum } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNull, lte, sql, sum } from 'drizzle-orm';
 import { LogoutButton } from '../dashboard/logout-button';
 import { AppNav } from '@/components/app-nav';
 import { brl, formatDate, int } from '@/lib/format';
@@ -157,8 +157,17 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             return base;
           })(),
         )
-        .orderBy(desc(schema.contaPagar.dataVencimento))
-        .limit(200)
+        // Ordenacao por status: abertas/vencidas/hoje mostram o que vence
+        // primeiro (mais urgente). 'pagas' mostra os pagamentos mais recentes.
+        // Bug pre-fix: estava DESC sempre, e contas com venc absurdo (parcelas
+        // ate 2050) empurravam contas reais (FOLHA, vencimentos da semana)
+        // pra fora dos primeiros 200 resultados.
+        .orderBy(
+          status === 'pagas'
+            ? desc(schema.contaPagar.dataPagamento)
+            : asc(schema.contaPagar.dataVencimento),
+        )
+        .limit(500)
     : [];
 
   const href = (next: Partial<SP>) => {
