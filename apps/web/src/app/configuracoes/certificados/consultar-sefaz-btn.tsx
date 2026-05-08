@@ -19,9 +19,16 @@ interface ResumoResp {
   ultNsu?: string | null;
   maxNsu?: string | null;
   temMais?: boolean;
+  filiaisProcessadas?: number;
 }
 
-export function ConsultarSefazBtn({ filialId }: { filialId: string }) {
+export function ConsultarSefazBtn({
+  filialId,
+  todasFiliais = false,
+}: {
+  filialId: string;
+  todasFiliais?: boolean;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [loading, setLoading] = useState(false);
@@ -34,7 +41,11 @@ export function ConsultarSefazBtn({ filialId }: { filialId: string }) {
       const r = await fetch('/api/notas/distribuicao/consultar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, loop: true }),
+        body: JSON.stringify({
+          filialId,
+          loop: true,
+          escopo: todasFiliais ? 'todas-da-org' : 'filial',
+        }),
       });
       const d = (await r.json()) as ResumoResp;
       if (!r.ok || !d.ok) {
@@ -50,9 +61,11 @@ export function ConsultarSefazBtn({ filialId }: { filialId: string }) {
       if (d.eventosIgnorados) partes.push(`${d.eventosIgnorados} eventos ignorados`);
       const resumo = partes.length ? partes.join(', ') : 'nada novo';
       const sufixo = d.temMais ? ' (ainda há mais docs — clique novamente)' : '';
+      const filiais = d.filiaisProcessadas && d.filiaisProcessadas > 1
+        ? ` (${d.filiaisProcessadas} filiais)` : '';
       setMsg({
         tipo: 'ok',
-        texto: `✓ ${d.lotes} lote(s) / ${d.docsRecebidos} docs: ${resumo}${sufixo}`,
+        texto: `✓ ${d.lotes} lote(s) / ${d.docsRecebidos} docs${filiais}: ${resumo}${sufixo}`,
       });
       start(() => router.refresh());
     } catch (e) {
@@ -70,7 +83,11 @@ export function ConsultarSefazBtn({ filialId }: { filialId: string }) {
         disabled={loading || pending}
         className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
       >
-        {loading ? 'Consultando...' : 'Consultar SEFAZ'}
+        {loading
+          ? 'Consultando...'
+          : todasFiliais
+            ? 'Consultar SEFAZ (todas filiais)'
+            : 'Consultar SEFAZ'}
       </button>
       {msg && (
         <span

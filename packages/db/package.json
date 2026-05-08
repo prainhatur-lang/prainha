@@ -21,6 +21,7 @@
     "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",
     "migrate:cert-compartilhar": "tsx scripts/migrate-cert-compartilhar.ts",
     "relink:fornecedores-notas": "tsx scripts/relink-fornecedores-notas.ts",
+    "consultar:todas-filiais": "tsx scripts/consultar-todas-filiais.ts",
     "migrate:fornecedor-bancarios": "tsx scripts/migrate-fornecedor-bancarios.ts",
     "seed:compras": "tsx scripts/seed-compras.ts",
     "seed:fornecedores": "tsx scripts/seed-fornecedores.ts",

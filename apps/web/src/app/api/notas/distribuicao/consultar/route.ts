@@ -7,8 +7,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { consultarEProcessar, type ResumoConsulta } from '@/lib/nfe-distribuicao';
+import { manifestarPendentes } from '@/lib/nfe-manifestar';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,6 +24,13 @@ export async function POST(req: Request) {
     filialId?: string;
     uf?: string;
     loop?: boolean;
+    /** 'filial' (default) consulta so a filial passada;
+     *  'todas-da-org' consulta todas as filiais da org da filial passada
+     *  (util quando o cert e compartilhado) */
+    escopo?: 'filial' | 'todas-da-org';
+    /** Se true, dispara manifestacao automatica em resumos pendentes
+     *  no fim de cada filial consultada. */
+    incluirManifestacao?: boolean;
   };
   const filialId = body.filialId;
   if (!filialId || !/^[0-9a-f-]{36}$/i.test(filialId)) {
@@ -46,25 +54,49 @@ export async function POST(req: Request) {
 
   const loop = body.loop !== false; // default: true
   const uf = body.uf ?? 'SE';
+  const escopo = body.escopo ?? 'filial';
+
+  // Resolve lista de filiais a processar
+  let filiaisIds: string[] = [filialId];
+  if (escopo === 'todas-da-org') {
+    const [filialAlvo] = await db
+      .select({ organizacaoId: schema.filial.organizacaoId })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filialId))
+      .limit(1);
+    if (filialAlvo?.organizacaoId) {
+      const filiaisDaOrg = await db
+        .select({ id: schema.filial.id })
+        .from(schema.filial)
+        .where(eq(schema.filial.organizacaoId, filialAlvo.organizacaoId));
+      filiaisIds = filiaisDaOrg.map((f) => f.id);
+    }
+  }
 
   const resultados: ResumoConsulta[] = [];
-  try {
-    for (let i = 0; i < 10; i++) {
-      const r = await consultarEProcessar({ filialId, uf });
-      resultados.push(r);
-      if (!loop) break;
-      if (!r.temMais) break;
-      // cStat 138 = docs localizados; qualquer outro a gente para
-      if (r.cStat !== '138') break;
+  const erroPorFilial: Array<{ filialId: string; erro: string }> = [];
+  let totalManifestadas = 0;
+
+  for (const fId of filiaisIds) {
+    try {
+      for (let i = 0; i < 10; i++) {
+        const r = await consultarEProcessar({ filialId: fId, uf });
+        resultados.push(r);
+        if (!loop) break;
+        if (!r.temMais) break;
+        if (r.cStat !== '138') break;
+      }
+      if (body.incluirManifestacao) {
+        try {
+          const m = await manifestarPendentes({ filialId: fId, limite: 100 });
+          totalManifestadas += m.chavesManifestadas.length;
+        } catch (e) {
+          erroPorFilial.push({ filialId: fId, erro: `manifestacao: ${(e as Error).message}` });
+        }
+      }
+    } catch (e) {
+      erroPorFilial.push({ filialId: fId, erro: (e as Error).message });
     }
-  } catch (e) {
-    return NextResponse.json(
-      {
-        error: `erro na consulta SEFAZ: ${(e as Error).message}`,
-        resultados,
-      },
-      { status: 500 },
-    );
   }
 
   // Consolida
@@ -105,6 +137,9 @@ export async function POST(req: Request) {
     maxNsu: ultimo?.maxNsu ?? null,
     temMais: ultimo?.temMais ?? false,
     lotes: resultados.length,
+    filiaisProcessadas: filiaisIds.length,
+    totalManifestadas,
+    erroPorFilial,
     detalhado: resultados,
   });
 }

@@ -185,8 +185,14 @@ export default async function CertificadosPage() {
                             certId={c.id}
                             compartilhado={c.compartilharOrganizacao}
                           />
-                          <ManifestarBtn filialId={c.filialId} />
-                          <ConsultarSefazBtn filialId={c.filialId} />
+                          <ManifestarBtn
+                            filialId={c.filialId}
+                            todasFiliais={c.compartilharOrganizacao}
+                          />
+                          <ConsultarSefazBtn
+                            filialId={c.filialId}
+                            todasFiliais={c.compartilharOrganizacao}
+                          />
                         </div>
                       </div>
                     )}
