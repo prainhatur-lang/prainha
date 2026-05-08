@@ -107,6 +107,26 @@ export default async function FolhaDetalhePage(props: {
     .from(schema.folhaAjuste)
     .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
 
+  // Status de pagamento das conta_pagar geradas pela folha — usado pra
+  // mostrar a opcao "Baixar lote" quando ha contas em aberto.
+  const [pgtoStatus] = await db
+    .select({
+      total: sql<number>`COUNT(*)::int`,
+      abertas: sql<number>`COUNT(*) FILTER (WHERE ${schema.contaPagar.dataPagamento} IS NULL)::int`,
+      valorAbertas: sql<string>`COALESCE(
+        SUM(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))
+          FILTER (WHERE ${schema.contaPagar.dataPagamento} IS NULL),
+        0
+      )::text`,
+    })
+    .from(schema.contaPagar)
+    .where(
+      and(
+        eq(schema.contaPagar.folhaSemanaId, folha.id),
+        sql`${schema.contaPagar.dataDelete} IS NULL`,
+      ),
+    );
+
   // Comandos baixar_fiado recentes (24h) — usado pra mostrar a coluna Fiado
   // como "baixando" / "baixado" sem esperar o reimport zerar o saldo.
   // sucesso entra pra cobrir o gap entre o agente lançar e o reimport (~15min).
@@ -391,6 +411,11 @@ export default async function FolhaDetalhePage(props: {
             descricao: a.descricao,
             origem: a.origem,
           }))}
+          pagamentoStatus={{
+            total: Number(pgtoStatus?.total ?? 0),
+            abertas: Number(pgtoStatus?.abertas ?? 0),
+            valorAbertas: Number(pgtoStatus?.valorAbertas ?? 0),
+          }}
         />
       </section>
     </main>

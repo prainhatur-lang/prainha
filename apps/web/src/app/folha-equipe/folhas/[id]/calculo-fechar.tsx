@@ -42,14 +42,27 @@ interface Resultado {
   avisos: string[];
 }
 
+interface PagamentoStatus {
+  total: number;
+  abertas: number;
+  valorAbertas: number;
+}
+
 interface Props {
   folhaId: string;
   status: string;
   pessoas: Pessoa[];
   ajustesIniciais: AjusteRow[];
+  pagamentoStatus: PagamentoStatus;
 }
 
-export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Props) {
+export function CalculoFechar({
+  folhaId,
+  status,
+  pessoas,
+  ajustesIniciais,
+  pagamentoStatus,
+}: Props) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [ajustes, setAjustes] = useState<AjusteRow[]>(ajustesIniciais);
@@ -61,6 +74,12 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
   const [formTipo, setFormTipo] = useState<'desconto' | 'acrescimo'>('desconto');
   const [formValor, setFormValor] = useState('');
   const [formDescricao, setFormDescricao] = useState('');
+
+  // Form da baixa em lote
+  const hojeIso = new Date(new Date().getTime() - 3 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const [dataPgtoLote, setDataPgtoLote] = useState(hojeIso);
 
   async function refreshPreview() {
     const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/preview`);
@@ -184,6 +203,68 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
       );
       if (r.ok) router.refresh();
       else setMsg({ tipo: 'erro', texto: await r.text() });
+    });
+  }
+
+  async function baixarLote() {
+    if (pagamentoStatus.abertas === 0) {
+      setMsg({ tipo: 'ok', texto: 'Não há contas em aberto pra baixar.' });
+      return;
+    }
+    if (
+      !confirm(
+        `Marcar ${pagamentoStatus.abertas} conta(s) como pagas em ${dataPgtoLote.split('-').reverse().join('/')}?\n\n` +
+          `Total: ${pagamentoStatus.valorAbertas.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}\n\n` +
+          'Use isso quando o pagador (banco/contador) confirmar que pagou tudo.',
+      )
+    )
+      return;
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/baixar-lote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataPagamento: dataPgtoLote }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setMsg({
+          tipo: 'ok',
+          texto: `${data.baixadas} conta(s) marcada(s) como paga(s) em ${dataPgtoLote
+            .split('-')
+            .reverse()
+            .join('/')} ✓`,
+        });
+        router.refresh();
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
+    });
+  }
+
+  async function estornarBaixa() {
+    if (
+      !confirm(
+        'Estornar a baixa? Todas as contas dessa folha (mesmo as ja pagas) voltam pra "em aberto".\n\n' +
+          'Use isso se a baixa foi feita errada (data errada, ou pagador nao pagou de fato).',
+      )
+    )
+      return;
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/baixar-lote`, {
+        method: 'DELETE',
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setMsg({
+          tipo: 'ok',
+          texto: `${data.estornadas} conta(s) estornada(s) (voltaram a "em aberto") ✓`,
+        });
+        router.refresh();
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
     });
   }
 
@@ -574,6 +655,83 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
           </>
         )}
       </section>
+
+      {/* Baixa em lote — so depois da folha fechada */}
+      {status === 'fechada' && pagamentoStatus.total > 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 text-base font-semibold text-slate-900">
+            🏦 Pagamento via instituição
+          </h2>
+          {pagamentoStatus.abertas === 0 ? (
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-emerald-700 font-medium">
+                  ✓ Todas as {pagamentoStatus.total} conta(s) dessa folha já estão pagas.
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Caso a baixa tenha sido feita por engano, dá pra estornar (volta tudo
+                  pra &quot;em aberto&quot;).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={estornarBaixa}
+                disabled={pending}
+                className="shrink-0 rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+              >
+                ↩ Estornar baixa
+              </button>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-slate-700">
+                <span className="font-semibold">{pagamentoStatus.abertas}</span> de{' '}
+                {pagamentoStatus.total} conta(s) em aberto · total{' '}
+                <span className="font-mono font-semibold">
+                  {brl(pagamentoStatus.valorAbertas)}
+                </span>
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Quando o pagador (banco/contador) confirmar que pagou tudo, marca as
+                contas como pagas em lote — atualiza{' '}
+                <code className="rounded bg-slate-100 px-1">data_pagamento</code> e{' '}
+                <code className="rounded bg-slate-100 px-1">valor_pago</code> de uma vez.
+              </p>
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                    Data do pagamento
+                  </label>
+                  <input
+                    type="date"
+                    value={dataPgtoLote}
+                    onChange={(e) => setDataPgtoLote(e.target.value)}
+                    className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={baixarLote}
+                  disabled={pending || !dataPgtoLote}
+                  className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:bg-slate-400"
+                >
+                  {pending ? 'Baixando...' : `✓ Marcar ${pagamentoStatus.abertas} como pagas`}
+                </button>
+                {pagamentoStatus.abertas < pagamentoStatus.total && (
+                  <button
+                    type="button"
+                    onClick={estornarBaixa}
+                    disabled={pending}
+                    className="rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                  >
+                    ↩ Estornar baixas anteriores
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {/* Acoes finais — exportar pagamento + fechar */}
       <div className="flex flex-wrap items-center justify-end gap-2">
