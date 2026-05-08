@@ -6,6 +6,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { CertificadoUploadForm } from './upload-form';
 import { ConsultarSefazBtn } from './consultar-sefaz-btn';
+import { ToggleCompartilharBtn } from './toggle-compartilhar';
 
 export const dynamic = 'force-dynamic';
 
@@ -178,7 +179,13 @@ export default async function CertificadosPage() {
                             {formataDataHora(c.ultimaConsultaSefaz)}
                           </p>
                         </div>
-                        <ConsultarSefazBtn filialId={c.filialId} />
+                        <div className="flex items-center gap-2">
+                          <ToggleCompartilharBtn
+                            certId={c.id}
+                            compartilhado={c.compartilharOrganizacao}
+                          />
+                          <ConsultarSefazBtn filialId={c.filialId} />
+                        </div>
                       </div>
                     )}
                   </div>
