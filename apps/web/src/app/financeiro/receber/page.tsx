@@ -17,6 +17,8 @@ interface SP {
    *  (default), nao filtra por data — mostra todos. */
   dataIni?: string;
   dataFim?: string;
+  /** Busca por nome do cliente (ILIKE). */
+  nome?: string;
 }
 
 export default async function ContasReceberPage(props: { searchParams: Promise<SP> }) {
@@ -34,6 +36,8 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
   const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : null;
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : null;
   const filtroDataAtivo = !!(dataIni && dataFim);
+  const nomeBusca = (sp.nome ?? '').trim();
+  const nomeBuscaLower = nomeBusca.toLowerCase();
 
   if (!filialSelecionada) {
     return (
@@ -136,6 +140,8 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     .filter((l) => {
       // Filtro de data: so clientes com movimento no periodo
       if (clientesNoPeriodo && !clientesNoPeriodo.has(l.key)) return false;
+      // Filtro de nome (case-insensitive)
+      if (nomeBuscaLower && !l.nome.toLowerCase().includes(nomeBuscaLower)) return false;
       if (filtro === 'devem') return l.saldo > 0.01;
       if (filtro === 'credor') return l.saldo < -0.01;
       if (filtro === 'zerado') return Math.abs(l.saldo) <= 0.01;
@@ -164,6 +170,8 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     const df = next.dataFim !== undefined ? next.dataFim : dataFim;
     if (di) qs.set('dataIni', di);
     if (df) qs.set('dataFim', df);
+    const nm = next.nome !== undefined ? next.nome : nomeBusca;
+    if (nm) qs.set('nome', nm);
     return `/financeiro/receber?${qs.toString()}`;
   }
   const hojeStr = hojeBr();
@@ -264,15 +272,27 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                 className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
               />
             </div>
+            <div className="min-w-[200px] flex-1">
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Cliente
+              </label>
+              <input
+                type="text"
+                name="nome"
+                defaultValue={nomeBusca}
+                placeholder="busca por nome"
+                className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+              />
+            </div>
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
             >
               Aplicar
             </button>
-            {filtroDataAtivo && (
+            {(filtroDataAtivo || nomeBusca) && (
               <Link
-                href={href({ dataIni: '', dataFim: '' })}
+                href={href({ dataIni: '', dataFim: '', nome: '' })}
                 className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
               >
                 Limpar

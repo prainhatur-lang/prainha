@@ -13,6 +13,7 @@ export const dynamic = 'force-dynamic';
 
 type TipoData = 'vencimento' | 'pagamento' | 'lancamento';
 type StatusFiltro = 'todas' | 'aberto' | 'pago' | 'atrasado';
+type OrigemFiltro = 'todas' | 'CONSUMER' | 'NFE' | 'FOLHA' | 'MANUAL';
 
 interface SP {
   filialId?: string;
@@ -20,6 +21,9 @@ interface SP {
   dataIni?: string;
   dataFim?: string;
   status?: StatusFiltro;
+  categoriaId?: string;
+  nome?: string;
+  origem?: OrigemFiltro;
 }
 
 const TIPOS_DATA: { value: TipoData; label: string; coluna: string }[] = [
@@ -56,8 +60,37 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
     sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(30);
   const dataFim =
     sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : diasAtrasBr(-30); // ate 30 dias adiante
+  const categoriaId = sp.categoriaId && /^[0-9a-f-]{36}$/.test(sp.categoriaId) ? sp.categoriaId : null;
+  const nomeBusca = (sp.nome ?? '').trim();
+  const origemFiltro: OrigemFiltro = (
+    ['todas', 'CONSUMER', 'NFE', 'FOLHA', 'MANUAL'] as const
+  ).includes(sp.origem as OrigemFiltro)
+    ? (sp.origem as OrigemFiltro)
+    : 'todas';
 
   const hoje = hojeBr();
+
+  // Lista de categorias usadas nessa filial (so as que tem conta_pagar) —
+  // usadas no select da UI. Ordenadas por descricao.
+  const categoriasDisponiveis = filialSelecionada
+    ? await db
+        .selectDistinct({
+          id: schema.categoriaConta.id,
+          descricao: schema.categoriaConta.descricao,
+        })
+        .from(schema.contaPagar)
+        .innerJoin(
+          schema.categoriaConta,
+          eq(schema.categoriaConta.id, schema.contaPagar.categoriaId),
+        )
+        .where(
+          and(
+            eq(schema.contaPagar.filialId, filialSelecionada.id),
+            isNull(schema.contaPagar.dataDelete),
+          ),
+        )
+        .orderBy(asc(schema.categoriaConta.descricao))
+    : [];
 
   // KPIs ficam fixos (independem do filtro principal — sao informativos
   // sobre o estado total da filial).
@@ -190,7 +223,32 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
               );
             }
 
-            return and(base, dataFilter, statusFilter);
+            // Filtros adicionais
+            const categoriaFilter = categoriaId
+              ? eq(schema.contaPagar.categoriaId, categoriaId)
+              : undefined;
+            const origemFilter =
+              origemFiltro !== 'todas'
+                ? eq(schema.contaPagar.origem, origemFiltro)
+                : undefined;
+            // Busca por nome busca em fornecedor.nome OU descricao da conta
+            // (cobre os casos de conta sem fornecedor com texto na descricao,
+            //  ex: "Aluguel" sem fornecedor mas reconhecivel pela descricao).
+            const nomeFilter = nomeBusca
+              ? sql`(
+                ${schema.fornecedor.nome} ILIKE ${`%${nomeBusca}%`}
+                OR ${schema.contaPagar.descricao} ILIKE ${`%${nomeBusca}%`}
+              )`
+              : undefined;
+
+            return and(
+              base,
+              dataFilter,
+              statusFilter,
+              categoriaFilter,
+              origemFilter,
+              nomeFilter,
+            );
           })(),
         )
         // Ordena pela data principal do filtro (mais recentes primeiro pra
@@ -214,8 +272,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
     qs.set('dataFim', next.dataFim ?? dataFim);
     const s = next.status ?? status;
     if (s !== 'todas') qs.set('status', s);
+    const cat = next.categoriaId !== undefined ? next.categoriaId : categoriaId;
+    if (cat) qs.set('categoriaId', cat);
+    const nm = next.nome !== undefined ? next.nome : nomeBusca;
+    if (nm) qs.set('nome', nm);
+    const o = next.origem ?? origemFiltro;
+    if (o !== 'todas') qs.set('origem', o);
     return `/financeiro?${qs.toString()}`;
   }
+  const algumFiltroExtra = !!(categoriaId || nomeBusca || origemFiltro !== 'todas');
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -329,13 +394,16 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                   </div>
                 </div>
 
-                <form action="/financeiro" method="GET" className="flex items-end gap-2">
+                <form action="/financeiro" method="GET" className="flex flex-wrap items-end gap-2">
                   {filialSelecionada && (
                     <input type="hidden" name="filialId" value={filialSelecionada.id} />
                   )}
                   <input type="hidden" name="tipoData" value={tipoData} />
                   {status !== 'todas' && (
                     <input type="hidden" name="status" value={status} />
+                  )}
+                  {origemFiltro !== 'todas' && (
+                    <input type="hidden" name="origem" value={origemFiltro} />
                   )}
                   <div>
                     <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
@@ -359,12 +427,53 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
                     />
                   </div>
+                  <div className="min-w-[180px] flex-1">
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Fornecedor / descrição
+                    </label>
+                    <input
+                      type="text"
+                      name="nome"
+                      defaultValue={nomeBusca}
+                      placeholder="busca por nome ou texto da descrição"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div className="min-w-[200px]">
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Categoria
+                    </label>
+                    <select
+                      name="categoriaId"
+                      defaultValue={categoriaId ?? ''}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    >
+                      <option value="">todas</option>
+                      {categoriasDisponiveis.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.descricao ?? '(sem descrição)'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <button
                     type="submit"
                     className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
                   >
                     Aplicar
                   </button>
+                  {algumFiltroExtra && (
+                    <Link
+                      href={href({
+                        categoriaId: '',
+                        nome: '',
+                        origem: 'todas',
+                      })}
+                      className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+                    >
+                      Limpar
+                    </Link>
+                  )}
                 </form>
 
                 {/* Presets rapidos */}
@@ -423,6 +532,38 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                     {label}
                   </Link>
                 ))}
+              </div>
+
+              {/* Pills de origem */}
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-500">Origem:</span>
+                {(
+                  [
+                    ['todas', 'Todas', 'slate'],
+                    ['CONSUMER', '🖥 PDV', 'slate'],
+                    ['NFE', '📄 NFe', 'violet'],
+                    ['FOLHA', '👥 Folha', 'amber'],
+                    ['MANUAL', '✍ Manual', 'slate'],
+                  ] as Array<[OrigemFiltro, string, 'slate' | 'violet' | 'amber']>
+                ).map(([k, label, tom]) => {
+                  const ativo = origemFiltro === k;
+                  const cls = ativo
+                    ? tom === 'violet'
+                      ? 'border-violet-700 bg-violet-700 text-white'
+                      : tom === 'amber'
+                        ? 'border-amber-600 bg-amber-600 text-white'
+                        : 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50';
+                  return (
+                    <Link
+                      key={k}
+                      href={href({ origem: k })}
+                      className={`rounded-md border px-3 py-1 ${cls}`}
+                    >
+                      {label}
+                    </Link>
+                  );
+                })}
               </div>
             </div>
 
