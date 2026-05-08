@@ -575,9 +575,17 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
         )}
       </section>
 
-      {/* Botão fechar */}
-      {aberta && (
-        <div className="flex justify-end">
+      {/* Acoes finais — exportar pagamento + fechar */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <a
+          href={`/folha-equipe/folhas/${folhaId}/exportar`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          💸 Exportar pagamento (CSV / impressão)
+        </a>
+        {aberta && (
           <button
             type="button"
             onClick={fechar}
@@ -586,8 +594,8 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
           >
             {pending ? 'Fechando...' : '✅ Fechar folha e gerar contas a pagar'}
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

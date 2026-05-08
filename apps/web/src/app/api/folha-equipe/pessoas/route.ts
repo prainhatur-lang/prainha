@@ -90,6 +90,11 @@ const PutBody = z.object({
   diaristaTaxaHoraOverride: z.number().nullable(),
   bonusFixoSemanal: z.number().nullable().optional(),
   ativo: z.boolean(),
+  // Dados bancarios — opcionais, viram NULL no DB se vazios.
+  bancoNome: z.string().max(100).nullable().optional(),
+  bancoAgencia: z.string().max(20).nullable().optional(),
+  bancoConta: z.string().max(30).nullable().optional(),
+  chavePix: z.string().max(100).nullable().optional(),
 });
 
 export async function PUT(req: NextRequest) {
@@ -143,6 +148,25 @@ export async function PUT(req: NextRequest) {
       atualizadoEm: new Date(),
     })
     .where(eq(schema.fornecedorFolha.fornecedorId, body.fornecedorId));
+
+  // Dados bancarios vivem em fornecedor (sao da pessoa, nao do vinculo
+  // com a folha). Atualiza so se algum campo bancario veio no body.
+  const temBancarios =
+    'bancoNome' in body ||
+    'bancoAgencia' in body ||
+    'bancoConta' in body ||
+    'chavePix' in body;
+  if (temBancarios) {
+    await db
+      .update(schema.fornecedor)
+      .set({
+        bancoNome: body.bancoNome?.trim() || null,
+        bancoAgencia: body.bancoAgencia?.trim() || null,
+        bancoConta: body.bancoConta?.trim() || null,
+        chavePix: body.chavePix?.trim() || null,
+      })
+      .where(eq(schema.fornecedor.id, body.fornecedorId));
+  }
 
   return NextResponse.json({ ok: true });
 }

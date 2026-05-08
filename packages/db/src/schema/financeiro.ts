@@ -56,6 +56,13 @@ export const fornecedor = pgTable(
     /** Categoria livre pro modulo de compras (Bebidas, Alimentos, Limpeza,
      *  Laticinios, etc). Permite agrupar fornecedores na UI. Null = sem categoria. */
     categoriaCompras: varchar('categoria_compras', { length: 50 }),
+    /** Dados bancarios pra pagamento da folha. Editaveis via tela
+     *  /folha-equipe/pessoas. NAO sao sobrescritos pelo agente (Consumer
+     *  nao tem essas colunas em FORNECEDORES). NULL = sem cadastro. */
+    bancoNome: varchar('banco_nome', { length: 100 }),
+    bancoAgencia: varchar('banco_agencia', { length: 20 }),
+    bancoConta: varchar('banco_conta', { length: 30 }),
+    chavePix: varchar('chave_pix', { length: 100 }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

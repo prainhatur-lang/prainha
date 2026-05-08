@@ -52,6 +52,10 @@ export default async function FolhaPessoasPage(props: { searchParams: Promise<SP
       clienteId: schema.fornecedorFolha.clienteId,
       fornecedorNome: schema.fornecedor.nome,
       fornecedorCpf: schema.fornecedor.cnpjOuCpf,
+      bancoNome: schema.fornecedor.bancoNome,
+      bancoAgencia: schema.fornecedor.bancoAgencia,
+      bancoConta: schema.fornecedor.bancoConta,
+      chavePix: schema.fornecedor.chavePix,
       clienteNome: schema.cliente.nome,
       clienteCpf: schema.cliente.cpfOuCnpj,
     })
@@ -189,6 +193,10 @@ export default async function FolhaPessoasPage(props: { searchParams: Promise<SP
             clienteId: p.clienteId,
             fornecedorNome: p.fornecedorNome ?? '(sem nome)',
             fornecedorCpf: p.fornecedorCpf ?? '',
+            bancoNome: p.bancoNome,
+            bancoAgencia: p.bancoAgencia,
+            bancoConta: p.bancoConta,
+            chavePix: p.chavePix,
             clienteNome: p.clienteNome,
             clienteCpf: p.clienteCpf,
           }))}

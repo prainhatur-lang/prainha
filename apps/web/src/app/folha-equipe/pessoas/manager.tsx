@@ -14,6 +14,10 @@ interface Pessoa {
   clienteId: string | null;
   fornecedorNome: string;
   fornecedorCpf: string;
+  bancoNome: string | null;
+  bancoAgencia: string | null;
+  bancoConta: string | null;
+  chavePix: string | null;
   clienteNome: string | null;
   clienteCpf: string | null;
 }
@@ -321,6 +325,10 @@ function PessoaEditRow({
   const [usaBonusFixo, setUsaBonusFixo] = useState(pessoa.bonusFixoSemanal != null);
   const [bonusFixoSemanal, setBonusFixoSemanal] = useState(pessoa.bonusFixoSemanal ?? 0);
   const [ativo, setAtivo] = useState(pessoa.ativo);
+  const [bancoNome, setBancoNome] = useState(pessoa.bancoNome ?? '');
+  const [bancoAgencia, setBancoAgencia] = useState(pessoa.bancoAgencia ?? '');
+  const [bancoConta, setBancoConta] = useState(pessoa.bancoConta ?? '');
+  const [chavePix, setChavePix] = useState(pessoa.chavePix ?? '');
 
   function salvar() {
     startTransition(async () => {
@@ -337,6 +345,10 @@ function PessoaEditRow({
             papel === 'diarista' && usaOverride ? diaristaTaxaHoraOverride : null,
           bonusFixoSemanal: usaBonusFixo && bonusFixoSemanal > 0 ? bonusFixoSemanal : null,
           ativo,
+          bancoNome,
+          bancoAgencia,
+          bancoConta,
+          chavePix,
         }),
       });
       if (r.ok) onSaved(`${pessoa.fornecedorNome} atualizado ✓`);
@@ -461,6 +473,56 @@ function PessoaEditRow({
                 <span className="text-xs text-slate-500">por semana</span>
               </div>
             )}
+          </div>
+
+          <div className="col-span-2 border-t border-slate-200 pt-3">
+            <h4 className="mb-2 text-sm font-medium text-slate-700">
+              🏦 Dados bancários (pra exportar pagamento da folha)
+            </h4>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600">Banco</label>
+                <input
+                  type="text"
+                  value={bancoNome}
+                  onChange={(e) => setBancoNome(e.target.value)}
+                  placeholder="ex: Caixa"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600">Agência</label>
+                <input
+                  type="text"
+                  value={bancoAgencia}
+                  onChange={(e) => setBancoAgencia(e.target.value)}
+                  placeholder="ex: 0001"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600">Conta</label>
+                <input
+                  type="text"
+                  value={bancoConta}
+                  onChange={(e) => setBancoConta(e.target.value)}
+                  placeholder="ex: 1234-5"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="col-span-3">
+                <label className="block text-xs font-medium text-slate-600">
+                  Chave PIX (CPF, e-mail, telefone ou aleatória — opcional se conta preenchida)
+                </label>
+                <input
+                  type="text"
+                  value={chavePix}
+                  onChange={(e) => setChavePix(e.target.value)}
+                  placeholder="chave PIX"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
           </div>
         </div>
 
