@@ -7,6 +7,7 @@ import { AppHeader } from '@/components/app-header';
 import { CertificadoUploadForm } from './upload-form';
 import { ConsultarSefazBtn } from './consultar-sefaz-btn';
 import { ToggleCompartilharBtn } from './toggle-compartilhar';
+import { ManifestarBtn } from './manifestar-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -184,6 +185,7 @@ export default async function CertificadosPage() {
                             certId={c.id}
                             compartilhado={c.compartilharOrganizacao}
                           />
+                          <ManifestarBtn filialId={c.filialId} />
                           <ConsultarSefazBtn filialId={c.filialId} />
                         </div>
                       </div>

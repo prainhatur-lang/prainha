@@ -44,6 +44,14 @@ const GRUPOS: Grupo[] = [
     ],
   },
   {
+    label: 'Folha da equipe',
+    links: [
+      { label: 'Folhas semanais', href: '/folha-equipe/folhas' },
+      { label: 'Pessoas', href: '/folha-equipe/pessoas' },
+      { label: 'Configuração da folha', href: '/folha-equipe/configuracao' },
+    ],
+  },
+  {
     label: 'Compras',
     links: [
       { label: 'Cotações', href: '/cotacao' },
