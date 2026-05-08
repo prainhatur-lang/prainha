@@ -8,11 +8,12 @@
 // Usado tanto pelo endpoint manual quanto pelo cron.
 
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
 import { findActiveCertForFilial } from '@/lib/certificado-resolver';
+import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { consultarDistribuicao, UF_CODIGO } from '@/lib/sefaz-dfe';
 import { parseNfeXml } from '@/lib/nfe-parser';
 import { XMLParser } from 'fast-xml-parser';
@@ -194,20 +195,12 @@ async function inserirNfeCompleta(
 
   if (existente && !ehResumo) return 'DUPLICADA';
 
-  let fornecedorId: string | null = null;
-  if (nfe.emitCnpj) {
-    const [forn] = await db
-      .select({ id: schema.fornecedor.id })
-      .from(schema.fornecedor)
-      .where(
-        and(
-          eq(schema.fornecedor.filialId, filialId),
-          eq(schema.fornecedor.cnpjOuCpf, nfe.emitCnpj),
-        ),
-      )
-      .limit(1);
-    fornecedorId = forn?.id ?? null;
-  }
+  // Match com fallback cross-filial — replica fornecedor de outra filial
+  // da mesma org se nao achar na filial alvo.
+  const fornecedorId = await resolverFornecedorParaNota({
+    filialId,
+    emitCnpj: nfe.emitCnpj,
+  });
 
   const xmlHash = createHash('sha256').update(xml).digest('hex');
 
@@ -313,20 +306,10 @@ async function inserirResumo(
     .limit(1);
   if (existente) return 'DUPLICADA';
 
-  let fornecedorId: string | null = null;
-  if (r.emitCnpj) {
-    const [forn] = await db
-      .select({ id: schema.fornecedor.id })
-      .from(schema.fornecedor)
-      .where(
-        and(
-          eq(schema.fornecedor.filialId, filialId),
-          eq(schema.fornecedor.cnpjOuCpf, r.emitCnpj),
-        ),
-      )
-      .limit(1);
-    fornecedorId = forn?.id ?? null;
-  }
+  const fornecedorId = await resolverFornecedorParaNota({
+    filialId,
+    emitCnpj: r.emitCnpj,
+  });
 
   // Extrai serie e número da chave (posições 22-25 = série, 26-34 = número)
   const serie = Number(r.chave.slice(22, 25));
