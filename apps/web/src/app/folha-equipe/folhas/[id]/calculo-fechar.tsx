@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Pessoa {
@@ -67,8 +67,33 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
     if (r.ok) setResultado(await r.json());
   }
 
+  // Mantém a tabela de ajustes em sync com o que o servidor mandou
+  // (depois de router.refresh os ajustesIniciais mudam, mas a state local
+  //  não atualizava sozinha — adiciona/remove e fiado_auto ficavam stale).
   useEffect(() => {
-    refreshPreview();
+    setAjustes(ajustesIniciais);
+  }, [ajustesIniciais]);
+
+  // Auto-puxa fiados ao abrir a folha (silencioso). Substitui o clique
+  // manual no botão "⤓ Puxar fiados" — sempre traz o saldo mais recente
+  // de cada cliente vinculado.
+  const autoPuxouRef = useRef(false);
+  useEffect(() => {
+    if (autoPuxouRef.current) return;
+    autoPuxouRef.current = true;
+    (async () => {
+      if (status === 'aberta') {
+        try {
+          const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/puxar-fiado`, {
+            method: 'POST',
+          });
+          if (r.ok) router.refresh();
+        } catch {
+          // Ignora — botão manual ainda funciona como fallback
+        }
+      }
+      refreshPreview();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -451,6 +476,90 @@ export function CalculoFechar({ folhaId, status, pessoas, ajustesIniciais }: Pro
                 </tbody>
               </table>
             )}
+
+            {/* Resumo por pessoa — soma dos lançamentos agrupados */}
+            {resultado.lancamentos.length > 0 && (() => {
+              type ResumoPessoa = {
+                fornecedorId: string;
+                nome: string;
+                bruto: number; // comissao + diaria + transporte (sem gratificacao)
+                acrescimos: number; // gratificacao
+                descontos: number;
+                liquido: number;
+              };
+              const porPessoa = new Map<string, ResumoPessoa>();
+              for (const l of resultado.lancamentos) {
+                const cur = porPessoa.get(l.fornecedorId) ?? {
+                  fornecedorId: l.fornecedorId,
+                  nome: l.pessoaNome,
+                  bruto: 0,
+                  acrescimos: 0,
+                  descontos: 0,
+                  liquido: 0,
+                };
+                if (l.tipo === 'gratificacao') {
+                  cur.acrescimos += l.valorBruto;
+                } else {
+                  cur.bruto += l.valorBruto;
+                }
+                cur.descontos += l.desconto;
+                cur.liquido += l.valorLiquido;
+                porPessoa.set(l.fornecedorId, cur);
+              }
+              const linhas = Array.from(porPessoa.values()).sort((a, b) =>
+                a.nome.localeCompare(b.nome, 'pt-BR'),
+              );
+              return (
+                <div className="mt-6">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                    📋 Resumo por pessoa (líquido a pagar)
+                  </h3>
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-xs">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">Bruto</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">↑ Acréscimos</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">↓ Descontos</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">Líquido</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {linhas.map((r) => (
+                        <tr key={r.fornecedorId} className="border-t border-slate-100">
+                          <td className="px-2 py-1.5 font-medium text-slate-900">{r.nome}</td>
+                          <td className="px-2 py-1.5 text-right font-mono">{brl(r.bruto)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono text-emerald-700">
+                            {r.acrescimos > 0 ? brl(r.acrescimos) : '—'}
+                          </td>
+                          <td className="px-2 py-1.5 text-right font-mono text-rose-700">
+                            {r.descontos > 0 ? brl(r.descontos) : '—'}
+                          </td>
+                          <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700">
+                            {brl(r.liquido)}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                        <td className="px-2 py-2">TOTAL</td>
+                        <td className="px-2 py-2 text-right font-mono">
+                          {brl(linhas.reduce((s, r) => s + r.bruto, 0))}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-emerald-700">
+                          {brl(resultado.totalAcrescimos)}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-rose-700">
+                          {brl(resultado.totalDescontos)}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-emerald-700">
+                          {brl(resultado.totalLiquido)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
 
             {resultado.avisos.length > 0 && (
               <div className="mt-4 rounded border border-amber-200 bg-amber-50 p-3 text-xs">
