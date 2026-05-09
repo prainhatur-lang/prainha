@@ -8,7 +8,7 @@
 // Usado tanto pelo endpoint manual quanto pelo cron.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';

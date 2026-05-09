@@ -14,7 +14,7 @@
 //      - nenhum item linkado -> mantem GERADO/ENVIADO
 
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull } from 'drizzle-orm';
 
 export async function tentarMatchPedidoComNota(opts: {
   notaCompraId: string;
@@ -76,7 +76,7 @@ export async function tentarMatchPedidoComNota(opts: {
     .where(eq(schema.notaCompraItem.notaCompraId, opts.notaCompraId));
 
   let linkados = 0;
-  let totalEsperado = itensPedido.length;
+  const totalEsperado = itensPedido.length;
   let totalRecebidoCompleto = 0;
 
   for (const ip of itensPedido) {
