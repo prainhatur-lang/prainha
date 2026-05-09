@@ -180,6 +180,16 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
 
+  const hrefFilial = (filialId: string) => {
+    const qs = new URLSearchParams();
+    qs.set('filialId', filialId);
+    if (q) qs.set('q', q);
+    if (dataIni) qs.set('dataIni', dataIni);
+    if (dataFim) qs.set('dataFim', dataFim);
+    if (origem !== 'TODAS') qs.set('origem', origem);
+    return `/movimento/entrada-notas?${qs.toString()}`;
+  };
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -193,6 +203,29 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
           </Link>
           .
         </p>
+
+        {/* Seletor de filial */}
+        {filiais.length > 1 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1 text-xs">
+            <span className="mr-1 text-slate-500">Filial:</span>
+            {filiais.map((f) => {
+              const ativo = f.id === filialSelecionada.id;
+              return (
+                <Link
+                  key={f.id}
+                  href={hrefFilial(f.id)}
+                  className={`rounded-md border px-2 py-1 ${
+                    ativo
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {f.nome}
+                </Link>
+              );
+            })}
+          </div>
+        )}
 
         {Number(resumosPendentes?.qtd ?? 0) > 0 && (
           <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
