@@ -25,16 +25,20 @@ export async function resolverFornecedorParaNota(opts: {
   const cnpjDigits = opts.emitCnpj?.replace(/\D/g, '') ?? null;
   if (!cnpjDigits) return null;
 
-  // 1. Tenta match na filial alvo via CNPJ normalizado
+  // Pra CNPJ (14 digits), match e' por cnpj_raiz (8 primeiros) — mesma empresa
+  // em filiais diferentes tem cnpj_raiz igual. Pra CPF (11 digits), match e
+  // pelo CPF inteiro (nao tem hierarquia).
+  const ehCnpj = cnpjDigits.length === 14;
+  const cnpjRaiz = ehCnpj ? cnpjDigits.slice(0, 8) : cnpjDigits;
+  const matchExpr = ehCnpj
+    ? sql`left(regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\D', '', 'g'), 8) = ${cnpjRaiz}`
+    : sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\D', '', 'g') = ${cnpjDigits}`;
+
+  // 1. Tenta match na filial alvo via cnpj_raiz (ou CPF inteiro)
   const [proprio] = await db
     .select({ id: schema.fornecedor.id })
     .from(schema.fornecedor)
-    .where(
-      and(
-        eq(schema.fornecedor.filialId, opts.filialId),
-        sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\D', '', 'g') = ${cnpjDigits}`,
-      ),
-    )
+    .where(and(eq(schema.fornecedor.filialId, opts.filialId), matchExpr))
     .limit(1);
   if (proprio) return proprio.id;
 
@@ -74,7 +78,7 @@ export async function resolverFornecedorParaNota(opts: {
         eq(schema.filial.organizacaoId, filialAlvo.organizacaoId),
         ne(schema.fornecedor.filialId, opts.filialId),
         isNull(schema.fornecedor.dataDelete),
-        sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\D', '', 'g') = ${cnpjDigits}`,
+        matchExpr,
       ),
     )
     .limit(1);

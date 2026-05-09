@@ -21,8 +21,10 @@ if (!url) throw new Error('DATABASE_URL nao definida');
 const sql = postgres(url, { prepare: false });
 
 async function main() {
-  // Etapa 1: match na propria filial
-  process.stdout.write('  Etapa 1: match na propria filial (digits-only)... ');
+  // Etapa 1: match na propria filial via cnpj_raiz (8 primeiros dígitos)
+  // Usa cnpj_raiz pra que mesma empresa em filiais diferentes (cnpj_raiz igual)
+  // batam. Pra CPF (11 digits) compara CPF inteiro.
+  process.stdout.write('  Etapa 1: match na propria filial (cnpj_raiz)... ');
   const etapa1 = await sql<Array<{ id: string }>>`
     UPDATE nota_compra nc
     SET fornecedor_id = f.id
@@ -31,7 +33,13 @@ async function main() {
       AND nc.emit_cnpj IS NOT NULL
       AND nc.filial_id = f.filial_id
       AND f.data_delete IS NULL
-      AND regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g') = nc.emit_cnpj
+      AND (
+        (length(nc.emit_cnpj) = 14
+         AND left(regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g'), 8) = left(nc.emit_cnpj, 8))
+        OR
+        (length(nc.emit_cnpj) <> 14
+         AND regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g') = nc.emit_cnpj)
+      )
     RETURNING nc.id
   `;
   console.log(`OK — ${etapa1.length} notas linkadas direto`);
@@ -77,7 +85,13 @@ async function main() {
     WHERE nc.fornecedor_id IS NULL
       AND nc.emit_cnpj IS NOT NULL
       AND f.data_delete IS NULL
-      AND regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g') = nc.emit_cnpj
+      AND (
+        (length(nc.emit_cnpj) = 14
+         AND left(regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g'), 8) = left(nc.emit_cnpj, 8))
+        OR
+        (length(nc.emit_cnpj) <> 14
+         AND regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g') = nc.emit_cnpj)
+      )
   `;
 
   let replicados = 0;
