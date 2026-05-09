@@ -253,22 +253,14 @@ export function calcularFolha(args: {
       valor = total;
       detalhe = `${config.ppGerente}pp dos 10% da semana`;
     } else if (g.gerenteModelo === 'fixo_por_dia' && g.gerenteValorFixoDia) {
-      // Conta dias com horas > 0 (o gerente registrou ponto?). Se não tiver
-      // horas, conta dias da semana inteira (gerente não bate ponto).
-      const minTotal = sumMin(horasMap.get(g.fornecedorId) ?? {});
-      let diasTrab = 0;
-      if (minTotal > 0) {
-        diasTrab = Object.values(horasMap.get(g.fornecedorId) ?? {}).filter((m) => m > 0)
-          .length;
-      } else {
-        // Sem ponto — assume 7 dias
-        diasTrab = 7;
-        avisos.push(
-          `${g.nome}: gerente fixo sem ponto — assumindo ${diasTrab} dias trabalhados.`,
-        );
-      }
+      // Conta dias da semana em que a loja funcionou (10pct > 0). Gerente
+      // nao bate ponto: se a loja abriu, ele recebe a diaria daquele dia.
+      const diasTrab = Object.values(dezPctPorDia).filter((v) => v > 0).length;
       valor = diasTrab * g.gerenteValorFixoDia;
       detalhe = `${diasTrab} × R$ ${g.gerenteValorFixoDia.toFixed(2)}/dia`;
+      if (diasTrab === 0) {
+        avisos.push(`${g.nome}: gerente fixo mas nenhum dia com movimento na semana.`);
+      }
     }
 
     if (valor > 0 || desconto > 0) {
