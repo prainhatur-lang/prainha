@@ -6,6 +6,7 @@ import { eq, asc, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { AprovarButton } from './aprovar';
+import { calcularAlocacaoCotacao } from '@/lib/cotacao-alocacao';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,6 +106,14 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
   const respondidasCount = fornecedores.filter((f) => f.status === 'RESPONDIDA').length;
   const badge = BADGE_STATUS[c.status] ?? BADGE_STATUS.RASCUNHO;
 
+  // Pré-visualização da alocação (só calcula, não escreve nada).
+  // Mostra antes da aprovação pra você ver totais por fornecedor + reassigns
+  // por valor mínimo + itens órfãos.
+  const previewAprovacao =
+    c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO'
+      ? await calcularAlocacaoCotacao(c.id).catch(() => null)
+      : null;
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -131,6 +140,125 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
             <AprovarButton cotacaoId={c.id} />
           )}
         </div>
+
+        {/* Preview da alocação (antes de aprovar) */}
+        {previewAprovacao && previewAprovacao.porFornecedor.length > 0 && (
+          <section className="mb-6 rounded-xl border border-violet-200 bg-violet-50 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-violet-900">
+                  Pré-visualização da aprovação
+                </h2>
+                <p className="mt-0.5 text-[11px] text-violet-700">
+                  Resultado se você aprovar agora. Itens reassignados ao 2º colocado quando o
+                  fornecedor não atinge valor mínimo.
+                </p>
+              </div>
+              <div className="text-right">
+                <div className="text-[10px] uppercase tracking-wide text-violet-700">
+                  Total geral
+                </div>
+                <div className="text-lg font-bold text-violet-900">
+                  {brl(previewAprovacao.totalGeral)}
+                </div>
+              </div>
+            </div>
+
+            {previewAprovacao.reassignados.length > 0 && (
+              <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+                <strong>{previewAprovacao.reassignados.length} item(s) reassignado(s)</strong>{' '}
+                pra atender valor mínimo de pedido:
+                <ul className="mt-1 list-disc pl-5">
+                  {previewAprovacao.reassignados.slice(0, 5).map((r) => (
+                    <li key={r.itemId}>
+                      {r.produtoNome}: {r.fornecedorOriginal} → {r.fornecedorFinal}
+                    </li>
+                  ))}
+                  {previewAprovacao.reassignados.length > 5 && (
+                    <li className="text-amber-700">
+                      …e mais {previewAprovacao.reassignados.length - 5}
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {previewAprovacao.orfaos.length > 0 && (
+              <div className="mb-3 rounded-md border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900">
+                <strong>⚠ {previewAprovacao.orfaos.length} item(s) sem fornecedor vencedor</strong>
+                {' '}— vai cair fora do pedido. Revise antes de aprovar.
+                <ul className="mt-1 list-disc pl-5">
+                  {previewAprovacao.orfaos.slice(0, 5).map((o) => (
+                    <li key={o.itemId}>
+                      {o.produtoNome} ({o.qtd} {o.unidade}) ·{' '}
+                      <em>
+                        {o.motivo === 'sem_resposta'
+                          ? 'nenhum fornecedor respondeu'
+                          : 'sem próximos colocados (todos abaixo do mínimo)'}
+                      </em>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {previewAprovacao.porFornecedor.map((f) => (
+                <div
+                  key={f.fornecedorId}
+                  className={`rounded-lg border p-3 ${
+                    f.atingeMinimo
+                      ? 'border-emerald-200 bg-white'
+                      : 'border-rose-300 bg-rose-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">{f.fornecedorNome}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {f.itens.length} item(s) ·{' '}
+                        {f.valorPedidoMinimo
+                          ? `mín. ${brl(f.valorPedidoMinimo)}`
+                          : 'sem mínimo cadastrado'}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-base font-bold text-slate-900">{brl(f.total)}</div>
+                      {f.valorPedidoMinimo &&
+                        (f.atingeMinimo ? (
+                          <div className="text-[10px] font-medium text-emerald-700">
+                            ✓ atende mínimo
+                          </div>
+                        ) : (
+                          <div className="text-[10px] font-medium text-rose-700">
+                            ✗ {brl(f.valorPedidoMinimo - f.total)} abaixo do mínimo
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {f.itens.map((it) => (
+                      <span
+                        key={it.itemId}
+                        className={`rounded px-1.5 py-0.5 text-[10px] ${
+                          it.ranque > 0
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                        title={
+                          it.ranque > 0 ? `Reassignado do ${it.ranque + 1}º colocado` : undefined
+                        }
+                      >
+                        {it.produtoNome} · {it.qtd}{it.unidade} · {brl(it.precoTotal)}
+                        {it.ranque > 0 && ` (${it.ranque + 1}º)`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Fornecedores convocados */}
         <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5">
