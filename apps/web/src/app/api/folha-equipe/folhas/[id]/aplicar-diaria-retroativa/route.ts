@@ -135,7 +135,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const competencia = folha.dataInicio.slice(0, 7);
 
   const inserts = pessoas
-    .filter((p) => p.papel !== 'gerente')
+    .filter((p) => p.papel === 'diarista')
     .map((p) => {
       const min = horasPorPessoa.get(p.fornecedorId) ?? 0;
       if (min === 0) return null;
@@ -161,7 +161,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({
       ok: true,
       criadas: 0,
-      msg: 'Nenhuma pessoa com horas > 0 nessa folha (excluindo gerente).',
+      msg: 'Nenhuma pessoa com papel=diarista e horas > 0 nessa folha.',
     });
   }
 

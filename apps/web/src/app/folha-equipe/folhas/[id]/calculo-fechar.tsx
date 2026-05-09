@@ -281,8 +281,8 @@ export function CalculoFechar({
     }
     if (
       !confirm(
-        `Calcular diária a R$ ${taxa.toFixed(2)}/h pra todas as pessoas (exceto gerente) com horas > 0 e gerar contas a pagar de Diária?\n\n` +
-          'Use isso quando você fechou a folha sem ter mudado o papel das pessoas pra "diarista" — só Comissão foi gerada, faltou a parte de R$/h × horas.\n\n' +
+        `Calcular diária a R$ ${taxa.toFixed(2)}/h pras pessoas com papel=diarista e horas > 0, e gerar contas a pagar de Diária?\n\n` +
+          'Use isso quando você fechou a folha sem ter mudado o papel pra "diarista" — só Comissão foi gerada, faltou a parte de R$/h × horas. Antes de clicar, garanta que as pessoas certas estão marcadas como diarista em /folha-equipe/pessoas.\n\n' +
           'As contas novas vão pra contas a pagar com categoria Diária e descrição "Diária retroativa". Dá pra estornar depois.',
       )
     )
@@ -791,8 +791,9 @@ export function CalculoFechar({
                 {pending ? 'Aplicando...' : '⏰ Aplicar diária retroativa'}
               </button>
               <p className="basis-full text-[11px] text-slate-500">
-                Vai gerar 1 conta a pagar (categoria Diária) por pessoa não-gerente com horas {'>'} 0,
-                marcadas como &quot;Diária retroativa&quot; pra dar pra estornar depois.
+                Vai gerar 1 conta a pagar (categoria Diária) por pessoa com{' '}
+                <strong>papel=diarista</strong> e horas {'>'} 0, marcadas como
+                &quot;Diária retroativa&quot; pra dar pra estornar depois.
               </p>
             </div>
           )}
