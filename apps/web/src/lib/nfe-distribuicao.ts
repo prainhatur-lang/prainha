@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
-import { findActiveCertForFilial } from '@/lib/certificado-resolver';
+import { findActiveCertForFilial, atualizarNsu } from '@/lib/certificado-resolver';
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { consultarDistribuicao, UF_CODIGO } from '@/lib/sefaz-dfe';
 import { parseNfeXml } from '@/lib/nfe-parser';
@@ -405,9 +405,17 @@ export async function consultarEProcessar(opts: {
   // (se houver ERRO sem ultNSU, volta o antes)
   const ultNsuDepois = resp.ultNSU && resp.ultNSU !== '000000000000000' ? resp.ultNSU : ultNsuAntes;
 
+  // Atualiza checkpoint NSU pra esse par (cert, filial). Cada filial tem
+  // sequencia NSU propria na SEFAZ — nao podemos sobrescrever o NSU global do cert.
+  await atualizarNsu({
+    certId: row.certId,
+    filialId: opts.filialId,
+    novoNsu: ultNsuDepois,
+  });
+  // Tambem atualiza ultima_consulta_sefaz no cert (puramente informativo)
   await db
     .update(schema.certificadoFilial)
-    .set({ ultimoNsu: ultNsuDepois, ultimaConsultaSefaz: new Date() })
+    .set({ ultimaConsultaSefaz: new Date() })
     .where(eq(schema.certificadoFilial.id, row.certId));
 
   return {

@@ -10,6 +10,7 @@ import {
   boolean,
   date,
   unique,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
@@ -48,5 +49,27 @@ export const certificadoFilial = pgTable(
   },
   (t) => ({
     uniqAtivoFilial: unique('uq_cert_filial_ativo').on(t.filialId, t.ativo),
+  }),
+);
+
+/** Checkpoint NSU por (certificado, filial). Necessario quando cert e
+ *  compartilhado pra varias filiais — cada filial tem propria sequencia
+ *  NSU na SEFAZ (per CNPJ destinatario), entao precisa rastrear separado.
+ *  Substitui certificado_filial.ultimo_nsu (que so funcionava quando cert
+ *  pertencia a 1 filial). */
+export const certFilialNsu = pgTable(
+  'cert_filial_nsu',
+  {
+    certId: uuid('cert_id')
+      .notNull()
+      .references(() => certificadoFilial.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    ultimoNsu: varchar('ultimo_nsu', { length: 15 }).notNull().default('000000000000000'),
+    ultimaConsultaEm: timestamp('ultima_consulta_em', { withTimezone: true }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.certId, t.filialId] }),
   }),
 );
