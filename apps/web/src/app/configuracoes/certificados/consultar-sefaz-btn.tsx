@@ -20,6 +20,7 @@ interface ResumoResp {
   maxNsu?: string | null;
   temMais?: boolean;
   filiaisProcessadas?: number;
+  totalManifestadas?: number;
 }
 
 export function ConsultarSefazBtn({
@@ -45,6 +46,9 @@ export function ConsultarSefazBtn({
           filialId,
           loop: true,
           escopo: todasFiliais ? 'todas-da-org' : 'filial',
+          // Roda consulta + manifestacao no mesmo clique. Proximo clique
+          // (~30s depois) puxa XMLs completos dos resumos manifestados.
+          incluirManifestacao: true,
         }),
       });
       const d = (await r.json()) as ResumoResp;
@@ -59,6 +63,7 @@ export function ConsultarSefazBtn({
       if (d.eventosCancelamentoAplicados)
         partes.push(`${d.eventosCancelamentoAplicados} cancelamentos`);
       if (d.eventosIgnorados) partes.push(`${d.eventosIgnorados} eventos ignorados`);
+      if (d.totalManifestadas) partes.push(`${d.totalManifestadas} manifestadas`);
       const resumo = partes.length ? partes.join(', ') : 'nada novo';
       const sufixo = d.temMais ? ' (ainda há mais docs — clique novamente)' : '';
       const filiais = d.filiaisProcessadas && d.filiaisProcessadas > 1
