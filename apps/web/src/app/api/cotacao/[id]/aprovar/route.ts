@@ -69,15 +69,83 @@ export async function POST(
       ),
     );
 
-  // Pra cada item, escolhe vencedor (menor preco_unitario_normalizado)
-  const respostasPorItem = new Map<string, typeof respostas>();
+  // Respostas ordenadas por preco asc (1º, 2º, 3º colocado por item)
+  const respostasOrdenadasPorItem = new Map<string, typeof respostas>();
   for (const r of respostas) {
     if (r.precoUnitarioNormalizado == null) continue;
-    if (!respostasPorItem.has(r.cotacaoItemId)) respostasPorItem.set(r.cotacaoItemId, []);
-    respostasPorItem.get(r.cotacaoItemId)!.push(r);
+    if (!respostasOrdenadasPorItem.has(r.cotacaoItemId))
+      respostasOrdenadasPorItem.set(r.cotacaoItemId, []);
+    respostasOrdenadasPorItem.get(r.cotacaoItemId)!.push(r);
+  }
+  for (const arr of respostasOrdenadasPorItem.values()) {
+    arr.sort(
+      (a, b) =>
+        Number(a.precoUnitarioNormalizado) - Number(b.precoUnitarioNormalizado),
+    );
   }
 
-  // vencedoresPorFornecedor: cotacaoFornecedorId -> [{itemId, respostaId, qtd, unidade, preco, marcaId}]
+  // Carrega valor minimo de pedido pra cada fornecedor convocado
+  const fornecedoresIds = [...new Set(convocacoes.map((c) => c.fornecedorId))];
+  const minimosRows = await db
+    .select({
+      id: schema.fornecedor.id,
+      valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
+    })
+    .from(schema.fornecedor)
+    .where(inArray(schema.fornecedor.id, fornecedoresIds));
+  const minimoPorFornecedor = new Map<string, number>();
+  for (const m of minimosRows) {
+    if (m.valorPedidoMinimo) minimoPorFornecedor.set(m.id, Number(m.valorPedidoMinimo));
+  }
+
+  // Estado: itemId -> indice no array ordenado (0 = vencedor, 1 = 2 colocado, ...)
+  const alocacao = new Map<string, number>();
+  for (const item of itens) {
+    const candidatos = respostasOrdenadasPorItem.get(item.id) ?? [];
+    if (candidatos.length > 0) alocacao.set(item.id, 0);
+  }
+
+  // Loop: enquanto houver fornecedor cuja soma fica abaixo do minimo, reassign
+  // os itens dele pro proximo colocado. Cap em 10 iteracoes pra evitar oscilacao.
+  for (let iter = 0; iter < 10; iter++) {
+    // Calcula totais por fornecedor com a alocacao atual
+    const totaisPorFornecedor = new Map<string, { total: number; itensAlocados: typeof itens }>();
+    for (const [itemId, idx] of alocacao) {
+      const candidatos = respostasOrdenadasPorItem.get(itemId)!;
+      const resp = candidatos[idx];
+      const item = itens.find((i) => i.id === itemId)!;
+      const fornId = fornecedorPorCotForn.get(resp.cotacaoFornecedorId)!;
+      const total = Number(resp.precoUnitarioNormalizado) * Number(item.quantidade);
+      if (!totaisPorFornecedor.has(fornId))
+        totaisPorFornecedor.set(fornId, { total: 0, itensAlocados: [] });
+      const acc = totaisPorFornecedor.get(fornId)!;
+      acc.total += total;
+      acc.itensAlocados.push(item);
+    }
+
+    // Acha primeiro fornecedor que viola minimo
+    let mudou = false;
+    for (const [fornId, { total, itensAlocados }] of totaisPorFornecedor) {
+      const minimo = minimoPorFornecedor.get(fornId);
+      if (!minimo || total >= minimo) continue;
+      // Reassigna TODOS os itens desse fornecedor pro proximo colocado
+      for (const item of itensAlocados) {
+        const idxAtual = alocacao.get(item.id)!;
+        const candidatos = respostasOrdenadasPorItem.get(item.id)!;
+        if (idxAtual + 1 < candidatos.length) {
+          alocacao.set(item.id, idxAtual + 1);
+        } else {
+          // Sem proximo colocado — item fica orfao (nao gera pedido)
+          alocacao.delete(item.id);
+        }
+      }
+      mudou = true;
+      break; // recalcula totais antes de tentar proximo fornecedor
+    }
+    if (!mudou) break;
+  }
+
+  // Aplica alocacao final: monta vencedoresPorFornecedor
   const vencedoresPorFornecedor = new Map<
     string,
     Array<{
@@ -90,31 +158,29 @@ export async function POST(
       marcaId: string | null;
     }>
   >();
-
+  const reassignedLog: Array<{ itemId: string; ranqueOriginal: number; ranqueFinal: number }> = [];
   for (const item of itens) {
-    const candidatos = respostasPorItem.get(item.id) ?? [];
-    if (candidatos.length === 0) continue;
-    const vencedor = candidatos.reduce((min, r) =>
-      Number(r.precoUnitarioNormalizado) < Number(min.precoUnitarioNormalizado) ? r : min,
-    );
+    const idxFinal = alocacao.get(item.id);
+    if (idxFinal == null) continue; // item sem fornecedor (vai precisar atencao manual)
+    const candidatos = respostasOrdenadasPorItem.get(item.id)!;
+    const resp = candidatos[idxFinal];
+    if (idxFinal > 0) reassignedLog.push({ itemId: item.id, ranqueOriginal: 0, ranqueFinal: idxFinal });
 
-    // Atualiza item com resposta_vencedora_id
     await db
       .update(schema.cotacaoItem)
-      .set({ respostaVencedoraId: vencedor.id })
+      .set({ respostaVencedoraId: resp.id })
       .where(eq(schema.cotacaoItem.id, item.id));
 
-    if (!vencedoresPorFornecedor.has(vencedor.cotacaoFornecedorId)) {
-      vencedoresPorFornecedor.set(vencedor.cotacaoFornecedorId, []);
-    }
-    vencedoresPorFornecedor.get(vencedor.cotacaoFornecedorId)!.push({
+    if (!vencedoresPorFornecedor.has(resp.cotacaoFornecedorId))
+      vencedoresPorFornecedor.set(resp.cotacaoFornecedorId, []);
+    vencedoresPorFornecedor.get(resp.cotacaoFornecedorId)!.push({
       itemId: item.id,
-      respostaId: vencedor.id,
+      respostaId: resp.id,
       produtoId: item.produtoId,
       qtd: item.quantidade,
       unidade: item.unidade,
-      preco: Number(vencedor.precoUnitarioNormalizado),
-      marcaId: vencedor.marcaId,
+      preco: Number(resp.precoUnitarioNormalizado),
+      marcaId: resp.marcaId,
     });
   }
 
@@ -167,5 +233,10 @@ export async function POST(
     .set({ status: 'APROVADA', aprovadaEm: new Date(), aprovadaPor: user.id })
     .where(eq(schema.cotacao.id, cotacaoId));
 
-  return NextResponse.json({ ok: true, pedidos: pedidosCriados });
+  return NextResponse.json({
+    ok: true,
+    pedidos: pedidosCriados,
+    reassigned: reassignedLog.length,
+    detalheReassign: reassignedLog,
+  });
 }
