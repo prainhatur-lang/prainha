@@ -104,13 +104,68 @@ async function main() {
   }
   console.log(`OK — ${replicados} fornecedores replicados + notas linkadas`);
 
+  // Etapa 3: auto-cria fornecedor com dados do XML pras notas que ainda
+  // estao sem vinculo (CNPJ desconhecido em qualquer filial da org).
+  process.stdout.write('  Etapa 3: auto-cria fornecedores com dados do XML... ');
+  const orfas = await sql<Array<{
+    nota_id: string;
+    nota_filial_id: string;
+    emit_cnpj: string;
+    emit_nome: string | null;
+    emit_fantasia: string | null;
+    emit_ie: string | null;
+    emit_uf: string | null;
+    emit_cidade: string | null;
+  }>>`
+    SELECT id AS nota_id, filial_id AS nota_filial_id,
+           emit_cnpj, emit_nome, emit_fantasia, emit_ie, emit_uf, emit_cidade
+    FROM nota_compra
+    WHERE fornecedor_id IS NULL
+      AND emit_cnpj IS NOT NULL
+      AND emit_nome IS NOT NULL
+  `;
+
+  let auto_criados = 0;
+  // Agrupa por (filial, cnpj) pra criar 1 fornecedor por par e linkar todas
+  // as notas dele de uma vez.
+  const grupos = new Map<string, typeof orfas>();
+  for (const o of orfas) {
+    const chave = `${o.nota_filial_id}|${o.emit_cnpj}`;
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave)!.push(o);
+  }
+
+  for (const [, notas] of grupos) {
+    const primeira = notas[0];
+    const [novo] = await sql<Array<{ id: string }>>`
+      INSERT INTO fornecedor (
+        filial_id, codigo_externo, cnpj_ou_cpf, nome, razao_social,
+        cidade, uf, rg_ou_ie, ativo_compras
+      ) VALUES (
+        ${primeira.nota_filial_id}, NULL, ${primeira.emit_cnpj},
+        ${primeira.emit_fantasia ?? primeira.emit_nome},
+        ${primeira.emit_nome},
+        ${primeira.emit_cidade}, ${primeira.emit_uf}, ${primeira.emit_ie},
+        true
+      )
+      RETURNING id
+    `;
+    const ids = notas.map((n) => n.nota_id);
+    await sql`
+      UPDATE nota_compra SET fornecedor_id = ${novo.id}
+      WHERE id = ANY(${ids}::uuid[])
+    `;
+    auto_criados++;
+  }
+  console.log(`OK — ${auto_criados} fornecedores auto-criados, ${orfas.length} notas linkadas`);
+
   // Resumo final
   const [{ ainda_sem }] = await sql<Array<{ ainda_sem: number }>>`
     SELECT count(*)::int AS ainda_sem
     FROM nota_compra
     WHERE fornecedor_id IS NULL AND emit_cnpj IS NOT NULL
   `;
-  console.log(`\n  Ainda sem fornecedor: ${ainda_sem} (CNPJ desconhecido na organizacao)`);
+  console.log(`\n  Ainda sem fornecedor: ${ainda_sem} (notas sem emit_nome — caso raro)`);
 
   await sql.end();
 }

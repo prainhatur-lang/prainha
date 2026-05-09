@@ -196,10 +196,15 @@ async function inserirNfeCompleta(
   if (existente && !ehResumo) return 'DUPLICADA';
 
   // Match com fallback cross-filial — replica fornecedor de outra filial
-  // da mesma org se nao achar na filial alvo.
+  // da mesma org se nao achar na filial alvo. Ultimo fallback: cria do XML.
   const fornecedorId = await resolverFornecedorParaNota({
     filialId,
     emitCnpj: nfe.emitCnpj,
+    emitNome: nfe.emitNome,
+    emitFantasia: nfe.emitFantasia,
+    emitIe: nfe.emitIe,
+    emitUf: nfe.emitUf,
+    emitCidade: nfe.emitCidade,
   });
 
   const xmlHash = createHash('sha256').update(xml).digest('hex');
@@ -309,6 +314,8 @@ async function inserirResumo(
   const fornecedorId = await resolverFornecedorParaNota({
     filialId,
     emitCnpj: r.emitCnpj,
+    emitNome: r.emitNome,
+    // resumo (resNFe) so traz CNPJ + nome — nao tem fantasia/IE/UF/cidade
   });
 
   // Extrai serie e número da chave (posições 22-25 = série, 26-34 = número)

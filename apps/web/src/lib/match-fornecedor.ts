@@ -16,6 +16,11 @@ import { and, eq, sql, ne, isNull } from 'drizzle-orm';
 export async function resolverFornecedorParaNota(opts: {
   filialId: string;
   emitCnpj: string | null;
+  emitNome?: string | null;
+  emitFantasia?: string | null;
+  emitIe?: string | null;
+  emitUf?: string | null;
+  emitCidade?: string | null;
 }): Promise<string | null> {
   const cnpjDigits = opts.emitCnpj?.replace(/\D/g, '') ?? null;
   if (!cnpjDigits) return null;
@@ -73,30 +78,53 @@ export async function resolverFornecedorParaNota(opts: {
       ),
     )
     .limit(1);
-  if (!outraFilial) return null;
 
-  // 4. Replica pra filial alvo (codigo_externo NULL = criado na nuvem)
+  if (outraFilial) {
+    // 4. Replica pra filial alvo (codigo_externo NULL = criado na nuvem)
+    const [novo] = await db
+      .insert(schema.fornecedor)
+      .values({
+        filialId: opts.filialId,
+        codigoExterno: null,
+        cnpjOuCpf: outraFilial.cnpjOuCpf,
+        nome: outraFilial.nome,
+        razaoSocial: outraFilial.razaoSocial,
+        endereco: outraFilial.endereco,
+        numero: outraFilial.numero,
+        complemento: outraFilial.complemento,
+        bairro: outraFilial.bairro,
+        cidade: outraFilial.cidade,
+        uf: outraFilial.uf,
+        cep: outraFilial.cep,
+        email: outraFilial.email,
+        fonePrincipal: outraFilial.fonePrincipal,
+        foneSecundario: outraFilial.foneSecundario,
+        rgOuIe: outraFilial.rgOuIe,
+        ativoCompras: outraFilial.ativoCompras,
+        categoriaCompras: outraFilial.categoriaCompras,
+      })
+      .returning({ id: schema.fornecedor.id });
+    return novo?.id ?? null;
+  }
+
+  // 5. Ultimo fallback: cria fornecedor com dados do proprio XML.
+  //    Nada existe em nenhum lugar da organizacao, entao e um fornecedor novo.
+  //    Quando o agente local sincronizar com o Consumer, vai fazer match por
+  //    CNPJ e atualizar codigo_externo.
+  if (!opts.emitNome) return null;
   const [novo] = await db
     .insert(schema.fornecedor)
     .values({
       filialId: opts.filialId,
       codigoExterno: null,
-      cnpjOuCpf: outraFilial.cnpjOuCpf,
-      nome: outraFilial.nome,
-      razaoSocial: outraFilial.razaoSocial,
-      endereco: outraFilial.endereco,
-      numero: outraFilial.numero,
-      complemento: outraFilial.complemento,
-      bairro: outraFilial.bairro,
-      cidade: outraFilial.cidade,
-      uf: outraFilial.uf,
-      cep: outraFilial.cep,
-      email: outraFilial.email,
-      fonePrincipal: outraFilial.fonePrincipal,
-      foneSecundario: outraFilial.foneSecundario,
-      rgOuIe: outraFilial.rgOuIe,
-      ativoCompras: outraFilial.ativoCompras,
-      categoriaCompras: outraFilial.categoriaCompras,
+      cnpjOuCpf: cnpjDigits,
+      nome: opts.emitFantasia ?? opts.emitNome,
+      razaoSocial: opts.emitNome,
+      cidade: opts.emitCidade ?? null,
+      uf: opts.emitUf ?? null,
+      rgOuIe: opts.emitIe ?? null,
+      ativoCompras: true,
+      categoriaCompras: null,
     })
     .returning({ id: schema.fornecedor.id });
   return novo?.id ?? null;
