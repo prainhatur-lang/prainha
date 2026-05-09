@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
@@ -134,6 +134,45 @@ export default async function NotaDetalhePage(props: {
         .where(eq(schema.fornecedor.filialId, nota.filialId))
         .orderBy(asc(schema.fornecedor.nome))
         .limit(2000);
+
+  // Pedido de compra vinculado a esta NF (auto-match no recebimento ou manual)
+  const pedidoVinculado = await db
+    .select({
+      id: schema.pedidoCompra.id,
+      numero: schema.pedidoCompra.numero,
+      status: schema.pedidoCompra.status,
+      valorTotal: schema.pedidoCompra.valorTotal,
+      cotacaoId: schema.pedidoCompra.cotacaoId,
+      cotacaoNumero: schema.cotacao.numero,
+      reconciliadoEm: schema.pedidoCompra.reconciliadoEm,
+    })
+    .from(schema.pedidoCompra)
+    .leftJoin(schema.cotacao, eq(schema.cotacao.id, schema.pedidoCompra.cotacaoId))
+    .where(eq(schema.pedidoCompra.notaCompraId, id))
+    .limit(1);
+  const pedido = pedidoVinculado[0] ?? null;
+
+  // Pedidos candidatos (mesmo fornecedor, sem NF, status pendente) — pra
+  // permitir vinculo manual quando auto-match nao pegou
+  const pedidosCandidatos = !pedido && nota.fornecedorId
+    ? await db
+        .select({
+          id: schema.pedidoCompra.id,
+          numero: schema.pedidoCompra.numero,
+          status: schema.pedidoCompra.status,
+          valorTotal: schema.pedidoCompra.valorTotal,
+          criadoEm: schema.pedidoCompra.criadoEm,
+        })
+        .from(schema.pedidoCompra)
+        .where(
+          and(
+            eq(schema.pedidoCompra.filialId, nota.filialId),
+            eq(schema.pedidoCompra.fornecedorId, nota.fornecedorId),
+          ),
+        )
+        .orderBy(desc(schema.pedidoCompra.criadoEm))
+        .limit(20)
+    : [];
 
   // Categorias do plano de contas (DESPESA) pra escolher ao lancar
   const categorias = await db
@@ -279,6 +318,83 @@ export default async function NotaDetalhePage(props: {
               emitUf={nota.emitUf}
               emitCidade={nota.emitCidade}
             />
+          </div>
+        )}
+
+        {/* Card: pedido de compra vinculado a esta NF */}
+        {pedido && (
+          <div className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-emerald-900">
+                  ✓ NF vinculada ao Pedido de Compra #{pedido.numero}
+                </p>
+                <p className="mt-1 text-xs text-emerald-800">
+                  Status:{' '}
+                  <span className="font-medium">{pedido.status.replace('_', ' ')}</span>
+                  {pedido.cotacaoNumero && (
+                    <>
+                      {' · '}Originado da cotação #{pedido.cotacaoNumero}
+                    </>
+                  )}
+                  {pedido.valorTotal && (
+                    <>
+                      {' · '}Valor pedido <span className="font-mono">{brl(Number(pedido.valorTotal))}</span> vs NF{' '}
+                      <span className="font-mono">{brl(Number(nota.valorTotal ?? 0))}</span>
+                    </>
+                  )}
+                  {pedido.reconciliadoEm && (
+                    <span className="ml-2 rounded bg-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-900">
+                      RECONCILIADO
+                    </span>
+                  )}
+                </p>
+              </div>
+              <Link
+                href={`/cotacao/${pedido.cotacaoId ?? ''}`}
+                className="rounded-md border border-emerald-400 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50"
+              >
+                Ver pedido
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Card: candidatos a vincular manualmente quando auto-match nao pegou */}
+        {!pedido && pedidosCandidatos.length > 0 && (
+          <div className="mt-4 rounded-xl border border-sky-300 bg-sky-50 p-4">
+            <p className="text-sm font-semibold text-sky-900">
+              💡 {pedidosCandidatos.length} pedido(s) de compra deste fornecedor sem NF vinculada
+            </p>
+            <p className="mt-1 text-xs text-sky-800">
+              Auto-match não vinculou (ambíguo ou pedido fora da janela de 60 dias). Vincule manualmente:
+            </p>
+            <div className="mt-3 space-y-1">
+              {pedidosCandidatos.slice(0, 5).map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center justify-between rounded-md border border-sky-200 bg-white px-3 py-2 text-xs"
+                >
+                  <div>
+                    <span className="font-medium">Pedido #{p.numero}</span>
+                    <span className="ml-2 text-slate-500">
+                      {p.status.replace('_', ' ')} ·{' '}
+                      {brl(Number(p.valorTotal ?? 0))} ·{' '}
+                      {new Date(p.criadoEm).toLocaleDateString('pt-BR')}
+                    </span>
+                  </div>
+                  <form action={`/api/nota-compra/${id}/vincular-pedido`} method="POST">
+                    <input type="hidden" name="pedidoCompraId" value={p.id} />
+                    <button
+                      type="submit"
+                      className="rounded border border-sky-400 bg-sky-100 px-2 py-0.5 text-xs text-sky-900 hover:bg-sky-200"
+                    >
+                      Vincular
+                    </button>
+                  </form>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -14,6 +14,7 @@ import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
 import { findActiveCertForFilial, atualizarNsu } from '@/lib/certificado-resolver';
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
+import { tentarMatchPedidoComNota } from '@/lib/match-pedido-nf';
 import { consultarDistribuicao, UF_CODIGO } from '@/lib/sefaz-dfe';
 import { parseNfeXml } from '@/lib/nfe-parser';
 import { XMLParser } from 'fast-xml-parser';
@@ -293,6 +294,22 @@ async function inserirNfeCompleta(
       })),
     );
   }
+
+  // Auto-match com pedido_compra (cotacao -> pedido -> NF -> estoque)
+  if (fornecedorId && nfe.dataEmissao) {
+    try {
+      await tentarMatchPedidoComNota({
+        notaCompraId,
+        filialId,
+        fornecedorId,
+        dataEmissao: new Date(nfe.dataEmissao),
+      });
+    } catch (e) {
+      // Falha do match nao deve quebrar a ingestao da NFe
+      console.error('match pedido x NF falhou:', (e as Error).message);
+    }
+  }
+
   return upgrade ? 'ATUALIZADA' : 'INSERIDA';
 }
 
