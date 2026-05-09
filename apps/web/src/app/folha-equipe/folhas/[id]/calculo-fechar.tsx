@@ -46,6 +46,8 @@ interface PagamentoStatus {
   total: number;
   abertas: number;
   valorAbertas: number;
+  diariasRetroativas: number;
+  valorDiariasRetroativas: number;
 }
 
 interface Props {
@@ -80,6 +82,9 @@ export function CalculoFechar({
     .toISOString()
     .slice(0, 10);
   const [dataPgtoLote, setDataPgtoLote] = useState(hojeIso);
+
+  // Form da diaria retroativa
+  const [taxaHora, setTaxaHora] = useState('7.70');
 
   async function refreshPreview() {
     const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/preview`);
@@ -260,6 +265,73 @@ export function CalculoFechar({
         setMsg({
           tipo: 'ok',
           texto: `${data.estornadas} conta(s) estornada(s) (voltaram a "em aberto") ✓`,
+        });
+        router.refresh();
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
+    });
+  }
+
+  async function aplicarDiariaRetroativa() {
+    const taxa = Number(taxaHora.replace(',', '.'));
+    if (!Number.isFinite(taxa) || taxa <= 0) {
+      setMsg({ tipo: 'erro', texto: 'Taxa R$/h inválida' });
+      return;
+    }
+    if (
+      !confirm(
+        `Calcular diária a R$ ${taxa.toFixed(2)}/h pra todas as pessoas (exceto gerente) com horas > 0 e gerar contas a pagar de Diária?\n\n` +
+          'Use isso quando você fechou a folha sem ter mudado o papel das pessoas pra "diarista" — só Comissão foi gerada, faltou a parte de R$/h × horas.\n\n' +
+          'As contas novas vão pra contas a pagar com categoria Diária e descrição "Diária retroativa". Dá pra estornar depois.',
+      )
+    )
+      return;
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(
+        `/api/folha-equipe/folhas/${folhaId}/aplicar-diaria-retroativa`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taxaHora: taxa }),
+        },
+      );
+      if (r.ok) {
+        const data = await r.json();
+        if (data.criadas === 0) {
+          setMsg({ tipo: 'ok', texto: data.msg ?? 'Nada a aplicar.' });
+        } else {
+          setMsg({
+            tipo: 'ok',
+            texto: `${data.criadas} conta(s) de Diária criada(s) — total ${brl(data.valorTotal)} ✓`,
+          });
+        }
+        router.refresh();
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
+    });
+  }
+
+  async function estornarDiariaRetroativa() {
+    if (
+      !confirm(
+        'Estornar diária retroativa? Apaga todas as contas de "Diária retroativa" dessa folha.',
+      )
+    )
+      return;
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(
+        `/api/folha-equipe/folhas/${folhaId}/aplicar-diaria-retroativa`,
+        { method: 'DELETE' },
+      );
+      if (r.ok) {
+        const data = await r.json();
+        setMsg({
+          tipo: 'ok',
+          texto: `${data.estornadas} conta(s) de Diária retroativa estornada(s) ✓`,
         });
         router.refresh();
       } else {
@@ -655,6 +727,77 @@ export function CalculoFechar({
           </>
         )}
       </section>
+
+      {/* Diaria retroativa — so depois da folha fechada */}
+      {status === 'fechada' && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50/50 p-5 shadow-sm">
+          <h2 className="mb-2 text-base font-semibold text-slate-900">
+            ⏰ Diária retroativa
+          </h2>
+          <p className="mb-3 text-xs text-slate-600">
+            Use isso quando a folha foi fechada com todo mundo como{' '}
+            <strong>funcionário</strong> — só foi gerada Comissão (rateio do 10%),
+            faltou a parte de <code className="rounded bg-white px-1">R$/h × horas</code>.
+            Este botão calcula <code className="rounded bg-white px-1">horas × taxa</code>{' '}
+            pra cada pessoa não-gerente com horas {'>'} 0 e gera contas a pagar de Diária.
+          </p>
+
+          {pagamentoStatus.diariasRetroativas > 0 ? (
+            <div className="flex items-start justify-between gap-4 rounded-md border border-emerald-200 bg-white p-3">
+              <div>
+                <p className="text-sm font-medium text-emerald-700">
+                  ✓ Diária retroativa já aplicada nessa folha
+                </p>
+                <p className="mt-1 text-xs text-slate-600">
+                  <span className="font-semibold">{pagamentoStatus.diariasRetroativas}</span>{' '}
+                  conta(s) gerada(s) · total{' '}
+                  <span className="font-mono font-semibold">
+                    {brl(pagamentoStatus.valorDiariasRetroativas)}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Se a taxa estiver errada, estorna e aplica de novo.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={estornarDiariaRetroativa}
+                disabled={pending}
+                className="shrink-0 rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+              >
+                ↩ Estornar diária retroativa
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-end gap-3 rounded-md border border-slate-200 bg-white p-3">
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Taxa R$/h
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={taxaHora}
+                  onChange={(e) => setTaxaHora(e.target.value)}
+                  className="mt-1 w-28 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={aplicarDiariaRetroativa}
+                disabled={pending || !taxaHora}
+                className="rounded-md bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700 disabled:bg-slate-400"
+              >
+                {pending ? 'Aplicando...' : '⏰ Aplicar diária retroativa'}
+              </button>
+              <p className="basis-full text-[11px] text-slate-500">
+                Vai gerar 1 conta a pagar (categoria Diária) por pessoa não-gerente com horas {'>'} 0,
+                marcadas como &quot;Diária retroativa&quot; pra dar pra estornar depois.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Baixa em lote — so depois da folha fechada */}
       {status === 'fechada' && pagamentoStatus.total > 0 && (

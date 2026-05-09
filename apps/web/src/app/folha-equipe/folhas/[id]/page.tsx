@@ -109,6 +109,8 @@ export default async function FolhaDetalhePage(props: {
 
   // Status de pagamento das conta_pagar geradas pela folha — usado pra
   // mostrar a opcao "Baixar lote" quando ha contas em aberto.
+  // Tambem conta diarias retroativas pra mostrar status do botao
+  // "Aplicar diaria retroativa".
   const [pgtoStatus] = await db
     .select({
       total: sql<number>`COUNT(*)::int`,
@@ -116,6 +118,12 @@ export default async function FolhaDetalhePage(props: {
       valorAbertas: sql<string>`COALESCE(
         SUM(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))
           FILTER (WHERE ${schema.contaPagar.dataPagamento} IS NULL),
+        0
+      )::text`,
+      diariasRetroativas: sql<number>`COUNT(*) FILTER (WHERE ${schema.contaPagar.descricao} LIKE 'Diária retroativa%')::int`,
+      valorDiariasRetroativas: sql<string>`COALESCE(
+        SUM(${schema.contaPagar.valor})
+          FILTER (WHERE ${schema.contaPagar.descricao} LIKE 'Diária retroativa%'),
         0
       )::text`,
     })
@@ -415,6 +423,8 @@ export default async function FolhaDetalhePage(props: {
             total: Number(pgtoStatus?.total ?? 0),
             abertas: Number(pgtoStatus?.abertas ?? 0),
             valorAbertas: Number(pgtoStatus?.valorAbertas ?? 0),
+            diariasRetroativas: Number(pgtoStatus?.diariasRetroativas ?? 0),
+            valorDiariasRetroativas: Number(pgtoStatus?.valorDiariasRetroativas ?? 0),
           }}
         />
       </section>
