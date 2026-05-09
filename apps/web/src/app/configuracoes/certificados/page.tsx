@@ -85,6 +85,69 @@ export default async function CertificadosPage() {
           />
         </div>
 
+        {/* Status de cobertura por filial */}
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold text-slate-900">Cobertura por filial</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Filiais que conseguem (ou não) consultar SEFAZ atualmente.
+          </p>
+          <div className="mt-3 space-y-1">
+            {filiais.map((f) => {
+              const certPropro = certificados.find(
+                (c) => c.filialId === f.id && c.ativo,
+              );
+              const certCompartilhado = certificados.find(
+                (c) => c.compartilharOrganizacao && c.ativo && c.filialId !== f.id,
+              );
+              const cobertaPor = certPropro
+                ? { tipo: 'propria' as const, cert: certPropro }
+                : certCompartilhado
+                  ? { tipo: 'compartilhada' as const, cert: certCompartilhado }
+                  : null;
+              const certFilialNome = cobertaPor
+                ? filialMap.get(cobertaPor.cert.filialId)?.nome
+                : null;
+              return (
+                <div
+                  key={f.id}
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${
+                    cobertaPor
+                      ? 'border-emerald-200 bg-emerald-50'
+                      : 'border-amber-300 bg-amber-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={
+                        cobertaPor ? 'text-emerald-700' : 'text-amber-700'
+                      }
+                    >
+                      {cobertaPor ? '✓' : '⚠'}
+                    </span>
+                    <span className="font-medium text-slate-900">{f.nome}</span>
+                    {cobertaPor?.tipo === 'propria' && (
+                      <span className="text-[10px] text-emerald-700">
+                        cert próprio
+                      </span>
+                    )}
+                    {cobertaPor?.tipo === 'compartilhada' && (
+                      <span className="text-[10px] text-emerald-700">
+                        usa cert compartilhado de {certFilialNome}
+                      </span>
+                    )}
+                  </div>
+                  {!cobertaPor && (
+                    <span className="text-[10px] text-amber-800">
+                      sem certificado — faça upload acima ou marque um existente como
+                      compartilhado
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="mt-8">
           <h2 className="text-sm font-semibold text-slate-900">Certificados cadastrados</h2>
           {certificados.length === 0 ? (

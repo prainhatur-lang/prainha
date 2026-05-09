@@ -53,7 +53,21 @@ export function ConsultarSefazBtn({
       });
       const d = (await r.json()) as ResumoResp;
       if (!r.ok || !d.ok) {
-        setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
+        const erroBase = d.error ?? `HTTP ${r.status}`;
+        // Hints acionaveis pra erros comuns
+        let hint = '';
+        if (/sem certificado/i.test(erroBase)) {
+          hint = ' → Faça upload do PFX ou marque cert existente como compartilhado.';
+        } else if (/CERTIFICATE_SECRET/i.test(erroBase)) {
+          hint = ' → Defina CERTIFICATE_SECRET nas env vars do Vercel.';
+        } else if (/Unsupported PKCS12/i.test(erroBase)) {
+          hint = ' → Re-exporte o PFX com algoritmo legacy ou troque por outro.';
+        } else if (/expirad/i.test(erroBase)) {
+          hint = ' → Faça upload de um cert válido.';
+        } else if (/senha/i.test(erroBase)) {
+          hint = ' → Verifique a senha do PFX e re-envie.';
+        }
+        setMsg({ tipo: 'erro', texto: `${erroBase}${hint}` });
         return;
       }
       const partes: string[] = [];
