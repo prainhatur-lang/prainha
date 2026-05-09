@@ -56,6 +56,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Cotações', href: '/cotacao' },
       { label: 'Pedidos de compra', href: '/compras/pedidos' },
+      { label: 'Aguardando NF', href: '/compras/aguardando-nf' },
       { label: 'Reconciliação produto × fornecedor', href: '/compras/reconciliacao' },
     ],
   },
