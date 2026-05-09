@@ -74,6 +74,7 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
       id: schema.fornecedor.id,
       nome: schema.fornecedor.nome,
       categoria: schema.fornecedor.categoriaCompras,
+      valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
     })
     .from(schema.fornecedor)
     .where(
@@ -113,6 +114,7 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
               ...f,
               nome: f.nome ?? '(sem nome)',
               categoria: f.categoria ?? 'Outros',
+              valorPedidoMinimo: f.valorPedidoMinimo,
             }))}
           />
         )}

@@ -16,6 +16,7 @@ interface Fornecedor {
   id: string;
   nome: string;
   categoria: string;
+  valorPedidoMinimo: string | null;
 }
 
 interface ItemSelecionado {
@@ -309,25 +310,36 @@ export function NovaCotacaoForm(props: {
               </select>
             </div>
             <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
-              {fornecedoresFiltrados.map((f) => (
-                <label
-                  key={f.id}
-                  className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-xs ${
-                    fornecedoresSelecionados.has(f.id)
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={fornecedoresSelecionados.has(f.id)}
-                    onChange={() => toggleFornecedor(f.id)}
-                    className="h-3.5 w-3.5"
-                  />
-                  <span className="flex-1">{f.nome}</span>
-                  <span className="text-[10px] text-slate-400">{f.categoria}</span>
-                </label>
-              ))}
+              {fornecedoresFiltrados.map((f) => {
+                const minimo = f.valorPedidoMinimo ? Number(f.valorPedidoMinimo) : null;
+                return (
+                  <label
+                    key={f.id}
+                    className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-xs ${
+                      fornecedoresSelecionados.has(f.id)
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={fornecedoresSelecionados.has(f.id)}
+                      onChange={() => toggleFornecedor(f.id)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <span className="flex-1">{f.nome}</span>
+                    {minimo != null && minimo > 0 && (
+                      <span
+                        className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800"
+                        title={`Pedido mínimo: R$ ${minimo.toFixed(2).replace('.', ',')}`}
+                      >
+                        mín. R$ {minimo.toFixed(0)}
+                      </span>
+                    )}
+                    <span className="text-[10px] text-slate-400">{f.categoria}</span>
+                  </label>
+                );
+              })}
               {fornecedoresFiltrados.length === 0 && (
                 <p className="col-span-full p-2 text-xs text-slate-400">
                   Nenhum fornecedor com esse filtro.

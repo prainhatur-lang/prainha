@@ -6,6 +6,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, ilike, isNull, sql, sum } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
+import { EditPedidoMinimo } from './edit-pedido-minimo';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,6 +72,7 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
       uf: schema.fornecedor.uf,
       email: schema.fornecedor.email,
       fonePrincipal: schema.fornecedor.fonePrincipal,
+      valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
     })
     .from(schema.fornecedor)
     .where(where)
@@ -171,13 +173,14 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                 <th className="px-4 py-2">CNPJ / CPF</th>
                 <th className="px-4 py-2">Cidade/UF</th>
                 <th className="px-4 py-2">Contato</th>
+                <th className="px-4 py-2 text-right">Pedido mín.</th>
                 <th className="px-4 py-2 text-right">Em aberto</th>
               </tr>
             </thead>
             <tbody>
               {fornecedores.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500">
                     {q ? 'Nenhum fornecedor com esse filtro.' : 'Aguardando sincronização do agente.'}
                   </td>
                 </tr>
@@ -196,6 +199,9 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-600">
                         {[f.email, f.fonePrincipal].filter(Boolean).join(' · ') || '—'}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <EditPedidoMinimo fornecedorId={f.id} valorAtual={f.valorPedidoMinimo} />
                       </td>
                       <td className="px-4 py-2 text-right">
                         {aberto ? (

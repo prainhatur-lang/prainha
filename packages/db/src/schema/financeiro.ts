@@ -56,6 +56,9 @@ export const fornecedor = pgTable(
     /** Categoria livre pro modulo de compras (Bebidas, Alimentos, Limpeza,
      *  Laticinios, etc). Permite agrupar fornecedores na UI. Null = sem categoria. */
     categoriaCompras: varchar('categoria_compras', { length: 50 }),
+    /** Valor minimo de pedido pra esse fornecedor entregar. Quando uma cotacao
+     *  vai dar pra ele um total abaixo disso, sistema avisa. Null = sem minimo. */
+    valorPedidoMinimo: numeric('valor_pedido_minimo', { precision: 14, scale: 2 }),
     /** Dados bancarios pra pagamento da folha. Editaveis via tela
      *  /folha-equipe/pessoas. NAO sao sobrescritos pelo agente (Consumer
      *  nao tem essas colunas em FORNECEDORES). NULL = sem cadastro. */
