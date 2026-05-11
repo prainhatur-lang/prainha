@@ -58,6 +58,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Pedidos de compra', href: '/compras/pedidos' },
       { label: 'Aguardando NF', href: '/compras/aguardando-nf' },
       { label: 'Revisar items de NF', href: '/compras/match-items' },
+      { label: 'Categorizar produtos do Consumer', href: '/cadastros/produtos/categorizar' },
       { label: 'Reconciliação produto × fornecedor', href: '/compras/reconciliacao' },
     ],
   },
