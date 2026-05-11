@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { consultarEProcessar, type ResumoConsulta } from '@/lib/nfe-distribuicao';
 import { manifestarPendentes } from '@/lib/nfe-manifestar';
 
@@ -65,10 +65,16 @@ export async function POST(req: Request) {
       .where(eq(schema.filial.id, filialId))
       .limit(1);
     if (filialAlvo?.organizacaoId) {
+      // Ignora filiais pausadas (loja fechada temporariamente)
       const filiaisDaOrg = await db
         .select({ id: schema.filial.id })
         .from(schema.filial)
-        .where(eq(schema.filial.organizacaoId, filialAlvo.organizacaoId));
+        .where(
+          and(
+            eq(schema.filial.organizacaoId, filialAlvo.organizacaoId),
+            isNull(schema.filial.pausadaEm),
+          ),
+        );
       filiaisIds = filiaisDaOrg.map((f) => f.id);
     }
   }

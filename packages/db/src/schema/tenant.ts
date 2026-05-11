@@ -94,6 +94,12 @@ export const filial = pgTable(
      *  Quando null/vazio, engine usa defaults do codigo (lib/conciliacao-params).
      *  Schema: ver type ParametrosConciliacao. */
     parametrosConciliacao: jsonb('parametros_conciliacao').$type<ParametrosConciliacao>(),
+    /** Marca a filial como pausada (loja fechada temporariamente). Cron de
+     *  SEFAZ DF-e nao consulta filiais pausadas. Null = ativa. Pra reativar,
+     *  basta setar null. */
+    pausadaEm: timestamp('pausada_em', { withTimezone: true }),
+    /** Motivo da pausa (opcional) — ex: "fechada ate julho/2026". */
+    pausadaMotivo: varchar('pausada_motivo', { length: 200 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

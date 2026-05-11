@@ -63,6 +63,19 @@ export default async function CertificadosPage() {
 
   const filialMap = new Map(filiais.map((f) => [f.id, f]));
 
+  // Carrega flag de pausada por filial (loja fechada temporariamente)
+  const pausadasRows = filialIds.length
+    ? await db
+        .select({
+          id: schema.filial.id,
+          pausadaEm: schema.filial.pausadaEm,
+          pausadaMotivo: schema.filial.pausadaMotivo,
+        })
+        .from(schema.filial)
+        .where(inArray(schema.filial.id, filialIds))
+    : [];
+  const pausadaPorFilial = new Map(pausadasRows.map((p) => [p.id, p]));
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -93,6 +106,8 @@ export default async function CertificadosPage() {
           </p>
           <div className="mt-3 space-y-1">
             {filiais.map((f) => {
+              const pausada = pausadaPorFilial.get(f.id);
+              const estaPausada = !!pausada?.pausadaEm;
               const certPropro = certificados.find(
                 (c) => c.filialId === f.id && c.ativo,
               );
@@ -111,32 +126,45 @@ export default async function CertificadosPage() {
                 <div
                   key={f.id}
                   className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${
-                    cobertaPor
-                      ? 'border-emerald-200 bg-emerald-50'
-                      : 'border-amber-300 bg-amber-50'
+                    estaPausada
+                      ? 'border-slate-200 bg-slate-50 opacity-70'
+                      : cobertaPor
+                        ? 'border-emerald-200 bg-emerald-50'
+                        : 'border-amber-300 bg-amber-50'
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <span
                       className={
-                        cobertaPor ? 'text-emerald-700' : 'text-amber-700'
+                        estaPausada
+                          ? 'text-slate-500'
+                          : cobertaPor
+                            ? 'text-emerald-700'
+                            : 'text-amber-700'
                       }
                     >
-                      {cobertaPor ? '✓' : '⚠'}
+                      {estaPausada ? '⏸' : cobertaPor ? '✓' : '⚠'}
                     </span>
-                    <span className="font-medium text-slate-900">{f.nome}</span>
-                    {cobertaPor?.tipo === 'propria' && (
+                    <span className={`font-medium ${estaPausada ? 'text-slate-600 line-through' : 'text-slate-900'}`}>
+                      {f.nome}
+                    </span>
+                    {estaPausada && (
+                      <span className="text-[10px] text-slate-500">
+                        pausada{pausada?.pausadaMotivo ? ` · ${pausada.pausadaMotivo}` : ''}
+                      </span>
+                    )}
+                    {!estaPausada && cobertaPor?.tipo === 'propria' && (
                       <span className="text-[10px] text-emerald-700">
                         cert próprio
                       </span>
                     )}
-                    {cobertaPor?.tipo === 'compartilhada' && (
+                    {!estaPausada && cobertaPor?.tipo === 'compartilhada' && (
                       <span className="text-[10px] text-emerald-700">
                         usa cert compartilhado de {certFilialNome}
                       </span>
                     )}
                   </div>
-                  {!cobertaPor && (
+                  {!estaPausada && !cobertaPor && (
                     <span className="text-[10px] text-amber-800">
                       sem certificado — faça upload acima ou marque um existente como
                       compartilhado

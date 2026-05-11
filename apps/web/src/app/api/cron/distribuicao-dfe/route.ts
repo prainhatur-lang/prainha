@@ -9,7 +9,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { eq, isNull } from 'drizzle-orm';
 import { consultarEProcessar } from '@/lib/nfe-distribuicao';
 import { manifestarPendentes } from '@/lib/nfe-manifestar';
 import { findActiveCertForFilial } from '@/lib/certificado-resolver';
@@ -30,13 +30,14 @@ export async function GET(req: Request) {
   // Isso permite que 1 cert da matriz atenda todas as filiais do mesmo cnpj_raiz.
   const hoje = new Date().toISOString().slice(0, 10);
 
-  // Busca todas as filiais ativas
+  // Busca todas as filiais ativas (ignora pausadas — loja fechada)
   const filiais = await db
     .select({
       filialId: schema.filial.id,
       organizacaoId: schema.filial.organizacaoId,
     })
-    .from(schema.filial);
+    .from(schema.filial)
+    .where(isNull(schema.filial.pausadaEm));
 
   // Resolve cert pra cada filial e filtra as que tem cert disponivel + nao expirado
   const certs: Array<{ filialId: string; validadeFim: string | null }> = [];
