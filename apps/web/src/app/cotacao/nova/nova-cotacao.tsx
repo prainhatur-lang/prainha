@@ -10,6 +10,8 @@ interface Produto {
   categoria: string;
   unidade: string;
   marcasAceitas: string[];
+  /** Lista de fornecedorIds que tem este produto vinculado (produto_fornecedor) */
+  fornecedoresQueVendem: string[];
 }
 
 interface Fornecedor {
@@ -129,16 +131,52 @@ export function NovaCotacaoForm(props: {
     return Array.from(new Set(props.fornecedores.map((f) => f.categoria))).sort();
   }, [props.fornecedores]);
 
-  const fornecedoresFiltrados = useMemo(() => {
-    return props.fornecedores.filter((f) => {
-      if (categoriaFornFiltro && f.categoria !== categoriaFornFiltro) return false;
-      if (filtroForn.trim()) {
-        const q = filtroForn.toLowerCase();
-        if (!f.nome.toLowerCase().includes(q)) return false;
+  // Pra cada fornecedor, quantos itens selecionados ele supplya (via produto_fornecedor)
+  const supplyPorFornecedor = useMemo(() => {
+    const map = new Map<string, number>();
+    const selecionados = Object.keys(itens);
+    if (selecionados.length === 0) return map;
+    for (const f of props.fornecedores) map.set(f.id, 0);
+    for (const itemId of selecionados) {
+      const produto = props.produtos.find((p) => p.id === itemId);
+      if (!produto) continue;
+      for (const fId of produto.fornecedoresQueVendem) {
+        if (map.has(fId)) map.set(fId, (map.get(fId) ?? 0) + 1);
       }
-      return true;
-    });
-  }, [props.fornecedores, filtroForn, categoriaFornFiltro]);
+    }
+    return map;
+  }, [itens, props.produtos, props.fornecedores]);
+
+  const totalItensSelecionados = Object.keys(itens).length;
+
+  const fornecedoresFiltrados = useMemo(() => {
+    return props.fornecedores
+      .filter((f) => {
+        if (categoriaFornFiltro && f.categoria !== categoriaFornFiltro) return false;
+        if (filtroForn.trim()) {
+          const q = filtroForn.toLowerCase();
+          if (!f.nome.toLowerCase().includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        // Quando ha itens selecionados, mostra fornecedores que supplyam mais primeiro
+        if (totalItensSelecionados > 0) {
+          const sa = supplyPorFornecedor.get(a.id) ?? 0;
+          const sb = supplyPorFornecedor.get(b.id) ?? 0;
+          if (sa !== sb) return sb - sa;
+        }
+        return a.nome.localeCompare(b.nome);
+      });
+  }, [props.fornecedores, filtroForn, categoriaFornFiltro, supplyPorFornecedor, totalItensSelecionados]);
+
+  function selecionarRecomendados() {
+    const ids = new Set<string>();
+    for (const f of props.fornecedores) {
+      if ((supplyPorFornecedor.get(f.id) ?? 0) > 0) ids.add(f.id);
+    }
+    setFornecedoresSelecionados(ids);
+  }
 
   function toggleProduto(p: Produto) {
     setItens((prev) => {
@@ -275,9 +313,22 @@ export function NovaCotacaoForm(props: {
       <section className="rounded-xl border border-slate-200 bg-white p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-900">Fornecedores convocados</h2>
-          <span className="text-xs text-slate-500">
-            {fornecedoresSelecionados.size}/{props.fornecedores.length} selecionados
-          </span>
+          <div className="flex items-center gap-2">
+            {totalItensSelecionados > 0 &&
+              [...supplyPorFornecedor.values()].some((v) => v > 0) && (
+                <button
+                  type="button"
+                  onClick={selecionarRecomendados}
+                  className="rounded-md border border-sky-300 bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-800 hover:bg-sky-100"
+                  title="Marca todos os fornecedores que têm pelo menos 1 item selecionado"
+                >
+                  ✨ Selecionar recomendados
+                </button>
+              )}
+            <span className="text-xs text-slate-500">
+              {fornecedoresSelecionados.size}/{props.fornecedores.length} selecionados
+            </span>
+          </div>
         </div>
         {props.fornecedores.length === 0 ? (
           <p className="text-xs text-slate-500">
@@ -312,13 +363,17 @@ export function NovaCotacaoForm(props: {
             <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
               {fornecedoresFiltrados.map((f) => {
                 const minimo = f.valorPedidoMinimo ? Number(f.valorPedidoMinimo) : null;
+                const supply = supplyPorFornecedor.get(f.id) ?? 0;
+                const naoVende = totalItensSelecionados > 0 && supply === 0;
                 return (
                   <label
                     key={f.id}
                     className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-xs ${
                       fornecedoresSelecionados.has(f.id)
                         ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        : naoVende
+                          ? 'border-slate-200 bg-slate-50 text-slate-400 opacity-60'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
                     <input
@@ -328,6 +383,14 @@ export function NovaCotacaoForm(props: {
                       className="h-3.5 w-3.5"
                     />
                     <span className="flex-1">{f.nome}</span>
+                    {totalItensSelecionados > 0 && supply > 0 && (
+                      <span
+                        className="rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-medium text-sky-900"
+                        title={`Tem vínculo com ${supply} dos ${totalItensSelecionados} itens selecionados`}
+                      >
+                        {supply}/{totalItensSelecionados}
+                      </span>
+                    )}
                     {minimo != null && minimo > 0 && (
                       <span
                         className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800"

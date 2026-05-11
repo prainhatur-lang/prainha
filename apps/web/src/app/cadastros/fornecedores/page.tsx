@@ -101,6 +101,19 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
     if (a.fornecedorId) abertasByFornecedor.set(a.fornecedorId, { qtd: Number(a.qtd), total: Number(a.total ?? 0) });
   }
 
+  // Count de produtos vinculados por fornecedor (pra mostrar na lista)
+  const vinculos = await db
+    .select({
+      fornecedorId: schema.produtoFornecedor.fornecedorId,
+      qtd: count(),
+    })
+    .from(schema.produtoFornecedor)
+    .where(eq(schema.produtoFornecedor.filialId, filialSelecionada.id))
+    .groupBy(schema.produtoFornecedor.fornecedorId);
+  const produtosByFornecedor = new Map<string, number>(
+    vinculos.map((v) => [v.fornecedorId, Number(v.qtd)]),
+  );
+
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
@@ -174,13 +187,14 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                 <th className="px-4 py-2">Cidade/UF</th>
                 <th className="px-4 py-2">Contato</th>
                 <th className="px-4 py-2 text-right">Pedido mín.</th>
+                <th className="px-4 py-2 text-right">Produtos</th>
                 <th className="px-4 py-2 text-right">Em aberto</th>
               </tr>
             </thead>
             <tbody>
               {fornecedores.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-xs text-slate-500">
                     {q ? 'Nenhum fornecedor com esse filtro.' : 'Aguardando sincronização do agente.'}
                   </td>
                 </tr>
@@ -202,6 +216,14 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                       </td>
                       <td className="px-4 py-2 text-right">
                         <EditPedidoMinimo fornecedorId={f.id} valorAtual={f.valorPedidoMinimo} />
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <Link
+                          href={`/cadastros/fornecedores/${f.id}/produtos`}
+                          className="inline-block rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                        >
+                          {produtosByFornecedor.get(f.id) ?? 0} vínculos →
+                        </Link>
                       </td>
                       <td className="px-4 py-2 text-right">
                         {aberto ? (

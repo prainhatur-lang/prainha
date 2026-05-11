@@ -52,6 +52,21 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
     )
     .orderBy(asc(schema.produto.categoriaCompras), asc(schema.produto.nome));
 
+  // Pega vinculos produto_fornecedor (pra sugerir fornecedores ao selecionar itens)
+  const vincRows = await db
+    .select({
+      produtoId: schema.produtoFornecedor.produtoId,
+      fornecedorId: schema.produtoFornecedor.fornecedorId,
+    })
+    .from(schema.produtoFornecedor)
+    .where(eq(schema.produtoFornecedor.filialId, filial.id));
+  // Map: produtoId -> [fornecedorIds]
+  const fornecedoresPorProduto: Record<string, string[]> = {};
+  for (const v of vincRows) {
+    if (!fornecedoresPorProduto[v.produtoId]) fornecedoresPorProduto[v.produtoId] = [];
+    fornecedoresPorProduto[v.produtoId].push(v.fornecedorId);
+  }
+
   // Pega marcas aceitas por produto (pra mostrar como badge na UI)
   const marcasRows = await db
     .select({
@@ -109,6 +124,7 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
               nome: p.nome ?? '(sem nome)',
               categoria: p.categoria ?? 'Sem categoria',
               marcasAceitas: marcasPorProduto[p.id] ?? [],
+              fornecedoresQueVendem: fornecedoresPorProduto[p.id] ?? [],
             }))}
             fornecedores={fornecedores.map((f) => ({
               ...f,
