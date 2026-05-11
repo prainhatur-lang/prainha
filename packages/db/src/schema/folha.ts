@@ -63,6 +63,10 @@ export const fornecedorFolha = pgTable(
      *  lançar manualmente cada semana. Útil pra gerentes/fiscais/etc com
      *  bônus recorrente. NULL = sem bônus fixo. */
     bonusFixoSemanal: numeric('bonus_fixo_semanal', { precision: 10, scale: 2 }),
+    /** Bônus por dia trabalhado (opcional). Quando preenchido, gera
+     *  acréscimo = dias_com_horas_>_0 × valor. Diferente do bonus_fixo_semanal
+     *  porque escala com os dias batidos no espelho. */
+    bonusPorDia: numeric('bonus_por_dia', { precision: 10, scale: 2 }),
     /** Codigo do colaborador no Consumer (PEDIDOS.CODIGOCOLABORADOR) — pra
      *  vincular automaticamente a comissao gerada via PDV (Consumer ja
      *  atribui o garcom ao pedido). */

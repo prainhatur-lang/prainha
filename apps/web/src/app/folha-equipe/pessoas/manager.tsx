@@ -10,6 +10,7 @@ interface Pessoa {
   gerenteValorFixoDia: number | null;
   diaristaTaxaHoraOverride: number | null;
   bonusFixoSemanal: number | null;
+  bonusPorDia: number | null;
   ativo: boolean;
   clienteId: string | null;
   fornecedorNome: string;
@@ -142,6 +143,11 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                       )}
                       {p.papel === 'diarista' && p.diaristaTaxaHoraOverride !== null && (
                         <span className="ml-2 text-xs text-slate-500">· R${p.diaristaTaxaHoraOverride}/h</span>
+                      )}
+                      {p.bonusPorDia != null && p.bonusPorDia > 0 && (
+                        <span className="ml-2 text-xs text-emerald-700">
+                          · 🗓 R${p.bonusPorDia.toFixed(2)}/dia
+                        </span>
                       )}
                       {p.bonusFixoSemanal != null && p.bonusFixoSemanal > 0 && (
                         <span className="ml-2 text-xs text-emerald-700" title="Bônus fixo semanal">
@@ -324,6 +330,8 @@ function PessoaEditRow({
   const [usaOverride, setUsaOverride] = useState(pessoa.diaristaTaxaHoraOverride !== null);
   const [usaBonusFixo, setUsaBonusFixo] = useState(pessoa.bonusFixoSemanal != null);
   const [bonusFixoSemanal, setBonusFixoSemanal] = useState(pessoa.bonusFixoSemanal ?? 0);
+  const [usaBonusPorDia, setUsaBonusPorDia] = useState(pessoa.bonusPorDia != null);
+  const [bonusPorDia, setBonusPorDia] = useState(pessoa.bonusPorDia ?? 0);
   const [ativo, setAtivo] = useState(pessoa.ativo);
   const [bancoNome, setBancoNome] = useState(pessoa.bancoNome ?? '');
   const [bancoAgencia, setBancoAgencia] = useState(pessoa.bancoAgencia ?? '');
@@ -344,6 +352,7 @@ function PessoaEditRow({
           diaristaTaxaHoraOverride:
             papel === 'diarista' && usaOverride ? diaristaTaxaHoraOverride : null,
           bonusFixoSemanal: usaBonusFixo && bonusFixoSemanal > 0 ? bonusFixoSemanal : null,
+          bonusPorDia: usaBonusPorDia && bonusPorDia > 0 ? bonusPorDia : null,
           ativo,
           bancoNome,
           bancoAgencia,
@@ -471,6 +480,33 @@ function PessoaEditRow({
                   className="w-48 rounded border border-slate-300 px-3 py-2 text-sm"
                 />
                 <span className="text-xs text-slate-500">por semana</span>
+              </div>
+            )}
+          </div>
+
+          <div className="col-span-2 border-t border-slate-200 pt-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={usaBonusPorDia}
+                onChange={(e) => setUsaBonusPorDia(e.target.checked)}
+                className="h-4 w-4"
+              />
+              🗓 Bônus por dia trabalhado (acréscimo = dias com horas no espelho × valor)
+            </label>
+            {usaBonusPorDia && (
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-slate-500">R$</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={bonusPorDia}
+                  onChange={(e) => setBonusPorDia(Number(e.target.value))}
+                  placeholder="ex: 120.00"
+                  className="w-48 rounded border border-slate-300 px-3 py-2 text-sm"
+                />
+                <span className="text-xs text-slate-500">por dia trabalhado</span>
               </div>
             )}
           </div>

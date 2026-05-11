@@ -70,6 +70,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
       diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
+      bonusPorDia: schema.fornecedorFolha.bonusPorDia,
       nome: schema.fornecedor.nome,
     })
     .from(schema.fornecedorFolha)
@@ -116,7 +117,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     });
     ajustesMap.set(a.fornecedorId, cur);
   }
-  // Injeta bonus fixo semanal como acrescimo automatico (vem do cadastro)
+  // Injeta bonus fixo semanal e por dia como acrescimos automaticos
+  // (vem do cadastro — sem precisar lancar manual a cada folha).
   for (const p of pessoasRows) {
     if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
       const cur = ajustesMap.get(p.fornecedorId) ?? [];
@@ -126,6 +128,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         descricao: '💰 Bônus fixo semanal (cadastro)',
       });
       ajustesMap.set(p.fornecedorId, cur);
+    }
+    if (p.bonusPorDia != null && Number(p.bonusPorDia) > 0) {
+      const porDia = horasMap.get(p.fornecedorId) ?? {};
+      const diasTrab = Object.values(porDia).filter((m) => m > 0).length;
+      if (diasTrab > 0) {
+        const valorDia = Number(p.bonusPorDia);
+        const cur = ajustesMap.get(p.fornecedorId) ?? [];
+        cur.push({
+          tipo: 'acrescimo',
+          valor: valorDia * diasTrab,
+          descricao: `🗓 Bônus por dia (${diasTrab} × R$ ${valorDia.toFixed(2)})`,
+        });
+        ajustesMap.set(p.fornecedorId, cur);
+      }
     }
   }
 

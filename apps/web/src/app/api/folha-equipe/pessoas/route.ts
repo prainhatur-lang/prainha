@@ -89,6 +89,7 @@ const PutBody = z.object({
   gerenteValorFixoDia: z.number().nullable(),
   diaristaTaxaHoraOverride: z.number().nullable(),
   bonusFixoSemanal: z.number().nullable().optional(),
+  bonusPorDia: z.number().nullable().optional(),
   ativo: z.boolean(),
   // Dados bancarios — opcionais, viram NULL no DB se vazios.
   bancoNome: z.string().max(100).nullable().optional(),
@@ -144,6 +145,7 @@ export async function PUT(req: NextRequest) {
         body.diaristaTaxaHoraOverride !== null ? String(body.diaristaTaxaHoraOverride) : null,
       bonusFixoSemanal:
         body.bonusFixoSemanal != null ? String(body.bonusFixoSemanal) : null,
+      bonusPorDia: body.bonusPorDia != null ? String(body.bonusPorDia) : null,
       ativo: body.ativo,
       atualizadoEm: new Date(),
     })
