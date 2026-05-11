@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { sugerirCategoria } from '@/lib/sugerir-categoria';
 
 interface Produto {
   id: string;
@@ -42,6 +43,31 @@ export function CategorizarForm({
     } else {
       setSelecionados(new Set(produtos.map((p) => p.id)));
     }
+  }
+
+  // Pre-computa sugestoes uma vez
+  const sugestoes = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of produtos) {
+      const s = sugerirCategoria(p.nome);
+      if (s) map.set(p.id, s);
+    }
+    return map;
+  }, [produtos]);
+
+  // Agrupa por categoria sugerida pra mostrar atalhos
+  const porSugestao = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const [id, cat] of sugestoes) {
+      if (!m.has(cat)) m.set(cat, []);
+      m.get(cat)!.push(id);
+    }
+    return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [sugestoes]);
+
+  function marcarSugestao(cat: string, ids: string[]) {
+    setSelecionados(new Set(ids));
+    setCategoria(cat);
   }
 
   async function salvar() {
@@ -108,6 +134,37 @@ export function CategorizarForm({
 
   return (
     <div>
+      {/* Painel de sugestoes automaticas */}
+      {porSugestao.length > 0 && (
+        <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-3">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h3 className="text-xs font-semibold text-sky-900">
+              ✨ Sugestões automáticas baseadas no nome
+            </h3>
+            <span className="text-[10px] text-sky-700">
+              {sugestoes.size} de {produtos.length} produtos com sugestão
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {porSugestao.map(([cat, ids]) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => marcarSugestao(cat, ids)}
+                className="rounded-md border border-sky-300 bg-white px-2 py-1 text-[11px] text-sky-900 hover:bg-sky-100"
+                title={`Marca os ${ids.length} produtos com sugestão de ${cat} e seta a categoria no dropdown`}
+              >
+                <strong>{ids.length}</strong> · {cat}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] text-sky-700">
+            Clica num botão → seleciona os produtos correspondentes + seta a categoria. Depois é
+            só clicar &quot;Atribuir categoria&quot; (você pode revisar/desmarcar antes).
+          </p>
+        </div>
+      )}
+
       {/* Barra de acao */}
       <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-white/95 p-2 backdrop-blur">
         <button
@@ -168,58 +225,71 @@ export function CategorizarForm({
               <th className="px-3 py-2 text-left font-medium">Tipo</th>
               <th className="px-3 py-2 text-left font-medium">Unidade</th>
               <th className="px-3 py-2 text-left font-medium">Origem</th>
+              <th className="px-3 py-2 text-left font-medium">Sugestão</th>
               <th className="px-3 py-2 text-left font-medium">Categoria atual</th>
             </tr>
           </thead>
           <tbody>
             {produtos.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-xs text-slate-500">
+                <td colSpan={7} className="px-3 py-6 text-center text-xs text-slate-500">
                   Nenhum produto com esse filtro.
                 </td>
               </tr>
             ) : (
-              produtos.map((p) => (
-                <tr
-                  key={p.id}
-                  className={`border-t border-slate-100 cursor-pointer ${
-                    selecionados.has(p.id) ? 'bg-emerald-50' : 'hover:bg-slate-50'
-                  }`}
-                  onClick={() => toggle(p.id)}
-                >
-                  <td className="px-3 py-1.5">
-                    <input
-                      type="checkbox"
-                      checked={selecionados.has(p.id)}
-                      onChange={() => toggle(p.id)}
-                      className="h-3.5 w-3.5"
-                    />
-                  </td>
-                  <td className="px-3 py-1.5 font-medium text-slate-900">{p.nome}</td>
-                  <td className="px-3 py-1.5">
-                    <span
-                      className={`rounded px-1 py-0.5 text-[9px] font-medium ${
-                        p.tipo === 'INSUMO'
-                          ? 'bg-sky-100 text-sky-800'
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}
-                    >
-                      {p.tipo === 'INSUMO' ? 'Insumo' : 'Produto'}
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5 text-slate-600">{p.unidade}</td>
-                  <td className="px-3 py-1.5 text-[10px] text-slate-500">
-                    {p.criadoNaNuvem
-                      ? 'criado-na-nuvem'
-                      : p.codigoExterno
-                        ? `Consumer #${p.codigoExterno}`
-                        : '—'}
-                  </td>
-                  <td className="px-3 py-1.5 text-slate-600">
-                    {p.categoria ?? <span className="italic text-slate-400">—</span>}
-                  </td>
-                </tr>
-              ))
+              produtos.map((p) => {
+                const sug = sugestoes.get(p.id);
+                return (
+                  <tr
+                    key={p.id}
+                    className={`border-t border-slate-100 cursor-pointer ${
+                      selecionados.has(p.id) ? 'bg-emerald-50' : 'hover:bg-slate-50'
+                    }`}
+                    onClick={() => toggle(p.id)}
+                  >
+                    <td className="px-3 py-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selecionados.has(p.id)}
+                        onChange={() => toggle(p.id)}
+                        className="h-3.5 w-3.5"
+                      />
+                    </td>
+                    <td className="px-3 py-1.5 font-medium text-slate-900">{p.nome}</td>
+                    <td className="px-3 py-1.5">
+                      <span
+                        className={`rounded px-1 py-0.5 text-[9px] font-medium ${
+                          p.tipo === 'INSUMO'
+                            ? 'bg-sky-100 text-sky-800'
+                            : 'bg-emerald-100 text-emerald-800'
+                        }`}
+                      >
+                        {p.tipo === 'INSUMO' ? 'Insumo' : 'Produto'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-600">{p.unidade}</td>
+                    <td className="px-3 py-1.5 text-[10px] text-slate-500">
+                      {p.criadoNaNuvem
+                        ? 'criado-na-nuvem'
+                        : p.codigoExterno
+                          ? `Consumer #${p.codigoExterno}`
+                          : '—'}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {sug ? (
+                        <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800">
+                          ✨ {sug}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-600">
+                      {p.categoria ?? <span className="italic text-slate-400">—</span>}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
