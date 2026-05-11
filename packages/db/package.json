@@ -23,6 +23,7 @@
     "migrate:cert-filial-nsu": "tsx scripts/migrate-cert-filial-nsu.ts",
     "migrate:fornecedor-pedido-minimo": "tsx scripts/migrate-fornecedor-pedido-minimo.ts",
     "relink:fornecedores-notas": "tsx scripts/relink-fornecedores-notas.ts",
+    "backfill:produto-fornecedor": "tsx scripts/backfill-produto-fornecedor.ts",
     "dedup:fornecedores": "tsx scripts/dedup-fornecedores.ts",
     "consultar:todas-filiais": "tsx scripts/consultar-todas-filiais.ts",
     "migrate:fornecedor-bancarios": "tsx scripts/migrate-fornecedor-bancarios.ts",
