@@ -12,6 +12,8 @@ interface Produto {
   unidade: string;
   codigoExterno: number | null;
   criadoNaNuvem: boolean;
+  /** Categoria que esse mesmo nome de produto tem em outra filial da org. */
+  categoriaCrossfilial: string | null;
 }
 
 export function CategorizarForm({
@@ -45,12 +47,17 @@ export function CategorizarForm({
     }
   }
 
-  // Pre-computa sugestoes uma vez
+  // Pre-computa sugestoes — prioriza cross-filial (mesmo nome ja categorizado
+  // em outra filial), fallback pra palavra-chave
   const sugestoes = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, { categoria: string; fonte: 'crossfilial' | 'keyword' }>();
     for (const p of produtos) {
+      if (p.categoriaCrossfilial) {
+        map.set(p.id, { categoria: p.categoriaCrossfilial, fonte: 'crossfilial' });
+        continue;
+      }
       const s = sugerirCategoria(p.nome);
-      if (s) map.set(p.id, s);
+      if (s) map.set(p.id, { categoria: s, fonte: 'keyword' });
     }
     return map;
   }, [produtos]);
@@ -58,9 +65,9 @@ export function CategorizarForm({
   // Agrupa por categoria sugerida pra mostrar atalhos
   const porSugestao = useMemo(() => {
     const m = new Map<string, string[]>();
-    for (const [id, cat] of sugestoes) {
-      if (!m.has(cat)) m.set(cat, []);
-      m.get(cat)!.push(id);
+    for (const [id, sug] of sugestoes) {
+      if (!m.has(sug.categoria)) m.set(sug.categoria, []);
+      m.get(sug.categoria)!.push(id);
     }
     return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
   }, [sugestoes]);
@@ -68,6 +75,46 @@ export function CategorizarForm({
   function marcarSugestao(cat: string, ids: string[]) {
     setSelecionados(new Set(ids));
     setCategoria(cat);
+  }
+
+  async function aplicarTodas() {
+    const total = sugestoes.size;
+    if (total === 0) return;
+    if (!confirm(`Aplicar todas as ${total} sugestões em ${porSugestao.length} categorias?`)) return;
+    setSalvando(true);
+    setMsg(null);
+    let totalAtualizados = 0;
+    let totalReplica = 0;
+    let totalErros = 0;
+    try {
+      for (const [cat, ids] of porSugestao) {
+        const r = await fetch('/api/produtos/categorizar-batch', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ produtoIds: ids, categoria: cat }),
+        });
+        if (!r.ok) {
+          totalErros++;
+          continue;
+        }
+        const d = (await r.json().catch(() => ({}))) as {
+          atualizados?: number;
+          replicacao?: { atualizados: number };
+        };
+        totalAtualizados += d.atualizados ?? 0;
+        totalReplica += d.replicacao?.atualizados ?? 0;
+      }
+      setMsg({
+        tipo: totalErros > 0 ? 'erro' : 'ok',
+        texto: `✓ ${totalAtualizados} categorizados em ${porSugestao.length} categorias · +${totalReplica} em filiais irmãs${totalErros > 0 ? ` · ${totalErros} categorias com erro` : ''}`,
+      });
+      setSelecionados(new Set());
+      start(() => router.refresh());
+    } catch (err) {
+      setMsg({ tipo: 'erro', texto: (err as Error).message });
+    } finally {
+      setSalvando(false);
+    }
   }
 
   async function salvar() {
@@ -137,13 +184,24 @@ export function CategorizarForm({
       {/* Painel de sugestoes automaticas */}
       {porSugestao.length > 0 && (
         <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-3">
-          <div className="mb-2 flex items-baseline justify-between">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-xs font-semibold text-sky-900">
-              ✨ Sugestões automáticas baseadas no nome
+              ✨ Sugestões automáticas
             </h3>
-            <span className="text-[10px] text-sky-700">
-              {sugestoes.size} de {produtos.length} produtos com sugestão
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-sky-700">
+                {sugestoes.size} de {produtos.length} produtos com sugestão
+              </span>
+              <button
+                type="button"
+                onClick={aplicarTodas}
+                disabled={salvando || sugestoes.size === 0}
+                className="rounded-md bg-sky-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+                title="Aplica todas as sugestoes em batch — 1 chamada por categoria"
+              >
+                {salvando ? 'Aplicando...' : `✨ Aplicar todas (${sugestoes.size})`}
+              </button>
+            </div>
           </div>
           <div className="flex flex-wrap gap-1">
             {porSugestao.map(([cat, ids]) => (
@@ -159,8 +217,9 @@ export function CategorizarForm({
             ))}
           </div>
           <p className="mt-2 text-[10px] text-sky-700">
-            Clica num botão → seleciona os produtos correspondentes + seta a categoria. Depois é
-            só clicar &quot;Atribuir categoria&quot; (você pode revisar/desmarcar antes).
+            Botão azul aplica tudo em batch. Os botões claros permitem revisar categoria a
+            categoria. Sugestão vem 1º de outras filiais (mesmo nome já categorizado lá), e como
+            fallback de palavras-chave.
           </p>
         </div>
       )}
@@ -277,8 +336,19 @@ export function CategorizarForm({
                     </td>
                     <td className="px-3 py-1.5">
                       {sug ? (
-                        <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800">
-                          ✨ {sug}
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            sug.fonte === 'crossfilial'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-sky-100 text-sky-800'
+                          }`}
+                          title={
+                            sug.fonte === 'crossfilial'
+                              ? 'Já categorizado com esse nome em outra filial — alta confiança'
+                              : 'Sugerido por palavra-chave no nome'
+                          }
+                        >
+                          {sug.fonte === 'crossfilial' ? '✓' : '✨'} {sug.categoria}
                         </span>
                       ) : (
                         <span className="text-[10px] text-slate-300">—</span>

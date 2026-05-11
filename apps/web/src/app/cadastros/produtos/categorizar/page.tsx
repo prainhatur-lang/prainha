@@ -94,6 +94,43 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
 
+  // Cross-filial: pra cada nome de produto na pagina, busca a categoria_compras
+  // de produtos com mesmo nome em outras filiais da mesma org (que ja foram
+  // categorizados). Vira a sugestao prioritaria (mais confiavel que keyword).
+  const nomesCanonicos = produtos
+    .map((p) => (p.nome ?? '').toLowerCase().trim())
+    .filter(Boolean);
+  const crossFilialMap: Record<string, string> = {};
+  if (nomesCanonicos.length > 0) {
+    const [filialAlvo] = await db
+      .select({ organizacaoId: schema.filial.organizacaoId })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filial.id))
+      .limit(1);
+    if (filialAlvo?.organizacaoId) {
+      const crossRows = await db
+        .select({
+          nome: schema.produto.nome,
+          categoria: schema.produto.categoriaCompras,
+        })
+        .from(schema.produto)
+        .innerJoin(schema.filial, eq(schema.filial.id, schema.produto.filialId))
+        .where(
+          and(
+            eq(schema.filial.organizacaoId, filialAlvo.organizacaoId),
+            // outras filiais (nao a alvo)
+            sql`${schema.produto.filialId} != ${filial.id}`,
+            isNotNull(schema.produto.categoriaCompras),
+            sql`lower(trim(${schema.produto.nome})) = ANY(${nomesCanonicos}::text[])`,
+          ),
+        );
+      for (const r of crossRows) {
+        const k = (r.nome ?? '').toLowerCase().trim();
+        if (k && r.categoria) crossFilialMap[k] = r.categoria;
+      }
+    }
+  }
+
   const totalPag = Math.max(1, Math.ceil(Number(qtd) / PAGE_SIZE));
 
   function hrefPag(p: number) {
@@ -193,6 +230,8 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
             unidade: p.unidade,
             codigoExterno: p.codigoExterno,
             criadoNaNuvem: p.criadoNaNuvem,
+            categoriaCrossfilial:
+              crossFilialMap[(p.nome ?? '').toLowerCase().trim()] ?? null,
           }))}
           categorias={CATEGORIAS}
         />
