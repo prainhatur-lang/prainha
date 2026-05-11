@@ -47,6 +47,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       gerenteModelo: schema.fornecedorFolha.gerenteModelo,
       gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
       diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
+      diaristaModelo: schema.fornecedorFolha.diaristaModelo,
+      diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       bonusPorDia: schema.fornecedorFolha.bonusPorDia,
       nome: schema.fornecedor.nome,
@@ -144,6 +146,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       diaristaTaxaHoraOverride: p.diaristaTaxaHoraOverride
         ? Number(p.diaristaTaxaHoraOverride)
         : null,
+      diaristaModelo: p.diaristaModelo ?? 'por_hora',
+      diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
     })),
     horas: Array.from(horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(ajustesMap),

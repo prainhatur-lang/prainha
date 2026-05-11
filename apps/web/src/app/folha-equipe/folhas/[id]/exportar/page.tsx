@@ -67,6 +67,8 @@ export default async function ExportarFolhaPage(props: {
       gerenteModelo: schema.fornecedorFolha.gerenteModelo,
       gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
       diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
+      diaristaModelo: schema.fornecedorFolha.diaristaModelo,
+      diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
@@ -153,6 +155,8 @@ export default async function ExportarFolhaPage(props: {
       diaristaTaxaHoraOverride: p.diaristaTaxaHoraOverride
         ? Number(p.diaristaTaxaHoraOverride)
         : null,
+      diaristaModelo: p.diaristaModelo ?? 'por_hora',
+      diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
     })),
     horas: Array.from(horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(ajustesMap),

@@ -9,6 +9,8 @@ interface Pessoa {
   gerenteModelo: string | null;
   gerenteValorFixoDia: number | null;
   diaristaTaxaHoraOverride: number | null;
+  diaristaModelo: string;
+  diaristaValorFixoDia: number | null;
   bonusFixoSemanal: number | null;
   bonusPorDia: number | null;
   ativo: boolean;
@@ -40,7 +42,7 @@ interface Props {
 
 const PAPEIS: { value: string; label: string }[] = [
   { value: 'funcionario', label: 'Funcionário (rateia 10%)' },
-  { value: 'diarista', label: 'Diarista (10% + R$/hora)' },
+  { value: 'diarista', label: 'Diarista (10% + R$/hora ou fixo/dia)' },
   { value: 'gerente', label: 'Gerente (1pp dos 10% ou fixo)' },
 ];
 
@@ -141,7 +143,10 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
                           {p.gerenteModelo === '1pp_dos_10pct' ? '· 1pp do 10%' : `· R$${p.gerenteValorFixoDia}/dia`}
                         </span>
                       )}
-                      {p.papel === 'diarista' && p.diaristaTaxaHoraOverride !== null && (
+                      {p.papel === 'diarista' && p.diaristaModelo === 'fixo_por_dia' && p.diaristaValorFixoDia != null && (
+                        <span className="ml-2 text-xs text-slate-500">· R${p.diaristaValorFixoDia}/dia</span>
+                      )}
+                      {p.papel === 'diarista' && p.diaristaModelo !== 'fixo_por_dia' && p.diaristaTaxaHoraOverride !== null && (
                         <span className="ml-2 text-xs text-slate-500">· R${p.diaristaTaxaHoraOverride}/h</span>
                       )}
                       {p.bonusPorDia != null && p.bonusPorDia > 0 && (
@@ -328,6 +333,10 @@ function PessoaEditRow({
     pessoa.diaristaTaxaHoraOverride ?? 0,
   );
   const [usaOverride, setUsaOverride] = useState(pessoa.diaristaTaxaHoraOverride !== null);
+  const [diaristaModelo, setDiaristaModelo] = useState(pessoa.diaristaModelo ?? 'por_hora');
+  const [diaristaValorFixoDia, setDiaristaValorFixoDia] = useState(
+    pessoa.diaristaValorFixoDia ?? 0,
+  );
   const [usaBonusFixo, setUsaBonusFixo] = useState(pessoa.bonusFixoSemanal != null);
   const [bonusFixoSemanal, setBonusFixoSemanal] = useState(pessoa.bonusFixoSemanal ?? 0);
   const [usaBonusPorDia, setUsaBonusPorDia] = useState(pessoa.bonusPorDia != null);
@@ -350,7 +359,14 @@ function PessoaEditRow({
           gerenteValorFixoDia:
             papel === 'gerente' && gerenteModelo === 'fixo_por_dia' ? gerenteValorFixoDia : null,
           diaristaTaxaHoraOverride:
-            papel === 'diarista' && usaOverride ? diaristaTaxaHoraOverride : null,
+            papel === 'diarista' && diaristaModelo === 'por_hora' && usaOverride
+              ? diaristaTaxaHoraOverride
+              : null,
+          diaristaModelo: papel === 'diarista' ? diaristaModelo : 'por_hora',
+          diaristaValorFixoDia:
+            papel === 'diarista' && diaristaModelo === 'fixo_por_dia' && diaristaValorFixoDia > 0
+              ? diaristaValorFixoDia
+              : null,
           bonusFixoSemanal: usaBonusFixo && bonusFixoSemanal > 0 ? bonusFixoSemanal : null,
           bonusPorDia: usaBonusPorDia && bonusPorDia > 0 ? bonusPorDia : null,
           ativo,
@@ -432,26 +448,64 @@ function PessoaEditRow({
           )}
 
           {papel === 'diarista' && (
-            <div className="col-span-2">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={usaOverride}
-                  onChange={(e) => setUsaOverride(e.target.checked)}
-                  className="h-4 w-4"
-                />
-                Sobrescrever taxa diarista padrão (filial)
-              </label>
-              {usaOverride && (
-                <div className="mt-2">
+            <div className="col-span-2 space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600">
+                  Modelo de remuneração da diária
+                </label>
+                <select
+                  value={diaristaModelo}
+                  onChange={(e) => setDiaristaModelo(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                >
+                  <option value="por_hora">Por hora trabalhada (taxa × horas)</option>
+                  <option value="fixo_por_dia">Fixo por dia trabalhado (valor × dias)</option>
+                </select>
+              </div>
+
+              {diaristaModelo === 'por_hora' && (
+                <div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={usaOverride}
+                      onChange={(e) => setUsaOverride(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Sobrescrever taxa diarista padrão (filial)
+                  </label>
+                  {usaOverride && (
+                    <div className="mt-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={diaristaTaxaHoraOverride}
+                        onChange={(e) => setDiaristaTaxaHoraOverride(Number(e.target.value))}
+                        placeholder="R$/hora dessa pessoa"
+                        className="w-48 rounded border border-slate-300 px-3 py-2 text-sm"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {diaristaModelo === 'fixo_por_dia' && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Valor fixo por dia trabalhado (R$)
+                  </label>
                   <input
                     type="number"
                     step="0.01"
-                    value={diaristaTaxaHoraOverride}
-                    onChange={(e) => setDiaristaTaxaHoraOverride(Number(e.target.value))}
-                    placeholder="R$/hora dessa pessoa"
-                    className="w-48 rounded border border-slate-300 px-3 py-2 text-sm"
+                    min="0"
+                    value={diaristaValorFixoDia}
+                    onChange={(e) => setDiaristaValorFixoDia(Number(e.target.value))}
+                    placeholder="ex: 150"
+                    className="mt-1 w-48 rounded border border-slate-300 px-3 py-2 text-sm"
                   />
+                  <p className="mt-1 text-xs text-slate-500">
+                    Conta dias com horas &gt; 0 no espelho × esse valor. Independente de quantas horas trabalhou no dia.
+                  </p>
                 </div>
               )}
             </div>

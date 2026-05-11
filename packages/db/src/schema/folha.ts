@@ -56,8 +56,16 @@ export const fornecedorFolha = pgTable(
     /** Pra gerente fixo: valor por dia trabalhado. */
     gerenteValorFixoDia: numeric('gerente_valor_fixo_dia', { precision: 10, scale: 2 }),
     /** Override da taxa diarista pra essa pessoa especifica (opcional).
-     *  Se null, usa o padrao da filial (folha_config.taxa_diarista_hora). */
+     *  Se null, usa o padrao da filial (folha_config.taxa_diarista_hora).
+     *  So tem efeito quando diarista_modelo='por_hora'. */
     diaristaTaxaHoraOverride: numeric('diarista_taxa_hora_override', { precision: 10, scale: 2 }),
+    /** Modelo de remuneracao do diarista:
+     *  'por_hora'     -> taxa × horas (default; usa override OU padrao da filial)
+     *  'fixo_por_dia' -> diarista_valor_fixo_dia × dias_com_horas>0 */
+    diaristaModelo: varchar('diarista_modelo', { length: 20 }).notNull().default('por_hora'),
+    /** Valor fixo por dia trabalhado, usado quando diarista_modelo='fixo_por_dia'.
+     *  Ex: Lilian R$150/dia independente de horas. */
+    diaristaValorFixoDia: numeric('diarista_valor_fixo_dia', { precision: 10, scale: 2 }),
     /** Bônus fixo semanal (opcional). Quando preenchido, entra como
      *  acréscimo automático em toda folha desse fornecedor — sem precisar
      *  lançar manualmente cada semana. Útil pra gerentes/fiscais/etc com

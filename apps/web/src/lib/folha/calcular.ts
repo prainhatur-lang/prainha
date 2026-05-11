@@ -18,6 +18,9 @@ export interface PessoaInput {
   gerenteModelo: string | null; // '1pp_dos_10pct' | 'fixo_por_dia' | null
   gerenteValorFixoDia: number | null;
   diaristaTaxaHoraOverride: number | null;
+  /** 'por_hora' (default) | 'fixo_por_dia' */
+  diaristaModelo?: string | null;
+  diaristaValorFixoDia?: number | null;
 }
 
 export interface HorasInput {
@@ -167,21 +170,35 @@ export function calcularFolha(args: {
       );
     }
 
-    // Diaria (papel='diarista'): R$/h × horas
+    // Diaria (papel='diarista'): por modelo
+    //   'fixo_por_dia' -> dias_com_horas>0 × valor_fixo_dia
+    //   'por_hora' (default) -> minutos/60 × taxa
     if (p.papel === 'diarista' && minTotal > 0) {
-      const taxa = p.diaristaTaxaHoraOverride ?? config.taxaDiaristaHora;
-      const dia = (minTotal / 60) * taxa;
-      lancamentos.push({
-        fornecedorId: p.fornecedorId,
-        pessoaNome: p.nome,
-        papel: p.papel,
-        tipo: 'diaria',
-        valorBruto: round2(dia),
-        desconto: 0,
-        valorLiquido: round2(dia),
-        descricao: `Diária semana — ${p.nome}`,
-        detalhe: `${minutosToHM(minTotal)} × R$ ${taxa.toFixed(2)}/h`,
-      });
+      let dia = 0;
+      let detalhe = '';
+      if (p.diaristaModelo === 'fixo_por_dia' && p.diaristaValorFixoDia && p.diaristaValorFixoDia > 0) {
+        const porDia = horasMap.get(p.fornecedorId) ?? {};
+        const diasTrab = Object.values(porDia).filter((m) => m > 0).length;
+        dia = diasTrab * p.diaristaValorFixoDia;
+        detalhe = `${diasTrab} dia(s) × R$ ${p.diaristaValorFixoDia.toFixed(2)}/dia`;
+      } else {
+        const taxa = p.diaristaTaxaHoraOverride ?? config.taxaDiaristaHora;
+        dia = (minTotal / 60) * taxa;
+        detalhe = `${minutosToHM(minTotal)} × R$ ${taxa.toFixed(2)}/h`;
+      }
+      if (dia > 0) {
+        lancamentos.push({
+          fornecedorId: p.fornecedorId,
+          pessoaNome: p.nome,
+          papel: p.papel,
+          tipo: 'diaria',
+          valorBruto: round2(dia),
+          desconto: 0,
+          valorLiquido: round2(dia),
+          descricao: `Diária semana — ${p.nome}`,
+          detalhe,
+        });
+      }
     }
 
     // Transporte

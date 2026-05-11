@@ -1,11 +1,13 @@
 // Aplica diaria retroativa numa folha ja fechada — usado quando o user
 // fechou a folha sem ter mudado as pessoas pra papel='diarista', entao
-// elas so receberam comissao (rateio do 10%) e nao a R$/h × horas.
+// elas so receberam comissao (rateio do 10%) e nao a diaria.
 //
-// Cria 1 conta_pagar de tipo Diaria pra cada pessoa nao-gerente com
-// horas > 0, valor = (minutos/60) × taxaHora. Idempotente: se ja existe
-// conta_pagar com descricao "Diária retroativa..." pra essa folha,
-// retorna erro pedindo pra estornar antes de aplicar de novo.
+// Cria 1 conta_pagar de tipo Diaria pra cada pessoa com papel='diarista'
+// e horas > 0. O calculo respeita o modelo de cada pessoa:
+//   - 'fixo_por_dia' -> dias_com_horas>0 × diarista_valor_fixo_dia
+//   - 'por_hora'     -> minutos/60 × (override OU body.taxaHora)
+// Idempotente: se ja existe conta_pagar com descricao "Diária retroativa..."
+// pra essa folha, retorna erro pedindo pra estornar antes de aplicar de novo.
 //
 // DELETE: estorna — apaga as conta_pagar com descricao 'Diária retroativa'
 // dessa folha. Pra corrigir taxa errada e re-aplicar.
@@ -102,11 +104,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Pessoas nao-gerentes da filial + horas totais nessa folha
+  // Pessoas nao-gerentes da filial + horas totais nessa folha.
+  // Tras tambem o modelo/override de cada diarista pra respeitar o
+  // 'fixo_por_dia' (Lilian R$150/dia, etc) no calculo retroativo.
   const pessoas = await db
     .select({
       fornecedorId: schema.fornecedorFolha.fornecedorId,
       papel: schema.fornecedorFolha.papel,
+      diaristaModelo: schema.fornecedorFolha.diaristaModelo,
+      diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
+      diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
       nome: schema.fornecedor.nome,
     })
     .from(schema.fornecedorFolha)
@@ -121,6 +128,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ),
     );
 
+  // Total minutos por pessoa
   const horasRows = await db
     .select({
       fornecedorId: schema.folhaHoras.fornecedorId,
@@ -131,6 +139,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .groupBy(schema.folhaHoras.fornecedorId);
   const horasPorPessoa = new Map(horasRows.map((h) => [h.fornecedorId, Number(h.total)]));
 
+  // Dias com horas>0 por pessoa (pra modelo fixo_por_dia)
+  const diasRows = await db
+    .select({
+      fornecedorId: schema.folhaHoras.fornecedorId,
+      dias: sql<number>`COUNT(*) FILTER (WHERE ${schema.folhaHoras.totalMin} > 0)::int`,
+    })
+    .from(schema.folhaHoras)
+    .where(eq(schema.folhaHoras.folhaSemanaId, id))
+    .groupBy(schema.folhaHoras.fornecedorId);
+  const diasPorPessoa = new Map(diasRows.map((d) => [d.fornecedorId, Number(d.dias)]));
+
   const dataPgto = folha.dataPagamento ?? somaDia(folha.dataFim, 1);
   const competencia = folha.dataInicio.slice(0, 7);
 
@@ -139,7 +158,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .map((p) => {
       const min = horasPorPessoa.get(p.fornecedorId) ?? 0;
       if (min === 0) return null;
-      const valor = round2((min / 60) * body.taxaHora);
+      let valor: number;
+      let observacao: string;
+      const valorFixoDia = p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null;
+      if (p.diaristaModelo === 'fixo_por_dia' && valorFixoDia && valorFixoDia > 0) {
+        const dias = diasPorPessoa.get(p.fornecedorId) ?? 0;
+        valor = round2(dias * valorFixoDia);
+        observacao = `${dias} dia(s) × R$ ${valorFixoDia.toFixed(2)}/dia (aplicada após fechamento)`;
+      } else {
+        const taxa = p.diaristaTaxaHoraOverride
+          ? Number(p.diaristaTaxaHoraOverride)
+          : body.taxaHora;
+        valor = round2((min / 60) * taxa);
+        observacao = `${fmtHM(min)} × R$ ${taxa.toFixed(2)}/h (aplicada após fechamento)`;
+      }
       if (valor <= 0) return null;
       return {
         filialId: folha.filialId,
@@ -149,7 +181,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         dataVencimento: dataPgto,
         valor: String(valor),
         descricao: `Diária retroativa — ${p.nome ?? 'sem nome'}`,
-        observacao: `${fmtHM(min)} × R$ ${body.taxaHora.toFixed(2)}/h (aplicada após fechamento)`,
+        observacao,
         competencia,
         origem: 'FOLHA',
         folhaSemanaId: folha.id,
