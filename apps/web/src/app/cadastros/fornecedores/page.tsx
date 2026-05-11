@@ -43,14 +43,21 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
     );
   }
 
+  // CNPJ so entra no OR se q tem digitos — caso contrario `%%` casaria com tudo
+  const qDigits = q.replace(/\D/g, '');
   const where = and(
     eq(schema.fornecedor.filialId, filialSelecionada.id),
     isNull(schema.fornecedor.dataDelete),
     q
-      ? sql`(${ilike(schema.fornecedor.nome, `%${q}%`)} OR ${ilike(
-          schema.fornecedor.razaoSocial,
-          `%${q}%`,
-        )} OR ${ilike(schema.fornecedor.cnpjOuCpf, `%${q.replace(/\D/g, '')}%`)})`
+      ? qDigits.length > 0
+        ? sql`(${ilike(schema.fornecedor.nome, `%${q}%`)} OR ${ilike(
+            schema.fornecedor.razaoSocial,
+            `%${q}%`,
+          )} OR ${ilike(schema.fornecedor.cnpjOuCpf, `%${qDigits}%`)})`
+        : sql`(${ilike(schema.fornecedor.nome, `%${q}%`)} OR ${ilike(
+            schema.fornecedor.razaoSocial,
+            `%${q}%`,
+          )})`
       : undefined,
   );
 

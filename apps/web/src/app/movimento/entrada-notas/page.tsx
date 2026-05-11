@@ -82,16 +82,20 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
   const dtIni = new Date(dataIni + 'T00:00:00-03:00');
   const dtFim = new Date(dataFim + 'T23:59:59-03:00');
 
+  // Mesmo fix do bug do CNPJ vazio (matchar tudo com %%) na lista de fornecedores
+  const qDigits = q.replace(/\D/g, '');
   const where = and(
     eq(schema.notaCompra.filialId, filialSelecionada.id),
     gte(schema.notaCompra.dataEmissao, dtIni),
     lte(schema.notaCompra.dataEmissao, dtFim),
     origem !== 'TODAS' ? eq(schema.notaCompra.origemImportacao, origem) : undefined,
     q
-      ? sql`(${ilike(schema.notaCompra.emitNome, `%${q}%`)} OR ${ilike(
-          schema.notaCompra.emitCnpj,
-          `%${q.replace(/\D/g, '')}%`,
-        )} OR ${ilike(schema.notaCompra.chave, `%${q.replace(/\D/g, '')}%`)})`
+      ? qDigits.length > 0
+        ? sql`(${ilike(schema.notaCompra.emitNome, `%${q}%`)} OR ${ilike(
+            schema.notaCompra.emitCnpj,
+            `%${qDigits}%`,
+          )} OR ${ilike(schema.notaCompra.chave, `%${qDigits}%`)})`
+        : ilike(schema.notaCompra.emitNome, `%${q}%`)
       : undefined,
   );
 
