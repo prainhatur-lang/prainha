@@ -87,10 +87,18 @@ export function VincularProdutosForm({
         setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
         return;
       }
-      setMsg({
-        tipo: 'ok',
-        texto: `✓ ${marcados.size} vínculo(s) salvos (${d.criados ?? 0} novos, ${d.removidos ?? 0} removidos)`,
-      });
+      const partes: string[] = [
+        `${marcados.size} vínculo(s) salvos (${d.criados ?? 0} novos, ${d.removidos ?? 0} removidos)`,
+      ];
+      const rep = d.replicacao as
+        | { filiaisIrmasAplicadas: number; criados: number; removidos: number }
+        | undefined;
+      if (rep && rep.filiaisIrmasAplicadas > 0) {
+        partes.push(
+          `replicado em ${rep.filiaisIrmasAplicadas} filial(is) irmã(s): +${rep.criados} / -${rep.removidos}`,
+        );
+      }
+      setMsg({ tipo: 'ok', texto: `✓ ${partes.join(' · ')}` });
       start(() => router.refresh());
     } catch (err) {
       setMsg({ tipo: 'erro', texto: (err as Error).message });

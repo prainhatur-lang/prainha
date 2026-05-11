@@ -87,6 +87,10 @@ export default async function VincularProdutosPage(props: {
           Marque os itens que ele costuma fornecer. Isso permite filtrar/recomendar fornecedores
           na hora de criar cotação. Não precisa marcar tudo — só o que ele realmente vende.
         </p>
+        <p className="mt-1 rounded-md bg-sky-50 px-2 py-1 text-[11px] text-sky-900">
+          💡 Os vínculos são <strong>replicados automaticamente</strong> pras filiais irmãs (mesmo
+          CNPJ raiz do fornecedor + produto com mesmo nome). Não precisa repetir o trabalho na 0002.
+        </p>
 
         <VincularProdutosForm
           fornecedorId={id}
