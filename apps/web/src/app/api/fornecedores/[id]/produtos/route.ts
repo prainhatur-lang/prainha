@@ -21,6 +21,22 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  try {
+    return await handlePost(req, params);
+  } catch (e) {
+    const err = e as Error;
+    console.error('[POST /api/fornecedores/[id]/produtos] erro:', err);
+    return NextResponse.json(
+      { error: err.message ?? 'erro interno', stack: err.stack?.split('\n').slice(0, 5) },
+      { status: 500 },
+    );
+  }
+}
+
+async function handlePost(
+  req: Request,
+  params: Promise<{ id: string }>,
+) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
