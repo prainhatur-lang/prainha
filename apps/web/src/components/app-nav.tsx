@@ -101,11 +101,12 @@ const GRUPOS: Grupo[] = [
   },
 ];
 
-type Role = 'DONO' | 'GERENTE' | 'COMPRAS';
+type Role = 'DONO' | 'GERENTE' | 'COMPRAS' | 'FINANCEIRO';
 const GRUPOS_POR_ROLE: Record<Role, Set<string>> = {
   DONO: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios', 'Configurações']),
   GERENTE: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios']),
   COMPRAS: new Set(['Compras']),
+  FINANCEIRO: new Set(['Movimentação', 'Conciliação', 'Relatórios']),
 };
 
 export function AppNav() {

@@ -151,8 +151,9 @@ export const usuarioFilial = pgTable(
       .notNull()
       .references(() => filial.id, { onDelete: 'cascade' }),
     /** DONO: ve tudo + admin. GERENTE: ve modulos operacionais. COMPRAS: so
-     *  modulo de Compras (cotacao, fornecedores, categorizar produtos, NF entrada). */
-    role: varchar('role', { length: 20, enum: ['DONO', 'GERENTE', 'COMPRAS'] }).notNull(),
+     *  modulo de Compras. FINANCEIRO: so Movimentacao (contas) + Conciliacao
+     *  + Relatorios + Entrada de notas. */
+    role: varchar('role', { length: 20, enum: ['DONO', 'GERENTE', 'COMPRAS', 'FINANCEIRO'] }).notNull(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

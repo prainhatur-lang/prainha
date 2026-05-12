@@ -11,11 +11,12 @@
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 
-export type Role = 'DONO' | 'GERENTE' | 'COMPRAS';
+export type Role = 'DONO' | 'GERENTE' | 'COMPRAS' | 'FINANCEIRO';
 
 /** Hierarquia de poder. Maior > menor. */
 const HIERARQUIA: Record<Role, number> = {
   COMPRAS: 1,
+  FINANCEIRO: 1,
   GERENTE: 2,
   DONO: 3,
 };
@@ -58,6 +59,8 @@ export function gruposAcessiveis(role: Role | null): Set<string> {
       ]);
     case 'COMPRAS':
       return new Set(['Compras']);
+    case 'FINANCEIRO':
+      return new Set(['Movimentação', 'Conciliação', 'Relatórios']);
   }
 }
 
@@ -78,6 +81,20 @@ export function podeAcessarPath(role: Role | null, pathname: string): boolean {
       pathname.startsWith('/cadastros/produtos') ||
       pathname.startsWith('/cadastros/fornecedores') ||
       pathname.startsWith('/movimento/entrada-notas')
+    );
+  }
+
+  if (role === 'FINANCEIRO') {
+    return (
+      pathname.startsWith('/financeiro') ||
+      pathname.startsWith('/movimento') ||
+      pathname.startsWith('/conciliacao') ||
+      pathname.startsWith('/excecoes') ||
+      pathname.startsWith('/fechamento') ||
+      pathname.startsWith('/relatorio') ||
+      pathname.startsWith('/upload') ||
+      pathname.startsWith('/cadastros/fornecedores') ||
+      pathname.startsWith('/cadastros/plano-contas')
     );
   }
 
