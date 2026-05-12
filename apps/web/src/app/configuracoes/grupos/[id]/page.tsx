@@ -7,6 +7,8 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { asc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
+import { podeUsuario } from '@/lib/permissoes-runtime';
+import { BotaoApagarGrupo } from './apagar';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +20,7 @@ export default async function GrupoDetailPage(props: {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'grupo_usuario.read');
+  const podeDeletar = await podeUsuario(user.id, 'grupo_usuario.delete');
 
   const [grupo] = await db
     .select()
@@ -72,10 +75,24 @@ export default async function GrupoDetailPage(props: {
           </p>
         </div>
 
-        {grupo.sistema && (
+        {grupo.sistema ? (
           <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
             Este é um grupo do sistema. As permissões são definidas pelo catálogo e
             não podem ser editadas pela UI.
+          </div>
+        ) : (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-900">
+            <p>
+              Grupo custom — você pode editar as permissões na{' '}
+              <Link
+                href="/configuracoes/grupos/matriz"
+                className="underline underline-offset-2"
+              >
+                matriz
+              </Link>
+              .
+            </p>
+            {podeDeletar && <BotaoApagarGrupo id={grupo.id} nome={grupo.nome} />}
           </div>
         )}
 

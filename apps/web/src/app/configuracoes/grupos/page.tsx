@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,7 @@ export default async function GruposPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'grupo_usuario.read');
+  const podeCriar = await podeUsuario(user.id, 'grupo_usuario.create');
 
   const grupos = await db
     .select({
@@ -49,12 +51,37 @@ export default async function GruposPage() {
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-5xl px-6 py-6">
-        <div className="mb-4">
-          <h1 className="text-xl font-semibold text-slate-900">Grupos e permissões</h1>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Grupos pré-prontos do sistema definem o que cada usuário pode fazer.
-            Atribua grupos aos usuários em <Link href="/configuracoes/usuarios" className="text-sky-700 underline-offset-2 hover:underline">Usuários</Link>.
-          </p>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold text-slate-900">Grupos e permissões</h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Grupos pré-prontos do sistema + grupos custom da sua organização.
+              Atribua grupos aos usuários em{' '}
+              <Link
+                href="/configuracoes/usuarios"
+                className="text-sky-700 underline-offset-2 hover:underline"
+              >
+                Usuários
+              </Link>
+              .
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/configuracoes/grupos/matriz"
+              className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              Ver matriz de permissões →
+            </Link>
+            {podeCriar && (
+              <Link
+                href="/configuracoes/grupos/novo"
+                className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                + Novo grupo
+              </Link>
+            )}
+          </div>
         </div>
 
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
