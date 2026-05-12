@@ -15,4 +15,5 @@ export * from './estoque';
 export * from './fechamento-mensal';
 export * from './compras';
 export * from './cotacao';
+export * from './permissao';
 export * from './folha';
