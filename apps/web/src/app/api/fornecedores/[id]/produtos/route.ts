@@ -168,7 +168,9 @@ async function handlePost(
       );
 
     for (const irmao of irmaos) {
-      // Acha produtos da filial irma com nome igual aos selecionados
+      // Acha produtos da filial irma com nome igual aos selecionados.
+      // Usa IN (...) com bind individual em vez de ANY(array::text[]) pra
+      // evitar "cannot cast type record to text[]" do Drizzle.
       const produtosIrma = nomesAlvo.length > 0
         ? await db
             .select({ id: schema.produto.id, nome: schema.produto.nome })
@@ -176,7 +178,10 @@ async function handlePost(
             .where(
               and(
                 eq(schema.produto.filialId, irmao.filialId),
-                sql`lower(trim(${schema.produto.nome})) = ANY(${nomesAlvo}::text[])`,
+                sql`lower(trim(${schema.produto.nome})) IN (${sql.join(
+                  nomesAlvo.map((n) => sql`${n}`),
+                  sql`, `,
+                )})`,
               ),
             )
         : [];
