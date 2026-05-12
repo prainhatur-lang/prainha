@@ -101,11 +101,38 @@ const GRUPOS: Grupo[] = [
   },
 ];
 
+type Role = 'DONO' | 'GERENTE' | 'COMPRAS';
+const GRUPOS_POR_ROLE: Record<Role, Set<string>> = {
+  DONO: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios', 'Configurações']),
+  GERENTE: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios']),
+  COMPRAS: new Set(['Compras']),
+};
+
 export function AppNav() {
   const pathname = usePathname();
   const [aberto, setAberto] = useState<string | null>(null);
   const [notif, setNotif] = useState<Notificacoes>({ opsAguardandoRevisao: 0 });
+  const [role, setRole] = useState<Role | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Carrega role do usuario uma vez na montagem (e ao trocar de rota auth)
+  useEffect(() => {
+    let cancelado = false;
+    fetch('/api/usuario/me', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelado && d?.role) setRole(d.role as Role);
+      })
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  // Filtra grupos baseado no role. Antes de carregar, mostra como DONO
+  // (sera filtrado quando role chegar).
+  const gruposPermitidos = role ? GRUPOS_POR_ROLE[role] : GRUPOS_POR_ROLE.DONO;
+  const gruposVisiveis = GRUPOS.filter((g) => gruposPermitidos.has(g.label));
 
   useEffect(() => {
     function handleClickFora(e: MouseEvent) {
@@ -139,7 +166,7 @@ export function AppNav() {
   // Badge total no grupo Movimentação (ordens de produção pra revisar)
   const totalRevisar = notif.opsAguardandoRevisao;
 
-  const grupoAtivo = GRUPOS.find((g) =>
+  const grupoAtivo = gruposVisiveis.find((g) =>
     g.links.some((l) => !l.soon && pathname.startsWith(l.href) && l.href !== '/'),
   );
 
@@ -161,7 +188,7 @@ export function AppNav() {
       >
         Início
       </Link>
-      {GRUPOS.map((g) => {
+      {gruposVisiveis.map((g) => {
         const isAtivo = grupoAtivo?.label === g.label;
         const isAberto = aberto === g.label;
         const ehMovimentacao = g.label === 'Movimentação';
