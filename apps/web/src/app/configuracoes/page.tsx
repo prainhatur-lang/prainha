@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
@@ -108,6 +109,7 @@ export default async function ConfiguracoesPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'configuracao.read');
 
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);

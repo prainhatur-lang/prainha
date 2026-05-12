@@ -12,6 +12,7 @@
 // → na hora de lancar, qtdInterna = 2 * 15.8 = 31.6 L.
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -32,6 +33,8 @@ export async function PATCH(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'nota_compra.vincular_produto');
+  if (_semPerm) return _semPerm;
 
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) {

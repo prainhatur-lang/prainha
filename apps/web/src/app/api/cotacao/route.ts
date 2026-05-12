@@ -3,6 +3,7 @@
 // Apos criar, retorna { id } pra redirecionar pra tela de detalhes.
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { randomBytes } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -24,6 +25,8 @@ export async function POST(req: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'cotacao.create');
+  if (_semPerm) return _semPerm;
 
   let body: Body;
   try {

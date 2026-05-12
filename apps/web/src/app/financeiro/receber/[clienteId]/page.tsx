@@ -3,6 +3,7 @@
 // pagamento e NSU quando vem do PDV (JOIN com pagamento via codigo).
 
 import { notFound, redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -38,6 +39,7 @@ export default async function ClienteFiadoPage(props: {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'conta_receber.read');
 
   const { clienteId } = await props.params;
   if (!/^[0-9a-f-]{36}$/i.test(clienteId)) notFound();

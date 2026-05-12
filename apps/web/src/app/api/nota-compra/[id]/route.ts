@@ -21,6 +21,7 @@
 // Logo, nao tem arquivo pra deletar; basta apagar o registro.
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -35,6 +36,8 @@ export async function DELETE(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'nota_compra.delete');
+  if (_semPerm) return _semPerm;
 
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) {

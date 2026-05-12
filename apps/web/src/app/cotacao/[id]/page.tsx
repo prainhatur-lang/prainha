@@ -1,4 +1,5 @@
 import { redirect, notFound } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -23,6 +24,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'cotacao.read');
 
   const { id } = await props.params;
 

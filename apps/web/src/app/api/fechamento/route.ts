@@ -10,6 +10,7 @@
 // selecionava 5, 13, 20, fechavam 16 dias. Agora o frontend manda lista exata.
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -60,6 +61,8 @@ export async function POST(req: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'conciliacao.fechar');
+  if (_semPerm) return _semPerm;
 
   const json = await req.json().catch(() => null);
   const parsed = Body.safeParse(json);
@@ -109,6 +112,8 @@ export async function DELETE(req: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'conciliacao.fechar');
+  if (_semPerm) return _semPerm;
 
   const u = new URL(req.url);
   const filialId = u.searchParams.get('filialId') ?? '';

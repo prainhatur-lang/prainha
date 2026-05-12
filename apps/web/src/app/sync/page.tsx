@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario, syncStats } from '@/lib/filiais';
 import { brl, formatDateTime, int, maskCnpj, relativeTime, statusFromPing } from '@/lib/format';
@@ -14,6 +15,7 @@ export default async function SyncPage() {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'configuracao.read');
 
   const filiais = await filiaisDoUsuario(user.id);
   const statsList = await Promise.all(filiais.map((f) => syncStats(f.id)));

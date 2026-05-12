@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -17,6 +18,7 @@ export default async function NotaDetalhePage(props: {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'nota_compra.read');
 
   const { id } = await props.params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();

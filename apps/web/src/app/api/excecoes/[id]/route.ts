@@ -7,6 +7,7 @@
 // — taxa correta sera aplicada em auditoria/dashboard com a forma da Cielo).
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -37,6 +38,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'conciliacao.conciliar');
+  if (_semPerm) return _semPerm;
 
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) {

@@ -11,6 +11,8 @@ interface Notificacoes {
 interface LinkItem {
   label: string;
   href: string;
+  /** Codigo de permissao exigido. Se omitido = sempre visivel. */
+  perm?: string;
   soon?: boolean;
 }
 
@@ -23,106 +25,104 @@ const GRUPOS: Grupo[] = [
   {
     label: 'Cadastros',
     links: [
-      { label: 'Filiais', href: '/sync' },
-      { label: 'Fornecedores', href: '/cadastros/fornecedores' },
+      { label: 'Filiais', href: '/sync', perm: 'configuracao.read' },
+      { label: 'Fornecedores', href: '/cadastros/fornecedores', perm: 'fornecedor.read' },
       { label: 'Clientes', href: '/cadastros/clientes', soon: true },
-      { label: 'Plano de contas', href: '/cadastros/plano-contas' },
-      { label: 'Produtos', href: '/cadastros/produtos' },
-      { label: 'Templates de produção', href: '/cadastros/templates-producao' },
-      { label: 'Cozinheiros', href: '/cadastros/colaboradores' },
+      { label: 'Plano de contas', href: '/cadastros/plano-contas', perm: 'configuracao.read' },
+      { label: 'Produtos', href: '/cadastros/produtos', perm: 'produto.read' },
+      { label: 'Templates de produção', href: '/cadastros/templates-producao', perm: 'ordem_producao.read' },
+      { label: 'Cozinheiros', href: '/cadastros/colaboradores', perm: 'folha_equipe.read' },
     ],
   },
   {
     label: 'Movimentação',
     links: [
-      { label: 'Contas a pagar', href: '/financeiro' },
-      { label: 'Contas a receber', href: '/financeiro/receber' },
-      { label: 'Pagamentos (PDV)', href: '/financeiro/pagamentos' },
-      { label: 'Pedidos / Vendas', href: '/movimento/pedidos' },
-      { label: 'Entrada de notas', href: '/movimento/entrada-notas' },
-      { label: 'Ordens de produção', href: '/movimento/producao' },
+      { label: 'Contas a pagar', href: '/financeiro', perm: 'conta_pagar.read' },
+      { label: 'Contas a receber', href: '/financeiro/receber', perm: 'conta_receber.read' },
+      { label: 'Pagamentos (PDV)', href: '/financeiro/pagamentos', perm: 'conciliacao.read' },
+      { label: 'Pedidos / Vendas', href: '/movimento/pedidos', perm: 'conciliacao.read' },
+      { label: 'Entrada de notas', href: '/movimento/entrada-notas', perm: 'nota_compra.read' },
+      { label: 'Ordens de produção', href: '/movimento/producao', perm: 'ordem_producao.read' },
     ],
   },
   {
     label: 'Folha da equipe',
     links: [
-      { label: 'Folhas semanais', href: '/folha-equipe/folhas' },
-      { label: 'Pessoas', href: '/folha-equipe/pessoas' },
-      { label: 'Configuração da folha', href: '/folha-equipe/configuracao' },
+      { label: 'Folhas semanais', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },
+      { label: 'Pessoas', href: '/folha-equipe/pessoas', perm: 'folha_equipe.read' },
+      { label: 'Configuração da folha', href: '/folha-equipe/configuracao', perm: 'folha_equipe.read' },
     ],
   },
   {
     label: 'Compras',
     links: [
-      { label: 'Cotações', href: '/cotacao' },
-      { label: 'Pedidos de compra', href: '/compras/pedidos' },
-      { label: 'Aguardando NF', href: '/compras/aguardando-nf' },
-      { label: 'Revisar items de NF', href: '/compras/match-items' },
-      { label: 'Categorizar produtos do Consumer', href: '/cadastros/produtos/categorizar' },
-      { label: 'Reconciliação produto × fornecedor', href: '/compras/reconciliacao' },
+      { label: 'Cotações', href: '/cotacao', perm: 'cotacao.read' },
+      { label: 'Pedidos de compra', href: '/compras/pedidos', perm: 'pedido_compra.read' },
+      { label: 'Aguardando NF', href: '/compras/aguardando-nf', perm: 'pedido_compra.read' },
+      { label: 'Revisar items de NF', href: '/compras/match-items', perm: 'nota_compra.vincular_produto' },
+      { label: 'Categorizar produtos do Consumer', href: '/cadastros/produtos/categorizar', perm: 'produto.categorizar' },
+      { label: 'Reconciliação produto × fornecedor', href: '/compras/reconciliacao', perm: 'produto.vincular_fornecedor' },
     ],
   },
   {
     label: 'Conciliação',
     links: [
-      { label: 'PDV × Cielo (Operadora)', href: '/conciliacao/operadora' },
-      { label: 'Cielo × Agenda (Recebíveis)', href: '/conciliacao/recebiveis' },
-      { label: 'Agenda × Banco', href: '/conciliacao/banco' },
-      { label: 'PDV × Banco direto', href: '/conciliacao/pdv-banco-direto' },
-      { label: 'Sugestões cross-route', href: '/conciliacao/cross-route-sugestoes' },
-      { label: 'Upload de arquivos', href: '/upload' },
-      { label: 'Exceções', href: '/excecoes' },
-      { label: 'Fechamento', href: '/fechamento' },
+      { label: 'PDV × Cielo (Operadora)', href: '/conciliacao/operadora', perm: 'conciliacao.read' },
+      { label: 'Cielo × Agenda (Recebíveis)', href: '/conciliacao/recebiveis', perm: 'conciliacao.read' },
+      { label: 'Agenda × Banco', href: '/conciliacao/banco', perm: 'conciliacao.read' },
+      { label: 'PDV × Banco direto', href: '/conciliacao/pdv-banco-direto', perm: 'conciliacao.read' },
+      { label: 'Sugestões cross-route', href: '/conciliacao/cross-route-sugestoes', perm: 'conciliacao.read' },
+      { label: 'Upload de arquivos', href: '/upload', perm: 'conciliacao.read' },
+      { label: 'Exceções', href: '/excecoes', perm: 'conciliacao.read' },
+      { label: 'Fechamento', href: '/fechamento', perm: 'conciliacao.fechar' },
     ],
   },
   {
     label: 'Relatórios',
     links: [
-      { label: 'Dashboard analítico', href: '/dashboard' },
-      { label: 'Relatório consolidado', href: '/relatorio' },
-      { label: 'Estoque', href: '/relatorios/estoque' },
-      { label: 'Movimentos de estoque', href: '/relatorios/movimentos' },
-      { label: 'Produção (perda por cozinheiro)', href: '/relatorios/producao' },
-      { label: 'DRE', href: '/relatorios/dre' },
-      { label: 'Fechamento mensal (histórico)', href: '/relatorios/fechamento-mensal' },
-      { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', soon: true },
+      { label: 'Dashboard analítico', href: '/dashboard', perm: 'relatorio.read' },
+      { label: 'Relatório consolidado', href: '/relatorio', perm: 'relatorio.read' },
+      { label: 'Estoque', href: '/relatorios/estoque', perm: 'relatorio.read' },
+      { label: 'Movimentos de estoque', href: '/relatorios/movimentos', perm: 'relatorio.read' },
+      { label: 'Produção (perda por cozinheiro)', href: '/relatorios/producao', perm: 'relatorio.read' },
+      { label: 'DRE', href: '/relatorios/dre', perm: 'relatorio.read' },
+      { label: 'Fechamento mensal (histórico)', href: '/relatorios/fechamento-mensal', perm: 'relatorio.read' },
+      { label: 'Fluxo de caixa', href: '/relatorios/fluxo-caixa', perm: 'relatorio.read', soon: true },
     ],
   },
   {
     label: 'Configurações',
     links: [
-      { label: 'Diagnóstico do sistema', href: '/diagnostico' },
-      { label: 'Filial / Taxas', href: '/configuracoes' },
-      { label: 'Formas de pagamento', href: '/configuracoes/formas-pagamento' },
-      { label: 'Certificados A1', href: '/configuracoes/certificados' },
-      { label: 'Sincronização (agentes)', href: '/sync' },
-      { label: 'Usuários', href: '/configuracoes/usuarios', soon: true },
+      { label: 'Diagnóstico do sistema', href: '/diagnostico', perm: 'configuracao.read' },
+      { label: 'Filial / Taxas', href: '/configuracoes', perm: 'configuracao.read' },
+      { label: 'Formas de pagamento', href: '/configuracoes/formas-pagamento', perm: 'configuracao.read' },
+      { label: 'Certificados A1', href: '/configuracoes/certificados', perm: 'configuracao.certificado' },
+      { label: 'Sincronização (agentes)', href: '/sync', perm: 'configuracao.read' },
+      { label: 'Usuários', href: '/configuracoes/usuarios', perm: 'usuario.read' },
+      { label: 'Grupos e permissões', href: '/configuracoes/grupos', perm: 'grupo_usuario.read' },
     ],
   },
 ];
 
 type Role = 'DONO' | 'GERENTE' | 'COMPRAS' | 'FINANCEIRO';
-const GRUPOS_POR_ROLE: Record<Role, Set<string>> = {
-  DONO: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios', 'Configurações']),
-  GERENTE: new Set(['Cadastros', 'Movimentação', 'Folha da equipe', 'Compras', 'Conciliação', 'Relatórios']),
-  COMPRAS: new Set(['Compras']),
-  FINANCEIRO: new Set(['Movimentação', 'Conciliação', 'Relatórios']),
-};
 
 export function AppNav() {
   const pathname = usePathname();
   const [aberto, setAberto] = useState<string | null>(null);
   const [notif, setNotif] = useState<Notificacoes>({ opsAguardandoRevisao: 0 });
   const [role, setRole] = useState<Role | null>(null);
+  const [perms, setPerms] = useState<Set<string> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  // Carrega role do usuario uma vez na montagem (e ao trocar de rota auth)
+  // Carrega role + perms do usuario uma vez na montagem
   useEffect(() => {
     let cancelado = false;
     fetch('/api/usuario/me', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!cancelado && d?.role) setRole(d.role as Role);
+        if (cancelado) return;
+        if (d?.role) setRole(d.role as Role);
+        if (Array.isArray(d?.perms)) setPerms(new Set<string>(d.perms));
       })
       .catch(() => {});
     return () => {
@@ -130,10 +130,30 @@ export function AppNav() {
     };
   }, []);
 
-  // Filtra grupos baseado no role. Antes de carregar, mostra como DONO
-  // (sera filtrado quando role chegar).
-  const gruposPermitidos = role ? GRUPOS_POR_ROLE[role] : GRUPOS_POR_ROLE.DONO;
-  const gruposVisiveis = GRUPOS.filter((g) => gruposPermitidos.has(g.label));
+  // Filtra links por permissao. Fallback: se nao carregou ainda (perms null),
+  // esconde tudo pra evitar flash do menu completo. Se carregou e ta vazio,
+  // mas role legado é DONO/GERENTE, usa fallback amplo (compat pre-migration).
+  function podeVer(linkPerm?: string): boolean {
+    if (!linkPerm) return true;
+    if (perms === null) return false;
+    if (perms.has(linkPerm)) return true;
+    // Fallback legado: DONO ve tudo, GERENTE ve quase tudo (sem certificado e admin)
+    if (perms.size === 0 && role === 'DONO') return true;
+    if (
+      perms.size === 0 &&
+      role === 'GERENTE' &&
+      linkPerm !== 'configuracao.certificado' &&
+      !linkPerm.startsWith('usuario.') &&
+      !linkPerm.startsWith('grupo_usuario.')
+    )
+      return true;
+    return false;
+  }
+
+  const gruposVisiveis = GRUPOS.map((g) => ({
+    ...g,
+    links: g.links.filter((l) => l.soon || podeVer(l.perm)),
+  })).filter((g) => g.links.length > 0);
 
   useEffect(() => {
     function handleClickFora(e: MouseEvent) {

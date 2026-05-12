@@ -3,6 +3,7 @@
 //   na próxima ingestão como ADQUIRENTE default)
 
 import { NextResponse } from 'next/server';
+import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -46,6 +47,8 @@ export async function PATCH(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'configuracao.editar');
+  if (_semPerm) return _semPerm;
 
   const { id } = await params;
   const check = await carregar(id, user.id);
@@ -83,6 +86,8 @@ export async function DELETE(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const _semPerm = await negarSemPerm(user.id, 'configuracao.editar');
+  if (_semPerm) return _semPerm;
 
   const { id } = await params;
   const check = await carregar(id, user.id);

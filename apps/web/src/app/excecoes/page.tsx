@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -87,6 +88,7 @@ export default async function ExcecoesPage(props: {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'conciliacao.read');
 
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);

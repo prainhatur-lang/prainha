@@ -3,6 +3,7 @@
 // Destaca atrasados (mais de 7 dias do envio sem NF chegar).
 
 import { redirect } from 'next/navigation';
+import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -32,6 +33,7 @@ export default async function AguardandoNfPage(props: { searchParams: Promise<SP
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
+   await exigirPerm(user.id, 'pedido_compra.read');
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
