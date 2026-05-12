@@ -1217,3 +1217,146 @@ export function buscarPagamentos(
     ),
   ]);
 }
+
+// =====================================================================
+// Outbox queue (CONCILIA_SYNC_QUEUE)
+//
+// A tabela e seus triggers sao criados via scripts/sql/outbox-queue.sql.
+// Quando a tabela nao existe (ex: agente novo rodando em filial onde o
+// SQL ainda nao foi aplicado), as funcoes abaixo retornam vazio / no-op
+// — assim o agente nao quebra e continua fazendo o ciclo normal.
+// =====================================================================
+
+export interface FilaItem {
+  id: number;
+  codigo: number;
+}
+
+/** True quando o erro do FB e "tabela nao existe" (fila ainda nao
+ *  instalada na filial). Codigo SQL/GDS varia entre versoes; checa por
+ *  mensagem tambem. */
+function isTabelaInexistente(err: unknown): boolean {
+  const msg = (err as { message?: string })?.message?.toLowerCase() ?? '';
+  return (
+    msg.includes('concilia_sync_queue') &&
+    (msg.includes('not defined') ||
+      msg.includes('does not exist') ||
+      msg.includes('unknown') ||
+      msg.includes('table'))
+  );
+}
+
+/** Le ate `limite` codigos distintos pendentes na fila para TABELA='PRODUTOS'.
+ *  Dedup por CODIGO ja na query — se o mesmo produto foi alterado varias
+ *  vezes, vem so uma vez (mas vamos marcar TODAS as linhas como processadas
+ *  ao fim do ciclo, em marcarFilaProcessada). */
+export async function lerFilaSyncProdutos(
+  cfg: Config,
+  limite: number,
+): Promise<FilaItem[]> {
+  const sql = `
+    SELECT FIRST ? MIN(ID) AS ID, CODIGO
+      FROM CONCILIA_SYNC_QUEUE
+     WHERE PROCESSADO = 0 AND TABELA = 'PRODUTOS'
+     GROUP BY CODIGO
+     ORDER BY MIN(ID)
+  `;
+  try {
+    const rows = await executarQuery<{ ID: number; CODIGO: number }>(
+      cfg,
+      sql,
+      [limite],
+    );
+    return rows.map((r) => ({ id: r.ID, codigo: r.CODIGO }));
+  } catch (e) {
+    if (isTabelaInexistente(e)) return [];
+    throw e;
+  }
+}
+
+/** Marca TODAS as linhas pendentes (PROCESSADO=0) dos codigos informados
+ *  como processadas. Isso e mais robusto que marcar so os IDs lidos: se
+ *  o produto foi alterado de novo entre a leitura e o envio, ainda assim
+ *  o estado mais recente foi enviado (a query de buscarProdutosPorCodigos
+ *  busca o estado atual). */
+export async function marcarFilaProcessadaProdutos(
+  cfg: Config,
+  codigos: number[],
+): Promise<void> {
+  if (codigos.length === 0) return;
+  const ints = codigos.filter((c) => Number.isInteger(c));
+  if (ints.length === 0) return;
+  const inList = ints.join(',');
+  const sql = `
+    UPDATE CONCILIA_SYNC_QUEUE
+       SET PROCESSADO = 1
+     WHERE PROCESSADO = 0
+       AND TABELA = 'PRODUTOS'
+       AND CODIGO IN (${inList})
+  `;
+  try {
+    await executarWrite(cfg, sql, []);
+  } catch (e) {
+    if (isTabelaInexistente(e)) return;
+    throw e;
+  }
+}
+
+/** Re-executa a query agregadora de produtos filtrando por uma lista de
+ *  CODIGO. Usada pelo ciclo da fila pra reenviar produtos alterados. */
+export async function buscarProdutosPorCodigos(
+  cfg: Config,
+  codigos: number[],
+): Promise<ProdutoIngest[]> {
+  if (codigos.length === 0) return [];
+  const ints = codigos.filter((c) => Number.isInteger(c));
+  if (ints.length === 0) return [];
+  const inList = ints.join(',');
+  const sql = `
+    SELECT p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
+           COALESCE(MAX(pd.PRECOVENDA), p.PRECOVENDA) AS PRECOVENDA,
+           COALESCE(MIN(CASE WHEN pd.PRECOCUSTO > 0 THEN pd.PRECOCUSTO END), p.PRECOCUSTO) AS PRECOCUSTO,
+           COALESCE(SUM(pd.ESTOQUEATUAL), p.ESTOQUEATUAL) AS ESTOQUEATUAL,
+           COALESCE(SUM(pd.ESTOQUEMINIMO), p.ESTOQUEMINIMO) AS ESTOQUEMINIMO,
+           COALESCE(MAX(pd.ESTOQUECONTROLADO), p.ESTOQUECONTROLADO) AS ESTOQUECONTROLADO,
+           p.DESCONTINUADO, p.ITEMPORKG,
+           p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
+           p.NCM, p.CFOP, p.CEST, p.VERSAOREG,
+           MIN(pd.DATAPAUSADO) AS DATAPAUSADO
+      FROM PRODUTOS p
+      LEFT JOIN PRODUTODETALHE pd ON pd.CODIGOPRODUTO = p.CODIGO
+     WHERE p.CODIGO IN (${inList})
+     GROUP BY p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
+              p.PRECOVENDA, p.PRECOCUSTO, p.ESTOQUEATUAL, p.ESTOQUEMINIMO,
+              p.ESTOQUECONTROLADO, p.DESCONTINUADO, p.ITEMPORKG,
+              p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
+              p.NCM, p.CFOP, p.CEST, p.VERSAOREG
+     ORDER BY p.CODIGO
+  `;
+  const rows = await executarQuery<ProdutoRow>(cfg, sql, []);
+  return rows.map((r) => ({
+    codigoExterno: r.CODIGO,
+    nome: toStr(r.NOME),
+    descricao: toStr(r.DESCRICAO),
+    codigoPersonalizado: toStr(r.CODIGOPERSONALIZADO),
+    codigoEtiqueta: toStr(r.CODIGOETIQUETA),
+    precoVenda: toNum(r.PRECOVENDA),
+    precoCusto: toNum(r.PRECOCUSTO),
+    estoqueAtual: toNum(r.ESTOQUEATUAL),
+    estoqueMinimo: toNum(r.ESTOQUEMINIMO),
+    estoqueControlado: toBool(r.ESTOQUECONTROLADO),
+    descontinuado: toBool(r.DESCONTINUADO),
+    itemPorKg: toBool(r.ITEMPORKG),
+    codigoUnidadeComercial: toNum(r.CODIGOUNIDADECOMERCIAL),
+    codigoProdutoTipo: toNum(r.CODIGOPRODUTOTIPO),
+    codigoCozinha: toNum(r.CODIGOCOZINHA),
+    ncm: toStr(r.NCM),
+    cfop: toStr(r.CFOP),
+    cest: toStr(r.CEST),
+    versaoReg: toNum(r.VERSAOREG),
+    dataPausado:
+      r.DATAPAUSADO instanceof Date
+        ? r.DATAPAUSADO.toISOString()
+        : toStr(r.DATAPAUSADO),
+  }));
+}
