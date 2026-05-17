@@ -355,9 +355,19 @@ export function CalculoFechar({
       });
       if (r.ok) {
         const data = await r.json();
+        const partes = [
+          `${data.lancamentosGerados} lançamento(s) gerado(s) no contas a pagar`,
+        ];
+        if (data.fiadosBaixados > 0) {
+          partes.push(
+            `${data.fiadosBaixados} comando(s) de baixa de fiado criado(s) (agente executa em ~15min)`,
+          );
+        } else if (data.fiadosIgnorados > 0) {
+          partes.push(`baixa de fiado já estava na fila (${data.fiadosIgnorados} ignorado(s))`);
+        }
         setMsg({
           tipo: 'ok',
-          texto: `Folha fechada — ${data.lancamentosGerados} lançamento(s) gerado(s) no contas a pagar.`,
+          texto: `Folha fechada — ${partes.join('; ')}.`,
         });
         router.refresh();
       } else {
@@ -395,18 +405,22 @@ export function CalculoFechar({
                 onClick={puxarFiados}
                 disabled={pending}
                 className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
-                title="Lê o saldo atual de fiado de cada cliente vinculado e cria desconto automático na folha"
+                title="Re-lê o saldo atual de fiado de cada cliente vinculado e atualiza descontos (já roda automaticamente ao abrir a folha)"
               >
-                ⤓ Puxar fiados
+                ⟳ Atualizar fiados
               </button>
+            </div>
+          )}
+          {!aberta && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={baixarFiadosNoConsumer}
                 disabled={pending}
                 className="rounded-md border border-purple-300 bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-50"
-                title="Cria comandos pro agente lançar baixa em CONTACORRENTE no Consumer (zera saldo dos garçons)"
+                title="Fallback manual — ao fechar a folha a baixa já roda automaticamente. Use só se algo falhou."
               >
-                📤 Baixar fiados no Consumer
+                📤 Re-disparar baixa de fiado (fallback)
               </button>
             </div>
           )}

@@ -17,6 +17,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { calcularFolha, type ConfigFolha, type Lancamento } from '@/lib/folha/calcular';
+import { criarComandosBaixarFiado } from '@/lib/folha/baixar-fiados';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
@@ -232,12 +233,37 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     })
     .where(eq(schema.folhaSemana.id, id));
 
+  // Baixa automatica de fiado no Consumer — pra todo garcom com saldo>0
+  // (que ja foi descontado na folha via puxar-fiado), gera comando pro
+  // agente zerar o CONTACORRENTE no Consumer Rede. Falha aqui NAO aborta
+  // o fechamento — a folha ja foi fechada; baixa pode ser re-disparada
+  // manualmente pelo endpoint /baixar-fiados se precisar.
+  let fiadosBaixados = 0;
+  let fiadosIgnorados = 0;
+  try {
+    const r = await criarComandosBaixarFiado({
+      filialId: folha.filialId,
+      folhaId: folha.id,
+      dataInicio: folha.dataInicio,
+      dataFim: folha.dataFim,
+      userId: user.id,
+    });
+    fiadosBaixados = r.comandos;
+    fiadosIgnorados = r.ignorados;
+  } catch (e) {
+    resultado.avisos.push(
+      `Folha fechada OK, mas falhou criar comandos de baixa de fiado: ${(e as Error).message}. Use o botao manual.`,
+    );
+  }
+
   return NextResponse.json({
     ok: true,
     lancamentosGerados: inseridos,
     totalBruto: resultado.totalBruto,
     totalLiquido: resultado.totalLiquido,
     totalDescontos: resultado.totalDescontos,
+    fiadosBaixados,
+    fiadosIgnorados,
     avisos: resultado.avisos,
   });
 }
