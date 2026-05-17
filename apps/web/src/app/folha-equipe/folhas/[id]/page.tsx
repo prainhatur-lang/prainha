@@ -87,11 +87,6 @@ export default async function FolhaDetalhePage(props: {
         eq(schema.fornecedorFolha.ativo, true),
       ),
     );
-  // Ordena alfabetica (pt-BR, case-insensitive)
-  const pessoas = pessoasRows.sort((a, b) =>
-    (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR', { sensitivity: 'base' }),
-  );
-
   // Horas trabalhadas por pessoa por dia (salvas pelo upload do espelho)
   const horasRows = await db
     .select()
@@ -104,6 +99,15 @@ export default async function FolhaDetalhePage(props: {
     cur[h.dia] = h.totalMin;
     horasPorPessoa.set(h.fornecedorId, cur);
   }
+
+  // Mostra apenas quem aparece no espelho de ponto (tem ao menos 1
+  // batida na semana). Gerentes nao batem ponto entao sempre aparecem.
+  // Ordena alfabetica (pt-BR, case-insensitive).
+  const pessoas = pessoasRows
+    .filter((p) => p.papel === 'gerente' || horasPorPessoa.has(p.fornecedorId))
+    .sort((a, b) =>
+      (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR', { sensitivity: 'base' }),
+    );
 
   // Ajustes (descontos/acréscimos) já lançados nessa folha
   const ajustes = await db
