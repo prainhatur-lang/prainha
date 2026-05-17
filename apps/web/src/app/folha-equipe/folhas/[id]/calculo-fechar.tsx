@@ -131,6 +131,7 @@ export function CalculoFechar({
         const data = await r.json();
         setMsg({ tipo: 'ok', texto: `${data.importados} fiado(s) importado(s) ✓` });
         router.refresh();
+        refreshPreview();
       } else {
         setMsg({ tipo: 'erro', texto: await r.text() });
       }
@@ -194,6 +195,7 @@ export function CalculoFechar({
         setFormValor('');
         setFormDescricao('');
         router.refresh();
+        refreshPreview();
       } else {
         setMsg({ tipo: 'erro', texto: await r.text() });
       }
@@ -206,8 +208,12 @@ export function CalculoFechar({
         `/api/folha-equipe/folhas/${folhaId}/ajustes?ajusteId=${ajusteId}`,
         { method: 'DELETE' },
       );
-      if (r.ok) router.refresh();
-      else setMsg({ tipo: 'erro', texto: await r.text() });
+      if (r.ok) {
+        router.refresh();
+        refreshPreview();
+      } else {
+        setMsg({ tipo: 'erro', texto: await r.text() });
+      }
     });
   }
 
