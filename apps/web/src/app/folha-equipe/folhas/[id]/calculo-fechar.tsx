@@ -622,7 +622,17 @@ export function CalculoFechar({
                   </tr>
                 </thead>
                 <tbody>
-                  {resultado.lancamentos.map((l, i) => (
+                  {[...resultado.lancamentos]
+                    .sort((a, b) => {
+                      // Por nome (alfabetica), mantendo lancamentos da mesma
+                      // pessoa juntos. Tipo desempata: comissao, diaria,
+                      // gratificacao, transporte (ordem do select abaixo).
+                      const ordemTipo = { comissao: 0, diaria: 1, gratificacao: 2, transporte: 3 } as const;
+                      const nome = a.pessoaNome.localeCompare(b.pessoaNome, 'pt-BR');
+                      if (nome !== 0) return nome;
+                      return ordemTipo[a.tipo] - ordemTipo[b.tipo];
+                    })
+                    .map((l, i) => (
                     <tr key={i} className="border-t border-slate-100">
                       <td className="px-2 py-1.5 font-medium text-slate-900">
                         {l.pessoaNome}
