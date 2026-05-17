@@ -63,7 +63,7 @@ export default async function FolhaDetalhePage(props: {
   const totalDezPct = Object.values(dezPct).reduce((a, b) => a + (b ?? 0), 0);
 
   // Pessoas vinculadas à folha (fornecedor_folha + fornecedor + cliente)
-  const pessoas = await db
+  const pessoasRows = await db
     .select({
       fornecedorId: schema.fornecedorFolha.fornecedorId,
       papel: schema.fornecedorFolha.papel,
@@ -87,6 +87,10 @@ export default async function FolhaDetalhePage(props: {
         eq(schema.fornecedorFolha.ativo, true),
       ),
     );
+  // Ordena alfabetica (pt-BR, case-insensitive)
+  const pessoas = pessoasRows.sort((a, b) =>
+    (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR', { sensitivity: 'base' }),
+  );
 
   // Horas trabalhadas por pessoa por dia (salvas pelo upload do espelho)
   const horasRows = await db
