@@ -122,8 +122,11 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
   // Injeta bonus fixo semanal e por dia como acrescimos automaticos
   // (vem do cadastro — sem precisar lancar manual a cada folha).
+  // Bonus fixo semanal so se a pessoa trabalhou na semana (>=1 dia com
+  // horas) — quem nao bateu ponto semana toda nao recebe.
   for (const p of pessoasRows) {
-    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
+    const diasComHoras = Object.values(horasMap.get(p.fornecedorId) ?? {}).filter((m) => m > 0).length;
+    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0 && diasComHoras > 0) {
       const cur = ajustesMap.get(p.fornecedorId) ?? [];
       cur.push({
         tipo: 'acrescimo',

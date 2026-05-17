@@ -96,8 +96,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
   // Injeta bonus fixo semanal como acrescimo automatico (vem do cadastro
   // da pessoa, nao precisa lancar manual em cada folha).
+  // SO se a pessoa trabalhou na semana (>=1 dia com horas). Faltou semana
+  // toda -> sem bonus. Gerente sem ponto cai aqui tb (sem horas = sem bonus
+  // fixo semanal); caso queira pagar bonus pro gerente que nao bate ponto,
+  // usar `gerente_modelo='fixo_por_dia'` (que usa dias da loja).
   for (const p of pessoasRows) {
-    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
+    const diasComHoras = Object.values(horasMap.get(p.fornecedorId) ?? {}).filter((m) => m > 0).length;
+    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0 && diasComHoras > 0) {
       const cur = ajustesMap.get(p.fornecedorId) ?? [];
       cur.push({
         tipo: 'acrescimo',

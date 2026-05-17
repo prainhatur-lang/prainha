@@ -270,13 +270,19 @@ export function calcularFolha(args: {
       valor = total;
       detalhe = `${config.ppGerente}pp dos 10% da semana`;
     } else if (g.gerenteModelo === 'fixo_por_dia' && g.gerenteValorFixoDia) {
-      // Conta dias da semana em que a loja funcionou (10pct > 0). Gerente
-      // nao bate ponto: se a loja abriu, ele recebe a diaria daquele dia.
-      const diasTrab = Object.values(dezPctPorDia).filter((v) => v > 0).length;
+      // Se o gerente BATE PONTO (tem folha_horas na semana), conta os dias
+      // dele com horas>0 — assim falta desconta. Caso nao bata ponto, usa
+      // os dias com movimento da loja (10pct>0) como fallback — gerentes
+      // antigos que so apareciam pra abrir/fechar e nao registravam ponto.
+      const porDiaGer = horasMap.get(g.fornecedorId) ?? {};
+      const diasComPonto = Object.values(porDiaGer).filter((m) => m > 0).length;
+      const diasLoja = Object.values(dezPctPorDia).filter((v) => v > 0).length;
+      const diasTrab = diasComPonto > 0 ? diasComPonto : diasLoja;
+      const origem = diasComPonto > 0 ? 'ponto' : 'loja';
       valor = diasTrab * g.gerenteValorFixoDia;
-      detalhe = `${diasTrab} × R$ ${g.gerenteValorFixoDia.toFixed(2)}/dia`;
+      detalhe = `${diasTrab} × R$ ${g.gerenteValorFixoDia.toFixed(2)}/dia (${origem})`;
       if (diasTrab === 0) {
-        avisos.push(`${g.nome}: gerente fixo mas nenhum dia com movimento na semana.`);
+        avisos.push(`${g.nome}: gerente fixo sem ponto e sem movimento na semana.`);
       }
     }
 
