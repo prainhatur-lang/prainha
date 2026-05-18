@@ -966,15 +966,24 @@ export async function buscarPedidoItens(
   desdeCodigo: number,
   limite: number,
 ): Promise<PedidoItemIngest[]> {
+  // No Consumer (RAL Tecnologia), o PDV vende variantes (PRODUTODETALHE),
+  // nao o produto pai. ITENSPEDIDO.CODIGOPRODUTO costuma ser NULL e o link
+  // real esta em ITENSPEDIDO.CODIGOPRODUTODETALHE -> PRODUTODETALHE.CODIGO,
+  // de onde tiramos CODIGOPRODUTO -> PRODUTOS.CODIGO. COALESCE pra cobrir
+  // raros casos em que ITENSPEDIDO.CODIGOPRODUTO esta preenchido direto.
   const sql = `
-    SELECT FIRST ? CODIGO, CODIGOPEDIDO, CODIGOPRODUTO, NOMEPRODUTO,
-           QUANTIDADE, VALORUNITARIO, PRECOCUSTO,
-           VALORITEM, VALORCOMPLEMENTO, VALORFILHO,
-           VALORDESCONTO, VALORGORJETA, VALORTOTAL,
-           CODIGOPAI, CODIGOITEMPEDIDOTIPO, CODIGOPAGAMENTO,
-           CODIGOCOLABORADOR, DATAHORACADASTRO, DATADELETE,
-           DETALHES, VERSAOREG
-    FROM ITENSPEDIDO WHERE CODIGO > ? ORDER BY CODIGO
+    SELECT FIRST ? i.CODIGO, i.CODIGOPEDIDO,
+           COALESCE(i.CODIGOPRODUTO, pd.CODIGOPRODUTO) AS CODIGOPRODUTO,
+           i.NOMEPRODUTO,
+           i.QUANTIDADE, i.VALORUNITARIO, i.PRECOCUSTO,
+           i.VALORITEM, i.VALORCOMPLEMENTO, i.VALORFILHO,
+           i.VALORDESCONTO, i.VALORGORJETA, i.VALORTOTAL,
+           i.CODIGOPAI, i.CODIGOITEMPEDIDOTIPO, i.CODIGOPAGAMENTO,
+           i.CODIGOCOLABORADOR, i.DATAHORACADASTRO, i.DATADELETE,
+           i.DETALHES, i.VERSAOREG
+    FROM ITENSPEDIDO i
+    LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = i.CODIGOPRODUTODETALHE
+    WHERE i.CODIGO > ? ORDER BY i.CODIGO
   `;
   const rows = await executarQuery<PedidoItemRow>(cfg, sql, [limite, desdeCodigo]);
   return rows.map((r) => ({
@@ -1010,8 +1019,11 @@ export async function buscarPedidoItensJanela(
   desdeCodigoNaJanela: number,
   limite: number,
 ): Promise<PedidoItemIngest[]> {
+  // Mesma logica de buscarPedidoItens: pega CODIGOPRODUTO via PRODUTODETALHE.
   const sql = `
-    SELECT FIRST ? i.CODIGO, i.CODIGOPEDIDO, i.CODIGOPRODUTO, i.NOMEPRODUTO,
+    SELECT FIRST ? i.CODIGO, i.CODIGOPEDIDO,
+           COALESCE(i.CODIGOPRODUTO, pd.CODIGOPRODUTO) AS CODIGOPRODUTO,
+           i.NOMEPRODUTO,
            i.QUANTIDADE, i.VALORUNITARIO, i.PRECOCUSTO,
            i.VALORITEM, i.VALORCOMPLEMENTO, i.VALORFILHO,
            i.VALORDESCONTO, i.VALORGORJETA, i.VALORTOTAL,
@@ -1020,6 +1032,7 @@ export async function buscarPedidoItensJanela(
            i.DETALHES, i.VERSAOREG
     FROM ITENSPEDIDO i
     INNER JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+    LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = i.CODIGOPRODUTODETALHE
     WHERE p.DATAABERTURA >= DATEADD(? DAY TO CURRENT_TIMESTAMP)
       AND i.CODIGO > ?
     ORDER BY i.CODIGO
