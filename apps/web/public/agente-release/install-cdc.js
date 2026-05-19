@@ -118,18 +118,11 @@ async function passo(db, descricao, fn) {
 
 // ---------- DDL ----------
 
-// Lista de tabelas pra captura via CDC.
-// IMPORTANTE: aqui estao TODAS as tabelas que o concilia precisa pra ter
-// representacao completa do produto no Consumer:
-//   - PRODUTOTIPO: 6 tipos (Produto=1, Insumo=2, Complemento=3, Combo=4,
-//     ProdutoPorTamanho=5, Servico=6) — usado pra distinguir insumo de produto
-//   - PRODUTOFICHA: receita/composicao (produto vendido -> ingredientes + qtd)
-//   - PRODUTOTAMANHO: tamanhos com QTDMAXIMAPARTES (= meio-a-meio quando >1)
-//   - UNIDADECOMERCIALIZACAO: unidades de venda (g/kg/m/m2/L/un/etc)
-//   - ITEMPEDIDOFICHA: ingredientes efetivamente usados nas vendas (pra baixa)
+// Lista FINAL de 57 tabelas a capturar via CDC (decisoes D1-D10 fechadas em 19/05/2026).
+// Ver memory/consumer_decisoes_finais_cdc.md pra justificativa.
 const TABELAS_CDC = [
   // [tabela, coluna_pk]
-  // --- catalogo / cadastros ---
+  // ============ 1. Catalogo de produtos (8) ============
   ['PRODUTOTIPO',              'CODIGO'],
   ['UNIDADECOMERCIALIZACAO',   'CODIGO'],
   ['PRODUTOSTAMANHOS',         'CODIGO'],
@@ -138,19 +131,67 @@ const TABELAS_CDC = [
   ['PRODUTODETALHE',           'CODIGO'],
   ['PRODUTOFICHA',             'CODIGO'],
   ['PRODUTODETALHECOMPLEMENTO','CODIGO'],
-  // --- vendas / movimentacao ---
+  // ============ 2. Vendas (5) ============
+  ['ITEMPEDIDOTIPO',           'CODIGO'],
+  ['PEDIDOORIGEM',             'CODIGO'],
   ['PEDIDOS',                  'CODIGO'],
   ['ITENSPEDIDO',              'CODIGO'],
   ['ITEMPEDIDOFICHA',          'CODIGO'],
+  // ============ 3. Pagamento (4) ============
+  ['MEIOPAGAMENTO',            'CODIGO'],
+  ['FORMASPAGAMENTO',          'CODIGO'],
+  // FORMAPAGAMENTOPRAZO removida: PK composta (CODIGOFORMAPAGAMENTO+CODIGOOPERADORACARTAO).
+  // Tabela pequena (30 linhas), pode ser refetched periodicamente sem CDC.
   ['PAGAMENTOS',               'CODIGO'],
-  // --- financeiro ---
-  ['CONTACORRENTE',            'CODIGO'],
-  ['CONTASPAGAR',              'CODIGO'],
+  // ============ 4. Cartao (3) ============
+  ['CREDENCIADORACARTAO',      'CODIGO'],
+  ['OPERADORACARTAO',          'CODIGO'],
+  ['TEFADQUIRENTE',            'CODIGO'],
+  // ============ 5. Financeiro (5) ============
+  ['GRUPODRE',                 'CODIGO'],
   ['CATEGORIACONTAS',          'CODIGO'],
   ['CONTASBANCARIAS',          'CODIGO'],
-  // --- relacionamentos ---
-  ['FORNECEDORES',             'CODIGO'],
+  ['CONTACORRENTE',            'CODIGO'],
+  ['CONTASPAGAR',              'CODIGO'],
+  // ============ 6. NF (4) ============
+  ['NFE',                      'CODIGO'],
+  ['NFCE',                     'CODIGO'],
+  ['NFITEM',                   'CODIGO'],
+  ['NFPAGAMENTO',              'CODIGO'],
+  // ============ 7. NF lookups fiscais (10) ============
+  ['CFOP',                     'CODIGO'],
+  ['SITUACAOTRIBUTARIA',       'CODIGO'],
+  ['SITUACAOTRIBUTARIAPIS',    'CODIGO'],
+  ['SITUACAOTRIBUTARIACOFINS', 'CODIGO'],
+  ['MODALIDADEBCICMS',         'CODIGO'],
+  ['ORIGEMMERCADORIA',         'CODIGO'],
+  ['REGIMETRIBUTARIO',         'CODIGO'],
+  ['TIPODOCUMENTODESTINATARIO','CODIGO'],
+  ['NFTIPO',                   'CODIGO'],
+  ['NFSERIE',                  'CODIGO'],
+  // ============ 8. Contatos (2) ============
   ['CONTATOS',                 'CODIGO'],
+  ['FORNECEDORES',             'CODIGO'],
+  // ============ 9. Delivery (8) ============
+  ['TIPOENTREGA',              'CODIGO'],
+  ['TAXAENTREGA',              'CODIGO'],
+  ['TAXAENTREGACEP',           'CODIGO'],
+  ['GRUPOENTREGA',             'CODIGO'],
+  ['ENDERECO',                 'CODIGO'],
+  ['DELIVERY',                 'CODIGOPEDIDO'],  // PK e CODIGOPEDIDO
+  ['PEDIDOGRUPOENTREGA',       'CODIGOPEDIDO'],  // PK e CODIGOPEDIDO
+  // TAXAENTREGAPOLIGONO removida — PK composto (CODIGOTAXAENTREGA+ORDEM), nao cabe no formato atual
+  // ============ 10. iFood / OrderIntegration (4) ============
+  ['IFOODPEDIDO',              'CODIGOPEDIDOIFOOD'],  // PK eh varchar nao CODIGO!
+  ['ORDERINTEGRATION',         'ID'],                  // PK eh ID nao CODIGO!
+  ['ORDERSHIPPING',            'ID'],                  // idem
+  ['MENUDINOPEDIDO',           'CODIGOPEDIDOMENUDINO'], // PK bigint nao CODIGO!
+  // ============ 11. Caixa (2) ============
+  ['CAIXA',                    'CODIGO'],
+  ['CAIXAOPERACAO',            'CODIGO'],
+  // ============ 12. Estoque (2) ============
+  ['ESTOQUE',                  'CODIGO'],
+  ['ESTOQUEMOVIMENTACAO',      'CODIGO'],
 ];
 
 const CREATE_TABLE_SQL = `
@@ -170,6 +211,7 @@ const CREATE_TABLE_SQL = `
 function triggerSql(tabela, pk) {
   // Trigger AFTER I/U/D que enfileira na queue.
   // WHEN ANY DO BEGIN END swallows erros — nunca bloqueia o Consumer.
+  // CAST AS VARCHAR(100) funciona pra INTEGER, BIGINT, VARCHAR.
   return `
     CREATE TRIGGER TR_CONCILIA_${tabela} FOR ${tabela}
     ACTIVE AFTER INSERT OR UPDATE OR DELETE POSITION 100
@@ -190,34 +232,82 @@ function triggerSql(tabela, pk) {
   `;
 }
 
-// Estrategia de backfill por tabela
-// "all" = marca tudo, "data" = marca onde {coluna} >= NOW - dias
-// "join_pedidos" = filtra via JOIN com PEDIDOS.DATAABERTURA
+// Estrategia de backfill por tabela.
+// "all"           = marca tudo
+// "data"          = filtra por {coluna} >= NOW - dias
+// "join_pedidos"  = JOIN PEDIDOS.DATAABERTURA
+// "join_itens"    = JOIN ITENSPEDIDO -> PEDIDOS.DATAABERTURA
+// "join_nfe"      = JOIN NFE.DATAHORAEMISSAO (pra NFITEM e NFPAGAMENTO)
 const BACKFILL_STRATEGY = {
-  // Lookups e cadastros (todos pequenos — marca tudo)
-  PRODUTOTIPO:                { tipo: 'all' },  // ~6 linhas (lookup)
-  UNIDADECOMERCIALIZACAO:     { tipo: 'all' },  // ~11 linhas (lookup)
-  PRODUTOSTAMANHOS:           { tipo: 'all' },  // ~5 linhas (lookup)
-  PRODUTOTAMANHO:             { tipo: 'all' },  // configuracao de produto-tamanho
-  PRODUTOS:                   { tipo: 'all' },  // ~2k
-  PRODUTODETALHE:             { tipo: 'all' },  // ~3k
-  PRODUTOFICHA:               { tipo: 'all' },  // ficha tecnica — tudo
-  PRODUTODETALHECOMPLEMENTO:  { tipo: 'all' },  // relacao complementos
-  CATEGORIACONTAS:            { tipo: 'all' },  // ~150
-  FORNECEDORES:               { tipo: 'all' },  // ~2k
-  CONTASBANCARIAS:            { tipo: 'all' },  // ~100
-  CONTATOS:                   { tipo: 'all' },  // ~31k — vale tudo
-  CONTACORRENTE:              { tipo: 'all' },  // ~11k
-  CONTASPAGAR:                { tipo: 'all' },  // ~50k — importante, marca tudo
-  // Movimentacao com filtro de data (volumes grandes)
+  // ===== Lookups (sempre 'all') =====
+  PRODUTOTIPO:                { tipo: 'all' },
+  UNIDADECOMERCIALIZACAO:     { tipo: 'all' },
+  PRODUTOSTAMANHOS:           { tipo: 'all' },
+  ITEMPEDIDOTIPO:             { tipo: 'all' },
+  PEDIDOORIGEM:               { tipo: 'all' },
+  MEIOPAGAMENTO:              { tipo: 'all' },
+  FORMASPAGAMENTO:            { tipo: 'all' },
+  // FORMAPAGAMENTOPRAZO removida do CDC (PK composta)
+  CREDENCIADORACARTAO:        { tipo: 'all' },
+  OPERADORACARTAO:            { tipo: 'all' },
+  TEFADQUIRENTE:              { tipo: 'all' },
+  GRUPODRE:                   { tipo: 'all' },
+  CFOP:                       { tipo: 'all' },
+  SITUACAOTRIBUTARIA:         { tipo: 'all' },
+  SITUACAOTRIBUTARIAPIS:      { tipo: 'all' },
+  SITUACAOTRIBUTARIACOFINS:   { tipo: 'all' },
+  MODALIDADEBCICMS:           { tipo: 'all' },
+  ORIGEMMERCADORIA:           { tipo: 'all' },
+  REGIMETRIBUTARIO:           { tipo: 'all' },
+  TIPODOCUMENTODESTINATARIO:  { tipo: 'all' },
+  NFTIPO:                     { tipo: 'all' },
+  NFSERIE:                    { tipo: 'all' },
+  TIPOENTREGA:                { tipo: 'all' },
+
+  // ===== Catalogo (sempre 'all' - volume pequeno) =====
+  PRODUTOTAMANHO:             { tipo: 'all' },
+  PRODUTOS:                   { tipo: 'all' },
+  PRODUTODETALHE:             { tipo: 'all' },
+  PRODUTOFICHA:               { tipo: 'all' },
+  PRODUTODETALHECOMPLEMENTO:  { tipo: 'all' },
+
+  // ===== Cadastros (volumes baixos-medios, all) =====
+  CATEGORIACONTAS:            { tipo: 'all' },
+  FORNECEDORES:               { tipo: 'all' },
+  CONTASBANCARIAS:            { tipo: 'all' },
+  CONTATOS:                   { tipo: 'all' },
+  TAXAENTREGA:                { tipo: 'all' },
+  TAXAENTREGACEP:             { tipo: 'all' },
+  GRUPOENTREGA:               { tipo: 'all' },
+  ENDERECO:                   { tipo: 'all' },
+  ESTOQUE:                    { tipo: 'all' },  // saldo atual, sempre marca tudo
+
+  // ===== Transacionais com filtro de data =====
   PEDIDOS:                    { tipo: 'data', coluna: 'DATAABERTURA' },
   ITENSPEDIDO:                { tipo: 'join_pedidos' },
-  ITEMPEDIDOFICHA:            { tipo: 'all' },  // depende do volume — vamos comecar com all
+  ITEMPEDIDOFICHA:            { tipo: 'join_itens' },
   PAGAMENTOS:                 { tipo: 'data', coluna: 'DATAPAGAMENTO' },
+  CONTACORRENTE:              { tipo: 'data', coluna: 'DATAHORA' },
+  CONTASPAGAR:                { tipo: 'data', coluna: 'DATACADASTRO' },
+  NFE:                        { tipo: 'data', coluna: 'DATAHORAEMISSAO' },
+  NFCE:                       { tipo: 'data', coluna: 'DATAHORAEMISSAO' },
+  NFITEM:                     { tipo: 'join_nfe' },
+  NFPAGAMENTO:                { tipo: 'join_nfe' },
+  DELIVERY:                   { tipo: 'join_pedidos_via_codigopedido' },
+  PEDIDOGRUPOENTREGA:         { tipo: 'join_pedidos_via_codigopedido' },
+  IFOODPEDIDO:                { tipo: 'data', coluna: 'DATAINSERT' },
+  MENUDINOPEDIDO:             { tipo: 'data', coluna: 'DATAINSERT' },
+  ORDERINTEGRATION:           { tipo: 'data', coluna: 'INSERTEDAT' },
+  ORDERSHIPPING:              { tipo: 'data', coluna: 'INSERTEDAT' },
+  CAIXA:                      { tipo: 'data', coluna: 'DATAABERTURA' },
+  CAIXAOPERACAO:              { tipo: 'data', coluna: 'DATAOPERACAO' },
+  ESTOQUEMOVIMENTACAO:        { tipo: 'data', coluna: 'DATAINSERT' },
 };
 
 function backfillSql(tabela, pk, dias) {
   const s = BACKFILL_STRATEGY[tabela];
+  const limit = `DATEADD(${-dias} DAY TO CURRENT_TIMESTAMP)`;
+
   if (s.tipo === 'all') {
     return `
       INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
@@ -230,19 +320,67 @@ function backfillSql(tabela, pk, dias) {
       INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
       SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(${pk} AS VARCHAR(100)), 'I'
       FROM ${tabela}
-      WHERE ${s.coluna} >= DATEADD(${-dias} DAY TO CURRENT_TIMESTAMP)
+      WHERE ${s.coluna} >= ${limit}
     `;
   }
   if (s.tipo === 'join_pedidos') {
+    // pra tabelas que tem FK CODIGOPEDIDO -> PEDIDOS, filtra pela DATAABERTURA
     return `
       INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
       SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(i.${pk} AS VARCHAR(100)), 'I'
       FROM ${tabela} i
       JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
-      WHERE p.DATAABERTURA >= DATEADD(${-dias} DAY TO CURRENT_TIMESTAMP)
+      WHERE p.DATAABERTURA >= ${limit}
     `;
   }
-  throw new Error('estrategia desconhecida');
+  if (s.tipo === 'join_pedidos_via_codigopedido') {
+    // pra DELIVERY e PEDIDOGRUPOENTREGA cuja PK ja eh CODIGOPEDIDO
+    return `
+      INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
+      SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(i.${pk} AS VARCHAR(100)), 'I'
+      FROM ${tabela} i
+      JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+      WHERE p.DATAABERTURA >= ${limit}
+    `;
+  }
+  if (s.tipo === 'join_itens') {
+    // pra ITEMPEDIDOFICHA: filtra via ITENSPEDIDO -> PEDIDOS
+    return `
+      INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
+      SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(f.${pk} AS VARCHAR(100)), 'I'
+      FROM ${tabela} f
+      JOIN ITENSPEDIDO i ON i.CODIGO = f.CODIGOITEMPEDIDO
+      JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+      WHERE p.DATAABERTURA >= ${limit}
+    `;
+  }
+  if (s.tipo === 'join_nfe') {
+    // pra NFITEM e NFPAGAMENTO. NFITEM tem CODNFE/CODNFCE? Vamos descobrir...
+    // Por enquanto so usa NFE.DATAHORAEMISSAO via cadeia (NFITEM tem CODITEMPEDIDO).
+    // Versao conservadora: marca tudo se a heuristica falhar.
+    if (tabela === 'NFITEM') {
+      // NFITEM.CODITEMPEDIDO -> ITENSPEDIDO.CODIGO -> PEDIDOS.DATAABERTURA
+      return `
+        INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
+        SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(ni.${pk} AS VARCHAR(100)), 'I'
+        FROM ${tabela} ni
+        LEFT JOIN ITENSPEDIDO i ON i.CODIGO = ni.CODITEMPEDIDO
+        LEFT JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+        WHERE p.DATAABERTURA >= ${limit} OR p.CODIGO IS NULL
+      `;
+    }
+    if (tabela === 'NFPAGAMENTO') {
+      // NFPAGAMENTO.CODPAGAMENTO -> PAGAMENTOS.DATAPAGAMENTO (ou CODIGOPEDIDO)
+      return `
+        INSERT INTO CONCILIA_SYNC_QUEUE (ID, TABELA, CHAVE_PK, OPERACAO)
+        SELECT GEN_ID(GEN_CONCILIA_SYNC_QUEUE, 1), '${tabela}', CAST(nf.${pk} AS VARCHAR(100)), 'I'
+        FROM ${tabela} nf
+        LEFT JOIN PAGAMENTOS pg ON pg.CODIGO = nf.CODPAGAMENTO
+        WHERE pg.DATAPAGAMENTO >= ${limit} OR pg.CODIGO IS NULL
+      `;
+    }
+  }
+  throw new Error('estrategia desconhecida: ' + s.tipo);
 }
 
 // ---------- Main ----------
@@ -278,7 +416,7 @@ async function main() {
       await exec(db, 'CREATE INDEX IDX_CONCILIA_QUEUE_DEDUP ON CONCILIA_SYNC_QUEUE (TABELA, CHAVE_PK, PROCESSADO)');
     });
 
-    console.log('\n### Triggers (11 tabelas) ###');
+    console.log(`\n### Triggers (${TABELAS_CDC.length} tabelas) ###`);
     for (const [tabela, pk] of TABELAS_CDC) {
       const trigName = 'TR_CONCILIA_' + tabela;
       await passo(db, trigName + ' (' + tabela + '.' + pk + ')', async () => {
