@@ -118,19 +118,39 @@ async function passo(db, descricao, fn) {
 
 // ---------- DDL ----------
 
+// Lista de tabelas pra captura via CDC.
+// IMPORTANTE: aqui estao TODAS as tabelas que o concilia precisa pra ter
+// representacao completa do produto no Consumer:
+//   - PRODUTOTIPO: 6 tipos (Produto=1, Insumo=2, Complemento=3, Combo=4,
+//     ProdutoPorTamanho=5, Servico=6) — usado pra distinguir insumo de produto
+//   - PRODUTOFICHA: receita/composicao (produto vendido -> ingredientes + qtd)
+//   - PRODUTOTAMANHO: tamanhos com QTDMAXIMAPARTES (= meio-a-meio quando >1)
+//   - UNIDADECOMERCIALIZACAO: unidades de venda (g/kg/m/m2/L/un/etc)
+//   - ITEMPEDIDOFICHA: ingredientes efetivamente usados nas vendas (pra baixa)
 const TABELAS_CDC = [
-  // [tabela, coluna_pk, descricao_curta]
-  ['PRODUTOS',        'CODIGO', 'produtos (pai)'],
-  ['PRODUTODETALHE',  'CODIGO', 'produto variantes'],
-  ['PEDIDOS',         'CODIGO', 'pedidos/comandas'],
-  ['ITENSPEDIDO',     'CODIGO', 'items de pedido'],
-  ['PAGAMENTOS',      'CODIGO', 'pagamentos'],
-  ['CONTACORRENTE',   'CODIGO', 'movimento conta corrente'],
-  ['CONTASPAGAR',     'CODIGO', 'contas a pagar'],
-  ['CATEGORIACONTAS', 'CODIGO', 'categorias contabeis'],
-  ['FORNECEDORES',    'CODIGO', 'fornecedores'],
-  ['CONTATOS',        'CODIGO', 'contatos/clientes'],
-  ['CONTASBANCARIAS', 'CODIGO', 'contas bancarias'],
+  // [tabela, coluna_pk]
+  // --- catalogo / cadastros ---
+  ['PRODUTOTIPO',              'CODIGO'],
+  ['UNIDADECOMERCIALIZACAO',   'CODIGO'],
+  ['PRODUTOSTAMANHOS',         'CODIGO'],
+  ['PRODUTOTAMANHO',           'CODIGO'],
+  ['PRODUTOS',                 'CODIGO'],
+  ['PRODUTODETALHE',           'CODIGO'],
+  ['PRODUTOFICHA',             'CODIGO'],
+  ['PRODUTODETALHECOMPLEMENTO','CODIGO'],
+  // --- vendas / movimentacao ---
+  ['PEDIDOS',                  'CODIGO'],
+  ['ITENSPEDIDO',              'CODIGO'],
+  ['ITEMPEDIDOFICHA',          'CODIGO'],
+  ['PAGAMENTOS',               'CODIGO'],
+  // --- financeiro ---
+  ['CONTACORRENTE',            'CODIGO'],
+  ['CONTASPAGAR',              'CODIGO'],
+  ['CATEGORIACONTAS',          'CODIGO'],
+  ['CONTASBANCARIAS',          'CODIGO'],
+  // --- relacionamentos ---
+  ['FORNECEDORES',             'CODIGO'],
+  ['CONTATOS',                 'CODIGO'],
 ];
 
 const CREATE_TABLE_SQL = `
@@ -174,17 +194,26 @@ function triggerSql(tabela, pk) {
 // "all" = marca tudo, "data" = marca onde {coluna} >= NOW - dias
 // "join_pedidos" = filtra via JOIN com PEDIDOS.DATAABERTURA
 const BACKFILL_STRATEGY = {
-  PRODUTOS:        { tipo: 'all' },
-  PRODUTODETALHE:  { tipo: 'all' },
-  CATEGORIACONTAS: { tipo: 'all' },
-  FORNECEDORES:    { tipo: 'all' },
-  CONTASBANCARIAS: { tipo: 'all' },
-  CONTATOS:        { tipo: 'all' },          // 31k — vale a pena tudo
-  CONTACORRENTE:   { tipo: 'all' },          // 11k
-  CONTASPAGAR:     { tipo: 'all' },          // 50k — tabela importante, marca tudo
-  PEDIDOS:         { tipo: 'data', coluna: 'DATAABERTURA' },
-  ITENSPEDIDO:     { tipo: 'join_pedidos' }, // via JOIN PEDIDOS.DATAABERTURA
-  PAGAMENTOS:      { tipo: 'data', coluna: 'DATAPAGAMENTO' },
+  // Lookups e cadastros (todos pequenos — marca tudo)
+  PRODUTOTIPO:                { tipo: 'all' },  // ~6 linhas (lookup)
+  UNIDADECOMERCIALIZACAO:     { tipo: 'all' },  // ~11 linhas (lookup)
+  PRODUTOSTAMANHOS:           { tipo: 'all' },  // ~5 linhas (lookup)
+  PRODUTOTAMANHO:             { tipo: 'all' },  // configuracao de produto-tamanho
+  PRODUTOS:                   { tipo: 'all' },  // ~2k
+  PRODUTODETALHE:             { tipo: 'all' },  // ~3k
+  PRODUTOFICHA:               { tipo: 'all' },  // ficha tecnica — tudo
+  PRODUTODETALHECOMPLEMENTO:  { tipo: 'all' },  // relacao complementos
+  CATEGORIACONTAS:            { tipo: 'all' },  // ~150
+  FORNECEDORES:               { tipo: 'all' },  // ~2k
+  CONTASBANCARIAS:            { tipo: 'all' },  // ~100
+  CONTATOS:                   { tipo: 'all' },  // ~31k — vale tudo
+  CONTACORRENTE:              { tipo: 'all' },  // ~11k
+  CONTASPAGAR:                { tipo: 'all' },  // ~50k — importante, marca tudo
+  // Movimentacao com filtro de data (volumes grandes)
+  PEDIDOS:                    { tipo: 'data', coluna: 'DATAABERTURA' },
+  ITENSPEDIDO:                { tipo: 'join_pedidos' },
+  ITEMPEDIDOFICHA:            { tipo: 'all' },  // depende do volume — vamos comecar com all
+  PAGAMENTOS:                 { tipo: 'data', coluna: 'DATAPAGAMENTO' },
 };
 
 function backfillSql(tabela, pk, dias) {
