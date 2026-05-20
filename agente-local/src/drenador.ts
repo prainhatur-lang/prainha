@@ -1,0 +1,328 @@
+// Drenador da fila CDC: le CONCILIA_SYNC_QUEUE, busca registros completos
+// das tabelas correspondentes, envia pro endpoint generico /api/concilia/sync
+// e marca como processado. Tolerante a tabela inexistente (filial sem CDC
+// instalado nao quebra).
+
+import Firebird from 'node-firebird';
+import type { Config } from './config';
+import { log } from './logger';
+
+interface FilaItem {
+  id: number;
+  tabela: string;
+  chavePk: string;
+  operacao: 'I' | 'U' | 'D';
+}
+
+interface RegistroSync {
+  tabela: string;
+  operacao: 'I' | 'U' | 'D';
+  chavePk: string;
+  dados: Record<string, unknown> | null; // null pra DELETE
+}
+
+// ---------- Helpers FB ----------
+
+function attachFb(cfg: Config): Promise<Firebird.Database> {
+  return new Promise((resolve, reject) => {
+    Firebird.attach(
+      {
+        host: cfg.firebird.host,
+        port: cfg.firebird.port,
+        database: cfg.firebird.database,
+        user: cfg.firebird.user,
+        password: cfg.firebird.password,
+        lowercase_keys: false,
+        pageSize: 4096,
+      },
+      (e: Error | null, db: Firebird.Database) => (e ? reject(e) : resolve(db)),
+    );
+  });
+}
+
+function detachFb(db: Firebird.Database): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      db.detach(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function query<T = Record<string, unknown>>(
+  db: Firebird.Database,
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  return new Promise((resolve, reject) => {
+    db.query(sql, params, (e: Error | null, r: T[]) => (e ? reject(e) : resolve(r ?? [])));
+  });
+}
+
+function execWrite(db: Firebird.Database, sql: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    db.transaction(Firebird.ISOLATION_READ_COMMITTED, (e, tx) => {
+      if (e) return reject(e);
+      tx.query(sql, [], (e2: Error | null) => {
+        if (e2) {
+          tx.rollback(() => reject(e2));
+          return;
+        }
+        tx.commit((e3) => (e3 ? reject(e3) : resolve()));
+      });
+    });
+  });
+}
+
+// Mapa tabela -> coluna PK pra buscar o registro completo (mesma lista de cdc.ts)
+const PK_POR_TABELA: Record<string, string> = {
+  DELIVERY: 'CODIGOPEDIDO',
+  PEDIDOGRUPOENTREGA: 'CODIGOPEDIDO',
+  IFOODPEDIDO: 'CODIGOPEDIDOIFOOD',
+  ORDERINTEGRATION: 'ID',
+  ORDERSHIPPING: 'ID',
+  MENUDINOPEDIDO: 'CODIGOPEDIDOMENUDINO',
+};
+const PK_DEFAULT = 'CODIGO';
+
+function pkOf(tabela: string): string {
+  return PK_POR_TABELA[tabela] ?? PK_DEFAULT;
+}
+
+// Escape de valor pra IN (...). Aceita numero ou string.
+function escapeLiteral(v: string): string {
+  return "'" + v.replace(/'/g, "''") + "'";
+}
+
+// ---------- Drenagem ----------
+
+async function lerFila(db: Firebird.Database, limite: number): Promise<FilaItem[]> {
+  const rows = await query<{
+    ID: number;
+    TABELA: string;
+    CHAVE_PK: string;
+    OPERACAO: string;
+  }>(
+    db,
+    `SELECT FIRST ${limite} ID, TABELA, CHAVE_PK, OPERACAO
+     FROM CONCILIA_SYNC_QUEUE
+     WHERE PROCESSADO = 0
+     ORDER BY ID`,
+  );
+  return rows.map((r) => ({
+    id: r.ID,
+    tabela: r.TABELA,
+    chavePk: r.CHAVE_PK,
+    operacao: r.OPERACAO as 'I' | 'U' | 'D',
+  }));
+}
+
+async function buscarRegistros(
+  db: Firebird.Database,
+  tabela: string,
+  chaves: string[],
+): Promise<Record<string, Record<string, unknown>>> {
+  if (chaves.length === 0) return {};
+  const pk = pkOf(tabela);
+  // Detecta se PK eh numerica via heuristica (todas as chaves sao integers)
+  const todasNumericas = chaves.every((c) => /^-?\d+$/.test(c));
+  const inList = todasNumericas
+    ? chaves.join(',')
+    : chaves.map(escapeLiteral).join(',');
+  const sql = `SELECT * FROM ${tabela} WHERE ${pk} IN (${inList})`;
+  const rows = await query<Record<string, unknown>>(db, sql);
+  const map: Record<string, Record<string, unknown>> = {};
+  for (const row of rows) {
+    const v = row[pk];
+    if (v !== null && v !== undefined) {
+      map[String(v)] = row;
+    }
+  }
+  return map;
+}
+
+async function marcarProcessado(db: Firebird.Database, ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  const sql = `UPDATE CONCILIA_SYNC_QUEUE
+               SET PROCESSADO = 1, PROCESSADO_EM = CURRENT_TIMESTAMP
+               WHERE ID IN (${ids.join(',')})`;
+  await execWrite(db, sql);
+}
+
+async function marcarErro(
+  db: Firebird.Database,
+  ids: number[],
+  erro: string,
+): Promise<void> {
+  if (ids.length === 0) return;
+  const erroTrunc = erro.slice(0, 500).replace(/'/g, "''");
+  const sql = `UPDATE CONCILIA_SYNC_QUEUE
+               SET TENTATIVAS = TENTATIVAS + 1, ULTIMO_ERRO = '${erroTrunc}'
+               WHERE ID IN (${ids.join(',')})`;
+  await execWrite(db, sql);
+}
+
+async function enviarSync(
+  cfg: Config,
+  registros: RegistroSync[],
+): Promise<{ recebidos: number; erros: string[] }> {
+  const url = cfg.api.url.replace(/\/$/, '') + '/api/concilia/sync';
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.api.token}`,
+    },
+    body: JSON.stringify({ registros }),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status} - ${txt.slice(0, 300)}`);
+  }
+  return (await r.json()) as { recebidos: number; erros: string[] };
+}
+
+// Testa se a fila existe (CDC instalado)
+async function filaExiste(db: Firebird.Database): Promise<boolean> {
+  try {
+    const r = await query(
+      db,
+      "SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'CONCILIA_SYNC_QUEUE'",
+    );
+    return r.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ---------- Ciclo principal ----------
+
+export async function cicloDrenador(cfg: Config): Promise<void> {
+  const BATCH = cfg.batchSize ?? 200;
+  const MAX_ITER = 50; // protecao contra loop infinito
+  let db: Firebird.Database | null = null;
+  let totalEnviado = 0;
+  let totalErro = 0;
+
+  try {
+    db = await attachFb(cfg);
+    if (!(await filaExiste(db))) {
+      // CDC ainda nao instalado nessa filial — no-op
+      return;
+    }
+
+    for (let iter = 0; iter < MAX_ITER; iter++) {
+      const pendentes = await lerFila(db, BATCH);
+      if (pendentes.length === 0) break;
+
+      // Agrupa por tabela pra fazer SELECT IN (...) eficiente
+      const porTabela = new Map<string, FilaItem[]>();
+      for (const p of pendentes) {
+        const arr = porTabela.get(p.tabela);
+        if (arr) arr.push(p);
+        else porTabela.set(p.tabela, [p]);
+      }
+
+      const registros: RegistroSync[] = [];
+      const idsOk: number[] = [];
+      const idsErr: number[] = [];
+
+      for (const [tabela, items] of porTabela) {
+        // DELETE nao precisa buscar (linha ja foi removida)
+        const naoDeletes = items.filter((i) => i.operacao !== 'D');
+        const deletes = items.filter((i) => i.operacao === 'D');
+
+        let mapaDados: Record<string, Record<string, unknown>> = {};
+        if (naoDeletes.length > 0) {
+          try {
+            const chaves = [...new Set(naoDeletes.map((i) => i.chavePk))];
+            mapaDados = await buscarRegistros(db, tabela, chaves);
+          } catch (e) {
+            log.warn('drenador: buscarRegistros falhou', {
+              tabela,
+              err: (e as Error).message,
+            });
+            // Marca os items como erro mas nao para o ciclo
+            for (const i of naoDeletes) idsErr.push(i.id);
+            continue;
+          }
+        }
+
+        for (const item of items) {
+          if (item.operacao === 'D') {
+            registros.push({
+              tabela: item.tabela,
+              operacao: 'D',
+              chavePk: item.chavePk,
+              dados: null,
+            });
+            idsOk.push(item.id);
+            continue;
+          }
+          const dados = mapaDados[item.chavePk];
+          if (!dados) {
+            // Registro foi deletado entre o INSERT e o sync — trata como DELETE
+            registros.push({
+              tabela: item.tabela,
+              operacao: 'D',
+              chavePk: item.chavePk,
+              dados: null,
+            });
+            idsOk.push(item.id);
+            continue;
+          }
+          registros.push({
+            tabela: item.tabela,
+            operacao: item.operacao,
+            chavePk: item.chavePk,
+            dados,
+          });
+          idsOk.push(item.id);
+        }
+
+        for (const d of deletes) idsOk.push(d.id); // ja incluido acima
+      }
+
+      // Envia pro servidor
+      if (registros.length === 0) {
+        if (idsErr.length > 0) await marcarErro(db, idsErr, 'sem registros pra enviar');
+        break;
+      }
+
+      try {
+        const resp = await enviarSync(cfg, registros);
+        await marcarProcessado(db, idsOk);
+        totalEnviado += resp.recebidos;
+        if (resp.erros && resp.erros.length > 0) {
+          log.warn('drenador: servidor reportou erros parciais', {
+            erros: resp.erros.slice(0, 5),
+            total: resp.erros.length,
+          });
+        }
+      } catch (e) {
+        const msg = (e as Error).message;
+        log.warn('drenador: envio falhou — vai tentar de novo no proximo ciclo', {
+          err: msg,
+          qtd: registros.length,
+        });
+        await marcarErro(db, idsOk, msg);
+        totalErro += idsOk.length;
+        break; // para o ciclo — servidor pode estar offline
+      }
+
+      if (idsErr.length > 0) {
+        await marcarErro(db, idsErr, 'falha ao buscar registros no FB');
+      }
+
+      // Curta pausa entre batches pra nao saturar
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    if (totalEnviado > 0 || totalErro > 0) {
+      log.info('drenador: ciclo concluido', { totalEnviado, totalErro });
+    }
+  } finally {
+    if (db) await detachFb(db);
+  }
+}

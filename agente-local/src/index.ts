@@ -61,14 +61,18 @@ import {
   buscarComandosPendentes,
   reportarComando,
 } from './ingest';
+import { instalarCdc, desinstalarCdc, statusCdc } from './cdc';
+import { cicloDrenador } from './drenador';
 import { log } from './logger';
+import { writeFileSync } from 'node:fs';
+// 'dirname' e 'resolve' ja importados acima como bootTrace
 
 bootTrace('BOOT 2 - imports OK');
 
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '0.7.0';
+const AGENTE_VERSAO = '1.0.0';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -481,6 +485,45 @@ async function cicloPdvRefetch(
   }
 }
 
+/** Auto-update: baixa novo agente.cjs do /agente-release/agente-v{versao}.cjs,
+ *  substitui o arquivo atual e chama process.exit(0) — NSSM reinicia.
+ *
+ *  Reporta sucesso ANTES de exitar (senao o comando fica como executando
+ *  pra sempre). Em caso de erro, reporta erro no comando e nao mata o agente. */
+async function autoUpdate(
+  cfg: ReturnType<typeof loadConfig>,
+  versao: string,
+  comandoId: string,
+): Promise<void> {
+  const url = `${cfg.api.url.replace(/\/$/, '')}/agente-release/agente-v${versao}.cjs`;
+  try {
+    log.info('auto_update: baixando', { versao, url });
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status} baixando ${url}`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 100_000) throw new Error(`arquivo suspeito (${buf.length} bytes)`);
+
+    // Caminho do agente.cjs atual — usa o execPath do node ou um fallback
+    const baseDir = dirname(process.execPath);
+    const alvo = resolve(baseDir, 'agente.cjs');
+    log.info('auto_update: salvando', { alvo, bytes: buf.length });
+    writeFileSync(alvo, buf);
+
+    await reportarComando(cfg, comandoId, 'sucesso', {
+      versao,
+      bytes: buf.length,
+      msg: 'agente atualizado, reiniciando em 2s',
+    });
+
+    log.info('auto_update: reiniciando processo (NSSM cuida do restart)');
+    setTimeout(() => process.exit(0), 2000);
+  } catch (e) {
+    const msg = (e as Error).message;
+    log.error('auto_update falhou', { err: msg });
+    await reportarComando(cfg, comandoId, 'erro', { msg });
+  }
+}
+
 /** Processa comandos pendentes do servidor (write-back no Firebird).
  *  Tipos suportados:
  *  - 'atualizar_fornecedor': UPDATE FORNECEDORES SET ... WHERE CODIGO = ?
@@ -545,6 +588,45 @@ async function cicloComandos(
         const r = await baixarFiado(cfg, codCliente, obs);
         await reportarComando(cfg, cmd.id, 'sucesso', r);
         log.info('comando ok', { id: cmd.id, tipo: cmd.tipo, ...r });
+        continue;
+      }
+
+      // Tipo 4: INSTALAR CDC — cria CONCILIA_SYNC_QUEUE + triggers + backfill
+      // payload = { dias?: number }
+      if (cmd.tipo === 'instalar_cdc') {
+        const dias =
+          (cmd.payload as unknown as { dias?: number }).dias ?? 365;
+        const r = await instalarCdc(cfg, dias);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        log.info('cdc instalado', { id: cmd.id, ...r });
+        continue;
+      }
+
+      // Tipo 5: DESINSTALAR CDC — remove tudo
+      if (cmd.tipo === 'desinstalar_cdc') {
+        const r = await desinstalarCdc(cfg);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        log.info('cdc desinstalado', { id: cmd.id, ...r });
+        continue;
+      }
+
+      // Tipo 6: STATUS CDC — retorna stats da fila
+      if (cmd.tipo === 'status_cdc') {
+        const r = await statusCdc(cfg);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        continue;
+      }
+
+      // Tipo 7: AUTO-UPDATE do agente — baixa nova versao e reinicia
+      // payload = { versao: string }
+      if (cmd.tipo === 'auto_update') {
+        const versao = (cmd.payload as unknown as { versao: string }).versao;
+        if (!versao || !/^\d+\.\d+\.\d+$/.test(versao)) {
+          await reportarComando(cfg, cmd.id, 'erro', { msg: 'versao invalida' });
+          continue;
+        }
+        await autoUpdate(cfg, versao, cmd.id);
+        // se chegou aqui sem exit, deu erro (autoUpdate ja reportou)
         continue;
       }
 
@@ -657,6 +739,18 @@ async function main() {
       log.error('ciclo pdv refetch falhou', { err: (e as Error).message });
       if ((e as Error).message?.includes('timeout')) {
         log.error('ciclo pdv refetch travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
+    }
+    // Drenador CDC v2 — le CONCILIA_SYNC_QUEUE e envia pro /api/concilia/sync.
+    // No-op silencioso se a fila nao existir (filial sem CDC instalado).
+    try {
+      await comTimeout(cicloDrenador(cfg), CICLO_TIMEOUT_MS, 'ciclo drenador');
+    } catch (e: unknown) {
+      log.error('ciclo drenador falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo drenador travou — reiniciando processo');
         setTimeout(() => process.exit(1), 1000);
         return;
       }
