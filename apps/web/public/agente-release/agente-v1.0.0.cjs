@@ -15722,99 +15722,6 @@ function buscarPagamentos(cfg, desdeCodigo, limite) {
     )
   ]);
 }
-function isTabelaInexistente(err) {
-  const msg = err?.message?.toLowerCase() ?? "";
-  return msg.includes("concilia_sync_queue") && (msg.includes("not defined") || msg.includes("does not exist") || msg.includes("unknown") || msg.includes("table"));
-}
-async function lerFilaSyncProdutos(cfg, limite) {
-  const sql = `
-    SELECT FIRST ? MIN(ID) AS ID, CODIGO
-      FROM CONCILIA_SYNC_QUEUE
-     WHERE PROCESSADO = 0 AND TABELA = 'PRODUTOS'
-     GROUP BY CODIGO
-     ORDER BY MIN(ID)
-  `;
-  try {
-    const rows = await executarQuery(
-      cfg,
-      sql,
-      [limite]
-    );
-    return rows.map((r) => ({ id: r.ID, codigo: r.CODIGO }));
-  } catch (e) {
-    if (isTabelaInexistente(e)) return [];
-    throw e;
-  }
-}
-async function marcarFilaProcessadaProdutos(cfg, codigos) {
-  if (codigos.length === 0) return;
-  const ints = codigos.filter((c) => Number.isInteger(c));
-  if (ints.length === 0) return;
-  const inList = ints.join(",");
-  const sql = `
-    UPDATE CONCILIA_SYNC_QUEUE
-       SET PROCESSADO = 1
-     WHERE PROCESSADO = 0
-       AND TABELA = 'PRODUTOS'
-       AND CODIGO IN (${inList})
-  `;
-  try {
-    await executarWrite(cfg, sql, []);
-  } catch (e) {
-    if (isTabelaInexistente(e)) return;
-    throw e;
-  }
-}
-async function buscarProdutosPorCodigos(cfg, codigos) {
-  if (codigos.length === 0) return [];
-  const ints = codigos.filter((c) => Number.isInteger(c));
-  if (ints.length === 0) return [];
-  const inList = ints.join(",");
-  const sql = `
-    SELECT p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
-           COALESCE(MAX(pd.PRECOVENDA), p.PRECOVENDA) AS PRECOVENDA,
-           COALESCE(MIN(CASE WHEN pd.PRECOCUSTO > 0 THEN pd.PRECOCUSTO END), p.PRECOCUSTO) AS PRECOCUSTO,
-           COALESCE(SUM(pd.ESTOQUEATUAL), p.ESTOQUEATUAL) AS ESTOQUEATUAL,
-           COALESCE(SUM(pd.ESTOQUEMINIMO), p.ESTOQUEMINIMO) AS ESTOQUEMINIMO,
-           COALESCE(MAX(pd.ESTOQUECONTROLADO), p.ESTOQUECONTROLADO) AS ESTOQUECONTROLADO,
-           p.DESCONTINUADO, p.ITEMPORKG,
-           p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
-           p.NCM, p.CFOP, p.CEST, p.VERSAOREG,
-           MIN(pd.DATAPAUSADO) AS DATAPAUSADO
-      FROM PRODUTOS p
-      LEFT JOIN PRODUTODETALHE pd ON pd.CODIGOPRODUTO = p.CODIGO
-     WHERE p.CODIGO IN (${inList})
-     GROUP BY p.CODIGO, p.NOME, p.DESCRICAO, p.CODIGOPERSONALIZADO, p.CODIGOETIQUETA,
-              p.PRECOVENDA, p.PRECOCUSTO, p.ESTOQUEATUAL, p.ESTOQUEMINIMO,
-              p.ESTOQUECONTROLADO, p.DESCONTINUADO, p.ITEMPORKG,
-              p.CODIGOUNIDADECOMERCIAL, p.CODIGOPRODUTOTIPO, p.CODIGOCOZINHA,
-              p.NCM, p.CFOP, p.CEST, p.VERSAOREG
-     ORDER BY p.CODIGO
-  `;
-  const rows = await executarQuery(cfg, sql, []);
-  return rows.map((r) => ({
-    codigoExterno: r.CODIGO,
-    nome: toStr(r.NOME),
-    descricao: toStr(r.DESCRICAO),
-    codigoPersonalizado: toStr(r.CODIGOPERSONALIZADO),
-    codigoEtiqueta: toStr(r.CODIGOETIQUETA),
-    precoVenda: toNum(r.PRECOVENDA),
-    precoCusto: toNum(r.PRECOCUSTO),
-    estoqueAtual: toNum(r.ESTOQUEATUAL),
-    estoqueMinimo: toNum(r.ESTOQUEMINIMO),
-    estoqueControlado: toBool(r.ESTOQUECONTROLADO),
-    descontinuado: toBool(r.DESCONTINUADO),
-    itemPorKg: toBool(r.ITEMPORKG),
-    codigoUnidadeComercial: toNum(r.CODIGOUNIDADECOMERCIAL),
-    codigoProdutoTipo: toNum(r.CODIGOPRODUTOTIPO),
-    codigoCozinha: toNum(r.CODIGOCOZINHA),
-    ncm: toStr(r.NCM),
-    cfop: toStr(r.CFOP),
-    cest: toStr(r.CEST),
-    versaoReg: toNum(r.VERSAOREG),
-    dataPausado: r.DATAPAUSADO instanceof Date ? r.DATAPAUSADO.toISOString() : toStr(r.DATAPAUSADO)
-  }));
-}
 
 // src/ingest.ts
 async function buscarComandosPendentes(cfg) {
@@ -16432,9 +16339,10 @@ async function lerFila(db, limite) {
   );
   return rows.map((r) => ({
     id: r.ID,
-    tabela: r.TABELA,
-    chavePk: r.CHAVE_PK,
-    operacao: r.OPERACAO
+    // FB retorna CHAR(N) com padding de espacos — trim em todos os strings
+    tabela: r.TABELA.trim(),
+    chavePk: r.CHAVE_PK.trim(),
+    operacao: r.OPERACAO.trim()
   }));
 }
 async function buscarRegistros(db, tabela, chaves) {
@@ -16811,57 +16719,6 @@ async function cicloPdv(cfg, checkpoint) {
     }
   }
 }
-async function cicloFilaSync(cfg) {
-  const limite = cfg.batchSize;
-  const MAX_ITER = 20;
-  let iter = 0;
-  let totalEnviado = 0;
-  for (; ; ) {
-    if (iter++ >= MAX_ITER) {
-      log.warn("cicloFilaSync atingiu MAX_ITER, encerrando \u2014 fila pode ter pendentes", {
-        iter,
-        totalEnviado
-      });
-      return;
-    }
-    let pendentes;
-    try {
-      pendentes = await lerFilaSyncProdutos(cfg, limite);
-    } catch (e) {
-      log.warn("cicloFilaSync: ler fila falhou, abortando", {
-        err: e.message
-      });
-      return;
-    }
-    if (pendentes.length === 0) {
-      if (totalEnviado > 0) {
-        log.info("cicloFilaSync ok", { totalEnviado });
-      }
-      return;
-    }
-    const codigos = pendentes.map((p) => p.codigo);
-    try {
-      const produtos = await buscarProdutosPorCodigos(cfg, codigos);
-      if (produtos.length > 0) {
-        await enviarPdv(cfg, { produtos });
-        totalEnviado += produtos.length;
-        log.info("cicloFilaSync batch ok", { qtd: produtos.length });
-      }
-      await marcarFilaProcessadaProdutos(cfg, codigos);
-    } catch (e) {
-      log.warn("cicloFilaSync batch falhou \u2014 vai tentar de novo no proximo ciclo", {
-        err: e.message,
-        codigos: codigos.length
-      });
-      return;
-    }
-    if (pendentes.length < limite) {
-      log.info("cicloFilaSync ok", { totalEnviado });
-      return;
-    }
-    await sleep(200);
-  }
-}
 async function cicloPdvRefetch(cfg) {
   const dias = cfg.refetchJanelaDias;
   if (dias <= 0) return;
@@ -17106,16 +16963,6 @@ async function main() {
       log.error("ciclo pdv falhou", { err: e.message });
       if (e.message?.includes("timeout")) {
         log.error("ciclo pdv travou \u2014 reiniciando processo");
-        setTimeout(() => process.exit(1), 1e3);
-        return;
-      }
-    }
-    try {
-      await comTimeout(cicloFilaSync(cfg), CICLO_TIMEOUT_MS, "ciclo fila sync");
-    } catch (e) {
-      log.error("ciclo fila sync falhou", { err: e.message });
-      if (e.message?.includes("timeout")) {
-        log.error("ciclo fila sync travou \u2014 reiniciando processo");
         setTimeout(() => process.exit(1), 1e3);
         return;
       }

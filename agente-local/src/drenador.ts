@@ -112,9 +112,10 @@ async function lerFila(db: Firebird.Database, limite: number): Promise<FilaItem[
   );
   return rows.map((r) => ({
     id: r.ID,
-    tabela: r.TABELA,
-    chavePk: r.CHAVE_PK,
-    operacao: r.OPERACAO as 'I' | 'U' | 'D',
+    // FB retorna CHAR(N) com padding de espacos — trim em todos os strings
+    tabela: r.TABELA.trim(),
+    chavePk: r.CHAVE_PK.trim(),
+    operacao: r.OPERACAO.trim() as 'I' | 'U' | 'D',
   }));
 }
 

@@ -50,9 +50,6 @@ import {
   buscarFornecedoresJanela,
   executarUpdate,
   baixarFiado,
-  lerFilaSyncProdutos,
-  buscarProdutosPorCodigos,
-  marcarFilaProcessadaProdutos,
 } from './firebird';
 import {
   enviarBatch,
@@ -303,77 +300,6 @@ async function cicloPdv(
         err: (e as Error).message,
       });
     }
-  }
-}
-
-/** Ciclo da fila CONCILIA_SYNC_QUEUE — captura ALTERACOES em produtos
- *  ja sincronizados (preco, nome, NCM, descontinuado...). O ciclo PDV
- *  normal so pega CODIGO > checkpoint, entao nao detecta edicao.
- *
- *  Funcionamento:
- *   1. Triggers no Firebird (scripts/sql/outbox-queue.sql) inserem em
- *      CONCILIA_SYNC_QUEUE quando PRODUTOS ou PRODUTODETALHE muda.
- *   2. Este ciclo le os pendentes, re-busca os produtos completos com
- *      a query agregadora, e reenvia pro /api/ingest/pdv (que ja faz
- *      UPSERT em filial_id + codigo_externo).
- *   3. Marca como processado.
- *
- *  Tolerante: se a tabela da fila nao existe (filial onde o SQL ainda
- *  nao foi aplicado), no-op silencioso. */
-async function cicloFilaSync(
-  cfg: ReturnType<typeof loadConfig>,
-): Promise<void> {
-  const limite = cfg.batchSize;
-  const MAX_ITER = 20; // evita loop infinito se trigger ficar enchendo fila
-  let iter = 0;
-  let totalEnviado = 0;
-  for (;;) {
-    if (iter++ >= MAX_ITER) {
-      log.warn('cicloFilaSync atingiu MAX_ITER, encerrando — fila pode ter pendentes', {
-        iter,
-        totalEnviado,
-      });
-      return;
-    }
-    let pendentes: Awaited<ReturnType<typeof lerFilaSyncProdutos>>;
-    try {
-      pendentes = await lerFilaSyncProdutos(cfg, limite);
-    } catch (e) {
-      log.warn('cicloFilaSync: ler fila falhou, abortando', {
-        err: (e as Error).message,
-      });
-      return;
-    }
-    if (pendentes.length === 0) {
-      if (totalEnviado > 0) {
-        log.info('cicloFilaSync ok', { totalEnviado });
-      }
-      return;
-    }
-    const codigos = pendentes.map((p) => p.codigo);
-    try {
-      const produtos = await buscarProdutosPorCodigos(cfg, codigos);
-      if (produtos.length > 0) {
-        await enviarPdv(cfg, { produtos });
-        totalEnviado += produtos.length;
-        log.info('cicloFilaSync batch ok', { qtd: produtos.length });
-      }
-      // marca como processado MESMO se nao achou (produto pode ter sido
-      // deletado entre o trigger disparar e a gente buscar) — senao a
-      // fila acumula lixo eterno
-      await marcarFilaProcessadaProdutos(cfg, codigos);
-    } catch (e) {
-      log.warn('cicloFilaSync batch falhou — vai tentar de novo no proximo ciclo', {
-        err: (e as Error).message,
-        codigos: codigos.length,
-      });
-      return;
-    }
-    if (pendentes.length < limite) {
-      log.info('cicloFilaSync ok', { totalEnviado });
-      return;
-    }
-    await sleep(200);
   }
 }
 
@@ -706,18 +632,9 @@ async function main() {
         return;
       }
     }
-    // Ciclo fila de alteracoes (CONCILIA_SYNC_QUEUE) — re-envia produtos
-    // editados. No-op silencioso se a tabela da fila nao existir na filial.
-    try {
-      await comTimeout(cicloFilaSync(cfg), CICLO_TIMEOUT_MS, 'ciclo fila sync');
-    } catch (e: unknown) {
-      log.error('ciclo fila sync falhou', { err: (e as Error).message });
-      if ((e as Error).message?.includes('timeout')) {
-        log.error('ciclo fila sync travou — reiniciando processo');
-        setTimeout(() => process.exit(1), 1000);
-        return;
-      }
-    }
+    // cicloFilaSync (v0.6.0) REMOVIDO em v1.0.0 — substituido pelo cicloDrenador
+    // genérico (que le mesma fila com schema novo de CHAVE_PK).
+    //
     // Comandos do servidor (write-back) — executa antes do refetch pra
     // alterações apareçam no banco do concilia ja na proxima sincronizacao
     try {
