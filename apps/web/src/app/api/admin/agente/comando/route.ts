@@ -11,8 +11,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { createClient } from '@/lib/supabase/server';
-import { exigirPerm } from '@/lib/exigir-perm';
+import { exigirPermApi } from '@/lib/exigir-perm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,13 +36,9 @@ const BodySchema = z.object({
 });
 
 export async function POST(req: Request) {
-  // 1. Auth de usuario
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  await exigirPerm(user.id, 'configuracao.write');
+  // 1. Auth de usuario + permissao (retorna JSON 401/403, nao redirect HTML)
+  const { user, error: authErr } = await exigirPermApi('configuracao.write');
+  if (authErr) return authErr;
 
   // 2. Parse body
   let body;
