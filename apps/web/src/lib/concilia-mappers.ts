@@ -1237,6 +1237,498 @@ async function mapProdutoDetalheComplemento(filialId: string, op: Operacao, chav
   return { status: 'ok' };
 }
 
+// ---------- Lookups globais simples (PK = codigo, sem filial) ----------
+
+/** Helper: lookup global com codigo numeric. Padrao: {codigo, descricao|nome|sigla|tipo|ordem|codigoDescricao|codigoFiscal} */
+type LookupKV = Record<string, unknown>;
+
+async function lookupSimples(
+  tabela: keyof typeof schema,
+  codCol: string,
+  op: Operacao,
+  chave: string,
+  d: Dados,
+  campos: (k: string, d: Dados) => LookupKV,
+): Promise<ResultadoMap> {
+  const codigo = parseInt(chave, 10);
+  if (!Number.isFinite(codigo)) return { status: 'erro', msg: 'codigo invalido' };
+  const tabelaObj = (schema as Record<string, unknown>)[tabela as string];
+  if (op === 'D') {
+    await db.delete(tabelaObj as never).where(eq((tabelaObj as never as Record<string, unknown>)[codCol] as never, codigo));
+    return { status: 'ok' };
+  }
+  const valores = { [codCol]: codigo, ...campos(chave, d) };
+  await db.insert(tabelaObj as never).values(valores as never).onConflictDoUpdate({
+    target: (tabelaObj as never as Record<string, unknown>)[codCol] as never,
+    set: campos(chave, d) as never,
+  });
+  return { status: 'ok' };
+}
+
+const mapItemPedidoTipo = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('itemPedidoTipo', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapPedidoOrigem = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('pedidoOrigem', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapMeioPagamento = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('meioPagamento', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapGrupoDre = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('grupoDre', 'codigo', op, c, d, (_k, d) => ({ ordem: num(d.ORDEM), descricao: str(d.DESCRICAO) }));
+const mapTipoEntrega = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('tipoEntrega', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapNfTipo = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('nfTipo', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapRegimeTributario = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('regimeTributario', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapModalidadeBcIcms = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('modalidadeBcIcms', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapOrigemMercadoria = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('origemMercadoria', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapTipoDocumentoDestinatario = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('tipoDocumentoDestinatario', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), nome: str(d.NOME) }));
+const mapCfop = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('cfop', 'codigo', op, c, d, (_k, d) => ({ descricao: str(d.DESCRICAO), codigoDescricao: str(d.CODIGODESCRICAO) }));
+
+// Lookups com PK varchar (CST/CSOSN)
+async function mapCst(
+  tabela: 'situacaoTributaria' | 'situacaoTributariaPis' | 'situacaoTributariaCofins',
+  op: Operacao, chave: string, d: Dados,
+): Promise<ResultadoMap> {
+  const codigo = String(chave).trim();
+  if (!codigo) return { status: 'erro', msg: 'codigo invalido' };
+  const tabelaObj = schema[tabela];
+  if (op === 'D') {
+    await db.delete(tabelaObj).where(eq(tabelaObj.codigo, codigo));
+    return { status: 'ok' };
+  }
+  const row = {
+    codigo,
+    tipo: str(d.TIPO),
+    descricao: str(d.DESCRICAO),
+    codigoDescricao: str(d.CODIGODESCRICAO),
+  };
+  await db.insert(tabelaObj).values(row).onConflictDoUpdate({
+    target: tabelaObj.codigo,
+    set: { tipo: row.tipo, descricao: row.descricao, codigoDescricao: row.codigoDescricao },
+  });
+  return { status: 'ok' };
+}
+const mapSituacaoTributaria = (_f: string, op: Operacao, c: string, d: Dados) => mapCst('situacaoTributaria', op, c, d);
+const mapSituacaoTributariaPis = (_f: string, op: Operacao, c: string, d: Dados) => mapCst('situacaoTributariaPis', op, c, d);
+const mapSituacaoTributariaCofins = (_f: string, op: Operacao, c: string, d: Dados) => mapCst('situacaoTributariaCofins', op, c, d);
+
+const mapFormaPagamentoConsumer = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('formaPagamentoConsumer', 'codigo', op, c, d, (_k, d) => ({
+    descricao: str(d.DESCRICAO),
+    codigoMeioPagamento: num(d.CODIGOMEIOPAGAMENTO),
+    codigoCredenciadoraCartao: num(d.CODIGOCREDENCIADORACARTAO),
+    ativo: bool(d.ATIVO),
+  }));
+
+const mapCredenciadoraCartao = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('credenciadoraCartao', 'codigo', op, c, d, (_k, d) => ({
+    nome: str(d.NOME),
+    codigoFiscal: num(d.CODIGOFISCAL),
+  }));
+
+const mapOperadoraCartao = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('operadoraCartao', 'codigo', op, c, d, (_k, d) => ({
+    nome: str(d.NOME),
+    codigoFiscal: num(d.CODIGOFISCAL),
+  }));
+
+const mapTefAdquirente = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('tefAdquirente', 'codigo', op, c, d, (_k, d) => ({
+    nome: str(d.NOME),
+    codCredenciadoraCartao: num(d.CODCREDENCIADORACARTAO),
+  }));
+
+const mapNfSerie = (_f: string, op: Operacao, c: string, d: Dados) =>
+  lookupSimples('nfSerie', 'codigo', op, c, d, (_k, d) => ({
+    serie: num(d.SERIE),
+    descricao: str(d.DESCRICAO),
+    ultimoNumero: num(d.ULTIMONUMERO),
+  }));
+
+// ---------- CAIXA ----------
+
+async function mapCaixa(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+
+  const row = {
+    filialId, codigoExterno,
+    codigoUsuario: num(d.CODIGOUSUARIO),
+    dataAbertura: date(d.DATAABERTURA),
+    dataFechamento: date(d.DATAFECHAMENTO),
+    saldoInicial: numStr(d.SALDOINICIAL),
+    saldoFinal: numStr(d.SALDOFINAL),
+    saldoFinalInformado: numStr(d.SALDOFINALINFORMADO),
+    observacao: str(d.OBSERVACAO),
+    versaoReg: num(d.VERSAOREG),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.caixa).values(row).onConflictDoUpdate({
+    target: [schema.caixa.filialId, schema.caixa.codigoExterno],
+    set: {
+      codigoUsuario: row.codigoUsuario, dataAbertura: row.dataAbertura,
+      dataFechamento: row.dataFechamento, saldoInicial: row.saldoInicial,
+      saldoFinal: row.saldoFinal, saldoFinalInformado: row.saldoFinalInformado,
+      observacao: row.observacao, versaoReg: row.versaoReg, sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+  return { status: 'ok' };
+}
+
+async function mapCaixaOperacao(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') {
+    await db.update(schema.caixaOperacao).set({ dataDelete: new Date() })
+      .where(and(eq(schema.caixaOperacao.filialId, filialId), eq(schema.caixaOperacao.codigoExterno, codigoExterno)));
+    return { status: 'ok' };
+  }
+  const row = {
+    filialId, codigoExterno,
+    codigoCaixa: num(d.CODIGOCAIXA),
+    codigoFormaPagamento: num(d.CODIGOFORMAPAGAMENTO),
+    codigoContasPagar: num(d.CODIGOCONTASPAGAR),
+    dataOperacao: date(d.DATAOPERACAO),
+    valorEntrada: numStr(d.VALORENTRADA),
+    valorSaida: numStr(d.VALORSAIDA),
+    tipo: str(d.TIPO)?.slice(0, 1),
+    observacao: str(d.OBSERVACAO),
+    dataDelete: date(d.DATADELETE),
+    versaoReg: num(d.VERSAOREG),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.caixaOperacao).values(row).onConflictDoUpdate({
+    target: [schema.caixaOperacao.filialId, schema.caixaOperacao.codigoExterno],
+    set: {
+      codigoCaixa: row.codigoCaixa, codigoFormaPagamento: row.codigoFormaPagamento,
+      codigoContasPagar: row.codigoContasPagar, dataOperacao: row.dataOperacao,
+      valorEntrada: row.valorEntrada, valorSaida: row.valorSaida,
+      tipo: row.tipo, observacao: row.observacao, dataDelete: row.dataDelete,
+      versaoReg: row.versaoReg, sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+  await db.execute(drizzleSql`
+    UPDATE caixa_operacao co SET caixa_id = c.id
+    FROM caixa c
+    WHERE co.filial_id = ${filialId} AND co.codigo_externo = ${codigoExterno}
+      AND co.codigo_caixa = c.codigo_externo AND c.filial_id = ${filialId}
+      AND co.caixa_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
+// ---------- ESTOQUE Consumer ----------
+
+async function mapConsumerEstoque(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoExterno,
+    codigoProdutoExterno: num(d.CODIGOPRODUTO),
+    dataCadastro: date(d.DATACADASTRO),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.consumerEstoque).values(row).onConflictDoUpdate({
+    target: [schema.consumerEstoque.filialId, schema.consumerEstoque.codigoExterno],
+    set: { codigoProdutoExterno: row.codigoProdutoExterno, dataCadastro: row.dataCadastro, sincronizadoEm: row.sincronizadoEm },
+  });
+  await db.execute(drizzleSql`
+    UPDATE consumer_estoque ce SET produto_id = p.id FROM produto p
+    WHERE ce.filial_id = ${filialId} AND ce.codigo_externo = ${codigoExterno}
+      AND ce.codigo_produto_externo = p.codigo_externo AND p.filial_id = ${filialId}
+      AND ce.produto_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
+async function mapEstoqueMovimentacao(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') {
+    await db.update(schema.consumerEstoqueMovimentacao).set({ dataDelete: new Date() })
+      .where(and(eq(schema.consumerEstoqueMovimentacao.filialId, filialId), eq(schema.consumerEstoqueMovimentacao.codigoExterno, codigoExterno)));
+    return { status: 'ok' };
+  }
+  const row = {
+    filialId, codigoExterno,
+    codigoProdutoDetalhe: num(d.CODIGOPRODUTODETALHE),
+    codigoItemPedido: num(d.CODIGOITEMPEDIDO),
+    codigoUsuario: num(d.CODIGOUSUARIO),
+    qtdInicial: numStr(d.QTDINICIAL),
+    qtd: numStr(d.QTD),
+    qtdFinal: numStr(d.QTDFINAL),
+    valorCompra: numStr(d.VALORCOMPRA),
+    tipo: str(d.TIPO)?.slice(0, 1),
+    observacao: str(d.OBSERVACAO),
+    codigoMovimentacaoEstorno: num(d.CODIGOMOVIMENTACAOESTORNO),
+    dataInsert: date(d.DATAINSERT),
+    dataUpdate: date(d.DATAUPDATE),
+    dataDelete: date(d.DATADELETE),
+    versaoReg: num(d.VERSAOREG),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.consumerEstoqueMovimentacao).values(row).onConflictDoUpdate({
+    target: [schema.consumerEstoqueMovimentacao.filialId, schema.consumerEstoqueMovimentacao.codigoExterno],
+    set: { ...row, filialId: undefined, codigoExterno: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+// ---------- DELIVERY ----------
+
+async function mapTaxaEntrega(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoExterno,
+    descricao: str(d.DESCRICAO),
+    valor: numStr(d.VALOR),
+    tempoMinutos: num(d.TEMPOMINUTOS),
+    pausaTemporariaInicio: date(d.PAUSATEMPORARIAINICIO),
+    pausaTemporariaFim: date(d.PAUSATEMPORARIAFIM),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.taxaEntrega).values(row).onConflictDoUpdate({
+    target: [schema.taxaEntrega.filialId, schema.taxaEntrega.codigoExterno],
+    set: { descricao: row.descricao, valor: row.valor, tempoMinutos: row.tempoMinutos,
+           pausaTemporariaInicio: row.pausaTemporariaInicio, pausaTemporariaFim: row.pausaTemporariaFim,
+           sincronizadoEm: row.sincronizadoEm },
+  });
+  return { status: 'ok' };
+}
+
+async function mapTaxaEntregaCep(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoExterno,
+    codigoTaxaEntrega: num(d.CODIGOTAXAENTREGA),
+    cepInicial: str(d.CEPINICIAL),
+    cepFinal: str(d.CEPFINAL),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.taxaEntregaCep).values(row).onConflictDoUpdate({
+    target: [schema.taxaEntregaCep.filialId, schema.taxaEntregaCep.codigoExterno],
+    set: { codigoTaxaEntrega: row.codigoTaxaEntrega, cepInicial: row.cepInicial, cepFinal: row.cepFinal, sincronizadoEm: row.sincronizadoEm },
+  });
+  await db.execute(drizzleSql`
+    UPDATE taxa_entrega_cep tec SET taxa_entrega_id = te.id FROM taxa_entrega te
+    WHERE tec.filial_id = ${filialId} AND tec.codigo_externo = ${codigoExterno}
+      AND tec.codigo_taxa_entrega = te.codigo_externo AND te.filial_id = ${filialId}
+      AND tec.taxa_entrega_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
+async function mapGrupoEntrega(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = { filialId, codigoExterno, descricao: str(d.DESCRICAO), sincronizadoEm: new Date() };
+  await db.insert(schema.grupoEntrega).values(row).onConflictDoUpdate({
+    target: [schema.grupoEntrega.filialId, schema.grupoEntrega.codigoExterno],
+    set: { descricao: row.descricao, sincronizadoEm: row.sincronizadoEm },
+  });
+  return { status: 'ok' };
+}
+
+async function mapEndereco(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') {
+    await db.update(schema.endereco).set({ dataDelete: new Date() })
+      .where(and(eq(schema.endereco.filialId, filialId), eq(schema.endereco.codigoExterno, codigoExterno)));
+    return { status: 'ok' };
+  }
+  const row = {
+    filialId, codigoExterno,
+    codigoContato: num(d.CODIGOCONTATO),
+    codigoTaxaEntrega: num(d.CODIGOTAXAENTREGA),
+    principal: bool(d.PRINCIPAL),
+    lat: numStr(d.LAT), lon: numStr(d.LON),
+    cep: str(d.CEP), logradouro: str(d.LOGRADOURO), numero: str(d.NUMERO),
+    complemento: str(d.COMPLEMENTO), bairro: str(d.BAIRRO), cidade: str(d.CIDADE),
+    uf: str(d.UF)?.slice(0, 2),
+    descricao: str(d.DESCRICAO), referencia: str(d.REFERENCIA),
+    dataDelete: date(d.DATADELETE), sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.endereco).values(row).onConflictDoUpdate({
+    target: [schema.endereco.filialId, schema.endereco.codigoExterno],
+    set: { ...row, filialId: undefined, codigoExterno: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+async function mapDelivery(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  // PK = CODIGOPEDIDO
+  const codigoPedidoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoPedidoExterno)) return { status: 'erro', msg: 'chave invalida' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoPedidoExterno,
+    codigoContato: num(d.CODIGOCONTATO),
+    codigoEndereco: num(d.CODIGOENDERECO),
+    codigoTaxaEntrega: num(d.CODIGOTAXAENTREGA),
+    codigoTipoEntrega: num(d.CODIGOTIPOENTREGA),
+    preparoPrevistoEm: date(d.PREPAROPREVISTOEM),
+    preparoIniciadoEm: date(d.PREPAROINICIADOEM),
+    saiuEntregaEm: date(d.SAIUENTREGAEM),
+    entregaPrevistaEm: date(d.ENTREGAPREVISTAEM),
+    entregueEm: date(d.ENTREGUEEM),
+    retiradaPrevistaEm: date(d.RETIRADAPREVISTAEM),
+    retiradoEm: date(d.RETIRADOEM),
+    prontoParaRetiradaEm: date(d.PRONTOPARARETIRADAEM),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.delivery).values(row).onConflictDoUpdate({
+    target: [schema.delivery.filialId, schema.delivery.codigoPedidoExterno],
+    set: { ...row, filialId: undefined, codigoPedidoExterno: undefined } as never,
+  });
+  // Resolve FKs pedido_id e endereco_id
+  await db.execute(drizzleSql`
+    UPDATE delivery d SET pedido_id = p.id FROM pedido p
+    WHERE d.filial_id = ${filialId} AND d.codigo_pedido_externo = ${codigoPedidoExterno}
+      AND d.codigo_pedido_externo = p.codigo_externo AND p.filial_id = ${filialId}
+      AND d.pedido_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
+async function mapPedidoGrupoEntrega(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoPedidoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoPedidoExterno)) return { status: 'erro', msg: 'chave invalida' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoPedidoExterno,
+    codigoGrupoEntrega: num(d.CODIGOGRUPOENTREGA),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.pedidoGrupoEntrega).values(row).onConflictDoUpdate({
+    target: [schema.pedidoGrupoEntrega.filialId, schema.pedidoGrupoEntrega.codigoPedidoExterno],
+    set: { codigoGrupoEntrega: row.codigoGrupoEntrega, sincronizadoEm: row.sincronizadoEm },
+  });
+  return { status: 'ok' };
+}
+
+// ---------- ITEMPEDIDOFICHA ----------
+
+async function mapItemPedidoFicha(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') {
+    await db.update(schema.pedidoItemFicha).set({ dataDelete: new Date() })
+      .where(and(eq(schema.pedidoItemFicha.filialId, filialId), eq(schema.pedidoItemFicha.codigoExterno, codigoExterno)));
+    return { status: 'ok' };
+  }
+  const row = {
+    filialId, codigoExterno,
+    codigoItemPedido: num(d.CODIGOITEMPEDIDO),
+    codigoProdutoDetalhe: num(d.CODIGOPRODUTODETALHE),
+    codigoColaborador: num(d.CODIGOCOLABORADOR),
+    dataInsert: date(d.DATAINSERT), dataUpdate: date(d.DATAUPDATE), dataDelete: date(d.DATADELETE),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.pedidoItemFicha).values(row).onConflictDoUpdate({
+    target: [schema.pedidoItemFicha.filialId, schema.pedidoItemFicha.codigoExterno],
+    set: { ...row, filialId: undefined, codigoExterno: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+// ---------- iFood / MenuDino / OrderIntegration ----------
+
+async function mapIfoodPedido(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoPedidoIfood = String(chave);
+  if (!codigoPedidoIfood) return { status: 'erro', msg: 'chave invalida' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, codigoPedidoIfood,
+    codigoPedidoConsumer: num(d.CODIGOPEDIDOCONSUMER),
+    status: str(d.STATUS), statusItens: str(d.STATUSITENS),
+    cancelamentoStatus: str(d.CANCELAMENTOSTATUS),
+    observacoes: str(d.OBSERVACOES),
+    payloadJson: d.JSON ? String(d.JSON).slice(0, 100000) : null,
+    dataInsert: date(d.DATAINSERT), dataUpdate: date(d.DATAUPDATE), dataDelete: date(d.DATADELETE),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.ifoodPedido).values(row).onConflictDoUpdate({
+    target: [schema.ifoodPedido.filialId, schema.ifoodPedido.codigoPedidoIfood],
+    set: { ...row, filialId: undefined, codigoPedidoIfood: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+async function mapMenudinoPedido(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  if (!/^-?\d+$/.test(chave)) return { status: 'erro', msg: 'chave invalida' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId,
+    codigoPedidoMenudino: BigInt(chave),
+    codigoPedidoConsumer: num(d.CODIGOPEDIDOCONSUMER),
+    guidPedidoMenudino: str(d.GUIDPEDIDOMENUDINO),
+    status: str(d.STATUS), statusItens: str(d.STATUSITENS),
+    observacoes: str(d.OBSERVACOES),
+    payloadJson: d.JSON ? String(d.JSON).slice(0, 100000) : null,
+    dataInsert: date(d.DATAINSERT), dataUpdate: date(d.DATAUPDATE), dataDelete: date(d.DATADELETE),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.menudinoPedido).values(row).onConflictDoUpdate({
+    target: [schema.menudinoPedido.filialId, schema.menudinoPedido.codigoPedidoMenudino],
+    set: { ...row, filialId: undefined, codigoPedidoMenudino: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+async function mapOrderIntegration(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const integrationId = parseInt(chave, 10);
+  if (!Number.isFinite(integrationId)) return { status: 'erro', msg: 'id invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, integrationId,
+    externalId: str(d.EXTERNALID),
+    providerOrigin: num(d.PROVIDERORIGIN),
+    localOrderId: num(d.LOCALORDERID),
+    insertedAt: date(d.INSERTEDAT), updatedAt: date(d.UPDATEDAT), deletedAt: date(d.DELETEDAT),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.orderIntegration).values(row).onConflictDoUpdate({
+    target: [schema.orderIntegration.filialId, schema.orderIntegration.integrationId],
+    set: { ...row, filialId: undefined, integrationId: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
+async function mapOrderShipping(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const shippingId = parseInt(chave, 10);
+  if (!Number.isFinite(shippingId)) return { status: 'erro', msg: 'id invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete skipped' };
+  const row = {
+    filialId, shippingId,
+    orderIntegrationId: num(d.ORDERINTEGRATIONID),
+    localOrderId: num(d.LOCALORDERID),
+    externalId: str(d.EXTERNALID),
+    providerOrigin: num(d.PROVIDERORIGIN),
+    trackingUrl: str(d.TRACKINGURL),
+    method: str(d.METHOD), brand: str(d.BRAND),
+    value: numStr(d.VALUE),
+    insertedAt: date(d.INSERTEDAT), updatedAt: date(d.UPDATEDAT), deletedAt: date(d.DELETEDAT),
+    sincronizadoEm: new Date(),
+  };
+  await db.insert(schema.orderShipping).values(row).onConflictDoUpdate({
+    target: [schema.orderShipping.filialId, schema.orderShipping.shippingId],
+    set: { ...row, filialId: undefined, shippingId: undefined } as never,
+  });
+  return { status: 'ok' };
+}
+
 // ---------- Dispatcher ----------
 
 type Mapper = (filialId: string, op: Operacao, chave: string, d: Dados) => Promise<ResultadoMap>;
@@ -1263,8 +1755,43 @@ const MAPPERS: Record<string, Mapper> = {
   PRODUTODETALHE: mapProdutoDetalhe,
   PRODUTOFICHA: mapProdutoFicha,
   PRODUTODETALHECOMPLEMENTO: mapProdutoDetalheComplemento,
-  // TODO: CAIXA, CAIXAOPERACAO, ESTOQUE, ESTOQUEMOVIMENTACAO, DELIVERY,
-  //       ENDERECO, TAXAENTREGA, IFOODPEDIDO etc — precisam schema novo
+  // Lookups globais
+  ITEMPEDIDOTIPO: mapItemPedidoTipo,
+  PEDIDOORIGEM: mapPedidoOrigem,
+  MEIOPAGAMENTO: mapMeioPagamento,
+  GRUPODRE: mapGrupoDre,
+  TIPOENTREGA: mapTipoEntrega,
+  NFTIPO: mapNfTipo,
+  REGIMETRIBUTARIO: mapRegimeTributario,
+  MODALIDADEBCICMS: mapModalidadeBcIcms,
+  ORIGEMMERCADORIA: mapOrigemMercadoria,
+  TIPODOCUMENTODESTINATARIO: mapTipoDocumentoDestinatario,
+  CFOP: mapCfop,
+  SITUACAOTRIBUTARIA: mapSituacaoTributaria,
+  SITUACAOTRIBUTARIAPIS: mapSituacaoTributariaPis,
+  SITUACAOTRIBUTARIACOFINS: mapSituacaoTributariaCofins,
+  FORMASPAGAMENTO: mapFormaPagamentoConsumer,
+  CREDENCIADORACARTAO: mapCredenciadoraCartao,
+  OPERADORACARTAO: mapOperadoraCartao,
+  TEFADQUIRENTE: mapTefAdquirente,
+  NFSERIE: mapNfSerie,
+  // Operacional
+  CAIXA: mapCaixa,
+  CAIXAOPERACAO: mapCaixaOperacao,
+  ESTOQUE: mapConsumerEstoque,
+  ESTOQUEMOVIMENTACAO: mapEstoqueMovimentacao,
+  TAXAENTREGA: mapTaxaEntrega,
+  TAXAENTREGACEP: mapTaxaEntregaCep,
+  GRUPOENTREGA: mapGrupoEntrega,
+  ENDERECO: mapEndereco,
+  DELIVERY: mapDelivery,
+  PEDIDOGRUPOENTREGA: mapPedidoGrupoEntrega,
+  ITEMPEDIDOFICHA: mapItemPedidoFicha,
+  // Integracao externa
+  IFOODPEDIDO: mapIfoodPedido,
+  MENUDINOPEDIDO: mapMenudinoPedido,
+  ORDERINTEGRATION: mapOrderIntegration,
+  ORDERSHIPPING: mapOrderShipping,
 };
 
 export async function aplicarRegistro(filialId: string, r: RegistroSync): Promise<ResultadoMap> {

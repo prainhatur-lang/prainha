@@ -19,3 +19,5 @@ export * from './permissao';
 export * from './folha';
 export * from './nf_venda';
 export * from './produto_variante';
+export * from './consumer_lookups';
+export * from './consumer_operacional';
