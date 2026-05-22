@@ -50,13 +50,26 @@ function detachFb(db: Firebird.Database): Promise<void> {
   });
 }
 
+// IMPORTANTE: usa transaction explicita com commit, igual ao cdc.ts exec().
+// db.query() direto em node-firebird FB4 pode nao enxergar dados commitados
+// por triggers de outras conexoes (bug observado em 22/05/2026 — drenador
+// ficava com lerFila qtd=0 mesmo com 1.4M itens na fila).
 function query<T = Record<string, unknown>>(
   db: Firebird.Database,
   sql: string,
   params: unknown[] = [],
 ): Promise<T[]> {
   return new Promise((resolve, reject) => {
-    db.query(sql, params, (e: Error | null, r: T[]) => (e ? reject(e) : resolve(r ?? [])));
+    db.transaction(Firebird.ISOLATION_READ_COMMITTED, (e, tx) => {
+      if (e) return reject(e);
+      tx.query(sql, params, (e2: Error | null, r: T[]) => {
+        if (e2) {
+          tx.rollback(() => reject(e2));
+          return;
+        }
+        tx.commit((e3) => (e3 ? reject(e3) : resolve(r ?? [])));
+      });
+    });
   });
 }
 
@@ -182,14 +195,34 @@ async function enviarSync(
   registros: RegistroSync[],
 ): Promise<{ recebidos: number; erros: string[] }> {
   const url = cfg.api.url.replace(/\/$/, '') + '/api/concilia/sync';
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.api.token}`,
-    },
-    body: JSON.stringify({ registros }),
-  });
+  const body = JSON.stringify({ registros });
+  const t0 = Date.now();
+  // Timeout de 45s no fetch. Sem isso, drenador trava pra sempre se a conexao
+  // ficar pendurada (bug observado em prod 22/05/2026 — ciclo drenador
+  // estourava timeout 600s e matava o processo).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  let r: Response;
+  try {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.api.token}`,
+      },
+      body,
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    const msg = (e as Error).name === 'AbortError'
+      ? `timeout 45s em POST /api/concilia/sync (payload ${body.length}B, ${registros.length} regs)`
+      : (e as Error).message;
+    throw new Error(msg);
+  }
+  clearTimeout(timer);
+  const dur = Date.now() - t0;
+  log.info('drenador: POST /sync', { ms: dur, regs: registros.length, bytes: body.length, http: r.status });
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
     throw new Error(`HTTP ${r.status} - ${txt.slice(0, 300)}`);
