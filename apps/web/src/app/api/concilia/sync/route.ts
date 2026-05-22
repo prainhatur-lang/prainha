@@ -26,7 +26,7 @@ const RegistroSchema = z.object({
 });
 
 const BodySchema = z.object({
-  registros: z.array(RegistroSchema).max(500),
+  registros: z.array(RegistroSchema).max(5000),
 });
 
 export async function POST(req: Request) {
