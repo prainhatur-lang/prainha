@@ -37,7 +37,7 @@ const BodySchema = z.object({
 
 export async function POST(req: Request) {
   // 1. Auth de usuario + permissao (retorna JSON 401/403, nao redirect HTML)
-  const { user, error: authErr } = await exigirPermApi('configuracao.write');
+  const { user, error: authErr } = await exigirPermApi('configuracao.editar');
   if (authErr) return authErr;
 
   // 2. Parse body
