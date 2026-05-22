@@ -17,3 +17,4 @@ export * from './compras';
 export * from './cotacao';
 export * from './permissao';
 export * from './folha';
+export * from './nf_venda';

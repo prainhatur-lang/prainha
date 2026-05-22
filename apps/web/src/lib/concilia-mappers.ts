@@ -704,6 +704,256 @@ async function mapContasBancarias(filialId: string, op: Operacao, chave: string,
   return { status: 'ok' };
 }
 
+// ---------- NF de venda (NFE + NFCE + NFITEM + NFPAGAMENTO) ----------
+
+/** Helper interno pra inserir/atualizar cabecalho de NF (unifica NFE+NFCE). */
+async function upsertNfVenda(
+  filialId: string,
+  tipo: 'NFE' | 'NFCE',
+  op: Operacao,
+  chave: string,
+  d: Dados,
+): Promise<ResultadoMap> {
+  const codigoExterno = chave; // bigint vem como string
+  if (!/^-?\d+$/.test(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+
+  if (op === 'D') {
+    // Sem soft delete claro — situacao=cancelada via update separado
+    return { status: 'ok', msg: 'delete soft skipped' };
+  }
+
+  // NFE: CODIGOPEDIDO + CODIGOSITUACAO + CODIGOTIPODOCUMENTO + NUMERODOCUMENTODESTINATARIO + TIPOEMISSAO=null
+  // NFCE: PEDIDO + SITUACAONFCE + TIPOEMISSAO + SUBTOTAL + ACRESCIMO + DESCONTO
+  const codigoPedidoExterno = num(d.CODIGOPEDIDO) ?? num(d.PEDIDO);
+  const situacao = num(d.CODIGOSITUACAO) ?? num(d.SITUACAONFCE);
+
+  const row = {
+    filialId,
+    tipo,
+    codigoExterno: BigInt(codigoExterno),
+    codigoPedidoExterno,
+    codNfInfo: d.CODNFINFO != null ? BigInt(String(d.CODNFINFO)) : null,
+    serie: num(d.SERIE),
+    numero: num(d.NUMERO),
+    chaveAcesso: str(d.CHAVEACESSO),
+    situacao,
+    dataHoraEmissao: date(d.DATAHORAEMISSAO),
+    valor: numStr(d.VALOR),
+    subtotal: numStr(d.SUBTOTAL),
+    acrescimo: numStr(d.ACRESCIMO),
+    desconto: numStr(d.DESCONTO),
+    tipoEmissao: num(d.TIPOEMISSAO),
+    numeroDocumentoDestinatario: str(d.NUMERODOCUMENTODESTINATARIO),
+    codigoTipoDocumento: num(d.CODIGOTIPODOCUMENTO),
+    codigoNumericoAleatorio: num(d.CODIGONUMERICOALEATORIO),
+    protocoloCancelamento: d.PROTOCOLOCANCELAMENTO != null ? BigInt(String(d.PROTOCOLOCANCELAMENTO)) : null,
+    numeroProtocolo: str(d.NUMEROPROTOCOLO),
+    justificativaCancelamento: str(d.JUSTIFICATIVACANCELAMENTO),
+    codigoEstacao: num(d.CODIGOESTACAO),
+    consolidadoEm: date(d.CONSOLIDADOEM),
+    caminhoXml: str(d.CAMINHOXML),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.nfVenda).values(row).onConflictDoUpdate({
+    target: [schema.nfVenda.filialId, schema.nfVenda.tipo, schema.nfVenda.codigoExterno],
+    set: {
+      codigoPedidoExterno: row.codigoPedidoExterno,
+      codNfInfo: row.codNfInfo,
+      serie: row.serie,
+      numero: row.numero,
+      chaveAcesso: row.chaveAcesso,
+      situacao: row.situacao,
+      dataHoraEmissao: row.dataHoraEmissao,
+      valor: row.valor,
+      subtotal: row.subtotal,
+      acrescimo: row.acrescimo,
+      desconto: row.desconto,
+      tipoEmissao: row.tipoEmissao,
+      numeroDocumentoDestinatario: row.numeroDocumentoDestinatario,
+      codigoTipoDocumento: row.codigoTipoDocumento,
+      codigoNumericoAleatorio: row.codigoNumericoAleatorio,
+      protocoloCancelamento: row.protocoloCancelamento,
+      numeroProtocolo: row.numeroProtocolo,
+      justificativaCancelamento: row.justificativaCancelamento,
+      codigoEstacao: row.codigoEstacao,
+      consolidadoEm: row.consolidadoEm,
+      caminhoXml: row.caminhoXml,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  // Resolve FK pedido_id
+  if (codigoPedidoExterno) {
+    await db.execute(drizzleSql`
+      UPDATE nf_venda SET pedido_id = p.id
+      FROM pedido p
+      WHERE nf_venda.filial_id = ${filialId}
+        AND nf_venda.tipo = ${tipo}
+        AND nf_venda.codigo_externo = ${codigoExterno}::bigint
+        AND nf_venda.codigo_pedido_externo = p.codigo_externo
+        AND p.filial_id = ${filialId}
+        AND nf_venda.pedido_id IS NULL
+    `);
+  }
+  return { status: 'ok' };
+}
+
+const mapNfe = (filialId: string, op: Operacao, chave: string, d: Dados) =>
+  upsertNfVenda(filialId, 'NFE', op, chave, d);
+const mapNfce = (filialId: string, op: Operacao, chave: string, d: Dados) =>
+  upsertNfVenda(filialId, 'NFCE', op, chave, d);
+
+async function mapNfItem(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  if (!/^-?\d+$/.test(chave)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete soft skipped' };
+
+  const codNfInfo = d.CODNFINFO != null ? BigInt(String(d.CODNFINFO)) : null;
+  if (!codNfInfo) return { status: 'erro', msg: 'codNfInfo nulo' };
+
+  const row = {
+    filialId,
+    codigoExterno: BigInt(chave),
+    codNfInfo,
+    codProdutoDetalhe: num(d.CODPRDUTODETALHE),
+    codItemPedido: num(d.CODITEMPEDIDO),
+    nItem: num(d.H02_NITEM),
+    cfop: num(d.I08_CFOP),
+    qCom: numStr(d.I10_QCOM),
+    vUnCom: numStr(d.I10A_VUNCOM),
+    vProd: numStr(d.I11_VPROD),
+    qTrib: numStr(d.I14_QTRIB),
+    vUnTrib: numStr(d.I14A_VUNTRIB),
+    vFrete: numStr(d.I15_VFRETE),
+    vSeg: numStr(d.I16_VSEG),
+    vDesc: numStr(d.I17_VDESC),
+    vOutro: numStr(d.I17A_VOUTRO),
+    indTot: num(d.I17B_INDTOT),
+    vTotTrib: numStr(d.M02_VTOTTRIB),
+    cProd: str(d.I02_CPROD),
+    xProd: str(d.I04_XPROD),
+    infAdProd: str(d.V01_INFADPROD),
+    vItem: numStr(d.VB01_VITEM),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.nfVendaItem).values(row).onConflictDoUpdate({
+    target: [schema.nfVendaItem.filialId, schema.nfVendaItem.codigoExterno],
+    set: {
+      codNfInfo: row.codNfInfo,
+      codProdutoDetalhe: row.codProdutoDetalhe,
+      codItemPedido: row.codItemPedido,
+      nItem: row.nItem,
+      cfop: row.cfop,
+      qCom: row.qCom,
+      vUnCom: row.vUnCom,
+      vProd: row.vProd,
+      qTrib: row.qTrib,
+      vUnTrib: row.vUnTrib,
+      vFrete: row.vFrete,
+      vSeg: row.vSeg,
+      vDesc: row.vDesc,
+      vOutro: row.vOutro,
+      indTot: row.indTot,
+      vTotTrib: row.vTotTrib,
+      cProd: row.cProd,
+      xProd: row.xProd,
+      infAdProd: row.infAdProd,
+      vItem: row.vItem,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  // Resolve FKs: nf_venda_id (via cod_nf_info) e pedido_item_id (via cod_item_pedido)
+  await db.execute(drizzleSql`
+    UPDATE nf_venda_item nvi SET nf_venda_id = nv.id
+    FROM nf_venda nv
+    WHERE nvi.filial_id = ${filialId}
+      AND nvi.codigo_externo = ${chave}::bigint
+      AND nvi.cod_nf_info = nv.cod_nf_info
+      AND nv.filial_id = ${filialId}
+      AND nvi.nf_venda_id IS NULL
+  `);
+  if (row.codItemPedido) {
+    await db.execute(drizzleSql`
+      UPDATE nf_venda_item nvi SET pedido_item_id = pi.id
+      FROM pedido_item pi
+      WHERE nvi.filial_id = ${filialId}
+        AND nvi.codigo_externo = ${chave}::bigint
+        AND nvi.cod_item_pedido = pi.codigo_externo
+        AND pi.filial_id = ${filialId}
+        AND nvi.pedido_item_id IS NULL
+    `);
+  }
+  return { status: 'ok' };
+}
+
+async function mapNfPagamento(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  if (!/^-?\d+$/.test(chave)) return { status: 'erro', msg: 'codigoExterno invalido' };
+  if (op === 'D') return { status: 'ok', msg: 'delete soft skipped' };
+
+  const codNfInfo = d.CODNFINFO != null ? BigInt(String(d.CODNFINFO)) : null;
+  if (!codNfInfo) return { status: 'erro', msg: 'codNfInfo nulo' };
+
+  const row = {
+    filialId,
+    codigoExterno: BigInt(chave),
+    codNfInfo,
+    codPagamento: num(d.CODPAGAMENTO),
+    indPag: num(d.YA01B_INDPAG),
+    tPag: num(d.YA02_TPAG),
+    vPag: numStr(d.YA03_VPAG),
+    tpIntegra: num(d.YA04A_TPINTEGRA),
+    tBand: num(d.YA06_TBAND),
+    cAdmCsat: num(d.WA05_CADMCSAT),
+    cnpj: str(d.YA05_CNPJ),
+    xPag: str(d.YA02A_XPAG),
+    cAut: str(d.YA07_CAUT),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.nfVendaPagamento).values(row).onConflictDoUpdate({
+    target: [schema.nfVendaPagamento.filialId, schema.nfVendaPagamento.codigoExterno],
+    set: {
+      codNfInfo: row.codNfInfo,
+      codPagamento: row.codPagamento,
+      indPag: row.indPag,
+      tPag: row.tPag,
+      vPag: row.vPag,
+      tpIntegra: row.tpIntegra,
+      tBand: row.tBand,
+      cAdmCsat: row.cAdmCsat,
+      cnpj: row.cnpj,
+      xPag: row.xPag,
+      cAut: row.cAut,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  // Resolve FKs: nf_venda_id, pagamento_id
+  await db.execute(drizzleSql`
+    UPDATE nf_venda_pagamento nvp SET nf_venda_id = nv.id
+    FROM nf_venda nv
+    WHERE nvp.filial_id = ${filialId}
+      AND nvp.codigo_externo = ${chave}::bigint
+      AND nvp.cod_nf_info = nv.cod_nf_info
+      AND nv.filial_id = ${filialId}
+      AND nvp.nf_venda_id IS NULL
+  `);
+  if (row.codPagamento) {
+    await db.execute(drizzleSql`
+      UPDATE nf_venda_pagamento nvp SET pagamento_id = p.id
+      FROM pagamento p
+      WHERE nvp.filial_id = ${filialId}
+        AND nvp.codigo_externo = ${chave}::bigint
+        AND nvp.cod_pagamento = p.codigo_externo
+        AND p.filial_id = ${filialId}
+        AND nvp.pagamento_id IS NULL
+    `);
+  }
+  return { status: 'ok' };
+}
+
 // ---------- Dispatcher ----------
 
 type Mapper = (filialId: string, op: Operacao, chave: string, d: Dados) => Promise<ResultadoMap>;
@@ -719,7 +969,11 @@ const MAPPERS: Record<string, Mapper> = {
   CONTACORRENTE: mapContaCorrente,
   CONTASPAGAR: mapContasPagar,
   CONTASBANCARIAS: mapContasBancarias,
-  // TODO: PRODUTODETALHE, PRODUTOFICHA, NFE, NFCE, CAIXA — precisam schema novo
+  NFE: mapNfe,
+  NFCE: mapNfce,
+  NFITEM: mapNfItem,
+  NFPAGAMENTO: mapNfPagamento,
+  // TODO: PRODUTODETALHE, PRODUTOFICHA, CAIXA — precisam schema novo
 };
 
 export async function aplicarRegistro(filialId: string, r: RegistroSync): Promise<ResultadoMap> {
