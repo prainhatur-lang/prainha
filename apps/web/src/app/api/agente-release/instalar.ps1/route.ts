@@ -106,6 +106,38 @@ if ($svcExiste) {
   Write-Ok 'Servico parado'
 }
 
+# 3b. Mata QUALQUER node.exe que esteja na pasta destino (zombies, backfills
+# manuais antigos, etc). Sem isso, Copy-Item falha com "file is being used by
+# another process". Filtra so processos cujo Path eh dentro de $Pasta.
+$nodesNaPasta = Get-Process node -ErrorAction SilentlyContinue | Where-Object {
+  $_.Path -and $_.Path.StartsWith($Pasta, [System.StringComparison]::OrdinalIgnoreCase)
+}
+if ($nodesNaPasta) {
+  Write-Step "Matando $($nodesNaPasta.Count) processo(s) node.exe orfaos na pasta..."
+  $nodesNaPasta | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+  Start-Sleep -Seconds 3
+  Write-Ok 'Processos node.exe da pasta finalizados'
+}
+
+# 3c. Aguarda handles serem liberados — testa abrindo o node.exe em modo
+# exclusivo. Tenta ate 6x com 1s entre tentativas.
+if (Test-Path "$Pasta\\node.exe") {
+  for ($i = 0; $i -lt 6; $i++) {
+    try {
+      $fs = [System.IO.File]::Open("$Pasta\\node.exe", 'Open', 'ReadWrite', 'None')
+      $fs.Close()
+      break
+    } catch {
+      if ($i -eq 5) {
+        Write-Err 'node.exe ainda esta em uso por outro processo apos 6s de espera.'
+        Write-Err 'Tente fechar manualmente (Task Manager) ou reiniciar a maquina.'
+        exit 1
+      }
+      Start-Sleep -Seconds 1
+    }
+  }
+}
+
 # 4. Backup do checkpoint e config se existirem (preserva progresso de sync)
 $BackupSubdir = "$Pasta\\backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $preservou = $false
