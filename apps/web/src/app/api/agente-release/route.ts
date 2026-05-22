@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '1.0.1';
+export const VERSAO_RELEASE = '1.0.2';
 
 export async function GET() {
   return NextResponse.json({

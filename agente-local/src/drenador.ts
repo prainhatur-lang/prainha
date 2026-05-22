@@ -336,6 +336,19 @@ export async function cicloDrenador(cfg: Config): Promise<void> {
     if (totalEnviado > 0 || totalErro > 0) {
       log.info('drenador: ciclo concluido', { totalEnviado, totalErro });
     }
+
+    // Housekeeping: limpa registros processados > 7 dias atras (evita fila
+    // crescer infinita).
+    try {
+      await execWrite(
+        db,
+        `DELETE FROM CONCILIA_SYNC_QUEUE
+         WHERE PROCESSADO = 1 AND PROCESSADO_EM < DATEADD(-7 DAY TO CURRENT_TIMESTAMP)
+         ROWS 5000`,
+      );
+    } catch (e) {
+      log.warn('drenador: housekeeping falhou', { err: (e as Error).message });
+    }
   } finally {
     if (db) await detachFb(db);
   }
