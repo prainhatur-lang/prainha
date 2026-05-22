@@ -219,15 +219,19 @@ export async function cicloDrenador(cfg: Config): Promise<void> {
   let totalEnviado = 0;
   let totalErro = 0;
 
+  log.info('drenador: ciclo iniciado');
   try {
     db = await attachFb(cfg);
-    if (!(await filaExiste(db))) {
+    const temFila = await filaExiste(db);
+    log.info('drenador: filaExiste', { temFila });
+    if (!temFila) {
       // CDC ainda nao instalado nessa filial — no-op
       return;
     }
 
     for (let iter = 0; iter < MAX_ITER; iter++) {
       const pendentes = await lerFila(db, BATCH);
+      log.info('drenador: lerFila resultado', { iter, qtd: pendentes.length });
       if (pendentes.length === 0) break;
 
       // Agrupa por tabela pra fazer SELECT IN (...) eficiente
@@ -333,9 +337,7 @@ export async function cicloDrenador(cfg: Config): Promise<void> {
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    if (totalEnviado > 0 || totalErro > 0) {
-      log.info('drenador: ciclo concluido', { totalEnviado, totalErro });
-    }
+    log.info('drenador: ciclo concluido', { totalEnviado, totalErro });
 
     // Housekeeping: limpa registros processados > 7 dias atras (evita fila
     // crescer infinita).

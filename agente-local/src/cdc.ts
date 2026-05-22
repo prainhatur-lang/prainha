@@ -476,6 +476,9 @@ export interface StatusCdc {
   totalNaFila: number;
   ultimaCriacao: string | null;
   ultimoProcessado: string | null;
+  comErro: number;
+  tentativasMax: number;
+  exemploErros: Array<{ tabela: string; tentativas: number; erro: string | null }>;
 }
 
 export async function statusCdc(cfg: Config): Promise<StatusCdc> {
@@ -490,6 +493,9 @@ export async function statusCdc(cfg: Config): Promise<StatusCdc> {
         totalNaFila: 0,
         ultimaCriacao: null,
         ultimoProcessado: null,
+        comErro: 0,
+        tentativasMax: 0,
+        exemploErros: [],
       };
     }
     const trigs = await exec<{ N: number }>(
@@ -511,6 +517,24 @@ export async function statusCdc(cfg: Config): Promise<StatusCdc> {
          MAX(PROCESSADO_EM) AS ULT_PROC
        FROM CONCILIA_SYNC_QUEUE`,
     );
+    // Diagnostico: quantos com erro + amostras
+    const erroStats = await exec<{ COM_ERRO: number; MAX_TENT: number }>(
+      db,
+      `SELECT count(*) AS COM_ERRO, COALESCE(MAX(TENTATIVAS), 0) AS MAX_TENT
+       FROM CONCILIA_SYNC_QUEUE
+       WHERE TENTATIVAS > 0 AND PROCESSADO = 0`,
+    );
+    const exemplos = await exec<{
+      TABELA: string;
+      TENTATIVAS: number;
+      ULTIMO_ERRO: string | null;
+    }>(
+      db,
+      `SELECT FIRST 5 TABELA, TENTATIVAS, ULTIMO_ERRO
+       FROM CONCILIA_SYNC_QUEUE
+       WHERE TENTATIVAS > 0 AND PROCESSADO = 0
+       ORDER BY TENTATIVAS DESC`,
+    );
     return {
       instalado: true,
       triggersInstalados: Number(trigs[0]?.N ?? 0),
@@ -518,6 +542,13 @@ export async function statusCdc(cfg: Config): Promise<StatusCdc> {
       totalNaFila: Number(stats[0]?.TOTAL ?? 0),
       ultimaCriacao: stats[0]?.ULT_CRIACAO?.toISOString() ?? null,
       ultimoProcessado: stats[0]?.ULT_PROC?.toISOString() ?? null,
+      comErro: Number(erroStats[0]?.COM_ERRO ?? 0),
+      tentativasMax: Number(erroStats[0]?.MAX_TENT ?? 0),
+      exemploErros: exemplos.map((e) => ({
+        tabela: (e.TABELA ?? '').trim(),
+        tentativas: Number(e.TENTATIVAS),
+        erro: e.ULTIMO_ERRO ? (e.ULTIMO_ERRO as unknown as string).trim() : null,
+      })),
     };
   } finally {
     await detachFb(db);

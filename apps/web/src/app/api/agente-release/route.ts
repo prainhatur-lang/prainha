@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '1.0.2';
+export const VERSAO_RELEASE = '1.0.3';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
+      'v1.0.3: Diagnostico — status_cdc agora retorna comErro/tentativasMax/exemploErros. Drenador loga ciclo iniciado/filaExiste/lerFila resultado em cada iteracao.',
       'v1.0.0: CDC v2 — captura genérica via triggers no Firebird. Agente embute instalador CDC (comando instalar_cdc), drenador da fila CONCILIA_SYNC_QUEUE, auto-update via comando. Endpoint /api/concilia/sync recebe registros. Botoes no dashboard pra instalar/desinstalar/atualizar sem precisar mexer na maquina.',
       'v0.7.0: Fix CRITICO — ITENSPEDIDO.CODIGOPRODUTO eh sempre NULL no Consumer (PDV vende variantes/PRODUTODETALHE). buscarPedidoItens agora faz LEFT JOIN PRODUTODETALHE pra resolver CODIGOPRODUTO via PRODUTODETALHE.CODIGOPRODUTO. Sem isso, 300k pedido_item existentes ficavam com produto_id=NULL.',
       'v0.6.0: Outbox queue inicial — tabela CONCILIA_SYNC_QUEUE + 2 triggers (PRODUTOS + PRODUTODETALHE). Tolerante a tabela inexistente. cicloFilaSync drena no agente.',
