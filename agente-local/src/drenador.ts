@@ -119,6 +119,18 @@ async function lerFila(db: Firebird.Database, limite: number): Promise<FilaItem[
   }));
 }
 
+/** Algumas tabelas precisam SELECT customizado pra trazer dados resolvidos
+ *  via JOIN (ex: ITENSPEDIDO precisa do CODIGOPRODUTO via PRODUTODETALHE).
+ *  Quando nao listada aqui, o drenador usa SELECT * FROM tabela. */
+const SELECT_ESPECIAL: Record<string, (inList: string, pk: string) => string> = {
+  ITENSPEDIDO: (inList, pk) =>
+    `SELECT i.*, ` +
+    `       COALESCE(i.CODIGOPRODUTO, pd.CODIGOPRODUTO) AS CODIGOPRODUTORESOLVIDO ` +
+    `FROM ITENSPEDIDO i ` +
+    `LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = i.CODIGOPRODUTODETALHE ` +
+    `WHERE i.${pk} IN (${inList})`,
+};
+
 async function buscarRegistros(
   db: Firebird.Database,
   tabela: string,
@@ -131,7 +143,8 @@ async function buscarRegistros(
   const inList = todasNumericas
     ? chaves.join(',')
     : chaves.map(escapeLiteral).join(',');
-  const sql = `SELECT * FROM ${tabela} WHERE ${pk} IN (${inList})`;
+  const especial = SELECT_ESPECIAL[tabela];
+  const sql = especial ? especial(inList, pk) : `SELECT * FROM ${tabela} WHERE ${pk} IN (${inList})`;
   const rows = await query<Record<string, unknown>>(db, sql);
   const map: Record<string, Record<string, unknown>> = {};
   for (const row of rows) {
