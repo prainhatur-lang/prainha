@@ -954,6 +954,289 @@ async function mapNfPagamento(filialId: string, op: Operacao, chave: string, d: 
   return { status: 'ok' };
 }
 
+// ---------- Lookups globais (PRODUTOTIPO, UNIDADECOMERCIALIZACAO, PRODUTOSTAMANHOS) ----------
+
+async function mapProdutoTipo(_filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigo = parseInt(chave, 10);
+  if (!Number.isFinite(codigo)) return { status: 'erro', msg: 'codigo invalido' };
+  if (op === 'D') {
+    await db.delete(schema.produtoTipo).where(eq(schema.produtoTipo.codigo, codigo));
+    return { status: 'ok' };
+  }
+  await db.insert(schema.produtoTipo)
+    .values({ codigo, descricao: str(d.DESCRICAO) ?? '' })
+    .onConflictDoUpdate({ target: schema.produtoTipo.codigo, set: { descricao: str(d.DESCRICAO) ?? '' } });
+  return { status: 'ok' };
+}
+
+async function mapUnidadeComercializacao(_filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigo = parseInt(chave, 10);
+  if (!Number.isFinite(codigo)) return { status: 'erro', msg: 'codigo invalido' };
+  if (op === 'D') {
+    await db.delete(schema.unidadeComercializacao).where(eq(schema.unidadeComercializacao.codigo, codigo));
+    return { status: 'ok' };
+  }
+  await db.insert(schema.unidadeComercializacao)
+    .values({ codigo, sigla: str(d.SIGLA) ?? '', descricao: str(d.DESCRICAO) ?? '' })
+    .onConflictDoUpdate({ target: schema.unidadeComercializacao.codigo, set: { sigla: str(d.SIGLA) ?? '', descricao: str(d.DESCRICAO) ?? '' } });
+  return { status: 'ok' };
+}
+
+async function mapProdutoTamanhoLookup(_filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigo = parseInt(chave, 10);
+  if (!Number.isFinite(codigo)) return { status: 'erro', msg: 'codigo invalido' };
+  if (op === 'D') {
+    await db.delete(schema.produtoTamanhoLookup).where(eq(schema.produtoTamanhoLookup.codigo, codigo));
+    return { status: 'ok' };
+  }
+  await db.insert(schema.produtoTamanhoLookup)
+    .values({ codigo, sigla: str(d.SIGLA) ?? '', descricao: str(d.DESCRICAO) ?? '' })
+    .onConflictDoUpdate({ target: schema.produtoTamanhoLookup.codigo, set: { sigla: str(d.SIGLA) ?? '', descricao: str(d.DESCRICAO) ?? '' } });
+  return { status: 'ok' };
+}
+
+// ---------- PRODUTOTAMANHO (config por produto) ----------
+
+async function mapProdutoTamanho(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+
+  if (op === 'D') {
+    await db.update(schema.produtoTamanho)
+      .set({ dataDelete: new Date() })
+      .where(and(
+        eq(schema.produtoTamanho.filialId, filialId),
+        eq(schema.produtoTamanho.codigoExterno, codigoExterno),
+      ));
+    return { status: 'ok' };
+  }
+
+  const row = {
+    filialId,
+    codigoExterno,
+    codigoProdutoPersonalizado: num(d.CODIGOPRODUTOPERSONALIZADO),
+    qtdMaximaPartes: num(d.QTDMAXIMAPARTES),
+    descricao: str(d.DESCRICAO),
+    sigla: str(d.SIGLA),
+    codigoGuid: str(d.CODIGOGUID),
+    dataInsert: date(d.DATAINSERT),
+    dataUpdate: date(d.DATAUPDATE),
+    dataDelete: date(d.DATADELETE),
+    versaoReg: num(d.VERSAOREG),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.produtoTamanho).values(row).onConflictDoUpdate({
+    target: [schema.produtoTamanho.filialId, schema.produtoTamanho.codigoExterno],
+    set: {
+      codigoProdutoPersonalizado: row.codigoProdutoPersonalizado,
+      qtdMaximaPartes: row.qtdMaximaPartes,
+      descricao: row.descricao,
+      sigla: row.sigla,
+      dataDelete: row.dataDelete,
+      versaoReg: row.versaoReg,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+  return { status: 'ok' };
+}
+
+// ---------- PRODUTODETALHE ----------
+
+async function mapProdutoDetalhe(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+
+  if (op === 'D') {
+    await db.update(schema.produtoVariante)
+      .set({ dataDelete: new Date() })
+      .where(and(
+        eq(schema.produtoVariante.filialId, filialId),
+        eq(schema.produtoVariante.codigoExterno, codigoExterno),
+      ));
+    return { status: 'ok' };
+  }
+
+  const codigoProdutoExterno = num(d.CODIGOPRODUTO);
+  if (!codigoProdutoExterno) return { status: 'erro', msg: 'codigoProdutoExterno nulo' };
+
+  const row = {
+    filialId,
+    codigoExterno,
+    codigoProdutoExterno,
+    codigoProdutoTamanhoExterno: num(d.CODIGOPRODUTOTAMANHO),
+    precoCusto: numStr(d.PRECOCUSTO),
+    precoVenda: numStr(d.PRECOVENDA),
+    estoqueAtual: numStr(d.ESTOQUEATUAL),
+    estoqueMinimo: numStr(d.ESTOQUEMINIMO),
+    estoqueControlado: bool(d.ESTOQUECONTROLADO),
+    codigoBarra: str(d.CODIGOBARRA),
+    codigoGuid: str(d.CODIGOGUID),
+    desktop: bool(d.DESKTOP),
+    comandaMobile: bool(d.COMANDAMOBILE),
+    cardapioDigital: bool(d.CARDAPIODIGITAL),
+    menuDino: bool(d.MENUDINO),
+    totem: bool(d.TOTEM),
+    dataPausado: date(d.DATAPAUSADO),
+    dataDelete: date(d.DATADELETE),
+    versaoReg: num(d.VERSAOREG),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.produtoVariante).values(row).onConflictDoUpdate({
+    target: [schema.produtoVariante.filialId, schema.produtoVariante.codigoExterno],
+    set: {
+      codigoProdutoExterno: row.codigoProdutoExterno,
+      codigoProdutoTamanhoExterno: row.codigoProdutoTamanhoExterno,
+      precoCusto: row.precoCusto,
+      precoVenda: row.precoVenda,
+      estoqueAtual: row.estoqueAtual,
+      estoqueMinimo: row.estoqueMinimo,
+      estoqueControlado: row.estoqueControlado,
+      codigoBarra: row.codigoBarra,
+      desktop: row.desktop,
+      comandaMobile: row.comandaMobile,
+      cardapioDigital: row.cardapioDigital,
+      menuDino: row.menuDino,
+      totem: row.totem,
+      dataPausado: row.dataPausado,
+      dataDelete: row.dataDelete,
+      versaoReg: row.versaoReg,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  // Resolve FK produto_id e produto_tamanho_id
+  await db.execute(drizzleSql`
+    UPDATE produto_variante pv SET produto_id = p.id
+    FROM produto p
+    WHERE pv.filial_id = ${filialId} AND pv.codigo_externo = ${codigoExterno}
+      AND pv.codigo_produto_externo = p.codigo_externo AND p.filial_id = ${filialId}
+      AND pv.produto_id IS NULL
+  `);
+  if (row.codigoProdutoTamanhoExterno) {
+    await db.execute(drizzleSql`
+      UPDATE produto_variante pv SET produto_tamanho_id = pt.id
+      FROM produto_tamanho pt
+      WHERE pv.filial_id = ${filialId} AND pv.codigo_externo = ${codigoExterno}
+        AND pv.codigo_produto_tamanho_externo = pt.codigo_externo AND pt.filial_id = ${filialId}
+        AND pv.produto_tamanho_id IS NULL
+    `);
+  }
+  return { status: 'ok' };
+}
+
+// ---------- PRODUTOFICHA ----------
+
+async function mapProdutoFicha(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+
+  if (op === 'D') {
+    await db.delete(schema.produtoVarianteFicha).where(and(
+      eq(schema.produtoVarianteFicha.filialId, filialId),
+      eq(schema.produtoVarianteFicha.codigoExterno, codigoExterno),
+    ));
+    return { status: 'ok' };
+  }
+
+  const codigoVarianteExterno = num(d.CODIGOPRODUTODETALHE);
+  const codigoIngredienteExterno = num(d.CODIGOPRODUTODETALHEITEM);
+  if (!codigoVarianteExterno || !codigoIngredienteExterno) return { status: 'erro', msg: 'variantes nulas' };
+
+  const row = {
+    filialId,
+    codigoExterno,
+    codigoVarianteExterno,
+    codigoIngredienteExterno,
+    quantidade: numStr(d.QUANTIDADE),
+    precoPromo: numStr(d.PRECOPROMO),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.produtoVarianteFicha).values(row).onConflictDoUpdate({
+    target: [schema.produtoVarianteFicha.filialId, schema.produtoVarianteFicha.codigoExterno],
+    set: {
+      codigoVarianteExterno: row.codigoVarianteExterno,
+      codigoIngredienteExterno: row.codigoIngredienteExterno,
+      quantidade: row.quantidade,
+      precoPromo: row.precoPromo,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  // Resolve FKs variante_id e ingrediente_id
+  await db.execute(drizzleSql`
+    UPDATE produto_variante_ficha pvf SET variante_id = pv.id
+    FROM produto_variante pv
+    WHERE pvf.filial_id = ${filialId} AND pvf.codigo_externo = ${codigoExterno}
+      AND pvf.codigo_variante_externo = pv.codigo_externo AND pv.filial_id = ${filialId}
+      AND pvf.variante_id IS NULL
+  `);
+  await db.execute(drizzleSql`
+    UPDATE produto_variante_ficha pvf SET ingrediente_id = pv.id
+    FROM produto_variante pv
+    WHERE pvf.filial_id = ${filialId} AND pvf.codigo_externo = ${codigoExterno}
+      AND pvf.codigo_ingrediente_externo = pv.codigo_externo AND pv.filial_id = ${filialId}
+      AND pvf.ingrediente_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
+// ---------- PRODUTODETALHECOMPLEMENTO ----------
+
+async function mapProdutoDetalheComplemento(filialId: string, op: Operacao, chave: string, d: Dados): Promise<ResultadoMap> {
+  const codigoExterno = parseInt(chave, 10);
+  if (!Number.isFinite(codigoExterno)) return { status: 'erro', msg: 'codigoExterno invalido' };
+
+  if (op === 'D') {
+    await db.delete(schema.produtoVarianteComplemento).where(and(
+      eq(schema.produtoVarianteComplemento.filialId, filialId),
+      eq(schema.produtoVarianteComplemento.codigoExterno, codigoExterno),
+    ));
+    return { status: 'ok' };
+  }
+
+  const codigoVarianteExterno = num(d.CODIGOPRODUTODETALHE);
+  const codigoComplementoExterno = num(d.CODIGOPRODUTODETALHECOMPLEMENTO);
+  if (!codigoVarianteExterno || !codigoComplementoExterno) return { status: 'erro', msg: 'variantes nulas' };
+
+  const row = {
+    filialId,
+    codigoExterno,
+    codigoVarianteExterno,
+    codigoComplementoExterno,
+    codigoGuid: str(d.CODIGOGUID),
+    sincronizadoEm: new Date(),
+  };
+
+  await db.insert(schema.produtoVarianteComplemento).values(row).onConflictDoUpdate({
+    target: [schema.produtoVarianteComplemento.filialId, schema.produtoVarianteComplemento.codigoExterno],
+    set: {
+      codigoVarianteExterno: row.codigoVarianteExterno,
+      codigoComplementoExterno: row.codigoComplementoExterno,
+      codigoGuid: row.codigoGuid,
+      sincronizadoEm: row.sincronizadoEm,
+    },
+  });
+
+  await db.execute(drizzleSql`
+    UPDATE produto_variante_complemento pvc SET variante_id = pv.id
+    FROM produto_variante pv
+    WHERE pvc.filial_id = ${filialId} AND pvc.codigo_externo = ${codigoExterno}
+      AND pvc.codigo_variante_externo = pv.codigo_externo AND pv.filial_id = ${filialId}
+      AND pvc.variante_id IS NULL
+  `);
+  await db.execute(drizzleSql`
+    UPDATE produto_variante_complemento pvc SET complemento_id = pv.id
+    FROM produto_variante pv
+    WHERE pvc.filial_id = ${filialId} AND pvc.codigo_externo = ${codigoExterno}
+      AND pvc.codigo_complemento_externo = pv.codigo_externo AND pv.filial_id = ${filialId}
+      AND pvc.complemento_id IS NULL
+  `);
+  return { status: 'ok' };
+}
+
 // ---------- Dispatcher ----------
 
 type Mapper = (filialId: string, op: Operacao, chave: string, d: Dados) => Promise<ResultadoMap>;
@@ -973,7 +1256,15 @@ const MAPPERS: Record<string, Mapper> = {
   NFCE: mapNfce,
   NFITEM: mapNfItem,
   NFPAGAMENTO: mapNfPagamento,
-  // TODO: PRODUTODETALHE, PRODUTOFICHA, CAIXA — precisam schema novo
+  PRODUTOTIPO: mapProdutoTipo,
+  UNIDADECOMERCIALIZACAO: mapUnidadeComercializacao,
+  PRODUTOSTAMANHOS: mapProdutoTamanhoLookup,
+  PRODUTOTAMANHO: mapProdutoTamanho,
+  PRODUTODETALHE: mapProdutoDetalhe,
+  PRODUTOFICHA: mapProdutoFicha,
+  PRODUTODETALHECOMPLEMENTO: mapProdutoDetalheComplemento,
+  // TODO: CAIXA, CAIXAOPERACAO, ESTOQUE, ESTOQUEMOVIMENTACAO, DELIVERY,
+  //       ENDERECO, TAXAENTREGA, IFOODPEDIDO etc — precisam schema novo
 };
 
 export async function aplicarRegistro(filialId: string, r: RegistroSync): Promise<ResultadoMap> {

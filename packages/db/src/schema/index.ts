@@ -18,3 +18,4 @@ export * from './cotacao';
 export * from './permissao';
 export * from './folha';
 export * from './nf_venda';
+export * from './produto_variante';
