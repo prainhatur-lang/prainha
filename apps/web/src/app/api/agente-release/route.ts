@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '1.0.4';
+export const VERSAO_RELEASE = '1.0.5';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
+      'v1.0.5: Drenador cap BATCH=min(cfg, 500) + timeout fetch 45s→90s. Config das filiais tava com batchSize=1000 (payload ~640KB) — endpoint timeout em 45s, ULTIMO_ERRO fez 39-45 retries falhando. Agora 500 max + 90s = endpoint serverless tem folga.',
       'v1.0.4: Fix CRITICO drenador — query() agora usa transaction explicita igual exec() do cdc.ts (db.query direto nao enxergava itens commitados por triggers de outra conexao em FB4). Tambem adicionado timeout 45s no POST /sync (sem isso, fetch travava 10min). Testado local: 285 itens processados em 14s.',
       'v1.0.0: CDC v2 — captura genérica via triggers no Firebird. Agente embute instalador CDC (comando instalar_cdc), drenador da fila CONCILIA_SYNC_QUEUE, auto-update via comando. Endpoint /api/concilia/sync recebe registros. Botoes no dashboard pra instalar/desinstalar/atualizar sem precisar mexer na maquina.',
       'v0.7.0: Fix CRITICO — ITENSPEDIDO.CODIGOPRODUTO eh sempre NULL no Consumer (PDV vende variantes/PRODUTODETALHE). buscarPedidoItens agora faz LEFT JOIN PRODUTODETALHE pra resolver CODIGOPRODUTO via PRODUTODETALHE.CODIGOPRODUTO. Sem isso, 300k pedido_item existentes ficavam com produto_id=NULL.',

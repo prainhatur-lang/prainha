@@ -197,11 +197,12 @@ async function enviarSync(
   const url = cfg.api.url.replace(/\/$/, '') + '/api/concilia/sync';
   const body = JSON.stringify({ registros });
   const t0 = Date.now();
-  // Timeout de 45s no fetch. Sem isso, drenador trava pra sempre se a conexao
+  // Timeout de 90s no fetch. Sem isso, drenador trava pra sempre se a conexao
   // ficar pendurada (bug observado em prod 22/05/2026 — ciclo drenador
-  // estourava timeout 600s e matava o processo).
+  // estourava timeout 600s e matava o processo). 90s da folga pro endpoint
+  // processar 500 regs em serverless (Vercel cold start + latencia BR→US).
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45000);
+  const timer = setTimeout(() => ctrl.abort(), 90000);
   let r: Response;
   try {
     r = await fetch(url, {
@@ -216,7 +217,7 @@ async function enviarSync(
   } catch (e) {
     clearTimeout(timer);
     const msg = (e as Error).name === 'AbortError'
-      ? `timeout 45s em POST /api/concilia/sync (payload ${body.length}B, ${registros.length} regs)`
+      ? `timeout 90s em POST /api/concilia/sync (payload ${body.length}B, ${registros.length} regs)`
       : (e as Error).message;
     throw new Error(msg);
   }
@@ -246,7 +247,10 @@ async function filaExiste(db: Firebird.Database): Promise<boolean> {
 // ---------- Ciclo principal ----------
 
 export async function cicloDrenador(cfg: Config): Promise<void> {
-  const BATCH = cfg.batchSize ?? 200;
+  // Cap em 500 — payloads > 500 regs estouravam timeout 45s no endpoint
+  // (config.json da 0001 tava com 1000, payload ~640KB, processamento
+  // serverless levava > 45s). Math.min protege mesmo com config velho.
+  const BATCH = Math.min(cfg.batchSize ?? 200, 500);
   const MAX_ITER = 50; // protecao contra loop infinito
   let db: Firebird.Database | null = null;
   let totalEnviado = 0;
