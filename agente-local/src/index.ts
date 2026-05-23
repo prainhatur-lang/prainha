@@ -69,7 +69,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.0.5';
+const AGENTE_VERSAO = '1.0.6';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -583,6 +583,9 @@ function comTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso e travamento
+// Drenador CDC tem timeout maior — pode precisar drenar 100k+ itens por ciclo
+// durante backfill inicial (cada batch de 500 leva ~15-20s no serverless).
+const DRENADOR_TIMEOUT_MS = 30 * 60 * 1000; // 30min
 
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
@@ -663,7 +666,7 @@ async function main() {
     // Drenador CDC v2 — le CONCILIA_SYNC_QUEUE e envia pro /api/concilia/sync.
     // No-op silencioso se a fila nao existir (filial sem CDC instalado).
     try {
-      await comTimeout(cicloDrenador(cfg), CICLO_TIMEOUT_MS, 'ciclo drenador');
+      await comTimeout(cicloDrenador(cfg), DRENADOR_TIMEOUT_MS, 'ciclo drenador');
     } catch (e: unknown) {
       log.error('ciclo drenador falhou', { err: (e as Error).message });
       if ((e as Error).message?.includes('timeout')) {

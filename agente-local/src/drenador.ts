@@ -251,7 +251,7 @@ export async function cicloDrenador(cfg: Config): Promise<void> {
   // (config.json da 0001 tava com 1000, payload ~640KB, processamento
   // serverless levava > 45s). Math.min protege mesmo com config velho.
   const BATCH = Math.min(cfg.batchSize ?? 200, 500);
-  const MAX_ITER = 50; // protecao contra loop infinito
+  const MAX_ITER = 200; // protecao contra loop infinito (200 × 500 = 100k itens/ciclo)
   let db: Firebird.Database | null = null;
   let totalEnviado = 0;
   let totalErro = 0;
