@@ -556,3 +556,47 @@ export async function statusCdc(cfg: Config): Promise<StatusCdc> {
 }
 
 export { TABELAS_CDC };
+
+/** Marca registros de tabelas especificadas como PROCESSADO=1, sem enviar pro
+ *  servidor. Util pra pular backfill de tabelas que ja foram populadas via
+ *  outra rota (ex: PEDIDOS/ITENSPEDIDO/PAGAMENTOS via cicloPdv antigo).
+ *  Retorna quantos foram marcados por tabela. */
+export async function pularTabelas(
+  cfg: Config,
+  tabelas: string[],
+): Promise<{ marcados: Record<string, number>; total: number }> {
+  const db = await attachFb(cfg);
+  try {
+    if (tabelas.length === 0) return { marcados: {}, total: 0 };
+    const marcados: Record<string, number> = {};
+    let total = 0;
+    for (const tab of tabelas) {
+      const tabSafe = tab.replace(/[^A-Z_0-9]/gi, '').toUpperCase();
+      if (!tabSafe) continue;
+      // Conta antes
+      const before = await exec<{ N: number }>(
+        db,
+        `SELECT count(*) AS N FROM CONCILIA_SYNC_QUEUE
+         WHERE PROCESSADO = 0 AND TABELA = '${tabSafe}'`,
+      );
+      const qtd = Number(before[0]?.N ?? 0);
+      if (qtd === 0) {
+        marcados[tabSafe] = 0;
+        continue;
+      }
+      // Marca em transacao
+      await exec(
+        db,
+        `UPDATE CONCILIA_SYNC_QUEUE
+         SET PROCESSADO = 1, PROCESSADO_EM = CURRENT_TIMESTAMP, ULTIMO_ERRO = 'pulado via comando pular_tabelas'
+         WHERE PROCESSADO = 0 AND TABELA = '${tabSafe}'`,
+      );
+      marcados[tabSafe] = qtd;
+      total += qtd;
+      log.info('cdc: tabela pulada', { tabela: tabSafe, marcados: qtd });
+    }
+    return { marcados, total };
+  } finally {
+    await detachFb(db);
+  }
+}

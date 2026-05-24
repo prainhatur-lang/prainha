@@ -21,6 +21,7 @@ const TIPOS_VALIDOS = [
   'instalar_cdc',
   'desinstalar_cdc',
   'status_cdc',
+  'pular_tabelas',
   // Auto-update do agente
   'auto_update',
   // Write-back ja existentes

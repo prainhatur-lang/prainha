@@ -58,7 +58,7 @@ import {
   buscarComandosPendentes,
   reportarComando,
 } from './ingest';
-import { instalarCdc, desinstalarCdc, statusCdc } from './cdc';
+import { instalarCdc, desinstalarCdc, statusCdc, pularTabelas } from './cdc';
 import { cicloDrenador } from './drenador';
 import { log } from './logger';
 import { writeFileSync } from 'node:fs';
@@ -69,7 +69,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.0.6';
+const AGENTE_VERSAO = '1.0.7';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -540,6 +540,22 @@ async function cicloComandos(
       if (cmd.tipo === 'status_cdc') {
         const r = await statusCdc(cfg);
         await reportarComando(cfg, cmd.id, 'sucesso', r);
+        continue;
+      }
+
+      // Tipo 6b: PULAR TABELAS — marca como processado registros de tabelas
+      // especificas, sem enviar pro servidor. payload = { tabelas: string[] }
+      if (cmd.tipo === 'pular_tabelas') {
+        const tabelas = (cmd.payload as unknown as { tabelas?: string[] }).tabelas ?? [];
+        if (!Array.isArray(tabelas) || tabelas.length === 0) {
+          await reportarComando(cfg, cmd.id, 'erro', {
+            msg: 'payload precisa de { tabelas: [...] }',
+          });
+          continue;
+        }
+        const r = await pularTabelas(cfg, tabelas);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        log.info('tabelas puladas', { id: cmd.id, ...r });
         continue;
       }
 
