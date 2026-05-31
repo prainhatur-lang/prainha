@@ -2,6 +2,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
+import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 
@@ -35,6 +36,26 @@ export async function POST(request: Request) {
   const status = STATUS.has(b?.status) ? b.status : 'confirmada';
   const txt = (v: unknown, max: number) =>
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
+  const area = txt(b?.area, 100);
+
+  // Valida hora limite do espaco escolhido (regra: incentivar chegar mais cedo).
+  if (area) {
+    const [fil] = await db
+      .select({ reservaConfig: schema.filial.reservaConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filialId))
+      .limit(1);
+    const espaco = fil?.reservaConfig?.areas?.find((a) => a.nome === area);
+    if (espaco?.somenteEventos) {
+      return NextResponse.json({ error: `${area} está disponível somente para eventos` }, { status: 400 });
+    }
+    if (espaco?.horaLimite && hora > espaco.horaLimite) {
+      return NextResponse.json(
+        { error: `${area} aceita reserva de mesa só até ${espaco.horaLimite}` },
+        { status: 400 },
+      );
+    }
+  }
 
   const [nova] = await db
     .insert(schema.reserva)
@@ -46,7 +67,7 @@ export async function POST(request: Request) {
       data,
       hora,
       status,
-      area: txt(b?.area, 100),
+      area,
       mesa: txt(b?.mesa, 20),
       canal,
       observacao: txt(b?.observacao, 2000),

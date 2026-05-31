@@ -3,9 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+export interface Area {
+  nome: string;
+  ativo: boolean;
+  somenteEventos?: boolean;
+  horaLimite?: string;
+}
+
 export interface FilialOpt {
   id: string;
   nome: string;
+  areas: Area[];
 }
 
 export interface ReservaItem {
@@ -67,6 +75,7 @@ export function ReservasClient({
   podeCriar,
   podeAtualizar,
   podeImportar,
+  podeConfigurar,
 }: {
   data: string;
   filiais: FilialOpt[];
@@ -75,9 +84,11 @@ export function ReservasClient({
   podeCriar: boolean;
   podeAtualizar: boolean;
   podeImportar: boolean;
+  podeConfigurar: boolean;
 }) {
   const router = useRouter();
   const [novaAberta, setNovaAberta] = useState(false);
+  const [configAberta, setConfigAberta] = useState(false);
 
   function irPara(d: string, f: string | null) {
     const qs = new URLSearchParams();
@@ -105,6 +116,14 @@ export function ReservasClient({
               Importar do Tagme: pelo navegador
             </span>
           )}
+          {podeConfigurar && (
+            <button
+              onClick={() => setConfigAberta((v) => !v)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              ⚙️ Espaços
+            </button>
+          )}
           {podeCriar && (
             <button
               onClick={() => setNovaAberta((v) => !v)}
@@ -115,6 +134,10 @@ export function ReservasClient({
           )}
         </div>
       </div>
+
+      {configAberta && podeConfigurar && (
+        <ConfigEspacos filiais={filiais} onSalvou={() => router.refresh()} />
+      )}
 
       {/* Navegação de data + filtro de filial */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -219,19 +242,109 @@ function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; 
   );
 }
 
+function ConfigEspacos({ filiais, onSalvou }: { filiais: FilialOpt[]; onSalvou: () => void }) {
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-slate-800">Espaços e horário limite de reserva</h3>
+      <p className="mt-0.5 text-xs text-slate-500">
+        Defina até que hora cada espaço aceita reserva de mesa. Espaços só de evento não aparecem na criação de reserva.
+      </p>
+      <div className="mt-3 space-y-4">
+        {filiais.map((f) => (
+          <FilialEspacos key={f.id} filial={f} onSalvou={onSalvou} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () => void }) {
+  const [areas, setAreas] = useState<Area[]>(filial.areas.length ? filial.areas.map((a) => ({ ...a })) : []);
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function upd(i: number, patch: Partial<Area>) {
+    setAreas((arr) => arr.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  }
+  function addArea() {
+    setAreas((arr) => [...arr, { nome: '', ativo: true, horaLimite: '18:00' }]);
+  }
+  function remover(i: number) {
+    setAreas((arr) => arr.filter((_, j) => j !== i));
+  }
+
+  async function salvar() {
+    setSalvando(true);
+    setMsg(null);
+    try {
+      const r = await fetch('/api/reservas/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId: filial.id, areas: areas.filter((a) => a.nome.trim()) }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setMsg(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      setMsg('Salvo ✓');
+      onSalvou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  const inp = 'rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-sky-500 focus:outline-none';
+
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="text-xs font-semibold text-slate-700">{filial.nome}</div>
+      <div className="mt-2 space-y-2">
+        {areas.map((a, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <input value={a.nome} onChange={(e) => upd(i, { nome: e.target.value })} placeholder="Nome do espaço" className={`${inp} w-40`} />
+            <label className="flex items-center gap-1 text-xs text-slate-600">
+              <input type="checkbox" checked={a.ativo} onChange={(e) => upd(i, { ativo: e.target.checked })} /> aceita reserva
+            </label>
+            <label className="flex items-center gap-1 text-xs text-slate-600">
+              <input type="checkbox" checked={!!a.somenteEventos} onChange={(e) => upd(i, { somenteEventos: e.target.checked })} /> só eventos
+            </label>
+            <span className="text-xs text-slate-500">até</span>
+            <input type="time" value={a.horaLimite ?? ''} onChange={(e) => upd(i, { horaLimite: e.target.value })} disabled={a.somenteEventos} className={`${inp} w-28 disabled:opacity-40`} />
+            <button onClick={() => remover(i)} className="text-xs text-rose-500 hover:underline">remover</button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        <button onClick={addArea} className="text-xs text-sky-600 hover:underline">+ espaço</button>
+        <button onClick={salvar} disabled={salvando} className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+          {salvando ? 'Salvando…' : 'Salvar espaços'}
+        </button>
+        {msg && <span className="text-xs text-slate-500">{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
 function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: FilialOpt[]; dataPadrao: string; filialPadrao: string | null; onCriou: () => void }) {
   const [filialId, setFilialId] = useState(filialPadrao ?? filiais[0]?.id ?? '');
   const [clienteNome, setNome] = useState('');
   const [clienteTelefone, setTel] = useState('');
   const [pessoas, setPessoas] = useState(2);
   const [dataR, setData] = useState(dataPadrao);
-  const [hora, setHora] = useState('19:00');
+  const [hora, setHora] = useState('17:00');
   const [canal, setCanal] = useState('telefone');
   const [area, setArea] = useState('');
   const [mesa, setMesa] = useState('');
   const [observacao, setObs] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  const filSel = filiais.find((f) => f.id === filialId);
+  const espacos = (filSel?.areas ?? []).filter((a) => a.ativo && !a.somenteEventos);
+  const espacoSel = espacos.find((a) => a.nome === area);
+  const limite = espacoSel?.horaLimite ?? null;
+  const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
 
   async function salvar() {
     setSalvando(true);
@@ -268,7 +381,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
         <input value={clienteTelefone} onChange={(e) => setTel(e.target.value)} placeholder="WhatsApp" inputMode="tel" className={inp} />
         <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} placeholder="Pessoas" className={inp} />
         <input type="date" value={dataR} onChange={(e) => setData(e.target.value)} className={inp} />
-        <input value={hora} onChange={(e) => setHora(e.target.value)} placeholder="HH:MM" className={inp} />
+        <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-rose-400 text-rose-600' : ''}`} />
         <select value={canal} onChange={(e) => setCanal(e.target.value)} className={inp}>
           <option value="telefone">Telefone</option>
           <option value="balcao">Balcão</option>
@@ -277,12 +390,28 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
           <option value="google">Google</option>
           <option value="outro">Outro</option>
         </select>
-        <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="Área/salão" className={inp} />
+        {espacos.length > 0 ? (
+          <select value={area} onChange={(e) => setArea(e.target.value)} className={inp}>
+            <option value="">Espaço…</option>
+            {espacos.map((a) => (
+              <option key={a.nome} value={a.nome}>
+                {a.nome}{a.horaLimite ? ` (até ${a.horaLimite})` : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="Área/espaço" className={inp} />
+        )}
         <input value={mesa} onChange={(e) => setMesa(e.target.value)} placeholder="Mesa" className={inp} />
         <input value={observacao} onChange={(e) => setObs(e.target.value)} placeholder="Observação" className={`${inp} col-span-2 sm:col-span-4`} />
       </div>
+      {horaInvalida && (
+        <p className="mt-2 text-xs text-rose-600">
+          {area} aceita reserva de mesa só até {limite} — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).
+        </p>
+      )}
       {erro && <p className="mt-2 text-xs text-rose-600">{erro}</p>}
-      <button onClick={salvar} disabled={salvando || !clienteNome.trim()} className="mt-3 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+      <button onClick={salvar} disabled={salvando || !clienteNome.trim() || horaInvalida} className="mt-3 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
         {salvando ? 'Salvando…' : 'Criar reserva'}
       </button>
     </div>

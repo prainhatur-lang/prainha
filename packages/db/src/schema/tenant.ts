@@ -60,6 +60,23 @@ export interface ParametrosConciliacao {
   };
 }
 
+/** Um espaco/area de reserva da filial (ex: Areia, Deck Superior, Lounges,
+ *  Terra'xo). Cada um pode ter hora limite propria pra reserva de mesa. */
+export interface AreaReserva {
+  nome: string;
+  /** Aceita reserva de mesa? false = nao listado pra reserva comum. */
+  ativo: boolean;
+  /** Espaco so pra eventos (ex: Terra'xo fechado). Nao entra na reserva de mesa. */
+  somenteEventos?: boolean;
+  /** Hora limite (HH:MM) do ultimo slot reservavel neste espaco. */
+  horaLimite?: string;
+}
+
+/** Config do setor de reservas por filial. */
+export interface ReservaConfig {
+  areas: AreaReserva[];
+}
+
 export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   nome: varchar('nome', { length: 200 }).notNull(),
@@ -112,6 +129,8 @@ export const filial = pgTable(
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),
+    /** Config do setor de reservas: espacos/areas + hora limite por espaco. */
+    reservaConfig: jsonb('reserva_config').$type<ReservaConfig>(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

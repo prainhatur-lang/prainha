@@ -143,6 +143,7 @@ export const PERMISSOES: PermissaoDef[] = [
   // === Reservas de mesa ===
   ...crud('reserva', 'reservas de mesa', [
     { acao: 'importar', descricao: 'Importar reservas de fontes externas (ex: Tagme)' },
+    { acao: 'configurar', descricao: 'Configurar espaços e horários limite de reserva' },
   ]),
 
   // === Usuarios/grupos (admin) ===

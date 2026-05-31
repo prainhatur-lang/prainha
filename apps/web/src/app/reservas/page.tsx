@@ -27,10 +27,25 @@ export default async function ReservasPage(props: {
   const podeCriar = await podeUsuario(user.id, 'reserva.create');
   const podeAtualizar = await podeUsuario(user.id, 'reserva.update');
   const podeImportar = await podeUsuario(user.id, 'reserva.importar');
+  const podeConfigurar = await podeUsuario(user.id, 'reserva.configurar');
 
   const acessiveis = await filiaisDoUsuario(user.id);
-  const filiais: FilialOpt[] = acessiveis.map((f) => ({ id: f.id, nome: f.nome }));
-  const filialIds = filiais.map((f) => f.id);
+  const filialIds = acessiveis.map((f) => f.id);
+
+  // Carrega config de espacos por filial
+  const configs =
+    filialIds.length === 0
+      ? []
+      : await db
+          .select({ id: schema.filial.id, reservaConfig: schema.filial.reservaConfig })
+          .from(schema.filial)
+          .where(inArray(schema.filial.id, filialIds));
+  const areasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.areas ?? []]));
+  const filiais: FilialOpt[] = acessiveis.map((f) => ({
+    id: f.id,
+    nome: f.nome,
+    areas: areasPorFilial.get(f.id) ?? [],
+  }));
 
   const { d, f } = await props.searchParams;
   const data = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : hojeBr();
@@ -75,6 +90,7 @@ export default async function ReservasPage(props: {
           podeCriar={podeCriar}
           podeAtualizar={podeAtualizar}
           podeImportar={podeImportar}
+          podeConfigurar={podeConfigurar}
         />
       </section>
     </main>

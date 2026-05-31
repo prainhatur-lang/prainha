@@ -19,6 +19,7 @@
     "db:list-insumos": "tsx scripts/list-insumos.ts",
     "migrate:avaliacoes": "tsx scripts/migrate-avaliacoes.ts",
     "migrate:reservas": "tsx scripts/migrate-reservas.ts",
+    "migrate:reserva-config": "tsx scripts/migrate-reserva-config.ts",
     "migrate:avaliacao-links": "tsx scripts/migrate-avaliacao-links.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
