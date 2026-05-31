@@ -14,6 +14,7 @@ interface Props {
   nome: string;
   token: string | null;
   googleUrl: string | null;
+  tripadvisorUrl: string | null;
   corte: number;
   podeConfigurar: boolean;
   stats: Stats | null;
@@ -24,12 +25,14 @@ export function ConfigFilial({
   nome,
   token,
   googleUrl: googleInicial,
+  tripadvisorUrl: tripInicial,
   corte: corteInicial,
   podeConfigurar,
   stats,
 }: Props) {
   const [editando, setEditando] = useState(false);
   const [google, setGoogle] = useState(googleInicial ?? '');
+  const [trip, setTrip] = useState(tripInicial ?? '');
   const [corte, setCorte] = useState(corteInicial);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -54,7 +57,12 @@ export function ConfigFilial({
       const r = await fetch('/api/avaliacoes/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, googleReviewUrl: google, notaCorteGoogle: corte }),
+        body: JSON.stringify({
+          filialId,
+          googleReviewUrl: google,
+          tripadvisorReviewUrl: trip,
+          notaCorteGoogle: corte,
+        }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -114,7 +122,16 @@ export function ConfigFilial({
             <input
               value={google}
               onChange={(e) => setGoogle(e.target.value)}
-              placeholder="https://g.page/r/..."
+              placeholder="https://g.page/r/... ou https://share.google/..."
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-sky-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600">Link de avaliação do TripAdvisor</label>
+            <input
+              value={trip}
+              onChange={(e) => setTrip(e.target.value)}
+              placeholder="https://www.tripadvisor.../UserReviewEdit-..."
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-sky-500 focus:outline-none"
             />
           </div>
@@ -145,6 +162,7 @@ export function ConfigFilial({
               onClick={() => {
                 setEditando(false);
                 setGoogle(googleInicial ?? '');
+                setTrip(tripInicial ?? '');
                 setCorte(corteInicial);
                 setErro(null);
               }}

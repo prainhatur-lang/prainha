@@ -26,6 +26,7 @@ export default async function AvaliarPage(props: {
       id: schema.filial.id,
       nome: schema.filial.nome,
       googleReviewUrl: schema.filial.googleReviewUrl,
+      tripadvisorReviewUrl: schema.filial.tripadvisorReviewUrl,
       notaCorteGoogle: schema.filial.notaCorteGoogle,
     })
     .from(schema.filial)
@@ -41,6 +42,7 @@ export default async function AvaliarPage(props: {
           nomeFilial={filial.nome}
           corte={filial.notaCorteGoogle}
           googleUrl={filial.googleReviewUrl}
+          tripadvisorUrl={filial.tripadvisorReviewUrl}
           origem={origem ?? null}
         />
       </div>

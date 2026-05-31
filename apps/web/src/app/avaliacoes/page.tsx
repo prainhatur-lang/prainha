@@ -46,6 +46,7 @@ export default async function AvaliacoesPage() {
             nome: schema.filial.nome,
             avaliacaoToken: schema.filial.avaliacaoToken,
             googleReviewUrl: schema.filial.googleReviewUrl,
+            tripadvisorReviewUrl: schema.filial.tripadvisorReviewUrl,
             notaCorteGoogle: schema.filial.notaCorteGoogle,
           })
           .from(schema.filial)
@@ -125,6 +126,7 @@ export default async function AvaliacoesPage() {
                 nome={f.nome}
                 token={f.avaliacaoToken}
                 googleUrl={f.googleReviewUrl}
+                tripadvisorUrl={f.tripadvisorReviewUrl}
                 corte={f.notaCorteGoogle}
                 podeConfigurar={podeConfigurar}
                 stats={

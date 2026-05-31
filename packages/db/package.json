@@ -18,6 +18,7 @@
     "criar:usuario": "tsx scripts/criar-usuario.ts",
     "db:list-insumos": "tsx scripts/list-insumos.ts",
     "migrate:avaliacoes": "tsx scripts/migrate-avaliacoes.ts",
+    "migrate:avaliacao-links": "tsx scripts/migrate-avaliacao-links.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
     "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",

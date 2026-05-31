@@ -7,6 +7,7 @@ interface Props {
   nomeFilial: string;
   corte: number;
   googleUrl: string | null;
+  tripadvisorUrl: string | null;
   origem: string | null;
 }
 
@@ -34,7 +35,7 @@ function Estrela({
   );
 }
 
-export function AvaliarForm({ token, nomeFilial, corte, googleUrl, origem }: Props) {
+export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUrl, origem }: Props) {
   const [fase, setFase] = useState<Fase>('nota');
   const [nota, setNota] = useState(0);
   const [hover, setHover] = useState(0);
@@ -73,9 +74,9 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, origem }: Pro
   async function escolherNota(n: number) {
     setNota(n);
     if (n >= corte) {
-      // Nota alta: registra e direciona pro Google
+      // Nota alta: registra e direciona pras plataformas de review
       setEnviando(true);
-      await registrar({ nota: n, foiPraGoogle: !!googleUrl });
+      await registrar({ nota: n, foiPraGoogle: !!googleUrl || !!tripadvisorUrl });
       setEnviando(false);
       setFase('alta');
     } else {
@@ -130,17 +131,31 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, origem }: Pro
         <div className="text-5xl">🙏</div>
         <h1 className="mt-3 text-lg font-semibold text-slate-900">Que bom que gostou!</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Sua opinião ajuda muito o {nomeFilial}. Que tal deixar uma avaliação no Google?
+          Sua opinião ajuda muito o {nomeFilial}. Que tal deixar uma avaliação pública?
         </p>
-        {googleUrl ? (
-          <a
-            href={googleUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-700"
-          >
-            ⭐ Avaliar no Google
-          </a>
+        {googleUrl || tripadvisorUrl ? (
+          <div className="mt-5 space-y-2">
+            {googleUrl && (
+              <a
+                href={googleUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-700"
+              >
+                ⭐ Avaliar no Google
+              </a>
+            )}
+            {tripadvisorUrl && (
+              <a
+                href={tripadvisorUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                🦉 Avaliar no TripAdvisor
+              </a>
+            )}
+          </div>
         ) : (
           <p className="mt-5 text-sm font-medium text-emerald-600">Obrigado pela avaliação! 💚</p>
         )}

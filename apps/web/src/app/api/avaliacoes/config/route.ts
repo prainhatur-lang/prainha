@@ -25,14 +25,19 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: 'corte deve ser 1 a 5' }, { status: 400 });
   }
 
-  let googleUrl: string | null = null;
-  if (typeof body?.googleReviewUrl === 'string' && body.googleReviewUrl.trim()) {
-    const u = body.googleReviewUrl.trim();
-    if (!/^https?:\/\//i.test(u)) {
-      return NextResponse.json({ error: 'link do Google deve começar com http' }, { status: 400 });
-    }
-    googleUrl = u.slice(0, 1000);
-  }
+  const limparUrl = (v: unknown, nome: string): { url: string | null } | { erro: string } => {
+    if (typeof v !== 'string' || !v.trim()) return { url: null };
+    const u = v.trim();
+    if (!/^https?:\/\//i.test(u)) return { erro: `link do ${nome} deve começar com http` };
+    return { url: u.slice(0, 1000) };
+  };
+
+  const g = limparUrl(body?.googleReviewUrl, 'Google');
+  if ('erro' in g) return NextResponse.json({ error: g.erro }, { status: 400 });
+  const t = limparUrl(body?.tripadvisorReviewUrl, 'TripAdvisor');
+  if ('erro' in t) return NextResponse.json({ error: t.erro }, { status: 400 });
+  const googleUrl = g.url;
+  const tripadvisorUrl = t.url;
 
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
@@ -42,7 +47,7 @@ export async function PUT(request: Request) {
 
   await db
     .update(schema.filial)
-    .set({ googleReviewUrl: googleUrl, notaCorteGoogle: corte })
+    .set({ googleReviewUrl: googleUrl, tripadvisorReviewUrl: tripadvisorUrl, notaCorteGoogle: corte })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filialIds)));
 
   return NextResponse.json({ ok: true });
