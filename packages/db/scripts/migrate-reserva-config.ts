@@ -17,6 +17,13 @@ const PRAINHA_BAR = {
   ],
 };
 
+const TABUARA = {
+  areas: [
+    { nome: 'Salão', ativo: true, horaLimite: '18:00' },
+    { nome: 'Varanda', ativo: true, horaLimite: '18:00' },
+  ],
+};
+
 async function main() {
   process.stdout.write('  ALTER filial ADD reserva_config... ');
   await sql`ALTER TABLE filial ADD COLUMN IF NOT EXISTS reserva_config jsonb`;
@@ -30,6 +37,15 @@ async function main() {
     RETURNING nome
   `;
   console.log(r.length ? `OK — ${r.map((x) => x.nome).join(', ')}` : 'ja configurado (mantido)');
+
+  process.stdout.write('  Seed espacos da Tabuara (so se ainda nao tiver)... ');
+  const t = await sql<Array<{ nome: string }>>`
+    UPDATE filial
+    SET reserva_config = ${sql.json(TABUARA)}
+    WHERE nome ILIKE '%Tabuar%' AND reserva_config IS NULL
+    RETURNING nome
+  `;
+  console.log(t.length ? `OK — ${t.map((x) => x.nome).join(', ')}` : 'ja configurado (mantido)');
 
   await sql.end();
 }
