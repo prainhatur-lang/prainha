@@ -80,6 +80,7 @@ const GRUPOS: Grupo[] = [
   {
     label: 'Relatórios',
     links: [
+      { label: 'Avaliações de clientes', href: '/avaliacoes', perm: 'avaliacao.read' },
       { label: 'Dashboard analítico', href: '/dashboard', perm: 'relatorio.read' },
       { label: 'Relatório consolidado', href: '/relatorio', perm: 'relatorio.read' },
       { label: 'Estoque', href: '/relatorios/estoque', perm: 'relatorio.read' },

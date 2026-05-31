@@ -42,6 +42,9 @@ export async function proxy(request: NextRequest) {
   // /agente-release/* sao bundles do agente local baixados pelo PowerShell
   // direto do PC da filial (.ps1 atualizador) — sem sessao do navegador.
   const isAgenteRelease = path.startsWith('/agente-release/');
+  // /avaliar/[token] eh a pagina publica de avaliacao do cliente (QR na mesa).
+  // O token na URL identifica a filial; sem login.
+  const isAvaliarPublico = path.startsWith('/avaliar/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -49,7 +52,8 @@ export async function proxy(request: NextRequest) {
     isOpPublica ||
     isCozinheiroPublico ||
     isNotaBoletoPublico ||
-    isAgenteRelease;
+    isAgenteRelease ||
+    isAvaliarPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric, integer } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /** Percentuais de taxas Cielo por forma + bandeira. Usado pela engine Banco
@@ -100,6 +100,15 @@ export const filial = pgTable(
     pausadaEm: timestamp('pausada_em', { withTimezone: true }),
     /** Motivo da pausa (opcional) — ex: "fechada ate julho/2026". */
     pausadaMotivo: varchar('pausada_motivo', { length: 200 }),
+    /** Token publico do link/QR de avaliacao de clientes (/avaliar/[token]).
+     *  Null = avaliacoes ainda nao habilitadas pra esta filial. */
+    avaliacaoToken: text('avaliacao_token').unique(),
+    /** Link de avaliacao do Google desta filial (Google Place "write a review").
+     *  Pra onde o cliente satisfeito eh direcionado. */
+    googleReviewUrl: text('google_review_url'),
+    /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
+     *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
+    notaCorteGoogle: integer('nota_corte_google').notNull().default(4),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

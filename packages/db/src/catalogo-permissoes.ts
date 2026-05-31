@@ -135,6 +135,11 @@ export const PERMISSOES: PermissaoDef[] = [
     escopo: 'organizacao',
   },
 
+  // === Reputacao / avaliacoes de clientes ===
+  ...crud('avaliacao', 'avaliações de clientes', [
+    { acao: 'configurar', descricao: 'Configurar link do Google, corte e QR codes' },
+  ]),
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({
