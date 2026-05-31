@@ -122,13 +122,28 @@ async function main() {
 
   console.log(`\n[3] Grupos do sistema (${GRUPOS_SISTEMA.length})`);
   for (const g of GRUPOS_SISTEMA) {
-    // Cria grupo sistema (organizacao_id = NULL, sistema=true)
-    const [{ id: grupoId }] = await sql<Array<{ id: string }>>`
-      INSERT INTO grupo_usuario (organizacao_id, nome, descricao, sistema)
-      VALUES (NULL, ${g.nome}, ${g.descricao}, true)
-      ON CONFLICT (organizacao_id, nome) DO UPDATE SET descricao = EXCLUDED.descricao
-      RETURNING id
+    // Cria/encontra grupo sistema (organizacao_id = NULL, sistema=true).
+    // NAO usar ON CONFLICT (organizacao_id, nome): no Postgres NULL != NULL,
+    // entao o upsert nunca casa pra grupos de sistema (org NULL) e cada run
+    // criava uma DUPLICATA. Em vez disso, busca pelo nome primeiro (o mais
+    // antigo = canonico) e so insere se nao existir.
+    let grupoId: string;
+    const existente = await sql<Array<{ id: string }>>`
+      SELECT id FROM grupo_usuario
+      WHERE sistema = true AND organizacao_id IS NULL AND nome = ${g.nome}
+      ORDER BY criado_em ASC LIMIT 1
     `;
+    if (existente.length > 0) {
+      grupoId = existente[0].id;
+      await sql`UPDATE grupo_usuario SET descricao = ${g.descricao} WHERE id = ${grupoId}`;
+    } else {
+      const [novo] = await sql<Array<{ id: string }>>`
+        INSERT INTO grupo_usuario (organizacao_id, nome, descricao, sistema)
+        VALUES (NULL, ${g.nome}, ${g.descricao}, true)
+        RETURNING id
+      `;
+      grupoId = novo.id;
+    }
 
     // Limpa permissoes antigas e re-aplica (mais simples que diff)
     await sql`DELETE FROM grupo_permissao WHERE grupo_id = ${grupoId}`;
@@ -152,7 +167,9 @@ async function main() {
   let migrados = 0;
   for (const [roleAntigo, grupoNome] of Object.entries(ROLE_PARA_GRUPO)) {
     const [grupo] = await sql<Array<{ id: string }>>`
-      SELECT id FROM grupo_usuario WHERE sistema = true AND nome = ${grupoNome} LIMIT 1
+      SELECT id FROM grupo_usuario
+      WHERE sistema = true AND organizacao_id IS NULL AND nome = ${grupoNome}
+      ORDER BY criado_em ASC LIMIT 1
     `;
     if (!grupo) continue;
     // Distinct usuarios com esse role
