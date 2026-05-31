@@ -38,9 +38,13 @@ export function ConfigFilial({
   const [erro, setErro] = useState<string | null>(null);
   const [origem, setOrigem] = useState('');
 
-  // Link base do QR — montado no client pra pegar a origem certa.
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const linkBase = token ? `${origin}/avaliar/${token}` : null;
+  // Link base do QR. Usa NEXT_PUBLIC_AVALIACAO_BASE_URL (ex: dominio publico
+  // tipo https://avaliar.prainhabar.com) se definido — assim o QR aponta sempre
+  // pro dominio certo, nao importa de onde o painel foi aberto. Fallback: origin atual.
+  const base =
+    process.env.NEXT_PUBLIC_AVALIACAO_BASE_URL?.replace(/\/+$/, '') ||
+    (typeof window !== 'undefined' ? window.location.origin : '');
+  const linkBase = token ? `${base}/avaliar/${token}` : null;
   const link = linkBase
     ? origem.trim()
       ? `${linkBase}?o=${encodeURIComponent(origem.trim().toLowerCase().replace(/\s+/g, '-'))}`
