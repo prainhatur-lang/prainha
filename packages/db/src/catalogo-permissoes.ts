@@ -140,6 +140,11 @@ export const PERMISSOES: PermissaoDef[] = [
     { acao: 'configurar', descricao: 'Configurar link do Google, corte e QR codes' },
   ]),
 
+  // === Reservas de mesa ===
+  ...crud('reserva', 'reservas de mesa', [
+    { acao: 'importar', descricao: 'Importar reservas de fontes externas (ex: Tagme)' },
+  ]),
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

@@ -46,6 +46,12 @@ const GRUPOS: Grupo[] = [
     ],
   },
   {
+    label: 'Reservas',
+    links: [
+      { label: 'Agenda de reservas', href: '/reservas', perm: 'reserva.read' },
+    ],
+  },
+  {
     label: 'Folha da equipe',
     links: [
       { label: 'Folhas semanais', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },
