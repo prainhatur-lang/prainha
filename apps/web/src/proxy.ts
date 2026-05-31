@@ -45,6 +45,8 @@ export async function proxy(request: NextRequest) {
   // /avaliar/[token] eh a pagina publica de avaliacao do cliente (QR na mesa).
   // O token na URL identifica a filial; sem login.
   const isAvaliarPublico = path.startsWith('/avaliar/');
+  // /reservar/[token] eh a pagina publica de reserva do cliente (sem login).
+  const isReservarPublico = path.startsWith('/reservar/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -53,7 +55,8 @@ export async function proxy(request: NextRequest) {
     isCozinheiroPublico ||
     isNotaBoletoPublico ||
     isAgenteRelease ||
-    isAvaliarPublico;
+    isAvaliarPublico ||
+    isReservarPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

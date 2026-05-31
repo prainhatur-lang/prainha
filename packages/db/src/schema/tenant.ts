@@ -75,6 +75,10 @@ export interface AreaReserva {
 /** Config do setor de reservas por filial. */
 export interface ReservaConfig {
   areas: AreaReserva[];
+  /** Valor "cheio" exibido pro cliente (ex: 30) — ancoragem de preco. */
+  valorCheio?: number;
+  /** Valor efetivamente cobrado hoje (ex: 0 = gratis). */
+  valorAtual?: number;
 }
 
 export const organizacao = pgTable('organizacao', {
