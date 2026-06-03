@@ -3,11 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+export interface Mesa {
+  numero: string;
+  lugares: number;
+}
+
 export interface Area {
   nome: string;
   ativo: boolean;
   somenteEventos?: boolean;
   horaLimite?: string;
+  mesas?: Mesa[];
 }
 
 export interface FilialOpt {
@@ -345,6 +351,9 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
   const espacoSel = espacos.find((a) => a.nome === area);
   const limite = espacoSel?.horaLimite ?? null;
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
+  const mesasDoEspaco = espacoSel?.mesas ?? [];
+  const mesaSel = mesasDoEspaco.find((mm) => mm.numero === mesa);
+  const capacidadeBaixa = !!(mesaSel && pessoas > mesaSel.lugares);
 
   async function salvar() {
     setSalvando(true);
@@ -402,12 +411,26 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
         ) : (
           <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="Área/espaço" className={inp} />
         )}
-        <input value={mesa} onChange={(e) => setMesa(e.target.value)} placeholder="Mesa" className={inp} />
+        {mesasDoEspaco.length > 0 ? (
+          <select value={mesa} onChange={(e) => setMesa(e.target.value)} className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}>
+            <option value="">Mesa…</option>
+            {mesasDoEspaco.map((mm) => (
+              <option key={mm.numero} value={mm.numero}>Mesa {mm.numero} ({mm.lugares} lug)</option>
+            ))}
+          </select>
+        ) : (
+          <input value={mesa} onChange={(e) => setMesa(e.target.value)} placeholder="Mesa" className={inp} />
+        )}
         <input value={observacao} onChange={(e) => setObs(e.target.value)} placeholder="Observação" className={`${inp} col-span-2 sm:col-span-4`} />
       </div>
       {horaInvalida && (
         <p className="mt-2 text-xs text-rose-600">
           {area} aceita reserva de mesa só até {limite} — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).
+        </p>
+      )}
+      {capacidadeBaixa && mesaSel && (
+        <p className="mt-2 text-xs text-amber-600">
+          A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas — confira a capacidade.
         </p>
       )}
       {erro && <p className="mt-2 text-xs text-rose-600">{erro}</p>}

@@ -60,6 +60,13 @@ export interface ParametrosConciliacao {
   };
 }
 
+/** Uma mesa fisica de um espaco, com capacidade. */
+export interface MesaReserva {
+  numero: string;
+  /** Lugares (capacidade). */
+  lugares: number;
+}
+
 /** Um espaco/area de reserva da filial (ex: Areia, Deck Superior, Lounges,
  *  Terra'xo). Cada um pode ter hora limite propria pra reserva de mesa. */
 export interface AreaReserva {
@@ -70,6 +77,8 @@ export interface AreaReserva {
   somenteEventos?: boolean;
   /** Hora limite (HH:MM) do ultimo slot reservavel neste espaco. */
   horaLimite?: string;
+  /** Mesas fisicas deste espaco (numero + capacidade). */
+  mesas?: MesaReserva[];
 }
 
 /** Config do setor de reservas por filial. */
