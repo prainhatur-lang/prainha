@@ -78,6 +78,11 @@ export default async function ReservasPage(props: {
 
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
+  // Mesas ocupadas no dia (chave `${filialId}:${mesa}`), pro mapa.
+  const ocupadas = itens
+    .filter((i) => i.mesa && i.status !== 'cancelada' && i.status !== 'no_show')
+    .map((i) => `${i.filialId}:${i.mesa}`);
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -91,6 +96,7 @@ export default async function ReservasPage(props: {
           podeAtualizar={podeAtualizar}
           podeImportar={podeImportar}
           podeConfigurar={podeConfigurar}
+          ocupadas={ocupadas}
         />
       </section>
     </main>

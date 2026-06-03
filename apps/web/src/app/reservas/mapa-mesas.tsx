@@ -1,0 +1,85 @@
+'use client';
+
+import type { FilialOpt, Mesa } from './reservas-client';
+
+// Mapa visual de mesas por espaco. 1a versao: colunas de 4 (rio na frente/topo),
+// cores por ocupacao no dia. Base pro mapa de selecao do cliente.
+
+function corLugares(n: number): string {
+  if (n >= 12) return 'bg-violet-100 border-violet-300 text-violet-800';
+  if (n >= 8) return 'bg-sky-100 border-sky-300 text-sky-800';
+  if (n >= 6) return 'bg-amber-100 border-amber-300 text-amber-800';
+  return 'bg-slate-100 border-slate-300 text-slate-700';
+}
+
+function MesaCard({ mesa, ocupada }: { mesa: Mesa; ocupada: boolean }) {
+  return (
+    <div
+      title={`Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''}${ocupada ? ' · OCUPADA' : ' · livre'}`}
+      className={`relative flex h-14 w-14 flex-col items-center justify-center rounded-lg border text-center ${
+        ocupada ? 'border-rose-300 bg-rose-100 text-rose-700' : corLugares(mesa.lugares)
+      }`}
+    >
+      <span className="text-sm font-bold leading-none">{mesa.numero}</span>
+      <span className="mt-0.5 text-[9px] leading-none opacity-70">{mesa.lugares} lug</span>
+      {mesa.juntavel && <span className="absolute right-0.5 top-0.5 text-[8px]">🔗</span>}
+      {ocupada && <span className="absolute -bottom-1 text-[8px]">🔴</span>}
+    </div>
+  );
+}
+
+function Espaco({ nome, mesas, ocupadas, filialId }: { nome: string; mesas: Mesa[]; ocupadas: Set<string>; filialId: string }) {
+  // colunas de 4 (rio em cima → mesa "da frente" no topo de cada coluna)
+  const colunas: Mesa[][] = [];
+  for (let i = 0; i < mesas.length; i += 4) colunas.push(mesas.slice(i, i + 4).reverse());
+
+  const livres = mesas.filter((m) => !ocupadas.has(`${filialId}:${m.numero}`)).length;
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-baseline justify-between">
+        <h4 className="text-sm font-semibold text-slate-800">{nome}</h4>
+        <span className="text-xs text-slate-500">{livres}/{mesas.length} livres</span>
+      </div>
+      <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
+        <div className="mb-1 text-center text-[10px] font-medium text-sky-500">🌊 rio (frente)</div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {colunas.map((col, ci) => (
+            <div key={ci} className="flex flex-col gap-1.5">
+              {col.map((m) => (
+                <MesaCard key={m.numero} mesa={m} ocupada={ocupadas.has(`${filialId}:${m.numero}`)} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MapaMesas({ filiais, ocupadas }: { filiais: FilialOpt[]; ocupadas: Set<string> }) {
+  const comMesas = filiais.filter((f) => (f.areas ?? []).some((a) => (a.mesas?.length ?? 0) > 0));
+  if (comMesas.length === 0) {
+    return <p className="mt-3 text-sm text-slate-400">Nenhuma mesa cadastrada ainda.</p>;
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3 text-[11px] text-slate-500">
+        <span>Legenda:</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-slate-100 ring-1 ring-slate-300" /> livre</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-rose-100 ring-1 ring-rose-300" /> ocupada</span>
+        <span>🔗 juntável</span>
+      </div>
+      {comMesas.map((f) => (
+        <div key={f.id} className="mt-3">
+          {filiais.length > 1 && <div className="text-xs font-semibold text-slate-600">{f.nome}</div>}
+          {(f.areas ?? [])
+            .filter((a) => (a.mesas?.length ?? 0) > 0)
+            .map((a) => (
+              <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} filialId={f.id} />
+            ))}
+        </div>
+      ))}
+    </div>
+  );
+}

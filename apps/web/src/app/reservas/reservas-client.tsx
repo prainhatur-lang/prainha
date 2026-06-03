@@ -2,10 +2,12 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { MapaMesas } from './mapa-mesas';
 
 export interface Mesa {
   numero: string;
   lugares: number;
+  juntavel?: boolean;
 }
 
 export interface Area {
@@ -82,6 +84,7 @@ export function ReservasClient({
   podeAtualizar,
   podeImportar,
   podeConfigurar,
+  ocupadas,
 }: {
   data: string;
   filiais: FilialOpt[];
@@ -91,10 +94,12 @@ export function ReservasClient({
   podeAtualizar: boolean;
   podeImportar: boolean;
   podeConfigurar: boolean;
+  ocupadas: string[];
 }) {
   const router = useRouter();
   const [novaAberta, setNovaAberta] = useState(false);
   const [configAberta, setConfigAberta] = useState(false);
+  const [mapaAberto, setMapaAberto] = useState(false);
 
   function irPara(d: string, f: string | null) {
     const qs = new URLSearchParams();
@@ -122,6 +127,12 @@ export function ReservasClient({
               Importar do Tagme: pelo navegador
             </span>
           )}
+          <button
+            onClick={() => setMapaAberto((v) => !v)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            🗺️ Mapa
+          </button>
           {podeConfigurar && (
             <button
               onClick={() => setConfigAberta((v) => !v)}
@@ -140,6 +151,13 @@ export function ReservasClient({
           )}
         </div>
       </div>
+
+      {mapaAberto && (
+        <MapaMesas
+          filiais={filialFiltro ? filiais.filter((f) => f.id === filialFiltro) : filiais}
+          ocupadas={new Set(ocupadas)}
+        />
+      )}
 
       {configAberta && podeConfigurar && (
         <ConfigEspacos filiais={filiais} onSalvou={() => router.refresh()} />

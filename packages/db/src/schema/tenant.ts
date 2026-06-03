@@ -65,6 +65,8 @@ export interface MesaReserva {
   numero: string;
   /** Lugares (capacidade). */
   lugares: number;
+  /** Pode ser juntada a outras pra formar grupos maiores. */
+  juntavel?: boolean;
 }
 
 /** Um espaco/area de reserva da filial (ex: Areia, Deck Superior, Lounges,

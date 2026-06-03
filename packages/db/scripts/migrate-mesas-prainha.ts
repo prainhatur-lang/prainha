@@ -10,10 +10,11 @@ import type { ReservaConfig, MesaReserva } from '../src/schema/tenant';
 
 const sql = postgres(process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL, { prepare: false });
 
-const m = (numero: number | string, lugares: number): MesaReserva => ({ numero: String(numero), lugares });
-const range = (de: number, ate: number, lugares: number) => {
+const m = (numero: number | string, lugares: number, juntavel = false): MesaReserva =>
+  juntavel ? { numero: String(numero), lugares, juntavel: true } : { numero: String(numero), lugares };
+const range = (de: number, ate: number, lugares: number, juntavel = false) => {
   const out: MesaReserva[] = [];
-  for (let n = de; n <= ate; n++) out.push(m(n, lugares));
+  for (let n = de; n <= ate; n++) out.push(m(n, lugares, juntavel));
   return out;
 };
 
@@ -29,6 +30,7 @@ const AREIA: MesaReserva[] = [
   ...range(34, 40, 6), // 41 nao existe
   m(42, 8),
   ...range(43, 48, 4),
+  ...range(49, 74, 4, true), // 49-74: 4 lugares, juntaveis (combinar mesas)
   ...range(111, 113, 4),
   ...range(114, 125, 4), // plastico (extensao)
 ];
