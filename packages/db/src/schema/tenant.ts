@@ -90,6 +90,10 @@ export interface ReservaConfig {
   valorCheio?: number;
   /** Valor efetivamente cobrado hoje (ex: 0 = gratis). */
   valorAtual?: number;
+  /** Modo confianca: pula o codigo OTP — confia no numero e confirma direto.
+   *  A validacao vira a entrega da mensagem de confirmacao (se nao entregar,
+   *  cancela). Default: usa OTP se houver provedor configurado. */
+  semOtp?: boolean;
 }
 
 export const organizacao = pgTable('organizacao', {

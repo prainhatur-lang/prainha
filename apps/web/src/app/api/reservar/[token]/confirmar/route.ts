@@ -43,12 +43,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const hora = typeof b?.hora === 'string' && /^\d{2}:\d{2}$/.test(b.hora) ? b.hora : null;
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 99) : 0;
 
-  if (!telefone || !codigo || !nome || !data || !hora || !pessoas) {
+  const cfg = filial.reservaConfig;
+  const semOtp = !!cfg?.semOtp;
+
+  if (!telefone || !nome || !data || !hora || !pessoas || (!semOtp && !codigo)) {
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
   }
 
   // Valida espaco + hora limite
-  const cfg = filial.reservaConfig;
   const areaCfg = cfg?.areas?.find((a) => a.nome === espaco);
   if (!areaCfg || !areaCfg.ativo || areaCfg.somenteEventos) {
     return NextResponse.json({ error: 'espaço indisponível para reserva' }, { status: 400 });
@@ -60,8 +62,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     );
   }
 
-  // Valida o codigo: via Twilio Verify (se configurado) OU pela tabela reserva_otp.
-  if (twilioConfigurado()) {
+  // Modo confianca (semOtp): pula a validacao de codigo — confia no numero.
+  // Senao, valida via Twilio Verify (se configurado) OU pela tabela reserva_otp.
+  if (semOtp) {
+    // sem validacao de codigo
+  } else if (twilioConfigurado()) {
     const ok = await twilioCheck(telefone, codigo);
     if (!ok) return NextResponse.json({ error: 'código incorreto ou expirado' }, { status: 400 });
   } else {

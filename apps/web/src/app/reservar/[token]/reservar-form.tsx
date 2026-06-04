@@ -14,6 +14,7 @@ interface Props {
   valorCheio: number | null;
   valorAtual: number;
   hoje: string;
+  semOtp: boolean;
 }
 
 type Fase = 'dados' | 'otp' | 'ok';
@@ -22,7 +23,7 @@ function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -40,6 +41,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const limite = areaSel?.horaLimite ?? null;
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const gratis = valorAtual === 0;
+
+  // Modo confianca: valida campos e cria a reserva direto (sem código).
+  async function reservarDireto() {
+    if (!nome.trim()) return setErro('Informe seu nome');
+    if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
+    if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
+    setErro(null);
+    await confirmar();
+  }
 
   async function pedirCodigo() {
     if (!nome.trim()) return setErro('Informe seu nome');
@@ -205,13 +215,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
 
       {erro && <p className="mt-3 text-center text-xs text-rose-600">{erro}</p>}
       <button
-        onClick={pedirCodigo}
+        onClick={semOtp ? reservarDireto : pedirCodigo}
         disabled={enviando || horaInvalida || areas.length === 0}
         className="mt-4 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
       >
-        {enviando ? 'Enviando código…' : 'Continuar'}
+        {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar' : 'Continuar'}
       </button>
-      <p className="mt-2 text-center text-[11px] text-slate-400">Validamos sua reserva por um código no WhatsApp.</p>
+      <p className="mt-2 text-center text-[11px] text-slate-400">
+        {semOtp ? 'Enviaremos a confirmação no seu WhatsApp.' : 'Validamos sua reserva por um código no WhatsApp.'}
+      </p>
     </div>
   );
 }
