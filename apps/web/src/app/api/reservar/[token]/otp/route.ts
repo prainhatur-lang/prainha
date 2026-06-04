@@ -6,6 +6,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import { randomInt } from 'node:crypto';
 import { enviarOtpWhatsApp } from '@/lib/whatsapp-otp';
+import { twilioConfigurado, twilioStart } from '@/lib/twilio-verify';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,6 +33,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const body = await request.json().catch(() => null);
   const telefone = normTelefone(body?.telefone);
   if (!telefone) return NextResponse.json({ error: 'WhatsApp inválido' }, { status: 400 });
+
+  // Se o Twilio Verify estiver configurado, ele gera/envia/valida o codigo.
+  if (twilioConfigurado()) {
+    try {
+      await twilioStart(telefone);
+      return NextResponse.json({ ok: true, modoTeste: false });
+    } catch (e) {
+      return NextResponse.json({ error: 'falha ao enviar código: ' + (e as Error).message }, { status: 502 });
+    }
+  }
 
   // Rate limit: max 5 codigos por telefone na ultima hora
   const [{ qtd }] = await db

@@ -36,19 +36,20 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
   const template = process.env.WHATSAPP_OTP_TEMPLATE!;
   const lang = process.env.WHATSAPP_OTP_LANG || 'pt_BR';
 
-  // Template de AUTENTICACAO: corpo com {{1}} = codigo + botao copy-code com o mesmo codigo.
+  // Componentes do template. Por padrao envia template de UTILIDADE (so corpo
+  // com {{1}} = codigo). Se WHATSAPP_OTP_BOTAO='true' (template de AUTENTICACAO),
+  // inclui tambem o botao copy-code com o codigo.
+  const components: unknown[] = [
+    { type: 'body', parameters: [{ type: 'text', text: codigo }] },
+  ];
+  if (process.env.WHATSAPP_OTP_BOTAO === 'true') {
+    components.push({ type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: codigo }] });
+  }
   const body = {
     messaging_product: 'whatsapp',
     to: telefone,
     type: 'template',
-    template: {
-      name: template,
-      language: { code: lang },
-      components: [
-        { type: 'body', parameters: [{ type: 'text', text: codigo }] },
-        { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: codigo }] },
-      ],
-    },
+    template: { name: template, language: { code: lang }, components },
   };
 
   const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {

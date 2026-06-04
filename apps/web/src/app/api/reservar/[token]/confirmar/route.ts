@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
+import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,32 +58,35 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     );
   }
 
-  // Valida OTP: ultimo codigo nao verificado deste telefone/filial
-  const [otp] = await db
-    .select()
-    .from(schema.reservaOtp)
-    .where(
-      and(
-        eq(schema.reservaOtp.filialId, filial.id),
-        eq(schema.reservaOtp.telefone, telefone),
-        isNull(schema.reservaOtp.verificadoEm),
-      ),
-    )
-    .orderBy(desc(schema.reservaOtp.criadoEm))
-    .limit(1);
+  // Valida o codigo: via Twilio Verify (se configurado) OU pela tabela reserva_otp.
+  if (twilioConfigurado()) {
+    const ok = await twilioCheck(telefone, codigo);
+    if (!ok) return NextResponse.json({ error: 'código incorreto ou expirado' }, { status: 400 });
+  } else {
+    const [otp] = await db
+      .select()
+      .from(schema.reservaOtp)
+      .where(
+        and(
+          eq(schema.reservaOtp.filialId, filial.id),
+          eq(schema.reservaOtp.telefone, telefone),
+          isNull(schema.reservaOtp.verificadoEm),
+        ),
+      )
+      .orderBy(desc(schema.reservaOtp.criadoEm))
+      .limit(1);
 
-  if (!otp) return NextResponse.json({ error: 'peça um código primeiro' }, { status: 400 });
-  if (otp.tentativas >= 5) return NextResponse.json({ error: 'muitas tentativas. Peça um novo código.' }, { status: 429 });
-  if (new Date(otp.expiraEm).getTime() < Date.now()) {
-    return NextResponse.json({ error: 'código expirado. Peça um novo.' }, { status: 400 });
+    if (!otp) return NextResponse.json({ error: 'peça um código primeiro' }, { status: 400 });
+    if (otp.tentativas >= 5) return NextResponse.json({ error: 'muitas tentativas. Peça um novo código.' }, { status: 429 });
+    if (new Date(otp.expiraEm).getTime() < Date.now()) {
+      return NextResponse.json({ error: 'código expirado. Peça um novo.' }, { status: 400 });
+    }
+    if (otp.codigo !== codigo) {
+      await db.update(schema.reservaOtp).set({ tentativas: otp.tentativas + 1 }).where(eq(schema.reservaOtp.id, otp.id));
+      return NextResponse.json({ error: 'código incorreto' }, { status: 400 });
+    }
+    await db.update(schema.reservaOtp).set({ verificadoEm: new Date() }).where(eq(schema.reservaOtp.id, otp.id));
   }
-  if (otp.codigo !== codigo) {
-    await db.update(schema.reservaOtp).set({ tentativas: otp.tentativas + 1 }).where(eq(schema.reservaOtp.id, otp.id));
-    return NextResponse.json({ error: 'código incorreto' }, { status: 400 });
-  }
-
-  // OK — marca verificado e cria a reserva
-  await db.update(schema.reservaOtp).set({ verificadoEm: new Date() }).where(eq(schema.reservaOtp.id, otp.id));
 
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
   await db.insert(schema.reserva).values({
