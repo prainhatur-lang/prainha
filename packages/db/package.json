@@ -22,6 +22,7 @@
     "migrate:reserva-config": "tsx scripts/migrate-reserva-config.ts",
     "migrate:mesas-prainha": "tsx scripts/migrate-mesas-prainha.ts",
     "migrate:reservar-publico": "tsx scripts/migrate-reservar-publico.ts",
+    "migrate:reserva-cancel": "tsx scripts/migrate-reserva-cancel.ts",
     "migrate:avaliacao-links": "tsx scripts/migrate-avaliacao-links.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",

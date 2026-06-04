@@ -63,3 +63,37 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
   }
   return { enviado: true, modoTeste: false };
 }
+
+/** Template de confirmacao de reserva (WHATSAPP_CONFIRMACAO_TEMPLATE). Envia os
+ *  campos na ordem do template de Utilidade: {{1}} nome, {{2}} data, {{3}} hora,
+ *  {{4}} espaco/mesa, {{5}} pessoas, {{6}} link de cancelamento.
+ *  Best-effort: so envia se WhatsApp + template de confirmacao configurados. */
+export async function enviarConfirmacaoReserva(
+  telefone: string,
+  vars: { nome: string; data: string; hora: string; local: string; pessoas: string; linkCancelar: string },
+): Promise<boolean> {
+  const template = process.env.WHATSAPP_CONFIRMACAO_TEMPLATE;
+  if (!whatsappConfigurado() || !template || otpEmModoTeste()) return false;
+
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const phoneId = process.env.WHATSAPP_PHONE_ID!;
+  const token = process.env.WHATSAPP_TOKEN!;
+  const lang = process.env.WHATSAPP_OTP_LANG || 'pt_BR';
+  const ordem = [vars.nome, vars.data, vars.hora, vars.local, vars.pessoas, vars.linkCancelar];
+
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: template,
+        language: { code: lang },
+        components: [{ type: 'body', parameters: ordem.map((t) => ({ type: 'text', text: String(t) })) }],
+      },
+    }),
+  });
+  return resp.ok;
+}

@@ -5,6 +5,8 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
+import { enviarConfirmacaoReserva } from '@/lib/whatsapp-otp';
+import { randomBytes } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -89,6 +91,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   }
 
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
+  const cancelToken = randomBytes(24).toString('hex');
   await db.insert(schema.reserva).values({
     filialId: filial.id,
     clienteNome: nome,
@@ -101,7 +104,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     canal: 'site',
     observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
     valor: String(valorAtual.toFixed(2)),
+    cancelToken,
   });
+
+  // Mensagem de confirmacao rica (best-effort; so envia se template configurado).
+  try {
+    const origin = new URL(request.url).origin;
+    const [a, mes, d] = data.split('-');
+    await enviarConfirmacaoReserva(telefone, {
+      nome,
+      data: `${d}/${mes}/${a}`,
+      hora,
+      local: espaco,
+      pessoas: String(pessoas),
+      linkCancelar: `${origin}/reservar/cancelar/${cancelToken}`,
+    });
+  } catch {
+    // nao bloqueia a reserva se a confirmacao falhar
+  }
 
   return NextResponse.json({
     ok: true,

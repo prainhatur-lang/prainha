@@ -41,6 +41,8 @@ export const reserva = pgTable(
     idExterno: varchar('id_externo', { length: 100 }),
     /** Valor cobrado pela reserva (R$). 0 = gratis. Null = nao aplicavel. */
     valor: numeric('valor', { precision: 10, scale: 2 }),
+    /** Token publico pro cliente cancelar a propria reserva (/reservar/cancelar/[token]). */
+    cancelToken: text('cancel_token').unique(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
