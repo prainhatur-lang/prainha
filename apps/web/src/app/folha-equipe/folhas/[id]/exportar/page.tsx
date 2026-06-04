@@ -70,6 +70,7 @@ export default async function ExportarFolhaPage(props: {
       diaristaModelo: schema.fornecedorFolha.diaristaModelo,
       diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
+      bonusPorDia: schema.fornecedorFolha.bonusPorDia,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       bancoNome: schema.fornecedor.bancoNome,
@@ -119,13 +120,26 @@ export default async function ExportarFolhaPage(props: {
     });
     ajustesMap.set(a.fornecedorId, cur);
   }
+  // Mesma injecao de bonus do preview/fechar — senao o valor exportado diverge
+  // do que foi fechado (e o bonus por dia some).
   for (const p of pessoasRows) {
-    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
+    const diasComHoras = Object.values(horasMap.get(p.fornecedorId) ?? {}).filter((m) => m > 0).length;
+    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0 && diasComHoras > 0) {
       const cur = ajustesMap.get(p.fornecedorId) ?? [];
       cur.push({
         tipo: 'acrescimo',
         valor: Number(p.bonusFixoSemanal),
-        descricao: 'Bônus fixo semanal',
+        descricao: '💰 Bônus fixo semanal (cadastro)',
+      });
+      ajustesMap.set(p.fornecedorId, cur);
+    }
+    if (p.bonusPorDia != null && Number(p.bonusPorDia) > 0 && diasComHoras > 0) {
+      const valorDia = Number(p.bonusPorDia);
+      const cur = ajustesMap.get(p.fornecedorId) ?? [];
+      cur.push({
+        tipo: 'acrescimo',
+        valor: valorDia * diasComHoras,
+        descricao: `🗓 Bônus por dia (${diasComHoras} × R$ ${valorDia.toFixed(2)})`,
       });
       ajustesMap.set(p.fornecedorId, cur);
     }
