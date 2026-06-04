@@ -26,16 +26,27 @@ function e164(telefone: string): string {
   return '+' + d;
 }
 
-/** Dispara o envio do codigo (Twilio gera e envia). Throw em falha. */
-export async function twilioStart(telefone: string): Promise<void> {
-  const sid = process.env.TWILIO_VERIFY_SERVICE_SID!;
-  const canal = (process.env.TWILIO_OTP_CHANNEL || 'sms').toLowerCase();
-  const body = new URLSearchParams({ To: e164(telefone), Channel: canal });
-  const r = await fetch(`https://verify.twilio.com/v2/Services/${sid}/Verifications`, {
+async function startCanal(sid: string, to: string, canal: string): Promise<Response> {
+  return fetch(`https://verify.twilio.com/v2/Services/${sid}/Verifications`, {
     method: 'POST',
     headers: { Authorization: auth(), 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    body: new URLSearchParams({ To: to, Channel: canal }),
   });
+}
+
+/** Dispara o envio do codigo (Twilio gera e envia). Throw em falha.
+ *  Tenta o canal configurado; se o canal estiver indisponivel (ex: WhatsApp
+ *  ainda nao habilitado no Verify Service), cai automaticamente pra SMS. */
+export async function twilioStart(telefone: string): Promise<void> {
+  const sid = process.env.TWILIO_VERIFY_SERVICE_SID!;
+  const to = e164(telefone);
+  const canal = (process.env.TWILIO_OTP_CHANNEL || 'sms').toLowerCase();
+
+  let r = await startCanal(sid, to, canal);
+  if (!r.ok && canal !== 'sms') {
+    // canal indisponivel -> fallback SMS
+    r = await startCanal(sid, to, 'sms');
+  }
   if (!r.ok) {
     const t = await r.text().catch(() => '');
     throw new Error(`Twilio start ${r.status}: ${t.slice(0, 300)}`);
