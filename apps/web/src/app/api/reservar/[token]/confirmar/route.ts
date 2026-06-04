@@ -112,11 +112,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     cancelToken,
   });
 
-  // Mensagem de confirmacao rica (best-effort; so envia se template configurado).
+  // Mensagem de confirmacao rica no WhatsApp (best-effort; so envia se houver
+  // remetente/template configurado). confirmacaoZap diz se realmente foi enviada.
+  let confirmacaoZap = false;
   try {
     const origin = new URL(request.url).origin;
     const [a, mes, d] = data.split('-');
-    await enviarConfirmacaoReserva(telefone, {
+    confirmacaoZap = await enviarConfirmacaoReserva(telefone, {
       nome,
       data: `${d}/${mes}/${a}`,
       hora,
@@ -130,6 +132,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
 
   return NextResponse.json({
     ok: true,
+    confirmacaoZap,
+    telefone,
     valorCheio: typeof cfg?.valorCheio === 'number' ? cfg.valorCheio : null,
     valorAtual,
   });

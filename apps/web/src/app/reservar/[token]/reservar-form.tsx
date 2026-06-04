@@ -36,6 +36,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [dicaTeste, setDicaTeste] = useState<string | null>(null);
+  const [zapEnviado, setZapEnviado] = useState(false);
 
   const areaSel = areas.find((a) => a.nome === espaco);
   const limite = areaSel?.horaLimite ?? null;
@@ -92,6 +93,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         setErro(d.error ?? `Erro ${r.status}`);
         return;
       }
+      setZapEnviado(!!d.confirmacaoZap);
       setFase('ok');
     } catch (e) {
       setErro((e as Error).message);
@@ -107,16 +109,28 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   if (fase === 'ok') {
     return (
       <div className={`${card} text-center`}>
-        <div className="text-5xl">✅</div>
-        <h1 className="mt-3 text-lg font-semibold text-slate-900">Reserva confirmada!</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          {nome}, sua mesa no {nomeFilial} está reservada:
+        <div className="text-6xl">{zapEnviado ? '📲' : '✅'}</div>
+        <h1 className="mt-4 text-2xl font-extrabold leading-tight text-emerald-600">
+          {zapEnviado ? 'Reserva enviada para o seu WhatsApp!' : 'Reserva confirmada!'}
+        </h1>
+        <p className="mt-3 text-base text-slate-700">
+          {zapEnviado ? (
+            <>
+              {nome}, enviamos a <b>confirmação da sua reserva</b> para o seu WhatsApp:
+              <br />
+              <span className="font-mono text-slate-900">{whatsapp}</span>
+              <br />
+              <b className="text-emerald-700">Abra o WhatsApp e confira! 📲</b>
+            </>
+          ) : (
+            <>{nome}, sua mesa no <b>{nomeFilial}</b> está reservada. Em breve a confirmação chega no seu WhatsApp.</>
+          )}
         </p>
-        <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-          <p><b>{espaco}</b> · {pessoas} pessoa(s)</p>
-          <p>{data.split('-').reverse().join('/')} às {hora}</p>
+        <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-base text-slate-800">
+          <p className="text-lg font-bold">{espaco}</p>
+          <p>{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
         </div>
-        <p className="mt-3 text-xs text-emerald-600">Confirmamos pelo seu WhatsApp. Até logo! 🌅</p>
+        <p className="mt-4 text-xs text-slate-500">⏰ Tolerância de 15 min. Te esperamos pro pôr do sol! 🌅</p>
       </div>
     );
   }
