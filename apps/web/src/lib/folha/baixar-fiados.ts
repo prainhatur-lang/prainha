@@ -6,7 +6,7 @@
 //   - POST /api/folha-equipe/folhas/:id/fechar         (automatico)
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 
 export interface BaixarFiadosResult {
   comandos: number;
@@ -22,11 +22,12 @@ export async function criarComandosBaixarFiado(args: {
   dataFim: string;
   userId: string;
 }): Promise<BaixarFiadosResult> {
-  const { filialId, dataInicio, dataFim, userId } = args;
+  const { filialId, folhaId, dataInicio, dataFim, userId } = args;
 
   // Pessoas vinculadas com cliente E saldo > 0
-  const pessoas = await db
+  let pessoas = await db
     .select({
+      fornecedorId: schema.fornecedorFolha.fornecedorId,
       fornecedorNome: schema.fornecedor.nome,
       clienteCodigoExterno: schema.cliente.codigoExterno,
       clienteNome: schema.cliente.nome,
@@ -50,6 +51,34 @@ export async function criarComandosBaixarFiado(args: {
 
   if (pessoas.length === 0) {
     return { comandos: 0, ignorados: 0, pessoas: [], msg: 'Nenhuma pessoa com saldo de fiado' };
+  }
+
+  // Só zera no Consumer quem teve o fiado EFETIVAMENTE descontado na folha
+  // (a conta_pagar de comissão saiu com descontos>0). Quem ficou em aberto
+  // — comissão não cobriu ou sem comissão na semana — NÃO é zerado: o saldo
+  // carrega pro próximo fechamento. Senão a dívida seria perdoada de graça.
+  const comDesconto = await db
+    .select({ fornecedorId: schema.contaPagar.fornecedorId })
+    .from(schema.contaPagar)
+    .where(
+      and(
+        eq(schema.contaPagar.folhaSemanaId, folhaId),
+        isNull(schema.contaPagar.dataDelete),
+        isNotNull(schema.contaPagar.descontos),
+        gt(schema.contaPagar.descontos, '0'),
+      ),
+    );
+  const coletados = new Set(comDesconto.map((c) => c.fornecedorId).filter(Boolean));
+  const pessoasAberto = pessoas.filter((p) => !coletados.has(p.fornecedorId));
+  pessoas = pessoas.filter((p) => coletados.has(p.fornecedorId));
+
+  if (pessoas.length === 0) {
+    return {
+      comandos: 0,
+      ignorados: 0,
+      pessoas: [],
+      msg: `Nenhum fiado descontado nesta folha — ${pessoasAberto.length} ficaram em aberto (carregam pra próxima).`,
+    };
   }
 
   const observacao = `Compensado folha ${formatBr(dataInicio)} a ${formatBr(dataFim)}`;

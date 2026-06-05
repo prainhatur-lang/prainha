@@ -146,25 +146,34 @@ export function calcularFolha(args: {
     const descontoComissao = ajustesPessoa
       .filter((a) => a.tipo === 'desconto')
       .reduce((s, a) => s + a.valor, 0);
-    totalDescontos += descontoComissao;
-
     if (com > 0) {
+      // O desconto/fiado só é abatido se a comissão da semana cobre o total.
+      // Senão fica EM ABERTO (não desconta nada, paga a comissão cheia) e a
+      // baixa no Consumer NÃO acontece — o saldo carrega pro fechamento
+      // seguinte. Evita comissão líquida negativa + vazamento de fiado.
+      const cobre = com >= descontoComissao;
+      const descAplicado = cobre ? descontoComissao : 0;
+      if (descontoComissao > 0 && !cobre) {
+        avisos.push(
+          `${p.nome}: comissão ${brl(com)} não cobre o desconto/fiado ${brl(descontoComissao)} — fiado fica em aberto.`,
+        );
+      }
+      totalDescontos += descAplicado;
       lancamentos.push({
         fornecedorId: p.fornecedorId,
         pessoaNome: p.nome,
         papel: p.papel,
         tipo: 'comissao',
         valorBruto: round2(com),
-        desconto: round2(descontoComissao),
-        valorLiquido: round2(com - descontoComissao),
+        desconto: round2(descAplicado),
+        valorLiquido: round2(com - descAplicado),
         descricao: `Comissão semana — ${p.nome}`,
         detalhe: `${minutosToHM(minTotal)} de horas; rateio do ${
           config.ppFuncionarios
         }pp do 10%`,
       });
     } else if (descontoComissao > 0) {
-      // Pessoa sem comissão mas com fiado — gera lancamento negativo (talvez
-      // melhor virar conta_receber? Por ora, registra como debito).
+      // Pessoa sem comissão mas com fiado — fica em aberto (não vira débito).
       avisos.push(
         `${p.nome}: tem desconto/fiado ${brl(descontoComissao)} mas sem comissão na semana — fiado fica em aberto.`,
       );
