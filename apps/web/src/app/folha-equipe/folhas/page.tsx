@@ -194,7 +194,7 @@ export default async function FolhasPage(props: { searchParams: Promise<SP> }) {
                           href={`/folha-equipe/folhas/${f.id}`}
                           className="text-xs font-medium text-blue-600 hover:underline"
                         >
-                          Abrir →
+                          {f.status === 'aberta' ? 'Abrir →' : 'Ver →'}
                         </Link>
                       </td>
                     </tr>
