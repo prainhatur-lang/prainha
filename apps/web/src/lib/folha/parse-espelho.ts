@@ -58,7 +58,7 @@ export function parseEspelho(
       let diaIdx = -1;
       for (let i = 0; i < DIAS_ABBR.length; i++) {
         if (cell.startsWith(DIAS_ABBR[i])) {
-          diaIdx = i >= 7 ? 6 : i; // 'sab' -> 'sáb' (6)
+          diaIdx = i >= 7 ? 5 : i; // 'sab' (sem acento) -> 'sáb' (índice 5)
           break;
         }
       }
