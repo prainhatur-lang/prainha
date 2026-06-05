@@ -86,6 +86,10 @@ export function CalculoFechar({
   // Form da diaria retroativa
   const [taxaHora, setTaxaHora] = useState('7.70');
 
+  // Reabrir folha fechada (pede senha do admin)
+  const [reabrirAberto, setReabrirAberto] = useState(false);
+  const [senhaReabrir, setSenhaReabrir] = useState('');
+
   async function refreshPreview() {
     const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/preview`);
     if (r.ok) setResultado(await r.json());
@@ -372,6 +376,37 @@ export function CalculoFechar({
         router.refresh();
       } else {
         setMsg({ tipo: 'erro', texto: await r.text() });
+      }
+    });
+  }
+
+  async function reabrir() {
+    if (!senhaReabrir) {
+      setMsg({ tipo: 'erro', texto: 'Informe a senha do admin.' });
+      return;
+    }
+    setMsg(null);
+    start(async () => {
+      const r = await fetch(`/api/folha-equipe/folhas/${folhaId}/reabrir`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senha: senhaReabrir }),
+      });
+      if (r.ok) {
+        setSenhaReabrir('');
+        setReabrirAberto(false);
+        setMsg({ tipo: 'ok', texto: 'Folha reaberta. Pode editar; ao fechar de novo as contas são regeradas (sem duplicar).' });
+        router.refresh();
+        refreshPreview();
+      } else {
+        let texto = 'Erro ao reabrir.';
+        try {
+          const d = await r.clone().json();
+          texto = d.error ?? texto;
+        } catch {
+          texto = (await r.text()) || texto;
+        }
+        setMsg({ tipo: 'erro', texto });
       }
     });
   }
@@ -927,7 +962,61 @@ export function CalculoFechar({
             {pending ? 'Fechando...' : '✅ Fechar folha e gerar contas a pagar'}
           </button>
         )}
+        {!aberta && status === 'fechada' && !reabrirAberto && (
+          <button
+            type="button"
+            onClick={() => setReabrirAberto(true)}
+            className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100"
+            title="Reabrir a folha para editar — pede a senha do admin"
+          >
+            🔓 Reabrir folha
+          </button>
+        )}
       </div>
+
+      {/* Reabrir folha — pede senha do admin */}
+      {!aberta && status === 'fechada' && reabrirAberto && (
+        <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-amber-900">🔓 Reabrir folha fechada</h3>
+          <p className="mt-1 text-xs text-amber-800">
+            Reabrir libera a edição. Ao fechar de novo, as contas a pagar são
+            <strong> regeradas</strong> (as antigas não pagas são substituídas — não duplica).
+            Se já houver contas <strong>pagas</strong>, estorne a baixa primeiro.
+          </p>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-amber-700">
+                Senha do admin
+              </label>
+              <input
+                type="password"
+                value={senhaReabrir}
+                onChange={(e) => setSenhaReabrir(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') reabrir(); }}
+                autoComplete="off"
+                className="mt-1 w-56 rounded-md border border-amber-300 px-2 py-1.5 text-sm"
+                placeholder="senha do seu usuário"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={reabrir}
+              disabled={pending || !senhaReabrir}
+              className="rounded-md bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:bg-slate-400"
+            >
+              {pending ? 'Reabrindo...' : 'Confirmar reabertura'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setReabrirAberto(false); setSenhaReabrir(''); }}
+              disabled={pending}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              Cancelar
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

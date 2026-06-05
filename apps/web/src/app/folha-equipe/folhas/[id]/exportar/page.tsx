@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { calcularFolha, type ConfigFolha } from '@/lib/folha/calcular';
+import { snapshotFolha } from '@/lib/folha/snapshot';
 import { labelSemana } from '@/lib/folha/semana';
 import { ExportarClient } from './client';
 
@@ -157,7 +158,11 @@ export default async function ExportarFolhaPage(props: {
     auxTransporteDias: (config.auxTransporteDias as Record<string, boolean> | null) ?? null,
   };
 
-  const resultado = calcularFolha({
+  // Folha FECHADA: exporta o SNAPSHOT do que foi gerado em conta_pagar
+  // (o que realmente foi/será pago), não recalcula com cadastro de hoje.
+  const resultado = folha.status !== 'aberta'
+    ? await snapshotFolha(id)
+    : calcularFolha({
     config: cfg,
     dezPctPorDia: (folha.dezPctPorDia as Record<string, number>) ?? {},
     pessoas: pessoasRows.map((p) => ({

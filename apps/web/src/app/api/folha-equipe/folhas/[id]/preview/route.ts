@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { calcularFolha, type ConfigFolha } from '@/lib/folha/calcular';
+import { snapshotFolha } from '@/lib/folha/snapshot';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
@@ -32,6 +33,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     )
     .limit(1);
   if (acesso.length === 0) return new NextResponse('Sem acesso', { status: 403 });
+
+  // Folha FECHADA/cancelada: retorna o SNAPSHOT do que foi gerado (conta_pagar),
+  // não recalcula — senão mostra cadastro/config de hoje (bônus/papel mudados).
+  if (folha.status !== 'aberta') {
+    return NextResponse.json(await snapshotFolha(folha.id));
+  }
 
   const [config] = await db
     .select()

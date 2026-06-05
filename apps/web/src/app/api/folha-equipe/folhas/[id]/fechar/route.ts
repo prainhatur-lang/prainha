@@ -15,7 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { calcularFolha, type ConfigFolha, type Lancamento } from '@/lib/folha/calcular';
 import { criarComandosBaixarFiado } from '@/lib/folha/baixar-fiados';
 
@@ -195,6 +195,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // Data de vencimento: data_pagamento se setada, senao data_fim + 1
   const dataPgto = folha.dataPagamento ?? somaDia(folha.dataFim, 1);
   const competencia = `${folha.dataInicio.slice(0, 7)}`;
+
+  // Idempotência: se a folha foi REABERTA e está sendo fechada de novo,
+  // remove (soft-delete) as conta_pagar geradas no fechamento anterior pra
+  // não duplicar. Só as NÃO pagas (reabrir já bloqueia se houver paga).
+  await db
+    .update(schema.contaPagar)
+    .set({ dataDelete: new Date() })
+    .where(
+      and(
+        eq(schema.contaPagar.folhaSemanaId, folha.id),
+        isNull(schema.contaPagar.dataDelete),
+        isNull(schema.contaPagar.dataPagamento),
+      ),
+    );
 
   // Insere as conta_pagar
   let inseridos = 0;
