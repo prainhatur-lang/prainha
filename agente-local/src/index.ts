@@ -50,6 +50,7 @@ import {
   buscarFornecedoresJanela,
   executarUpdate,
   baixarFiado,
+  criarContaPagar,
 } from './firebird';
 import {
   enviarBatch,
@@ -517,6 +518,17 @@ async function cicloComandos(
         const r = await baixarFiado(cfg, codCliente, obs, valorBaixar);
         await reportarComando(cfg, cmd.id, 'sucesso', r);
         log.info('comando ok', { id: cmd.id, tipo: cmd.tipo, ...r });
+        continue;
+      }
+
+      // Tipo: CRIAR CONTA A PAGAR — INSERT em CONTASPAGAR (write-back da folha).
+      // payload = { codigoFornecedor, codigoCategoria, valor, descontos?,
+      //             dataVencimento, competencia, descricao, observacao }
+      if (cmd.tipo === 'criar_conta_pagar') {
+        const p = cmd.payload as unknown as Parameters<typeof criarContaPagar>[1];
+        const r = await criarContaPagar(cfg, p);
+        await reportarComando(cfg, cmd.id, 'sucesso', r);
+        log.info('conta a pagar criada', { id: cmd.id, codigo: r.codigo });
         continue;
       }
 

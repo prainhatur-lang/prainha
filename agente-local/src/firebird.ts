@@ -1157,6 +1157,62 @@ export async function baixarFiado(
   return { saldoAnterior, saldoNovo, codigo };
 }
 
+/** Cria uma conta a pagar no Consumer (tabela CONTASPAGAR), em aberto (sem
+ *  DATAPAGAMENTO). Usado pelo write-back da folha de pagamento.
+ *
+ *  ⚠️ A VALIDAR na base antes de ligar em produção (ver fb-test/
+ *  diag-contaspagar.js): nome do generator (assumido GEN_CONTASPAGAR_ID) e a
+ *  escala de VALOR (BIGINT escala 4 — node-firebird deve aceitar reais direto,
+ *  igual ao CONTACORRENTE, mas confirmar com 1 INSERT de teste na instância
+ *  TESTE).
+ *
+ *  Colunas NOT NULL preenchidas: CODIGO, CODIGOCATEGORIACONTAS, PARCELA,
+ *  TOTALPARCELAS, DATAVENCIMENTO, VALOR, DATACADASTRO, COMPETENCIA(6),
+ *  DESCRICAO(80), OBSERVACAO(100). */
+export async function criarContaPagar(
+  cfg: Config,
+  p: {
+    codigoFornecedor: number;
+    codigoCategoria: number;
+    valor: number;
+    descontos?: number | null;
+    dataVencimento: string; // YYYY-MM-DD
+    competencia: string; // YYYYMM
+    descricao: string;
+    observacao: string;
+  },
+): Promise<{ codigo: number | null }> {
+  const sql = `
+    INSERT INTO CONTASPAGAR
+      (CODIGO, CODIGOCATEGORIACONTAS, CODIGOFORNECEDOR, PARCELA, TOTALPARCELAS,
+       DATAVENCIMENTO, VALOR, DESCONTOS, DATACADASTRO, COMPETENCIA,
+       DESCRICAO, OBSERVACAO, VERSAOREG, VERSAOSINC)
+    VALUES
+      (GEN_ID(GEN_CONTASPAGAR_ID, 1), ?, ?, 1, 1, ?, ?, ?, CURRENT_TIMESTAMP,
+       ?, ?, ?, 1, 1)
+    RETURNING CODIGO
+  `;
+  const params = [
+    p.codigoCategoria,
+    p.codigoFornecedor,
+    new Date(p.dataVencimento + 'T00:00:00'),
+    p.valor,
+    p.descontos != null && p.descontos > 0 ? p.descontos : null,
+    p.competencia.slice(0, 6),
+    p.descricao.slice(0, 80),
+    p.observacao.slice(0, 100),
+  ];
+  const resultados = await executarWrites(cfg, [{ sql, params }]);
+  const ins = resultados[0];
+  const codigo =
+    ins == null
+      ? null
+      : Array.isArray(ins)
+        ? ((ins[0] as { CODIGO?: number })?.CODIGO ?? null)
+        : ((ins as { CODIGO?: number }).CODIGO ?? null);
+  return { codigo };
+}
+
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }
  *  e WHERE codigo. Retorna numero de linhas afetadas (0 ou 1 normalmente). */
 export async function executarUpdate(

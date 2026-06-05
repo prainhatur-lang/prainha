@@ -18,6 +18,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { calcularFolha, type ConfigFolha, type Lancamento } from '@/lib/folha/calcular';
 import { criarComandosBaixarFiado } from '@/lib/folha/baixar-fiados';
+import { criarComandosContaPagarConsumer } from '@/lib/folha/criar-conta-consumer';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
@@ -273,6 +274,28 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     );
   }
 
+  // Write-back pro Consumer (gated por env FOLHA_WRITEBACK_CONSUMER). Cria
+  // conta a pagar no Firebird pra cada lançamento. Falha aqui NÃO aborta — a
+  // folha já foi fechada.
+  let contasConsumer = 0;
+  try {
+    const wb = await criarComandosContaPagarConsumer({
+      filialId: folha.filialId,
+      folhaId: folha.id,
+      lancamentos: resultado.lancamentos,
+      categoriaPorTipo,
+      dataVencimento: dataPgto,
+      competencia,
+      userId: user.id,
+    });
+    contasConsumer = wb.comandos;
+    if (wb.ligado && wb.avisos.length) resultado.avisos.push(...wb.avisos);
+  } catch (e) {
+    resultado.avisos.push(
+      `Folha fechada OK, mas write-back Consumer falhou: ${(e as Error).message}.`,
+    );
+  }
+
   return NextResponse.json({
     ok: true,
     lancamentosGerados: inseridos,
@@ -281,6 +304,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     totalDescontos: resultado.totalDescontos,
     fiadosBaixados,
     fiadosIgnorados,
+    contasConsumer,
     avisos: resultado.avisos,
   });
 }

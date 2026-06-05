@@ -28,6 +28,7 @@ const TIPOS_VALIDOS = [
   'atualizar_fornecedor',
   'atualizar_cliente',
   'baixar_fiado',
+  'criar_conta_pagar',
 ] as const;
 
 const BodySchema = z.object({
