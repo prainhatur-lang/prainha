@@ -1085,18 +1085,23 @@ export async function buscarPedidoItensJanela(
  *  - CODIGO: gerado via GEN_CONTACORRENTE_ID
  *  - DATAHORA: CURRENT_TIMESTAMP
  *  - SALDOINICIAL: saldo lido (proximo valor pra integridade)
- *  - CREDITO: saldo atual (pagamento)
+ *  - CREDITO: valor cobrado na folha (limitado ao saldo) — pagamento
  *  - DEBITO: NULL
- *  - SALDOFINAL: 0
+ *  - SALDOFINAL: saldo - credito (>=0; sobra fica em aberto)
  *  - OBSERVACAO: passada (ex: "Compensado folha 27/04 a 03/05")
  *  - IMPORTADO: 'S' (já considerada importada — entra no calculo do saldo)
  *  - VERSAOREG/VERSAOSINC: 1
+ *
+ *  `valorBaixar` = quanto a folha cobrou. Credita só esse valor (limitado ao
+ *  saldo vivo) — consumo novo entre o puxar-fiado e a baixa NÃO é perdoado.
+ *  Sem `valorBaixar` (comandos antigos), zera o saldo inteiro (legado).
  *
  *  Retorna { saldoAnterior, saldoNovo }. Se saldoAnterior=0, faz nada. */
 export async function baixarFiado(
   cfg: Config,
   codigoCliente: number,
   observacao: string,
+  valorBaixar?: number,
 ): Promise<{ saldoAnterior: number; saldoNovo: number; codigo: number | null }> {
   // 1) Le saldo atual (ultima linha de CONTACORRENTE pra esse cliente)
   const ultimo = await executarQuery<{ SALDOFINAL: number | string | null }>(
@@ -1110,6 +1115,14 @@ export async function baixarFiado(
   if (saldoAnterior <= 0) {
     return { saldoAnterior, saldoNovo: saldoAnterior, codigo: null };
   }
+
+  // Credita só o que a folha cobrou (limitado ao saldo). Sem valorBaixar,
+  // mantém o legado de zerar tudo.
+  const credito =
+    valorBaixar != null && valorBaixar > 0
+      ? Math.min(valorBaixar, saldoAnterior)
+      : saldoAnterior;
+  const saldoNovo = Math.round((saldoAnterior - credito) * 100) / 100;
 
   // 2) Numa unica transaction: INSERT no extrato + UPDATE no cache do cliente.
   // O Consumer Rede mantem 2 fontes do saldo:
@@ -1125,13 +1138,13 @@ export async function baixarFiado(
        SALDOFINAL, OBSERVACAO, IMPORTADO, VERSAOREG, VERSAOSINC)
     VALUES
       (GEN_ID(GEN_CONTACORRENTE_ID, 1), ?, CURRENT_TIMESTAMP, ?, ?, NULL,
-       0, ?, 'S', 1, 1)
+       ?, ?, 'S', 1, 1)
     RETURNING CODIGO
   `;
-  const sqlUpdate = `UPDATE CONTATOS SET SALDOATUALCONTACORRENTE = 0 WHERE CODIGO = ?`;
+  const sqlUpdate = `UPDATE CONTATOS SET SALDOATUALCONTACORRENTE = ? WHERE CODIGO = ?`;
   const resultados = await executarWrites(cfg, [
-    { sql: sqlInsert, params: [codigoCliente, saldoAnterior, saldoAnterior, obsLimpa] },
-    { sql: sqlUpdate, params: [codigoCliente] },
+    { sql: sqlInsert, params: [codigoCliente, saldoAnterior, credito, saldoNovo, obsLimpa] },
+    { sql: sqlUpdate, params: [saldoNovo, codigoCliente] },
   ]);
   // RETURNING em node-firebird as vezes vem como objeto unico, as vezes como array
   const ins = resultados[0];
@@ -1141,7 +1154,7 @@ export async function baixarFiado(
       : Array.isArray(ins)
         ? ((ins[0] as { CODIGO?: number })?.CODIGO ?? null)
         : ((ins as { CODIGO?: number }).CODIGO ?? null);
-  return { saldoAnterior, saldoNovo: 0, codigo };
+  return { saldoAnterior, saldoNovo, codigo };
 }
 
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }

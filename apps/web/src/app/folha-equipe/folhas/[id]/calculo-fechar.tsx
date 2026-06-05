@@ -779,6 +779,95 @@ export function CalculoFechar({
               );
             })()}
 
+            {/* Fiado: quanto cada pessoa tem e quanto vai baixar no Consumer */}
+            {(() => {
+              // Fiado puxado por pessoa (folha_ajuste origem 'fiado_auto').
+              const fiadoPorPessoa = new Map<string, number>();
+              for (const a of ajustes) {
+                if (a.origem === 'fiado_auto' && a.tipo === 'desconto') {
+                  fiadoPorPessoa.set(
+                    a.fornecedorId,
+                    (fiadoPorPessoa.get(a.fornecedorId) ?? 0) + Number(a.valor),
+                  );
+                }
+              }
+              if (fiadoPorPessoa.size === 0) return null;
+              // Desconto aplicado na comissão: se > 0, o fiado foi cobrado e
+              // vai baixar; se 0, ficou em aberto (comissão não cobriu).
+              const descAplicado = new Map<string, number>();
+              for (const l of resultado.lancamentos) {
+                if (l.tipo === 'comissao') descAplicado.set(l.fornecedorId, l.desconto);
+              }
+              const linhasFiado = Array.from(fiadoPorPessoa.entries())
+                .map(([fid, fiado]) => ({
+                  fid,
+                  nome: pessoas.find((p) => p.fornecedorId === fid)?.nome ?? '—',
+                  fiado,
+                  vaiBaixar: (descAplicado.get(fid) ?? 0) > 0,
+                }))
+                .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+              const totalBaixar = linhasFiado
+                .filter((l) => l.vaiBaixar)
+                .reduce((s, l) => s + l.fiado, 0);
+              const totalFiado = linhasFiado.reduce((s, l) => s + l.fiado, 0);
+              const totalAberto = totalFiado - totalBaixar;
+              return (
+                <div className="mt-6">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                    🤖 Fiado (consumo a compensar no Consumer)
+                  </h3>
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-xs">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-medium text-slate-500">Pessoa</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">Fiado</th>
+                        <th className="px-2 py-2 text-right font-medium text-slate-500">Vai baixar</th>
+                        <th className="px-2 py-2 text-left font-medium text-slate-500">Situação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {linhasFiado.map((l) => (
+                        <tr key={l.fid} className="border-t border-slate-100">
+                          <td className="px-2 py-1.5 font-medium text-slate-900">{l.nome}</td>
+                          <td className="px-2 py-1.5 text-right font-mono text-amber-700">
+                            {brl(l.fiado)}
+                          </td>
+                          <td className="px-2 py-1.5 text-right font-mono font-semibold">
+                            {l.vaiBaixar ? brl(l.fiado) : '—'}
+                          </td>
+                          <td className="px-2 py-1.5 text-xs">
+                            {l.vaiBaixar ? (
+                              <span className="text-emerald-700">
+                                ✓ cobrado na folha — zera no Consumer
+                              </span>
+                            ) : (
+                              <span className="text-amber-700">
+                                ⏳ em aberto — comissão não cobre, carrega pra próxima
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                        <td className="px-2 py-2">TOTAL</td>
+                        <td className="px-2 py-2 text-right font-mono text-amber-700">
+                          {brl(totalFiado)}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono">{brl(totalBaixar)}</td>
+                        <td className="px-2 py-2 text-xs text-slate-500">
+                          {totalAberto > 0 ? `${brl(totalAberto)} em aberto` : 'tudo cobrado'}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    &ldquo;Vai baixar&rdquo; = valor que o agente credita no CONTACORRENTE do
+                    Consumer ao fechar. O que fica em aberto não é zerado.
+                  </p>
+                </div>
+              );
+            })()}
+
             {resultado.avisos.length > 0 && (
               <div className="mt-4 rounded border border-amber-200 bg-amber-50 p-3 text-xs">
                 <p className="mb-1 font-semibold text-amber-800">⚠ Avisos:</p>

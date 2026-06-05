@@ -81,6 +81,31 @@ export async function criarComandosBaixarFiado(args: {
     };
   }
 
+  // Valor a baixar por pessoa = o fiado que foi PUXADO (folha_ajuste origem
+  // 'fiado_auto') e cobrado na folha. O agente credita exatamente esse valor
+  // (não o saldo atual ao vivo) — assim consumo novo entre o puxar e a baixa
+  // continua em aberto, sem ser perdoado.
+  const fiadoRows = await db
+    .select({
+      fornecedorId: schema.folhaAjuste.fornecedorId,
+      valor: schema.folhaAjuste.valor,
+    })
+    .from(schema.folhaAjuste)
+    .where(
+      and(
+        eq(schema.folhaAjuste.folhaSemanaId, folhaId),
+        eq(schema.folhaAjuste.origem, 'fiado_auto'),
+        eq(schema.folhaAjuste.tipo, 'desconto'),
+      ),
+    );
+  const fiadoPorFornecedor = new Map<string, number>();
+  for (const r of fiadoRows) {
+    fiadoPorFornecedor.set(
+      r.fornecedorId,
+      (fiadoPorFornecedor.get(r.fornecedorId) ?? 0) + Number(r.valor),
+    );
+  }
+
   const observacao = `Compensado folha ${formatBr(dataInicio)} a ${formatBr(dataFim)}`;
 
   // Idempotencia: ja existe comando pendente/executando pra mesma filial+codigoCliente?
@@ -121,6 +146,9 @@ export async function criarComandosBaixarFiado(args: {
     payload: {
       codigoCliente: p.clienteCodigoExterno,
       observacao,
+      // Valor exato a creditar no Consumer = fiado cobrado na folha. O agente
+      // credita esse valor (limitado ao saldo vivo), não zera o saldo inteiro.
+      valorBaixar: fiadoPorFornecedor.get(p.fornecedorId) ?? Number(p.saldo),
       saldoEsperado: p.saldo, // só pra debug — agente lê o real
       pessoa: p.fornecedorNome,
     },

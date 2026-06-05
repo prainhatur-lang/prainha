@@ -511,7 +511,10 @@ async function cicloComandos(
         const obs =
           (cmd.payload as unknown as { observacao?: string }).observacao ??
           'Compensado em folha';
-        const r = await baixarFiado(cfg, codCliente, obs);
+        // valorBaixar = quanto a folha cobrou. Sem ele (comandos antigos), o
+        // agente zera o saldo inteiro (comportamento legado).
+        const valorBaixar = (cmd.payload as unknown as { valorBaixar?: number }).valorBaixar;
+        const r = await baixarFiado(cfg, codCliente, obs, valorBaixar);
         await reportarComando(cfg, cmd.id, 'sucesso', r);
         log.info('comando ok', { id: cmd.id, tipo: cmd.tipo, ...r });
         continue;
