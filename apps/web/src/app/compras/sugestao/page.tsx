@@ -9,6 +9,8 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
+import { hojeBr } from '@/lib/datas';
+import { avisosDemanda } from '@/lib/compras/previsao';
 import { SugestaoClient, type LinhaSugestao, type FornecedorOpt } from './sugestao-client';
 
 export const dynamic = 'force-dynamic';
@@ -143,6 +145,15 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     categoria: f.categoria,
   }));
 
+  // Avisos de demanda (clima + feriados) — só alerta, não muda quantidades.
+  // Tolerante a falha de API externa.
+  let avisos: Awaited<ReturnType<typeof avisosDemanda>> = [];
+  try {
+    avisos = await avisosDemanda(hojeBr());
+  } catch {
+    avisos = [];
+  }
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -169,6 +180,24 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
                 {f.nome}
               </a>
             ))}
+          </div>
+        )}
+
+        {avisos.length > 0 && (
+          <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 p-4">
+            <p className="mb-2 text-sm font-semibold text-sky-900">
+              📣 Avisos de demanda (próximos dias)
+            </p>
+            <ul className="space-y-1">
+              {avisos.map((a, i) => (
+                <li key={i} className="text-xs text-slate-700">
+                  {a.texto}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[11px] text-sky-700">
+              São só avisos pra te ajudar a decidir — as quantidades sugeridas não mudam sozinhas.
+            </p>
           </div>
         )}
 
