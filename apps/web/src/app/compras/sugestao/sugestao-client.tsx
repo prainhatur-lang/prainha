@@ -9,10 +9,12 @@ export interface LinhaSugestao {
   unidade: string;
   categoria: string | null;
   atual: number;
-  minimo: number;
+  minimo: number | null;
   maximo: number | null;
   consumo7d: number;
   sugestao: number;
+  base: 'minimo' | 'consumo';
+  precisaRepor: boolean;
 }
 
 export interface FornecedorOpt {
@@ -96,10 +98,11 @@ export function SugestaoClient({ filialId, linhas, fornecedores }: Props) {
     return (
       <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center">
         <p className="text-sm text-slate-500">
-          🎉 Nenhum produto no/abaixo do estoque mínimo. Tudo abastecido.
+          🎉 Nada pra repor agora. Tudo abastecido.
         </p>
         <p className="mt-1 text-xs text-slate-400">
-          Dica: defina estoque mínimo/máximo nos produtos pra essa tela sugerir reposição.
+          A sugestão considera produtos com <b>categoria de compras</b> definida: repõe quando o
+          estoque chega no mínimo, ou (sem mínimo) quando há menos de 1 semana de consumo em estoque.
         </p>
       </div>
     );
@@ -136,11 +139,15 @@ export function SugestaoClient({ filialId, linhas, fornecedores }: Props) {
                   </td>
                   <td className="px-3 py-1.5">
                     <div className="font-medium text-slate-900">{l.nome}</div>
-                    <div className="text-[10px] text-slate-400">por {l.unidade}{risco && <span className="ml-1 text-rose-600">⚠ consumo &gt; estoque</span>}</div>
+                    <div className="text-[10px] text-slate-400">
+                      por {l.unidade}
+                      {l.base === 'consumo' && <span className="ml-1 text-sky-600">base: consumo</span>}
+                      {risco && <span className="ml-1 text-rose-600">⚠ consumo &gt; estoque</span>}
+                    </div>
                   </td>
                   <td className="px-3 py-1.5 text-slate-600">{l.categoria ?? '—'}</td>
                   <td className="px-3 py-1.5 text-right font-mono text-slate-700">{num(l.atual)}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-amber-700">{num(l.minimo)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-amber-700">{l.minimo != null ? num(l.minimo) : '—'}</td>
                   <td className={`px-3 py-1.5 text-right font-mono ${semMax ? 'text-slate-300' : 'text-slate-700'}`}>
                     {semMax ? '—' : num(l.maximo as number)}
                   </td>

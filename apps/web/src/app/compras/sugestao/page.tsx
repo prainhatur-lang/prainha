@@ -57,10 +57,13 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       and(
         eq(schema.produto.filialId, filial.id),
         eq(schema.produto.controlaEstoque, true),
-        sql`${schema.produto.estoqueMinimo} IS NOT NULL`,
         sql`${schema.produto.estoqueAtual} IS NOT NULL`,
         sql`COALESCE(${schema.produto.descontinuado}, false) = false`,
-        sql`${schema.produto.estoqueAtual} <= ${schema.produto.estoqueMinimo}`,
+        // Só produtos que a gente COMPRA (têm categoria de compras). Insumos
+        // derivados de produção (ex.: cortes do filé) não têm categoria de
+        // compras → não entram na sugestão. O consumo do filé cru já é captado
+        // pela saída de produção.
+        sql`${schema.produto.categoriaCompras} IS NOT NULL`,
       ),
     );
 
@@ -89,12 +92,23 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
   const linhas: LinhaSugestao[] = candidatos
     .map((c) => {
       const atual = Number(c.atual ?? 0);
-      const minimo = Number(c.minimo ?? 0);
+      const minimo = c.minimo != null ? Number(c.minimo) : null;
       const maximo = c.maximo != null ? Number(c.maximo) : null;
       const consumo7d = consumoPorProduto.get(c.id) ?? 0;
-      // Sugestão: repor até o máximo. Sem máximo, repõe o consumo de 1 semana.
-      const alvo = maximo != null ? maximo : atual + consumo7d;
+
+      // Precisa repor?
+      //  - COM mínimo: quando o estoque atual <= mínimo.
+      //  - SEM mínimo: usa o consumo da semana como base — repõe quando tem
+      //    menos de ~1 semana de cobertura (atual < consumo da semana).
+      const base: 'minimo' | 'consumo' = minimo != null ? 'minimo' : 'consumo';
+      const precisaRepor =
+        minimo != null ? atual <= minimo : consumo7d > 0 && atual < consumo7d;
+
+      // Alvo de reposição: máximo se definido; senão o maior entre o mínimo
+      // e o consumo de 1 semana (garante cobrir a demanda da próxima semana).
+      const alvo = maximo != null ? maximo : Math.max(minimo ?? 0, consumo7d);
       const sugestao = Math.max(0, Math.ceil(alvo - atual));
+
       return {
         produtoId: c.id,
         nome: c.nome ?? '(sem nome)',
@@ -105,8 +119,11 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
         maximo,
         consumo7d,
         sugestao,
+        base,
+        precisaRepor,
       };
     })
+    .filter((l) => l.precisaRepor && l.sugestao > 0)
     .sort((a, b) => (a.categoria ?? '').localeCompare(b.categoria ?? '', 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR'));
 
   // Fornecedores ativos pra compras (pra montar a cotação).
@@ -133,7 +150,7 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
         <div className="mb-4">
           <h1 className="text-xl font-semibold text-slate-900">Sugestão de compra</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            {filial.nome} · {linhas.length} produto(s) no/abaixo do mínimo · consumo dos últimos 7 dias
+            {filial.nome} · {linhas.length} produto(s) pra repor · base: estoque mínimo ou consumo dos últimos 7 dias
           </p>
         </div>
 
