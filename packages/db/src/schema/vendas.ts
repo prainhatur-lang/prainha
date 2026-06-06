@@ -47,6 +47,9 @@ export const produto = pgTable(
     precoCusto: numeric('preco_custo', { precision: 14, scale: 4 }),
     estoqueAtual: numeric('estoque_atual', { precision: 14, scale: 3 }),
     estoqueMinimo: numeric('estoque_minimo', { precision: 14, scale: 3 }),
+    /** Estoque máximo (alvo de reposição) — campo próprio do concilia, usado
+     *  na sugestão de compra: quanto pedir = máximo − atual. Null = sem alvo. */
+    estoqueMaximo: numeric('estoque_maximo', { precision: 14, scale: 3 }),
     estoqueControlado: boolean('estoque_controlado'),
     descontinuado: boolean('descontinuado'),
     /** Data em que o produto foi pausado (null = nao pausado). Espelha

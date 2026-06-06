@@ -20,6 +20,7 @@ interface Produto {
   unidadeEstoque: string;
   controlaEstoque: boolean;
   estoqueMinimo: string | null;
+  estoqueMaximo: string | null;
   descontinuado: boolean | null;
   criadoNaNuvem: boolean;
   estoqueAtual?: string | null;
@@ -35,6 +36,9 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
   const [controla, setControla] = useState(produto.controlaEstoque);
   const [estoqueMinimo, setEstoqueMinimo] = useState(
     produto.estoqueMinimo ? String(Number(produto.estoqueMinimo)) : '',
+  );
+  const [estoqueMaximo, setEstoqueMaximo] = useState(
+    produto.estoqueMaximo ? String(Number(produto.estoqueMaximo)) : '',
   );
   const [descontinuado, setDescontinuado] = useState(produto.descontinuado ?? false);
   const [pesoUn, setPesoUn] = useState(
@@ -89,6 +93,19 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
       return;
     }
     if (minNovo !== minAtual) body.estoqueMinimo = minNovo;
+
+    // Estoque máximo (alvo de reposição) — vazio = limpar (null)
+    const maxAtual = produto.estoqueMaximo ? Number(produto.estoqueMaximo) : null;
+    const maxNovo = estoqueMaximo.trim() ? Number(estoqueMaximo.replace(',', '.')) : null;
+    if (maxNovo !== null && (!Number.isFinite(maxNovo) || maxNovo < 0)) {
+      setErro('Estoque máximo inválido');
+      return;
+    }
+    if (maxNovo !== null && minNovo > 0 && maxNovo < minNovo) {
+      setErro('Estoque máximo não pode ser menor que o mínimo');
+      return;
+    }
+    if (maxNovo !== maxAtual) body.estoqueMaximo = maxNovo;
 
     // Peso unitario padrao (kg por un) — null pra limpar
     const pesoUnAtual = produto.pesoUnitarioPadraoKg
@@ -204,18 +221,33 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
               </div>
             </div>
 
-            <div>
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Estoque mínimo
-              </label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={estoqueMinimo}
-                onChange={(e) => setEstoqueMinimo(e.target.value)}
-                placeholder="0"
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Estoque mínimo
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={estoqueMinimo}
+                  onChange={(e) => setEstoqueMinimo(e.target.value)}
+                  placeholder="0"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Estoque máximo
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={estoqueMaximo}
+                  onChange={(e) => setEstoqueMaximo(e.target.value)}
+                  placeholder="alvo de reposição"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                />
+              </div>
             </div>
 
             {/* Peso unitario padrao — relevante quando produto eh em un mas

@@ -30,6 +30,7 @@ const Body = z.object({
   unidadeEstoque: z.enum(UNIDADES).optional(),
   controlaEstoque: z.boolean().optional(),
   estoqueMinimo: z.number().min(0).optional(),
+  estoqueMaximo: z.number().min(0).nullable().optional(),
   descontinuado: z.boolean().optional(),
   tipo: z.enum(TIPOS).optional(),
   pesoUnitarioPadraoKg: z.number().positive().nullable().optional(),
@@ -82,11 +83,12 @@ export async function PATCH(
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
-  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, descontinuado, tipo, pesoUnitarioPadraoKg } = parsed.data;
+  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg } = parsed.data;
   const set: Record<string, unknown> = {};
   if (unidadeEstoque !== undefined) set.unidadeEstoque = unidadeEstoque;
   if (controlaEstoque !== undefined) set.controlaEstoque = controlaEstoque;
   if (estoqueMinimo !== undefined) set.estoqueMinimo = estoqueMinimo.toFixed(3);
+  if (estoqueMaximo !== undefined) set.estoqueMaximo = estoqueMaximo !== null ? estoqueMaximo.toFixed(3) : null;
   if (descontinuado !== undefined) set.descontinuado = descontinuado;
   if (tipo !== undefined) set.tipo = tipo;
   if (pesoUnitarioPadraoKg !== undefined) {
