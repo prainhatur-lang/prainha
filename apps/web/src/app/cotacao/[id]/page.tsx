@@ -9,6 +9,8 @@ import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
+import { EnviarTodosButton } from './enviar-todos-button';
+import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao } from '@/lib/cotacao-alocacao';
 
 export const dynamic = 'force-dynamic';
@@ -277,7 +279,10 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
 
         {/* Fornecedores convocados */}
         <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold text-slate-900">Fornecedores convocados</h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-900">Fornecedores convocados</h2>
+            {conviteCotacaoConfigurado() && <EnviarTodosButton cotacaoId={id} />}
+          </div>
           <table className="w-full text-xs">
             <thead className="bg-slate-50 text-slate-600">
               <tr>

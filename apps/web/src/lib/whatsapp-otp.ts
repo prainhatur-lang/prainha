@@ -64,6 +64,59 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
   return { enviado: true, modoTeste: false };
 }
 
+/** Convite de cotacao pro fornecedor (WHATSAPP_COTACAO_TEMPLATE — UTILIDADE).
+ *  Template sugerido (corpo): "Olá {{1}}! Aqui é do {{2}}. Estamos cotando alguns
+ *  itens e queremos o seu melhor preço. Toque no botão abaixo para responder até
+ *  {{3}} (prazo de 4h). Obrigado!" + botão URL DINÂMICO "Responder cotação" com
+ *  base https://app.prainhabar.com/cotacao/preencher/ e variável {{1}} = token.
+ *  Vars na ordem: {{1}} nome, {{2}} filial, {{3}} prazo; botão {{1}} = token. */
+export function conviteCotacaoConfigurado(): boolean {
+  return !!(
+    process.env.WHATSAPP_TOKEN &&
+    process.env.WHATSAPP_PHONE_ID &&
+    process.env.WHATSAPP_COTACAO_TEMPLATE
+  );
+}
+
+export async function enviarConviteCotacao(
+  telefone: string,
+  vars: { nome: string; filial: string; prazo: string; token: string },
+): Promise<boolean> {
+  if (!conviteCotacaoConfigurado()) return false;
+
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const phoneId = process.env.WHATSAPP_PHONE_ID!;
+  const token = process.env.WHATSAPP_TOKEN!;
+  const template = process.env.WHATSAPP_COTACAO_TEMPLATE!;
+  const lang = process.env.WHATSAPP_COTACAO_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
+
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: template,
+        language: { code: lang },
+        components: [
+          {
+            type: 'body',
+            parameters: [vars.nome, vars.filial, vars.prazo].map((t) => ({ type: 'text', text: String(t) })),
+          },
+          { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: vars.token }] },
+        ],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  return true;
+}
+
 /** Template de confirmacao de reserva (WHATSAPP_CONFIRMACAO_TEMPLATE). Envia os
  *  campos na ordem do template de Utilidade: {{1}} nome, {{2}} data, {{3}} hora,
  *  {{4}} espaco/mesa, {{5}} pessoas, {{6}} link de cancelamento.
