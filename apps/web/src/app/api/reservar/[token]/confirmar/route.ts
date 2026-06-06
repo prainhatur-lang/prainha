@@ -5,7 +5,8 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
-import { enviarConfirmacaoReserva } from '@/lib/whatsapp-otp';
+import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
+import { hojeBr } from '@/lib/datas';
 import { randomBytes } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
@@ -97,20 +98,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
 
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
   const cancelToken = randomBytes(24).toString('hex');
-  await db.insert(schema.reserva).values({
-    filialId: filial.id,
-    clienteNome: nome,
-    clienteTelefone: telefone,
-    pessoas,
-    data,
-    hora,
-    status: 'confirmada',
-    area: espaco,
-    canal: 'site',
-    observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
-    valor: String(valorAtual.toFixed(2)),
-    cancelToken,
-  });
+  const [nova] = await db
+    .insert(schema.reserva)
+    .values({
+      filialId: filial.id,
+      clienteNome: nome,
+      clienteTelefone: telefone,
+      pessoas,
+      data,
+      hora,
+      status: 'confirmada',
+      area: espaco,
+      canal: 'site',
+      observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
+      valor: String(valorAtual.toFixed(2)),
+      cancelToken,
+    })
+    .returning({ id: schema.reserva.id });
 
   // Mensagem de confirmacao rica no WhatsApp (best-effort; so envia se houver
   // remetente/template configurado). confirmacaoZap diz se realmente foi enviada.
@@ -128,6 +132,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     });
   } catch {
     // nao bloqueia a reserva se a confirmacao falhar
+  }
+
+  // Reserva pro MESMO dia: o lembrete da vespera (cron 17h) nao alcanca, entao
+  // ja pede a confirmacao de presenca na hora. Marca lembreteConfirmacaoEm pra
+  // o cron nao mandar de novo. Best-effort, env-gated.
+  try {
+    if (data === hojeBr() && lembreteReservaConfigurado()) {
+      const [a, mes, d] = data.split('-');
+      await enviarLembreteReserva(telefone, {
+        nome: nome.split(' ')[0] || 'tudo bem',
+        data: `${d}/${mes}/${a}`,
+        hora,
+        local: `${filial.nome}${espaco ? ' · ' + espaco : ''}`,
+        token: cancelToken,
+      });
+      if (nova?.id) {
+        await db
+          .update(schema.reserva)
+          .set({ lembreteConfirmacaoEm: new Date() })
+          .where(eq(schema.reserva.id, nova.id));
+      }
+    }
+  } catch {
+    // nao bloqueia a reserva se o lembrete do mesmo dia falhar
   }
 
   return NextResponse.json({
