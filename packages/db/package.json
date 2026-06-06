@@ -25,6 +25,7 @@
     "migrate:reserva-cancel": "tsx scripts/migrate-reserva-cancel.ts",
     "migrate:avaliacao-links": "tsx scripts/migrate-avaliacao-links.ts",
     "migrate:estoque-maximo": "tsx scripts/migrate-estoque-maximo.ts",
+    "migrate:reserva-lembrete": "tsx scripts/migrate-reserva-lembrete.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
     "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",

@@ -39,6 +39,8 @@ export interface ReservaItem {
   canal: string;
   observacao: string | null;
   origemExterna: string | null;
+  lembreteConfirmacaoEm?: string | null;
+  confirmadaClienteEm?: string | null;
 }
 
 const STATUS_INFO: Record<string, { txt: string; cls: string }> = {
@@ -234,6 +236,11 @@ function Linha({ r, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaItem; p
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${st.cls}`}>{st.txt}</span>
             <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{CANAL_INFO[r.canal] ?? r.canal}</span>
             {r.origemExterna && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-600">via {r.origemExterna}</span>}
+            {r.confirmadaClienteEm ? (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700" title="Cliente confirmou presença pelo WhatsApp">✓ cliente confirmou</span>
+            ) : r.lembreteConfirmacaoEm ? (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700" title="Lembrete enviado, aguardando resposta">⏳ lembrete enviado</span>
+            ) : null}
             {mostrarFilial && r.filialNome && <span className="text-[10px] text-slate-400">{r.filialNome}</span>}
           </div>
           <div className="mt-0.5 text-xs text-slate-500">

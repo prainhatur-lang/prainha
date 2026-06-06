@@ -7,7 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { ReservasClient, type ReservaItem, type FilialOpt } from './reservas-client';
@@ -71,6 +71,8 @@ export default async function ReservasPage(props: {
             canal: schema.reserva.canal,
             observacao: schema.reserva.observacao,
             origemExterna: schema.reserva.origemExterna,
+            lembreteConfirmacaoEm: sql<string | null>`${schema.reserva.lembreteConfirmacaoEm}::text`,
+            confirmadaClienteEm: sql<string | null>`${schema.reserva.confirmadaClienteEm}::text`,
           })
           .from(schema.reserva)
           .where(and(inArray(schema.reserva.filialId, escopo), eq(schema.reserva.data, data)))

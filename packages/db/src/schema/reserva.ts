@@ -43,6 +43,11 @@ export const reserva = pgTable(
     valor: numeric('valor', { precision: 10, scale: 2 }),
     /** Token publico pro cliente cancelar a propria reserva (/reservar/cancelar/[token]). */
     cancelToken: text('cancel_token').unique(),
+    /** Quando o lembrete de confirmacao (vespera ~17h) foi enviado no WhatsApp.
+     *  Null = ainda nao enviado (cron usa pra nao mandar 2x). */
+    lembreteConfirmacaoEm: timestamp('lembrete_confirmacao_em', { withTimezone: true }),
+    /** Quando o cliente confirmou presenca pelo link do lembrete. */
+    confirmadaClienteEm: timestamp('confirmada_cliente_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

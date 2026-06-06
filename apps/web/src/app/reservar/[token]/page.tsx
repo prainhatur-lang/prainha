@@ -29,8 +29,41 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
     .map((a) => ({ nome: a.nome, horaLimite: a.horaLimite ?? null }));
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-sky-50 to-slate-100 p-4">
-      <div className="w-full max-w-md">
+    <main
+      className="relative flex min-h-screen items-center justify-center overflow-hidden p-4"
+      style={{
+        background:
+          'linear-gradient(180deg,#07191c 0%,#143a3d 26%,#5a6a4f 46%,#c98a3f 66%,#e7873a 82%,#b3411c 100%)',
+      }}
+    >
+      {/* brilho do sol */}
+      <div
+        className="pointer-events-none absolute left-1/2 top-[60%] h-[90vmin] w-[90vmin] -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{
+          background:
+            'radial-gradient(circle, rgba(255,236,184,0.55) 0%, rgba(231,135,58,0.18) 38%, transparent 64%)',
+        }}
+        aria-hidden
+      />
+      {/* vinheta p/ legibilidade */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(120% 90% at 50% 30%, transparent 45%, rgba(7,25,28,0.45) 100%)',
+        }}
+        aria-hidden
+      />
+
+      <div className="relative w-full max-w-md">
+        <div className="mb-6 text-center">
+          <span
+            className="text-3xl tracking-tight text-[#fbf6ec]"
+            style={{ fontFamily: 'var(--rsv-display)' }}
+          >
+            Prainha<span className="text-[#f4b454]">.</span>
+          </span>
+        </div>
         <ReservarForm
           token={token}
           nomeFilial={filial.nome}

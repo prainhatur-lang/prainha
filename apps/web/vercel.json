@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/distribuicao-dfe",
       "schedule": "0 7,19 * * *"
+    },
+    {
+      "path": "/api/cron/lembrete-reserva",
+      "schedule": "0 20 * * *"
     }
   ]
 }

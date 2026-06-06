@@ -23,6 +23,8 @@ function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+const serif = { fontFamily: 'var(--rsv-display)' } as const;
+
 export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
@@ -102,35 +104,39 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     }
   }
 
-  const card = 'rounded-2xl border border-slate-200 bg-white p-6 shadow-sm';
-  const inp = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none';
-  const lbl = 'text-xs font-medium text-slate-600';
+  const card =
+    'rounded-3xl border border-[#e9d9bb] bg-[#fbf6ec] p-7 shadow-[0_28px_70px_-30px_rgba(7,25,28,0.75)]';
+  const inp =
+    'mt-1.5 w-full rounded-xl border border-[#e2c9a0] bg-white px-3.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors placeholder:text-[#b7a888] focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20';
+  const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64]';
+  const btn =
+    'mt-5 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#df5a35] disabled:translate-y-0 disabled:opacity-50';
 
   if (fase === 'ok') {
     return (
       <div className={`${card} text-center`}>
-        <div className="text-6xl">{zapEnviado ? '📲' : '✅'}</div>
-        <h1 className="mt-4 text-2xl font-extrabold leading-tight text-emerald-600">
-          {zapEnviado ? 'Reserva enviada para o seu WhatsApp!' : 'Reserva confirmada!'}
+        <div className="text-6xl">{zapEnviado ? '📲' : '🌅'}</div>
+        <h1 className="mt-4 text-3xl leading-tight text-[#b3411c]" style={serif}>
+          {zapEnviado ? 'Reserva enviada pro seu WhatsApp!' : 'Reserva confirmada!'}
         </h1>
-        <p className="mt-3 text-base text-slate-700">
+        <p className="mt-3 text-base text-[#4a382a]">
           {zapEnviado ? (
             <>
               {nome}, enviamos a <b>confirmação da sua reserva</b> para o seu WhatsApp:
               <br />
-              <span className="font-mono text-slate-900">{whatsapp}</span>
+              <span className="font-mono text-[#1d130c]">{whatsapp}</span>
               <br />
-              <b className="text-emerald-700">Abra o WhatsApp e confira! 📲</b>
+              <b className="text-[#b3411c]">Abra o WhatsApp e confira! 📲</b>
             </>
           ) : (
             <>{nome}, sua mesa no <b>{nomeFilial}</b> está reservada. Em breve a confirmação chega no seu WhatsApp.</>
           )}
         </p>
-        <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-base text-slate-800">
-          <p className="text-lg font-bold">{espaco}</p>
-          <p>{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
+        <div className="mt-5 rounded-2xl border border-[#e9d9bb] bg-[#f6ecd9] p-4 text-base text-[#1d130c]">
+          <p className="text-lg font-bold" style={serif}>{espaco}</p>
+          <p className="mt-0.5 text-[#4a382a]">{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
         </div>
-        <p className="mt-4 text-xs text-slate-500">⏰ Tolerância de 15 min. Te esperamos pro pôr do sol! 🌅</p>
+        <p className="mt-4 text-xs text-[#8a7a64]">⏰ Tolerância de 15 min. Te esperamos pro pôr do sol! 🌅</p>
       </div>
     );
   }
@@ -138,26 +144,22 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   if (fase === 'otp') {
     return (
       <div className={card}>
-        <button onClick={() => setFase('dados')} className="text-xs text-slate-400 hover:text-slate-600">← voltar</button>
-        <h1 className="mt-2 text-lg font-semibold text-slate-900">Confirme seu WhatsApp</h1>
-        <p className="mt-1 text-sm text-slate-500">Enviamos um código de 6 dígitos para o WhatsApp <b>{whatsapp}</b>.</p>
-        {dicaTeste && <p className="mt-2 rounded bg-amber-50 p-2 text-xs text-amber-700">{dicaTeste}</p>}
+        <button onClick={() => setFase('dados')} className="text-xs text-[#8a7a64] transition-colors hover:text-[#4a382a]">← voltar</button>
+        <h1 className="mt-2 text-2xl text-[#1d130c]" style={serif}>Confirme seu WhatsApp</h1>
+        <p className="mt-1 text-sm text-[#8a7a64]">Enviamos um código de 6 dígitos para o WhatsApp <b className="text-[#4a382a]">{whatsapp}</b>.</p>
+        {dicaTeste && <p className="mt-3 rounded-lg bg-[#f4b454]/15 p-2 text-xs text-[#b3411c]">{dicaTeste}</p>}
         <input
           value={codigo}
           onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
           placeholder="000000"
-          className="mt-4 w-full rounded-lg border border-slate-300 px-3 py-3 text-center text-2xl tracking-[0.5em] focus:border-sky-500 focus:outline-none"
+          className="mt-4 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-3 text-center text-2xl tracking-[0.5em] text-[#1d130c] outline-none focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20"
         />
-        {erro && <p className="mt-2 text-center text-xs text-rose-600">{erro}</p>}
-        <button
-          onClick={confirmar}
-          disabled={enviando || codigo.length < 6}
-          className="mt-4 w-full rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
-        >
+        {erro && <p className="mt-2 text-center text-xs text-[#b3411c]">{erro}</p>}
+        <button onClick={confirmar} disabled={enviando || codigo.length < 6} className={btn}>
           {enviando ? 'Confirmando…' : 'Confirmar reserva'}
         </button>
-        <button onClick={pedirCodigo} disabled={enviando} className="mt-2 w-full text-xs text-slate-500 hover:text-slate-700">
+        <button onClick={pedirCodigo} disabled={enviando} className="mt-3 w-full text-xs text-[#8a7a64] transition-colors hover:text-[#4a382a]">
           Reenviar código
         </button>
       </div>
@@ -167,23 +169,23 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // fase dados
   return (
     <div className={card}>
-      <h1 className="text-lg font-semibold text-slate-900">Reservar mesa — {nomeFilial}</h1>
-      <p className="mt-1 text-sm text-slate-500">Garanta sua mesa e venha curtir o pôr do sol 🌅</p>
+      <h1 className="text-2xl leading-tight text-[#1d130c]" style={serif}>Reserve sua mesa</h1>
+      <p className="mt-1 text-sm text-[#8a7a64]">{nomeFilial} · venha curtir o pôr do sol 🌅</p>
 
       {/* Ancoragem de preco */}
-      <div className="mt-3 flex items-center justify-center gap-2 rounded-lg bg-emerald-50 p-2 text-sm">
+      <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-sm">
         {valorCheio && gratis ? (
           <>
-            <span className="text-slate-400 line-through">{brl(valorCheio)}</span>
-            <span className="font-bold text-emerald-700">GRÁTIS</span>
-            <span className="text-xs text-emerald-600">por enquanto 😉</span>
+            <span className="text-[#b7a888] line-through">{brl(valorCheio)}</span>
+            <span className="font-bold tracking-wide text-[#b3411c]">GRÁTIS</span>
+            <span className="text-xs text-[#a86a2e]">por enquanto 😉</span>
           </>
         ) : (
-          <span className="font-semibold text-emerald-700">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
+          <span className="font-semibold text-[#b3411c]">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
         )}
       </div>
 
-      <div className="mt-4 space-y-3">
+      <div className="mt-5 space-y-3.5">
         <div>
           <label className={lbl}>Espaço</label>
           {areas.length > 0 ? (
@@ -193,7 +195,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
               ))}
             </select>
           ) : (
-            <p className="mt-1 text-sm text-rose-600">Nenhum espaço disponível para reserva.</p>
+            <p className="mt-1 text-sm text-[#b3411c]">Nenhum espaço disponível para reserva.</p>
           )}
         </div>
         <div className="flex gap-3">
@@ -203,7 +205,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           </div>
           <div className="w-28">
             <label className={lbl}>Hora</label>
-            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-rose-400 text-rose-600' : ''}`} />
+            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-[#b3411c] text-[#b3411c]' : ''}`} />
           </div>
           <div className="w-24">
             <label className={lbl}>Pessoas</label>
@@ -211,7 +213,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           </div>
         </div>
         {horaInvalida && (
-          <p className="text-xs text-rose-600">{espaco} aceita reserva só até {limite} — escolha um horário mais cedo 🌅</p>
+          <p className="text-xs text-[#b3411c]">{espaco} aceita reserva só até {limite} — escolha um horário mais cedo 🌅</p>
         )}
         <div>
           <label className={lbl}>Seu nome</label>
@@ -227,15 +229,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         </div>
       </div>
 
-      {erro && <p className="mt-3 text-center text-xs text-rose-600">{erro}</p>}
-      <button
-        onClick={semOtp ? reservarDireto : pedirCodigo}
-        disabled={enviando || horaInvalida || areas.length === 0}
-        className="mt-4 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
-      >
-        {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar' : 'Continuar'}
+      {erro && <p className="mt-3 text-center text-xs text-[#b3411c]">{erro}</p>}
+      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0} className={btn}>
+        {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar mesa' : 'Continuar'}
       </button>
-      <p className="mt-2 text-center text-[11px] text-slate-400">
+      <p className="mt-3 text-center text-[11px] text-[#8a7a64]">
         {semOtp ? 'Enviaremos a confirmação no seu WhatsApp.' : 'Validamos sua reserva por um código no WhatsApp.'}
       </p>
     </div>
