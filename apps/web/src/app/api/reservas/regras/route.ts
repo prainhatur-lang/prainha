@@ -21,8 +21,11 @@ function sanitizeTurnos(arr: unknown): TurnoReserva[] {
   const out: TurnoReserva[] = [];
   for (const t of arr) {
     const hora = typeof t?.hora === 'string' && HORA.test(t.hora) ? t.hora : null;
-    const vagas = Number.isFinite(t?.vagas) ? Math.max(0, Math.min(99999, Math.trunc(t.vagas))) : null;
-    if (hora && vagas !== null) out.push({ hora, vagas });
+    if (!hora) continue;
+    const turno: TurnoReserva = { hora };
+    // vaga manual e opcional; sem ela a capacidade vem do % da area por turno
+    if (Number.isFinite(t?.vagas)) turno.vagas = Math.max(0, Math.min(99999, Math.trunc(t.vagas)));
+    out.push(turno);
   }
   // ordena por hora e remove horas duplicadas (mantem a primeira)
   out.sort((a, b) => a.hora.localeCompare(b.hora));

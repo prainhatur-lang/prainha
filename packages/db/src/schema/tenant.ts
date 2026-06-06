@@ -81,14 +81,19 @@ export interface AreaReserva {
   horaLimite?: string;
   /** Mesas fisicas deste espaco (numero + capacidade). */
   mesas?: MesaReserva[];
+  /** % das mesas/lugares desta area liberado pra reserva online POR TURNO
+   *  (0-100). O resto fica pra walk-in. Capacidade do turno na area =
+   *  round(soma dos lugares das mesas x percentualReserva / 100). */
+  percentualReserva?: number;
 }
 
 /** Um turno (horario fixo) reservavel, com capacidade em pessoas. */
 export interface TurnoReserva {
   /** Horario do turno (HH:MM). */
   hora: string;
-  /** Capacidade em PESSOAS deste turno no dia (soma das reservas ativas). */
-  vagas: number;
+  /** (Opcional) Capacidade manual em PESSOAS deste turno. Quando ausente, a
+   *  capacidade vem do percentualReserva de cada area (% por turno). */
+  vagas?: number;
 }
 
 /** Excecao de calendario para uma data especifica (YYYY-MM-DD). */

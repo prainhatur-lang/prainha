@@ -3,7 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import type { AreaReserva } from '@concilia/db/schema';
+import type { AreaReserva, ReservaConfig } from '@concilia/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -26,26 +26,35 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
   }
 
-  const areas: AreaReserva[] = [];
-  for (const a of b.areas) {
-    const nome = typeof a?.nome === 'string' ? a.nome.trim().slice(0, 100) : '';
-    if (!nome) continue;
-    const hl = typeof a?.horaLimite === 'string' && /^\d{2}:\d{2}$/.test(a.horaLimite) ? a.horaLimite : undefined;
-    areas.push({
-      nome,
-      ativo: a?.ativo !== false,
-      ...(a?.somenteEventos ? { somenteEventos: true } : {}),
-      ...(hl ? { horaLimite: hl } : {}),
-    });
-  }
-
-  // Mescla com a config atual pra NAO apagar valores/semOtp/turnos/excecoes.
+  // Config atual: preserva valores/semOtp/turnos/excecoes e as mesas ja
+  // cadastradas por area (a edicao de areas nao mexe nas mesas fisicas).
   const [row] = await db
     .select({ reservaConfig: schema.filial.reservaConfig })
     .from(schema.filial)
     .where(eq(schema.filial.id, filialId))
     .limit(1);
-  const atual = row?.reservaConfig ?? { areas: [] };
+  const atual: ReservaConfig = row?.reservaConfig ?? { areas: [] };
+  const mesasPorArea = new Map<string, AreaReserva['mesas']>();
+  for (const a of atual.areas ?? []) if (a?.nome) mesasPorArea.set(a.nome, a.mesas);
+
+  const areas: AreaReserva[] = [];
+  for (const a of b.areas) {
+    const nome = typeof a?.nome === 'string' ? a.nome.trim().slice(0, 100) : '';
+    if (!nome) continue;
+    const hl = typeof a?.horaLimite === 'string' && /^\d{2}:\d{2}$/.test(a.horaLimite) ? a.horaLimite : undefined;
+    const pct = Number.isFinite(a?.percentualReserva)
+      ? Math.max(0, Math.min(100, Math.trunc(a.percentualReserva)))
+      : undefined;
+    const mesas = mesasPorArea.get(nome);
+    areas.push({
+      nome,
+      ativo: a?.ativo !== false,
+      ...(a?.somenteEventos ? { somenteEventos: true } : {}),
+      ...(hl ? { horaLimite: hl } : {}),
+      ...(pct !== undefined ? { percentualReserva: pct } : {}),
+      ...(mesas ? { mesas } : {}),
+    });
+  }
 
   await db
     .update(schema.filial)
