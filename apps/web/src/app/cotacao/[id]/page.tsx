@@ -4,9 +4,11 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { eq, asc, inArray } from 'drizzle-orm';
+import { headers } from 'next/headers';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { AprovarButton } from './aprovar';
+import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { calcularAlocacaoCotacao } from '@/lib/cotacao-alocacao';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +37,16 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
     .limit(1);
   if (!c) notFound();
 
+  const [filialRow] = await db
+    .select({ nome: schema.filial.nome })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, c.filialId))
+    .limit(1);
+  const filialNome = filialRow?.nome ?? '';
+
+  const h = await headers();
+  const baseUrl = `${h.get('x-forwarded-proto') ?? 'https'}://${h.get('host') ?? ''}`;
+
   const itens = await db
     .select({
       id: schema.cotacaoItem.id,
@@ -60,6 +72,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       linkAbertoEm: schema.cotacaoFornecedor.linkAbertoEm,
       respondidoEm: schema.cotacaoFornecedor.respondidoEm,
       fornecedorNome: schema.fornecedor.nome,
+      fonePrincipal: schema.fornecedor.fonePrincipal,
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))
@@ -273,6 +286,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                 <th className="px-3 py-2 text-left font-medium">Link enviado</th>
                 <th className="px-3 py-2 text-left font-medium">Aberto</th>
                 <th className="px-3 py-2 text-left font-medium">Respondido</th>
+                <th className="px-3 py-2 text-center font-medium">WhatsApp</th>
                 <th className="px-3 py-2 text-right font-medium">Link público</th>
               </tr>
             </thead>
@@ -289,6 +303,18 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                   </td>
                   <td className="px-3 py-2 text-slate-600">
                     {f.respondidoEm ? new Date(f.respondidoEm).toLocaleString('pt-BR') : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <EnviarWhatsappButton
+                      cotacaoId={id}
+                      cotacaoFornecedorId={f.id}
+                      telefone={f.fonePrincipal}
+                      fornecedorNome={f.fornecedorNome ?? ''}
+                      filialNome={filialNome}
+                      link={`${baseUrl}/cotacao/preencher/${f.tokenPublico}`}
+                      fechaEm={c.fechaEm ? new Date(c.fechaEm).toISOString() : null}
+                      jaEnviado={!!f.linkEnviadoEm}
+                    />
                   </td>
                   <td className="px-3 py-2 text-right">
                     <CopiarLinkButton tokenPublico={f.tokenPublico} />
