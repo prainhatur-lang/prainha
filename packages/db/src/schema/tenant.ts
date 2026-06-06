@@ -83,6 +83,24 @@ export interface AreaReserva {
   mesas?: MesaReserva[];
 }
 
+/** Um turno (horario fixo) reservavel, com capacidade em pessoas. */
+export interface TurnoReserva {
+  /** Horario do turno (HH:MM). */
+  hora: string;
+  /** Capacidade em PESSOAS deste turno no dia (soma das reservas ativas). */
+  vagas: number;
+}
+
+/** Excecao de calendario para uma data especifica (YYYY-MM-DD). */
+export interface ExcecaoReserva {
+  /** Data no formato YYYY-MM-DD. */
+  data: string;
+  /** Dia fechado: sem reservas. */
+  fechado?: boolean;
+  /** Turnos especiais que SUBSTITUEM os do dia da semana nesta data. */
+  turnos?: TurnoReserva[];
+}
+
 /** Config do setor de reservas por filial. */
 export interface ReservaConfig {
   areas: AreaReserva[];
@@ -94,6 +112,11 @@ export interface ReservaConfig {
    *  A validacao vira a entrega da mensagem de confirmacao (se nao entregar,
    *  cancela). Default: usa OTP se houver provedor configurado. */
   semOtp?: boolean;
+  /** Turnos por dia da semana (chave 0=domingo .. 6=sabado). Cada dia tem uma
+   *  lista de turnos {hora, vagas}. Vazio/ausente = dia sem turnos (fechado). */
+  turnosSemana?: Record<number, TurnoReserva[]>;
+  /** Excecoes de calendario: datas fechadas ou com turnos especiais. */
+  excecoes?: ExcecaoReserva[];
 }
 
 export const organizacao = pgTable('organizacao', {

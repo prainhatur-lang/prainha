@@ -39,9 +39,17 @@ export async function PUT(request: Request) {
     });
   }
 
+  // Mescla com a config atual pra NAO apagar valores/semOtp/turnos/excecoes.
+  const [row] = await db
+    .select({ reservaConfig: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const atual = row?.reservaConfig ?? { areas: [] };
+
   await db
     .update(schema.filial)
-    .set({ reservaConfig: { areas } })
+    .set({ reservaConfig: { ...atual, areas } })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filiais.map((f) => f.id))));
 
   return NextResponse.json({ ok: true, areas });
