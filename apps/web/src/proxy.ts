@@ -1,7 +1,21 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
+// Subdomínio amigável da reserva do cliente. reservas.prainhabar.com (root)
+// serve a reserva pública do Prainha Bar com URL limpa (sem token na barra).
+// O token é o avaliacaoToken da filial Prainha Bar (público, vai na URL mesmo).
+const RESERVAS_HOST = 'reservas.prainhabar.com';
+const RESERVAS_TOKEN_PRAINHA_BAR =
+  '023c8170d59b84fff285540e88584fbf5d00db5606fd1e65deda36fb1df54ac6';
+
 export async function proxy(request: NextRequest) {
+  const hostname = (request.headers.get('host') ?? '').split(':')[0];
+  if (hostname === RESERVAS_HOST && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = `/reservar/${RESERVAS_TOKEN_PRAINHA_BAR}`;
+    return NextResponse.rewrite(url);
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
