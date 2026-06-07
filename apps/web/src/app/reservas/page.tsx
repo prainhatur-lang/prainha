@@ -81,9 +81,19 @@ export default async function ReservasPage(props: {
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
   // Mesas ocupadas no dia (chave `${filialId}:${mesa}`), pro mapa.
-  const ocupadas = itens
-    .filter((i) => i.mesa && i.status !== 'cancelada' && i.status !== 'no_show')
-    .map((i) => `${i.filialId}:${i.mesa}`);
+  const ativasComMesa = itens.filter(
+    (i) => i.mesa && i.status !== 'cancelada' && i.status !== 'no_show',
+  );
+  const ocupadas = ativasComMesa.map((i) => `${i.filialId}:${i.mesa}`);
+  // Quem está em cada mesa (pro mapa mostrar o nome).
+  const reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }> = {};
+  for (const i of ativasComMesa) {
+    reservasPorMesa[`${i.filialId}:${i.mesa}`] = {
+      nome: i.clienteNome,
+      hora: i.hora,
+      pessoas: i.pessoas,
+    };
+  }
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -99,6 +109,7 @@ export default async function ReservasPage(props: {
           podeImportar={podeImportar}
           podeConfigurar={podeConfigurar}
           ocupadas={ocupadas}
+          reservasPorMesa={reservasPorMesa}
         />
       </section>
     </main>

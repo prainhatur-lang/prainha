@@ -12,23 +12,37 @@ function corLugares(n: number): string {
   return 'bg-slate-100 border-slate-300 text-slate-700';
 }
 
-function MesaCard({ mesa, ocupada }: { mesa: Mesa; ocupada: boolean }) {
+interface ReservaInfo { nome: string; hora: string; pessoas: number }
+
+function MesaCard({ mesa, info }: { mesa: Mesa; info?: ReservaInfo }) {
+  const ocupada = !!info;
+  const primeiro = info ? info.nome.split(' ')[0] : '';
   return (
     <div
-      title={`Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''}${ocupada ? ' · OCUPADA' : ' · livre'}`}
-      className={`relative flex h-14 w-14 flex-col items-center justify-center rounded-lg border text-center ${
+      title={
+        ocupada
+          ? `Mesa ${mesa.numero} · ${info!.nome} · ${info!.hora} · ${info!.pessoas} pessoa(s)`
+          : `Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''} · livre`
+      }
+      className={`relative flex h-16 w-16 flex-col items-center justify-center rounded-lg border px-0.5 text-center ${
         ocupada ? 'border-rose-300 bg-rose-100 text-rose-700' : corLugares(mesa.lugares)
       }`}
     >
       <span className="text-sm font-bold leading-none">{mesa.numero}</span>
-      <span className="mt-0.5 text-[9px] leading-none opacity-70">{mesa.lugares} lug</span>
+      {ocupada ? (
+        <>
+          <span className="mt-0.5 max-w-full truncate text-[9px] font-semibold leading-tight">{primeiro}</span>
+          <span className="text-[8px] leading-none opacity-80">{info!.hora}</span>
+        </>
+      ) : (
+        <span className="mt-0.5 text-[9px] leading-none opacity-70">{mesa.lugares} lug</span>
+      )}
       {mesa.juntavel && <span className="absolute right-0.5 top-0.5 text-[8px]">🔗</span>}
-      {ocupada && <span className="absolute -bottom-1 text-[8px]">🔴</span>}
     </div>
   );
 }
 
-function Espaco({ nome, mesas, ocupadas, filialId }: { nome: string; mesas: Mesa[]; ocupadas: Set<string>; filialId: string }) {
+function Espaco({ nome, mesas, ocupadas, reservasPorMesa, filialId }: { nome: string; mesas: Mesa[]; ocupadas: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
   // colunas de 4 (rio em cima → mesa "da frente" no topo de cada coluna)
   const colunas: Mesa[][] = [];
   for (let i = 0; i < mesas.length; i += 4) colunas.push(mesas.slice(i, i + 4).reverse());
@@ -47,7 +61,7 @@ function Espaco({ nome, mesas, ocupadas, filialId }: { nome: string; mesas: Mesa
           {colunas.map((col, ci) => (
             <div key={ci} className="flex flex-col gap-1.5">
               {col.map((m) => (
-                <MesaCard key={m.numero} mesa={m} ocupada={ocupadas.has(`${filialId}:${m.numero}`)} />
+                <MesaCard key={m.numero} mesa={m} info={reservasPorMesa[`${filialId}:${m.numero}`]} />
               ))}
             </div>
           ))}
@@ -57,7 +71,7 @@ function Espaco({ nome, mesas, ocupadas, filialId }: { nome: string; mesas: Mesa
   );
 }
 
-export function MapaMesas({ filiais, ocupadas }: { filiais: FilialOpt[]; ocupadas: Set<string> }) {
+export function MapaMesas({ filiais, ocupadas, reservasPorMesa }: { filiais: FilialOpt[]; ocupadas: Set<string>; reservasPorMesa: Record<string, ReservaInfo> }) {
   const comMesas = filiais.filter((f) => (f.areas ?? []).some((a) => (a.mesas?.length ?? 0) > 0));
   if (comMesas.length === 0) {
     return <p className="mt-3 text-sm text-slate-400">Nenhuma mesa cadastrada ainda.</p>;
@@ -76,7 +90,7 @@ export function MapaMesas({ filiais, ocupadas }: { filiais: FilialOpt[]; ocupada
           {(f.areas ?? [])
             .filter((a) => (a.mesas?.length ?? 0) > 0)
             .map((a) => (
-              <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} filialId={f.id} />
+              <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} reservasPorMesa={reservasPorMesa} filialId={f.id} />
             ))}
         </div>
       ))}
