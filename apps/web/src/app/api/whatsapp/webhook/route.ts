@@ -15,12 +15,17 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // --- Verificação (Meta chama no setup) ---
+// Token de verificacao: usa a env se setada, senao um padrao (so serve pro
+// handshake de setup do webhook — nao protege dados; os eventos sao validados
+// pelo token secreto da reserva no payload).
+const VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'prainha_zap_2026';
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const mode = url.searchParams.get('hub.mode');
   const verifyToken = url.searchParams.get('hub.verify_token');
   const challenge = url.searchParams.get('hub.challenge');
-  if (mode === 'subscribe' && verifyToken && verifyToken === process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && verifyToken && verifyToken === VERIFY_TOKEN) {
     return new NextResponse(challenge ?? '', { status: 200 });
   }
   return new NextResponse('forbidden', { status: 403 });
