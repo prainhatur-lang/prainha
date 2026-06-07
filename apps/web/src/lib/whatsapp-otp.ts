@@ -250,7 +250,10 @@ export async function enviarConfirmacaoReserva(
   vars: { nome: string; data: string; hora: string; local: string; pessoas: string; linkCancelar: string },
 ): Promise<boolean> {
   const template = process.env.WHATSAPP_CONFIRMACAO_TEMPLATE;
-  if (!whatsappConfigurado() || !template || otpEmModoTeste()) return false;
+  // Gate proprio (token + phone + template de confirmacao). NAO depende do
+  // WHATSAPP_OTP_TEMPLATE (resquicio do OTP, que foi pro Twilio e nunca foi setado).
+  const tokenEnv = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META;
+  if (!tokenEnv || !process.env.WHATSAPP_PHONE_ID || !template || otpEmModoTeste()) return false;
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
