@@ -8,6 +8,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { EnviarPedidoButton } from './enviar-pedido-button';
+import { pedidoCompraConfigurado } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,6 +88,8 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
     itensPorPedido.set(it.pedidoId, arr);
   }
 
+  const autoEnvioPedido = pedidoCompraConfigurado();
+
   function montarMensagem(p: (typeof pedidos)[number]): string {
     const itens = itensPorPedido.get(p.id) ?? [];
     const linhas = itens.map((i) => {
@@ -157,6 +160,7 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                           telefone={p.fornecedorFone}
                           mensagem={montarMensagem(p)}
                           jaEnviado={!!p.enviadoEm}
+                          autoConfigurado={autoEnvioPedido}
                         />
                       </td>
                       <td className="px-3 py-2">
