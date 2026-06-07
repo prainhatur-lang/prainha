@@ -88,6 +88,7 @@ export function ReservasClient({
   podeConfigurar,
   ocupadas,
   reservasPorMesa,
+  historico,
 }: {
   data: string;
   filiais: FilialOpt[];
@@ -99,6 +100,7 @@ export function ReservasClient({
   podeConfigurar: boolean;
   ocupadas: string[];
   reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>;
+  historico: Record<string, { visitas: number; ultima: string | null }>;
 }) {
   const router = useRouter();
   const [novaAberta, setNovaAberta] = useState(false);
@@ -278,14 +280,14 @@ export function ReservasClient({
             Nenhuma reserva para {ymdToBr(data)}.
           </p>
         ) : (
-          itens.map((r) => <Linha key={r.id} r={r} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} onMudou={() => router.refresh()} />)
+          itens.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaItem; podeAtualizar: boolean; mostrarFilial: boolean; onMudou: () => void }) {
+function Linha({ r, hist, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
 
@@ -310,6 +312,16 @@ function Linha({ r, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaItem; p
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-slate-900">{r.clienteNome}</span>
+            {hist && (hist.visitas > 0 ? (
+              <span
+                className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800"
+                title={hist.ultima ? `Já reservou ${hist.visitas}x · última em ${hist.ultima.split('-').reverse().join('/')}` : `Já reservou ${hist.visitas}x`}
+              >
+                ⭐ {hist.visitas + 1}ª vez{hist.ultima ? ` · últ. ${hist.ultima.slice(8, 10)}/${hist.ultima.slice(5, 7)}` : ''}
+              </span>
+            ) : (
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">✨ novo cliente</span>
+            ))}
             <span className="text-xs text-slate-500">· {r.pessoas} pessoa(s)</span>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${st.cls}`}>{st.txt}</span>
             <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{CANAL_INFO[r.canal] ?? r.canal}</span>

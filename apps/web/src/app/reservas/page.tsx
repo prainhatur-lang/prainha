@@ -95,6 +95,37 @@ export default async function ReservasPage(props: {
     };
   }
 
+  // Histórico do cliente (recorrência): por telefone, conta visitas ANTERIORES
+  // (reservas não canceladas/no-show com data < o dia visto) e a última.
+  const normTel = (t: string | null) => (t ?? '').replace(/\D/g, '').slice(-11);
+  const historico: Record<string, { visitas: number; ultima: string | null }> = {};
+  if (escopo.length > 0) {
+    const anteriores = await db
+      .select({ tel: schema.reserva.clienteTelefone, data: sql<string>`${schema.reserva.data}::text` })
+      .from(schema.reserva)
+      .where(
+        and(
+          inArray(schema.reserva.filialId, escopo),
+          sql`${schema.reserva.data} < ${data}`,
+          sql`${schema.reserva.status} NOT IN ('cancelada', 'no_show')`,
+          sql`${schema.reserva.clienteTelefone} IS NOT NULL`,
+        ),
+      );
+    const porTel = new Map<string, { visitas: number; ultima: string }>();
+    for (const a of anteriores) {
+      const k = normTel(a.tel);
+      if (k.length < 8) continue;
+      const cur = porTel.get(k) ?? { visitas: 0, ultima: '' };
+      cur.visitas += 1;
+      if (a.data > cur.ultima) cur.ultima = a.data;
+      porTel.set(k, cur);
+    }
+    for (const i of itens) {
+      const h = porTel.get(normTel(i.clienteTelefone));
+      historico[i.id] = { visitas: h?.visitas ?? 0, ultima: h?.ultima ?? null };
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -110,6 +141,7 @@ export default async function ReservasPage(props: {
           podeConfigurar={podeConfigurar}
           ocupadas={ocupadas}
           reservasPorMesa={reservasPorMesa}
+          historico={historico}
         />
       </section>
     </main>
