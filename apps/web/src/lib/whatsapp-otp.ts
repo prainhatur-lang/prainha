@@ -20,7 +20,7 @@ export function otpEmModoTeste(): boolean {
 }
 
 export function whatsappConfigurado(): boolean {
-  return !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID && process.env.WHATSAPP_OTP_TEMPLATE);
+  return !!((process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) && process.env.WHATSAPP_PHONE_ID && process.env.WHATSAPP_OTP_TEMPLATE);
 }
 
 /** Envia o codigo OTP. telefone deve vir so com digitos + DDI (ex: 5579999998888). */
@@ -32,7 +32,7 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = process.env.WHATSAPP_TOKEN!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_OTP_TEMPLATE!;
   const lang = process.env.WHATSAPP_OTP_LANG || 'pt_BR';
 
@@ -72,7 +72,7 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
  *  Vars na ordem: {{1}} nome, {{2}} filial, {{3}} prazo; botão {{1}} = token. */
 export function conviteCotacaoConfigurado(): boolean {
   return !!(
-    process.env.WHATSAPP_TOKEN &&
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
     process.env.WHATSAPP_PHONE_ID &&
     process.env.WHATSAPP_COTACAO_TEMPLATE
   );
@@ -86,7 +86,7 @@ export async function enviarConviteCotacao(
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = process.env.WHATSAPP_TOKEN!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_COTACAO_TEMPLATE!;
   const lang = process.env.WHATSAPP_COTACAO_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
 
@@ -125,7 +125,7 @@ export async function enviarConviteCotacao(
  *  Vars corpo: {{1}} nome, {{2}} data, {{3}} hora, {{4}} local; botão {{1}} = token. */
 export function lembreteReservaConfigurado(): boolean {
   return !!(
-    process.env.WHATSAPP_TOKEN &&
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
     process.env.WHATSAPP_PHONE_ID &&
     process.env.WHATSAPP_LEMBRETE_TEMPLATE
   );
@@ -139,7 +139,7 @@ export async function enviarLembreteReserva(
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = process.env.WHATSAPP_TOKEN!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_LEMBRETE_TEMPLATE!;
   const lang = process.env.WHATSAPP_LEMBRETE_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
 
@@ -178,7 +178,7 @@ export async function enviarLembreteReserva(
  *  sem quebra), {{5}} total. */
 export function pedidoCompraConfigurado(): boolean {
   return !!(
-    process.env.WHATSAPP_TOKEN &&
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
     process.env.WHATSAPP_PHONE_ID &&
     process.env.WHATSAPP_PEDIDO_TEMPLATE
   );
@@ -192,7 +192,7 @@ export async function enviarPedidoCompra(
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = process.env.WHATSAPP_TOKEN!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_PEDIDO_TEMPLATE!;
   const lang = process.env.WHATSAPP_PEDIDO_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
   // Variaveis de template nao aceitam \n nem >4 espacos seguidos — sanitiza.
@@ -235,7 +235,7 @@ export async function enviarConfirmacaoReserva(
 
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = process.env.WHATSAPP_TOKEN!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const lang = process.env.WHATSAPP_OTP_LANG || 'pt_BR';
   const ordem = [vars.nome, vars.data, vars.hora, vars.local, vars.pessoas, vars.linkCancelar];
 
