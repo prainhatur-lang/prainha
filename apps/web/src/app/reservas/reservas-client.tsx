@@ -102,6 +102,29 @@ export function ReservasClient({
   const [novaAberta, setNovaAberta] = useState(false);
   const [configAberta, setConfigAberta] = useState(false);
   const [mapaAberto, setMapaAberto] = useState(false);
+  const [enviandoLembretes, setEnviandoLembretes] = useState(false);
+
+  async function enviarLembretes() {
+    if (!confirm('Enviar AGORA os lembretes de confirmação no WhatsApp para as reservas de amanhã?')) return;
+    setEnviandoLembretes(true);
+    try {
+      const r = await fetch('/api/reservas/enviar-lembretes', { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      const partes = [`${d.enviados} enviado(s) de ${d.total}`];
+      if (d.semTelefone) partes.push(`${d.semTelefone} sem telefone`);
+      if (d.falhas?.length) partes.push(`falhas: ${d.falhas.join(' | ')}`);
+      alert(`Lembretes (${d.data}): ${partes.join(' · ')}`);
+      router.refresh();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setEnviandoLembretes(false);
+    }
+  }
 
   function irPara(d: string, f: string | null) {
     const qs = new URLSearchParams();
@@ -141,6 +164,16 @@ export function ReservasClient({
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
             >
               ⚙️ Espaços
+            </button>
+          )}
+          {podeAtualizar && (
+            <button
+              onClick={enviarLembretes}
+              disabled={enviandoLembretes}
+              className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              title="Manda agora o lembrete de confirmação no WhatsApp pras reservas de amanhã (igual o cron das 17h)"
+            >
+              {enviandoLembretes ? 'Enviando…' : '🔔 Lembretes amanhã'}
             </button>
           )}
           {podeCriar && (
