@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface AreaPub {
   nome: string;
@@ -39,6 +39,39 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [erro, setErro] = useState<string | null>(null);
   const [dicaTeste, setDicaTeste] = useState<string | null>(null);
   const [zapEnviado, setZapEnviado] = useState(false);
+  const [voltou, setVoltou] = useState<string | null>(null);
+
+  // Reconhece cliente recorrente: ao digitar o WhatsApp, busca o nome de
+  // reservas anteriores e autopreenche (sem sobrescrever se já digitou).
+  const nomeAutoRef = useRef(false); // só autopreenche 1x e se o nome estava vazio
+  useEffect(() => {
+    const dig = whatsapp.replace(/\D/g, '');
+    if (dig.length < 10) {
+      setVoltou(null);
+      return;
+    }
+    let cancelado = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/reservar/${token}/cliente?tel=${encodeURIComponent(whatsapp)}`);
+        const d = await r.json().catch(() => ({}));
+        if (cancelado || !d?.found) return;
+        const primeiro = String(d.nome).trim().split(' ')[0];
+        setVoltou(primeiro);
+        if (!nome.trim() && !nomeAutoRef.current) {
+          setNome(d.nome);
+          nomeAutoRef.current = true;
+        }
+      } catch {
+        /* ignora */
+      }
+    }, 450);
+    return () => {
+      cancelado = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [whatsapp, token]);
 
   const areaSel = areas.find((a) => a.nome === espaco);
   const limite = areaSel?.horaLimite ?? null;
@@ -222,6 +255,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div>
           <label className={lbl}>WhatsApp</label>
           <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" />
+          {voltou && (
+            <p className="mt-1.5 rounded-lg bg-[#fff4e6] px-2.5 py-1.5 text-xs text-[#b3411c]">
+              👋 Que bom te ver de novo, <b>{voltou}</b>! Já preenchemos seu nome.
+            </p>
+          )}
         </div>
         <div>
           <label className={lbl}>Observação (opcional)</label>
