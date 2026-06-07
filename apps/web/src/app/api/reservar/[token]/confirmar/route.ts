@@ -3,7 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
@@ -96,6 +96,43 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     await db.update(schema.reservaOtp).set({ verificadoEm: new Date() }).where(eq(schema.reservaOtp.id, otp.id));
   }
 
+  // ALOCAÇÃO DE MESA — a mesa é a unidade: reservar = tirar a mesa INTEIRA do
+  // estoque (mesmo que 1 pessoa numa mesa de 4). Pega a MENOR mesa livre do
+  // espaço que comporta o grupo. Sem mesa livre → lotado (bloqueia).
+  // Se o espaço não tem mesas cadastradas, segue sem mesa (fallback).
+  let mesaAlocada: string | null = null;
+  const mesasDoEspaco = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
+  if (mesasDoEspaco.length > 0) {
+    const ativas = await db
+      .select({ mesa: schema.reserva.mesa })
+      .from(schema.reserva)
+      .where(
+        and(
+          eq(schema.reserva.filialId, filial.id),
+          eq(schema.reserva.data, data),
+          eq(schema.reserva.area, espaco),
+          inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada']),
+        ),
+      );
+    const ocupadas = new Set(ativas.filter((r) => r.mesa).map((r) => String(r.mesa)));
+    const ordenadas = mesasDoEspaco.slice().sort((a, b) => a.lugares - b.lugares);
+    const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
+    if (cabem.length === 0) {
+      return NextResponse.json(
+        { error: `Não temos mesa para ${pessoas} pessoa(s) em ${espaco}. Tente outro espaço.` },
+        { status: 409 },
+      );
+    }
+    const livre = cabem.find((m) => !ocupadas.has(String(m.numero)));
+    if (!livre) {
+      return NextResponse.json(
+        { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
+        { status: 409 },
+      );
+    }
+    mesaAlocada = String(livre.numero);
+  }
+
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
   const cancelToken = randomBytes(24).toString('hex');
   const [nova] = await db
@@ -109,6 +146,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       hora,
       status: 'confirmada',
       area: espaco,
+      mesa: mesaAlocada,
       canal: 'site',
       observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
       valor: String(valorAtual.toFixed(2)),
