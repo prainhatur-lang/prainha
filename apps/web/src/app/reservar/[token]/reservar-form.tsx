@@ -303,8 +303,14 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         </div>
         <div>
           <label className={lbl}>Qual bebida você mais gosta? 🍹 (opcional)</label>
-          <input value={preferencias} onChange={(e) => setPref(e.target.value)} className={inp} placeholder="Ex.: gin tônica, caipirinha de morango, cerveja gelada…" />
-          <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa preparada pra quando você chegar 🌅</p>
+          <input value={preferencias} onChange={(e) => setPref(e.target.value)} className={inp} placeholder="Ex.: gin tônica, caipirinha de morango, Heineken…" />
+          {/^.*(cerveja|brej|beer|chopp|chope)/i.test(preferencias) ? (
+            <p className="mt-1 rounded-lg bg-[#fff4e6] px-2.5 py-1.5 text-[11px] text-[#b3411c]">
+              🍺 Qual <b>marca</b> de cerveja? (ex.: Heineken, Stella, Original, Budweiser) — pra já deixar gelada pra você.
+            </p>
+          ) : (
+            <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa preparada pra quando você chegar 🌅</p>
+          )}
         </div>
       </div>
 
