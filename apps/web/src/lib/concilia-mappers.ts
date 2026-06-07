@@ -227,9 +227,12 @@ async function mapFornecedores(filialId: string, op: Operacao, chave: string, d:
         razaoSocial: row.razaoSocial,
         cnpjOuCpf: row.cnpjOuCpf,
         rgOuIe: row.rgOuIe,
-        email: row.email,
-        fonePrincipal: row.fonePrincipal,
-        foneSecundario: row.foneSecundario,
+        // Contatos (email/telefones): só sobrescreve se o Consumer mandar valor.
+        // Se vier vazio, PRESERVA o que foi cadastrado no concilia (ex.: telefone
+        // do fornecedor pra cotação no WhatsApp) — senão o sync apaga toda hora.
+        email: drizzleSql`COALESCE(NULLIF(excluded.email, ''), ${schema.fornecedor.email})`,
+        fonePrincipal: drizzleSql`COALESCE(NULLIF(excluded.fone_principal, ''), ${schema.fornecedor.fonePrincipal})`,
+        foneSecundario: drizzleSql`COALESCE(NULLIF(excluded.fone_secundario, ''), ${schema.fornecedor.foneSecundario})`,
         dataDelete: row.dataDelete,
         versaoReg: row.versaoReg,
         sincronizadoEm: row.sincronizadoEm,
