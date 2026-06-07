@@ -78,6 +78,29 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const gratis = valorAtual === 0;
 
+  // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a unidade).
+  const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/reservar/${token}/disponibilidade?data=${data}`);
+        const d = await r.json().catch(() => ({}));
+        if (cancel || !Array.isArray(d?.areas)) return;
+        const m: Record<string, { total: number; livres: number }> = {};
+        for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres };
+        setDispon(m);
+      } catch {
+        /* ignora */
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [data, token]);
+  const espacoSelLotado = !!dispon[espaco] && dispon[espaco].livres === 0;
+
   // Modo confianca: valida campos e cria a reserva direto (sem código).
   async function reservarDireto() {
     if (!nome.trim()) return setErro('Informe seu nome');
@@ -223,12 +246,23 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <label className={lbl}>Espaço</label>
           {areas.length > 0 ? (
             <select value={espaco} onChange={(e) => setEspaco(e.target.value)} className={inp}>
-              {areas.map((a) => (
-                <option key={a.nome} value={a.nome}>{a.nome}{a.horaLimite ? ` (até ${a.horaLimite})` : ''}</option>
-              ))}
+              {areas.map((a) => {
+                const d = dispon[a.nome];
+                const disp = d ? (d.livres === 0 ? ' · LOTADO' : ` · ${d.livres} mesa${d.livres > 1 ? 's' : ''} livre${d.livres > 1 ? 's' : ''}`) : '';
+                return (
+                  <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>
+                    {a.nome}{a.horaLimite ? ` (até ${a.horaLimite})` : ''}{disp}
+                  </option>
+                );
+              })}
             </select>
           ) : (
             <p className="mt-1 text-sm text-[#b3411c]">Nenhum espaço disponível para reserva.</p>
+          )}
+          {espacoSelLotado && (
+            <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
+              😕 {espaco} está <b>lotado</b> nesse dia. Escolha outro espaço ou outra data.
+            </p>
           )}
         </div>
         <div className="flex gap-3">
@@ -268,7 +302,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       </div>
 
       {erro && <p className="mt-3 text-center text-xs text-[#b3411c]">{erro}</p>}
-      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0} className={btn}>
+      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0 || espacoSelLotado} className={btn}>
         {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar mesa' : 'Continuar'}
       </button>
       <p className="mt-3 text-center text-[11px] text-[#8a7a64]">
