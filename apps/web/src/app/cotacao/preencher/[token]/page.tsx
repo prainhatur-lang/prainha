@@ -13,7 +13,10 @@ export const dynamic = 'force-dynamic';
 export default async function PreencherCotacaoPage(props: {
   params: Promise<{ token: string }>;
 }) {
-  const { token } = await props.params;
+  const { token: rawToken } = await props.params;
+  // Alguns botoes de URL dinamica da Meta ANEXAM a variavel no fim da base em
+  // vez de substituir o {{1}} — chega "{{1}}cot_xxx". Limpa o prefixo {{N}}.
+  const token = rawToken.replace(/^(\{\{\d+\}\})+/, '');
 
   // Busca cotacao_fornecedor pelo token
   const [cf] = await db

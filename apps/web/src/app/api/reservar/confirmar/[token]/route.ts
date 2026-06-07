@@ -9,7 +9,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(_req: Request, { params }: { params: Promise<{ token: string }> }) {
-  const { token } = await params;
+  const { token: rawToken } = await params;
+  const token = rawToken.replace(/^(\{\{\d+\}\})+/, '');
   if (!token || token.length < 20) return NextResponse.json({ error: 'token inválido' }, { status: 404 });
 
   const upd = await db

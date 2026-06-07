@@ -23,7 +23,8 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ token: string }> },
 ) {
-  const { token } = await params;
+  const { token: rawToken } = await params;
+  const token = rawToken.replace(/^(\{\{\d+\}\})+/, '');
 
   const [cf] = await db
     .select()
