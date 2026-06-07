@@ -118,11 +118,10 @@ export async function enviarConviteCotacao(
 }
 
 /** Lembrete de confirmacao de reserva (vespera ~17h) — WHATSAPP_LEMBRETE_TEMPLATE
- *  (UTILIDADE). Template sugerido (corpo): "Olá {{1}}! Sua reserva no Prainha é
- *  amanhã, {{2}} às {{3}} ({{4}}). Você confirma presença? Toque no botão abaixo."
- *  + botão URL DINÂMICO "Confirmar reserva" base
- *  https://app.prainhabar.com/reservar/confirmar/ e variável {{1}} = token.
- *  Vars corpo: {{1}} nome, {{2}} data, {{3}} hora, {{4}} local; botão {{1}} = token. */
+ *  (UTILIDADE). Template tem 4 vars no corpo (nome, data, hora, local) + 2 botoes
+ *  de RESPOSTA RAPIDA (quick_reply): "Confirmar presenca" e "Cancelar". O cliente
+ *  responde DENTRO do WhatsApp (sem abrir site); a resposta chega no webhook
+ *  /api/whatsapp/webhook com o payload "confirmar:<token>" / "cancelar:<token>". */
 export function lembreteReservaConfigurado(): boolean {
   return !!(
     (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
@@ -158,7 +157,8 @@ export async function enviarLembreteReserva(
             type: 'body',
             parameters: [vars.nome, vars.data, vars.hora, vars.local].map((t) => ({ type: 'text', text: String(t) })),
           },
-          { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: vars.token }] },
+          { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `confirmar:${vars.token}` }] },
+          { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `cancelar:${vars.token}` }] },
         ],
       },
     }),
@@ -168,6 +168,25 @@ export async function enviarLembreteReserva(
     throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
   }
   return true;
+}
+
+/** Envia um texto livre (so funciona dentro da janela de 24h apos o cliente
+ *  mandar mensagem — ex.: logo apos ele tocar num botao). Best-effort. */
+export async function enviarTextoWhatsApp(telefone: string, texto: string): Promise<boolean> {
+  const tokenEnv = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META;
+  if (!tokenEnv || !process.env.WHATSAPP_PHONE_ID) return false;
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tokenEnv}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'text',
+      text: { body: texto },
+    }),
+  });
+  return resp.ok;
 }
 
 /** Envio do PEDIDO de compra pro fornecedor (WHATSAPP_PEDIDO_TEMPLATE — UTILIDADE).
