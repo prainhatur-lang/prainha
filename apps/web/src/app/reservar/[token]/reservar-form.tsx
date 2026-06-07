@@ -34,6 +34,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [nome, setNome] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
   const [observacao, setObs] = useState('');
+  const [preferencias, setPref] = useState('');
   const [codigo, setCodigo] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -62,6 +63,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           setNome(d.nome);
           nomeAutoRef.current = true;
         }
+        if (d.preferencias && !preferencias.trim()) setPref(d.preferencias);
       } catch {
         /* ignora */
       }
@@ -144,7 +146,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -298,6 +300,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div>
           <label className={lbl}>Observação (opcional)</label>
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />
+        </div>
+        <div>
+          <label className={lbl}>Gosto especial / preferência (opcional)</label>
+          <input value={preferencias} onChange={(e) => setPref(e.target.value)} className={inp} placeholder="Ex.: gin tônica, camarão, sem pimenta…" />
+          <p className="mt-1 text-[11px] text-[#8a7a64]">Conta o que você curte que a gente já deixa pronto pra você 🌅</p>
         </div>
       </div>
 

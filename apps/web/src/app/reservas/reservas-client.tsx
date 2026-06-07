@@ -38,6 +38,7 @@ export interface ReservaItem {
   mesa: string | null;
   canal: string;
   observacao: string | null;
+  preferencias: string | null;
   origemExterna: string | null;
   lembreteConfirmacaoEm?: string | null;
   confirmadaClienteEm?: string | null;
@@ -338,6 +339,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaI
             {r.clienteTelefone && <span className="font-mono">{r.clienteTelefone}</span>}
           </div>
           {r.observacao && <p className="mt-1 text-xs text-slate-600">“{r.observacao}”</p>}
+          <PreferenciasInline reservaId={r.id} inicial={r.preferencias} podeAtualizar={podeAtualizar} onMudou={onMudou} />
         </div>
         {r.clienteTelefone && (
           <a href={whatsappLink(r.clienteTelefone, r.clienteNome)} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700">💬</a>
@@ -353,6 +355,59 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaI
       )}
     </div>
   );
+}
+
+function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { reservaId: string; inicial: string | null; podeAtualizar: boolean; onMudou: () => void }) {
+  const [editando, setEditando] = useState(false);
+  const [val, setVal] = useState(inicial ?? '');
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    setSalvando(true);
+    try {
+      await fetch(`/api/reservas/${reservaId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferencias: val }),
+      });
+      setEditando(false);
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (editando) {
+    return (
+      <div className="mt-1 flex items-center gap-1.5">
+        <input
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') salvar(); if (e.key === 'Escape') setEditando(false); }}
+          autoFocus
+          placeholder="Ex.: gin tônica, camarão, sem pimenta…"
+          className="flex-1 rounded border border-amber-300 px-2 py-1 text-xs"
+        />
+        <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
+        <button onClick={() => { setVal(inicial ?? ''); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+      </div>
+    );
+  }
+
+  if (inicial) {
+    return (
+      <p className="mt-1 flex items-center gap-1 text-xs text-amber-800">
+        🍹 <span className="font-medium">{inicial}</span>
+        {podeAtualizar && <button onClick={() => setEditando(true)} className="text-[10px] text-slate-400 hover:text-slate-600">✎</button>}
+      </p>
+    );
+  }
+  if (podeAtualizar) {
+    return (
+      <button onClick={() => setEditando(true)} className="mt-1 text-[11px] text-slate-400 hover:text-amber-700">+ gosto especial</button>
+    );
+  }
+  return null;
 }
 
 function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string }) {

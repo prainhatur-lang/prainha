@@ -44,10 +44,26 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     .limit(1);
 
   if (!r?.nome) return NextResponse.json({ found: false });
+
+  // Preferências mais recentes não-vazias desse cliente (segue o telefone).
+  const [pref] = await db
+    .select({ preferencias: schema.reserva.preferencias })
+    .from(schema.reserva)
+    .where(
+      and(
+        sql`regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
+        sql`${schema.reserva.preferencias} IS NOT NULL`,
+        sql`length(trim(${schema.reserva.preferencias})) > 1`,
+      ),
+    )
+    .orderBy(desc(schema.reserva.criadoEm))
+    .limit(1);
+
   return NextResponse.json({
     found: true,
     nome: r.nome,
     area: r.area ?? null,
     pessoas: r.pessoas ?? null,
+    preferencias: pref?.preferencias ?? null,
   });
 }

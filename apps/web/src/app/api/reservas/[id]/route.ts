@@ -27,6 +27,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (b?.area !== undefined) set.area = typeof b.area === 'string' && b.area.trim() ? b.area.trim().slice(0, 100) : null;
   if (b?.observacao !== undefined)
     set.observacao = typeof b.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null;
+  if (b?.preferencias !== undefined)
+    set.preferencias = typeof b.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null;
 
   if (Object.keys(set).length === 1) {
     return NextResponse.json({ error: 'nada para atualizar' }, { status: 400 });

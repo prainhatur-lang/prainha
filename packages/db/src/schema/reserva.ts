@@ -35,6 +35,9 @@ export const reserva = pgTable(
     canal: varchar('canal', { length: 30 }).notNull().default('outro'),
     /** Observacao do cliente / da reserva. */
     observacao: text('observacao'),
+    /** Gosto/preferencia de consumo do cliente (ex: "gin tonica, camarao, sem
+     *  pimenta") — pra equipe adiantar o atendimento. Segue o cliente (telefone). */
+    preferencias: text('preferencias'),
     /** Sistema de origem quando importada (ex: "tagme"). Null = criada no concilia. */
     origemExterna: varchar('origem_externa', { length: 30 }),
     /** Id da reserva no sistema externo (pra dedupe no import). */

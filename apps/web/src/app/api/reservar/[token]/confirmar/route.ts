@@ -149,6 +149,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       mesa: mesaAlocada,
       canal: 'site',
       observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
+      preferencias: typeof b?.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null,
       valor: String(valorAtual.toFixed(2)),
       cancelToken,
     })

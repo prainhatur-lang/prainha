@@ -43,7 +43,8 @@
     "seed:compras": "tsx scripts/seed-compras.ts",
     "seed:fornecedores": "tsx scripts/seed-fornecedores.ts",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate:reserva-preferencias": "tsx scripts/migrate-reserva-preferencias.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
