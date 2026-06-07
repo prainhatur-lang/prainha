@@ -61,6 +61,9 @@ export async function proxy(request: NextRequest) {
   const isAvaliarPublico = path.startsWith('/avaliar/');
   // /reservar/[token] eh a pagina publica de reserva do cliente (sem login).
   const isReservarPublico = path.startsWith('/reservar/');
+  // /cotacao/preencher/[token] eh a pagina publica do FORNECEDOR responder a
+  // cotacao (link enviado no WhatsApp; token = autenticacao, sem login).
+  const isCotacaoPublica = path.startsWith('/cotacao/preencher/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -70,7 +73,8 @@ export async function proxy(request: NextRequest) {
     isNotaBoletoPublico ||
     isAgenteRelease ||
     isAvaliarPublico ||
-    isReservarPublico;
+    isReservarPublico ||
+    isCotacaoPublica;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
