@@ -4,9 +4,10 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
+import { EnviarPedidoButton } from './enviar-pedido-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,12 +56,52 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       enviadoEm: schema.pedidoCompra.enviadoEm,
       criadoEm: schema.pedidoCompra.criadoEm,
       fornecedorNome: schema.fornecedor.nome,
+      fornecedorFone: schema.fornecedor.fonePrincipal,
     })
     .from(schema.pedidoCompra)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.pedidoCompra.fornecedorId))
     .where(eq(schema.pedidoCompra.filialId, filial.id))
     .orderBy(desc(schema.pedidoCompra.criadoEm))
     .limit(100);
+
+  // Itens de todos os pedidos listados (pra montar o resumo do WhatsApp).
+  const pedidoIds = pedidos.map((p) => p.id);
+  const itensRows = pedidoIds.length
+    ? await db
+        .select({
+          pedidoId: schema.pedidoCompraItem.pedidoCompraId,
+          quantidade: schema.pedidoCompraItem.quantidade,
+          precoUnitario: schema.pedidoCompraItem.precoUnitario,
+          valorTotal: schema.pedidoCompraItem.valorTotal,
+          produtoNome: schema.produto.nome,
+          unidade: schema.produto.unidadeEstoque,
+        })
+        .from(schema.pedidoCompraItem)
+        .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+        .where(inArray(schema.pedidoCompraItem.pedidoCompraId, pedidoIds))
+    : [];
+  const itensPorPedido = new Map<string, typeof itensRows>();
+  for (const it of itensRows) {
+    const arr = itensPorPedido.get(it.pedidoId) ?? [];
+    arr.push(it);
+    itensPorPedido.set(it.pedidoId, arr);
+  }
+
+  function montarMensagem(p: (typeof pedidos)[number]): string {
+    const itens = itensPorPedido.get(p.id) ?? [];
+    const linhas = itens.map((i) => {
+      const q = Number(i.quantidade);
+      const pu = Number(i.precoUnitario);
+      return `• ${i.produtoNome} — ${q.toLocaleString('pt-BR')} ${i.unidade} x ${brl(pu)} = ${brl(Number(i.valorTotal))}`;
+    });
+    const nome = (p.fornecedorNome ?? '').split(' ')[0] || 'tudo bem';
+    return (
+      `Olá ${nome}! Pedido de compra do ${filial.nome} (nº ${p.numero}):\n\n` +
+      `${linhas.join('\n')}\n\n` +
+      `Total: ${p.valorTotal != null ? brl(Number(p.valorTotal)) : '—'}\n\n` +
+      `Você confirma que consegue entregar? Prazo pra retorno: 4h. Obrigado!`
+    );
+  }
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -92,6 +133,7 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                   <th className="px-3 py-2 text-left font-medium">Fornecedor</th>
                   <th className="px-3 py-2 text-left font-medium">Status</th>
                   <th className="px-3 py-2 text-right font-medium">Valor total</th>
+                  <th className="px-3 py-2 text-center font-medium">WhatsApp</th>
                   <th className="px-3 py-2 text-left font-medium">Cotação</th>
                   <th className="px-3 py-2 text-left font-medium">Criado em</th>
                 </tr>
@@ -108,6 +150,14 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                       </td>
                       <td className="px-3 py-2 text-right font-medium text-slate-900">
                         {p.valorTotal != null ? brl(Number(p.valorTotal)) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <EnviarPedidoButton
+                          pedidoId={p.id}
+                          telefone={p.fornecedorFone}
+                          mensagem={montarMensagem(p)}
+                          jaEnviado={!!p.enviadoEm}
+                        />
                       </td>
                       <td className="px-3 py-2">
                         {p.cotacaoId ? (
