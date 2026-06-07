@@ -385,7 +385,7 @@ function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { re
           onChange={(e) => setVal(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') salvar(); if (e.key === 'Escape') setEditando(false); }}
           autoFocus
-          placeholder="Ex.: gin tônica, camarão, sem pimenta…"
+          placeholder="Bebida favorita / gosto: gin tônica, caipirinha…"
           className="flex-1 rounded border border-amber-300 px-2 py-1 text-xs"
         />
         <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
@@ -404,7 +404,7 @@ function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { re
   }
   if (podeAtualizar) {
     return (
-      <button onClick={() => setEditando(true)} className="mt-1 text-[11px] text-slate-400 hover:text-amber-700">+ gosto especial</button>
+      <button onClick={() => setEditando(true)} className="mt-1 text-[11px] text-slate-400 hover:text-amber-700">+ bebida favorita / gosto</button>
     );
   }
   return null;

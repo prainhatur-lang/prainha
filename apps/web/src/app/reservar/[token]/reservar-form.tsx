@@ -302,9 +302,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />
         </div>
         <div>
-          <label className={lbl}>Gosto especial / preferência (opcional)</label>
-          <input value={preferencias} onChange={(e) => setPref(e.target.value)} className={inp} placeholder="Ex.: gin tônica, camarão, sem pimenta…" />
-          <p className="mt-1 text-[11px] text-[#8a7a64]">Conta o que você curte que a gente já deixa pronto pra você 🌅</p>
+          <label className={lbl}>Qual bebida você mais gosta? 🍹 (opcional)</label>
+          <input value={preferencias} onChange={(e) => setPref(e.target.value)} className={inp} placeholder="Ex.: gin tônica, caipirinha de morango, cerveja gelada…" />
+          <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa preparada pra quando você chegar 🌅</p>
         </div>
       </div>
 
