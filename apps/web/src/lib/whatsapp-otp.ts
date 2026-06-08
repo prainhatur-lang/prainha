@@ -66,10 +66,12 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
 
 /** Convite de cotacao pro fornecedor (WHATSAPP_COTACAO_TEMPLATE — UTILIDADE).
  *  Corpo (texto 100% utilidade, sem tom promocional — evita recategorizacao
- *  pra Marketing que a Meta fez na v1 por "queremos o seu melhor preco/Obrigado!"):
+ *  pra Marketing que a Meta fez na v1 por "queremos o seu melhor preco/Obrigado!").
+ *  IMPORTANTE: o corpo NAO pode terminar numa variavel (regra da Meta) — por isso
+ *  o {{3}} (prazo) fica no meio e a frase acaba em texto fixo:
  *    "Ola, {{1}}. {{2}} abriu uma solicitacao de cotacao de precos para voce,
- *     fornecedor cadastrado. Acesse o link abaixo para informar os valores dos
- *     itens solicitados. Prazo para resposta: {{3}}."
+ *     fornecedor cadastrado. O prazo para resposta e {{3}}. Acesse o link abaixo
+ *     para informar os valores dos itens solicitados."
  *  + botao URL DINAMICO "Responder cotacao" base
  *  https://app.prainhabar.com/cotacao/preencher/ e variavel {{1}} = token.
  *  Vars na ordem (INALTERADAS): {{1}} nome, {{2}} filial, {{3}} prazo; botao {{1}} = token.
