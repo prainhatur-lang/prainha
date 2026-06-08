@@ -65,11 +65,16 @@ export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promi
 }
 
 /** Convite de cotacao pro fornecedor (WHATSAPP_COTACAO_TEMPLATE — UTILIDADE).
- *  Template sugerido (corpo): "Olá {{1}}! Aqui é do {{2}}. Estamos cotando alguns
- *  itens e queremos o seu melhor preço. Toque no botão abaixo para responder até
- *  {{3}} (prazo de 4h). Obrigado!" + botão URL DINÂMICO "Responder cotação" com
- *  base https://app.prainhabar.com/cotacao/preencher/ e variável {{1}} = token.
- *  Vars na ordem: {{1}} nome, {{2}} filial, {{3}} prazo; botão {{1}} = token. */
+ *  Corpo (texto 100% utilidade, sem tom promocional — evita recategorizacao
+ *  pra Marketing que a Meta fez na v1 por "queremos o seu melhor preco/Obrigado!"):
+ *    "Ola, {{1}}. {{2}} abriu uma solicitacao de cotacao de precos para voce,
+ *     fornecedor cadastrado. Acesse o link abaixo para informar os valores dos
+ *     itens solicitados. Prazo para resposta: {{3}}."
+ *  + botao URL DINAMICO "Responder cotacao" base
+ *  https://app.prainhabar.com/cotacao/preencher/ e variavel {{1}} = token.
+ *  Vars na ordem (INALTERADAS): {{1}} nome, {{2}} filial, {{3}} prazo; botao {{1}} = token.
+ *  Recriar template como UTILIDADE com esse corpo e apontar WHATSAPP_COTACAO_TEMPLATE
+ *  pro novo nome (ex.: convite_cotacao_util). Nenhuma mudanca de codigo necessaria. */
 export function conviteCotacaoConfigurado(): boolean {
   return !!(
     (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
