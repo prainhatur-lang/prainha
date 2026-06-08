@@ -115,6 +115,24 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
           <p className="mt-0.5 text-xs text-slate-500">
             {filial.nome} · {pedidos.length} pedidos · gerados a partir de cotações aprovadas
           </p>
+          {filiais.length > 1 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-slate-500">Filial:</span>
+              {filiais.map((f) => (
+                <Link
+                  key={f.id}
+                  href={`/compras/pedidos?filialId=${f.id}`}
+                  className={`rounded-md border px-3 py-1 text-xs ${
+                    f.id === filial.id
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {f.nome}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {pedidos.length === 0 ? (
