@@ -9,6 +9,8 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { eq, max } from 'drizzle-orm';
 import { calcularAlocacaoCotacao } from '@/lib/cotacao-alocacao';
+import { pedidoCompraConfigurado } from '@/lib/whatsapp-otp';
+import { enviarPedidoAuto } from '@/lib/enviar-pedido';
 
 export async function POST(
   _req: Request,
@@ -97,9 +99,29 @@ export async function POST(
     .set({ status: 'APROVADA', aprovadaEm: new Date(), aprovadaPor: user.id })
     .where(eq(schema.cotacao.id, cotacaoId));
 
+  // Envia AUTOMATICAMENTE cada pedido gerado pro fornecedor (quando o WhatsApp
+  // de pedido esta configurado). Resiliente: falha de um envio nao derruba a
+  // aprovacao — o pedido fica GERADO e pode ser reenviado na tela de pedidos.
+  let enviados = 0;
+  const falhasEnvio: Array<{ numero: number; error: string }> = [];
+  if (pedidoCompraConfigurado()) {
+    for (const ped of pedidosCriados) {
+      try {
+        const r = await enviarPedidoAuto(ped.id);
+        if (r.ok) enviados++;
+        else falhasEnvio.push({ numero: ped.numero, error: r.error ?? 'falha' });
+      } catch (e) {
+        falhasEnvio.push({ numero: ped.numero, error: (e as Error).message });
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     pedidos: pedidosCriados,
+    enviados,
+    envioConfigurado: pedidoCompraConfigurado(),
+    falhasEnvio,
     reassigned: alocacao.reassignados.length,
     orfaos: alocacao.orfaos.length,
     totalGeral: alocacao.totalGeral,

@@ -12,7 +12,8 @@ export function AprovarButton({ cotacaoId }: { cotacaoId: string }) {
   async function aprovar() {
     if (
       !confirm(
-        'Confirmar aprovação? Vai gerar 1 pedido por fornecedor vencedor.\n\n' +
+        'Confirmar aprovação? Vai gerar 1 pedido por fornecedor vencedor e ' +
+          'ENVIAR cada pedido pro fornecedor no WhatsApp automaticamente.\n\n' +
           'Se algum fornecedor não atingir o valor mínimo de pedido, os itens dele ' +
           'são reassignados pro próximo colocado.',
       )
@@ -29,8 +30,21 @@ export function AprovarButton({ cotacaoId }: { cotacaoId: string }) {
       }
       const partes: string[] = [];
       partes.push(`${(d.pedidos as unknown[]).length} pedido(s) gerado(s)`);
+      if (d.envioConfigurado) {
+        partes.push(`${d.enviados ?? 0} enviado(s) no WhatsApp`);
+      } else {
+        partes.push('envio automático desligado — enviar manualmente em Pedidos');
+      }
       if (d.reassigned) partes.push(`${d.reassigned} item(s) reassignado(s) por valor mínimo`);
       setInfo(`✓ ${partes.join(' · ')}`);
+      const falhas = (d.falhasEnvio ?? []) as Array<{ numero: number; error: string }>;
+      if (falhas.length) {
+        setErro(
+          'Não enviados: ' +
+            falhas.map((f) => `pedido #${f.numero} (${f.error})`).join('; ') +
+            '. Reenvie em Pedidos.',
+        );
+      }
       start(() => router.refresh());
     } catch (err) {
       setErro((err as Error).message);
