@@ -55,24 +55,48 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
         aria-hidden
       />
 
-      <div className="relative w-full max-w-md">
-        <div className="mb-6 text-center">
-          <span
-            className="text-3xl tracking-tight text-[#fbf6ec]"
-            style={{ fontFamily: 'var(--rsv-display)' }}
-          >
-            Prainha<span className="text-[#f4b454]">.</span>
-          </span>
+      <div className="relative w-full max-w-md lg:max-w-5xl">
+        <div className="lg:grid lg:grid-cols-2 lg:items-center lg:gap-14">
+          {/* Marca + destaque (no computador vira um painel à esquerda) */}
+          <div className="mb-6 text-center lg:mb-0 lg:text-left">
+            <span
+              className="text-3xl tracking-tight text-[#fbf6ec] lg:text-4xl"
+              style={{ fontFamily: 'var(--rsv-display)' }}
+            >
+              Prainha<span className="text-[#f4b454]">.</span>
+            </span>
+            {/* Conteúdo extra só no computador */}
+            <div className="mt-7 hidden lg:block">
+              <h1
+                className="text-[2.6rem] leading-[1.05] text-[#fbf6ec]"
+                style={{ fontFamily: 'var(--rsv-display)' }}
+              >
+                Sua mesa com o melhor pôr do sol de Sergipe.
+              </h1>
+              <p className="mt-5 max-w-sm text-[15px] leading-relaxed text-[#fbf6ec]/85">
+                À beira do rio Vaza Barris, em Matapoã. Reserve em 1 minuto e a
+                gente garante seu lugar pra hora dourada.
+              </p>
+              <ul className="mt-7 space-y-3 text-sm text-[#fbf6ec]/90">
+                <li>🌅 Vista do pôr do sol</li>
+                <li>🍤 Frutos do mar fresquinhos</li>
+                <li>📍 À beira do rio, em Matapoã</li>
+              </ul>
+            </div>
+          </div>
+          {/* Formulário */}
+          <div className="lg:max-w-md">
+            <ReservarForm
+              token={token}
+              nomeFilial={filial.nome}
+              areas={areas}
+              valorCheio={typeof cfg?.valorCheio === 'number' ? cfg.valorCheio : null}
+              valorAtual={typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0}
+              hoje={hojeBr()}
+              semOtp={!!cfg?.semOtp}
+            />
+          </div>
         </div>
-        <ReservarForm
-          token={token}
-          nomeFilial={filial.nome}
-          areas={areas}
-          valorCheio={typeof cfg?.valorCheio === 'number' ? cfg.valorCheio : null}
-          valorAtual={typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0}
-          hoje={hojeBr()}
-          semOtp={!!cfg?.semOtp}
-        />
       </div>
     </main>
   );
