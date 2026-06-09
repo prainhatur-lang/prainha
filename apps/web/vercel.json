@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/lembrete-reserva",
-      "schedule": "30 1 * * *"
+      "schedule": "47 2 * * *"
     }
   ]
 }

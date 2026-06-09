@@ -1,5 +1,5 @@
 // GET /api/cron/lembrete-reserva
-// Cron diário (01:30 UTC → 22:30 BRT): manda na VÉSPERA o lembrete pedindo pro
+// Cron diário (02:47 UTC → 23:47 BRT): manda na VÉSPERA o lembrete pedindo pro
 // cliente confirmar a reserva do dia seguinte. Auth: Bearer CRON_SECRET.
 
 import { NextResponse } from 'next/server';
