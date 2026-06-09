@@ -144,7 +144,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       pessoas,
       data,
       hora,
-      status: 'confirmada',
+      // Nasce "feita" (pendente). Vira "confirmada" só quando o cliente
+      // confirmar a presença pelo lembrete da véspera.
+      status: 'pendente',
       area: espaco,
       mesa: mesaAlocada,
       canal: 'site',

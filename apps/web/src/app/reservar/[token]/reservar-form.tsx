@@ -175,7 +175,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       <div className={`${card} text-center`}>
         <div className="text-6xl">{zapEnviado ? '📲' : '🌅'}</div>
         <h1 className="mt-4 text-3xl leading-tight text-[#b3411c]" style={serif}>
-          {zapEnviado ? 'Reserva enviada pro seu WhatsApp!' : 'Reserva confirmada!'}
+          {zapEnviado ? 'Reserva enviada pro seu WhatsApp!' : 'Reserva feita!'}
         </h1>
         <p className="mt-3 text-base text-[#4a382a]">
           {zapEnviado ? (

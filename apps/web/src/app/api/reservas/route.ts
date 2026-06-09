@@ -33,7 +33,8 @@ export async function POST(request: Request) {
 
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 999) : 1;
   const canal = CANAIS.has(b?.canal) ? b.canal : 'outro';
-  const status = STATUS.has(b?.status) ? b.status : 'confirmada';
+  // Nasce "feita" (pendente) — só vira "confirmada" quando o cliente confirma.
+  const status = STATUS.has(b?.status) ? b.status : 'pendente';
   const txt = (v: unknown, max: number) =>
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
   const area = txt(b?.area, 100);

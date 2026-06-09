@@ -45,7 +45,7 @@ export interface ReservaItem {
 }
 
 const STATUS_INFO: Record<string, { txt: string; cls: string }> = {
-  pendente: { txt: 'Pendente', cls: 'bg-slate-100 text-slate-700' },
+  pendente: { txt: 'Feita', cls: 'bg-slate-100 text-slate-700' },
   confirmada: { txt: 'Confirmada', cls: 'bg-sky-100 text-sky-700' },
   sentada: { txt: 'Sentada', cls: 'bg-emerald-100 text-emerald-700' },
   cancelada: { txt: 'Cancelada', cls: 'bg-rose-100 text-rose-700' },
@@ -532,7 +532,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
       const r = await fetch('/api/reservas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, observacao, status: 'confirmada' }),
+        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, observacao, status: 'pendente' }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
