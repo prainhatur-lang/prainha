@@ -146,6 +146,9 @@ export const PERMISSOES: PermissaoDef[] = [
     { acao: 'configurar', descricao: 'Configurar espaços e horários limite de reserva' },
   ]),
 
+  // === Lista de espera (recepcao) ===
+  ...crud('lista_espera', 'lista de espera', []),
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

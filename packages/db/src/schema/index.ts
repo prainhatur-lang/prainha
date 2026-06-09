@@ -23,3 +23,4 @@ export * from './consumer_lookups';
 export * from './consumer_operacional';
 export * from './avaliacao';
 export * from './reserva';
+export * from './lista-espera';

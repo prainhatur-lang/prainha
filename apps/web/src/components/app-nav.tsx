@@ -49,6 +49,7 @@ const GRUPOS: Grupo[] = [
     label: 'Reservas',
     links: [
       { label: 'Agenda de reservas', href: '/reservas', perm: 'reserva.read' },
+      { label: 'Lista de espera', href: '/lista-espera', perm: 'lista_espera.read' },
     ],
   },
   {

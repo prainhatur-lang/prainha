@@ -263,6 +263,51 @@ export async function enviarPedidoCompra(
   return true;
 }
 
+/** Avisa o cliente da LISTA DE ESPERA que a mesa ficou pronta
+ *  (WHATSAPP_ESPERA_TEMPLATE — UTILIDADE). Corpo: {{1}} nome, {{2}} filial.
+ *  Corpo sugerido (NAO terminar em variavel): "Olá {{1}}! Sua mesa no {{2}} já
+ *  está pronta. Procure a recepção, por favor. Te esperamos!" Best-effort. */
+export function mesaProntaConfigurado(): boolean {
+  return !!(
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
+    process.env.WHATSAPP_PHONE_ID &&
+    process.env.WHATSAPP_ESPERA_TEMPLATE
+  );
+}
+
+export async function enviarMesaPronta(
+  telefone: string,
+  vars: { nome: string; filial: string },
+): Promise<boolean> {
+  if (!mesaProntaConfigurado()) return false;
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const phoneId = process.env.WHATSAPP_PHONE_ID!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
+  const template = process.env.WHATSAPP_ESPERA_TEMPLATE!;
+  const lang = process.env.WHATSAPP_ESPERA_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: template,
+        language: { code: lang },
+        components: [
+          { type: 'body', parameters: [vars.nome, vars.filial].map((t) => ({ type: 'text', text: String(t) })) },
+        ],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  return true;
+}
+
 /** Template de confirmacao de reserva (WHATSAPP_CONFIRMACAO_TEMPLATE). Envia os
  *  campos na ordem do template de Utilidade: {{1}} nome, {{2}} data, {{3}} hora,
  *  {{4}} espaco/mesa, {{5}} pessoas, {{6}} link de cancelamento.
