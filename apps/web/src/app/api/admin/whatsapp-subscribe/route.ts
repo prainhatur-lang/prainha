@@ -9,10 +9,19 @@ import { createClient } from '@/lib/supabase/server';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+export async function GET(req: Request) {
+  // Aceita: usuário logado OU ?key=<verify token do webhook> (pra rodar via URL
+  // direta sem depender da sessão do navegador).
+  const url = new URL(req.url);
+  const key = url.searchParams.get('key');
+  const expectedKey = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'prainha_zap_2026';
+  let autorizado = key != null && key === expectedKey;
+  if (!autorizado) {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    autorizado = !!user;
+  }
+  if (!autorizado) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
   const token = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META;
   const waba = process.env.WHATSAPP_WABA_ID || '2163799284418471';
