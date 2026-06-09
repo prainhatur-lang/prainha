@@ -19,6 +19,8 @@ interface SP {
 const BADGE_STATUS: Record<string, { label: string; cls: string }> = {
   GERADO: { label: 'Gerado', cls: 'bg-amber-100 text-amber-800' },
   ENVIADO: { label: 'Enviado', cls: 'bg-violet-100 text-violet-800' },
+  CONFIRMADO: { label: 'Confirmado pelo fornecedor', cls: 'bg-emerald-100 text-emerald-800' },
+  RECUSADO: { label: 'Fornecedor não atende', cls: 'bg-rose-100 text-rose-800' },
   ENTREGUE_PARCIAL: { label: 'Entrega parcial', cls: 'bg-sky-100 text-sky-800' },
   ENTREGUE_TOTAL: { label: 'Entregue', cls: 'bg-emerald-100 text-emerald-800' },
   RECONCILIADO: { label: 'Reconciliado com NF', cls: 'bg-emerald-200 text-emerald-900' },

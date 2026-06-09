@@ -72,6 +72,24 @@ export async function POST(req: Request) {
 async function tratarPayload(payload: string, from: string | null) {
   const [acao, token] = payload.split(':');
   if (!token || token.length < 20) return;
+
+  // --- Pedido de compra: fornecedor confirma/recusa (ped_ok / ped_nao). token = pedido.id ---
+  if (acao === 'ped_ok' || acao === 'ped_nao') {
+    const novo = acao === 'ped_ok' ? 'CONFIRMADO' : 'RECUSADO';
+    const upd = await db
+      .update(schema.pedidoCompra)
+      .set({ status: novo, atualizadoEm: sql`now()` })
+      .where(and(eq(schema.pedidoCompra.id, token), sql`${schema.pedidoCompra.status} NOT IN ('CANCELADO')`))
+      .returning({ numero: schema.pedidoCompra.numero });
+    if (upd.length && from) {
+      const msg = acao === 'ped_ok'
+        ? `✅ Pedido nº ${upd[0].numero} confirmado. Obrigado!`
+        : `Ok, registramos que o pedido nº ${upd[0].numero} não poderá ser atendido. Obrigado pelo retorno.`;
+      await enviarTextoWhatsApp(from, msg).catch(() => {});
+    }
+    return;
+  }
+
   if (acao !== 'confirmar' && acao !== 'cancelar') return;
 
   if (acao === 'confirmar') {

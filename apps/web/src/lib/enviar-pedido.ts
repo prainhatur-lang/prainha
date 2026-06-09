@@ -70,6 +70,7 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
       numero: String(p.numero),
       itens: itensStr || '(itens no sistema)',
       total: p.valorTotal != null ? brl(Number(p.valorTotal)) : '—',
+      pedidoId, // p/ o payload dos botões Confirmar/Não consigo
     });
   } catch (e) {
     return { ok: false, error: (e as Error).message };

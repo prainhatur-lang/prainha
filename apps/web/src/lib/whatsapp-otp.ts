@@ -197,11 +197,16 @@ export async function enviarTextoWhatsApp(telefone: string, texto: string): Prom
 }
 
 /** Envio do PEDIDO de compra pro fornecedor (WHATSAPP_PEDIDO_TEMPLATE — UTILIDADE).
- *  Template sugerido (corpo): "Olá {{1}}! Pedido de compra do {{2}} (nº {{3}}):
- *  {{4}}. Total: {{5}}. Você confirma que consegue entregar? Prazo para retorno:
- *  4 horas. Obrigado!" — SEM botão.
- *  Vars: {{1}} fornecedor, {{2}} filial, {{3}} numero, {{4}} itens (1 linha,
- *  sem quebra), {{5}} total. */
+ *  Corpo: {{1}} fornecedor, {{2}} filial, {{3}} numero, {{4}} itens (1 linha,
+ *  sem quebra), {{5}} total.
+ *  BOTÕES (opcional, igual ao lembrete de reserva): quando o template tem 2
+ *  botões de RESPOSTA RÁPIDA (Confirmar / Não consigo) E a env
+ *  WHATSAPP_PEDIDO_CONFIRM está ligada, manda os botões com payload
+ *  "ped_ok:<pedidoId>" / "ped_nao:<pedidoId>". O fornecedor responde dentro do
+ *  zap; o webhook /api/whatsapp/webhook atualiza o pedido pra CONFIRMADO/RECUSADO.
+ *  Corpo sugerido do template v2 (NÃO terminar em variável): "Olá {{1}}! Pedido
+ *  de compra do {{2}} (nº {{3}}): {{4}}. Total: {{5}}. Você consegue entregar?
+ *  Confirme em um dos botões abaixo. Prazo: 4 horas." */
 export function pedidoCompraConfigurado(): boolean {
   return !!(
     (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
@@ -212,7 +217,7 @@ export function pedidoCompraConfigurado(): boolean {
 
 export async function enviarPedidoCompra(
   telefone: string,
-  vars: { fornecedor: string; filial: string; numero: string; itens: string; total: string },
+  vars: { fornecedor: string; filial: string; numero: string; itens: string; total: string; pedidoId?: string },
 ): Promise<boolean> {
   if (!pedidoCompraConfigurado()) return false;
 
@@ -225,6 +230,18 @@ export async function enviarPedidoCompra(
   const limpa = (s: string) => s.replace(/\s+/g, ' ').trim();
   const ordem = [vars.fornecedor, vars.filial, vars.numero, vars.itens, vars.total];
 
+  const components: unknown[] = [
+    { type: 'body', parameters: ordem.map((t) => ({ type: 'text', text: limpa(String(t)) })) },
+  ];
+  // Botoes Confirmar / Nao consigo — so quando o template v2 tem os 2 quick_reply
+  // e a flag esta ligada (evita quebrar o template antigo sem botao).
+  if (process.env.WHATSAPP_PEDIDO_CONFIRM && vars.pedidoId) {
+    components.push(
+      { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `ped_ok:${vars.pedidoId}` }] },
+      { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `ped_nao:${vars.pedidoId}` }] },
+    );
+  }
+
   const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -235,9 +252,7 @@ export async function enviarPedidoCompra(
       template: {
         name: template,
         language: { code: lang },
-        components: [
-          { type: 'body', parameters: ordem.map((t) => ({ type: 'text', text: limpa(String(t)) })) },
-        ],
+        components,
       },
     }),
   });
