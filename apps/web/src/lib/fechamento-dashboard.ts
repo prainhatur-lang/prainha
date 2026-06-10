@@ -142,7 +142,16 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
   // pagamento.formaPagamento quando existe; senão pega da NFC-e ligada
   // (nf_venda_pagamento.t_pag) por pagamento_id. Classifica ~90%; o resto fica
   // "Não identificado" (a origem não traz a forma dessas linhas — gap do sync).
+  // Ordem: canal de delivery (iFood/MenuDino) PRIMEIRO — venda pelo iFood conta
+  // como iFood mesmo que o cartão dela tenha NFC-e. Depois a forma do pagamento,
+  // depois a forma da NFC-e ligada, senão "Não identificado".
   const formaExpr = sql<string>`coalesce(
+    (select case ped.codigo_pedido_origem
+       when 4 then 'iFood Online' when 7 then 'iFood Online'
+       when 5 then 'MenuDino' when 6 then 'MenuDino' else null end
+     from pedido ped
+     where ped.filial_id = ${schema.pagamento.filialId}
+       and ped.codigo_externo = ${schema.pagamento.codigoPedidoExterno} limit 1),
     nullif(trim(${schema.pagamento.formaPagamento}),''),
     (select case nvp.t_pag
        when 1 then 'Dinheiro' when 2 then 'Cheque' when 3 then 'Cartão de Crédito'
@@ -150,12 +159,6 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
        when 16 then 'Depósito Bancário' when 17 then 'PIX' when 18 then 'Transferência'
        when 99 then nullif(trim(nvp.x_pag),'') else null end
      from nf_venda_pagamento nvp where nvp.pagamento_id = ${schema.pagamento.id} limit 1),
-    (select case ped.codigo_pedido_origem
-       when 4 then 'iFood Online' when 7 then 'iFood Online'
-       when 5 then 'MenuDino' when 6 then 'MenuDino' else null end
-     from pedido ped
-     where ped.filial_id = ${schema.pagamento.filialId}
-       and ped.codigo_externo = ${schema.pagamento.codigoPedidoExterno} limit 1),
     'Não identificado'
   )`;
   const formasRows = await db
