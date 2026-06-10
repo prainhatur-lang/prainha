@@ -3,7 +3,7 @@
 // despesas/fornecedores (conta_pagar). Datas em BRT (ver lib/datas).
 
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, isNull, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, isNotNull, lte, sql } from 'drizzle-orm';
 import { brDateStart, brDateEnd } from './datas';
 
 const num = (v: string | number | null): number => (v == null ? 0 : Number(v));
@@ -142,37 +142,76 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
   // pagamento.formaPagamento quando existe; senão pega da NFC-e ligada
   // (nf_venda_pagamento.t_pag) por pagamento_id. Classifica ~90%; o resto fica
   // "Não identificado" (a origem não traz a forma dessas linhas — gap do sync).
-  // Forma de pagamento: SQL bruto via db.execute (o query-builder do drizzle não
-  // correlacionava os subqueries no group by). Ordem: canal de delivery
-  // (iFood/MenuDino) primeiro → depois pagamento.forma → depois NFC-e ligada.
-  const formasRes = await db.execute(sql`
-    select coalesce(
-      (select case ped.codigo_pedido_origem
-         when 4 then 'iFood Online' when 7 then 'iFood Online'
-         when 5 then 'MenuDino' when 6 then 'MenuDino' else null end
-       from pedido ped where ped.filial_id = p.filial_id
-         and ped.codigo_externo = p.codigo_pedido_externo limit 1),
-      nullif(trim(p.forma_pagamento), ''),
-      (select case nvp.t_pag
-         when 1 then 'Dinheiro' when 2 then 'Cheque' when 3 then 'Cartão de Crédito'
-         when 4 then 'Cartão de Débito' when 5 then 'Crédito Loja' when 15 then 'Boleto'
-         when 16 then 'Depósito Bancário' when 17 then 'PIX' when 18 then 'Transferência'
-         when 99 then nullif(trim(nvp.x_pag), '') else null end
-       from nf_venda_pagamento nvp where nvp.pagamento_id = p.id limit 1),
-      'Não identificado'
-    ) as forma,
-    coalesce(sum(p.valor), 0)::float8 as total,
-    count(*)::int as qtd
-    from pagamento p
-    where p.filial_id = ${filialId}::uuid
-      and p.data_pagamento >= ${tsStart}::timestamptz
-      and p.data_pagamento <= ${tsEnd}::timestamptz
-    group by 1
-    order by sum(p.valor) desc
-  `);
-  const formasArr = (formasRes as unknown as Array<{ forma: string | null; total: number; qtd: number }>).map(
-    (r) => ({ forma: r.forma || 'Não identificado', total: num(r.total), qtd: Number(r.qtd) }),
-  );
+  // Forma de pagamento: 3 selects simples + classificação em JS (robusto; o
+  // query-builder não correlacionava o subquery e o db.execute deu problema de
+  // tipo/retorno). Prioridade: canal delivery > pagamento.forma > NFC-e ligada.
+  const pgRows = await db
+    .select({
+      id: schema.pagamento.id,
+      valor: schema.pagamento.valor,
+      forma: schema.pagamento.formaPagamento,
+      codPedido: schema.pagamento.codigoPedidoExterno,
+    })
+    .from(schema.pagamento)
+    .where(
+      and(
+        eq(schema.pagamento.filialId, filialId),
+        gte(schema.pagamento.dataPagamento, tsStart),
+        lte(schema.pagamento.dataPagamento, tsEnd),
+      ),
+    );
+
+  const codPedidos = [...new Set(pgRows.map((r) => r.codPedido).filter((x): x is number => x != null))];
+  const pedRows = codPedidos.length
+    ? await db
+        .select({ cod: schema.pedido.codigoExterno, origem: schema.pedido.codigoPedidoOrigem })
+        .from(schema.pedido)
+        .where(and(eq(schema.pedido.filialId, filialId), inArray(schema.pedido.codigoExterno, codPedidos)))
+    : [];
+  const origemMap = new Map<number, number | null>();
+  for (const r of pedRows) if (r.cod != null) origemMap.set(r.cod, r.origem);
+
+  const pgIds = pgRows.map((r) => r.id);
+  const nfpRows = pgIds.length
+    ? await db
+        .select({
+          pid: schema.nfVendaPagamento.pagamentoId,
+          tPag: schema.nfVendaPagamento.tPag,
+          xPag: schema.nfVendaPagamento.xPag,
+        })
+        .from(schema.nfVendaPagamento)
+        .where(inArray(schema.nfVendaPagamento.pagamentoId, pgIds))
+    : [];
+  const nfpMap = new Map<string, { tPag: number | null; xPag: string | null }>();
+  for (const r of nfpRows) if (r.pid && !nfpMap.has(r.pid)) nfpMap.set(r.pid, { tPag: r.tPag, xPag: r.xPag });
+
+  const TPAG: Record<number, string> = {
+    1: 'Dinheiro', 2: 'Cheque', 3: 'Cartão de Crédito', 4: 'Cartão de Débito',
+    5: 'Crédito Loja', 15: 'Boleto', 16: 'Depósito Bancário', 17: 'PIX', 18: 'Transferência',
+  };
+  const classificar = (r: (typeof pgRows)[number]): string => {
+    const o = r.codPedido != null ? origemMap.get(r.codPedido) : undefined;
+    if (o === 4 || o === 7) return 'iFood Online';
+    if (o === 5 || o === 6) return 'MenuDino';
+    if (r.forma && r.forma.trim()) return r.forma.trim();
+    const nf = nfpMap.get(r.id);
+    if (nf?.tPag != null) {
+      if (nf.tPag === 99) return nf.xPag && nf.xPag.trim() ? nf.xPag.trim() : 'Outros';
+      if (TPAG[nf.tPag]) return TPAG[nf.tPag];
+    }
+    return 'Não identificado';
+  };
+  const formasAgg = new Map<string, { total: number; qtd: number }>();
+  for (const r of pgRows) {
+    const label = classificar(r);
+    const cur = formasAgg.get(label) ?? { total: 0, qtd: 0 };
+    cur.total += num(r.valor);
+    cur.qtd += 1;
+    formasAgg.set(label, cur);
+  }
+  const formasArr = [...formasAgg.entries()]
+    .map(([forma, v]) => ({ forma, total: v.total, qtd: v.qtd }))
+    .sort((a, b) => b.total - a.total);
 
   const topProdutos = await db
     .select({
