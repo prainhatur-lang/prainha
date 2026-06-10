@@ -285,6 +285,12 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                 extra: totalForma ? pct((f.total / totalForma) * 100) : undefined,
               }))}
             />
+            <p className="mt-3 text-[11px] text-slate-400">
+              Base: notas fiscais (NFC-e) — {brl(totalForma)}
+              {d.vendas.faturamento ? `, ${pct((totalForma / d.vendas.faturamento) * 100)} do faturamento` : ''}.
+              A proporção (mix) é fiel; o valor absoluto cobre só as vendas com nota emitida — a forma das demais
+              não vem no sincronismo do agente (CODIGOFORMAPAGAMENTO vazio na origem).
+            </p>
           </Secao>
           <Secao titulo="Top 10 produtos (R$ vendido)">
             <Bars cor="bg-amber-500" itens={d.topProdutos.map((p) => ({ label: p.nome, valor: p.valor, extra: `${int(p.qtd)} un` }))} />
