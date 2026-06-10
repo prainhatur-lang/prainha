@@ -8,26 +8,6 @@ import { brDateStart, brDateEnd } from './datas';
 
 const num = (v: string | number | null): number => (v == null ? 0 : Number(v));
 
-// Códigos de meio de pagamento da NFC-e (SEFAZ tPag).
-const TPAG_LABEL: Record<number, string> = {
-  1: 'Dinheiro',
-  2: 'Cheque',
-  3: 'Cartão de Crédito',
-  4: 'Cartão de Débito',
-  5: 'Crédito Loja',
-  10: 'Vale Alimentação',
-  11: 'Vale Refeição',
-  12: 'Vale Presente',
-  13: 'Vale Combustível',
-  15: 'Boleto',
-  16: 'Depósito',
-  17: 'PIX',
-  18: 'Transferência',
-  19: 'Cashback',
-  90: 'Sem pagamento',
-  99: 'Outros',
-};
-
 function mesBounds(ano: number, mes: number) {
   const mm = String(mes).padStart(2, '0');
   const lastDay = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
@@ -158,38 +138,37 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       ),
     );
 
-  // Forma de pagamento REAL vem do bloco de pagamento da NFC-e
-  // (nf_venda_pagamento.t_pag/v_pag), porque pagamento.formaPagamento é nulo na
-  // maioria das linhas (esparso no Consumer). Filtra pela emissão da nota.
-  const formasRaw = await db
+  // Forma de pagamento: parte do VALOR TOTAL real (pagamento) e usa
+  // pagamento.formaPagamento quando existe; senão pega da NFC-e ligada
+  // (nf_venda_pagamento.t_pag) por pagamento_id. Classifica ~90%; o resto fica
+  // "Não identificado" (a origem não traz a forma dessas linhas — gap do sync).
+  const formaExpr = sql<string>`coalesce(
+    nullif(trim(${schema.pagamento.formaPagamento}),''),
+    (select case nvp.t_pag
+       when 1 then 'Dinheiro' when 2 then 'Cheque' when 3 then 'Cartão de Crédito'
+       when 4 then 'Cartão de Débito' when 5 then 'Crédito Loja' when 15 then 'Boleto'
+       when 16 then 'Depósito Bancário' when 17 then 'PIX' when 18 then 'Transferência'
+       when 99 then nullif(trim(nvp.x_pag),'') else null end
+     from nf_venda_pagamento nvp where nvp.pagamento_id = ${schema.pagamento.id} limit 1),
+    'Não identificado'
+  )`;
+  const formasRows = await db
     .select({
-      tPag: schema.nfVendaPagamento.tPag,
-      xPag: schema.nfVendaPagamento.xPag,
-      total: sql<string>`coalesce(sum(${schema.nfVendaPagamento.vPag}),0)`,
+      forma: formaExpr,
+      total: sql<string>`coalesce(sum(${schema.pagamento.valor}),0)`,
       qtd: sql<number>`count(*)::int`,
     })
-    .from(schema.nfVendaPagamento)
-    .innerJoin(schema.nfVenda, eq(schema.nfVenda.id, schema.nfVendaPagamento.nfVendaId))
+    .from(schema.pagamento)
     .where(
       and(
-        eq(schema.nfVendaPagamento.filialId, filialId),
-        gte(schema.nfVenda.dataHoraEmissao, tsStart),
-        lte(schema.nfVenda.dataHoraEmissao, tsEnd),
+        eq(schema.pagamento.filialId, filialId),
+        gte(schema.pagamento.dataPagamento, tsStart),
+        lte(schema.pagamento.dataPagamento, tsEnd),
       ),
     )
-    .groupBy(schema.nfVendaPagamento.tPag, schema.nfVendaPagamento.xPag);
-
-  const formasMap = new Map<string, { total: number; qtd: number }>();
-  for (const r of formasRaw) {
-    const label = r.xPag && r.xPag.trim() ? r.xPag.trim() : TPAG_LABEL[r.tPag ?? -1] ?? `Forma ${r.tPag ?? '?'}`;
-    const cur = formasMap.get(label) ?? { total: 0, qtd: 0 };
-    cur.total += num(r.total);
-    cur.qtd += r.qtd;
-    formasMap.set(label, cur);
-  }
-  const formasArr = [...formasMap.entries()]
-    .map(([forma, v]) => ({ forma, total: v.total, qtd: v.qtd }))
-    .sort((a, b) => b.total - a.total);
+    .groupBy(sql`1`)
+    .orderBy(desc(sql`sum(${schema.pagamento.valor})`));
+  const formasArr = formasRows.map((r) => ({ forma: r.forma || 'Não identificado', total: num(r.total), qtd: r.qtd }));
 
   const topProdutos = await db
     .select({

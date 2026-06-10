@@ -286,10 +286,8 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
               }))}
             />
             <p className="mt-3 text-[11px] text-slate-400">
-              Base: notas fiscais (NFC-e) — {brl(totalForma)}
-              {d.vendas.faturamento ? `, ${pct((totalForma / d.vendas.faturamento) * 100)} do faturamento` : ''}.
-              A proporção (mix) é fiel; o valor absoluto cobre só as vendas com nota emitida — a forma das demais
-              não vem no sincronismo do agente (CODIGOFORMAPAGAMENTO vazio na origem).
+              Total de recebimentos: {brl(totalForma)}. Forma vem do pagamento + NFC-e ligada (~90% classificado).
+              &quot;Não identificado&quot; = linhas cuja forma não veio no sincronismo do agente (gap da origem).
             </p>
           </Secao>
           <Secao titulo="Top 10 produtos (R$ vendido)">
