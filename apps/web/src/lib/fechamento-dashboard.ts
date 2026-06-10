@@ -150,6 +150,12 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
        when 16 then 'Depósito Bancário' when 17 then 'PIX' when 18 then 'Transferência'
        when 99 then nullif(trim(nvp.x_pag),'') else null end
      from nf_venda_pagamento nvp where nvp.pagamento_id = ${schema.pagamento.id} limit 1),
+    (select case ped.codigo_pedido_origem
+       when 4 then 'iFood Online' when 7 then 'iFood Online'
+       when 5 then 'MenuDino' when 6 then 'MenuDino' else null end
+     from pedido ped
+     where ped.filial_id = ${schema.pagamento.filialId}
+       and ped.codigo_externo = ${schema.pagamento.codigoPedidoExterno} limit 1),
     'Não identificado'
   )`;
   const formasRows = await db
