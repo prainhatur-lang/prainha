@@ -100,6 +100,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       pedidos: sql<number>`count(*)::int`,
       pessoas: sql<number>`coalesce(sum(${schema.pedido.quantidadePessoas}),0)::int`,
       descontos: sql<string>`coalesce(sum(${schema.pedido.totalDesconto}),0)`,
+      acrescimos: sql<string>`coalesce(sum(${schema.pedido.totalAcrescimo}),0)`,
       servico: sql<string>`coalesce(sum(${schema.pedido.totalServico}),0)`,
     })
     .from(schema.pedido)
@@ -113,7 +114,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     );
 
   const [canc] = await db
-    .select({ q: sql<number>`count(*)::int` })
+    .select({ q: sql<number>`count(*)::int`, valor: sql<string>`coalesce(sum(${schema.pedido.valorTotal}),0)` })
     .from(schema.pedido)
     .where(
       and(
@@ -263,6 +264,58 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .orderBy(desc(sql`sum(coalesce(${schema.contaPagar.valorPago},${schema.contaPagar.valor}))`))
     .limit(10);
 
+  // --- Faturamento por canal de origem ---
+  const porCanal = await db
+    .select({
+      canal: schema.pedidoOrigem.descricao,
+      faturamento: sql<string>`coalesce(sum(${schema.pedido.valorTotal}),0)`,
+      pedidos: sql<number>`count(*)::int`,
+    })
+    .from(schema.pedido)
+    .leftJoin(schema.pedidoOrigem, eq(schema.pedidoOrigem.codigo, schema.pedido.codigoPedidoOrigem))
+    .where(
+      and(
+        eq(schema.pedido.filialId, filialId),
+        isNull(schema.pedido.dataDelete),
+        gte(schema.pedido.dataFechamento, tsStart),
+        lte(schema.pedido.dataFechamento, tsEnd),
+      ),
+    )
+    .groupBy(schema.pedidoOrigem.descricao)
+    .orderBy(desc(sql`sum(${schema.pedido.valorTotal})`));
+
+  // --- Faturamento por dia da semana (BRT: 0=Dom..6=Sáb) ---
+  const dow = await db
+    .select({
+      dia: sql<number>`extract(dow from (${schema.pedido.dataFechamento} at time zone 'America/Sao_Paulo'))::int`,
+      faturamento: sql<string>`coalesce(sum(${schema.pedido.valorTotal}),0)`,
+    })
+    .from(schema.pedido)
+    .where(
+      and(
+        eq(schema.pedido.filialId, filialId),
+        isNull(schema.pedido.dataDelete),
+        gte(schema.pedido.dataFechamento, tsStart),
+        lte(schema.pedido.dataFechamento, tsEnd),
+      ),
+    )
+    .groupBy(sql`1`);
+
+  // --- Custo de ocupação (aluguel/energia/água/gás/internet/condomínio) pago no mês ---
+  const [ocup] = await db
+    .select({ total: sql<string>`coalesce(sum(coalesce(${schema.contaPagar.valorPago},${schema.contaPagar.valor})),0)` })
+    .from(schema.contaPagar)
+    .leftJoin(schema.categoriaConta, eq(schema.categoriaConta.id, schema.contaPagar.categoriaId))
+    .where(
+      and(
+        eq(schema.contaPagar.filialId, filialId),
+        isNotNull(schema.contaPagar.dataPagamento),
+        gte(schema.contaPagar.dataPagamento, ymdStart),
+        lte(schema.contaPagar.dataPagamento, ymdEnd),
+        sql`${schema.categoriaConta.descricao} ~* 'aluguel|energia|agua|água|g[áa]s|internet|condom'`,
+      ),
+    );
+
   const faturamento = num(vendas.faturamento);
   const pedidos = vendas.pedidos;
   const despesasPagas = num(despPagas.total);
@@ -273,14 +326,20 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     periodo: { ano, mes, ymdStart, ymdEnd },
     vendas: {
       faturamento,
+      faturamentoLiquido: faturamento - num(vendas.descontos),
       pedidos,
       cancelados: canc.q,
+      valorCancelado: num(canc.valor),
       ticketMedio: pedidos ? faturamento / pedidos : 0,
       pessoas: vendas.pessoas,
       descontos: num(vendas.descontos),
+      acrescimos: num(vendas.acrescimos),
       servico: num(vendas.servico),
       itensPorPedido: pedidos ? itens.total / pedidos : 0,
+      custoOcupacao: num(ocup.total),
     },
+    canais: porCanal.map((c) => ({ canal: c.canal || '(sem origem)', faturamento: num(c.faturamento), pedidos: c.pedidos })),
+    diaSemana: dow.map((x) => ({ dia: x.dia, faturamento: num(x.faturamento) })),
     formas: formas.map((f) => ({ forma: f.forma || '—', total: num(f.total), qtd: f.qtd })),
     topProdutos: topProdutos.map((p) => ({ nome: p.nome || '—', valor: num(p.valor), qtd: num(p.qtd) })),
     banco: {

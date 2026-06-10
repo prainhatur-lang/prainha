@@ -126,6 +126,45 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
 
   const maxEvo = Math.max(1, ...evo.map((m) => Math.max(m.entradas, m.saidas, m.faturamento, m.despesas)));
 
+  const DOW = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const diaSemanaItens = DOW.map((label, i) => ({ label, valor: d.diaSemana.find((x) => x.dia === i)?.faturamento ?? 0 }));
+
+  // Indicadores que ainda faltam dados (da auditoria) — exibidos no painel.
+  const faltam: Array<{ grupo: string; itens: string[] }> = [
+    { grupo: 'Margem e custo', itens: [
+      'CMV (custo da mercadoria vendida) e margem bruta — falta custo confiável nos itens vendidos (~12-15% sem preço de custo).',
+      'Prime Cost (CMV + folha) — depende do CMV e dos encargos de pessoal.',
+      'Split bebida × comida (food cost vs beverage cost) — exige classificar produtos por grupo.',
+      'Ponto de equilíbrio / custo fixo vs variável — falta classificar categorias (FIXO|VARIÁVEL).',
+    ] },
+    { grupo: 'Delivery', itens: [
+      'Comissão de plataforma (iFood/MenuDino) e receita líquida de delivery — não há dado de comissão/repasse no sistema.',
+      'Custo de entrega / margem do frete — falta custo do entregador por pedido.',
+    ] },
+    { grupo: 'Pessoal (folha)', itens: [
+      'Encargos trabalhistas (INSS, FGTS, 13º, férias, rescisões) e pró-labore — sem estrutura.',
+      'Turnover, custo por setor (cozinha/salão/bar) — faltam admissão/desligamento e setor.',
+      'Faturamento/gorjeta por garçom — só há código do colaborador, sem o nome espelhado.',
+    ] },
+    { grupo: 'Fiscal', itens: [
+      'DAS / Simples Nacional do mês — falta regime tributário da filial e apuração.',
+      'ICMS destacado nas vendas e NFe pendentes de manifestação (SEFAZ).',
+    ] },
+    { grupo: 'Recebíveis e caixa', itens: [
+      'Contas a receber / fiado em aberto, aging e PDD — estrutura improvisada (cliente "PREJUÍZO").',
+      'Recebíveis de cartão a receber (agenda Cielo) e taxas de cartão pagas — parcial.',
+      'Fluxo de caixa projetado (30/60/90 dias) — falta consolidar a vencer + a receber.',
+    ] },
+    { grupo: 'Clientes e ocupação', itens: [
+      'No-show e conversão reserva → consumo — falta check-in e vínculo reserva↔comanda.',
+      'Ocupação efetiva / faturamento por mesa ou m² — falta capacidade (lugares, mesas, horário).',
+      'Lista de espera (tempo, conversão) — tabela pronta, falta a recepção usar.',
+    ] },
+    { grupo: 'Marketing', itens: [
+      'Custo de marketing / CAC e ROI de mídia (Meta Ads) — gasto não classificado no sistema.',
+    ] },
+  ];
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -181,6 +220,16 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           <KPI label="Pessoas" valor={int(d.vendas.pessoas)} sub={`${d.vendas.itensPorPedido.toFixed(1)} itens/pedido`} />
           <KPI label="Descontos" valor={brl(d.vendas.descontos)} cor="text-violet-700" sub={pct(descontoPct)} />
           <KPI label="Serviço (10%)" valor={brl(d.vendas.servico)} />
+        </div>
+
+        {/* KPIs secundários */}
+        <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+          <KPI label="Faturamento líquido" valor={brl(d.vendas.faturamentoLiquido)} cor="text-emerald-700" sub="bruto − descontos" />
+          <KPI label="Acréscimos" valor={brl(d.vendas.acrescimos)} />
+          <KPI label="Valor cancelado" valor={brl(d.vendas.valorCancelado)} cor="text-rose-600" sub={pct(canceladoPct)} />
+          <KPI label="Custo de ocupação" valor={brl(d.vendas.custoOcupacao)} sub={d.vendas.faturamento ? `${pct((d.vendas.custoOcupacao / d.vendas.faturamento) * 100)} da receita` : undefined} />
+          <KPI label="Despesas a vencer" valor={brl(d.despesas.aVencer)} cor="text-amber-700" sub={`${int(d.despesas.qtdAVencer)} contas`} />
+          <KPI label="Conciliação banco" valor={d.banco.contas.length ? 'Importado' : '—'} sub={d.banco.contas.map((c) => c.nome).join(' · ') || 'sem extrato'} />
         </div>
 
         {/* Resultado: operacional vs financeiro */}
@@ -239,6 +288,16 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           </Secao>
           <Secao titulo="Top 10 produtos (R$ vendido)">
             <Bars cor="bg-amber-500" itens={d.topProdutos.map((p) => ({ label: p.nome, valor: p.valor, extra: `${int(p.qtd)} un` }))} />
+          </Secao>
+        </div>
+
+        {/* Canal de origem + dia da semana */}
+        <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <Secao titulo="Faturamento por canal de origem">
+            <Bars cor="bg-indigo-500" itens={d.canais.map((c) => ({ label: c.canal, valor: c.faturamento, extra: `${int(c.pedidos)} ped` }))} />
+          </Secao>
+          <Secao titulo="Faturamento por dia da semana">
+            <Bars cor="bg-teal-500" itens={diaSemanaItens} />
           </Secao>
         </div>
 
@@ -302,6 +361,29 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-500">
             <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-emerald-500" /> Faturamento</span>
             <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-rose-400" /> Despesas</span>
+          </div>
+        </Secao>
+
+        {/* Indicadores que faltam dados */}
+        <Secao titulo="Indicadores que faltam (precisam de dados)" className="mb-5">
+          <p className="mb-3 text-xs text-slate-500">
+            Levantamento de 118 indicadores de fechamento: ~47 já dá pra calcular, ~54 ficam parciais e ~17 faltam dados.
+            Abaixo o que ainda não dá pra mostrar com confiança e o que precisaria pra habilitar.
+          </p>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {faltam.map((g) => (
+              <div key={g.grupo} className="rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                <p className="mb-1.5 text-xs font-semibold text-slate-700">{g.grupo}</p>
+                <ul className="space-y-1">
+                  {g.itens.map((it, i) => (
+                    <li key={i} className="flex gap-1.5 text-[11px] leading-snug text-slate-600">
+                      <span className="text-amber-500">⚠️</span>
+                      <span>{it}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </Secao>
 
