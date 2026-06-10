@@ -142,6 +142,14 @@ const SELECT_ESPECIAL: Record<string, (inList: string, pk: string) => string> = 
     `FROM ITENSPEDIDO i ` +
     `LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = i.CODIGOPRODUTODETALHE ` +
     `WHERE i.${pk} IN (${inList})`,
+  // PAGAMENTOS precisa resolver a FORMA de pagamento via JOIN — sem isso o CDC
+  // grava forma_pagamento NULL (so o CODIGOFORMAPAGAMENTO vem no SELECT *).
+  PAGAMENTOS: (inList, pk) =>
+    `SELECT p.*, ` +
+    `       TRIM(fp.DESCRICAO) AS FORMA ` +
+    `FROM PAGAMENTOS p ` +
+    `LEFT JOIN FORMASPAGAMENTO fp ON fp.CODIGO = p.CODIGOFORMAPAGAMENTO ` +
+    `WHERE p.${pk} IN (${inList})`,
 };
 
 async function buscarRegistros(
