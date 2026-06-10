@@ -164,9 +164,9 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     coalesce(sum(p.valor), 0)::float8 as total,
     count(*)::int as qtd
     from pagamento p
-    where p.filial_id = ${filialId}
-      and p.data_pagamento >= ${tsStart}
-      and p.data_pagamento <= ${tsEnd}
+    where p.filial_id = ${filialId}::uuid
+      and p.data_pagamento >= ${tsStart}::timestamptz
+      and p.data_pagamento <= ${tsEnd}::timestamptz
     group by 1
     order by sum(p.valor) desc
   `);
