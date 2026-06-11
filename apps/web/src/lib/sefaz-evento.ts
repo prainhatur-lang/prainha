@@ -334,4 +334,8 @@ export async function enviarEventosManifestacao(opts: {
 }
 
 /** cStats aceitas pra manifestação bem-sucedida. */
-export const CSTAT_EVENTO_OK = new Set(['135', '136', '155']);
+// 135/136 = registrado (vinculado/não-vinculado a NF-e); 155 = registrado fora do prazo.
+// 573 = duplicidade de evento → já foi manifestado antes (idempotente): o objetivo
+// já está atingido, então tratamos como sucesso pra marcar a nota como ciente localmente
+// (acontece quando a SEFAZ aceitou mas a gravação local falhou e tentamos de novo).
+export const CSTAT_EVENTO_OK = new Set(['135', '136', '155', '573']);

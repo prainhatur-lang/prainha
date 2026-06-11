@@ -82,7 +82,8 @@ export const notaCompra = pgTable(
     boletoPendentePath: text('boleto_pendente_path'),
 
     // Metadata
-    origemImportacao: varchar('origem_importacao', { length: 20 }).default('UPLOAD'), // UPLOAD | SEFAZ_MANIFESTO
+    // UPLOAD | SEFAZ_DFE | SEFAZ_DFE_RESUMO | SEFAZ_DFE_RESUMO_CIENTE (23 chars — por isso 40, não 20)
+    origemImportacao: varchar('origem_importacao', { length: 40 }).default('UPLOAD'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -27,6 +27,7 @@
     "migrate:estoque-maximo": "tsx scripts/migrate-estoque-maximo.ts",
     "migrate:reserva-lembrete": "tsx scripts/migrate-reserva-lembrete.ts",
     "migrate:lista-espera": "tsx scripts/migrate-lista-espera.ts",
+    "migrate:origem-importacao-len": "tsx scripts/migrate-origem-importacao-len.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",
     "migrate:fornecedor-compras": "tsx scripts/migrate-fornecedor-compras.ts",
