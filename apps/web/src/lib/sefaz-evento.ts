@@ -159,13 +159,17 @@ function postSoapEvento(opts: {
   keyPem: string;
 }): Promise<{ status: number; body: string }> {
   // SOAP envelope wrapping
+  // RecepcaoEvento4: o <nfeDadosMsg> vai DIRETO dentro do <soap12:Body>, sem wrapper
+  // de operação, carregando ele mesmo o xmlns do serviço. (Diferente do
+  // NFeDistribuicaoDFe, que usa o wrapper <nfeDistDFeInteresse>.) O wrapper antigo
+  // <nfeRecepcaoEventoNF> fazia o ASMX devolver HTTP 500 (SOAP fault "action not
+  // recognized") antes de processar o evento. A RESPOSTA, porém, volta dentro de
+  // <nfeRecepcaoEventoNFResult> — por isso o parser abaixo continua usando esse nome.
   const envelope =
     `<?xml version="1.0" encoding="utf-8"?>` +
     `<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">` +
     `<soap12:Body>` +
-    `<nfeRecepcaoEventoNF xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4">` +
-    `<nfeDadosMsg>${opts.envEventoAssinado}</nfeDadosMsg>` +
-    `</nfeRecepcaoEventoNF>` +
+    `<nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4">${opts.envEventoAssinado}</nfeDadosMsg>` +
     `</soap12:Body>` +
     `</soap12:Envelope>`;
 
@@ -204,6 +208,36 @@ function postSoapEvento(opts: {
     req.write(envelope);
     req.end();
   });
+}
+
+/** Extrai uma mensagem legível de um corpo de erro da SEFAZ (SOAP fault ou texto). */
+function motivoDoErro(body: string): string {
+  if (!body) return 'sem corpo';
+  try {
+    const p = new XMLParser({
+      ignoreAttributes: true,
+      removeNSPrefix: true,
+      parseTagValue: false,
+      trimValues: true,
+    }).parse(body) as Record<string, unknown>;
+    const env = (p.Envelope ?? p) as Record<string, unknown>;
+    const bodyNode = (env?.Body ?? env) as Record<string, unknown>;
+    const fault = bodyNode?.Fault as Record<string, unknown> | undefined;
+    if (fault) {
+      const reason = fault.Reason as Record<string, unknown> | undefined;
+      const text =
+        (reason?.Text as { '#text'?: string } | string | undefined) ?? undefined;
+      const txt =
+        typeof text === 'string'
+          ? text
+          : (text as { '#text'?: string } | undefined)?.['#text'];
+      const fs = fault.faultstring as string | undefined;
+      return String(txt ?? fs ?? JSON.stringify(fault)).slice(0, 220);
+    }
+  } catch {
+    /* corpo não é XML parseável — cai no slice cru */
+  }
+  return body.replace(/\s+/g, ' ').trim().slice(0, 220);
 }
 
 export interface RetornoEvento {
@@ -258,7 +292,7 @@ export async function enviarEventosManifestacao(opts: {
         tpEvento: ev.tpEvento,
         nSeqEvento: ev.nSeqEvento ?? 1,
         cStat: 'HTTP' + status,
-        xMotivo: body.slice(0, 200),
+        xMotivo: motivoDoErro(body),
         nProt: null,
       });
       continue;
