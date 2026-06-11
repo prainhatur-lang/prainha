@@ -13,7 +13,7 @@ interface ManifestarResp {
   erros?: { chave: string; motivo: string }[];
 }
 
-/** Dispara manifestacao de ciencia (210200) em todos os resumos pendentes
+/** Dispara manifestacao de ciencia (210210) em todos os resumos pendentes
  *  da filial, sem precisar esperar o cron. Apos manifestar, a proxima
  *  consulta SEFAZ ja vai trazer os XMLs completos. */
 export function ManifestarBtn({

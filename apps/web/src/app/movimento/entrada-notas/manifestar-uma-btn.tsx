@@ -11,7 +11,7 @@ interface Resp {
   erros?: { chave: string; motivo: string }[];
 }
 
-/** Dá ciência (210200) em UMA nota resumo específica (pela chave). */
+/** Dá ciência (210210) em UMA nota resumo específica (pela chave). */
 export function ManifestarUmaBtn({ filialId, chave }: { filialId: string; chave: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();

@@ -1,7 +1,7 @@
 // POST /api/notas/manifestar
 // Body: JSON { filialId, limite? }
 //
-// Dá ciência (evento 210200) em todas as notas que ainda estão como resumo
+// Dá ciência (evento 210210) em todas as notas que ainda estão como resumo
 // naquela filial. Após ciência, a próxima consulta DF-e devolve o XML
 // completo (procNFe) que a gente faz upgrade automaticamente.
 

@@ -57,7 +57,9 @@ export function extrairPem(pfxBytes: Buffer, senha: string): PemCert {
 
 export interface EventoManifestacao {
   chave: string;
-  /** 210200 = ciência | 210210 = confirmação | 210220 = desconhecimento | 210240 = não realizada */
+  /** 210210 = Ciência | 210200 = Confirmação | 210220 = Desconhecimento | 210240 = Operação não realizada.
+   *  ATENÇÃO: Ciência é 210210 e Confirmação é 210200 (não inverter — a SEFAZ valida
+   *  o descEvento contra o schema do tpEvento e rejeita com cStat 493 se trocar). */
   tpEvento: '210200' | '210210' | '210220' | '210240';
   descEvento:
     | 'Ciencia da Operacao'

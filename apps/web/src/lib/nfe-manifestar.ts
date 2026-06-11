@@ -1,4 +1,4 @@
-// Dá ciência da operação (evento 210200) em notas que chegaram como resumo.
+// Dá ciência da operação (evento 210210) em notas que chegaram como resumo.
 // Isso destrava a SEFAZ pra devolver o XML completo (procNFe) na próxima
 // consulta DF-e.
 //
@@ -38,7 +38,7 @@ export interface ResultadoManifestacao {
   retornos: RetornoEvento[];
 }
 
-/** Dá ciência (210200) em todas as notas que ainda estão como resumo na filial. */
+/** Dá ciência (210210) em todas as notas que ainda estão como resumo na filial. */
 export async function manifestarPendentes(opts: {
   filialId: string;
   /** Limite por chamada (default 50 pra não estourar timeout do Vercel). */
@@ -85,7 +85,11 @@ export async function manifestarPendentes(opts: {
 
   const eventos: EventoManifestacao[] = resumos.map((r) => ({
     chave: r.chave,
-    tpEvento: '210200',
+    // Ciência da Operação = 210210 (NÃO 210200, que é Confirmação). A SEFAZ valida
+    // o detEvento contra o schema do tpEvento: 210210 exige descEvento="Ciencia da
+    // Operacao". Usar 210200 dava cStat 493 (schema específico). Ciência é a
+    // manifestação leve que destrava o XML completo sem comprometer a empresa.
+    tpEvento: '210210',
     descEvento: 'Ciencia da Operacao',
     nSeqEvento: 1,
   }));
