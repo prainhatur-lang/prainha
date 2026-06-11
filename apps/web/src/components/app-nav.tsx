@@ -204,7 +204,7 @@ export function AppNav() {
   return (
     <nav
       ref={ref}
-      className="flex items-center gap-1 text-sm"
+      className="flex flex-wrap items-center gap-1 text-sm"
       onKeyDown={(e) => {
         if (e.key === 'Escape') setAberto(null);
       }}

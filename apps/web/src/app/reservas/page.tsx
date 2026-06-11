@@ -130,7 +130,7 @@ export default async function ReservasPage(props: {
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
-      <section className="mx-auto max-w-5xl px-6 py-10">
+      <section className="mx-auto max-w-5xl px-4 py-5 sm:px-6 sm:py-10">
         <ReservasClient
           data={data}
           filiais={filiais}

@@ -9,15 +9,15 @@ interface Props {
 export function AppHeader({ userEmail }: Props) {
   return (
     <header className="border-b border-slate-200 bg-white">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-        <div className="flex items-center gap-6">
-          <Link href="/" className="text-lg font-semibold text-slate-900">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3 sm:gap-6">
+          <Link href="/" className="shrink-0 text-lg font-semibold text-slate-900">
             concilia
           </Link>
           <AppNav />
         </div>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-slate-500">{userEmail}</span>
+        <div className="flex shrink-0 items-center gap-3 text-sm">
+          <span className="hidden text-slate-500 md:inline">{userEmail}</span>
           <LogoutButton />
         </div>
       </div>
