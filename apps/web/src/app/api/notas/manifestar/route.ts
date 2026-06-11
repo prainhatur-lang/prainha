@@ -24,6 +24,8 @@ export async function POST(req: Request) {
     filialId?: string;
     limite?: number;
     escopo?: 'filial' | 'todas-da-org';
+    /** Ciência individual: manifesta só essas chaves (na filial informada). */
+    chaves?: string[];
   };
   const filialId = body.filialId;
   if (!filialId || !/^[0-9a-f-]{36}$/i.test(filialId)) {
@@ -77,6 +79,7 @@ export async function POST(req: Request) {
       const r = await manifestarPendentes({
         filialId: fId,
         limite: Math.min(body.limite ?? 50, 100),
+        chaves: body.chaves && body.chaves.length ? body.chaves : undefined,
       });
       totalTentado += r.totalTentado;
       manifestadas += r.chavesManifestadas.length;

@@ -44,10 +44,13 @@ export async function manifestarPendentes(opts: {
   /** Limite por chamada (default 50 pra não estourar timeout do Vercel). */
   limite?: number;
   tpAmb?: 1 | 2;
+  /** Se informado, manifesta SÓ essas chaves (ciência individual). Mesmo assim
+   *  valida que ainda são resumo da filial — não dá pra manifestar nota alheia. */
+  chaves?: string[];
 }): Promise<ResultadoManifestacao> {
   const limite = opts.limite ?? 50;
 
-  // Busca notas resumo na filial
+  // Busca notas resumo na filial (ou só as chaves pedidas, se ciência individual)
   const resumos = await db
     .select({ chave: schema.notaCompra.chave })
     .from(schema.notaCompra)
@@ -55,6 +58,9 @@ export async function manifestarPendentes(opts: {
       and(
         eq(schema.notaCompra.filialId, opts.filialId),
         eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO'),
+        opts.chaves && opts.chaves.length
+          ? inArray(schema.notaCompra.chave, opts.chaves)
+          : undefined,
       ),
     )
     .limit(limite);

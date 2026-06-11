@@ -10,6 +10,7 @@ import { brl, int, maskCnpj } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { UploadNotasForm } from './upload-form';
 import { ManifestarBtn } from './manifestar-btn';
+import { ManifestarUmaBtn } from './manifestar-uma-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -468,6 +469,14 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                               </span>
                             );
                           })()}
+                          {n.origemImportacao === 'SEFAZ_DFE_RESUMO' && (
+                            <div className="mt-1">
+                              <ManifestarUmaBtn
+                                filialId={filialSelecionada.id}
+                                chave={n.chave}
+                              />
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))
