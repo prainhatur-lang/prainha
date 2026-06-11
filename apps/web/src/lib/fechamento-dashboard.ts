@@ -322,15 +322,14 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .orderBy(desc(sql`sum(coalesce(${schema.contaPagar.valorPago},${schema.contaPagar.valor}))`))
     .limit(10);
 
-  // --- Faturamento por canal de origem ---
-  const porCanal = await db
+  // --- Faturamento por canal de origem (rótulo amigável: iFood/MenuDino) ---
+  const porCanalRaw = await db
     .select({
-      canal: schema.pedidoOrigem.descricao,
+      origem: schema.pedido.codigoPedidoOrigem,
       faturamento: sql<string>`coalesce(sum(${schema.pedido.valorTotal}),0)`,
       pedidos: sql<number>`count(*)::int`,
     })
     .from(schema.pedido)
-    .leftJoin(schema.pedidoOrigem, eq(schema.pedidoOrigem.codigo, schema.pedido.codigoPedidoOrigem))
     .where(
       and(
         eq(schema.pedido.filialId, filialId),
@@ -339,8 +338,23 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
         lte(schema.pedido.dataFechamento, tsEnd),
       ),
     )
-    .groupBy(schema.pedidoOrigem.descricao)
-    .orderBy(desc(sql`sum(${schema.pedido.valorTotal})`));
+    .groupBy(schema.pedido.codigoPedidoOrigem);
+  // 4/7 (iFood, DeliveryHub) = iFood; 5/6 = MenuDino. Funde os duplicados.
+  const CANAL_LABEL: Record<number, string> = {
+    1: 'Desktop', 2: 'Comanda Mobile', 3: 'Cardápio Digital', 4: 'iFood Online',
+    5: 'MenuDino', 6: 'MenuDino', 7: 'iFood Online', 8: 'Totem',
+  };
+  const canalAgg = new Map<string, { faturamento: number; pedidos: number }>();
+  for (const c of porCanalRaw) {
+    const label = c.origem != null ? CANAL_LABEL[c.origem] ?? `Origem ${c.origem}` : '(sem origem)';
+    const cur = canalAgg.get(label) ?? { faturamento: 0, pedidos: 0 };
+    cur.faturamento += num(c.faturamento);
+    cur.pedidos += c.pedidos;
+    canalAgg.set(label, cur);
+  }
+  const porCanal = [...canalAgg.entries()]
+    .map(([canal, v]) => ({ canal, faturamento: v.faturamento, pedidos: v.pedidos }))
+    .sort((a, b) => b.faturamento - a.faturamento);
 
   // --- Faturamento por dia da semana (BRT: 0=Dom..6=Sáb) ---
   const dow = await db
@@ -396,7 +410,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       itensPorPedido: pedidos ? itens.total / pedidos : 0,
       custoOcupacao: num(ocup.total),
     },
-    canais: porCanal.map((c) => ({ canal: c.canal || '(sem origem)', faturamento: num(c.faturamento), pedidos: c.pedidos })),
+    canais: porCanal,
     diaSemana: dow.map((x) => ({ dia: x.dia, faturamento: num(x.faturamento) })),
     formas: formasArr,
     topProdutos: topProdutos.map((p) => ({ nome: p.nome || '—', valor: num(p.valor), qtd: num(p.qtd) })),
