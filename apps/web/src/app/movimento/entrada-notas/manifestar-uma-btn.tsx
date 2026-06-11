@@ -45,7 +45,7 @@ export function ManifestarUmaBtn({ filialId, chave }: { filialId: string; chave:
   }
 
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex flex-col items-start gap-0.5">
       <button
         type="button"
         onClick={dar}
@@ -55,7 +55,11 @@ export function ManifestarUmaBtn({ filialId, chave }: { filialId: string; chave:
       >
         {loading ? '...' : 'Dar ciência'}
       </button>
-      {erro && <span className="max-w-[120px] truncate text-[10px] text-rose-600" title={erro}>{erro}</span>}
+      {erro && (
+        <span className="max-w-[220px] whitespace-normal break-words text-[10px] leading-tight text-rose-600">
+          {erro}
+        </span>
+      )}
     </span>
   );
 }
