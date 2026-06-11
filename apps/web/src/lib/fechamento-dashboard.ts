@@ -388,6 +388,34 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       ),
     );
 
+  // --- Cobertura / conciliação (até quando vai cada fonte) ---
+  const [extr] = await db
+    .select({ ate: sql<string | null>`max(${schema.lancamentoBanco.dataMovimento})::text` })
+    .from(schema.lancamentoBanco)
+    .where(eq(schema.lancamentoBanco.filialId, filialId));
+  const [vadq] = await db
+    .select({ ate: sql<string | null>`max(${schema.vendaAdquirente.dataVenda})::text` })
+    .from(schema.vendaAdquirente)
+    .where(eq(schema.vendaAdquirente.filialId, filialId));
+  const [radq] = await db
+    .select({ ate: sql<string | null>`max(${schema.recebivelAdquirente.dataPagamento})::text` })
+    .from(schema.recebivelAdquirente)
+    .where(eq(schema.recebivelAdquirente.filialId, filialId));
+  const [conc] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      completo: sql<number>`count(*) filter (where ${schema.conciliacaoPagamento.etapa} = 'COMPLETO')::int`,
+    })
+    .from(schema.pagamento)
+    .leftJoin(schema.conciliacaoPagamento, eq(schema.conciliacaoPagamento.pagamentoId, schema.pagamento.id))
+    .where(
+      and(
+        eq(schema.pagamento.filialId, filialId),
+        gte(schema.pagamento.dataPagamento, tsStart),
+        lte(schema.pagamento.dataPagamento, tsEnd),
+      ),
+    );
+
   const faturamento = num(vendas.faturamento);
   const pedidos = vendas.pedidos;
   const despesasPagas = num(despPagas.total);
@@ -437,6 +465,14 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       despesas: despesasPagas,
       lucro: faturamento - despesasPagas,
       margem: faturamento ? ((faturamento - despesasPagas) / faturamento) * 100 : 0,
+    },
+    cobertura: {
+      extratoAte: extr?.ate ?? null,
+      vendaCartaoAte: vadq?.ate ?? null,
+      recebivelCartaoAte: radq?.ate ?? null,
+      concTotal: conc?.total ?? 0,
+      concCompleto: conc?.completo ?? 0,
+      concPct: conc?.total ? (conc.completo / conc.total) * 100 : 0,
     },
   };
 }

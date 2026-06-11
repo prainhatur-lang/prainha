@@ -26,6 +26,12 @@ function pct(n: number): string {
   return `${n.toFixed(1).replace('.', ',')}%`;
 }
 
+function fmtData(s: string | null): string {
+  if (!s) return '—';
+  const [a, m, d] = s.slice(0, 10).split('-');
+  return d && m && a ? `${d}/${m}/${a}` : s;
+}
+
 function KPI({ label, valor, cor = 'text-slate-900', sub }: { label: string; valor: string; cor?: string; sub?: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -128,6 +134,14 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
 
   const DOW = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
   const diaSemanaItens = DOW.map((label, i) => ({ label, valor: d.diaSemana.find((x) => x.dia === i)?.faturamento ?? 0 }));
+
+  // Conciliável até = a fonte mais atrasada (extrato/vendas/recebíveis de cartão).
+  const covDatas = [d.cobertura.extratoAte, d.cobertura.vendaCartaoAte, d.cobertura.recebivelCartaoAte]
+    .filter((x): x is string => !!x)
+    .map((s) => s.slice(0, 10))
+    .sort();
+  const conciliavelAte = covDatas.length ? covDatas[0] : null;
+  const coberturaIncompleta = !!conciliavelAte && conciliavelAte < d.periodo.ymdEnd;
 
   // Indicadores que ainda faltam dados (da auditoria) — exibidos no painel.
   const faltam: Array<{ grupo: string; itens: string[] }> = [
@@ -273,6 +287,37 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
             )}
           </Secao>
         </div>
+
+        {/* Cobertura & conciliação */}
+        <Secao titulo="Cobertura & conciliação" className="mb-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div>
+              <p className="text-[11px] uppercase text-slate-500">Extrato bancário</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">até {fmtData(d.cobertura.extratoAte)}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase text-slate-500">Vendas de cartão (Cielo)</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">até {fmtData(d.cobertura.vendaCartaoAte)}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase text-slate-500">Recebimentos de cartão</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">até {fmtData(d.cobertura.recebivelCartaoAte)}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase text-slate-500">Conciliação do mês</p>
+              <p className={`mt-1 text-sm font-semibold ${d.cobertura.concPct >= 90 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                {pct(d.cobertura.concPct)}{' '}
+                <span className="text-[11px] font-normal text-slate-400">({int(d.cobertura.concCompleto)}/{int(d.cobertura.concTotal)})</span>
+              </p>
+            </div>
+          </div>
+          {coberturaIncompleta && (
+            <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+              ⚠️ Conciliação depende de extrato + cartões. A fonte mais atrasada vai só até <b>{fmtData(conciliavelAte)}</b> — os
+              pagamentos depois dessa data ainda <b>não foram conciliados</b> (importar o extrato/cartões do restante do mês e rodar a conciliação).
+            </p>
+          )}
+        </Secao>
 
         {/* Vendas */}
         <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
