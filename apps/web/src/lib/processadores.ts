@@ -34,6 +34,70 @@ export interface ResumoProcessamento {
   totalDebitos?: number;
   periodo?: { de: string; ate: string };
   estabelecimentos?: string[];
+  /** Quebra por filial quando o arquivo tem ECs de mais de uma filial (auto-split). */
+  porFilial?: Array<{
+    filialNome: string;
+    ecs: string[];
+    lidos: number;
+    inseridos: number;
+    bruto: number;
+    liquido: number;
+    ignorado?: boolean;
+  }>;
+}
+
+/** Roteamento de linhas Cielo por EC. mapaEc: EC -> filial dona (do histórico). */
+export interface RoteamentoEc {
+  mapaEc: Map<string, { filialId: string; filialNome: string }>;
+  filialNomePadrao: string;
+  /** ECs a ignorar (ex: filial sem acesso do usuário). */
+  ecsIgnorar?: Set<string>;
+}
+
+/**
+ * Para cada EC, retorna a filial DONA (única no histórico de venda_adquirente).
+ * ECs ambíguos (em +de 1 filial) ou inéditos não entram no mapa.
+ */
+export async function mapearEcParaFilial(
+  ecs: string[],
+): Promise<Map<string, { filialId: string; filialNome: string }>> {
+  const mapa = new Map<string, { filialId: string; filialNome: string }>();
+  if (ecs.length === 0) return mapa;
+  const linhas = await db
+    .select({
+      ec: schema.vendaAdquirente.codigoEstabelecimento,
+      filialId: schema.vendaAdquirente.filialId,
+      filialNome: schema.filial.nome,
+    })
+    .from(schema.vendaAdquirente)
+    .innerJoin(schema.filial, eq(schema.filial.id, schema.vendaAdquirente.filialId))
+    .where(
+      and(
+        eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
+        inArray(schema.vendaAdquirente.codigoEstabelecimento, ecs),
+      ),
+    )
+    .groupBy(
+      schema.vendaAdquirente.codigoEstabelecimento,
+      schema.vendaAdquirente.filialId,
+      schema.filial.nome,
+    );
+  const porEc = new Map<string, Set<string>>();
+  const nomePorFilial = new Map<string, string>();
+  for (const l of linhas) {
+    if (!l.ec) continue;
+    const set = porEc.get(l.ec) ?? new Set();
+    set.add(l.filialId);
+    porEc.set(l.ec, set);
+    nomePorFilial.set(l.filialId, l.filialNome);
+  }
+  for (const [ec, filiais] of porEc) {
+    if (filiais.size === 1) {
+      const filialId = [...filiais][0]!;
+      mapa.set(ec, { filialId, filialNome: nomePorFilial.get(filialId) ?? '' });
+    }
+  }
+  return mapa;
 }
 
 /**
@@ -196,50 +260,84 @@ export async function processarCieloVendas(
   filialId: string,
   conteudo: Buffer,
   storagePath: string,
+  rot?: RoteamentoEc,
 ): Promise<ResumoProcessamento> {
   const rows = parseCieloVendas(conteudo);
   if (rows.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
 
-  const dados = rows.map((r) => ({
-    filialId,
-    adquirente: ADQUIRENTE_CIELO,
-    codigoEstabelecimento: r.estabelecimento || null,
-    dataVenda: parseDateBR(r.data) ?? '',
-    horaVenda: r.hora || null,
-    formaPagamento: r.formaPagamento || null,
-    bandeira: r.bandeira || null,
-    valorBruto: String(r.valorBruto),
-    valorTaxa: r.valorTaxa ? String(r.valorTaxa) : null,
-    valorLiquido: r.valorLiquido ? String(r.valorLiquido) : null,
-    nsu: r.nsu,
-    autorizacao: r.autorizacao || null,
-    tid: r.tid,
-    dataPrevistaPagamento: parseDateBR(r.dataPrevistaPagamento),
-    arquivoOrigem: storagePath,
-  }));
+  type VendaInsert = typeof schema.vendaAdquirente.$inferInsert;
+  interface Grupo { filialNome: string; dados: VendaInsert[]; lidos: number; bruto: number; liquido: number; ecs: Set<string>; }
+  const resolver = (ecRaw?: string) => {
+    const ec = ecRaw?.trim() || '';
+    if (rot && ec && rot.ecsIgnorar?.has(ec)) return null;
+    if (rot && ec && rot.mapaEc.has(ec)) return rot.mapaEc.get(ec)!;
+    return { filialId, filialNome: rot?.filialNomePadrao ?? '' };
+  };
 
-  // Insert ignorando duplicados (mesmo filial + adquirente + nsu), em chunks
-  let inseridos = 0;
-  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
-    const chunk = dados.slice(i, i + CHUNK_SIZE);
-    const r = await db
-      .insert(schema.vendaAdquirente)
-      .values(chunk)
-      .onConflictDoNothing()
-      .returning({ id: schema.vendaAdquirente.id });
-    inseridos += r.length;
+  const grupos = new Map<string, Grupo>();
+  const ignorados = new Map<string, Grupo>();
+  for (const r of rows) {
+    const ec = r.estabelecimento?.trim() || '';
+    const alvo = resolver(r.estabelecimento);
+    const bruto = r.valorBruto, liquido = r.valorLiquido || 0;
+    if (!alvo) {
+      const nome = (ec ? rot?.mapaEc.get(ec)?.filialNome : '') || 'Outra filial (sem acesso)';
+      const g = ignorados.get(nome) ?? { filialNome: nome, dados: [], lidos: 0, bruto: 0, liquido: 0, ecs: new Set() };
+      g.lidos++; g.bruto += bruto; g.liquido += liquido; if (ec) g.ecs.add(ec);
+      ignorados.set(nome, g);
+      continue;
+    }
+    const g = grupos.get(alvo.filialId) ?? { filialNome: alvo.filialNome, dados: [], lidos: 0, bruto: 0, liquido: 0, ecs: new Set() };
+    g.dados.push({
+      filialId: alvo.filialId,
+      adquirente: ADQUIRENTE_CIELO,
+      codigoEstabelecimento: r.estabelecimento || null,
+      dataVenda: parseDateBR(r.data) ?? '',
+      horaVenda: r.hora || null,
+      formaPagamento: r.formaPagamento || null,
+      bandeira: r.bandeira || null,
+      valorBruto: String(r.valorBruto),
+      valorTaxa: r.valorTaxa ? String(r.valorTaxa) : null,
+      valorLiquido: r.valorLiquido ? String(r.valorLiquido) : null,
+      nsu: r.nsu,
+      autorizacao: r.autorizacao || null,
+      tid: r.tid,
+      dataPrevistaPagamento: parseDateBR(r.dataPrevistaPagamento),
+      arquivoOrigem: storagePath,
+    });
+    g.lidos++; g.bruto += bruto; g.liquido += liquido; if (ec) g.ecs.add(ec);
+    grupos.set(alvo.filialId, g);
+  }
+
+  let inseridosTotal = 0;
+  const porFilial: NonNullable<ResumoProcessamento['porFilial']> = [];
+  for (const g of grupos.values()) {
+    let ins = 0;
+    for (let i = 0; i < g.dados.length; i += CHUNK_SIZE) {
+      const chunk = g.dados.slice(i, i + CHUNK_SIZE);
+      const r = await db.insert(schema.vendaAdquirente).values(chunk).onConflictDoNothing().returning({ id: schema.vendaAdquirente.id });
+      ins += r.length;
+    }
+    inseridosTotal += ins;
+    porFilial.push({ filialNome: g.filialNome, ecs: [...g.ecs], lidos: g.lidos, inseridos: ins, bruto: g.bruto, liquido: g.liquido });
+  }
+  for (const g of ignorados.values()) {
+    porFilial.push({ filialNome: g.filialNome, ecs: [...g.ecs], lidos: g.lidos, inseridos: 0, bruto: g.bruto, liquido: g.liquido, ignorado: true });
   }
 
   const datas = rows.map((r) => parseDateBR(r.data)).filter(Boolean) as string[];
   datas.sort();
+  const soUmaFilial = grupos.size === 1 && ignorados.size === 0;
+  const divergiu = !soUmaFilial || [...grupos.keys()][0] !== filialId;
 
   return {
     registrosLidos: rows.length,
-    registrosInseridos: inseridos,
+    registrosInseridos: inseridosTotal,
     totalBruto: rows.reduce((s, r) => s + r.valorBruto, 0),
     totalLiquido: rows.reduce((s, r) => s + (r.valorLiquido || 0), 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
     estabelecimentos: [...new Set(rows.map((r) => r.estabelecimento).filter(Boolean))],
+    porFilial: rot && divergiu ? porFilial : undefined,
   };
 }
 
@@ -248,48 +346,83 @@ export async function processarCieloRecebiveis(
   filialId: string,
   conteudo: Buffer,
   storagePath: string,
+  rot?: RoteamentoEc,
 ): Promise<ResumoProcessamento> {
   const rows = parseCieloRecebiveis(conteudo);
   if (rows.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
 
-  const dados = rows.map((r) => ({
-    filialId,
-    adquirente: ADQUIRENTE_CIELO,
-    codigoEstabelecimento: r.estabelecimento || null,
-    dataPagamento: parseDateBR(r.dataPagamento) ?? '',
-    dataVenda: parseDateBR(r.dataVenda),
-    formaPagamento: r.formaPagamento || null,
-    bandeira: r.bandeira || null,
-    valorBruto: String(r.valorBruto),
-    valorTaxa: r.valorTaxa ? String(r.valorTaxa) : null,
-    valorLiquido: String(r.valorLiquido),
-    nsu: r.nsu,
-    autorizacao: r.autorizacao || null,
-    status: r.status || null,
-    arquivoOrigem: storagePath,
-  }));
+  type RecebInsert = typeof schema.recebivelAdquirente.$inferInsert;
+  interface Grupo { filialNome: string; dados: RecebInsert[]; lidos: number; bruto: number; liquido: number; ecs: Set<string>; }
+  const resolver = (ecRaw?: string) => {
+    const ec = ecRaw?.trim() || '';
+    if (rot && ec && rot.ecsIgnorar?.has(ec)) return null;
+    if (rot && ec && rot.mapaEc.has(ec)) return rot.mapaEc.get(ec)!;
+    return { filialId, filialNome: rot?.filialNomePadrao ?? '' };
+  };
 
-  let inseridos = 0;
-  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
-    const chunk = dados.slice(i, i + CHUNK_SIZE);
-    const r = await db
-      .insert(schema.recebivelAdquirente)
-      .values(chunk)
-      .onConflictDoNothing()
-      .returning({ id: schema.recebivelAdquirente.id });
-    inseridos += r.length;
+  const grupos = new Map<string, Grupo>();
+  const ignorados = new Map<string, Grupo>();
+  for (const r of rows) {
+    const ec = r.estabelecimento?.trim() || '';
+    const alvo = resolver(r.estabelecimento);
+    const bruto = r.valorBruto, liquido = r.valorLiquido || 0;
+    if (!alvo) {
+      const nome = (ec ? rot?.mapaEc.get(ec)?.filialNome : '') || 'Outra filial (sem acesso)';
+      const g = ignorados.get(nome) ?? { filialNome: nome, dados: [], lidos: 0, bruto: 0, liquido: 0, ecs: new Set() };
+      g.lidos++; g.bruto += bruto; g.liquido += liquido; if (ec) g.ecs.add(ec);
+      ignorados.set(nome, g);
+      continue;
+    }
+    const g = grupos.get(alvo.filialId) ?? { filialNome: alvo.filialNome, dados: [], lidos: 0, bruto: 0, liquido: 0, ecs: new Set() };
+    g.dados.push({
+      filialId: alvo.filialId,
+      adquirente: ADQUIRENTE_CIELO,
+      codigoEstabelecimento: r.estabelecimento || null,
+      dataPagamento: parseDateBR(r.dataPagamento) ?? '',
+      dataVenda: parseDateBR(r.dataVenda),
+      formaPagamento: r.formaPagamento || null,
+      bandeira: r.bandeira || null,
+      valorBruto: String(r.valorBruto),
+      valorTaxa: r.valorTaxa ? String(r.valorTaxa) : null,
+      valorLiquido: String(r.valorLiquido),
+      nsu: r.nsu,
+      autorizacao: r.autorizacao || null,
+      status: r.status || null,
+      arquivoOrigem: storagePath,
+    });
+    g.lidos++; g.bruto += bruto; g.liquido += liquido; if (ec) g.ecs.add(ec);
+    grupos.set(alvo.filialId, g);
+  }
+
+  let inseridosTotal = 0;
+  const porFilial: NonNullable<ResumoProcessamento['porFilial']> = [];
+  for (const g of grupos.values()) {
+    let ins = 0;
+    for (let i = 0; i < g.dados.length; i += CHUNK_SIZE) {
+      const chunk = g.dados.slice(i, i + CHUNK_SIZE);
+      const r = await db.insert(schema.recebivelAdquirente).values(chunk).onConflictDoNothing().returning({ id: schema.recebivelAdquirente.id });
+      ins += r.length;
+    }
+    inseridosTotal += ins;
+    porFilial.push({ filialNome: g.filialNome, ecs: [...g.ecs], lidos: g.lidos, inseridos: ins, bruto: g.bruto, liquido: g.liquido });
+  }
+  for (const g of ignorados.values()) {
+    porFilial.push({ filialNome: g.filialNome, ecs: [...g.ecs], lidos: g.lidos, inseridos: 0, bruto: g.bruto, liquido: g.liquido, ignorado: true });
   }
 
   const datas = rows.map((r) => parseDateBR(r.dataPagamento)).filter(Boolean) as string[];
   datas.sort();
+  const soUmaFilial = grupos.size === 1 && ignorados.size === 0;
+  const divergiu = !soUmaFilial || [...grupos.keys()][0] !== filialId;
 
   return {
     registrosLidos: rows.length,
-    registrosInseridos: inseridos,
+    registrosInseridos: inseridosTotal,
     totalBruto: rows.reduce((s, r) => s + r.valorBruto, 0),
     totalLiquido: rows.reduce((s, r) => s + r.valorLiquido, 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
     estabelecimentos: [...new Set(rows.map((r) => r.estabelecimento).filter(Boolean))],
+    porFilial: rot && divergiu ? porFilial : undefined,
   };
 }
 

@@ -21,6 +21,15 @@ interface UploadResult {
     totalDebitos?: number;
     periodo?: { de: string; ate: string };
     estabelecimentos?: string[];
+    porFilial?: Array<{
+      filialNome: string;
+      ecs: string[];
+      lidos: number;
+      inseridos: number;
+      bruto: number;
+      liquido: number;
+      ignorado?: boolean;
+    }>;
   };
   aviso?: string;
   erro?: string;
@@ -236,6 +245,25 @@ export function UploadForm({ filiais }: { filiais: Filial[] }) {
                   {r.resumo.registrosInseridos}
                   {r.resumo.periodo && ` — período ${r.resumo.periodo.de} a ${r.resumo.periodo.ate}`}
                 </p>
+              )}
+              {r.ok && r.resumo?.porFilial && r.resumo.porFilial.length > 0 && (
+                <div className="mt-1.5 space-y-1">
+                  <p className="text-[11px] font-medium text-slate-500">Separado automaticamente por estabelecimento:</p>
+                  {r.resumo.porFilial.map((pf, j) => (
+                    <p
+                      key={j}
+                      className={`rounded px-2 py-1 text-[11px] ${
+                        pf.ignorado ? 'bg-amber-100 text-amber-900' : 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {pf.ignorado ? '⚠ ' : '→ '}
+                      <span className="font-medium">{pf.filialNome}</span>: {pf.lidos} lidos
+                      {!pf.ignorado && `, ${pf.inseridos} novos`}
+                      {pf.ignorado && ' (ignorado — sem acesso a esta filial)'}
+                      {pf.ecs.length > 0 && ` · EC ${pf.ecs.join(', ')}`}
+                    </p>
+                  ))}
+                </div>
               )}
               {r.aviso && (
                 <p className="mt-1 rounded bg-amber-100 px-2 py-1 text-[11px] text-amber-900">

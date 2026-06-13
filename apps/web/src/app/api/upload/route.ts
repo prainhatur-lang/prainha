@@ -4,14 +4,14 @@
 import { NextResponse } from 'next/server';
 import { createClient, createAdminClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   processarCieloVendas,
   processarCieloRecebiveis,
   processarCnab240Inter,
   detectarTipo,
   extrairEcsCielo,
-  validarEcsContraFilial,
+  mapearEcParaFilial,
   validarCnabContraFilial,
 } from '@/lib/processadores';
 
@@ -65,15 +65,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'arquivo > 50MB' }, { status: 413 });
   }
 
-  // 3. RBAC: usuario tem acesso a filial?
-  const [link] = await db
-    .select({ filialId: schema.usuarioFilial.filialId })
+  // 3. RBAC: filiais que o usuario acessa (valida a selecionada + roteia o auto-split)
+  const acessiveis = await db
+    .select({ filialId: schema.usuarioFilial.filialId, nome: schema.filial.nome })
     .from(schema.usuarioFilial)
-    .where(
-      and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)),
-    )
-    .limit(1);
-  if (!link) {
+    .innerJoin(schema.filial, eq(schema.filial.id, schema.usuarioFilial.filialId))
+    .where(eq(schema.usuarioFilial.usuarioId, user.id));
+  const acessivelSet = new Set(acessiveis.map((a) => a.filialId));
+  const nomeSelecionada = acessiveis.find((a) => a.filialId === filialId)?.nome ?? '';
+  if (!acessivelSet.has(filialId)) {
     return NextResponse.json({ error: 'sem acesso a esta filial' }, { status: 403 });
   }
 
@@ -134,38 +134,24 @@ export async function POST(req: Request) {
     }
   }
 
-  // 5b. Validação de EC (apenas pra arquivos Cielo).
-  // Bloqueia upload cruzado (EC pertence a outra filial) e pede confirmação
-  // explícita pra ECs novos (ainda nunca vistos nessa filial).
-  // O frontend reenvia o request com confirmarEcsNovos=true depois de o user clicar OK.
+  // 5b. Roteamento por EC (auto-split, arquivos Cielo).
+  // Cada EC vai pra filial DONA (aprendida do histórico). EC inédito → filial
+  // selecionada. EC de filial que o usuário não acessa → ignorado (reportado).
+  // Assim um export consolidado (raiz do CNPJ, vários estabelecimentos) entra
+  // de uma vez, cada parte na filial certa.
+  let rotCielo:
+    | { mapaEc: Map<string, { filialId: string; filialNome: string }>; filialNomePadrao: string; ecsIgnorar: Set<string> }
+    | undefined;
   if (tipo === 'CIELO_VENDAS' || tipo === 'CIELO_RECEBIVEIS') {
     const ecs = extrairEcsCielo(buf, tipo);
-    if (ecs.length > 0) {
-      const validacao = await validarEcsContraFilial(filialId, ecs);
-      if (validacao.conflitos.length > 0) {
-        const c = validacao.conflitos[0]!;
-        return NextResponse.json(
-          {
-            error: `Este arquivo é do EC ${c.ec}, que pertence à filial "${c.filialNome}". Selecione a filial correta antes de subir.`,
-            ecConflito: c,
-            ecsNoArquivo: ecs,
-          },
-          { status: 409 },
-        );
-      }
-      const confirmou = form.get('confirmarEcsNovos')?.toString() === 'true';
-      if (validacao.novos.length > 0 && !confirmou) {
-        return NextResponse.json(
-          {
-            error: 'EC_NOVO_REQUER_CONFIRMACAO',
-            mensagem: `Este arquivo tem ${validacao.novos.length === 1 ? 'um EC novo' : `${validacao.novos.length} ECs novos`} pra esta filial: ${validacao.novos.join(', ')}. Confirma que ${validacao.novos.length === 1 ? 'pertence' : 'pertencem'} à filial selecionada?`,
-            ecsNovos: validacao.novos,
-            ecsJaConhecidos: validacao.jaConhecidos,
-          },
-          { status: 422 },
-        );
-      }
+    const mapaFull = await mapearEcParaFilial(ecs);
+    const mapaEc = new Map<string, { filialId: string; filialNome: string }>();
+    const ecsIgnorar = new Set<string>();
+    for (const [ec, alvo] of mapaFull) {
+      if (acessivelSet.has(alvo.filialId)) mapaEc.set(ec, alvo);
+      else ecsIgnorar.add(ec);
     }
+    rotCielo = { mapaEc, filialNomePadrao: nomeSelecionada, ecsIgnorar };
   }
 
   // 6. Sobe pro Storage
@@ -200,10 +186,10 @@ export async function POST(req: Request) {
     let resumo;
     switch (tipo) {
       case 'CIELO_VENDAS':
-        resumo = await processarCieloVendas(filialId, buf, path);
+        resumo = await processarCieloVendas(filialId, buf, path, rotCielo);
         break;
       case 'CIELO_RECEBIVEIS':
-        resumo = await processarCieloRecebiveis(filialId, buf, path);
+        resumo = await processarCieloRecebiveis(filialId, buf, path, rotCielo);
         break;
       case 'CNAB240_INTER':
         resumo = await processarCnab240Inter(filialId, buf, path);
