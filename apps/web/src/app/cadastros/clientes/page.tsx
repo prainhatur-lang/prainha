@@ -287,7 +287,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 <th className="px-4 py-2 text-right">Reservas</th>
                 <th className="px-4 py-2">Última</th>
                 <th className="px-4 py-2 text-right">Fiado</th>
-                <th className="px-4 py-2">Origem</th>
+                <th className="px-4 py-2">Tipo de cliente</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -329,8 +329,8 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                   <td className="px-4 py-2">
                     <div className="flex flex-wrap gap-1">
                       {c.fontes.has('reserva') && chip('Reserva', 'bg-sky-100 text-sky-700')}
-                      {c.fontes.has('consumer') && chip('PDV', 'bg-amber-100 text-amber-700')}
-                      {c.fontes.has('tagme') && chip('Tagme', 'bg-emerald-100 text-emerald-700')}
+                      {c.fontes.has('consumer') && chip('Cadastro (PDV)', 'bg-amber-100 text-amber-700')}
+                      {c.fontes.has('tagme') && chip('Importado pelo Tagme', 'bg-emerald-100 text-emerald-700')}
                     </div>
                   </td>
                 </tr>
