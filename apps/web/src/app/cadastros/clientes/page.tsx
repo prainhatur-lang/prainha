@@ -298,10 +298,23 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                   </td>
                 </tr>
               )}
-              {pageItems.map((c, i) => (
+              {pageItems.map((c, i) => {
+                const dig = soDigitos(c.fone);
+                const href = dig
+                  ? `/cadastros/clientes/${dig}?filialId=${fid}`
+                  : c.email
+                    ? `/cadastros/clientes/e:${encodeURIComponent(c.email)}?filialId=${fid}`
+                    : null;
+                return (
                 <tr key={`${c.fone}-${i}`} className="align-top hover:bg-slate-50/60">
                   <td className="px-4 py-2">
-                    <div className="font-medium text-slate-800">{c.nome}</div>
+                    {href ? (
+                      <Link href={href} className="font-medium text-sky-700 hover:underline">
+                        {c.nome}
+                      </Link>
+                    ) : (
+                      <div className="font-medium text-slate-800">{c.nome}</div>
+                    )}
                     {c.preferencias && (
                       <div className="mt-0.5 text-xs text-slate-400">🍽️ {c.preferencias}</div>
                     )}
@@ -334,7 +347,8 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
