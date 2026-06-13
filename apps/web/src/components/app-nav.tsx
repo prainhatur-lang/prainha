@@ -27,7 +27,7 @@ const GRUPOS: Grupo[] = [
     links: [
       { label: 'Filiais', href: '/sync', perm: 'configuracao.read' },
       { label: 'Fornecedores', href: '/cadastros/fornecedores', perm: 'fornecedor.read' },
-      { label: 'Clientes', href: '/cadastros/clientes', soon: true },
+      { label: 'Clientes', href: '/cadastros/clientes', perm: 'reserva.read' },
       { label: 'Plano de contas', href: '/cadastros/plano-contas', perm: 'configuracao.read' },
       { label: 'Produtos', href: '/cadastros/produtos', perm: 'produto.read' },
       { label: 'Templates de produção', href: '/cadastros/templates-producao', perm: 'ordem_producao.read' },
