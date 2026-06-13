@@ -137,8 +137,19 @@ export async function rodarConciliacaoOperadora(opts: {
           eq(schema.pagamento.filialId, filialId),
           gte(schema.pagamento.dataPagamento, dtIni),
           lte(schema.pagamento.dataPagamento, dtFim),
-          isNotNull(schema.pagamento.formaPagamento),
-          notInArray(schema.pagamento.formaPagamento, FORMAS_EXCLUIR_OPERADORA),
+          // Pagamento elegivel quando: (a) tem forma e nao esta na lista de exclusao;
+          // OU (b) tem NSU (passou por adquirente, mesmo sem forma — caso do bug CDC
+          // forma=null em ~96% das vendas pos-01/05/2026 ate fix 2f5efbf chegar a prod).
+          or(
+            and(
+              isNotNull(schema.pagamento.formaPagamento),
+              notInArray(schema.pagamento.formaPagamento, FORMAS_EXCLUIR_OPERADORA),
+            ),
+            and(
+              isNull(schema.pagamento.formaPagamento),
+              isNotNull(schema.pagamento.nsuTransacao),
+            ),
+          ),
         ),
       );
     const pagamentos = pagamentosRaw.filter((p) => {
