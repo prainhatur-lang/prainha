@@ -20,8 +20,8 @@ interface SP {
 
 const soDigitos = (s?: string | null) => (s ?? '').replace(/\D/g, '');
 
-// Chave de casamento entre Consumer e reservas: últimos 8 dígitos (número local,
-// ignora DDI 55 / DDD). Suficiente pra unificar dentro de uma filial.
+// Chave de casamento entre as fontes: últimos 8 dígitos do telefone (número
+// local, ignora DDI 55 / DDD). Suficiente pra unificar dentro de uma filial.
 function chaveFone(digits: string): string {
   let x = digits;
   if (x.length > 11 && x.startsWith('55')) x = x.slice(2);
@@ -43,16 +43,21 @@ function fmtData(s?: string | null): string {
   return d ? `${d}/${m}/${y}` : t;
 }
 
+type Fonte = 'consumer' | 'reserva' | 'tagme';
+
 interface Unificado {
   nome: string;
   fone: string;
+  email: string | null;
   cpf: string | null;
   saldo: number | null;
-  reservas: number;
+  reservas: number; // reservas no concilia (tabela reserva)
   ultima: string | null;
+  reservasTagme: number; // histórico do Tagme
+  aniversario: string | null;
   canais: string[];
   preferencias: string | null;
-  origem: 'ambos' | 'consumer' | 'reserva';
+  fontes: Set<Fonte>;
 }
 
 export default async function ClientesPage(props: { searchParams: Promise<SP> }) {
@@ -84,23 +89,21 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
     );
   }
 
-  // 1) Clientes cadastrados no Consumer (fiado / conta corrente)
+  const fid = filialSelecionada.id;
+
+  // 1) Cadastro do PDV (Consumer) — fiado / conta corrente
   const consumer = await db
     .select({
       nome: schema.cliente.nome,
       cpf: schema.cliente.cpfOuCnpj,
       telefone: schema.cliente.telefone,
+      email: schema.cliente.email,
       saldo: schema.cliente.saldoAtualContaCorrente,
     })
     .from(schema.cliente)
-    .where(
-      and(
-        eq(schema.cliente.filialId, filialSelecionada.id),
-        isNull(schema.cliente.dataDelete),
-      ),
-    );
+    .where(and(eq(schema.cliente.filialId, fid), isNull(schema.cliente.dataDelete)));
 
-  // 2) Clientes das reservas, agregados por telefone
+  // 2) Reservas do concilia, agregadas por telefone
   const reservas = await db
     .select({
       telefone: schema.reserva.clienteTelefone,
@@ -111,75 +114,93 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       preferencias: sql<string | null>`max(${schema.reserva.preferencias})`,
     })
     .from(schema.reserva)
-    .where(
-      and(
-        eq(schema.reserva.filialId, filialSelecionada.id),
-        sql`${schema.reserva.clienteTelefone} IS NOT NULL`,
-      ),
-    )
+    .where(and(eq(schema.reserva.filialId, fid), sql`${schema.reserva.clienteTelefone} IS NOT NULL`))
     .groupBy(schema.reserva.clienteTelefone);
 
-  // 3) Unifica por telefone (últimos 8 dígitos). Consumer sem telefone fica como
-  //    cadastro avulso (chave por CPF).
+  // 3) Contatos importados (ex: Tagme)
+  const contatos = await db
+    .select({
+      nome: schema.clienteContato.nome,
+      sobrenome: schema.clienteContato.sobrenome,
+      telefone: schema.clienteContato.telefone,
+      email: schema.clienteContato.email,
+      aniversario: schema.clienteContato.dataAniversario,
+      reservasH: schema.clienteContato.reservasHistorico,
+    })
+    .from(schema.clienteContato)
+    .where(eq(schema.clienteContato.filialId, fid));
+
+  // --- Unificação por telefone (fallback: e-mail / cpf) ---
   const map = new Map<string, Unificado>();
+  let seq = 0;
+  const chave = (fone?: string | null, email?: string | null, cpf?: string | null) => {
+    const d = soDigitos(fone);
+    if (d) return `f:${chaveFone(d)}`;
+    if (email) return `e:${email.toLowerCase()}`;
+    if (cpf) return `c:${soDigitos(cpf)}`;
+    return `x:${++seq}`;
+  };
+  const novo = (): Unificado => ({
+    nome: '', fone: '', email: null, cpf: null, saldo: null, reservas: 0,
+    ultima: null, reservasTagme: 0, aniversario: null, canais: [], preferencias: null,
+    fontes: new Set(),
+  });
+
   for (const c of consumer) {
-    const d = soDigitos(c.telefone);
-    const key = d ? chaveFone(d) : `cpf:${c.cpf ?? c.nome ?? Math.random()}`;
-    map.set(key, {
-      nome: c.nome?.trim() || 'Sem nome',
-      fone: c.telefone ?? '',
-      cpf: c.cpf ?? null,
-      saldo: c.saldo != null ? Number(c.saldo) : null,
-      reservas: 0,
-      ultima: null,
-      canais: [],
-      preferencias: null,
-      origem: 'consumer',
-    });
+    const k = chave(c.telefone, c.email, c.cpf);
+    const u = map.get(k) ?? novo();
+    u.fontes.add('consumer');
+    if (!u.nome) u.nome = c.nome?.trim() || '';
+    if (!u.fone) u.fone = c.telefone ?? '';
+    if (!u.email) u.email = c.email ?? null;
+    if (!u.cpf) u.cpf = c.cpf ?? null;
+    if (c.saldo != null) u.saldo = Number(c.saldo);
+    map.set(k, u);
   }
   for (const r of reservas) {
-    const key = chaveFone(soDigitos(r.telefone));
-    const canais = (r.canais ?? '').split(',').filter(Boolean);
-    const ex = map.get(key);
-    if (ex) {
-      ex.reservas = Number(r.qtd);
-      ex.ultima = r.ultima ?? null;
-      ex.canais = canais;
-      ex.preferencias = r.preferencias ?? null;
-      ex.origem = 'ambos';
-      if (!ex.nome || ex.nome === 'Sem nome') ex.nome = r.nome?.trim() || ex.nome;
-      if (!ex.fone) ex.fone = r.telefone ?? '';
-    } else {
-      map.set(key, {
-        nome: r.nome?.trim() || 'Sem nome',
-        fone: r.telefone ?? '',
-        cpf: null,
-        saldo: null,
-        reservas: Number(r.qtd),
-        ultima: r.ultima ?? null,
-        canais,
-        preferencias: r.preferencias ?? null,
-        origem: 'reserva',
-      });
-    }
+    const k = chave(r.telefone);
+    const u = map.get(k) ?? novo();
+    u.fontes.add('reserva');
+    u.reservas = Number(r.qtd);
+    u.ultima = r.ultima ?? null;
+    u.canais = (r.canais ?? '').split(',').filter(Boolean);
+    if (!u.preferencias) u.preferencias = r.preferencias ?? null;
+    if (!u.nome) u.nome = r.nome?.trim() || '';
+    if (!u.fone) u.fone = r.telefone ?? '';
+    map.set(k, u);
+  }
+  for (const ct of contatos) {
+    const k = chave(ct.telefone, ct.email);
+    const u = map.get(k) ?? novo();
+    u.fontes.add('tagme');
+    u.reservasTagme = Number(ct.reservasH ?? 0);
+    if (!u.aniversario) u.aniversario = ct.aniversario ?? null;
+    if (!u.email) u.email = ct.email ?? null;
+    if (!u.fone) u.fone = ct.telefone ?? '';
+    if (!u.nome) u.nome = [ct.nome, ct.sobrenome].filter(Boolean).join(' ').trim();
+    map.set(k, u);
   }
 
   let lista = [...map.values()];
+  for (const u of lista) if (!u.nome) u.nome = 'Sem nome';
+
   if (q) {
     const qlow = q.toLowerCase();
     lista = lista.filter(
       (c) =>
         c.nome.toLowerCase().includes(qlow) ||
+        (c.email != null && c.email.includes(qlow)) ||
         (qDigits.length > 0 && soDigitos(c.fone).includes(qDigits)) ||
         (c.cpf != null && qDigits.length > 0 && soDigitos(c.cpf).includes(qDigits)),
     );
   }
-  // Ordena: quem reservou mais recentemente primeiro; depois por nome.
+  // Ordena: quem reservou no concilia primeiro (mais recente), depois mais
+  // histórico no Tagme, depois nome.
   lista.sort((a, b) => {
-    if (a.ultima && b.ultima)
-      return a.ultima < b.ultima ? 1 : a.ultima > b.ultima ? -1 : a.nome.localeCompare(b.nome);
-    if (a.ultima) return -1;
-    if (b.ultima) return 1;
+    if (a.ultima && b.ultima && a.ultima !== b.ultima) return a.ultima < b.ultima ? 1 : -1;
+    if (a.ultima && !b.ultima) return -1;
+    if (b.ultima && !a.ultima) return 1;
+    if (b.reservasTagme !== a.reservasTagme) return b.reservasTagme - a.reservasTagme;
     return a.nome.localeCompare(b.nome);
   });
 
@@ -191,19 +212,15 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
 
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
-    qs.set('filialId', filialSelecionada.id);
+    qs.set('filialId', fid);
     if (q) qs.set('q', q);
     if (p > 0) qs.set('page', String(p));
     return `/cadastros/clientes?${qs.toString()}`;
   };
 
-  const badge = (origem: Unificado['origem']) => {
-    if (origem === 'ambos')
-      return <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Reserva + Cadastro</span>;
-    if (origem === 'consumer')
-      return <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">Cadastro (PDV)</span>;
-    return <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-700">Reserva</span>;
-  };
+  const chip = (txt: string, cls: string) => (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{txt}</span>
+  );
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -224,7 +241,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 key={f.id}
                 href={`/cadastros/clientes?filialId=${f.id}`}
                 className={`rounded-md border px-3 py-1 text-xs ${
-                  f.id === filialSelecionada.id
+                  f.id === fid
                     ? 'border-slate-900 bg-slate-900 text-white'
                     : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                 }`}
@@ -236,13 +253,13 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
         )}
 
         <form method="GET" className="mt-4 flex items-center gap-2">
-          <input type="hidden" name="filialId" value={filialSelecionada.id} />
+          <input type="hidden" name="filialId" value={fid} />
           <input
             type="text"
             name="q"
             defaultValue={q}
-            placeholder="Buscar por nome, telefone ou CPF..."
-            className="w-80 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+            placeholder="Buscar por nome, telefone, e-mail ou CPF..."
+            className="w-96 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
           />
           <button
             type="submit"
@@ -252,7 +269,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
           </button>
           {q && (
             <Link
-              href={`/cadastros/clientes?filialId=${filialSelecionada.id}`}
+              href={`/cadastros/clientes?filialId=${fid}`}
               className="text-xs text-slate-500 hover:text-slate-700"
             >
               Limpar
@@ -260,13 +277,13 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
           )}
         </form>
 
-        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Cliente</th>
                 <th className="px-4 py-2">Telefone</th>
-                <th className="px-4 py-2">CPF/CNPJ</th>
+                <th className="px-4 py-2">E-mail</th>
                 <th className="px-4 py-2 text-right">Reservas</th>
                 <th className="px-4 py-2">Última</th>
                 <th className="px-4 py-2 text-right">Fiado</th>
@@ -282,15 +299,22 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 </tr>
               )}
               {pageItems.map((c, i) => (
-                <tr key={`${c.fone}-${i}`} className="hover:bg-slate-50/60">
+                <tr key={`${c.fone}-${i}`} className="align-top hover:bg-slate-50/60">
                   <td className="px-4 py-2">
                     <div className="font-medium text-slate-800">{c.nome}</div>
                     {c.preferencias && (
                       <div className="mt-0.5 text-xs text-slate-400">🍽️ {c.preferencias}</div>
                     )}
+                    {(c.aniversario || c.reservasTagme > 0) && (
+                      <div className="mt-0.5 text-xs text-slate-400">
+                        {c.aniversario ? `🎂 ${c.aniversario}` : ''}
+                        {c.aniversario && c.reservasTagme > 0 ? ' · ' : ''}
+                        {c.reservasTagme > 0 ? `📋 ${int(c.reservasTagme)} no Tagme` : ''}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-slate-600">{fmtFone(c.fone)}</td>
-                  <td className="px-4 py-2 text-slate-500">{c.cpf || '—'}</td>
+                  <td className="px-4 py-2 text-slate-500">{c.email || '—'}</td>
                   <td className="px-4 py-2 text-right text-slate-700">
                     {c.reservas > 0 ? int(c.reservas) : '—'}
                   </td>
@@ -302,7 +326,13 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                   >
                     {c.saldo != null && c.saldo !== 0 ? brl(c.saldo) : '—'}
                   </td>
-                  <td className="px-4 py-2">{badge(c.origem)}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {c.fontes.has('reserva') && chip('Reserva', 'bg-sky-100 text-sky-700')}
+                      {c.fontes.has('consumer') && chip('PDV', 'bg-amber-100 text-amber-700')}
+                      {c.fontes.has('tagme') && chip('Tagme', 'bg-emerald-100 text-emerald-700')}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -312,7 +342,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
         {totalPag > 1 && (
           <div className="mt-4 flex items-center justify-between text-sm text-slate-600">
             <span>
-              Página {page + 1} de {totalPag}
+              Página {page + 1} de {int(totalPag)}
             </span>
             <div className="flex gap-2">
               {page > 0 && (
@@ -336,7 +366,8 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
         )}
 
         <p className="mt-4 text-xs text-slate-400">
-          Unifica o cadastro do PDV (Consumer) com quem já reservou, casando pelo telefone.
+          Unifica o cadastro do PDV (Consumer), as reservas do concilia e os contatos
+          importados (Tagme), casando pelo telefone.
         </p>
       </section>
     </main>

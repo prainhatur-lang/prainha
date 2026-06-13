@@ -82,3 +82,42 @@ export const reservaOtp = pgTable(
     filTelIdx: index('reserva_otp_fil_tel_idx').on(t.filialId, t.telefone),
   }),
 );
+
+/**
+ * Contatos de clientes importados de fontes externas (ex: export do Tagme).
+ * Guarda TODOS os campos do export. Reimportar = apaga os da mesma
+ * (filial, origem) e insere de novo (snapshot). Aparece na pagina
+ * /cadastros/clientes unificado com o cadastro do PDV (cliente) e as reservas
+ * do concilia, casando por telefone.
+ */
+export const clienteContato = pgTable(
+  'cliente_contato',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 200 }).notNull(),
+    sobrenome: varchar('sobrenome', { length: 200 }),
+    /** Data de aniversario crua como veio no export (ex: "22/06/1986"). */
+    dataAniversario: varchar('data_aniversario', { length: 10 }),
+    genero: varchar('genero', { length: 20 }),
+    /** Telefone (so digitos, com DDI quando houver). */
+    telefone: varchar('telefone', { length: 30 }),
+    email: varchar('email', { length: 200 }),
+    pontosFidelidade: integer('pontos_fidelidade').default(0),
+    /** Nº de reservas historico na origem (ex: Tagme) — NAO e a reserva do concilia. */
+    reservasHistorico: integer('reservas_historico').default(0),
+    filasEsperaHistorico: integer('filas_espera_historico').default(0),
+    detalhes: text('detalhes'),
+    /** Origem do import: 'tagme' | ... */
+    origem: varchar('origem', { length: 20 }).notNull().default('tagme'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('idx_cliente_contato_filial').on(t.filialId),
+    foneIdx: index('idx_cliente_contato_fone').on(t.filialId, t.telefone),
+    emailIdx: index('idx_cliente_contato_email').on(t.filialId, t.email),
+  }),
+);

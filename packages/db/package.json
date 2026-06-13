@@ -46,7 +46,9 @@
     "seed:fornecedores": "tsx scripts/seed-fornecedores.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "migrate:reserva-preferencias": "tsx scripts/migrate-reserva-preferencias.ts"
+    "migrate:reserva-preferencias": "tsx scripts/migrate-reserva-preferencias.ts",
+    "migrate:cliente-contato": "tsx scripts/migrate-cliente-contato.ts",
+    "import:cliente-contato": "tsx scripts/import-cliente-contato.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
