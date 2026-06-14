@@ -3,7 +3,7 @@
 
 import { db, schema } from '@concilia/db';
 import { matchPdvCielo } from '@concilia/conciliador/engine';
-import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, gte, lte, inArray, notInArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { diasFechados } from './fechamento';
 import { dateToBrYmd } from './datas';
 import { resolverParametros } from './conciliacao-params';
@@ -140,6 +140,9 @@ export async function rodarConciliacaoOperadora(opts: {
           // Pagamento elegivel quando: (a) tem forma e nao esta na lista de exclusao;
           // OU (b) tem NSU (passou por adquirente, mesmo sem forma — caso do bug CDC
           // forma=null em ~96% das vendas pos-01/05/2026 ate fix 2f5efbf chegar a prod).
+          // Excecao em (b): se a autorizacao tem cara de EndToEndId Pix BACEN
+          // (E + 8 digitos ISPB + 32 chars total), nao entra — Pix concilia
+          // direto banco x PDV, fora do fluxo Cielo.
           or(
             and(
               isNotNull(schema.pagamento.formaPagamento),
@@ -148,6 +151,7 @@ export async function rodarConciliacaoOperadora(opts: {
             and(
               isNull(schema.pagamento.formaPagamento),
               isNotNull(schema.pagamento.nsuTransacao),
+              sql`NOT (${schema.pagamento.numeroAutorizacaoCartao} ~ '^E[0-9]{8}' AND length(${schema.pagamento.numeroAutorizacaoCartao}) = 32)`,
             ),
           ),
         ),
