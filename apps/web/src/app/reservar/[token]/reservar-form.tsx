@@ -250,7 +250,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <select value={espaco} onChange={(e) => setEspaco(e.target.value)} className={inp}>
               {areas.map((a) => {
                 const d = dispon[a.nome];
-                const disp = d ? (d.livres === 0 ? ' · LOTADO' : ` · ${d.livres} mesa${d.livres > 1 ? 's' : ''} livre${d.livres > 1 ? 's' : ''}`) : '';
+                // Não expor a quantidade de mesas restantes pro cliente —
+                // só sinaliza quando o espaço está lotado (opção desabilitada).
+                const disp = d && d.livres === 0 ? ' · LOTADO' : '';
                 return (
                   <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>
                     {a.nome}{a.horaLimite ? ` (até ${a.horaLimite})` : ''}{disp}
