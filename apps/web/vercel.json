@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/lembrete-reserva",
       "schedule": "10 3 * * *"
+    },
+    {
+      "path": "/api/cron/match-pix-orfao",
+      "schedule": "0 8 * * *"
     }
   ]
 }
