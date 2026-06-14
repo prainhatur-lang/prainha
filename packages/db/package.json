@@ -34,6 +34,7 @@
     "migrate:cert-compartilhar": "tsx scripts/migrate-cert-compartilhar.ts",
     "migrate:cert-filial-nsu": "tsx scripts/migrate-cert-filial-nsu.ts",
     "migrate:permissoes": "tsx scripts/migrate-permissoes.ts",
+    "seed:grupos-front": "tsx scripts/seed-grupos-front.ts",
     "migrate:fornecedor-pedido-minimo": "tsx scripts/migrate-fornecedor-pedido-minimo.ts",
     "migrate:filial-pausada": "tsx scripts/migrate-filial-pausada.ts",
     "relink:fornecedores-notas": "tsx scripts/relink-fornecedores-notas.ts",

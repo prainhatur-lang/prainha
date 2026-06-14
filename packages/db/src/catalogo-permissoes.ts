@@ -157,6 +157,20 @@ export const PERMISSOES: PermissaoDef[] = [
   })),
 ];
 
+/**
+ * Acesso operacional a Reservas + Lista de espera (fila), usado pelo front of
+ * house (Recepção e Vendas). Read/create/update nos dois modulos — sem as acoes
+ * administrativas (reserva.configurar, reserva.importar) nem delete.
+ */
+const RESERVAS_FILA_OPERACIONAL = [
+  'reserva.read',
+  'reserva.create',
+  'reserva.update',
+  'lista_espera.read',
+  'lista_espera.create',
+  'lista_espera.update',
+];
+
 /** Grupos pre-prontos do sistema com lista de permissoes (codigos). */
 export const GRUPOS_SISTEMA: Array<{
   nome: string;
@@ -231,6 +245,16 @@ export const GRUPOS_SISTEMA: Array<{
           c === 'ordem_producao.update' ||
           c === 'ordem_producao.concluir',
       ),
+  },
+  {
+    nome: 'Recepção',
+    descricao: 'Agenda de reservas + fila (lista de espera) — uso operacional',
+    permissoes: (todas) => todas.filter((c) => RESERVAS_FILA_OPERACIONAL.includes(c)),
+  },
+  {
+    nome: 'Vendas',
+    descricao: 'Agenda de reservas + fila (lista de espera) — uso operacional',
+    permissoes: (todas) => todas.filter((c) => RESERVAS_FILA_OPERACIONAL.includes(c)),
   },
 ];
 
