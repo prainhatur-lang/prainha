@@ -54,6 +54,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .select({
       fornecedorId: schema.fornecedorFolha.fornecedorId,
       nome: schema.fornecedor.nome,
+      nomesAlternativos: schema.fornecedorFolha.nomesAlternativos,
     })
     .from(schema.fornecedorFolha)
     .innerJoin(
@@ -69,6 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const pessoasNorm = pessoas.map((p) => ({
     fornecedorId: p.fornecedorId,
     nome: p.nome ?? '',
+    nomesAlternativos: (p.nomesAlternativos as string[] | null) ?? null,
   }));
 
   // Faz fuzzy match e salva folha_horas com matches automáticos

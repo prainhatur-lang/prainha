@@ -83,19 +83,25 @@ export function parseEspelho(
   return out;
 }
 
-/** Faz fuzzy match entre nome do espelho e lista de pessoas (fornecedor.nome).
- *  Retorna o melhor match (score ≥ 0.5) ou null. */
+/** Faz fuzzy match entre nome do espelho e lista de pessoas (fornecedor.nome
+ *  + nomes_alternativos). Pega o melhor score testando cada variante.
+ *  Retorna o melhor match (score > 0.4) ou null. */
 export function fuzzyMatchPessoa(
   nomeEspelho: string,
-  pessoas: { fornecedorId: string; nome: string }[],
+  pessoas: { fornecedorId: string; nome: string; nomesAlternativos?: string[] | null }[],
 ): { fornecedorId: string; score: number } | null {
   const tokensEsp = tokens(nomeEspelho);
   let best: { fornecedorId: string; score: number } | null = null;
   for (const p of pessoas) {
-    const tokensPessoa = tokens(p.nome);
-    const score = jaccard(tokensEsp, tokensPessoa);
-    if (score > 0.4 && (!best || score > best.score)) {
-      best = { fornecedorId: p.fornecedorId, score };
+    // Testa nome principal e cada nome alternativo, fica com o melhor score
+    const variantes = [p.nome, ...(p.nomesAlternativos ?? [])];
+    let scorePessoa = 0;
+    for (const v of variantes) {
+      const s = jaccard(tokensEsp, tokens(v));
+      if (s > scorePessoa) scorePessoa = s;
+    }
+    if (scorePessoa > 0.4 && (!best || scorePessoa > best.score)) {
+      best = { fornecedorId: p.fornecedorId, score: scorePessoa };
     }
   }
   return best;
@@ -106,6 +112,9 @@ function tokens(s: string): Set<string> {
     s
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
+      // remove tudo que nao for letra/numero/espaco — parenteses, virgulas, etc
+      // (sem isso, "SANTOS(" nao casa com "SANTOS" e nome curto + parentese afunda)
+      .replace(/[^a-z0-9\s]/gi, ' ')
       .toLowerCase()
       .split(/\s+/)
       .filter((t) => t.length >= 3),
