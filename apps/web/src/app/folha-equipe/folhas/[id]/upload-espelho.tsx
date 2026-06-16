@@ -40,7 +40,10 @@ export function UploadEspelho({ folhaId }: { folhaId: string }) {
       if (r.ok) {
         const data = (await r.json()) as UploadResposta;
         setResultado(data);
-        router.refresh();
+        // router.refresh() sozinho nao recarrega o resumo (em useState do
+        // calculo-fechar). reload total garante que folha_horas novo entra no
+        // calculo da comissao por pessoa.
+        window.location.reload();
       } else {
         setErro(await r.text());
       }
