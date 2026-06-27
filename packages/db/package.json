@@ -50,7 +50,8 @@
     "typecheck": "tsc --noEmit",
     "migrate:reserva-preferencias": "tsx scripts/migrate-reserva-preferencias.ts",
     "migrate:cliente-contato": "tsx scripts/migrate-cliente-contato.ts",
-    "import:cliente-contato": "tsx scripts/import-cliente-contato.ts"
+    "import:cliente-contato": "tsx scripts/import-cliente-contato.ts",
+    "migrate:patio": "tsx scripts/migrate-patio.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

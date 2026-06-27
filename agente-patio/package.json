@@ -1,0 +1,24 @@
+{
+  "name": "@concilia/agente-patio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "No de cancela do patio (estacionamento): webhook LPR UniFi + rele facial Intelbras + impressao de ticket. Roda no mini-PC de cada cancela.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "test:facial": "tsx src/test-facial.ts",
+    "test:relay": "tsx src/test-relay.ts",
+    "test:protect": "tsx src/test-protect.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
