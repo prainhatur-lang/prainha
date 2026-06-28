@@ -41,6 +41,13 @@ async function main() {
   `;
   console.log('OK');
 
+  process.stdout.write('  colunas de foto (entrada/saida, G6+facial)... ');
+  await sql`ALTER TABLE patio_sessao ADD COLUMN IF NOT EXISTS entrada_foto_g6_url text`;
+  await sql`ALTER TABLE patio_sessao ADD COLUMN IF NOT EXISTS entrada_foto_facial_url text`;
+  await sql`ALTER TABLE patio_sessao ADD COLUMN IF NOT EXISTS saida_foto_g6_url text`;
+  await sql`ALTER TABLE patio_sessao ADD COLUMN IF NOT EXISTS saida_foto_facial_url text`;
+  console.log('OK');
+
   process.stdout.write('  indexes patio_sessao... ');
   await sql`CREATE INDEX IF NOT EXISTS patio_sessao_filial_placa_status_idx ON patio_sessao (filial_id, placa, status)`;
   await sql`CREATE INDEX IF NOT EXISTS patio_sessao_filial_codigo_idx ON patio_sessao (filial_id, codigo)`;

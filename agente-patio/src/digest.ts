@@ -75,3 +75,41 @@ export async function digestRequest(
   const text = await r2.text();
   return { status: r2.status, text, ok: r2.ok };
 }
+
+/** Igual digestRequest, mas devolve o corpo em bytes (pra snapshot/imagem). */
+export async function digestRequestBuffer(
+  url: string,
+  user: string,
+  pass: string,
+  method = 'GET',
+  timeoutMs = 10000,
+): Promise<{ status: number; buffer: Buffer; ok: boolean }> {
+  const u = new URL(url);
+  const uri = u.pathname + u.search;
+  const doFetch = (headers: Record<string, string>) => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    return fetch(url, { method, headers, signal: ctl.signal }).finally(() => clearTimeout(t));
+  };
+  const r1 = await doFetch({});
+  if (r1.status !== 401) {
+    return { status: r1.status, buffer: Buffer.from(await r1.arrayBuffer()), ok: r1.ok };
+  }
+  const wwwAuth = r1.headers.get('www-authenticate') ?? '';
+  const d = parseAuthHeader(wwwAuth);
+  const realm = d.realm ?? '';
+  const nonce = d.nonce ?? '';
+  const qop = (d.qop ?? 'auth').split(',')[0].trim();
+  const opaque = d.opaque;
+  const ha1 = md5(`${user}:${realm}:${pass}`);
+  const ha2 = md5(`${method}:${uri}`);
+  const nc = '00000001';
+  const cnonce = randomBytes(8).toString('hex');
+  const response = md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`);
+  let auth =
+    `Digest username="${user}", realm="${realm}", nonce="${nonce}", uri="${uri}", ` +
+    `qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"`;
+  if (opaque) auth += `, opaque="${opaque}"`;
+  const r2 = await doFetch({ Authorization: auth });
+  return { status: r2.status, buffer: Buffer.from(await r2.arrayBuffer()), ok: r2.ok };
+}

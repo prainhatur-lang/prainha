@@ -12,6 +12,7 @@
     "test:relay": "tsx src/test-relay.ts",
     "test:protect": "tsx src/test-protect.ts",
     "test:placas": "tsx src/test-placas.ts",
+    "test:captura": "tsx src/test-captura.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -45,8 +45,10 @@ export const patioSessao = pgTable(
     entradaEm: timestamp('entrada_em', { withTimezone: true }).notNull().defaultNow(),
     /** Id da camera UniFi que leu na entrada (ex: G6 Cancela Entrada). */
     entradaCameraId: varchar('entrada_camera_id', { length: 40 }),
-    /** Snapshot da entrada (URL no storage), quando o agente salvar. */
-    entradaFotoUrl: text('entrada_foto_url'),
+    /** Foto da G6 na entrada (carro+placa) — URL no storage. */
+    entradaFotoG6Url: text('entrada_foto_g6_url'),
+    /** Foto do facial na entrada (pessoa/cena) — URL no storage. */
+    entradaFotoFacialUrl: text('entrada_foto_facial_url'),
     /** Ticket foi impresso com sucesso na entrada. */
     ticketImpresso: boolean('ticket_impresso').notNull().default(false),
 
@@ -67,6 +69,10 @@ export const patioSessao = pgTable(
     saidaEm: timestamp('saida_em', { withTimezone: true }),
     /** Id da camera UniFi que leu na saida (ex: G6 Bullet Totem Saida). */
     saidaCameraId: varchar('saida_camera_id', { length: 40 }),
+    /** Foto da G6 na saida (carro+placa) — URL no storage. */
+    saidaFotoG6Url: text('saida_foto_g6_url'),
+    /** Foto do facial na saida (pessoa/cena) — URL no storage. */
+    saidaFotoFacialUrl: text('saida_foto_facial_url'),
     /** placa | cupom | manual — como a saida foi liberada. */
     saidaMetodo: varchar('saida_metodo', { length: 20 }),
 
