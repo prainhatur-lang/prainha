@@ -16,50 +16,79 @@ import { startWebhookServer, type LprEvent } from './server.js';
 import { getDeviceType, getDoorStatus, openDoor } from './facial.js';
 import { ping as protectPing, getCamera } from './protect.js';
 import { lerPlacas, login as nvrLogin } from './protect-events.js';
+import { Store } from './store.js';
+import { startWeb } from './web.js';
+import { capturarCena } from './captura.js';
 
 const cfg = loadConfig();
+const store = new Store(cfg.dataDir);
 
-// Estado do laco: quando o laco dispara, marca o instante. A placa so "conta"
-// se chegar dentro de correlacaoMs. Em DEV (laco.fonte === 'none') a placa
-// sozinha ja vale como gatilho.
-let lacoAtivoAte = 0;
+const snapCfgs = () => ({
+  protect: { host: cfg.protect.host, apiKey: cfg.protect.apiKey },
+  cameraId: cfg.camera.id,
+  facial: { host: cfg.facial.host, user: cfg.facial.user, password: cfg.facial.password },
+});
 
-function lacoLiberado(): boolean {
-  if (cfg.laco.fonte === 'none') return true; // DEV: sem laco instalado
-  return Date.now() <= lacoAtivoAte;
-}
-
-/** Handler unico de placa — chamado tanto pelo polling quanto pelo webhook. */
-async function onPlaca(args: {
+/**
+ * Handler de placa — chamado pelo polling (ou webhook). Gatilho fisico da
+ * ENTRADA = botoeira no BOT do facial (abre a cancela direto). O agente so
+ * REGISTRA pela placa: captura as fotos e cria a sessao local.
+ */
+async function handlePlaca(args: {
   placa: string | null;
   confianca: number | null;
   nomeCadastro?: string | null;
   fonte: 'polling' | 'webhook';
 }) {
-  if (!lacoLiberado()) {
-    log.info('placa lida mas laco nao ativo — ignorando (sem carro na posicao)', {
-      placa: args.placa,
+  const placa = args.placa;
+
+  if (cfg.papel === 'entrada') {
+    // dedup: carro ja dentro com sessao aberta? (a G6 re-le a mesma placa varias
+    // vezes enquanto o carro fica na frente — nao duplicar a sessao)
+    if (placa && store.abertaPorPlaca(placa)) return;
+
+    log.info('ENTRADA — registrando', {
+      placa: placa ?? 'NAO_LIDA',
+      confianca: args.confianca,
+      cadastro: args.nomeCadastro ?? undefined,
     });
+
+    const cena = await capturarCena(snapCfgs());
+    const fotoG6 = cena.g6 ? store.salvarFoto(cena.g6, 'entrada-g6') : undefined;
+    const fotoFacial = cena.facial ? store.salvarFoto(cena.facial, 'entrada-facial') : undefined;
+
+    const s = store.criarEntrada({
+      placa,
+      confianca: args.confianca ?? null,
+      nomeCadastro: args.nomeCadastro ?? null,
+      entradaCameraId: cfg.camera.id,
+      entradaFotoG6: fotoG6,
+      entradaFotoFacial: fotoFacial,
+    });
+    log.info('sessao criada', {
+      id: s.id,
+      placa: s.placa,
+      fotos: { g6: !!fotoG6, facial: !!fotoFacial },
+    });
+
+    // O BOT (botoeira) ja abre a cancela. openDoor so se autoAbrir (fallback).
+    if (cfg.autoAbrir) {
+      await openDoor(cfg.facial).catch((e) =>
+        log.error('falha abrindo cancela', { err: (e as Error).message }),
+      );
+    }
     return;
   }
-  log.info('PLACA confirmada pra acao', {
-    papel: cfg.papel,
-    placa: args.placa ?? 'NAO_LIDA',
-    confianca: args.confianca,
-    cadastro: args.nomeCadastro ?? undefined,
-    fonte: args.fonte,
-  });
 
-  // TODO F2/F3: criar/achar sessao no concilia, imprimir ticket (entrada),
-  // validar consumo + tolerancia (saida). Por ora F1 so loga e (opcional) abre.
-  if (cfg.autoAbrir) {
-    try {
-      await openDoor(cfg.facial);
-    } catch (e) {
-      log.error('falha abrindo cancela', { err: (e as Error).message });
+  // SAIDA — acha a sessao pela placa. A liberacao gated por validacao entra na
+  // proxima fase; por ora so registra o encontro.
+  if (placa) {
+    const s = store.abertaPorPlaca(placa);
+    if (!s) {
+      log.info('SAIDA — placa sem sessao aberta (ignora)', { placa });
+      return;
     }
-  } else {
-    log.info('autoAbrir=false (F1): cancela NAO acionada — so captura', { placa: args.placa });
+    log.info('SAIDA — sessao encontrada', { id: s.id, placa, status: s.status });
   }
 }
 
@@ -94,7 +123,7 @@ async function startPolling() {
         if (vistos.has(p.eventId)) continue;
         vistos.add(p.eventId);
         if (p.ts > desde) desde = p.ts;
-        await onPlaca({
+        await handlePlaca({
           placa: p.placa,
           confianca: p.confianca,
           nomeCadastro: p.nomeCadastro,
@@ -141,13 +170,16 @@ async function boot() {
     log.error('protect/camera NAO respondeu (segue mesmo assim)', { err: (e as Error).message });
   }
 
+  // UI local (Pátio ao vivo) — servida pelo próprio agente, funciona offline.
+  startWeb(store, cfg.web.porta);
+
   // Fonte de placa: polling (recomendado) ou webhook (mini-PC same-LAN).
   if (cfg.placa.fonte === 'webhook') {
     startWebhookServer({
       porta: cfg.webhook.porta,
       segredo: cfg.webhook.segredo,
       onLpr: (ev: LprEvent) => {
-        void onPlaca({ placa: ev.placa, confianca: ev.confianca, fonte: 'webhook' });
+        void handlePlaca({ placa: ev.placa, confianca: ev.confianca, fonte: 'webhook' });
       },
     });
     log.info('agente-patio pronto (webhook) — aguardando placas', {
