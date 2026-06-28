@@ -28,6 +28,8 @@ export interface Sessao {
   toleranciaSaidaAte?: string;
   // saída
   saidaEm?: string;
+  saidaCameraId?: string;
+  saidaMetodo?: 'placa' | 'cupom' | 'manual';
   saidaFotoG6?: string;
   saidaFotoFacial?: string;
   observacao?: string;

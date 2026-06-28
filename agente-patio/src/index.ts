@@ -80,16 +80,39 @@ async function handlePlaca(args: {
     return;
   }
 
-  // SAIDA — acha a sessao pela placa. A liberacao gated por validacao entra na
-  // proxima fase; por ora so registra o encontro.
-  if (placa) {
-    const s = store.abertaPorPlaca(placa);
-    if (!s) {
-      log.info('SAIDA — placa sem sessao aberta (ignora)', { placa });
-      return;
-    }
-    log.info('SAIDA — sessao encontrada', { id: s.id, placa, status: s.status });
+  // SAIDA — acha a sessao pela placa e libera SE validada + dentro da tolerancia.
+  // Aqui o AGENTE é o porteiro (não tem botoeira na saída): só abre se ok.
+  if (!placa) return;
+  const s = store.abertaPorPlaca(placa);
+  if (!s) {
+    log.info('SAIDA — placa sem sessao aberta (ignora)', { placa });
+    return;
   }
+  if (s.status !== 'validada') {
+    log.info('SAIDA — sessao NAO validada (passe no caixa)', { placa, id: s.id });
+    return; // cancela fica fechada
+  }
+  if (s.toleranciaSaidaAte && Date.now() > new Date(s.toleranciaSaidaAte).getTime()) {
+    log.warn('SAIDA — fora da tolerancia (revalidar no caixa)', { placa, id: s.id });
+    return; // passou do tempo liberado
+  }
+
+  log.info('SAIDA — LIBERADA', { placa, id: s.id, tipo: s.validacaoTipo });
+  const cena = await capturarCena(snapCfgs());
+  const fG6 = cena.g6 ? store.salvarFoto(cena.g6, 'saida-g6') : undefined;
+  const fFac = cena.facial ? store.salvarFoto(cena.facial, 'saida-facial') : undefined;
+  store.atualizar(s.id, {
+    status: 'saiu',
+    saidaEm: new Date().toISOString(),
+    saidaCameraId: cfg.camera.id,
+    saidaMetodo: 'placa',
+    saidaFotoG6: fG6,
+    saidaFotoFacial: fFac,
+  });
+  // na saída o agente SEMPRE abre quando liberado (é ele quem controla).
+  await openDoor(cfg.facial).catch((e) =>
+    log.error('falha abrindo cancela saída', { err: (e as Error).message }),
+  );
 }
 
 /** Loop de polling: le placas novas da camera deste no e dispara onPlaca. */
