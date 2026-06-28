@@ -170,8 +170,12 @@ async function boot() {
     log.error('protect/camera NAO respondeu (segue mesmo assim)', { err: (e as Error).message });
   }
 
-  // UI local (Pátio ao vivo) — servida pelo próprio agente, funciona offline.
-  startWeb(store, cfg.web.porta);
+  // UI local (Pátio ao vivo / caixa) — servida pelo próprio agente, offline.
+  startWeb(store, {
+    porta: cfg.web.porta,
+    toleranciaSaidaMin: cfg.caixa.toleranciaSaidaMin,
+    tarifaPadraoCentavos: cfg.caixa.tarifaPadraoCentavos,
+  });
 
   // Fonte de placa: polling (recomendado) ou webhook (mini-PC same-LAN).
   if (cfg.placa.fonte === 'webhook') {

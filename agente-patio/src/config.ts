@@ -64,6 +64,15 @@ const ConfigSchema = z.object({
   web: z
     .object({ porta: z.number().int().min(1).max(65535).default(8080) })
     .default({ porta: 8080 }),
+  /** Regras do caixa / validação. */
+  caixa: z
+    .object({
+      /** Minutos que a saída fica liberada após validar (tolerância). */
+      toleranciaSaidaMin: z.number().int().min(0).max(120).default(15),
+      /** Valor pré-preenchido no "Cobrar" (centavos). */
+      tarifaPadraoCentavos: z.number().int().min(0).default(1000),
+    })
+    .default({ toleranciaSaidaMin: 15, tarifaPadraoCentavos: 1000 }),
   /** Pasta de dados locais (sessões + fotos). Local-first. */
   dataDir: z.string().default('./data'),
   impressora: z

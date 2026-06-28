@@ -42,7 +42,11 @@ async function main() {
   console.log('sessão criada:', { id: s.id, placa: s.placa, fotos: { g6: !!fotoG6, facial: !!fotoFacial } });
 
   // 4) sobe a UI pra ver
-  startWeb(store, cfg.web.porta);
+  startWeb(store, {
+    porta: cfg.web.porta,
+    toleranciaSaidaMin: cfg.caixa.toleranciaSaidaMin,
+    tarifaPadraoCentavos: cfg.caixa.tarifaPadraoCentavos,
+  });
   console.log(`\n👉 Pátio ao vivo: http://localhost:${cfg.web.porta}  (Ctrl+C pra sair)`);
 }
 
