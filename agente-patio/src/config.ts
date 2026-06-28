@@ -60,6 +60,12 @@ const ConfigSchema = z.object({
     /** Segredo opcional exigido no path/header do webhook (anti-spoofing). */
     segredo: z.string().default(''),
   }),
+  /** UI local (Pátio ao vivo / caixa) servida pelo próprio agente. */
+  web: z
+    .object({ porta: z.number().int().min(1).max(65535).default(8080) })
+    .default({ porta: 8080 }),
+  /** Pasta de dados locais (sessões + fotos). Local-first. */
+  dataDir: z.string().default('./data'),
   impressora: z
     .object({
       /** none (F1) | escpos-usb | escpos-net — definido na F2. */

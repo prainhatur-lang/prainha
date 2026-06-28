@@ -14,6 +14,7 @@
     "test:placas": "tsx src/test-placas.ts",
     "test:captura": "tsx src/test-captura.ts",
     "test:alarme": "tsx src/test-alarme.ts",
+    "test:entrada": "tsx src/test-entrada.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
