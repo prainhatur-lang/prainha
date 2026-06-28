@@ -17,7 +17,14 @@
   },
   "protect": {
     "host": "10.0.2.57",
-    "apiKey": "<API_KEY_PROTECT>"
+    "apiKey": "<API_KEY_PROTECT>",
+    "username": "<CONTA_LOCAL_NVR>",
+    "password": "<SENHA_CONTA_LOCAL>"
+  },
+  "placa": {
+    "fonte": "polling",
+    "intervalMs": 2000,
+    "minConfianca": 0.8
   },
   "laco": {
     "fonte": "none"

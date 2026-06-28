@@ -26,8 +26,22 @@ const ConfigSchema = z.object({
   }),
   protect: z.object({
     host: z.string(),
+    /** API key (integração) — usada pra snapshot/info da câmera. */
     apiKey: z.string(),
+    /** Conta LOCAL do NVR (sem 2FA) pra login na API legada de eventos/placas. */
+    username: z.string(),
+    password: z.string(),
   }),
+  /** Leitura de placa. fonte=polling (recomendado, outbound) ou webhook (mini-PC same-LAN). */
+  placa: z
+    .object({
+      fonte: z.enum(['polling', 'webhook']).default('polling'),
+      /** Intervalo do polling em ms. */
+      intervalMs: z.number().int().min(500).max(30000).default(2000),
+      /** Confiança mínima (0-1) pra aceitar a placa. Abaixo disso = não-lida (cai no ticket). */
+      minConfianca: z.number().min(0).max(1).default(0.8),
+    })
+    .default({ fonte: 'polling', intervalMs: 2000, minConfianca: 0.8 }),
   laco: z
     .object({
       /** facial = entrada de alarme do SS 3532; rele = placa USB; none = nao instalado (usa placa como gatilho em DEV). */

@@ -11,6 +11,7 @@
     "test:facial": "tsx src/test-facial.ts",
     "test:relay": "tsx src/test-relay.ts",
     "test:protect": "tsx src/test-protect.ts",
+    "test:placas": "tsx src/test-placas.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

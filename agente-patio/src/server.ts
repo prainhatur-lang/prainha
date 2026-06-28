@@ -120,8 +120,10 @@ export function startWebhookServer(opts: ServerOpts) {
     });
   });
 
-  srv.listen(opts.porta, () => {
-    log.info('webhook listener no ar', { porta: opts.porta, captures: CAPTURES });
+  // Bind explicito em IPv4 (0.0.0.0): camera/NVR mandam o POST em IPv4 e um
+  // socket IPv6-only recusaria a conexao.
+  srv.listen(opts.porta, '0.0.0.0', () => {
+    log.info('webhook listener no ar', { porta: opts.porta, host: '0.0.0.0', captures: CAPTURES });
   });
   return srv;
 }

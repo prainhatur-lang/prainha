@@ -15,6 +15,7 @@ import { log } from './logger.js';
 import { startWebhookServer, type LprEvent } from './server.js';
 import { getDeviceType, getDoorStatus, openDoor } from './facial.js';
 import { ping as protectPing, getCamera } from './protect.js';
+import { lerPlacas, login as nvrLogin } from './protect-events.js';
 
 const cfg = loadConfig();
 
@@ -28,17 +29,25 @@ function lacoLiberado(): boolean {
   return Date.now() <= lacoAtivoAte;
 }
 
-async function handleLpr(ev: LprEvent) {
+/** Handler unico de placa — chamado tanto pelo polling quanto pelo webhook. */
+async function onPlaca(args: {
+  placa: string | null;
+  confianca: number | null;
+  nomeCadastro?: string | null;
+  fonte: 'polling' | 'webhook';
+}) {
   if (!lacoLiberado()) {
     log.info('placa lida mas laco nao ativo — ignorando (sem carro na posicao)', {
-      placa: ev.placa,
+      placa: args.placa,
     });
     return;
   }
   log.info('PLACA confirmada pra acao', {
     papel: cfg.papel,
-    placa: ev.placa ?? 'NAO_LIDA',
-    confianca: ev.confianca,
+    placa: args.placa ?? 'NAO_LIDA',
+    confianca: args.confianca,
+    cadastro: args.nomeCadastro ?? undefined,
+    fonte: args.fonte,
   });
 
   // TODO F2/F3: criar/achar sessao no concilia, imprimir ticket (entrada),
@@ -50,7 +59,54 @@ async function handleLpr(ev: LprEvent) {
       log.error('falha abrindo cancela', { err: (e as Error).message });
     }
   } else {
-    log.info('autoAbrir=false (F1): cancela NAO acionada — so captura', { placa: ev.placa });
+    log.info('autoAbrir=false (F1): cancela NAO acionada — so captura', { placa: args.placa });
+  }
+}
+
+/** Loop de polling: le placas novas da camera deste no e dispara onPlaca. */
+async function startPolling() {
+  const auth = {
+    host: cfg.protect.host,
+    username: cfg.protect.username,
+    password: cfg.protect.password,
+  };
+  await nvrLogin(auth).catch((e) =>
+    log.error('login NVR falhou no boot (vai re-tentar no loop)', { err: (e as Error).message }),
+  );
+  // comeca olhando so o "agora pra frente" (nao reprocessa historico)
+  let desde = Date.now();
+  const vistos = new Set<string>();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  log.info('polling de placas iniciado', {
+    camera: cfg.camera.nome || cfg.camera.id,
+    intervalMs: cfg.placa.intervalMs,
+    minConfianca: cfg.placa.minConfianca,
+  });
+
+  for (;;) {
+    try {
+      const placas = await lerPlacas(auth, desde - 5000, {
+        cameraId: cfg.camera.id,
+        minConfianca: cfg.placa.minConfianca,
+      });
+      for (const p of placas) {
+        if (vistos.has(p.eventId)) continue;
+        vistos.add(p.eventId);
+        if (p.ts > desde) desde = p.ts;
+        await onPlaca({
+          placa: p.placa,
+          confianca: p.confianca,
+          nomeCadastro: p.nomeCadastro,
+          fonte: 'polling',
+        });
+      }
+      // evita o Set crescer pra sempre
+      if (vistos.size > 5000) vistos.clear();
+    } catch (e) {
+      log.warn('ciclo de polling falhou (segue)', { err: (e as Error).message });
+    }
+    await sleep(cfg.placa.intervalMs);
   }
 }
 
@@ -85,18 +141,22 @@ async function boot() {
     log.error('protect/camera NAO respondeu (segue mesmo assim)', { err: (e as Error).message });
   }
 
-  // Sobe o listener
-  startWebhookServer({
-    porta: cfg.webhook.porta,
-    segredo: cfg.webhook.segredo,
-    onLpr: (ev) => {
-      void handleLpr(ev);
-    },
-  });
-
-  log.info('agente-patio pronto — aguardando placas', {
-    dica: 'configure o Alarm Manager do Protect (LPR) apontando pra este host:porta',
-  });
+  // Fonte de placa: polling (recomendado) ou webhook (mini-PC same-LAN).
+  if (cfg.placa.fonte === 'webhook') {
+    startWebhookServer({
+      porta: cfg.webhook.porta,
+      segredo: cfg.webhook.segredo,
+      onLpr: (ev: LprEvent) => {
+        void onPlaca({ placa: ev.placa, confianca: ev.confianca, fonte: 'webhook' });
+      },
+    });
+    log.info('agente-patio pronto (webhook) — aguardando placas', {
+      dica: 'Alarm Manager do Protect (LPR) apontando pra este host:porta',
+    });
+  } else {
+    void startPolling();
+    log.info('agente-patio pronto (polling) — lendo placas do NVR');
+  }
 }
 
 boot().catch((e) => {
