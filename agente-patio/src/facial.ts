@@ -39,6 +39,23 @@ export async function getDoorStatus(cfg: FacialCfg): Promise<string> {
 }
 
 /**
+ * Le o estado das entradas de alarme. Retorna o bitmask cru (result=N) e se
+ * QUALQUER entrada esta ativa. O laco/botoeira de presenca liga aqui (entrada
+ * de alarme) e o agente usa isso como GATILHO da sequencia de entrada.
+ */
+export async function getAlarmInState(cfg: FacialCfg): Promise<{ raw: number; ativo: boolean }> {
+  const r = await digestRequest(
+    `${base(cfg)}/alarm.cgi?action=getInState`,
+    cfg.user,
+    cfg.password,
+  );
+  if (!r.ok) throw new Error(`getInState HTTP ${r.status}`);
+  const m = r.text.match(/result=(\d+)/);
+  const raw = m ? parseInt(m[1], 10) : 0;
+  return { raw, ativo: raw > 0 };
+}
+
+/**
  * Abre a cancela (pulso no rele). No SS 3532 e o openDoor remoto.
  * ATENCAO: aciona o portao fisico de verdade.
  */
