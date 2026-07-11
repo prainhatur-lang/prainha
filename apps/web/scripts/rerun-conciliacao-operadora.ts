@@ -5,8 +5,8 @@
 import { rodarConciliacaoOperadora } from '../src/lib/conciliacao-operadora';
 
 const FILIAIS = [
-  { nome: 'Prainha Bar 0001', id: '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9', dataFim: '2026-06-12' },
-  { nome: 'Tabuara 0002', id: 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7', dataFim: '2026-06-11' },
+  { nome: 'Prainha Bar 0001', id: '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9', dataFim: '2026-07-05' },
+  { nome: 'Tabuara 0002', id: 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7', dataFim: '2026-07-05' },
 ];
 
 const dataInicio = '2026-05-01';

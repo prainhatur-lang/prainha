@@ -140,9 +140,10 @@ export async function rodarConciliacaoOperadora(opts: {
           // Pagamento elegivel quando: (a) tem forma e nao esta na lista de exclusao;
           // OU (b) tem NSU (passou por adquirente, mesmo sem forma — caso do bug CDC
           // forma=null em ~96% das vendas pos-01/05/2026 ate fix 2f5efbf chegar a prod).
-          // Excecao em (b): se a autorizacao tem cara de EndToEndId Pix BACEN
-          // (E + 8 digitos ISPB + 32 chars total), nao entra — Pix concilia
-          // direto banco x PDV, fora do fluxo Cielo.
+          // Pagamentos (b) com autorizacao de Pix (EndToEndId BACEN) sao filtrados
+          // adiante em JS: so entram se o NSU deles existir nas vendas Cielo do
+          // periodo (= Pix pago NA MAQUININHA da Cielo, que liquida via Cielo).
+          // Pix comum (direto na conta) fica fora — concilia banco x PDV.
           or(
             and(
               isNotNull(schema.pagamento.formaPagamento),
@@ -151,12 +152,12 @@ export async function rodarConciliacaoOperadora(opts: {
             and(
               isNull(schema.pagamento.formaPagamento),
               isNotNull(schema.pagamento.nsuTransacao),
-              sql`NOT (${schema.pagamento.numeroAutorizacaoCartao} ~ '^E[0-9]{8}' AND length(${schema.pagamento.numeroAutorizacaoCartao}) = 32)`,
             ),
           ),
         ),
       );
-    const pagamentos = pagamentosRaw.filter((p) => {
+    const isAuthPixE2E = (a: string | null) => !!a && a.length === 32 && /^E\d{8}/.test(a);
+    const pagamentosPreFiltro = pagamentosRaw.filter((p) => {
       if (idsPagFirmes.has(p.id)) return false;
       if (!p.dataPagamento) return true;
       return !fechados.has(dateToBrYmd(p.dataPagamento));
@@ -191,6 +192,16 @@ export async function rodarConciliacaoOperadora(opts: {
         ),
       );
     const vendas = vendasRaw.filter((v) => !idsVendaFirmes.has(v.id));
+
+    // Pagamento sem forma cuja autorizacao e um EndToEndId Pix: so entra no pool
+    // se o NSU dele aparece nas vendas Cielo do periodo (Pix via maquininha).
+    const nsusVendas = new Set(vendasRaw.map((v) => v.nsu).filter(Boolean));
+    const pagamentos = pagamentosPreFiltro.filter(
+      (p) =>
+        p.formaPagamento !== null ||
+        !isAuthPixE2E(p.numeroAutorizacao) ||
+        (p.nsu != null && nsusVendas.has(p.nsu)),
+    );
 
     // Apaga matches AUTO auto-revogaveis no scope — vao ser regerados pelo engine.
     // NUNCA toca em manuais ou firmes (idsPagFirmes / idsVendaFirmes ja filtrados acima).
