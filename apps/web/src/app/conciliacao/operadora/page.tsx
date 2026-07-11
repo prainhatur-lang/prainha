@@ -142,6 +142,8 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
           descricao: schema.excecao.descricao,
           valor: schema.excecao.valor,
           detectadoEm: schema.excecao.detectadoEm,
+          pagamentoId: schema.excecao.pagamentoId,
+          pagamentoPedido: schema.pagamento.codigoPedidoExterno,
           pagamentoNsu: schema.pagamento.nsuTransacao,
           pagamentoFormaPagamento: schema.pagamento.formaPagamento,
           pagamentoDataPagamento: schema.pagamento.dataPagamento,
@@ -736,9 +738,12 @@ function SecaoExcecoes({
   tom: 'amber' | 'rose';
   excecoes: Array<{
     id: string;
+    tipo?: string;
     valor: string | null;
     descricao: string;
     detectadoEm: Date;
+    pagamentoId?: string | null;
+    pagamentoPedido?: number | null;
     pagamentoNsu: string | null;
     pagamentoFormaPagamento: string | null;
     pagamentoDataPagamento: Date | null;

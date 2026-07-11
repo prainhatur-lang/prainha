@@ -30,6 +30,10 @@ const MOTIVOS = [
 const Body = z.object({
   observacao: z.string().max(500).optional(),
   motivo: z.enum(MOTIVOS).optional(),
+  /** CIELO_SEM_PDV com par sugerido pelo motor: true = confirmar o par
+   * (propaga forma da Cielo + grava match firme). Sem a flag, aceitar a
+   * excecao NAO cria match. */
+  confirmarParSugerido: z.boolean().optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -97,17 +101,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // formaEfetiva/bandeiraEfetiva quando setadas.
   // Tipo no banco e 'DIVERGENCIA_VALOR_OPERADORA' (com sufixo).
   // CIELO_SEM_PDV com pagamentoId preenchido = sugestao de par do motor
-  // (mesma data+valor, forma divergente/ausente). Aceitar SEM motivo (ou com
-  // motivo de forma errada) = confirmar o par: propaga forma da Cielo e grava
-  // match firme igual a divergencia. Motivos que NEGAM o par (estorno, venda
-  // da casa, gorjeta, desconto) apenas aceitam a excecao, sem criar match.
-  const motivoNegaPar = ['VENDA_DA_CASA', 'GORJETA', 'DESCONTO_OU_AJUSTE', 'ESTORNO'].includes(
-    parsed.data.motivo ?? '',
-  );
+  // (mesma data+valor, forma divergente/ausente). So confirma o par quando o
+  // usuario clicou "Confirmar par" (confirmarParSugerido=true): propaga forma
+  // da Cielo e grava match firme igual a divergencia. "Resolver" comum apenas
+  // aceita a excecao, sem criar match.
   if (
     exc.processo === 'OPERADORA' &&
     (exc.tipo === 'DIVERGENCIA_VALOR_OPERADORA' ||
-      (exc.tipo === 'CIELO_SEM_PDV' && !motivoNegaPar)) &&
+      (exc.tipo === 'CIELO_SEM_PDV' && parsed.data.confirmarParSugerido === true)) &&
     exc.pagamentoId &&
     exc.vendaAdquirenteId
   ) {

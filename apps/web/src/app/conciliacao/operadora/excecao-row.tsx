@@ -14,6 +14,8 @@ interface Props {
     tipo?: string;
     valor: string | null;
     descricao: string;
+    pagamentoId?: string | null;
+    pagamentoPedido?: number | null;
     pagamentoNsu: string | null;
     pagamentoFormaPagamento: string | null;
     pagamentoDataPagamento: Date | null;
@@ -36,13 +38,48 @@ export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMat
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const nsu = e.pagamentoNsu ?? e.vendaNsu ?? '—';
-  const data = e.pagamentoDataPagamento
+  // Na seção "Na Cielo" o lado principal é a VENDA — o pagamento vinculado,
+  // quando existe, é o PAR SUGERIDO pelo motor (não inverte os campos da linha).
+  const ehCieloSemPdv = e.tipo === 'CIELO_SEM_PDV';
+  const temParSugerido = ehCieloSemPdv && !!e.pagamentoId;
+  const nsu = ehCieloSemPdv
+    ? (e.vendaNsu ?? '—')
+    : (e.pagamentoNsu ?? e.vendaNsu ?? '—');
+  const dataPag = e.pagamentoDataPagamento
     ? new Date(e.pagamentoDataPagamento).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
-    : e.vendaDataVenda
-      ? new Date(e.vendaDataVenda + 'T00:00:00-03:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
-      : '—';
-  const forma = e.pagamentoFormaPagamento ?? e.vendaBandeira ?? '—';
+    : null;
+  const dataVenda = e.vendaDataVenda
+    ? new Date(e.vendaDataVenda + 'T00:00:00-03:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+    : null;
+  const data = (ehCieloSemPdv ? (dataVenda ?? dataPag) : (dataPag ?? dataVenda)) ?? '—';
+  const forma = ehCieloSemPdv
+    ? (e.vendaBandeira ?? '—')
+    : (e.pagamentoFormaPagamento ?? e.vendaBandeira ?? '—');
+
+  async function confirmarPar() {
+    const pedidoTxt = e.pagamentoPedido ? `Pedido #${e.pagamentoPedido}` : 'o pagamento sugerido';
+    if (!window.confirm(`Confirmar que esta venda Cielo é ${pedidoTxt}? Cria o match e aplica a forma da Cielo no pagamento.`)) return;
+    setErr(null);
+    setSubmitting(true);
+    try {
+      const r = await fetch(`/api/excecoes/${e.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmarParSugerido: true,
+          observacao: `Par sugerido confirmado (${pedidoTxt}).`,
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setErr(j.error || `HTTP ${r.status}`);
+        return;
+      }
+      start(() => router.refresh());
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function aceitar(motivo: Motivo | null, observacao: string) {
     setErr(null);
@@ -134,6 +171,16 @@ export function ExcecaoRow({ excecao: e, acoesDivergencia = false, candidatosMat
           </div>
         ) : (
           <div className="flex flex-col items-stretch gap-1">
+            {temParSugerido && (
+              <button
+                onClick={confirmarPar}
+                disabled={submitting || pending}
+                title={e.pagamentoPedido ? `Par sugerido: Pedido #${e.pagamentoPedido}` : 'Par sugerido pelo motor'}
+                className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+              >
+                Confirmar par{e.pagamentoPedido ? ` #${e.pagamentoPedido}` : ''}
+              </button>
+            )}
             {candidatosMatchManual && candidatosMatchManual.length > 0 && (
               <MatchManualPicker
                 excecaoId={e.id}
