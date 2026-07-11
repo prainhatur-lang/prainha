@@ -399,28 +399,36 @@ export async function rodarConciliacaoOperadora(opts: {
       );
     type CandSugestao = {
       id: string;
+      valor: number;
       pedido: number | null;
       forma: string | null;
       dentroDoPool: boolean;
       nsu: string | null;
     };
-    const chaveDataValor = (data: string, valor: number) => `${data}|${valor.toFixed(2)}`;
-    const sugestoesPorChave = new Map<string, CandSugestao[]>();
-    const addCandidato = (data: string | Date | null, valor: number, c: CandSugestao) => {
+    // Candidatos agrupados por DIA; o valor casa com a MESMA tolerância que o
+    // engine usa (max(absoluta, valor*percentual) dos parâmetros da filial) —
+    // cobre centavos de gorjeta/arredondamento (ex: PDV 381,48 vs Cielo 381,40).
+    const tolSugestao = (valor: number) =>
+      Math.max(
+        params.pdvCielo.toleranciaAbsoluta,
+        Math.abs(valor) * params.pdvCielo.toleranciaPercentual,
+      );
+    const sugestoesPorDia = new Map<string, CandSugestao[]>();
+    const addCandidato = (data: string | Date | null, c: CandSugestao) => {
       if (!data) return;
       const dia = typeof data === 'string' ? data : dateToBrYmd(data);
       if (fechados.has(dia)) return;
-      const k = chaveDataValor(dia, valor);
-      const arr = sugestoesPorChave.get(k) ?? [];
+      const arr = sugestoesPorDia.get(dia) ?? [];
       arr.push(c);
-      sugestoesPorChave.set(k, arr);
+      sugestoesPorDia.set(dia, arr);
     };
     // (1) fora do pool — preferidos (o motor nem os viu)
     for (const p of candidatosForaPool) {
       if (idsNoPool.has(p.id) || idsPagFirmes.has(p.id)) continue;
       if (isAuthPixE2E(p.numeroAutorizacao)) continue; // Pix direto: concilia no fluxo banco
-      addCandidato(p.dataPagamento, Number(p.valor), {
+      addCandidato(p.dataPagamento, {
         id: p.id,
+        valor: Number(p.valor),
         pedido: p.codigoPedidoExterno ?? null,
         forma: p.formaPagamento,
         dentroDoPool: false,
@@ -429,8 +437,9 @@ export async function rodarConciliacaoOperadora(opts: {
     }
     // (2) órfãos do pool (sem match; NSU divergente) — segunda preferência
     for (const pdv of result.pdvSemCielo) {
-      addCandidato(pdv.dataPagamento ?? null, pdv.valor, {
+      addCandidato(pdv.dataPagamento ?? null, {
         id: pdv.id,
+        valor: pdv.valor,
         pedido: pdv.codigoPedidoExterno ?? null,
         forma: pdv.formaPagamento || null,
         dentroDoPool: true,
@@ -440,11 +449,27 @@ export async function rodarConciliacaoOperadora(opts: {
 
     for (const cielo of cieloSemPdvNoRange) {
       const v = cielo.id ? vendasPorId.get(cielo.id) : undefined;
-      const sug = v
-        ? (sugestoesPorChave.get(chaveDataValor(v.dataVenda, cielo.valorBruto)) ?? []).shift()
-        : undefined;
+      let sug: CandSugestao | undefined;
+      if (v) {
+        const bucket = sugestoesPorDia.get(v.dataVenda) ?? [];
+        const tol = tolSugestao(cielo.valorBruto);
+        let melhorIdx = -1;
+        let melhorRank = Infinity;
+        for (let i = 0; i < bucket.length; i++) {
+          const diff = Math.abs(bucket[i]!.valor - cielo.valorBruto);
+          if (diff > tol) continue;
+          // rank: menor diff primeiro; empate → fora-do-pool na frente
+          const rank = diff * 10 + (bucket[i]!.dentroDoPool ? 1 : 0);
+          if (rank < melhorRank) {
+            melhorRank = rank;
+            melhorIdx = i;
+          }
+        }
+        if (melhorIdx >= 0) sug = bucket.splice(melhorIdx, 1)[0];
+      }
+      const diffSug = sug ? +(sug.valor - cielo.valorBruto).toFixed(2) : 0;
       const sugTxt = sug
-        ? ` SUGESTÃO: ${sug.pedido ? `Pedido #${sug.pedido}` : 'pagamento'} de R$ ${cielo.valorBruto.toFixed(2)} no mesmo dia, forma ${sug.forma ? `"${sug.forma}"` : 'não informada (lançamento manual, sem TEF)'}${sug.dentroDoPool ? `, NSU divergente (${sug.nsu ?? '—'})` : ', sem NSU'} — provável par. Confirme e resolva.`
+        ? ` SUGESTÃO: ${sug.pedido ? `Pedido #${sug.pedido}` : 'pagamento'} de R$ ${sug.valor.toFixed(2)} no mesmo dia${Math.abs(diffSug) >= 0.01 ? ` (diff R$ ${Math.abs(diffSug).toFixed(2)})` : ''}, forma ${sug.forma ? `"${sug.forma}"` : 'não informada (lançamento manual, sem TEF)'}${sug.dentroDoPool ? `, NSU divergente (${sug.nsu ?? '—'})` : ', sem NSU'} — provável par. Confirme e resolva.`
         : '';
       novasExcecoes.push({
         filialId,
