@@ -366,14 +366,94 @@ export async function rodarConciliacaoOperadora(opts: {
       if (fechados.has(v.dataVenda)) return false; // venda em dia fechado nao vira excecao
       return v.dataVenda >= dataInicio && v.dataVenda <= dataFim;
     });
+    // --- SUGESTÃO de par pra CIELO_SEM_PDV: pagamento com MESMA DATA + MESMO
+    // VALOR mas forma divergente/ausente. Cobre:
+    //  (1) pagamento fora do pool: forma=null sem NSU (bug CDC — ex. "Pix
+    //      Manual" lançado sem TEF) ou forma excluída (ex. Dinheiro) quando na
+    //      real a cobrança passou na maquininha;
+    //  (2) pagamento no pool que sobrou sem match (NSU divergente).
+    // NUNCA vira match automático — a exceção nasce com o pagamento sugerido
+    // (pagamentoId + texto) e o usuário confirma no Resolver.
+    const idsNoPool = new Set(pagamentos.map((p) => p.id));
+    const candidatosForaPool = await db
+      .select({
+        id: schema.pagamento.id,
+        valor: schema.pagamento.valor,
+        formaPagamento: schema.pagamento.formaPagamento,
+        dataPagamento: schema.pagamento.dataPagamento,
+        codigoPedidoExterno: schema.pagamento.codigoPedidoExterno,
+        numeroAutorizacao: schema.pagamento.numeroAutorizacaoCartao,
+        nsu: schema.pagamento.nsuTransacao,
+      })
+      .from(schema.pagamento)
+      .where(
+        and(
+          eq(schema.pagamento.filialId, filialId),
+          gte(schema.pagamento.dataPagamento, dtIni),
+          lte(schema.pagamento.dataPagamento, dtFim),
+          or(
+            and(isNull(schema.pagamento.formaPagamento), isNull(schema.pagamento.nsuTransacao)),
+            inArray(schema.pagamento.formaPagamento, FORMAS_EXCLUIR_OPERADORA),
+          ),
+        ),
+      );
+    type CandSugestao = {
+      id: string;
+      pedido: number | null;
+      forma: string | null;
+      dentroDoPool: boolean;
+      nsu: string | null;
+    };
+    const chaveDataValor = (data: string, valor: number) => `${data}|${valor.toFixed(2)}`;
+    const sugestoesPorChave = new Map<string, CandSugestao[]>();
+    const addCandidato = (data: string | Date | null, valor: number, c: CandSugestao) => {
+      if (!data) return;
+      const dia = typeof data === 'string' ? data : dateToBrYmd(data);
+      if (fechados.has(dia)) return;
+      const k = chaveDataValor(dia, valor);
+      const arr = sugestoesPorChave.get(k) ?? [];
+      arr.push(c);
+      sugestoesPorChave.set(k, arr);
+    };
+    // (1) fora do pool — preferidos (o motor nem os viu)
+    for (const p of candidatosForaPool) {
+      if (idsNoPool.has(p.id) || idsPagFirmes.has(p.id)) continue;
+      if (isAuthPixE2E(p.numeroAutorizacao)) continue; // Pix direto: concilia no fluxo banco
+      addCandidato(p.dataPagamento, Number(p.valor), {
+        id: p.id,
+        pedido: p.codigoPedidoExterno ?? null,
+        forma: p.formaPagamento,
+        dentroDoPool: false,
+        nsu: p.nsu,
+      });
+    }
+    // (2) órfãos do pool (sem match; NSU divergente) — segunda preferência
+    for (const pdv of result.pdvSemCielo) {
+      addCandidato(pdv.dataPagamento ?? null, pdv.valor, {
+        id: pdv.id,
+        pedido: pdv.codigoPedidoExterno ?? null,
+        forma: pdv.formaPagamento || null,
+        dentroDoPool: true,
+        nsu: pdv.nsu ?? null,
+      });
+    }
+
     for (const cielo of cieloSemPdvNoRange) {
+      const v = cielo.id ? vendasPorId.get(cielo.id) : undefined;
+      const sug = v
+        ? (sugestoesPorChave.get(chaveDataValor(v.dataVenda, cielo.valorBruto)) ?? []).shift()
+        : undefined;
+      const sugTxt = sug
+        ? ` SUGESTÃO: ${sug.pedido ? `Pedido #${sug.pedido}` : 'pagamento'} de R$ ${cielo.valorBruto.toFixed(2)} no mesmo dia, forma ${sug.forma ? `"${sug.forma}"` : 'não informada (lançamento manual, sem TEF)'}${sug.dentroDoPool ? `, NSU divergente (${sug.nsu ?? '—'})` : ', sem NSU'} — provável par. Confirme e resolva.`
+        : '';
       novasExcecoes.push({
         filialId,
         processo: PROCESSO_OPERADORA,
         vendaAdquirenteId: cielo.id ?? null,
+        pagamentoId: sug?.id ?? null,
         tipo: TIPO_OPERADORA.CIELO_SEM_PDV,
-        severidade: 'ALTA',
-        descricao: `Venda na Cielo (NSU ${cielo.nsu}, R$ ${cielo.valorBruto.toFixed(2)}) sem pagamento no PDV.`,
+        severidade: sug ? 'MEDIA' : 'ALTA',
+        descricao: `Venda na Cielo (NSU ${cielo.nsu}, R$ ${cielo.valorBruto.toFixed(2)}) sem pagamento no PDV.${sugTxt}`,
         valor: String(cielo.valorBruto),
       });
     }

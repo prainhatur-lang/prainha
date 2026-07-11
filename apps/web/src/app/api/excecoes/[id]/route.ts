@@ -96,9 +96,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // mas relatorios baseados em pagamento.formaPagamento agora sabem usar
   // formaEfetiva/bandeiraEfetiva quando setadas.
   // Tipo no banco e 'DIVERGENCIA_VALOR_OPERADORA' (com sufixo).
+  // CIELO_SEM_PDV com pagamentoId preenchido = sugestao de par do motor
+  // (mesma data+valor, forma divergente/ausente). Aceitar SEM motivo (ou com
+  // motivo de forma errada) = confirmar o par: propaga forma da Cielo e grava
+  // match firme igual a divergencia. Motivos que NEGAM o par (estorno, venda
+  // da casa, gorjeta, desconto) apenas aceitam a excecao, sem criar match.
+  const motivoNegaPar = ['VENDA_DA_CASA', 'GORJETA', 'DESCONTO_OU_AJUSTE', 'ESTORNO'].includes(
+    parsed.data.motivo ?? '',
+  );
   if (
     exc.processo === 'OPERADORA' &&
-    exc.tipo === 'DIVERGENCIA_VALOR_OPERADORA' &&
+    (exc.tipo === 'DIVERGENCIA_VALOR_OPERADORA' ||
+      (exc.tipo === 'CIELO_SEM_PDV' && !motivoNegaPar)) &&
     exc.pagamentoId &&
     exc.vendaAdquirenteId
   ) {
