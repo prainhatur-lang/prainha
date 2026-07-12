@@ -10,6 +10,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
+import { mesasOcupadasNoConsumer } from '@/lib/reservas/mesa-disponivel';
 import { ReservasClient, type ReservaItem, type FilialOpt } from './reservas-client';
 
 export const dynamic = 'force-dynamic';
@@ -106,6 +107,19 @@ export default async function ReservasPage(props: {
     };
   }
 
+  // Mesas fisicamente ocupadas AGORA no Consumer (comanda aberta), só faz
+  // sentido pra hoje — sincronizado via CDC do agente-local (~15min de
+  // atraso). Sinaliza no mapa mesas ocupadas por walk-in, sem reserva.
+  const ocupadasConsumer: string[] = [];
+  if (data === hojeBr() && filialIds.length > 0) {
+    const porFilial = await Promise.all(
+      filialIds.map(async (fid) => ({ fid, mesas: await mesasOcupadasNoConsumer(fid) })),
+    );
+    for (const { fid, mesas } of porFilial) {
+      for (const m of mesas) ocupadasConsumer.push(`${fid}:${m}`);
+    }
+  }
+
   // Histórico do cliente (recorrência): por telefone, conta visitas ANTERIORES
   // (reservas não canceladas/no-show com data < o dia visto) e a última.
   const normTel = (t: string | null) => (t ?? '').replace(/\D/g, '').slice(-11);
@@ -151,6 +165,7 @@ export default async function ReservasPage(props: {
           podeImportar={podeImportar}
           podeConfigurar={podeConfigurar}
           ocupadas={ocupadas}
+          ocupadasConsumer={ocupadasConsumer}
           reservasPorMesa={reservasPorMesa}
           historico={historico}
         />

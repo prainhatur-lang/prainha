@@ -93,6 +93,7 @@ export function ReservasClient({
   podeImportar,
   podeConfigurar,
   ocupadas,
+  ocupadasConsumer,
   reservasPorMesa,
   historico,
 }: {
@@ -105,6 +106,7 @@ export function ReservasClient({
   podeImportar: boolean;
   podeConfigurar: boolean;
   ocupadas: string[];
+  ocupadasConsumer: string[];
   reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>;
   historico: Record<string, { visitas: number; ultima: string | null }>;
 }) {
@@ -287,6 +289,7 @@ export function ReservasClient({
           <MapaMesas
             filiais={filialFiltro ? filiais.filter((f) => f.id === filialFiltro) : filiais}
             ocupadas={new Set(ocupadas)}
+            ocupadasConsumer={new Set(ocupadasConsumer)}
             reservasPorMesa={reservasPorMesa}
           />
         </>
