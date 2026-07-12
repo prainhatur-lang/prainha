@@ -5,14 +5,15 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
+import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 interface MesaCfg { numero: string | number; lugares: number }
-interface AreaCfg { nome: string; ativo?: boolean; somenteEventos?: boolean; mesas?: MesaCfg[] }
+interface AreaCfg { nome: string; ativo?: boolean; somenteEventos?: boolean; mesas?: MesaCfg[]; percentualReserva?: number }
 
 export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -42,29 +43,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   );
   if (areas.length === 0) return NextResponse.json({ areas: [], fechado: false });
 
-  // Reservas ativas do dia com mesa
-  const reservas = await db
-    .select({ area: schema.reserva.area, mesa: schema.reserva.mesa })
-    .from(schema.reserva)
-    .where(
-      and(
-        eq(schema.reserva.filialId, filial.id),
-        eq(schema.reserva.data, data),
-        inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada']),
-      ),
-    );
-  const ocupPorArea = new Map<string, Set<string>>();
-  for (const r of reservas) {
-    if (!r.area || !r.mesa) continue;
-    if (!ocupPorArea.has(r.area)) ocupPorArea.set(r.area, new Set());
-    ocupPorArea.get(r.area)!.add(String(r.mesa));
-  }
-
-  const out = areas.map((a) => {
-    const total = a.mesas!.length;
-    const ocupadas = ocupPorArea.get(a.nome)?.size ?? 0;
-    return { nome: a.nome, total, livres: Math.max(0, total - ocupadas) };
-  });
+  // Ocupação por área: reserva ativa + ocupação real no Consumer (se hoje) —
+  // mesma fonte usada pra alocar mesa de verdade no /confirmar, evita a
+  // disponibilidade mostrada divergir do que realmente é aceito.
+  const out = await Promise.all(
+    areas.map(async (a) => {
+      const total = a.mesas!.length;
+      const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome })).size;
+      const limite = typeof a.percentualReserva === 'number' ? Math.floor((total * a.percentualReserva) / 100) : total;
+      return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas) };
+    }),
+  );
 
   return NextResponse.json({ areas: out, fechado: false });
 }

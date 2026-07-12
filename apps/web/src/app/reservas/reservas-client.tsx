@@ -17,6 +17,7 @@ export interface Area {
   horaLimite?: string;
   mesas?: Mesa[];
   taxaReserva?: { sabDom: number; diasUteis: number };
+  percentualReserva?: number;
 }
 
 export interface FilialOpt {
@@ -723,6 +724,29 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
                     title="Valor em outros dias"
                   />
                   <span className="text-xs text-slate-500">outros dias · cobrança manual no local (feriado ainda não é automático)</span>
+                </>
+              )}
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-1.5">
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={a.percentualReserva != null}
+                  onChange={(e) => upd(i, { percentualReserva: e.target.checked ? 80 : undefined })}
+                />
+                limite de reserva (evitar overbook)
+              </label>
+              {a.percentualReserva != null && (
+                <>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={a.percentualReserva}
+                    onChange={(e) => upd(i, { percentualReserva: Math.max(0, Math.min(100, Number(e.target.value))) })}
+                    className={`${inp} w-20`}
+                  />
+                  <span className="text-xs text-slate-500">% das mesas — o resto fica pra quem chega sem reservar</span>
                 </>
               )}
             </div>

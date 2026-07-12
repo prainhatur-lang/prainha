@@ -134,6 +134,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const mesasDoEspaco = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
   if (mesasDoEspaco.length > 0) {
     const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area: espaco });
+
+    // Teto de overbook: % do total de mesas liberado pra reserva antecipada
+    // (conta reserva ativa + ocupação real do Consumer, se hoje). Ausente =
+    // sem teto, usa a capacidade física inteira.
+    const limiteMesas =
+      typeof areaCfg.percentualReserva === 'number'
+        ? Math.floor((mesasDoEspaco.length * areaCfg.percentualReserva) / 100)
+        : mesasDoEspaco.length;
+    if (ocupadas.size >= limiteMesas) {
+      return NextResponse.json(
+        { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
+        { status: 409 },
+      );
+    }
+
     const ordenadas = mesasDoEspaco.slice().sort((a, b) => a.lugares - b.lugares);
     const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
     if (cabem.length === 0) {

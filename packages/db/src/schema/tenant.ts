@@ -86,9 +86,11 @@ export interface AreaReserva {
    *  ainda é manual — sem calendário de feriados). Cobrança hoje é sempre
    *  MANUAL no local (cartão Cielo ou Pix) — não há checkout online. */
   taxaReserva?: { sabDom: number; diasUteis: number };
-  /** % das mesas/lugares desta area liberado pra reserva online POR TURNO
-   *  (0-100). O resto fica pra walk-in. Capacidade do turno na area =
-   *  round(soma dos lugares das mesas x percentualReserva / 100). */
+  /** % do total de MESAS desta área liberado pra reserva antecipada (0-100).
+   *  Conta reserva ativa + ocupação real no Consumer (hoje) — o resto fica
+   *  reservado pra walk-in, evita overbook. Ex: 80 numa área com 10 mesas =
+   *  aceita reserva até 8 mesas ocupadas, mesmo com mesa física livre.
+   *  Ausente = sem limite (100%, todas as mesas reserváveis). */
   percentualReserva?: number;
 }
 
