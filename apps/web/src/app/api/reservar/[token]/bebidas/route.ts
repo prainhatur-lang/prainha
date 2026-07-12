@@ -3,12 +3,14 @@
 // Público. Cerveja ganha combo automático (long neck=10, 600ml=6) — pra já
 // lançar direto quando o cliente chegar (Fase 2, futura).
 //
-// SEM FILTRO DE ESTOQUE: o campo estoque_atual sincronizado está
-// desatualizado pra maioria dos produtos (achado 12/07/2026 — só 11/2137
-// produtos com estoque > 0 no Postgres, itens comuns sem sync há semanas).
-// Até corrigir a causa (gatilho de sincronização do Consumer), mostra a
-// lista sem checar quantidade — decisão do usuário, ciente do risco de
-// oferecer algo em falta.
+// IMPORTANTE: le de `produto_variante` (PRODUTODETALHE), NAO de `produto`
+// (PRODUTOS) — achado 12/07/2026 que o mapper de PRODUTOS nunca escreve
+// data_pausado em `produto` (bug de mapeamento, campo fica sempre vazio).
+// `produto_variante` tem o dado certo (confirmado contra Firebird ao vivo:
+// 192 pausados reais batendo com o que produto_variante mostra, contra só
+// 3 que apareciam em `produto`). estoque_atual dessa tabela também parece
+// bem mais confiável (574 com estoque>0 vs 11) mas ainda NÃO filtramos por
+// estoque aqui — decisão pendente de confirmar com o usuário.
 //
 // Códigos de etiqueta fixos da Prainha Bar (achados por consulta direta em
 // 12/07/2026 — não variam, não precisam de busca online):
@@ -54,12 +56,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
       nome: schema.produto.nome,
       codigoEtiqueta: schema.produto.codigoEtiqueta,
     })
-    .from(schema.produto)
+    .from(schema.produtoVariante)
+    .innerJoin(
+      schema.produto,
+      and(
+        eq(schema.produto.filialId, schema.produtoVariante.filialId),
+        eq(schema.produto.codigoExterno, schema.produtoVariante.codigoProdutoExterno),
+      ),
+    )
     .where(
       and(
-        eq(schema.produto.filialId, filial.id),
+        eq(schema.produtoVariante.filialId, filial.id),
         inArray(schema.produto.codigoEtiqueta, Object.keys(CATEGORIAS)),
-        isNull(schema.produto.dataPausado),
+        isNull(schema.produtoVariante.dataPausado),
+        isNull(schema.produtoVariante.dataDelete),
         or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
       ),
     );
