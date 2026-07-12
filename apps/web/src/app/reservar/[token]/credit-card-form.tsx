@@ -1,0 +1,401 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+
+interface ThreeDSResult {
+  Cavv: string;
+  Eci: string;
+  Xid?: string;
+  Version?: string;
+  ReferenceID?: string;
+}
+
+type BpmpiResult = {
+  Cavv?: string; cavv?: string;
+  Eci?: string; eci?: string;
+  Xid?: string; xid?: string;
+  Version?: string; version?: string;
+  ReferenceId?: string; referenceId?: string;
+};
+
+declare global {
+  interface Window {
+    bpmpi_config?: () => unknown;
+    bpmpi_authenticate?: () => void;
+    bpmpi_load?: () => void;
+    Bpmpi?: unknown;
+  }
+}
+
+function formatCardNumber(value: string): string {
+  const digits = value.replace(/\D/g, '').slice(0, 16);
+  return digits.replace(/(\d{4})(?=\d)/g, '$1 ');
+}
+
+function formatExpiry(value: string): string {
+  const digits = value.replace(/\D/g, '').slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+}
+
+function formatCPF(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return `${d.slice(0, 3)}.${d.slice(3)}`;
+  if (d.length <= 9) return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6)}`;
+  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+}
+
+function detectBrand(number: string): string {
+  const n = number.replace(/\s/g, '');
+  if (/^4/.test(n)) return 'Visa';
+  if (/^5[1-5]/.test(n) || /^2[2-7]/.test(n)) return 'Master';
+  if (/^636368|636369|438935|504175|451416|636297|5067|4576|4011|506699/.test(n)) return 'Elo';
+  if (/^3[47]/.test(n)) return 'Amex';
+  if (/^606282|3841/.test(n)) return 'Hipercard';
+  return 'Visa';
+}
+
+interface Props {
+  token: string;
+  reservaId: string;
+  totalCents: number;
+  onPago: () => void;
+}
+
+const inp =
+  'mt-1.5 w-full rounded-xl border border-[#e2c9a0] bg-white px-3.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors placeholder:text-[#b7a888] focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20';
+const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64]';
+const btn =
+  'mt-5 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#df5a35] disabled:translate-y-0 disabled:opacity-50';
+
+export function CreditCardForm({ token, reservaId, totalCents, onPago }: Props) {
+  const [cardNumber, setCardNumber] = useState('');
+  const [holder, setHolder] = useState('');
+  const [expiry, setExpiry] = useState('');
+  const [cvv, setCvv] = useState('');
+  const [cpf, setCpf] = useState('');
+  const [cardType, setCardType] = useState<'CreditCard' | 'DebitCard'>('CreditCard');
+  const [street, setStreet] = useState('');
+  const [number, setNumber] = useState('');
+  const [neighborhood, setNeighborhood] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('SE');
+  const [cep, setCep] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [authenticating3DS, setAuthenticating3DS] = useState(false);
+  const [mpiReady, setMpiReady] = useState(false);
+  const [mpiToken, setMpiToken] = useState('');
+  const mpiConfigRef = useRef<{ accessToken: string } | null>(null);
+  const threeDsResolverRef = useRef<((v: ThreeDSResult | null) => void) | null>(null);
+
+  const cleanNumber = cardNumber.replace(/\s/g, '');
+  const brand = cleanNumber.length >= 4 ? detectBrand(cleanNumber) : '';
+
+  // Carrega SDK Braspag MPI + token. window.bpmpi_config PRECISA existir
+  // ANTES do script BP.Mpi carregar — o SDK registra os callbacks de
+  // notificação no parse. Definir depois do onload faz o pagamento travar
+  // em "Autenticando..." mesmo com o banco aprovando.
+  useEffect(() => {
+    if (mpiReady) return;
+    let cancelled = false;
+    const resolverRef = threeDsResolverRef;
+
+    window.bpmpi_config = function () {
+      const cfg = mpiConfigRef.current;
+      return {
+        Environment: 'PRD',
+        environment: 'PRD',
+        AccessToken: cfg?.accessToken || '',
+        accessToken: cfg?.accessToken || '',
+        onSuccess: function (result: BpmpiResult) {
+          resolverRef.current?.({
+            Cavv: result?.Cavv || result?.cavv || '',
+            Eci: result?.Eci || result?.eci || '',
+            Xid: result?.Xid || result?.xid,
+            Version: result?.Version || result?.version || '2',
+            ReferenceID: result?.ReferenceId || result?.referenceId,
+          });
+          resolverRef.current = null;
+        },
+        onFailure: function () {
+          resolverRef.current?.(null);
+          resolverRef.current = null;
+        },
+        onUnenrolled: function (result: BpmpiResult) {
+          // Cartão sem 3DS — segue sem Cavv, a Cielo decide se aceita.
+          resolverRef.current?.({
+            Cavv: result?.Cavv || '',
+            Eci: result?.Eci || '07',
+            Xid: result?.Xid,
+            Version: result?.Version || '2',
+            ReferenceID: result?.ReferenceId,
+          });
+          resolverRef.current = null;
+        },
+        onDisabled: function () {
+          resolverRef.current?.(null);
+          resolverRef.current = null;
+        },
+        onError: function (err: unknown) {
+          console.error('[bpmpi] error', err);
+          resolverRef.current?.(null);
+          resolverRef.current = null;
+        },
+        onUnsupportedBrand: function () {
+          resolverRef.current?.(null);
+          resolverRef.current = null;
+        },
+      };
+    };
+
+    async function load() {
+      try {
+        const res = await fetch(`/api/reservar/${token}/mpi-token`);
+        if (!res.ok) throw new Error('Falha ao obter token de segurança');
+        const data = await res.json();
+        if (cancelled) return;
+        mpiConfigRef.current = { accessToken: data.accessToken };
+        setMpiToken(data.accessToken);
+        if (!document.querySelector('script[data-bpmpi]')) {
+          const script = document.createElement('script');
+          script.src = data.scriptUrl;
+          script.async = true;
+          script.dataset.bpmpi = 'true';
+          script.onload = () => !cancelled && setMpiReady(true);
+          script.onerror = () => !cancelled && setError('Falha ao carregar segurança da Cielo');
+          document.head.appendChild(script);
+        } else {
+          setMpiReady(true);
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message || 'Falha ao inicializar autenticação do cartão');
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mpiReady]);
+
+  async function authenticate3DS(): Promise<ThreeDSResult | null> {
+    if (typeof window === 'undefined' || !window.bpmpi_authenticate) return null;
+
+    // Token MPI é consumido a cada bpmpi_authenticate — busca um FRESCO
+    // agora (o do mount pode já ter sido usado numa tentativa anterior).
+    try {
+      const res = await fetch(`/api/reservar/${token}/mpi-token`);
+      if (res.ok) {
+        const data = await res.json();
+        if (mpiConfigRef.current) mpiConfigRef.current.accessToken = data.accessToken;
+        setMpiToken(data.accessToken);
+        await new Promise((r) => setTimeout(r, 100));
+        window.bpmpi_load?.();
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    } catch (err) {
+      console.error('[mpi-token refresh]', err);
+    }
+
+    return new Promise((resolve) => {
+      threeDsResolverRef.current = resolve;
+      try {
+        window.bpmpi_authenticate!();
+      } catch (err) {
+        console.error('[bpmpi_authenticate]', err);
+        resolve(null);
+        threeDsResolverRef.current = null;
+      }
+      // Challenge do banco (SMS/app) facilmente leva 1-3min.
+      setTimeout(() => {
+        if (threeDsResolverRef.current === resolve) {
+          threeDsResolverRef.current = null;
+          resolve(null);
+        }
+      }, 300_000);
+    });
+  }
+
+  async function handleSubmit() {
+    setError(null);
+
+    if (cleanNumber.length < 13) return setError('Número do cartão inválido.');
+    if (!holder.trim()) return setError('Digite o nome impresso no cartão.');
+    const expiryDigits = expiry.replace(/\D/g, '');
+    if (expiryDigits.length !== 4) return setError('Validade inválida.');
+    if (cvv.length < 3) return setError('Código de segurança inválido.');
+    if (cpf.replace(/\D/g, '').length < 11) return setError('CPF inválido.');
+    if (!street || !number || !neighborhood) return setError('Preencha o endereço de cobrança do cartão.');
+
+    setProcessing(true);
+
+    const month = expiryDigits.slice(0, 2);
+    const year = `20${expiryDigits.slice(2)}`;
+
+    if (!mpiReady) {
+      setError('Carregando autenticação segura... aguarde alguns segundos e tente de novo.');
+      setProcessing(false);
+      return;
+    }
+    setAuthenticating3DS(true);
+    const auth = await authenticate3DS();
+    setAuthenticating3DS(false);
+    if (!auth || !auth.Cavv) {
+      setError('Não foi possível autenticar o cartão. Tente outro cartão ou pague via Pix.');
+      setProcessing(false);
+      return;
+    }
+
+    try {
+      const r = await fetch(`/api/reservar/${token}/pagamento-cartao`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservaId,
+          cardNumber: cleanNumber,
+          cardHolder: holder.trim().toUpperCase(),
+          cardExpiration: `${month}/${year}`,
+          cardCvv: cvv,
+          brand,
+          cpf,
+          paymentType: cardType,
+          billingAddress: { street, number, neighborhood, city, state, cep },
+          threeDS: auth,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.pago) {
+        setError(d.error ?? 'Pagamento recusado. Tente outro cartão ou pague via Pix.');
+        setProcessing(false);
+        return;
+      }
+      onPago();
+    } catch (err) {
+      setError((err as Error).message || 'Erro ao processar cartão.');
+      setProcessing(false);
+    }
+  }
+
+  const isProcessing = processing || authenticating3DS;
+
+  const amountForMpi = String(totalCents);
+  const orderIdForMpi = reservaId;
+  const expDigitsForMpi = expiry.replace(/\D/g, '');
+  const expMonthForMpi = expDigitsForMpi.length === 4 ? expDigitsForMpi.slice(0, 2) : '';
+  const expYearForMpi = expDigitsForMpi.length === 4 ? `20${expDigitsForMpi.slice(2)}` : '';
+
+  return (
+    <div className="space-y-3.5 text-left">
+      {error && (
+        <div className="rounded-xl border border-[#e6a08a] bg-[#fdecec] px-3.5 py-2.5 text-xs text-[#b3411c]">
+          {error}
+        </div>
+      )}
+
+      {/* Inputs ocultos lidos pelo SDK Braspag MPI 3DS via document.querySelector
+          — não vem do retorno de bpmpi_config, esses campos são obrigatórios aqui. */}
+      {mpiReady && mpiToken && (
+        <div style={{ display: 'none' }} aria-hidden="true">
+          <input className="bpmpi_auth" value="true" readOnly />
+          <input className="bpmpi_accesstoken" value={mpiToken} readOnly />
+          <input className="bpmpi_cardnumber" value={cleanNumber} readOnly />
+          <input className="bpmpi_cardexpirationmonth" value={expMonthForMpi} readOnly />
+          <input className="bpmpi_cardexpirationyear" value={expYearForMpi} readOnly />
+          <input className="bpmpi_ordernumber" value={orderIdForMpi} readOnly />
+          <input className="bpmpi_currency" value="BRL" readOnly />
+          <input className="bpmpi_totalamount" value={amountForMpi} readOnly />
+          <input className="bpmpi_installments" value="1" readOnly />
+          <input className="bpmpi_paymentmethod" value={cardType === 'DebitCard' ? 'Debit' : 'Credit'} readOnly />
+          <input className="bpmpi_orderdate" value={new Date().toISOString().slice(0, 10).replace(/-/g, '')} readOnly />
+          <input className="bpmpi_order_productcode" value="PHY" readOnly />
+          <input
+            className="bpmpi_merchant_url"
+            value={typeof window !== 'undefined' ? window.location.origin : 'https://app.prainhabar.com'}
+            readOnly
+          />
+          <input className="bpmpi_billto_contactname" value={holder.trim().toUpperCase() || 'CLIENTE'} readOnly />
+          <input className="bpmpi_billto_phonenumber" value="" readOnly />
+          <input className="bpmpi_billto_email" value="" readOnly />
+          <input className="bpmpi_billto_street1" value={street} readOnly />
+          <input className="bpmpi_billto_city" value={city} readOnly />
+          <input className="bpmpi_billto_state" value={state} readOnly />
+          <input className="bpmpi_billto_zipcode" value={cep.replace(/\D/g, '')} readOnly />
+          <input className="bpmpi_billto_country" value="BR" readOnly />
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setCardType('CreditCard')}
+          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'CreditCard' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+        >
+          Crédito
+        </button>
+        <button
+          type="button"
+          onClick={() => setCardType('DebitCard')}
+          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'DebitCard' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+        >
+          Débito
+        </button>
+      </div>
+
+      <div>
+        <label className={lbl}>Número do cartão</label>
+        <div className="relative">
+          <input
+            value={cardNumber}
+            onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
+            placeholder="0000 0000 0000 0000"
+            inputMode="numeric"
+            autoComplete="cc-number"
+            className={inp}
+          />
+          {brand && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[#8a7a64]">{brand}</span>}
+        </div>
+      </div>
+
+      <div>
+        <label className={lbl}>Nome no cartão</label>
+        <input value={holder} onChange={(e) => setHolder(e.target.value)} placeholder="Como está no cartão" autoComplete="cc-name" className={inp} />
+      </div>
+
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <label className={lbl}>Validade</label>
+          <input value={expiry} onChange={(e) => setExpiry(formatExpiry(e.target.value))} placeholder="MM/AA" inputMode="numeric" autoComplete="cc-exp" className={inp} />
+        </div>
+        <div className="flex-1">
+          <label className={lbl}>CVV</label>
+          <input value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="123" inputMode="numeric" autoComplete="cc-csc" className={inp} />
+        </div>
+      </div>
+
+      <div>
+        <label className={lbl}>CPF do titular</label>
+        <input value={cpf} onChange={(e) => setCpf(formatCPF(e.target.value))} placeholder="000.000.000-00" inputMode="numeric" className={inp} />
+      </div>
+
+      <div>
+        <label className={lbl}>Endereço de cobrança do cartão</label>
+        <div className="mt-1.5 grid grid-cols-2 gap-2">
+          <input value={cep} onChange={(e) => setCep(e.target.value)} placeholder="CEP" className={`${inp} mt-0`} />
+          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Número" className={`${inp} mt-0`} />
+          <input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Rua" className={`${inp} col-span-2 mt-0`} />
+          <input value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} placeholder="Bairro" className={`${inp} mt-0`} />
+          <input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Cidade" className={`${inp} mt-0`} />
+          <input value={state} onChange={(e) => setState(e.target.value.toUpperCase().slice(0, 2))} placeholder="UF" className={`${inp} col-span-2 mt-0`} />
+        </div>
+      </div>
+
+      <button onClick={handleSubmit} disabled={isProcessing} className={btn}>
+        {isProcessing ? (authenticating3DS ? 'Autenticando com o banco…' : 'Processando…') : `Pagar com ${cardType === 'CreditCard' ? 'crédito' : 'débito'}`}
+      </button>
+
+      <p className="text-center text-[10px] text-[#8a7a64]">Pagamento seguro processado pela Cielo (3DS)</p>
+    </div>
+  );
+}

@@ -4,9 +4,13 @@
  *
  * Docs: https://docs.cielo.com.br/ecommerce-cielo
  *
- * Hoje só PIX está em uso no concilia (taxa de reserva do Lounge). Cartão
- * (createCieloCardPayment + MPI/3DS) fica pronto mas DORMENTE — falta a
- * credencial CIELO_3DS_CLIENT_ID/SECRET (Braspag) pra ligar.
+ * PIX e cartão (com 3DS via Braspag MPI) em uso na taxa de reserva do
+ * Lounge. IMPORTANTE (lição do chamado técnico do compre-daqui com a
+ * Cielo): 3DS autenticar com sucesso NÃO garante que a cobrança vai
+ * passar — se o EC tiver o produto cartão contratado mas não ativado
+ * TRANSACIONALMENTE, a venda cai com "002 Credenciais Inválidas" mesmo
+ * com o banco pré-autorizando. Se isso acontecer aqui, o problema é
+ * ativação da conta na Cielo, não bug de integração.
  */
 
 const isSandbox = process.env.CIELO_SANDBOX === 'true';
@@ -101,6 +105,14 @@ export async function createCieloCardPayment(params: {
   installments: number;
   paymentType?: 'CreditCard' | 'DebitCard';
   threeDS?: ThreeDSData;
+  billingAddress?: {
+    street: string;
+    number: string;
+    neighborhood: string;
+    city: string;
+    state: string;
+    cep: string;
+  };
 }) {
   const paymentType = params.paymentType || 'CreditCard';
   const hasThreeDS = !!(params.threeDS && params.threeDS.Cavv && params.threeDS.Eci);
@@ -112,6 +124,17 @@ export async function createCieloCardPayment(params: {
       Email: params.customerEmail,
       Identity: params.customerCpf?.replace(/\D/g, '') || undefined,
       IdentityType: params.customerCpf ? 'CPF' : undefined,
+      Address: params.billingAddress
+        ? {
+            Street: params.billingAddress.street,
+            Number: params.billingAddress.number,
+            District: params.billingAddress.neighborhood,
+            City: params.billingAddress.city,
+            State: params.billingAddress.state,
+            ZipCode: params.billingAddress.cep.replace(/\D/g, ''),
+            Country: 'BRA',
+          }
+        : undefined,
     },
     Payment: {
       Type: paymentType,
@@ -236,7 +259,39 @@ function mapCieloStatus(cieloStatus: number): 'pendente' | 'pago' | 'reembolsado
 }
 
 // ============================================
-// 3DS — autenticação Braspag MPI (Merchant Plug-in), DORMENTE
+// Mensagens de erro amigáveis (ReturnCode da Cielo)
+// ============================================
+
+export function friendlyCieloError(returnCode: string): string {
+  const messages: Record<string, string> = {
+    '000': 'Transação autorizada com sucesso.',
+    '002': 'Transação não permitida. Verifique com a Cielo se o cartão está habilitado nessa conta.',
+    '003': 'Erro na comunicação. Tente novamente.',
+    '005': 'Transação não autorizada. Entre em contato com o banco.',
+    '006': 'Transação não autorizada. Tente novamente.',
+    '009': 'Transação parcialmente cancelada.',
+    '012': 'Transação inválida. Revise os dados.',
+    '014': 'Cartão inválido. Verifique os dados.',
+    '041': 'Cartão bloqueado. Entre em contato com o banco.',
+    '051': 'Saldo insuficiente.',
+    '054': 'Cartão vencido.',
+    '057': 'Transação não permitida para este cartão.',
+    '058': 'Transação não permitida para este terminal.',
+    '062': 'Cartão restrito.',
+    '063': 'Regras de segurança violadas.',
+    '065': 'Limite de tentativas excedido.',
+    '077': 'Cartão cancelado.',
+    '078': 'Cartão não foi desbloqueado.',
+    '099': 'Timeout. Tente novamente.',
+    N7: 'Código de segurança inválido.',
+    BV: 'Cartão vencido.',
+    BP: 'Transação não permitida.',
+  };
+  return messages[returnCode] || `Pagamento recusado (${returnCode}). Tente outro cartão ou pague via Pix.`;
+}
+
+// ============================================
+// 3DS — autenticação Braspag MPI (Merchant Plug-in)
 // ============================================
 
 const MPI_BASE_URL = isSandbox ? 'https://mpisandbox.braspag.com.br' : 'https://mpi.braspag.com.br';
@@ -266,4 +321,17 @@ export async function getCieloMpiAccessToken(): Promise<string> {
 
   const data = await res.json();
   return data.access_token;
+}
+
+/** Config pública do MPI pro frontend usar em window.bpmpi_config. */
+export function getCieloMpiPublicConfig() {
+  return {
+    establishmentCode: process.env.CIELO_3DS_ESTABLISHMENT_CODE || process.env.CIELO_MERCHANT_ID || '',
+    merchantName: process.env.CIELO_3DS_MERCHANT_NAME || 'Prainha',
+    mcc: process.env.CIELO_3DS_MCC || '5812',
+    environment: isSandbox ? 'SDB' : 'PRD',
+    scriptUrl: isSandbox
+      ? 'https://mpisandbox.braspag.com.br/Scripts/BP.Mpi.3ds20.min.js'
+      : 'https://mpi.braspag.com.br/Scripts/BP.Mpi.3ds20.min.js',
+  };
 }

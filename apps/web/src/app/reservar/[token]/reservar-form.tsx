@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { CreditCardForm } from './credit-card-form';
 
 export interface AreaPub {
   nome: string;
@@ -77,6 +78,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [valorPago, setValorPago] = useState(0);
   const [pagamentoStatus, setPagamentoStatus] = useState<'aguardando' | 'pago' | 'reembolsado'>('aguardando');
   const [copiado, setCopiado] = useState(false);
+  const [metodoPagamento, setMetodoPagamento] = useState<'pix' | 'cartao'>('pix');
 
   // Poll do status do Pix a cada 4s enquanto na fase de pagamento.
   useEffect(() => {
@@ -382,29 +384,64 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       <div className={`${card} text-center`}>
         <h1 className="text-2xl text-[#1d130c]" style={serif}>Pague a taxa da reserva</h1>
         <p className="mt-1 text-sm text-[#8a7a64]">
-          {espaco} · {brl(valorPago)} · Pix
+          {espaco} · {brl(valorPago)}
         </p>
-        {qrCodeBase64 && (
-          <img
-            src={`data:image/png;base64,${qrCodeBase64}`}
-            alt="QR Code Pix"
-            className="mx-auto mt-4 h-56 w-56 rounded-xl border border-[#e9d9bb]"
-          />
-        )}
-        <button
-          onClick={copiarPix}
-          className="mt-3 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-2.5 text-xs font-medium text-[#4a382a] hover:bg-[#f6ecd9]"
-        >
-          {copiado ? '✓ Copiado!' : '📋 Copiar código Pix (copia e cola)'}
-        </button>
-        <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[#8a7a64]">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-[#e7723a]" />
-          Aguardando o pagamento…
+
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={() => setMetodoPagamento('pix')}
+            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'pix' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+          >
+            Pix
+          </button>
+          <button
+            onClick={() => setMetodoPagamento('cartao')}
+            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'cartao' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+          >
+            Cartão
+          </button>
         </div>
-        <p className="mt-3 text-xs text-[#8a7a64]">
-          Sua mesa já está reservada, mas só fica garantida depois do pagamento. Assim que cair, a
-          confirmação chega automaticamente aqui e no seu WhatsApp.
-        </p>
+
+        {metodoPagamento === 'pix' ? (
+          <>
+            {qrCodeBase64 && (
+              <img
+                src={`data:image/png;base64,${qrCodeBase64}`}
+                alt="QR Code Pix"
+                className="mx-auto mt-4 h-56 w-56 rounded-xl border border-[#e9d9bb]"
+              />
+            )}
+            <button
+              onClick={copiarPix}
+              className="mt-3 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-2.5 text-xs font-medium text-[#4a382a] hover:bg-[#f6ecd9]"
+            >
+              {copiado ? '✓ Copiado!' : '📋 Copiar código Pix (copia e cola)'}
+            </button>
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[#8a7a64]">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[#e7723a]" />
+              Aguardando o pagamento…
+            </div>
+            <p className="mt-3 text-xs text-[#8a7a64]">
+              Sua mesa já está reservada, mas só fica garantida depois do pagamento. Assim que cair, a
+              confirmação chega automaticamente aqui e no seu WhatsApp.
+            </p>
+          </>
+        ) : (
+          reservaIdPag && (
+            <div className="mt-4">
+              <CreditCardForm
+                token={token}
+                reservaId={reservaIdPag}
+                totalCents={Math.round(valorPago * 100)}
+                onPago={() => {
+                  setPagamentoStatus('pago');
+                  setZapEnviado(true);
+                  setFase('ok');
+                }}
+              />
+            </div>
+          )
+        )}
       </div>
     );
   }
