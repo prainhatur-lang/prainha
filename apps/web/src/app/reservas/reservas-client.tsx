@@ -228,7 +228,7 @@ export function ReservasClient({
               ⚙️ Espaços
             </button>
           )}
-          {podeConfigurar && filialAtualId && (
+          {podeAtualizar && filialAtualId && (
             <button
               onClick={togglePausa}
               disabled={pausando}
@@ -383,7 +383,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}
             {r.area && <span>·</span>}
-            <MesaInline reservaId={r.id} inicial={r.mesa} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar} onMudou={onMudou} />
+            <MesaInline reservaId={r.id} inicial={r.mesa} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
             {r.clienteTelefone && <span>·</span>}
             {r.clienteTelefone && <span className="font-mono">{r.clienteTelefone}</span>}
           </div>

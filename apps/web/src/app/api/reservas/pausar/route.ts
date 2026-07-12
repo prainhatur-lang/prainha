@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function PATCH(request: Request) {
-  const { user, error } = await exigirPermApi('reserva.configurar');
+  const { user, error } = await exigirPermApi('reserva.update');
   if (error) return error;
 
   const b = await request.json().catch(() => null);
