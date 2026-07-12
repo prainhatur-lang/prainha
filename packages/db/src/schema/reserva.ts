@@ -51,10 +51,14 @@ export const reserva = pgTable(
     lembreteConfirmacaoEm: timestamp('lembrete_confirmacao_em', { withTimezone: true }),
     /** Quando o cliente confirmou presenca pelo link do lembrete. */
     confirmadaClienteEm: timestamp('confirmada_cliente_em', { withTimezone: true }),
-    /** Bebida escolhida antecipadamente na reserva (pré-pedido, F1). Nome
-     *  livre vindo da lista curta configurada em reservaConfig.bebidas. Null
-     *  = não pediu antecipado. */
+    /** Bebida escolhida antecipadamente na reserva (pré-pedido, F1). Nome do
+     *  produto real do Consumer (cerveja/espumante/vinho com estoque) ou,
+     *  como fallback, item da lista curta manual em reservaConfig.bebidas.
+     *  Null = não pediu antecipado. */
     bebidaPedido: varchar('bebida_pedido', { length: 100 }),
+    /** Quantas unidades do combo de cerveja (ex: long neck=10, 600ml=6).
+     *  Null = não é cerveja com combo (espumante/vinho/lista manual). */
+    bebidaComboQtd: integer('bebida_combo_qtd'),
     /** Placa do veículo, informada na reserva (uso futuro: LPR do pátio). */
     placaVeiculo: varchar('placa_veiculo', { length: 10 }),
     /** Confirmação da bebida pela recepção no momento de sentar. Null = ainda

@@ -85,6 +85,7 @@ export default async function ReservasPage(props: {
             lembreteConfirmacaoEm: sql<string | null>`${schema.reserva.lembreteConfirmacaoEm}::text`,
             confirmadaClienteEm: sql<string | null>`${schema.reserva.confirmadaClienteEm}::text`,
             bebidaPedido: schema.reserva.bebidaPedido,
+            bebidaComboQtd: schema.reserva.bebidaComboQtd,
             placaVeiculo: schema.reserva.placaVeiculo,
             bebidaConfirmada: schema.reserva.bebidaConfirmada,
             pagamentoStatus: schema.reserva.pagamentoStatus,

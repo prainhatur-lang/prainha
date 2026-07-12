@@ -38,6 +38,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [observacao, setObs] = useState('');
   const [preferencias, setPref] = useState('');
   const [bebida, setBebida] = useState('');
+  const [categoriaBebida, setCategoriaBebida] = useState('');
+  const [catalogoBebidas, setCatalogoBebidas] = useState<Array<{ nome: string; produtos: Array<{ nome: string; comboQtd: number | null }> }>>([]);
   const [placa, setPlaca] = useState('');
   const [codigo, setCodigo] = useState('');
   const [enviando, setEnviando] = useState(false);
@@ -45,6 +47,25 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [dicaTeste, setDicaTeste] = useState<string | null>(null);
   const [zapEnviado, setZapEnviado] = useState(false);
   const [voltou, setVoltou] = useState<string | null>(null);
+
+  // Catálogo real de Cerveja/Espumante/Vinho do Consumer (com combo de
+  // cerveja). Se vier vazio (filial sem sync, ou tudo filtrado), cai pra
+  // lista curta manual (`bebidas` prop) como antes.
+  useEffect(() => {
+    let cancel = false;
+    fetch(`/api/reservar/${token}/bebidas`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancel && Array.isArray(d?.categorias)) setCatalogoBebidas(d.categorias);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [token]);
+  const usaCatalogoReal = catalogoBebidas.length > 0;
+  const produtosDaCategoria = catalogoBebidas.find((c) => c.nome === categoriaBebida)?.produtos ?? [];
+  const comboSelecionado = produtosDaCategoria.find((p) => p.nome === bebida)?.comboQtd ?? null;
 
   // Pagamento (espaço com taxa obrigatória, ex: Lounge — Pix Cielo)
   const [reservaIdPag, setReservaIdPag] = useState<string | null>(null);
@@ -230,7 +251,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, placa }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, placa }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -456,7 +477,36 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <label className={lbl}>Observação (opcional)</label>
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />
         </div>
-        {bebidas.length > 0 && (
+        {usaCatalogoReal ? (
+          <div>
+            <label className={lbl}>Já adianta sua bebida? 🍹 (opcional)</label>
+            <div className="mt-1.5 flex gap-2">
+              <select
+                value={categoriaBebida}
+                onChange={(e) => { setCategoriaBebida(e.target.value); setBebida(''); }}
+                className={`${inp} mt-0 flex-1`}
+              >
+                <option value="">Prefiro decidir lá</option>
+                {catalogoBebidas.map((c) => (
+                  <option key={c.nome} value={c.nome}>{c.nome}</option>
+                ))}
+              </select>
+              {categoriaBebida && (
+                <select value={bebida} onChange={(e) => setBebida(e.target.value)} className={`${inp} mt-0 flex-[2]`}>
+                  <option value="">Qual?</option>
+                  {produtosDaCategoria.map((p) => (
+                    <option key={p.nome} value={p.nome}>{p.nome}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {comboSelecionado ? (
+              <p className="mt-1 text-[11px] text-[#8a7a64]">Vem em combo de {comboSelecionado} unidades 🍻 — já deixa pronto pra quando você sentar 🌅</p>
+            ) : (
+              <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa pronta pra quando você sentar 🌅</p>
+            )}
+          </div>
+        ) : bebidas.length > 0 ? (
           <div>
             <label className={lbl}>Já adianta sua bebida? 🍹 (opcional)</label>
             <select value={bebida} onChange={(e) => setBebida(e.target.value)} className={inp}>
@@ -467,7 +517,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             </select>
             <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa pronta pra quando você sentar 🌅</p>
           </div>
-        )}
+        ) : null}
         <div>
           <label className={lbl}>Placa do carro (opcional)</label>
           <input

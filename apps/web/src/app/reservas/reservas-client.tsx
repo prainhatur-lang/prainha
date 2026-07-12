@@ -48,6 +48,7 @@ export interface ReservaItem {
   lembreteConfirmacaoEm?: string | null;
   confirmadaClienteEm?: string | null;
   bebidaPedido?: string | null;
+  bebidaComboQtd?: number | null;
   placaVeiculo?: string | null;
   bebidaConfirmada?: boolean | null;
   pagamentoStatus?: string | null;
@@ -456,7 +457,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
                 }`}
                 title={r.bebidaConfirmada === true ? 'Confirmado com o cliente' : r.bebidaConfirmada === false ? 'Cliente não quis mais' : 'Ainda não confirmado com o cliente'}
               >
-                🍹 {r.bebidaPedido}
+                🍹 {r.bebidaPedido}{r.bebidaComboQtd ? ` (combo ${r.bebidaComboQtd}un)` : ''}
               </span>
             )}
             {r.placaVeiculo && <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">🚗 {r.placaVeiculo}</span>}
@@ -488,7 +489,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
       {podeAtualizar && confirmandoBebida && (
         <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
           <p className="text-xs font-medium text-amber-900">
-            {r.clienteNome} pediu <b>🍹 {r.bebidaPedido}</b> antecipado — confirma com o cliente antes de sentar?
+            {r.clienteNome} pediu <b>🍹 {r.bebidaPedido}{r.bebidaComboQtd ? ` (combo ${r.bebidaComboQtd}un)` : ''}</b> antecipado — confirma com o cliente antes de sentar?
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <Btn onClick={() => { setStatus('sentada', { bebidaConfirmada: true }); setConfirmandoBebida(false); }} disabled={salvando} cls="border-emerald-300 bg-white text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">

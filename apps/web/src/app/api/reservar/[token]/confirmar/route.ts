@@ -53,13 +53,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const hora = typeof b?.hora === 'string' && /^\d{2}:\d{2}$/.test(b.hora) ? b.hora : null;
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 99) : 0;
   const bebida = typeof b?.bebida === 'string' && b.bebida.trim() ? b.bebida.trim().slice(0, 100) : null;
+  const bebidaComboQtd = Number.isInteger(b?.bebidaComboQtd) && b.bebidaComboQtd > 0 ? b.bebidaComboQtd : null;
   const placa = typeof b?.placa === 'string' && b.placa.trim() ? b.placa.trim().toUpperCase().slice(0, 10) : null;
 
   const cfg = filial.reservaConfig;
   const semOtp = !!cfg?.semOtp;
-  // Só aceita bebida se estiver na lista atual configurada pela filial —
-  // evita gravar lixo de um formulário com config desatualizada em cache.
-  const bebidaValida = bebida && cfg?.bebidas?.includes(bebida) ? bebida : null;
+  // Bebida pode vir do catálogo real do Consumer (Cerveja/Espumante/Vinho,
+  // via /bebidas) ou da lista curta manual (cfg.bebidas) — informativo pra
+  // equipe se preparar, não é dado crítico/financeiro, aceita como veio.
+  const bebidaValida = bebida;
 
   if (!telefone || !nome || !data || !hora || !pessoas || (!semOtp && !codigo)) {
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
@@ -194,6 +196,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
       preferencias: typeof b?.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null,
       bebidaPedido: bebidaValida,
+      bebidaComboQtd,
       placaVeiculo: placa,
       valor: valorTaxa != null ? String(valorTaxa.toFixed(2)) : String(valorAtual.toFixed(2)),
       pagamentoStatus: valorTaxa != null ? 'aguardando' : null,
