@@ -211,6 +211,18 @@ export function ReservasClient({
     .filter((i) => i.status !== 'cancelada' && i.status !== 'no_show')
     .reduce((s, i) => s + i.pessoas, 0);
 
+  const [statusFiltro, setStatusFiltro] = useState<string>('');
+  const [busca, setBusca] = useState('');
+  const buscaNorm = busca.trim().toLowerCase();
+  const buscaSoDigitos = busca.replace(/\D/g, '');
+  const itensFiltrados = itens.filter((r) => {
+    if (statusFiltro && r.status !== statusFiltro) return false;
+    if (buscaNorm && !r.clienteNome.toLowerCase().includes(buscaNorm)) {
+      if (!buscaSoDigitos || !(r.clienteTelefone ?? '').includes(buscaSoDigitos)) return false;
+    }
+    return true;
+  });
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -332,14 +344,45 @@ export function ReservasClient({
         <NovaReserva filiais={filiais} dataPadrao={data} filialPadrao={filialFiltro} onCriou={() => { setNovaAberta(false); router.refresh(); }} />
       )}
 
+      {/* Filtro de status + busca por nome/telefone */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setStatusFiltro('')}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${statusFiltro === '' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
+          >
+            Todas
+          </button>
+          {Object.entries(STATUS_INFO).map(([s, info]) => (
+            <button
+              key={s}
+              onClick={() => setStatusFiltro((v) => (v === s ? '' : s))}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium ${statusFiltro === s ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
+            >
+              {info.txt}
+            </button>
+          ))}
+        </div>
+        <input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar por nome ou telefone…"
+          className="ml-auto h-9 min-w-[200px] flex-1 rounded-lg border border-slate-300 px-3 text-sm focus:border-sky-500 focus:outline-none sm:flex-none"
+        />
+      </div>
+
       {/* Lista */}
-      <div className="mt-6 space-y-2">
+      <div className="mt-4 space-y-2">
         {itens.length === 0 ? (
           <p className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">
             Nenhuma reserva para {ymdToBr(data)}.
           </p>
+        ) : itensFiltrados.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">
+            Nenhuma reserva bate com esse filtro.
+          </p>
         ) : (
-          itens.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} onMudou={() => router.refresh()} />)
+          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
