@@ -108,16 +108,16 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
 
   // Modo confianca: valida campos e cria a reserva direto (sem código).
   async function reservarDireto() {
-    if (!nome.trim()) return setErro('Informe seu nome');
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
+    if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
     setErro(null);
     await confirmar();
   }
 
   async function pedirCodigo() {
-    if (!nome.trim()) return setErro('Informe seu nome');
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
+    if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
     setEnviando(true);
     setErro(null);
@@ -290,17 +290,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <p className="text-xs text-[#b3411c]">{espaco} aceita reserva só até {limite} — escolha um horário mais cedo 🌅</p>
         )}
         <div>
-          <label className={lbl}>Seu nome</label>
-          <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} placeholder="Nome completo" />
-        </div>
-        <div>
           <label className={lbl}>WhatsApp</label>
-          <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" />
+          <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" autoFocus />
           {voltou && (
             <p className="mt-1.5 rounded-lg bg-[#fff4e6] px-2.5 py-1.5 text-xs text-[#b3411c]">
               👋 Que bom te ver de novo, <b>{voltou}</b>! Já preenchemos seu nome.
             </p>
           )}
+        </div>
+        <div>
+          <label className={lbl}>Seu nome</label>
+          <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} placeholder="Nome completo" />
         </div>
         <div>
           <label className={lbl}>Observação (opcional)</label>
