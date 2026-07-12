@@ -1,7 +1,11 @@
 // GET /api/reservar/[token]/cliente?tel=...
 // Público (token = filial). Dado um telefone, retorna o nome do cliente se ele
-// já é conhecido — casa contra o cadastro do Consumer (cliente, mais
-// autoritativo) e, se não achar lá, contra reservas anteriores. Best-effort.
+// já é conhecido — prioriza o histórico de reservas (mais recente e
+// especifico da relação com o concilia) e só cai pro cadastro do Consumer
+// (CONTATOS) se a pessoa nunca reservou por aqui. Cadastro do Consumer pode
+// ter nome desatualizado (ex: cliente antigo cujo telefone foi reciclado —
+// visto em prod), então NÃO tem prioridade sobre um histórico de reservas
+// existente. Best-effort.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
@@ -27,43 +31,46 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   // Casa pelo final do número (DDD + número), ignorando DDI/55 e formatação.
   const local = digitos.slice(-11);
 
-  // 1) Cadastro de cliente do Consumer (CONTATOS, sincronizado) — fonte mais
-  // autoritativa: é o cadastro real do PDV, não só um nome digitado numa
-  // reserva antiga.
-  const [cli] = await db
-    .select({ nome: schema.cliente.nome })
-    .from(schema.cliente)
+  // 1) Histórico de reservas — o nome mais recente que a própria pessoa deu
+  // numa reserva anterior. Mais confiável que o cadastro do Consumer porque é
+  // específico dessa relação e tende a estar mais atualizado.
+  const [res] = await db
+    .select({
+      nome: schema.reserva.clienteNome,
+      area: schema.reserva.area,
+      pessoas: schema.reserva.pessoas,
+    })
+    .from(schema.reserva)
     .where(
       and(
-        eq(schema.cliente.filialId, filial.id),
-        isNull(schema.cliente.dataDelete),
-        sql`regexp_replace(${schema.cliente.telefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
-        sql`${schema.cliente.nome} IS NOT NULL`,
-        sql`length(trim(${schema.cliente.nome})) > 1`,
+        sql`regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
+        sql`${schema.reserva.clienteNome} IS NOT NULL`,
+        sql`length(trim(${schema.reserva.clienteNome})) > 1`,
       ),
     )
+    .orderBy(desc(schema.reserva.criadoEm))
     .limit(1);
 
-  const r = cli
-    ? { nome: cli.nome, area: null as string | null, pessoas: null as number | null }
-    : (
-        await db
-          .select({
-            nome: schema.reserva.clienteNome,
-            area: schema.reserva.area,
-            pessoas: schema.reserva.pessoas,
-          })
-          .from(schema.reserva)
-          .where(
-            and(
-              sql`regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
-              sql`${schema.reserva.clienteNome} IS NOT NULL`,
-              sql`length(trim(${schema.reserva.clienteNome})) > 1`,
-            ),
-          )
-          .orderBy(desc(schema.reserva.criadoEm))
-          .limit(1)
-      )[0];
+  // 2) Sem histórico de reserva: cai pro cadastro de cliente do Consumer
+  // (CONTATOS, sincronizado) — útil pra quem já é cliente do PDV mas nunca
+  // reservou pelo concilia.
+  const r =
+    res ??
+    (
+      await db
+        .select({ nome: schema.cliente.nome })
+        .from(schema.cliente)
+        .where(
+          and(
+            eq(schema.cliente.filialId, filial.id),
+            isNull(schema.cliente.dataDelete),
+            sql`regexp_replace(${schema.cliente.telefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
+            sql`${schema.cliente.nome} IS NOT NULL`,
+            sql`length(trim(${schema.cliente.nome})) > 1`,
+          ),
+        )
+        .limit(1)
+    ).map((c) => ({ nome: c.nome, area: null as string | null, pessoas: null as number | null }))[0];
 
   if (!r?.nome) return NextResponse.json({ found: false });
 
