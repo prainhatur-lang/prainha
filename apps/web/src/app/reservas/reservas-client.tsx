@@ -22,6 +22,7 @@ export interface FilialOpt {
   id: string;
   nome: string;
   areas: Area[];
+  pausada?: boolean;
 }
 
 export interface ReservaItem {
@@ -109,6 +110,35 @@ export function ReservasClient({
   const [mapaAberto, setMapaAberto] = useState(false);
   const [preenchendo, setPreenchendo] = useState(false);
   const [enviandoLembretes, setEnviandoLembretes] = useState(false);
+  const [pausando, setPausando] = useState(false);
+
+  const filialAtualId = filialFiltro ?? filiais[0]?.id ?? null;
+  const filialAtual = filiais.find((f) => f.id === filialAtualId);
+  const pausada = !!filialAtual?.pausada;
+
+  async function togglePausa() {
+    if (!filialAtualId) return;
+    const novoValor = !pausada;
+    if (novoValor && !confirm(`Pausar novas reservas de ${filialAtual?.nome ?? 'esta filial'}? O site público para de aceitar até você religar.`)) return;
+    setPausando(true);
+    try {
+      const r = await fetch('/api/reservas/pausar', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId: filialAtualId, pausada: novoValor }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      router.refresh();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setPausando(false);
+    }
+  }
 
   async function preencherMesas() {
     const fil = filialFiltro ?? filiais[0]?.id;
@@ -198,6 +228,21 @@ export function ReservasClient({
               ⚙️ Espaços
             </button>
           )}
+          {podeConfigurar && filialAtualId && (
+            <button
+              onClick={togglePausa}
+              disabled={pausando}
+              title={pausada ? 'Reabrir o site público pra novas reservas' : 'Parar de aceitar novas reservas no site público até religar'}
+              className={
+                'rounded-lg border px-3 py-2.5 text-sm font-semibold disabled:opacity-50 ' +
+                (pausada
+                  ? 'border-rose-300 bg-rose-50 text-rose-700 active:bg-rose-100 hover:bg-rose-100'
+                  : 'border-slate-300 text-slate-700 active:bg-slate-100 hover:bg-slate-50')
+              }
+            >
+              {pausando ? '…' : pausada ? '🔒 Reservas pausadas — reabrir' : '⏸️ Pausar reservas'}
+            </button>
+          )}
           {podeAtualizar && (
             <button
               onClick={enviarLembretes}
@@ -281,16 +326,17 @@ export function ReservasClient({
             Nenhuma reserva para {ymdToBr(data)}.
           </p>
         ) : (
-          itens.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} onMudou={() => router.refresh()} />)
+          itens.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, hist, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; onMudou: () => void }) {
+function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
+  const mesasDoEspaco = filiais.find((f) => f.id === r.filialId)?.areas.find((a) => a.nome === r.area)?.mesas ?? [];
 
   async function setStatus(status: string) {
     setSalvando(true);
@@ -334,8 +380,11 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, onMudou }: { r: ReservaI
             ) : null}
             {mostrarFilial && r.filialNome && <span className="text-[10px] text-slate-400">{r.filialNome}</span>}
           </div>
-          <div className="mt-0.5 text-xs text-slate-500">
-            {(r.area || r.mesa) && <span>{r.area}{r.mesa ? ` · mesa ${r.mesa}` : ''} · </span>}
+          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+            {r.area && <span>{r.area}</span>}
+            {r.area && <span>·</span>}
+            <MesaInline reservaId={r.id} inicial={r.mesa} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar} onMudou={onMudou} />
+            {r.clienteTelefone && <span>·</span>}
             {r.clienteTelefone && <span className="font-mono">{r.clienteTelefone}</span>}
           </div>
           {r.observacao && <p className="mt-1 text-xs text-slate-600">“{r.observacao}”</p>}
@@ -408,6 +457,88 @@ function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { re
     );
   }
   return null;
+}
+
+// Troca de mesa na recepção: ex. mesa 10 já ocupada, recepcionista muda pra
+// mesa 11. Se o espaço tem mesas cadastradas, mostra um <select> com elas;
+// senão cai pra um campo livre. O servidor (PATCH) é quem bloqueia se a mesa
+// escolhida já estiver ocupada por outra reserva ativa (409) — a mensagem de
+// erro do servidor aparece aqui embaixo do controle.
+function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou }: { reservaId: string; inicial: string | null; mesasDoEspaco: Mesa[]; podeAtualizar: boolean; onMudou: () => void }) {
+  const [editando, setEditando] = useState(false);
+  const [val, setVal] = useState(inicial ?? '');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function salvar() {
+    setSalvando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/reservas/${reservaId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mesa: val }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setErro(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      setEditando(false);
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (editando) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        {mesasDoEspaco.length > 0 ? (
+          <select
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            autoFocus
+            className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
+          >
+            <option value="">sem mesa</option>
+            {mesasDoEspaco.map((m) => (
+              <option key={m.numero} value={m.numero}>mesa {m.numero} ({m.lugares}p)</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') salvar(); if (e.key === 'Escape') setEditando(false); }}
+            autoFocus
+            placeholder="nº da mesa"
+            className="w-20 rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
+          />
+        )}
+        <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
+        <button onClick={() => { setVal(inicial ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+        {erro && <span className="text-[11px] font-medium text-rose-600">{erro}</span>}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span>{mesaTexto(inicial)}</span>
+      {podeAtualizar && (
+        <button
+          onClick={() => setEditando(true)}
+          className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 active:bg-amber-200 hover:bg-amber-100"
+        >
+          🔀 trocar mesa
+        </button>
+      )}
+    </span>
+  );
+}
+function mesaTexto(mesa: string | null) {
+  return mesa ? `mesa ${mesa}` : 'sem mesa';
 }
 
 function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string }) {

@@ -41,10 +41,12 @@ export default async function ReservasPage(props: {
           .from(schema.filial)
           .where(inArray(schema.filial.id, filialIds));
   const areasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.areas ?? []]));
+  const pausadaPorFilial = new Map(configs.map((c) => [c.id, !!c.reservaConfig?.pausada]));
   const filiais: FilialOpt[] = acessiveis.map((f) => ({
     id: f.id,
     nome: f.nome,
     areas: areasPorFilial.get(f.id) ?? [],
+    pausada: pausadaPorFilial.get(f.id) ?? false,
   }));
 
   const { d, f } = await props.searchParams;

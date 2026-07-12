@@ -5,6 +5,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { mesaEstaLivre } from '@/lib/reservas/mesa-disponivel';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,6 +38,34 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
   if (filialIds.length === 0) return NextResponse.json({ error: 'sem filiais' }, { status: 403 });
+
+  // Troca de mesa (recepção): a nova mesa não pode já estar ocupada por outra
+  // reserva ativa no mesmo espaço/data. Só checa quando uma mesa está sendo
+  // atribuída (null = "tirar a mesa", sempre permitido).
+  if (typeof set.mesa === 'string') {
+    const [atual] = await db
+      .select({ filialId: schema.reserva.filialId, data: schema.reserva.data, area: schema.reserva.area })
+      .from(schema.reserva)
+      .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
+      .limit(1);
+    if (!atual) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+    const areaFinal = (typeof set.area === 'string' ? set.area : atual.area) as string | null;
+    if (areaFinal) {
+      const livre = await mesaEstaLivre({
+        filialId: atual.filialId,
+        data: atual.data,
+        area: areaFinal,
+        mesa: set.mesa,
+        excluirReservaId: id,
+      });
+      if (!livre) {
+        return NextResponse.json(
+          { error: `Mesa ${set.mesa} já está ocupada em ${areaFinal} nessa data.` },
+          { status: 409 },
+        );
+      }
+    }
+  }
 
   const upd = await db
     .update(schema.reserva)

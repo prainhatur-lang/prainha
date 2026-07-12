@@ -3,10 +3,11 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
+import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { randomBytes } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
 
   const cfg = filial.reservaConfig;
   const semOtp = !!cfg?.semOtp;
+
+  if (cfg?.pausada) {
+    return NextResponse.json(
+      { error: 'Reservas pausadas no momento. Tente novamente mais tarde ou fale direto com a gente.' },
+      { status: 403 },
+    );
+  }
 
   if (!telefone || !nome || !data || !hora || !pessoas || (!semOtp && !codigo)) {
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
@@ -103,18 +111,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   let mesaAlocada: string | null = null;
   const mesasDoEspaco = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
   if (mesasDoEspaco.length > 0) {
-    const ativas = await db
-      .select({ mesa: schema.reserva.mesa })
-      .from(schema.reserva)
-      .where(
-        and(
-          eq(schema.reserva.filialId, filial.id),
-          eq(schema.reserva.data, data),
-          eq(schema.reserva.area, espaco),
-          inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada']),
-        ),
-      );
-    const ocupadas = new Set(ativas.filter((r) => r.mesa).map((r) => String(r.mesa)));
+    const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area: espaco });
     const ordenadas = mesasDoEspaco.slice().sort((a, b) => a.lugares - b.lugares);
     const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
     if (cabem.length === 0) {

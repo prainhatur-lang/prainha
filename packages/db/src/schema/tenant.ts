@@ -109,6 +109,10 @@ export interface ExcecaoReserva {
 /** Config do setor de reservas por filial. */
 export interface ReservaConfig {
   areas: AreaReserva[];
+  /** Pausa manual: true = site publico de reserva para de aceitar novas
+   *  reservas ate alguem religar. Independe de excecoes/calendario — e um
+   *  interruptor imediato (ex: lotou, ou vai fechar por um tempo). */
+  pausada?: boolean;
   /** Valor "cheio" exibido pro cliente (ex: 30) — ancoragem de preco. */
   valorCheio?: number;
   /** Valor efetivamente cobrado hoje (ex: 0 = gratis). */

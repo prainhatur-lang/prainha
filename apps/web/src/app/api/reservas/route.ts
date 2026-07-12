@@ -5,6 +5,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { mesaEstaLivre } from '@/lib/reservas/mesa-disponivel';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,6 +39,19 @@ export async function POST(request: Request) {
   const txt = (v: unknown, max: number) =>
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
   const area = txt(b?.area, 100);
+  const mesa = txt(b?.mesa, 20);
+
+  // Mesa já ocupada por outra reserva ativa no mesmo espaço/data? Bloqueia
+  // double-booking (duas reservas na mesma mesa).
+  if (mesa && area) {
+    const livre = await mesaEstaLivre({ filialId, data, area, mesa });
+    if (!livre) {
+      return NextResponse.json(
+        { error: `Mesa ${mesa} já está ocupada em ${area} nessa data.` },
+        { status: 409 },
+      );
+    }
+  }
 
   // Valida hora limite do espaco escolhido (regra: incentivar chegar mais cedo).
   if (area) {
@@ -69,7 +83,7 @@ export async function POST(request: Request) {
       hora,
       status,
       area,
-      mesa: txt(b?.mesa, 20),
+      mesa,
       canal,
       observacao: txt(b?.observacao, 2000),
     })
