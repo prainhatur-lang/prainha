@@ -17,6 +17,7 @@ interface Props {
   hoje: string;
   semOtp: boolean;
   bebidas: string[];
+  atendimento: { inicio: string; fim: string } | null;
 }
 
 type Fase = 'dados' | 'otp' | 'pagamento' | 'ok';
@@ -27,7 +28,7 @@ function brl(n: number): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -145,16 +146,27 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
 
   const areaSel = areas.find((a) => a.nome === espaco);
   const limite = areaSel?.horaLimite ?? null;
-  const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
+  // Hora pedida precisa caber no horaLimite do espaço E na janela de
+  // atendimento do restaurante (se configurada).
+  const horaInvalida = !!(
+    (limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite) ||
+    (atendimento && /^\d{2}:\d{2}$/.test(hora) && (hora < atendimento.inicio || hora > atendimento.fim))
+  );
   const gratis = valorAtual === 0;
 
-  // Horários oferecidos em combo (não digitados) — de 11h até o horaLimite
-  // do espaço (ou 22h se não tiver limite), de 30 em 30min.
+  // Horários oferecidos em combo (não digitados) — do início da janela de
+  // atendimento (ou 11h, padrão, se não configurada) até o mais cedo entre
+  // o horaLimite do espaço e o fim da janela de atendimento, de 30 em 30min.
   function gerarHorarios(fimStr: string | null): string[] {
-    const [hFim, mFim] = (fimStr ?? '22:00').split(':').map(Number);
+    const [hIni, mIni] = (atendimento?.inicio ?? '11:00').split(':').map(Number);
+    const inicioMin = hIni * 60 + mIni;
+    const fimEspaco = fimStr ?? '22:00';
+    const fimJanela = atendimento?.fim ?? '22:00';
+    const fimEfetivo = fimEspaco < fimJanela ? fimEspaco : fimJanela;
+    const [hFim, mFim] = fimEfetivo.split(':').map(Number);
     const fimMin = hFim * 60 + mFim;
     const out: string[] = [];
-    for (let min = 11 * 60; min <= fimMin; min += 30) {
+    for (let min = inicioMin; min <= fimMin; min += 30) {
       const h = String(Math.floor(min / 60)).padStart(2, '0');
       const m = String(min % 60).padStart(2, '0');
       out.push(`${h}:${m}`);
@@ -208,11 +220,18 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   }, [data, token]);
   const espacoSelLotado = !!dispon[espaco] && dispon[espaco].livres === 0;
 
+  function msgHoraInvalida(): string {
+    if (atendimento && (hora < atendimento.inicio || hora > atendimento.fim)) {
+      return `Reservas só de ${atendimento.inicio} às ${atendimento.fim}.`;
+    }
+    return `${espaco} aceita reserva só até ${limite}`;
+  }
+
   // Modo confianca: valida campos e cria a reserva direto (sem código).
   async function reservarDireto() {
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
-    if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
+    if (horaInvalida) return setErro(msgHoraInvalida());
     if (diaFechado) return setErro(motivoFechado ?? 'Estamos sem vaga pra essa data. Escolha outra.');
     setErro(null);
     await confirmar();
@@ -221,7 +240,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   async function pedirCodigo() {
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
-    if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
+    if (horaInvalida) return setErro(msgHoraInvalida());
     if (diaFechado) return setErro(motivoFechado ?? 'Estamos sem vaga pra essa data. Escolha outra.');
     setEnviando(true);
     setErro(null);
@@ -460,7 +479,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           </div>
         </div>
         {horaInvalida && (
-          <p className="text-xs text-[#b3411c]">{espaco} aceita reserva só até {limite} — escolha um horário mais cedo 🌅</p>
+          <p className="text-xs text-[#b3411c]">{msgHoraInvalida()} 🌅</p>
         )}
         <div>
           <label className={lbl}>WhatsApp</label>

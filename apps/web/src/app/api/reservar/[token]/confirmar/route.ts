@@ -77,9 +77,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     );
   }
 
-  // Janela de atendimento do sistema (fora dela, nenhum pedido é aceito;
-  // fim de semana/feriado tem corte extra pra pedido do MESMO DIA).
-  const janela = await foraDaJanelaAtendimento(cfg, data);
+  // Janela de atendimento do restaurante (a HORA PEDIDA precisa estar dentro
+  // dela; fim de semana/feriado tem corte extra pra pedido do MESMO DIA).
+  const janela = await foraDaJanelaAtendimento(cfg, data, hora);
   if (janela.bloqueado) {
     return NextResponse.json({ error: janela.motivo }, { status: 403 });
   }

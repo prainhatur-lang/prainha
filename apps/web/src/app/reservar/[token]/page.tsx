@@ -96,6 +96,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
               hoje={hojeBr()}
               semOtp={!!cfg?.semOtp}
               bebidas={cfg?.bebidas ?? []}
+              atendimento={cfg?.atendimento ? { inicio: cfg.atendimento.inicio, fim: cfg.atendimento.fim } : null}
             />
           </div>
         </div>
