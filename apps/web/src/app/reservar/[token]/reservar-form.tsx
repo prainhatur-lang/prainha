@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 export interface AreaPub {
   nome: string;
   horaLimite: string | null;
+  taxaReserva: { sabDom: number; diasUteis: number } | null;
 }
 
 interface Props {
@@ -82,6 +83,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const limite = areaSel?.horaLimite ?? null;
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const gratis = valorAtual === 0;
+
+  // Taxa de reserva obrigatória do espaço (ex: Lounge) — varia sáb/dom vs
+  // outros dias. Cobrança é manual no local (cartão Cielo ou Pix), não tem
+  // checkout aqui ainda.
+  function ehFimDeSemana(ymd: string): boolean {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const dia = new Date(y, m - 1, d).getDay();
+    return dia === 0 || dia === 6;
+  }
+  const taxaEspaco = areaSel?.taxaReserva ?? null;
+  const taxaValor = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
 
   // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a unidade).
   const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
@@ -238,18 +250,27 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       <h1 className="text-2xl leading-tight text-[#1d130c]" style={serif}>Reserve sua mesa</h1>
       <p className="mt-1 text-sm text-[#8a7a64]">{nomeFilial} · venha curtir o pôr do sol 🌅</p>
 
-      {/* Ancoragem de preco */}
-      <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-sm">
-        {valorCheio && gratis ? (
-          <>
-            <span className="text-[#b7a888] line-through">{brl(valorCheio)}</span>
-            <span className="font-bold tracking-wide text-[#b3411c]">GRÁTIS</span>
-            <span className="text-xs text-[#a86a2e]">por enquanto 😉</span>
-          </>
-        ) : (
-          <span className="font-semibold text-[#b3411c]">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
-        )}
-      </div>
+      {/* Taxa obrigatória do espaço selecionado (ex: Lounge) OU ancoragem de preço padrão */}
+      {taxaEspaco ? (
+        <div className="mt-4 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-center text-sm">
+          <span className="font-semibold text-[#b3411c]">{espaco}: taxa de reserva de {brl(taxaValor!)}</span>
+          <p className="mt-0.5 text-xs text-[#a86a2e]">
+            {ehFimDeSemana(data) ? 'Valor de sábado/domingo.' : 'Valor de dia de semana.'} Pagamento no local, cartão ou Pix.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-sm">
+          {valorCheio && gratis ? (
+            <>
+              <span className="text-[#b7a888] line-through">{brl(valorCheio)}</span>
+              <span className="font-bold tracking-wide text-[#b3411c]">GRÁTIS</span>
+              <span className="text-xs text-[#a86a2e]">por enquanto 😉</span>
+            </>
+          ) : (
+            <span className="font-semibold text-[#b3411c]">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
+          )}
+        </div>
+      )}
 
       <div className="mt-5 space-y-3.5">
         <div>

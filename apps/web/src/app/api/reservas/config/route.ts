@@ -46,6 +46,10 @@ export async function PUT(request: Request) {
       ? Math.max(0, Math.min(100, Math.trunc(a.percentualReserva)))
       : undefined;
     const mesas = mesasPorArea.get(nome);
+    const taxaReserva =
+      a?.taxaReserva && Number.isFinite(a.taxaReserva.sabDom) && Number.isFinite(a.taxaReserva.diasUteis)
+        ? { sabDom: Math.max(0, Number(a.taxaReserva.sabDom)), diasUteis: Math.max(0, Number(a.taxaReserva.diasUteis)) }
+        : undefined;
     areas.push({
       nome,
       ativo: a?.ativo !== false,
@@ -53,6 +57,7 @@ export async function PUT(request: Request) {
       ...(hl ? { horaLimite: hl } : {}),
       ...(pct !== undefined ? { percentualReserva: pct } : {}),
       ...(mesas ? { mesas } : {}),
+      ...(taxaReserva ? { taxaReserva } : {}),
     });
   }
 

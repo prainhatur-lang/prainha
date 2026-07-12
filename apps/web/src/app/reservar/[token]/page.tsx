@@ -26,7 +26,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
   const cfg = filial.reservaConfig;
   const areas: AreaPub[] = (cfg?.areas ?? [])
     .filter((a) => a.ativo && !a.somenteEventos)
-    .map((a) => ({ nome: a.nome, horaLimite: a.horaLimite ?? null }));
+    .map((a) => ({ nome: a.nome, horaLimite: a.horaLimite ?? null, taxaReserva: a.taxaReserva ?? null }));
 
   return (
     <main

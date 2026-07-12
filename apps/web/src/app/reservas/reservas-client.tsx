@@ -16,6 +16,7 @@ export interface Area {
   somenteEventos?: boolean;
   horaLimite?: string;
   mesas?: Mesa[];
+  taxaReserva?: { sabDom: number; diasUteis: number };
 }
 
 export interface FilialOpt {
@@ -662,17 +663,54 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
       <div className="text-xs font-semibold text-slate-700">{filial.nome}</div>
       <div className="mt-2 space-y-2">
         {areas.map((a, i) => (
-          <div key={i} className="flex flex-wrap items-center gap-2">
-            <input value={a.nome} onChange={(e) => upd(i, { nome: e.target.value })} placeholder="Nome do espaço" className={`${inp} w-40`} />
-            <label className="flex items-center gap-1 text-xs text-slate-600">
-              <input type="checkbox" checked={a.ativo} onChange={(e) => upd(i, { ativo: e.target.checked })} /> aceita reserva
-            </label>
-            <label className="flex items-center gap-1 text-xs text-slate-600">
-              <input type="checkbox" checked={!!a.somenteEventos} onChange={(e) => upd(i, { somenteEventos: e.target.checked })} /> só eventos
-            </label>
-            <span className="text-xs text-slate-500">até</span>
-            <input type="time" value={a.horaLimite ?? ''} onChange={(e) => upd(i, { horaLimite: e.target.value })} disabled={a.somenteEventos} className={`${inp} w-28 disabled:opacity-40`} />
-            <button onClick={() => remover(i)} className="text-xs text-rose-500 hover:underline">remover</button>
+          <div key={i} className="rounded-md border border-slate-200 bg-white p-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={a.nome} onChange={(e) => upd(i, { nome: e.target.value })} placeholder="Nome do espaço" className={`${inp} w-40`} />
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input type="checkbox" checked={a.ativo} onChange={(e) => upd(i, { ativo: e.target.checked })} /> aceita reserva
+              </label>
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input type="checkbox" checked={!!a.somenteEventos} onChange={(e) => upd(i, { somenteEventos: e.target.checked })} /> só eventos
+              </label>
+              <span className="text-xs text-slate-500">até</span>
+              <input type="time" value={a.horaLimite ?? ''} onChange={(e) => upd(i, { horaLimite: e.target.value })} disabled={a.somenteEventos} className={`${inp} w-28 disabled:opacity-40`} />
+              <button onClick={() => remover(i)} className="text-xs text-rose-500 hover:underline">remover</button>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-1.5">
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={!!a.taxaReserva}
+                  onChange={(e) => upd(i, { taxaReserva: e.target.checked ? { sabDom: 0, diasUteis: 0 } : undefined })}
+                />
+                taxa de reserva obrigatória
+              </label>
+              {a.taxaReserva && (
+                <>
+                  <span className="text-xs text-slate-500">R$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={a.taxaReserva.sabDom}
+                    onChange={(e) => upd(i, { taxaReserva: { sabDom: Number(e.target.value), diasUteis: a.taxaReserva!.diasUteis } })}
+                    className={`${inp} w-24`}
+                    placeholder="sáb/dom"
+                    title="Valor em sábados e domingos"
+                  />
+                  <span className="text-xs text-slate-500">sáb/dom · R$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={a.taxaReserva.diasUteis}
+                    onChange={(e) => upd(i, { taxaReserva: { sabDom: a.taxaReserva!.sabDom, diasUteis: Number(e.target.value) } })}
+                    className={`${inp} w-24`}
+                    placeholder="outros dias"
+                    title="Valor em outros dias"
+                  />
+                  <span className="text-xs text-slate-500">outros dias · cobrança manual no local (feriado ainda não é automático)</span>
+                </>
+              )}
+            </div>
           </div>
         ))}
       </div>

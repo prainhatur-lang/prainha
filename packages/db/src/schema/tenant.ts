@@ -81,6 +81,11 @@ export interface AreaReserva {
   horaLimite?: string;
   /** Mesas fisicas deste espaco (numero + capacidade). */
   mesas?: MesaReserva[];
+  /** Taxa de reserva OBRIGATÓRIA desse espaço (ex: Lounge), diferente do
+   *  valorCheio/valorAtual genérico da filial. sabDom = sáb/dom (feriado
+   *  ainda é manual — sem calendário de feriados). Cobrança hoje é sempre
+   *  MANUAL no local (cartão Cielo ou Pix) — não há checkout online. */
+  taxaReserva?: { sabDom: number; diasUteis: number };
   /** % das mesas/lugares desta area liberado pra reserva online POR TURNO
    *  (0-100). O resto fica pra walk-in. Capacidade do turno na area =
    *  round(soma dos lugares das mesas x percentualReserva / 100). */
