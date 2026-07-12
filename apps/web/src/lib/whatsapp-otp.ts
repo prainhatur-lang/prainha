@@ -308,6 +308,54 @@ export async function enviarMesaPronta(
   return true;
 }
 
+/** Avisa o cliente de uma MUDANÇA na reserva feita pela recepção — troca de
+ *  mesa, no-show ou cancelamento (WHATSAPP_ATUALIZACAO_TEMPLATE — UTILIDADE).
+ *  Corpo: {{1}} nome, {{2}} mensagem (frase já pronta, varia por tipo de
+ *  mudança — o template não muda, só o texto da variável).
+ *  Corpo sugerido do template (NÃO terminar em variável): "Olá {{1}}! {{2}}
+ *  Qualquer dúvida, é só chamar a gente por aqui." Best-effort. */
+export function atualizacaoReservaConfigurada(): boolean {
+  return !!(
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
+    process.env.WHATSAPP_PHONE_ID &&
+    process.env.WHATSAPP_ATUALIZACAO_TEMPLATE
+  );
+}
+
+export async function enviarAtualizacaoReserva(
+  telefone: string,
+  vars: { nome: string; mensagem: string },
+): Promise<boolean> {
+  if (!atualizacaoReservaConfigurada()) return false;
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const phoneId = process.env.WHATSAPP_PHONE_ID!;
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
+  const template = process.env.WHATSAPP_ATUALIZACAO_TEMPLATE!;
+  const lang = process.env.WHATSAPP_ATUALIZACAO_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: template,
+        language: { code: lang },
+        components: [
+          { type: 'body', parameters: [vars.nome, vars.mensagem].map((t) => ({ type: 'text', text: String(t) })) },
+        ],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    console.error(`WhatsApp atualizacao erro ${resp.status}: ${txt.slice(0, 300)}`);
+    return false;
+  }
+  return true;
+}
+
 /** Template de confirmacao de reserva (WHATSAPP_CONFIRMACAO_TEMPLATE). Envia os
  *  campos na ordem do template de Utilidade: {{1}} nome, {{2}} data, {{3}} hora,
  *  {{4}} espaco/mesa, {{5}} pessoas, {{6}} link de cancelamento.

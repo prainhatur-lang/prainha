@@ -6,6 +6,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { mesaEstaLivre } from '@/lib/reservas/mesa-disponivel';
+import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,16 +43,44 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const filialIds = filiais.map((f) => f.id);
   if (filialIds.length === 0) return NextResponse.json({ error: 'sem filiais' }, { status: 403 });
 
-  // Troca de mesa (recepção): a nova mesa não pode já estar ocupada por outra
-  // reserva ativa no mesmo espaço/data. Só checa quando uma mesa está sendo
-  // atribuída (null = "tirar a mesa", sempre permitido).
-  if (typeof set.mesa === 'string') {
-    const [atual] = await db
-      .select({ filialId: schema.reserva.filialId, data: schema.reserva.data, area: schema.reserva.area, mesa: schema.reserva.mesa })
+  // Busca o estado atual quando mexe em mesa ou status — usado pra checagem
+  // de conflito de mesa E pra saber se precisa avisar o cliente no WhatsApp
+  // (troca de mesa / no-show / cancelamento).
+  const mudaMesa = typeof set.mesa === 'string';
+  const mudaStatus = typeof set.status === 'string';
+  let atual: {
+    filialId: string;
+    data: string;
+    hora: string;
+    area: string | null;
+    mesa: string | null;
+    status: string;
+    clienteNome: string;
+    clienteTelefone: string | null;
+  } | null = null;
+  if (mudaMesa || mudaStatus) {
+    const [row] = await db
+      .select({
+        filialId: schema.reserva.filialId,
+        data: schema.reserva.data,
+        hora: schema.reserva.hora,
+        area: schema.reserva.area,
+        mesa: schema.reserva.mesa,
+        status: schema.reserva.status,
+        clienteNome: schema.reserva.clienteNome,
+        clienteTelefone: schema.reserva.clienteTelefone,
+      })
       .from(schema.reserva)
       .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
       .limit(1);
-    if (!atual) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+    if (!row) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+    atual = row;
+  }
+
+  // Troca de mesa (recepção): a nova mesa não pode já estar ocupada por outra
+  // reserva ativa no mesmo espaço/data. Só checa quando uma mesa está sendo
+  // atribuída (null = "tirar a mesa", sempre permitido).
+  if (mudaMesa && atual) {
     const areaFinal = (typeof set.area === 'string' ? set.area : atual.area) as string | null;
     // Mantendo a mesma mesa que já tinha: sempre permitido, mesmo que o
     // Consumer mostre ela como ocupada (é a própria comanda dessa reserva).
@@ -60,7 +89,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         filialId: atual.filialId,
         data: atual.data,
         area: areaFinal,
-        mesa: set.mesa,
+        mesa: set.mesa as string,
         excluirReservaId: id,
       });
       if (!livre) {
@@ -79,5 +108,36 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .returning({ id: schema.reserva.id });
 
   if (upd.length === 0) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+
+  // Avisa o cliente no WhatsApp — troca de mesa de verdade (mesa diferente
+  // da que já tinha), ou virou no-show/cancelada agora (não reenvia se já
+  // estava nesse status). Best-effort, nunca bloqueia a resposta da API.
+  if (atual?.clienteTelefone) {
+    const [a, mes, d] = atual.data.split('-');
+    const dataBr = `${d}/${mes}/${a}`;
+    let mensagem: string | null = null;
+    if (mudaMesa && set.mesa !== atual.mesa) {
+      mensagem = set.mesa
+        ? `Sua mesa pra reserva de ${dataBr} às ${atual.hora} foi alterada para a mesa ${set.mesa}.`
+        : null;
+    }
+    if (mudaStatus && set.status !== atual.status) {
+      if (set.status === 'no_show') {
+        mensagem = `Notamos que você não compareceu à sua reserva de ${dataBr} às ${atual.hora}. Se quiser remarcar, é só chamar a gente!`;
+      } else if (set.status === 'cancelada') {
+        mensagem = `Sua reserva de ${dataBr} às ${atual.hora} foi cancelada. Se foi engano ou quiser remarcar, é só chamar a gente!`;
+      }
+    }
+    if (mensagem) {
+      // Vercel pode congelar a function assim que a resposta sai — aguarda
+      // o envio (best-effort) em vez de disparar sem esperar.
+      try {
+        await enviarAtualizacaoReserva(atual.clienteTelefone, { nome: atual.clienteNome, mensagem });
+      } catch (e) {
+        console.error('Erro enviando atualizacao de reserva:', (e as Error).message);
+      }
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }

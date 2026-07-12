@@ -421,7 +421,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
                 const disp = d && d.livres === 0 ? ' · LOTADO' : '';
                 return (
                   <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>
-                    {a.nome}{a.horaLimite ? ` (até ${a.horaLimite})` : ''}{disp}
+                    {a.nome}{disp}
                   </option>
                 );
               })}
