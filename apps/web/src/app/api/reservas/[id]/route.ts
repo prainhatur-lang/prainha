@@ -44,13 +44,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // atribuída (null = "tirar a mesa", sempre permitido).
   if (typeof set.mesa === 'string') {
     const [atual] = await db
-      .select({ filialId: schema.reserva.filialId, data: schema.reserva.data, area: schema.reserva.area })
+      .select({ filialId: schema.reserva.filialId, data: schema.reserva.data, area: schema.reserva.area, mesa: schema.reserva.mesa })
       .from(schema.reserva)
       .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
       .limit(1);
     if (!atual) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
     const areaFinal = (typeof set.area === 'string' ? set.area : atual.area) as string | null;
-    if (areaFinal) {
+    // Mantendo a mesma mesa que já tinha: sempre permitido, mesmo que o
+    // Consumer mostre ela como ocupada (é a própria comanda dessa reserva).
+    if (areaFinal && set.mesa !== atual.mesa) {
       const livre = await mesaEstaLivre({
         filialId: atual.filialId,
         data: atual.data,

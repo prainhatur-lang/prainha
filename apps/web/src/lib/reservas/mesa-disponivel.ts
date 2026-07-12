@@ -2,14 +2,38 @@
 // (pendente|confirmada|sentada) por vez, no mesmo espaço/data. Usado tanto na
 // criação manual (admin) quanto na edição/troca de mesa (recepção) e na
 // alocação automática do fluxo público de reserva.
+//
+// Pra HOJE, também soma as mesas fisicamente ocupadas no Consumer (comanda
+// aberta = PEDIDOS.NUMERO, sincronizado via CDC pra tabela `pedido`) — uma
+// mesa com cliente sentado (mesmo sem ter vindo de reserva) não pode ser
+// oferecida. Não olha Consumer pra datas futuras (comanda de hoje não diz
+// nada sobre disponibilidade de daqui a uma semana). Sujeito ao atraso do
+// agente-local (~15min, ciclo padrão) — não é tempo real.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { hojeBr } from '@/lib/datas';
 
 const STATUS_ATIVOS = ['pendente', 'confirmada', 'sentada'];
 
-/** Mesas ocupadas por reserva ativa num espaço/data. `excluirReservaId` serve
- *  pra edição: a própria reserva não deve "brigar" com sua mesa atual. */
+/** Mesas com comanda aberta agora no Consumer (só faz sentido pra hoje). */
+export async function mesasOcupadasNoConsumer(filialId: string): Promise<Set<string>> {
+  const abertas = await db
+    .select({ numero: schema.pedido.numero })
+    .from(schema.pedido)
+    .where(
+      and(
+        eq(schema.pedido.filialId, filialId),
+        isNull(schema.pedido.dataFechamento),
+        isNull(schema.pedido.dataDelete),
+      ),
+    );
+  return new Set(abertas.filter((p) => p.numero != null).map((p) => String(p.numero)));
+}
+
+/** Mesas ocupadas por reserva ativa num espaço/data (+ Consumer, se hoje).
+ *  `excluirReservaId` serve pra edição: a própria reserva não deve "brigar"
+ *  com sua mesa atual. */
 export async function mesasOcupadas(params: {
   filialId: string;
   data: string;
@@ -30,7 +54,14 @@ export async function mesasOcupadas(params: {
     .from(schema.reserva)
     .where(and(...condicoes));
 
-  return new Set(ativas.filter((r) => r.mesa).map((r) => String(r.mesa).trim()));
+  const ocupadas = new Set(ativas.filter((r) => r.mesa).map((r) => String(r.mesa).trim()));
+
+  if (data === hojeBr()) {
+    const doConsumer = await mesasOcupadasNoConsumer(filialId);
+    for (const m of doConsumer) ocupadas.add(m);
+  }
+
+  return ocupadas;
 }
 
 /** Checa se uma mesa específica está livre pra uma reserva (nova ou edição). */
