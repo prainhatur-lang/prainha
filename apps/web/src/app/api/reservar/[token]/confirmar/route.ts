@@ -44,9 +44,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const data = typeof b?.data === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.data) ? b.data : null;
   const hora = typeof b?.hora === 'string' && /^\d{2}:\d{2}$/.test(b.hora) ? b.hora : null;
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 99) : 0;
+  const bebida = typeof b?.bebida === 'string' && b.bebida.trim() ? b.bebida.trim().slice(0, 100) : null;
+  const placa = typeof b?.placa === 'string' && b.placa.trim() ? b.placa.trim().toUpperCase().slice(0, 10) : null;
 
   const cfg = filial.reservaConfig;
   const semOtp = !!cfg?.semOtp;
+  // Só aceita bebida se estiver na lista atual configurada pela filial —
+  // evita gravar lixo de um formulário com config desatualizada em cache.
+  const bebidaValida = bebida && cfg?.bebidas?.includes(bebida) ? bebida : null;
 
   if (cfg?.pausada) {
     return NextResponse.json(
@@ -149,6 +154,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       canal: 'site',
       observacao: typeof b?.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null,
       preferencias: typeof b?.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null,
+      bebidaPedido: bebidaValida,
+      placaVeiculo: placa,
       valor: String(valorAtual.toFixed(2)),
       cancelToken,
     })

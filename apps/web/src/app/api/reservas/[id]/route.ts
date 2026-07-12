@@ -30,6 +30,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.observacao = typeof b.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null;
   if (b?.preferencias !== undefined)
     set.preferencias = typeof b.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null;
+  if (typeof b?.bebidaConfirmada === 'boolean') set.bebidaConfirmada = b.bebidaConfirmada;
+  if (b?.bebidaPedido !== undefined)
+    set.bebidaPedido = typeof b.bebidaPedido === 'string' && b.bebidaPedido.trim() ? b.bebidaPedido.trim().slice(0, 100) : null;
 
   if (Object.keys(set).length === 1) {
     return NextResponse.json({ error: 'nada para atualizar' }, { status: 400 });

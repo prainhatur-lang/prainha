@@ -42,11 +42,13 @@ export default async function ReservasPage(props: {
           .where(inArray(schema.filial.id, filialIds));
   const areasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.areas ?? []]));
   const pausadaPorFilial = new Map(configs.map((c) => [c.id, !!c.reservaConfig?.pausada]));
+  const bebidasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.bebidas ?? []]));
   const filiais: FilialOpt[] = acessiveis.map((f) => ({
     id: f.id,
     nome: f.nome,
     areas: areasPorFilial.get(f.id) ?? [],
     pausada: pausadaPorFilial.get(f.id) ?? false,
+    bebidas: bebidasPorFilial.get(f.id) ?? [],
   }));
 
   const { d, f } = await props.searchParams;
@@ -76,6 +78,9 @@ export default async function ReservasPage(props: {
             origemExterna: schema.reserva.origemExterna,
             lembreteConfirmacaoEm: sql<string | null>`${schema.reserva.lembreteConfirmacaoEm}::text`,
             confirmadaClienteEm: sql<string | null>`${schema.reserva.confirmadaClienteEm}::text`,
+            bebidaPedido: schema.reserva.bebidaPedido,
+            placaVeiculo: schema.reserva.placaVeiculo,
+            bebidaConfirmada: schema.reserva.bebidaConfirmada,
           })
           .from(schema.reserva)
           .where(and(inArray(schema.reserva.filialId, escopo), eq(schema.reserva.data, data)))

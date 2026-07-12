@@ -126,6 +126,9 @@ export interface ReservaConfig {
   turnosSemana?: Record<number, TurnoReserva[]>;
   /** Excecoes de calendario: datas fechadas ou com turnos especiais. */
   excecoes?: ExcecaoReserva[];
+  /** Lista curta de bebidas pra pré-pedido antecipado na reserva (F1). Vazio/
+   *  ausente = a pergunta de bebida não aparece no formulário público. */
+  bebidas?: string[];
 }
 
 export const organizacao = pgTable('organizacao', {

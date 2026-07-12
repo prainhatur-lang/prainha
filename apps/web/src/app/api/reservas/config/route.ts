@@ -56,10 +56,17 @@ export async function PUT(request: Request) {
     });
   }
 
+  const bebidas: string[] | undefined = Array.isArray(b.bebidas)
+    ? b.bebidas
+        .filter((x: unknown) => typeof x === 'string' && x.trim())
+        .map((x: string) => x.trim().slice(0, 60))
+        .slice(0, 30)
+    : undefined;
+
   await db
     .update(schema.filial)
-    .set({ reservaConfig: { ...atual, areas } })
+    .set({ reservaConfig: { ...atual, areas, ...(bebidas !== undefined ? { bebidas } : {}) } })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filiais.map((f) => f.id))));
 
-  return NextResponse.json({ ok: true, areas });
+  return NextResponse.json({ ok: true, areas, bebidas });
 }

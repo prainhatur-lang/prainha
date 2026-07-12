@@ -23,6 +23,7 @@ export interface FilialOpt {
   nome: string;
   areas: Area[];
   pausada?: boolean;
+  bebidas?: string[];
 }
 
 export interface ReservaItem {
@@ -43,6 +44,9 @@ export interface ReservaItem {
   origemExterna: string | null;
   lembreteConfirmacaoEm?: string | null;
   confirmadaClienteEm?: string | null;
+  bebidaPedido?: string | null;
+  placaVeiculo?: string | null;
+  bebidaConfirmada?: boolean | null;
 }
 
 const STATUS_INFO: Record<string, { txt: string; cls: string }> = {
@@ -335,21 +339,31 @@ export function ReservasClient({
 
 function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
+  const [confirmandoBebida, setConfirmandoBebida] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
   const mesasDoEspaco = filiais.find((f) => f.id === r.filialId)?.areas.find((a) => a.nome === r.area)?.mesas ?? [];
+  const precisaConfirmarBebida = !!r.bebidaPedido && r.bebidaConfirmada == null;
 
-  async function setStatus(status: string) {
+  async function setStatus(status: string, extra?: Record<string, unknown>) {
     setSalvando(true);
     try {
       await fetch(`/api/reservas/${r.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, ...extra }),
       });
       onMudou();
     } finally {
       setSalvando(false);
     }
+  }
+
+  function clicarSentar() {
+    if (precisaConfirmarBebida) {
+      setConfirmandoBebida(true);
+      return;
+    }
+    setStatus('sentada');
   }
 
   return (
@@ -379,6 +393,21 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
               <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700" title="Lembrete enviado, aguardando resposta">⏳ lembrete enviado</span>
             ) : null}
             {mostrarFilial && r.filialNome && <span className="text-[10px] text-slate-400">{r.filialNome}</span>}
+            {r.bebidaPedido && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  r.bebidaConfirmada === true
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : r.bebidaConfirmada === false
+                      ? 'bg-slate-100 text-slate-400 line-through'
+                      : 'bg-amber-100 text-amber-800'
+                }`}
+                title={r.bebidaConfirmada === true ? 'Confirmado com o cliente' : r.bebidaConfirmada === false ? 'Cliente não quis mais' : 'Ainda não confirmado com o cliente'}
+              >
+                🍹 {r.bebidaPedido}
+              </span>
+            )}
+            {r.placaVeiculo && <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">🚗 {r.placaVeiculo}</span>}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}
@@ -394,10 +423,26 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
           <a href={whatsappLink(r.clienteTelefone, r.clienteNome)} target="_blank" rel="noopener noreferrer" className="flex h-10 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white active:bg-emerald-800 hover:bg-emerald-700">💬</a>
         )}
       </div>
-      {podeAtualizar && (
+      {podeAtualizar && confirmandoBebida && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p className="text-xs font-medium text-amber-900">
+            {r.clienteNome} pediu <b>🍹 {r.bebidaPedido}</b> antecipado — confirma com o cliente antes de sentar?
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Btn onClick={() => { setStatus('sentada', { bebidaConfirmada: true }); setConfirmandoBebida(false); }} disabled={salvando} cls="border-emerald-300 bg-white text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">
+              ✓ Quer sim, senta
+            </Btn>
+            <Btn onClick={() => { setStatus('sentada', { bebidaConfirmada: false }); setConfirmandoBebida(false); }} disabled={salvando} cls="border-slate-300 bg-white text-slate-700 active:bg-slate-100 hover:bg-slate-50">
+              ✗ Não quer mais, senta sem bebida
+            </Btn>
+            <button onClick={() => setConfirmandoBebida(false)} className="text-xs text-amber-700 underline">cancelar</button>
+          </div>
+        </div>
+      )}
+      {podeAtualizar && !confirmandoBebida && (
         <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:flex sm:flex-wrap">
           {r.status !== 'confirmada' && <Btn onClick={() => setStatus('confirmada')} disabled={salvando} cls="border-sky-300 text-sky-700 active:bg-sky-100 hover:bg-sky-50">Confirmar</Btn>}
-          {r.status !== 'sentada' && <Btn onClick={() => setStatus('sentada')} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">Sentar</Btn>}
+          {r.status !== 'sentada' && <Btn onClick={clicarSentar} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">Sentar</Btn>}
           {r.status !== 'cancelada' && <Btn onClick={() => setStatus('cancelada')} disabled={salvando} cls="border-rose-300 text-rose-700 active:bg-rose-100 hover:bg-rose-50">Cancelar</Btn>}
           {r.status !== 'no_show' && <Btn onClick={() => setStatus('no_show')} disabled={salvando} cls="border-amber-300 text-amber-700 active:bg-amber-100 hover:bg-amber-50">No-show</Btn>}
         </div>
@@ -567,6 +612,7 @@ function ConfigEspacos({ filiais, onSalvou }: { filiais: FilialOpt[]; onSalvou: 
 
 function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () => void }) {
   const [areas, setAreas] = useState<Area[]>(filial.areas.length ? filial.areas.map((a) => ({ ...a })) : []);
+  const [bebidasTxt, setBebidasTxt] = useState((filial.bebidas ?? []).join('\n'));
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -587,7 +633,11 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
       const r = await fetch('/api/reservas/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId: filial.id, areas: areas.filter((a) => a.nome.trim()) }),
+        body: JSON.stringify({
+          filialId: filial.id,
+          areas: areas.filter((a) => a.nome.trim()),
+          bebidas: bebidasTxt.split('\n').map((s) => s.trim()).filter(Boolean),
+        }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -621,6 +671,17 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
             <button onClick={() => remover(i)} className="text-xs text-rose-500 hover:underline">remover</button>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <label className="text-xs font-semibold text-slate-700">Bebidas pra pré-pedido na reserva</label>
+        <p className="mt-0.5 text-xs text-slate-500">Uma por linha. Vazio = a pergunta de bebida não aparece no formulário público.</p>
+        <textarea
+          value={bebidasTxt}
+          onChange={(e) => setBebidasTxt(e.target.value)}
+          rows={4}
+          placeholder={'Caipirinha\nCerveja\nÁgua com gás\nRefrigerante'}
+          className={`${inp} mt-1.5 w-full resize-y`}
+        />
       </div>
       <div className="mt-2 flex items-center gap-3">
         <button onClick={addArea} className="text-xs text-sky-600 hover:underline">+ espaço</button>

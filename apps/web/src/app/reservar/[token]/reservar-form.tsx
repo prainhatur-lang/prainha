@@ -15,6 +15,7 @@ interface Props {
   valorAtual: number;
   hoje: string;
   semOtp: boolean;
+  bebidas: string[];
 }
 
 type Fase = 'dados' | 'otp' | 'ok';
@@ -25,7 +26,7 @@ function brl(n: number): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -35,6 +36,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [whatsapp, setWhatsapp] = useState('');
   const [observacao, setObs] = useState('');
   const [preferencias, setPref] = useState('');
+  const [bebida, setBebida] = useState('');
+  const [placa, setPlaca] = useState('');
   const [codigo, setCodigo] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -146,7 +149,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, placa }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -302,6 +305,27 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div>
           <label className={lbl}>Observação (opcional)</label>
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />
+        </div>
+        {bebidas.length > 0 && (
+          <div>
+            <label className={lbl}>Já adianta sua bebida? 🍹 (opcional)</label>
+            <select value={bebida} onChange={(e) => setBebida(e.target.value)} className={inp}>
+              <option value="">Prefiro decidir lá</option>
+              {bebidas.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa pronta pra quando você sentar 🌅</p>
+          </div>
+        )}
+        <div>
+          <label className={lbl}>Placa do carro (opcional)</label>
+          <input
+            value={placa}
+            onChange={(e) => setPlaca(e.target.value.toUpperCase().slice(0, 8))}
+            className={inp}
+            placeholder="ABC1D23"
+          />
         </div>
         <div>
           <label className={lbl}>Qual bebida você mais gosta? 🍹 (opcional)</label>

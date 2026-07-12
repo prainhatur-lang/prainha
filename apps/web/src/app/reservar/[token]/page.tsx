@@ -103,6 +103,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
                 valorAtual={typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0}
                 hoje={hojeBr()}
                 semOtp={!!cfg?.semOtp}
+                bebidas={cfg?.bebidas ?? []}
               />
             )}
           </div>

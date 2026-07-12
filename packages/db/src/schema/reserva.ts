@@ -4,7 +4,7 @@
 // externas (ex: Tagme). A importacao usa (filial_id, origem_externa, id_externo)
 // pra deduplicar — reimportar nao cria duplicata, faz upsert.
 
-import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, index, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -51,6 +51,15 @@ export const reserva = pgTable(
     lembreteConfirmacaoEm: timestamp('lembrete_confirmacao_em', { withTimezone: true }),
     /** Quando o cliente confirmou presenca pelo link do lembrete. */
     confirmadaClienteEm: timestamp('confirmada_cliente_em', { withTimezone: true }),
+    /** Bebida escolhida antecipadamente na reserva (pré-pedido, F1). Nome
+     *  livre vindo da lista curta configurada em reservaConfig.bebidas. Null
+     *  = não pediu antecipado. */
+    bebidaPedido: varchar('bebida_pedido', { length: 100 }),
+    /** Placa do veículo, informada na reserva (uso futuro: LPR do pátio). */
+    placaVeiculo: varchar('placa_veiculo', { length: 10 }),
+    /** Confirmação da bebida pela recepção no momento de sentar. Null = ainda
+     *  não perguntou. true = confirmou, false = não quer mais/trocou. */
+    bebidaConfirmada: boolean('bebida_confirmada'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
