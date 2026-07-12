@@ -8,12 +8,11 @@ import type { Config } from './config';
 
 export interface AgenteComando {
   id: string;
-  tipo: string; // 'atualizar_fornecedor' | 'atualizar_cliente'
-  payload: {
-    codigoExterno: number;
-    campos: Record<string, string | number | null>;
-  };
+  tipo: string; // 'atualizar_fornecedor' | 'atualizar_cliente' | 'baixar_fiado' | 'criar_conta_pagar' | 'lancar_bebida_reserva' | ...
+  // Payload varia por tipo — cada handler em index.ts faz o cast pro shape certo.
+  payload: Record<string, unknown>;
   status: string;
+  criadoEm: string;
 }
 
 export async function buscarComandosPendentes(cfg: Config): Promise<AgenteComando[]> {
@@ -33,7 +32,7 @@ export async function buscarComandosPendentes(cfg: Config): Promise<AgenteComand
 export async function reportarComando(
   cfg: Config,
   id: string,
-  status: 'executando' | 'sucesso' | 'erro',
+  status: 'pendente' | 'executando' | 'sucesso' | 'erro',
   resultado?: unknown,
 ): Promise<void> {
   const url = `${cfg.api.url.replace(/\/$/, '')}/api/agente/comandos`;

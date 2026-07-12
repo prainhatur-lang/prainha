@@ -47,7 +47,9 @@ export async function GET(req: NextRequest) {
 
 const PatchBody = z.object({
   id: z.string().uuid(),
-  status: z.enum(['executando', 'sucesso', 'erro']),
+  // 'pendente' = recoloca na fila pra tentar de novo no próximo ciclo (ex:
+  // comando que depende de algo ainda não pronto, como mesa não aberta).
+  status: z.enum(['pendente', 'executando', 'sucesso', 'erro']),
   resultado: z.unknown().optional(),
 });
 

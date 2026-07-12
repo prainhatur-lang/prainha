@@ -43,11 +43,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const filialIds = filiais.map((f) => f.id);
   if (filialIds.length === 0) return NextResponse.json({ error: 'sem filiais' }, { status: 403 });
 
-  // Busca o estado atual quando mexe em mesa ou status — usado pra checagem
-  // de conflito de mesa E pra saber se precisa avisar o cliente no WhatsApp
-  // (troca de mesa / no-show / cancelamento).
+  // Busca o estado atual quando mexe em mesa, status ou confirma a bebida —
+  // usado pra checagem de conflito de mesa, aviso no WhatsApp (troca de
+  // mesa/no-show/cancelamento) E pra enfileirar o lançamento da bebida no
+  // Consumer quando confirmada.
   const mudaMesa = typeof set.mesa === 'string';
   const mudaStatus = typeof set.status === 'string';
+  const confirmaBebida = set.bebidaConfirmada === true;
   let atual: {
     filialId: string;
     data: string;
@@ -57,8 +59,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     status: string;
     clienteNome: string;
     clienteTelefone: string | null;
+    bebidaPedido: string | null;
+    bebidaComboQtd: number | null;
+    bebidaCodigoPdv: number | null;
   } | null = null;
-  if (mudaMesa || mudaStatus) {
+  if (mudaMesa || mudaStatus || confirmaBebida) {
     const [row] = await db
       .select({
         filialId: schema.reserva.filialId,
@@ -69,12 +74,22 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         status: schema.reserva.status,
         clienteNome: schema.reserva.clienteNome,
         clienteTelefone: schema.reserva.clienteTelefone,
+        bebidaPedido: schema.reserva.bebidaPedido,
+        bebidaComboQtd: schema.reserva.bebidaComboQtd,
+        bebidaCodigoPdv: schema.reserva.bebidaCodigoPdv,
       })
       .from(schema.reserva)
       .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
       .limit(1);
     if (!row) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
     atual = row;
+  }
+
+  // Confirmou a bebida (recepção clicou "quer sim, senta"): se veio do
+  // catálogo real (tem código PDV) e já tem mesa, entra na fila do agente
+  // pra lançar na comanda assim que ela abrir no Consumer (F2).
+  if (confirmaBebida && atual?.mesa && atual?.bebidaCodigoPdv) {
+    set.bebidaLancamentoStatus = 'aguardando';
   }
 
   // Troca de mesa (recepção): a nova mesa não pode já estar ocupada por outra
@@ -108,6 +123,23 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .returning({ id: schema.reserva.id });
 
   if (upd.length === 0) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+
+  // Enfileira o lançamento da bebida pro agente da filial processar —
+  // ele espera a mesa abrir no Consumer antes de inserir o item (não cria
+  // comanda nova, evita duplicar com o garçom).
+  if (confirmaBebida && atual?.mesa && atual?.bebidaCodigoPdv) {
+    await db.insert(schema.agenteComando).values({
+      filialId: atual.filialId,
+      tipo: 'lancar_bebida_reserva',
+      payload: {
+        reservaId: id,
+        numero: atual.mesa,
+        codigoProdutoDetalhe: atual.bebidaCodigoPdv,
+        nomeProduto: atual.bebidaPedido,
+        quantidade: atual.bebidaComboQtd ?? 1,
+      },
+    });
+  }
 
   // Avisa o cliente no WhatsApp — troca de mesa de verdade (mesa diferente
   // da que já tinha), ou virou no-show/cancelada agora (não reenvia se já

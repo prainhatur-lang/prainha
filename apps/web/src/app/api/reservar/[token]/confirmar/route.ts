@@ -54,6 +54,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 99) : 0;
   const bebida = typeof b?.bebida === 'string' && b.bebida.trim() ? b.bebida.trim().slice(0, 100) : null;
   const bebidaComboQtd = Number.isInteger(b?.bebidaComboQtd) && b.bebidaComboQtd > 0 ? b.bebidaComboQtd : null;
+  const bebidaCodigoPdv = Number.isInteger(b?.bebidaCodigoPdv) && b.bebidaCodigoPdv > 0 ? b.bebidaCodigoPdv : null;
   const placa = typeof b?.placa === 'string' && b.placa.trim() ? b.placa.trim().toUpperCase().slice(0, 10) : null;
 
   const cfg = filial.reservaConfig;
@@ -197,6 +198,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       preferencias: typeof b?.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null,
       bebidaPedido: bebidaValida,
       bebidaComboQtd,
+      bebidaCodigoPdv,
       placaVeiculo: placa,
       valor: valorTaxa != null ? String(valorTaxa.toFixed(2)) : String(valorAtual.toFixed(2)),
       pagamentoStatus: valorTaxa != null ? 'aguardando' : null,

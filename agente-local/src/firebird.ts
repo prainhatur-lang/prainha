@@ -1213,6 +1213,96 @@ export async function criarContaPagar(
   return { codigo };
 }
 
+/** Comanda ABERTA (DATAFECHAMENTO IS NULL) de uma mesa agora, se houver.
+ *  NUMERO é a mesa (confirmado em prod 13/06/2026 — não é PEDIDOMESAS). */
+export async function buscarPedidoAbertoPorMesa(
+  cfg: Config,
+  numero: string,
+): Promise<{ codigo: number; valorTotal: number; valorTotalItens: number } | null> {
+  const rows = await executarQuery<{
+    CODIGO: number;
+    VALORTOTAL: number | string | null;
+    VALORTOTALITENS: number | string | null;
+  }>(
+    cfg,
+    `SELECT FIRST 1 CODIGO, VALORTOTAL, VALORTOTALITENS FROM PEDIDOS
+     WHERE NUMERO = ? AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL
+     ORDER BY DATAABERTURA DESC`,
+    [Number(numero)],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    codigo: r.CODIGO,
+    valorTotal: Number(r.VALORTOTAL ?? 0),
+    valorTotalItens: Number(r.VALORTOTALITENS ?? 0),
+  };
+}
+
+/** Lança um item (bebida pré-pedida na reserva) na comanda JÁ ABERTA de uma
+ *  mesa — NUNCA cria comanda nova (evita duplicar com o garçom, que abre a
+ *  mesa quando chega nela). Insere o item + o job de impressão cozinha/bar
+ *  (mesma receita validada em prod pelo projeto cardápio digital: item com
+ *  IMPRESSO='N' + PEDIDOIMPRESSAO tipo 1 → Consumer imprime em ~3s) e
+ *  atualiza o total da comanda. `lancado:false` = mesa ainda não abriu,
+ *  quem chama decide se tenta de novo depois (fila com espera).
+ *
+ *  ⚠️ NÃO TESTADO CONTRA PRODUÇÃO AINDA — vai imprimir ticket de verdade
+ *  na cozinha/bar quando rodar. Validar com o usuário antes do primeiro
+ *  disparo real. */
+export async function lancarBebidaNaComanda(
+  cfg: Config,
+  p: { numero: string; codigoProdutoDetalhe: number; nomeProduto: string; quantidade: number },
+): Promise<{ lancado: boolean; pedidoCodigo?: number }> {
+  const pedido = await buscarPedidoAbertoPorMesa(cfg, p.numero);
+  if (!pedido) return { lancado: false };
+
+  const precoRows = await executarQuery<{ PRECOVENDA: number | string | null }>(
+    cfg,
+    `SELECT PRECOVENDA FROM PRODUTODETALHE WHERE CODIGO = ? AND DATADELETE IS NULL`,
+    [p.codigoProdutoDetalhe],
+  );
+  const precoUnitario = Number(precoRows[0]?.PRECOVENDA ?? 0);
+  const quantidade = Math.max(1, Math.trunc(p.quantidade));
+  const valorItem = Math.round(precoUnitario * quantidade * 100) / 100;
+  const nome = p.nomeProduto.slice(0, 60);
+
+  const novoTotal = Math.round((pedido.valorTotal + valorItem) * 100) / 100;
+  const novoTotalItens = Math.round((pedido.valorTotalItens + valorItem) * 100) / 100;
+
+  await executarWrites(cfg, [
+    {
+      // CODIGOPEDIDOORIGEM=3 (Cardápio Digital) — reaproveitado como "veio
+      // de fora do fluxo normal do garçom", não existe origem própria de
+      // reserva ainda. CODIGOITEMPEDIDOTIPO=1=Produto. Sem RETURNING (evita
+      // o crash intermitente do driver em INSERT...RETURNING).
+      sql: `INSERT INTO ITENSPEDIDO
+        (CODIGOPEDIDO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO,
+         VALORITEM, VALORTOTAL, CODIGOITEMPEDIDOTIPO, IMPRESSO, JUNCAOMESA,
+         IMPRESSOFICHACONSUMO, PRECOCUSTO, DETALHES, CODIGOPEDIDOORIGEM)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'N', 'N', 'N', 0, '', 3)`,
+      params: [pedido.codigo, p.codigoProdutoDetalhe, nome, quantidade, precoUnitario, valorItem, valorItem],
+    },
+    {
+      // TIPOIMPRESSAO=1 (Impressão Cozinha), ORIGEMIMPRESSAO=0 (Automática),
+      // SITUACAOIMPRESSAO=2 (Autorizado) — o Consumer roteia pro bar/cozinha
+      // certo sozinho, conforme o cadastro do produto (não é algo que a
+      // gente define aqui).
+      sql: `INSERT INTO PEDIDOIMPRESSAO
+        (CODIGOPEDIDO, CODIGOTIPOIMPRESSAO, CODIGOORIGEMIMPRESSAO, CODIGOSITUACAOIMPRESSAO,
+         INSERIDOEM, AUTORIZADOEM)
+        VALUES (?, 1, 0, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      params: [pedido.codigo],
+    },
+    {
+      sql: `UPDATE PEDIDOS SET VALORTOTAL = ?, VALORTOTALITENS = ? WHERE CODIGO = ?`,
+      params: [novoTotal, novoTotalItens, pedido.codigo],
+    },
+  ]);
+
+  return { lancado: true, pedidoCodigo: pedido.codigo };
+}
+
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }
  *  e WHERE codigo. Retorna numero de linhas afetadas (0 ou 1 normalmente). */
 export async function executarUpdate(

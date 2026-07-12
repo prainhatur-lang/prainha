@@ -39,7 +39,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [preferencias, setPref] = useState('');
   const [bebida, setBebida] = useState('');
   const [categoriaBebida, setCategoriaBebida] = useState('');
-  const [catalogoBebidas, setCatalogoBebidas] = useState<Array<{ nome: string; produtos: Array<{ nome: string; comboQtd: number | null }> }>>([]);
+  const [catalogoBebidas, setCatalogoBebidas] = useState<Array<{ nome: string; produtos: Array<{ nome: string; codigoPdv: number; comboQtd: number | null }> }>>([]);
   const [placa, setPlaca] = useState('');
   const [codigo, setCodigo] = useState('');
   const [enviando, setEnviando] = useState(false);
@@ -65,7 +65,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   }, [token]);
   const usaCatalogoReal = catalogoBebidas.length > 0;
   const produtosDaCategoria = catalogoBebidas.find((c) => c.nome === categoriaBebida)?.produtos ?? [];
-  const comboSelecionado = produtosDaCategoria.find((p) => p.nome === bebida)?.comboQtd ?? null;
+  const produtoSelecionado = produtosDaCategoria.find((p) => p.nome === bebida);
+  const comboSelecionado = produtoSelecionado?.comboQtd ?? null;
+  const codigoPdvSelecionado = produtoSelecionado?.codigoPdv ?? null;
 
   // Pagamento (espaço com taxa obrigatória, ex: Lounge — Pix Cielo)
   const [reservaIdPag, setReservaIdPag] = useState<string | null>(null);
@@ -251,7 +253,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, placa }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {

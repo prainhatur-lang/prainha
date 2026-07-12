@@ -51,6 +51,7 @@ import {
   executarUpdate,
   baixarFiado,
   criarContaPagar,
+  lancarBebidaNaComanda,
 } from './firebird';
 import {
   enviarBatch,
@@ -70,7 +71,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.0.8';
+const AGENTE_VERSAO = '1.0.9';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -484,8 +485,12 @@ async function cicloComandos(
       // Tipo 1+2: UPDATE em FORNECEDORES ou CONTATOS
       if (cmd.tipo === 'atualizar_fornecedor' || cmd.tipo === 'atualizar_cliente') {
         const tabela = cmd.tipo === 'atualizar_fornecedor' ? 'FORNECEDORES' : 'CONTATOS';
+        const payload = cmd.payload as unknown as {
+          campos?: Record<string, string | number | null>;
+          codigoExterno: number;
+        };
         const camposFB: Record<string, string | number | null> = {};
-        for (const [k, v] of Object.entries(cmd.payload.campos ?? {})) {
+        for (const [k, v] of Object.entries(payload.campos ?? {})) {
           const col = COL_MAP[k];
           if (col) camposFB[col] = v;
         }
@@ -493,11 +498,11 @@ async function cicloComandos(
           await reportarComando(cfg, cmd.id, 'erro', { msg: 'sem campos validos' });
           continue;
         }
-        const r = await executarUpdate(cfg, tabela, camposFB, cmd.payload.codigoExterno);
+        const r = await executarUpdate(cfg, tabela, camposFB, payload.codigoExterno);
         await reportarComando(cfg, cmd.id, 'sucesso', {
           afetados: r.afetados,
           tabela,
-          codigo: cmd.payload.codigoExterno,
+          codigo: payload.codigoExterno,
           campos: camposFB,
         });
         log.info('comando ok', { id: cmd.id, tipo: cmd.tipo });
@@ -587,6 +592,36 @@ async function cicloComandos(
         continue;
       }
 
+      // Tipo 8: LANCAR BEBIDA DA RESERVA — insere item na comanda quando a
+      // mesa ja estiver aberta no Consumer (recepcao confirmou o pedido no
+      // check-in). Se a mesa ainda nao abriu, reenfileira como 'pendente' e
+      // tenta de novo no proximo ciclo, ate expirar (janela de um servico).
+      if (cmd.tipo === 'lancar_bebida_reserva') {
+        const p = cmd.payload as unknown as {
+          reservaId: string;
+          numero: string;
+          codigoProdutoDetalhe: number;
+          nomeProduto: string;
+          quantidade: number;
+        };
+        const r = await lancarBebidaNaComanda(cfg, p);
+        if (r.lancado) {
+          await reportarComando(cfg, cmd.id, 'sucesso', r);
+          log.info('bebida lancada na comanda', { id: cmd.id, ...r });
+          continue;
+        }
+        const idadeMs = Date.now() - new Date(cmd.criadoEm).getTime();
+        if (idadeMs > LANCAR_BEBIDA_EXPIRACAO_MS) {
+          await reportarComando(cfg, cmd.id, 'erro', {
+            msg: 'mesa nao abriu no Consumer dentro do prazo',
+          });
+          log.warn('lancar_bebida_reserva expirado', { id: cmd.id, numero: p.numero });
+          continue;
+        }
+        await reportarComando(cfg, cmd.id, 'pendente', { msg: 'mesa ainda nao aberta, tentando de novo' });
+        continue;
+      }
+
       await reportarComando(cfg, cmd.id, 'erro', { msg: `tipo ${cmd.tipo} desconhecido` });
     } catch (e) {
       log.warn('comando falhou', { id: cmd.id, err: (e as Error).message });
@@ -612,6 +647,10 @@ function comTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     });
   });
 }
+
+// Janela de retry pro lancamento de bebida esperar a mesa abrir no Consumer —
+// cobre um servico inteiro (almoco ou janta) antes de desistir.
+const LANCAR_BEBIDA_EXPIRACAO_MS = 4 * 60 * 60 * 1000; // 4h
 
 const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso e travamento
 // Drenador CDC tem timeout maior — pode precisar drenar 100k+ itens por ciclo

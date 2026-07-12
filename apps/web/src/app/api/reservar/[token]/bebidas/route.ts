@@ -55,6 +55,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
     .select({
       nome: schema.produto.nome,
       codigoEtiqueta: schema.produto.codigoEtiqueta,
+      // Cod.PDV (PRODUTODETALHE.CODIGO) — guardado na reserva pro lançamento
+      // automático na comanda quando o cliente senta (F2).
+      codigoPdv: schema.produtoVariante.codigoExterno,
     })
     .from(schema.produtoVariante)
     .innerJoin(
@@ -80,7 +83,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
   // Consumer, limpa pra exibição. Sem preço aqui — o campo sincronizado
   // está tão desatualizado quanto o estoque (mesma causa), risco de
   // mostrar valor errado.
-  const porCategoria = new Map<string, Array<{ nome: string; comboQtd: number | null }>>();
+  const porCategoria = new Map<string, Array<{ nome: string; codigoPdv: number; comboQtd: number | null }>>();
   const vistos = new Set<string>();
   for (const p of produtos) {
     if (!p.nome || p.nome.startsWith('T ')) continue;
@@ -94,6 +97,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
     if (!porCategoria.has(cat)) porCategoria.set(cat, []);
     porCategoria.get(cat)!.push({
       nome: nomeLimpo,
+      codigoPdv: p.codigoPdv,
       comboQtd: cat === 'Cervejas' ? comboCerveja(nomeLimpo) : null,
     });
   }

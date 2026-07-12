@@ -59,6 +59,16 @@ export const reserva = pgTable(
     /** Quantas unidades do combo de cerveja (ex: long neck=10, 600ml=6).
      *  Null = não é cerveja com combo (espumante/vinho/lista manual). */
     bebidaComboQtd: integer('bebida_combo_qtd'),
+    /** Código do produto (PRODUTODETALHE.CODIGO / Cod.PDV) no Consumer, só
+     *  quando a bebida veio do catálogo real (não da lista manual). Usado
+     *  pro lançamento automático na comanda quando o cliente senta (F2). */
+    bebidaCodigoPdv: integer('bebida_codigo_pdv'),
+    /** Status do lançamento automático da bebida na comanda (F2). Null =
+     *  não se aplica (sem bebida, ou lista manual sem código). 'aguardando'
+     *  = confirmada, na fila esperando a mesa abrir no Consumer; 'lancado'
+     *  = item + impressão já entraram na comanda; 'expirado' = mesa nunca
+     *  abriu a tempo. */
+    bebidaLancamentoStatus: varchar('bebida_lancamento_status', { length: 20 }),
     /** Placa do veículo, informada na reserva (uso futuro: LPR do pátio). */
     placaVeiculo: varchar('placa_veiculo', { length: 10 }),
     /** Confirmação da bebida pela recepção no momento de sentar. Null = ainda
