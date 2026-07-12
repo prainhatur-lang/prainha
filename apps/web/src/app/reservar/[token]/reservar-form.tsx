@@ -125,6 +125,27 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const gratis = valorAtual === 0;
 
+  // Horários oferecidos em combo (não digitados) — de 11h até o horaLimite
+  // do espaço (ou 22h se não tiver limite), de 30 em 30min.
+  function gerarHorarios(fimStr: string | null): string[] {
+    const [hFim, mFim] = (fimStr ?? '22:00').split(':').map(Number);
+    const fimMin = hFim * 60 + mFim;
+    const out: string[] = [];
+    for (let min = 11 * 60; min <= fimMin; min += 30) {
+      const h = String(Math.floor(min / 60)).padStart(2, '0');
+      const m = String(min % 60).padStart(2, '0');
+      out.push(`${h}:${m}`);
+    }
+    return out;
+  }
+  const horariosDisponiveis = gerarHorarios(limite);
+  useEffect(() => {
+    if (!horariosDisponiveis.includes(hora)) {
+      setHora(horariosDisponiveis[horariosDisponiveis.length - 1] ?? '17:00');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [espaco, limite]);
+
   // Taxa de reserva obrigatória do espaço (ex: Lounge) — varia sáb/dom vs
   // outros dias. Cobrança é manual no local (cartão Cielo ou Pix), não tem
   // checkout aqui ainda.
@@ -404,7 +425,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           </div>
           <div className="w-28">
             <label className={lbl}>Hora</label>
-            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-[#b3411c] text-[#b3411c]' : ''}`} />
+            <select value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-[#b3411c] text-[#b3411c]' : ''}`}>
+              {horariosDisponiveis.map((h) => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
           </div>
           <div className="w-24">
             <label className={lbl}>Pessoas</label>
