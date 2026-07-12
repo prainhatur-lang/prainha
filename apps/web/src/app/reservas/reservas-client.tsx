@@ -123,13 +123,14 @@ export function ReservasClient({
   async function togglePausa() {
     if (!filialAtualId) return;
     const novoValor = !pausada;
-    if (novoValor && !confirm(`Pausar novas reservas de ${filialAtual?.nome ?? 'esta filial'}? O site público para de aceitar até você religar.`)) return;
+    const dataBr = ymdToBr(data);
+    if (novoValor && !confirm(`Pausar reservas de ${filialAtual?.nome ?? 'esta filial'} pra ${dataBr}? O site público para de aceitar reserva SÓ desse dia — outros dias continuam normais.`)) return;
     setPausando(true);
     try {
       const r = await fetch('/api/reservas/pausar', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId: filialAtualId, pausada: novoValor }),
+        body: JSON.stringify({ filialId: filialAtualId, data, pausada: novoValor }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -236,7 +237,7 @@ export function ReservasClient({
             <button
               onClick={togglePausa}
               disabled={pausando}
-              title={pausada ? 'Reabrir o site público pra novas reservas' : 'Parar de aceitar novas reservas no site público até religar'}
+              title={pausada ? `Reabrir o site público pra reservas em ${ymdToBr(data)}` : `Parar de aceitar reserva no site público só pra ${ymdToBr(data)} — outros dias continuam normais`}
               className={
                 'rounded-lg border px-3 py-2.5 text-sm font-semibold disabled:opacity-50 ' +
                 (pausada
@@ -244,7 +245,7 @@ export function ReservasClient({
                   : 'border-slate-300 text-slate-700 active:bg-slate-100 hover:bg-slate-50')
               }
             >
-              {pausando ? '…' : pausada ? '🔒 Reservas pausadas — reabrir' : '⏸️ Pausar reservas'}
+              {pausando ? '…' : pausada ? `🔒 Sem vaga em ${ymdToBr(data)} — reabrir` : `⏸️ Pausar ${ymdToBr(data)}`}
             </button>
           )}
           {podeAtualizar && (

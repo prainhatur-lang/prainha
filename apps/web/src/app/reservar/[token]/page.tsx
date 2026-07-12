@@ -84,7 +84,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
               </ul>
             </div>
           </div>
-          {/* Formulário (ou aviso de pausa) */}
+          {/* Formulário (ou aviso de pausa GLOBAL — legado, hoje a pausa é por dia) */}
           <div className="lg:max-w-md">
             {cfg?.pausada ? (
               <div className="rounded-2xl bg-[#fbf6ec]/95 p-6 text-center shadow-xl">

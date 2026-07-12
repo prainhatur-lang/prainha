@@ -25,12 +25,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   if (!filial) return NextResponse.json({ areas: [] });
 
   const data = new URL(request.url).searchParams.get('data') ?? '';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return NextResponse.json({ areas: [] });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return NextResponse.json({ areas: [], fechado: false });
+
+  // Pausa por dia: exceção de calendário com fechado=true pra essa data
+  // específica (ex: "hoje lotou") — não afeta outros dias.
+  const fechado = !!filial.reservaConfig?.excecoes?.some((e) => e.data === data && e.fechado);
+  if (fechado) return NextResponse.json({ areas: [], fechado: true });
 
   const areas = ((filial.reservaConfig?.areas as AreaCfg[] | undefined) ?? []).filter(
     (a) => a.ativo && !a.somenteEventos && (a.mesas?.length ?? 0) > 0,
   );
-  if (areas.length === 0) return NextResponse.json({ areas: [] });
+  if (areas.length === 0) return NextResponse.json({ areas: [], fechado: false });
 
   // Reservas ativas do dia com mesa
   const reservas = await db
@@ -56,5 +61,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     return { nome: a.nome, total, livres: Math.max(0, total - ocupadas) };
   });
 
-  return NextResponse.json({ areas: out });
+  return NextResponse.json({ areas: out, fechado: false });
 }

@@ -85,6 +85,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
 
   // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a unidade).
   const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
+  const [diaFechado, setDiaFechado] = useState(false);
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
     let cancel = false;
@@ -92,7 +93,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       try {
         const r = await fetch(`/api/reservar/${token}/disponibilidade?data=${data}`);
         const d = await r.json().catch(() => ({}));
-        if (cancel || !Array.isArray(d?.areas)) return;
+        if (cancel) return;
+        setDiaFechado(!!d?.fechado);
+        if (!Array.isArray(d?.areas)) return;
         const m: Record<string, { total: number; livres: number }> = {};
         for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres };
         setDispon(m);
@@ -111,6 +114,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
+    if (diaFechado) return setErro('Estamos sem vaga pra essa data. Escolha outra.');
     setErro(null);
     await confirmar();
   }
@@ -119,6 +123,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
+    if (diaFechado) return setErro('Estamos sem vaga pra essa data. Escolha outra.');
     setEnviando(true);
     setErro(null);
     setDicaTeste(null);
@@ -266,11 +271,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           ) : (
             <p className="mt-1 text-sm text-[#b3411c]">Nenhum espaço disponível para reserva.</p>
           )}
-          {espacoSelLotado && (
+          {diaFechado ? (
+            <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
+              😕 Estamos <b>sem vaga</b> pra {data.split('-').reverse().join('/')}. Escolha outra data.
+            </p>
+          ) : espacoSelLotado ? (
             <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
               😕 {espaco} está <b>lotado</b> nesse dia. Escolha outro espaço ou outra data.
             </p>
-          )}
+          ) : null}
         </div>
         <div className="flex gap-3">
           <div className="flex-1">
@@ -341,7 +350,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       </div>
 
       {erro && <p className="mt-3 text-center text-xs text-[#b3411c]">{erro}</p>}
-      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0 || espacoSelLotado} className={btn}>
+      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0 || espacoSelLotado || diaFechado} className={btn}>
         {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar mesa' : 'Continuar'}
       </button>
       <p className="mt-3 text-center text-[11px] text-[#8a7a64]">

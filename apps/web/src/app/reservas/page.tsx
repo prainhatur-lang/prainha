@@ -32,6 +32,10 @@ export default async function ReservasPage(props: {
   const acessiveis = await filiaisDoUsuario(user.id);
   const filialIds = acessiveis.map((f) => f.id);
 
+  const { d, f } = await props.searchParams;
+  const data = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : hojeBr();
+  const filialFiltro = f && filialIds.includes(f) ? f : null;
+
   // Carrega config de espacos por filial
   const configs =
     filialIds.length === 0
@@ -41,7 +45,10 @@ export default async function ReservasPage(props: {
           .from(schema.filial)
           .where(inArray(schema.filial.id, filialIds));
   const areasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.areas ?? []]));
-  const pausadaPorFilial = new Map(configs.map((c) => [c.id, !!c.reservaConfig?.pausada]));
+  // Pausada = o DIA sendo visto (data) tem exceção fechado=true pra essa filial.
+  const pausadaPorFilial = new Map(
+    configs.map((c) => [c.id, !!c.reservaConfig?.excecoes?.some((e) => e.data === data && e.fechado)]),
+  );
   const bebidasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.bebidas ?? []]));
   const filiais: FilialOpt[] = acessiveis.map((f) => ({
     id: f.id,
@@ -50,10 +57,6 @@ export default async function ReservasPage(props: {
     pausada: pausadaPorFilial.get(f.id) ?? false,
     bebidas: bebidasPorFilial.get(f.id) ?? [],
   }));
-
-  const { d, f } = await props.searchParams;
-  const data = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : hojeBr();
-  const filialFiltro = f && filialIds.includes(f) ? f : null;
 
   const escopo = filialFiltro ? [filialFiltro] : filialIds;
 

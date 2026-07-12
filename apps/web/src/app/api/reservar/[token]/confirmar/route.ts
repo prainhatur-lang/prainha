@@ -64,6 +64,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
   }
 
+  // Pausa por dia: exceção de calendário com fechado=true pra essa data
+  // específica (ex: "hoje lotou") — não bloqueia outros dias.
+  if (cfg?.excecoes?.some((e) => e.data === data && e.fechado)) {
+    return NextResponse.json(
+      { error: 'Estamos sem vaga pra essa data. Escolha outra data ou fale direto com a gente.' },
+      { status: 403 },
+    );
+  }
+
   // Valida espaco + hora limite
   const areaCfg = cfg?.areas?.find((a) => a.nome === espaco);
   if (!areaCfg || !areaCfg.ativo || areaCfg.somenteEventos) {
