@@ -25,6 +25,7 @@ export interface FilialOpt {
   areas: Area[];
   pausada?: boolean;
   bebidas?: string[];
+  atendimento?: { inicio: string; fim: string; fimHojeFimDeSemana: string };
 }
 
 export interface ReservaItem {
@@ -630,6 +631,7 @@ function ConfigEspacos({ filiais, onSalvou }: { filiais: FilialOpt[]; onSalvou: 
 function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () => void }) {
   const [areas, setAreas] = useState<Area[]>(filial.areas.length ? filial.areas.map((a) => ({ ...a })) : []);
   const [bebidasTxt, setBebidasTxt] = useState((filial.bebidas ?? []).join('\n'));
+  const [atendimento, setAtendimento] = useState(filial.atendimento ?? null);
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -654,6 +656,7 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
           filialId: filial.id,
           areas: areas.filter((a) => a.nome.trim()),
           bebidas: bebidasTxt.split('\n').map((s) => s.trim()).filter(Boolean),
+          atendimento,
         }),
       });
       if (!r.ok) {
@@ -736,6 +739,29 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
           placeholder={'Caipirinha\nCerveja\nÁgua com gás\nRefrigerante'}
           className={`${inp} mt-1.5 w-full resize-y`}
         />
+      </div>
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+          <input
+            type="checkbox"
+            checked={!!atendimento}
+            onChange={(e) => setAtendimento(e.target.checked ? { inicio: '09:30', fim: '17:00', fimHojeFimDeSemana: '11:30' } : null)}
+          />
+          Janela de atendimento (horário em que o site aceita pedido de reserva)
+        </label>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Fora dessas horas, o site não aceita reserva pra nenhuma data. Desmarcado = sem restrição.
+        </p>
+        {atendimento && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-500">abre</span>
+            <input type="time" value={atendimento.inicio} onChange={(e) => setAtendimento({ ...atendimento, inicio: e.target.value })} className={`${inp} w-24`} />
+            <span className="text-xs text-slate-500">fecha</span>
+            <input type="time" value={atendimento.fim} onChange={(e) => setAtendimento({ ...atendimento, fim: e.target.value })} className={`${inp} w-24`} />
+            <span className="text-xs text-slate-500">· corte pra reserva de HOJE em fds/feriado</span>
+            <input type="time" value={atendimento.fimHojeFimDeSemana} onChange={(e) => setAtendimento({ ...atendimento, fimHojeFimDeSemana: e.target.value })} className={`${inp} w-24`} />
+          </div>
+        )}
       </div>
       <div className="mt-2 flex items-center gap-3">
         <button onClick={addArea} className="text-xs text-sky-600 hover:underline">+ espaço</button>

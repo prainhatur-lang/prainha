@@ -139,6 +139,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a unidade).
   const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
   const [diaFechado, setDiaFechado] = useState(false);
+  const [motivoFechado, setMotivoFechado] = useState<string | null>(null);
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
     let cancel = false;
@@ -148,6 +149,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         const d = await r.json().catch(() => ({}));
         if (cancel) return;
         setDiaFechado(!!d?.fechado);
+        setMotivoFechado(typeof d?.motivo === 'string' ? d.motivo : null);
         if (!Array.isArray(d?.areas)) return;
         const m: Record<string, { total: number; livres: number }> = {};
         for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres };
@@ -167,7 +169,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
-    if (diaFechado) return setErro('Estamos sem vaga pra essa data. Escolha outra.');
+    if (diaFechado) return setErro(motivoFechado ?? 'Estamos sem vaga pra essa data. Escolha outra.');
     setErro(null);
     await confirmar();
   }
@@ -176,7 +178,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
     if (horaInvalida) return setErro(`${espaco} aceita reserva só até ${limite}`);
-    if (diaFechado) return setErro('Estamos sem vaga pra essa data. Escolha outra.');
+    if (diaFechado) return setErro(motivoFechado ?? 'Estamos sem vaga pra essa data. Escolha outra.');
     setEnviando(true);
     setErro(null);
     setDicaTeste(null);
@@ -387,7 +389,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           )}
           {diaFechado ? (
             <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
-              😕 Estamos <b>sem vaga</b> pra {data.split('-').reverse().join('/')}. Escolha outra data.
+              😕 {motivoFechado ?? `Estamos sem vaga pra ${data.split('-').reverse().join('/')}. Escolha outra data.`}
             </p>
           ) : espacoSelLotado ? (
             <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">

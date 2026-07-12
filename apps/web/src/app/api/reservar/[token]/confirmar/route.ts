@@ -8,6 +8,7 @@ import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import { createCieloPixPayment } from '@/lib/cielo';
 import { randomBytes } from 'node:crypto';
 
@@ -71,6 +72,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       { error: 'Estamos sem vaga pra essa data. Escolha outra data ou fale direto com a gente.' },
       { status: 403 },
     );
+  }
+
+  // Janela de atendimento do sistema (fora dela, nenhum pedido é aceito;
+  // fim de semana/feriado tem corte extra pra pedido do MESMO DIA).
+  const janela = await foraDaJanelaAtendimento(cfg, data);
+  if (janela.bloqueado) {
+    return NextResponse.json({ error: janela.motivo }, { status: 403 });
   }
 
   // Valida espaco + hora limite

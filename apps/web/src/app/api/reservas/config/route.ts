@@ -68,10 +68,32 @@ export async function PUT(request: Request) {
         .slice(0, 30)
     : undefined;
 
+  const HORA = /^\d{2}:\d{2}$/;
+  const atendimento =
+    b.atendimento &&
+    HORA.test(b.atendimento.inicio) &&
+    HORA.test(b.atendimento.fim) &&
+    HORA.test(b.atendimento.fimHojeFimDeSemana)
+      ? {
+          inicio: b.atendimento.inicio,
+          fim: b.atendimento.fim,
+          fimHojeFimDeSemana: b.atendimento.fimHojeFimDeSemana,
+        }
+      : b.atendimento === null
+        ? undefined
+        : atual.atendimento;
+
   await db
     .update(schema.filial)
-    .set({ reservaConfig: { ...atual, areas, ...(bebidas !== undefined ? { bebidas } : {}) } })
+    .set({
+      reservaConfig: {
+        ...atual,
+        areas,
+        ...(bebidas !== undefined ? { bebidas } : {}),
+        ...(atendimento ? { atendimento } : { atendimento: undefined }),
+      },
+    })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filiais.map((f) => f.id))));
 
-  return NextResponse.json({ ok: true, areas, bebidas });
+  return NextResponse.json({ ok: true, areas, bebidas, atendimento });
 }

@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
+import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,6 +32,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   // específica (ex: "hoje lotou") — não afeta outros dias.
   const fechado = !!filial.reservaConfig?.excecoes?.some((e) => e.data === data && e.fechado);
   if (fechado) return NextResponse.json({ areas: [], fechado: true });
+
+  // Janela de atendimento do sistema (horário de funcionamento das reservas).
+  const janela = await foraDaJanelaAtendimento(filial.reservaConfig, data);
+  if (janela.bloqueado) return NextResponse.json({ areas: [], fechado: true, motivo: janela.motivo });
 
   const areas = ((filial.reservaConfig?.areas as AreaCfg[] | undefined) ?? []).filter(
     (a) => a.ativo && !a.somenteEventos && (a.mesas?.length ?? 0) > 0,

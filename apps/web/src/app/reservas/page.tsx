@@ -51,12 +51,14 @@ export default async function ReservasPage(props: {
     configs.map((c) => [c.id, !!c.reservaConfig?.excecoes?.some((e) => e.data === data && e.fechado)]),
   );
   const bebidasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.bebidas ?? []]));
+  const atendimentoPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.atendimento]));
   const filiais: FilialOpt[] = acessiveis.map((f) => ({
     id: f.id,
     nome: f.nome,
     areas: areasPorFilial.get(f.id) ?? [],
     pausada: pausadaPorFilial.get(f.id) ?? false,
     bebidas: bebidasPorFilial.get(f.id) ?? [],
+    atendimento: atendimentoPorFilial.get(f.id),
   }));
 
   const escopo = filialFiltro ? [filialFiltro] : filialIds;

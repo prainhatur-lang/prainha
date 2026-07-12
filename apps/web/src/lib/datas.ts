@@ -42,3 +42,9 @@ export function brDateStart(ymd: string): Date {
 export function brDateEnd(ymd: string): Date {
   return new Date(ymd + 'T23:59:59-03:00');
 }
+
+/** Hora atual em BRT no formato HH:MM (comparavel como string, ex: janela
+ *  de atendimento). */
+export function horaAgoraBr(): string {
+  return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(11, 16);
+}
