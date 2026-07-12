@@ -176,10 +176,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const horariosDisponiveis = gerarHorarios(limite);
   useEffect(() => {
     if (!horariosDisponiveis.includes(hora)) {
-      setHora(horariosDisponiveis[horariosDisponiveis.length - 1] ?? '17:00');
+      setHora(horariosDisponiveis[0] ?? '17:00');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [espaco, limite]);
+
+  // Ao trocar a data, sempre volta pro primeiro horário disponível do dia
+  // (em vez de manter o horário anterior, que pode confundir o cliente).
+  useEffect(() => {
+    setHora(horariosDisponiveis[0] ?? '17:00');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   // Taxa de reserva obrigatória do espaço (ex: Lounge) — varia sáb/dom vs
   // outros dias. Cobrança é manual no local (cartão Cielo ou Pix), não tem
