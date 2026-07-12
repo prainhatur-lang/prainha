@@ -19,7 +19,7 @@ interface Props {
   bebidas: string[];
 }
 
-type Fase = 'dados' | 'otp' | 'ok';
+type Fase = 'dados' | 'otp' | 'pagamento' | 'ok';
 
 function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -45,6 +45,47 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [dicaTeste, setDicaTeste] = useState<string | null>(null);
   const [zapEnviado, setZapEnviado] = useState(false);
   const [voltou, setVoltou] = useState<string | null>(null);
+
+  // Pagamento (espaço com taxa obrigatória, ex: Lounge — Pix Cielo)
+  const [reservaIdPag, setReservaIdPag] = useState<string | null>(null);
+  const [qrCodeBase64, setQrCodeBase64] = useState('');
+  const [qrCodeString, setQrCodeString] = useState('');
+  const [valorPago, setValorPago] = useState(0);
+  const [pagamentoStatus, setPagamentoStatus] = useState<'aguardando' | 'pago' | 'reembolsado'>('aguardando');
+  const [copiado, setCopiado] = useState(false);
+
+  // Poll do status do Pix a cada 4s enquanto na fase de pagamento.
+  useEffect(() => {
+    if (fase !== 'pagamento' || !reservaIdPag) return;
+    let cancel = false;
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/reservar/${token}/pagamento/${reservaIdPag}`);
+        const d = await r.json().catch(() => ({}));
+        if (cancel) return;
+        if (d.status === 'pago') {
+          setPagamentoStatus('pago');
+          setZapEnviado(true);
+          setFase('ok');
+        } else if (d.status === 'reembolsado') {
+          setPagamentoStatus('reembolsado');
+        }
+      } catch {
+        /* ignora, tenta de novo no próximo poll */
+      }
+    }, 4000);
+    return () => {
+      cancel = true;
+      clearInterval(t);
+    };
+  }, [fase, reservaIdPag, token]);
+
+  function copiarPix() {
+    navigator.clipboard?.writeText(qrCodeString).then(() => {
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    });
+  }
 
   // Reconhece cliente recorrente: ao digitar o WhatsApp, busca o nome de
   // reservas anteriores e autopreenche (sem sobrescrever se já digitou).
@@ -173,6 +214,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         setErro(d.error ?? `Erro ${r.status}`);
         return;
       }
+      if (d.pagamentoPendente) {
+        setReservaIdPag(d.reservaId);
+        setQrCodeBase64(d.qrCodeBase64 ?? '');
+        setQrCodeString(d.qrCodeString ?? '');
+        setValorPago(d.valor ?? 0);
+        setPagamentoStatus('aguardando');
+        setFase('pagamento');
+        return;
+      }
       setZapEnviado(!!d.confirmacaoZap);
       setFase('ok');
     } catch (e) {
@@ -240,6 +290,49 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <button onClick={pedirCodigo} disabled={enviando} className="mt-3 w-full text-xs text-[#8a7a64] transition-colors hover:text-[#4a382a]">
           Reenviar código
         </button>
+      </div>
+    );
+  }
+
+  if (fase === 'pagamento') {
+    if (pagamentoStatus === 'reembolsado') {
+      return (
+        <div className={`${card} text-center`}>
+          <div className="text-5xl">😕</div>
+          <h1 className="mt-3 text-2xl text-[#1d130c]" style={serif}>Algo deu errado</h1>
+          <p className="mt-2 text-sm text-[#4a382a]">
+            Seu Pix foi estornado. Se você já pagou, fale com a gente pelo WhatsApp pra resolver.
+          </p>
+        </div>
+      );
+    }
+    return (
+      <div className={`${card} text-center`}>
+        <h1 className="text-2xl text-[#1d130c]" style={serif}>Pague a taxa da reserva</h1>
+        <p className="mt-1 text-sm text-[#8a7a64]">
+          {espaco} · {brl(valorPago)} · Pix
+        </p>
+        {qrCodeBase64 && (
+          <img
+            src={`data:image/png;base64,${qrCodeBase64}`}
+            alt="QR Code Pix"
+            className="mx-auto mt-4 h-56 w-56 rounded-xl border border-[#e9d9bb]"
+          />
+        )}
+        <button
+          onClick={copiarPix}
+          className="mt-3 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-2.5 text-xs font-medium text-[#4a382a] hover:bg-[#f6ecd9]"
+        >
+          {copiado ? '✓ Copiado!' : '📋 Copiar código Pix (copia e cola)'}
+        </button>
+        <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[#8a7a64]">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-[#e7723a]" />
+          Aguardando o pagamento…
+        </div>
+        <p className="mt-3 text-xs text-[#8a7a64]">
+          Sua mesa já está reservada, mas só fica garantida depois do pagamento. Assim que cair, a
+          confirmação chega automaticamente aqui e no seu WhatsApp.
+        </p>
       </div>
     );
   }

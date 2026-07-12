@@ -48,6 +48,8 @@ export interface ReservaItem {
   bebidaPedido?: string | null;
   placaVeiculo?: string | null;
   bebidaConfirmada?: boolean | null;
+  pagamentoStatus?: string | null;
+  pagamentoValor?: string | null;
 }
 
 const STATUS_INFO: Record<string, { txt: string; cls: string }> = {
@@ -413,6 +415,16 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
               </span>
             )}
             {r.placaVeiculo && <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">🚗 {r.placaVeiculo}</span>}
+            {r.pagamentoStatus === 'aguardando' && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800" title="Cliente ainda não pagou a taxa de reserva">
+                💳 aguardando pagamento{r.pagamentoValor ? ` (R$ ${Number(r.pagamentoValor).toFixed(2).replace('.', ',')})` : ''}
+              </span>
+            )}
+            {r.pagamentoStatus === 'pago' && (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700" title="Taxa de reserva paga">
+                💳 taxa paga
+              </span>
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}

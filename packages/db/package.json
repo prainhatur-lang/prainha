@@ -53,7 +53,8 @@
     "import:cliente-contato": "tsx scripts/import-cliente-contato.ts",
     "migrate:patio": "tsx scripts/migrate-patio.ts",
     "migrate:reserva-pre-pedido": "tsx scripts/migrate-reserva-pre-pedido.ts",
-    "migrate:pausa-por-dia": "tsx scripts/migrate-pausa-por-dia.ts"
+    "migrate:pausa-por-dia": "tsx scripts/migrate-pausa-por-dia.ts",
+    "migrate:reserva-pagamento": "tsx scripts/migrate-reserva-pagamento.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

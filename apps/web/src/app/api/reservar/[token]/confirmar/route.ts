@@ -8,6 +8,7 @@ import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { createCieloPixPayment } from '@/lib/cielo';
 import { randomBytes } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,12 @@ function normTelefone(v: unknown): string | null {
   if (d.length < 10 || d.length > 13) return null;
   if (d.length <= 11) d = '55' + d;
   return d;
+}
+
+function ehFimDeSemana(ymd: string): boolean {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dia = new Date(y, m - 1, d).getDay();
+  return dia === 0 || dia === 6;
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ token: string }> }) {
@@ -139,6 +146,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
 
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
   const cancelToken = randomBytes(24).toString('hex');
+
+  // Espaço com taxa de reserva obrigatória (ex: Lounge): a reserva nasce
+  // "aguardando pagamento" e só vira de fato válida quando o Pix cair —
+  // recepção enxerga esse estado (não confunde com reserva confirmada).
+  const taxaEspaco = areaCfg.taxaReserva;
+  const valorTaxa = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
+
   const [nova] = await db
     .insert(schema.reserva)
     .values({
@@ -158,10 +172,47 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       preferencias: typeof b?.preferencias === 'string' && b.preferencias.trim() ? b.preferencias.trim().slice(0, 500) : null,
       bebidaPedido: bebidaValida,
       placaVeiculo: placa,
-      valor: String(valorAtual.toFixed(2)),
+      valor: valorTaxa != null ? String(valorTaxa.toFixed(2)) : String(valorAtual.toFixed(2)),
+      pagamentoStatus: valorTaxa != null ? 'aguardando' : null,
+      pagamentoValor: valorTaxa != null ? String(valorTaxa.toFixed(2)) : null,
       cancelToken,
     })
     .returning({ id: schema.reserva.id });
+
+  // Espaço com taxa: gera o Pix e devolve pro cliente pagar — reserva já
+  // existe (segura a mesa) mas fica "aguardando" até o pagamento confirmar.
+  // WhatsApp de confirmação e lembrete do dia só disparam depois de pago
+  // (rota de status/webhook), não aqui.
+  if (valorTaxa != null && nova?.id) {
+    try {
+      const pix = await createCieloPixPayment({
+        orderId: nova.id,
+        amount: Math.round(valorTaxa * 100),
+        customerName: nome,
+      });
+      await db
+        .update(schema.reserva)
+        .set({ pagamentoId: pix.paymentId, pagamentoQrcode: pix.qrCodeString })
+        .where(eq(schema.reserva.id, nova.id));
+      return NextResponse.json({
+        ok: true,
+        pagamentoPendente: true,
+        reservaId: nova.id,
+        valor: valorTaxa,
+        qrCodeBase64: pix.qrCodeBase64,
+        qrCodeString: pix.qrCodeString,
+      });
+    } catch (e) {
+      // Falhou gerar o Pix: desfaz a reserva (não deixa mesa presa sem
+      // forma de pagar) e avisa o cliente.
+      await db.delete(schema.reserva).where(eq(schema.reserva.id, nova.id));
+      console.error('Cielo Pix erro na reserva do Lounge:', (e as Error).message);
+      return NextResponse.json(
+        { error: 'Não consegui gerar o Pix agora. Tente de novo em instantes.' },
+        { status: 502 },
+      );
+    }
+  }
 
   // Mensagem de confirmacao rica no WhatsApp (best-effort; so envia se houver
   // remetente/template configurado). confirmacaoZap diz se realmente foi enviada.

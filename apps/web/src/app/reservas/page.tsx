@@ -85,6 +85,8 @@ export default async function ReservasPage(props: {
             bebidaPedido: schema.reserva.bebidaPedido,
             placaVeiculo: schema.reserva.placaVeiculo,
             bebidaConfirmada: schema.reserva.bebidaConfirmada,
+            pagamentoStatus: schema.reserva.pagamentoStatus,
+            pagamentoValor: schema.reserva.pagamentoValor,
           })
           .from(schema.reserva)
           .where(and(inArray(schema.reserva.filialId, escopo), eq(schema.reserva.data, data)))

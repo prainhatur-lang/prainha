@@ -60,6 +60,17 @@ export const reserva = pgTable(
     /** Confirmação da bebida pela recepção no momento de sentar. Null = ainda
      *  não perguntou. true = confirmou, false = não quer mais/trocou. */
     bebidaConfirmada: boolean('bebida_confirmada'),
+    /** Taxa de reserva obrigatória (ex: Lounge) via Cielo. Null = área sem
+     *  taxa, não se aplica. 'aguardando' = reserva criada mas ainda não paga
+     *  (mesa fica reservada até expirar); 'pago'; 'reembolsado'; 'expirado'
+     *  (não pagou a tempo — libera a mesa). */
+    pagamentoStatus: varchar('pagamento_status', { length: 20 }),
+    /** Valor da taxa cobrada (R$), já calculado sáb/dom vs dia útil. */
+    pagamentoValor: numeric('pagamento_valor', { precision: 10, scale: 2 }),
+    /** PaymentId da Cielo, pra consultar/estornar. */
+    pagamentoId: varchar('pagamento_id', { length: 50 }),
+    /** Pix copia-e-cola, pra reexibir se o cliente voltar pra tela antes de pagar. */
+    pagamentoQrcode: text('pagamento_qrcode'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

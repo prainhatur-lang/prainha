@@ -16,6 +16,11 @@ import { hojeBr } from '@/lib/datas';
 
 const STATUS_ATIVOS = ['pendente', 'confirmada', 'sentada'];
 
+// Reserva de espaço com taxa (ex: Lounge) nasce "aguardando" pagamento e
+// segura a mesa — mas se ninguém pagar, não pode travar a mesa pra sempre.
+// Expira (lazy, sem cron) depois desse tempo.
+const PAGAMENTO_TIMEOUT_MS = 20 * 60 * 1000;
+
 /** Mesas com comanda aberta agora no Consumer (só faz sentido pra hoje). */
 export async function mesasOcupadasNoConsumer(filialId: string): Promise<Set<string>> {
   const abertas = await db
@@ -50,11 +55,32 @@ export async function mesasOcupadas(params: {
   if (excluirReservaId) condicoes.push(ne(schema.reserva.id, excluirReservaId));
 
   const ativas = await db
-    .select({ mesa: schema.reserva.mesa })
+    .select({
+      id: schema.reserva.id,
+      mesa: schema.reserva.mesa,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      criadoEm: schema.reserva.criadoEm,
+    })
     .from(schema.reserva)
     .where(and(...condicoes));
 
-  const ocupadas = new Set(ativas.filter((r) => r.mesa).map((r) => String(r.mesa).trim()));
+  const agora = Date.now();
+  const expiradas: string[] = [];
+  const validas = ativas.filter((r) => {
+    if (r.pagamentoStatus !== 'aguardando') return true;
+    const expirou = agora - new Date(r.criadoEm).getTime() > PAGAMENTO_TIMEOUT_MS;
+    if (expirou) expiradas.push(r.id);
+    return !expirou;
+  });
+
+  if (expiradas.length > 0) {
+    await db
+      .update(schema.reserva)
+      .set({ status: 'cancelada', pagamentoStatus: 'expirado' })
+      .where(inArray(schema.reserva.id, expiradas));
+  }
+
+  const ocupadas = new Set(validas.filter((r) => r.mesa).map((r) => String(r.mesa).trim()));
 
   if (data === hojeBr()) {
     const doConsumer = await mesasOcupadasNoConsumer(filialId);
