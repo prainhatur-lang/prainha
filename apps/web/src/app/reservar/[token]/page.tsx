@@ -84,28 +84,19 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
               </ul>
             </div>
           </div>
-          {/* Formulário (ou aviso de pausa GLOBAL — legado, hoje a pausa é por dia) */}
+          {/* Pausa hoje é por dia (excecoes[].fechado), tratada dentro do
+              formulário conforme a data escolhida — não há mais gate global aqui. */}
           <div className="lg:max-w-md">
-            {cfg?.pausada ? (
-              <div className="rounded-2xl bg-[#fbf6ec]/95 p-6 text-center shadow-xl">
-                <p className="text-lg font-semibold text-[#143a3d]">Reservas pausadas no momento</p>
-                <p className="mt-2 text-sm text-[#143a3d]/80">
-                  Estamos com as reservas temporariamente pausadas. Tente novamente mais tarde ou
-                  fale direto com a gente.
-                </p>
-              </div>
-            ) : (
-              <ReservarForm
-                token={token}
-                nomeFilial={filial.nome}
-                areas={areas}
-                valorCheio={typeof cfg?.valorCheio === 'number' ? cfg.valorCheio : null}
-                valorAtual={typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0}
-                hoje={hojeBr()}
-                semOtp={!!cfg?.semOtp}
-                bebidas={cfg?.bebidas ?? []}
-              />
-            )}
+            <ReservarForm
+              token={token}
+              nomeFilial={filial.nome}
+              areas={areas}
+              valorCheio={typeof cfg?.valorCheio === 'number' ? cfg.valorCheio : null}
+              valorAtual={typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0}
+              hoje={hojeBr()}
+              semOtp={!!cfg?.semOtp}
+              bebidas={cfg?.bebidas ?? []}
+            />
           </div>
         </div>
       </div>

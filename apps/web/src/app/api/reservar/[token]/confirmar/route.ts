@@ -53,13 +53,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // evita gravar lixo de um formulário com config desatualizada em cache.
   const bebidaValida = bebida && cfg?.bebidas?.includes(bebida) ? bebida : null;
 
-  if (cfg?.pausada) {
-    return NextResponse.json(
-      { error: 'Reservas pausadas no momento. Tente novamente mais tarde ou fale direto com a gente.' },
-      { status: 403 },
-    );
-  }
-
   if (!telefone || !nome || !data || !hora || !pessoas || (!semOtp && !codigo)) {
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
   }
