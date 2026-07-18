@@ -156,6 +156,13 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   );
   const gratis = valorAtual === 0;
 
+  // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a
+  // unidade) — declarado aqui (antes de horariosDisponiveis usar diaFechado)
+  // porque const/let não hoisteia; o efeito que popula isso fica mais abaixo.
+  const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
+  const [diaFechado, setDiaFechado] = useState(false);
+  const [motivoFechado, setMotivoFechado] = useState<string | null>(null);
+
   // Horários oferecidos em combo (não digitados) — do início da janela de
   // atendimento (ou 11h, padrão, se não configurada) até o mais cedo entre
   // o horaLimite do espaço e o fim da janela de atendimento, de 30 em 30min.
@@ -184,7 +191,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     }
     return out;
   }
-  const horariosDisponiveis = gerarHorarios(limite);
+  // Dia inteiro bloqueado (excecao, ou corte de fim de semana/feriado) — não
+  // faz sentido oferecer horário nenhum se nenhum vai ser aceito mesmo.
+  const horariosDisponiveis = diaFechado ? [] : gerarHorarios(limite);
   useEffect(() => {
     if (!horariosDisponiveis.includes(hora)) {
       setHora(horariosDisponiveis[0] ?? '17:00');
@@ -210,10 +219,6 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const taxaEspaco = areaSel?.taxaReserva ?? null;
   const taxaValor = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
 
-  // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a unidade).
-  const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
-  const [diaFechado, setDiaFechado] = useState(false);
-  const [motivoFechado, setMotivoFechado] = useState<string | null>(null);
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
     let cancel = false;
@@ -535,7 +540,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} className={inp} />
           </div>
         </div>
-        {semHorarios ? (
+        {diaFechado ? null : semHorarios ? (
           <p className="text-xs text-[#b3411c]">Não sobrou horário disponível hoje — escolha outra data. 🌅</p>
         ) : (
           horaInvalida && <p className="text-xs text-[#b3411c]">{msgHoraInvalida()} 🌅</p>
