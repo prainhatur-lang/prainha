@@ -49,6 +49,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // Consumer quando confirmada.
   const mudaMesa = typeof set.mesa === 'string';
   const mudaStatus = typeof set.status === 'string';
+  const vaiSentar = set.status === 'sentada';
   const confirmaBebida = set.bebidaConfirmada === true;
   let atual: {
     filialId: string;
@@ -115,6 +116,27 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           { status: 409 },
         );
       }
+    }
+  }
+
+  // Sentar (recepção confirma que o cliente chegou): a mesa dessa reserva
+  // já pode estar ocupada por outra reserva ativa ou por alguém sentado de
+  // verdade no Consumer (walk-in). Se a mesa também está sendo trocada
+  // nesse mesmo PATCH, a checagem acima já validou a mesa nova — não
+  // precisa checar a antiga de novo.
+  if (vaiSentar && !mudaMesa && atual?.mesa && atual.area) {
+    const livre = await mesaEstaLivre({
+      filialId: atual.filialId,
+      data: atual.data,
+      area: atual.area,
+      mesa: atual.mesa,
+      excluirReservaId: id,
+    });
+    if (!livre) {
+      return NextResponse.json(
+        { error: `Mesa ${atual.mesa} já está ocupada. Troque a mesa antes de sentar.` },
+        { status: 409 },
+      );
     }
   }
 

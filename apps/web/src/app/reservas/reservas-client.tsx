@@ -414,11 +414,16 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
   async function setStatus(status: string, extra?: Record<string, unknown>) {
     setSalvando(true);
     try {
-      await fetch(`/api/reservas/${r.id}`, {
+      const r2 = await fetch(`/api/reservas/${r.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, ...extra }),
       });
+      if (!r2.ok) {
+        const d = await r2.json().catch(() => ({}));
+        alert(d.error ?? `Erro ${r2.status} ao atualizar a reserva.`);
+        return;
+      }
       onMudou();
     } finally {
       setSalvando(false);
