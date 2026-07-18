@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MapaMesas } from './mapa-mesas';
 
@@ -125,6 +125,71 @@ export function ReservasClient({
   const [enviandoLembretes, setEnviandoLembretes] = useState(false);
   const [pausando, setPausando] = useState(false);
 
+  // Aviso de chegada por placa (pátio/LPR) — só funciona com essa aba
+  // aberta: consulta a cada poucos segundos se alguma placa bateu com
+  // reserva, toca um beep e mostra um aviso. Sem infra nova (sem PWA/push).
+  const [chegadas, setChegadas] = useState<Array<{ id: string; texto: string }>>([]);
+  const desdeRef = useRef(new Date().toISOString());
+  useEffect(() => {
+    let cancel = false;
+    function tocarBeep() {
+      try {
+        const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.6);
+        // segundo bipe, mais alto
+        setTimeout(() => {
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sine';
+          osc2.frequency.value = 1046;
+          gain2.gain.setValueAtTime(0.2, ctx.currentTime);
+          gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start();
+          osc2.stop(ctx.currentTime + 0.6);
+        }, 250);
+      } catch {
+        /* navegador sem AudioContext ou bloqueou — segue só com o aviso visual */
+      }
+    }
+    async function poll() {
+      try {
+        const r = await fetch(`/api/reservas/chegadas?desde=${encodeURIComponent(desdeRef.current)}`);
+        const d = await r.json().catch(() => ({}));
+        if (cancel) return;
+        if (typeof d?.agora === 'string') desdeRef.current = d.agora;
+        if (Array.isArray(d?.chegadas) && d.chegadas.length > 0) {
+          tocarBeep();
+          setChegadas((prev) => [
+            ...prev,
+            ...d.chegadas.map((c: { id: string; clienteNome: string; mesa: string | null; area: string | null; placaVeiculo: string | null }) => ({
+              id: `${c.id}-${Date.now()}`,
+              texto: `🚗 ${c.clienteNome} chegou! Placa ${c.placaVeiculo ?? '?'}${c.mesa ? ` · mesa ${c.mesa}` : c.area ? ` · ${c.area}` : ''}`,
+            })),
+          ]);
+        }
+      } catch {
+        /* ignora, tenta de novo no proximo ciclo */
+      }
+    }
+    const t = setInterval(poll, 5000);
+    return () => {
+      cancel = true;
+      clearInterval(t);
+    };
+  }, []);
+
   const filialAtualId = filialFiltro ?? filiais[0]?.id ?? null;
   const filialAtual = filiais.find((f) => f.id === filialAtualId);
   const pausada = !!filialAtual?.pausada;
@@ -233,6 +298,25 @@ export function ReservasClient({
 
   return (
     <div>
+      {chegadas.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {chegadas.map((c) => (
+            <div
+              key={c.id}
+              className="flex items-center justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 shadow-sm"
+            >
+              <span>{c.texto}</span>
+              <button
+                onClick={() => setChegadas((prev) => prev.filter((x) => x.id !== c.id))}
+                className="shrink-0 text-emerald-600 hover:text-emerald-900"
+                aria-label="Dispensar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Reservas</h1>

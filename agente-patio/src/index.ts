@@ -19,6 +19,7 @@ import { lerPlacas, login as nvrLogin } from './protect-events.js';
 import { Store } from './store.js';
 import { startWeb } from './web.js';
 import { capturarCena } from './captura.js';
+import { avisarChegadaPlaca } from './concilia.js';
 
 const cfg = loadConfig();
 const store = new Store(cfg.dataDir);
@@ -70,6 +71,10 @@ async function handlePlaca(args: {
       placa: s.placa,
       fotos: { g6: !!fotoG6, facial: !!fotoFacial },
     });
+
+    // Avisa o concilia — se a placa bater com reserva de hoje, a recepção
+    // ouve um som na tela /reservas. Best-effort, não bloqueia a cancela.
+    if (placa) void avisarChegadaPlaca(cfg.api, placa);
 
     // O BOT (botoeira) ja abre a cancela. openDoor so se autoAbrir (fallback).
     if (cfg.autoAbrir) {

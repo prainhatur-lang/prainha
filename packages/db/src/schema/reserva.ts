@@ -71,6 +71,9 @@ export const reserva = pgTable(
     bebidaLancamentoStatus: varchar('bebida_lancamento_status', { length: 20 }),
     /** Placa do veículo, informada na reserva (uso futuro: LPR do pátio). */
     placaVeiculo: varchar('placa_veiculo', { length: 10 }),
+    /** Quando o agente-patio detectou essa placa entrando (LPR bateu com
+     *  placaVeiculo) — usado pra avisar a recepção com som na hora. */
+    placaChegadaEm: timestamp('placa_chegada_em', { withTimezone: true }),
     /** Confirmação da bebida pela recepção no momento de sentar. Null = ainda
      *  não perguntou. true = confirmou, false = não quer mais/trocou. */
     bebidaConfirmada: boolean('bebida_confirmada'),
