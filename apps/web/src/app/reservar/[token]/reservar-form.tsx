@@ -159,9 +159,18 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // Horários oferecidos em combo (não digitados) — do início da janela de
   // atendimento (ou 11h, padrão, se não configurada) até o mais cedo entre
   // o horaLimite do espaço e o fim da janela de atendimento, de 30 em 30min.
+  // Se a data escolhida é hoje, corta os horários que já passaram — não faz
+  // sentido oferecer reservar pras 09h se já são 14h.
   function gerarHorarios(fimStr: string | null): string[] {
     const [hIni, mIni] = (atendimento?.inicio ?? '11:00').split(':').map(Number);
-    const inicioMin = hIni * 60 + mIni;
+    let inicioMin = hIni * 60 + mIni;
+    if (data === hoje) {
+      const agora = new Date();
+      const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+      // Arredonda pro próximo slot de 30min (ex: 14:07 -> 14:30).
+      const proximoSlot = Math.ceil(agoraMin / 30) * 30;
+      inicioMin = Math.max(inicioMin, proximoSlot);
+    }
     const fimEspaco = fimStr ?? '22:00';
     const fimJanela = atendimento?.fim ?? '22:00';
     const fimEfetivo = fimEspaco < fimJanela ? fimEspaco : fimJanela;
@@ -228,6 +237,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     };
   }, [data, token]);
   const espacoSelLotado = !!dispon[espaco] && dispon[espaco].livres === 0;
+  const semHorarios = horariosDisponiveis.length === 0;
 
   function msgHoraInvalida(): string {
     if (atendimento && (hora < atendimento.inicio || hora > atendimento.fim)) {
@@ -525,8 +535,10 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} className={inp} />
           </div>
         </div>
-        {horaInvalida && (
-          <p className="text-xs text-[#b3411c]">{msgHoraInvalida()} 🌅</p>
+        {semHorarios ? (
+          <p className="text-xs text-[#b3411c]">Não sobrou horário disponível hoje — escolha outra data. 🌅</p>
+        ) : (
+          horaInvalida && <p className="text-xs text-[#b3411c]">{msgHoraInvalida()} 🌅</p>
         )}
         <div>
           <label className={lbl}>WhatsApp</label>
@@ -598,7 +610,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       </div>
 
       {erro && <p className="mt-3 text-center text-xs text-[#b3411c]">{erro}</p>}
-      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || areas.length === 0 || espacoSelLotado || diaFechado} className={btn}>
+      <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || semHorarios || areas.length === 0 || espacoSelLotado || diaFechado} className={btn}>
         {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar mesa' : 'Continuar'}
       </button>
       <p className="mt-3 text-center text-[11px] text-[#8a7a64]">

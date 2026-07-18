@@ -6,7 +6,7 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
-import { hojeBr } from '@/lib/datas';
+import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import { createCieloPixPayment } from '@/lib/cielo';
@@ -73,6 +73,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // direto na API (curl, devtools) e reservar mesa pra ontem.
   if (data < hojeBr()) {
     return NextResponse.json({ error: 'Não é possível reservar para uma data que já passou.' }, { status: 400 });
+  }
+
+  // Hora no passado (reserva pra HOJE numa hora que já bateu): mesma lógica
+  // do dropdown do formulário, checada aqui pra quem burlar o front.
+  if (data === hojeBr() && hora < horaAgoraBr()) {
+    return NextResponse.json({ error: 'Não é possível reservar para uma hora que já passou.' }, { status: 400 });
   }
 
   // Pausa por dia: exceção de calendário com fechado=true pra essa data
