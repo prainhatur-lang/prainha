@@ -339,7 +339,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <p className="mt-0.5 text-[#4a382a]">{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
         </div>
         <p className="mt-4 rounded-xl border border-[#f4b454]/40 bg-[#f4b454]/12 px-3 py-2 text-xs font-medium text-[#b3411c]">
-          ⚠️ Atenção: sua mesa fica reservada por até 20 minutos após o horário marcado. Depois disso, a
+          ⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a
           reserva é cancelada automaticamente.
         </p>
       </div>

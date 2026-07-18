@@ -9,7 +9,11 @@ import { and, eq, inArray, lte } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
+// Tolerância real (quando o sistema derruba de verdade) é maior que a
+// anunciada pro cliente (tela/WhatsApp dizem 15min) — dá uma folga sem
+// prometer mais do que o combinado.
 export const TOLERANCIA_NO_SHOW_MIN = 20;
+const TOLERANCIA_ANUNCIADA_MIN = 15;
 
 export interface ResultadoNoShow {
   total: number;
@@ -54,7 +58,7 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
         const [a, m, d] = r.data.split('-');
         await enviarAtualizacaoReserva(r.telefone, {
           nome: r.nome,
-          mensagem: `Sua reserva de ${d}/${m}/${a} às ${r.hora} foi cancelada automaticamente — passou dos ${TOLERANCIA_NO_SHOW_MIN} minutos de tolerância sem você chegar. Se quiser, é só fazer uma nova reserva ou chamar a gente por aqui! 🌅`,
+          mensagem: `Sua reserva de ${d}/${m}/${a} às ${r.hora} foi cancelada automaticamente — passou dos ${TOLERANCIA_ANUNCIADA_MIN} minutos de tolerância sem você chegar. Se quiser, é só fazer uma nova reserva ou chamar a gente por aqui! 🌅`,
         });
       }
     } catch (e) {

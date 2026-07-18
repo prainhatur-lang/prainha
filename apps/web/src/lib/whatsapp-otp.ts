@@ -330,7 +330,7 @@ export async function enviarAvisoTolerancia(telefone: string, nome: string): Pro
   return enviarAtualizacaoReserva(telefone, {
     nome,
     mensagem:
-      '⚠️ Atenção: sua mesa fica reservada por até 20 minutos após o horário marcado. Depois disso, a reserva é cancelada automaticamente.',
+      '⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a reserva é cancelada automaticamente.',
   });
 }
 
