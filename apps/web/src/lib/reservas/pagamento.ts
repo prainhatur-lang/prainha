@@ -5,7 +5,7 @@
 
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
+import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
 
 export async function marcarReservaPaga(reservaId: string, appOrigin: string): Promise<void> {
@@ -16,7 +16,7 @@ export async function marcarReservaPaga(reservaId: string, appOrigin: string): P
 
   try {
     const [a, mes, d] = reserva.data.split('-');
-    await enviarConfirmacaoReserva(reserva.clienteTelefone ?? '', {
+    const enviouConfirmacao = await enviarConfirmacaoReserva(reserva.clienteTelefone ?? '', {
       nome: reserva.clienteNome,
       data: `${d}/${mes}/${a}`,
       hora: reserva.hora,
@@ -24,6 +24,9 @@ export async function marcarReservaPaga(reservaId: string, appOrigin: string): P
       pessoas: String(reserva.pessoas),
       linkCancelar: `${appOrigin}/reservar/cancelar/${reserva.cancelToken}`,
     });
+    if (enviouConfirmacao && reserva.clienteTelefone) {
+      await enviarAvisoTolerancia(reserva.clienteTelefone, reserva.clienteNome);
+    }
   } catch {
     // best-effort
   }

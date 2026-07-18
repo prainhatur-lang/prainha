@@ -322,6 +322,18 @@ export function atualizacaoReservaConfigurada(): boolean {
   );
 }
 
+/** Aviso de tolerância — manda logo após a confirmação da reserva (mesmo
+ *  canal do enviarAtualizacaoReserva, texto livre). Reforça o que já aparece
+ *  na tela de confirmação do site: a mesa cancela sozinha depois de
+ *  TOLERANCIA_NO_SHOW_MIN min sem o cliente chegar (ver lib/reservas/no-show). */
+export async function enviarAvisoTolerancia(telefone: string, nome: string): Promise<boolean> {
+  return enviarAtualizacaoReserva(telefone, {
+    nome,
+    mensagem:
+      '⚠️ Atenção: sua mesa fica reservada por até 20 minutos após o horário marcado. Depois disso, a reserva é cancelada automaticamente.',
+  });
+}
+
 export async function enviarAtualizacaoReserva(
   telefone: string,
   vars: { nome: string; mensagem: string },

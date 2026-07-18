@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
-import { enviarConfirmacaoReserva, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
+import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
@@ -256,6 +256,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       pessoas: String(pessoas),
       linkCancelar: `${origin}/reservar/cancelar/${cancelToken}`,
     });
+    if (confirmacaoZap) await enviarAvisoTolerancia(telefone, nome);
   } catch {
     // nao bloqueia a reserva se a confirmacao falhar
   }
