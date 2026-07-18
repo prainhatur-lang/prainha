@@ -71,7 +71,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.0.9';
+const AGENTE_VERSAO = '1.1.0';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -652,10 +652,36 @@ function comTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 // cobre um servico inteiro (almoco ou janta) antes de desistir.
 const LANCAR_BEBIDA_EXPIRACAO_MS = 4 * 60 * 60 * 1000; // 4h
 
+// Fila de comandos (lancar bebida, baixar fiado, etc.) roda num loop PROPRIO
+// e rapido — nao pode esperar o ciclo pesado de sync (cfg.intervalSeconds,
+// 15min em prod). Sem isso, "lancar bebida" confirmado na recepcao so seria
+// processado no proximo ciclo grande, tarde demais (cliente ja sentado).
+const COMANDOS_INTERVAL_MS = 15 * 1000;
+
 const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso e travamento
 // Drenador CDC tem timeout maior — pode precisar drenar 100k+ itens por ciclo
 // durante backfill inicial (cada batch de 500 leva ~15-20s no serverless).
 const DRENADOR_TIMEOUT_MS = 30 * 60 * 1000; // 30min
+
+/** Loop rapido e independente do ciclo pesado de sync — so cuida da fila de
+ *  comandos (lancar bebida, baixar fiado, etc.), verificada a cada 15s em
+ *  vez de esperar o cfg.intervalSeconds (15min em prod). Roda em paralelo
+ *  com o main(), nao bloqueia nem e bloqueado por ele. */
+async function loopComandos(cfg: ReturnType<typeof loadConfig>): Promise<void> {
+  for (;;) {
+    try {
+      await comTimeout(cicloComandos(cfg), CICLO_TIMEOUT_MS, 'ciclo comandos');
+    } catch (e: unknown) {
+      log.error('ciclo comandos falhou', { err: (e as Error).message });
+      if ((e as Error).message?.includes('timeout')) {
+        log.error('ciclo comandos travou — reiniciando processo');
+        setTimeout(() => process.exit(1), 1000);
+        return;
+      }
+    }
+    await new Promise((r) => setTimeout(r, COMANDOS_INTERVAL_MS));
+  }
+}
 
 async function main() {
   // Boot marker: confirma que o processo iniciou de verdade
@@ -666,9 +692,14 @@ async function main() {
     api: cfg.api.url,
     firebird: `${cfg.firebird.host}:${cfg.firebird.port}`,
     intervalo: `${cfg.intervalSeconds}s`,
+    intervaloComandos: `${COMANDOS_INTERVAL_MS / 1000}s`,
   });
 
   const checkpoint = new Checkpoint(cfg.checkpointFile);
+
+  // Fila de comandos tem loop proprio (ver loopComandos) — nao entra no
+  // ciclo pesado abaixo. Roda solto, sem await, em paralelo com o resto.
+  loopComandos(cfg).catch((e: unknown) => log.error('loop comandos morreu', { err: (e as Error).message }));
 
   // Loop infinito
   for (;;) {
@@ -708,18 +739,8 @@ async function main() {
     // cicloFilaSync (v0.6.0) REMOVIDO em v1.0.0 — substituido pelo cicloDrenador
     // genérico (que le mesma fila com schema novo de CHAVE_PK).
     //
-    // Comandos do servidor (write-back) — executa antes do refetch pra
-    // alterações apareçam no banco do concilia ja na proxima sincronizacao
-    try {
-      await comTimeout(cicloComandos(cfg), CICLO_TIMEOUT_MS, 'ciclo comandos');
-    } catch (e: unknown) {
-      log.error('ciclo comandos falhou', { err: (e as Error).message });
-      if ((e as Error).message?.includes('timeout')) {
-        log.error('ciclo comandos travou — reiniciando processo');
-        setTimeout(() => process.exit(1), 1000);
-        return;
-      }
-    }
+    // Comandos do servidor (write-back) — agora rodam no loopComandos (fila
+    // rapida, 15s), nao aqui — ver funcao loopComandos acima.
     // Refetch PDV — pedidos/itens da ultima semana sao re-buscados e UPSERT.
     // Garante que data_fechamento/valor_total/total_servico fiquem frescos
     // mesmo apos snapshot inicial baixo.
