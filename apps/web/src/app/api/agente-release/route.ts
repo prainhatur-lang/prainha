@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '1.2.0';
+export const VERSAO_RELEASE = '1.3.0';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
+      'v1.3.0: lancar_bebida_reserva agora checa estoque (ESTOQUECONTROLADO/ESTOQUEATUAL em PRODUTODETALHE) antes de lançar — se não tiver quantidade suficiente, falha na hora com "sem estoque suficiente" em vez de vender o que não existe. E quando lança de verdade, grava ESTOQUEMOVIMENTACAO + baixa ESTOQUEATUAL, replicando exatamente o padrão de uma venda feita pelo garçom (conferido contra 3 vendas reais em produção) — antes disso, nenhum lançamento automático baixava estoque, porque essa baixa é feita pelo app do Consumer, não por trigger do banco.',
       'v1.2.0: lancar_bebida_reserva agora ABRE a mesa no Consumer se ela ainda não estiver aberta (CODIGOPEDIDOORIGEM=3, mesma origem já validada em prod pelo cardápio digital), em vez de só esperar o garçom abrir. A recepção já confirmou que o cliente chegou e sentou, então abrir a comanda nesse momento é o correto — não precisa mais esperar.',
       'v1.1.1: GET /api/agente/comandos agora é long-poll (servidor segura a resposta até 25s esperando comando novo, em vez de devolver vazio na hora) — junto com o loop de comandos separado do 1.1.0, um comando novo (ex: lançar bebida) chega no agente em ~1s em vez de até 15s.',
       'v1.1.0: Fila de comandos (lancar_bebida_reserva, baixar_fiado, etc.) agora roda num loop PRÓPRIO de 15s, separado do ciclo pesado de sincronização (que continua no intervalo normal de 15min). Antes, um comando só era processado no próximo ciclo grande — podia levar até 15min pra lançar uma bebida confirmada na recepção, tarde demais com o cliente já sentado.',

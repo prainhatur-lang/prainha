@@ -71,7 +71,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.2.0';
+const AGENTE_VERSAO = '1.3.0';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -612,6 +612,14 @@ async function cicloComandos(
         if (r.lancado) {
           await reportarComando(cfg, cmd.id, 'sucesso', r);
           log.info('bebida lancada na comanda', { id: cmd.id, ...r });
+          continue;
+        }
+        if (r.semEstoque) {
+          // Sem estoque nao eh algo que resolve tentando de novo depois —
+          // falha na hora, recepcao ve o aviso e resolve com o cliente
+          // (troca a bebida, avisa que nao tem, etc.).
+          await reportarComando(cfg, cmd.id, 'erro', { msg: 'sem estoque suficiente pra esse produto' });
+          log.warn('lancar_bebida_reserva sem estoque', { id: cmd.id, numero: p.numero, produto: p.nomeProduto });
           continue;
         }
         const idadeMs = Date.now() - new Date(cmd.criadoEm).getTime();

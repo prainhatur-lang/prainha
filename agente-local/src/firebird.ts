@@ -1271,11 +1271,35 @@ async function abrirMesa(
  *  o correto — não precisa esperar o garçom passar por lá). Insere o item +
  *  o job de impressão cozinha/bar (mesma receita validada em prod pelo
  *  projeto cardápio digital: item com IMPRESSO='N' + PEDIDOIMPRESSAO tipo 1
- *  → Consumer imprime em ~3s) e atualiza o total da comanda. */
+ *  → Consumer imprime em ~3s), atualiza o total da comanda, e — se o produto
+ *  tiver controle de estoque — baixa ESTOQUEATUAL + grava ESTOQUEMOVIMENTACAO
+ *  (mesmo padrão confirmado em vendas reais: nenhuma trigger do banco faz
+ *  isso sozinha, é o app que grava os dois; sem isso o estoque nunca desce
+ *  quando o lançamento é automático). Se não tiver estoque suficiente,
+ *  `lancado:false, semEstoque:true` — não lança, evita vender o que não tem. */
 export async function lancarBebidaNaComanda(
   cfg: Config,
   p: { numero: string; codigoProdutoDetalhe: number; nomeProduto: string; quantidade: number; pessoas?: number; nomeCliente?: string },
-): Promise<{ lancado: boolean; pedidoCodigo?: number; mesaAberta?: boolean }> {
+): Promise<{ lancado: boolean; pedidoCodigo?: number; mesaAberta?: boolean; semEstoque?: boolean }> {
+  const quantidade = Math.max(1, Math.trunc(p.quantidade));
+
+  const produtoRows = await executarQuery<{
+    PRECOVENDA: number | string | null;
+    ESTOQUEATUAL: number | string | null;
+    ESTOQUECONTROLADO: number | string | null;
+  }>(
+    cfg,
+    `SELECT PRECOVENDA, ESTOQUEATUAL, ESTOQUECONTROLADO FROM PRODUTODETALHE WHERE CODIGO = ? AND DATADELETE IS NULL`,
+    [p.codigoProdutoDetalhe],
+  );
+  const produto = produtoRows[0];
+  const precoUnitario = Number(produto?.PRECOVENDA ?? 0);
+  const estoqueControlado = Number(produto?.ESTOQUECONTROLADO ?? 0) === 1;
+  const estoqueAtual = Number(produto?.ESTOQUEATUAL ?? 0);
+  if (estoqueControlado && estoqueAtual < quantidade) {
+    return { lancado: false, semEstoque: true };
+  }
+
   let pedido = await buscarPedidoAbertoPorMesa(cfg, p.numero);
   let mesaAberta = false;
   if (!pedido) {
@@ -1283,25 +1307,19 @@ export async function lancarBebidaNaComanda(
     mesaAberta = true;
   }
 
-  const precoRows = await executarQuery<{ PRECOVENDA: number | string | null }>(
-    cfg,
-    `SELECT PRECOVENDA FROM PRODUTODETALHE WHERE CODIGO = ? AND DATADELETE IS NULL`,
-    [p.codigoProdutoDetalhe],
-  );
-  const precoUnitario = Number(precoRows[0]?.PRECOVENDA ?? 0);
-  const quantidade = Math.max(1, Math.trunc(p.quantidade));
   const valorItem = Math.round(precoUnitario * quantidade * 100) / 100;
   const nome = p.nomeProduto.slice(0, 60);
-
   const novoTotal = Math.round((pedido.valorTotal + valorItem) * 100) / 100;
   const novoTotalItens = Math.round((pedido.valorTotalItens + valorItem) * 100) / 100;
 
+  // Passo 1: insere o item sozinho, sem RETURNING (evita o crash
+  // intermitente do driver) — depois busca o CODIGO recem-criado pra poder
+  // linkar a movimentação de estoque a ele, igual o Consumer faz de verdade.
   await executarWrites(cfg, [
     {
       // CODIGOPEDIDOORIGEM=3 (Cardápio Digital) — reaproveitado como "veio
       // de fora do fluxo normal do garçom", não existe origem própria de
-      // reserva ainda. CODIGOITEMPEDIDOTIPO=1=Produto. Sem RETURNING (evita
-      // o crash intermitente do driver em INSERT...RETURNING).
+      // reserva ainda. CODIGOITEMPEDIDOTIPO=1=Produto.
       sql: `INSERT INTO ITENSPEDIDO
         (CODIGOPEDIDO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO,
          VALORITEM, VALORTOTAL, CODIGOITEMPEDIDOTIPO, IMPRESSO, JUNCAOMESA,
@@ -1309,6 +1327,17 @@ export async function lancarBebidaNaComanda(
         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'N', 'N', 'N', 0, '', 3)`,
       params: [pedido.codigo, p.codigoProdutoDetalhe, nome, quantidade, precoUnitario, valorItem, valorItem],
     },
+  ]);
+
+  const itemRows = await executarQuery<{ CODIGO: number }>(
+    cfg,
+    `SELECT FIRST 1 CODIGO FROM ITENSPEDIDO
+     WHERE CODIGOPEDIDO = ? AND CODIGOPRODUTODETALHE = ? ORDER BY CODIGO DESC`,
+    [pedido.codigo, p.codigoProdutoDetalhe],
+  );
+  const itemCodigo = itemRows[0]?.CODIGO ?? null;
+
+  const passo2: Array<{ sql: string; params: unknown[] }> = [
     {
       // TIPOIMPRESSAO=1 (Impressão Cozinha), ORIGEMIMPRESSAO=0 (Automática),
       // SITUACAOIMPRESSAO=2 (Autorizado) — o Consumer roteia pro bar/cozinha
@@ -1324,7 +1353,34 @@ export async function lancarBebidaNaComanda(
       sql: `UPDATE PEDIDOS SET VALORTOTAL = ?, VALORTOTALITENS = ? WHERE CODIGO = ?`,
       params: [novoTotal, novoTotalItens, pedido.codigo],
     },
-  ]);
+  ];
+
+  if (estoqueControlado && itemCodigo) {
+    const estoqueFinal = Math.round((estoqueAtual - quantidade) * 100) / 100;
+    passo2.push(
+      {
+        // Mesmo padrão de 3 vendas reais conferidas em produção: TIPO='S'
+        // (saída), QTD negativo, QTDFINAL = novo ESTOQUEATUAL.
+        sql: `INSERT INTO ESTOQUEMOVIMENTACAO
+          (CODIGOPRODUTODETALHE, CODIGOITEMPEDIDO, QTDINICIAL, QTD, QTDFINAL, DATAINSERT, TIPO, OBSERVACAO)
+          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'S', ?)`,
+        params: [
+          p.codigoProdutoDetalhe,
+          itemCodigo,
+          estoqueAtual,
+          -quantidade,
+          estoqueFinal,
+          `Venda de ${nome} do pedido ${pedido.codigo}`.slice(0, 100),
+        ],
+      },
+      {
+        sql: `UPDATE PRODUTODETALHE SET ESTOQUEATUAL = ? WHERE CODIGO = ?`,
+        params: [estoqueFinal, p.codigoProdutoDetalhe],
+      },
+    );
+  }
+
+  await executarWrites(cfg, passo2);
 
   return { lancado: true, pedidoCodigo: pedido.codigo, mesaAberta };
 }
