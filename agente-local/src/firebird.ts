@@ -1239,23 +1239,49 @@ export async function buscarPedidoAbertoPorMesa(
   };
 }
 
-/** Lança um item (bebida pré-pedida na reserva) na comanda JÁ ABERTA de uma
- *  mesa — NUNCA cria comanda nova (evita duplicar com o garçom, que abre a
- *  mesa quando chega nela). Insere o item + o job de impressão cozinha/bar
- *  (mesma receita validada em prod pelo projeto cardápio digital: item com
- *  IMPRESSO='N' + PEDIDOIMPRESSAO tipo 1 → Consumer imprime em ~3s) e
- *  atualiza o total da comanda. `lancado:false` = mesa ainda não abriu,
- *  quem chama decide se tenta de novo depois (fila com espera).
- *
- *  ⚠️ NÃO TESTADO CONTRA PRODUÇÃO AINDA — vai imprimir ticket de verdade
- *  na cozinha/bar quando rodar. Validar com o usuário antes do primeiro
- *  disparo real. */
+/** Abre uma comanda nova pra mesa — usado quando a recepção já confirmou o
+ *  cliente (ele chegou, sentou) mas o garçom ainda não abriu a mesa no
+ *  Consumer. CODIGOPEDIDOORIGEM=3 (Cardápio Digital) — mesma origem já
+ *  validada em prod pelo projeto cardápio digital pra abrir mesa por fora
+ *  do fluxo normal do garçom. Sem CODIGO/RETURNING (BI trigger gera sozinho
+ *  + evita o crash intermitente do driver em INSERT...RETURNING) — busca o
+ *  CODIGO logo depois via buscarPedidoAbertoPorMesa (a comanda recém-criada
+ *  é a mais recente pra essa mesa). */
+async function abrirMesa(
+  cfg: Config,
+  p: { numero: string; pessoas?: number; nomeCliente?: string },
+): Promise<{ codigo: number; valorTotal: number; valorTotalItens: number }> {
+  await executarWrites(cfg, [
+    {
+      sql: `INSERT INTO PEDIDOS
+        (NUMERO, DATAABERTURA, QUANTIDADEPESSOAS, CODIGOPEDIDOORIGEM, NOME)
+        VALUES (?, CURRENT_TIMESTAMP, ?, 3, ?)`,
+      params: [Number(p.numero), Math.max(1, p.pessoas ?? 1), (p.nomeCliente ?? '').slice(0, 80)],
+    },
+  ]);
+
+  const aberta = await buscarPedidoAbertoPorMesa(cfg, p.numero);
+  if (!aberta) throw new Error('mesa nao abriu depois do INSERT (inesperado)');
+  return aberta;
+}
+
+/** Lança um item (bebida pré-pedida na reserva) na comanda de uma mesa —
+ *  se já tiver uma aberta, usa ela; senão ABRE uma comanda nova (a recepção
+ *  já confirmou que o cliente chegou e sentou, então "abrir a mesa" agora é
+ *  o correto — não precisa esperar o garçom passar por lá). Insere o item +
+ *  o job de impressão cozinha/bar (mesma receita validada em prod pelo
+ *  projeto cardápio digital: item com IMPRESSO='N' + PEDIDOIMPRESSAO tipo 1
+ *  → Consumer imprime em ~3s) e atualiza o total da comanda. */
 export async function lancarBebidaNaComanda(
   cfg: Config,
-  p: { numero: string; codigoProdutoDetalhe: number; nomeProduto: string; quantidade: number },
-): Promise<{ lancado: boolean; pedidoCodigo?: number }> {
-  const pedido = await buscarPedidoAbertoPorMesa(cfg, p.numero);
-  if (!pedido) return { lancado: false };
+  p: { numero: string; codigoProdutoDetalhe: number; nomeProduto: string; quantidade: number; pessoas?: number; nomeCliente?: string },
+): Promise<{ lancado: boolean; pedidoCodigo?: number; mesaAberta?: boolean }> {
+  let pedido = await buscarPedidoAbertoPorMesa(cfg, p.numero);
+  let mesaAberta = false;
+  if (!pedido) {
+    pedido = await abrirMesa(cfg, { numero: p.numero, pessoas: p.pessoas, nomeCliente: p.nomeCliente });
+    mesaAberta = true;
+  }
 
   const precoRows = await executarQuery<{ PRECOVENDA: number | string | null }>(
     cfg,
@@ -1300,7 +1326,7 @@ export async function lancarBebidaNaComanda(
     },
   ]);
 
-  return { lancado: true, pedidoCodigo: pedido.codigo };
+  return { lancado: true, pedidoCodigo: pedido.codigo, mesaAberta };
 }
 
 /** Executa UPDATE numa tabela do Firebird. Recebe campos = { coluna: valor }

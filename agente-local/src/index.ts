@@ -71,7 +71,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.1.1';
+const AGENTE_VERSAO = '1.2.0';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -592,10 +592,12 @@ async function cicloComandos(
         continue;
       }
 
-      // Tipo 8: LANCAR BEBIDA DA RESERVA — insere item na comanda quando a
-      // mesa ja estiver aberta no Consumer (recepcao confirmou o pedido no
-      // check-in). Se a mesa ainda nao abriu, reenfileira como 'pendente' e
-      // tenta de novo no proximo ciclo, ate expirar (janela de um servico).
+      // Tipo 8: LANCAR BEBIDA DA RESERVA — insere item na comanda da mesa.
+      // Se a mesa ja estiver aberta no Consumer, usa ela; senao ABRE uma
+      // comanda nova (a recepcao ja confirmou que o cliente chegou e
+      // sentou, entao "abrir a mesa" agora e o correto). Fallback de
+      // reenfileirar/expirar fica so por seguranca — na pratica sempre
+      // lanca de primeira, a menos que de erro de conexao/etc.
       if (cmd.tipo === 'lancar_bebida_reserva') {
         const p = cmd.payload as unknown as {
           reservaId: string;
@@ -603,6 +605,8 @@ async function cicloComandos(
           codigoProdutoDetalhe: number;
           nomeProduto: string;
           quantidade: number;
+          pessoas?: number;
+          nomeCliente?: string;
         };
         const r = await lancarBebidaNaComanda(cfg, p);
         if (r.lancado) {

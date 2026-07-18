@@ -59,6 +59,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     status: string;
     clienteNome: string;
     clienteTelefone: string | null;
+    pessoas: number;
     bebidaPedido: string | null;
     bebidaComboQtd: number | null;
     bebidaCodigoPdv: number | null;
@@ -74,6 +75,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         status: schema.reserva.status,
         clienteNome: schema.reserva.clienteNome,
         clienteTelefone: schema.reserva.clienteTelefone,
+        pessoas: schema.reserva.pessoas,
         bebidaPedido: schema.reserva.bebidaPedido,
         bebidaComboQtd: schema.reserva.bebidaComboQtd,
         bebidaCodigoPdv: schema.reserva.bebidaCodigoPdv,
@@ -124,9 +126,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   if (upd.length === 0) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
 
-  // Enfileira o lançamento da bebida pro agente da filial processar —
-  // ele espera a mesa abrir no Consumer antes de inserir o item (não cria
-  // comanda nova, evita duplicar com o garçom).
+  // Enfileira o lançamento da bebida pro agente da filial processar — se a
+  // mesa já estiver aberta no Consumer, usa ela; senão abre uma comanda
+  // nova (a recepção já confirmou que o cliente chegou e sentou).
   if (confirmaBebida && atual?.mesa && atual?.bebidaCodigoPdv) {
     await db.insert(schema.agenteComando).values({
       filialId: atual.filialId,
@@ -137,6 +139,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         codigoProdutoDetalhe: atual.bebidaCodigoPdv,
         nomeProduto: atual.bebidaPedido,
         quantidade: atual.bebidaComboQtd ?? 1,
+        pessoas: atual.pessoas,
+        nomeCliente: atual.clienteNome,
       },
     });
   }
