@@ -212,12 +212,18 @@ export function ReservasClient({
     .filter((i) => i.status !== 'cancelada' && i.status !== 'no_show')
     .reduce((s, i) => s + i.pessoas, 0);
 
-  const [statusFiltro, setStatusFiltro] = useState<string>('');
+  // Padrão mostra só as que ainda vão acontecer (esconde cancelada/no_show/
+  // concluida) — equipe pode trocar pra "Todas" ou um status específico.
+  const [statusFiltro, setStatusFiltro] = useState<string>('ativas');
   const [busca, setBusca] = useState('');
   const buscaNorm = busca.trim().toLowerCase();
   const buscaSoDigitos = busca.replace(/\D/g, '');
   const itensFiltrados = itens.filter((r) => {
-    if (statusFiltro && r.status !== statusFiltro) return false;
+    if (statusFiltro === 'ativas') {
+      if (r.status === 'cancelada' || r.status === 'no_show' || r.status === 'concluida') return false;
+    } else if (statusFiltro && r.status !== statusFiltro) {
+      return false;
+    }
     if (buscaNorm && !r.clienteNome.toLowerCase().includes(buscaNorm)) {
       if (!buscaSoDigitos || !(r.clienteTelefone ?? '').includes(buscaSoDigitos)) return false;
     }
@@ -348,6 +354,13 @@ export function ReservasClient({
       {/* Filtro de status + busca por nome/telefone */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setStatusFiltro('ativas')}
+            title="Esconde cancelada, no-show e concluída"
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium ${statusFiltro === 'ativas' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
+          >
+            Ativas
+          </button>
           <button
             onClick={() => setStatusFiltro('')}
             className={`rounded-full border px-3 py-1.5 text-xs font-medium ${statusFiltro === '' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
