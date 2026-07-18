@@ -68,6 +68,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     return NextResponse.json({ error: 'preencha todos os campos' }, { status: 400 });
   }
 
+  // Data no passado: o <input type="date" min={hoje}> do formulário já
+  // bloqueia isso, mas só no navegador — sem checar aqui, dá pra burlar
+  // direto na API (curl, devtools) e reservar mesa pra ontem.
+  if (data < hojeBr()) {
+    return NextResponse.json({ error: 'Não é possível reservar para uma data que já passou.' }, { status: 400 });
+  }
+
   // Pausa por dia: exceção de calendário com fechado=true pra essa data
   // específica (ex: "hoje lotou") — não bloqueia outros dias.
   if (cfg?.excecoes?.some((e) => e.data === data && e.fechado)) {
