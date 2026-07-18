@@ -2,14 +2,15 @@ import { NextResponse } from 'next/server';
 
 /** Versão atual disponível pra deploy. Deve casar com o arquivo
  *  `public/agente-release/agente-vX.Y.Z.cjs` correspondente. */
-export const VERSAO_RELEASE = '1.1.0';
+export const VERSAO_RELEASE = '1.1.1';
 
 export async function GET() {
   return NextResponse.json({
     versao: VERSAO_RELEASE,
     bundleUrl: `/agente-release/agente-v${VERSAO_RELEASE}.cjs`,
     changelog: [
-      'v1.1.0: Fila de comandos (lancar_bebida_reserva, baixar_fiado, etc.) agora roda num loop PRÓPRIO de 15s, separado do ciclo pesado de sincronização (que continua no intervalo normal de 15min). Antes, um comando só era processado no próximo ciclo grande — podia levar até 15min pra lançar uma bebida confirmada na recepção, tarde demais com o cliente já sentado. Agora é quase imediato.',
+      'v1.1.1: GET /api/agente/comandos agora é long-poll (servidor segura a resposta até 25s esperando comando novo, em vez de devolver vazio na hora) — junto com o loop de comandos separado do 1.1.0, um comando novo (ex: lançar bebida) chega no agente em ~1s em vez de até 15s.',
+      'v1.1.0: Fila de comandos (lancar_bebida_reserva, baixar_fiado, etc.) agora roda num loop PRÓPRIO de 15s, separado do ciclo pesado de sincronização (que continua no intervalo normal de 15min). Antes, um comando só era processado no próximo ciclo grande — podia levar até 15min pra lançar uma bebida confirmada na recepção, tarde demais com o cliente já sentado.',
       'v1.0.9: Comando novo lancar_bebida_reserva — quando a recepção confirma no check-in que o cliente ainda quer a bebida pré-pedida na reserva do site, o agente lança o item direto na comanda aberta da mesa no Consumer (com job de impressão cozinha/bar), sem lançamento manual. Se a mesa ainda não abriu, reenfileira e tenta de novo por até 4h antes de desistir. Nunca cria comanda nova.',
       'v1.0.7: Comando novo pular_tabelas — marca registros de tabelas especificas como PROCESSADO=1 sem enviar pro servidor. Util pra pular backfill de PRODUTOS/PEDIDOS/ITENSPEDIDO/PAGAMENTOS que ja estao no concilia via cicloPdv antigo. Reduz fila de 1.4M pra ~150k em segundos. Payload: { tabelas: ["PRODUTOS","PEDIDOS",...] }.',
       'v1.0.6: Drenador timeout 10min→30min + MAX_ITER 50→200 (= 100k itens/ciclo). Backfill inicial de 1.4M itens em 0001 estava lento (250/min) porque ciclo era matado em 10min. Agora drena ate 100k/ciclo, ~5 ciclos pra esvaziar 0001 (~30min cada).',

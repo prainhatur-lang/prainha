@@ -16726,7 +16726,7 @@ function bootTrace(msg) {
 }
 bootTrace("BOOT 1 - antes de imports");
 bootTrace("BOOT 2 - imports OK");
-var AGENTE_VERSAO = "1.1.0";
+var AGENTE_VERSAO = "1.1.1";
 process.on("uncaughtException", (err) => {
   if (err?.message?.includes("pluginName")) {
     log.warn("node-firebird pluginName bug ignorado (apos ciclo)", {
@@ -17156,7 +17156,7 @@ function comTimeout(p, ms, label) {
   });
 }
 var LANCAR_BEBIDA_EXPIRACAO_MS = 4 * 60 * 60 * 1e3;
-var COMANDOS_INTERVAL_MS = 15 * 1e3;
+var COMANDOS_INTERVAL_MS = 500;
 var CICLO_TIMEOUT_MS = 10 * 60 * 1e3;
 var DRENADOR_TIMEOUT_MS = 30 * 60 * 1e3;
 async function loopComandos(cfg) {

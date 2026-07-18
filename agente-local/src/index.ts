@@ -71,7 +71,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.1.0';
+const AGENTE_VERSAO = '1.1.1';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -656,7 +656,12 @@ const LANCAR_BEBIDA_EXPIRACAO_MS = 4 * 60 * 60 * 1000; // 4h
 // e rapido — nao pode esperar o ciclo pesado de sync (cfg.intervalSeconds,
 // 15min em prod). Sem isso, "lancar bebida" confirmado na recepcao so seria
 // processado no proximo ciclo grande, tarde demais (cliente ja sentado).
-const COMANDOS_INTERVAL_MS = 15 * 1000;
+//
+// O servidor faz long-poll em GET /api/agente/comandos (segura ate 25s
+// esperando comando novo antes de devolver vazio) — entao esse intervalo
+// aqui e so um respiro entre uma chamada e outra, nao o mecanismo de espera
+// em si. Comando novo chega em ~1s, nao em 15s.
+const COMANDOS_INTERVAL_MS = 500;
 
 const CICLO_TIMEOUT_MS = 10 * 60 * 1000; // 10min — qualquer ciclo alem disso e travamento
 // Drenador CDC tem timeout maior — pode precisar drenar 100k+ itens por ciclo
