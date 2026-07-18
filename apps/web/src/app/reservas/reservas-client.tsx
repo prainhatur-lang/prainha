@@ -51,6 +51,7 @@ export interface ReservaItem {
   bebidaComboQtd?: number | null;
   placaVeiculo?: string | null;
   bebidaConfirmada?: boolean | null;
+  bebidaLancamentoStatus?: string | null;
   pagamentoStatus?: string | null;
   pagamentoValor?: string | null;
 }
@@ -471,6 +472,21 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
                 title={r.bebidaConfirmada === true ? 'Confirmado com o cliente' : r.bebidaConfirmada === false ? 'Cliente não quis mais' : 'Ainda não confirmado com o cliente'}
               >
                 🍹 {r.bebidaPedido}{r.bebidaComboQtd ? ` (combo ${r.bebidaComboQtd}un)` : ''}
+              </span>
+            )}
+            {r.bebidaLancamentoStatus === 'aguardando' && (
+              <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700" title="Aguardando a mesa abrir no Consumer pra lançar sozinho">
+                ⏳ lançando na comanda...
+              </span>
+            )}
+            {r.bebidaLancamentoStatus === 'sucesso' && (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700" title="Lançado automaticamente na comanda">
+                ✅ lançado na comanda
+              </span>
+            )}
+            {r.bebidaLancamentoStatus === 'erro' && (
+              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700" title="Não foi possível lançar sozinho — sem conexão com o agente ou outro erro">
+                ⚠️ não lançou sozinho — lance na mão
               </span>
             )}
             {r.placaVeiculo && <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">🚗 {r.placaVeiculo}</span>}

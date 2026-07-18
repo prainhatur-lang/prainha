@@ -88,6 +88,7 @@ export default async function ReservasPage(props: {
             bebidaComboQtd: schema.reserva.bebidaComboQtd,
             placaVeiculo: schema.reserva.placaVeiculo,
             bebidaConfirmada: schema.reserva.bebidaConfirmada,
+            bebidaLancamentoStatus: schema.reserva.bebidaLancamentoStatus,
             pagamentoStatus: schema.reserva.pagamentoStatus,
             pagamentoValor: schema.reserva.pagamentoValor,
           })

@@ -87,7 +87,7 @@ export async function PATCH(req: NextRequest) {
 
   // Confere que o comando é da filial
   const [cmd] = await db
-    .select({ filialId: schema.agenteComando.filialId })
+    .select({ filialId: schema.agenteComando.filialId, tipo: schema.agenteComando.tipo, payload: schema.agenteComando.payload })
     .from(schema.agenteComando)
     .where(eq(schema.agenteComando.id, body.id))
     .limit(1);
@@ -100,6 +100,19 @@ export async function PATCH(req: NextRequest) {
   if (body.status === 'sucesso' || body.status === 'erro') set.finalizadoEm = new Date();
 
   await db.update(schema.agenteComando).set(set).where(eq(schema.agenteComando.id, body.id));
+
+  // Reflete o resultado do lançamento de bebida na reserva — sem isso a
+  // recepção não tem como saber que o lançamento automático falhou (o
+  // agente só reporta aqui, ninguém olha essa tabela na tela normal).
+  if (cmd.tipo === 'lancar_bebida_reserva' && (body.status === 'sucesso' || body.status === 'erro')) {
+    const reservaId = (cmd.payload as { reservaId?: string })?.reservaId;
+    if (reservaId) {
+      await db
+        .update(schema.reserva)
+        .set({ bebidaLancamentoStatus: body.status })
+        .where(eq(schema.reserva.id, reservaId));
+    }
+  }
 
   return NextResponse.json({ ok: true });
 }
