@@ -522,24 +522,6 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
     setStatus('sentada');
   }
 
-  async function avisarEspera() {
-    setSalvando(true);
-    try {
-      const r2 = await fetch(`/api/reservas/${r.id}/avisar-espera`, { method: 'POST' });
-      const d = await r2.json().catch(() => ({}));
-      if (!r2.ok) {
-        alert(d.error ?? `Erro ${r2.status} ao avisar.`);
-        return;
-      }
-      if (!d.enviado) {
-        alert('Não consegui mandar o WhatsApp agora — confere se o número está certo.');
-        return;
-      }
-    } finally {
-      setSalvando(false);
-    }
-  }
-
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center gap-3">
@@ -644,11 +626,6 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
           {r.status !== 'sentada' && <Btn onClick={clicarSentar} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">Sentar</Btn>}
           {r.status !== 'cancelada' && <Btn onClick={() => setStatus('cancelada')} disabled={salvando} cls="border-rose-300 text-rose-700 active:bg-rose-100 hover:bg-rose-50">Cancelar</Btn>}
           {r.status !== 'no_show' && <Btn onClick={() => setStatus('no_show')} disabled={salvando} cls="border-amber-300 text-amber-700 active:bg-amber-100 hover:bg-amber-50">No-show</Btn>}
-          {r.clienteTelefone && r.status !== 'cancelada' && r.status !== 'no_show' && (
-            <Btn onClick={avisarEspera} disabled={salvando} cls="border-indigo-300 text-indigo-700 active:bg-indigo-100 hover:bg-indigo-50">
-              ⏳ Avisar espera
-            </Btn>
-          )}
         </div>
       )}
     </div>

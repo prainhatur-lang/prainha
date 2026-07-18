@@ -334,17 +334,6 @@ export async function enviarAvisoTolerancia(telefone: string, nome: string): Pro
   });
 }
 
-/** Aviso de espera — recepção manda na hora (botão manual) quando o cliente
- *  chegou mas ainda não tem mesa livre pra sentar. Mesmo canal genérico do
- *  enviarAtualizacaoReserva (texto livre, template já aprovado). */
-export async function enviarAvisoEspera(telefone: string, nome: string): Promise<boolean> {
-  return enviarAtualizacaoReserva(telefone, {
-    nome,
-    mensagem:
-      'Que bom te ver por aqui! No momento estamos com todas as mesas ocupadas — você está na nossa fila de espera e vamos te chamar assim que uma mesa ficar livre. Agradecemos a paciência! 🌅',
-  });
-}
-
 export async function enviarAtualizacaoReserva(
   telefone: string,
   vars: { nome: string; mensagem: string },
