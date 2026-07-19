@@ -190,6 +190,36 @@ export function ReservasClient({
     };
   }, []);
 
+  // Aviso de avaliação nova — mesmo padrão de polling da chegada por placa
+  // acima, mas pra quando um cliente manda uma avaliação (nota+comentário).
+  // Banner grande e piscando de propósito (pedido do user: "bem bem grande
+  // pra poder a pessoa ver").
+  const [avaliacoesNovas, setAvaliacoesNovas] = useState<
+    Array<{ id: string; nota: number; comentario: string | null; origem: string | null }>
+  >([]);
+  const desdeAvaliacaoRef = useRef(new Date().toISOString());
+  useEffect(() => {
+    let cancel = false;
+    async function poll() {
+      try {
+        const r = await fetch(`/api/avaliacoes/novas?desde=${encodeURIComponent(desdeAvaliacaoRef.current)}`);
+        const d = await r.json().catch(() => ({}));
+        if (cancel) return;
+        if (typeof d?.agora === 'string') desdeAvaliacaoRef.current = d.agora;
+        if (Array.isArray(d?.novas) && d.novas.length > 0) {
+          setAvaliacoesNovas((prev) => [...prev, ...d.novas]);
+        }
+      } catch {
+        /* ignora, tenta de novo no proximo ciclo */
+      }
+    }
+    const t = setInterval(poll, 5000);
+    return () => {
+      cancel = true;
+      clearInterval(t);
+    };
+  }, []);
+
   const filialAtualId = filialFiltro ?? filiais[0]?.id ?? null;
   const filialAtual = filiais.find((f) => f.id === filialAtualId);
   const pausada = !!filialAtual?.pausada;
@@ -298,6 +328,30 @@ export function ReservasClient({
 
   return (
     <div>
+      {avaliacoesNovas.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {avaliacoesNovas.map((a) => (
+            <div
+              key={a.id}
+              className="flex animate-pulse items-center justify-between gap-3 rounded-xl border-2 border-amber-400 bg-amber-100 px-5 py-4 shadow-md"
+            >
+              <span className="text-lg font-bold text-amber-900">
+                ⭐ Nova avaliação: {'★'.repeat(a.nota)}
+                {'☆'.repeat(5 - a.nota)}
+                {a.origem ? ` · ${a.origem}` : ''}
+                {a.comentario ? ` — "${a.comentario}"` : ''}
+              </span>
+              <button
+                onClick={() => setAvaliacoesNovas((prev) => prev.filter((x) => x.id !== a.id))}
+                className="shrink-0 text-xl text-amber-700 hover:text-amber-900"
+                aria-label="Dispensar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {chegadas.length > 0 && (
         <div className="mb-4 space-y-2">
           {chegadas.map((c) => (
