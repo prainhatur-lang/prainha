@@ -1,6 +1,14 @@
 // Registra as mesas fisicas (numero + capacidade) nos espacos do Prainha Bar.
 // Mescla em filial.reserva_config.areas[].mesas sem perder os outros campos.
 // Idempotente. Uso: pnpm --filter @concilia/db tsx scripts/migrate-mesas-prainha.ts
+//
+// ⚠️ DESATUALIZADO (19/07/2026): os arrays AREIA/DECK abaixo NAO refletem
+// mais a producao — a config real de mesas foi corrigida direto no banco
+// desde entao (Areia perdeu 61-74, que nao existem fisicamente; Deck
+// Superior ficou só 101-111, sem 112-120). Os comentarios "nao existe" pra
+// mesa 32/41 tambem estao errados (existem, 4/6 lugares). NAO RODAR este
+// script sem antes atualizar os arrays pra bater com a realidade atual —
+// ele vai SOBRESCREVER a config corrigida com estes dados velhos.
 
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
