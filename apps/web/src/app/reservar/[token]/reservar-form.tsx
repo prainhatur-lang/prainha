@@ -27,6 +27,14 @@ function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function formatCPF(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return `${d.slice(0, 3)}.${d.slice(3)}`;
+  if (d.length <= 9) return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6)}`;
+  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+}
+
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
 export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento }: Props) {
@@ -49,6 +57,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [dicaTeste, setDicaTeste] = useState<string | null>(null);
   const [zapEnviado, setZapEnviado] = useState(false);
   const [voltou, setVoltou] = useState<string | null>(null);
+  const [precisaCpf, setPrecisaCpf] = useState(false);
+  const [cpf, setCpf] = useState('');
 
   // Catálogo real de Cerveja/Espumante/Vinho do Consumer (com combo de
   // cerveja). Se vier vazio (filial sem sync, ou tudo filtrado), cai pra
@@ -120,6 +130,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     const dig = whatsapp.replace(/\D/g, '');
     if (dig.length < 10) {
       setVoltou(null);
+      setPrecisaCpf(false);
       return;
     }
     let cancelado = false;
@@ -135,6 +146,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           nomeAutoRef.current = true;
         }
         if (d.preferencias && !preferencias.trim()) setPref(d.preferencias);
+        setPrecisaCpf(!!d.precisaCpf);
       } catch {
         /* ignora */
       }
@@ -296,7 +308,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa, cpf: precisaCpf ? cpf : undefined }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -558,6 +570,19 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <label className={lbl}>Seu nome</label>
           <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} placeholder="Nome completo" />
         </div>
+        {precisaCpf && (
+          <div>
+            <label className={lbl}>CPF</label>
+            <input
+              value={cpf}
+              onChange={(e) => setCpf(formatCPF(e.target.value))}
+              inputMode="numeric"
+              className={inp}
+              placeholder="000.000.000-00"
+            />
+            <p className="mt-1 text-[11px] text-[#8a7a64]">Notamos que seu cadastro está sem CPF — pode completar? 🙂</p>
+          </div>
+        )}
         <div>
           <label className={lbl}>Observação (opcional)</label>
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />

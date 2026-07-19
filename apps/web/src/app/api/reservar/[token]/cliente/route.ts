@@ -88,11 +88,29 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     .orderBy(desc(schema.reserva.criadoEm))
     .limit(1);
 
+  // Cliente já cadastrado no Consumer sem CPF/CNPJ na ficha? Pede na reserva
+  // e atualiza o cadastro (ver /confirmar). Só faz sentido perguntar quando
+  // já existe um cadastro pra atualizar (codigoExterno) — cliente 100% novo
+  // não tem onde gravar ainda.
+  const [cli] = await db
+    .select({ cpfOuCnpj: schema.cliente.cpfOuCnpj })
+    .from(schema.cliente)
+    .where(
+      and(
+        eq(schema.cliente.filialId, filial.id),
+        isNull(schema.cliente.dataDelete),
+        sql`regexp_replace(${schema.cliente.telefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
+      ),
+    )
+    .limit(1);
+  const precisaCpf = !!cli && !cli.cpfOuCnpj?.trim();
+
   return NextResponse.json({
     found: true,
     nome: r.nome,
     area: r.area ?? null,
     pessoas: r.pessoas ?? null,
     preferencias: pref?.preferencias ?? null,
+    precisaCpf,
   });
 }

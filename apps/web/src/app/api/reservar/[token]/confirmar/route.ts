@@ -3,7 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
@@ -56,6 +56,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const bebidaComboQtd = Number.isInteger(b?.bebidaComboQtd) && b.bebidaComboQtd > 0 ? b.bebidaComboQtd : null;
   const bebidaCodigoPdv = Number.isInteger(b?.bebidaCodigoPdv) && b.bebidaCodigoPdv > 0 ? b.bebidaCodigoPdv : null;
   const placa = typeof b?.placa === 'string' && b.placa.trim() ? b.placa.trim().toUpperCase().slice(0, 10) : null;
+  const cpfDigitos = typeof b?.cpf === 'string' ? b.cpf.replace(/\D/g, '') : '';
 
   const cfg = filial.reservaConfig;
   const semOtp = !!cfg?.semOtp;
@@ -219,6 +220,35 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       cancelToken,
     })
     .returning({ id: schema.reserva.id });
+
+  // Cliente já cadastrado no Consumer sem CPF na ficha, preencheu agora:
+  // atualiza o cadastro lá (mesmo write-back já usado no admin de clientes/
+  // fornecedores) — best-effort, nunca bloqueia a reserva.
+  if (cpfDigitos.length === 11 || cpfDigitos.length === 14) {
+    try {
+      const local = telefone.slice(-11);
+      const [cli] = await db
+        .select({ codigoExterno: schema.cliente.codigoExterno, cpfOuCnpj: schema.cliente.cpfOuCnpj })
+        .from(schema.cliente)
+        .where(
+          and(
+            eq(schema.cliente.filialId, filial.id),
+            isNull(schema.cliente.dataDelete),
+            sql`regexp_replace(${schema.cliente.telefone}, '\\D', '', 'g') LIKE ${'%' + local}`,
+          ),
+        )
+        .limit(1);
+      if (cli && !cli.cpfOuCnpj?.trim()) {
+        await db.insert(schema.agenteComando).values({
+          filialId: filial.id,
+          tipo: 'atualizar_cliente',
+          payload: { codigoExterno: cli.codigoExterno, campos: { cnpjOuCpf: cpfDigitos } },
+        });
+      }
+    } catch (e) {
+      console.error('Erro enfileirando atualização de CPF do cliente:', (e as Error).message);
+    }
+  }
 
   // Espaço com taxa: gera o Pix e devolve pro cliente pagar — reserva já
   // existe (segura a mesa) mas fica "aguardando" até o pagamento confirmar.
