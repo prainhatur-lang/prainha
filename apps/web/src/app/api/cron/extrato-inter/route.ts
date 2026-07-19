@@ -4,10 +4,12 @@
 // com overlap de propósito) — cobre lançamentos que "atrasaram" pra aparecer
 // no extrato e a dedupe (unique constraint) cuida do resto.
 //
-// v1: uma conta só (Prainha Bar), credenciais globais via env INTER_*.
+// Roda pra toda conta configurada em contasConfiguradas() (uma por filial —
+// mesmo CNPJ raiz não implica mesma conta bancária, ver lib/inter.ts).
 
 import { NextResponse } from 'next/server';
 import { processarExtratoInterApi } from '@/lib/processadores';
+import { contasConfiguradas } from '@/lib/inter';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
@@ -21,18 +23,19 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const filialId = process.env.INTER_FILIAL_ID;
-  if (!filialId) {
-    return NextResponse.json({ ok: true, skip: 'INTER_FILIAL_ID não configurado' });
-  }
-
+  const contas = contasConfiguradas();
   const fim = hojeBr();
   const inicio = diasAtrasBr(10);
 
-  try {
-    const resumo = await processarExtratoInterApi(filialId, inicio, fim);
-    return NextResponse.json({ ok: true, executadoEm: new Date().toISOString(), resumo });
-  } catch (e) {
-    return NextResponse.json({ ok: false, erro: (e as Error).message }, { status: 502 });
+  const resultados = [];
+  for (const { filialId, cred } of contas) {
+    try {
+      const resumo = await processarExtratoInterApi(filialId, inicio, fim, cred);
+      resultados.push({ filialId, ok: true, resumo });
+    } catch (e) {
+      resultados.push({ filialId, ok: false, erro: (e as Error).message });
+    }
   }
+
+  return NextResponse.json({ ok: true, executadoEm: new Date().toISOString(), resultados });
 }

@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { processarExtratoInterApi } from '@/lib/processadores';
+import { resolverCredenciaisInter } from '@/lib/inter';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
@@ -34,7 +35,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'sem acesso a esta filial' }, { status: 403 });
   }
 
-  if (filialId !== process.env.INTER_FILIAL_ID) {
+  const cred = resolverCredenciaisInter(filialId);
+  if (!cred) {
     return NextResponse.json({ error: 'sincronização automática ainda não configurada pra essa filial' }, { status: 400 });
   }
 
@@ -42,7 +44,7 @@ export async function POST(req: Request) {
   const inicio = diasAtrasBr(dias);
 
   try {
-    const resumo = await processarExtratoInterApi(filialId, inicio, fim);
+    const resumo = await processarExtratoInterApi(filialId, inicio, fim, cred);
     return NextResponse.json({ ok: true, resumo });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });

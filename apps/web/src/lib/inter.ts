@@ -6,7 +6,10 @@
  * Banking) — TODA chamada, incluindo a de token, exige o cert. fetch() global
  * do Node não expõe client cert, então usamos https.request diretamente.
  *
- * Escopo v1: uma conta só (Prainha Bar), credenciais globais via env.
+ * Multi-conta: cada filial com Inter tem seu próprio client_id/secret/cert —
+ * mesmo CNPJ raiz (matriz/filial) não implica mesma conta bancária. Config
+ * via pares de env `INTER_<SUFIXO>_*` mapeados pra um filialId (ver
+ * `contasConfiguradas`/`resolverCredenciaisInter`).
  */
 
 import https from 'node:https';
@@ -23,15 +26,38 @@ interface InterTransacao {
   descricao: string;
 }
 
-function certAgente(): https.Agent {
-  const certB64 = process.env.INTER_CERT_B64;
-  const keyB64 = process.env.INTER_KEY_B64;
-  if (!certB64 || !keyB64) {
-    throw new Error('INTER_CERT_B64/INTER_KEY_B64 não configurados');
+export interface InterCredenciais {
+  clientId: string;
+  clientSecret: string;
+  certB64: string;
+  keyB64: string;
+}
+
+/** Contas Inter configuradas via env, uma por filial. */
+export function contasConfiguradas(): Array<{ filialId: string; cred: InterCredenciais }> {
+  const contas: Array<{ filialId: string; cred: InterCredenciais }> = [];
+  const prefixos = ['INTER', 'INTER_TABUARA'];
+  for (const p of prefixos) {
+    const filialId = process.env[`${p}_FILIAL_ID`];
+    const clientId = process.env[`${p}_CLIENT_ID`];
+    const clientSecret = process.env[`${p}_CLIENT_SECRET`];
+    const certB64 = process.env[`${p}_CERT_B64`];
+    const keyB64 = process.env[`${p}_KEY_B64`];
+    if (filialId && clientId && clientSecret && certB64 && keyB64) {
+      contas.push({ filialId, cred: { clientId, clientSecret, certB64, keyB64 } });
+    }
   }
+  return contas;
+}
+
+export function resolverCredenciaisInter(filialId: string): InterCredenciais | null {
+  return contasConfiguradas().find((c) => c.filialId === filialId)?.cred ?? null;
+}
+
+function certAgente(cred: InterCredenciais): https.Agent {
   return new https.Agent({
-    cert: Buffer.from(certB64, 'base64'),
-    key: Buffer.from(keyB64, 'base64'),
+    cert: Buffer.from(cred.certB64, 'base64'),
+    key: Buffer.from(cred.keyB64, 'base64'),
   });
 }
 
@@ -41,6 +67,7 @@ function requestJson<T>(opts: {
   body?: string;
   contentType?: string;
   authorization?: string;
+  cred: InterCredenciais;
 }): Promise<{ status: number; data: T }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -48,7 +75,7 @@ function requestJson<T>(opts: {
         hostname: BASE_URL,
         path: opts.path,
         method: opts.method,
-        agent: certAgente(),
+        agent: certAgente(opts.cred),
         headers: {
           ...(opts.body ? { 'Content-Type': opts.contentType ?? 'application/json' } : {}),
           ...(opts.body ? { 'Content-Length': Buffer.byteLength(opts.body) } : {}),
@@ -73,18 +100,16 @@ function requestJson<T>(opts: {
   });
 }
 
-let tokenCache: { token: string; expiraEm: number } | null = null;
+// Cache de token por clientId — cada conta tem o seu.
+const tokenCache = new Map<string, { token: string; expiraEm: number }>();
 
-async function getAccessToken(): Promise<string> {
-  if (tokenCache && tokenCache.expiraEm > Date.now()) return tokenCache.token;
-
-  const clientId = process.env.INTER_CLIENT_ID;
-  const clientSecret = process.env.INTER_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error('INTER_CLIENT_ID/INTER_CLIENT_SECRET não configurados');
+async function getAccessToken(cred: InterCredenciais): Promise<string> {
+  const cached = tokenCache.get(cred.clientId);
+  if (cached && cached.expiraEm > Date.now()) return cached.token;
 
   const body = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
+    client_id: cred.clientId,
+    client_secret: cred.clientSecret,
     grant_type: 'client_credentials',
     scope: 'extrato.read',
   }).toString();
@@ -94,22 +119,28 @@ async function getAccessToken(): Promise<string> {
     path: '/oauth/v2/token',
     body,
     contentType: 'application/x-www-form-urlencoded',
+    cred,
   });
   if (status !== 200 || !data.access_token) {
     throw new Error(`Inter OAuth erro (${status}): ${JSON.stringify(data)}`);
   }
 
-  tokenCache = { token: data.access_token, expiraEm: Date.now() + (data.expires_in - 60) * 1000 };
-  return tokenCache.token;
+  tokenCache.set(cred.clientId, { token: data.access_token, expiraEm: Date.now() + (data.expires_in - 60) * 1000 });
+  return data.access_token;
 }
 
 /** Busca o extrato bruto da API (sem transformar em lancamento_banco). */
-export async function buscarExtratoInter(dataInicio: string, dataFim: string): Promise<InterTransacao[]> {
-  const token = await getAccessToken();
+export async function buscarExtratoInter(
+  cred: InterCredenciais,
+  dataInicio: string,
+  dataFim: string,
+): Promise<InterTransacao[]> {
+  const token = await getAccessToken(cred);
   const { status, data } = await requestJson<{ transacoes?: InterTransacao[]; title?: string }>({
     method: 'GET',
     path: `/banking/v2/extrato?dataInicio=${dataInicio}&dataFim=${dataFim}`,
     authorization: `Bearer ${token}`,
+    cred,
   });
   if (status !== 200) {
     throw new Error(`Inter extrato erro (${status}): ${JSON.stringify(data)}`);

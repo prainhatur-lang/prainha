@@ -8,6 +8,7 @@ import { AppHeader } from '@/components/app-header';
 import { UploadForm } from './upload-form';
 import { Historico } from './historico';
 import { InterSyncButton } from './inter-sync-button';
+import { contasConfiguradas } from '@/lib/inter';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,8 @@ export default async function UploadPage() {
 
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
-  const filialInter = filiais.find((f) => f.id === process.env.INTER_FILIAL_ID);
+  const filiaisComInter = new Set(contasConfiguradas().map((c) => c.filialId));
+  const filiaisInter = filiais.filter((f) => filiaisComInter.has(f.id));
 
   const ultimosArquivos = filialIds.length
     ? await db
@@ -43,9 +45,11 @@ export default async function UploadPage() {
           O tipo é detectado automaticamente.
         </p>
 
-        {filialInter && (
-          <div className="mt-8">
-            <InterSyncButton filialId={filialInter.id} filialNome={filialInter.nome} />
+        {filiaisInter.length > 0 && (
+          <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {filiaisInter.map((f) => (
+              <InterSyncButton key={f.id} filialId={f.id} filialNome={f.nome} />
+            ))}
           </div>
         )}
 

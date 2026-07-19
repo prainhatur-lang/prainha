@@ -10,7 +10,7 @@ import {
   extrairIdentificacaoCnab,
 } from '@concilia/conciliador/parsers';
 import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
-import { buscarExtratoInter, idTransacaoDeterministico, type InterTransacao } from './inter';
+import { buscarExtratoInter, idTransacaoDeterministico, type InterTransacao, type InterCredenciais } from './inter';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
@@ -499,8 +499,9 @@ export async function processarExtratoInterApi(
   filialId: string,
   dataInicio: string,
   dataFim: string,
+  cred: InterCredenciais,
 ): Promise<ResumoProcessamento> {
-  const transacoes = await buscarExtratoInter(dataInicio, dataFim);
+  const transacoes = await buscarExtratoInter(cred, dataInicio, dataFim);
   if (transacoes.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
 
   let [conta] = await db
