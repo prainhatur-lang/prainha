@@ -5,7 +5,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { mesaEstaLivre } from '@/lib/reservas/mesa-disponivel';
+import { mesaEstaLivre, mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -40,14 +40,18 @@ export async function POST(request: Request) {
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
   const area = txt(b?.area, 100);
   const mesa = txt(b?.mesa, 20);
+  // Segunda mesa juntada lateralmente pra caber grupo maior que 1 mesa só.
+  const mesaJuntada = txt(b?.mesaJuntada, 20);
 
-  // Mesa já ocupada por outra reserva ativa no mesmo espaço/data? Bloqueia
-  // double-booking (duas reservas na mesma mesa).
+  // Mesa(s) já ocupada(s) por outra reserva ativa no mesmo espaço/data?
+  // Bloqueia double-booking.
   if (mesa && area) {
-    const livre = await mesaEstaLivre({ filialId, data, area, mesa });
+    const livre = mesaJuntada
+      ? await mesasEstaoLivres({ filialId, data, area, mesas: [mesa, mesaJuntada] })
+      : await mesaEstaLivre({ filialId, data, area, mesa });
     if (!livre) {
       return NextResponse.json(
-        { error: `Mesa ${mesa} já está ocupada em ${area} nessa data.` },
+        { error: `Mesa ${mesa}${mesaJuntada ? `/${mesaJuntada}` : ''} já está ocupada em ${area} nessa data.` },
         { status: 409 },
       );
     }
@@ -84,6 +88,7 @@ export async function POST(request: Request) {
       status,
       area,
       mesa,
+      mesaJuntada,
       canal,
       observacao: txt(b?.observacao, 2000),
     })

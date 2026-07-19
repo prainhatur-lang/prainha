@@ -5,7 +5,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { mesaEstaLivre } from '@/lib/reservas/mesa-disponivel';
+import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
@@ -26,6 +26,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.status = b.status;
   }
   if (b?.mesa !== undefined) set.mesa = typeof b.mesa === 'string' && b.mesa.trim() ? b.mesa.trim().slice(0, 20) : null;
+  // Segunda mesa juntada lateralmente (grupo maior que 1 mesa só). null =
+  // desfaz a junção (volta a ser só a mesa principal).
+  if (b?.mesaJuntada !== undefined)
+    set.mesaJuntada = typeof b.mesaJuntada === 'string' && b.mesaJuntada.trim() ? b.mesaJuntada.trim().slice(0, 20) : null;
   if (b?.area !== undefined) set.area = typeof b.area === 'string' && b.area.trim() ? b.area.trim().slice(0, 100) : null;
   if (b?.observacao !== undefined)
     set.observacao = typeof b.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null;
@@ -48,6 +52,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // mesa/no-show/cancelamento) E pra enfileirar o lançamento da bebida no
   // Consumer quando confirmada.
   const mudaMesa = typeof set.mesa === 'string';
+  const mudaMesaJuntada = 'mesaJuntada' in set;
   const mudaStatus = typeof set.status === 'string';
   const vaiSentar = set.status === 'sentada';
   const confirmaBebida = set.bebidaConfirmada === true;
@@ -57,6 +62,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     hora: string;
     area: string | null;
     mesa: string | null;
+    mesaJuntada: string | null;
     status: string;
     clienteNome: string;
     clienteTelefone: string | null;
@@ -65,7 +71,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     bebidaComboQtd: number | null;
     bebidaCodigoPdv: number | null;
   } | null = null;
-  if (mudaMesa || mudaStatus || confirmaBebida) {
+  if (mudaMesa || mudaMesaJuntada || mudaStatus || confirmaBebida) {
     const [row] = await db
       .select({
         filialId: schema.reserva.filialId,
@@ -73,6 +79,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         hora: schema.reserva.hora,
         area: schema.reserva.area,
         mesa: schema.reserva.mesa,
+        mesaJuntada: schema.reserva.mesaJuntada,
         status: schema.reserva.status,
         clienteNome: schema.reserva.clienteNome,
         clienteTelefone: schema.reserva.clienteTelefone,
@@ -95,24 +102,27 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.bebidaLancamentoStatus = 'aguardando';
   }
 
-  // Troca de mesa (recepção): a nova mesa não pode já estar ocupada por outra
-  // reserva ativa no mesmo espaço/data. Só checa quando uma mesa está sendo
-  // atribuída (null = "tirar a mesa", sempre permitido).
-  if (mudaMesa && atual) {
+  // Troca de mesa e/ou junção (recepção): a mesa (ou o par mesa+mesaJuntada)
+  // não pode já estar ocupada por outra reserva ativa no mesmo espaço/data.
+  // Só checa quando o par final mudou — manter o que já tinha é sempre
+  // permitido, mesmo que o Consumer mostre ocupada (é a própria comanda).
+  if ((mudaMesa || mudaMesaJuntada) && atual) {
     const areaFinal = (typeof set.area === 'string' ? set.area : atual.area) as string | null;
-    // Mantendo a mesma mesa que já tinha: sempre permitido, mesmo que o
-    // Consumer mostre ela como ocupada (é a própria comanda dessa reserva).
-    if (areaFinal && set.mesa !== atual.mesa) {
-      const livre = await mesaEstaLivre({
+    const mesaFinal = (mudaMesa ? set.mesa : atual.mesa) as string | null;
+    const mesaJuntadaFinal = (mudaMesaJuntada ? set.mesaJuntada : atual.mesaJuntada) as string | null;
+    const parMudou = mesaFinal !== atual.mesa || mesaJuntadaFinal !== atual.mesaJuntada;
+    if (areaFinal && mesaFinal && parMudou) {
+      const mesas = mesaJuntadaFinal ? [mesaFinal, mesaJuntadaFinal] : [mesaFinal];
+      const livre = await mesasEstaoLivres({
         filialId: atual.filialId,
         data: atual.data,
         area: areaFinal,
-        mesa: set.mesa as string,
+        mesas,
         excluirReservaId: id,
       });
       if (!livre) {
         return NextResponse.json(
-          { error: `Mesa ${set.mesa} já está ocupada em ${areaFinal} nessa data.` },
+          { error: `Mesa ${mesas.join('/')} já está ocupada em ${areaFinal} nessa data.` },
           { status: 409 },
         );
       }
@@ -122,19 +132,20 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // Sentar (recepção confirma que o cliente chegou): a mesa dessa reserva
   // já pode estar ocupada por outra reserva ativa ou por alguém sentado de
   // verdade no Consumer (walk-in). Se a mesa também está sendo trocada
-  // nesse mesmo PATCH, a checagem acima já validou a mesa nova — não
-  // precisa checar a antiga de novo.
-  if (vaiSentar && !mudaMesa && atual?.mesa && atual.area) {
-    const livre = await mesaEstaLivre({
+  // nesse mesmo PATCH, a checagem acima já validou o par novo — não
+  // precisa checar o antigo de novo.
+  if (vaiSentar && !mudaMesa && !mudaMesaJuntada && atual?.mesa && atual.area) {
+    const mesas = atual.mesaJuntada ? [atual.mesa, atual.mesaJuntada] : [atual.mesa];
+    const livre = await mesasEstaoLivres({
       filialId: atual.filialId,
       data: atual.data,
       area: atual.area,
-      mesa: atual.mesa,
+      mesas,
       excluirReservaId: id,
     });
     if (!livre) {
       return NextResponse.json(
-        { error: `Mesa ${atual.mesa} já está ocupada. Troque a mesa antes de sentar.` },
+        { error: `Mesa ${mesas.join('/')} já está ocupada. Troque a mesa antes de sentar.` },
         { status: 409 },
       );
     }

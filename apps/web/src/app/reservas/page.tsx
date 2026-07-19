@@ -79,6 +79,7 @@ export default async function ReservasPage(props: {
             status: schema.reserva.status,
             area: schema.reserva.area,
             mesa: schema.reserva.mesa,
+            mesaJuntada: schema.reserva.mesaJuntada,
             canal: schema.reserva.canal,
             observacao: schema.reserva.observacao,
             preferencias: schema.reserva.preferencias,
@@ -99,19 +100,22 @@ export default async function ReservasPage(props: {
 
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
-  // Mesas ocupadas no dia (chave `${filialId}:${mesa}`), pro mapa.
+  // Mesas ocupadas no dia (chave `${filialId}:${mesa}`), pro mapa. Reserva
+  // com mesa juntada ocupa AS DUAS chaves (mesa + mesaJuntada).
   const ativasComMesa = itens.filter(
     (i) => i.mesa && i.status !== 'cancelada' && i.status !== 'no_show',
   );
-  const ocupadas = ativasComMesa.map((i) => `${i.filialId}:${i.mesa}`);
+  const ocupadas: string[] = [];
   // Quem está em cada mesa (pro mapa mostrar o nome).
   const reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }> = {};
   for (const i of ativasComMesa) {
-    reservasPorMesa[`${i.filialId}:${i.mesa}`] = {
-      nome: i.clienteNome,
-      hora: i.hora,
-      pessoas: i.pessoas,
-    };
+    const info = { nome: i.clienteNome, hora: i.hora, pessoas: i.pessoas };
+    ocupadas.push(`${i.filialId}:${i.mesa}`);
+    reservasPorMesa[`${i.filialId}:${i.mesa}`] = info;
+    if (i.mesaJuntada) {
+      ocupadas.push(`${i.filialId}:${i.mesaJuntada}`);
+      reservasPorMesa[`${i.filialId}:${i.mesaJuntada}`] = info;
+    }
   }
 
   // Mesas fisicamente ocupadas AGORA no Consumer (comanda aberta), só faz

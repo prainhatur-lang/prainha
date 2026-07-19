@@ -57,7 +57,8 @@
     "migrate:reserva-pagamento": "tsx scripts/migrate-reserva-pagamento.ts",
     "migrate:reserva-bebida-combo": "tsx scripts/migrate-reserva-bebida-combo.ts",
     "migrate:reserva-bebida-lancamento": "tsx scripts/migrate-reserva-bebida-lancamento.ts",
-    "migrate:reserva-placa-chegada": "tsx scripts/migrate-reserva-placa-chegada.ts"
+    "migrate:reserva-placa-chegada": "tsx scripts/migrate-reserva-placa-chegada.ts",
+    "migrate:reserva-mesa-juntada": "tsx scripts/migrate-reserva-mesa-juntada.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

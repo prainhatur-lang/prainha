@@ -58,6 +58,7 @@ export async function mesasOcupadas(params: {
     .select({
       id: schema.reserva.id,
       mesa: schema.reserva.mesa,
+      mesaJuntada: schema.reserva.mesaJuntada,
       pagamentoStatus: schema.reserva.pagamentoStatus,
       criadoEm: schema.reserva.criadoEm,
     })
@@ -80,7 +81,11 @@ export async function mesasOcupadas(params: {
       .where(inArray(schema.reserva.id, expiradas));
   }
 
-  const ocupadas = new Set(validas.filter((r) => r.mesa).map((r) => String(r.mesa).trim()));
+  const ocupadas = new Set<string>();
+  for (const r of validas) {
+    if (r.mesa) ocupadas.add(String(r.mesa).trim());
+    if (r.mesaJuntada) ocupadas.add(String(r.mesaJuntada).trim());
+  }
 
   if (data === hojeBr()) {
     const doConsumer = await mesasOcupadasNoConsumer(filialId);
@@ -100,4 +105,18 @@ export async function mesaEstaLivre(params: {
 }): Promise<boolean> {
   const ocupadas = await mesasOcupadas(params);
   return !ocupadas.has(String(params.mesa).trim());
+}
+
+/** Checa se TODAS as mesas de um grupo (ex: mesa + mesaJuntada) estão livres —
+ *  usado quando a reserva junta 2 mesas lateralmente. */
+export async function mesasEstaoLivres(params: {
+  filialId: string;
+  data: string;
+  area: string;
+  mesas: string[];
+  excluirReservaId?: string;
+}): Promise<boolean> {
+  const { mesas, ...resto } = params;
+  const ocupadas = await mesasOcupadas(resto);
+  return mesas.every((m) => !ocupadas.has(String(m).trim()));
 }

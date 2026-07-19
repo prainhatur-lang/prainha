@@ -42,6 +42,7 @@ export interface ReservaItem {
   status: string;
   area: string | null;
   mesa: string | null;
+  mesaJuntada: string | null;
   canal: string;
   observacao: string | null;
   preferencias: string | null;
@@ -658,7 +659,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}
             {r.area && <span>·</span>}
-            <MesaInline reservaId={r.id} inicial={r.mesa} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
+            <MesaInline reservaId={r.id} inicial={r.mesa} inicialJuntada={r.mesaJuntada} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
             {r.clienteTelefone && <span>·</span>}
             {r.clienteTelefone && <span className="font-mono">{r.clienteTelefone}</span>}
           </div>
@@ -755,11 +756,17 @@ function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { re
 // senão cai pra um campo livre. O servidor (PATCH) é quem bloqueia se a mesa
 // escolhida já estiver ocupada por outra reserva ativa (409) — a mensagem de
 // erro do servidor aparece aqui embaixo do controle.
-function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou }: { reservaId: string; inicial: string | null; mesasDoEspaco: Mesa[]; podeAtualizar: boolean; onMudou: () => void }) {
+function MesaInline({ reservaId, inicial, inicialJuntada, mesasDoEspaco, podeAtualizar, onMudou }: { reservaId: string; inicial: string | null; inicialJuntada: string | null; mesasDoEspaco: Mesa[]; podeAtualizar: boolean; onMudou: () => void }) {
   const [editando, setEditando] = useState(false);
   const [val, setVal] = useState(inicial ?? '');
+  const [valJuntada, setValJuntada] = useState(inicialJuntada ?? '');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  const mesaSel = mesasDoEspaco.find((m) => m.numero === val);
+  // Mesas juntáveis do espaço, sem a que já está selecionada — equipe junta
+  // olhando o mapa quem fica do lado (sistema não sabe a planta física).
+  const opcoesJuntar = mesasDoEspaco.filter((m) => m.juntavel && m.numero !== val);
 
   async function salvar() {
     setSalvando(true);
@@ -768,7 +775,7 @@ function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou 
       const r = await fetch(`/api/reservas/${reservaId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mesa: val }),
+        body: JSON.stringify({ mesa: val, mesaJuntada: valJuntada || null }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -788,7 +795,7 @@ function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou 
         {mesasDoEspaco.length > 0 ? (
           <select
             value={val}
-            onChange={(e) => setVal(e.target.value)}
+            onChange={(e) => { setVal(e.target.value); setValJuntada(''); }}
             autoFocus
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
@@ -807,8 +814,20 @@ function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou 
             className="w-20 rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           />
         )}
+        {mesaSel?.juntavel && opcoesJuntar.length > 0 && (
+          <select
+            value={valJuntada}
+            onChange={(e) => setValJuntada(e.target.value)}
+            className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
+          >
+            <option value="">+ juntar…</option>
+            {opcoesJuntar.map((m) => (
+              <option key={m.numero} value={m.numero}>+ mesa {m.numero} ({m.lugares}p)</option>
+            ))}
+          </select>
+        )}
         <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
-        <button onClick={() => { setVal(inicial ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+        <button onClick={() => { setVal(inicial ?? ''); setValJuntada(inicialJuntada ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
         {erro && <span className="text-[11px] font-medium text-rose-600">{erro}</span>}
       </span>
     );
@@ -816,7 +835,7 @@ function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou 
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span>{mesaTexto(inicial)}</span>
+      <span>{mesaTexto(inicial, inicialJuntada)}</span>
       {podeAtualizar && (
         <button
           onClick={() => setEditando(true)}
@@ -828,8 +847,9 @@ function MesaInline({ reservaId, inicial, mesasDoEspaco, podeAtualizar, onMudou 
     </span>
   );
 }
-function mesaTexto(mesa: string | null) {
-  return mesa ? `mesa ${mesa}` : 'sem mesa';
+function mesaTexto(mesa: string | null, mesaJuntada?: string | null) {
+  if (!mesa) return 'sem mesa';
+  return mesaJuntada ? `mesa ${mesa}+${mesaJuntada}` : `mesa ${mesa}`;
 }
 
 function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string }) {
@@ -1035,6 +1055,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
   const [canal, setCanal] = useState('telefone');
   const [area, setArea] = useState('');
   const [mesa, setMesa] = useState('');
+  const [mesaJuntada, setMesaJuntada] = useState('');
   const [observacao, setObs] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -1046,7 +1067,13 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const mesasDoEspaco = espacoSel?.mesas ?? [];
   const mesaSel = mesasDoEspaco.find((mm) => mm.numero === mesa);
-  const capacidadeBaixa = !!(mesaSel && pessoas > mesaSel.lugares);
+  const mesaJuntadaSel = mesasDoEspaco.find((mm) => mm.numero === mesaJuntada);
+  const capacidadeJunta = (mesaSel?.lugares ?? 0) + (mesaJuntadaSel?.lugares ?? 0);
+  const capacidadeBaixa = !!(mesaSel && pessoas > (mesaJuntadaSel ? capacidadeJunta : mesaSel.lugares));
+  // Mesas juntáveis do mesmo espaço, pra oferecer juntar quando a mesa
+  // escolhida não comporta o grupo — a equipe decide olhando o mapa se são
+  // fisicamente vizinhas (o sistema não sabe a planta do salão).
+  const opcoesJuntar = mesasDoEspaco.filter((mm) => mm.juntavel && mm.numero !== mesa);
 
   async function salvar() {
     setSalvando(true);
@@ -1055,7 +1082,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
       const r = await fetch('/api/reservas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, observacao, status: 'pendente' }),
+        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, mesaJuntada: mesaJuntada || undefined, observacao, status: 'pendente' }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -1105,7 +1132,14 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
           <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="Área/espaço" className={inp} />
         )}
         {mesasDoEspaco.length > 0 ? (
-          <select value={mesa} onChange={(e) => setMesa(e.target.value)} className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}>
+          <select
+            value={mesa}
+            onChange={(e) => {
+              setMesa(e.target.value);
+              setMesaJuntada('');
+            }}
+            className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}
+          >
             <option value="">Mesa…</option>
             {mesasDoEspaco.map((mm) => (
               <option key={mm.numero} value={mm.numero}>Mesa {mm.numero} ({mm.lugares} lug)</option>
@@ -1121,9 +1155,33 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
           {area} aceita reserva de mesa só até {limite} — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).
         </p>
       )}
-      {capacidadeBaixa && mesaSel && (
+      {capacidadeBaixa && mesaSel && mesaSel.juntavel && opcoesJuntar.length > 0 && (
+        <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5">
+          <p className="text-xs text-amber-800">
+            A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas. Se
+            tiver outra mesa juntável do lado dela (confira no mapa 🗺️), pode juntar:
+          </p>
+          <select
+            value={mesaJuntada}
+            onChange={(e) => setMesaJuntada(e.target.value)}
+            className={`${inp} mt-1.5 w-full`}
+          >
+            <option value="">Juntar com…</option>
+            {opcoesJuntar.map((mm) => (
+              <option key={mm.numero} value={mm.numero}>Mesa {mm.numero} ({mm.lugares} lug)</option>
+            ))}
+          </select>
+          {mesaJuntadaSel && (
+            <p className="mt-1.5 text-xs text-amber-700">
+              Mesa {mesaSel.numero} + {mesaJuntadaSel.numero} = {capacidadeJunta} lugares
+              {pessoas > capacidadeJunta ? ' — ainda não cabe, confira de novo.' : ' ✓'}
+            </p>
+          )}
+        </div>
+      )}
+      {capacidadeBaixa && mesaSel && !mesaSel.juntavel && (
         <p className="mt-2 text-xs text-amber-600">
-          A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas — confira a capacidade.
+          A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas — confira a capacidade (essa mesa não é juntável).
         </p>
       )}
       {erro && <p className="mt-2 text-xs text-rose-600">{erro}</p>}
