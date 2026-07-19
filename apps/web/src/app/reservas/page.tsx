@@ -29,6 +29,7 @@ export default async function ReservasPage(props: {
   const podeAtualizar = await podeUsuario(user.id, 'reserva.update');
   const podeImportar = await podeUsuario(user.id, 'reserva.importar');
   const podeConfigurar = await podeUsuario(user.id, 'reserva.configurar');
+  const podeVerListaEspera = await podeUsuario(user.id, 'lista_espera.read');
 
   const acessiveis = await filiaisDoUsuario(user.id);
   const filialIds = acessiveis.map((f) => f.id);
@@ -170,6 +171,7 @@ export default async function ReservasPage(props: {
           podeAtualizar={podeAtualizar}
           podeImportar={podeImportar}
           podeConfigurar={podeConfigurar}
+          podeVerListaEspera={podeVerListaEspera}
           ocupadas={ocupadas}
           ocupadasConsumer={ocupadasConsumer}
           reservasPorMesa={reservasPorMesa}

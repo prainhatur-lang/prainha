@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { MapaMesas } from './mapa-mesas';
 
 export interface Mesa {
@@ -99,6 +100,7 @@ export function ReservasClient({
   podeAtualizar,
   podeImportar,
   podeConfigurar,
+  podeVerListaEspera,
   ocupadas,
   ocupadasConsumer,
   reservasPorMesa,
@@ -112,6 +114,7 @@ export function ReservasClient({
   podeAtualizar: boolean;
   podeImportar: boolean;
   podeConfigurar: boolean;
+  podeVerListaEspera: boolean;
   ocupadas: string[];
   ocupadasConsumer: string[];
   reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>;
@@ -383,6 +386,14 @@ export function ReservasClient({
             <span className="hidden rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500 sm:inline" title="Importação do Tagme é feita via navegador">
               Importar do Tagme: pelo navegador
             </span>
+          )}
+          {podeVerListaEspera && (
+            <Link
+              href="/lista-espera"
+              className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-100 hover:bg-slate-50"
+            >
+              ⏳ Lista de espera
+            </Link>
           )}
           <button
             onClick={() => setMapaAberto((v) => !v)}

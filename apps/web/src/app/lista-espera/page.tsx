@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
@@ -15,6 +16,7 @@ export default async function ListaEsperaPage(props: { searchParams: Promise<{ f
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'lista_espera.read');
+  const podeVerReservas = await podeUsuario(user.id, 'reserva.read');
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
@@ -62,6 +64,7 @@ export default async function ListaEsperaPage(props: { searchParams: Promise<{ f
         filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
         itens={itens}
         whatsappOn={mesaProntaConfigurado()}
+        podeVerReservas={podeVerReservas}
       />
     </main>
   );

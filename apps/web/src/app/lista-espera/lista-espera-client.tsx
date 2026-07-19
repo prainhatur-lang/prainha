@@ -71,12 +71,14 @@ export function ListaEsperaClient({
   filiais,
   itens,
   whatsappOn,
+  podeVerReservas,
 }: {
   filialId: string;
   filialNome: string;
   filiais: Filial[];
   itens: Item[];
   whatsappOn: boolean;
+  podeVerReservas: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -153,10 +155,22 @@ export function ListaEsperaClient({
   return (
     <div className="mx-auto max-w-3xl px-4 py-5 sm:px-6">
       <div className="mb-4">
-        <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">Lista de espera</h1>
-        <p className="mt-0.5 text-sm text-slate-500">
-          {filialNome} · {itens.length} grupo(s) · {totalPessoas} pessoa(s) na fila
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">Lista de espera</h1>
+            <p className="mt-0.5 text-sm text-slate-500">
+              {filialNome} · {itens.length} grupo(s) · {totalPessoas} pessoa(s) na fila
+            </p>
+          </div>
+          {podeVerReservas && (
+            <Link
+              href="/reservas"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 active:bg-slate-100 hover:bg-slate-50"
+            >
+              📅 Agenda de reservas
+            </Link>
+          )}
+        </div>
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
             <span className="text-slate-500">Filial:</span>
