@@ -10,6 +10,7 @@ import {
   extrairIdentificacaoCnab,
 } from '@concilia/conciliador/parsers';
 import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
+import { buscarExtratoInter, idTransacaoDeterministico, type InterTransacao } from './inter';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
@@ -486,6 +487,70 @@ export async function processarCnab240Inter(
     totalCreditos: rows.filter((r) => r.tipo === 'C').reduce((s, r) => s + r.valor, 0),
     totalDebitos: rows.filter((r) => r.tipo === 'D').reduce((s, r) => s + r.valor, 0),
     periodo: datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : undefined,
+  };
+}
+
+/**
+ * Busca o extrato direto da API do Inter (sem upload manual de CNAB) e
+ * grava em lancamento_banco — mesma tabela que o CNAB alimenta, então a
+ * tela/engine de conciliação (rodarConciliacaoBanco) não muda nada.
+ */
+export async function processarExtratoInterApi(
+  filialId: string,
+  dataInicio: string,
+  dataFim: string,
+): Promise<ResumoProcessamento> {
+  const transacoes = await buscarExtratoInter(dataInicio, dataFim);
+  if (transacoes.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
+
+  let [conta] = await db
+    .select({ id: schema.contaBancaria.id })
+    .from(schema.contaBancaria)
+    .where(drizzleSql`${schema.contaBancaria.filialId} = ${filialId} AND ${schema.contaBancaria.codigoBanco} = '077'`)
+    .limit(1);
+  if (!conta) {
+    [conta] = await db
+      .insert(schema.contaBancaria)
+      .values({
+        filialId,
+        banco: 'Banco Inter',
+        codigoBanco: '077',
+        apelido: 'Inter (extrato CNAB)',
+      })
+      .returning({ id: schema.contaBancaria.id });
+  }
+
+  const ids = idTransacaoDeterministico(transacoes);
+  const dados = transacoes.map((t: InterTransacao, i: number) => ({
+    contaBancariaId: conta!.id,
+    filialId,
+    dataMovimento: t.dataEntrada,
+    dataExecucao: t.dataEntrada,
+    tipo: t.tipoOperacao,
+    valor: String(Number(t.valor)),
+    codigoHistorico: t.tipoTransacao || null,
+    descricao: `${t.titulo ?? ''} - ${t.descricao ?? ''}`.trim().slice(0, 100) || null,
+    idTransacao: ids[i]!,
+    arquivoOrigem: `inter-api:${dataInicio}_${dataFim}`,
+  }));
+
+  let inseridos = 0;
+  for (let i = 0; i < dados.length; i += CHUNK_SIZE) {
+    const chunk = dados.slice(i, i + CHUNK_SIZE);
+    const r = await db
+      .insert(schema.lancamentoBanco)
+      .values(chunk)
+      .onConflictDoNothing()
+      .returning({ id: schema.lancamentoBanco.id });
+    inseridos += r.length;
+  }
+
+  return {
+    registrosLidos: transacoes.length,
+    registrosInseridos: inseridos,
+    totalCreditos: transacoes.filter((t) => t.tipoOperacao === 'C').reduce((s, t) => s + Number(t.valor), 0),
+    totalDebitos: transacoes.filter((t) => t.tipoOperacao === 'D').reduce((s, t) => s + Number(t.valor), 0),
+    periodo: { de: dataInicio, ate: dataFim },
   };
 }
 

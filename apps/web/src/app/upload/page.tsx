@@ -7,6 +7,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { UploadForm } from './upload-form';
 import { Historico } from './historico';
+import { InterSyncButton } from './inter-sync-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,7 @@ export default async function UploadPage() {
 
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
+  const filialInter = filiais.find((f) => f.id === process.env.INTER_FILIAL_ID);
 
   const ultimosArquivos = filialIds.length
     ? await db
@@ -40,6 +42,12 @@ export default async function UploadPage() {
           Envie os arquivos da Cielo (Vendas e Recebíveis Detalhados) e o extrato CNAB do banco.
           O tipo é detectado automaticamente.
         </p>
+
+        {filialInter && (
+          <div className="mt-8">
+            <InterSyncButton filialId={filialInter.id} filialNome={filialInter.nome} />
+          </div>
+        )}
 
         <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
           <UploadForm
