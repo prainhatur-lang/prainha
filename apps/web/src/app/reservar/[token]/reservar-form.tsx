@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
-import { MapaMesasPublico, MapaDeckLoungesPublico, type MesaPublica } from './mapa-mesas-publico';
+import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
   nome: string;
@@ -606,6 +606,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             selecionada={mesaEscolhida}
             onSelecionar={setMesaEscolhida}
           />
+        ) : espaco === 'Areia' && mesas.length % 20 === 0 && mesas.length > 0 ? (
+          <MapaAreiaPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
         ) : (
           <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
         )}

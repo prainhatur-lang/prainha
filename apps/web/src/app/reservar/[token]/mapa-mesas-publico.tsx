@@ -108,6 +108,63 @@ export function MapaMesasPublico({
 }
 
 /**
+ * Agrupa mesas em N "raias" indo do rio (frente) pra trás — mesma lógica de
+ * `agruparEmRaias` em mapa-mesas.tsx (admin). Duplicado aqui de propósito
+ * (arquivos client-side separados, sem util compartilhado ainda) — se mexer
+ * numa cópia, mexer na outra.
+ */
+function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
+  const fatias: T[][] = [];
+  for (let i = 0; i < itens.length; i += 4) fatias.push(itens.slice(i, i + 4).reverse());
+  const raias: T[][] = Array.from({ length: largura }, () => []);
+  fatias.forEach((fatia, i) => raias[i % largura]!.push(...fatia));
+  return raias;
+}
+
+/**
+ * Areia como planta real (mesma lógica do mapa do admin, ver mapa-mesas.tsx
+ * `AreiaGrid`) — só as mesas 4, 8, 12, 16, 20 encostam no rio; as outras 55
+ * ficam atrás, na mesma raia (12 de profundidade cada). Só renderiza se
+ * vierem exatamente 60 mesas (múltiplo de 20) — senão cai pro grid flat.
+ */
+export function MapaAreiaPublico({
+  mesas,
+  pessoas,
+  selecionada,
+  onSelecionar,
+}: {
+  mesas: MesaPublica[];
+  pessoas: number;
+  selecionada: string;
+  onSelecionar: (numero: string) => void;
+}) {
+  if (mesas.length === 0) return null;
+  const raias = agruparEmRaias(mesas, 5);
+
+  return (
+    <div className="mt-1.5 rounded-xl border border-[#e7dcc9] bg-[#fdfaf4] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[#8a7a64]">
+        Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
+      </p>
+      <p className="mt-0.5 text-[10px] text-[#b3a686]">mesas 4, 8, 12, 16, 20 encostam no rio — as demais ficam atrás, na mesma raia</p>
+      <div className="mt-2 rounded-lg bg-gradient-to-b from-[#eef6fb] to-transparent p-2">
+        <div className="mb-1.5 text-center text-[10px] font-medium text-[#7fb0cf]">🌊 rio (frente)</div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {raias.map((raia, ri) => (
+            <div key={ri} className="flex flex-col gap-1.5">
+              {raia.map((m) => (
+                <MesaBotao key={m.numero} mesa={m} pessoas={pessoas} selecionada={selecionada} onSelecionar={onSelecionar} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+      <Legenda />
+    </div>
+  );
+}
+
+/**
  * Deck Superior + Lounges como planta real (mesma lógica do mapa do admin,
  * ver mapa-mesas.tsx `DeckELounges`) — linha da frente 101 | 128 | 129 | 130
  * virada pro rio; atrás de 101 vêm 102+103, atrás dessas 104+105, e atrás
