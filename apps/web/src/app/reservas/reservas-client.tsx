@@ -125,7 +125,6 @@ export function ReservasClient({
   const [novaAberta, setNovaAberta] = useState(false);
   const [configAberta, setConfigAberta] = useState(false);
   const [mapaAberto, setMapaAberto] = useState(false);
-  const [preenchendo, setPreenchendo] = useState(false);
   const [enviandoLembretes, setEnviandoLembretes] = useState(false);
   const [pausando, setPausando] = useState(false);
 
@@ -250,32 +249,6 @@ export function ReservasClient({
       alert((e as Error).message);
     } finally {
       setPausando(false);
-    }
-  }
-
-  async function preencherMesas() {
-    const fil = filialFiltro ?? filiais[0]?.id;
-    if (!fil) return;
-    setPreenchendo(true);
-    try {
-      const r = await fetch('/api/reservas/distribuir-mesas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId: fil, data }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        alert(d.error ?? `Erro ${r.status}`);
-        return;
-      }
-      const partes = [`${d.alocadas} reserva(s) colocada(s) em mesa`];
-      if (d.naoCoube?.length) partes.push(`${d.naoCoube.length} não coube(ram): ${d.naoCoube.join('; ')}`);
-      alert(partes.join('\n'));
-      router.refresh();
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setPreenchendo(false);
     }
   }
 
@@ -448,19 +421,6 @@ export function ReservasClient({
 
       {mapaAberto && (
         <>
-          {podeAtualizar && (
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                onClick={preencherMesas}
-                disabled={preenchendo}
-                className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-                title="Distribui as reservas do dia (sem mesa) nas mesas livres do espaço, por capacidade"
-              >
-                {preenchendo ? 'Preenchendo…' : '✨ Preencher mesas com as reservas'}
-              </button>
-              <span className="text-xs text-slate-500">do dia {data.split('-').reverse().join('/')}</span>
-            </div>
-          )}
           <MapaMesas
             filiais={filialFiltro ? filiais.filter((f) => f.id === filialFiltro) : filiais}
             ocupadas={new Set(ocupadas)}
