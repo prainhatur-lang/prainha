@@ -57,12 +57,9 @@ function MesaCard({ mesa, info, noConsumer, larguraPx }: { mesa: Mesa; info?: Re
 /**
  * Agrupa mesas em N "raias" indo do rio (frente) pra trás — cada bloco de 4
  * mesas consecutivas do array é uma fatia de profundidade; a fatia i cai na
- * raia (i % largura), então a raia 0 recebe as fatias 0, `largura`,
- * `largura*2`... empilhadas front-to-back. Com largura=5 e mesas 1-60 da
- * Areia, dá exatamente: raia 0 = 4,3,2,1,24,23,22,21,44,43,42,41 (frente=4);
- * raia 1 = 8,7,6,5,... (frente=8); raia 2 frente=12; raia 3 frente=16; raia
- * 4 frente=20 — bate com a planta real descrita pelo dono (só essas 5
- * mesas encostam no rio, as outras 55 ficam atrás, na mesma raia).
+ * raia (i % largura). Com largura=5 e um bloco de 20 mesas (1 fatia por
+ * raia, sem repetir), dá raia0=[4,3,2,1] (frente=4), raia1=[8,7,6,5]
+ * (frente=8), raia2 frente=12, raia3 frente=16, raia4 frente=20.
  */
 function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
   const fatias: T[][] = [];
@@ -72,8 +69,21 @@ function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
   return raias;
 }
 
+/**
+ * Areia não é 1 raia de 12 mesas de fundo — são 3 BLOCOS de 20 mesas lado a
+ * lado (1-20, 21-40, 41-60), cada um com suas próprias 5 raias de 4 de
+ * profundidade. O bloco 2 (frente=24,28,32,36,40) fica do lado do bloco 1
+ * (frente=4,8,12,16,20), não empilhado atrás dele na mesma raia — mesma
+ * lógica pro bloco 3 (frente=44,48,52,56,60).
+ */
+function blocosDeAreia<T>(mesas: T[]): T[][][] {
+  const blocos: T[][][] = [];
+  for (let i = 0; i < mesas.length; i += 20) blocos.push(agruparEmRaias(mesas.slice(i, i + 20), 5));
+  return blocos;
+}
+
 function AreiaGrid({ mesas, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { mesas: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
-  const raias = agruparEmRaias(mesas, 5);
+  const blocos = blocosDeAreia(mesas);
   const livres = mesas.filter(
     (m) => !ocupadas.has(`${filialId}:${m.numero}`) && !ocupadasConsumer.has(`${filialId}:${m.numero}`),
   ).length;
@@ -84,19 +94,23 @@ function AreiaGrid({ mesas, ocupadas, ocupadasConsumer, reservasPorMesa, filialI
         <h4 className="text-sm font-semibold text-slate-800">Areia</h4>
         <span className="text-xs text-slate-500">{livres}/{mesas.length} livres</span>
       </div>
-      <p className="mt-0.5 text-[10px] text-slate-400">mesas 4, 8, 12, 16, 20 encostam no rio — as demais ficam atrás, na mesma raia</p>
+      <p className="mt-0.5 text-[10px] text-slate-400">mesas 4, 8, 12, 16, 20 encostam no rio — os próximos 3 blocos de 20 ficam do lado, um depois do outro</p>
       <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
         <div className="mb-1 text-center text-[10px] font-medium text-sky-500">🌊 rio (frente)</div>
-        <div className="flex gap-1.5 overflow-x-auto pb-1">
-          {raias.map((raia, ri) => (
-            <div key={ri} className="flex flex-col gap-1.5">
-              {raia.map((m) => (
-                <MesaCard
-                  key={m.numero}
-                  mesa={m}
-                  info={reservasPorMesa[`${filialId}:${m.numero}`]}
-                  noConsumer={ocupadasConsumer.has(`${filialId}:${m.numero}`)}
-                />
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {blocos.map((raias, bi) => (
+            <div key={bi} className={`flex gap-1.5 ${bi > 0 ? 'border-l border-sky-100 pl-3' : ''}`}>
+              {raias.map((raia, ri) => (
+                <div key={ri} className="flex flex-col gap-1.5">
+                  {raia.map((m) => (
+                    <MesaCard
+                      key={m.numero}
+                      mesa={m}
+                      info={reservasPorMesa[`${filialId}:${m.numero}`]}
+                      noConsumer={ocupadasConsumer.has(`${filialId}:${m.numero}`)}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
           ))}
