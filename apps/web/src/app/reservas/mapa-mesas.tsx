@@ -89,6 +89,76 @@ function Espaco({ nome, mesas, ocupadas, ocupadasConsumer, reservasPorMesa, fili
   );
 }
 
+/**
+ * Deck Superior + Lounges tratados como UM bloco só — fica atrás das mesas
+ * 1-20 da Areia (não é um espaço genérico em colunas de 4, é a planta real
+ * descrita pelo dono): linha da frente 101 | 128 | 129 | 130 (viradas pro
+ * rio); atrás de 101 vêm 102+103, e atrás dessas 104-107; atrás de 128+
+ * metade de 129 vêm 108+109 (deck); atrás do outro lado (130) vêm 110+111.
+ */
+function DeckELounges({
+  deck,
+  lounges,
+  ocupadas,
+  ocupadasConsumer,
+  reservasPorMesa,
+  filialId,
+}: {
+  deck: Mesa[];
+  lounges: Mesa[];
+  ocupadas: Set<string>;
+  ocupadasConsumer: Set<string>;
+  reservasPorMesa: Record<string, ReservaInfo>;
+  filialId: string;
+}) {
+  const todas = [...deck, ...lounges];
+  const m = (numero: string) => todas.find((x) => x.numero === numero);
+  const card = (numero: string) => {
+    const mesa = m(numero);
+    if (!mesa) return null;
+    return (
+      <MesaCard
+        key={numero}
+        mesa={mesa}
+        info={reservasPorMesa[`${filialId}:${numero}`]}
+        noConsumer={ocupadasConsumer.has(`${filialId}:${numero}`)}
+      />
+    );
+  };
+  const livres = todas.filter(
+    (mm) => !ocupadas.has(`${filialId}:${mm.numero}`) && !ocupadasConsumer.has(`${filialId}:${mm.numero}`),
+  ).length;
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-baseline justify-between">
+        <h4 className="text-sm font-semibold text-slate-800">Deck Superior + Lounges</h4>
+        <span className="text-xs text-slate-500">{livres}/{todas.length} livres</span>
+      </div>
+      <p className="mt-0.5 text-[10px] text-slate-400">atrás das mesas 1-20 da Areia · virado pro rio na linha da frente</p>
+      <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
+        <div className="mb-1.5 text-center text-[10px] font-medium text-sky-500">🌊 Areia / rio (frente)</div>
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {/* Lado 101: mesa grande → 102+103 → 104-107 */}
+          <div className="flex flex-col items-start gap-1.5">
+            <div className="flex gap-1.5">{card('101')}</div>
+            <div className="flex gap-1.5">{card('102')}{card('103')}</div>
+            <div className="flex gap-1.5">{card('104')}{card('105')}{card('106')}{card('107')}</div>
+          </div>
+          {/* Lado Lounges: 128,129,130 → 108,109 (atrás de 128+meio de 129) e 110,111 (atrás de 130) */}
+          <div className="flex flex-col items-start gap-1.5 border-l border-sky-100 pl-3">
+            <div className="flex gap-1.5">{card('128')}{card('129')}{card('130')}</div>
+            <div className="flex gap-1.5">
+              <div className="flex gap-1.5">{card('108')}{card('109')}</div>
+              <div className="ml-1.5 flex gap-1.5">{card('110')}{card('111')}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa }: { filiais: FilialOpt[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo> }) {
   const comMesas = filiais.filter((f) => (f.areas ?? []).some((a) => (a.mesas?.length ?? 0) > 0));
   if (comMesas.length === 0) {
@@ -103,16 +173,35 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
         <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-100 ring-1 ring-orange-300" /> ocupada no sistema (sem reserva)</span>
         <span>🔗 juntável</span>
       </div>
-      {comMesas.map((f) => (
-        <div key={f.id} className="mt-3">
-          {filiais.length > 1 && <div className="text-xs font-semibold text-slate-600">{f.nome}</div>}
-          {(f.areas ?? [])
-            .filter((a) => (a.mesas?.length ?? 0) > 0)
-            .map((a) => (
+      {comMesas.map((f) => {
+        const areasComMesa = (f.areas ?? []).filter((a) => (a.mesas?.length ?? 0) > 0);
+        const deckArea = areasComMesa.find((a) => a.nome === 'Deck Superior');
+        const loungesArea = areasComMesa.find((a) => a.nome === 'Lounges');
+        const outras = areasComMesa.filter((a) => a.nome !== 'Deck Superior' && a.nome !== 'Lounges');
+        return (
+          <div key={f.id} className="mt-3">
+            {filiais.length > 1 && <div className="text-xs font-semibold text-slate-600">{f.nome}</div>}
+            {outras.map((a) => (
               <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
             ))}
-        </div>
-      ))}
+            {deckArea && loungesArea ? (
+              <DeckELounges
+                deck={deckArea.mesas!}
+                lounges={loungesArea.mesas!}
+                ocupadas={ocupadas}
+                ocupadasConsumer={ocupadasConsumer}
+                reservasPorMesa={reservasPorMesa}
+                filialId={f.id}
+              />
+            ) : (
+              <>
+                {deckArea && <Espaco nome="Deck Superior" mesas={deckArea.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />}
+                {loungesArea && <Espaco nome="Lounges" mesas={loungesArea.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
