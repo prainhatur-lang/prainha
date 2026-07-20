@@ -49,7 +49,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   const out = await Promise.all(
     areas.map(async (a) => {
       const total = a.mesas!.length;
-      const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome })).size;
+      const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome, mesasValidas: a.mesas!.map((m) => String(m.numero)) })).size;
       const limite = typeof a.percentualReserva === 'number' ? Math.floor((total * a.percentualReserva) / 100) : total;
       return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas) };
     }),

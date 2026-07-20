@@ -43,12 +43,27 @@ export async function POST(request: Request) {
   // Segunda mesa juntada lateralmente pra caber grupo maior que 1 mesa só.
   const mesaJuntada = txt(b?.mesaJuntada, 20);
 
+  // Config da filial (mesas do espaço + regras) — busca antes pra poder
+  // escopar a checagem de ocupação do Consumer só às mesas desse espaço
+  // (ver comentário em mesasOcupadas: sem isso, conta comandas abertas da
+  // casa INTEIRA e derruba espaços pequenos como "lotado" à toa).
+  let espacoCfg: { somenteEventos?: boolean; horaLimite?: string | null; mesas?: Array<{ numero: string | number }> } | undefined;
+  if (area) {
+    const [fil] = await db
+      .select({ reservaConfig: schema.filial.reservaConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filialId))
+      .limit(1);
+    espacoCfg = fil?.reservaConfig?.areas?.find((a) => a.nome === area);
+  }
+  const mesasValidas = espacoCfg?.mesas?.map((m) => String(m.numero));
+
   // Mesa(s) já ocupada(s) por outra reserva ativa no mesmo espaço/data?
   // Bloqueia double-booking.
   if (mesa && area) {
     const livre = mesaJuntada
-      ? await mesasEstaoLivres({ filialId, data, area, mesas: [mesa, mesaJuntada] })
-      : await mesaEstaLivre({ filialId, data, area, mesa });
+      ? await mesasEstaoLivres({ filialId, data, area, mesas: [mesa, mesaJuntada], mesasValidas })
+      : await mesaEstaLivre({ filialId, data, area, mesa, mesasValidas });
     if (!livre) {
       return NextResponse.json(
         { error: `Mesa ${mesa}${mesaJuntada ? `/${mesaJuntada}` : ''} já está ocupada em ${area} nessa data.` },
@@ -59,18 +74,12 @@ export async function POST(request: Request) {
 
   // Valida hora limite do espaco escolhido (regra: incentivar chegar mais cedo).
   if (area) {
-    const [fil] = await db
-      .select({ reservaConfig: schema.filial.reservaConfig })
-      .from(schema.filial)
-      .where(eq(schema.filial.id, filialId))
-      .limit(1);
-    const espaco = fil?.reservaConfig?.areas?.find((a) => a.nome === area);
-    if (espaco?.somenteEventos) {
+    if (espacoCfg?.somenteEventos) {
       return NextResponse.json({ error: `${area} está disponível somente para eventos` }, { status: 400 });
     }
-    if (espaco?.horaLimite && hora > espaco.horaLimite) {
+    if (espacoCfg?.horaLimite && hora > espacoCfg.horaLimite) {
       return NextResponse.json(
-        { error: `${area} aceita reserva de mesa só até ${espaco.horaLimite}` },
+        { error: `${area} aceita reserva de mesa só até ${espacoCfg.horaLimite}` },
         { status: 400 },
       );
     }

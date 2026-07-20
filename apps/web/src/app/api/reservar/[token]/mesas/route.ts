@@ -35,7 +35,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     return NextResponse.json({ mesas: [] });
   }
 
-  const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area });
+  const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area, mesasValidas: areaCfg.mesas.map((m) => String(m.numero)) });
 
   const mesas = areaCfg.mesas.map((m) => ({
     numero: String(m.numero),

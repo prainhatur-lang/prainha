@@ -102,6 +102,22 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.bebidaLancamentoStatus = 'aguardando';
   }
 
+  // Mesas do espaço (pra escopar a ocupação do Consumer — ver comentário em
+  // mesasOcupadas: sem isso, conta comandas abertas da casa INTEIRA e
+  // derruba espaços pequenos como "ocupado" à toa). Só busca quando alguma
+  // checagem abaixo vai precisar.
+  let mesasValidas: string[] | undefined;
+  if (atual && (mudaMesa || mudaMesaJuntada || vaiSentar)) {
+    const [fil] = await db
+      .select({ reservaConfig: schema.filial.reservaConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, atual.filialId))
+      .limit(1);
+    const areaParaBuscar = (typeof set.area === 'string' ? set.area : atual.area) ?? undefined;
+    const espacoCfg = fil?.reservaConfig?.areas?.find((a) => a.nome === areaParaBuscar);
+    mesasValidas = espacoCfg?.mesas?.map((m) => String(m.numero));
+  }
+
   // Troca de mesa e/ou junção (recepção): a mesa (ou o par mesa+mesaJuntada)
   // não pode já estar ocupada por outra reserva ativa no mesmo espaço/data.
   // Só checa quando o par final mudou — manter o que já tinha é sempre
@@ -119,6 +135,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         area: areaFinal,
         mesas,
         excluirReservaId: id,
+        mesasValidas,
       });
       if (!livre) {
         return NextResponse.json(
@@ -142,6 +159,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       area: atual.area,
       mesas,
       excluirReservaId: id,
+      mesasValidas,
     });
     if (!livre) {
       return NextResponse.json(

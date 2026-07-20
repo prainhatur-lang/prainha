@@ -38,14 +38,22 @@ export async function mesasOcupadasNoConsumer(filialId: string): Promise<Set<str
 
 /** Mesas ocupadas por reserva ativa num espaço/data (+ Consumer, se hoje).
  *  `excluirReservaId` serve pra edição: a própria reserva não deve "brigar"
- *  com sua mesa atual. */
+ *  com sua mesa atual. `mesasValidas` = números de mesa que pertencem a esse
+ *  espaço — filtra a ocupação do Consumer, que vem da FILIAL INTEIRA (não é
+ *  escopada por espaço). SEM esse filtro, um espaço pequeno com teto baixo
+ *  (`percentualReserva`) mostra "lotado" só porque a casa tem várias mesas
+ *  abertas em QUALQUER área — bug real encontrado 20/07/2026: Deck Superior
+ *  (11 mesas, teto 8) e Lounges (3 mesas) apareciam sempre lotados porque
+ *  ocupadas.size somava as ~46 comandas abertas da casa toda, não só as
+ *  desse espaço. */
 export async function mesasOcupadas(params: {
   filialId: string;
   data: string;
   area: string;
   excluirReservaId?: string;
+  mesasValidas?: string[];
 }): Promise<Set<string>> {
-  const { filialId, data, area, excluirReservaId } = params;
+  const { filialId, data, area, excluirReservaId, mesasValidas } = params;
   const condicoes = [
     eq(schema.reserva.filialId, filialId),
     eq(schema.reserva.data, data),
@@ -89,7 +97,10 @@ export async function mesasOcupadas(params: {
 
   if (data === hojeBr()) {
     const doConsumer = await mesasOcupadasNoConsumer(filialId);
-    for (const m of doConsumer) ocupadas.add(m);
+    const validasSet = mesasValidas ? new Set(mesasValidas.map((m) => String(m).trim())) : null;
+    for (const m of doConsumer) {
+      if (!validasSet || validasSet.has(m)) ocupadas.add(m);
+    }
   }
 
   return ocupadas;
@@ -102,6 +113,7 @@ export async function mesaEstaLivre(params: {
   area: string;
   mesa: string;
   excluirReservaId?: string;
+  mesasValidas?: string[];
 }): Promise<boolean> {
   const ocupadas = await mesasOcupadas(params);
   return !ocupadas.has(String(params.mesa).trim());
@@ -115,6 +127,7 @@ export async function mesasEstaoLivres(params: {
   area: string;
   mesas: string[];
   excluirReservaId?: string;
+  mesasValidas?: string[];
 }): Promise<boolean> {
   const { mesas, ...resto } = params;
   const ocupadas = await mesasOcupadas(resto);

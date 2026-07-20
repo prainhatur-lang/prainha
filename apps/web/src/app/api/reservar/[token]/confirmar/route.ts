@@ -153,7 +153,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   let mesaAlocada: string | null = null;
   const mesasDoEspaco = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
   if (mesasDoEspaco.length > 0) {
-    const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area: espaco });
+    const ocupadas = await mesasOcupadas({ filialId: filial.id, data, area: espaco, mesasValidas: mesasDoEspaco.map((m) => String(m.numero)) });
 
     // Teto de overbook: % do total de mesas liberado pra reserva antecipada
     // (conta reserva ativa + ocupação real do Consumer, se hoje). Ausente =
