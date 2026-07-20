@@ -14,7 +14,7 @@ function corLugares(n: number): string {
 
 interface ReservaInfo { nome: string; hora: string; pessoas: number }
 
-function MesaCard({ mesa, info, noConsumer }: { mesa: Mesa; info?: ReservaInfo; noConsumer: boolean }) {
+function MesaCard({ mesa, info, noConsumer, larguraPx }: { mesa: Mesa; info?: ReservaInfo; noConsumer: boolean; larguraPx?: number }) {
   const ocupada = !!info;
   // Ocupada no Consumer mas SEM reserva vinculada = walk-in (cliente sentou
   // sem passar pela recepção/reserva).
@@ -29,7 +29,8 @@ function MesaCard({ mesa, info, noConsumer }: { mesa: Mesa; info?: ReservaInfo; 
             ? `Mesa ${mesa.numero} · ocupada no sistema (sem reserva)`
             : `Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''} · livre`
       }
-      className={`relative flex h-16 w-16 flex-col items-center justify-center rounded-lg border px-0.5 text-center ${
+      style={larguraPx ? { width: larguraPx } : undefined}
+      className={`relative flex h-16 ${larguraPx ? '' : 'w-16'} flex-col items-center justify-center rounded-lg border px-0.5 text-center ${
         ocupada
           ? 'border-rose-300 bg-rose-100 text-rose-700'
           : walkIn
@@ -166,7 +167,7 @@ function DeckELounges({
 }) {
   const todas = [...deck, ...lounges];
   const m = (numero: string) => todas.find((x) => x.numero === numero);
-  const card = (numero: string) => {
+  const card = (numero: string, larguraPx?: number) => {
     const mesa = m(numero);
     if (!mesa) return null;
     return (
@@ -175,6 +176,7 @@ function DeckELounges({
         mesa={mesa}
         info={reservasPorMesa[`${filialId}:${numero}`]}
         noConsumer={ocupadasConsumer.has(`${filialId}:${numero}`)}
+        larguraPx={larguraPx}
       />
     );
   };
@@ -192,16 +194,18 @@ function DeckELounges({
       <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
         <div className="mb-1.5 text-center text-[10px] font-medium text-sky-500">🌊 Areia / rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">
-          {/* Lado 101: mesa grande → 102+103 → 104+105 → 106+107 */}
+          {/* Lado 101: mesa grande (larga igual 102+103 juntas) → 102+103 → 104+105 → 106+107 */}
           <div className="flex flex-col items-start gap-1.5">
-            <div className="flex gap-1.5">{card('101')}</div>
+            <div className="flex gap-1.5">{card('101', 134)}</div>
             <div className="flex gap-1.5">{card('102')}{card('103')}</div>
             <div className="flex gap-1.5">{card('104')}{card('105')}</div>
             <div className="flex gap-1.5">{card('106')}{card('107')}</div>
           </div>
-          {/* Lado Lounges: 128,129,130 → 108,109 (atrás de 128+meio de 129) e 110,111 (atrás de 130) */}
+          {/* Lado Lounges: mesas grandes, esticadas pra ocupar a largura das
+              4 de trás (108-111) → 108,109 (atrás de 128+meio de 129) e
+              110,111 (atrás de 130) */}
           <div className="flex flex-col items-start gap-1.5 border-l border-sky-100 pl-3">
-            <div className="flex gap-1.5">{card('128')}{card('129')}{card('130')}</div>
+            <div className="flex gap-1.5">{card('128', 87)}{card('129', 87)}{card('130', 87)}</div>
             <div className="flex gap-1.5">
               <div className="flex gap-1.5">{card('108')}{card('109')}</div>
               <div className="ml-1.5 flex gap-1.5">{card('110')}{card('111')}</div>

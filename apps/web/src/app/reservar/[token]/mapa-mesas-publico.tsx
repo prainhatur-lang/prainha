@@ -18,6 +18,7 @@ function MesaBotao({
   selecionada,
   onSelecionar,
   contexto,
+  larguraPx,
 }: {
   mesa: MesaPublica;
   pessoas: number;
@@ -26,6 +27,7 @@ function MesaBotao({
   /** Mesa de outro espaço, só pra mostrar a planta — não clicável aqui
    *  (o cliente precisa trocar o "Espaço" pra reservar ela, taxa diferente). */
   contexto?: boolean;
+  larguraPx?: number;
 }) {
   const cabe = mesa.lugares >= pessoas;
   const clicavel = !contexto && mesa.livre && cabe;
@@ -44,7 +46,8 @@ function MesaBotao({
               ? `Mesa ${mesa.numero} · ${mesa.lugares} lugares — não cabe ${pessoas} pessoa(s)`
               : `Mesa ${mesa.numero} · ${mesa.lugares} lugares`
       }
-      className={`flex h-14 w-14 flex-col items-center justify-center rounded-lg border text-center transition ${
+      style={larguraPx ? { width: larguraPx } : undefined}
+      className={`flex h-14 ${larguraPx ? '' : 'w-14'} flex-col items-center justify-center rounded-lg border text-center transition ${
         sel
           ? 'border-[#b3411c] bg-[#b3411c] text-white shadow-md'
           : contexto
@@ -132,12 +135,12 @@ export function MapaDeckLoungesPublico({
   const todas = [...deck, ...lounges];
   if (todas.length === 0) return null;
   const m = (numero: string) => todas.find((x) => x.numero === numero);
-  const botao = (numero: string) => {
+  const botao = (numero: string, larguraPx?: number) => {
     const mesa = m(numero);
     if (!mesa) return null;
     const doLadoDeck = deck.some((x) => x.numero === numero);
     const contexto = (doLadoDeck && areaAtual !== 'Deck Superior') || (!doLadoDeck && areaAtual !== 'Lounges');
-    return <MesaBotao key={numero} mesa={mesa} pessoas={pessoas} selecionada={selecionada} onSelecionar={onSelecionar} contexto={contexto} />;
+    return <MesaBotao key={numero} mesa={mesa} pessoas={pessoas} selecionada={selecionada} onSelecionar={onSelecionar} contexto={contexto} larguraPx={larguraPx} />;
   };
 
   return (
@@ -150,13 +153,13 @@ export function MapaDeckLoungesPublico({
         <div className="mb-1.5 text-center text-[10px] font-medium text-[#7fb0cf]">🌊 Areia / rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">
           <div className="flex flex-col items-start gap-1.5">
-            <div className="flex gap-1.5">{botao('101')}</div>
+            <div className="flex gap-1.5">{botao('101', 118)}</div>
             <div className="flex gap-1.5">{botao('102')}{botao('103')}</div>
             <div className="flex gap-1.5">{botao('104')}{botao('105')}</div>
             <div className="flex gap-1.5">{botao('106')}{botao('107')}</div>
           </div>
           <div className="flex flex-col items-start gap-1.5 border-l border-[#dde9f0] pl-3">
-            <div className="flex gap-1.5">{botao('128')}{botao('129')}{botao('130')}</div>
+            <div className="flex gap-1.5">{botao('128', 77)}{botao('129', 77)}{botao('130', 77)}</div>
             <div className="flex gap-1.5">
               <div className="flex gap-1.5">{botao('108')}{botao('109')}</div>
               <div className="ml-1.5 flex gap-1.5">{botao('110')}{botao('111')}</div>
