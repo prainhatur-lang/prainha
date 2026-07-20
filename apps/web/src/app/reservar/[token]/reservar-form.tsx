@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
-import { MapaMesasPublico, type MesaPublica } from './mapa-mesas-publico';
+import { MapaMesasPublico, MapaDeckLoungesPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
   nome: string;
@@ -65,11 +65,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // mesa (opcional). Recarrega sempre que espaço/data mudam; escolha antiga
   // não faz mais sentido nesse caso, então reseta.
   const [mesas, setMesas] = useState<MesaPublica[]>([]);
+  // Deck Superior e Lounges ficam fisicamente juntos (mesma planta do mapa
+  // do admin) — quando o cliente escolhe QUALQUER um dos dois, busca o
+  // outro também só pra desenhar o contexto espacial (não fica clicável).
+  const [mesasVizinhas, setMesasVizinhas] = useState<MesaPublica[]>([]);
   const [mesaEscolhida, setMesaEscolhida] = useState('');
+  const areaVizinha = espaco === 'Deck Superior' ? 'Lounges' : espaco === 'Lounges' ? 'Deck Superior' : null;
   useEffect(() => {
     setMesaEscolhida('');
     if (!espaco || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
       setMesas([]);
+      setMesasVizinhas([]);
       return;
     }
     let cancel = false;
@@ -79,10 +85,20 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         if (!cancel && Array.isArray(d?.mesas)) setMesas(d.mesas);
       })
       .catch(() => {});
+    if (areaVizinha) {
+      fetch(`/api/reservar/${token}/mesas?area=${encodeURIComponent(areaVizinha)}&data=${data}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (!cancel && Array.isArray(d?.mesas)) setMesasVizinhas(d.mesas);
+        })
+        .catch(() => {});
+    } else {
+      setMesasVizinhas([]);
+    }
     return () => {
       cancel = true;
     };
-  }, [espaco, data, token]);
+  }, [espaco, data, token, areaVizinha]);
 
   // Catálogo real de Cerveja/Espumante/Vinho do Consumer (com combo de
   // cerveja). Se vier vazio (filial sem sync, ou tudo filtrado), cai pra
@@ -581,7 +597,18 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} className={inp} />
           </div>
         </div>
-        <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
+        {espaco === 'Deck Superior' || espaco === 'Lounges' ? (
+          <MapaDeckLoungesPublico
+            areaAtual={espaco}
+            deck={espaco === 'Deck Superior' ? mesas : mesasVizinhas}
+            lounges={espaco === 'Lounges' ? mesas : mesasVizinhas}
+            pessoas={pessoas}
+            selecionada={mesaEscolhida}
+            onSelecionar={setMesaEscolhida}
+          />
+        ) : (
+          <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
+        )}
         {diaFechado ? null : semHorarios ? (
           <p className="text-xs text-[#b3411c]">Não sobrou horário disponível hoje — escolha outra data. 🌅</p>
         ) : (
