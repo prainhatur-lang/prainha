@@ -107,8 +107,9 @@ export function MapaMesasPublico({
 /**
  * Deck Superior + Lounges como planta real (mesma lógica do mapa do admin,
  * ver mapa-mesas.tsx `DeckELounges`) — linha da frente 101 | 128 | 129 | 130
- * virada pro rio; atrás de 101 vêm 102+103, atrás dessas 104-107; atrás de
- * 128+metade de 129 vêm 108+109; atrás do outro lado (130) vêm 110+111.
+ * virada pro rio; atrás de 101 vêm 102+103, atrás dessas 104+105, e atrás
+ * dessas 106+107; atrás de 128+metade de 129 vêm 108+109; atrás do outro
+ * lado (130) vêm 110+111.
  * `areaAtual` decide qual lado é clicável — o outro é só contexto visual
  * (mesa de outro espaço, taxa diferente, cliente troca o "Espaço" pra
  * reservar lá).
@@ -151,7 +152,8 @@ export function MapaDeckLoungesPublico({
           <div className="flex flex-col items-start gap-1.5">
             <div className="flex gap-1.5">{botao('101')}</div>
             <div className="flex gap-1.5">{botao('102')}{botao('103')}</div>
-            <div className="flex gap-1.5">{botao('104')}{botao('105')}{botao('106')}{botao('107')}</div>
+            <div className="flex gap-1.5">{botao('104')}{botao('105')}</div>
+            <div className="flex gap-1.5">{botao('106')}{botao('107')}</div>
           </div>
           <div className="flex flex-col items-start gap-1.5 border-l border-[#dde9f0] pl-3">
             <div className="flex gap-1.5">{botao('128')}{botao('129')}{botao('130')}</div>

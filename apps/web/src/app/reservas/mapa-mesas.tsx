@@ -93,8 +93,9 @@ function Espaco({ nome, mesas, ocupadas, ocupadasConsumer, reservasPorMesa, fili
  * Deck Superior + Lounges tratados como UM bloco só — fica atrás das mesas
  * 1-20 da Areia (não é um espaço genérico em colunas de 4, é a planta real
  * descrita pelo dono): linha da frente 101 | 128 | 129 | 130 (viradas pro
- * rio); atrás de 101 vêm 102+103, e atrás dessas 104-107; atrás de 128+
- * metade de 129 vêm 108+109 (deck); atrás do outro lado (130) vêm 110+111.
+ * rio); atrás de 101 vêm 102+103, atrás dessas 104+105, e atrás dessas
+ * 106+107 (4 fileiras de profundidade); atrás de 128+metade de 129 vêm
+ * 108+109 (deck); atrás do outro lado (130) vêm 110+111.
  */
 function DeckELounges({
   deck,
@@ -139,11 +140,12 @@ function DeckELounges({
       <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
         <div className="mb-1.5 text-center text-[10px] font-medium text-sky-500">🌊 Areia / rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">
-          {/* Lado 101: mesa grande → 102+103 → 104-107 */}
+          {/* Lado 101: mesa grande → 102+103 → 104+105 → 106+107 */}
           <div className="flex flex-col items-start gap-1.5">
             <div className="flex gap-1.5">{card('101')}</div>
             <div className="flex gap-1.5">{card('102')}{card('103')}</div>
-            <div className="flex gap-1.5">{card('104')}{card('105')}{card('106')}{card('107')}</div>
+            <div className="flex gap-1.5">{card('104')}{card('105')}</div>
+            <div className="flex gap-1.5">{card('106')}{card('107')}</div>
           </div>
           {/* Lado Lounges: 128,129,130 → 108,109 (atrás de 128+meio de 129) e 110,111 (atrás de 130) */}
           <div className="flex flex-col items-start gap-1.5 border-l border-sky-100 pl-3">
