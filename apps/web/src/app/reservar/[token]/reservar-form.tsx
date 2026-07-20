@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
+import { MapaMesasPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
   nome: string;
@@ -59,6 +60,29 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [voltou, setVoltou] = useState<string | null>(null);
   const [precisaCpf, setPrecisaCpf] = useState(false);
   const [cpf, setCpf] = useState('');
+
+  // Mapa de mesas do espaço escolhido — cliente pode clicar pra escolher a
+  // mesa (opcional). Recarrega sempre que espaço/data mudam; escolha antiga
+  // não faz mais sentido nesse caso, então reseta.
+  const [mesas, setMesas] = useState<MesaPublica[]>([]);
+  const [mesaEscolhida, setMesaEscolhida] = useState('');
+  useEffect(() => {
+    setMesaEscolhida('');
+    if (!espaco || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+      setMesas([]);
+      return;
+    }
+    let cancel = false;
+    fetch(`/api/reservar/${token}/mesas?area=${encodeURIComponent(espaco)}&data=${data}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancel && Array.isArray(d?.mesas)) setMesas(d.mesas);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [espaco, data, token]);
 
   // Catálogo real de Cerveja/Espumante/Vinho do Consumer (com combo de
   // cerveja). Se vier vazio (filial sem sync, ou tudo filtrado), cai pra
@@ -308,7 +332,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa, cpf: precisaCpf ? cpf : undefined }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, mesa: mesaEscolhida || undefined, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa, cpf: precisaCpf ? cpf : undefined }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -557,6 +581,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} className={inp} />
           </div>
         </div>
+        <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
         {diaFechado ? null : semHorarios ? (
           <p className="text-xs text-[#b3411c]">Não sobrou horário disponível hoje — escolha outra data. 🌅</p>
         ) : (

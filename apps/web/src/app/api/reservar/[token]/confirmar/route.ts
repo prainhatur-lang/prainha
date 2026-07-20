@@ -56,6 +56,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const bebidaComboQtd = Number.isInteger(b?.bebidaComboQtd) && b.bebidaComboQtd > 0 ? b.bebidaComboQtd : null;
   const bebidaCodigoPdv = Number.isInteger(b?.bebidaCodigoPdv) && b.bebidaCodigoPdv > 0 ? b.bebidaCodigoPdv : null;
   const placa = typeof b?.placa === 'string' && b.placa.trim() ? b.placa.trim().toUpperCase().slice(0, 10) : null;
+  // Mesa escolhida pelo cliente no mapa clicável (opcional — sem isso, cai
+  // na alocação automática de sempre).
+  const mesaEscolhida = typeof b?.mesa === 'string' && b.mesa.trim() ? b.mesa.trim().slice(0, 20) : null;
   const cpfDigitos = typeof b?.cpf === 'string' ? b.cpf.replace(/\D/g, '') : '';
 
   const cfg = filial.reservaConfig;
@@ -166,22 +169,45 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       );
     }
 
-    const ordenadas = mesasDoEspaco.slice().sort((a, b) => a.lugares - b.lugares);
-    const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
-    if (cabem.length === 0) {
-      return NextResponse.json(
-        { error: `Não temos mesa para ${pessoas} pessoa(s) em ${espaco}. Tente outro espaço.` },
-        { status: 409 },
-      );
+    if (mesaEscolhida) {
+      // Cliente escolheu no mapa — revalida no servidor (nunca confia no
+      // client): existe, cabe o grupo, e ainda está livre (pode ter sido
+      // reservada por outra pessoa entre o cliente ver o mapa e confirmar).
+      const escolhida = mesasDoEspaco.find((m) => String(m.numero) === mesaEscolhida);
+      if (!escolhida) {
+        return NextResponse.json({ error: `Mesa ${mesaEscolhida} não existe em ${espaco}.` }, { status: 400 });
+      }
+      if (escolhida.lugares < pessoas) {
+        return NextResponse.json(
+          { error: `A mesa ${mesaEscolhida} tem só ${escolhida.lugares} lugares — não cabe ${pessoas} pessoa(s).` },
+          { status: 400 },
+        );
+      }
+      if (ocupadas.has(mesaEscolhida)) {
+        return NextResponse.json(
+          { error: `A mesa ${mesaEscolhida} acabou de ser reservada por outra pessoa. Escolha outra mesa. 🙏` },
+          { status: 409 },
+        );
+      }
+      mesaAlocada = mesaEscolhida;
+    } else {
+      const ordenadas = mesasDoEspaco.slice().sort((a, b) => a.lugares - b.lugares);
+      const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
+      if (cabem.length === 0) {
+        return NextResponse.json(
+          { error: `Não temos mesa para ${pessoas} pessoa(s) em ${espaco}. Tente outro espaço.` },
+          { status: 409 },
+        );
+      }
+      const livre = cabem.find((m) => !ocupadas.has(String(m.numero)));
+      if (!livre) {
+        return NextResponse.json(
+          { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
+          { status: 409 },
+        );
+      }
+      mesaAlocada = String(livre.numero);
     }
-    const livre = cabem.find((m) => !ocupadas.has(String(m.numero)));
-    if (!livre) {
-      return NextResponse.json(
-        { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
-        { status: 409 },
-      );
-    }
-    mesaAlocada = String(livre.numero);
   }
 
   const valorAtual = typeof cfg?.valorAtual === 'number' ? cfg.valorAtual : 0;
