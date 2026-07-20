@@ -53,6 +53,58 @@ function MesaCard({ mesa, info, noConsumer }: { mesa: Mesa; info?: ReservaInfo; 
   );
 }
 
+/**
+ * Agrupa mesas em N "raias" indo do rio (frente) pra trás — cada bloco de 4
+ * mesas consecutivas do array é uma fatia de profundidade; a fatia i cai na
+ * raia (i % largura), então a raia 0 recebe as fatias 0, `largura`,
+ * `largura*2`... empilhadas front-to-back. Com largura=5 e mesas 1-60 da
+ * Areia, dá exatamente: raia 0 = 4,3,2,1,24,23,22,21,44,43,42,41 (frente=4);
+ * raia 1 = 8,7,6,5,... (frente=8); raia 2 frente=12; raia 3 frente=16; raia
+ * 4 frente=20 — bate com a planta real descrita pelo dono (só essas 5
+ * mesas encostam no rio, as outras 55 ficam atrás, na mesma raia).
+ */
+function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
+  const fatias: T[][] = [];
+  for (let i = 0; i < itens.length; i += 4) fatias.push(itens.slice(i, i + 4).reverse());
+  const raias: T[][] = Array.from({ length: largura }, () => []);
+  fatias.forEach((fatia, i) => raias[i % largura]!.push(...fatia));
+  return raias;
+}
+
+function AreiaGrid({ mesas, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { mesas: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
+  const raias = agruparEmRaias(mesas, 5);
+  const livres = mesas.filter(
+    (m) => !ocupadas.has(`${filialId}:${m.numero}`) && !ocupadasConsumer.has(`${filialId}:${m.numero}`),
+  ).length;
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-baseline justify-between">
+        <h4 className="text-sm font-semibold text-slate-800">Areia</h4>
+        <span className="text-xs text-slate-500">{livres}/{mesas.length} livres</span>
+      </div>
+      <p className="mt-0.5 text-[10px] text-slate-400">mesas 4, 8, 12, 16, 20 encostam no rio — as demais ficam atrás, na mesma raia</p>
+      <div className="mt-1 rounded-lg bg-gradient-to-b from-sky-50 to-white p-2">
+        <div className="mb-1 text-center text-[10px] font-medium text-sky-500">🌊 rio (frente)</div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {raias.map((raia, ri) => (
+            <div key={ri} className="flex flex-col gap-1.5">
+              {raia.map((m) => (
+                <MesaCard
+                  key={m.numero}
+                  mesa={m}
+                  info={reservasPorMesa[`${filialId}:${m.numero}`]}
+                  noConsumer={ocupadasConsumer.has(`${filialId}:${m.numero}`)}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Espaco({ nome, mesas, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { nome: string; mesas: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
   // colunas de 4 (rio em cima → mesa "da frente" no topo de cada coluna)
   const colunas: Mesa[][] = [];
@@ -179,10 +231,17 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
         const areasComMesa = (f.areas ?? []).filter((a) => (a.mesas?.length ?? 0) > 0);
         const deckArea = areasComMesa.find((a) => a.nome === 'Deck Superior');
         const loungesArea = areasComMesa.find((a) => a.nome === 'Lounges');
-        const outras = areasComMesa.filter((a) => a.nome !== 'Deck Superior' && a.nome !== 'Lounges');
+        // Grade de 5 raias (4/8/12/16/20 na frente) só faz sentido pra ESSA
+        // planta específica (60 mesas, múltiplo de 20) — se o número mudar
+        // de novo, cai pro genérico em vez de desenhar raia errada.
+        const areiaArea = areasComMesa.find((a) => a.nome === 'Areia' && (a.mesas?.length ?? 0) % 20 === 0);
+        const outras = areasComMesa.filter((a) => a.nome !== 'Deck Superior' && a.nome !== 'Lounges' && a !== areiaArea);
         return (
           <div key={f.id} className="mt-3">
             {filiais.length > 1 && <div className="text-xs font-semibold text-slate-600">{f.nome}</div>}
+            {areiaArea && (
+              <AreiaGrid mesas={areiaArea.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
+            )}
             {outras.map((a) => (
               <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
             ))}
