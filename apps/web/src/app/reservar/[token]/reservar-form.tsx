@@ -514,9 +514,14 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
                 // Não expor a quantidade de mesas restantes pro cliente —
                 // só sinaliza quando o espaço está lotado (opção desabilitada).
                 const disp = d && d.livres === 0 ? ' · LOTADO' : '';
+                // Espaço com taxa (ex: Lounge): mostra o valor JÁ na opção do
+                // dropdown, antes de selecionar — não espera o cliente clicar
+                // pra descobrir que é pago.
+                const taxaOpcao = a.taxaReserva ? (ehFimDeSemana(data) ? a.taxaReserva.sabDom : a.taxaReserva.diasUteis) : null;
+                const pago = taxaOpcao ? ` · pago (${brl(taxaOpcao)})` : '';
                 return (
                   <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>
-                    {a.nome}{disp}
+                    {a.nome}{pago}{disp}
                   </option>
                 );
               })}
