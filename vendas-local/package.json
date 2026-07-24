@@ -1,0 +1,12 @@
+{
+  "name": "vendas-local",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Sistema de vendas local-first (Fase 0: espelho + monitor) — piloto 0001",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": {
+    "node-firebird": "2.0.2",
+    "postgres": "^3.4.4"
+  }
+}
