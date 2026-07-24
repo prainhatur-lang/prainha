@@ -19,7 +19,7 @@ set "PASTA=C:\prainha-vendas"
 set "PGVER=16"
 set "PGFULLVER=16.9-1"
 set "PGPORT=5432"
-set "PGSUPERPASS=Prainha_Super_2026"
+set "PGSUPERPASS=Eli153515"
 set "APPDB=vendas_local"
 set "APPUSER=prainha_app"
 set "APPPASS=Prainha_App_2026"
@@ -45,12 +45,14 @@ if not exist "%PASTA%\server.mjs" (
   pause & exit /b 1
 )
 
-REM ---- 2) PostgreSQL ----
-set "PGHOME=C:\Program Files\PostgreSQL\%PGVER%"
-if exist "%PGHOME%\bin\psql.exe" (
-  echo [2/6] PostgreSQL %PGVER% ja instalado.
+REM ---- 2) PostgreSQL (detecta QUALQUER versao ja instalada) ----
+set "PGHOME="
+for /d %%D in ("C:\Program Files\PostgreSQL\*") do if exist "%%D\bin\psql.exe" set "PGHOME=%%D"
+if not "%PGHOME%"=="" (
+  echo [2/6] PostgreSQL ja instalado em "%PGHOME%".
   goto :pgconfig
 )
+set "PGHOME=C:\Program Files\PostgreSQL\%PGVER%"
 echo [2/6] Instalando PostgreSQL %PGVER% ...
 where winget >nul 2>&1
 if "%errorlevel%"=="0" (
