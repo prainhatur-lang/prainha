@@ -45,9 +45,10 @@ if not exist "%PASTA%\server.mjs" (
   pause & exit /b 1
 )
 
-REM ---- 2) PostgreSQL (detecta QUALQUER versao ja instalada) ----
+REM ---- 2) PostgreSQL (detecta QUALQUER versao; PREFERE a 16, ignora 9.5 antigo) ----
 set "PGHOME="
 for /d %%D in ("C:\Program Files\PostgreSQL\*") do if exist "%%D\bin\psql.exe" set "PGHOME=%%D"
+if exist "C:\Program Files\PostgreSQL\16\bin\psql.exe" set "PGHOME=C:\Program Files\PostgreSQL\16"
 if not "%PGHOME%"=="" (
   echo [2/6] PostgreSQL ja instalado em "%PGHOME%".
   goto :pgconfig
@@ -82,29 +83,16 @@ if "%SVC%"=="" set "SVC=postgresql-x64-%PGVER%"
 sc config "%SVC%" start= auto >nul 2>&1
 net start "%SVC%" >nul 2>&1
 
-REM define a senha do superusuario via trust temporario (idempotente)
-powershell -NoProfile -Command "$f='%PGDATA%\pg_hba.conf'; Copy-Item $f ($f + '.bak') -Force; (Get-Content $f) -replace '(scram-sha-256|md5|peer|ident|sspi)','trust' | Set-Content $f"
-net stop "%SVC%" >nul 2>&1
-net start "%SVC%" >nul 2>&1
-timeout /t 3 /nobreak >nul
-"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -c "ALTER USER postgres PASSWORD '%PGSUPERPASS%';" >nul 2>&1
-powershell -NoProfile -Command "Copy-Item ('%PGDATA%\pg_hba.conf.bak') ('%PGDATA%\pg_hba.conf') -Force"
-net stop "%SVC%" >nul 2>&1
-net start "%SVC%" >nul 2>&1
-timeout /t 3 /nobreak >nul
-
+REM A senha do 'postgres' ja foi definida pelo corrige-postgres.bat (= %PGSUPERPASS%).
+REM Cria banco + usuario SEM \gexec (compativel com psql de qualquer versao).
 echo    Criando banco %APPDB% e usuario %APPUSER% ...
-set "SQL=%TEMP%\pg-setup.sql"
-> "%SQL%" echo DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%APPUSER%') THEN CREATE ROLE %APPUSER% LOGIN PASSWORD '%APPPASS%'; END IF; END $$;
->>"%SQL%" echo SELECT 'CREATE DATABASE %APPDB% OWNER %APPUSER%' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='%APPDB%') \gexec
->>"%SQL%" echo GRANT ALL PRIVILEGES ON DATABASE %APPDB% TO %APPUSER%;
->>"%SQL%" echo \connect %APPDB%
->>"%SQL%" echo GRANT ALL ON SCHEMA public TO %APPUSER%;
->>"%SQL%" echo ALTER SCHEMA public OWNER TO %APPUSER%;
 set "PGPASSWORD=%PGSUPERPASS%"
-"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -f "%SQL%" >nul
+"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -c "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%APPUSER%') THEN CREATE ROLE %APPUSER% LOGIN PASSWORD '%APPPASS%'; END IF; END $$;"
+"%PGHOME%\bin\createdb" -U postgres -h 127.0.0.1 -p %PGPORT% -O %APPUSER% %APPDB% 2>nul
+"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -c "GRANT ALL PRIVILEGES ON DATABASE %APPDB% TO %APPUSER%;"
+"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -d %APPDB% -c "GRANT ALL ON SCHEMA public TO %APPUSER%;"
+"%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -d %APPDB% -c "ALTER SCHEMA public OWNER TO %APPUSER%;"
 set "PGPASSWORD="
-del "%SQL%" >nul 2>&1
 
 REM ---- 3) Node.js ----
 set "NODEEXE=C:\Program Files\nodejs\node.exe"
