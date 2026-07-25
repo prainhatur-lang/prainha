@@ -566,7 +566,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupa
             ) : (
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">✨ novo cliente</span>
             ))}
-            <span className="text-xs text-slate-500">· {r.pessoas} pessoa(s)</span>
+            <PessoasInline reservaId={r.id} inicial={r.pessoas} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${st.cls}`}>{st.txt}</span>
             <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{CANAL_INFO[r.canal] ?? r.canal}</span>
             {r.origemExterna && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-600">via {r.origemExterna}</span>}
@@ -626,6 +626,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupa
           </div>
           {r.observacao && <p className="mt-1 text-xs text-slate-600">“{r.observacao}”</p>}
           <PreferenciasInline reservaId={r.id} inicial={r.preferencias} podeAtualizar={podeAtualizar} onMudou={onMudou} />
+          <HistoricoInline reservaId={r.id} />
         </div>
         {r.clienteTelefone && (
           <a href={whatsappLink(r.clienteTelefone, r.clienteNome)} target="_blank" rel="noopener noreferrer" className="flex h-10 shrink-0 items-center gap-1 rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white active:bg-emerald-800 hover:bg-emerald-700">💬</a>
@@ -856,6 +857,149 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
 function mesaTexto(mesa: string | null, mesaJuntada?: string | null) {
   if (!mesa) return 'sem mesa';
   return mesaJuntada ? `mesa ${mesa}+${mesaJuntada}` : `mesa ${mesa}`;
+}
+
+// Nº de pessoas editável na recepção (grupo aumentou/diminuiu). Toda mudança
+// fica na auditoria (reserva_alteracao) com quem fez e quando.
+function PessoasInline({ reservaId, inicial, podeAtualizar, onMudou }: { reservaId: string; inicial: number; podeAtualizar: boolean; onMudou: () => void }) {
+  const [editando, setEditando] = useState(false);
+  const [val, setVal] = useState(inicial);
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function salvar() {
+    if (!Number.isInteger(val) || val < 1) return setErro('inválido');
+    setSalvando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/reservas/${reservaId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pessoas: val }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setErro(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      setEditando(false);
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (!editando) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-xs text-slate-500">
+        · {inicial} pessoa(s)
+        {podeAtualizar && (
+          <button onClick={() => { setVal(inicial); setErro(null); setEditando(true); }} className="text-[10px] text-slate-400 hover:text-slate-600" title="Editar nº de pessoas">✎</button>
+        )}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs">
+      <span className="text-slate-500">·</span>
+      <input
+        type="number"
+        min={1}
+        value={val}
+        onChange={(e) => setVal(Number(e.target.value))}
+        onKeyDown={(e) => { if (e.key === 'Enter') salvar(); if (e.key === 'Escape') setEditando(false); }}
+        autoFocus
+        className="w-14 rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
+      />
+      <span className="text-slate-500">pessoa(s)</span>
+      <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
+      <button onClick={() => { setVal(inicial); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+      {erro && <span className="text-[11px] font-medium text-rose-600">{erro}</span>}
+    </span>
+  );
+}
+
+// Histórico de auditoria da reserva: quem mudou o quê e quando (equipe com
+// email, cliente via WhatsApp, sistema). Carrega sob demanda ao abrir.
+const CAMPO_LABEL: Record<string, string> = {
+  pessoas: 'pessoas',
+  mesa: 'mesa',
+  mesa_juntada: 'junção',
+  area: 'espaço',
+  status: 'status',
+  observacao: 'observação',
+  data: 'data',
+  hora: 'hora',
+};
+interface AlteracaoItem {
+  campo: string;
+  valorAnterior: string | null;
+  valorNovo: string | null;
+  autorTipo: string;
+  autorNome: string | null;
+  criadoEm: string;
+}
+function HistoricoInline({ reservaId }: { reservaId: string }) {
+  const [aberto, setAberto] = useState(false);
+  const [linhas, setLinhas] = useState<AlteracaoItem[] | null>(null);
+  const [carregando, setCarregando] = useState(false);
+
+  async function alternar() {
+    if (aberto) return setAberto(false);
+    setAberto(true);
+    if (linhas !== null) return;
+    setCarregando(true);
+    try {
+      const r = await fetch(`/api/reservas/${reservaId}/alteracoes`);
+      const d = await r.json().catch(() => ({}));
+      setLinhas(Array.isArray(d.alteracoes) ? d.alteracoes : []);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  function fmtQuando(iso: string): string {
+    const dt = new Date(iso);
+    return dt.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+  function fmtAutor(l: AlteracaoItem): string {
+    if (l.autorTipo === 'cliente') return l.autorNome ?? 'cliente';
+    if (l.autorTipo === 'sistema') return 'sistema';
+    return l.autorNome ?? 'equipe';
+  }
+
+  return (
+    <div className="mt-1">
+      <button onClick={alternar} className="text-[11px] text-slate-400 hover:text-slate-600">
+        🕐 histórico{aberto ? ' ▴' : ''}
+      </button>
+      {aberto && (
+        <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5">
+          {carregando ? (
+            <p className="text-[11px] text-slate-400">carregando…</p>
+          ) : !linhas || linhas.length === 0 ? (
+            <p className="text-[11px] text-slate-400">sem alterações registradas.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {linhas.map((l, i) => (
+                <li key={i} className="text-[11px] text-slate-600">
+                  <span className="font-mono text-slate-400">{fmtQuando(l.criadoEm)}</span>
+                  {' · '}
+                  <span className="font-medium">{CAMPO_LABEL[l.campo] ?? l.campo}</span>
+                  {': '}
+                  <span>{l.valorAnterior ?? '—'}</span>
+                  {' → '}
+                  <span className="font-medium">{l.valorNovo ?? '—'}</span>
+                  {' · '}
+                  <span className={l.autorTipo === 'cliente' ? 'text-sky-700' : 'text-slate-500'}>{fmtAutor(l)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string }) {

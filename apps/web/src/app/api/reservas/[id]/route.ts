@@ -6,6 +6,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +39,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (typeof b?.bebidaConfirmada === 'boolean') set.bebidaConfirmada = b.bebidaConfirmada;
   if (b?.bebidaPedido !== undefined)
     set.bebidaPedido = typeof b.bebidaPedido === 'string' && b.bebidaPedido.trim() ? b.bebidaPedido.trim().slice(0, 100) : null;
+  // Numero de pessoas editavel na recepcao (cliente mudou o tamanho do grupo).
+  if (b?.pessoas !== undefined) {
+    const n = Number(b.pessoas);
+    if (!Number.isInteger(n) || n < 1 || n > 500) {
+      return NextResponse.json({ error: 'pessoas inválido' }, { status: 400 });
+    }
+    set.pessoas = n;
+  }
 
   if (Object.keys(set).length === 1) {
     return NextResponse.json({ error: 'nada para atualizar' }, { status: 400 });
@@ -67,11 +76,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     clienteNome: string;
     clienteTelefone: string | null;
     pessoas: number;
+    observacao: string | null;
     bebidaPedido: string | null;
     bebidaComboQtd: number | null;
     bebidaCodigoPdv: number | null;
   } | null = null;
-  if (mudaMesa || mudaMesaJuntada || mudaStatus || confirmaBebida) {
+  {
     const [row] = await db
       .select({
         filialId: schema.reserva.filialId,
@@ -84,6 +94,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         clienteNome: schema.reserva.clienteNome,
         clienteTelefone: schema.reserva.clienteTelefone,
         pessoas: schema.reserva.pessoas,
+        observacao: schema.reserva.observacao,
         bebidaPedido: schema.reserva.bebidaPedido,
         bebidaComboQtd: schema.reserva.bebidaComboQtd,
         bebidaCodigoPdv: schema.reserva.bebidaCodigoPdv,
@@ -176,6 +187,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     .returning({ id: schema.reserva.id });
 
   if (upd.length === 0) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+
+  // Auditoria: uma linha por campo que realmente mudou, com quem mudou.
+  if (atual) {
+    await registrarAlteracoesReserva(id, atual, set, {
+      tipo: 'equipe',
+      nome: user.email ?? null,
+      id: user.id,
+    });
+  }
 
   // Enfileira o lançamento da bebida pro agente da filial processar — se a
   // mesa já estiver aberta no Consumer, usa ela; senão abre uma comanda

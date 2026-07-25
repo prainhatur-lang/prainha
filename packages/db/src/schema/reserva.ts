@@ -164,3 +164,29 @@ export const clienteContato = pgTable(
     emailIdx: index('idx_cliente_contato_email').on(t.filialId, t.email),
   }),
 );
+
+/**
+ * Auditoria de alteracoes da reserva — quem mudou o que e quando.
+ * autor_tipo: 'equipe' (painel, autor_nome=email do usuario) |
+ * 'cliente' (botoes do WhatsApp / links publicos) | 'sistema' (cron etc).
+ */
+export const reservaAlteracao = pgTable(
+  'reserva_alteracao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    reservaId: uuid('reserva_id')
+      .notNull()
+      .references(() => reserva.id, { onDelete: 'cascade' }),
+    /** campo alterado: pessoas | mesa | mesa_juntada | area | status | observacao | ... */
+    campo: varchar('campo', { length: 30 }).notNull(),
+    valorAnterior: text('valor_anterior'),
+    valorNovo: text('valor_novo'),
+    autorTipo: varchar('autor_tipo', { length: 12 }).notNull(),
+    autorNome: varchar('autor_nome', { length: 160 }),
+    autorId: uuid('autor_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    reservaIdx: index('reserva_alteracao_reserva_idx').on(t.reservaId, t.criadoEm),
+  }),
+);

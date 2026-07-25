@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { enviarTextoWhatsApp } from '@/lib/whatsapp-otp';
+import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -92,25 +93,43 @@ async function tratarPayload(payload: string, from: string | null) {
 
   if (acao !== 'confirmar' && acao !== 'cancelar') return;
 
+  // Pre-select pra auditoria saber o status ANTERIOR (o update sobrescreve).
+  const [antes] = await db
+    .select({ id: schema.reserva.id, status: schema.reserva.status, nome: schema.reserva.clienteNome })
+    .from(schema.reserva)
+    .where(and(eq(schema.reserva.cancelToken, token), sql`${schema.reserva.status} <> 'cancelada'`))
+    .limit(1);
+  if (!antes) return;
+
   if (acao === 'confirmar') {
-    const upd = await db
+    await db
       .update(schema.reserva)
       .set({ status: 'confirmada', confirmadaClienteEm: sql`now()`, atualizadoEm: sql`now()` })
-      .where(and(eq(schema.reserva.cancelToken, token), sql`${schema.reserva.status} <> 'cancelada'`))
-      .returning({ nome: schema.reserva.clienteNome });
-    if (upd.length && from) {
+      .where(eq(schema.reserva.id, antes.id));
+    await registrarAlteracoesReserva(
+      antes.id,
+      { status: antes.status },
+      { status: 'confirmada' },
+      { tipo: 'cliente', nome: 'cliente via WhatsApp' },
+    );
+    if (from) {
       await enviarTextoWhatsApp(
         from,
-        `✅ Presença confirmada, ${(upd[0].nome ?? '').split(' ')[0] || ''}! Te esperamos. 🌅`,
+        `✅ Presença confirmada, ${(antes.nome ?? '').split(' ')[0] || ''}! Te esperamos. 🌅`,
       ).catch(() => {});
     }
   } else {
-    const upd = await db
+    await db
       .update(schema.reserva)
       .set({ status: 'cancelada', atualizadoEm: sql`now()` })
-      .where(and(eq(schema.reserva.cancelToken, token), sql`${schema.reserva.status} <> 'cancelada'`))
-      .returning({ nome: schema.reserva.clienteNome });
-    if (upd.length && from) {
+      .where(eq(schema.reserva.id, antes.id));
+    await registrarAlteracoesReserva(
+      antes.id,
+      { status: antes.status },
+      { status: 'cancelada' },
+      { tipo: 'cliente', nome: 'cliente via WhatsApp' },
+    );
+    if (from) {
       await enviarTextoWhatsApp(
         from,
         `Tudo bem! Sua reserva foi cancelada e a mesa liberada. Quando quiser, é só reservar de novo. 🙏`,
