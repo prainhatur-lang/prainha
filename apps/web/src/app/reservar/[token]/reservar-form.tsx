@@ -296,6 +296,25 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const espacoSelLotado = !!dispon[espaco] && dispon[espaco].livres === 0;
   const semHorarios = horariosDisponiveis.length === 0;
 
+  // Se HOJE já não aceita mais reserva (corte de fim de semana/feriado, dia
+  // fechado ou sem horário restante), pula o padrão direto pra amanhã em vez
+  // de abrir com o aviso vermelho — e trava o picker pra não voltar em hoje.
+  const [hojeIndisponivel, setHojeIndisponivel] = useState(false);
+  const amanha = (() => {
+    const [y, m, d] = hoje.split('-').map(Number);
+    const dt = new Date(y!, m! - 1, d! + 1);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  })();
+  useEffect(() => {
+    if (hojeIndisponivel) return;
+    if (data !== hoje) return;
+    if (!(diaFechado || horariosDisponiveis.length === 0)) return;
+    setHojeIndisponivel(true);
+    setData(amanha);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, diaFechado, horariosDisponiveis.length]);
+  const minData = hojeIndisponivel ? amanha : hoje;
+
   function msgHoraInvalida(): string {
     if (atendimento && (hora < atendimento.inicio || hora > atendimento.fim)) {
       return `Reservas só de ${atendimento.inicio} às ${atendimento.fim}.`;
@@ -582,7 +601,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div className="flex gap-3">
           <div className="flex-1">
             <label className={lbl}>Data</label>
-            <input type="date" min={hoje} value={data} onChange={(e) => setData(e.target.value)} className={inp} />
+            <input type="date" min={minData} value={data} onChange={(e) => setData(e.target.value)} className={inp} />
           </div>
           <div className="w-28">
             <label className={lbl}>Hora</label>
