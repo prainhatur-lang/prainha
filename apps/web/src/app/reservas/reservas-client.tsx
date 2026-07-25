@@ -459,7 +459,7 @@ export function ReservasClient({
       </div>
 
       {novaAberta && podeCriar && (
-        <NovaReserva filiais={filiais} dataPadrao={data} filialPadrao={filialFiltro} onCriou={() => { setNovaAberta(false); router.refresh(); }} />
+        <NovaReserva filiais={filiais} dataPadrao={data} filialPadrao={filialFiltro} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onCriou={() => { setNovaAberta(false); router.refresh(); }} />
       )}
 
       {/* Filtro de status + busca por nome/telefone */}
@@ -1005,7 +1005,7 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
   );
 }
 
-function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: FilialOpt[]; dataPadrao: string; filialPadrao: string | null; onCriou: () => void }) {
+function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasConsumer, reservasPorMesa, onCriou }: { filiais: FilialOpt[]; dataPadrao: string; filialPadrao: string | null; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onCriou: () => void }) {
   const [filialId, setFilialId] = useState(filialPadrao ?? filiais[0]?.id ?? '');
   const [clienteNome, setNome] = useState('');
   const [clienteTelefone, setTel] = useState('');
@@ -1030,6 +1030,23 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
   const mesaJuntadaSel = mesasDoEspaco.find((mm) => mm.numero === mesaJuntada);
   const capacidadeJunta = (mesaSel?.lugares ?? 0) + (mesaJuntadaSel?.lugares ?? 0);
   const capacidadeBaixa = !!(mesaSel && pessoas > (mesaJuntadaSel ? capacidadeJunta : mesaSel.lugares));
+  // Ocupação só é conhecida pro dia que a página carregou (dataPadrao) — se o
+  // usuário trocar a data da reserva no form, libera tudo (não temos o dado).
+  const ocupacaoVale = dataR === dataPadrao;
+  const setOcupadas = new Set(ocupadas);
+  const setOcupadasConsumer = new Set(ocupadasConsumer);
+  // Sufixo do rótulo + trava por mesa: reservada no dia (com hora de quem
+  // reservou) ou com comanda aberta agora no Consumer (walk-in).
+  function statusMesa(numero: string): { sufixo: string; bloqueada: boolean } {
+    if (!ocupacaoVale) return { sufixo: '', bloqueada: false };
+    const k = `${filialId}:${numero}`;
+    if (setOcupadas.has(k)) {
+      const r = reservasPorMesa[k];
+      return { sufixo: r ? ` · reservada ${r.hora}` : ' · reservada', bloqueada: true };
+    }
+    if (setOcupadasConsumer.has(k)) return { sufixo: ' · ocupada agora', bloqueada: true };
+    return { sufixo: '', bloqueada: false };
+  }
   // Mesas juntáveis do mesmo espaço, pra oferecer juntar quando a mesa
   // escolhida não comporta o grupo — a equipe decide olhando o mapa se são
   // fisicamente vizinhas (o sistema não sabe a planta do salão).
@@ -1101,9 +1118,14 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
             className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}
           >
             <option value="">Mesa…</option>
-            {mesasDoEspaco.map((mm) => (
-              <option key={mm.numero} value={mm.numero}>Mesa {mm.numero} ({mm.lugares} lug)</option>
-            ))}
+            {mesasDoEspaco.map((mm) => {
+              const st = statusMesa(mm.numero);
+              return (
+                <option key={mm.numero} value={mm.numero} disabled={st.bloqueada}>
+                  Mesa {mm.numero} ({mm.lugares} lug){st.sufixo}
+                </option>
+              );
+            })}
           </select>
         ) : (
           <input value={mesa} onChange={(e) => setMesa(e.target.value)} placeholder="Mesa" className={inp} />
@@ -1127,9 +1149,14 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, onCriou }: { filiais: 
             className={`${inp} mt-1.5 w-full`}
           >
             <option value="">Juntar com…</option>
-            {opcoesJuntar.map((mm) => (
-              <option key={mm.numero} value={mm.numero}>Mesa {mm.numero} ({mm.lugares} lug)</option>
-            ))}
+            {opcoesJuntar.map((mm) => {
+              const st = statusMesa(mm.numero);
+              return (
+                <option key={mm.numero} value={mm.numero} disabled={st.bloqueada}>
+                  Mesa {mm.numero} ({mm.lugares} lug){st.sufixo}
+                </option>
+              );
+            })}
           </select>
           {mesaJuntadaSel && (
             <p className="mt-1.5 text-xs text-amber-700">
