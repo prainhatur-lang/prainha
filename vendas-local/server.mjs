@@ -75,22 +75,27 @@ const N = (v) => (v == null ? null : Number(v));
 const T = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
 
 // ---- schema ----
+// addCol tolerante: o Postgres da loja pode ser ANTIGO (9.5 não tem ADD COLUMN IF NOT EXISTS).
+async function addCol(tabela, ddl) {
+  try { await sql.unsafe(`ALTER TABLE ${tabela} ADD COLUMN ${ddl}`); }
+  catch (e) { if (e.code !== '42701') throw e; } // 42701 = coluna já existe
+}
 async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS area (codigo integer PRIMARY KEY, nome text)`;
   await sql`CREATE TABLE IF NOT EXISTS comanda (codigo integer PRIMARY KEY, numero integer, origem integer, nome text, valor_total numeric, subtotal_pago numeric, qtd_pessoas integer, data_abertura timestamptz)`;
   await sql`CREATE TABLE IF NOT EXISTS comanda_item (id bigserial PRIMARY KEY, item_codigo bigint, codigo_pai bigint, comanda_codigo integer, nome text, quantidade numeric, valor_total numeric, tipo integer, detalhes text, area_codigo integer, criado timestamptz, produzido timestamptz, entregue timestamptz)`;
-  await sql`ALTER TABLE comanda_item ADD COLUMN IF NOT EXISTS item_codigo bigint`;
-  await sql`ALTER TABLE comanda_item ADD COLUMN IF NOT EXISTS codigo_pai bigint`;
-  await sql`ALTER TABLE comanda_item ADD COLUMN IF NOT EXISTS criado timestamptz`;
-  await sql`ALTER TABLE comanda_item ADD COLUMN IF NOT EXISTS area_codigo integer`;
+  await addCol('comanda_item', 'item_codigo bigint');
+  await addCol('comanda_item', 'codigo_pai bigint');
+  await addCol('comanda_item', 'criado timestamptz');
+  await addCol('comanda_item', 'area_codigo integer');
   // marca = os toques do NOSSO sistema + REGISTRO DURÁVEL do tempo de produção.
   // (não some no TRUNCATE do espelho; chave = ITENSPEDIDO.CODIGO)
   // tempo de produção = pronto_em - criado_em ; tempo de entrega = entregue_em - pronto_em
   await sql`CREATE TABLE IF NOT EXISTS marca (item_codigo bigint PRIMARY KEY, pronto_em timestamptz, entregue_em timestamptz)`;
-  await sql`ALTER TABLE marca ADD COLUMN IF NOT EXISTS criado_em timestamptz`;
-  await sql`ALTER TABLE marca ADD COLUMN IF NOT EXISTS comanda_codigo integer`;
-  await sql`ALTER TABLE marca ADD COLUMN IF NOT EXISTS area_codigo integer`;
-  await sql`ALTER TABLE marca ADD COLUMN IF NOT EXISTS nome text`;
+  await addCol('marca', 'criado_em timestamptz');
+  await addCol('marca', 'comanda_codigo integer');
+  await addCol('marca', 'area_codigo integer');
+  await addCol('marca', 'nome text');
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_item ON comanda_item(item_codigo)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_pai ON comanda_item(codigo_pai)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_area ON comanda_item(area_codigo)`;
