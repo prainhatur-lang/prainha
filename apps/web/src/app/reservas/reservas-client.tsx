@@ -507,18 +507,19 @@ export function ReservasClient({
             Nenhuma reserva bate com esse filtro.
           </p>
         ) : (
-          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} onMudou={() => router.refresh()} />)
+          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; onMudou: () => void }) {
+function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const [confirmandoBebida, setConfirmandoBebida] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
-  const mesasDoEspaco = filiais.find((f) => f.id === r.filialId)?.areas.find((a) => a.nome === r.area)?.mesas ?? [];
+  const areasDaFilial = (filiais.find((f) => f.id === r.filialId)?.areas ?? []).filter((a) => a.ativo && !a.somenteEventos);
+  const mesasDoEspaco = areasDaFilial.find((a) => a.nome === r.area)?.mesas ?? [];
   const precisaConfirmarBebida = !!r.bebidaPedido && r.bebidaConfirmada == null;
 
   async function setStatus(status: string, extra?: Record<string, unknown>) {
@@ -619,7 +620,7 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, onMudou }: { r:
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}
             {r.area && <span>·</span>}
-            <MesaInline reservaId={r.id} inicial={r.mesa} inicialJuntada={r.mesaJuntada} mesasDoEspaco={mesasDoEspaco} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
+            <MesaInline reservaId={r.id} filialId={r.filialId} areaInicial={r.area} areasDaFilial={areasDaFilial} inicial={r.mesa} inicialJuntada={r.mesaJuntada} mesasDoEspaco={mesasDoEspaco} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
             {r.clienteTelefone && <span>·</span>}
             {r.clienteTelefone && <span className="font-mono">{r.clienteTelefone}</span>}
           </div>
@@ -712,30 +713,51 @@ function PreferenciasInline({ reservaId, inicial, podeAtualizar, onMudou }: { re
 }
 
 // Troca de mesa na recepção: ex. mesa 10 já ocupada, recepcionista muda pra
-// mesa 11. Se o espaço tem mesas cadastradas, mostra um <select> com elas;
-// senão cai pra um campo livre. O servidor (PATCH) é quem bloqueia se a mesa
-// escolhida já estiver ocupada por outra reserva ativa (409) — a mensagem de
-// erro do servidor aparece aqui embaixo do controle.
-function MesaInline({ reservaId, inicial, inicialJuntada, mesasDoEspaco, podeAtualizar, onMudou }: { reservaId: string; inicial: string | null; inicialJuntada: string | null; mesasDoEspaco: Mesa[]; podeAtualizar: boolean; onMudou: () => void }) {
+// mesa 11 — ou muda o ESPAÇO inteiro (Areia -> Deck). Mesas já reservadas no
+// dia ou com comanda aberta agora aparecem desabilitadas com o motivo. O
+// servidor (PATCH) continua sendo a trava final (409 se ocupada) — a mensagem
+// de erro do servidor aparece aqui embaixo do controle.
+function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, inicialJuntada, mesasDoEspaco, ocupadas, ocupadasConsumer, reservasPorMesa, podeAtualizar, onMudou }: { reservaId: string; filialId: string; areaInicial: string | null; areasDaFilial: Area[]; inicial: string | null; inicialJuntada: string | null; mesasDoEspaco: Mesa[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; podeAtualizar: boolean; onMudou: () => void }) {
   const [editando, setEditando] = useState(false);
+  const [esp, setEsp] = useState(areaInicial ?? '');
   const [val, setVal] = useState(inicial ?? '');
   const [valJuntada, setValJuntada] = useState(inicialJuntada ?? '');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  const mesaSel = mesasDoEspaco.find((m) => m.numero === val);
+  const temEspacos = areasDaFilial.length > 0;
+  const mesasDoEsp = temEspacos ? (areasDaFilial.find((a) => a.nome === esp)?.mesas ?? []) : mesasDoEspaco;
+  const mesaSel = mesasDoEsp.find((m) => m.numero === val);
   // Mesas juntáveis do espaço, sem a que já está selecionada — equipe junta
   // olhando o mapa quem fica do lado (sistema não sabe a planta física).
-  const opcoesJuntar = mesasDoEspaco.filter((m) => m.juntavel && m.numero !== val);
+  const opcoesJuntar = mesasDoEsp.filter((m) => m.juntavel && m.numero !== val);
+
+  const setOcupadas = new Set(ocupadas);
+  const setOcupadasConsumer = new Set(ocupadasConsumer);
+  // A própria mesa da reserva conta como ocupada no dia — não bloqueia ela
+  // mesma (só vale quando ainda estamos no espaço original).
+  const minhas = new Set(esp === (areaInicial ?? '') ? [inicial, inicialJuntada].filter(Boolean) : []);
+  function statusMesa(numero: string): { sufixo: string; bloqueada: boolean } {
+    if (minhas.has(numero)) return { sufixo: '', bloqueada: false };
+    const k = `${filialId}:${numero}`;
+    if (setOcupadas.has(k)) {
+      const rr = reservasPorMesa[k];
+      return { sufixo: rr ? ` · reservada ${rr.hora}` : ' · reservada', bloqueada: true };
+    }
+    if (setOcupadasConsumer.has(k)) return { sufixo: ' · ocupada agora', bloqueada: true };
+    return { sufixo: '', bloqueada: false };
+  }
 
   async function salvar() {
     setSalvando(true);
     setErro(null);
     try {
+      const body: Record<string, unknown> = { mesa: val, mesaJuntada: valJuntada || null };
+      if (temEspacos && esp && esp !== (areaInicial ?? '')) body.area = esp;
       const r = await fetch(`/api/reservas/${reservaId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mesa: val, mesaJuntada: valJuntada || null }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -752,7 +774,21 @@ function MesaInline({ reservaId, inicial, inicialJuntada, mesasDoEspaco, podeAtu
   if (editando) {
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5">
-        {mesasDoEspaco.length > 0 ? (
+        {temEspacos && (
+          <select
+            value={esp}
+            onChange={(e) => { setEsp(e.target.value); setVal(''); setValJuntada(''); }}
+            className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
+          >
+            {areaInicial && !areasDaFilial.some((a) => a.nome === areaInicial) && (
+              <option value={areaInicial}>{areaInicial}</option>
+            )}
+            {areasDaFilial.map((a) => (
+              <option key={a.nome} value={a.nome}>{a.nome}</option>
+            ))}
+          </select>
+        )}
+        {mesasDoEsp.length > 0 ? (
           <select
             value={val}
             onChange={(e) => { setVal(e.target.value); setValJuntada(''); }}
@@ -760,9 +796,14 @@ function MesaInline({ reservaId, inicial, inicialJuntada, mesasDoEspaco, podeAtu
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
             <option value="">sem mesa</option>
-            {mesasDoEspaco.map((m) => (
-              <option key={m.numero} value={m.numero}>mesa {m.numero} ({m.lugares}p)</option>
-            ))}
+            {mesasDoEsp.map((m) => {
+              const st = statusMesa(m.numero);
+              return (
+                <option key={m.numero} value={m.numero} disabled={st.bloqueada}>
+                  mesa {m.numero} ({m.lugares}p){st.sufixo}
+                </option>
+              );
+            })}
           </select>
         ) : (
           <input
@@ -781,13 +822,18 @@ function MesaInline({ reservaId, inicial, inicialJuntada, mesasDoEspaco, podeAtu
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
             <option value="">+ juntar…</option>
-            {opcoesJuntar.map((m) => (
-              <option key={m.numero} value={m.numero}>+ mesa {m.numero} ({m.lugares}p)</option>
-            ))}
+            {opcoesJuntar.map((m) => {
+              const st = statusMesa(m.numero);
+              return (
+                <option key={m.numero} value={m.numero} disabled={st.bloqueada}>
+                  + mesa {m.numero} ({m.lugares}p){st.sufixo}
+                </option>
+              );
+            })}
           </select>
         )}
         <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
-        <button onClick={() => { setVal(inicial ?? ''); setValJuntada(inicialJuntada ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+        <button onClick={() => { setEsp(areaInicial ?? ''); setVal(inicial ?? ''); setValJuntada(inicialJuntada ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
         {erro && <span className="text-[11px] font-medium text-rose-600">{erro}</span>}
       </span>
     );
