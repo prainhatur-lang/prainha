@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, ilike, isNull, sql, sum } from 'drizzle-orm';
+import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
@@ -52,13 +53,13 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
     isNull(schema.fornecedor.dataDelete),
     q
       ? qDigits.length > 0
-        ? sql`(${ilike(schema.fornecedor.nome, `%${q}%`)} OR ${ilike(
+        ? sql`(${buscaIlike(schema.fornecedor.nome, q)} OR ${buscaIlike(
             schema.fornecedor.razaoSocial,
-            `%${q}%`,
+            q,
           )} OR ${ilike(schema.fornecedor.cnpjOuCpf, `%${qDigits}%`)})`
-        : sql`(${ilike(schema.fornecedor.nome, `%${q}%`)} OR ${ilike(
+        : sql`(${buscaIlike(schema.fornecedor.nome, q)} OR ${buscaIlike(
             schema.fornecedor.razaoSocial,
-            `%${q}%`,
+            q,
           )})`
       : undefined,
   );

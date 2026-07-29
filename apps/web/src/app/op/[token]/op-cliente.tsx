@@ -3,6 +3,7 @@
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { comprimirImagem, formatBytes } from '@/lib/comprimir-imagem';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Op {
   id: string;
@@ -800,9 +801,9 @@ function AdicionarEntradaBtn({
   const escolhido = produtos.find((p) => p.id === produtoId);
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return produtos
-      .filter((p) => (b ? p.nome.toLowerCase().includes(b) : true))
+      .filter((p) => (b ? normalizaBusca(p.nome).includes(b) : true))
       .slice(0, 20);
   }, [produtos, busca]);
 
@@ -1357,9 +1358,9 @@ function AdicionarSaidaBtn({
     : `Quantidade ${escolhido ? `(${escolhido.unidade})` : ''} *`;
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return produtos
-      .filter((p) => (b ? p.nome.toLowerCase().includes(b) : true))
+      .filter((p) => (b ? normalizaBusca(p.nome).includes(b) : true))
       .slice(0, 20);
   }, [produtos, busca]);
 

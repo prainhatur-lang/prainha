@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Pessoa {
   fornecedorId: string;
@@ -1012,7 +1013,7 @@ function AdicionarModal({
   const filtrados = busca
     ? candidatosBase.filter(
         (c) =>
-          c.fornecedorNome.toLowerCase().includes(busca.toLowerCase()) ||
+          normalizaBusca(c.fornecedorNome).includes(normalizaBusca(busca)) ||
           c.fornecedorCpf.includes(busca),
       )
     : candidatosBase;

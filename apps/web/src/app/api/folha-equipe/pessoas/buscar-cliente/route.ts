@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, ilike, or, asc, isNull } from 'drizzle-orm';
+import { and, eq, ilike, or, asc, isNull, sql } from 'drizzle-orm';
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -32,7 +32,9 @@ export async function GET(req: NextRequest) {
   // Busca por nome (ilike) ou CPF
   const cpfDigits = q.replace(/\D/g, '');
   const condicoes = [];
-  condicoes.push(ilike(schema.cliente.nome, `%${q}%`));
+  condicoes.push(
+    sql`extensions.unaccent(${schema.cliente.nome}) ILIKE extensions.unaccent(${`%${q}%`})`,
+  );
   if (cpfDigits.length >= 3) {
     condicoes.push(ilike(schema.cliente.cpfOuCnpj, `%${cpfDigits}%`));
   }

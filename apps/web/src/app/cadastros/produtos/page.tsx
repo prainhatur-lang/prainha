@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, eq, ilike, sql } from 'drizzle-orm';
+import { and, asc, count, eq, sql } from 'drizzle-orm';
+import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { NovoInsumoButton } from './novo-insumo';
@@ -101,10 +102,10 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       ? sql`NOT EXISTS (SELECT 1 FROM ${schema.produtoFornecedor} WHERE ${schema.produtoFornecedor.produtoId} = ${schema.produto.id})`
       : undefined,
     q
-      ? sql`(${ilike(schema.produto.nome, `%${q}%`)} OR ${ilike(
+      ? sql`(${buscaIlike(schema.produto.nome, q)} OR ${buscaIlike(
           schema.produto.descricao,
-          `%${q}%`,
-        )} OR ${ilike(schema.produto.codigoPersonalizado, `%${q}%`)})`
+          q,
+        )} OR ${buscaIlike(schema.produto.codigoPersonalizado, q)})`
       : undefined,
   );
 

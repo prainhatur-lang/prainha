@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { ExcecoesFiltros } from './filtros';
@@ -157,7 +158,7 @@ export default async function ExcecoesPage(props: {
     const cond = or(
       sql`${schema.pagamento.nsuTransacao} ILIKE ${like}`,
       sql`${schema.pagamento.codigoPedidoExterno}::text = ${q}`,
-      sql`${schema.excecao.descricao} ILIKE ${like}`,
+      buscaIlike(schema.excecao.descricao, q),
     );
     if (cond) whereBase.push(cond);
   }

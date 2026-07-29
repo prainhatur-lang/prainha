@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, count, desc, eq, gte, ilike, lte, sql, sum } from 'drizzle-orm';
+import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -94,11 +95,11 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     origem !== 'TODAS' ? eq(schema.notaCompra.origemImportacao, origem) : undefined,
     q
       ? qDigits.length > 0
-        ? sql`(${ilike(schema.notaCompra.emitNome, `%${q}%`)} OR ${ilike(
+        ? sql`(${buscaIlike(schema.notaCompra.emitNome, q)} OR ${ilike(
             schema.notaCompra.emitCnpj,
             `%${qDigits}%`,
           )} OR ${ilike(schema.notaCompra.chave, `%${qDigits}%`)})`
-        : ilike(schema.notaCompra.emitNome, `%${q}%`)
+        : buscaIlike(schema.notaCompra.emitNome, q)
       : undefined,
   );
 

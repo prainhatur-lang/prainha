@@ -15,6 +15,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNotNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 
 export const dynamic = 'force-dynamic';
 
@@ -107,9 +108,10 @@ export default async function ReconciliacaoPage(props: { searchParams: Promise<S
   }
 
   // Filtro por busca
-  const produtosFiltrados = q
+  const qn = normalizaBusca(q);
+  const produtosFiltrados = qn
     ? produtos.filter((p) =>
-        (p.nome ?? '').toLowerCase().includes(q.toLowerCase()),
+        normalizaBusca(p.nome).includes(qn),
       )
     : produtos;
 

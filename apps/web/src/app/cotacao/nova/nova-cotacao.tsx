@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Produto {
   id: string;
@@ -103,9 +104,9 @@ export function NovaCotacaoForm(props: {
 
   const produtosFiltrados = useMemo(() => {
     if (!filtro.trim()) return props.produtos;
-    const q = filtro.toLowerCase();
+    const q = normalizaBusca(filtro);
     return props.produtos.filter(
-      (p) => p.nome.toLowerCase().includes(q) || p.categoria.toLowerCase().includes(q),
+      (p) => normalizaBusca(p.nome).includes(q) || normalizaBusca(p.categoria).includes(q),
     );
   }, [filtro, props.produtos]);
 
@@ -154,8 +155,8 @@ export function NovaCotacaoForm(props: {
       .filter((f) => {
         if (categoriaFornFiltro && f.categoria !== categoriaFornFiltro) return false;
         if (filtroForn.trim()) {
-          const q = filtroForn.toLowerCase();
-          if (!f.nome.toLowerCase().includes(q)) return false;
+          const q = normalizaBusca(filtroForn);
+          if (!normalizaBusca(f.nome).includes(q)) return false;
         }
         return true;
       })

@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 
 export interface CandidatoMatch {
   id: string;
@@ -65,7 +66,7 @@ export function MatchManualPicker({
   const candidatosFiltrados = useMemo(() => {
     const b = busca.trim();
     if (!b) return candidatosOrdenados;
-    const bLower = b.toLowerCase();
+    const bNorm = normalizaBusca(b);
 
     // Tenta interpretar como número
     const numMatch = b.match(/^[\d.,]+$/);
@@ -97,7 +98,7 @@ export function MatchManualPicker({
         if (dataBr.startsWith(dataBuscadaParcial)) return true;
       }
       // Match em descrição (case-insensitive, substring)
-      if (c.descricao.toLowerCase().includes(bLower)) return true;
+      if (normalizaBusca(c.descricao).includes(bNorm)) return true;
       return false;
     });
   }, [busca, candidatosOrdenados]);

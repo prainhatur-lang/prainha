@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { normalizaBusca } from '@/lib/texto';
 import { MapaMesas } from './mapa-mesas';
 
 export interface Mesa {
@@ -289,7 +290,7 @@ export function ReservasClient({
   // concluida) — equipe pode trocar pra "Todas" ou um status específico.
   const [statusFiltro, setStatusFiltro] = useState<string>('ativas');
   const [busca, setBusca] = useState('');
-  const buscaNorm = busca.trim().toLowerCase();
+  const buscaNorm = normalizaBusca(busca.trim());
   const buscaSoDigitos = busca.replace(/\D/g, '');
   const itensFiltrados = itens.filter((r) => {
     if (statusFiltro === 'ativas') {
@@ -297,7 +298,7 @@ export function ReservasClient({
     } else if (statusFiltro && r.status !== statusFiltro) {
       return false;
     }
-    if (buscaNorm && !r.clienteNome.toLowerCase().includes(buscaNorm)) {
+    if (buscaNorm && !normalizaBusca(r.clienteNome).includes(buscaNorm)) {
       if (!buscaSoDigitos || !(r.clienteTelefone ?? '').includes(buscaSoDigitos)) return false;
     }
     return true;

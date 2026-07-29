@@ -3,6 +3,7 @@
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { normalizaBusca } from '@/lib/texto';
 
 interface LinhaFicha {
   id: string;
@@ -55,10 +56,10 @@ export function AbaFicha({
 
   const idsJaNaFicha = useMemo(() => new Set(linhas.map((l) => l.insumoId)), [linhas]);
   const opcoesFiltradas = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return insumosDisponiveis
       .filter((i) => !idsJaNaFicha.has(i.id))
-      .filter((i) => (b ? i.nome.toLowerCase().includes(b) : true))
+      .filter((i) => (b ? normalizaBusca(i.nome).includes(b) : true))
       .slice(0, 50);
   }, [busca, insumosDisponiveis, idsJaNaFicha]);
 

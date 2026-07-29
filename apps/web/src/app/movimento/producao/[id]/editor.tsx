@@ -4,6 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 import { EnviarCozinheiroBtn } from './enviar-cozinheiro';
 
 interface Op {
@@ -747,14 +748,14 @@ function ResponsavelEditor({
   const [_pending, start] = useTransition();
 
   const sugestoes = useMemo(() => {
-    const q = valor.trim().toLowerCase();
+    const q = normalizaBusca(valor);
     if (!q) return colaboradores.slice(0, 8);
     return colaboradores
-      .filter((c) => c.toLowerCase().includes(q))
+      .filter((c) => normalizaBusca(c).includes(q))
       .slice(0, 8);
   }, [valor, colaboradores]);
 
-  const exato = colaboradores.some((c) => c.toLowerCase() === valor.trim().toLowerCase());
+  const exato = colaboradores.some((c) => normalizaBusca(c) === normalizaBusca(valor));
   const podeAdicionar = valor.trim().length > 0 && !exato;
 
   async function salvar(nomeOverride?: string) {
@@ -768,7 +769,7 @@ function ResponsavelEditor({
       // Se nome novo (não tá na lista), cadastra primeiro
       if (
         valorLimpo &&
-        !colaboradores.some((c) => c.toLowerCase() === valorLimpo.toLowerCase())
+        !colaboradores.some((c) => normalizaBusca(c) === normalizaBusca(valorLimpo))
       ) {
         const novo = await fetch('/api/colaborador', {
           method: 'POST',
@@ -1483,9 +1484,9 @@ function AdicionarLinhaBtn({
   const escolhido = produtosDisponiveis.find((p) => p.id === produtoId);
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return produtosDisponiveis
-      .filter((p) => (b ? p.nome.toLowerCase().includes(b) : true))
+      .filter((p) => (b ? normalizaBusca(p.nome).includes(b) : true))
       .slice(0, 30);
   }, [busca, produtosDisponiveis]);
 

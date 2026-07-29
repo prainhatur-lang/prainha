@@ -4,6 +4,7 @@ import { useState, useTransition, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { maskCnpj } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 
 interface FornecedorOpcao {
   id: string;
@@ -43,11 +44,11 @@ export function VincularFornecedorBtn({
   const [cidadeForm, setCidadeForm] = useState(emitCidade ?? '');
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     if (!b) return fornecedoresDisponiveis.slice(0, 30);
     return fornecedoresDisponiveis
       .filter((f) => {
-        const nome = f.nome.toLowerCase();
+        const nome = normalizaBusca(f.nome);
         const cnpj = (f.cnpjOuCpf ?? '').toLowerCase();
         return nome.includes(b) || cnpj.includes(b.replace(/\D/g, ''));
       })

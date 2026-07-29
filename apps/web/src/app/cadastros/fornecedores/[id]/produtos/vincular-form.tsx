@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Produto {
   id: string;
@@ -38,9 +39,9 @@ export function VincularProdutosForm({
   // Filtro de busca
   const produtosFiltrados = useMemo(() => {
     if (!filtro.trim()) return produtos;
-    const q = filtro.toLowerCase();
+    const qn = normalizaBusca(filtro);
     return produtos.filter(
-      (p) => p.nome.toLowerCase().includes(q) || p.categoria.toLowerCase().includes(q),
+      (p) => normalizaBusca(p.nome).includes(qn) || normalizaBusca(p.categoria).includes(qn),
     );
   }, [produtos, filtro]);
 

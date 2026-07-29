@@ -3,6 +3,7 @@
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 
 interface LinhaForn {
   id: string;
@@ -205,9 +206,9 @@ function ModalForn({
   const [erro, setErro] = useState<string | null>(null);
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return fornecedoresDisponiveis
-      .filter((f) => (b ? f.nome.toLowerCase().includes(b) || (f.cnpj ?? '').includes(b) : true))
+      .filter((f) => (b ? normalizaBusca(f.nome).includes(b) || (f.cnpj ?? '').includes(b) : true))
       .slice(0, 50);
   }, [busca, fornecedoresDisponiveis]);
 

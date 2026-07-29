@@ -3,6 +3,7 @@
 import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Template {
   id: string;
@@ -386,9 +387,9 @@ function AdicionarLinhaBtn({
   const escolhido = produtosDisponiveis.find((p) => p.id === produtoId);
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     return produtosDisponiveis
-      .filter((p) => (b ? p.nome.toLowerCase().includes(b) : true))
+      .filter((p) => (b ? normalizaBusca(p.nome).includes(b) : true))
       .slice(0, 30);
   }, [busca, produtosDisponiveis]);
 

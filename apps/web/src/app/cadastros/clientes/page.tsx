@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
+import { normalizaBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 
@@ -185,11 +186,11 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   for (const u of lista) if (!u.nome) u.nome = 'Sem nome';
 
   if (q) {
-    const qlow = q.toLowerCase();
+    const qlow = normalizaBusca(q);
     lista = lista.filter(
       (c) =>
-        c.nome.toLowerCase().includes(qlow) ||
-        (c.email != null && c.email.includes(qlow)) ||
+        normalizaBusca(c.nome).includes(qlow) ||
+        (c.email != null && normalizaBusca(c.email).includes(qlow)) ||
         (qDigits.length > 0 && soDigitos(c.fone).includes(qDigits)) ||
         (c.cpf != null && qDigits.length > 0 && soDigitos(c.cpf).includes(qDigits)),
     );

@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { normalizaBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
@@ -39,7 +40,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : null;
   const filtroDataAtivo = !!(dataIni && dataFim);
   const nomeBusca = (sp.nome ?? '').trim();
-  const nomeBuscaLower = nomeBusca.toLowerCase();
+  const nomeBuscaLower = normalizaBusca(nomeBusca);
 
   if (!filialSelecionada) {
     return (
@@ -143,7 +144,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
       // Filtro de data: so clientes com movimento no periodo
       if (clientesNoPeriodo && !clientesNoPeriodo.has(l.key)) return false;
       // Filtro de nome (case-insensitive)
-      if (nomeBuscaLower && !l.nome.toLowerCase().includes(nomeBuscaLower)) return false;
+      if (nomeBuscaLower && !normalizaBusca(l.nome).includes(nomeBuscaLower)) return false;
       if (filtro === 'devem') return l.saldo > 0.01;
       if (filtro === 'credor') return l.saldo < -0.01;
       if (filtro === 'zerado') return Math.abs(l.saldo) <= 0.01;

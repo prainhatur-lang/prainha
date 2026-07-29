@@ -238,8 +238,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             //  ex: "Aluguel" sem fornecedor mas reconhecivel pela descricao).
             const nomeFilter = nomeBusca
               ? sql`(
-                ${schema.fornecedor.nome} ILIKE ${`%${nomeBusca}%`}
-                OR ${schema.contaPagar.descricao} ILIKE ${`%${nomeBusca}%`}
+                extensions.unaccent(${schema.fornecedor.nome}) ILIKE extensions.unaccent(${`%${nomeBusca}%`})
+                OR extensions.unaccent(${schema.contaPagar.descricao}) ILIKE extensions.unaccent(${`%${nomeBusca}%`})
               )`
               : undefined;
 

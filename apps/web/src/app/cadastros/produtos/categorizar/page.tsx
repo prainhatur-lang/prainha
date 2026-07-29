@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, ilike, isNull, isNotNull, sql, inArray } from 'drizzle-orm';
+import { and, asc, eq, isNull, isNotNull, sql, inArray } from 'drizzle-orm';
+import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { CategorizarForm } from './form';
 
@@ -70,7 +71,7 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
       ? isNull(schema.produto.categoriaCompras)
       : isNotNull(schema.produto.categoriaCompras),
     tipoFiltro ? eq(schema.produto.tipo, tipoFiltro) : undefined,
-    q ? ilike(schema.produto.nome, `%${q}%`) : undefined,
+    q ? buscaIlike(schema.produto.nome, q) : undefined,
   );
 
   const [{ qtd }] = await db

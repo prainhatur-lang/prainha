@@ -107,7 +107,7 @@ export default async function PagamentosPage(props: {
         SELECT 1 FROM ${schema.pedido} pd
         WHERE pd.filial_id = ${schema.pagamento.filialId}
           AND pd.codigo_externo = ${schema.pagamento.codigoPedidoExterno}
-          AND pd.tag ILIKE ${'%' + sp.mesa + '%'}
+          AND extensions.unaccent(pd.tag) ILIKE extensions.unaccent(${'%' + sp.mesa + '%'})
       )`,
     );
   }
@@ -117,7 +117,7 @@ export default async function PagamentosPage(props: {
         SELECT 1 FROM ${schema.pedido} pd
         WHERE pd.filial_id = ${schema.pagamento.filialId}
           AND pd.codigo_externo = ${schema.pagamento.codigoPedidoExterno}
-          AND pd.nome_cliente ILIKE ${'%' + sp.cliente + '%'}
+          AND extensions.unaccent(pd.nome_cliente) ILIKE extensions.unaccent(${'%' + sp.cliente + '%'})
       )`,
     );
   }

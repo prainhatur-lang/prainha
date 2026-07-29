@@ -4,6 +4,7 @@ import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
+import { normalizaBusca } from '@/lib/texto';
 
 interface Item {
   id: string;
@@ -365,12 +366,12 @@ function ModalVincular({
   const [fatorTexto, setFatorTexto] = useState<string>('1');
 
   const opcoes = useMemo(() => {
-    const b = busca.trim().toLowerCase();
+    const b = normalizaBusca(busca);
     if (!b) return produtosDisponiveis.slice(0, 30);
     return produtosDisponiveis
       .filter((p) => {
-        const nome = p.nome.toLowerCase();
-        const cod = (p.codigo ?? '').toLowerCase();
+        const nome = normalizaBusca(p.nome);
+        const cod = normalizaBusca(p.codigo ?? '');
         return nome.includes(b) || cod.includes(b);
       })
       .slice(0, 50);

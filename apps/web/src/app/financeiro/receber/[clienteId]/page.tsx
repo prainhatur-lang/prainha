@@ -111,7 +111,7 @@ export default async function ClienteFiadoPage(props: {
   }
   if (sp.q && sp.q.trim()) {
     const q = sp.q.trim();
-    where.push(sql`${schema.movimentoContaCorrente.observacao} ILIKE ${'%' + q + '%'}`);
+    where.push(sql`extensions.unaccent(${schema.movimentoContaCorrente.observacao}) ILIKE extensions.unaccent(${'%' + q + '%'})`);
   }
   if (sp.modalidade && sp.modalidade.trim()) {
     where.push(eq(schema.pagamento.formaPagamento, sp.modalidade.trim()));
@@ -120,7 +120,7 @@ export default async function ClienteFiadoPage(props: {
     where.push(eq(schema.pagamento.nsuTransacao, sp.nsu.trim()));
   }
   if (sp.mesa && sp.mesa.trim()) {
-    where.push(sql`${schema.pedido.tag} ILIKE ${'%' + sp.mesa.trim() + '%'}`);
+    where.push(sql`extensions.unaccent(${schema.pedido.tag}) ILIKE extensions.unaccent(${'%' + sp.mesa.trim() + '%'})`);
   }
 
   // Movimentos com JOIN no pagamento (forma + NSU + bandeira) e no pedido

@@ -73,6 +73,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function q(s, tries = 3) { const run = async () => { for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; await sleep(400); } return { ok: false, err: 'retry' }; }; const p = chain.then(run); chain = p.catch(() => {}); return p; }
 const N = (v) => (v == null ? null : Number(v));
 const T = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
+// Normaliza pra busca: sem acento, minusculo. Feito em JS (nao com a extensao
+// unaccent do Postgres) porque o banco da loja e' o 9.5 legado — nao da pra
+// contar com extensao instalada nem com o schema `extensions` do Supabase.
+const semAcento = (s) => (s == null ? '' : String(s)).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 // ---- schema ----
 // addCol tolerante: o Postgres da loja pode ser ANTIGO (9.5 não tem ADD COLUMN IF NOT EXISTS).
@@ -104,6 +108,8 @@ async function initSchema() {
   // --- VENDA (Fase 1) ---
   // catálogo local (cache do Firebird; a busca do garçom lê daqui — funciona offline)
   await sql`CREATE TABLE IF NOT EXISTS produto_local (codigo_pdv integer PRIMARY KEY, produto_codigo integer, nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, atualizado timestamptz DEFAULT now())`;
+  // nome+tamanho normalizado (sem acento, minusculo) — a busca do garcom usa esta coluna
+  await addCol('produto_local', 'nome_busca text');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // log durável de TUDO que o nosso app lançou (a venda mora aqui mesmo se o FB falhar)
@@ -158,10 +164,17 @@ async function espelhoCatalogo() {
     LEFT JOIN PRODUTOTAMANHO pt ON pt.CODIGO=pd.CODIGOPRODUTOTAMANHO
     WHERE pd.DATADELETE IS NULL AND pd.DATAPAUSADO IS NULL AND (p.DESCONTINUADO IS NULL OR p.DESCONTINUADO<>'S') AND pd.PRECOVENDA>0`);
   if (!r.ok) { console.error('[catalogo] ERRO:', r.err); return; }
-  const rows = r.rows.map((x) => ({ codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome: T(x.NOME) || '?', tamanho: T(x.TAM), preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1 }));
+  const rows = r.rows.map((x) => {
+    const nome = T(x.NOME) || '?';
+    const tam = T(x.TAM);
+    // nome_busca = nome+tamanho sem acento e minusculo. O garcom digita "acai",
+    // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
+    // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
+    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')) };
+  });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
-    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile')}`;
+    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca')}`;
   });
   console.log(`[catalogo] ok — ${rows.length} produtos vendíveis`);
 }
@@ -203,9 +216,10 @@ async function fbJobCozinha(ped) {
 
 // ---- API de VENDA ----
 async function apiVendaBusca(termo) {
-  const t = '%' + String(termo || '').trim() + '%';
+  // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
+  const t = '%' + semAcento(String(termo || '').trim()) + '%';
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo FROM produto_local
-    WHERE nome ILIKE ${t} ORDER BY comanda_mobile DESC, nome LIMIT 30`;
+    WHERE nome_busca LIKE ${t} ORDER BY comanda_mobile DESC, nome LIMIT 30`;
   return { produtos: rows };
 }
 async function apiVendaMesa(mesa) {
