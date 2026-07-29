@@ -71,6 +71,12 @@ function q1(s) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function q(s, tries = 3) { const run = async () => { for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; await sleep(400); } return { ok: false, err: 'retry' }; }; const p = chain.then(run); chain = p.catch(() => {}); return p; }
+// Fila SEPARADA pras telas interativas (conta/pagamento). Sem isso, abrir a
+// conta de uma mesa fica atrás do ciclo do espelho e o operador espera até 90s
+// — inaceitável na hora de fechar a conta. Cada query já abre sua própria
+// conexão, então são só duas vias em vez de uma.
+let chainUi = Promise.resolve();
+function qi(s, tries = 2) { const run = async () => { for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; await sleep(250); } return { ok: false, err: 'retry' }; }; const p = chainUi.then(run); chainUi = p.catch(() => {}); return p; }
 const N = (v) => (v == null ? null : Number(v));
 const T = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
 // Normaliza pra busca: sem acento, minusculo. Feito em JS (nao com a extensao
@@ -114,6 +120,17 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // log durável de TUDO que o nosso app lançou (a venda mora aqui mesmo se o FB falhar)
   await sql`CREATE TABLE IF NOT EXISTS venda_envio (id bigserial PRIMARY KEY, criado_em timestamptz DEFAULT now(), numero integer, mesa integer, comanda integer, pedido_fb integer, itens jsonb, total numeric, status text, erro text)`;
+  // --- PAGAMENTO (Fase 2) ---
+  // Log durável de todo pagamento que NÓS capturamos. Fonte da verdade do que
+  // foi cobrado, mesmo que o write-back no Consumer falhe depois.
+  // origem: 'tef' (pinpad comandado por nós) | 'manual' (operador cobrou na
+  // maquininha e confirmou aqui) | 'dinheiro'.
+  await sql`CREATE TABLE IF NOT EXISTS venda_pagamento (
+    id bigserial PRIMARY KEY, criado_em timestamptz DEFAULT now(),
+    numero integer, pedido_fb integer, forma_codigo integer, forma text,
+    valor numeric, origem text, nsu text, autorizacao text, bandeira text,
+    tef_ref text, status text, erro text, pagamento_fb integer)`;
+  await addCol('venda_pagamento', 'pagamento_fb integer');
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -214,6 +231,114 @@ async function fbJobCozinha(ped) {
   if (!r.ok) throw new Error('FB job impressão: ' + r.err);
 }
 
+// ---- PAGAMENTO no Consumer (Fase 2, Rota A) ----
+// Grava em PAGAMENTOS o que NÓS cobramos, com NSU/autorização, do mesmo jeito
+// que a integração "Smart POS Cielo" grava hoje (INTEGRADOAUTOMACAO='1'). Isso
+// mantém o Consumer capaz de emitir a NFC-e enquanto a Fase 3 não chega.
+// NÃO fecha o pedido — quem fecha/emite a nota segue sendo o Consumer.
+const FORMA = { DINHEIRO: 1, CREDITO: 3, DEBITO: 4, PIX_MANUAL: 18, PIX_ONLINE: 21 };
+async function fbCaixaAberto() {
+  const r = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
+  if (!r.ok) throw new Error('FB caixa: ' + r.err);
+  if (!r.rows.length) throw new Error('nenhum caixa aberto no Consumer');
+  return Number(r.rows[0].CODIGO);
+}
+async function fbInserirPagamento(ped, pg) {
+  const caixa = await fbCaixaAberto();
+  const nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
+  const campos = ['CODIGOPEDIDO', 'CODIGOFORMAPAGAMENTO', 'VALOR', 'DATAPAGAMENTO', 'CODIGOCAIXA', 'CODIGOCATEGORIACONTAS', 'PERCENTUALTAXA', 'INTEGRADOAUTOMACAO', 'OBSERVACAO'];
+  const vals = [String(ped), String(pg.forma_codigo), fbNum(pg.valor), 'CURRENT_TIMESTAMP', String(caixa), '1', '0', "'1'", `'${fbEsc(pg.observacao || 'Prainha Vendas')}'`];
+  if (nsu != null) { campos.push('NSUTRANSACAO'); vals.push(String(nsu)); }
+  if (pg.autorizacao) { campos.push('NUMEROAUTORIZACAOCARTAO'); vals.push(`'${fbEsc(pg.autorizacao)}'`); }
+  if (pg.bandeira) { campos.push('BANDEIRAMFE'); vals.push(`'${fbEsc(pg.bandeira)}'`); }
+  const r = await qi(`INSERT INTO PAGAMENTOS (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
+  if (!r.ok) throw new Error('FB pagamento: ' + r.err);
+  // RETURNING crasha intermitente no FB4 -> busca o recém-inserido
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
+  return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+}
+/** Quanto já foi pago desse pedido no Consumer (fonte da verdade do saldo). */
+async function fbPagoDoPedido(ped) {
+  const r = await qi(`SELECT COALESCE(SUM(VALOR),0) PAGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
+  if (!r.ok) throw new Error('FB pago: ' + r.err);
+  return Number(r.rows[0].PAGO) || 0;
+}
+
+// ---- COBRANÇA: adapter de provedor ----
+// Dois modos, pela MESMA interface — a tela não muda quando trocar de provedor:
+//
+//  'manual' (default, funciona HOJE sem depender de ninguém): o operador cobra
+//     na maquininha como já faz e confirma aqui; a gente registra com o NSU.
+//  'lio'    (quando as credenciais chegarem): manda a cobrança pra LIO V3 pela
+//     Order Manager API da Cielo; o garçom só confirma no terminal.
+//
+// A LIO está em fim de vida (Cielo migrando pra Smart) — por isso o provedor é
+// trocável por env: quando virar Smart/Conecta, só entra outro caso no switch.
+const PAG_PROVEDOR = process.env.PAG_PROVEDOR || 'manual';
+const LIO_BASE = process.env.LIO_BASE || 'https://api.cielo.com.br/order-management/v1';
+const LIO_CLIENT_ID = process.env.LIO_CLIENT_ID || '';
+const LIO_ACCESS_TOKEN = process.env.LIO_ACCESS_TOKEN || '';
+const LIO_MERCHANT = process.env.LIO_MERCHANT_CODE || '';
+const lioConfigurado = () => !!(LIO_CLIENT_ID && LIO_ACCESS_TOKEN);
+
+function pagStatus() {
+  return {
+    provedor: PAG_PROVEDOR,
+    lio_configurado: lioConfigurado(),
+    // 'manual' sempre disponível — é o que garante que a loja nunca trava.
+    modos: PAG_PROVEDOR === 'lio' && lioConfigurado() ? ['lio', 'manual'] : ['manual'],
+  };
+}
+
+const lioHeaders = () => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${LIO_ACCESS_TOKEN}`,
+  'Client-Id': LIO_CLIENT_ID,
+  ...(LIO_MERCHANT ? { 'Merchant-Code': LIO_MERCHANT } : {}),
+});
+
+/** Cria o pedido na Cielo e coloca na fila do terminal (operation=PLACE). */
+async function lioCriarCobranca({ numero, valor, itens }) {
+  if (!lioConfigurado()) throw new Error('LIO sem credenciais (LIO_CLIENT_ID/LIO_ACCESS_TOKEN)');
+  const cent = Math.round(Number(valor) * 100);
+  const body = {
+    reference: 'PRAINHA-' + numero + '-' + Date.now(),
+    price: cent,
+    items: (itens || []).map((i) => ({
+      name: String(i.nome).slice(0, 60),
+      sku: String(i.codigo_pdv),
+      unitPrice: Math.round(Number(i.preco) * 100),
+      quantity: Number(i.qtd) || 1,
+      unitOfMeasure: 'UNIT',
+    })),
+  };
+  const r = await fetch(`${LIO_BASE}/orders`, { method: 'POST', headers: lioHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`LIO criar pedido ${r.status}: ${txt.slice(0, 200)}`);
+  const ord = JSON.parse(txt);
+  const place = await fetch(`${LIO_BASE}/orders/${ord.id}?operation=PLACE`, { method: 'PUT', headers: lioHeaders(), signal: AbortSignal.timeout(20000) });
+  if (!place.ok) throw new Error(`LIO enviar pro terminal ${place.status}: ${(await place.text()).slice(0, 200)}`);
+  return { orderId: ord.id, reference: body.reference };
+}
+
+/** Consulta o pedido na Cielo; retorna dados do pagamento quando aprovado. */
+async function lioConsultar(orderId) {
+  const r = await fetch(`${LIO_BASE}/orders/${orderId}`, { headers: lioHeaders(), signal: AbortSignal.timeout(15000) });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`LIO consulta ${r.status}: ${txt.slice(0, 200)}`);
+  const d = JSON.parse(txt);
+  const pg = (d.payments && d.payments[0]) || {};
+  const pago = String(d.status || '').toUpperCase() === 'PAID' || !!pg.authCode;
+  return {
+    pago,
+    status: d.status,
+    nsu: pg.cieloCode || pg.nsu || null,
+    autorizacao: pg.authCode || null,
+    bandeira: pg.brand || null,
+    bruto: d,
+  };
+}
+
 // ---- API de VENDA ----
 async function apiVendaBusca(termo) {
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
@@ -272,6 +397,97 @@ async function apiVendaEnviar(body) {
     await sql`UPDATE venda_envio SET status='erro', erro=${String(e.message).slice(0, 300)} WHERE id=${log.id}`;
     return { ok: false, erro: 'Falha ao gravar no Consumer: ' + e.message + ' (lançamento guardado localmente, id ' + log.id + ')' };
   }
+}
+
+// ---- API de CONTA / PAGAMENTO (Fase 2) ----
+// A conta lê do Consumer (fonte da verdade do total e do que já foi pago) —
+// assim nunca cobramos a mais por causa de espelho atrasado.
+async function apiConta(numero) {
+  const n = Number(numero);
+  if (!(n >= 1 && n <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'nenhuma comanda aberta com o número ' + n };
+  const it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO
+    FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO`);
+  if (!it.ok) throw new Error('FB itens: ' + it.err);
+  const cab = await qi(`SELECT VALORTOTAL, TOTALSERVICO, NUMERO FROM PEDIDOS WHERE CODIGO=${ped}`);
+  if (!cab.ok) throw new Error('FB pedido: ' + cab.err);
+  const total = Number(cab.rows[0]?.VALORTOTAL) || 0;
+  const servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
+  const pago = await fbPagoDoPedido(ped);
+  const mesa = n >= COMANDA_MIN ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
+  return {
+    ok: true, numero: n, mesa, pedido_fb: ped,
+    itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO) })),
+    total, servico, pago: +pago.toFixed(2), saldo: +(total - pago).toFixed(2),
+    pagamentos: await sql`SELECT id, forma, valor, origem, nsu, status, criado_em FROM venda_pagamento WHERE pedido_fb=${ped} ORDER BY id`,
+  };
+}
+
+/** Registra um pagamento. body: {numero, forma, valor, modo, nsu?, autorizacao?, bandeira?} */
+async function apiContaPagar(body) {
+  const n = Number(body.numero);
+  const valor = +Number(body.valor || 0).toFixed(2);
+  const forma = String(body.forma || '').toLowerCase(); // dinheiro|credito|debito|pix
+  const modo = String(body.modo || 'manual').toLowerCase(); // manual|lio
+  if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+  const MAPA = {
+    dinheiro: { cod: FORMA.DINHEIRO, nome: 'Dinheiro' },
+    credito: { cod: FORMA.CREDITO, nome: 'Cartão de Crédito' },
+    debito: { cod: FORMA.DEBITO, nome: 'Cartão de Débito' },
+    pix: { cod: FORMA.PIX_MANUAL, nome: 'Pix Manual' },
+  };
+  const fp = MAPA[forma];
+  if (!fp) return { ok: false, erro: 'forma inválida' };
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const saldo = +((Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0) - (await fbPagoDoPedido(ped))).toFixed(2);
+  if (valor > saldo + 0.01) return { ok: false, erro: `valor maior que o saldo (R$ ${saldo.toFixed(2)})` };
+
+  const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
+    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${modo}, 'iniciado') RETURNING id`;
+
+  let dados = { nsu: body.nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null };
+  try {
+    if (modo === 'lio') {
+      // Manda pro terminal e espera o garçom confirmar lá (polling curto).
+      const cob = await lioCriarCobranca({ numero: n, valor, itens: [] });
+      await sql`UPDATE venda_pagamento SET tef_ref=${cob.orderId}, status='aguardando' WHERE id=${log.id}`;
+      return { ok: true, aguardando: true, pagamento_id: log.id, order_id: cob.orderId,
+        msg: 'Cobrança enviada pra maquininha. Conclua na LIO e a tela confirma sozinha.' };
+    }
+    // modo manual: já foi cobrado na maquininha, só registramos
+    const pagFb = await fbInserirPagamento(ped, {
+      forma_codigo: fp.cod, valor, nsu: dados.nsu, autorizacao: dados.autorizacao,
+      bandeira: dados.bandeira, observacao: 'Prainha Vendas',
+    });
+    await sql`UPDATE venda_pagamento SET status='ok', nsu=${dados.nsu}, autorizacao=${dados.autorizacao},
+      bandeira=${dados.bandeira}, pagamento_fb=${pagFb} WHERE id=${log.id}`;
+    const pagoAgora = await fbPagoDoPedido(ped);
+    const totalPed = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+    return { ok: true, pagamento_id: log.id, pagamento_fb: pagFb, pago: +pagoAgora.toFixed(2),
+      saldo: +(totalPed - pagoAgora).toFixed(2), quitada: pagoAgora >= totalPed - 0.01 };
+  } catch (e) {
+    await sql`UPDATE venda_pagamento SET status='erro', erro=${String(e.message).slice(0, 300)} WHERE id=${log.id}`;
+    return { ok: false, erro: e.message, pagamento_id: log.id };
+  }
+}
+
+/** Confere na Cielo se a cobrança da LIO foi paga; se sim, grava no Consumer. */
+async function apiContaConferir(pagamentoId) {
+  const [p] = await sql`SELECT * FROM venda_pagamento WHERE id=${Number(pagamentoId)}`;
+  if (!p) return { ok: false, erro: 'pagamento não encontrado' };
+  if (p.status === 'ok') return { ok: true, pago: true, ja_registrado: true };
+  if (!p.tef_ref) return { ok: false, erro: 'pagamento sem referência na Cielo' };
+  const r = await lioConsultar(p.tef_ref);
+  if (!r.pago) return { ok: true, pago: false, status: r.status };
+  const pagFb = await fbInserirPagamento(p.pedido_fb, {
+    forma_codigo: p.forma_codigo, valor: p.valor, nsu: r.nsu,
+    autorizacao: r.autorizacao, bandeira: r.bandeira, observacao: 'Prainha Vendas LIO',
+  });
+  await sql`UPDATE venda_pagamento SET status='ok', nsu=${r.nsu}, autorizacao=${r.autorizacao},
+    bandeira=${r.bandeira}, pagamento_fb=${pagFb} WHERE id=${p.id}`;
+  return { ok: true, pago: true, nsu: r.nsu, autorizacao: r.autorizacao, pagamento_fb: pagFb };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -696,6 +912,174 @@ var _t=null;function carregarMesaSoon(){clearTimeout(_t);_t=setTimeout(function(
 telaMesa();
 </script></body></html>`;
 
+// ---- TELA DE CONTA / PAGAMENTO (Fase 2) ----
+const CONTA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Prainha Bar — Conta</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px}
+h1{font-size:17px;margin:0}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 12px;font:inherit;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
+.wrap{max-width:560px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.num{width:100%;font:inherit;font-size:26px;text-align:center;padding:14px;border:2px solid var(--line);border-radius:12px}
+.big{width:100%;padding:16px;border:0;border-radius:12px;background:var(--green);color:#fff;font:inherit;font-size:17px;font-weight:700;cursor:pointer}
+.big:disabled{opacity:.5}
+.it{display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid #f0f0f4;font-size:14px}
+.it:last-child{border:0}.it .q{color:var(--mut);font-size:12px}
+.tot{display:flex;justify-content:space-between;font-size:15px;padding:6px 0}
+.tot.g{font-size:22px;font-weight:800;border-top:2px solid var(--line);margin-top:8px;padding-top:12px}
+.saldo{color:var(--red)}.quit{color:var(--green2)}
+.formas{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.f{padding:14px;border:2px solid var(--line);background:#fff;border-radius:12px;font:inherit;font-size:15px;font-weight:600;cursor:pointer}
+.f.on{border-color:var(--green);background:#eafaf0;color:var(--green2)}
+.lbl{font-size:12px;color:var(--mut);margin:10px 0 4px;display:block}
+.inp{width:100%;font:inherit;font-size:16px;padding:12px;border:1px solid var(--line);border-radius:10px}
+.mut{color:var(--mut);font-size:13px}
+.ok{background:#eafaf0;border:1px solid #b6e6c9;color:#12643a;padding:12px;border-radius:12px;margin-top:10px}
+.err{background:#fdecec;border:1px solid #f6c5c5;color:#a11;padding:12px;border-radius:12px;margin-top:10px}
+.pg{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--mut)}
+.conta{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;text-align:left;
+  padding:14px;margin-bottom:8px;border:2px solid var(--line);background:#fff;border-radius:12px;font:inherit;font-size:15px;cursor:pointer}
+.conta:active{border-color:var(--gold2);background:#fff8f3}
+.conta .v{font-weight:800;font-size:17px;white-space:nowrap}
+</style></head><body>
+<header><a class="back" href="/venda">‹ Venda</a><h1>Prainha <b>Conta</b></h1></header>
+<div class="wrap" id="app"></div>
+<script>
+var NUM=null,MESA=null,DADOS=null,FORMA=null,MODOS=['manual'];
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function brl(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
+async function jget(u){var r=await fetch(u);return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return r.json()}
+
+function telaNumero(){
+  MESA=null;NUM=null;FORMA=null;
+  document.getElementById('app').innerHTML=
+    '<div class="card"><div class="mut" style="margin-bottom:8px">Número da MESA</div>'+
+    '<input class="num" id="n" type="number" inputmode="numeric" placeholder="ex.: 12" autofocus>'+
+    '<button class="big" style="margin-top:12px" onclick="abrirMesa()">VER CONTAS DA MESA</button>'+
+    '<div class="mut" style="margin-top:10px;text-align:center">A mesa pode ter várias comandas (300–400).<br>Se souber o número da comanda, digite ele direto.</div></div>';
+  document.getElementById('n').addEventListener('keydown',function(e){if(e.key==='Enter')abrirMesa()});
+}
+/** Mesa -> mostra as contas dela (a própria mesa + comandas vinculadas). */
+async function abrirMesa(){
+  var n=Number(document.getElementById('n').value);
+  if(!n)return;
+  if(n>=300){NUM=n;return carregar();}   // digitou a comanda direto
+  MESA=n;
+  var d=await jget('/api/venda/mesa?n='+n);
+  var contas=(d.abertos||[]);
+  if(!contas.length){
+    document.getElementById('app').innerHTML='<div class="card"><div class="err">Mesa '+n+' não tem conta aberta.</div>'+
+      '<button class="big" style="margin-top:12px;background:#888" onclick="telaNumero()">VOLTAR</button></div>';return;
+  }
+  if(contas.length===1){NUM=contas[0].numero;return carregar();}
+  var geral=contas.reduce(function(s,c){return s+Number(c.valor_total||0)},0);
+  var h='<div class="card"><div style="font-weight:700;font-size:16px">Mesa '+n+'</div>'+
+    '<div class="mut" style="margin:2px 0 12px">'+contas.length+' contas abertas · total geral '+brl(geral)+'</div>';
+  contas.forEach(function(c){
+    var eh=c.numero>=300;
+    h+='<button class="conta" onclick="NUM='+c.numero+';carregar()">'+
+       '<span><b>'+(eh?'Comanda '+c.numero:'Mesa '+c.numero)+'</b><br><span class="mut">'+c.itens+' itens</span></span>'+
+       '<span class="v">'+brl(c.valor_total)+'</span></button>';
+  });
+  h+='<div class="mut" style="margin-top:10px">Cada conta é paga separada. Se for tudo junto, cobre uma de cada vez.</div>'+
+     '<button class="big" style="background:#888;margin-top:10px" onclick="telaNumero()">OUTRA MESA</button></div>';
+  document.getElementById('app').innerHTML=h;
+}
+async function carregar(){
+  var d=await jget('/api/conta?n='+NUM);
+  if(!d.ok){document.getElementById('app').innerHTML='<div class="card"><div class="err">'+esc(d.erro)+'</div>'+
+    '<button class="big" style="margin-top:12px;background:#888" onclick="telaNumero()">VOLTAR</button></div>';return}
+  DADOS=d;var s=await jget('/api/pag/status');MODOS=s.modos||['manual'];
+  render();
+}
+function render(){
+  var d=DADOS,h='';
+  h+='<div class="card"><div style="font-weight:700;font-size:16px;margin-bottom:8px">'+
+     (d.numero>=300?'Comanda '+d.numero+(d.mesa?' · Mesa '+d.mesa:''):'Mesa '+d.numero)+
+     ' <span class="mut">· pedido #'+d.pedido_fb+'</span></div>';
+  d.itens.filter(function(i){return i.tipo!==2}).forEach(function(i){
+    h+='<div class="it"><div>'+esc(i.nome)+' <span class="q">×'+i.qtd+'</span></div><div>'+brl(i.valor)+'</div></div>';
+  });
+  h+='<div class="tot"><span>Subtotal</span><span>'+brl(d.total)+'</span></div>';
+  if(d.servico>0)h+='<div class="tot"><span>Serviço</span><span>'+brl(d.servico)+'</span></div>';
+  if(d.pago>0)h+='<div class="tot"><span>Já pago</span><span class="quit">− '+brl(d.pago)+'</span></div>';
+  h+='<div class="tot g"><span>'+(d.saldo<=0.01?'QUITADA':'A pagar')+'</span><span class="'+(d.saldo<=0.01?'quit':'saldo')+'">'+brl(Math.max(0,d.saldo))+'</span></div></div>';
+
+  if(d.pagamentos&&d.pagamentos.length){
+    h+='<div class="card"><div class="mut" style="margin-bottom:6px">Pagamentos registrados por nós</div>';
+    d.pagamentos.forEach(function(p){
+      h+='<div class="pg"><span>'+esc(p.forma)+(p.nsu?' · NSU '+esc(p.nsu):'')+'</span><span>'+brl(p.valor)+' · '+esc(p.status)+'</span></div>';
+    });
+    h+='</div>';
+  }
+
+  if(d.saldo>0.01){
+    h+='<div class="card"><div class="mut">Forma de pagamento</div><div class="formas">'+
+      ['dinheiro|Dinheiro','credito|Crédito','debito|Débito','pix|Pix'].map(function(f){
+        var k=f.split('|')[0],n=f.split('|')[1];
+        return '<button class="f'+(FORMA===k?' on':'')+'" onclick="setForma(\\''+k+'\\')">'+n+'</button>';
+      }).join('')+'</div>';
+    if(FORMA){
+      h+='<label class="lbl">Valor</label><input class="inp" id="v" type="number" step="0.01" value="'+Math.max(0,d.saldo).toFixed(2)+'">';
+      if(FORMA==='credito'||FORMA==='debito'||FORMA==='pix'){
+        h+='<label class="lbl">NSU (opcional — o que aparece no comprovante da maquininha)</label>'+
+           '<input class="inp" id="nsu" inputmode="numeric" placeholder="ex.: 136282">'+
+           '<label class="lbl">Autorização (opcional)</label><input class="inp" id="aut" placeholder="ex.: 440774">';
+      }
+      h+='<button class="big" style="margin-top:12px" id="btn" onclick="pagar()">'+
+         (MODOS.indexOf('lio')>=0&&(FORMA==='credito'||FORMA==='debito')?'COBRAR NA MAQUININHA':'REGISTRAR PAGAMENTO')+'</button>';
+      if(MODOS.indexOf('lio')<0&&(FORMA==='credito'||FORMA==='debito'))
+        h+='<div class="mut" style="margin-top:8px">Cobre na maquininha normalmente e registre aqui. (Quando as credenciais da LIO chegarem, o valor vai direto pro terminal.)</div>';
+    }
+    h+='</div>';
+  }
+  h+='<div id="msg"></div>';
+  if(MESA)h+='<button class="big" style="background:#5b5b66;margin-top:6px" onclick="document.getElementById(\\'n\\')||0;voltarMesa()">‹ CONTAS DA MESA '+MESA+'</button>';
+  h+='<button class="big" style="background:#888;margin-top:6px" onclick="telaNumero()">OUTRA MESA</button>';
+  document.getElementById('app').innerHTML=h;
+}
+function setForma(f){FORMA=(FORMA===f?null:f);render()}
+/** volta pra lista de contas da mesa sem perder o contexto */
+async function voltarMesa(){
+  var m=MESA;FORMA=null;
+  document.getElementById('app').innerHTML='<div class="card"><input class="num" id="n" value="'+m+'" style="display:none"></div>';
+  await abrirMesa();
+}
+async function pagar(){
+  var btn=document.getElementById('btn');btn.disabled=true;btn.textContent='…';
+  var modo=(MODOS.indexOf('lio')>=0&&(FORMA==='credito'||FORMA==='debito'))?'lio':'manual';
+  var body={numero:NUM,forma:FORMA,valor:Number(document.getElementById('v').value),modo:modo};
+  var nsu=document.getElementById('nsu'),aut=document.getElementById('aut');
+  if(nsu&&nsu.value)body.nsu=nsu.value.trim();
+  if(aut&&aut.value)body.autorizacao=aut.value.trim();
+  var r=await jpost('/api/conta/pagar',body);
+  if(r.ok&&r.aguardando){
+    document.getElementById('msg').innerHTML='<div class="ok">'+esc(r.msg)+'</div>';
+    poll(r.pagamento_id,0);return;
+  }
+  if(r.ok){
+    FORMA=null;
+    document.getElementById('msg').innerHTML='<div class="ok"><b>✓ Pagamento registrado</b><div class="mut" style="margin-top:4px">'+
+      (r.quitada?'Conta quitada. Feche a comanda no Consumer pra sair a nota.':'Falta '+brl(r.saldo))+'</div></div>';
+    await carregar();
+  } else {
+    document.getElementById('msg').innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';
+    btn.disabled=false;btn.textContent='REGISTRAR PAGAMENTO';
+  }
+}
+async function poll(id,n){
+  if(n>60){document.getElementById('msg').innerHTML='<div class="err">Não confirmou a tempo. Confira na maquininha.</div>';return}
+  var r=await jpost('/api/conta/conferir',{pagamento_id:id});
+  if(r.ok&&r.pago){FORMA=null;await carregar();
+    document.getElementById('msg').innerHTML='<div class="ok"><b>✓ Aprovado na maquininha</b>'+(r.nsu?'<div class="mut">NSU '+esc(r.nsu)+'</div>':'')+'</div>';return}
+  setTimeout(function(){poll(id,n+1)},3000);
+}
+telaNumero();
+</script></body></html>`;
+
 function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
 
 const server = http.createServer(async (req, res) => {
@@ -705,6 +1089,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
     if (req.method === 'POST' && p === '/api/venda/enviar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaEnviar(body))); }
+    if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
+    if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
+    if (p === '/api/conta') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(u.searchParams.get('n') || 0))); }
+    if (req.method === 'POST' && p === '/api/conta/pagar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaPagar(body))); }
+    if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
