@@ -8,9 +8,22 @@ import {
   parseCieloRecebiveis,
   parseCnab240Inter,
   extrairIdentificacaoCnab,
+  ehArquivoEdi,
+  parseCieloEdiVendas,
+  parseCieloEdiRecebiveis,
 } from '@concilia/conciliador/parsers';
+
 import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
 import { buscarExtratoInter, idTransacaoDeterministico, type InterTransacao, type InterCredenciais } from './inter';
+
+// A Cielo entrega os mesmos dados em dois formatos: os CSVs que se baixam à mão
+// ("Vendas/Recebíveis Detalhado") e os arquivos EDI posicionais do Extrato
+// Eletrônico (CIELO03/CIELO04), que é o que a API devolve. Aqui detectamos qual
+// veio e usamos o parser certo — os dois desembocam na mesma estrutura, então
+// todo o resto do pipeline (auto-split por EC, dedup, conciliação) não muda.
+const lerVendasCielo = (c: Buffer) => (ehArquivoEdi(c) ? parseCieloEdiVendas(c) : parseCieloVendas(c));
+const lerRecebiveisCielo = (c: Buffer) =>
+  ehArquivoEdi(c) ? parseCieloEdiRecebiveis(c) : parseCieloRecebiveis(c);
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
@@ -110,7 +123,7 @@ export function extrairEcsCielo(
   conteudo: Buffer,
   tipo: 'CIELO_VENDAS' | 'CIELO_RECEBIVEIS',
 ): string[] {
-  const rows = tipo === 'CIELO_VENDAS' ? parseCieloVendas(conteudo) : parseCieloRecebiveis(conteudo);
+  const rows = tipo === 'CIELO_VENDAS' ? lerVendasCielo(conteudo) : lerRecebiveisCielo(conteudo);
   const ecs = new Set<string>();
   for (const r of rows) {
     const ec = r.estabelecimento?.trim();
@@ -263,7 +276,7 @@ export async function processarCieloVendas(
   storagePath: string,
   rot?: RoteamentoEc,
 ): Promise<ResumoProcessamento> {
-  const rows = parseCieloVendas(conteudo);
+  const rows = lerVendasCielo(conteudo);
   if (rows.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
 
   type VendaInsert = typeof schema.vendaAdquirente.$inferInsert;
@@ -349,7 +362,7 @@ export async function processarCieloRecebiveis(
   storagePath: string,
   rot?: RoteamentoEc,
 ): Promise<ResumoProcessamento> {
-  const rows = parseCieloRecebiveis(conteudo);
+  const rows = lerRecebiveisCielo(conteudo);
   if (rows.length === 0) return { registrosLidos: 0, registrosInseridos: 0 };
 
   type RecebInsert = typeof schema.recebivelAdquirente.$inferInsert;
