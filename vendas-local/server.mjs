@@ -30,7 +30,7 @@ const INTERVALO_MS = 15000;
 // Se de madrugada faltar a virada (comanda aberta ontem à noite ainda aberta), trocar por:
 //   DATEADD(-16 HOUR TO CURRENT_TIMESTAMP)   (janela rolante de 16h, como o Consumer usa)
 const DESDE = 'CURRENT_DATE';
-const LIMITE_ATRASO_MIN = 15; // prato esperando mais que isso sem "pronto" = ATRASADO (vermelho)
+const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
 // Comandas individuais (cartão da PESSOA) usam a faixa 300–400; mesas do Prainha vão até ~220.
 // Mesa = ONDE entregar; comanda = DE QUEM é. Uma mesa pode ter várias comandas.
 const COMANDA_MIN = 300, COMANDA_MAX = 400;
@@ -109,6 +109,7 @@ async function initSchema() {
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_item ON comanda_item(item_codigo)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_pai ON comanda_item(codigo_pai)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_area ON comanda_item(area_codigo)`;
+  await addCol('comanda_item', 'codigo_pdv integer'); // liga o item ao catálogo (tempo extra por prato)
   await sql`CREATE TABLE IF NOT EXISTS sync_estado (id int PRIMARY KEY DEFAULT 1, ultimo_ok timestamptz, ultimo_erro text, comandas int, itens int)`;
   await sql`INSERT INTO sync_estado (id) VALUES (1) ON CONFLICT DO NOTHING`;
   // --- VENDA (Fase 1) ---
@@ -136,6 +137,19 @@ async function initSchema() {
     valor numeric, origem text, nsu text, autorizacao text, bandeira text,
     tef_ref text, status text, erro text, pagamento_fb integer)`;
   await addCol('venda_pagamento', 'pagamento_fb integer');
+  // "servir tudo junto": escolha DO PEDIDO, não regra automática. Bebida
+  // normalmente vem antes; só casa as praças quando alguém pediu pra casar.
+  await addCol('venda_envio', 'junto boolean DEFAULT false');
+  // CHAMADOS da mesa: "chamar garçom" e reclamação (avaliação ruim).
+  // Reclamação muda a ordem da cozinha — a mesa insatisfeita passa na frente.
+  await sql`CREATE TABLE IF NOT EXISTS chamado (id bigserial PRIMARY KEY,
+    mesa integer, tipo text NOT NULL, origem text, nota integer, texto text,
+    criado_em timestamptz DEFAULT now(), atendido_em timestamptz, atendido_por text)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_chamado_aberto ON chamado(atendido_em, criado_em)`;
+  // TEMPO DE PREPARO: cada praça tem o seu (bebida sai em 5min, carne em 25).
+  // Prato demorado soma minutos EXTRA por cima do tempo da praça dele.
+  await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
+  await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -144,7 +158,7 @@ async function espelho() {
   const az = await q(`SELECT CODIGO, TRIM(DESCRICAO) D FROM COZINHAS ORDER BY CODIGO`);
   const c = await q(`SELECT CODIGO, NUMERO, CODIGOPEDIDOORIGEM ORI, TRIM(NOME) NOME, VALORTOTAL, SUBTOTALPAGO, QUANTIDADEPESSOAS QP, DATAABERTURA FROM PEDIDOS WHERE DATAFECHAMENTO IS NULL AND DATADELETE IS NULL AND DATAABERTURA >= ${DESDE} ORDER BY NUMERO`);
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
-  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA
+  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
     LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
     LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
@@ -153,7 +167,7 @@ async function espelho() {
 
   const areas = az.ok ? az.rows.map((x) => ({ codigo: N(x.CODIGO), nome: T(x.D) || ('Área ' + x.CODIGO) })) : [];
   const comandas = c.rows.map((x) => ({ codigo: N(x.CODIGO), numero: N(x.NUMERO), origem: N(x.ORI), nome: T(x.NOME), valor_total: N(x.VALORTOTAL) || 0, subtotal_pago: N(x.SUBTOTALPAGO) || 0, qtd_pessoas: N(x.QP), data_abertura: x.DATAABERTURA || null }));
-  const itens = it.rows.map((x) => ({ item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || null, entregue: x.ENTR || null }));
+  const itens = it.rows.map((x) => ({ item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || null, entregue: x.ENTR || null }));
   // COMPLEMENTO (tipo 2) sai na cozinha do PRATO-PAI: se não tem área própria, herda a do pai (CODIGOPAI).
   const areaPorItem = new Map(itens.map((i) => [i.item_codigo, i.area_codigo]));
   for (const i of itens) {
@@ -164,7 +178,7 @@ async function espelho() {
     if (areas.length) for (const a of areas) await sql`INSERT INTO area (codigo, nome) VALUES (${a.codigo}, ${a.nome}) ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome`;
     await sql`TRUNCATE comanda, comanda_item`;
     if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura')}`;
-    if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
+    if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
     await sql`UPDATE sync_estado SET ultimo_ok=now(), ultimo_erro=null, comandas=${comandas.length}, itens=${itens.length} WHERE id=1`;
   });
   ultimoStatus = { ok: true, comandas: comandas.length, itens: itens.length };
@@ -427,10 +441,11 @@ async function apiVendaEnviar(body) {
   }
   // Quem imprime separado por cozinha é o Consumer (usa PRODUTOS.CODIGOCOZINHA).
   // O que falta é a cozinha SABER que o pedido tem acompanhamento em outra praça:
-  // sem isso o petisco sai sozinho e o prato chega frio (ou vice-versa). Então
-  // cada via leva escrito onde está o resto do pedido.
+  // sem isso o petisco sai sozinho e o prato chega frio (ou vice-versa). Só que
+  // isso é pedido a pedido — quem marca "servir junto" é quem atende a mesa.
+  const junto = body.junto === true;
   const areas = [...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))];
-  if (areas.length > 1) {
+  if (junto && areas.length > 1) {
     const as = await sql`SELECT codigo, nome FROM area WHERE codigo = ANY(${areas})`;
     const nomeArea = new Map(as.map((a) => [Number(a.codigo), a.nome]));
     for (const i of itens) {
@@ -439,8 +454,8 @@ async function apiVendaEnviar(body) {
     }
   }
   const total = itens.reduce((s, i) => s + i.preco * i.qtd, 0);
-  const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status)
-    VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando') RETURNING id`;
+  const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status, junto)
+    VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando', ${junto && areas.length > 1}) RETURNING id`;
   try {
     let ped = await fbAcharPedido(numero);
     if (!ped) ped = await fbCriarPedido(numero);
@@ -552,6 +567,72 @@ async function apiContaConferir(pagamentoId) {
 // entregue= COALESCE(ci.entregue,  m.entregue_em)
 
 // ---- API: seleção de áreas (produção) ----
+// ---- TEMPO DE PREPARO por praça e por prato ----
+async function apiTempos() {
+  const areas = await sql`SELECT a.codigo, a.nome, c.minutos FROM area a
+    LEFT JOIN praca_config c ON c.area_codigo=a.codigo ORDER BY a.nome`;
+  const pratos = await sql`SELECT t.codigo_pdv, t.minutos_extra, p.nome FROM produto_tempo t
+    LEFT JOIN produto_local p ON p.codigo_pdv=t.codigo_pdv ORDER BY t.minutos_extra DESC, p.nome`;
+  return { padrao: LIMITE_ATRASO_MIN, areas, pratos };
+}
+async function apiTemposSalvar(body) {
+  const min = Number(body.minutos);
+  if (body.area_codigo != null) {
+    if (!(min >= 0 && min <= 600)) return { ok: false, erro: 'minutos de 0 a 600' };
+    await sql`INSERT INTO praca_config (area_codigo, minutos) VALUES (${Number(body.area_codigo)}, ${min})
+      ON CONFLICT (area_codigo) DO UPDATE SET minutos=EXCLUDED.minutos`;
+    return { ok: true };
+  }
+  if (body.codigo_pdv != null) {
+    const cod = Number(body.codigo_pdv);
+    if (min <= 0) { await sql`DELETE FROM produto_tempo WHERE codigo_pdv=${cod}`; return { ok: true, removido: true }; }
+    if (min > 600) return { ok: false, erro: 'minutos de 0 a 600' };
+    await sql`INSERT INTO produto_tempo (codigo_pdv, minutos_extra) VALUES (${cod}, ${min})
+      ON CONFLICT (codigo_pdv) DO UPDATE SET minutos_extra=EXCLUDED.minutos_extra`;
+    return { ok: true };
+  }
+  return { ok: false, erro: 'informe area_codigo ou codigo_pdv' };
+}
+
+// ---- CHAMADOS da mesa (garçom / reclamação) ----
+const TIPOS_CHAMADO = new Set(['garcom', 'reclamacao']);
+async function apiChamadoCriar(body) {
+  const tipo = String(body.tipo || 'garcom');
+  if (!TIPOS_CHAMADO.has(tipo)) return { ok: false, erro: 'tipo inválido' };
+  const mesa = body.mesa == null ? null : Number(body.mesa);
+  if (mesa != null && !(mesa >= 1 && mesa <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  // um chamado aberto por mesa+tipo: apertar o botão 5x não vira 5 alertas
+  const [ja] = await sql`SELECT id FROM chamado WHERE mesa IS NOT DISTINCT FROM ${mesa} AND tipo=${tipo} AND atendido_em IS NULL LIMIT 1`;
+  if (ja) return { ok: true, id: Number(ja.id), repetido: true };
+  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto)
+    VALUES (${mesa}, ${tipo}, ${String(body.origem || '').slice(0, 120) || null},
+            ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null})
+    RETURNING id`;
+  return { ok: true, id: Number(r.id) };
+}
+async function apiChamados() {
+  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, criado_em FROM chamado
+    WHERE atendido_em IS NULL ORDER BY criado_em`;
+  const agora = Date.now();
+  const comIdade = rows.map((x) => ({ ...x, ha_min: Math.max(0, Math.floor((agora - new Date(x.criado_em).getTime()) / 60000)) }));
+  return {
+    reclamacoes: comIdade.filter((x) => x.tipo === 'reclamacao'),
+    garcom: comIdade.filter((x) => x.tipo === 'garcom'),
+  };
+}
+async function apiChamadoAtender(body) {
+  const id = Number(body.id);
+  if (!id) return { ok: false, erro: 'id' };
+  await sql`UPDATE chamado SET atendido_em=now(), atendido_por=${String(body.por || '').slice(0, 60) || null}
+    WHERE id=${id} AND atendido_em IS NULL`;
+  return { ok: true };
+}
+/** Mesas com reclamação aberta — a cozinha usa pra passar na frente. */
+async function mesasComReclamacao() {
+  const r = await sql`SELECT DISTINCT mesa FROM chamado WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL`;
+  return new Set(r.map((x) => Number(x.mesa)));
+}
+
 async function apiAreas() {
   const rows = await sql`
     SELECT a.codigo, a.nome,
@@ -582,13 +663,48 @@ async function apiKds(areaCod) {
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const r = agrupar(itens, 'chegada');
   await rotularComandas(r.comandas);
+  // Prazo desta praça + o extra do prato mais demorado da comanda.
+  // Ex.: Bar 5min; se a comanda tem um drink com +10, o prazo dela vira 15.
+  const cfg = (await sql`SELECT minutos FROM praca_config WHERE area_codigo=${areaCod}`)[0];
+  const prazoPraca = cfg ? Number(cfg.minutos) : LIMITE_ATRASO_MIN;
+  const extras = new Map((await sql`SELECT codigo_pdv, minutos_extra FROM produto_tempo`).map((x) => [Number(x.codigo_pdv), Number(x.minutos_extra)]));
   const agora = Date.now();
   for (const c of r.comandas) {
     c.espera_min = c.chegada ? Math.max(0, Math.floor((agora - new Date(c.chegada).getTime()) / 60000)) : null;
-    c.atrasado = c.espera_min != null && c.espera_min >= LIMITE_ATRASO_MIN;
+    const extra = Math.max(0, ...(c.itens || []).map((i) => extras.get(Number(i.codigo_pdv)) || 0), 0);
+    c.prazo_min = prazoPraca + extra;
+    c.atrasado = c.espera_min != null && c.espera_min >= c.prazo_min;
+    // 2x o prazo = estourou de vez: o KDS sobe o alarme (som mais forte e repetido)
+    c.critico = c.espera_min != null && c.espera_min >= c.prazo_min * 2;
   }
   const areaNome = areaCod === 0 ? 'Sem área' : ((await sql`SELECT nome FROM area WHERE codigo=${areaCod}`)[0]?.nome || ('Área ' + areaCod));
-  return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r, online: ultimoStatus.ok };
+
+  // "SAI JUNTO": só para as comandas em que alguém pediu pra servir junto.
+  // A outra praça já terminou a parte dela e o item daqui ainda está pendente
+  // — quem segura o pedido agora é esta praça.
+  const esperando = await sql`
+    SELECT DISTINCT c.numero, a2.nome AS praca, m2.pronto_em
+      FROM comanda_item ci
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+      JOIN comanda_item ci2 ON ci2.comanda_codigo = ci.comanda_codigo
+       AND ci2.area_codigo IS DISTINCT FROM ci.area_codigo AND ci2.tipo IS DISTINCT FROM 2
+      LEFT JOIN marca m2 ON m2.item_codigo = ci2.item_codigo
+      LEFT JOIN area a2 ON a2.codigo = ci2.area_codigo
+     WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2
+       AND COALESCE(ci.produzido, m.pronto_em) IS NULL
+       AND COALESCE(ci2.produzido, m2.pronto_em) IS NOT NULL
+       AND EXISTS (SELECT 1 FROM venda_envio ve WHERE ve.numero = c.numero AND ve.junto AND ve.status <> 'erro')
+     ORDER BY m2.pronto_em`;
+
+  // Mesa que reclamou passa na frente: sobe pro topo da fila e vem marcada.
+  const reclamou = await mesasComReclamacao();
+  for (const c of r.comandas) c.reclamou = reclamou.has(Number(c.numero));
+  r.comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
+
+  const ch = await apiChamados();
+  return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r,
+    esperando, reclamacoes: ch.reclamacoes, online: ultimoStatus.ok };
 }
 
 // ---- API: ENTREGA (global) — itens prontos, FIFO por hora do "pronto" ----
@@ -620,7 +736,7 @@ function agrupar(itens, ordem) {
   for (const i of itens) {
     if (!porC.has(i.comanda_codigo)) porC.set(i.comanda_codigo, { codigo: i.comanda_codigo, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
     const c = porC.get(i.comanda_codigo);
-    c.itens.push({ item_codigo: i.item_codigo, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes) });
+    c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes) });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
   }
@@ -719,6 +835,21 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .cfoot{padding:9px 12px;border-top:1px solid #eee;display:flex;gap:8px}
 .cfoot .b{flex:1;font-size:13px;padding:9px}
 .vazio{padding:70px 20px;text-align:center;color:var(--mut);font-size:15px}
+/* faixa de RECLAMAÇÃO — vermelha, piscando, no topo. A mesa que reclamou
+   passa na frente da fila; a cozinha adianta o prato pra apagar o incêndio. */
+.alerta{background:var(--red);color:#fff;padding:15px 20px;font-size:21px;font-weight:800;letter-spacing:.02em;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;animation:pisca 1.1s ease-in-out infinite}
+@keyframes pisca{0%,100%{background:#dc2626}50%{background:#8f1414}}
+@media (prefers-reduced-motion:reduce){.alerta{animation:none}}
+.alerta .ms{background:rgba(255,255,255,.22);border-radius:9px;padding:3px 12px}
+.alerta .sub{font-size:13.5px;font-weight:500;opacity:.92;width:100%}
+.c.reclamou{border:2px solid var(--red);border-top:4px solid var(--red);box-shadow:0 0 0 3px rgba(220,38,38,.13)}
+.flag{background:var(--red);color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;padding:2px 8px;border-radius:6px;margin-left:6px}
+/* "sai junto": a outra praça já terminou e este item ainda está pendente */
+.junto{background:#fff4e0;border-bottom:1px solid #f0d08a;color:#8a4b06;padding:11px 20px;font-size:14.5px;font-weight:600}
+.junto b{color:#6b3a04}
+.c.junto-alvo{border-top-color:#e0651a}
+.flagj{background:#e0651a;color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px}
 /* fila / tempo / atraso */
 .pos{background:#1b1b20;color:#fff;border-radius:8px;padding:2px 9px;font-weight:800;font-size:13px;margin-right:8px}
 .c.atrasado .pos{background:var(--red)}
@@ -745,6 +876,26 @@ function _tone(t,f,off,dur){var o=_ctx.createOscillator(),g=_ctx.createGain();o.
 function apitar(){if(!SOM)return;try{_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
   if(_ctx.state==='suspended')_ctx.resume();var t=_ctx.currentTime;
   _tone(t,880,0,0.45);_tone(t,1318.5,0.22,0.5);_tone(t,880,0.8,0.45);_tone(t,1318.5,1.02,0.6);}catch(e){}}
+// ALARME DE ATRASO: nada a ver com o "din-don" de pedido novo. É grave,
+// mais alto e repetido, pra virar cabeça na cozinha barulhenta.
+function alarmar(){if(!SOM)return;try{_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
+  if(_ctx.state==='suspended')_ctx.resume();var t=_ctx.currentTime;
+  for(var k=0;k<5;k++){var o=_ctx.createOscillator(),g=_ctx.createGain(),b=t+k*0.42;
+    o.type='sawtooth';o.frequency.setValueAtTime(300,b);o.frequency.linearRampToValueAtTime(620,b+0.3);
+    g.gain.setValueAtTime(0.0001,b);g.gain.exponentialRampToValueAtTime(0.95,b+0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001,b+0.34);
+    o.connect(g);g.connect(_ctx.destination);o.start(b);o.stop(b+0.4)}}catch(e){}}
+// Repete a cada 45s enquanto houver comanda estourada — não deixa "acostumar".
+var _crit=new Set(),_alarmeTmr=null;
+function checaAtraso(d){
+  var criticas=new Set();
+  (d.comandas||[]).forEach(function(c){if(c.critico)criticas.add(c.codigo)});
+  var nova=false;criticas.forEach(function(k){if(!_crit.has(k))nova=true});
+  _crit=criticas;
+  if(nova)alarmar();
+  clearInterval(_alarmeTmr);
+  if(criticas.size)_alarmeTmr=setInterval(alarmar,45000);
+}
 function toggleSom(){SOM=!SOM;localStorage.setItem('kds_som',SOM?'on':'off');if(SOM)apitar();if(VIEW)VIEW()}
 function somBtn(){return '<button class="back" onclick="toggleSom()" title="som de pedido novo">'+(SOM?'🔊':'🔇')+'</button>'}
 document.addEventListener('pointerdown',function(){try{_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();if(_ctx.state==='suspended')_ctx.resume();}catch(e){}},{once:true});
@@ -774,7 +925,10 @@ function comandaHTML(c,modo,idx){
       '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+'</span>'+btn+'</div>';
   }).join('');
   var badge=c.tipo==='delivery'?'<span class="badge">delivery</span>':'';
-  if(modo!=='entrega'&&c.atrasado) badge+='<span class="badge late">atrasado</span>';
+  if(modo!=='entrega'&&c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
+  else if(modo!=='entrega'&&c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
+  if(c.reclamou) badge+='<span class="flag">⚠ reclamou · adiantar</span>';
+  if(esperandoNesta(c.numero)) badge+='<span class="flagj">sai junto</span>';
   var tchip=modo==='entrega'
     ? (c.aguarda_min!=null?'<span class="tchip">⏱ '+fmtMin(c.aguarda_min)+'</span>':'')
     : (c.espera_min!=null?'<span class="tchip">⏱ '+fmtMin(c.espera_min)+'</span>':'');
@@ -782,7 +936,8 @@ function comandaHTML(c,modo,idx){
   var foot;
   if(modo==='entrega') foot='<div class="cfoot"><button class="b e" onclick="marca(\\'entregue\\',{comanda_codigo:'+c.codigo+'})">✓ Entregar tudo</button></div>';
   else foot='<div class="cfoot"><button class="b p" onclick="marca(\\'pronto\\',{comanda_codigo:'+c.codigo+',area_codigo:'+AREA.cod+'})">✓ Tudo pronto</button></div>';
-  return '<div class="c '+c.tipo+(modo!=='entrega'&&c.atrasado?' atrasado':'')+'">'+
+  return '<div class="c '+c.tipo+(modo!=='entrega'&&c.atrasado?' atrasado':'')+
+    (c.reclamou?' reclamou':'')+(esperandoNesta(c.numero)?' junto-alvo':'')+'">'+
     '<div class="chd"><div class="rot"><span class="pos">'+(idx+1)+'º</span>'+esc(c.rotulo)+badge+'</div>'+tchip+'</div>'+
     nome+'<div class="its">'+its+'</div>'+foot+'</div>';
 }
@@ -800,15 +955,44 @@ async function selecao(){
 }
 async function kds(){
   var d=await (await fetch('/api/kds?area='+AREA.cod,{cache:'no-store'})).json();
+  ESPERANDO=d.esperando||[];
   checaNovos(d); // pedido novo na área -> apita
+  checaAtraso(d); // comanda estourou o prazo -> alarme grave e repetido
+  var nCrit=(d.comandas||[]).filter(function(c){return c.critico}).length;
   document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecao()">◂ Áreas</button>'+
     '<h1>'+esc(d.area.nome)+' · <b>Produção</b></h1>'+
-    '<span class="pill"><b>'+d.nItens+'</b> a produzir</span><span class="grow"></span>'+somBtn()+
+    '<span class="pill"><b>'+d.nItens+'</b> a produzir</span>'+
+    (nCrit?'<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626"><b>'+nCrit+'</b> estourou o prazo</span>':'')+
+    '<span class="grow"></span>'+somBtn()+
+    '<a class="linkbtn" href="/tempos" title="tempo de preparo">⏱</a>'+
     '<a class="linkbtn go" href="/entrega">Entregas ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
-  if(!d.comandas.length){app.innerHTML='<div class="vazio">tudo produzido nesta área ✅</div>';return}
-  app.innerHTML='<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>';
+  var topo=faixaReclamacao(d)+faixaJunto(d);
+  if(!d.comandas.length){app.innerHTML=topo+'<div class="vazio">tudo produzido nesta área ✅</div>';return}
+  app.innerHTML=topo+'<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>';
+}
+var ESPERANDO=[];
+function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(e.numero)===Number(numero)})}
+// Reclamações em SEQUÊNCIA, da mais antiga pra mais nova — "mesa 1, mesa 8, mesa 10".
+function faixaReclamacao(d){
+  var rs=d.reclamacoes||[];if(!rs.length)return '';
+  var mesas=rs.map(function(r){
+    return '<span class="ms">'+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · '+r.ha_min+'min':'')+'</span>';
+  }).join('');
+  var txts=rs.filter(function(r){return r.texto}).map(function(r){return (r.mesa?'Mesa '+r.mesa+': ':'')+esc(r.texto)});
+  return '<div class="alerta">⚠️ ATENÇÃO '+mesas+
+    '<span class="sub">Cliente reclamou — adiante o que for dessa mesa.'+
+    (txts.length?' — '+txts.join(' · '):'')+'</span></div>';
+}
+// A outra praça já entregou a parte dela: o que sair daqui está segurando o pedido.
+function faixaJunto(d){
+  var es=d.esperando||[];if(!es.length)return '';
+  var por={};es.forEach(function(e){(por[e.numero]=por[e.numero]||[]).push(e.praca||'outra praça')});
+  var txt=Object.keys(por).map(function(n){
+    return '<b>'+(Number(n)>=300?'comanda ':'mesa ')+n+'</b> (pronto em '+por[n].join(', ')+')';
+  }).join(' · ');
+  return '<div class="junto">⏱️ SAI JUNTO — a outra praça já terminou: '+txt+'</div>';
 }
 async function entrega(){
   var d=await (await fetch('/api/entrega',{cache:'no-store'})).json();
@@ -859,6 +1043,15 @@ input:focus{border-color:var(--gold2)}
 .pi .obsv{display:block;color:var(--gold2);font-size:12.5px;margin-top:2px}
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:12px;padding:12px 14px;font-size:14px;margin-top:12px;line-height:1.45}
 .totrev{display:flex;justify-content:space-between;font-size:18px;font-weight:800;padding:16px 4px 4px}
+/* barra de chamados no celular do garçom — fica acima de tudo, sempre visível */
+#chamados{position:sticky;top:0;z-index:9}
+.ch{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:15px;font-weight:700;color:#fff}
+.ch .ir{margin-left:auto;background:rgba(255,255,255,.25);border:0;color:#fff;font:inherit;font-size:13px;
+  font-weight:700;border-radius:8px;padding:6px 12px;cursor:pointer;white-space:nowrap}
+.ch.rec{background:var(--red);animation:pisca 1.1s ease-in-out infinite}
+@keyframes pisca{0%,100%{background:#dc2626}50%{background:#8f1414}}
+@media (prefers-reduced-motion:reduce){.ch.rec{animation:none}}
+.ch.gar{background:#2563eb}
 .ri .n{font-size:15px}.ri .n small{color:var(--mut)}.ri .p{color:var(--gold2);font-weight:700;white-space:nowrap}
 .cart{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);box-shadow:0 -4px 18px rgba(0,0,0,.08);max-height:62vh;overflow:auto}
 .cart .in{max-width:560px;margin:0 auto;padding:10px 16px 14px}
@@ -875,12 +1068,13 @@ input:focus{border-color:var(--gold2)}
 .mut{color:var(--mut);font-size:13px}
 </style></head><body>
 <header><h1>Prainha <b>Bar</b> · Venda</h1><span style="flex:1"></span><a class="back" href="/">KDS</a></header>
+<div id="chamados"></div>
 <div class="wrap" id="app"></div>
 <div class="cart" id="cart" style="display:none"><div class="in" id="cartin"></div></div>
 <script>
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
 var brl=function(n){return 'R$ '+Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
-var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null, AREAS=null;
+var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null, AREAS=null, JUNTO=false;
 function app(h){document.getElementById('app').innerHTML=h}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
@@ -1013,8 +1207,10 @@ async function revisar(){
     '<div class="tit" style="margin-top:12px">Confira antes de enviar — <b>'+esc(alvoTxt)+'</b></div>';
   if(ordem.length>1){
     h+='<div class="aviso"><b>Este pedido vai para '+ordem.length+' praças.</b><br>'+
-       'Cada comanda impressa vai levar <b>&gt;&gt; SAI JUNTO C/ …</b> com o nome das outras, '+
-       'pra que os pratos saiam ao mesmo tempo.</div>';
+       '<label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px;cursor:pointer">'+
+       '<input type="checkbox" id="chkjunto" style="width:22px;height:22px;margin:2px 0 0" '+(JUNTO?'checked':'')+' onchange="JUNTO=this.checked">'+
+       '<span><b>Servir tudo junto</b><br><span class="mut">Marque quando o cliente pedir tudo de uma vez. '+
+       'Cada cozinha recebe <b>&gt;&gt; SAI JUNTO C/ …</b> impresso, e quem terminar primeiro avisa a outra praça no KDS.</span></span></label></div>';
   }
   ordem.forEach(function(k){
     var its=grupos[k],n=its.reduce(function(s,i){return s+i.qtd},0);
@@ -1061,9 +1257,9 @@ async function enviar(){
   if(!CART.length)return;
   var btn=document.getElementById('btnenviar')||document.querySelector('.big.verde');
   if(btn){btn.disabled=true;btn.textContent='Enviando…'}
-  var r=await jpost('/api/venda/enviar',{numero:ALVO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs}})});
+  var r=await jpost('/api/venda/enviar',{numero:ALVO,junto:JUNTO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs}})});
   if(r.ok){
-    CART=[];renderCart();
+    CART=[];JUNTO=false;renderCart();
     app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
       '<div class="mut" style="margin-top:6px">'+(r.numero>=300?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
       ' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>'+
@@ -1075,7 +1271,176 @@ async function enviar(){
     if(btn){btn.disabled=false;btn.textContent='CONFIRMAR E ENVIAR PRA COZINHA'}
   }
 }
+// ---- chamados da mesa: reclamação (vermelho piscando) e chamar garçom ----
+// Fica no topo de QUALQUER tela do garçom. Reclamação primeiro: é a que a
+// cozinha vai adiantar, e quanto antes alguém for à mesa, menor o estrago.
+async function puxarChamados(){
+  var el=document.getElementById('chamados');if(!el)return;
+  var d;try{d=await jget('/api/chamados')}catch(e){return}
+  var h='';
+  (d.reclamacoes||[]).forEach(function(r){
+    h+='<div class="ch rec">⚠️ '+(r.mesa?'MESA '+r.mesa:'Sem mesa')+' reclamou'+
+      (r.ha_min>0?' · há '+r.ha_min+'min':' · agora')+
+      (r.texto?' — '+esc(r.texto):'')+
+      '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">Vou lá</button></div>';
+  });
+  (d.garcom||[]).forEach(function(r){
+    h+='<div class="ch gar">🔔 '+(r.mesa?'Mesa '+r.mesa:'Alguém')+' chamou'+
+      (r.ha_min>0?' · há '+r.ha_min+'min':' · agora')+
+      '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">Vou lá</button></div>';
+  });
+  el.innerHTML=h;
+}
+async function atender(id,mesa){
+  await jpost('/api/chamado/atender',{id:id});
+  await puxarChamados();
+  if(mesa){MESA=Number(mesa);ALVO=Number(mesa);carregarMesa()}
+}
+puxarChamados();setInterval(puxarChamados,15000);
 telaMesa();
+</script></body></html>`;
+
+// ---- /tempos — configuração do tempo de preparo ----
+const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prainha Bar — Tempo de preparo</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:13px 20px;display:flex;align-items:center;gap:12px}
+h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 13px;font:inherit;font-size:14px;text-decoration:none}
+.wrap{max-width:720px;margin:0 auto;padding:22px 20px 60px}
+h2{font-size:15px;color:var(--mut);font-weight:500;margin:26px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.l{display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid #f1f1f5}
+.l:first-child{border-top:0}.l .nm{flex:1;font-size:15.5px}
+.l .nm small{display:block;color:var(--mut);font-size:12.5px}
+input{width:86px;font:inherit;font-size:16px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;text-align:center}
+input:focus{outline:none;border-color:var(--gold2)}
+.un{color:var(--mut);font-size:13.5px}
+.mut{color:var(--mut);font-size:13.5px;line-height:1.55}
+.add{display:flex;gap:9px;margin-top:10px}
+.add input[type=search]{flex:1;width:auto;text-align:left}
+.sug{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:6px;overflow:hidden}
+.sug div{padding:11px 14px;border-top:1px solid #f1f1f5;cursor:pointer;font-size:14.5px}
+.sug div:first-child{border-top:0}.sug div:hover{background:#faf5ef}
+.rm{color:#dc2626;background:none;border:0;font-size:17px;cursor:pointer}
+.ok{color:var(--green);font-size:13px;font-weight:700;min-width:56px}
+</style></head><body>
+<header><a class="back" href="/">◂ KDS</a><h1>Tempo de <b>preparo</b></h1></header>
+<div class="wrap" id="app">carregando…</div>
+<script>
+var D=null,tmr={};
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
+async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
+async function carregar(){D=await jget('/api/tempos');pinta()}
+function pinta(){
+  var h='<div class="mut">Quanto tempo cada praça tem pra entregar. Passou disso, o pedido fica <b>vermelho</b> no KDS. '+
+    'Passou do <b>dobro</b>, o alarme fica mais alto e insistente.</div>'+
+    '<h2>Por praça</h2><div class="card">';
+  D.areas.forEach(function(a){
+    h+='<div class="l"><div class="nm">'+esc(a.nome)+
+      (a.minutos==null?'<small>usando o padrão de '+D.padrao+' min</small>':'')+'</div>'+
+      '<input type="number" inputmode="numeric" min="0" max="600" value="'+(a.minutos==null?D.padrao:a.minutos)+'" '+
+      'onchange="salvaArea('+a.codigo+',this.value)"><span class="un">min</span>'+
+      '<span class="ok" id="ok-a'+a.codigo+'"></span></div>';
+  });
+  h+='</div><h2>Pratos que demoram mais</h2>'+
+    '<div class="mut">Minutos <b>somados</b> ao tempo da praça. Uma picanha na Cozinha de 20min com +15 vira 35min só pra ela.</div>'+
+    '<div class="card" style="margin-top:10px">';
+  if(!D.pratos.length) h+='<div class="l"><div class="nm mut">nenhum prato com tempo extra</div></div>';
+  D.pratos.forEach(function(p){
+    h+='<div class="l"><div class="nm">'+esc(p.nome||('produto '+p.codigo_pdv))+'</div>'+
+      '<input type="number" inputmode="numeric" min="0" max="600" value="'+p.minutos_extra+'" '+
+      'onchange="salvaPrato('+p.codigo_pdv+',this.value)"><span class="un">min a mais</span>'+
+      '<button class="rm" onclick="salvaPrato('+p.codigo_pdv+',0)" title="remover">✕</button></div>';
+  });
+  h+='</div><div class="add"><input type="search" id="q" placeholder="buscar prato pra dar tempo extra…" oninput="buscar(this.value)"></div>'+
+     '<div class="sug" id="sug" style="display:none"></div>';
+  document.getElementById('app').innerHTML=h;
+}
+var deb=null;
+function buscar(v){
+  clearTimeout(deb);
+  var s=document.getElementById('sug');
+  if(!v||v.length<2){s.style.display='none';return}
+  deb=setTimeout(async function(){
+    var d=await jget('/api/venda/busca?q='+encodeURIComponent(v));
+    s.style.display='block';
+    s.innerHTML=d.produtos.length?d.produtos.slice(0,8).map(function(p){
+      return '<div onclick="novoPrato('+p.codigo_pdv+')">'+esc(p.nome)+(p.tamanho?' <span class="un">['+esc(p.tamanho)+']</span>':'')+'</div>';
+    }).join(''):'<div class="mut">nada encontrado</div>';
+  },250);
+}
+async function novoPrato(cod){
+  var m=prompt('Quantos minutos A MAIS esse prato leva?','10');
+  if(m===null)return;
+  await jpost('/api/tempos',{codigo_pdv:cod,minutos:Number(m)});
+  document.getElementById('q').value='';document.getElementById('sug').style.display='none';
+  carregar();
+}
+function marcaOk(id){var e=document.getElementById(id);if(!e)return;e.textContent='salvo ✓';
+  clearTimeout(tmr[id]);tmr[id]=setTimeout(function(){e.textContent=''},1800)}
+async function salvaArea(cod,v){await jpost('/api/tempos',{area_codigo:cod,minutos:Number(v)});marcaOk('ok-a'+cod)}
+async function salvaPrato(cod,v){await jpost('/api/tempos',{codigo_pdv:cod,minutos:Number(v)});carregar()}
+carregar();
+</script></body></html>`;
+
+// ---- /mesa?n=12 — o que o CLIENTE vê no QR da mesa ----
+// Fica no servidor da loja: funciona no Wi-Fi da casa sem depender de internet.
+const MESA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prainha Bar</title><style>
+:root{--bg:#f2f2f5;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--line:#e3e3e9}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:460px;margin:0 auto;padding:28px 20px}
+h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
+.mesa{color:var(--mut);font-size:15px;margin-bottom:26px}
+.b{display:block;width:100%;border:0;border-radius:16px;font:inherit;font-size:18px;font-weight:700;padding:20px;margin-top:14px;cursor:pointer;color:#fff;background:var(--gold2)}
+.b.g{background:#5b5b66}
+.ok{background:#eafaf0;border:1px solid #bfe9cf;border-radius:16px;padding:22px;text-align:center;margin-top:18px}
+.ok .t{font-size:19px;font-weight:800;color:#0f8a3e}
+.mut{color:var(--mut);font-size:14px;line-height:1.5}
+input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
+</style></head><body><div class="wrap" id="app"></div>
+<script>
+var MESA=new URLSearchParams(location.search).get('n');
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function app(h){document.getElementById('app').innerHTML=h}
+function inicio(){
+  app('<h1>Prainha <b>Bar</b></h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
+    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+
+    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
+    '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
+    '<div class="mut" style="margin-top:22px">O garçom recebe o aviso na hora.</div>');
+}
+function mesaAtual(){
+  if(MESA)return Number(MESA);
+  var el=document.getElementById('nm');
+  var n=el?Number(el.value):0;
+  if(!(n>=1)){alert('Digite o número da mesa');return null}
+  return n;
+}
+async function post(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
+async function chamar(){
+  var n=mesaAtual();if(n===null)return;
+  await post('/api/chamado',{mesa:n,tipo:'garcom',origem:'qr-mesa'});
+  app('<div class="ok"><div class="t">✓ Garçom avisado</div><div class="mut" style="margin-top:8px">Ele já está a caminho da mesa '+n+'.</div></div>');
+}
+function telaProblema(){
+  app('<h1>Como podemos ajudar?</h1>'+
+    '<div class="mut" style="margin:8px 0 16px">Conta rapidinho o que houve — a equipe é avisada na hora e vai até você.</div>'+
+    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+
+    '<input id="tx" placeholder="ex.: demora no pedido">'+
+    '<button class="b" onclick="reclamar()">Enviar</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
+}
+async function reclamar(){
+  var n=mesaAtual();if(n===null)return;
+  var t=(document.getElementById('tx')||{}).value||'';
+  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',texto:t});
+  app('<div class="ok"><div class="t">✓ Recebemos</div><div class="mut" style="margin-top:8px">Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.</div></div>');
+}
+inicio();
 </script></body></html>`;
 
 // ---- TELA DE CONTA / PAGAMENTO (Fase 2) ----
@@ -1268,6 +1633,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
+    if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
+    if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+    if (p === '/tempos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TEMPOS_HTML); }
+    // POST antes do GET: o `if` sem checar método engoliria o POST
+    if (req.method === 'POST' && p === '/api/tempos') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTemposSalvar(body))); }
+    if (p === '/api/tempos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTempos())); }
+    if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
+    if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
     if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias())); }
     if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || ''))); }
     res.writeHead(404); res.end('not found');
