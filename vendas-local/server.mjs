@@ -11,8 +11,10 @@
 // Postgres local, na tabela `marca`, chaveada por ITENSPEDIDO.CODIGO (estável).
 
 import http from 'node:http';
+import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
+import QRCode from 'qrcode-svg';
 
 // Config por variável de ambiente. Defaults = desenvolvimento no Mac (VPN).
 // Na LOJA (Xeon), o start.bat define FB_HOST=127.0.0.1 e PG_URL do Postgres local.
@@ -169,6 +171,11 @@ async function initSchema() {
   await addCol('mesa_comanda', 'nome text');
   await addCol('mesa_comanda', 'nome_curto text');
   await addCol('mesa_comanda', 'contato_fb integer');
+  // Quem está no lugar — serve pra MESA e pra COMANDA (o número é a chave).
+  // Antes só dava pra identificar comanda, e a maioria das mesas não abre uma.
+  await sql`CREATE TABLE IF NOT EXISTS identificacao (numero integer PRIMARY KEY,
+    cpf varchar(11), telefone varchar(15), nome text, nome_curto text, contato_fb integer,
+    criado_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // log durável de TUDO que o nosso app lançou (a venda mora aqui mesmo se o FB falhar)
   await sql`CREATE TABLE IF NOT EXISTS venda_envio (id bigserial PRIMARY KEY, criado_em timestamptz DEFAULT now(), numero integer, mesa integer, comanda integer, pedido_fb integer, itens jsonb, total numeric, status text, erro text)`;
   // --- PAGAMENTO (Fase 2) ---
@@ -534,8 +541,11 @@ async function apiVendaMesa(mesa) {
   const abertos = await sql`SELECT c.numero, count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS itens, c.valor_total
     FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
     WHERE c.numero = ANY(${numeros}) GROUP BY c.numero, c.codigo ORDER BY c.numero`;
-  return { mesa: m, comandas: comandas.map((x) => x.comanda),
-    nomes: Object.fromEntries(comandas.filter((x) => x.nome_curto).map((x) => [x.comanda, x.nome_curto])), abertos };
+  const nums = [m, ...comandas.map((x) => Number(x.comanda))];
+  const ids = await sql`SELECT numero, nome_curto FROM identificacao WHERE numero = ANY(${nums}) AND fechada_em IS NULL`;
+  const nomes = Object.fromEntries(comandas.filter((x) => x.nome_curto).map((x) => [x.comanda, x.nome_curto]));
+  for (const i of ids) if (i.nome_curto) nomes[i.numero] = i.nome_curto; // identificacao ganha da antiga
+  return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos };
 }
 async function apiVendaVincular(body) {
   const mesa = Number(body.mesa), comanda = Number(body.comanda);
@@ -765,10 +775,48 @@ async function consultarCpfExterno(cpf) {
     return nome ? { nome: String(nome), fonte: 'spc' } : null;
   } finally { clearTimeout(t); }
 }
-async function apiVendaIdentificar(cpf) {
+/** Telefone/WhatsApp como chave alternativa: nem todo cliente dá o CPF. */
+async function contatoPorTelefone(tel) {
+  const t = soDig(tel);
+  if (t.length < 10) return null;
+  const ult8 = t.slice(-8); // ignora DDD e o 9 extra, que variam no cadastro
+  const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(NOME) NOME FROM CONTATOS
+    WHERE DATADELETE IS NULL AND (
+      REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(FONECELULAR,''),'(',''),')',''),'-',''),' ','') LIKE '%${ult8}'
+      OR REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(FONEPRINCIPAL,''),'(',''),')',''),'-',''),' ','') LIKE '%${ult8}')`);
+  if (!r.ok) throw new Error('cadastro indisponível: ' + r.err);
+  if (!r.rows.length) return null;
+  return { contato_fb: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME), fonte: 'consumer' };
+}
+/** Cadastra o cliente no CONTATOS do Consumer — a trigger CONTATOS_BI gera o
+ *  CODIGO. Assim ele existe pra fiado, NFC-e e pra próxima visita. */
+async function fbCriarContato({ nome, cpf, telefone }) {
+  const n = String(nome || '').trim().slice(0, 100);
+  if (!n) throw new Error('nome é obrigatório pra cadastrar');
+  const campos = ['NOME', 'TIPO', 'DATAINSERT', 'LIMITECREDITOCONTACORRENTE', 'SALDOATUALCONTACORRENTE',
+    'COMISSAOCOLABORADOR', 'ICMSDESONDIMINUIVALORNF', 'BLOQUEARVENDAAPOSLIMITE', 'ARQUIVARFIADO'];
+  const vals = [`'${fbEsc(n)}'`, `'CF'`, 'CURRENT_TIMESTAMP', '0', '0', '0', '0', `'N'`, `'N'`];
+  if (cpf) { campos.push('CNPJOUCPF'); vals.push(`'${fbEsc(soDig(cpf))}'`); }
+  if (telefone) { campos.push('FONECELULAR'); vals.push(`'${fbEsc(soDig(telefone))}'`); }
+  const r = await qi(`INSERT INTO CONTATOS (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
+  if (!r.ok) throw new Error('FB cadastrar cliente: ' + r.err);
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(NOME)='${fbEsc(n)}' ORDER BY CODIGO DESC`);
+  return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+}
+async function apiVendaIdentificar(cpf, telefone) {
+  // CPF ou WhatsApp — o que a pessoa tiver
+  if (telefone && !cpf) {
+    try {
+      const t = await contatoPorTelefone(telefone);
+      if (t) return { ok: true, ...t, nome_curto: nomeCurto(t.nome) };
+      return { ok: true, nome: null, fonte: 'nao_cadastrado' };
+    } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
+  }
   if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
-  const local = await contatoPorCpf(cpf);
-  if (local) return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
+  try {
+    const local = await contatoPorCpf(cpf);
+    if (local) return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
+  } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
   try {
     const ext = await consultarCpfExterno(cpf);
     if (ext) return { ok: true, ...ext, nome_curto: nomeCurto(ext.nome) };
@@ -776,6 +824,35 @@ async function apiVendaIdentificar(cpf) {
     return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) };
   }
   return { ok: true, nome: null, fonte: CPF_PROVEDOR === 'off' ? 'nao_cadastrado' : 'nao_encontrado' };
+}
+/** Carimba quem está na MESA ou na COMANDA (o número é a chave dos dois). */
+async function apiIdentificarSalvar(body) {
+  const numero = Number(body.numero);
+  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  const cpf = body.cpf ? soDig(body.cpf) : null;
+  if (cpf && !cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
+  const tel = body.telefone ? soDig(body.telefone) : null;
+  const nome = String(body.nome || '').trim().slice(0, 120) || null;
+  if (!nome) return { ok: false, erro: 'informe o nome' };
+  const curto = nomeCurto(nome);
+  let contatoFb = body.contato_fb ? Number(body.contato_fb) : null;
+  // Cliente novo: cadastra no Consumer pra existir na próxima visita
+  if (!contatoFb && body.cadastrar) {
+    try { contatoFb = await fbCriarContato({ nome, cpf, telefone: tel }); }
+    catch (e) { return { ok: false, erro: e.message }; }
+  }
+  await sql`INSERT INTO identificacao (numero, cpf, telefone, nome, nome_curto, contato_fb)
+      VALUES (${numero}, ${cpf}, ${tel}, ${nome}, ${curto}, ${contatoFb})
+    ON CONFLICT (numero) DO UPDATE SET cpf=COALESCE(EXCLUDED.cpf, identificacao.cpf),
+      telefone=COALESCE(EXCLUDED.telefone, identificacao.telefone),
+      nome=EXCLUDED.nome, nome_curto=EXCLUDED.nome_curto,
+      contato_fb=COALESCE(EXCLUDED.contato_fb, identificacao.contato_fb),
+      criado_em=now(), fechada_em=NULL`;
+  try {
+    const ped = await fbAcharPedido(numero);
+    if (ped) await fbIdentificarPedido(ped, { nome: curto, cpf, contatoFb });
+  } catch (e) { console.error('[identificar] write-back:', e.message); }
+  return { ok: true, numero, nome_curto: curto, contato_fb: contatoFb, cadastrado: !!(body.cadastrar && contatoFb) };
 }
 
 // ---- HISTÓRICO do que já saiu (últimas baixas) ----
@@ -1381,6 +1458,19 @@ input:focus{border-color:var(--gold2)}
 .grupohd{display:flex;align-items:center;gap:10px;padding:10px 13px;background:#f6f6fa;border-bottom:1px solid var(--line);font-size:14.5px}
 .grupohd .mut{margin-left:auto;font-size:12.5px}
 .voltag{background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer;color:var(--ink)}
+/* faixa "quem está na mesa" — sempre visível, um toque pra identificar */
+.cliente{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);
+  border-radius:13px;padding:11px 13px;margin-top:12px;cursor:pointer;font-size:15px}
+.cliente .av{width:32px;height:32px;flex:none;border-radius:50%;background:var(--gold2);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px}
+.cliente .av.vazio{background:#e9e9ef;color:var(--mut);font-size:20px}
+.cliente .mut{font-size:12.5px}.cliente .seta{margin-left:auto;color:var(--mut);font-size:20px}
+.segs{display:flex;gap:8px;margin:10px 0}
+.seg{flex:1;background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:11px;font:inherit;
+  font-size:14.5px;cursor:pointer;color:var(--mut)}
+.seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
+.chk{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:14px;color:var(--mut);cursor:pointer}
+.chk input{width:20px;height:20px}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
 .ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
 .ph .qtd{color:var(--mut);font-weight:400}
@@ -1482,7 +1572,12 @@ async function carregarMesa(){
       infoDe(c)+'</button>';
   });
   chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
+  var quemMesa=INFO.cliente;
   app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
+    '<div class="cliente" onclick="telaCliente('+MESA+')">'+
+      (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
+               :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
+      '<span class="seta">›</span></div>'+
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     '<div class="tit">Produto</div>'+
     '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
@@ -1550,34 +1645,73 @@ function setAlvo(n){ALVO=n;carregarMesa()}
 // Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
 // pessoa não quiser dar, segue só com o número, como sempre foi.
 function addComanda(){
-  var h='<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
-    '<div class="tit" style="margin-top:12px">Nova comanda na mesa '+MESA+'</div>'+
-    '<input type="number" id="ncmd" inputmode="numeric" placeholder="número da comanda (300–400)">'+
-    '<div class="tit" style="margin-top:16px">CPF de quem vai usar <span class="mut">(opcional)</span></div>'+
-    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
-    '<div id="quem" class="mut" style="margin-top:8px">O nome aparece na comanda impressa e na tela da cozinha.</div>'+
-    '<button class="big" onclick="criarComanda()">Abrir comanda</button>';
-  app(h);
-  var el=document.getElementById('ncmd');if(el)el.focus();
+  var c=prompt('Número da comanda (300–400):');if(!c)return;
+  criarComanda(Number(c));
 }
-var CPFINFO=null,cpfDeb=null;
+async function criarComanda(c){
+  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
+  if(!r.ok){alert(r.erro);return}
+  ALVO=c;await carregarMesa();
+  telaCliente(c); // logo em seguida: quem vai usar essa comanda
+}
+var CPFINFO=null,cpfDeb=null,ALVOID=null;
+// Identificar quem está no lugar — serve pra MESA e pra COMANDA.
+// CPF ou WhatsApp: o cliente dá o que quiser.
+function telaCliente(numero){
+  ALVOID=Number(numero);CPFINFO=null;
+  app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=300?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
+    '<div class="segs"><button class="seg on" id="sgc" onclick="modoDoc(\\'cpf\\')">CPF</button>'+
+    '<button class="seg" id="sgt" onclick="modoDoc(\\'tel\\')">WhatsApp</button></div>'+
+    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
+    '<div id="quem" class="mut" style="margin-top:10px">O nome aparece na comanda impressa e na tela da cozinha.</div>'+
+    '<button class="big" onclick="salvarCliente()">Salvar</button>');
+  var el=document.getElementById('ncpf');if(el)el.focus();
+}
+var MODODOC='cpf';
+function modoDoc(m){
+  MODODOC=m;CPFINFO=null;
+  document.getElementById('sgc').className='seg'+(m==='cpf'?' on':'');
+  document.getElementById('sgt').className='seg'+(m==='tel'?' on':'');
+  var i=document.getElementById('ncpf');
+  i.value='';i.placeholder=m==='cpf'?'000.000.000-00':'(79) 90000-0000';
+  var q=document.getElementById('quem');
+  q.style.color='';q.innerHTML='O nome aparece na comanda impressa e na tela da cozinha.';
+}
 function olhaCpf(v){
   CPFINFO=null;clearTimeout(cpfDeb);
   var d=String(v||'').replace(/\\D/g,'');
   var q=document.getElementById('quem');if(!q)return;
-  if(d.length<11){q.className='mut';q.textContent='O nome aparece na comanda impressa e na tela da cozinha.';return}
-  q.className='mut';q.textContent='consultando…';
+  var min=MODODOC==='cpf'?11:10;
+  if(d.length<min){q.style.color='';q.innerHTML='O nome aparece na comanda impressa e na tela da cozinha.';return}
+  q.style.color='';q.textContent='consultando…';
   cpfDeb=setTimeout(async function(){
-    var r=await jget('/api/venda/identificar?cpf='+d);
-    if(!r.ok){q.className='mut';q.style.color='#dc2626';q.textContent=r.erro||'CPF inválido';return}
+    var r=await jget('/api/venda/identificar?'+(MODODOC==='cpf'?'cpf=':'tel=')+d);
+    if(!r.ok){q.style.color='#dc2626';q.textContent=r.erro||'inválido';return}
     q.style.color='';
     if(r.nome){CPFINFO=r;q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b> — '+esc(r.nome)+
       ' <span class="mut">('+(r.fonte==='consumer'?'já é cliente da casa':'consulta externa')+')</span>';}
-    else if(r.fonte==='erro'){q.innerHTML='<span style="color:#b45309">consulta indisponível ('+esc(r.aviso||'')+') — dá pra digitar o nome</span>'+campoNome()}
-    else {q.innerHTML='<span class="mut">CPF válido, não encontrado no cadastro.</span>'+campoNome()}
+    else if(r.fonte==='erro'){q.innerHTML='<span style="color:#b45309">consulta indisponível — dá pra digitar o nome</span>'+campoNome()}
+    else {q.innerHTML='<span class="mut">Não encontrado no cadastro. Digite o nome pra cadastrar:</span>'+campoNome()}
   },500);
 }
-function campoNome(){return '<input type="text" id="nnome" placeholder="nome da pessoa" style="margin-top:8px">'}
+function campoNome(){return '<input type="text" id="nnome" placeholder="nome completo da pessoa" style="margin-top:8px">'+
+  '<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar no sistema pra próxima visita</label>'}
+async function salvarCliente(){
+  var doc=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
+  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim());
+  if(!nome){alert('Informe o nome (ou um CPF/WhatsApp já cadastrado)');return}
+  var body={numero:ALVOID,nome:nome};
+  if(MODODOC==='cpf'&&doc.length===11)body.cpf=doc; else if(doc.length>=10)body.telefone=doc;
+  if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
+  else if((document.getElementById('ncad')||{}).checked)body.cadastrar=true;
+  var r=await jpost('/api/venda/identificar',body);
+  if(!r.ok){alert(r.erro);return}
+  CPFINFO=null;
+  if(ALVOID>=300)ALVO=ALVOID;
+  await carregarMesa();
+}
 async function criarComanda(){
   var c=Number((document.getElementById('ncmd')||{}).value);
   if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
@@ -1722,6 +1856,71 @@ async function atender(id,mesa){
 }
 puxarChamados();setInterval(puxarChamados,15000);
 telaMesa();
+</script></body></html>`;
+
+// ---- QR CODES das mesas (pra imprimir e colar) ----
+// O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
+// /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
+function ipDaLoja() {
+  if (process.env.URL_PUBLICA) return process.env.URL_PUBLICA.replace(/\/+$/, '');
+  const nets = os.networkInterfaces();
+  for (const lista of Object.values(nets)) {
+    for (const n of lista || []) {
+      if (n.family === 'IPv4' && !n.internal) return `http://${n.address}:${PORT}`;
+    }
+  }
+  return `http://localhost:${PORT}`;
+}
+function qrSvg(texto, px = 150) {
+  return new QRCode({ content: texto, padding: 0, width: px, height: px, ecl: 'M', join: true }).svg();
+}
+async function apiQrcodes(de, ate) {
+  const base = ipDaLoja();
+  const ini = Math.max(1, Number(de) || 1);
+  const fim = Math.min(COMANDA_MAX, Number(ate) || 30);
+  const mesas = [];
+  for (let n = ini; n <= fim; n++) mesas.push({ numero: n, url: `${base}/mesa?n=${n}`, svg: qrSvg(`${base}/mesa?n=${n}`) });
+  return { base, de: ini, ate: fim, mesas };
+}
+const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR das mesas — Prainha Bar</title><style>
+:root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
+.barra{background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.barra b{font-size:15px;margin-right:auto}
+input{width:74px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:9px;text-align:center}
+button{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+button.g{background:#5b5b66}
+.grade{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:18px}
+.cd{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 10px;text-align:center;page-break-inside:avoid;break-inside:avoid}
+.cd .casa{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
+.cd .n{font-size:30px;font-weight:800;line-height:1.05;margin:2px 0 8px}
+.cd svg{width:100%;height:auto;max-width:160px}
+.cd .cha{font-size:11.5px;color:var(--mut);margin-top:8px;line-height:1.35}
+.aviso{padding:0 18px;color:var(--mut);font-size:13px}
+@media print{body{background:#fff}.barra,.aviso{display:none}.grade{grid-template-columns:repeat(3,1fr);padding:0;gap:8px}.cd{border-color:#bbb}}
+</style></head><body>
+<div class="barra"><b>QR das mesas</b>
+  <span class="aviso" style="padding:0">mesa</span>
+  <input id="de" type="number" value="1" min="1"> <span>até</span> <input id="ate" type="number" value="30" min="1">
+  <button onclick="carregar()">Gerar</button>
+  <button class="g" onclick="window.print()">🖨 Imprimir</button>
+  <a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<div class="aviso" id="info"></div>
+<div class="grade" id="app">gerando…</div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+async function carregar(){
+  var de=document.getElementById('de').value,ate=document.getElementById('ate').value;
+  var d=await (await fetch('/api/qrcodes?de='+de+'&ate='+ate,{cache:'no-store'})).json();
+  document.getElementById('info').innerHTML='Aponta para <b>'+esc(d.base)+'</b> — o celular precisa estar no Wi-Fi da casa. '+
+    'Se o IP da máquina mudar, os QR param de funcionar: fixe o IP ou use a variável URL_PUBLICA.';
+  document.getElementById('app').innerHTML=d.mesas.map(function(m){
+    return '<div class="cd"><div class="casa">Prainha Bar</div><div class="n">'+m.numero+'</div>'+
+      m.svg+'<div class="cha">Aponte a câmera<br>conta · chamar garçom · Pix</div></div>';
+  }).join('');
+}
+carregar();
 </script></body></html>`;
 
 // ---- PIX do cliente (tela da mesa) ----
@@ -2198,11 +2397,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/entrega') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEntrega())); }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
-    if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || ''))); }
+    if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
+    if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+    if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
+    if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
