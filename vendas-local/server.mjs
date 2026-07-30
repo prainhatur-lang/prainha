@@ -31,6 +31,11 @@ const INTERVALO_MS = 15000;
 //   DATEADD(-16 HOUR TO CURRENT_TIMESTAMP)   (janela rolante de 16h, como o Consumer usa)
 const DESDE = 'CURRENT_DATE';
 const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
+// Uma comanda do Consumer é a MESA INTEIRA da noite — dois lançamentos
+// separados caem no mesmo PEDIDOS.CODIGO. Pra cozinha isso é errado: o que
+// já foi mandado não pode crescer depois. Itens com intervalo maior que isso
+// viram uma VIA nova, como se fosse outro papel na impressora.
+const RODADA_GAP_SEG = Number(process.env.RODADA_GAP_SEG || 90);
 // Comandas individuais (cartão da PESSOA) usam a faixa 300–400; mesas do Prainha vão até ~220.
 // Mesa = ONDE entregar; comanda = DE QUEM é. Uma mesa pode ter várias comandas.
 const COMANDA_MIN = 300, COMANDA_MAX = 400;
@@ -61,12 +66,27 @@ async function rotularComandas(comandas) {
 const temMod = (d) => { const s = (d || '').trim().toUpperCase(); return s && s !== 'NENHUM' && s !== 'N/A'; };
 
 // ---- Firebird serializado (só leitura) ----
-let pending = null;
-process.on('uncaughtException', () => { if (pending) { const r = pending; pending = null; r({ ok: false, err: 'uncaught' }); } });
-process.on('unhandledRejection', () => { if (pending) { const r = pending; pending = null; r({ ok: false, err: 'unhandled' }); } });
+// O node-firebird estoura FORA da promise quando a conexão cai feio
+// ("Cannot read properties of undefined (reading 'pluginName')"), e aí a
+// query nunca resolveria. O resgate é o uncaughtException abaixo.
+//
+// BUG QUE ISSO CORRIGE: antes era UMA variável `pending` global — desenho de
+// quando havia uma fila só. Com a fila interativa (qi), passam a existir DUAS
+// queries em voo: a segunda sobrescrevia o `pending` da primeira, a primeira
+// ao terminar consumia o da segunda, e a segunda ficava pendurada PARA SEMPRE
+// — travando espelho, lançamento de pedido e tela de pagamento juntos.
+// Agora cada query tem seu próprio `done` e o resgate acorda todas as em voo.
+const pendentes = new Set();
+const resgatar = (err) => { for (const fin of [...pendentes]) fin({ ok: false, err }); };
+process.on('uncaughtException', () => resgatar('uncaught'));
+process.on('unhandledRejection', () => resgatar('unhandled'));
 let chain = Promise.resolve();
 function q1(s) {
-  return new Promise((res) => { pending = res; const fin = (r) => { if (pending) { pending = null; res(r); } }; setTimeout(() => fin({ ok: false, err: 'timeout' }), 15000);
+  return new Promise((res) => {
+    let done = false;
+    const fin = (r) => { if (done) return; done = true; pendentes.delete(fin); res(r); };
+    pendentes.add(fin);
+    setTimeout(() => fin({ ok: false, err: 'timeout' }), 15000);
     try { Firebird.attach(FB, (err, db) => { if (err) return fin({ ok: false, err: String(err.message).slice(0, 150) }); db.query(s, [], (e, rows) => { try { db.detach(() => {}); } catch {} if (e) return fin({ ok: false, err: String(e.message).slice(0, 180) }); fin({ ok: true, rows }); }); }); } catch (e) { fin({ ok: false, err: String(e.message).slice(0, 150) }); } });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -940,11 +960,40 @@ async function apiEntrega() {
   return { ...r, online: ultimoStatus.ok };
 }
 
+/** Quebra os itens de uma comanda em RODADAS de lançamento.
+ *  Duas águas às 20h e uma coca às 20h10 são duas vias, não uma comanda que
+ *  cresceu — o que já saiu pra cozinha não muda mais. */
+function chaveRodada(itens) {
+  const porComanda = new Map();
+  for (const i of itens) {
+    if (!porComanda.has(i.comanda_codigo)) porComanda.set(i.comanda_codigo, []);
+    porComanda.get(i.comanda_codigo).push(i);
+  }
+  const chave = new Map(); // id do item -> nº da rodada
+  for (const [, lista] of porComanda) {
+    const ord = [...lista].sort((a, b) => {
+      const ta = a.criado ? new Date(a.criado).getTime() : 0;
+      const tb = b.criado ? new Date(b.criado).getTime() : 0;
+      return ta - tb || Number(a.item_codigo || 0) - Number(b.item_codigo || 0);
+    });
+    let rodada = 0, anterior = null;
+    for (const i of ord) {
+      const t = i.criado ? new Date(i.criado).getTime() : null;
+      if (anterior != null && t != null && (t - anterior) > RODADA_GAP_SEG * 1000) rodada++;
+      if (t != null) anterior = t;
+      chave.set(i.id ?? i.item_codigo, rodada);
+    }
+  }
+  return chave;
+}
 function agrupar(itens, ordem) {
+  const rodadaDe = chaveRodada(itens);
   const porC = new Map();
   for (const i of itens) {
-    if (!porC.has(i.comanda_codigo)) porC.set(i.comanda_codigo, { codigo: i.comanda_codigo, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
-    const c = porC.get(i.comanda_codigo);
+    const rod = rodadaDe.get(i.id ?? i.item_codigo) || 0;
+    const chave = i.comanda_codigo + ':' + rod;
+    if (!porC.has(chave)) porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
+    const c = porC.get(chave);
     c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes) });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
@@ -968,7 +1017,14 @@ async function marcar(body) {
   const on = body.on !== false;
   const val = on ? new Date() : null;
   let codigos = [];
-  if (body.item_codigo != null) {
+  // lista explícita = "tudo pronto" de UMA rodada (não da comanda inteira,
+  // senão baixaria item que ainda nem foi produzido de um lançamento posterior)
+  if (Array.isArray(body.item_codigos) && body.item_codigos.length) {
+    codigos = body.item_codigos.map(Number).filter(Boolean);
+    const filhos = await sql`SELECT item_codigo AS ic FROM comanda_item
+      WHERE codigo_pai = ANY(${codigos}) AND item_codigo IS NOT NULL`;
+    for (const f of filhos) codigos.push(Number(f.ic));
+  } else if (body.item_codigo != null) {
     codigos = [Number(body.item_codigo)];
     // marca junto os complementos-filhos (molho, acompanhamento) do prato
     const filhos = await sql`SELECT item_codigo AS ic FROM comanda_item WHERE codigo_pai=${Number(body.item_codigo)} AND item_codigo IS NOT NULL`;
@@ -1074,6 +1130,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 @media (max-width:900px){.pal{flex-direction:column}.hist{width:auto;flex:none;border-left:0;
   border-top:1px solid var(--line);position:static;max-height:none}}
 .flagj{background:#e0651a;color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px}
+.badge.via{background:rgba(109,91,208,.14);color:var(--roxo2)}
 /* fila / tempo / atraso */
 .pos{background:#1b1b20;color:#fff;border-radius:8px;padding:2px 9px;font-weight:800;font-size:13px;margin-right:8px}
 .c.atrasado .pos{background:var(--red)}
@@ -1156,10 +1213,17 @@ function comandaHTML(c,modo,idx){
   var tchip=modo==='entrega'
     ? (c.aguarda_min!=null?'<span class="tchip">⏱ '+fmtMin(c.aguarda_min)+'</span>':'')
     : (c.espera_min!=null?'<span class="tchip">⏱ '+fmtMin(c.espera_min)+'</span>':'');
+  // 2ª via da mesma mesa: mostra a hora do lançamento pra não confundir
+  if(c.rodada>0&&c.chegada) badge+='<span class="badge via">'+(c.rodada+1)+'ª via · '+
+    new Date(c.chegada).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'</span>';
   var nome=c.nome?'<div style="font-size:12px;color:var(--mut);padding:0 14px 6px">'+esc(c.nome)+'</div>':'';
   var foot;
-  if(modo==='entrega') foot='<div class="cfoot"><button class="b e" onclick="marca(\\'entregue\\',{comanda_codigo:'+c.codigo+'})">✓ Entregar tudo</button></div>';
-  else foot='<div class="cfoot"><button class="b p" onclick="marca(\\'pronto\\',{comanda_codigo:'+c.codigo+',area_codigo:'+AREA.cod+'})">✓ Tudo pronto</button></div>';
+  // manda os códigos DESTA via: "tudo pronto" não pode baixar item de um
+  // lançamento posterior que a cozinha nem começou
+  var cods=JSON.stringify((c.itens||[]).filter(function(i){return i.item_codigo!=null&&i.tipo!==2})
+    .map(function(i){return Number(i.item_codigo)}));
+  if(modo==='entrega') foot='<div class="cfoot"><button class="b e" onclick="marca(\\'entregue\\',{item_codigos:'+cods+'})">✓ Entregar tudo</button></div>';
+  else foot='<div class="cfoot"><button class="b p" onclick="marca(\\'pronto\\',{item_codigos:'+cods+'})">✓ Tudo pronto</button></div>';
   return '<div class="c '+c.tipo+(modo!=='entrega'&&c.atrasado?' atrasado':'')+
     (c.reclamou?' reclamou':'')+(esperandoNesta(c.numero)?' junto-alvo':'')+'">'+
     '<div class="chd"><div class="rot"><span class="pos">'+(idx+1)+'º</span>'+esc(c.rotulo)+badge+'</div>'+tchip+'</div>'+
@@ -1314,6 +1378,9 @@ input:focus{border-color:var(--gold2)}
 .ac span{font-size:12.5px;font-weight:600;line-height:1.2;text-align:center}
 .ac:active{transform:scale(.97)}
 .ac.rec{border-color:var(--green);color:var(--green2);background:#f1fbf5}
+.grupohd{display:flex;align-items:center;gap:10px;padding:10px 13px;background:#f6f6fa;border-bottom:1px solid var(--line);font-size:14.5px}
+.grupohd .mut{margin-left:auto;font-size:12.5px}
+.voltag{background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer;color:var(--ink)}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
 .ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
 .ph .qtd{color:var(--mut);font-weight:400}
@@ -1396,7 +1463,8 @@ async function acaoConta(acao){
   if(r.ok)setTimeout(carregarMesa,1500);
 }
 function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
-function receber(){location.href='/conta?n='+(ALVO||MESA)}
+// conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
+function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
   if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
@@ -1424,14 +1492,15 @@ async function carregarMesa(){
     '<div id="msg"></div>'+
     '<div class="tit" style="margin-top:22px">Conta</div>'+
     '<div class="acoes">'+
-      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir conta</span></button>'+
-      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Fechar conta</span></button>'+
-      '<button class="ac rec" onclick="receber()">💳<span>Receber</span></button>'+
-    '</div>');
+      '<button class="ac" onclick="verConta()">👁<span>Ver / imprimir</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
+    '</div>'+
+    '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
   var el=document.getElementById('busca');
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
   await carregarCategorias();
-  if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL,true);
+  if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL);
 }
 async function carregarCategorias(){
   if(!CATS)CATS=(await jget('/api/venda/categorias')).categorias||[];
@@ -1441,16 +1510,25 @@ async function carregarCategorias(){
       '<span class="nm">'+esc(c.categoria)+'</span><span class="qt">'+c.disp+'</span></button>';
   }).join('');
 }
-async function verCat(nome,manter){
-  if(CATSEL===nome&&!manter){ // segundo toque fecha
-    CATSEL=null;var r=document.getElementById('res');if(r)r.style.display='none';
-    return carregarCategorias();
-  }
+// Escolheu o grupo: a grade INTEIRA sai da tela e fica só a lista do grupo,
+// com um botão de voltar. Ficar com 36 grupos por cima da lista empurrava os
+// produtos pra fora do alcance do polegar.
+async function verCat(nome){
   CATSEL=nome;BUSCA='';
   var b=document.getElementById('busca');if(b)b.value='';
-  await carregarCategorias();
+  var g=document.getElementById('grupos');if(g)g.style.display='none';
   var d=await jget('/api/venda/categoria?c='+encodeURIComponent(nome));
-  mostrarProdutos(d.produtos);
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML='<div class="grupohd"><button class="voltag" onclick="fechaCat()">◂ grupos</button>'+
+    '<b>'+esc(nome)+'</b><span class="mut">'+(d.produtos||[]).length+' itens</span></div>'+
+    ((d.produtos&&d.produtos.length)?d.produtos.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>');
+}
+function fechaCat(){
+  CATSEL=null;
+  var r=document.getElementById('res');if(r)r.style.display='none';
+  var g=document.getElementById('grupos');if(g)g.style.display='';
+  carregarCategorias();
 }
 function linhaProduto(p){
   var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
@@ -1646,6 +1724,97 @@ puxarChamados();setInterval(puxarChamados,15000);
 telaMesa();
 </script></body></html>`;
 
+// ---- PIX do cliente (tela da mesa) ----
+// Adapter igual ao do pagamento: sem credencial, a tela diz honestamente que
+// não está ligado e oferece chamar o garçom — nunca finge que gerou cobrança.
+// 'inter' = API de cobrança imediata do Banco Inter (mTLS), o mesmo banco que
+// já usamos pro extrato. Cielo Pix segue bloqueado na conta da casa.
+const PIX_PROVEDOR = process.env.PIX_PROVEDOR || 'off';
+function pixStatus() {
+  const pronto = PIX_PROVEDOR === 'inter' && !!process.env.INTER_PIX_CHAVE;
+  return { disponivel: pronto, provedor: PIX_PROVEDOR };
+}
+async function apiPixCobrar(body) {
+  if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
+  const conta = await apiContaTexto(body.mesa);
+  if (!conta.ok) return conta;
+  const valor = Number(conta.resta || conta.total || 0);
+  if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
+  return { ok: false, erro: 'cobrança Pix ainda não implementada — falta a credencial do Inter' };
+}
+
+// ---- /conta/ver?n=12 — a conta na TELA, imprimível em papel comum ----
+// A impressão do Consumer (TIPOIMPRESSAO 2) depende da impressora do caixa
+// estar configurada, e a maquininha Cielo ainda está inacessível. Esta página
+// resolve hoje: abre no navegador, imprime em qualquer impressora, ou só mostra.
+async function apiContaTexto(numero) {
+  const n = Number(numero);
+  const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
+    FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+  if (!c) return { ok: false, erro: 'não há conta aberta no número ' + n };
+  const itens = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
+    WHERE comanda_codigo=${c.codigo} ORDER BY criado NULLS LAST, id`;
+  const quem = (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
+  const total = itens.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+  const pago = Number(c.subtotal_pago || 0);
+  return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
+    pessoas: c.qtd_pessoas, itens, total, pago, resta: Math.max(0, total - pago) };
+}
+const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conta — Prainha Bar</title><style>
+:root{--ink:#141418;--mut:#6e6e78;--line:#dcdce3}
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
+.barra{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;align-items:center}
+.barra b{flex:1;font-size:15px}
+button,a.b{background:#e0651a;color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;text-decoration:none}
+button.g{background:#5b5b66}
+/* 80mm = a largura do cupom térmico; em papel A4 fica centralizado */
+.cupom{width:80mm;max-width:100%;margin:16px auto;background:#fff;padding:14px 12px;
+  font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12.5px;line-height:1.45;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+.cab{text-align:center;margin-bottom:10px}
+.cab .n{font-size:16px;font-weight:800;letter-spacing:.5px}
+.cab .s{color:var(--mut);font-size:11px}
+hr{border:0;border-top:1px dashed #9a9aa5;margin:9px 0}
+.it{display:flex;gap:6px}
+.it .q{width:26px;flex:none}.it .d{flex:1;word-break:break-word}.it .v{text-align:right;white-space:nowrap}
+.sub{color:var(--mut);font-size:11px;padding-left:32px}
+.tot{display:flex;justify-content:space-between;font-size:15px;font-weight:800;margin-top:4px}
+.lin{display:flex;justify-content:space-between}
+.pe{text-align:center;color:var(--mut);font-size:10.5px;margin-top:12px;line-height:1.5}
+.erro{max-width:420px;margin:40px auto;background:#fff;padding:22px;border-radius:12px;text-align:center}
+@media print{body{background:#fff}.barra{display:none}.cupom{box-shadow:none;margin:0;width:auto}}
+</style></head><body>
+<div class="barra"><b>Conta</b>
+  <button onclick="window.print()">🖨 Imprimir</button>
+  <button class="g" onclick="history.back()">Voltar</button></div>
+<div id="app"></div>
+<script>
+var N=new URLSearchParams(location.search).get('n');
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
+(async function(){
+  var d=await (await fetch('/api/conta/texto?n='+N,{cache:'no-store'})).json();
+  var app=document.getElementById('app');
+  if(!d.ok){app.innerHTML='<div class="erro">'+esc(d.erro||'erro')+'</div>';return}
+  var h='<div class="cupom"><div class="cab"><div class="n">PRAINHA BAR</div>'+
+    '<div class="s">CONFERÊNCIA DE CONSUMO<br>não é documento fiscal</div></div><hr>'+
+    '<div class="lin"><span>'+(Number(d.numero)>=300?'Comanda':'Mesa')+' <b>'+d.numero+'</b></span>'+
+    '<span>'+new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</span></div>'+
+    (d.nome?'<div class="lin"><span>Cliente</span><span>'+esc(d.nome)+'</span></div>':'')+
+    (d.pessoas?'<div class="lin"><span>Pessoas</span><span>'+d.pessoas+'</span></div>':'')+'<hr>';
+  (d.itens||[]).forEach(function(i){
+    if(i.tipo===2){h+='<div class="sub">+ '+esc(i.nome)+'</div>';return}
+    h+='<div class="it"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
+       '<span class="d">'+esc(i.nome)+'</span><span class="v">'+brl(i.valor_total)+'</span></div>';
+  });
+  h+='<hr><div class="tot"><span>TOTAL</span><span>'+brl(d.total)+'</span></div>';
+  if(d.pago>0){h+='<div class="lin"><span>já pago</span><span>-'+brl(d.pago)+'</span></div>'+
+    '<div class="tot"><span>A PAGAR</span><span>'+brl(d.resta)+'</span></div>'}
+  h+='<div class="pe">Serviço não incluso.<br>Obrigado pela preferência!</div></div>';
+  app.innerHTML=h;
+})();
+</script></body></html>`;
+
 // ---- /tempos — configuração do tempo de preparo ----
 const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Prainha Bar — Tempo de preparo</title><style>
@@ -1747,6 +1916,12 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .ok .t{font-size:19px;font-weight:800;color:#0f8a3e}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
+.b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}
+.valor{font-size:38px;font-weight:800;letter-spacing:-.5px}
+.aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:14px;padding:15px;font-size:14.5px;line-height:1.5;margin:8px 0 4px}
+.qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
+.copia{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px;font-family:Menlo,monospace;
+  font-size:11px;word-break:break-all;line-height:1.4;max-height:110px;overflow:auto}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
@@ -1755,9 +1930,53 @@ function app(h){document.getElementById('app').innerHTML=h}
 function inicio(){
   app('<h1>Prainha <b>Bar</b></h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
     (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+
+    '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
+    '<button class="b pix" onclick="telaPix()">Pagar com Pix</button>'+
     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
     '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
     '<div class="mut" style="margin-top:22px">O garçom recebe o aviso na hora.</div>');
+}
+function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
+async function telaPix(){
+  var n=mesaAtual();if(n===null)return;
+  app('<h1>Pagar com Pix</h1><div class="mesa">Mesa '+n+'</div><div class="mut">carregando sua conta…</div>');
+  var c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json();
+  if(!c.ok){app('<div class="ok"><div class="t">Conta não encontrada</div><div class="mut" style="margin-top:8px">'+
+    esc(c.erro||'')+'</div></div><button class="b g" onclick="inicio()">Voltar</button>');return}
+  var v=(c.resta||c.total||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+  var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
+  var h='<h1>Pagar com Pix</h1><div class="mesa">Mesa '+n+'</div>'+
+    '<div class="valor">R$ '+v+'</div>'+
+    '<div class="mut" style="margin:6px 0 18px">'+(c.pago>0?'já pagos R$ '+Number(c.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+' · ':'')+
+    (c.itens||[]).filter(function(i){return i.tipo!==2}).length+' itens</div>';
+  if(st.disponivel){
+    h+='<button class="b pix" onclick="gerarPix('+n+')">Gerar código Pix</button>';
+  } else {
+    h+='<div class="aviso">O Pix na tela ainda não está ligado nesta casa.<br>'+
+       '<b>Chame o garçom</b> para pagar na maquininha — é um toque abaixo.</div>'+
+       '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
+  }
+  h+='<button class="b ver" onclick="minhaConta()">🧾 Ver o detalhe da conta</button>'+
+     '<button class="b g" onclick="inicio()">Voltar</button>';
+  app(h);
+}
+async function gerarPix(n){
+  app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
+  var r=await post('/api/pix/cobrar',{mesa:n});
+  if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui gerar')+'</div>'+
+    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');return}
+  app('<h1>Pix gerado</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR Code Pix">':'')+
+    '<div class="mut" style="margin:10px 0 6px">Ou copie o código:</div>'+
+    '<div class="copia" id="cp">'+esc(r.copia_cola||'')+'</div>'+
+    '<button class="b" onclick="copiar()">Copiar código</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
+}
+function copiar(){
+  var t=(document.getElementById('cp')||{}).textContent||'';
+  if(navigator.clipboard)navigator.clipboard.writeText(t);
+  alert('Código copiado. Cole no app do seu banco.');
 }
 function mesaAtual(){
   if(MESA)return Number(MESA);
@@ -1984,6 +2203,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+    if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
+    if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
+    if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
+    if (p === '/api/conta/texto') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0))); }
     if (p === '/tempos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TEMPOS_HTML); }
     // POST antes do GET: o `if` sem checar método engoliria o POST
     if (req.method === 'POST' && p === '/api/tempos') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTemposSalvar(body))); }
