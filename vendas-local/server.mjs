@@ -76,7 +76,23 @@ function q(s, tries = 3) { const run = async () => { for (let i = 0; i < tries; 
 // — inaceitável na hora de fechar a conta. Cada query já abre sua própria
 // conexão, então são só duas vias em vez de uma.
 let chainUi = Promise.resolve();
-function qi(s, tries = 2) { const run = async () => { for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; await sleep(250); } return { ok: false, err: 'retry' }; }; const p = chainUi.then(run); chainUi = p.catch(() => {}); return p; }
+// TIMEOUT obrigatório: quando a conexão do node-firebird falha feio (o
+// "Cannot read properties of undefined (reading 'pluginName')"), ele estoura
+// fora do contexto da promise e ela NUNCA resolve — a tela do garçom fica
+// girando pra sempre e a fila inteira trava atrás dela.
+function qi(s, tries = 2) {
+  const run = async () => {
+    for (let i = 0; i < tries; i++) {
+      const r = await comTimeout(q1(s), 8000, 'Firebird não respondeu em 8s').catch((e) => ({ ok: false, err: e.message }));
+      if (r.ok) return r;
+      await sleep(250);
+    }
+    return { ok: false, err: 'sem resposta do Firebird' };
+  };
+  const p = chainUi.then(run, run); // erro anterior não pode matar a fila
+  chainUi = p.catch(() => {});
+  return p;
+}
 const N = (v) => (v == null ? null : Number(v));
 const T = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
 // Normaliza pra busca: sem acento, minusculo. Feito em JS (nao com a extensao
@@ -128,6 +144,11 @@ async function initSchema() {
   await addCol('produto_local', 'sem_estoque boolean DEFAULT false');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
+  // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
+  await addCol('mesa_comanda', 'cpf varchar(11)');
+  await addCol('mesa_comanda', 'nome text');
+  await addCol('mesa_comanda', 'nome_curto text');
+  await addCol('mesa_comanda', 'contato_fb integer');
   // log durável de TUDO que o nosso app lançou (a venda mora aqui mesmo se o FB falhar)
   await sql`CREATE TABLE IF NOT EXISTS venda_envio (id bigserial PRIMARY KEY, criado_em timestamptz DEFAULT now(), numero integer, mesa integer, comanda integer, pedido_fb integer, itens jsonb, total numeric, status text, erro text)`;
   // --- PAGAMENTO (Fase 2) ---
@@ -271,6 +292,48 @@ async function fbInserirItem(ped, it) {
     VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(it.nome)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
   if (!r.ok) throw new Error('FB item "' + it.nome + '": ' + r.err);
 }
+/** Carimba quem é a pessoa da comanda no PEDIDOS do Consumer.
+ *  NOME sai na comanda impressa e no KDS; o CPF fica pronto pra NFC-e. */
+async function fbIdentificarPedido(ped, { nome, cpf, contatoFb }) {
+  const sets = [];
+  if (nome) sets.push(`NOME='${fbEsc(nome)}'`);
+  if (cpf) sets.push(`NUMERODOCUMENTODESTINATARIO='${fbEsc(cpf)}'`, `TIPODOCUMENTODESTINATARIO=1`);
+  if (contatoFb) sets.push(`CODIGOCONTATOCLIENTE=${Number(contatoFb)}`);
+  if (!sets.length) return;
+  const r = await qi(`UPDATE PEDIDOS SET ${sets.join(', ')} WHERE CODIGO=${Number(ped)}`);
+  if (!r.ok) throw new Error('FB identificar: ' + r.err);
+}
+/** TIPOIMPRESSAO 2 = "Fechamento Conta": manda o cupom de conferência pra
+ *  impressora do caixa, o mesmo caminho que o Consumer usa (8.754 jobs). */
+async function fbImprimirConta(ped) {
+  const r = await qi(`INSERT INTO PEDIDOIMPRESSAO (INSERIDOEM, CODIGOPEDIDO, CODIGOTIPOIMPRESSAO, CODIGOORIGEMIMPRESSAO, CODIGOSITUACAOIMPRESSAO, AUTORIZADOEM)
+    VALUES (CURRENT_TIMESTAMP, ${Number(ped)}, 2, 0, 2, CURRENT_TIMESTAMP)`);
+  if (!r.ok) throw new Error('FB imprimir conta: ' + r.err);
+}
+/** Marca que a mesa pediu a conta — é isso que deixa ela vermelha na tela. */
+async function fbPedirConta(ped, on = true) {
+  const r = await qi(`UPDATE PEDIDOS SET CONTASOLICITADA='${on ? 'S' : 'N'}' WHERE CODIGO=${Number(ped)}`);
+  if (!r.ok) throw new Error('FB pedir conta: ' + r.err);
+}
+/** As três ações do rodapé da mesa. NÃO fecha o pedido no Consumer:
+ *  quem encerra e emite a nota continua sendo ele. */
+async function apiVendaConta(body) {
+  const numero = Number(body.numero);
+  const acao = String(body.acao || '');
+  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  let ped;
+  try { ped = await fbAcharPedido(numero); } catch (e) { return { ok: false, erro: e.message }; }
+  if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_MIN ? 'comanda ' : 'mesa ') + numero };
+  try {
+    if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbImprimirConta(ped);
+      return { ok: true, pedido_fb: ped, msg: 'Conta enviada pra impressora do caixa.' }; }
+    if (acao === 'fechar') { await fbPedirConta(ped, true);
+      return { ok: true, pedido_fb: ped, msg: 'Mesa marcada como “conta pedida”.' }; }
+    if (acao === 'reabrir') { await fbPedirConta(ped, false);
+      return { ok: true, pedido_fb: ped, msg: 'Mesa voltou pra em andamento.' }; }
+    return { ok: false, erro: 'ação inválida' };
+  } catch (e) { return { ok: false, erro: e.message }; }
+}
 async function fbAtualizarTotal(ped) {
   const r = await q(`UPDATE PEDIDOS SET VALORTOTAL=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL) WHERE CODIGO=${ped}`);
   if (!r.ok) throw new Error('FB total: ' + r.err);
@@ -406,7 +469,7 @@ async function apiVendaCategorias() {
       (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
     FROM produto_local GROUP BY categoria
     HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
-    ORDER BY min(categoria_ordem), categoria`;
+    ORDER BY categoria`;
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome) {
@@ -446,12 +509,13 @@ async function apiVendaAbertas() {
 }
 async function apiVendaMesa(mesa) {
   const m = Number(mesa);
-  const comandas = await sql`SELECT comanda FROM mesa_comanda WHERE mesa=${m} AND fechada_em IS NULL ORDER BY comanda`;
+  const comandas = await sql`SELECT comanda, nome_curto FROM mesa_comanda WHERE mesa=${m} AND fechada_em IS NULL ORDER BY comanda`;
   const numeros = [m, ...comandas.map((x) => x.comanda)];
   const abertos = await sql`SELECT c.numero, count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS itens, c.valor_total
     FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
     WHERE c.numero = ANY(${numeros}) GROUP BY c.numero, c.codigo ORDER BY c.numero`;
-  return { mesa: m, comandas: comandas.map((x) => x.comanda), abertos };
+  return { mesa: m, comandas: comandas.map((x) => x.comanda),
+    nomes: Object.fromEntries(comandas.filter((x) => x.nome_curto).map((x) => [x.comanda, x.nome_curto])), abertos };
 }
 async function apiVendaVincular(body) {
   const mesa = Number(body.mesa), comanda = Number(body.comanda);
@@ -459,9 +523,28 @@ async function apiVendaVincular(body) {
   if (!(comanda >= COMANDA_MIN && comanda <= COMANDA_MAX)) return { ok: false, erro: 'comanda é de ' + COMANDA_MIN + ' a ' + COMANDA_MAX };
   const jaEm = await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${comanda} AND fechada_em IS NULL AND mesa<>${mesa}`;
   if (jaEm.length) return { ok: false, erro: 'comanda ' + comanda + ' já está na mesa ' + jaEm[0].mesa };
-  await sql`INSERT INTO mesa_comanda (comanda, mesa) VALUES (${comanda}, ${mesa})
-    ON CONFLICT (comanda) DO UPDATE SET mesa=EXCLUDED.mesa, aberta_em=now(), fechada_em=NULL`;
-  return { ok: true, comanda, mesa };
+  // Quem está na comanda (opcional): CPF válido + nome do cadastro ou digitado.
+  const cpf = body.cpf ? soDig(body.cpf) : null;
+  if (cpf && !cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
+  const nome = String(body.nome || '').trim().slice(0, 120) || null;
+  const curto = nome ? nomeCurto(nome) : null;
+  const contatoFb = body.contato_fb ? Number(body.contato_fb) : null;
+  await sql`INSERT INTO mesa_comanda (comanda, mesa, cpf, nome, nome_curto, contato_fb)
+      VALUES (${comanda}, ${mesa}, ${cpf}, ${nome}, ${curto}, ${contatoFb})
+    ON CONFLICT (comanda) DO UPDATE SET mesa=EXCLUDED.mesa, aberta_em=now(), fechada_em=NULL,
+      cpf=COALESCE(EXCLUDED.cpf, mesa_comanda.cpf),
+      nome=COALESCE(EXCLUDED.nome, mesa_comanda.nome),
+      nome_curto=COALESCE(EXCLUDED.nome_curto, mesa_comanda.nome_curto),
+      contato_fb=COALESCE(EXCLUDED.contato_fb, mesa_comanda.contato_fb)`;
+  // Escreve no Consumer também: assim o nome aparece na comanda impressa, no
+  // KDS (que espelha PEDIDOS.NOME) e o CPF já fica pronto pra NFC-e.
+  if (curto || cpf) {
+    try {
+      const ped = await fbAcharPedido(comanda);
+      if (ped) await fbIdentificarPedido(ped, { nome: curto, cpf, contatoFb });
+    } catch (e) { console.error('[identificar] write-back falhou:', e.message); }
+  }
+  return { ok: true, comanda, mesa, nome_curto: curto };
 }
 async function apiVendaEnviar(body) {
   const numero = Number(body.numero);
@@ -606,6 +689,75 @@ async function apiContaConferir(pagamentoId) {
 // entregue= COALESCE(ci.entregue,  m.entregue_em)
 
 // ---- API: seleção de áreas (produção) ----
+// ---- IDENTIFICAÇÃO da comanda por CPF ----
+// Objetivo: a comanda deixa de ser só um número. "Comanda 301 · João S."
+// aparece no celular do garçom, na conta e na comanda impressa da cozinha.
+const soDig = (s) => String(s || '').replace(/\D/g, '');
+/** Dígito verificador — de graça e local, evita bater na API à toa. */
+function cpfValido(cpf) {
+  const c = soDig(cpf);
+  if (c.length !== 11 || /^(\d)\1{10}$/.test(c)) return false;
+  for (const [len, pos] of [[9, 10], [10, 11]]) {
+    let soma = 0;
+    for (let i = 0; i < len; i++) soma += Number(c[i]) * (pos - i);
+    let d = (soma * 10) % 11;
+    if (d === 10) d = 0;
+    if (d !== Number(c[len])) return false;
+  }
+  return true;
+}
+/** "RYAN DA SILVA SANTOS" -> "Ryan S." — identifica sem expor o nome inteiro. */
+function nomeCurto(nome) {
+  const partes = String(nome || '').trim().split(/\s+/)
+    .filter((p) => !/^(da|de|do|das|dos|e)$/i.test(p));
+  if (!partes.length) return '';
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  const primeiro = cap(partes[0]);
+  return partes.length > 1 ? `${primeiro} ${partes[1][0].toUpperCase()}.` : primeiro;
+}
+/** Cliente que já esteve na casa: nome sai de graça, sem consultar nada fora. */
+async function contatoPorCpf(cpf) {
+  const c = soDig(cpf);
+  const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(NOME) NOME FROM CONTATOS
+    WHERE DATADELETE IS NULL AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') = '${c}'`);
+  // banco fora do ar NÃO é "cliente não cadastrado" — o garçom precisa saber a diferença
+  if (!r.ok) throw new Error('cadastro indisponível: ' + r.err);
+  if (!r.rows.length) return null;
+  return { contato_fb: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME), fonte: 'consumer' };
+}
+// Consulta externa: mesmo padrão do pagamento — trocável por env, sem mexer na
+// tela. 'off' (default) = só o cadastro local. 'spc' quando a credencial chegar.
+const CPF_PROVEDOR = process.env.CPF_PROVEDOR || 'off';
+async function consultarCpfExterno(cpf) {
+  if (CPF_PROVEDOR !== 'spc') return null;
+  const url = process.env.SPC_URL, user = process.env.SPC_USUARIO, senha = process.env.SPC_SENHA;
+  if (!url || !user || !senha) throw new Error('SPC sem credencial (SPC_URL/SPC_USUARIO/SPC_SENHA)');
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 6000); // a mesa não pode esperar a API
+  try {
+    const r = await fetch(url.replace('{cpf}', soDig(cpf)), {
+      headers: { authorization: 'Basic ' + Buffer.from(`${user}:${senha}`).toString('base64'), accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) throw new Error('SPC HTTP ' + r.status);
+    const j = await r.json();
+    const nome = j.nome || j.nomeConsumidor || j.consumidor?.nome || j.resposta?.nome || null;
+    return nome ? { nome: String(nome), fonte: 'spc' } : null;
+  } finally { clearTimeout(t); }
+}
+async function apiVendaIdentificar(cpf) {
+  if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
+  const local = await contatoPorCpf(cpf);
+  if (local) return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
+  try {
+    const ext = await consultarCpfExterno(cpf);
+    if (ext) return { ok: true, ...ext, nome_curto: nomeCurto(ext.nome) };
+  } catch (e) {
+    return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) };
+  }
+  return { ok: true, nome: null, fonte: CPF_PROVEDOR === 'off' ? 'nao_cadastrado' : 'nao_encontrado' };
+}
+
 // ---- HISTÓRICO do que já saiu (últimas baixas) ----
 // Serve pra desfazer engano: "quem deu baixa nesse item, que horas, que mesa?".
 // Lê de `marca`, que é durável — `comanda` é truncada a cada espelho.
@@ -1131,7 +1283,10 @@ input:focus{border-color:var(--gold2)}
 .chip small{white-space:nowrap}
 /* grupos: grade uniforme — 3 por fila no celular, 4 em tela maior.
    Antes eram chips de largura livre e a lista ficava um paredão irregular. */
-.cats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}
+/* 4 linhas visíveis e o resto rola dentro da caixa — a lista não empurra
+   a busca e o carrinho pra fora da tela do celular. */
+.cats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0;
+  max-height:288px;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px}
 @media (min-width:430px){.cats{grid-template-columns:repeat(4,1fr)}}
 .cat{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:9px 6px;font:inherit;
   font-size:12.5px;line-height:1.22;cursor:pointer;color:var(--ink);text-align:center;min-height:64px;
@@ -1152,6 +1307,13 @@ input:focus{border-color:var(--gold2)}
 .legenda span{display:flex;align-items:center;gap:5px}
 .pt{width:9px;height:9px;border-radius:50%;display:inline-block}
 .pt.v{background:#15a34a}.pt.a{background:#e0a413}.pt.r{background:#dc2626}
+/* rodapé da mesa: imprimir / fechar / receber */
+.acoes{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:8px 0 4px}
+.ac{background:#fff;border:1.5px solid var(--line);border-radius:13px;padding:14px 6px;font:inherit;
+  font-size:19px;cursor:pointer;color:var(--ink);display:flex;flex-direction:column;align-items:center;gap:5px}
+.ac span{font-size:12.5px;font-weight:600;line-height:1.2;text-align:center}
+.ac:active{transform:scale(.97)}
+.ac.rec{border-color:var(--green);color:var(--green2);background:#f1fbf5}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
 .ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
 .ph .qtd{color:var(--mut);font-weight:400}
@@ -1221,6 +1383,20 @@ async function telaMesa(){
         '<span><i class="pt a"></i>algo atrasado</span><span><i class="pt r"></i>conta pedida</span></div>':'');
 }
 function irPara(mesa,alvo){MESA=Number(mesa);ALVO=Number(alvo);carregarMesa()}
+// As três ações da conta. Nenhuma delas ENCERRA o pedido: quem fecha e emite
+// a nota continua sendo o Consumer. "Fechar" aqui = marcar que pediu a conta.
+async function acaoConta(acao){
+  var alvo=ALVO||MESA;
+  var oQue=acao==='imprimir'?('Imprimir a conta '+rotuloAlvo()+'?'):('Marcar '+rotuloAlvo()+' como conta pedida?');
+  if(!confirm(oQue))return;
+  var r=await jpost('/api/venda/conta',{numero:alvo,acao:acao});
+  var m=document.getElementById('msg');
+  if(m)m.innerHTML=r.ok?'<div class="ok"><div class="t">✓ '+esc(r.msg)+'</div></div>'
+                      :'<div class="err">'+esc(r.erro||'erro')+'</div>';
+  if(r.ok)setTimeout(carregarMesa,1500);
+}
+function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
+function receber(){location.href='/conta?n='+(ALVO||MESA)}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
   if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
@@ -1231,7 +1407,12 @@ async function carregarMesa(){
   INFO=await jget('/api/venda/mesa?n='+MESA);
   var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
     infoDe(MESA)+'</button>';
-  INFO.comandas.forEach(function(c){chips+='<button class="chip'+(ALVO===c?' on':'')+'" onclick="setAlvo('+c+')">Comanda '+c+infoDe(c)+'</button>'});
+  INFO.comandas.forEach(function(c){
+    var quem=(INFO.nomes||{})[c];
+    chips+='<button class="chip'+(ALVO===c?' on':'')+'" onclick="setAlvo('+c+')">'+
+      (quem?esc(quem):'Comanda '+c)+(quem?' <span class="mut" style="font-weight:400">·'+c+'</span>':'')+
+      infoDe(c)+'</button>';
+  });
   chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
   app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
@@ -1240,7 +1421,13 @@ async function carregarMesa(){
     '<div id="grupos"><div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
     '<div class="cats" id="cats"><span class="mut">carregando…</span></div></div>'+
     '<div class="res" id="res" style="display:none"></div>'+
-    '<div id="msg"></div>');
+    '<div id="msg"></div>'+
+    '<div class="tit" style="margin-top:22px">Conta</div>'+
+    '<div class="acoes">'+
+      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir conta</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Fechar conta</span></button>'+
+      '<button class="ac rec" onclick="receber()">💳<span>Receber</span></button>'+
+    '</div>');
   var el=document.getElementById('busca');
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
   await carregarCategorias();
@@ -1282,11 +1469,49 @@ function infoDe(n){
   return a?'<small>'+a.itens+' itens · '+brl(a.valor_total)+'</small>':'<small>vazia</small>';
 }
 function setAlvo(n){ALVO=n;carregarMesa()}
-async function addComanda(){
-  var c=prompt('Número da comanda (300–400):');if(!c)return;
-  var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:Number(c)});
+// Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
+// pessoa não quiser dar, segue só com o número, como sempre foi.
+function addComanda(){
+  var h='<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:12px">Nova comanda na mesa '+MESA+'</div>'+
+    '<input type="number" id="ncmd" inputmode="numeric" placeholder="número da comanda (300–400)">'+
+    '<div class="tit" style="margin-top:16px">CPF de quem vai usar <span class="mut">(opcional)</span></div>'+
+    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
+    '<div id="quem" class="mut" style="margin-top:8px">O nome aparece na comanda impressa e na tela da cozinha.</div>'+
+    '<button class="big" onclick="criarComanda()">Abrir comanda</button>';
+  app(h);
+  var el=document.getElementById('ncmd');if(el)el.focus();
+}
+var CPFINFO=null,cpfDeb=null;
+function olhaCpf(v){
+  CPFINFO=null;clearTimeout(cpfDeb);
+  var d=String(v||'').replace(/\\D/g,'');
+  var q=document.getElementById('quem');if(!q)return;
+  if(d.length<11){q.className='mut';q.textContent='O nome aparece na comanda impressa e na tela da cozinha.';return}
+  q.className='mut';q.textContent='consultando…';
+  cpfDeb=setTimeout(async function(){
+    var r=await jget('/api/venda/identificar?cpf='+d);
+    if(!r.ok){q.className='mut';q.style.color='#dc2626';q.textContent=r.erro||'CPF inválido';return}
+    q.style.color='';
+    if(r.nome){CPFINFO=r;q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b> — '+esc(r.nome)+
+      ' <span class="mut">('+(r.fonte==='consumer'?'já é cliente da casa':'consulta externa')+')</span>';}
+    else if(r.fonte==='erro'){q.innerHTML='<span style="color:#b45309">consulta indisponível ('+esc(r.aviso||'')+') — dá pra digitar o nome</span>'+campoNome()}
+    else {q.innerHTML='<span class="mut">CPF válido, não encontrado no cadastro.</span>'+campoNome()}
+  },500);
+}
+function campoNome(){return '<input type="text" id="nnome" placeholder="nome da pessoa" style="margin-top:8px">'}
+async function criarComanda(){
+  var c=Number((document.getElementById('ncmd')||{}).value);
+  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  var cpf=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
+  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim()||null);
+  var body={mesa:MESA,comanda:c};
+  if(cpf.length===11)body.cpf=cpf;
+  if(nome)body.nome=nome;
+  if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
+  var r=await jpost('/api/venda/vincular',body);
   if(!r.ok){alert(r.erro);return}
-  ALVO=Number(c);await carregarMesa();
+  CPFINFO=null;ALVO=c;await carregarMesa();
 }
 function buscar(v){
   BUSCA=v;clearTimeout(debounce);
@@ -1740,6 +1965,7 @@ const server = http.createServer(async (req, res) => {
     const p = u.pathname.replace(/\/+$/, '') || '/';
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
+    if (req.method === 'POST' && p === '/api/venda/conta') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaConta(body))); }
     if (req.method === 'POST' && p === '/api/venda/enviar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaEnviar(body))); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
@@ -1753,6 +1979,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/entrega') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEntrega())); }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
+    if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || ''))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
