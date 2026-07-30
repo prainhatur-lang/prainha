@@ -1,10 +1,14 @@
-PRAINHA BAR — Sistema de Vendas local (KDS + venda do garcom)
-===============================================================
+PRAINHA — Sistema de Vendas local (KDS + venda do garcom + conta/pagamento)
+============================================================================
 
-COMO INSTALAR NA MAQUINA DA LOJA (Xeon / 10.0.0.252):
+Serve pra qualquer maquina da loja: o instalador descobre o IP sozinho
+e imprime os enderecos certos no final.
 
-  1. Copie o ZIP para a maquina (pelo Acesso Remoto) e EXTRAIA tudo
-     em qualquer pasta (ex.: Downloads).
+COMO INSTALAR
+-------------
+
+  1. Copie o ZIP para a maquina e EXTRAIA TUDO em uma pasta
+     (ex.: Downloads\vendas-local).
 
   2. Na pasta extraida, clique com o BOTAO DIREITO em
         instalar-tudo.bat
@@ -13,18 +17,42 @@ COMO INSTALAR NA MAQUINA DA LOJA (Xeon / 10.0.0.252):
      IMPORTANTE: NAO abrir o arquivo dentro do PowerShell.
      E botao direito > Executar como administrador.
 
-  3. Espere terminar (instala Postgres e Node sozinho se precisar).
+  3. Espere terminar. Ele instala sozinho o que faltar
+     (PostgreSQL, Node.js, dependencias) e cria a tarefa que
+     sobe o sistema junto com o Windows.
      No final aparece "PRONTO!" com os enderecos.
 
-DEPOIS DE INSTALADO (aparelhos na rede/Wi-Fi da loja):
+DEPOIS DE INSTALADO (aparelhos na mesma rede/Wi-Fi)
+---------------------------------------------------
 
-  Garcom (celular) ...... http://10.0.0.252:8790/venda
-  KDS producao (TV) ..... http://10.0.0.252:8790/?area=NUMERO
-      (abra http://10.0.0.252:8790 uma vez pra ver o numero de cada area)
-  Entregas (tablet) ..... http://10.0.0.252:8790/entrega
+  KDS producao (TV) ..... http://IP:8790/
+        abre numa tela pra escolher a cozinha/praca
+  Garcom (celular) ...... http://IP:8790/venda
+  Entregas (tablet) ..... http://IP:8790/entrega
+  Conta / pagamento ..... http://IP:8790/conta
+
+  (o IP certo aparece no final da instalacao)
 
 O sistema inicia sozinho quando o Windows liga (tarefa "PrainhaVendas")
-e se reinicia sozinho se cair. Log em C:\prainha-vendas\log.txt
+e se reinicia sozinho se cair.
 
-Se algo der errado: me mande uma foto/print do erro ou o final do
-arquivo C:\prainha-vendas\log.txt
+ONDE FICA
+---------
+  Programa ... C:\prainha-vendas
+  Log ........ C:\prainha-vendas\log.txt
+
+SE DER ERRO
+-----------
+  - "Nao conectei em vendas_local": a senha do superusuario 'postgres'
+    dessa maquina e diferente da que esta no topo do instalar-tudo.bat
+    (variavel PGSUPERPASS). Ajuste e rode de novo.
+
+  - "npm install falhou": abra um PowerShell NOVO (pra pegar o Node no
+    PATH), va em C:\prainha-vendas e rode:  npm install
+
+  - Qualquer outra coisa: me mande o final de C:\prainha-vendas\log.txt
+
+CONFIGURACAO (start.bat)
+------------------------
+Se o Firebird nao estiver na PROPRIA maquina, edite
+C:\prainha-vendas\start.bat e troque FB_HOST pelo IP do servidor Firebird.

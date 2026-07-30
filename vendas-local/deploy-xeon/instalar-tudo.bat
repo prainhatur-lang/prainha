@@ -24,6 +24,9 @@ set "APPDB=vendas_local"
 set "APPUSER=prainha_app"
 set "APPPASS=Prainha_App_2026"
 set "PORTA=8790"
+REM IP desta maquina, pra imprimir as URLs certas em qualquer loja
+for /f "tokens=1" %%I in ('powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 ^| Where-Object {$_.IPAddress -notlike '127.*'} ^| Select-Object -First 1 -ExpandProperty IPAddress)"') do set "IPLOJA=%%I"
+if "%IPLOJA%"=="" set "IPLOJA=localhost"
 
 echo.
 echo ===== PRAINHA VENDAS - instalador (Xeon) =====
@@ -94,6 +97,20 @@ set "PGPASSWORD=%PGSUPERPASS%"
 "%PSQL%" -U postgres -h 127.0.0.1 -p %PGPORT% -d %APPDB% -c "ALTER SCHEMA public OWNER TO %APPUSER%;"
 set "PGPASSWORD="
 
+REM confere se o banco do app responde de verdade
+set "PGPASSWORD=%APPPASS%"
+"%PSQL%" -U %APPUSER% -h 127.0.0.1 -p %PGPORT% -d %APPDB% -c "SELECT 1" >nul 2>&1
+if not "%errorlevel%"=="0" (
+  set "PGPASSWORD="
+  echo [ERRO] Nao conectei em %APPDB% como %APPUSER%.
+  echo        Causa provavel: a senha do superusuario 'postgres' nesta maquina
+  echo        nao e a que esta no topo deste arquivo ^(PGSUPERPASS^).
+  echo        Ajuste PGSUPERPASS e rode de novo.
+  pause & exit /b 1
+)
+set "PGPASSWORD="
+echo    Banco %APPDB% OK.
+
 REM ---- 3) Node.js ----
 set "NODEEXE=C:\Program Files\nodejs\node.exe"
 if exist "%NODEEXE%" (
@@ -101,12 +118,29 @@ if exist "%NODEEXE%" (
 ) else (
   where node >nul 2>&1
   if "!errorlevel!"=="0" (
-    echo [3/6] Node.js ja instalado (no PATH).
+    REM parenteses PRECISAM de ^ aqui: dentro de um bloco ( ) o ")" solto
+    REM fecha o bloco no parse e quebra o .bat inteiro com
+    REM ". was unexpected at this time." — mesmo sem entrar neste ramo.
+    echo [3/6] Node.js ja instalado ^(no PATH^).
   ) else (
     echo [3/6] Instalando Node.js LTS ...
     winget install -e --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
     timeout /t 3 /nobreak >nul
   )
+)
+
+REM ---- 3b) dependencias do node (node-firebird + postgres) ----
+if exist "%PASTA%\node_modules\postgres\package.json" (
+  echo    Dependencias ja instaladas.
+) else (
+  echo    Instalando dependencias do sistema ^(npm^) ...
+  pushd "%PASTA%"
+  call npm install --omit=dev --no-audit --no-fund
+  popd
+)
+if not exist "%PASTA%\node_modules\postgres\package.json" (
+  echo [ERRO] npm install falhou. Abra um PowerShell NOVO em %PASTA% e rode: npm install
+  pause & exit /b 1
 )
 
 REM ---- 4) firewall: liberar a porta pros aparelhos da loja ----
@@ -135,10 +169,11 @@ if exist "%TEMP%\vendas-teste.json" (
     echo ================= PRONTO! =================
     echo  O sistema esta NO AR nesta maquina.
     echo.
-    echo  Nos aparelhos da loja (mesma rede/Wi-Fi):
-    echo    Garcom (celular): http://10.0.0.252:%PORTA%/venda
-    echo    KDS producao (TV): http://10.0.0.252:%PORTA%/?area=NUMERO
-    echo    Entregas (tablet): http://10.0.0.252:%PORTA%/entrega
+    echo  Nos aparelhos da loja ^(mesma rede/Wi-Fi^):
+    echo    Garcom ^(celular^):  http://%IPLOJA%:%PORTA%/venda
+    echo    KDS ^(TV^):          http://%IPLOJA%:%PORTA%/       ^<- abre na escolha de area
+    echo    Entregas ^(tablet^): http://%IPLOJA%:%PORTA%/entrega
+    echo    Conta/pagamento:   http://%IPLOJA%:%PORTA%/conta
     echo.
     echo  Log: %PASTA%\log.txt
     echo ===========================================
