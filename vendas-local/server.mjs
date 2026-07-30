@@ -229,8 +229,13 @@ async function fbCriarPedido(numero) {
 }
 async function fbInserirItem(ped, it) {
   const vt = fbNum(it.preco * it.qtd);
+  // DETALHES é o que sai impresso embaixo do item na comanda da cozinha.
+  // Vai a observação do garçom e, quando o pedido está espalhado por mais de
+  // uma praça, o aviso pra sair junto. Caixa alta porque é cupom térmico.
+  const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
+  const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
   const r = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPRODUTO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL, VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
-    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(it.nome)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(it.obs || 'NENHUM')}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
+    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(it.nome)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
   if (!r.ok) throw new Error('FB item "' + it.nome + '": ' + r.err);
 }
 async function fbAtualizarTotal(ped) {
@@ -415,10 +420,23 @@ async function apiVendaEnviar(body) {
   // resolve cada item no catálogo local (preço/nome/área da NOSSA cópia — nunca confiar no client)
   const itens = [];
   for (const p of pedidos) {
-    const cat = (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco FROM produto_local WHERE codigo_pdv=${Number(p.codigo_pdv)}`)[0];
+    const cat = (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo FROM produto_local WHERE codigo_pdv=${Number(p.codigo_pdv)}`)[0];
     if (!cat) return { ok: false, erro: 'produto ' + p.codigo_pdv + ' não está no catálogo' };
     const qtd = Math.max(1, Math.min(99, Number(p.qtd) || 1));
     itens.push({ ...cat, preco: Number(cat.preco), qtd, obs: String(p.obs || '').trim() });
+  }
+  // Quem imprime separado por cozinha é o Consumer (usa PRODUTOS.CODIGOCOZINHA).
+  // O que falta é a cozinha SABER que o pedido tem acompanhamento em outra praça:
+  // sem isso o petisco sai sozinho e o prato chega frio (ou vice-versa). Então
+  // cada via leva escrito onde está o resto do pedido.
+  const areas = [...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))];
+  if (areas.length > 1) {
+    const as = await sql`SELECT codigo, nome FROM area WHERE codigo = ANY(${areas})`;
+    const nomeArea = new Map(as.map((a) => [Number(a.codigo), a.nome]));
+    for (const i of itens) {
+      const outras = areas.filter((a) => a !== i.area_codigo).map((a) => nomeArea.get(a) || 'Área ' + a);
+      if (outras.length) i.junto = outras.join(' + ');
+    }
   }
   const total = itens.reduce((s, i) => s + i.preco * i.qtd, 0);
   const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status)
@@ -834,6 +852,13 @@ input:focus{border-color:var(--gold2)}
 .ri.fora:active{background:#fafafa}.ri.fora .p{color:var(--mut)}
 .ri.fora .n small{color:var(--red)}
 .chip small{white-space:nowrap}
+.praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
+.ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.ph .qtd{color:var(--mut);font-weight:400}
+.pi{display:flex;justify-content:space-between;gap:10px;padding:11px 13px;border-top:1px solid #f4f4f7;font-size:15px;align-items:flex-start}
+.pi .obsv{display:block;color:var(--gold2);font-size:12.5px;margin-top:2px}
+.aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:12px;padding:12px 14px;font-size:14px;margin-top:12px;line-height:1.45}
+.totrev{display:flex;justify-content:space-between;font-size:18px;font-weight:800;padding:16px 4px 4px}
 .ri .n{font-size:15px}.ri .n small{color:var(--mut)}.ri .p{color:var(--gold2);font-weight:700;white-space:nowrap}
 .cart{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);box-shadow:0 -4px 18px rgba(0,0,0,.08);max-height:62vh;overflow:auto}
 .cart .in{max-width:560px;margin:0 auto;padding:10px 16px 14px}
@@ -855,7 +880,7 @@ input:focus{border-color:var(--gold2)}
 <script>
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
 var brl=function(n){return 'R$ '+Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
-var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null;
+var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null, AREAS=null;
 function app(h){document.getElementById('app').innerHTML=h}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
@@ -890,6 +915,7 @@ async function abrirMesa(){
   MESA=n;ALVO=n;await carregarMesa();
 }
 async function carregarMesa(){
+  renderCart(); // a revisão esconde o carrinho fixo; voltando, ele reaparece
   INFO=await jget('/api/venda/mesa?n='+MESA);
   var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
     infoDe(MESA)+'</button>';
@@ -962,9 +988,55 @@ function buscar(v){
 function addItem(p){
   if(p.sem_estoque)return;
   var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&!x.obs});
-  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho,preco:Number(p.preco),qtd:1,obs:''});
+  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho,preco:Number(p.preco),qtd:1,obs:'',area_codigo:p.area_codigo});
   renderCart();
 }
+// REVISAO: nada vai pra cozinha sem passar por aqui. O garcom anota a mesa
+// inteira, confere item por item com a mesa e so entao confirma.
+function nomeArea(c){
+  if(c==null||c==='0')return 'Sem praça definida';
+  var a=(AREAS||[]).find(function(x){return Number(x.codigo)===Number(c)});
+  return a?a.nome:'Área '+c;
+}
+async function revisar(){
+  if(!CART.length)return;
+  if(!AREAS)AREAS=(await jget('/api/areas')).areas||[];
+  document.getElementById('cart').style.display='none';
+  var grupos={},ordem=[];
+  CART.forEach(function(i){
+    var k=(i.area_codigo==null?'0':String(i.area_codigo));
+    if(!grupos[k]){grupos[k]=[];ordem.push(k)}
+    grupos[k].push(i);
+  });
+  var alvoTxt=(ALVO>=300?'Comanda '+ALVO+(MESA&&MESA!==ALVO?' · Mesa '+MESA:''):'Mesa '+MESA);
+  var h='<button class="back" onclick="carregarMesa()">◂ voltar e ajustar</button>'+
+    '<div class="tit" style="margin-top:12px">Confira antes de enviar — <b>'+esc(alvoTxt)+'</b></div>';
+  if(ordem.length>1){
+    h+='<div class="aviso"><b>Este pedido vai para '+ordem.length+' praças.</b><br>'+
+       'Cada comanda impressa vai levar <b>&gt;&gt; SAI JUNTO C/ …</b> com o nome das outras, '+
+       'pra que os pratos saiam ao mesmo tempo.</div>';
+  }
+  ordem.forEach(function(k){
+    var its=grupos[k],n=its.reduce(function(s,i){return s+i.qtd},0);
+    h+='<div class="praca"><div class="ph"><span>'+esc(nomeArea(k))+'</span><span class="qtd">'+n+' item'+(n>1?'s':'')+'</span></div>';
+    its.forEach(function(i){
+      var ix=CART.indexOf(i);
+      h+='<div class="pi"><span><b>'+i.qtd+'×</b> '+esc(i.nome)+
+        (i.tamanho?' <span class="mut">['+esc(i.tamanho)+']</span>':'')+
+        (i.obs?'<span class="obsv">✎ '+esc(i.obs)+'</span>':'')+'</span>'+
+        '<span style="white-space:nowrap"><span class="p">'+brl(i.preco*i.qtd)+'</span>'+
+        ' <button class="rm" onclick="rmRev('+ix+')">✕</button></span></div>';
+    });
+    h+='</div>';
+  });
+  var tot=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
+  h+='<div class="totrev"><span>Total</span><span>'+brl(tot)+'</span></div>'+
+     '<button class="big verde" id="btnenviar" onclick="enviar()">CONFIRMAR E ENVIAR PRA COZINHA</button>'+
+     '<button class="big" style="background:#888" onclick="carregarMesa()">Voltar e ajustar</button>'+
+     '<div id="msg"></div>';
+  app(h);
+}
+function rmRev(ix){CART.splice(ix,1);if(CART.length)revisar();else carregarMesa()}
 function renderCart(){
   var c=document.getElementById('cart');
   if(!CART.length){c.style.display='none';return}
@@ -979,26 +1051,30 @@ function renderCart(){
   var alvoTxt=ALVO>=300?('Comanda '+ALVO+' · Mesa '+MESA):('Mesa '+MESA);
   document.getElementById('cartin').innerHTML=rows+
     '<div class="tot"><span>'+alvoTxt+'</span><span>'+brl(tot)+'</span></div>'+
-    '<button class="big verde" onclick="enviar()">ENVIAR PRA COZINHA ('+CART.reduce(function(s,i){return s+i.qtd},0)+')</button>';
+    '<button class="big" onclick="revisar()">REVISAR PEDIDO ('+CART.reduce(function(s,i){return s+i.qtd},0)+')</button>'+
+    '<div class="mut" style="text-align:center;margin-top:6px">continue anotando a mesa toda — só envia depois de conferir</div>';
 }
 function qtd(ix,d){CART[ix].qtd+=d;if(CART[ix].qtd<1)CART.splice(ix,1);renderCart()}
 function rm(ix){CART.splice(ix,1);renderCart()}
 function editObs(ix){var o=prompt('Observação do prato (ex.: ao ponto, sem cebola):',CART[ix].obs||'');if(o!==null){CART[ix].obs=o.trim();renderCart()}}
 async function enviar(){
   if(!CART.length)return;
-  var btn=document.querySelector('.big.verde');btn.disabled=true;btn.textContent='Enviando…';
+  var btn=document.getElementById('btnenviar')||document.querySelector('.big.verde');
+  if(btn){btn.disabled=true;btn.textContent='Enviando…'}
   var r=await jpost('/api/venda/enviar',{numero:ALVO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs}})});
   if(r.ok){
     CART=[];renderCart();
-    document.getElementById('msg').innerHTML='<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
-      '<div class="mut" style="margin-top:6px">'+(r.numero>=300?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>';
-    carregarMesaSoon();
+    app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
+      '<div class="mut" style="margin-top:6px">'+(r.numero>=300?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
+      ' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>'+
+      '<button class="big" onclick="carregarMesa()">Continuar nesta mesa</button>'+
+      '<button class="big" style="background:#888" onclick="telaMesa()">Outra mesa</button>');
   } else {
-    document.getElementById('msg').innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';
-    btn.disabled=false;btn.textContent='ENVIAR PRA COZINHA';
+    var m=document.getElementById('msg');
+    if(m)m.innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';
+    if(btn){btn.disabled=false;btn.textContent='CONFIRMAR E ENVIAR PRA COZINHA'}
   }
 }
-var _t=null;function carregarMesaSoon(){clearTimeout(_t);_t=setTimeout(function(){if(MESA)carregarMesa()},4000)}
 telaMesa();
 </script></body></html>`;
 
