@@ -116,6 +116,11 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS produto_local (codigo_pdv integer PRIMARY KEY, produto_codigo integer, nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, atualizado timestamptz DEFAULT now())`;
   // nome+tamanho normalizado (sem acento, minusculo) — a busca do garcom usa esta coluna
   await addCol('produto_local', 'nome_busca text');
+  // categoria = ETIQUETAS do Consumer (a mesma que monta o cardápio impresso).
+  // sem_estoque: produto de estoque controlado que zerou — aparece CINZA, não some.
+  await addCol('produto_local', 'categoria text');
+  await addCol('produto_local', 'categoria_ordem integer');
+  await addCol('produto_local', 'sem_estoque boolean DEFAULT false');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // log durável de TUDO que o nosso app lançou (a venda mora aqui mesmo se o FB falhar)
@@ -176,24 +181,31 @@ async function loopEspelho() {
 
 // ---- CATÁLOGO local (Firebird -> Postgres, a cada 5 min) ----
 async function espelhoCatalogo() {
-  const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM
+  // Pausado (pd.DATAPAUSADO) e descontinuado SOMEM do cardapio.
+  // Estoque controlado zerado NAO some: vem marcado e a tela mostra cinza.
+  const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM,
+      TRIM(e.DESCRICAO) CAT, e.ORDEM CATORD, p.ESTOQUECONTROLADO ECTRL, p.ESTOQUEATUAL EATU
     FROM PRODUTODETALHE pd JOIN PRODUTOS p ON p.CODIGO=pd.CODIGOPRODUTO
     LEFT JOIN PRODUTOTAMANHO pt ON pt.CODIGO=pd.CODIGOPRODUTOTAMANHO
+    LEFT JOIN ETIQUETAS e ON e.CODIGO=p.CODIGOETIQUETA AND e.DATADELETE IS NULL
     WHERE pd.DATADELETE IS NULL AND pd.DATAPAUSADO IS NULL AND (p.DESCONTINUADO IS NULL OR p.DESCONTINUADO<>'S') AND pd.PRECOVENDA>0`);
   if (!r.ok) { console.error('[catalogo] ERRO:', r.err); return; }
   const rows = r.rows.map((x) => {
     const nome = T(x.NOME) || '?';
     const tam = T(x.TAM);
+    // CHAR do Firebird vem com espaco a direita ("S   ") — T() apara antes de comparar.
+    const semEstoque = T(x.ECTRL) === 'S' && (N(x.EATU) || 0) <= 0;
     // nome_busca = nome+tamanho sem acento e minusculo. O garcom digita "acai",
     // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
     // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
-    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')) };
+    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque };
   });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
-    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca')}`;
+    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque')}`;
   });
-  console.log(`[catalogo] ok — ${rows.length} produtos vendíveis`);
+  const fora = rows.filter((x) => x.sem_estoque).length;
+  console.log(`[catalogo] ok — ${rows.length} produtos vendíveis (${fora} sem estoque)`);
 }
 
 // ---- WRITE-BACK no Consumer (caminho validado 13/06) ----
@@ -343,9 +355,36 @@ async function lioConsultar(orderId) {
 async function apiVendaBusca(termo) {
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo FROM produto_local
-    WHERE nome_busca LIKE ${t} ORDER BY comanda_mobile DESC, nome LIMIT 30`;
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque FROM produto_local
+    WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 30`;
   return { produtos: rows };
+}
+// Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
+async function apiVendaCategorias() {
+  // parenteses no FILTER antes do cast: sem eles a precedencia fica ambigua
+  const rows = await sql`SELECT categoria, min(categoria_ordem) AS ordem, count(*)::int AS n,
+      (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
+    FROM produto_local GROUP BY categoria ORDER BY min(categoria_ordem), categoria`;
+  return { categorias: rows };
+}
+async function apiVendaCategoria(nome) {
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
+    FROM produto_local WHERE categoria=${String(nome || '')} ORDER BY sem_estoque, nome`;
+  return { categoria: String(nome || ''), produtos: rows };
+}
+// Mesas/comandas abertas AGORA — o garcom clica em vez de digitar o numero.
+async function apiVendaAbertas() {
+  const rows = await sql`SELECT c.numero, c.valor_total, c.data_abertura,
+      (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens
+    FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
+    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura ORDER BY c.numero`;
+  // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
+  const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
+  const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
+  return {
+    mesas: rows.filter((x) => Number(x.numero) < COMANDA_MIN),
+    comandas: rows.filter((x) => Number(x.numero) >= COMANDA_MIN).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
+  };
 }
 async function apiVendaMesa(mesa) {
   const m = Number(mesa);
@@ -791,6 +830,10 @@ input:focus{border-color:var(--gold2)}
 .res{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:8px;overflow:hidden}
 .ri{display:flex;justify-content:space-between;gap:10px;padding:12px 14px;border-top:1px solid #f0f0f3;cursor:pointer;align-items:center}
 .ri:first-child{border-top:0}.ri:active{background:#faf5ef}
+.ri.fora{opacity:.5;cursor:default;background:#fafafa}
+.ri.fora:active{background:#fafafa}.ri.fora .p{color:var(--mut)}
+.ri.fora .n small{color:var(--red)}
+.chip small{white-space:nowrap}
 .ri .n{font-size:15px}.ri .n small{color:var(--mut)}.ri .p{color:var(--gold2);font-weight:700;white-space:nowrap}
 .cart{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);box-shadow:0 -4px 18px rgba(0,0,0,.08);max-height:62vh;overflow:auto}
 .cart .in{max-width:560px;margin:0 auto;padding:10px 16px 14px}
@@ -812,20 +855,35 @@ input:focus{border-color:var(--gold2)}
 <script>
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
 var brl=function(n){return 'R$ '+Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
-var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null;
+var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null;
 function app(h){document.getElementById('app').innerHTML=h}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
 
-function telaMesa(){
-  MESA=null;ALVO=null;CART=[];renderCart();
-  app('<div class="tit">Número da mesa</div>'+
-    '<input type="number" id="nmesa" inputmode="numeric" placeholder="ex.: 5" autofocus>'+
+async function telaMesa(){
+  MESA=null;ALVO=null;CART=[];CATSEL=null;BUSCA='';renderCart();
+  app('<div class="tit">Mesas abertas — toque pra lançar</div>'+
+    '<div class="chips" id="abertas"><span class="mut">carregando…</span></div>'+
+    '<div class="tit" style="margin-top:18px">Ou digite o número</div>'+
+    '<input type="number" id="nmesa" inputmode="numeric" placeholder="ex.: 5">'+
     '<button class="big" onclick="abrirMesa()">Abrir mesa</button>'+
-    '<div class="mut" style="margin-top:14px">Padrão: lança na <b>mesa</b>. Dentro dela dá pra adicionar <b>comandas (300–400)</b> — a comanda é a pessoa, a mesa é o lugar.</div>');
-  var el=document.getElementById('nmesa');el.focus();
+    '<div class="mut" style="margin-top:14px">A <b>mesa</b> é o lugar; a <b>comanda (300–400)</b> é a pessoa. Dentro da mesa dá pra abrir comandas.</div>');
+  var el=document.getElementById('nmesa');
   el.addEventListener('keydown',function(e){if(e.key==='Enter')abrirMesa()});
+  var d=await jget('/api/venda/abertas');
+  var h='';
+  (d.mesas||[]).forEach(function(m){
+    h+='<button class="chip" onclick="irPara('+m.numero+','+m.numero+')">Mesa '+m.numero+
+       '<small>'+m.itens+' itens · '+brl(m.valor_total)+'</small></button>';
+  });
+  (d.comandas||[]).forEach(function(c){
+    h+='<button class="chip" onclick="irPara('+(c.mesa||c.numero)+','+c.numero+')">Comanda '+c.numero+
+       '<small>'+(c.mesa?'mesa '+c.mesa+' · ':'')+c.itens+' itens · '+brl(c.valor_total)+'</small></button>';
+  });
+  var a=document.getElementById('abertas');
+  if(a)a.innerHTML=h||'<span class="mut">nenhuma mesa aberta agora</span>';
 }
+function irPara(mesa,alvo){MESA=Number(mesa);ALVO=Number(alvo);carregarMesa()}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
   if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
@@ -841,11 +899,45 @@ async function carregarMesa(){
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     '<div class="tit">Produto</div>'+
     '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
+    '<div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
+    '<div class="chips" id="cats"><span class="mut">carregando…</span></div>'+
     '<div class="res" id="res" style="display:none"></div>'+
     '<div id="msg"></div>');
   var el=document.getElementById('busca');
-  if(BUSCA)buscar(BUSCA);
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
+  await carregarCategorias();
+  if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL,true);
+}
+async function carregarCategorias(){
+  if(!CATS)CATS=(await jget('/api/venda/categorias')).categorias||[];
+  var el=document.getElementById('cats');if(!el)return;
+  el.innerHTML=CATS.map(function(c){
+    return '<button class="chip'+(CATSEL===c.categoria?' on':'')+'" onclick=\\'verCat('+JSON.stringify(c.categoria).replace(/'/g,'&#39;')+')\\'>'+
+      esc(c.categoria)+'<small>'+c.disp+(c.n>c.disp?' de '+c.n:'')+'</small></button>';
+  }).join('');
+}
+async function verCat(nome,manter){
+  if(CATSEL===nome&&!manter){ // segundo toque fecha
+    CATSEL=null;var r=document.getElementById('res');if(r)r.style.display='none';
+    return carregarCategorias();
+  }
+  CATSEL=nome;BUSCA='';
+  var b=document.getElementById('busca');if(b)b.value='';
+  await carregarCategorias();
+  var d=await jget('/api/venda/categoria?c='+encodeURIComponent(nome));
+  mostrarProdutos(d.produtos);
+}
+function linhaProduto(p){
+  var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
+  if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+nm+' <small>· fora de estoque</small></span>'+
+    '<span class="p">'+brl(p.preco)+'</span></div>';
+  return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'>'+
+    '<span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
+}
+function mostrarProdutos(ps){
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML=(ps&&ps.length)?ps.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>';
 }
 function infoDe(n){
   var a=(INFO.abertos||[]).find(function(x){return Number(x.numero)===n});
@@ -860,17 +952,15 @@ async function addComanda(){
 }
 function buscar(v){
   BUSCA=v;clearTimeout(debounce);
-  if(!v||v.length<2){document.getElementById('res').style.display='none';return}
+  if(v){CATSEL=null;carregarCategorias()}
+  if(!v||v.length<2){var r=document.getElementById('res');if(r)r.style.display='none';return}
   debounce=setTimeout(async function(){
     var d=await jget('/api/venda/busca?q='+encodeURIComponent(v));
-    var el=document.getElementById('res');el.style.display='block';
-    el.innerHTML=d.produtos.length?d.produtos.map(function(p){
-      var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
-      return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'><span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
-    }).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>';
+    mostrarProdutos(d.produtos);
   },250);
 }
 function addItem(p){
+  if(p.sem_estoque)return;
   var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&!x.obs});
   if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho,preco:Number(p.preco),qtd:1,obs:''});
   renderCart();
@@ -1101,6 +1191,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/entrega') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEntrega())); }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
+    if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
+    if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias())); }
+    if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || ''))); }
     res.writeHead(404); res.end('not found');
   } catch (e) { res.writeHead(500); res.end('erro: ' + e.message); }
 });
