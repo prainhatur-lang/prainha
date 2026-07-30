@@ -101,11 +101,15 @@ async function initSchema() {
   // marca = os toques do NOSSO sistema + REGISTRO DURÁVEL do tempo de produção.
   // (não some no TRUNCATE do espelho; chave = ITENSPEDIDO.CODIGO)
   // tempo de produção = pronto_em - criado_em ; tempo de entrega = entregue_em - pronto_em
+  await addCol('comanda', 'conta_pedida boolean DEFAULT false'); // PEDIDOS.CONTASOLICITADA = mesa em fechamento
   await sql`CREATE TABLE IF NOT EXISTS marca (item_codigo bigint PRIMARY KEY, pronto_em timestamptz, entregue_em timestamptz)`;
   await addCol('marca', 'criado_em timestamptz');
   await addCol('marca', 'comanda_codigo integer');
   await addCol('marca', 'area_codigo integer');
   await addCol('marca', 'nome text');
+  await addCol('marca', 'numero integer'); // nº da mesa/comanda no momento da baixa (a comanda fecha e some do espelho)
+  await sql`CREATE INDEX IF NOT EXISTS ix_marca_pronto ON marca(pronto_em)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_marca_entregue ON marca(entregue_em)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_item ON comanda_item(item_codigo)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_pai ON comanda_item(codigo_pai)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_area ON comanda_item(area_codigo)`;
@@ -156,7 +160,7 @@ async function initSchema() {
 let ultimoStatus = { ok: false, comandas: 0, itens: 0 };
 async function espelho() {
   const az = await q(`SELECT CODIGO, TRIM(DESCRICAO) D FROM COZINHAS ORDER BY CODIGO`);
-  const c = await q(`SELECT CODIGO, NUMERO, CODIGOPEDIDOORIGEM ORI, TRIM(NOME) NOME, VALORTOTAL, SUBTOTALPAGO, QUANTIDADEPESSOAS QP, DATAABERTURA FROM PEDIDOS WHERE DATAFECHAMENTO IS NULL AND DATADELETE IS NULL AND DATAABERTURA >= ${DESDE} ORDER BY NUMERO`);
+  const c = await q(`SELECT CODIGO, NUMERO, CODIGOPEDIDOORIGEM ORI, TRIM(NOME) NOME, VALORTOTAL, SUBTOTALPAGO, QUANTIDADEPESSOAS QP, DATAABERTURA, CONTASOLICITADA CS FROM PEDIDOS WHERE DATAFECHAMENTO IS NULL AND DATADELETE IS NULL AND DATAABERTURA >= ${DESDE} ORDER BY NUMERO`);
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
   const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
@@ -166,7 +170,7 @@ async function espelho() {
   if (!it.ok) throw new Error('FB itens: ' + it.err);
 
   const areas = az.ok ? az.rows.map((x) => ({ codigo: N(x.CODIGO), nome: T(x.D) || ('Área ' + x.CODIGO) })) : [];
-  const comandas = c.rows.map((x) => ({ codigo: N(x.CODIGO), numero: N(x.NUMERO), origem: N(x.ORI), nome: T(x.NOME), valor_total: N(x.VALORTOTAL) || 0, subtotal_pago: N(x.SUBTOTALPAGO) || 0, qtd_pessoas: N(x.QP), data_abertura: x.DATAABERTURA || null }));
+  const comandas = c.rows.map((x) => ({ codigo: N(x.CODIGO), numero: N(x.NUMERO), origem: N(x.ORI), nome: T(x.NOME), valor_total: N(x.VALORTOTAL) || 0, subtotal_pago: N(x.SUBTOTALPAGO) || 0, qtd_pessoas: N(x.QP), data_abertura: x.DATAABERTURA || null, conta_pedida: T(x.CS) === 'S' }));
   const itens = it.rows.map((x) => ({ item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || null, entregue: x.ENTR || null }));
   // COMPLEMENTO (tipo 2) sai na cozinha do PRATO-PAI: se não tem área própria, herda a do pai (CODIGOPAI).
   const areaPorItem = new Map(itens.map((i) => [i.item_codigo, i.area_codigo]));
@@ -177,7 +181,7 @@ async function espelho() {
   await sql.begin(async (sql) => {
     if (areas.length) for (const a of areas) await sql`INSERT INTO area (codigo, nome) VALUES (${a.codigo}, ${a.nome}) ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome`;
     await sql`TRUNCATE comanda, comanda_item`;
-    if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura')}`;
+    if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
     await sql`UPDATE sync_estado SET ultimo_ok=now(), ultimo_erro=null, comandas=${comandas.length}, itens=${itens.length} WHERE id=1`;
   });
@@ -195,6 +199,19 @@ async function loopEspelho() {
 
 // ---- CATÁLOGO local (Firebird -> Postgres, a cada 5 min) ----
 async function espelhoCatalogo() {
+  // SALDO REAL de estoque: PRODUTOS.ESTOQUEATUAL e' CAMPO MORTO no Consumer
+  // (zero nos 501 produtos controlados, positivo em nenhum). Quem tem a verdade
+  // e' a ultima ESTOQUEMOVIMENTACAO de cada PRODUTODETALHE, no QTDFINAL.
+  // Usar o campo errado marcava 156 produtos como "fora" — inclusive agua com
+  // 131 em estoque. O certo sao 14.
+  const est = await q(`SELECT em.CODIGOPRODUTODETALHE PDV, em.QTDFINAL QF
+      FROM ESTOQUEMOVIMENTACAO em
+      JOIN (SELECT CODIGOPRODUTODETALHE P, MAX(CODIGO) C FROM ESTOQUEMOVIMENTACAO
+             WHERE DATADELETE IS NULL GROUP BY CODIGOPRODUTODETALHE) u ON u.C = em.CODIGO`);
+  const saldo = new Map();
+  if (est.ok) for (const x of est.rows) saldo.set(N(x.PDV), N(x.QF) || 0);
+  else console.error('[catalogo] saldo de estoque indisponível:', est.err);
+
   // Pausado (pd.DATAPAUSADO) e descontinuado SOMEM do cardapio.
   // Estoque controlado zerado NAO some: vem marcado e a tela mostra cinza.
   const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM,
@@ -208,7 +225,9 @@ async function espelhoCatalogo() {
     const nome = T(x.NOME) || '?';
     const tam = T(x.TAM);
     // CHAR do Firebird vem com espaco a direita ("S   ") — T() apara antes de comparar.
-    const semEstoque = T(x.ECTRL) === 'S' && (N(x.EATU) || 0) <= 0;
+    // Sem movimentação registrada não dá pra afirmar que zerou: trata como disponível.
+    const pdv = N(x.PDV);
+    const semEstoque = T(x.ECTRL) === 'S' && saldo.has(pdv) && saldo.get(pdv) <= 0;
     // nome_busca = nome+tamanho sem acento e minusculo. O garcom digita "acai",
     // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
     // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
@@ -380,10 +399,14 @@ async function apiVendaBusca(termo) {
 }
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
 async function apiVendaCategorias() {
+  // Só grupo que tem o que vender AGORA. Grupo inteiro fora de estoque não
+  // aparece — o garçom não deve tocar num grupo pra descobrir que está vazio.
   // parenteses no FILTER antes do cast: sem eles a precedencia fica ambigua
   const rows = await sql`SELECT categoria, min(categoria_ordem) AS ordem, count(*)::int AS n,
       (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
-    FROM produto_local GROUP BY categoria ORDER BY min(categoria_ordem), categoria`;
+    FROM produto_local GROUP BY categoria
+    HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
+    ORDER BY min(categoria_ordem), categoria`;
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome) {
@@ -393,10 +416,26 @@ async function apiVendaCategoria(nome) {
 }
 // Mesas/comandas abertas AGORA — o garcom clica em vez de digitar o numero.
 async function apiVendaAbertas() {
-  const rows = await sql`SELECT c.numero, c.valor_total, c.data_abertura,
-      (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens
-    FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
-    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura ORDER BY c.numero`;
+  // Status da mesa, pra cor na tela do garçom:
+  //   vermelho = conta pedida (fechando)   amarelo = tem coisa atrasada
+  //   verde    = em andamento, tudo em dia
+  const rows = await sql`SELECT c.numero, c.valor_total, c.data_abertura, c.conta_pedida,
+      (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens,
+      (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+        AND COALESCE(ci.produzido, m.pronto_em) IS NULL
+        AND ci.criado < now() - (COALESCE(pc.minutos, ${LIMITE_ATRASO_MIN}) || ' minutes')::interval))::int AS atrasados,
+      (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+        AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
+        AND COALESCE(ci.entregue, m.entregue_em) IS NULL
+        AND COALESCE(ci.produzido, m.pronto_em) < now() - interval '5 minutes'))::int AS parados
+    FROM comanda c
+    LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
+    LEFT JOIN marca m ON m.item_codigo=ci.item_codigo
+    LEFT JOIN praca_config pc ON pc.area_codigo=ci.area_codigo
+    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida ORDER BY c.numero`;
+  for (const r of rows) {
+    r.status = r.conta_pedida ? 'fechando' : ((r.atrasados > 0 || r.parados > 0) ? 'atrasada' : 'andamento');
+  }
   // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
   const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
@@ -567,6 +606,24 @@ async function apiContaConferir(pagamentoId) {
 // entregue= COALESCE(ci.entregue,  m.entregue_em)
 
 // ---- API: seleção de áreas (produção) ----
+// ---- HISTÓRICO do que já saiu (últimas baixas) ----
+// Serve pra desfazer engano: "quem deu baixa nesse item, que horas, que mesa?".
+// Lê de `marca`, que é durável — `comanda` é truncada a cada espelho.
+async function apiHistorico(areaCod, modo) {
+  const entrega = modo === 'entrega';
+  const campo = entrega ? sql`m.entregue_em` : sql`m.pronto_em`;
+  const filtroArea = entrega ? sql`TRUE` : (areaCod === 0 ? sql`m.area_codigo IS NULL` : sql`m.area_codigo=${areaCod}`);
+  const rows = await sql`
+    SELECT m.item_codigo, m.nome, COALESCE(m.numero, c.numero) AS numero,
+           m.pronto_em, m.entregue_em, m.criado_em, a.nome AS area_nome
+      FROM marca m
+      LEFT JOIN comanda c ON c.codigo = m.comanda_codigo
+      LEFT JOIN area a ON a.codigo = m.area_codigo
+     WHERE ${campo} IS NOT NULL AND ${filtroArea}
+     ORDER BY ${campo} DESC LIMIT 40`;
+  return { itens: rows.map((x) => ({ ...x, quando: entrega ? x.entregue_em : x.pronto_em })) };
+}
+
 // ---- TEMPO DE PREPARO por praça e por prato ----
 async function apiTempos() {
   const areas = await sql`SELECT a.codigo, a.nome, c.minutos FROM area a
@@ -780,10 +837,11 @@ async function marcar(body) {
   }
   for (const ic of codigos) {
     // snapshot do item (hora do lançamento, área, nome) -> registro durável do tempo de produção
-    const s = (await sql`SELECT criado, comanda_codigo, area_codigo, nome FROM comanda_item WHERE item_codigo=${ic} LIMIT 1`)[0] || {};
-    await sql`INSERT INTO marca (item_codigo, criado_em, comanda_codigo, area_codigo, nome, ${sql(col)})
-              VALUES (${ic}, ${s.criado || null}, ${s.comanda_codigo || null}, ${s.area_codigo || null}, ${s.nome || null}, ${val})
+    const s = (await sql`SELECT ci.criado, ci.comanda_codigo, ci.area_codigo, ci.nome, c.numero FROM comanda_item ci LEFT JOIN comanda c ON c.codigo=ci.comanda_codigo WHERE ci.item_codigo=${ic} LIMIT 1`)[0] || {};
+    await sql`INSERT INTO marca (item_codigo, criado_em, comanda_codigo, area_codigo, nome, numero, ${sql(col)})
+              VALUES (${ic}, ${s.criado || null}, ${s.comanda_codigo || null}, ${s.area_codigo || null}, ${s.nome || null}, ${s.numero ?? null}, ${val})
               ON CONFLICT (item_codigo) DO UPDATE SET ${sql(col)}=${val},
+                numero=COALESCE(marca.numero, EXCLUDED.numero),
                 criado_em=COALESCE(marca.criado_em, EXCLUDED.criado_em),
                 comanda_codigo=COALESCE(marca.comanda_codigo, EXCLUDED.comanda_codigo),
                 area_codigo=COALESCE(marca.area_codigo, EXCLUDED.area_codigo),
@@ -849,6 +907,20 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .junto{background:#fff4e0;border-bottom:1px solid #f0d08a;color:#8a4b06;padding:11px 20px;font-size:14.5px;font-weight:600}
 .junto b{color:#6b3a04}
 .c.junto-alvo{border-top-color:#e0651a}
+/* HISTÓRICO lateral: o que já saiu, na ordem. Resolve "quem deu baixa nisso?" */
+.pal{display:flex;align-items:flex-start;gap:0}
+.pal .main{flex:1;min-width:0}
+.hist{width:270px;flex:0 0 270px;border-left:1px solid var(--line);background:#fff;
+  max-height:calc(100vh - 58px);overflow:auto;position:sticky;top:58px}
+.hist h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);
+  margin:0;padding:13px 15px 9px;border-bottom:1px solid var(--line);background:#fafafb;position:sticky;top:0}
+.hi{padding:9px 15px;border-bottom:1px solid #f3f3f6;font-size:13px}
+.hi .n{font-weight:600;line-height:1.28}
+.hi .m{color:var(--mut);font-size:11.5px;margin-top:2px;display:flex;gap:8px;flex-wrap:wrap}
+.hi .m b{color:var(--gold2);font-weight:700}
+.hist .vaziinho{padding:22px 15px;color:var(--mut);font-size:13px}
+@media (max-width:900px){.pal{flex-direction:column}.hist{width:auto;flex:none;border-left:0;
+  border-top:1px solid var(--line);position:static;max-height:none}}
 .flagj{background:#e0651a;color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px}
 /* fila / tempo / atraso */
 .pos{background:#1b1b20;color:#fff;border-radius:8px;padding:2px 9px;font-weight:800;font-size:13px;margin-right:8px}
@@ -969,8 +1041,25 @@ async function kds(){
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
   var topo=faixaReclamacao(d)+faixaJunto(d);
-  if(!d.comandas.length){app.innerHTML=topo+'<div class="vazio">tudo produzido nesta área ✅</div>';return}
-  app.innerHTML=topo+'<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>';
+  var corpo=d.comandas.length
+    ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>'
+    : '<div class="vazio">tudo produzido nesta área ✅</div>';
+  app.innerHTML='<div class="pal"><div class="main">'+topo+corpo+'</div>'+
+    '<aside class="hist" id="hist"><h3>Últimos que saíram</h3><div class="vaziinho">carregando…</div></aside></div>';
+  histLateral('/api/historico?modo=producao&area='+AREA.cod);
+}
+// Sempre o mesmo formato: item · mesa · hora. É por isso que a marca guarda
+// o número — a comanda fecha e some do espelho, o histórico não pode perder.
+async function histLateral(url){
+  var el=document.getElementById('hist');if(!el)return;
+  var d;try{d=await (await fetch(url,{cache:'no-store'})).json()}catch(e){return}
+  var its=d.itens||[];
+  el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
+    var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
+    return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div><div class="m">'+
+      '<b>'+(i.numero?(Number(i.numero)>=300?'Comanda ':'Mesa ')+i.numero:'sem mesa')+'</b>'+
+      '<span>'+t+'</span>'+(i.area_nome?'<span>'+esc(i.area_nome)+'</span>':'')+'</div></div>';
+  }).join(''):'<div class="vaziinho">nada saiu ainda</div>');
 }
 var ESPERANDO=[];
 function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(e.numero)===Number(numero)})}
@@ -1002,8 +1091,12 @@ async function entrega(){
     '<span class="pill"><b>'+d.nComandas+'</b> comandas</span><span class="pill"><b>'+d.nItens+'</b> prontos</span><span class="grow"></span>'+somBtn()+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
-  if(!d.comandas.length){app.innerHTML='<div class="vazio">nada aguardando entrega ✅</div>';return}
-  app.innerHTML='<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'entrega',ix)}).join('')+'</div>';
+  var corpo=d.comandas.length
+    ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'entrega',ix)}).join('')+'</div>'
+    : '<div class="vazio">nada aguardando entrega ✅</div>';
+  app.innerHTML='<div class="pal"><div class="main">'+corpo+'</div>'+
+    '<aside class="hist" id="hist"><h3>Últimos que saíram</h3><div class="vaziinho">carregando…</div></aside></div>';
+  histLateral('/api/historico?modo=entrega');
 }
 if(ENTREGA){setView(entrega)}
 else{var _p=new URLSearchParams(location.search);var a=_p.get('area');
@@ -1036,6 +1129,29 @@ input:focus{border-color:var(--gold2)}
 .ri.fora:active{background:#fafafa}.ri.fora .p{color:var(--mut)}
 .ri.fora .n small{color:var(--red)}
 .chip small{white-space:nowrap}
+/* grupos: grade uniforme — 3 por fila no celular, 4 em tela maior.
+   Antes eram chips de largura livre e a lista ficava um paredão irregular. */
+.cats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}
+@media (min-width:430px){.cats{grid-template-columns:repeat(4,1fr)}}
+.cat{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:9px 6px;font:inherit;
+  font-size:12.5px;line-height:1.22;cursor:pointer;color:var(--ink);text-align:center;min-height:64px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;overflow:hidden;word-break:break-word}
+.cat .nm{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.cat .qt{font-size:11px;color:var(--mut);font-weight:400}
+.cat.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
+.cat.on .qt{color:var(--gold2)}
+.cat:active{transform:scale(.97)}
+/* cor da mesa pelo status: verde em andamento, amarelo com atraso, vermelho fechando */
+.chip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
+.chip.st-andamento small{color:#0f8a3e}
+.chip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
+.chip.st-atrasada small{color:#9a6b06}
+.chip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
+.chip.st-fechando small{color:#b32626}
+.legenda{width:100%;display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;color:var(--mut);font-size:12px}
+.legenda span{display:flex;align-items:center;gap:5px}
+.pt{width:9px;height:9px;border-radius:50%;display:inline-block}
+.pt.v{background:#15a34a}.pt.a{background:#e0a413}.pt.r{background:#dc2626}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
 .ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
 .ph .qtd{color:var(--mut);font-weight:400}
@@ -1092,15 +1208,17 @@ async function telaMesa(){
   var d=await jget('/api/venda/abertas');
   var h='';
   (d.mesas||[]).forEach(function(m){
-    h+='<button class="chip" onclick="irPara('+m.numero+','+m.numero+')">Mesa '+m.numero+
+    h+='<button class="chip st-'+(m.status||'andamento')+'" onclick="irPara('+m.numero+','+m.numero+')">Mesa '+m.numero+
        '<small>'+m.itens+' itens · '+brl(m.valor_total)+'</small></button>';
   });
   (d.comandas||[]).forEach(function(c){
-    h+='<button class="chip" onclick="irPara('+(c.mesa||c.numero)+','+c.numero+')">Comanda '+c.numero+
+    h+='<button class="chip st-'+(c.status||'andamento')+'" onclick="irPara('+(c.mesa||c.numero)+','+c.numero+')">Comanda '+c.numero+
        '<small>'+(c.mesa?'mesa '+c.mesa+' · ':'')+c.itens+' itens · '+brl(c.valor_total)+'</small></button>';
   });
   var a=document.getElementById('abertas');
-  if(a)a.innerHTML=h||'<span class="mut">nenhuma mesa aberta agora</span>';
+  if(a)a.innerHTML=(h||'<span class="mut">nenhuma mesa aberta agora</span>')+
+    (h?'<div class="legenda"><span><i class="pt v"></i>em andamento</span>'+
+        '<span><i class="pt a"></i>algo atrasado</span><span><i class="pt r"></i>conta pedida</span></div>':'');
 }
 function irPara(mesa,alvo){MESA=Number(mesa);ALVO=Number(alvo);carregarMesa()}
 async function abrirMesa(){
@@ -1119,8 +1237,8 @@ async function carregarMesa(){
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     '<div class="tit">Produto</div>'+
     '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
-    '<div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
-    '<div class="chips" id="cats"><span class="mut">carregando…</span></div>'+
+    '<div id="grupos"><div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
+    '<div class="cats" id="cats"><span class="mut">carregando…</span></div></div>'+
     '<div class="res" id="res" style="display:none"></div>'+
     '<div id="msg"></div>');
   var el=document.getElementById('busca');
@@ -1132,8 +1250,8 @@ async function carregarCategorias(){
   if(!CATS)CATS=(await jget('/api/venda/categorias')).categorias||[];
   var el=document.getElementById('cats');if(!el)return;
   el.innerHTML=CATS.map(function(c){
-    return '<button class="chip'+(CATSEL===c.categoria?' on':'')+'" onclick=\\'verCat('+JSON.stringify(c.categoria).replace(/'/g,'&#39;')+')\\'>'+
-      esc(c.categoria)+'<small>'+c.disp+(c.n>c.disp?' de '+c.n:'')+'</small></button>';
+    return '<button class="cat'+(CATSEL===c.categoria?' on':'')+'" onclick=\\'verCat('+JSON.stringify(c.categoria).replace(/'/g,'&#39;')+')\\'>'+
+      '<span class="nm">'+esc(c.categoria)+'</span><span class="qt">'+c.disp+'</span></button>';
   }).join('');
 }
 async function verCat(nome,manter){
@@ -1172,6 +1290,9 @@ async function addComanda(){
 }
 function buscar(v){
   BUSCA=v;clearTimeout(debounce);
+  // digitou = os grupos somem na hora e a lista fica só do que casa com o texto
+  var g=document.getElementById('grupos');
+  if(g)g.style.display=v?'none':'';
   if(v){CATSEL=null;carregarCategorias()}
   if(!v||v.length<2){var r=document.getElementById('res');if(r)r.style.display='none';return}
   debounce=setTimeout(async function(){
@@ -1633,6 +1754,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
+    if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
     if (p === '/tempos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TEMPOS_HTML); }
