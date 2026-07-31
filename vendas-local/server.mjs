@@ -207,8 +207,11 @@ async function initSchema() {
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
-  await sql`CREATE TABLE IF NOT EXISTS spc_cache (cpf_hash text PRIMARY KEY, nome text NOT NULL,
+  await sql`CREATE TABLE IF NOT EXISTS spc_cache (cpf_hash text PRIMARY KEY, nome text,
     criado_em timestamptz DEFAULT now())`;
+  // nome NULL = "o SPC ja foi consultado e nao devolveu nome util". Guardar
+  // isso evita pagar de novo pelo mesmo CPF sem resposta.
+  await sql`ALTER TABLE spc_cache ALTER COLUMN nome DROP NOT NULL`.catch(() => {});
   await sql`CREATE TABLE IF NOT EXISTS saida_qr (token text PRIMARY KEY, mesa integer,
     pessoas integer NOT NULL, adultos integer, criancas integer, usados integer NOT NULL DEFAULT 0,
     origem text, criado_em timestamptz DEFAULT now(), expira_em timestamptz, ultima_em timestamptz)`;
@@ -794,7 +797,16 @@ async function consultarCpfExterno(cpf) {
   // Cache: o mesmo CPF não pode ser cobrado duas vezes. Guarda só o hash.
   const hash = createHash('sha256').update(doc).digest('hex');
   const cache = (await sql`SELECT nome FROM spc_cache WHERE cpf_hash=${hash}`)[0];
-  if (cache?.nome) return { nome: cache.nome, fonte: 'spc-cache' };
+  if (cache) {
+    // Já consultamos esse CPF antes. Se veio sem nome útil (ou com mensagem
+    // de status, de quando o filtro ainda não existia), responde "não achei"
+    // SEM consultar de novo — a consulta é paga.
+    if (!cache.nome || ehStatusNaoNome(cache.nome)) {
+      if (cache.nome) await sql`UPDATE spc_cache SET nome=NULL WHERE cpf_hash=${hash}`.catch(() => {});
+      return null;
+    }
+    return { nome: cache.nome, fonte: 'spc-cache' };
+  }
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 12000); // a mesa não pode esperar demais
@@ -816,11 +828,12 @@ async function consultarCpfExterno(cpf) {
     }
     if (!r.ok) throw new Error('SPC HTTP ' + r.status);
     const pf = j?.result?.return_object?.resultado?.consumidor?.consumidorPessoaFisica;
-    const nome = pf?.nome ? String(pf.nome).trim() : null;
-    if (!nome || ehStatusNaoNome(nome)) return null;
+    const bruto = pf?.nome ? String(pf.nome).trim() : null;
+    const nome = bruto && !ehStatusNaoNome(bruto) ? bruto : null;
+    // grava SEMPRE (mesmo sem nome): a consulta já foi cobrada, não repetir
     await sql`INSERT INTO spc_cache (cpf_hash, nome) VALUES (${hash}, ${nome})
       ON CONFLICT (cpf_hash) DO UPDATE SET nome=EXCLUDED.nome`.catch(() => {});
-    return { nome, fonte: 'spc' };
+    return nome ? { nome, fonte: 'spc' } : null;
   } finally { clearTimeout(t); }
 }
 /** Telefone/WhatsApp como chave alternativa: nem todo cliente dá o CPF. */
@@ -861,10 +874,18 @@ async function apiVendaIdentificar(cpf, telefone) {
     } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
   }
   if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
+  // 1º) cadastro do Consumer — a base oficial da casa
   try {
     const local = await contatoPorCpf(cpf);
     if (local) return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
   } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
+  // 2º) quem já identificamos em alguma mesa antes, mesmo sem cadastrar no
+  //     Consumer. Sem isto, essa pessoa seria consultada (e cobrada) de novo.
+  const jaVisto = (await sql`SELECT nome, contato_fb FROM identificacao
+    WHERE cpf=${soDig(cpf)} AND nome IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)[0];
+  if (jaVisto?.nome) return { ok: true, nome: jaVisto.nome, contato_fb: jaVisto.contato_fb ?? null,
+    fonte: 'ja-atendido', nome_curto: nomeCurto(jaVisto.nome) };
+  // 3º) só agora o SPC — e ele ainda passa pelo próprio cache antes de cobrar
   try {
     const ext = await consultarCpfExterno(cpf);
     if (ext) return { ok: true, ...ext, nome_curto: nomeCurto(ext.nome) };
