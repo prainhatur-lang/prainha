@@ -103,6 +103,7 @@ export function CreditCardForm({
   const [city, setCity] = useState('');
   const [state, setState] = useState('SE');
   const [cep, setCep] = useState('');
+  const [buscandoCep, setBuscandoCep] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [authenticating3DS, setAuthenticating3DS] = useState(false);
@@ -219,6 +220,31 @@ export function CreditCardForm({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mpiReady]);
+
+  /** CEP completo preenche rua, bairro, cidade e UF. Digitar endereco inteiro
+   *  no celular, na mesa, e' onde a pessoa desiste de pagar. Se o ViaCEP nao
+   *  responder, os campos continuam editaveis — nunca trava o pagamento. */
+  async function buscarCep(valor: string) {
+    const d = valor.replace(/\D/g, '');
+    if (d.length !== 8) return;
+    setBuscandoCep(true);
+    try {
+      const r = await fetch(`https://viacep.com.br/ws/${d}/json/`);
+      if (!r.ok) return;
+      const j = (await r.json()) as {
+        logradouro?: string; bairro?: string; localidade?: string; uf?: string; erro?: boolean | string;
+      };
+      if (j.erro) return;
+      if (j.logradouro) setStreet(j.logradouro);
+      if (j.bairro) setNeighborhood(j.bairro);
+      if (j.localidade) setCity(j.localidade);
+      if (j.uf) setState(j.uf.toUpperCase().slice(0, 2));
+    } catch {
+      /* sem internet ou ViaCEP fora: segue com os campos em branco */
+    } finally {
+      setBuscandoCep(false);
+    }
+  }
 
   async function authenticate3DS(): Promise<ThreeDSResult | null> {
     if (typeof window === 'undefined' || !window.bpmpi_authenticate) return null;
@@ -470,7 +496,18 @@ export function CreditCardForm({
       <div>
         <label className={lbl}>Endereço de cobrança do cartão</label>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <input value={cep} onChange={(e) => setCep(e.target.value)} placeholder="CEP" className={`${inp} mt-0`} />
+          <input
+            value={cep}
+            onChange={(e) => {
+              const v = e.target.value.replace(/\D/g, '').slice(0, 8);
+              setCep(v);
+              if (v.length === 8) void buscarCep(v);
+            }}
+            placeholder={buscandoCep ? 'buscando…' : 'CEP'}
+            inputMode="numeric"
+            autoComplete="postal-code"
+            className={`${inp} mt-0`}
+          />
           <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Número" className={`${inp} mt-0`} />
           <input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Rua" className={`${inp} col-span-2 mt-0`} />
           <input value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} placeholder="Bairro" className={`${inp} mt-0`} />
