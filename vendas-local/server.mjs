@@ -3167,6 +3167,12 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 #cart .ci button{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:#f7f7fa;
   font-size:18px;font-weight:700;cursor:pointer;color:var(--ink);padding:0;margin:0}
 #cart .ct{display:flex;justify-content:space-between;padding:11px 0 9px;font-size:15px}
+#cart .jt{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:#f7f7fa;
+  font-size:15px;cursor:pointer;color:var(--mut);padding:0;flex:none}
+#cart .jt.on{border-color:var(--gold2);background:rgba(224,101,26,.12);color:var(--gold2);font-weight:800}
+.jmark{display:block;color:var(--gold2);font-size:11.5px;margin-top:2px;font-weight:700}
+.jdica{background:#fff7e3;border:1px solid #f0d68f;border-radius:10px;padding:9px 11px;font-size:12.5px;
+  color:#8a4b06;margin-top:8px;line-height:1.4}
 body{padding-bottom:120px}
 /* observacao do item: as sugestoes que a casa ja cadastrou pro grupo */
 .obsl{display:flex;flex-wrap:wrap;gap:8px}
@@ -3395,7 +3401,8 @@ function confirmaObs(){
 }
 function poeNoCarrinho(p,obs){
   var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&(x.obs||'')===(obs||'')});
-  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1,obs:obs||''});
+  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1,obs:obs||'',
+    area_codigo:p.area_codigo,junto:false});
   renderCarrinho();
 }
 function renderCarrinho(){
@@ -3404,18 +3411,31 @@ function renderCarrinho(){
   if(!CART.length){el.style.display='none';return}
   var t=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
   var n=CART.reduce(function(s,i){return s+i.qtd},0);
+  // "sai junto" so faz sentido quando o pedido cai em cozinhas diferentes —
+  // bebida e prato, por exemplo. Dois itens da mesma cozinha ja saem juntos.
+  var pracas={};CART.forEach(function(i){if(i.area_codigo!=null)pracas[i.area_codigo]=1});
+  var varias=Object.keys(pracas).length>1;
+  var marcados=CART.filter(function(i){return i.junto}).length;
   el.style.display='block';
   el.innerHTML='<div class="cin">'+CART.map(function(i,ix){
-    return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+(i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+'</span>'+
+    return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+
+      (i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+
+      (i.junto?'<small class="jmark">⇄ sai junto</small>':'')+'</span>'+
+      (varias?'<button class="jt'+(i.junto?' on':'')+'" onclick="togJuntoCli('+ix+')" title="servir junto">⇄</button>':'')+
       '<button onclick="menos('+ix+')">−</button><button onclick="mais('+ix+')">+</button></div>';
-  }).join('')+'<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+  }).join('')+
+  (varias?'<div class="jdica">'+(marcados>1
+    ? '<b>'+marcados+' itens</b> vão sair ao mesmo tempo. Os outros vêm assim que ficarem prontos.'
+    : 'Quer que algo chegue junto com outro item? Toque no <b>⇄</b> dos dois.')+'</div>':'')+
+  '<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
   '<button class="b" style="margin:0" onclick="enviarPedido()">Enviar pedido</button></div>';
 }
+function togJuntoCli(ix){CART[ix].junto=!CART[ix].junto;renderCarrinho()}
 function mais(i){CART[i].qtd++;renderCarrinho()}
 function menos(i){CART[i].qtd--;if(CART[i].qtd<1)CART.splice(i,1);renderCarrinho()}
 async function enviarPedido(){
   var n=mesaAtual();if(n===null)return;
-  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||''}})});
+  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',junto:!!i.junto}})});
   if(!r.ok){alert(r.erro||'não consegui enviar');return}
   CART=[];renderCarrinho();
   app('<div class="enviadao"><div class="tick">✓</div>'+
