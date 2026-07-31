@@ -62,7 +62,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          `Este cartão não pôde ser autenticado pelo banco, e sem autenticação só aceitamos até ` +
+          `A autenticação do cartão não está disponível no momento. Sem ela só conseguimos aceitar até ` +
           `${(SEM_3DS_TETO_CENTAVOS / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}. ` +
           `Pague via Pix ou chame o garçom com a maquininha.`,
       },

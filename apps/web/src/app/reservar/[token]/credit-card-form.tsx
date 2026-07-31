@@ -282,24 +282,30 @@ export function CreditCardForm({
     setAuthenticating3DS(true);
     const auth = await authenticate3DS();
     setAuthenticating3DS(false);
-    // 'unenrolled' = cartão/emissor não participa do 3DS. A regra da bandeira
-    // permite seguir com ECI 07: a Cielo autoriza e o risco daquela transação
-    // fica com a casa. Bloquear isso recusava cartão bom.
-    // Os outros motivos (emissor negou, SDK com erro, bandeira sem suporte)
-    // continuam barrados — aí o cartão realmente não deve passar.
+    // Só UM motivo significa "esse cartão não deve passar": 'failure', que é o
+    // emissor tendo rodado o 3DS e NEGADO.
+    //
+    // Os demais são o autenticador indisponível, não um problema do cartão:
+    //   unenrolled        cartão/emissor não participa do 3DS (caso normal)
+    //   error             SDK da Braspag falhou (hoje: 401, produto não ativado)
+    //   disabled          3DS desligado no merchant
+    //   unsupported_brand bandeira fora do 3DS
+    // Nesses, seguimos sem autenticação — e quem limita o risco é o TETO de
+    // valor conferido no servidor. Barrar tudo aqui deixava a casa sem receber
+    // por uma falha que não é do cliente.
     const semAutenticacao = !auth || !auth.Cavv;
     const motivo = motivoRef.current;
+    const detalhe = detalheRef.current;
     motivoRef.current = null;
-    if (semAutenticacao && motivo !== 'unenrolled') {
-      setError(
-        motivo === 'failure'
-          ? 'O banco não autorizou a autenticação desse cartão. Tente outro cartão ou pague via Pix.'
-          : motivo === 'unsupported_brand'
-            ? 'Bandeira não aceita nesta forma de pagamento. Tente outro cartão ou pague via Pix.'
-            : `Não consegui autenticar o cartão agora${detalheRef.current ? `: ${detalheRef.current}` : motivo ? ` (${motivo})` : ''}. Tente de novo ou pague via Pix.`,
-      );
+    detalheRef.current = null;
+    if (semAutenticacao && motivo === 'failure') {
+      setError('O banco não autorizou esse cartão. Tente outro cartão ou pague via Pix.');
       setProcessing(false);
       return;
+    }
+    if (semAutenticacao) {
+      // segue, mas registra o porquê — o servidor ainda pode recusar pelo teto
+      console.warn('[3ds] seguindo sem autenticação:', motivo, detalhe);
     }
 
     try {
