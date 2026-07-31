@@ -2143,8 +2143,8 @@ async function apiSaidaPassar(token) {
      RETURNING pessoas, usados, mesa`;
   if (r.length) {
     const { pessoas, usados, mesa } = r[0];
-    return { ok: true, libera: true, mesa, restantes: Number(pessoas) - Number(usados),
-      de: Number(pessoas), msg: `Passagem ${usados} de ${pessoas}` };
+    return { ok: true, libera: true, mesa, pessoa: Number(usados), de: Number(pessoas),
+      restantes: Number(pessoas) - Number(usados), ultima: Number(usados) === Number(pessoas) };
   }
   const q = (await sql`SELECT pessoas, usados, expira_em FROM saida_qr WHERE token=${t}`)[0];
   if (!q) return { ok: true, libera: false, motivo: 'código não encontrado' };
@@ -2343,7 +2343,11 @@ button{width:100%;background:#3b82f6;color:#fff;border:0;border-radius:14px;font
 .res .t{font-size:22px;font-weight:800;margin-top:6px}
 .res.ok .t{color:#4ade80}.res.no .t{color:#f87171}
 .res .d{color:var(--mut);font-size:14.5px;margin-top:6px}
-.big{font-size:44px;font-weight:800;margin-top:8px}
+.big{font-size:56px;font-weight:800;margin-top:6px;line-height:1}
+.big .de{font-size:24px;font-weight:600;color:var(--mut)}
+.bolas{display:flex;gap:7px;justify-content:center;flex-wrap:wrap;margin-top:14px}
+.bo{width:14px;height:14px;border-radius:50%;background:#2c2c3a;border:1px solid #3d3d50}
+.bo.on{background:var(--ok);border-color:var(--ok)}
 </style></head><body><div class="wrap">
 <h1>Saída · catraca</h1>
 <div class="mut">Leia o QR do cliente ou digite o código. Cada leitura libera uma pessoa.</div>
@@ -2360,8 +2364,12 @@ async function passar(){
   var r=document.getElementById('r');
   if(d.libera){
     r.innerHTML='<div class="res ok"><div class="ic">✓</div><div class="t">PODE PASSAR</div>'+
-      '<div class="big">'+d.restantes+'</div><div class="d">ainda faltam passar · mesa '+d.mesa+'</div></div>';
-    if(d.restantes===0)el.value='';
+      '<div class="big">'+d.pessoa+'<span class="de"> de '+d.de+'</span></div>'+
+      '<div class="d">'+(d.ultima?'era a última pessoa · mesa '+d.mesa
+        :'faltam '+d.restantes+' · mesa '+d.mesa)+'</div>'+
+      '<div class="bolas">'+Array.from({length:d.de},function(_,i){
+        return '<span class="bo'+(i<d.pessoa?' on':'')+'"></span>'}).join('')+'</div></div>';
+    if(d.ultima)el.value='';
   } else {
     r.innerHTML='<div class="res no"><div class="ic">✕</div><div class="t">NÃO LIBERADO</div>'+
       '<div class="d">'+esc(d.motivo||'')+'</div></div>';
@@ -2479,6 +2487,12 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
   font-size:22px;font-weight:700;cursor:pointer;color:var(--ink);padding:0}
 .codigo{font-family:Menlo,monospace;font-size:19px;letter-spacing:.1em;text-align:center;
   background:#fff;border:1px solid var(--line);border-radius:11px;padding:12px;margin-top:8px}
+.passou{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;margin-top:10px;
+  text-align:center;font-size:15px;color:var(--mut)}
+.passou b{color:var(--ink);font-size:19px}
+.bolas{display:flex;gap:7px;justify-content:center;flex-wrap:wrap;margin-top:9px}
+.bo{width:14px;height:14px;border-radius:50%;background:#e4e4ea;border:1px solid #d2d2da}
+.bo.on{background:#15a34a;border-color:#15a34a}
 .valor{font-size:38px;font-weight:800;letter-spacing:-.5px}
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:14px;padding:15px;font-size:14.5px;line-height:1.5;margin:8px 0 4px}
 .qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
@@ -2753,11 +2767,37 @@ async function gerarSaida(origem){
   var r=await post('/api/saida/gerar',{mesa:n,adultos:PES.ad,criancas:PES.cr,origem:origem});
   if(!r.ok){alert(r.erro||'não consegui gerar');return}
   app('<h1>Seu QR de saída</h1>'+
-    '<div class="mut" style="margin:6px 0 2px">Mostre na catraca. Libera <b>'+r.pessoas+' pessoa'+(r.pessoas>1?'s':'')+'</b>, uma por vez.</div>'+
+    '<div class="mut" style="margin:6px 0 2px">É <b>um código só</b> pra mesa toda. '+
+    'Na catraca, cada pessoa encosta e passa — uma de cada vez.</div>'+
     (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR de saída">':'')+
     '<div class="codigo">'+esc(r.token)+'</div>'+
-    '<div class="mut" style="margin-top:10px">Vale por '+r.validade_min+' minutos. Se fechar a tela, chame o garçom.</div>'+
-    '<button class="b g" onclick="inicio()">Voltar ao início</button>');
+    '<div id="prog"></div>'+
+    '<div class="mut" style="margin-top:10px">Vale por '+r.validade_min+' minutos.</div>'+
+    '<button class="b g" onclick="pararSaida()">Voltar ao início</button>');
+  vigiarSaida(r.token);
+}
+// O cliente vê na própria tela quantos já passaram — evita a dúvida de
+// "será que a catraca leu?" com a fila esperando atrás.
+var saidaTmr=null;
+function pararSaida(){clearInterval(saidaTmr);saidaTmr=null;inicio()}
+function vigiarSaida(token){
+  clearInterval(saidaTmr);
+  var pinta=async function(){
+    var d;try{d=await (await fetch('/api/saida/consultar?t='+encodeURIComponent(token),{cache:'no-store'})).json()}catch(e){return}
+    if(!d.ok)return;
+    var el=document.getElementById('prog');if(!el)return;
+    var bolas='';for(var i=0;i<d.pessoas;i++)bolas+='<span class="bo'+(i<d.usados?' on':'')+'"></span>';
+    el.innerHTML='<div class="passou"><b>'+d.usados+'</b> de <b>'+d.pessoas+'</b> já passaram'+
+      '<div class="bolas">'+bolas+'</div></div>';
+    if(d.restantes===0){
+      clearInterval(saidaTmr);saidaTmr=null;
+      app('<div class="ok"><div class="t">✓ Todos passaram</div>'+
+        '<div class="mut" style="margin-top:8px">Obrigado pela visita! Volte sempre.</div></div>'+
+        '<button class="b g" onclick="inicio()">Fechar</button>');
+    }
+  };
+  pinta();
+  saidaTmr=setInterval(pinta,4000);
 }
 function copiar(){
   var t=(document.getElementById('cp')||{}).textContent||'';
