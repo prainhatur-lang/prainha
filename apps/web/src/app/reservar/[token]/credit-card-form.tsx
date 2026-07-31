@@ -92,6 +92,10 @@ export function CreditCardForm({
   const [expiry, setExpiry] = useState('');
   const [cvv, setCvv] = useState('');
   const [cpf, setCpf] = useState('');
+  // O 3DS 2.0 manda telefone e e-mail do titular na analise de risco do
+  // emissor. Iam vazios, e o SDK devolvia onError sem autenticar nada.
+  const [fone, setFone] = useState('');
+  const [email, setEmail] = useState('');
   const [cardType, setCardType] = useState<'CreditCard' | 'DebitCard'>('CreditCard');
   const [street, setStreet] = useState('');
   const [number, setNumber] = useState('');
@@ -109,6 +113,7 @@ export function CreditCardForm({
   // Qual callback do SDK disparou. Sem isto, "cartão não participa do 3DS" e
   // "emissor negou" viram a mesma mensagem e não dá pra diagnosticar nada.
   const motivoRef = useRef<string | null>(null);
+  const detalheRef = useRef<string | null>(null);
 
   const cleanNumber = cardNumber.replace(/\s/g, '');
   const brand = cleanNumber.length >= 4 ? detectBrand(cleanNumber) : '';
@@ -165,6 +170,14 @@ export function CreditCardForm({
         },
         onError: function (err: unknown) {
           motivoRef.current = 'error';
+          try {
+            const e = err as Record<string, unknown> | undefined;
+            detalheRef.current = String(
+              (e?.ReturnMessage as string) || (e?.returnMessage as string) ||
+              (e?.Message as string) || (e?.message as string) ||
+              (e ? JSON.stringify(e) : ''),
+            ).slice(0, 160);
+          } catch { detalheRef.current = null; }
           console.error('[bpmpi] error', err);
           resolverRef.current?.(null);
           resolverRef.current = null;
@@ -283,7 +296,7 @@ export function CreditCardForm({
           ? 'O banco não autorizou a autenticação desse cartão. Tente outro cartão ou pague via Pix.'
           : motivo === 'unsupported_brand'
             ? 'Bandeira não aceita nesta forma de pagamento. Tente outro cartão ou pague via Pix.'
-            : `Não consegui autenticar o cartão agora${motivo ? ` (${motivo})` : ''}. Tente de novo ou pague via Pix.`,
+            : `Não consegui autenticar o cartão agora${detalheRef.current ? `: ${detalheRef.current}` : motivo ? ` (${motivo})` : ''}. Tente de novo ou pague via Pix.`,
       );
       setProcessing(false);
       return;
@@ -358,8 +371,8 @@ export function CreditCardForm({
             readOnly
           />
           <input className="bpmpi_billto_contactname" value={holder.trim().toUpperCase() || 'CLIENTE'} readOnly />
-          <input className="bpmpi_billto_phonenumber" value="" readOnly />
-          <input className="bpmpi_billto_email" value="" readOnly />
+          <input className="bpmpi_billto_phonenumber" value={fone.replace(/\D/g, '')} readOnly />
+          <input className="bpmpi_billto_email" value={email.trim()} readOnly />
           <input className="bpmpi_billto_street1" value={street} readOnly />
           <input className="bpmpi_billto_city" value={city} readOnly />
           <input className="bpmpi_billto_state" value={state} readOnly />
@@ -413,6 +426,33 @@ export function CreditCardForm({
         <div className="flex-1">
           <label className={lbl}>CVV</label>
           <input value={cvv} onChange={(e) => setCvv(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="123" inputMode="numeric" autoComplete="cc-csc" className={inp} />
+        </div>
+      </div>
+
+      {/* Celular e e-mail vao pro 3DS: o emissor usa na analise de risco e,
+          sem eles, a autenticacao nem chega a rodar. */}
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <label className={lbl}>Celular</label>
+          <input
+            value={fone}
+            onChange={(e) => setFone(e.target.value.replace(/\D/g, '').slice(0, 11))}
+            placeholder="79900000000"
+            inputMode="numeric"
+            autoComplete="tel"
+            className={inp}
+          />
+        </div>
+        <div className="flex-1">
+          <label className={lbl}>E-mail</label>
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value.slice(0, 120))}
+            placeholder="voce@email.com"
+            inputMode="email"
+            autoComplete="email"
+            className={inp}
+          />
         </div>
       </div>
 
