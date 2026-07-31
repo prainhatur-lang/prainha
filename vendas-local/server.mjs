@@ -658,6 +658,36 @@ async function apiObservacoes(codigoPdv) {
   const r = await sql`SELECT DISTINCT texto FROM observacao_sugerida WHERE categoria=${p.categoria} ORDER BY texto`;
   return { categoria: p.categoria, sugestoes: r.map((x) => x.texto) };
 }
+// ---- SESSAO DA MESA ----
+// O QR fica colado na mesa e o celular do cliente guarda a pagina aberta. Se
+// ele vai embora e a mesa vira de outra pessoa, aquele celular NAO pode
+// continuar lancando pedido ali. Duas travas:
+//   1. a conta tem que ser A MESMA (PEDIDOS.CODIGO muda quando a mesa fecha
+//      e reabre — e' a checagem que realmente protege)
+//   2. tempo maximo desde que escaneou
+// Sem sessao valida, a tela pede pra escanear o QR de novo.
+const SESSAO_MESA_MIN = Number(process.env.SESSAO_MESA_MIN || 60);
+async function apiMesaSessao(numero, comandaCliente, desde) {
+  const n = Number(numero);
+  if (!(n >= 1 && n <= COMANDA_MAX)) return { ok: false, motivo: 'mesa inválida' };
+  const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+  if (!c) return { ok: false, motivo: 'fechada', comanda_codigo: null,
+    aviso: 'Essa mesa foi fechada. Escaneie o QR de novo pra começar.' };
+  const atual = Number(c.codigo);
+  // primeira entrada: o cliente ainda nao tem sessao, devolve a atual
+  if (comandaCliente == null) return { ok: true, comanda_codigo: atual, validade_min: SESSAO_MESA_MIN };
+  if (Number(comandaCliente) !== atual) {
+    return { ok: false, motivo: 'trocou', comanda_codigo: atual,
+      aviso: 'Essa mesa foi fechada e aberta de novo. Escaneie o QR pra continuar.' };
+  }
+  const min = desde ? (Date.now() - Number(desde)) / 60000 : 0;
+  if (min > SESSAO_MESA_MIN) {
+    return { ok: false, motivo: 'expirou', comanda_codigo: atual,
+      aviso: `Faz mais de ${SESSAO_MESA_MIN} minutos que você abriu. Escaneie o QR pra continuar.` };
+  }
+  return { ok: true, comanda_codigo: atual, validade_min: SESSAO_MESA_MIN };
+}
+
 /** O que a mesa JA pediu — evita pedir duas vezes a mesma coisa. */
 async function apiJaPedido(numero) {
   const c = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} LIMIT 1`)[0];
@@ -2429,6 +2459,13 @@ async function apiClienteHistorico({ numero, contato }) {
 async function apiMesaPedir(body) {
   const numero = Number(body.mesa);
   if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  // trava no SERVIDOR: a tela pode estar velha, ter sido restaurada pelo
+  // navegador ou ser de alguem que ja foi embora. Se a sessao nao bate, nao
+  // lanca — senao daria pra pedir na conta de outra pessoa.
+  if (body.sessao != null || body.desde != null) {
+    const ses = await apiMesaSessao(numero, body.sessao, body.desde);
+    if (!ses.ok) return { ok: false, erro: ses.aviso || 'sessão expirada', reescanear: true };
+  }
   const itens = Array.isArray(body.itens) ? body.itens.slice(0, 30) : [];
   if (!itens.length) return { ok: false, erro: 'sem itens' };
   const r = await apiVendaEnviar({ numero, itens, junto: false }); // obs vai dentro de cada item
@@ -3205,6 +3242,36 @@ body{padding-bottom:120px}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
+// ---- sessao da mesa ----
+// Trocar de app e voltar nao pode perder a mesa (o Android recarrega a
+// pagina), mas TAMBEM nao pode deixar pedir numa mesa que ja e' de outra
+// pessoa. Guardamos a mesa + qual CONTA estava aberta; o servidor recusa se
+// a conta trocou ou se passou do tempo.
+var SES=null;
+function lerSes(){ try{return JSON.parse(sessionStorage.getItem('prainha_mesa')||'null')}catch(e){return null} }
+function gravaSes(v){ try{sessionStorage.setItem('prainha_mesa',JSON.stringify(v))}catch(e){} SES=v; }
+function limpaSes(){ try{sessionStorage.removeItem('prainha_mesa')}catch(e){} SES=null; }
+if(!MESA){ var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
+else { var g2=lerSes(); if(g2&&String(g2.mesa)===String(MESA)) SES=g2; }
+
+/** Confere com o servidor antes de qualquer acao que valha dinheiro. */
+async function sessaoOk(){
+  var n=MESA?Number(MESA):null;
+  if(!n)return true; // sem mesa ainda: a propria tela pede o numero
+  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda?'&c='+SES.comanda+'&t='+SES.desde:'');
+  var r;try{r=await (await fetch(q,{cache:'no-store'})).json()}catch(e){return true} // sem rede: nao trava
+  if(r.ok){ if(!SES||SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:Date.now()}); return true }
+  limpaSes();
+  telaReescanear(r.aviso||'Escaneie o QR da mesa pra continuar.');
+  return false;
+}
+function telaReescanear(msg){
+  MESA=null;CART=[];renderCarrinho();
+  app('<h1>Escaneie o QR da mesa</h1>'+
+    '<div class="aviso" style="margin-top:12px">'+esc(msg)+'</div>'+
+    '<div class="mut" style="margin-top:14px">É rápido: aponte a câmera pro código que está na sua mesa. '+
+    'Isso garante que o pedido vai pra conta certa.</div>');
+}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 // O cliente chega aqui pela CAMERA do celular. Sem mexer no historico, o botao
 // "voltar" do Android fecha a pagina e joga ele de volta na camera — parecia
@@ -3220,6 +3287,7 @@ window.addEventListener('popstate',function(){ NOINICIO=true; inicio(); });
 var EU=null, CART=[], CATS=null;
 async function inicio(){
   NOINICIO=true; // daqui, o proximo "voltar" do Android sai mesmo
+  if(MESA&&!(await sessaoOk()))return;
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
   var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'Prainha <b>Bar</b>';
@@ -3435,8 +3503,10 @@ function mais(i){CART[i].qtd++;renderCarrinho()}
 function menos(i){CART[i].qtd--;if(CART[i].qtd<1)CART.splice(i,1);renderCarrinho()}
 async function enviarPedido(){
   var n=mesaAtual();if(n===null)return;
-  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',junto:!!i.junto}})});
-  if(!r.ok){alert(r.erro||'não consegui enviar');return}
+  if(!(await sessaoOk()))return;
+  var r=await post('/api/mesa/pedir',{mesa:n,sessao:SES&&SES.comanda,desde:SES&&SES.desde,
+    itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',junto:!!i.junto}})});
+  if(!r.ok){ if(r.reescanear){limpaSes();telaReescanear(r.erro);return} alert(r.erro||'não consegui enviar');return}
   CART=[];renderCarrinho();
   app('<div class="enviadao"><div class="tick">✓</div>'+
     '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A COZINHA</div>'+
@@ -3691,6 +3761,11 @@ async function reclamar(){
   app('<div class="ok"><div class="t">✓ Recebemos</div><div class="mut" style="margin-top:8px">Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.</div></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
 }
+// Voltar pro app depois de um tempo revalida: e' exatamente quando a mesa
+// pode ter sido fechada e passada pra outra pessoa.
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible'&&MESA)sessaoOk();
+});
 inicio();
 </script></body></html>`;
 
@@ -3889,6 +3964,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
     if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
     if (p === '/api/observacoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiObservacoes(u.searchParams.get('p') || 0))); }
+    if (p === '/api/mesa/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaSessao(u.searchParams.get('n'), u.searchParams.get('c'), u.searchParams.get('t')))); }
     if (p === '/api/ja-pedido') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiJaPedido(u.searchParams.get('n') || 0))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
