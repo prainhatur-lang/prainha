@@ -696,18 +696,26 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
   if (!c) return { ok: false, motivo: 'fechada', comanda_codigo: null,
     aviso: 'Essa mesa foi fechada. Escaneie o QR de novo pra começar.' };
   const atual = Number(c.codigo);
+  // ⚠️ O TEMPO E' SEMPRE DO SERVIDOR (`agora`). O celular do cliente pode estar
+  // com qualquer relogio — e o proprio servidor da loja pode estar errado. Como
+  // os dois lados usavam relogios diferentes, a sessao nascia velha: o Windows
+  // da 0003 estava 4h adiantado e TODA sessao ja aparecia com 239 minutos.
+  // Devolvendo `agora`, o cliente guarda o tempo do servidor e a comparacao
+  // fica servidor-contra-servidor, imune a relogio de aparelho.
+  const agora = Date.now();
   // primeira entrada: o cliente ainda nao tem sessao, devolve a atual
-  if (comandaCliente == null) return { ok: true, comanda_codigo: atual, validade_min: SESSAO_MESA_MIN };
+  if (comandaCliente == null) return { ok: true, comanda_codigo: atual, agora, validade_min: SESSAO_MESA_MIN };
   if (Number(comandaCliente) !== atual) {
-    return { ok: false, motivo: 'trocou', comanda_codigo: atual,
+    return { ok: false, motivo: 'trocou', comanda_codigo: atual, agora,
       aviso: 'Essa mesa foi fechada e aberta de novo. Escaneie o QR pra continuar.' };
   }
-  const min = desde ? (Date.now() - Number(desde)) / 60000 : 0;
+  // sem `desde` (sessao recem-criada que ainda nao fixou o tempo): nao expira
+  const min = desde != null && desde !== '' ? (agora - Number(desde)) / 60000 : 0;
   if (min > SESSAO_MESA_MIN) {
-    return { ok: false, motivo: 'expirou', comanda_codigo: atual,
+    return { ok: false, motivo: 'expirou', comanda_codigo: atual, agora,
       aviso: `Faz mais de ${SESSAO_MESA_MIN} minutos que você abriu. Escaneie o QR pra continuar.` };
   }
-  return { ok: true, comanda_codigo: atual, validade_min: SESSAO_MESA_MIN };
+  return { ok: true, comanda_codigo: atual, agora, validade_min: SESSAO_MESA_MIN };
 }
 
 /** O que a mesa JA pediu — evita pedir duas vezes a mesma coisa. */
@@ -2484,7 +2492,7 @@ async function apiMesaPedir(body) {
   // trava no SERVIDOR: a tela pode estar velha, ter sido restaurada pelo
   // navegador ou ser de alguem que ja foi embora. Se a sessao nao bate, nao
   // lanca — senao daria pra pedir na conta de outra pessoa.
-  if (body.sessao != null || body.desde != null) {
+  if (body.sessao != null) {
     const ses = await apiMesaSessao(numero, body.sessao, body.desde);
     if (!ses.ok) return { ok: false, erro: ses.aviso || 'sessão expirada', reescanear: true };
   }
@@ -3276,20 +3284,23 @@ function limpaSes(){ try{sessionStorage.removeItem('prainha_mesa')}catch(e){} SE
 // Veio da CAMERA (URL com ?n=) -> sessao NOVA. Escanear o QR e' a prova de
 // que a pessoa esta na mesa agora; reusar a sessao velha fazia o relogio
 // contar desde o escaneamento ANTERIOR e barrava quem tinha acabado de chegar.
-if(MESA){ gravaSes({mesa:Number(MESA),comanda:null,desde:Date.now()}); }
+// desde=null: quem carimba o tempo e' o servidor, na primeira validacao.
+// Date.now() do aparelho nao serve — o relogio dele (ou o da loja) pode estar
+// errado, e ja esteve: 4h de diferenca fazia toda sessao nascer expirada.
+if(MESA){ gravaSes({mesa:Number(MESA),comanda:null,desde:null}); }
 else { var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
 
 /** Confere com o servidor antes de qualquer acao que valha dinheiro. */
 async function sessaoOk(){
   var n=MESA?Number(MESA):null;
   if(!n)return true; // sem mesa ainda: a propria tela pede o numero
-  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda!=null?'&c='+SES.comanda+'&t='+SES.desde:'');
+  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda!=null?'&c='+SES.comanda+(SES.desde!=null?'&t='+SES.desde:''):'');
   var r;try{r=await (await fetch(q,{cache:'no-store'})).json()}catch(e){return true} // sem rede: nao trava
   if(r.ok){
     // primeira validacao apos escanear: fixa qual conta estava aberta, mantendo
     // o instante do escaneamento (nao reinicia o relogio a cada checagem)
-    if(!SES||SES.comanda==null) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:(SES&&SES.desde)||Date.now()});
-    else if(SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:Date.now()});
+    if(!SES||SES.comanda==null) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:(SES&&SES.desde)||r.agora});
+    else if(SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:r.agora});
     return true;
   }
   limpaSes();
