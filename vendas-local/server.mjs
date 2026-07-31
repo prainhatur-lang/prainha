@@ -208,6 +208,10 @@ async function initSchema() {
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
+  // itens que devem SAIR JUNTOS — marcados um a um no pedido, nao o envio todo
+  await sql`CREATE TABLE IF NOT EXISTS item_junto (item_codigo bigint PRIMARY KEY,
+    grupo text NOT NULL, numero integer, criado_em timestamptz DEFAULT now())`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_item_junto_grupo ON item_junto(grupo)`;
   await sql`CREATE TABLE IF NOT EXISTS observacao_sugerida (categoria text, texto text)`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
@@ -356,6 +360,10 @@ async function fbInserirItem(ped, it) {
   const r = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPRODUTO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL, VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
     VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(it.nome)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
   if (!r.ok) throw new Error('FB item "' + it.nome + '": ' + r.err);
+  // RETURNING crasha intermitente no FB4 — pega o recem-inserido. E' seguro
+  // porque a fila serializa: ninguem inseriu no meio.
+  const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
+  return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
 }
 /** Carimba quem é a pessoa da comanda no PEDIDOS do Consumer.
  *  NOME sai na comanda impressa e no KDS; o CPF fica pronto pra NFC-e. */
@@ -706,12 +714,22 @@ async function apiVendaEnviar(body) {
   // O que falta é a cozinha SABER que o pedido tem acompanhamento em outra praça:
   // sem isso o petisco sai sozinho e o prato chega frio (ou vice-versa). Só que
   // isso é pedido a pedido — quem marca "servir junto" é quem atende a mesa.
-  const junto = body.junto === true;
-  const areas = [...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))];
+  // "sai junto" ITEM A ITEM: cada item traz o proprio flag. Antes era uma
+  // marca do envio inteiro, o que obrigava a mandar dois pedidos quando so
+  // parte da mesa queria esperar.
+  itens.forEach((it, ix) => { it.junto_item = pedidos[ix]?.junto === true; });
+  const marcados = itens.filter((i) => i.junto_item);
+  const areasJunto = [...new Set(marcados.map((i) => i.area_codigo).filter((a) => a != null))];
+  // so faz sentido parear se os marcados estao em pracas DIFERENTES
+  const parear = marcados.length > 1 && areasJunto.length > 1;
+
+  const junto = body.junto === true || parear; // body.junto = modo antigo, do envio todo
+  const areas = parear ? areasJunto : [...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))];
   if (junto && areas.length > 1) {
     const as = await sql`SELECT codigo, nome FROM area WHERE codigo = ANY(${areas})`;
     const nomeArea = new Map(as.map((a) => [Number(a.codigo), a.nome]));
     for (const i of itens) {
+      if (parear && !i.junto_item) continue; // item nao marcado nao leva aviso
       const outras = areas.filter((a) => a !== i.area_codigo).map((a) => nomeArea.get(a) || 'Área ' + a);
       if (outras.length) i.junto = outras.join(' + ');
     }
@@ -722,7 +740,16 @@ async function apiVendaEnviar(body) {
   try {
     let ped = await fbAcharPedido(numero);
     if (!ped) ped = await fbCriarPedido(numero);
-    for (const it of itens) await fbInserirItem(ped, it);
+    const grupo = parear ? 'G' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36) : null;
+    const paresGrupo = [];
+    for (const it of itens) {
+      const cod = await fbInserirItem(ped, it);
+      if (grupo && it.junto_item && cod) paresGrupo.push({ item_codigo: cod, grupo, numero });
+    }
+    if (paresGrupo.length > 1) {
+      await sql`INSERT INTO item_junto ${sql(paresGrupo, 'item_codigo', 'grupo', 'numero')}
+        ON CONFLICT (item_codigo) DO NOTHING`;
+    }
     await fbAtualizarTotal(ped);
     await fbJobCozinha(ped);
     await sql`UPDATE venda_envio SET status='ok', pedido_fb=${ped} WHERE id=${log.id}`;
@@ -1196,23 +1223,29 @@ async function apiKds(areaCod) {
   }
   const areaNome = areaCod === 0 ? 'Sem área' : ((await sql`SELECT nome FROM area WHERE codigo=${areaCod}`)[0]?.nome || ('Área ' + areaCod));
 
-  // "SAI JUNTO": só para as comandas em que alguém pediu pra servir junto.
-  // A outra praça já terminou a parte dela e o item daqui ainda está pendente
-  // — quem segura o pedido agora é esta praça.
+  // "SAI JUNTO" ITEM A ITEM: o par e' explicito (item_junto), nao a comanda
+  // inteira. Aqui listamos os ITENS desta praca cujo PAR de outra praca ja
+  // ficou pronto — quem segura o pedido agora e' este item.
   const esperando = await sql`
-    SELECT DISTINCT c.numero, a2.nome AS praca, m2.pronto_em
-      FROM comanda_item ci
+    SELECT ci.item_codigo, ci.nome AS item, c.numero, a2.nome AS praca, m2.pronto_em,
+           ci2.nome AS item_pronto
+      FROM item_junto ij
+      JOIN comanda_item ci ON ci.item_codigo = ij.item_codigo
       JOIN comanda c ON c.codigo = ci.comanda_codigo
       LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-      JOIN comanda_item ci2 ON ci2.comanda_codigo = ci.comanda_codigo
-       AND ci2.area_codigo IS DISTINCT FROM ci.area_codigo AND ci2.tipo IS DISTINCT FROM 2
+      JOIN item_junto ij2 ON ij2.grupo = ij.grupo AND ij2.item_codigo <> ij.item_codigo
+      JOIN comanda_item ci2 ON ci2.item_codigo = ij2.item_codigo
       LEFT JOIN marca m2 ON m2.item_codigo = ci2.item_codigo
       LEFT JOIN area a2 ON a2.codigo = ci2.area_codigo
      WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2
        AND COALESCE(ci.produzido, m.pronto_em) IS NULL
        AND COALESCE(ci2.produzido, m2.pronto_em) IS NOT NULL
-       AND EXISTS (SELECT 1 FROM venda_envio ve WHERE ve.numero = c.numero AND ve.junto AND ve.status <> 'erro')
      ORDER BY m2.pronto_em`;
+  // itens desta praca que fazem parte de ALGUM par (pra marcar na tela)
+  const pareados = await sql`
+    SELECT ci.item_codigo, ij.grupo FROM item_junto ij
+      JOIN comanda_item ci ON ci.item_codigo = ij.item_codigo
+     WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2`;
 
   // Mesa que reclamou passa na frente: sobe pro topo da fila e vem marcada.
   const reclamou = await mesasComReclamacao();
@@ -1220,6 +1253,16 @@ async function apiKds(areaCod) {
   r.comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
 
   const ch = await apiChamados();
+  const espItens = new Set(esperando.map((x) => Number(x.item_codigo)));
+  const parItens = new Map(pareados.map((x) => [Number(x.item_codigo), x.grupo]));
+  for (const c of r.comandas) for (const i of c.itens || []) {
+    if (i.item_codigo == null) continue;
+    if (parItens.has(Number(i.item_codigo))) i.pareado = true;
+    if (espItens.has(Number(i.item_codigo))) {
+      const e = esperando.find((x) => Number(x.item_codigo) === Number(i.item_codigo));
+      i.esperando_par = { praca: e?.praca || 'outra praça', item: e?.item_pronto || null };
+    }
+  }
   return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r,
     esperando, reclamacoes: ch.reclamacoes, online: ultimoStatus.ok };
 }
@@ -1282,7 +1325,7 @@ function agrupar(itens, ordem) {
     const chave = i.comanda_codigo + ':' + rod;
     if (!porC.has(chave)) porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
     const c = porC.get(chave);
-    c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes) });
+    c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes), pareado: false, esperando_par: null });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
   }
@@ -1418,6 +1461,9 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 @media (max-width:900px){.pal{flex-direction:column}.hist{width:auto;flex:none;border-left:0;
   border-top:1px solid var(--line);position:static;max-height:none}}
 .flagj{background:#e0651a;color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px}
+.parmarca{margin:3px 0 0 34px;font-size:11.5px;color:#8a4b06;background:#fff4e0;border-left:2px solid #e0651a;padding:2px 8px;border-radius:0 6px 6px 0}
+.parpronto{margin:4px 0 0 34px;font-size:12.5px;font-weight:800;color:#fff;background:#e0651a;padding:5px 9px;border-radius:7px;line-height:1.3}
+.it.segurando{background:rgba(224,101,26,.07);border-radius:8px}
 .badge.via{background:rgba(109,91,208,.14);color:var(--roxo2)}
 /* fila / tempo / atraso */
 .pos{background:#1b1b20;color:#fff;border-radius:8px;padding:2px 9px;font-weight:800;font-size:13px;margin-right:8px}
@@ -1490,8 +1536,12 @@ function comandaHTML(c,modo,idx){
       if(modo==='entrega') btn='<button class="b e" onclick="marca(\\'entregue\\',{item_codigo:'+i.item_codigo+'})">Entregue</button>';
       else btn='<button class="b p" onclick="marca(\\'pronto\\',{item_codigo:'+i.item_codigo+'})">Pronto</button>';
     }
-    return '<div class="it"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
-      '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+'</span>'+btn+'</div>';
+    var par='';
+    if(i.esperando_par) par='<div class="parpronto">⏱ O PAR JÁ ESTÁ PRONTO no '+esc(i.esperando_par.praca)+
+      (i.esperando_par.item?' ('+esc(i.esperando_par.item)+')':'')+' — este item está segurando</div>';
+    else if(i.pareado) par='<div class="parmarca">⇄ sai junto com outra praça</div>';
+    return '<div class="it'+(i.esperando_par?' segurando':'')+'"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
+      '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span>'+btn+'</div>';
   }).join('');
   var badge=c.tipo==='delivery'?'<span class="badge">delivery</span>':'';
   if(modo!=='entrega'&&c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
@@ -1567,6 +1617,7 @@ async function histLateral(url){
 }
 var ESPERANDO=[];
 function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(e.numero)===Number(numero)})}
+// (a marca fina agora e' por ITEM — ver i.esperando_par em comandaHTML)
 // Reclamações em SEQUÊNCIA, da mais antiga pra mais nova — "mesa 1, mesa 8, mesa 10".
 function faixaReclamacao(d){
   var rs=d.reclamacoes||[];if(!rs.length)return '';
@@ -1581,11 +1632,10 @@ function faixaReclamacao(d){
 // A outra praça já entregou a parte dela: o que sair daqui está segurando o pedido.
 function faixaJunto(d){
   var es=d.esperando||[];if(!es.length)return '';
-  var por={};es.forEach(function(e){(por[e.numero]=por[e.numero]||[]).push(e.praca||'outra praça')});
-  var txt=Object.keys(por).map(function(n){
-    return '<b>'+(Number(n)>=300?'comanda ':'mesa ')+n+'</b> (pronto em '+por[n].join(', ')+')';
+  var txt=es.map(function(e){
+    return '<b>'+esc(e.item)+'</b> ('+(Number(e.numero)>=300?'comanda ':'mesa ')+e.numero+') — o par já saiu no '+esc(e.praca||'outra praça');
   }).join(' · ');
-  return '<div class="junto">⏱️ SAI JUNTO — a outra praça já terminou: '+txt+'</div>';
+  return '<div class="junto">⏱️ SAI JUNTO — '+txt+'</div>';
 }
 async function entrega(){
   var d=await (await fetch('/api/entrega',{cache:'no-store'})).json();
@@ -1691,6 +1741,9 @@ input:focus{border-color:var(--gold2)}
 .pi .obsv{display:block;color:var(--gold2);font-size:12.5px;margin-top:2px}
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:12px;padding:12px 14px;font-size:14px;margin-top:12px;line-height:1.45}
 .totrev{display:flex;justify-content:space-between;font-size:18px;font-weight:800;padding:16px 4px 4px}
+.jt{background:#fff;border:1.5px solid var(--line);border-radius:9px;width:34px;height:34px;font-size:16px;
+  cursor:pointer;color:var(--mut);padding:0;vertical-align:middle}
+.jt.on{border-color:var(--gold2);background:rgba(224,101,26,.12);color:var(--gold2);font-weight:800}
 /* barra de chamados no celular do garçom — fica acima de tudo, sempre visível */
 #chamados{position:sticky;top:0;z-index:9}
 .ch{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:15px;font-weight:700;color:#fff}
@@ -2198,10 +2251,8 @@ async function revisar(){
     '<div class="tit" style="margin-top:12px">Confira antes de enviar — <b>'+esc(alvoTxt)+'</b></div>';
   if(ordem.length>1){
     h+='<div class="aviso"><b>Este pedido vai para '+ordem.length+' praças.</b><br>'+
-       '<label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px;cursor:pointer">'+
-       '<input type="checkbox" id="chkjunto" style="width:22px;height:22px;margin:2px 0 0" '+(JUNTO?'checked':'')+' onchange="JUNTO=this.checked">'+
-       '<span><b>Servir tudo junto</b><br><span class="mut">Marque quando o cliente pedir tudo de uma vez. '+
-       'Cada cozinha recebe <b>&gt;&gt; SAI JUNTO C/ …</b> impresso, e quem terminar primeiro avisa a outra praça no KDS.</span></span></label></div>';
+       '<span class="mut">Marque <b>⇄</b> nos itens que devem sair ao mesmo tempo — só neles. '+
+       'O resto segue normal, sem esperar.</span></div>';
   }
   ordem.forEach(function(k){
     var its=grupos[k],n=its.reduce(function(s,i){return s+i.qtd},0);
@@ -2211,7 +2262,9 @@ async function revisar(){
       h+='<div class="pi"><span><b>'+i.qtd+'×</b> '+esc(i.nome)+
         (i.tamanho?' <span class="mut">['+esc(i.tamanho)+']</span>':'')+
         (i.obs?'<span class="obsv">✎ '+esc(i.obs)+'</span>':'')+'</span>'+
-        '<span style="white-space:nowrap"><span class="p">'+brl(i.preco*i.qtd)+'</span>'+
+        '<span style="white-space:nowrap">'+
+        (ordem.length>1?'<button class="jt'+(i.junto?' on':'')+'" onclick="togJunto('+ix+')" title="sai junto">⇄</button> ':'')+
+        '<span class="p">'+brl(i.preco*i.qtd)+'</span>'+
         ' <button class="rm" onclick="rmRev('+ix+')">✕</button></span></div>';
     });
     h+='</div>';
@@ -2224,6 +2277,9 @@ async function revisar(){
   app(h);
 }
 function rmRev(ix){CART.splice(ix,1);if(CART.length)revisar();else carregarMesa()}
+// marca ESTE item pra sair junto. So vale se houver marcado em praca diferente
+// — dois itens da mesma cozinha ja saem juntos naturalmente.
+function togJunto(ix){CART[ix].junto=!CART[ix].junto;revisar()}
 function renderCart(){
   var c=document.getElementById('cart');
   if(!CART.length){c.style.display='none';return}
@@ -2248,7 +2304,7 @@ async function enviar(){
   if(!CART.length)return;
   var btn=document.getElementById('btnenviar')||document.querySelector('.big.verde');
   if(btn){btn.disabled=true;btn.textContent='Enviando…'}
-  var r=await jpost('/api/venda/enviar',{numero:ALVO,junto:JUNTO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs}})});
+  var r=await jpost('/api/venda/enviar',{numero:ALVO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs,junto:!!i.junto}})});
   if(r.ok){
     CART=[];JUNTO=false;renderCart();
     app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
