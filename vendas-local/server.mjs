@@ -264,6 +264,27 @@ async function espelho() {
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
     await sql`UPDATE sync_estado SET ultimo_ok=now(), ultimo_erro=null, comandas=${comandas.length}, itens=${itens.length} WHERE id=1`;
   });
+
+  // ---- FECHOU A MESA, LIBERA TUDO QUE ESTAVA PRESO A ELA ----
+  // O espelho so traz pedido ABERTO. Se a mesa sumiu daqui, ela fechou no
+  // Consumer — e entao:
+  //   · as comandas vinculadas voltam a ficar livres (senao a 301 fica presa
+  //     pra sempre e nao pode ser usada em outra mesa)
+  //   · a identificacao morre. Sem isso, o proximo cliente da mesa 1 apareceria
+  //     com o nome de quem estava antes — confusao na comanda impressa e
+  //     dado de gente que ja foi embora continuando na tela.
+  //   · a sessao do celular tambem cai (ela compara o codigo da comanda)
+  const numerosAbertos = comandas.map((c) => c.numero).filter((n) => n != null);
+  if (numerosAbertos.length) {
+    await sql`UPDATE mesa_comanda SET fechada_em = now()
+       WHERE fechada_em IS NULL AND (mesa <> ALL(${numerosAbertos}) OR comanda <> ALL(${numerosAbertos}))`;
+    await sql`UPDATE identificacao SET fechada_em = now()
+       WHERE fechada_em IS NULL AND numero <> ALL(${numerosAbertos})`;
+  } else {
+    // nenhuma mesa aberta (casa fechada): libera tudo
+    await sql`UPDATE mesa_comanda SET fechada_em = now() WHERE fechada_em IS NULL`;
+    await sql`UPDATE identificacao SET fechada_em = now() WHERE fechada_em IS NULL`;
+  }
   ultimoStatus = { ok: true, comandas: comandas.length, itens: itens.length };
   return ultimoStatus;
 }
