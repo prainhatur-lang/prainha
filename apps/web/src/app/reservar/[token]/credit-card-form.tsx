@@ -61,6 +61,13 @@ interface Props {
   reservaId: string;
   totalCents: number;
   onPago: () => void;
+  /** Onde postar o cartao. Default: a rota da reserva. A cobranca de MESA
+   *  (cliente pagando a conta pelo QR) usa a mesma tela com outro endpoint. */
+  endpointPagamento?: string;
+  /** Onde buscar o token do MPI 3DS. Default: a rota da reserva. */
+  endpointMpiToken?: string;
+  /** Campos a mais no corpo do POST (ex.: os parametros assinados da mesa). */
+  extraPayload?: Record<string, unknown>;
 }
 
 const inp =
@@ -69,7 +76,17 @@ const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64
 const btn =
   'mt-5 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#df5a35] disabled:translate-y-0 disabled:opacity-50';
 
-export function CreditCardForm({ token, reservaId, totalCents, onPago }: Props) {
+export function CreditCardForm({
+  token,
+  reservaId,
+  totalCents,
+  onPago,
+  endpointPagamento,
+  endpointMpiToken,
+  extraPayload,
+}: Props) {
+  const urlPagamento = endpointPagamento ?? `/api/reservar/${token}/pagamento-cartao`;
+  const urlMpiToken = endpointMpiToken ?? `/api/reservar/${token}/mpi-token`;
   const [cardNumber, setCardNumber] = useState('');
   const [holder, setHolder] = useState('');
   const [expiry, setExpiry] = useState('');
@@ -152,7 +169,7 @@ export function CreditCardForm({ token, reservaId, totalCents, onPago }: Props) 
 
     async function load() {
       try {
-        const res = await fetch(`/api/reservar/${token}/mpi-token`);
+        const res = await fetch(urlMpiToken);
         if (!res.ok) throw new Error('Falha ao obter token de segurança');
         const data = await res.json();
         if (cancelled) return;
@@ -186,7 +203,7 @@ export function CreditCardForm({ token, reservaId, totalCents, onPago }: Props) 
     // Token MPI é consumido a cada bpmpi_authenticate — busca um FRESCO
     // agora (o do mount pode já ter sido usado numa tentativa anterior).
     try {
-      const res = await fetch(`/api/reservar/${token}/mpi-token`);
+      const res = await fetch(urlMpiToken);
       if (res.ok) {
         const data = await res.json();
         if (mpiConfigRef.current) mpiConfigRef.current.accessToken = data.accessToken;
@@ -249,10 +266,11 @@ export function CreditCardForm({ token, reservaId, totalCents, onPago }: Props) 
     }
 
     try {
-      const r = await fetch(`/api/reservar/${token}/pagamento-cartao`, {
+      const r = await fetch(urlPagamento, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ...(extraPayload ?? {}),
           reservaId,
           cardNumber: cleanNumber,
           cardHolder: holder.trim().toUpperCase(),

@@ -12,6 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { createHmac } from 'node:crypto';
 import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
@@ -204,6 +205,8 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
+  await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
+    criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
 }
@@ -2108,6 +2111,67 @@ async function apiPixCobrar(body) {
   return { ok: true, txid, valor, copia_cola: copia,
     imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(copia, 260)).toString('base64') };
 }
+// ---- CARTÃO: o cliente paga no concilia (HTTPS), não aqui ----
+// Este servidor roda em HTTP na rede da loja. Número de cartão digitado aqui
+// seria lido por qualquer um no Wi-Fi. Então a gente só monta um link ASSINADO
+// e manda o cliente pro app (Vercel), que já tem cartão com 3DS. Nenhum dado
+// de cartão passa por esta máquina.
+const PAGAR_MESA_URL = process.env.PAGAR_MESA_URL || 'https://app.prainhabar.com';
+const PAGAR_MESA_SECRET = process.env.PAGAR_MESA_SECRET || '';
+const FILIAL_ID = process.env.FILIAL_ID || '';
+function cartaoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
+function assinarMesa({ filialId, mesa, valorCentavos, ref, expira }) {
+  return createHmac('sha256', PAGAR_MESA_SECRET)
+    .update([filialId, mesa, valorCentavos, ref, expira].join('|')).digest('hex');
+}
+function linkCartao({ mesa, valorCentavos, ref, expira }) {
+  const p = { filialId: FILIAL_ID, mesa, valorCentavos, ref, expira };
+  const q = new URLSearchParams({ f: FILIAL_ID, m: String(mesa), v: String(valorCentavos),
+    r: ref, e: String(expira), s: assinarMesa(p) });
+  return `${PAGAR_MESA_URL}/pagar-mesa?${q}`;
+}
+async function apiCartaoCobrar(body) {
+  if (!cartaoDisponivel()) return { ok: false, erro: 'Pagamento com cartão na tela ainda não está configurado (falta PAGAR_MESA_SECRET/FILIAL_ID).' };
+  const conta = await apiContaTexto(body.mesa);
+  if (!conta.ok) return conta;
+  const valor = Number(conta.resta || conta.total || 0);
+  if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
+  const centavos = Math.round(valor * 100);
+  const ref = 'M' + Number(body.mesa) + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e6).toString(36);
+  const expira = Math.floor(Date.now() / 1000) + 20 * 60; // 20min
+  const url = linkCartao({ mesa: Number(body.mesa), valorCentavos: centavos, ref, expira });
+  await sql`INSERT INTO cartao_cobranca (ref, mesa, valor, expira_em) VALUES (${ref}, ${Number(body.mesa)}, ${valor}, to_timestamp(${expira}))
+    ON CONFLICT (ref) DO NOTHING`;
+  return { ok: true, ref, valor, url,
+    imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(url, 240)).toString('base64') };
+}
+async function apiCartaoConferir(ref) {
+  if (!cartaoDisponivel()) return { ok: false, erro: 'cartão não configurado' };
+  const c = (await sql`SELECT * FROM cartao_cobranca WHERE ref=${String(ref)}`)[0];
+  if (!c) return { ok: false, erro: 'cobrança não encontrada' };
+  if (c.pago_em) return { ok: true, pago: true, ja_registrado: true };
+  const expira = Math.floor(new Date(c.expira_em).getTime() / 1000);
+  const centavos = Math.round(Number(c.valor) * 100);
+  const q = new URLSearchParams({ f: FILIAL_ID, m: String(c.mesa), v: String(centavos), r: c.ref, e: String(expira),
+    s: assinarMesa({ filialId: FILIAL_ID, mesa: Number(c.mesa), valorCentavos: centavos, ref: c.ref, expira }) });
+  let r;
+  try {
+    const resp = await fetch(`${PAGAR_MESA_URL}/api/pagar-mesa/status?${q}`, { signal: AbortSignal.timeout(8000) });
+    r = await resp.json();
+  } catch (e) { return { ok: false, erro: 'sem internet pra conferir: ' + e.message }; }
+  if (!r?.ok) return { ok: false, erro: r?.error || 'consulta falhou' };
+  if (!r.pago) return { ok: true, pago: false, status: r.status, erro_cielo: r.erro || null };
+  await sql`UPDATE cartao_cobranca SET pago_em=now(), autorizacao=${r.autorizacao || null} WHERE ref=${String(ref)}`;
+  try {
+    const ped = await fbAcharPedido(Number(c.mesa));
+    if (ped) await fbInserirPagamento(ped, {
+      forma_codigo: r.tipo === 'DebitCard' ? FORMA.DEBITO : FORMA.CREDITO,
+      valor: Number(c.valor), autorizacao: r.autorizacao, bandeira: r.bandeira,
+      observacao: 'Cartão do cliente (Cielo) ' + ref });
+  } catch (err) { console.error('[cartao] registrar no Consumer falhou:', err.message); }
+  return { ok: true, pago: true };
+}
+
 /** Confere se caiu. Quando cair, registra em PAGAMENTOS (forma 21 = Pix online),
  *  do mesmo jeito que a Fase 2 já faz — o Consumer segue emitindo a NFC-e. */
 async function apiPixConferir(txid) {
@@ -2312,7 +2376,7 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .ok .t{font-size:19px;font-weight:800;color:#0f8a3e}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
-.b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}
+.b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}.b.cart{background:#2563eb}
 .valor{font-size:38px;font-weight:800;letter-spacing:-.5px}
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:14px;padding:15px;font-size:14.5px;line-height:1.5;margin:8px 0 4px}
 .qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
@@ -2489,16 +2553,51 @@ async function telaPix(){
     '<div class="valor">R$ '+v+'</div>'+
     '<div class="mut" style="margin:6px 0 18px">'+(c.pago>0?'já pagos R$ '+Number(c.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+' · ':'')+
     (c.itens||[]).filter(function(i){return i.tipo!==2}).length+' itens</div>';
-  if(st.disponivel){
-    h+='<button class="b pix" onclick="gerarPix('+n+')">Gerar código Pix</button>';
-  } else {
-    h+='<div class="aviso">O Pix na tela ainda não está ligado nesta casa.<br>'+
+  var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
+  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+n+')">Pagar com Pix</button>';
+  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+n+')">Pagar com cartão</button>';
+  if(!st.disponivel&&!ct.disponivel){
+    h+='<div class="aviso">O pagamento pela tela ainda não está ligado nesta casa.<br>'+
        '<b>Chame o garçom</b> para pagar na maquininha — é um toque abaixo.</div>'+
        '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
   }
   h+='<button class="b ver" onclick="minhaConta()">🧾 Ver o detalhe da conta</button>'+
      '<button class="b g" onclick="inicio()">Voltar</button>';
   app(h);
+}
+// Cartão NÃO é digitado aqui: esta página é HTTP na rede da casa. O cliente vai
+// pro app em HTTPS, e a gente só espera a confirmação.
+async function gerarCartao(n){
+  app('<h1>Pagar com cartão</h1><div class="mut">preparando…</div>');
+  var r=await post('/api/cartao/cobrar',{mesa:n});
+  if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui')+'</div>'+
+    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');return}
+  app('<h1>Pagar com cartão</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    '<div class="mut" style="margin:8px 0 4px">Toque no botão para abrir a página segura de pagamento.</div>'+
+    '<a class="b cart" style="display:block;text-align:center;text-decoration:none" href="'+esc(r.url)+'" target="_blank" rel="noopener">Abrir pagamento seguro</a>'+
+    '<div class="mut" style="margin:14px 0 6px">Ou aponte a câmera de outro celular:</div>'+
+    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR do pagamento">':'')+
+    '<div id="pgst" class="mut">aguardando o pagamento…</div>'+
+    '<button class="b g" onclick="pararCartao()">Voltar</button>');
+  vigiarCartao(r.ref);
+}
+var cartTmr=null;
+function pararCartao(){clearInterval(cartTmr);cartTmr=null;inicio()}
+function vigiarCartao(ref){
+  clearInterval(cartTmr);
+  var t=0;
+  cartTmr=setInterval(async function(){
+    if(++t>120){clearInterval(cartTmr);return}
+    var s;try{s=await (await fetch('/api/cartao/conferir?ref='+encodeURIComponent(ref),{cache:'no-store'})).json()}catch(e){return}
+    var el=document.getElementById('pgst');
+    if(s.ok&&s.pago){
+      clearInterval(cartTmr);cartTmr=null;
+      app('<div class="ok"><div class="t">✓ Pagamento aprovado</div>'+
+        '<div class="mut" style="margin-top:8px">Obrigado! Já registramos na sua conta.</div></div>'+
+        '<button class="b" onclick="inicio()">Voltar</button>');
+    } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
+  },5000);
 }
 async function gerarPix(n){
   app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
@@ -2768,6 +2867,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
+    if (p === '/api/cartao/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ disponivel: cartaoDisponivel() })); }
+    if (req.method === 'POST' && p === '/api/cartao/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoCobrar(body))); }
+    if (p === '/api/cartao/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoConferir(u.searchParams.get('ref') || ''))); }
     if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
