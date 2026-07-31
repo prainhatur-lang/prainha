@@ -9,7 +9,7 @@
 // HMAC (segredo compartilhado) e depois consulta o status pelo mesmo caminho.
 // Nada aqui aceita valor sem assinatura valida.
 
-import { pgTable, uuid, text, timestamp, varchar, integer, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, integer, boolean, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -35,6 +35,10 @@ export const cobrancaMesa = pgTable(
     bandeira: varchar('bandeira', { length: 30 }),
     /** Ultimo erro devolvido pela Cielo, pra mostrar ao cliente e depurar. */
     erro: text('erro'),
+    /** Passou com 3DS de verdade? Falso = ECI 07, sem garantia contra
+     *  chargeback. Precisa sobreviver a aprovacao: em disputa, e' o que diz
+     *  se a casa tinha protecao naquela transacao. */
+    autenticado3ds: boolean('autenticado_3ds').notNull().default(false),
     /** Depois disso o link nao vale mais (o vendas-local manda no HMAC). */
     expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
     pagoEm: timestamp('pago_em', { withTimezone: true }),

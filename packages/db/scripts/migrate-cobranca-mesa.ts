@@ -31,6 +31,7 @@ async function main() {
       pago_em timestamptz,
       criado_em timestamptz NOT NULL DEFAULT now()
     )`;
+  await sql`ALTER TABLE cobranca_mesa ADD COLUMN IF NOT EXISTS autenticado_3ds boolean NOT NULL DEFAULT false`;
   await sql`CREATE INDEX IF NOT EXISTS cobranca_mesa_filial_status_idx ON cobranca_mesa (filial_id, status)`;
   await sql`CREATE INDEX IF NOT EXISTS cobranca_mesa_criado_idx ON cobranca_mesa (criado_em)`;
   // RLS: a tabela e' escrita/lida so pelo app (role postgres, que bypassa),

@@ -10,6 +10,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { createCieloCardPayment, friendlyCieloError } from '@/lib/cielo';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
+import { SEM_3DS_TETO_CENTAVOS } from '@/lib/pagar-mesa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -71,10 +72,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     return NextResponse.json({ error: 'essa reserva não está aguardando pagamento' }, { status: 400 });
   }
 
+  // Mesmo teto da conta de mesa: sem 3DS nao ha garantia contra chargeback.
+  // Antes o fluxo recusava TODO cartao sem Cavv (inclusive o nao-inscrito, que
+  // e' caso legitimo); agora que ele passa, o limite de valor e' o que protege.
+  const valorCentavos = Math.round(Number(reserva.pagamentoValor) * 100);
+  if (!threeDS?.Cavv && valorCentavos > SEM_3DS_TETO_CENTAVOS) {
+    return NextResponse.json(
+      {
+        error:
+          'Esse cartao nao pode ser autenticado pelo banco. Para este valor precisamos da autenticacao — ' +
+          'tente outro cartao ou pague via Pix.',
+      },
+      { status: 402 },
+    );
+  }
+
   try {
     const resultado = await createCieloCardPayment({
       orderId: reserva.id,
-      amount: Math.round(Number(reserva.pagamentoValor) * 100),
+      amount: valorCentavos,
       customerName: reserva.clienteNome,
       customerCpf: cpf,
       cardNumber,

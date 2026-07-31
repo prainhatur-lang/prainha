@@ -9,7 +9,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { createCieloCardPayment, friendlyCieloError } from '@/lib/cielo';
-import { lerParams } from '@/lib/pagar-mesa';
+import { lerParams, SEM_3DS_TETO_CENTAVOS } from '@/lib/pagar-mesa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,6 +55,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'dados do cartão incompletos' }, { status: 400 });
   }
 
+  // Sem 3DS a casa fica sem garantia contra chargeback. Vale pra valor baixo;
+  // acima do teto, exige autenticação. O valor conferido é o do link ASSINADO.
+  const autenticado = !!threeDS?.Cavv;
+  if (!autenticado && p.valorCentavos > SEM_3DS_TETO_CENTAVOS) {
+    return NextResponse.json(
+      {
+        error:
+          `Este cartão não pôde ser autenticado pelo banco, e sem autenticação só aceitamos até ` +
+          `${(SEM_3DS_TETO_CENTAVOS / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}. ` +
+          `Pague via Pix ou chame o garçom com a maquininha.`,
+      },
+      { status: 402 },
+    );
+  }
+
   // cria (ou recupera) a cobranca dessa ref — idempotente por `ref`
   const [existente] = await db
     .select()
@@ -74,6 +89,7 @@ export async function POST(request: Request) {
         valorCentavos: p.valorCentavos,
         tipoPagamento: paymentType,
         expiraEm: new Date(p.expira * 1000),
+        autenticado3ds: autenticado,
       })
       .returning({ id: schema.cobrancaMesa.id });
     cobrancaId = nova.id;
@@ -105,6 +121,7 @@ export async function POST(request: Request) {
         bandeira: brand,
         tipoPagamento: paymentType,
         pagoEm: pago ? new Date() : null,
+        autenticado3ds: autenticado, // sobrevive à aprovação: importa em disputa
         erro: pago ? null : friendlyCieloError(resultado.returnCode),
       })
       .where(eq(schema.cobrancaMesa.id, cobrancaId!));

@@ -11,6 +11,17 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+/** Teto para transação SEM autenticação 3DS.
+ *
+ *  Cartão cujo emissor não participa do 3DS passa com ECI 07: a Cielo
+ *  autoriza, mas o risco de chargeback fica com a casa — não há garantia do
+ *  banco. Numa conta de mesa isso é aceitável em valor baixo; num valor alto,
+ *  não. Acima deste teto exigimos autenticação de verdade.
+ *
+ *  Checado no SERVIDOR: o browser diz se autenticou, e browser não é fonte
+ *  confiável pra decidir limite de risco. */
+export const SEM_3DS_TETO_CENTAVOS = Number(process.env.SEM_3DS_TETO_CENTAVOS ?? 5000);
+
 export type PagarMesaParams = {
   filialId: string;
   mesa: number;
