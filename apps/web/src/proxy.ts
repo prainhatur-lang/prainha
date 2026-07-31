@@ -64,6 +64,11 @@ export async function proxy(request: NextRequest) {
   // /cotacao/preencher/[token] eh a pagina publica do FORNECEDOR responder a
   // cotacao (link enviado no WhatsApp; token = autenticacao, sem login).
   const isCotacaoPublica = path.startsWith('/cotacao/preencher/');
+  // /pagar-mesa eh o cliente pagando a conta da mesa no cartao, vindo do QR.
+  // Sem login: quem autoriza eh a assinatura HMAC nos parametros (a propria
+  // pagina recusa link adulterado ou vencido). Existe porque o servidor da
+  // loja roda em HTTP e nao pode capturar cartao.
+  const isPagarMesaPublico = path === '/pagar-mesa';
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -74,7 +79,8 @@ export async function proxy(request: NextRequest) {
     isAgenteRelease ||
     isAvaliarPublico ||
     isReservarPublico ||
-    isCotacaoPublica;
+    isCotacaoPublica ||
+    isPagarMesaPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
