@@ -3272,26 +3272,36 @@ var SES=null;
 function lerSes(){ try{return JSON.parse(sessionStorage.getItem('prainha_mesa')||'null')}catch(e){return null} }
 function gravaSes(v){ try{sessionStorage.setItem('prainha_mesa',JSON.stringify(v))}catch(e){} SES=v; }
 function limpaSes(){ try{sessionStorage.removeItem('prainha_mesa')}catch(e){} SES=null; }
-if(!MESA){ var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
-else { var g2=lerSes(); if(g2&&String(g2.mesa)===String(MESA)) SES=g2; }
+// Veio da CAMERA (URL com ?n=) -> sessao NOVA. Escanear o QR e' a prova de
+// que a pessoa esta na mesa agora; reusar a sessao velha fazia o relogio
+// contar desde o escaneamento ANTERIOR e barrava quem tinha acabado de chegar.
+if(MESA){ gravaSes({mesa:Number(MESA),comanda:null,desde:Date.now()}); }
+else { var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
 
 /** Confere com o servidor antes de qualquer acao que valha dinheiro. */
 async function sessaoOk(){
   var n=MESA?Number(MESA):null;
   if(!n)return true; // sem mesa ainda: a propria tela pede o numero
-  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda?'&c='+SES.comanda+'&t='+SES.desde:'');
+  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda!=null?'&c='+SES.comanda+'&t='+SES.desde:'');
   var r;try{r=await (await fetch(q,{cache:'no-store'})).json()}catch(e){return true} // sem rede: nao trava
-  if(r.ok){ if(!SES||SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:Date.now()}); return true }
+  if(r.ok){
+    // primeira validacao apos escanear: fixa qual conta estava aberta, mantendo
+    // o instante do escaneamento (nao reinicia o relogio a cada checagem)
+    if(!SES||SES.comanda==null) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:(SES&&SES.desde)||Date.now()});
+    else if(SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:Date.now()});
+    return true;
+  }
   limpaSes();
   telaReescanear(r.aviso||'Escaneie o QR da mesa pra continuar.');
   return false;
 }
 function telaReescanear(msg){
+  var tinha=CART.length;
   MESA=null;CART=[];renderCarrinho();
   app('<h1>Escaneie o QR da mesa</h1>'+
     '<div class="aviso" style="margin-top:12px">'+esc(msg)+'</div>'+
-    '<div class="mut" style="margin-top:14px">É rápido: aponte a câmera pro código que está na sua mesa. '+
-    'Isso garante que o pedido vai pra conta certa.</div>');
+    (tinha?'<div class="mut" style="margin-top:10px">Seu carrinho foi limpo por segurança — o pedido precisa ir pra conta certa.</div>':'')+
+    '<div class="mut" style="margin-top:14px">É rápido: aponte a câmera pro código que está na sua mesa.</div>');
 }
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 // O cliente chega aqui pela CAMERA do celular. Sem mexer no historico, o botao
@@ -3421,6 +3431,9 @@ function telaHistorico(){
 // ---- cardápio: mesmo catálogo do garçom ----
 async function telaPedir(){
   if(mesaAtual()===null)return;
+  // conferir ANTES de deixar montar o carrinho: descobrir que a sessao caiu
+  // depois de escolher tudo e' a pior hora possivel.
+  if(!(await sessaoOk()))return;
   app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
     '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
@@ -3527,7 +3540,9 @@ async function enviarPedido(){
   if(!(await sessaoOk()))return;
   var r=await post('/api/mesa/pedir',{mesa:n,sessao:SES&&SES.comanda,desde:SES&&SES.desde,
     itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',junto:!!i.junto}})});
-  if(!r.ok){ if(r.reescanear){limpaSes();telaReescanear(r.erro);return} alert(r.erro||'não consegui enviar');return}
+  if(!r.ok){
+    if(r.reescanear){ limpaSes(); telaReescanear(r.erro); return }
+    alert(r.erro||'não consegui enviar');return}
   CART=[];renderCarrinho();
   app('<div class="enviadao"><div class="tick">✓</div>'+
     '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A COZINHA</div>'+
