@@ -203,6 +203,7 @@ async function initSchema() {
   // Prato demorado soma minutos EXTRA por cima do tempo da praça dele.
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
+  await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
 }
@@ -1989,8 +1990,47 @@ function interCred() {
     cert: process.env.INTER_CERT_B64, key: process.env.INTER_KEY_B64, chave: process.env.INTER_PIX_CHAVE };
   return (c.id && c.secret && c.cert && c.key && c.chave) ? c : null;
 }
+// Cielo API 3.0 — validado em 30/07: a conta JÁ aceita Pix (HTTP 201 com QR).
+// Vale mais que o Inter aqui, porque não depende de liberar escopo nenhum.
+const CIELO_BASE = process.env.CIELO_SANDBOX === 'true'
+  ? 'https://apisandbox.cieloecommerce.cielo.com.br' : 'https://api.cieloecommerce.cielo.com.br';
+const CIELO_QUERY = process.env.CIELO_SANDBOX === 'true'
+  ? 'https://apiquerysandbox.cieloecommerce.cielo.com.br' : 'https://apiquery.cieloecommerce.cielo.com.br';
+function cieloCred() {
+  const id = process.env.CIELO_MERCHANT_ID, key = process.env.CIELO_MERCHANT_KEY;
+  return (id && key) ? { id, key } : null;
+}
 function pixStatus() {
+  if (PIX_PROVEDOR === 'cielo') return { disponivel: !!cieloCred(), provedor: 'cielo' };
   return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR };
+}
+async function cieloPixCriar(mesa, valor) {
+  const c = cieloCred();
+  const r = await fetch(CIELO_BASE + '/1/sales/', { method: 'POST',
+    headers: { 'content-type': 'application/json', MerchantId: c.id, MerchantKey: c.key },
+    body: JSON.stringify({
+      MerchantOrderId: 'MESA' + mesa + '-' + Date.now(),
+      Customer: { Name: 'Mesa ' + mesa },
+      // Amount em CENTAVOS
+      Payment: { Type: 'Pix', Amount: Math.round(valor * 100) },
+    }) });
+  const j = await r.json().catch(() => null);
+  if (r.status !== 201 && r.status !== 200) {
+    return { ok: false, erro: 'Cielo recusou: ' + (j?.[0]?.Message || j?.Message || 'HTTP ' + r.status) };
+  }
+  const p = j?.Payment || {};
+  if (!p.QrCodeString) return { ok: false, erro: 'Cielo não devolveu o código Pix' };
+  return { ok: true, txid: p.PaymentId, copia: p.QrCodeString };
+}
+async function cieloPixStatus(paymentId) {
+  const c = cieloCred();
+  const r = await fetch(CIELO_QUERY + '/1/sales/' + encodeURIComponent(paymentId),
+    { headers: { MerchantId: c.id, MerchantKey: c.key } });
+  const j = await r.json().catch(() => null);
+  if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
+  const st = Number(j?.Payment?.Status);
+  // 12 = pendente · 2 = pago (Payment Confirmed)
+  return { ok: true, pago: st === 2, status: st, e2e: j?.Payment?.ProofOfSale || null };
 }
 /** mTLS: o fetch do Node não expõe client cert, então vai de https.request. */
 function interAgent(c) {
@@ -2035,12 +2075,20 @@ async function interToken(c) {
 }
 /** Cobrança imediata (cob) — o cliente paga e a gente confere por polling. */
 async function apiPixCobrar(body) {
-  const c = interCred();
-  if (PIX_PROVEDOR !== 'inter' || !c) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
+  if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const conta = await apiContaTexto(body.mesa);
   if (!conta.ok) return conta;
   const valor = Number(conta.resta || conta.total || 0);
   if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
+  if (PIX_PROVEDOR === 'cielo') {
+    const r = await cieloPixCriar(Number(body.mesa), valor);
+    if (!r.ok) return r;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor) VALUES (${r.txid}, ${Number(body.mesa)}, ${valor}, ${r.copia}, 'cielo')
+      ON CONFLICT (txid) DO NOTHING`;
+    return { ok: true, txid: r.txid, valor, copia_cola: r.copia,
+      imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(r.copia, 260)).toString('base64') };
+  }
+  const c = interCred();
   let token;
   try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
   const txid = ('PRAINHA' + Number(body.mesa) + Date.now().toString(36) + Math.floor(Math.random() * 1e6)).replace(/[^A-Za-z0-9]/g, '').slice(0, 35);
@@ -2063,18 +2111,25 @@ async function apiPixCobrar(body) {
 /** Confere se caiu. Quando cair, registra em PAGAMENTOS (forma 21 = Pix online),
  *  do mesmo jeito que a Fase 2 já faz — o Consumer segue emitindo a NFC-e. */
 async function apiPixConferir(txid) {
-  const c = interCred();
-  if (!c) return { ok: false, erro: 'Pix não habilitado' };
   const cob = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
   if (!cob) return { ok: false, erro: 'cobrança não encontrada' };
   if (cob.pago_em) return { ok: true, pago: true, ja_registrado: true };
-  let token;
-  try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
-  const r = await interReq(c, { method: 'GET', path: '/pix/v2/cob/' + String(txid), token });
-  if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
-  const pago = r.data?.status === 'CONCLUIDA';
-  if (!pago) return { ok: true, pago: false, status: r.data?.status || '?' };
-  const e2e = r.data?.pix?.[0]?.endToEndId || null;
+  let pago, e2e;
+  if (cob.provedor === 'cielo') {
+    const s = await cieloPixStatus(String(txid));
+    if (!s.ok) return s;
+    if (!s.pago) return { ok: true, pago: false, status: s.status };
+    pago = true; e2e = s.e2e;
+  } else {
+    const c = interCred();
+    if (!c) return { ok: false, erro: 'Pix não habilitado' };
+    let token;
+    try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+    const r = await interReq(c, { method: 'GET', path: '/pix/v2/cob/' + String(txid), token });
+    if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
+    if (r.data?.status !== 'CONCLUIDA') return { ok: true, pago: false, status: r.data?.status || '?' };
+    pago = true; e2e = r.data?.pix?.[0]?.endToEndId || null;
+  }
   await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e} WHERE txid=${String(txid)}`;
   try {
     const ped = await fbAcharPedido(Number(cob.mesa));
