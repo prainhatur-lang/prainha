@@ -53,11 +53,13 @@ export async function GET(request: Request) {
   const org = await orgDaFilial(v.f);
   if (!org) return NextResponse.json({ error: 'filial não encontrada' }, { status: 404 });
   const [c] = await db
-    .select({ nome: schema.clienteDocumento.nome, origem: schema.clienteDocumento.origem })
+    .select({ nome: schema.clienteDocumento.nome, origem: schema.clienteDocumento.origem,
+      telefoneFim: schema.clienteDocumento.telefoneFim })
     .from(schema.clienteDocumento)
     .where(and(eq(schema.clienteDocumento.organizacaoId, org), eq(schema.clienteDocumento.cpfHash, v.h)))
     .limit(1);
-  return NextResponse.json({ ok: true, achou: !!c, nome: c?.nome ?? null, origem: c?.origem ?? null });
+  return NextResponse.json({ ok: true, achou: !!c, nome: c?.nome ?? null, origem: c?.origem ?? null,
+    telefone_fim: c?.telefoneFim ?? null });
 }
 
 export async function POST(request: Request) {

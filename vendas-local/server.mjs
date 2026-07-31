@@ -862,7 +862,7 @@ async function clienteDoGrupo(cpf) {
   const r = await fetch(`${PAGAR_MESA_URL}/api/cliente-documento?${q}`, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) return null;
   const j = await r.json();
-  return j?.achou && j.nome ? { nome: j.nome, origem: j.origem } : null;
+  return j?.achou && j.nome ? { nome: j.nome, origem: j.origem, telefone_fim: j.telefone_fim || null } : null;
 }
 /** Publica na base do grupo — quem se identificar aqui é conhecido nas outras. */
 async function publicarNoGrupo({ cpf, nome, telefone, origem }) {
@@ -985,7 +985,8 @@ async function apiVendaIdentificar(cpf, telefone) {
   //     conhecido no Tabuará não pode ser consultado de novo na Prainha Bar.
   try {
     const grupo = await clienteDoGrupo(cpf);
-    if (grupo) return { ok: true, nome: grupo.nome, fonte: 'grupo', nome_curto: nomeCurto(grupo.nome) };
+    if (grupo) return { ok: true, nome: grupo.nome, fonte: 'grupo',
+      telefone_fim: grupo.telefone_fim, nome_curto: nomeCurto(grupo.nome) };
   } catch { /* sem internet: segue pro SPC, que também precisaria dela */ }
   // 4º) só agora o SPC — e ele ainda passa pelo próprio cache antes de cobrar
   try {
@@ -1644,6 +1645,8 @@ input:focus{border-color:var(--gold2)}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
 .chk{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:14px;color:var(--mut);cursor:pointer}
 .chk input{width:20px;height:20px}
+.mini{background:none;border:0;color:var(--mut);font:inherit;font-size:13.5px;text-decoration:underline;
+  cursor:pointer;padding:10px 0;width:100%;text-align:center}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
 .ph{background:#f6f6fa;padding:10px 13px;font-weight:700;font-size:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
 .ph .qtd{color:var(--mut);font-weight:400}
@@ -1862,6 +1865,200 @@ function telaCliente(numero){
   ALVOID=Number(numero);CPFINFO=null;
   app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=300?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
+    '<div class="tit" style="margin-top:14px">CPF</div>'+
+    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
+    '<div id="quem" class="mut" style="margin-top:10px">Digite o CPF que o nome vem sozinho.</div>'+
+    '<div id="passo2"></div>'+
+    '<button class="mini" onclick="modoDoc(\\'tel\\')">Não tem CPF? usar o WhatsApp</button>');
+  var el=document.getElementById('ncpf');if(el)el.focus();
+}
+// CPF acha o nome; o WhatsApp vem DEPOIS, no passo 2 — é o que a casa usa
+// pra avisar de reserva, promoção e mesa pronta.
+var MODODOC='cpf';
+function modoDoc(m){
+  MODODOC=m;CPFINFO=null;
+  var i=document.getElementById('ncpf');
+  i.value='';i.placeholder=m==='cpf'?'000.000.000-00':'(79) 90000-0000';i.focus();
+  document.getElementById('quem').innerHTML=m==='cpf'
+    ? 'Digite o CPF que o nome vem sozinho.' : 'Digite o WhatsApp de quem já é cliente da casa.';
+  document.getElementById('passo2').innerHTML='';
+  var b=document.querySelector('.mini');
+  if(b)b.outerHTML='<button class="mini" onclick="modoDoc(\\''+(m==='cpf'?'tel':'cpf')+'\\')">'+
+    (m==='cpf'?'Não tem CPF? usar o WhatsApp':'Voltar a usar o CPF')+'</button>';
+}
+function olhaCpf(v){
+  CPFINFO=null;clearTimeout(cpfDeb);
+  var d=String(v||'').replace(/\\D/g,'');
+  var q=document.getElementById('quem'),p2=document.getElementById('passo2');
+  if(!q)return;
+  var min=MODODOC==='cpf'?11:10;
+  if(d.length<min){q.style.color='';q.innerHTML=MODODOC==='cpf'?'Digite o CPF que o nome vem sozinho.':'Digite o WhatsApp de quem já é cliente.';if(p2)p2.innerHTML='';return}
+  q.style.color='';q.textContent='consultando…';
+  cpfDeb=setTimeout(async function(){
+    var r=await jget('/api/venda/identificar?'+(MODODOC==='cpf'?'cpf=':'tel=')+d);
+    if(!r.ok){q.style.color='#dc2626';q.textContent=r.erro||'inválido';return}
+    q.style.color='';
+    if(r.nome){
+      CPFINFO=r;
+      q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b> — '+esc(r.nome)+
+        ' <span class="mut">('+fonteTexto(r.fonte)+')</span>';
+      passo2(r.telefone_fim);
+    } else if(r.fonte==='erro'){
+      q.innerHTML='<span style="color:#b45309">consulta indisponível — digite o nome</span>';
+      passo2(null,true);
+    } else {
+      q.innerHTML='<span class="mut">Não encontrado. Digite o nome:</span>';
+      passo2(null,true);
+    }
+  },500);
+}
+function fonteTexto(f){
+  return f==='consumer'?'já é cliente da casa'
+    :f==='grupo'?'já veio em outra unidade'
+    :f==='ja-atendido'?'já atendido aqui'
+    :f==='spc'||f==='spc-cache'?'consulta externa':'cadastro';
+}
+// Passo 2: o WhatsApp. Se já conhecemos o final do número, mostra pra
+// confirmar em vez de fazer a pessoa ditar tudo de novo.
+function passo2(telFim, pedeNome){
+  var p2=document.getElementById('passo2');if(!p2)return;
+  p2.innerHTML=(pedeNome?'<input type="text" id="nnome" placeholder="nome completo" style="margin-top:10px">':'')+
+    '<div class="tit" style="margin-top:16px">WhatsApp'+(telFim?' <span class="mut">(temos o final '+esc(telFim.slice(-4))+')</span>':'')+'</div>'+
+    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000">'+
+    (pedeNome?'<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>':'')+
+    '<button class="big" onclick="salvarCliente()">Salvar</button>'+
+    '<div class="mut" style="margin-top:8px">O WhatsApp é opcional — serve pra avisar de reserva e mesa pronta.</div>';
+  var z=document.getElementById('nzap');if(z)z.focus();
+}
+async function salvarCliente(){
+  var doc=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
+  var zap=((document.getElementById('nzap')||{}).value||'').replace(/\\D/g,'');
+  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim());
+  if(!nome){alert('Informe o nome');return}
+  var body={numero:ALVOID,nome:nome};
+  if(MODODOC==='cpf'&&doc.length===11)body.cpf=doc;
+  if(zap.length>=10)body.telefone=zap;
+  else if(MODODOC==='tel'&&doc.length>=10)body.telefone=doc;
+  if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
+  else if((document.getElementById('ncad')||{}).checked)body.cadastrar=true;
+  var r=await jpost('/api/venda/identificar',body);
+  if(!r.ok){alert(r.erro);return}
+  CPFINFO=null;
+  if(ALVOID>=300)ALVO=ALVOID;
+  await carregarMesa();
+}
+function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
+// conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
+function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
+async function abrirMesa(){
+  var n=Number(document.getElementById('nmesa').value);
+  if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
+  MESA=n;ALVO=n;await carregarMesa();
+}
+async function carregarMesa(){
+  renderCart(); // a revisão esconde o carrinho fixo; voltando, ele reaparece
+  INFO=await jget('/api/venda/mesa?n='+MESA);
+  var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
+    infoDe(MESA)+'</button>';
+  INFO.comandas.forEach(function(c){
+    var quem=(INFO.nomes||{})[c];
+    chips+='<button class="chip'+(ALVO===c?' on':'')+'" onclick="setAlvo('+c+')">'+
+      (quem?esc(quem):'Comanda '+c)+(quem?' <span class="mut" style="font-weight:400">·'+c+'</span>':'')+
+      infoDe(c)+'</button>';
+  });
+  chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
+  var quemMesa=INFO.cliente;
+  app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
+    '<div class="cliente" onclick="telaCliente('+MESA+')">'+
+      (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
+               :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
+      '<span class="seta">›</span></div>'+
+    '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
+    '<div class="tit">Produto</div>'+
+    '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
+    '<div id="grupos"><div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
+    '<div class="cats" id="cats"><span class="mut">carregando…</span></div></div>'+
+    '<div class="res" id="res" style="display:none"></div>'+
+    '<div id="msg"></div>'+
+    '<div class="tit" style="margin-top:22px">Conta</div>'+
+    '<div class="acoes">'+
+      '<button class="ac" onclick="verConta()">👁<span>Ver / imprimir</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
+    '</div>'+
+    '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
+      (ALVO>=300?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
+    '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
+  var el=document.getElementById('busca');
+  el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
+  await carregarCategorias();
+  if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL);
+}
+async function carregarCategorias(){
+  if(!CATS)CATS=(await jget('/api/venda/categorias')).categorias||[];
+  var el=document.getElementById('cats');if(!el)return;
+  el.innerHTML=CATS.map(function(c){
+    return '<button class="cat'+(CATSEL===c.categoria?' on':'')+'" onclick=\\'verCat('+JSON.stringify(c.categoria).replace(/'/g,'&#39;')+')\\'>'+
+      '<span class="nm">'+esc(c.categoria)+'</span><span class="qt">'+c.disp+'</span></button>';
+  }).join('');
+}
+// Escolheu o grupo: a grade INTEIRA sai da tela e fica só a lista do grupo,
+// com um botão de voltar. Ficar com 36 grupos por cima da lista empurrava os
+// produtos pra fora do alcance do polegar.
+async function verCat(nome){
+  CATSEL=nome;BUSCA='';
+  var b=document.getElementById('busca');if(b)b.value='';
+  var g=document.getElementById('grupos');if(g)g.style.display='none';
+  var d=await jget('/api/venda/categoria?c='+encodeURIComponent(nome));
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML='<div class="grupohd"><button class="voltag" onclick="fechaCat()">◂ grupos</button>'+
+    '<b>'+esc(nome)+'</b><span class="mut">'+(d.produtos||[]).length+' itens</span></div>'+
+    ((d.produtos&&d.produtos.length)?d.produtos.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>');
+}
+function fechaCat(){
+  CATSEL=null;
+  var r=document.getElementById('res');if(r)r.style.display='none';
+  var g=document.getElementById('grupos');if(g)g.style.display='';
+  carregarCategorias();
+}
+function linhaProduto(p){
+  var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
+  if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+nm+' <small>· fora de estoque</small></span>'+
+    '<span class="p">'+brl(p.preco)+'</span></div>';
+  return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'>'+
+    '<span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
+}
+function mostrarProdutos(ps){
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML=(ps&&ps.length)?ps.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>';
+}
+function infoDe(n){
+  var a=(INFO.abertos||[]).find(function(x){return Number(x.numero)===n});
+  return a?'<small>'+a.itens+' itens · '+brl(a.valor_total)+'</small>':'<small>vazia</small>';
+}
+function setAlvo(n){ALVO=n;carregarMesa()}
+// Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
+// pessoa não quiser dar, segue só com o número, como sempre foi.
+function addComanda(){
+  var c=prompt('Número da comanda (300–400):');if(!c)return;
+  criarComanda(Number(c));
+}
+async function criarComanda(c){
+  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
+  if(!r.ok){alert(r.erro);return}
+  ALVO=c;await carregarMesa();
+  telaCliente(c); // logo em seguida: quem vai usar essa comanda
+}
+var CPFINFO=null,cpfDeb=null,ALVOID=null;
+// Identificar quem está no lugar — serve pra MESA e pra COMANDA.
+// CPF ou WhatsApp: o cliente dá o que quiser.
+function telaCliente(numero){
+  ALVOID=Number(numero);CPFINFO=null;
+  app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=300?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
     '<div class="segs"><button class="seg on" id="sgc" onclick="modoDoc(\\'cpf\\')">CPF</button>'+
     '<button class="seg" id="sgt" onclick="modoDoc(\\'tel\\')">WhatsApp</button></div>'+
     '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
@@ -1869,7 +2066,6 @@ function telaCliente(numero){
     '<button class="big" onclick="salvarCliente()">Salvar</button>');
   var el=document.getElementById('ncpf');if(el)el.focus();
 }
-var MODODOC='cpf';
 function modoDoc(m){
   MODODOC=m;CPFINFO=null;
   document.getElementById('sgc').className='seg'+(m==='cpf'?' on':'');
