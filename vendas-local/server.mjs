@@ -205,6 +205,9 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
+  await sql`CREATE TABLE IF NOT EXISTS saida_qr (token text PRIMARY KEY, mesa integer,
+    pessoas integer NOT NULL, adultos integer, criancas integer, usados integer NOT NULL DEFAULT 0,
+    origem text, criado_em timestamptz DEFAULT now(), expira_em timestamptz, ultima_em timestamptz)`;
   await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
@@ -2111,6 +2114,50 @@ async function apiPixCobrar(body) {
   return { ok: true, txid, valor, copia_cola: copia,
     imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(copia, 260)).toString('base64') };
 }
+// ---- QR DE SAÍDA (catraca) ----
+// Depois de pagar, o cliente diz quantas pessoas saem com ele e recebe um QR.
+// A catraca lê o mesmo QR a cada passagem e libera UMA por vez, até zerar.
+// Crianças de até 10 anos não entram na conta — passam com o responsável.
+const SAIDA_VALIDADE_MIN = Number(process.env.SAIDA_VALIDADE_MIN || 90);
+async function apiSaidaGerar(body) {
+  const mesa = Number(body.mesa);
+  const adultos = Math.max(0, Math.min(50, Number(body.adultos) || 0));
+  const criancas = Math.max(0, Math.min(50, Number(body.criancas) || 0));
+  const pessoas = adultos + criancas;
+  if (!(pessoas >= 1)) return { ok: false, erro: 'informe pelo menos 1 pessoa' };
+  if (!(mesa >= 1 && mesa <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  const token = 'S' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1e8).toString(36).toUpperCase();
+  await sql`INSERT INTO saida_qr (token, mesa, pessoas, adultos, criancas, origem, expira_em)
+    VALUES (${token}, ${mesa}, ${pessoas}, ${adultos}, ${criancas}, ${String(body.origem || '').slice(0, 20) || null},
+            now() + (${SAIDA_VALIDADE_MIN} || ' minutes')::interval)`;
+  return { ok: true, token, pessoas, adultos, criancas, validade_min: SAIDA_VALIDADE_MIN,
+    imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(token, 250)).toString('base64') };
+}
+/** A CATRACA chama isto a cada leitura. Cada chamada consome UMA passagem. */
+async function apiSaidaPassar(token) {
+  const t = String(token || '').trim().toUpperCase();
+  if (!t) return { ok: false, libera: false, motivo: 'sem código' };
+  // UPDATE condicional: duas leituras ao mesmo tempo não podem liberar a mais
+  const r = await sql`UPDATE saida_qr SET usados = usados + 1, ultima_em = now()
+     WHERE token = ${t} AND usados < pessoas AND expira_em > now()
+     RETURNING pessoas, usados, mesa`;
+  if (r.length) {
+    const { pessoas, usados, mesa } = r[0];
+    return { ok: true, libera: true, mesa, restantes: Number(pessoas) - Number(usados),
+      de: Number(pessoas), msg: `Passagem ${usados} de ${pessoas}` };
+  }
+  const q = (await sql`SELECT pessoas, usados, expira_em FROM saida_qr WHERE token=${t}`)[0];
+  if (!q) return { ok: true, libera: false, motivo: 'código não encontrado' };
+  if (new Date(q.expira_em) <= new Date()) return { ok: true, libera: false, motivo: 'código expirado' };
+  return { ok: true, libera: false, motivo: 'todas as passagens já foram usadas', de: Number(q.pessoas) };
+}
+async function apiSaidaConsultar(token) {
+  const q = (await sql`SELECT * FROM saida_qr WHERE token=${String(token || '').toUpperCase()}`)[0];
+  if (!q) return { ok: false, erro: 'não encontrado' };
+  return { ok: true, mesa: q.mesa, pessoas: Number(q.pessoas), usados: Number(q.usados),
+    restantes: Number(q.pessoas) - Number(q.usados), expira_em: q.expira_em };
+}
+
 // ---- CARTÃO: o cliente paga no concilia (HTTPS), não aqui ----
 // Este servidor roda em HTTP na rede da loja. Número de cartão digitado aqui
 // seria lido por qualquer um no Wi-Fi. Então a gente só monta um link ASSINADO
@@ -2275,6 +2322,54 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
 })();
 </script></body></html>`;
 
+// ---- /catraca — tela de operação da saída ----
+// Serve pra testar e pra operar na mão enquanto a catraca não estiver ligada
+// na API. A catraca de verdade só precisa chamar /api/saida/passar?t=CODIGO.
+const CATRACA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Saída — Prainha Bar</title><style>
+:root{--bg:#12121a;--ink:#f4f4f7;--mut:#9a9aa8;--ok:#15a34a;--no:#dc2626}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif;min-height:100vh}
+.wrap{max-width:520px;margin:0 auto;padding:26px 20px}
+h1{font-size:20px;margin:0 0 4px}.mut{color:var(--mut);font-size:14px}
+input{width:100%;font:inherit;font-size:26px;letter-spacing:.08em;text-align:center;padding:16px;
+  border:2px solid #2c2c3a;border-radius:14px;background:#1c1c26;color:var(--ink);outline:none;margin-top:16px;text-transform:uppercase}
+input:focus{border-color:#4b4b64}
+button{width:100%;background:#3b82f6;color:#fff;border:0;border-radius:14px;font:inherit;font-size:17px;
+  font-weight:700;padding:15px;margin-top:12px;cursor:pointer}
+.res{border-radius:16px;padding:24px;text-align:center;margin-top:20px}
+.res.ok{background:rgba(21,163,74,.16);border:1px solid rgba(21,163,74,.5)}
+.res.no{background:rgba(220,38,38,.14);border:1px solid rgba(220,38,38,.45)}
+.res .ic{font-size:52px;line-height:1}
+.res .t{font-size:22px;font-weight:800;margin-top:6px}
+.res.ok .t{color:#4ade80}.res.no .t{color:#f87171}
+.res .d{color:var(--mut);font-size:14.5px;margin-top:6px}
+.big{font-size:44px;font-weight:800;margin-top:8px}
+</style></head><body><div class="wrap">
+<h1>Saída · catraca</h1>
+<div class="mut">Leia o QR do cliente ou digite o código. Cada leitura libera uma pessoa.</div>
+<input id="t" placeholder="CÓDIGO" autocomplete="off" autofocus>
+<button onclick="passar()">Liberar passagem</button>
+<div id="r"></div></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+var el=document.getElementById('t');
+el.addEventListener('keydown',function(e){if(e.key==='Enter')passar()});
+async function passar(){
+  var t=(el.value||'').trim();if(!t)return;
+  var d=await (await fetch('/api/saida/passar?t='+encodeURIComponent(t),{cache:'no-store'})).json();
+  var r=document.getElementById('r');
+  if(d.libera){
+    r.innerHTML='<div class="res ok"><div class="ic">✓</div><div class="t">PODE PASSAR</div>'+
+      '<div class="big">'+d.restantes+'</div><div class="d">ainda faltam passar · mesa '+d.mesa+'</div></div>';
+    if(d.restantes===0)el.value='';
+  } else {
+    r.innerHTML='<div class="res no"><div class="ic">✕</div><div class="t">NÃO LIBERADO</div>'+
+      '<div class="d">'+esc(d.motivo||'')+'</div></div>';
+  }
+  el.focus();el.select();
+}
+</script></body></html>`;
+
 // ---- /tempos — configuração do tempo de preparo ----
 const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Prainha Bar — Tempo de preparo</title><style>
@@ -2377,6 +2472,13 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
 .b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}.b.cart{background:#2563eb}
+.cont{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:14px;
+  padding:12px 14px;margin-top:10px;font-size:15.5px}
+.cont span{flex:1}.cont b{min-width:30px;text-align:center;font-size:21px}
+.cont button{width:42px;height:42px;border-radius:11px;border:1px solid var(--line);background:#f6f6fa;
+  font-size:22px;font-weight:700;cursor:pointer;color:var(--ink);padding:0}
+.codigo{font-family:Menlo,monospace;font-size:19px;letter-spacing:.1em;text-align:center;
+  background:#fff;border:1px solid var(--line);border-radius:11px;padding:12px;margin-top:8px}
 .valor{font-size:38px;font-weight:800;letter-spacing:-.5px}
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:14px;padding:15px;font-size:14.5px;line-height:1.5;margin:8px 0 4px}
 .qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
@@ -2593,9 +2695,7 @@ function vigiarCartao(ref){
     var el=document.getElementById('pgst');
     if(s.ok&&s.pago){
       clearInterval(cartTmr);cartTmr=null;
-      app('<div class="ok"><div class="t">✓ Pagamento aprovado</div>'+
-        '<div class="mut" style="margin-top:8px">Obrigado! Já registramos na sua conta.</div></div>'+
-        '<button class="b" onclick="inicio()">Voltar</button>');
+      telaPessoas('cartao');
     } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
   },5000);
 }
@@ -2625,11 +2725,39 @@ function vigiarPix(txid){
     var s;try{s=await (await fetch('/api/pix/conferir?txid='+encodeURIComponent(txid),{cache:'no-store'})).json()}catch(e){return}
     if(s.ok&&s.pago){
       clearInterval(pixTmr);pixTmr=null;
-      app('<div class="ok"><div class="t">✓ Pagamento confirmado</div>'+
-        '<div class="mut" style="margin-top:8px">Obrigado! Já registramos na sua conta.</div></div>'+
-        '<button class="b" onclick="inicio()">Voltar</button>');
+      telaPessoas('pix');
     }
   },5000);
+}
+// Pago: agora o QR da saida. Cada leitura na catraca libera uma pessoa.
+// Crianca de ate 10 anos nao conta — passa junto com o responsavel.
+function telaPessoas(origem){
+  app('<div class="ok"><div class="t">✓ Pagamento confirmado</div>'+
+    '<div class="mut" style="margin-top:6px">Obrigado! Falta só uma coisa.</div></div>'+
+    '<h1 style="margin-top:22px">Quem sai com você?</h1>'+
+    '<div class="mut" style="margin:6px 0 14px">É o que a catraca vai liberar na saída. '+
+    'Crianças de até 10 anos passam com o responsável e não precisam ser contadas.</div>'+
+    '<div class="cont"><span>Adultos</span>'+
+      '<button onclick="passo(\\'ad\\',-1)">−</button><b id="ad">1</b><button onclick="passo(\\'ad\\',1)">+</button></div>'+
+    '<div class="cont"><span>Crianças acima de 10 anos</span>'+
+      '<button onclick="passo(\\'cr\\',-1)">−</button><b id="cr">0</b><button onclick="passo(\\'cr\\',1)">+</button></div>'+
+    '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>');
+}
+var PES={ad:1,cr:0};
+function passo(q,d){
+  PES[q]=Math.max(q==='ad'?1:0,Math.min(50,PES[q]+d));
+  document.getElementById(q).textContent=PES[q];
+}
+async function gerarSaida(origem){
+  var n=mesaAtual();if(n===null)return;
+  var r=await post('/api/saida/gerar',{mesa:n,adultos:PES.ad,criancas:PES.cr,origem:origem});
+  if(!r.ok){alert(r.erro||'não consegui gerar');return}
+  app('<h1>Seu QR de saída</h1>'+
+    '<div class="mut" style="margin:6px 0 2px">Mostre na catraca. Libera <b>'+r.pessoas+' pessoa'+(r.pessoas>1?'s':'')+'</b>, uma por vez.</div>'+
+    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR de saída">':'')+
+    '<div class="codigo">'+esc(r.token)+'</div>'+
+    '<div class="mut" style="margin-top:10px">Vale por '+r.validade_min+' minutos. Se fechar a tela, chame o garçom.</div>'+
+    '<button class="b g" onclick="inicio()">Voltar ao início</button>');
 }
 function copiar(){
   var t=(document.getElementById('cp')||{}).textContent||'';
@@ -2867,6 +2995,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
+    if (req.method === 'POST' && p === '/api/saida/gerar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaGerar(body))); }
+    if (p === '/api/saida/passar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaPassar(u.searchParams.get('t') || u.searchParams.get('token') || ''))); }
+    if (p === '/api/saida/consultar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaConsultar(u.searchParams.get('t') || ''))); }
+    if (p === '/catraca') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CATRACA_HTML); }
     if (p === '/api/cartao/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ disponivel: cartaoDisponivel() })); }
     if (req.method === 'POST' && p === '/api/cartao/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoCobrar(body))); }
     if (p === '/api/cartao/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoConferir(u.searchParams.get('ref') || ''))); }
