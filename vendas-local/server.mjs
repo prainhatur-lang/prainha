@@ -13,6 +13,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { createHmac, createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
@@ -3975,10 +3976,29 @@ telaNumero();
 
 function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
 
+// VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
+// da loja pegou a atualizacao ou esta com pagina velha.
+const INICIADO_EM = new Date().toISOString();
+const VERSAO = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex').slice(0, 8);
+
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://x');
     const p = u.pathname.replace(/\/+$/, '') || '/';
+
+    // ⚠️ SEM ISTO, A LOJA NAO RECEBE ATUALIZACAO.
+    // O servidor nao mandava header de cache nenhum. Sem Cache-Control nem
+    // ETag, o Chrome do celular aplica cache heuristico e serve a pagina
+    // ANTIGA por horas — o tablet do KDS e o celular do garcom continuavam
+    // rodando o JS de antes do deploy, e o bug "parecia" nao ter sido
+    // corrigido. Toda tela e toda API sao dinamicas aqui: nada pode ser
+    // guardado.
+    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('pragma', 'no-cache');
+    res.setHeader('expires', '0');
+    res.setHeader('x-app-versao', VERSAO);
+
+    if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
     if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
