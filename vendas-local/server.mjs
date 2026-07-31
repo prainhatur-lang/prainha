@@ -166,6 +166,10 @@ async function initSchema() {
   await addCol('produto_local', 'categoria text');
   await addCol('produto_local', 'categoria_ordem integer');
   await addCol('produto_local', 'sem_estoque boolean DEFAULT false');
+  await addCol('produto_local', 'cardapio_digital boolean DEFAULT true');
+  // grupos que a CASA decidiu esconder do cliente, independente do Consumer
+  // (ex.: "Artistas" vem marcado como cardapio digital la, mas nao e' pra mesa)
+  await sql`CREATE TABLE IF NOT EXISTS grupo_oculto (categoria text PRIMARY KEY, criado_em timestamptz DEFAULT now())`;
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -290,7 +294,8 @@ async function espelhoCatalogo() {
   // Pausado (pd.DATAPAUSADO) e descontinuado SOMEM do cardapio.
   // Estoque controlado zerado NAO some: vem marcado e a tela mostra cinza.
   const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM,
-      TRIM(e.DESCRICAO) CAT, e.ORDEM CATORD, p.ESTOQUECONTROLADO ECTRL, p.ESTOQUEATUAL EATU
+      TRIM(e.DESCRICAO) CAT, e.ORDEM CATORD, p.ESTOQUECONTROLADO ECTRL, p.ESTOQUEATUAL EATU,
+      p.CARDAPIODIGITAL CARDIG
     FROM PRODUTODETALHE pd JOIN PRODUTOS p ON p.CODIGO=pd.CODIGOPRODUTO
     LEFT JOIN PRODUTOTAMANHO pt ON pt.CODIGO=pd.CODIGOPRODUTOTAMANHO
     LEFT JOIN ETIQUETAS e ON e.CODIGO=p.CODIGOETIQUETA AND e.DATADELETE IS NULL
@@ -306,11 +311,15 @@ async function espelhoCatalogo() {
     // nome_busca = nome+tamanho sem acento e minusculo. O garcom digita "acai",
     // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
     // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
-    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque };
+    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque,
+      // flag do proprio Consumer: o que NAO e' de cardapio digital some da
+      // tela do cliente (servico, a maioria dos complementos), mas o garcom
+      // continua vendo tudo — ele precisa lancar qualquer coisa.
+      cardapio_digital: T(x.CARDIG) === 'S' };
   });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
-    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque')}`;
+    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'cardapio_digital')}`;
   });
   // Observacoes que a casa ja tem cadastradas, ligadas ao GRUPO do produto:
   // "Mal passada" aparece em Porcoes, "Com gelo e limao" em Refrigerantes.
@@ -534,21 +543,41 @@ async function apiVendaBusca(termo) {
   return { produtos: rows };
 }
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
-async function apiVendaCategorias() {
+/** Filtro do cardápio do CLIENTE: respeita a flag do Consumer e a lista de
+ *  grupos que a casa escondeu. O GARÇOM não passa por aqui — ele lança tudo. */
+const soCliente = (cliente) => (cliente
+  ? sql`AND cardapio_digital AND categoria NOT IN (SELECT categoria FROM grupo_oculto)`
+  : sql``);
+async function apiVendaCategorias(cliente) {
   // Só grupo que tem o que vender AGORA. Grupo inteiro fora de estoque não
   // aparece — o garçom não deve tocar num grupo pra descobrir que está vazio.
   // parenteses no FILTER antes do cast: sem eles a precedencia fica ambigua
   const rows = await sql`SELECT categoria, min(categoria_ordem) AS ordem, count(*)::int AS n,
       (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
-    FROM produto_local GROUP BY categoria
+    FROM produto_local WHERE TRUE ${soCliente(cliente)} GROUP BY categoria
     HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
     ORDER BY categoria`;
   return { categorias: rows };
 }
-async function apiVendaCategoria(nome) {
+async function apiVendaCategoria(nome, cliente) {
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
-    FROM produto_local WHERE categoria=${String(nome || '')} ORDER BY sem_estoque, nome`;
+    FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
+    ORDER BY sem_estoque, nome`;
   return { categoria: String(nome || ''), produtos: rows };
+}
+/** Grupos que a casa escondeu do cardápio do cliente. */
+async function apiGruposOcultos() {
+  const todos = await sql`SELECT DISTINCT categoria FROM produto_local WHERE cardapio_digital ORDER BY categoria`;
+  const ocultos = await sql`SELECT categoria FROM grupo_oculto`;
+  const set = new Set(ocultos.map((x) => x.categoria));
+  return { grupos: todos.map((x) => ({ categoria: x.categoria, oculto: set.has(x.categoria) })) };
+}
+async function apiGrupoOcultar(body) {
+  const cat = String(body.categoria || '').slice(0, 120);
+  if (!cat) return { ok: false, erro: 'categoria' };
+  if (body.oculto) await sql`INSERT INTO grupo_oculto (categoria) VALUES (${cat}) ON CONFLICT DO NOTHING`;
+  else await sql`DELETE FROM grupo_oculto WHERE categoria=${cat}`;
+  return { ok: true };
 }
 // Mesas/comandas abertas AGORA — o garcom clica em vez de digitar o numero.
 async function apiVendaAbertas() {
@@ -638,9 +667,22 @@ async function apiJaPedido(numero) {
     FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ci.comanda_codigo=${c.codigo} AND ci.tipo IS DISTINCT FROM 2
     ORDER BY ci.criado NULLS LAST, ci.id`;
-  return { itens: r.map((x) => ({ nome: x.nome, quantidade: Number(x.quantidade) || 1,
-    observacao: temMod(x.detalhes) ? x.detalhes : null,
-    estado: x.entregue ? 'entregue' : x.pronto ? 'pronto' : 'preparando', criado: x.criado })) };
+  const agora = Date.now();
+  return { itens: r.map((x) => {
+    // ">> SAI JUNTO C/ ..." e' recado pra COZINHA. O cliente nao precisa ver
+    // como a casa se organiza por dentro — só a observação dele.
+    const det = temMod(x.detalhes)
+      ? String(x.detalhes).split('|').map((p) => p.trim()).filter((p) => p && !/^>>/.test(p)).join(' · ')
+      : '';
+    const criado = x.criado ? new Date(x.criado).getTime() : null;
+    return {
+      nome: x.nome, quantidade: Number(x.quantidade) || 1,
+      observacao: det || null,
+      estado: x.entregue ? 'entregue' : x.pronto ? 'pronto' : 'preparando',
+      pedido_em: x.criado, pronto_em: x.pronto, entregue_em: x.entregue,
+      espera_min: criado ? Math.max(0, Math.floor((agora - criado) / 60000)) : null,
+    };
+  }) };
 }
 
 // ---- TRANSFERIR comanda/mesa ----
@@ -2999,7 +3041,18 @@ var D=null,tmr={};
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
-async function carregar(){D=await jget('/api/tempos');pinta()}
+async function carregar(){D=await jget('/api/tempos');pinta();pintaGrupos()}
+async function pintaGrupos(){
+  var d=await jget('/api/grupos-ocultos');
+  var el=document.getElementById('grupos');if(!el)return;
+  el.innerHTML=(d.grupos||[]).map(function(g){
+    return '<div class="l"><label class="nm" style="cursor:pointer;display:flex;gap:10px;align-items:center">'+
+      '<input type="checkbox" '+(g.oculto?'':'checked')+
+      ' onchange=\\'togGrupo('+JSON.stringify(g.categoria).replace(/'/g,"&#39;")+',this.checked)\\' '+
+      'style="width:20px;height:20px">'+esc(g.categoria)+'</label></div>';
+  }).join('')||'<div class="l"><div class="nm mut">nenhum grupo</div></div>';
+}
+async function togGrupo(cat,visivel){await jpost('/api/grupo-ocultar',{categoria:cat,oculto:!visivel})}
 function pinta(){
   var h='<div class="mut">Quanto tempo cada praça tem pra entregar. Passou disso, o pedido fica <b>vermelho</b> no KDS. '+
     'Passou do <b>dobro</b>, o alarme fica mais alto e insistente.</div>'+
@@ -3011,7 +3064,11 @@ function pinta(){
       'onchange="salvaArea('+a.codigo+',this.value)"><span class="un">min</span>'+
       '<span class="ok" id="ok-a'+a.codigo+'"></span></div>';
   });
-  h+='</div><h2>Pratos que demoram mais</h2>'+
+  h+='</div><h2>O que o cliente vê no cardápio</h2>'+
+     '<div class="mut">Desmarque o que não deve aparecer pra quem pede pela mesa. '+
+     'O garçom continua vendo tudo. (Serviço e a maioria dos complementos já saem sozinhos, '+
+     'pela marcação do Consumer.)</div><div class="card" id="grupos" style="margin-top:10px">carregando…</div>'+
+     '<h2>Pratos que demoram mais</h2>'+
     '<div class="mut">Minutos <b>somados</b> ao tempo da praça. Uma picanha na Cozinha de 20min com +15 vira 35min só pra ela.</div>'+
     '<div class="card" style="margin-top:10px">';
   if(!D.pratos.length) h+='<div class="l"><div class="nm mut">nenhum prato com tempo extra</div></div>';
@@ -3132,6 +3189,7 @@ body{padding-bottom:120px}
 .ja .q{font-weight:700;color:var(--gold2);min-width:26px}
 .ja .n{flex:1}
 .ja .st{font-size:11.5px;color:var(--mut);white-space:nowrap;align-self:center}
+.ja .hr{display:block;color:var(--mut);font-size:11.5px;margin-top:3px}
 .aovivo{font-size:10.5px;background:#eafaf0;color:#0f8a3e;border:1px solid #bfe9cf;border-radius:20px;padding:1px 8px;font-weight:700}
 .tit2{font-size:13px;color:var(--mut);margin:16px 0 6px}
 .segs{display:flex;gap:7px;flex-wrap:wrap}
@@ -3180,25 +3238,78 @@ async function inicio(){
 }
 // ---- cadastro do cliente (tudo opcional) ----
 function telaCadastro(){
-  app('<h1>Seu cadastro</h1><div class="mut" style="margin:6px 0 16px">Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.</div>'+
-    '<input id="cnome" placeholder="seu nome">'+
-    '<input id="ccpf" inputmode="numeric" placeholder="CPF (opcional)">'+
-    '<input id="ctel" inputmode="numeric" placeholder="WhatsApp (opcional)">'+
-    '<button class="b" onclick="salvarCadastro()">Salvar</button>'+
+  CADINFO=null;
+  app('<h1>Seu cadastro</h1>'+
+    '<div class="mut" style="margin:6px 0 16px">Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.</div>'+
+    '<div class="tit2" style="margin-top:0">CPF</div>'+
+    '<input id="ccpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpfCli(this.value)">'+
+    '<div id="cquem" class="mut" style="margin-top:9px">Digite o CPF que o nome vem sozinho.</div>'+
+    '<div id="cpasso2"></div>'+
+    '<button class="b g" onclick="semCpf()">Não quero informar o CPF</button>'+
     '<button class="b g" onclick="inicio()">Agora não</button>');
+  var el=document.getElementById('ccpf');if(el)el.focus();
+}
+var CADINFO=null, cadDeb=null;
+function semCpf(){
+  CADINFO=null;
+  document.getElementById('cquem').innerHTML='';
+  passo2Cli(null,true);
+  var i=document.getElementById('ccpf');if(i)i.value='';
+}
+function olhaCpfCli(v){
+  CADINFO=null;clearTimeout(cadDeb);
+  var d=String(v||'').replace(/\\D/g,'');
+  var q=document.getElementById('cquem'), p2=document.getElementById('cpasso2');
+  if(!q)return;
+  if(d.length<11){q.style.color='';q.textContent='Digite o CPF que o nome vem sozinho.';if(p2)p2.innerHTML='';return}
+  q.style.color='';q.textContent='consultando…';
+  cadDeb=setTimeout(async function(){
+    var r=await (await fetch('/api/venda/identificar?cpf='+d,{cache:'no-store'})).json();
+    if(!r.ok){q.style.color='#dc2626';q.textContent=r.erro||'CPF inválido';if(p2)p2.innerHTML='';return}
+    q.style.color='';
+    if(r.nome){
+      CADINFO=r;
+      q.innerHTML='Olá, <b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b>!';
+      passo2Cli(r.telefone_fim,false);
+    } else {
+      q.innerHTML='<span class="mut">Primeira vez aqui? Só o nome então:</span>';
+      passo2Cli(null,true);
+    }
+  },500);
+}
+// WhatsApp: nao validamos se o numero existe, mas o DDD e' obrigatorio —
+// numero sem DDD nao serve pra avisar de reserva nem de mesa pronta.
+function passo2Cli(telFim, pedeNome){
+  var p2=document.getElementById('cpasso2');if(!p2)return;
+  p2.innerHTML=(pedeNome?'<div class="tit2">Seu nome</div><input id="cnome" placeholder="como quer ser chamado">':'')+
+    '<div class="tit2">WhatsApp'+(telFim?' <span class="mut">(temos o final '+esc(String(telFim).slice(-4))+')</span>':'')+'</div>'+
+    '<input id="czap" inputmode="numeric" placeholder="(79) 90000-0000" oninput="olhaZap(this.value)">'+
+    '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. Usamos pra avisar de reserva e mesa pronta.</div>'+
+    '<button class="b" onclick="salvarCadastro()">Salvar</button>';
+  var z=document.getElementById('czap');if(z)z.focus();
+}
+function olhaZap(v){
+  var d=String(v||'').replace(/\\D/g,'');
+  var m=document.getElementById('czapmsg');if(!m)return;
+  if(!d){m.style.color='';m.textContent='Com DDD. Usamos pra avisar de reserva e mesa pronta.';return}
+  if(d.length<10){m.style.color='#b45309';m.textContent='Falta o DDD — comece pelo 79, 11, 21…';return}
+  if(d.length>11){m.style.color='#dc2626';m.textContent='Número muito longo';return}
+  m.style.color='#0f8a3e';m.textContent='✓ (' + d.slice(0,2) + ') ' + d.slice(2);
 }
 async function salvarCadastro(){
   var n=mesaAtual();if(n===null)return;
-  var nome=(document.getElementById('cnome')||{}).value||'';
-  if(!nome.trim()){alert('Digite pelo menos o seu nome');return}
   var cpf=((document.getElementById('ccpf')||{}).value||'').replace(/\\D/g,'');
-  var tel=((document.getElementById('ctel')||{}).value||'').replace(/\\D/g,'');
-  var body={numero:n,nome:nome.trim(),cadastrar:true};
+  var zap=((document.getElementById('czap')||{}).value||'').replace(/\\D/g,'');
+  var nome=CADINFO?CADINFO.nome:(((document.getElementById('cnome')||{}).value||'').trim());
+  if(!nome){alert('Digite seu nome');return}
+  if(zap&&zap.length<10){alert('O WhatsApp precisa do DDD (ex.: 79 seguido do número)');return}
+  var body={numero:n,nome:nome,cadastrar:true};
   if(cpf.length===11)body.cpf=cpf;
-  if(tel.length>=10)body.telefone=tel;
+  if(zap.length>=10)body.telefone=zap;
+  if(CADINFO&&CADINFO.contato_fb)body.contato_fb=CADINFO.contato_fb;
   var r=await post('/api/venda/identificar',body);
   if(!r.ok){alert(r.erro);return}
-  inicio();
+  CADINFO=null;inicio();
 }
 // ---- histórico: pedir de novo com um toque ----
 function telaHistorico(){
@@ -3218,7 +3329,7 @@ async function telaPedir(){
   app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
     '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
-  if(!CATS)CATS=(await (await fetch('/api/venda/categorias',{cache:'no-store'})).json()).categorias||[];
+  if(!CATS)CATS=(await (await fetch('/api/venda/categorias?cliente=1',{cache:'no-store'})).json()).categorias||[];
   var g=document.getElementById('grid');if(!g)return;
   g.innerHTML=CATS.map(function(c){
     return '<button class="cat" onclick=\\'abrirCat('+JSON.stringify(c.categoria).replace(/'/g,"&#39;")+')\\'>'+
@@ -3227,7 +3338,7 @@ async function telaPedir(){
   renderCarrinho();
 }
 async function abrirCat(nome){
-  var d=await (await fetch('/api/venda/categoria?c='+encodeURIComponent(nome),{cache:'no-store'})).json();
+  var d=await (await fetch('/api/venda/categoria?cliente=1&c='+encodeURIComponent(nome),{cache:'no-store'})).json();
   document.getElementById('grid').style.display='none';
   listar(d.produtos,nome);
 }
@@ -3337,8 +3448,15 @@ async function pintaJa(n){
     (prontos?' · <b style="color:#0f8a3e">'+prontos+' a caminho</b>':'')+
     ' <span class="aovivo">ao vivo</span></div>'+
     '<div id="jalista">'+(its.length?its.map(function(i){
+      var hora=function(t){return t?new Date(t).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):''};
+      var linha='pedido às '+hora(i.pedido_em);
+      if(i.estado==='preparando'&&i.espera_min!=null) linha+=' · há '+i.espera_min+' min';
+      if(i.pronto_em) linha+=' · pronto às '+hora(i.pronto_em);
+      if(i.entregue_em) linha+=' · entregue às '+hora(i.entregue_em);
       return '<div class="ja '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
-        '<span class="n">'+esc(i.nome)+(i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+'</span>'+
+        '<span class="n">'+esc(i.nome)+
+        (i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+
+        '<small class="hr">'+linha+'</small></span>'+
         '<span class="st">'+est[i.estado]+'</span></div>';
     }).join(''):'<div class="mut">nada pedido ainda</div>')+'</div>'+
     '<button class="b ped" onclick="pararJa();telaPedir()">Pedir mais</button>'+
@@ -3779,8 +3897,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/tempos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTempos())); }
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
-    if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias())); }
-    if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || ''))); }
+    if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/grupos-ocultos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGruposOcultos())); }
+    if (req.method === 'POST' && p === '/api/grupo-ocultar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGrupoOcultar(body))); }
     res.writeHead(404); res.end('not found');
   } catch (e) { res.writeHead(500); res.end('erro: ' + e.message); }
 });
