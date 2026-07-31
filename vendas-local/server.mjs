@@ -12,7 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import { createHmac } from 'node:crypto';
+import { createHmac, createHash } from 'node:crypto';
 import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
@@ -205,6 +205,10 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
+  // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
+  // Guarda o HASH do CPF, nao o CPF.
+  await sql`CREATE TABLE IF NOT EXISTS spc_cache (cpf_hash text PRIMARY KEY, nome text NOT NULL,
+    criado_em timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS saida_qr (token text PRIMARY KEY, mesa integer,
     pessoas integer NOT NULL, adultos integer, criancas integer, usados integer NOT NULL DEFAULT 0,
     origem text, criado_em timestamptz DEFAULT now(), expira_em timestamptz, ultima_em timestamptz)`;
@@ -767,22 +771,56 @@ async function contatoPorCpf(cpf) {
 }
 // Consulta externa: mesmo padrão do pagamento — trocável por env, sem mexer na
 // tela. 'off' (default) = só o cadastro local. 'spc' quando a credencial chegar.
+// SPC Brasil — formato validado no projeto "Melhores do Ano" da CDL:
+// POST JSON (não GET), Basic auth, e o erro vem DENTRO do corpo mesmo com
+// HTTP 200/500. Consulta é PAGA por CPF, daí o cache local abaixo.
 const CPF_PROVEDOR = process.env.CPF_PROVEDOR || 'off';
+const SPC_URL = process.env.SPC_API_URL || 'https://api.spcbrasil.com.br/spcconsulta/recurso/consulta/padrao';
+const SPC_PRODUTO = process.env.SPC_CODIGO_PRODUTO || '11';
+/** O SPC devolve o STATUS do CPF dentro do campo `nome`. Sem isto, um CPF
+ *  inexistente viraria um cliente chamado "Cpf Nao Existe Na Base Recfederal
+ *  Situacao Em 23052015" — visto no primeiro teste real. */
+function ehStatusNaoNome(nome) {
+  const n = semAcento(nome);
+  if (/\d/.test(n)) return true;          // nome de gente não tem número
+  if (n.split(/\s+/).length > 7) return true; // frase, não nome
+  return /\bcpf\b|nao existe|nao consta|nao localizad|situacao|regulariz|cancelad|suspens|falecid|inexistent|\bnula\b|\bpendente\b/.test(n);
+}
 async function consultarCpfExterno(cpf) {
   if (CPF_PROVEDOR !== 'spc') return null;
-  const url = process.env.SPC_URL, user = process.env.SPC_USUARIO, senha = process.env.SPC_SENHA;
-  if (!url || !user || !senha) throw new Error('SPC sem credencial (SPC_URL/SPC_USUARIO/SPC_SENHA)');
+  const user = process.env.SPC_USER, senha = process.env.SPC_PASSWORD;
+  if (!user || !senha) throw new Error('SPC sem credencial (SPC_USER/SPC_PASSWORD)');
+  const doc = soDig(cpf);
+  // Cache: o mesmo CPF não pode ser cobrado duas vezes. Guarda só o hash.
+  const hash = createHash('sha256').update(doc).digest('hex');
+  const cache = (await sql`SELECT nome FROM spc_cache WHERE cpf_hash=${hash}`)[0];
+  if (cache?.nome) return { nome: cache.nome, fonte: 'spc-cache' };
+
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 6000); // a mesa não pode esperar a API
+  const t = setTimeout(() => ctrl.abort(), 12000); // a mesa não pode esperar demais
   try {
-    const r = await fetch(url.replace('{cpf}', soDig(cpf)), {
-      headers: { authorization: 'Basic ' + Buffer.from(`${user}:${senha}`).toString('base64'), accept: 'application/json' },
+    const r = await fetch(SPC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json',
+        authorization: 'Basic ' + Buffer.from(`${user}:${senha}`).toString('base64') },
+      body: JSON.stringify({ codigoProduto: SPC_PRODUTO, tipoConsumidor: 'F',
+        documentoConsumidor: doc, codigoInsumoOpcional: [] }),
       signal: ctrl.signal,
     });
+    const j = await r.json().catch(() => null);
+    if (r.status === 401 || r.status === 403) throw new Error('SPC recusou as credenciais');
+    if (r.status === 429) throw new Error('SPC: limite de consultas atingido');
+    // erro estruturado chega no corpo mesmo com HTTP 200
+    if (j?.result?.error === true || j?.result?.error === 'true') {
+      throw new Error('SPC: ' + (j?.result?.message || 'erro na consulta'));
+    }
     if (!r.ok) throw new Error('SPC HTTP ' + r.status);
-    const j = await r.json();
-    const nome = j.nome || j.nomeConsumidor || j.consumidor?.nome || j.resposta?.nome || null;
-    return nome ? { nome: String(nome), fonte: 'spc' } : null;
+    const pf = j?.result?.return_object?.resultado?.consumidor?.consumidorPessoaFisica;
+    const nome = pf?.nome ? String(pf.nome).trim() : null;
+    if (!nome || ehStatusNaoNome(nome)) return null;
+    await sql`INSERT INTO spc_cache (cpf_hash, nome) VALUES (${hash}, ${nome})
+      ON CONFLICT (cpf_hash) DO UPDATE SET nome=EXCLUDED.nome`.catch(() => {});
+    return { nome, fonte: 'spc' };
   } finally { clearTimeout(t); }
 }
 /** Telefone/WhatsApp como chave alternativa: nem todo cliente dá o CPF. */
@@ -2007,8 +2045,16 @@ function cieloCred() {
   return (id && key) ? { id, key } : null;
 }
 function pixStatus() {
-  if (PIX_PROVEDOR === 'cielo') return { disponivel: !!cieloCred(), provedor: 'cielo' };
-  return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR };
+  // Diagnostico junto: "disponivel" so diz que a env EXISTE. Se ela vier com
+  // aspas sobrando do .bat ou truncada, a Cielo responde "MerchantId is
+  // required" e sem isto aqui nao da pra saber o porque a distancia.
+  const c = cieloCred();
+  const fmt = (v) => (v ? { tamanho: v.length, comeca: v.slice(0, 4), aspas: /["']/.test(v) } : null);
+  const diag = PIX_PROVEDOR === 'cielo'
+    ? { merchant_id: fmt(c?.id), merchant_key: fmt(c?.key) }
+    : { chave: interCred()?.chave ? 'ok' : 'ausente' };
+  if (PIX_PROVEDOR === 'cielo') return { disponivel: !!c, provedor: 'cielo', diag };
+  return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR, diag };
 }
 async function cieloPixCriar(mesa, valor) {
   const c = cieloCred();
