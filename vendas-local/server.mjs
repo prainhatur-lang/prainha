@@ -780,6 +780,45 @@ async function contatoPorCpf(cpf) {
 const CPF_PROVEDOR = process.env.CPF_PROVEDOR || 'off';
 const SPC_URL = process.env.SPC_API_URL || 'https://api.spcbrasil.com.br/spcconsulta/recurso/consulta/padrao';
 const SPC_PRODUTO = process.env.SPC_CODIGO_PRODUTO || '11';
+// ---- BASE DE CLIENTES DO GRUPO (compartilhada entre as filiais) ----
+// Cada loja tem seu Consumer: quem é cliente da Prainha Bar não existe pro
+// Tabuará. Esta ponte faz o cliente ser reconhecido em qualquer casa.
+// Trafega só o HASH do CPF — o documento não sai da loja.
+// Endereco e segredo da nuvem — usados tanto pelo cartao quanto pela base de
+// clientes do grupo, entao ficam declarados aqui, antes de qualquer uso.
+const PAGAR_MESA_URL = process.env.PAGAR_MESA_URL || 'https://app.prainhabar.com';
+const PAGAR_MESA_SECRET = process.env.PAGAR_MESA_SECRET || '';
+const FILIAL_ID = process.env.FILIAL_ID || '';
+const CLIENTE_SALT = process.env.CLIENTE_HASH_SALT || '';
+function hashCpfGrupo(cpf) {
+  return createHash('sha256').update(`${CLIENTE_SALT}::${soDig(cpf)}`).digest('hex');
+}
+function assinaGrupo(h, expira) {
+  return createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, h, String(expira)].join('|')).digest('hex');
+}
+function grupoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
+async function clienteDoGrupo(cpf) {
+  if (!grupoDisponivel()) return null;
+  const h = hashCpfGrupo(cpf);
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const q = new URLSearchParams({ h, f: FILIAL_ID, e: String(e), s: assinaGrupo(h, e) });
+  const r = await fetch(`${PAGAR_MESA_URL}/api/cliente-documento?${q}`, { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) return null;
+  const j = await r.json();
+  return j?.achou && j.nome ? { nome: j.nome, origem: j.origem } : null;
+}
+/** Publica na base do grupo — quem se identificar aqui é conhecido nas outras. */
+async function publicarNoGrupo({ cpf, nome, telefone, origem }) {
+  if (!grupoDisponivel() || !cpf || !nome) return;
+  const h = hashCpfGrupo(cpf);
+  const e = Math.floor(Date.now() / 1000) + 120;
+  await fetch(`${PAGAR_MESA_URL}/api/cliente-documento`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ h, f: FILIAL_ID, e, s: assinaGrupo(h, e), nome, tel: telefone || '', origem: origem || 'manual' }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => {}); // publicar é best-effort: não pode travar o atendimento
+}
+
 /** O SPC devolve o STATUS do CPF dentro do campo `nome`. Sem isto, um CPF
  *  inexistente viraria um cliente chamado "Cpf Nao Existe Na Base Recfederal
  *  Situacao Em 23052015" — visto no primeiro teste real. */
@@ -885,7 +924,13 @@ async function apiVendaIdentificar(cpf, telefone) {
     WHERE cpf=${soDig(cpf)} AND nome IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)[0];
   if (jaVisto?.nome) return { ok: true, nome: jaVisto.nome, contato_fb: jaVisto.contato_fb ?? null,
     fonte: 'ja-atendido', nome_curto: nomeCurto(jaVisto.nome) };
-  // 3º) só agora o SPC — e ele ainda passa pelo próprio cache antes de cobrar
+  // 3º) base do GRUPO: quem já foi identificado em QUALQUER filial. Um cliente
+  //     conhecido no Tabuará não pode ser consultado de novo na Prainha Bar.
+  try {
+    const grupo = await clienteDoGrupo(cpf);
+    if (grupo) return { ok: true, nome: grupo.nome, fonte: 'grupo', nome_curto: nomeCurto(grupo.nome) };
+  } catch { /* sem internet: segue pro SPC, que também precisaria dela */ }
+  // 4º) só agora o SPC — e ele ainda passa pelo próprio cache antes de cobrar
   try {
     const ext = await consultarCpfExterno(cpf);
     if (ext) return { ok: true, ...ext, nome_curto: nomeCurto(ext.nome) };
@@ -921,6 +966,8 @@ async function apiIdentificarSalvar(body) {
     const ped = await fbAcharPedido(numero);
     if (ped) await fbIdentificarPedido(ped, { nome: curto, cpf, contatoFb });
   } catch (e) { console.error('[identificar] write-back:', e.message); }
+  // leva pra base do grupo: identificou aqui, é conhecido nas outras filiais
+  publicarNoGrupo({ cpf, nome, telefone: tel, origem: contatoFb ? 'consumer' : 'manual' });
   return { ok: true, numero, nome_curto: curto, contato_fb: contatoFb, cadastrado: !!(body.cadastrar && contatoFb) };
 }
 
@@ -2236,9 +2283,6 @@ async function apiSaidaConsultar(token) {
 // seria lido por qualquer um no Wi-Fi. Então a gente só monta um link ASSINADO
 // e manda o cliente pro app (Vercel), que já tem cartão com 3DS. Nenhum dado
 // de cartão passa por esta máquina.
-const PAGAR_MESA_URL = process.env.PAGAR_MESA_URL || 'https://app.prainhabar.com';
-const PAGAR_MESA_SECRET = process.env.PAGAR_MESA_SECRET || '';
-const FILIAL_ID = process.env.FILIAL_ID || '';
 function cartaoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
 function assinarMesa({ filialId, mesa, valorCentavos, ref, expira }) {
   return createHmac('sha256', PAGAR_MESA_SECRET)

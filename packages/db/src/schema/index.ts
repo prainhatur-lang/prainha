@@ -26,3 +26,4 @@ export * from './reserva';
 export * from './lista-espera';
 export * from './patio';
 export * from './cobranca-mesa';
+export * from './cliente-documento';
