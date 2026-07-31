@@ -2802,9 +2802,20 @@ body{padding-bottom:120px}
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
-function app(h){document.getElementById('app').innerHTML=h}
+// O cliente chega aqui pela CAMERA do celular. Sem mexer no historico, o botao
+// "voltar" do Android fecha a pagina e joga ele de volta na camera — parecia
+// que o sistema tinha travado. Cada tela interna empilha uma entrada; o voltar
+// traz pro inicio, e so do inicio e' que ele realmente sai.
+var NOINICIO=true;
+function app(h){
+  document.getElementById('app').innerHTML=h;
+  window.scrollTo(0,0);
+  if(NOINICIO){ NOINICIO=false; try{history.pushState({app:1},'')}catch(e){} }
+}
+window.addEventListener('popstate',function(){ NOINICIO=true; inicio(); });
 var EU=null, CART=[], CATS=null;
 async function inicio(){
+  NOINICIO=true; // daqui, o proximo "voltar" do Android sai mesmo
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
   var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'Prainha <b>Bar</b>';
@@ -3030,7 +3041,8 @@ function telaPessoas(origem){
       '<button onclick="passo(\\'ad\\',-1)">−</button><b id="ad">1</b><button onclick="passo(\\'ad\\',1)">+</button></div>'+
     '<div class="cont"><span>Crianças acima de 10 anos</span>'+
       '<button onclick="passo(\\'cr\\',-1)">−</button><b id="cr">0</b><button onclick="passo(\\'cr\\',1)">+</button></div>'+
-    '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>');
+    '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>'+
+    '<button class="b g" onclick="inicio()">Agora não</button>');
 }
 var PES={ad:1,cr:0};
 function passo(q,d){
@@ -3090,7 +3102,8 @@ async function post(u,b){return (await fetch(u,{method:'POST',headers:{'content-
 async function chamar(){
   var n=mesaAtual();if(n===null)return;
   await post('/api/chamado',{mesa:n,tipo:'garcom',origem:'qr-mesa'});
-  app('<div class="ok"><div class="t">✓ Garçom avisado</div><div class="mut" style="margin-top:8px">Ele já está a caminho da mesa '+n+'.</div></div>');
+  app('<div class="ok"><div class="t">✓ Garçom avisado</div><div class="mut" style="margin-top:8px">Ele já está a caminho da mesa '+n+'.</div></div>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
 }
 function telaProblema(){
   app('<h1>Como podemos ajudar?</h1>'+
@@ -3104,7 +3117,8 @@ async function reclamar(){
   var n=mesaAtual();if(n===null)return;
   var t=(document.getElementById('tx')||{}).value||'';
   await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',texto:t});
-  app('<div class="ok"><div class="t">✓ Recebemos</div><div class="mut" style="margin-top:8px">Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.</div></div>');
+  app('<div class="ok"><div class="t">✓ Recebemos</div><div class="mut" style="margin-top:8px">Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.</div></div>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
 }
 inicio();
 </script></body></html>`;
