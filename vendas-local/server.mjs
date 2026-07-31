@@ -207,6 +207,11 @@ async function initSchema() {
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
+  // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
+  await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
+    de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
+    itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
+    criado_em timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS spc_cache (cpf_hash text PRIMARY KEY, nome text,
     criado_em timestamptz DEFAULT now())`;
   // nome NULL = "o SPC ja foi consultado e nao devolveu nome util". Guardar
@@ -593,6 +598,58 @@ async function apiVendaVincular(body) {
   }
   return { ok: true, comanda, mesa, nome_curto: curto };
 }
+// ---- TRANSFERIR comanda/mesa ----
+// A mesa mudou de lugar, ou a comanda foi pra outra mesa. Dois casos:
+//  - comanda (300-400) -> outra mesa: muda só o vínculo, os itens seguem nela
+//  - mesa -> mesa:      move os ITENS no Firebird (ITENSPEDIDO.CODIGOPEDIDO)
+// Tudo fica registrado: quem move uma conta inteira precisa deixar rastro.
+async function apiTransferir(body) {
+  const de = Number(body.de), para = Number(body.para);
+  if (!(de >= 1 && de <= COMANDA_MAX) || !(para >= 1 && para <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
+  const quem = String(body.por || '').slice(0, 60) || null;
+
+  // comanda mudando de mesa: só o vínculo
+  if (de >= COMANDA_MIN) {
+    if (para >= COMANDA_MIN) return { ok: false, erro: 'destino tem que ser uma mesa (1–' + (COMANDA_MIN - 1) + ')' };
+    const antes = (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${de} AND fechada_em IS NULL`)[0];
+    await sql`INSERT INTO mesa_comanda (comanda, mesa) VALUES (${de}, ${para})
+      ON CONFLICT (comanda) DO UPDATE SET mesa=${para}, fechada_em=NULL`;
+    await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por)
+      VALUES (${de}, ${para}, 'comanda', 0, ${quem})`;
+    return { ok: true, tipo: 'comanda', de, para, mesa_anterior: antes?.mesa ?? null,
+      msg: `Comanda ${de} agora é da mesa ${para}.` };
+  }
+
+  // mesa -> mesa: move os itens de verdade no Consumer
+  let pedDe, pedPara;
+  try {
+    pedDe = await fbAcharPedido(de);
+    if (!pedDe) return { ok: false, erro: `não há conta aberta na mesa ${de}` };
+    pedPara = await fbAcharPedido(para);
+    if (!pedPara) pedPara = await fbCriarPedido(para);
+  } catch (e) { return { ok: false, erro: e.message }; }
+
+  const cont = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const n = cont.ok ? Number(cont.rows[0].N) : 0;
+  if (!n) return { ok: false, erro: `a mesa ${de} não tem itens pra mover` };
+
+  const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  if (!mv.ok) return { ok: false, erro: 'não consegui mover os itens: ' + mv.err };
+  try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* total recalcula no próximo ciclo */ }
+
+  // as comandas que estavam nessa mesa vão junto
+  await sql`UPDATE mesa_comanda SET mesa=${para} WHERE mesa=${de} AND fechada_em IS NULL`;
+  await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
+    VALUES (${de}, ${para}, 'mesa', ${n}, ${quem}, ${pedDe}, ${pedPara})`;
+  return { ok: true, tipo: 'mesa', de, para, itens: n,
+    msg: `${n} item(ns) da mesa ${de} foram para a mesa ${para}.` };
+}
+async function apiTransferencias() {
+  const r = await sql`SELECT * FROM transferencia ORDER BY criado_em DESC LIMIT 30`;
+  return { transferencias: r };
+}
+
 async function apiVendaEnviar(body) {
   const numero = Number(body.numero);
   if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
@@ -1668,6 +1725,31 @@ async function acaoConta(acao){
                       :'<div class="err">'+esc(r.erro||'erro')+'</div>';
   if(r.ok)setTimeout(carregarMesa,1500);
 }
+// Mesa mudou de lugar, ou a comanda foi pra outra mesa.
+function telaTransferir(){
+  var ehComanda=ALVO>=300;
+  app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:12px">'+(ehComanda?'Mover a comanda '+ALVO:'Mover a mesa '+MESA)+'</div>'+
+    '<div class="mut" style="margin-bottom:12px">'+(ehComanda
+      ? 'A comanda passa a pertencer a outra mesa. Os itens continuam nela.'
+      : 'Todos os itens da mesa '+MESA+' vão pra mesa nova, e as comandas dela vão junto.')+'</div>'+
+    '<input type="number" id="dest" inputmode="numeric" placeholder="número da mesa de destino">'+
+    '<button class="big" onclick="confirmarTransf()">Transferir</button>'+
+    '<div id="msg"></div>');
+  var el=document.getElementById('dest');if(el)el.focus();
+}
+async function confirmarTransf(){
+  var d=Number((document.getElementById('dest')||{}).value);
+  if(!(d>=1&&d<300)){alert('Informe a mesa de destino (1 a 299)');return}
+  var origem=ALVO>=300?ALVO:MESA;
+  if(!confirm('Transferir '+(ALVO>=300?'a comanda '+origem:'tudo da mesa '+origem)+' para a mesa '+d+'?'))return;
+  var r=await jpost('/api/venda/transferir',{de:origem,para:d});
+  var m=document.getElementById('msg');
+  if(!r.ok){if(m)m.innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';return}
+  MESA=d;ALVO=ALVO>=300?ALVO:d;
+  app('<div class="ok"><div class="t">✓ Transferido</div><div class="mut" style="margin-top:6px">'+esc(r.msg)+'</div></div>'+
+    '<button class="big" onclick="carregarMesa()">Abrir a mesa '+d+'</button>');
+}
 function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
 // conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
 function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
@@ -1707,6 +1789,8 @@ async function carregarMesa(){
       '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
       '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
     '</div>'+
+    '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
+      (ALVO>=300?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
     '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
   var el=document.getElementById('busca');
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
@@ -2371,6 +2455,8 @@ async function apiPixConferir(txid) {
 // A impressão do Consumer (TIPOIMPRESSAO 2) depende da impressora do caixa
 // estar configurada, e a maquininha Cielo ainda está inacessível. Esta página
 // resolve hoje: abre no navegador, imprime em qualquer impressora, ou só mostra.
+/** Taxa de serviço da casa (CONFIG.TAXASERVICO do Consumer, hoje 10%). */
+const TAXA_SERVICO = Number(process.env.TAXA_SERVICO ?? 10);
 async function apiContaTexto(numero) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
@@ -2378,11 +2464,35 @@ async function apiContaTexto(numero) {
   if (!c) return { ok: false, erro: 'não há conta aberta no número ' + n };
   const itens = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
     WHERE comanda_codigo=${c.codigo} ORDER BY criado NULLS LAST, id`;
-  const quem = (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
+  // nome: a identificacao nova ganha da tabela antiga de vinculo
+  const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${n} AND fechada_em IS NULL`)[0];
+  const quem = ident || (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
   const total = itens.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
   const pago = Number(c.subtotal_pago || 0);
+
+  // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
+  // Sem isso, na hora de dividir a conta a mesa faz a conta de cabeça e erra.
+  const comandas = [];
+  if (n < COMANDA_MIN) {
+    const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
+      WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
+    for (const v of vinc) {
+      const cc = (await sql`SELECT codigo, nome FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
+      if (!cc) continue;
+      const its = await sql`SELECT valor_total, tipo FROM comanda_item WHERE comanda_codigo=${cc.codigo}`;
+      const sub = its.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+      const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
+      comandas.push({ numero: Number(v.comanda), nome: idc?.nome_curto || v.nome_curto || cc.nome || null,
+        subtotal: sub, servico: +(sub * TAXA_SERVICO / 100).toFixed(2),
+        com_servico: +(sub * (1 + TAXA_SERVICO / 100)).toFixed(2) });
+    }
+  }
+  const servico = +(total * TAXA_SERVICO / 100).toFixed(2);
+  const comServico = +(total + servico).toFixed(2);
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
-    pessoas: c.qtd_pessoas, itens, total, pago, resta: Math.max(0, total - pago) };
+    pessoas: c.qtd_pessoas, itens, comandas,
+    total, taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
+    pago, resta: Math.max(0, comServico - pago) };
 }
 const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Conta — Prainha Bar</title><style>
@@ -2431,10 +2541,22 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
     h+='<div class="it"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
        '<span class="d">'+esc(i.nome)+'</span><span class="v">'+brl(i.valor_total)+'</span></div>';
   });
-  h+='<hr><div class="tot"><span>TOTAL</span><span>'+brl(d.total)+'</span></div>';
+  h+='<hr><div class="lin"><span>Subtotal</span><span>'+brl(d.total)+'</span></div>'+
+     '<div class="lin"><span>Serviço '+d.taxa_servico+'%</span><span>'+brl(d.servico)+'</span></div>'+
+     '<div class="tot"><span>TOTAL</span><span>'+brl(d.com_servico)+'</span></div>';
   if(d.pago>0){h+='<div class="lin"><span>já pago</span><span>-'+brl(d.pago)+'</span></div>'+
     '<div class="tot"><span>A PAGAR</span><span>'+brl(d.resta)+'</span></div>'}
-  h+='<div class="pe">Serviço não incluso.<br>Obrigado pela preferência!</div></div>';
+  // Divisão por comanda: cada um vê o seu, já com o serviço somado
+  if((d.comandas||[]).length){
+    h+='<hr><div style="text-align:center;font-weight:700;margin-bottom:4px">POR COMANDA</div>';
+    d.comandas.forEach(function(c){
+      h+='<div class="it"><span class="q">'+c.numero+'</span>'+
+         '<span class="d">'+esc(c.nome||'sem nome')+'<br><span style="font-size:11px">'+
+         brl(c.subtotal)+' + '+brl(c.servico)+' serv.</span></span>'+
+         '<span class="v"><b>'+brl(c.com_servico)+'</b></span></div>';
+    });
+  }
+  h+='<div class="pe">Serviço de '+d.taxa_servico+'% incluso no total.<br>Obrigado pela preferência!</div></div>';
   app.innerHTML=h;
 })();
 </script></body></html>`;
@@ -3163,6 +3285,8 @@ const server = http.createServer(async (req, res) => {
     const p = u.pathname.replace(/\/+$/, '') || '/';
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
+    if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
+    if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
     if (req.method === 'POST' && p === '/api/venda/conta') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaConta(body))); }
     if (req.method === 'POST' && p === '/api/venda/enviar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaEnviar(body))); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
