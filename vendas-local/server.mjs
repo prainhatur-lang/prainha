@@ -2151,6 +2151,12 @@ async function apiSaidaPassar(token) {
   if (new Date(q.expira_em) <= new Date()) return { ok: true, libera: false, motivo: 'código expirado' };
   return { ok: true, libera: false, motivo: 'todas as passagens já foram usadas', de: Number(q.pessoas) };
 }
+/** Códigos que ainda têm gente pra passar — o operador da catraca vê a fila. */
+async function apiSaidaAtivos() {
+  const r = await sql`SELECT token, mesa, pessoas, usados, origem, criado_em, expira_em FROM saida_qr
+    WHERE usados < pessoas AND expira_em > now() ORDER BY criado_em DESC LIMIT 30`;
+  return { ativos: r.map((x) => ({ ...x, restantes: Number(x.pessoas) - Number(x.usados) })) };
+}
 async function apiSaidaConsultar(token) {
   const q = (await sql`SELECT * FROM saida_qr WHERE token=${String(token || '').toUpperCase()}`)[0];
   if (!q) return { ok: false, erro: 'não encontrado' };
@@ -2348,12 +2354,23 @@ button{width:100%;background:#3b82f6;color:#fff;border:0;border-radius:14px;font
 .bolas{display:flex;gap:7px;justify-content:center;flex-wrap:wrap;margin-top:14px}
 .bo{width:14px;height:14px;border-radius:50%;background:#2c2c3a;border:1px solid #3d3d50}
 .bo.on{background:var(--ok);border-color:var(--ok)}
+.sec{margin-top:30px;font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:var(--mut)}
+.at{display:flex;align-items:center;gap:12px;background:#1c1c26;border:1px solid #2c2c3a;border-radius:12px;
+  padding:13px 15px;margin-top:9px;cursor:pointer;font-size:15px}
+.at:active{background:#23232f}
+.at .cod{font-family:Menlo,monospace;font-size:12px;color:var(--mut);flex:1}
+.at .rest{background:#2c2c3a;border-radius:20px;padding:3px 11px;font-size:13px;font-weight:700}
+button.tst{background:#2c2c3a;color:var(--mut);font-size:14px;margin-top:16px}
 </style></head><body><div class="wrap">
 <h1>Saída · catraca</h1>
 <div class="mut">Leia o QR do cliente ou digite o código. Cada leitura libera uma pessoa.</div>
 <input id="t" placeholder="CÓDIGO" autocomplete="off" autofocus>
 <button onclick="passar()">Liberar passagem</button>
-<div id="r"></div></div>
+<div id="r"></div>
+<div class="sec">Mesas com gente pra sair</div>
+<div id="ativos" class="mut">carregando…</div>
+<button class="tst" onclick="criarTeste()">Criar um código de teste (4 pessoas)</button>
+</div>
 <script>
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 var el=document.getElementById('t');
@@ -2375,7 +2392,32 @@ async function passar(){
       '<div class="d">'+esc(d.motivo||'')+'</div></div>';
   }
   el.focus();el.select();
+  carregarAtivos();
 }
+// Quem ainda tem gente pra passar. Serve na operacao (ver a fila) e pra
+// achar o codigo quando o cliente perdeu a tela do celular.
+async function carregarAtivos(){
+  var d;try{d=await (await fetch('/api/saida/ativos',{cache:'no-store'})).json()}catch(e){return}
+  var el=document.getElementById('ativos');if(!el)return;
+  if(!d.ativos.length){el.className='mut';el.innerHTML='ninguém aguardando saída agora';return}
+  el.className='';
+  el.innerHTML=d.ativos.map(function(a){
+    return '<div class="at" onclick="usar(\\''+a.token+'\\')"><b>Mesa '+a.mesa+'</b>'+
+      '<span class="cod">'+a.token+'</span>'+
+      '<span class="rest">'+a.restantes+' de '+a.pessoas+'</span></div>';
+  }).join('');
+}
+function usar(t){document.getElementById('t').value=t;passar()}
+async function criarTeste(){
+  var r=await (await fetch('/api/saida/gerar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({mesa:99,adultos:4,criancas:0,origem:'teste'})})).json();
+  if(!r.ok){alert(r.erro||'erro');return}
+  document.getElementById('t').value=r.token;
+  carregarAtivos();
+  document.getElementById('r').innerHTML='<div class="res ok" style="padding:16px">'+
+    '<div class="d">código de teste criado: <b>'+r.token+'</b><br>toque em "Liberar passagem" 4 vezes</div></div>';
+}
+carregarAtivos();setInterval(carregarAtivos,10000);
 </script></body></html>`;
 
 // ---- /tempos — configuração do tempo de preparo ----
@@ -3037,6 +3079,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
     if (req.method === 'POST' && p === '/api/saida/gerar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaGerar(body))); }
     if (p === '/api/saida/passar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaPassar(u.searchParams.get('t') || u.searchParams.get('token') || ''))); }
+    if (p === '/api/saida/ativos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaAtivos())); }
     if (p === '/api/saida/consultar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaConsultar(u.searchParams.get('t') || ''))); }
     if (p === '/catraca') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CATRACA_HTML); }
     if (p === '/api/cartao/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ disponivel: cartaoDisponivel() })); }
