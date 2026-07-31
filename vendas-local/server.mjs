@@ -11,6 +11,7 @@
 // Postgres local, na tabela `marca`, chaveada por ITENSPEDIDO.CODIGO (estável).
 
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
@@ -200,6 +201,8 @@ async function initSchema() {
   await sql`CREATE INDEX IF NOT EXISTS ix_chamado_aberto ON chamado(atendido_em, criado_em)`;
   // TEMPO DE PREPARO: cada praça tem o seu (bebida sai em 5min, carne em 25).
   // Prato demorado soma minutos EXTRA por cima do tempo da praça dele.
+  await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
+    copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
 }
@@ -1980,17 +1983,105 @@ carregar();
 // 'inter' = API de cobrança imediata do Banco Inter (mTLS), o mesmo banco que
 // já usamos pro extrato. Cielo Pix segue bloqueado na conta da casa.
 const PIX_PROVEDOR = process.env.PIX_PROVEDOR || 'off';
-function pixStatus() {
-  const pronto = PIX_PROVEDOR === 'inter' && !!process.env.INTER_PIX_CHAVE;
-  return { disponivel: pronto, provedor: PIX_PROVEDOR };
+const INTER_HOST = process.env.INTER_HOST || 'cdpj.partners.bancointer.com.br';
+function interCred() {
+  const c = { id: process.env.INTER_CLIENT_ID, secret: process.env.INTER_CLIENT_SECRET,
+    cert: process.env.INTER_CERT_B64, key: process.env.INTER_KEY_B64, chave: process.env.INTER_PIX_CHAVE };
+  return (c.id && c.secret && c.cert && c.key && c.chave) ? c : null;
 }
+function pixStatus() {
+  return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR };
+}
+/** mTLS: o fetch do Node não expõe client cert, então vai de https.request. */
+function interAgent(c) {
+  return new https.Agent({ cert: Buffer.from(c.cert, 'base64'), key: Buffer.from(c.key, 'base64'), keepAlive: false });
+}
+function interReq(c, { method, path, body, token }) {
+  const dados = body ? JSON.stringify(body) : null;
+  return new Promise((ok) => {
+    const headers = { accept: 'application/json' };
+    if (token) headers.authorization = 'Bearer ' + token;
+    if (dados) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(dados); }
+    const r = https.request({ hostname: INTER_HOST, path, method, agent: interAgent(c), headers, timeout: 12000 }, (res) => {
+      let d = ''; res.on('data', (x) => (d += x));
+      res.on('end', () => { try { ok({ status: res.statusCode, data: d ? JSON.parse(d) : null }); }
+        catch { ok({ status: res.statusCode, data: null, raw: d.slice(0, 300) }); } });
+    });
+    r.on('timeout', () => { r.destroy(); ok({ status: 0, data: null, raw: 'timeout' }); });
+    r.on('error', (e) => ok({ status: 0, data: null, raw: e.message }));
+    if (dados) r.write(dados);
+    r.end();
+  });
+}
+let tokenPix = { valor: null, expira: 0 };
+async function interToken(c) {
+  if (tokenPix.valor && tokenPix.expira > Date.now()) return tokenPix.valor;
+  const body = new URLSearchParams({ client_id: c.id, client_secret: c.secret,
+    grant_type: 'client_credentials', scope: 'cob.write cob.read' }).toString();
+  const r = await new Promise((ok) => {
+    const req = https.request({ hostname: INTER_HOST, path: '/oauth/v2/token', method: 'POST', agent: interAgent(c),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body) }, timeout: 12000 },
+      (res) => { let d = ''; res.on('data', (x) => (d += x)); res.on('end', () => { try { ok({ status: res.statusCode, data: JSON.parse(d) }); } catch { ok({ status: res.statusCode, data: null, raw: d.slice(0, 200) }); } }); });
+    req.on('timeout', () => { req.destroy(); ok({ status: 0, raw: 'timeout' }); });
+    req.on('error', (e) => ok({ status: 0, raw: e.message }));
+    req.write(body); req.end();
+  });
+  if (r.status !== 200 || !r.data?.access_token) {
+    // 401 "No registered scope" = a aplicação do Inter não tem cobrança Pix liberada
+    throw new Error('Inter recusou o token de cobrança: ' + (r.data?.error_description || r.raw || 'HTTP ' + r.status));
+  }
+  tokenPix = { valor: r.data.access_token, expira: Date.now() + (Number(r.data.expires_in || 300) - 30) * 1000 };
+  return tokenPix.valor;
+}
+/** Cobrança imediata (cob) — o cliente paga e a gente confere por polling. */
 async function apiPixCobrar(body) {
-  if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
+  const c = interCred();
+  if (PIX_PROVEDOR !== 'inter' || !c) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const conta = await apiContaTexto(body.mesa);
   if (!conta.ok) return conta;
   const valor = Number(conta.resta || conta.total || 0);
   if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
-  return { ok: false, erro: 'cobrança Pix ainda não implementada — falta a credencial do Inter' };
+  let token;
+  try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+  const txid = ('PRAINHA' + Number(body.mesa) + Date.now().toString(36) + Math.floor(Math.random() * 1e6)).replace(/[^A-Za-z0-9]/g, '').slice(0, 35);
+  const r = await interReq(c, { method: 'PUT', path: '/pix/v2/cob/' + txid, token, body: {
+    calendario: { expiracao: 1800 },
+    valor: { original: valor.toFixed(2) },
+    chave: c.chave,
+    solicitacaoPagador: 'Mesa ' + Number(body.mesa) + ' - Prainha Bar',
+  } });
+  if (r.status !== 201 && r.status !== 200) {
+    return { ok: false, erro: 'Inter recusou a cobrança: ' + (r.data?.detail || r.data?.title || r.raw || 'HTTP ' + r.status) };
+  }
+  const copia = r.data?.pixCopiaECola || r.data?.location || null;
+  if (!copia) return { ok: false, erro: 'Inter não devolveu o código Pix' };
+  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola) VALUES (${txid}, ${Number(body.mesa)}, ${valor}, ${copia})
+    ON CONFLICT (txid) DO NOTHING`;
+  return { ok: true, txid, valor, copia_cola: copia,
+    imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(copia, 260)).toString('base64') };
+}
+/** Confere se caiu. Quando cair, registra em PAGAMENTOS (forma 21 = Pix online),
+ *  do mesmo jeito que a Fase 2 já faz — o Consumer segue emitindo a NFC-e. */
+async function apiPixConferir(txid) {
+  const c = interCred();
+  if (!c) return { ok: false, erro: 'Pix não habilitado' };
+  const cob = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
+  if (!cob) return { ok: false, erro: 'cobrança não encontrada' };
+  if (cob.pago_em) return { ok: true, pago: true, ja_registrado: true };
+  let token;
+  try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+  const r = await interReq(c, { method: 'GET', path: '/pix/v2/cob/' + String(txid), token });
+  if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
+  const pago = r.data?.status === 'CONCLUIDA';
+  if (!pago) return { ok: true, pago: false, status: r.data?.status || '?' };
+  const e2e = r.data?.pix?.[0]?.endToEndId || null;
+  await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e} WHERE txid=${String(txid)}`;
+  try {
+    const ped = await fbAcharPedido(Number(cob.mesa));
+    if (ped) await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
+      autorizacao: e2e, observacao: 'Pix do cliente (Inter) ' + txid });
+  } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
+  return { ok: true, pago: true, e2e };
 }
 
 // ---- /conta/ver?n=12 — a conta na TELA, imprimível em papel comum ----
@@ -2365,7 +2456,26 @@ async function gerarPix(n){
     '<div class="mut" style="margin:10px 0 6px">Ou copie o código:</div>'+
     '<div class="copia" id="cp">'+esc(r.copia_cola||'')+'</div>'+
     '<button class="b" onclick="copiar()">Copiar código</button>'+
-    '<button class="b g" onclick="inicio()">Voltar</button>');
+    '<div id="pgst" class="mut" style="margin-top:14px">aguardando o pagamento…</div>'+
+    '<button class="b g" onclick="pararPix()">Voltar</button>');
+  vigiarPix(r.txid);
+}
+// Confirma sozinho: o cliente paga no app do banco e a tela avisa aqui.
+var pixTmr=null;
+function pararPix(){clearInterval(pixTmr);pixTmr=null;inicio()}
+function vigiarPix(txid){
+  clearInterval(pixTmr);
+  var tentativas=0;
+  pixTmr=setInterval(async function(){
+    if(++tentativas>120){clearInterval(pixTmr);return} // ~10 min
+    var s;try{s=await (await fetch('/api/pix/conferir?txid='+encodeURIComponent(txid),{cache:'no-store'})).json()}catch(e){return}
+    if(s.ok&&s.pago){
+      clearInterval(pixTmr);pixTmr=null;
+      app('<div class="ok"><div class="t">✓ Pagamento confirmado</div>'+
+        '<div class="mut" style="margin-top:8px">Obrigado! Já registramos na sua conta.</div></div>'+
+        '<button class="b" onclick="inicio()">Voltar</button>');
+    }
+  },5000);
 }
 function copiar(){
   var t=(document.getElementById('cp')||{}).textContent||'';
@@ -2603,6 +2713,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
+    if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
     if (p === '/api/conta/texto') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0))); }
