@@ -41,9 +41,33 @@ const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca
 // já foi mandado não pode crescer depois. Itens com intervalo maior que isso
 // viram uma VIA nova, como se fosse outro papel na impressora.
 const RODADA_GAP_SEG = Number(process.env.RODADA_GAP_SEG || 90);
-// Comandas individuais (cartão da PESSOA) usam a faixa 300–400; mesas do Prainha vão até ~220.
+// ---- NUMERAÇÃO DE MESA E COMANDA — muda de loja pra loja ----
 // Mesa = ONDE entregar; comanda = DE QUEM é. Uma mesa pode ter várias comandas.
-const COMANDA_MIN = 300, COMANDA_MAX = 400;
+//
+//   Prainha Bar .. mesas até 299 + comanda individual (o cartão da PESSOA) 300–400
+//   Tabuará ...... só mesa, 1 a 50 — comanda individual não existe lá, e a
+//                  tabela de vínculo PEDIDOMESAS está vazia (0 registros)
+//
+// Pra desligar a comanda numa loja: COMANDA_MIN=0 (e ajuste MESA_MAX).
+const COMANDA_MIN = Number(process.env.COMANDA_MIN ?? 300);
+const COMANDA_MAX = Number(process.env.COMANDA_MAX ?? 400);
+const COMANDA_ATIVA = COMANDA_MIN > 0 && COMANDA_MAX >= COMANDA_MIN;
+// Limiar de "isto é comanda ou mesa?". Com a comanda desligada vira Infinity,
+// então nenhum número alcança e tudo é tratado como mesa.
+const COMANDA_DE = COMANDA_ATIVA ? COMANDA_MIN : Infinity;
+// Maior número de MESA aceito.
+const MESA_MAX = Number(process.env.MESA_MAX ?? (COMANDA_ATIVA ? COMANDA_MIN - 1 : 299));
+// Teto de QUALQUER número válido (mesa ou comanda) — usado nas validações.
+const NUMERO_MAX = COMANDA_ATIVA ? COMANDA_MAX : MESA_MAX;
+// Nome da casa, pros títulos e telas do cliente.
+const LOJA_NOME = process.env.LOJA_NOME || 'Prainha Bar';
+// A última palavra sai em destaque, como era o "Prainha <b>Bar</b>".
+const LOJA_HTML = (() => {
+  const p = LOJA_NOME.trim().split(/\s+/);
+  return p.length > 1
+    ? p.slice(0, -1).join(' ') + ' <b>' + p[p.length - 1] + '</b>'
+    : '<b>' + LOJA_NOME + '</b>';
+})();
 const VENDA_ORIGEM_FB = 3; // origem do pedido gravado no Consumer (3 = Cardápio Digital, caminho validado 13/06)
 
 const ORIGEM_NOME = { 1: 'Balcão', 2: 'Comanda', 3: 'QR Mesa', 4: 'iFood', 5: 'MenuDino', 6: 'MenuDino', 7: 'DeliveryHub', 8: 'Totem' };
@@ -55,12 +79,13 @@ function classificar(origem, numero) {
 }
 // Comanda 300-400 = a PESSOA; o rótulo ganha a mesa onde ela está (vínculo mesa_comanda).
 async function rotularComandas(comandas) {
-  const nums = comandas.filter((c) => c.numero >= COMANDA_MIN && c.numero <= COMANDA_MAX).map((c) => c.numero);
+  if (!COMANDA_ATIVA) return comandas; // loja só com mesa: não há o que rotular
+  const nums = comandas.filter((c) => c.numero >= COMANDA_DE && c.numero <= NUMERO_MAX).map((c) => c.numero);
   if (!nums.length) return comandas;
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE comanda = ANY(${nums}) AND fechada_em IS NULL`;
   const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
   for (const c of comandas) {
-    if (c.numero >= COMANDA_MIN && c.numero <= COMANDA_MAX) {
+    if (c.numero >= COMANDA_DE && c.numero <= NUMERO_MAX) {
       const mesa = mapa.get(c.numero);
       c.rotulo = 'Comanda ' + c.numero + (mesa ? ' · Mesa ' + mesa : '');
       c.mesa_local = mesa ?? null;
@@ -424,10 +449,10 @@ async function fbPedirConta(ped, on = true) {
 async function apiVendaConta(body) {
   const numero = Number(body.numero);
   const acao = String(body.acao || '');
-  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   let ped;
   try { ped = await fbAcharPedido(numero); } catch (e) { return { ok: false, erro: e.message }; }
-  if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_MIN ? 'comanda ' : 'mesa ') + numero };
+  if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_DE ? 'comanda ' : 'mesa ') + numero };
   try {
     if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbImprimirConta(ped);
       return { ok: true, pedido_fb: ped, msg: 'Conta enviada pra impressora do caixa.' }; }
@@ -627,8 +652,8 @@ async function apiVendaAbertas() {
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
   const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
   return {
-    mesas: rows.filter((x) => Number(x.numero) < COMANDA_MIN),
-    comandas: rows.filter((x) => Number(x.numero) >= COMANDA_MIN).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
+    mesas: rows.filter((x) => Number(x.numero) < COMANDA_DE),
+    comandas: rows.filter((x) => Number(x.numero) >= COMANDA_DE).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
   };
 }
 async function apiVendaMesa(mesa) {
@@ -646,8 +671,8 @@ async function apiVendaMesa(mesa) {
 }
 async function apiVendaVincular(body) {
   const mesa = Number(body.mesa), comanda = Number(body.comanda);
-  if (!(mesa >= 1 && mesa < COMANDA_MIN)) return { ok: false, erro: 'mesa inválida (1–' + (COMANDA_MIN - 1) + ')' };
-  if (!(comanda >= COMANDA_MIN && comanda <= COMANDA_MAX)) return { ok: false, erro: 'comanda é de ' + COMANDA_MIN + ' a ' + COMANDA_MAX };
+  if (!(mesa >= 1 && mesa <= MESA_MAX)) return { ok: false, erro: 'mesa inválida (1–' + MESA_MAX + ')' };
+  if (!(comanda >= COMANDA_DE && comanda <= NUMERO_MAX)) return { ok: false, erro: 'comanda é de ' + COMANDA_MIN + ' a ' + COMANDA_MAX };
   const jaEm = await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${comanda} AND fechada_em IS NULL AND mesa<>${mesa}`;
   if (jaEm.length) return { ok: false, erro: 'comanda ' + comanda + ' já está na mesa ' + jaEm[0].mesa };
   // Quem está na comanda (opcional): CPF válido + nome do cadastro ou digitado.
@@ -691,7 +716,7 @@ async function apiObservacoes(codigoPdv) {
 const SESSAO_MESA_MIN = Number(process.env.SESSAO_MESA_MIN || 60);
 async function apiMesaSessao(numero, comandaCliente, desde) {
   const n = Number(numero);
-  if (!(n >= 1 && n <= COMANDA_MAX)) return { ok: false, motivo: 'mesa inválida' };
+  if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, motivo: 'mesa inválida' };
   const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} LIMIT 1`)[0];
   if (!c) return { ok: false, motivo: 'fechada', comanda_codigo: null,
     aviso: 'Essa mesa foi fechada. Escaneie o QR de novo pra começar.' };
@@ -752,13 +777,13 @@ async function apiJaPedido(numero) {
 // Tudo fica registrado: quem move uma conta inteira precisa deixar rastro.
 async function apiTransferir(body) {
   const de = Number(body.de), para = Number(body.para);
-  if (!(de >= 1 && de <= COMANDA_MAX) || !(para >= 1 && para <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  if (!(de >= 1 && de <= NUMERO_MAX) || !(para >= 1 && para <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
   const quem = String(body.por || '').slice(0, 60) || null;
 
   // comanda mudando de mesa: só o vínculo
-  if (de >= COMANDA_MIN) {
-    if (para >= COMANDA_MIN) return { ok: false, erro: 'destino tem que ser uma mesa (1–' + (COMANDA_MIN - 1) + ')' };
+  if (de >= COMANDA_DE) {
+    if (para >= COMANDA_DE) return { ok: false, erro: 'destino tem que ser uma mesa (1–' + MESA_MAX + ')' };
     const antes = (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${de} AND fechada_em IS NULL`)[0];
     await sql`INSERT INTO mesa_comanda (comanda, mesa) VALUES (${de}, ${para})
       ON CONFLICT (comanda) DO UPDATE SET mesa=${para}, fechada_em=NULL`;
@@ -799,8 +824,8 @@ async function apiTransferencias() {
 
 async function apiVendaEnviar(body) {
   const numero = Number(body.numero);
-  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
-  const ehComanda = numero >= COMANDA_MIN;
+  if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
+  const ehComanda = numero >= COMANDA_DE;
   const mesa = ehComanda ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${numero} AND fechada_em IS NULL`)[0]?.mesa ?? null : numero;
   const pedidos = Array.isArray(body.itens) ? body.itens : [];
   if (!pedidos.length) return { ok: false, erro: 'sem itens' };
@@ -868,7 +893,7 @@ async function apiVendaEnviar(body) {
 // assim nunca cobramos a mais por causa de espelho atrasado.
 async function apiConta(numero) {
   const n = Number(numero);
-  if (!(n >= 1 && n <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'nenhuma comanda aberta com o número ' + n };
   const it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO
@@ -879,7 +904,7 @@ async function apiConta(numero) {
   const total = Number(cab.rows[0]?.VALORTOTAL) || 0;
   const servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
   const pago = await fbPagoDoPedido(ped);
-  const mesa = n >= COMANDA_MIN ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
+  const mesa = n >= COMANDA_DE ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
   return {
     ok: true, numero: n, mesa, pedido_fb: ped,
     itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO) })),
@@ -1166,7 +1191,7 @@ async function apiVendaIdentificar(cpf, telefone) {
 /** Carimba quem está na MESA ou na COMANDA (o número é a chave dos dois). */
 async function apiIdentificarSalvar(body) {
   const numero = Number(body.numero);
-  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'número inválido' };
+  if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const cpf = body.cpf ? soDig(body.cpf) : null;
   if (cpf && !cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
   const tel = body.telefone ? soDig(body.telefone) : null;
@@ -1246,7 +1271,7 @@ async function apiChamadoCriar(body) {
   const tipo = String(body.tipo || 'garcom');
   if (!TIPOS_CHAMADO.has(tipo)) return { ok: false, erro: 'tipo inválido' };
   const mesa = body.mesa == null ? null : Number(body.mesa);
-  if (mesa != null && !(mesa >= 1 && mesa <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  if (mesa != null && !(mesa >= 1 && mesa <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
   // um chamado aberto por mesa+tipo: apertar o botão 5x não vira 5 alertas
   const [ja] = await sql`SELECT id FROM chamado WHERE mesa IS NOT DISTINCT FROM ${mesa} AND tipo=${tipo} AND atendido_em IS NULL LIMIT 1`;
   if (ja) return { ok: true, id: Number(ja.id), repetido: true };
@@ -1493,7 +1518,7 @@ async function marcar(body) {
 
 // ---- HTML (uma SPA; rota / = produção, /entrega = entrega) ----
 const HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Prainha Bar — KDS</title><style>
+<title>${LOJA_NOME} — KDS</title><style>
 :root{--bg:#f2f2f5;--card:#ffffff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--deliv:#2563eb;--mesa:#c0850f;--roxo:#6d5bd0;--roxo2:#5a49bd}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
 header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 1px 3px rgba(0,0,0,.05)}
@@ -1671,7 +1696,7 @@ function comandaHTML(c,modo,idx){
 }
 async function selecao(){
   var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
-  document.getElementById('hd').innerHTML='<h1>Prainha <b>Bar</b> · Produção</h1><span class="grow"></span>'+
+  document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
     '<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
@@ -1713,7 +1738,7 @@ async function histLateral(url){
   el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
     var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
     return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div><div class="m">'+
-      '<b>'+(i.numero?(Number(i.numero)>=300?'Comanda ':'Mesa ')+i.numero:'sem mesa')+'</b>'+
+      '<b>'+(i.numero?(Number(i.numero)>=${COMANDA_DE}?'Comanda ':'Mesa ')+i.numero:'sem mesa')+'</b>'+
       '<span>'+t+'</span>'+(i.area_nome?'<span>'+esc(i.area_nome)+'</span>':'')+'</div></div>';
   }).join(''):'<div class="vaziinho">nada saiu ainda</div>');
 }
@@ -1735,7 +1760,7 @@ function faixaReclamacao(d){
 function faixaJunto(d){
   var es=d.esperando||[];if(!es.length)return '';
   var txt=es.map(function(e){
-    return '<b>'+esc(e.item)+'</b> ('+(Number(e.numero)>=300?'comanda ':'mesa ')+e.numero+') — o par já saiu no '+esc(e.praca||'outra praça');
+    return '<b>'+esc(e.item)+'</b> ('+(Number(e.numero)>=${COMANDA_DE}?'comanda ':'mesa ')+e.numero+') — o par já saiu no '+esc(e.praca||'outra praça');
   }).join(' · ');
   return '<div class="junto">⏱️ SAI JUNTO — '+txt+'</div>';
 }
@@ -1761,7 +1786,7 @@ else{var _p=new URLSearchParams(location.search);var a=_p.get('area');
 
 // ---- /venda — tela do garçom (mobile) ----
 const VENDA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Prainha Bar — Venda</title><style>
+<title>${LOJA_NOME} — Venda</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--roxo:#6d5bd0}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:120px}
 header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px}
@@ -1870,7 +1895,7 @@ input:focus{border-color:var(--gold2)}
 .err{background:#fdeeee;border:1px solid #f3c1c1;border-radius:12px;padding:12px 14px;color:#a11;font-size:14px;margin-top:10px}
 .mut{color:var(--mut);font-size:13px}
 </style></head><body>
-<header><h1>Prainha <b>Bar</b> · Venda</h1><span style="flex:1"></span><a class="back" href="/">KDS</a></header>
+<header><h1>${LOJA_HTML} · Venda</h1><span style="flex:1"></span><a class="back" href="/">KDS</a></header>
 <div id="chamados"></div>
 <div class="wrap" id="app"></div>
 <div class="cart" id="cart" style="display:none"><div class="in" id="cartin"></div></div>
@@ -1889,7 +1914,7 @@ async function telaMesa(){
     '<div class="tit" style="margin-top:18px">Ou digite o número</div>'+
     '<input type="number" id="nmesa" inputmode="numeric" placeholder="ex.: 5">'+
     '<button class="big" onclick="abrirMesa()">Abrir mesa</button>'+
-    '<div class="mut" style="margin-top:14px">A <b>mesa</b> é o lugar; a <b>comanda (300–400)</b> é a pessoa. Dentro da mesa dá pra abrir comandas.</div>');
+    '<div class="mut" style="margin-top:14px">${COMANDA_ATIVA ? 'A <b>mesa</b> é o lugar; a <b>comanda (' + COMANDA_MIN + '–' + COMANDA_MAX + ')</b> é a pessoa. Dentro da mesa dá pra abrir comandas.' : 'Cada <b>mesa</b> tem a sua própria conta.'}</div>');
   var el=document.getElementById('nmesa');
   el.addEventListener('keydown',function(e){if(e.key==='Enter')abrirMesa()});
   var d=await jget('/api/venda/abertas');
@@ -1922,7 +1947,7 @@ async function acaoConta(acao){
 }
 // Mesa mudou de lugar, ou a comanda foi pra outra mesa.
 function telaTransferir(){
-  var ehComanda=ALVO>=300;
+  var ehComanda=ALVO>=${COMANDA_DE};
   app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">'+(ehComanda?'Mover a comanda '+ALVO:'Mover a mesa '+MESA)+'</div>'+
     '<div class="mut" style="margin-bottom:12px">'+(ehComanda
@@ -1935,22 +1960,22 @@ function telaTransferir(){
 }
 async function confirmarTransf(){
   var d=Number((document.getElementById('dest')||{}).value);
-  if(!(d>=1&&d<300)){alert('Informe a mesa de destino (1 a 299)');return}
-  var origem=ALVO>=300?ALVO:MESA;
-  if(!confirm('Transferir '+(ALVO>=300?'a comanda '+origem:'tudo da mesa '+origem)+' para a mesa '+d+'?'))return;
+  if(!(d>=1&&d<=${MESA_MAX})){alert('Informe a mesa de destino (1 a ${MESA_MAX})');return}
+  var origem=ALVO>=${COMANDA_DE}?ALVO:MESA;
+  if(!confirm('Transferir '+(ALVO>=${COMANDA_DE}?'a comanda '+origem:'tudo da mesa '+origem)+' para a mesa '+d+'?'))return;
   var r=await jpost('/api/venda/transferir',{de:origem,para:d});
   var m=document.getElementById('msg');
   if(!r.ok){if(m)m.innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';return}
-  MESA=d;ALVO=ALVO>=300?ALVO:d;
+  MESA=d;ALVO=ALVO>=${COMANDA_DE}?ALVO:d;
   app('<div class="ok"><div class="t">✓ Transferido</div><div class="mut" style="margin-top:6px">'+esc(r.msg)+'</div></div>'+
     '<button class="big" onclick="carregarMesa()">Abrir a mesa '+d+'</button>');
 }
-function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
+function rotuloAlvo(){return (ALVO>=${COMANDA_DE}?'da comanda '+ALVO:'da mesa '+MESA)}
 // conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
 function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
-  if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
+  if(!(n>=1&&n<=${MESA_MAX})){alert('Mesa de 1 a ${MESA_MAX}');return}
   MESA=n;ALVO=n;await carregarMesa();
 }
 async function carregarMesa(){
@@ -1964,7 +1989,7 @@ async function carregarMesa(){
       (quem?esc(quem):'Comanda '+c)+(quem?' <span class="mut" style="font-weight:400">·'+c+'</span>':'')+
       infoDe(c)+'</button>';
   });
-  chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
+  if(${COMANDA_ATIVA})chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
   var quemMesa=INFO.cliente;
   app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
     '<div class="cliente" onclick="telaCliente('+MESA+')">'+
@@ -1985,7 +2010,7 @@ async function carregarMesa(){
       '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
     '</div>'+
     '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
-      (ALVO>=300?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
+      (ALVO>=${COMANDA_DE}?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
     '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
   var el=document.getElementById('busca');
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
@@ -2040,11 +2065,11 @@ function setAlvo(n){ALVO=n;carregarMesa()}
 // Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
 // pessoa não quiser dar, segue só com o número, como sempre foi.
 function addComanda(){
-  var c=prompt('Número da comanda (300–400):');if(!c)return;
+  var c=prompt('Número da comanda (${COMANDA_MIN}–${COMANDA_MAX}):');if(!c)return;
   criarComanda(Number(c));
 }
 async function criarComanda(c){
-  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
   var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
   if(!r.ok){alert(r.erro);return}
   ALVO=c;await carregarMesa();
@@ -2056,7 +2081,7 @@ var CPFINFO=null,cpfDeb=null,ALVOID=null;
 function telaCliente(numero){
   ALVOID=Number(numero);CPFINFO=null;
   app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
-    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=300?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
+    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=${COMANDA_DE}?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
     '<div class="tit" style="margin-top:14px">CPF</div>'+
     '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
     '<div id="quem" class="mut" style="margin-top:10px">Digite o CPF que o nome vem sozinho.</div>'+
@@ -2136,15 +2161,15 @@ async function salvarCliente(){
   var r=await jpost('/api/venda/identificar',body);
   if(!r.ok){alert(r.erro);return}
   CPFINFO=null;
-  if(ALVOID>=300)ALVO=ALVOID;
+  if(ALVOID>=${COMANDA_DE})ALVO=ALVOID;
   await carregarMesa();
 }
-function rotuloAlvo(){return (ALVO>=300?'da comanda '+ALVO:'da mesa '+MESA)}
+function rotuloAlvo(){return (ALVO>=${COMANDA_DE}?'da comanda '+ALVO:'da mesa '+MESA)}
 // conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
 function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
-  if(!(n>=1&&n<300)){alert('Mesa de 1 a 299');return}
+  if(!(n>=1&&n<=${MESA_MAX})){alert('Mesa de 1 a ${MESA_MAX}');return}
   MESA=n;ALVO=n;await carregarMesa();
 }
 async function carregarMesa(){
@@ -2158,7 +2183,7 @@ async function carregarMesa(){
       (quem?esc(quem):'Comanda '+c)+(quem?' <span class="mut" style="font-weight:400">·'+c+'</span>':'')+
       infoDe(c)+'</button>';
   });
-  chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
+  if(${COMANDA_ATIVA})chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
   var quemMesa=INFO.cliente;
   app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
     '<div class="cliente" onclick="telaCliente('+MESA+')">'+
@@ -2179,7 +2204,7 @@ async function carregarMesa(){
       '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
     '</div>'+
     '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
-      (ALVO>=300?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
+      (ALVO>=${COMANDA_DE}?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
     '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
   var el=document.getElementById('busca');
   el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
@@ -2234,11 +2259,11 @@ function setAlvo(n){ALVO=n;carregarMesa()}
 // Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
 // pessoa não quiser dar, segue só com o número, como sempre foi.
 function addComanda(){
-  var c=prompt('Número da comanda (300–400):');if(!c)return;
+  var c=prompt('Número da comanda (${COMANDA_MIN}–${COMANDA_MAX}):');if(!c)return;
   criarComanda(Number(c));
 }
 async function criarComanda(c){
-  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
   var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
   if(!r.ok){alert(r.erro);return}
   ALVO=c;await carregarMesa();
@@ -2250,7 +2275,7 @@ var CPFINFO=null,cpfDeb=null,ALVOID=null;
 function telaCliente(numero){
   ALVOID=Number(numero);CPFINFO=null;
   app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
-    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=300?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
+    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=${COMANDA_DE}?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
     '<div class="segs"><button class="seg on" id="sgc" onclick="modoDoc(\\'cpf\\')">CPF</button>'+
     '<button class="seg" id="sgt" onclick="modoDoc(\\'tel\\')">WhatsApp</button></div>'+
     '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
@@ -2297,12 +2322,12 @@ async function salvarCliente(){
   var r=await jpost('/api/venda/identificar',body);
   if(!r.ok){alert(r.erro);return}
   CPFINFO=null;
-  if(ALVOID>=300)ALVO=ALVOID;
+  if(ALVOID>=${COMANDA_DE})ALVO=ALVOID;
   await carregarMesa();
 }
 async function criarComanda(){
   var c=Number((document.getElementById('ncmd')||{}).value);
-  if(!(c>=300&&c<=400)){alert('Comanda de 300 a 400');return}
+  if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
   var cpf=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
   var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim()||null);
   var body={mesa:MESA,comanda:c};
@@ -2348,7 +2373,7 @@ async function revisar(){
     if(!grupos[k]){grupos[k]=[];ordem.push(k)}
     grupos[k].push(i);
   });
-  var alvoTxt=(ALVO>=300?'Comanda '+ALVO+(MESA&&MESA!==ALVO?' · Mesa '+MESA:''):'Mesa '+MESA);
+  var alvoTxt=(ALVO>=${COMANDA_DE}?'Comanda '+ALVO+(MESA&&MESA!==ALVO?' · Mesa '+MESA:''):'Mesa '+MESA);
   var h='<button class="back" onclick="carregarMesa()">◂ voltar e ajustar</button>'+
     '<div class="tit" style="margin-top:12px">Confira antes de enviar — <b>'+esc(alvoTxt)+'</b></div>';
   if(ordem.length>1){
@@ -2393,7 +2418,7 @@ function renderCart(){
       '<button class="rm" onclick="rm('+ix+')">✕</button></div>';
   }).join('');
   var tot=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
-  var alvoTxt=ALVO>=300?('Comanda '+ALVO+' · Mesa '+MESA):('Mesa '+MESA);
+  var alvoTxt=ALVO>=${COMANDA_DE}?('Comanda '+ALVO+' · Mesa '+MESA):('Mesa '+MESA);
   document.getElementById('cartin').innerHTML=rows+
     '<div class="tot"><span>'+alvoTxt+'</span><span>'+brl(tot)+'</span></div>'+
     '<button class="big" onclick="revisar()">REVISAR PEDIDO ('+CART.reduce(function(s,i){return s+i.qtd},0)+')</button>'+
@@ -2410,7 +2435,7 @@ async function enviar(){
   if(r.ok){
     CART=[];JUNTO=false;renderCart();
     app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
-      '<div class="mut" style="margin-top:6px">'+(r.numero>=300?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
+      '<div class="mut" style="margin-top:6px">'+(r.numero>=${COMANDA_DE}?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
       ' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>'+
       '<button class="big" onclick="carregarMesa()">Continuar nesta mesa</button>'+
       '<button class="big" style="background:#888" onclick="telaMesa()">Outra mesa</button>');
@@ -2488,7 +2513,7 @@ async function apiClienteHistorico({ numero, contato }) {
 /** Pedido feito pelo PRÓPRIO cliente, do celular dele, pelo QR da mesa. */
 async function apiMesaPedir(body) {
   const numero = Number(body.mesa);
-  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
   // trava no SERVIDOR: a tela pode estar velha, ter sido restaurada pelo
   // navegador ou ser de alguem que ja foi embora. Se a sessao nao bate, nao
   // lanca — senao daria pra pedir na conta de outra pessoa.
@@ -2526,13 +2551,13 @@ function qrSvg(texto, px = 150) {
 async function apiQrcodes(de, ate) {
   const base = ipDaLoja();
   const ini = Math.max(1, Number(de) || 1);
-  const fim = Math.min(COMANDA_MAX, Number(ate) || 30);
+  const fim = Math.min(MESA_MAX, Number(ate) || 30);
   const mesas = [];
   for (let n = ini; n <= fim; n++) mesas.push({ numero: n, url: `${base}/mesa?n=${n}`, svg: qrSvg(`${base}/mesa?n=${n}`) });
   return { base, de: ini, ate: fim, mesas };
 }
 const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QR das mesas — Prainha Bar</title><style>
+<title>QR das mesas — ${LOJA_NOME}</title><style>
 :root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
 *{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
 .barra{background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -2565,7 +2590,7 @@ async function carregar(){
   document.getElementById('info').innerHTML='Aponta para <b>'+esc(d.base)+'</b> — o celular precisa estar no Wi-Fi da casa. '+
     'Se o IP da máquina mudar, os QR param de funcionar: fixe o IP ou use a variável URL_PUBLICA.';
   document.getElementById('app').innerHTML=d.mesas.map(function(m){
-    return '<div class="cd"><div class="casa">Prainha Bar</div><div class="n">'+m.numero+'</div>'+
+    return '<div class="cd"><div class="casa">${LOJA_NOME}</div><div class="n">'+m.numero+'</div>'+
       m.svg+'<div class="cha">Aponte a câmera<br>conta · chamar garçom · Pix</div></div>';
   }).join('');
 }
@@ -2721,7 +2746,7 @@ async function apiPixCobrar(body) {
     calendario: { expiracao: 1800 },
     valor: { original: valor.toFixed(2) },
     chave: c.chave,
-    solicitacaoPagador: 'Mesa ' + Number(body.mesa) + ' - Prainha Bar',
+    solicitacaoPagador: 'Mesa ' + Number(body.mesa) + ' - ' + LOJA_NOME,
   } });
   if (r.status !== 201 && r.status !== 200) {
     return { ok: false, erro: 'Inter recusou a cobrança: ' + (r.data?.detail || r.data?.title || r.raw || 'HTTP ' + r.status) };
@@ -2744,7 +2769,7 @@ async function apiSaidaGerar(body) {
   const criancas = Math.max(0, Math.min(50, Number(body.criancas) || 0));
   const pessoas = adultos + criancas;
   if (!(pessoas >= 1)) return { ok: false, erro: 'informe pelo menos 1 pessoa' };
-  if (!(mesa >= 1 && mesa <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  if (!(mesa >= 1 && mesa <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
   const token = 'S' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1e8).toString(36).toUpperCase();
   await sql`INSERT INTO saida_qr (token, mesa, pessoas, adultos, criancas, origem, expira_em)
     VALUES (${token}, ${mesa}, ${pessoas}, ${adultos}, ${criancas}, ${String(body.origem || '').slice(0, 20) || null},
@@ -2895,7 +2920,7 @@ async function apiContaTexto(numero) {
   // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
   // Sem isso, na hora de dividir a conta a mesa faz a conta de cabeça e erra.
   const comandas = [];
-  if (n < COMANDA_MIN) {
+  if (n < COMANDA_DE) {
     const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
       WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
     for (const v of vinc) {
@@ -2917,7 +2942,7 @@ async function apiContaTexto(numero) {
     pago, resta: Math.max(0, comServico - pago) };
 }
 const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Conta — Prainha Bar</title><style>
+<title>Conta — ${LOJA_NOME}</title><style>
 :root{--ink:#141418;--mut:#6e6e78;--line:#dcdce3}
 *{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
 .barra{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;align-items:center}
@@ -2954,7 +2979,7 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
   if(!d.ok){app.innerHTML='<div class="erro">'+esc(d.erro||'erro')+'</div>';return}
   var h='<div class="cupom"><div class="cab"><div class="n">PRAINHA BAR</div>'+
     '<div class="s">CONFERÊNCIA DE CONSUMO<br>não é documento fiscal</div></div><hr>'+
-    '<div class="lin"><span>'+(Number(d.numero)>=300?'Comanda':'Mesa')+' <b>'+d.numero+'</b></span>'+
+    '<div class="lin"><span>'+(Number(d.numero)>=${COMANDA_DE}?'Comanda':'Mesa')+' <b>'+d.numero+'</b></span>'+
     '<span>'+new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</span></div>'+
     (d.nome?'<div class="lin"><span>Cliente</span><span>'+esc(d.nome)+'</span></div>':'')+
     (d.pessoas?'<div class="lin"><span>Pessoas</span><span>'+d.pessoas+'</span></div>':'')+'<hr>';
@@ -2987,7 +3012,7 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
 // Serve pra testar e pra operar na mão enquanto a catraca não estiver ligada
 // na API. A catraca de verdade só precisa chamar /api/saida/passar?t=CODIGO.
 const CATRACA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Saída — Prainha Bar</title><style>
+<title>Saída — ${LOJA_NOME}</title><style>
 :root{--bg:#12121a;--ink:#f4f4f7;--mut:#9a9aa8;--ok:#15a34a;--no:#dc2626}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif;min-height:100vh}
 .wrap{max-width:520px;margin:0 auto;padding:26px 20px}
@@ -3077,7 +3102,7 @@ carregarAtivos();setInterval(carregarAtivos,10000);
 
 // ---- /tempos — configuração do tempo de preparo ----
 const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Prainha Bar — Tempo de preparo</title><style>
+<title>${LOJA_NOME} — Tempo de preparo</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
 header{background:#fff;border-bottom:1px solid var(--line);padding:13px 20px;display:flex;align-items:center;gap:12px}
@@ -3179,7 +3204,7 @@ carregar();
 // ---- /mesa?n=12 — o que o CLIENTE vê no QR da mesa ----
 // Fica no servidor da loja: funciona no Wi-Fi da casa sem depender de internet.
 const MESA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Prainha Bar</title><style>
+<title>${LOJA_NOME}</title><style>
 :root{--bg:#f2f2f5;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--line:#e3e3e9}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
 .wrap{max-width:460px;margin:0 auto;padding:28px 20px}
@@ -3333,7 +3358,7 @@ async function inicio(){
   if(MESA&&!(await sessaoOk()))return;
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
-  var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'Prainha <b>Bar</b>';
+  var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'${LOJA_HTML}';
   var h='<h1>'+saud+'</h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
     (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">');
   if(EU&&EU.identificado){
@@ -3819,7 +3844,7 @@ inicio();
 
 // ---- TELA DE CONTA / PAGAMENTO (Fase 2) ----
 const CONTA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Prainha Bar — Conta</title><style>
+<title>${LOJA_NOME} — Conta</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
 header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px}
@@ -3849,7 +3874,7 @@ h1{font-size:17px;margin:0}h1 b{color:var(--gold2)}
 .conta:active{border-color:var(--gold2);background:#fff8f3}
 .conta .v{font-weight:800;font-size:17px;white-space:nowrap}
 </style></head><body>
-<header><a class="back" href="/venda">‹ Venda</a><h1>Prainha <b>Conta</b></h1></header>
+<header><a class="back" href="/venda">‹ Venda</a><h1>${LOJA_HTML} · Conta</h1></header>
 <div class="wrap" id="app"></div>
 <script>
 var NUM=null,MESA=null,DADOS=null,FORMA=null,MODOS=['manual'];
@@ -3864,14 +3889,14 @@ function telaNumero(){
     '<div class="card"><div class="mut" style="margin-bottom:8px">Número da MESA</div>'+
     '<input class="num" id="n" type="number" inputmode="numeric" placeholder="ex.: 12" autofocus>'+
     '<button class="big" style="margin-top:12px" onclick="abrirMesa()">VER CONTAS DA MESA</button>'+
-    '<div class="mut" style="margin-top:10px;text-align:center">A mesa pode ter várias comandas (300–400).<br>Se souber o número da comanda, digite ele direto.</div></div>';
+    '<div class="mut" style="margin-top:10px;text-align:center">${COMANDA_ATIVA ? 'A mesa pode ter várias comandas (' + COMANDA_MIN + '–' + COMANDA_MAX + ').<br>Se souber o número da comanda, digite ele direto.' : 'Digite o número da sua mesa.'}</div></div>';
   document.getElementById('n').addEventListener('keydown',function(e){if(e.key==='Enter')abrirMesa()});
 }
 /** Mesa -> mostra as contas dela (a própria mesa + comandas vinculadas). */
 async function abrirMesa(){
   var n=Number(document.getElementById('n').value);
   if(!n)return;
-  if(n>=300){NUM=n;return carregar();}   // digitou a comanda direto
+  if(n>=${COMANDA_DE}){NUM=n;return carregar();}   // digitou a comanda direto
   MESA=n;
   var d=await jget('/api/venda/mesa?n='+n);
   var contas=(d.abertos||[]);
@@ -3884,7 +3909,7 @@ async function abrirMesa(){
   var h='<div class="card"><div style="font-weight:700;font-size:16px">Mesa '+n+'</div>'+
     '<div class="mut" style="margin:2px 0 12px">'+contas.length+' contas abertas · total geral '+brl(geral)+'</div>';
   contas.forEach(function(c){
-    var eh=c.numero>=300;
+    var eh=c.numero>=${COMANDA_DE};
     h+='<button class="conta" onclick="NUM='+c.numero+';carregar()">'+
        '<span><b>'+(eh?'Comanda '+c.numero:'Mesa '+c.numero)+'</b><br><span class="mut">'+c.itens+' itens</span></span>'+
        '<span class="v">'+brl(c.valor_total)+'</span></button>';
@@ -3903,7 +3928,7 @@ async function carregar(){
 function render(){
   var d=DADOS,h='';
   h+='<div class="card"><div style="font-weight:700;font-size:16px;margin-bottom:8px">'+
-     (d.numero>=300?'Comanda '+d.numero+(d.mesa?' · Mesa '+d.mesa:''):'Mesa '+d.numero)+
+     (d.numero>=${COMANDA_DE}?'Comanda '+d.numero+(d.mesa?' · Mesa '+d.mesa:''):'Mesa '+d.numero)+
      ' <span class="mut">· pedido #'+d.pedido_fb+'</span></div>';
   d.itens.filter(function(i){return i.tipo!==2}).forEach(function(i){
     h+='<div class="it"><div>'+esc(i.nome)+' <span class="q">×'+i.qtd+'</span></div><div>'+brl(i.valor)+'</div></div>';
