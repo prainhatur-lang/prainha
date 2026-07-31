@@ -1858,6 +1858,57 @@ puxarChamados();setInterval(puxarChamados,15000);
 telaMesa();
 </script></body></html>`;
 
+// ---- HISTÓRICO DE CONSUMO do cliente ----
+// O que essa pessoa já pediu aqui. Serve pro cliente ("pedir de novo") e pro
+// garçom sugerir. Fonte: PEDIDOS.CODIGOCONTATOCLIENTE (887 pedidos vinculados).
+async function apiClienteHistorico({ numero, contato }) {
+  let contatoFb = contato ? Number(contato) : null;
+  let nome = null;
+  if (!contatoFb && numero) {
+    const id = (await sql`SELECT contato_fb, nome_curto FROM identificacao WHERE numero=${Number(numero)} AND fechada_em IS NULL`)[0];
+    contatoFb = id?.contato_fb ?? null;
+    nome = id?.nome_curto ?? null;
+  }
+  if (!contatoFb) return { ok: true, identificado: false, itens: [], visitas: 0 };
+  const r = await qi(`SELECT FIRST 12 TRIM(i.NOMEPRODUTO) NOME, i.CODIGOPRODUTODETALHE PDV,
+      COUNT(*) VEZES, MAX(p.DATAABERTURA) ULT
+    FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+    WHERE p.CODIGOCONTATOCLIENTE = ${contatoFb} AND i.DATADELETE IS NULL
+      AND p.DATADELETE IS NULL AND i.CODIGOITEMPEDIDOTIPO <> 2
+    GROUP BY 1, 2 ORDER BY 3 DESC`);
+  if (!r.ok) return { ok: false, erro: 'histórico indisponível: ' + r.err };
+  const v = await qi(`SELECT COUNT(*) VISITAS, COALESCE(SUM(VALORTOTAL),0) GASTO, MAX(DATAABERTURA) ULT
+    FROM PEDIDOS WHERE CODIGOCONTATOCLIENTE = ${contatoFb} AND DATADELETE IS NULL`);
+  // só oferece o que dá pra vender AGORA (preço, não pausado, com estoque)
+  const pdvs = r.rows.map((x) => N(x.PDV)).filter(Boolean);
+  const vend = pdvs.length
+    ? await sql`SELECT codigo_pdv, nome, tamanho, preco, area_codigo, sem_estoque FROM produto_local WHERE codigo_pdv = ANY(${pdvs})`
+    : [];
+  const porPdv = new Map(vend.map((x) => [Number(x.codigo_pdv), x]));
+  const itens = r.rows.map((x) => {
+    const p = porPdv.get(N(x.PDV));
+    return { nome: T(x.NOME), codigo_pdv: N(x.PDV), vezes: Number(x.VEZES), ultima: x.ULT,
+      disponivel: !!p && !p.sem_estoque, preco: p ? Number(p.preco) : null, tamanho: p?.tamanho ?? null };
+  });
+  const st = v.ok && v.rows.length ? v.rows[0] : {};
+  return { ok: true, identificado: true, nome, contato_fb: contatoFb, itens,
+    visitas: Number(st.VISITAS || 0), gasto: Number(st.GASTO || 0), ultima_visita: st.ULT || null };
+}
+/** Pedido feito pelo PRÓPRIO cliente, do celular dele, pelo QR da mesa. */
+async function apiMesaPedir(body) {
+  const numero = Number(body.mesa);
+  if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  const itens = Array.isArray(body.itens) ? body.itens.slice(0, 30) : [];
+  if (!itens.length) return { ok: false, erro: 'sem itens' };
+  const r = await apiVendaEnviar({ numero, itens, junto: false });
+  if (r.ok) {
+    // o garçom fica sabendo que a mesa pediu sozinha
+    await apiChamadoCriar({ mesa: numero, tipo: 'garcom', origem: 'pedido-cliente',
+      texto: 'pediu pelo celular: ' + itens.length + ' item(ns)' }).catch(() => {});
+  }
+  return r;
+}
+
 // ---- QR CODES das mesas (pra imprimir e colar) ----
 // O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
 // /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
@@ -2121,19 +2172,163 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
 .copia{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px;font-family:Menlo,monospace;
   font-size:11px;word-break:break-all;line-height:1.4;max-height:110px;overflow:auto}
+.b.ped{background:var(--gold2)}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-top:12px}
+.card .lin{display:flex;justify-content:space-between;padding:4px 0;font-size:14.5px}
+.cats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0;max-height:264px;overflow-y:auto}
+.cat{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px 8px;font:inherit;font-size:13px;
+  cursor:pointer;color:var(--ink);text-align:center;min-height:60px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:3px;line-height:1.2}
+.cat span{font-size:11px;color:var(--mut)}
+.cabg{display:flex;align-items:center;gap:10px;padding:10px 0;font-size:15px}
+.voltag{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
+.pr{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);
+  border-radius:11px;padding:12px 13px;margin-top:7px;cursor:pointer;font-size:15px}
+.pr:active{background:#faf5ef}
+.pr.off{opacity:.45;cursor:default;background:#fafafa}
+.pr .pn small{display:block;color:var(--mut);font-size:11.5px}
+.pr .pv{color:var(--gold2);font-weight:700;white-space:nowrap}
+#cart{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);
+  box-shadow:0 -4px 18px rgba(0,0,0,.12);max-height:56vh;overflow:auto;z-index:9}
+#cart .cin{max-width:460px;margin:0 auto;padding:12px 20px 16px}
+#cart .ci{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f1f1f4;font-size:14.5px}
+#cart .ci span{flex:1}
+#cart .ci button{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:#f7f7fa;
+  font-size:18px;font-weight:700;cursor:pointer;color:var(--ink);padding:0;margin:0}
+#cart .ct{display:flex;justify-content:space-between;padding:11px 0 9px;font-size:15px}
+body{padding-bottom:120px}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function app(h){document.getElementById('app').innerHTML=h}
-function inicio(){
-  app('<h1>Prainha <b>Bar</b></h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
-    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+
-    '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
-    '<button class="b pix" onclick="telaPix()">Pagar com Pix</button>'+
-    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
-    '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
-    '<div class="mut" style="margin-top:22px">O garçom recebe o aviso na hora.</div>');
+var EU=null, CART=[], CATS=null;
+async function inicio(){
+  var n=MESA?Number(MESA):null;
+  if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
+  var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'Prainha <b>Bar</b>';
+  var h='<h1>'+saud+'</h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
+    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">');
+  if(EU&&EU.identificado){
+    h+='<div class="card"><div class="lin"><span>Suas visitas</span><b>'+EU.visitas+'</b></div>'+
+       (EU.itens&&EU.itens.length?'<div class="lin"><span>Costuma pedir</span><b>'+esc(EU.itens[0].nome)+'</b></div>':'')+
+       '</div>';
+  } else {
+    h+='<button class="b g" onclick="telaCadastro()">Quer se identificar? <span style="font-weight:400">(opcional)</span></button>';
+  }
+  h+='<button class="b ped" onclick="telaPedir()">🍽 Fazer pedido</button>'+
+     (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
+     '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
+     '<button class="b pix" onclick="telaPix()">Pagar com Pix</button>'+
+     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
+     '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
+     '<div class="mut" style="margin-top:22px">O garçom recebe seus pedidos e avisos na hora.</div>';
+  app(h);renderCarrinho();
+}
+// ---- cadastro do cliente (tudo opcional) ----
+function telaCadastro(){
+  app('<h1>Seu cadastro</h1><div class="mut" style="margin:6px 0 16px">Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.</div>'+
+    '<input id="cnome" placeholder="seu nome">'+
+    '<input id="ccpf" inputmode="numeric" placeholder="CPF (opcional)">'+
+    '<input id="ctel" inputmode="numeric" placeholder="WhatsApp (opcional)">'+
+    '<button class="b" onclick="salvarCadastro()">Salvar</button>'+
+    '<button class="b g" onclick="inicio()">Agora não</button>');
+}
+async function salvarCadastro(){
+  var n=mesaAtual();if(n===null)return;
+  var nome=(document.getElementById('cnome')||{}).value||'';
+  if(!nome.trim()){alert('Digite pelo menos o seu nome');return}
+  var cpf=((document.getElementById('ccpf')||{}).value||'').replace(/\\D/g,'');
+  var tel=((document.getElementById('ctel')||{}).value||'').replace(/\\D/g,'');
+  var body={numero:n,nome:nome.trim(),cadastrar:true};
+  if(cpf.length===11)body.cpf=cpf;
+  if(tel.length>=10)body.telefone=tel;
+  var r=await post('/api/venda/identificar',body);
+  if(!r.ok){alert(r.erro);return}
+  inicio();
+}
+// ---- histórico: pedir de novo com um toque ----
+function telaHistorico(){
+  var h='<h1>O que você sempre pede</h1><div class="mut" style="margin:6px 0 14px">'+
+    EU.visitas+' visitas · toque pra adicionar</div>';
+  EU.itens.forEach(function(i){
+    h+='<div class="pr'+(i.disponivel?'':' off')+'"'+(i.disponivel?' onclick=\\'addCart('+JSON.stringify(i).replace(/'/g,"&#39;")+')\\'':'')+'>'+
+      '<span class="pn">'+esc(i.nome)+'<small>'+i.vezes+'x'+(i.disponivel?'':' · indisponível')+'</small></span>'+
+      (i.preco?'<span class="pv">R$ '+Number(i.preco).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</span>':'')+'</div>';
+  });
+  h+='<button class="b g" onclick="inicio()">Voltar</button>';
+  app(h);renderCarrinho();
+}
+// ---- cardápio: mesmo catálogo do garçom ----
+async function telaPedir(){
+  if(mesaAtual()===null)return;
+  app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
+    '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
+  if(!CATS)CATS=(await (await fetch('/api/venda/categorias',{cache:'no-store'})).json()).categorias||[];
+  var g=document.getElementById('grid');if(!g)return;
+  g.innerHTML=CATS.map(function(c){
+    return '<button class="cat" onclick=\\'abrirCat('+JSON.stringify(c.categoria).replace(/'/g,"&#39;")+')\\'>'+
+      esc(c.categoria)+'<span>'+c.disp+'</span></button>';
+  }).join('');
+  renderCarrinho();
+}
+async function abrirCat(nome){
+  var d=await (await fetch('/api/venda/categoria?c='+encodeURIComponent(nome),{cache:'no-store'})).json();
+  document.getElementById('grid').style.display='none';
+  listar(d.produtos,nome);
+}
+var bdeb=null;
+function buscarProd(v){
+  clearTimeout(bdeb);
+  var g=document.getElementById('grid');
+  if(!v){if(g)g.style.display='';document.getElementById('lst').innerHTML='';return}
+  if(g)g.style.display='none';
+  if(v.length<2)return;
+  bdeb=setTimeout(async function(){
+    var d=await (await fetch('/api/venda/busca?q='+encodeURIComponent(v),{cache:'no-store'})).json();
+    listar(d.produtos,null);
+  },300);
+}
+function listar(ps,titulo){
+  var h=titulo?'<div class="cabg"><button class="voltag" onclick="telaPedir()">◂ grupos</button><b>'+esc(titulo)+'</b></div>':'';
+  h+=(ps&&ps.length)?ps.map(function(p){
+    return '<div class="pr'+(p.sem_estoque?' off':'')+'"'+(p.sem_estoque?'':' onclick=\\'addCart('+JSON.stringify(p).replace(/'/g,"&#39;")+')\\'')+'>'+
+      '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+
+      (p.sem_estoque?'<small>indisponível</small>':'')+'</span>'+
+      '<span class="pv">R$ '+Number(p.preco).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</span></div>';
+  }).join(''):'<div class="mut" style="padding:14px 2px">nada encontrado</div>';
+  document.getElementById('lst').innerHTML=h;
+}
+function addCart(p){
+  if(p.sem_estoque||p.disponivel===false)return;
+  var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv});
+  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1});
+  renderCarrinho();
+}
+function renderCarrinho(){
+  var el=document.getElementById('cart');
+  if(!el){el=document.createElement('div');el.id='cart';document.body.appendChild(el)}
+  if(!CART.length){el.style.display='none';return}
+  var t=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
+  var n=CART.reduce(function(s,i){return s+i.qtd},0);
+  el.style.display='block';
+  el.innerHTML='<div class="cin">'+CART.map(function(i,ix){
+    return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+'</span>'+
+      '<button onclick="menos('+ix+')">−</button><button onclick="mais('+ix+')">+</button></div>';
+  }).join('')+'<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+  '<button class="b" style="margin:0" onclick="enviarPedido()">Enviar pedido</button></div>';
+}
+function mais(i){CART[i].qtd++;renderCarrinho()}
+function menos(i){CART[i].qtd--;if(CART[i].qtd<1)CART.splice(i,1);renderCarrinho()}
+async function enviarPedido(){
+  var n=mesaAtual();if(n===null)return;
+  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd}})});
+  if(!r.ok){alert(r.erro||'não consegui enviar');return}
+  CART=[];renderCarrinho();
+  app('<div class="ok"><div class="t">✓ Pedido enviado</div><div class="mut" style="margin-top:8px">'+
+    r.n_itens+' item(ns) · a cozinha já recebeu. O garçom foi avisado.</div></div>'+
+    '<button class="b" onclick="inicio()">Voltar</button>');
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
 async function telaPix(){
@@ -2403,6 +2598,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+    if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
+    if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
