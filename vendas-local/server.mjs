@@ -208,6 +208,7 @@ async function initSchema() {
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
+  await sql`CREATE TABLE IF NOT EXISTS observacao_sugerida (categoria text, texto text)`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -307,6 +308,21 @@ async function espelhoCatalogo() {
     await sql`TRUNCATE produto_local`;
     if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque')}`;
   });
+  // Observacoes que a casa ja tem cadastradas, ligadas ao GRUPO do produto:
+  // "Mal passada" aparece em Porcoes, "Com gelo e limao" em Refrigerantes.
+  // A casa nao usa COMPLEMENTOS (tabela vazia) — e' por aqui que o cliente
+  // diz o ponto da carne sem precisar digitar.
+  const obs = await q(`SELECT TRIM(e.DESCRICAO) GRUPO, TRIM(o.DESCRICAO) OBS
+      FROM ETIQUETASOBSERVACOES eo
+      JOIN ETIQUETAS e ON e.CODIGO = eo.CODIGOETIQUETA
+      JOIN OBSERVACOES o ON o.CODIGO = eo.CODIGOOBSERVACAO`);
+  if (obs.ok) {
+    const linhas = obs.rows.map((x) => ({ categoria: T(x.GRUPO), texto: T(x.OBS) })).filter((x) => x.categoria && x.texto);
+    await sql.begin(async (sql) => {
+      await sql`TRUNCATE observacao_sugerida`;
+      if (linhas.length) await sql`INSERT INTO observacao_sugerida ${sql(linhas, 'categoria', 'texto')}`;
+    });
+  }
   const fora = rows.filter((x) => x.sem_estoque).length;
   console.log(`[catalogo] ok — ${rows.length} produtos vendíveis (${fora} sem estoque)`);
 }
@@ -598,6 +614,27 @@ async function apiVendaVincular(body) {
   }
   return { ok: true, comanda, mesa, nome_curto: curto };
 }
+/** Observacoes que a casa sugere pro grupo daquele produto. */
+async function apiObservacoes(codigoPdv) {
+  const p = (await sql`SELECT categoria FROM produto_local WHERE codigo_pdv=${Number(codigoPdv)}`)[0];
+  if (!p?.categoria) return { sugestoes: [] };
+  const r = await sql`SELECT DISTINCT texto FROM observacao_sugerida WHERE categoria=${p.categoria} ORDER BY texto`;
+  return { categoria: p.categoria, sugestoes: r.map((x) => x.texto) };
+}
+/** O que a mesa JA pediu — evita pedir duas vezes a mesma coisa. */
+async function apiJaPedido(numero) {
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} LIMIT 1`)[0];
+  if (!c) return { itens: [] };
+  const r = await sql`SELECT ci.nome, ci.quantidade, ci.detalhes, ci.tipo,
+      COALESCE(ci.produzido, m.pronto_em) AS pronto, COALESCE(ci.entregue, m.entregue_em) AS entregue, ci.criado
+    FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+    WHERE ci.comanda_codigo=${c.codigo} AND ci.tipo IS DISTINCT FROM 2
+    ORDER BY ci.criado NULLS LAST, ci.id`;
+  return { itens: r.map((x) => ({ nome: x.nome, quantidade: Number(x.quantidade) || 1,
+    observacao: temMod(x.detalhes) ? x.detalhes : null,
+    estado: x.entregue ? 'entregue' : x.pronto ? 'pronto' : 'preparando', criado: x.criado })) };
+}
+
 // ---- TRANSFERIR comanda/mesa ----
 // A mesa mudou de lugar, ou a comanda foi pra outra mesa. Dois casos:
 //  - comanda (300-400) -> outra mesa: muda só o vínculo, os itens seguem nela
@@ -2296,7 +2333,7 @@ async function apiMesaPedir(body) {
   if (!(numero >= 1 && numero <= COMANDA_MAX)) return { ok: false, erro: 'mesa inválida' };
   const itens = Array.isArray(body.itens) ? body.itens.slice(0, 30) : [];
   if (!itens.length) return { ok: false, erro: 'sem itens' };
-  const r = await apiVendaEnviar({ numero, itens, junto: false });
+  const r = await apiVendaEnviar({ numero, itens, junto: false }); // obs vai dentro de cada item
   if (r.ok) {
     // o garçom fica sabendo que a mesa pediu sozinha
     await apiChamadoCriar({ mesa: numero, tipo: 'garcom', origem: 'pedido-cliente',
@@ -2994,6 +3031,27 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
   font-size:18px;font-weight:700;cursor:pointer;color:var(--ink);padding:0;margin:0}
 #cart .ct{display:flex;justify-content:space-between;padding:11px 0 9px;font-size:15px}
 body{padding-bottom:120px}
+/* observacao do item: as sugestoes que a casa ja cadastrou pro grupo */
+.obsl{display:flex;flex-wrap:wrap;gap:8px}
+.ob{background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:10px 13px;font:inherit;
+  font-size:14px;cursor:pointer;color:var(--ink)}
+.ob.on{border-color:var(--gold2);background:rgba(224,101,26,.1);color:var(--gold2);font-weight:700}
+.obsv{display:block;color:var(--gold2);font-size:12px;margin-top:2px}
+/* confirmacao GRANDE — tem que dar pra ler de longe, com a mesa cheia */
+.enviadao{background:#0f8a3e;color:#fff;border-radius:20px;padding:36px 22px;text-align:center;margin-top:14px}
+.enviadao .tick{font-size:64px;line-height:1}
+.enviadao .t1{font-size:31px;font-weight:800;letter-spacing:.02em;margin-top:10px;line-height:1.1}
+.enviadao .t2{font-size:31px;font-weight:800;letter-spacing:.02em;line-height:1.1}
+.enviadao .t3{font-size:15px;opacity:.9;margin-top:12px}
+/* o que ja pedi */
+.ja{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);
+  border-left:4px solid #d2d2da;border-radius:11px;padding:12px 13px;margin-top:8px;font-size:15px}
+.ja.preparando{border-left-color:#e0a413}
+.ja.pronto{border-left-color:#15a34a}
+.ja.entregue{border-left-color:#c8c8d0;opacity:.7}
+.ja .q{font-weight:700;color:var(--gold2);min-width:26px}
+.ja .n{flex:1}
+.ja .st{font-size:11.5px;color:var(--mut);white-space:nowrap;align-self:center}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
@@ -3025,6 +3083,7 @@ async function inicio(){
     h+='<button class="b g" onclick="telaCadastro()">Quer se identificar? <span style="font-weight:400">(opcional)</span></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Fazer pedido</button>'+
+     '<button class="b g" onclick="verJaPedido()">📋 O que já pedi</button>'+
      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
      '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
      '<button class="b pix" onclick="telaPix()">Pagar com Pix</button>'+
@@ -3108,10 +3167,38 @@ function listar(ps,titulo){
   }).join(''):'<div class="mut" style="padding:14px 2px">nada encontrado</div>';
   document.getElementById('lst').innerHTML=h;
 }
-function addCart(p){
+async function addCart(p){
   if(p.sem_estoque||p.disponivel===false)return;
-  var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv});
-  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1});
+  // A casa ja tem observacoes cadastradas por grupo ("Mal passada" em Porcoes,
+  // "Com gelo e limao" em Refrigerantes). Mostra as do grupo e deixa escrever.
+  var d;try{d=await (await fetch('/api/observacoes?p='+p.codigo_pdv,{cache:'no-store'})).json()}catch(e){d={sugestoes:[]}}
+  if(!d.sugestoes||!d.sugestoes.length){poeNoCarrinho(p,'');return}
+  PEND=p;PENDOBS='';
+  app('<h1>'+esc(p.nome)+'</h1>'+
+    '<div class="mut" style="margin:6px 0 14px">Quer pedir de algum jeito?</div>'+
+    '<div class="obsl">'+d.sugestoes.map(function(o){
+      return '<button class="ob" onclick=\\'marcaObs('+JSON.stringify(o).replace(/'/g,"&#39;")+',this)\\'>'+esc(o)+'</button>';
+    }).join('')+'</div>'+
+    '<input id="obstxt" placeholder="ou escreva aqui (ex.: sem cebola)" style="margin-top:12px">'+
+    '<button class="b ped" onclick="confirmaObs()">Adicionar ao pedido</button>'+
+    '<button class="b g" onclick="telaPedir()">Cancelar</button>');
+}
+var PEND=null,PENDOBS='';
+function marcaObs(o,el){
+  var sel=PENDOBS.split(' · ').filter(Boolean);
+  var i=sel.indexOf(o);
+  if(i>=0){sel.splice(i,1);el.className='ob'}else{sel.push(o);el.className='ob on'}
+  PENDOBS=sel.join(' · ');
+}
+function confirmaObs(){
+  var livre=((document.getElementById('obstxt')||{}).value||'').trim();
+  var obs=[PENDOBS,livre].filter(Boolean).join(' · ');
+  poeNoCarrinho(PEND,obs);PEND=null;PENDOBS='';
+  telaPedir();
+}
+function poeNoCarrinho(p,obs){
+  var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&(x.obs||'')===(obs||'')});
+  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1,obs:obs||''});
   renderCarrinho();
 }
 function renderCarrinho(){
@@ -3122,7 +3209,7 @@ function renderCarrinho(){
   var n=CART.reduce(function(s,i){return s+i.qtd},0);
   el.style.display='block';
   el.innerHTML='<div class="cin">'+CART.map(function(i,ix){
-    return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+'</span>'+
+    return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+(i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+'</span>'+
       '<button onclick="menos('+ix+')">−</button><button onclick="mais('+ix+')">+</button></div>';
   }).join('')+'<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
   '<button class="b" style="margin:0" onclick="enviarPedido()">Enviar pedido</button></div>';
@@ -3131,12 +3218,29 @@ function mais(i){CART[i].qtd++;renderCarrinho()}
 function menos(i){CART[i].qtd--;if(CART[i].qtd<1)CART.splice(i,1);renderCarrinho()}
 async function enviarPedido(){
   var n=mesaAtual();if(n===null)return;
-  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd}})});
+  var r=await post('/api/mesa/pedir',{mesa:n,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||''}})});
   if(!r.ok){alert(r.erro||'não consegui enviar');return}
   CART=[];renderCarrinho();
-  app('<div class="ok"><div class="t">✓ Pedido enviado</div><div class="mut" style="margin-top:8px">'+
-    r.n_itens+' item(ns) · a cozinha já recebeu. O garçom foi avisado.</div></div>'+
-    '<button class="b" onclick="inicio()">Voltar</button>');
+  app('<div class="enviadao"><div class="tick">✓</div>'+
+    '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A COZINHA</div>'+
+    '<div class="t3">'+r.n_itens+' item'+(r.n_itens>1?'s':'')+' · mesa '+n+'</div></div>'+
+    '<button class="b ped" onclick="verJaPedido()">Ver o que já pedi</button>'+
+    '<button class="b g" onclick="inicio()">Voltar ao início</button>');
+}
+// O que ja esta a caminho — sem isso a mesa pede a mesma coisa duas vezes.
+async function verJaPedido(){
+  var n=mesaAtual();if(n===null)return;
+  var d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json();
+  var its=d.itens||[];
+  var est={preparando:'na cozinha',pronto:'pronto, a caminho',entregue:'já na mesa'};
+  app('<h1>O que você já pediu</h1><div class="mut" style="margin:6px 0 12px">Mesa '+n+' · '+its.length+' item(ns)</div>'+
+    (its.length?its.map(function(i){
+      return '<div class="ja '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
+        '<span class="n">'+esc(i.nome)+(i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+'</span>'+
+        '<span class="st">'+est[i.estado]+'</span></div>';
+    }).join(''):'<div class="mut">nada pedido ainda</div>')+
+    '<button class="b ped" onclick="telaPedir()">Pedir mais</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
 async function telaPix(){
@@ -3513,6 +3617,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
     if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
+    if (p === '/api/observacoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiObservacoes(u.searchParams.get('p') || 0))); }
+    if (p === '/api/ja-pedido') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiJaPedido(u.searchParams.get('n') || 0))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
     if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
