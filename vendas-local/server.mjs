@@ -2567,12 +2567,35 @@ async function interToken(c) {
   return tokenPix.valor;
 }
 /** Cobrança imediata (cob) — o cliente paga e a gente confere por polling. */
+/** Quanto cobrar: o cliente pode pagar SÓ A PARTE DELE e escolher a gorjeta.
+ *  O teto é sempre o que falta pagar — ninguém paga a mais por engano, e
+ *  valor vindo do browser nunca vira cobrança sem passar por aqui. */
+function valorDaCobranca(conta, body) {
+  const itens = Number(conta.total || 0);
+  // gorjeta: null/undefined = mantém os 10% da casa; número = o que o cliente escolheu
+  const pct = body.gorjeta_pct == null ? Number(conta.taxa_servico || 0) : Math.max(0, Math.min(30, Number(body.gorjeta_pct)));
+  const comGorjeta = +(itens * (1 + pct / 100)).toFixed(2);
+  const restaTotal = Math.max(0, +(comGorjeta - Number(conta.pago || 0)).toFixed(2));
+  if (restaTotal <= 0) return { erro: 'essa conta já está paga' };
+  // divisão: paga 1/N do que falta
+  const partes = Math.max(1, Math.min(20, Number(body.dividir_por) || 1));
+  let valor = +(restaTotal / partes).toFixed(2);
+  // valor explícito (o cliente digitou quanto quer pagar)
+  if (body.valor != null) {
+    const v = Number(body.valor);
+    if (!(v > 0)) return { erro: 'valor inválido' };
+    valor = Math.min(+v.toFixed(2), restaTotal); // nunca acima do que falta
+  }
+  if (!(valor > 0)) return { erro: 'não há saldo a pagar nessa mesa' };
+  return { valor, pct, comGorjeta, restaTotal, partes };
+}
 async function apiPixCobrar(body) {
   if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const conta = await apiContaTexto(body.mesa);
   if (!conta.ok) return conta;
-  const valor = Number(conta.resta || conta.total || 0);
-  if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
+  const cob = valorDaCobranca(conta, body);
+  if (cob.erro) return { ok: false, erro: cob.erro };
+  const valor = cob.valor;
   if (PIX_PROVEDOR === 'cielo') {
     const r = await cieloPixCriar(Number(body.mesa), valor);
     if (!r.ok) return r;
@@ -2671,8 +2694,9 @@ async function apiCartaoCobrar(body) {
   if (!cartaoDisponivel()) return { ok: false, erro: 'Pagamento com cartão na tela ainda não está configurado (falta PAGAR_MESA_SECRET/FILIAL_ID).' };
   const conta = await apiContaTexto(body.mesa);
   if (!conta.ok) return conta;
-  const valor = Number(conta.resta || conta.total || 0);
-  if (!(valor > 0)) return { ok: false, erro: 'não há saldo a pagar nessa mesa' };
+  const c = valorDaCobranca(conta, body);
+  if (c.erro) return { ok: false, erro: c.erro };
+  const valor = c.valor;
   const centavos = Math.round(valor * 100);
   const ref = 'M' + Number(body.mesa) + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e6).toString(36);
   const expira = Math.floor(Date.now() / 1000) + 20 * 60; // 20min
@@ -3108,6 +3132,12 @@ body{padding-bottom:120px}
 .ja .q{font-weight:700;color:var(--gold2);min-width:26px}
 .ja .n{flex:1}
 .ja .st{font-size:11.5px;color:var(--mut);white-space:nowrap;align-self:center}
+.aovivo{font-size:10.5px;background:#eafaf0;color:#0f8a3e;border:1px solid #bfe9cf;border-radius:20px;padding:1px 8px;font-weight:700}
+.tit2{font-size:13px;color:var(--mut);margin:16px 0 6px}
+.segs{display:flex;gap:7px;flex-wrap:wrap}
+.seg{flex:1;min-width:64px;background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:11px 6px;
+  font:inherit;font-size:14px;cursor:pointer;color:var(--mut)}
+.seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
@@ -3284,80 +3314,95 @@ async function enviarPedido(){
     '<button class="b g" onclick="inicio()">Voltar ao início</button>');
 }
 // O que ja esta a caminho — sem isso a mesa pede a mesma coisa duas vezes.
+var jaTmr=null, jaEstado='';
+function pararJa(){clearInterval(jaTmr);jaTmr=null}
 async function verJaPedido(){
   var n=mesaAtual();if(n===null)return;
-  var d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json();
+  await pintaJa(n);
+  // ao vivo: o cliente ve o prato mudar de "na cozinha" pra "a caminho" sem
+  // ter que sair e voltar. Para sozinho quando ele troca de tela.
+  clearInterval(jaTmr);
+  jaTmr=setInterval(function(){ if(document.getElementById('jalista'))pintaJa(n); else pararJa(); },8000);
+}
+async function pintaJa(n){
+  var d;try{d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json()}catch(e){return}
   var its=d.itens||[];
   var est={preparando:'na cozinha',pronto:'pronto, a caminho',entregue:'já na mesa'};
-  app('<h1>O que você já pediu</h1><div class="mut" style="margin:6px 0 12px">Mesa '+n+' · '+its.length+' item(ns)</div>'+
-    (its.length?its.map(function(i){
+  var assinatura=its.map(function(i){return i.nome+i.estado}).join('|');
+  var mudou=jaEstado&&jaEstado!==assinatura;
+  jaEstado=assinatura;
+  var prontos=its.filter(function(i){return i.estado==='pronto'}).length;
+  app('<h1>O que você já pediu</h1>'+
+    '<div class="mut" style="margin:6px 0 12px">Mesa '+n+' · '+its.length+' item(ns)'+
+    (prontos?' · <b style="color:#0f8a3e">'+prontos+' a caminho</b>':'')+
+    ' <span class="aovivo">ao vivo</span></div>'+
+    '<div id="jalista">'+(its.length?its.map(function(i){
       return '<div class="ja '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
         '<span class="n">'+esc(i.nome)+(i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+'</span>'+
         '<span class="st">'+est[i.estado]+'</span></div>';
-    }).join(''):'<div class="mut">nada pedido ainda</div>')+
-    '<button class="b ped" onclick="telaPedir()">Pedir mais</button>'+
-    '<button class="b g" onclick="inicio()">Voltar</button>');
+    }).join(''):'<div class="mut">nada pedido ainda</div>')+'</div>'+
+    '<button class="b ped" onclick="pararJa();telaPedir()">Pedir mais</button>'+
+    '<button class="b g" onclick="pararJa();inicio()">Voltar</button>');
+  if(mudou&&navigator.vibrate)try{navigator.vibrate(120)}catch(e){}
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
+var PGGORJ=null, PGPARTES=1;   // gorjeta escolhida (null = a da casa) e em quantos divide
 async function telaPix(){
   var n=mesaAtual();if(n===null)return;
-  app('<h1>Pagar com Pix</h1><div class="mesa">Mesa '+n+'</div><div class="mut">carregando sua conta…</div>');
+  app('<h1>Pagar</h1><div class="mesa">Mesa '+n+'</div><div class="mut">carregando sua conta…</div>');
   var c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json();
   if(!c.ok){app('<div class="ok"><div class="t">Conta não encontrada</div><div class="mut" style="margin-top:8px">'+
     esc(c.erro||'')+'</div></div><button class="b g" onclick="inicio()">Voltar</button>');return}
-  var v=(c.resta||c.total||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
-  var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
-  var h='<h1>Pagar com Pix</h1><div class="mesa">Mesa '+n+'</div>'+
-    '<div class="valor">R$ '+v+'</div>'+
-    '<div class="mut" style="margin:6px 0 18px">'+(c.pago>0?'já pagos R$ '+Number(c.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+' · ':'')+
-    (c.itens||[]).filter(function(i){return i.tipo!==2}).length+' itens</div>';
-  var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
-  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+n+')">Pagar com Pix</button>';
-  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+n+')">Pagar com cartão</button>';
-  if(!st.disponivel&&!ct.disponivel){
-    h+='<div class="aviso">O pagamento pela tela ainda não está ligado nesta casa.<br>'+
-       '<b>Chame o garçom</b> para pagar na maquininha — é um toque abaixo.</div>'+
-       '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
-  }
-  h+='<button class="b ver" onclick="minhaConta()">🧾 Ver o detalhe da conta</button>'+
+  CONTA=c;if(PGGORJ===null)PGGORJ=c.taxa_servico;
+  pintaPagar();
+}
+var CONTA=null;
+function calcPagar(){
+  var itens=CONTA.total||0;
+  var gorj=+(itens*PGGORJ/100).toFixed(2);
+  var total=+(itens+gorj).toFixed(2);
+  var resta=Math.max(0,+(total-(CONTA.pago||0)).toFixed(2));
+  var minha=+(resta/PGPARTES).toFixed(2);
+  return {itens:itens,gorj:gorj,total:total,resta:resta,minha:minha};
+}
+function pintaPagar(){
+  var v=calcPagar(), n=mesaAtual();
+  var h='<h1>Pagar</h1><div class="mesa">Mesa '+n+'</div>'+
+    '<div class="valor">R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · conta de R$ '+v.resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+' dividida por '+PGPARTES:'total a pagar')+'</div>'+
+    '<div class="card"><div class="lin"><span>Consumo</span><b>R$ '+v.itens.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+    (CONTA.pago>0?'<div class="lin"><span>já pago</span><b>− R$ '+Number(CONTA.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>':'')+
+    '<div class="lin"><span>Serviço</span><b>R$ '+v.gorj.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div></div>'+
+    // A taxa de servico e' OPCIONAL por lei — a tela deixa tirar sem constranger.
+    '<div class="tit2">Serviço</div><div class="segs">'+
+      [0,10,15].map(function(p){return '<button class="seg'+(PGGORJ===p?' on':'')+'" onclick="setGorj('+p+')">'+(p===0?'não incluir':p+'%')+'</button>'}).join('')+
+    '</div>'+
+    '<div class="tit2">Dividir por</div><div class="segs">'+
+      [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
+    '</div>'+
+    (PGPARTES>1?'<div class="mut" style="margin-top:8px">Cada pessoa paga a sua e a conta vai baixando sozinha. Quem pagar por último acerta a diferença.</div>':'');
+  h+='<div id="pgbtns"></div>'+
+     '<button class="b ver" onclick="minhaConta()">🧾 Ver o detalhe da conta</button>'+
      '<button class="b g" onclick="inicio()">Voltar</button>';
   app(h);
+  botoesPagar(v.minha);
 }
-// Cartão NÃO é digitado aqui: esta página é HTTP na rede da casa. O cliente vai
-// pro app em HTTPS, e a gente só espera a confirmação.
-async function gerarCartao(n){
-  app('<h1>Pagar com cartão</h1><div class="mut">preparando…</div>');
-  var r=await post('/api/cartao/cobrar',{mesa:n});
-  if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui')+'</div>'+
-    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
-    '<button class="b g" onclick="inicio()">Voltar</button>');return}
-  app('<h1>Pagar com cartão</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
-    '<div class="mut" style="margin:8px 0 4px">Toque no botão para abrir a página segura de pagamento.</div>'+
-    '<a class="b cart" style="display:block;text-align:center;text-decoration:none" href="'+esc(r.url)+'" target="_blank" rel="noopener">Abrir pagamento seguro</a>'+
-    '<div class="mut" style="margin:14px 0 6px">Ou aponte a câmera de outro celular:</div>'+
-    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR do pagamento">':'')+
-    '<div id="pgst" class="mut">aguardando o pagamento…</div>'+
-    '<button class="b g" onclick="pararCartao()">Voltar</button>');
-  vigiarCartao(r.ref);
-}
-var cartTmr=null;
-function pararCartao(){clearInterval(cartTmr);cartTmr=null;inicio()}
-function vigiarCartao(ref){
-  clearInterval(cartTmr);
-  var t=0;
-  cartTmr=setInterval(async function(){
-    if(++t>120){clearInterval(cartTmr);return}
-    var s;try{s=await (await fetch('/api/cartao/conferir?ref='+encodeURIComponent(ref),{cache:'no-store'})).json()}catch(e){return}
-    var el=document.getElementById('pgst');
-    if(s.ok&&s.pago){
-      clearInterval(cartTmr);cartTmr=null;
-      telaPessoas('cartao');
-    } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
-  },5000);
+function setGorj(p){PGGORJ=p;pintaPagar()}
+function setPartes(k){PGPARTES=k;pintaPagar()}
+async function botoesPagar(valor){
+  var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
+  var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
+  var el=document.getElementById('pgbtns');if(!el)return;
+  var h='';
+  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+mesaAtual()+')">Pagar com Pix</button>';
+  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+mesaAtual()+')">Pagar com cartão</button>';
+  if(!st.disponivel&&!ct.disponivel)h+='<div class="aviso">Pagamento pela tela ainda não está ligado. <b>Chame o garçom.</b></div>'+
+    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
+  el.innerHTML=h;
 }
 async function gerarPix(n){
   app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
-  var r=await post('/api/pix/cobrar',{mesa:n});
+  var r=await post('/api/pix/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES});
   if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui gerar')+'</div>'+
     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');return}
@@ -3441,6 +3486,38 @@ function vigiarSaida(token){
   };
   pinta();
   saidaTmr=setInterval(pinta,4000);
+}
+// Cartão NÃO é digitado aqui: esta página é HTTP na rede da casa. O cliente vai
+// pro app em HTTPS, e a gente só espera a confirmação.
+async function gerarCartao(n){
+  app('<h1>Pagar com cartão</h1><div class="mut">preparando…</div>');
+  var r=await post('/api/cartao/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES});
+  if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui')+'</div>'+
+    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
+    '<button class="b g" onclick="inicio()">Voltar</button>');return}
+  app('<h1>Pagar com cartão</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    '<div class="mut" style="margin:8px 0 4px">Toque no botão para abrir a página segura de pagamento.</div>'+
+    '<a class="b cart" style="display:block;text-align:center;text-decoration:none" href="'+esc(r.url)+'" target="_blank" rel="noopener">Abrir pagamento seguro</a>'+
+    '<div class="mut" style="margin:14px 0 6px">Ou aponte a câmera de outro celular:</div>'+
+    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR do pagamento">':'')+
+    '<div id="pgst" class="mut">aguardando o pagamento…</div>'+
+    '<button class="b g" onclick="pararCartao()">Voltar</button>');
+  vigiarCartao(r.ref);
+}
+var cartTmr=null;
+function pararCartao(){clearInterval(cartTmr);cartTmr=null;inicio()}
+function vigiarCartao(ref){
+  clearInterval(cartTmr);
+  var t=0;
+  cartTmr=setInterval(async function(){
+    if(++t>120){clearInterval(cartTmr);return}
+    var s;try{s=await (await fetch('/api/cartao/conferir?ref='+encodeURIComponent(ref),{cache:'no-store'})).json()}catch(e){return}
+    var el=document.getElementById('pgst');
+    if(s.ok&&s.pago){
+      clearInterval(cartTmr);cartTmr=null;
+      telaPessoas('cartao');
+    } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
+  },5000);
 }
 function copiar(){
   var t=(document.getElementById('cp')||{}).textContent||'';
