@@ -106,6 +106,9 @@ export function CreditCardForm({
   const [mpiToken, setMpiToken] = useState('');
   const mpiConfigRef = useRef<{ accessToken: string } | null>(null);
   const threeDsResolverRef = useRef<((v: ThreeDSResult | null) => void) | null>(null);
+  // Qual callback do SDK disparou. Sem isto, "cartão não participa do 3DS" e
+  // "emissor negou" viram a mesma mensagem e não dá pra diagnosticar nada.
+  const motivoRef = useRef<string | null>(null);
 
   const cleanNumber = cardNumber.replace(/\s/g, '');
   const brand = cleanNumber.length >= 4 ? detectBrand(cleanNumber) : '';
@@ -137,11 +140,15 @@ export function CreditCardForm({
           resolverRef.current = null;
         },
         onFailure: function () {
+          motivoRef.current = 'failure'; // 3DS rodou e o emissor NEGOU
           resolverRef.current?.(null);
           resolverRef.current = null;
         },
         onUnenrolled: function (result: BpmpiResult) {
-          // Cartão sem 3DS — segue sem Cavv, a Cielo decide se aceita.
+          // Cartão/emissor não participa do 3DS. É caso NORMAL: a regra permite
+          // seguir com ECI 07 e a Cielo decide. Marcado pra não ser confundido
+          // com uma negativa de verdade.
+          motivoRef.current = 'unenrolled';
           resolverRef.current?.({
             Cavv: result?.Cavv || '',
             Eci: result?.Eci || '07',
@@ -152,15 +159,18 @@ export function CreditCardForm({
           resolverRef.current = null;
         },
         onDisabled: function () {
+          motivoRef.current = 'disabled';
           resolverRef.current?.(null);
           resolverRef.current = null;
         },
         onError: function (err: unknown) {
+          motivoRef.current = 'error';
           console.error('[bpmpi] error', err);
           resolverRef.current?.(null);
           resolverRef.current = null;
         },
         onUnsupportedBrand: function () {
+          motivoRef.current = 'unsupported_brand';
           resolverRef.current?.(null);
           resolverRef.current = null;
         },
@@ -259,8 +269,22 @@ export function CreditCardForm({
     setAuthenticating3DS(true);
     const auth = await authenticate3DS();
     setAuthenticating3DS(false);
-    if (!auth || !auth.Cavv) {
-      setError('Não foi possível autenticar o cartão. Tente outro cartão ou pague via Pix.');
+    // 'unenrolled' = cartão/emissor não participa do 3DS. A regra da bandeira
+    // permite seguir com ECI 07: a Cielo autoriza e o risco daquela transação
+    // fica com a casa. Bloquear isso recusava cartão bom.
+    // Os outros motivos (emissor negou, SDK com erro, bandeira sem suporte)
+    // continuam barrados — aí o cartão realmente não deve passar.
+    const semAutenticacao = !auth || !auth.Cavv;
+    const motivo = motivoRef.current;
+    motivoRef.current = null;
+    if (semAutenticacao && motivo !== 'unenrolled') {
+      setError(
+        motivo === 'failure'
+          ? 'O banco não autorizou a autenticação desse cartão. Tente outro cartão ou pague via Pix.'
+          : motivo === 'unsupported_brand'
+            ? 'Bandeira não aceita nesta forma de pagamento. Tente outro cartão ou pague via Pix.'
+            : `Não consegui autenticar o cartão agora${motivo ? ` (${motivo})` : ''}. Tente de novo ou pague via Pix.`,
+      );
       setProcessing(false);
       return;
     }
