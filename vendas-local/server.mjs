@@ -463,7 +463,7 @@ async function espelhoCatalogo() {
   // Estoque controlado zerado NAO some: vem marcado e a tela mostra cinza.
   const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM,
       TRIM(e.DESCRICAO) CAT, e.ORDEM CATORD, p.ESTOQUECONTROLADO ECTRL, p.ESTOQUEATUAL EATU,
-      p.CARDAPIODIGITAL CARDIG, TRIM(p.DESCRICAO) DESCR, TRIM(p.MODOPREPARO) PREPARO
+      pd.CARDAPIODIGITAL CARDIG, TRIM(p.DESCRICAO) DESCR, TRIM(p.MODOPREPARO) PREPARO
     FROM PRODUTODETALHE pd JOIN PRODUTOS p ON p.CODIGO=pd.CODIGOPRODUTO
     LEFT JOIN PRODUTOTAMANHO pt ON pt.CODIGO=pd.CODIGOPRODUTOTAMANHO
     LEFT JOIN ETIQUETAS e ON e.CODIGO=p.CODIGOETIQUETA AND e.DATADELETE IS NULL
@@ -484,7 +484,12 @@ async function espelhoCatalogo() {
       // flag do proprio Consumer: o que NAO e' de cardapio digital some da
       // tela do cliente (servico, a maioria dos complementos), mas o garcom
       // continua vendo tudo — ele precisa lancar qualquer coisa.
-      cardapio_digital: T(x.CARDIG) === 'S' };
+      // ⚠️ A FLAG QUE VALE É A DA VARIANTE (PRODUTODETALHE), não a do produto.
+      // São duas colunas com o mesmo nome e formatos diferentes: em PRODUTOS é
+      // 'S'/'N', em PRODUTODETALHE é 1/0 — e discordam em 555 variantes. Lendo
+      // a do produto, os 505 itens do Terraço ("T Absolut", "T Germana")
+      // apareciam pro cliente, e outros 50 que deveriam aparecer sumiam.
+      cardapio_digital: N(x.CARDIG) === 1 };
   });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
