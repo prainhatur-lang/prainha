@@ -4060,10 +4060,16 @@ function limpaSes(){ try{sessionStorage.removeItem('prainha_mesa')}catch(e){} SE
 if(MESA){ gravaSes({mesa:Number(MESA),comanda:null,desde:null}); }
 else { var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
 
-/** Confere com o servidor antes de qualquer acao que valha dinheiro. */
+/** Confere com o servidor antes de qualquer acao que valha dinheiro.
+ *  Guarda o "ok" por poucos segundos: inicio() e telaPedir() chamam em
+ *  sequencia, e em rede lenta (o Wi-Fi da loja, no celular do cliente) cada
+ *  ida-e-volta atrasa a tela. A sessao vale 60 min — 6 segundos de folga aqui
+ *  nao afrouxa nada. */
+var _sesOk=0;
 async function sessaoOk(){
   var n=MESA?Number(MESA):null;
   if(!n)return true; // sem mesa ainda: a propria tela pede o numero
+  if(Date.now()-_sesOk<6000)return true;
   var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda!=null?'&c='+SES.comanda+(SES.desde!=null?'&t='+SES.desde:''):'');
   var r;try{r=await (await fetch(q,{cache:'no-store'})).json()}catch(e){return true} // sem rede: nao trava
   if(r.ok){
@@ -4071,8 +4077,10 @@ async function sessaoOk(){
     // o instante do escaneamento (nao reinicia o relogio a cada checagem)
     if(!SES||SES.comanda==null) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:(SES&&SES.desde)||r.agora});
     else if(SES.comanda!==r.comanda_codigo) gravaSes({mesa:n,comanda:r.comanda_codigo,desde:r.agora});
+    _sesOk=Date.now();
     return true;
   }
+  _sesOk=0;
   limpaSes();
   telaReescanear(r.aviso||'Escaneie o QR da mesa pra continuar.');
   return false;
@@ -4234,8 +4242,28 @@ async function telaPedir(){
   app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
     '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
-  if(!CATS)CATS=(await (await fetch('/api/venda/categorias?cliente=1',{cache:'no-store'})).json()).categorias||[];
+  // Sem try/catch, um soluço de rede deixava a tela em "carregando…" PRA
+  // SEMPRE, sem dizer nada — foi assim que o iPhone apareceu "sem grupos".
+  // Agora a falha aparece e dá pra tentar de novo.
+  if(!CATS){
+    try{
+      var rc=await fetch('/api/venda/categorias?cliente=1',{cache:'no-store'});
+      if(!rc.ok)throw new Error('servidor respondeu '+rc.status);
+      CATS=(await rc.json()).categorias||[];
+    }catch(e){
+      CATS=null;
+      var ge=document.getElementById('grid');
+      if(ge)ge.innerHTML='<div class="aviso" style="grid-column:1/-1">Não consegui carregar o cardápio.<br>'+
+        '<small>'+esc((e&&e.message)||e)+'</small></div>'+
+        '<button class="b" style="grid-column:1/-1" onclick="telaPedir()">Tentar de novo</button>';
+      return;
+    }
+  }
   var g=document.getElementById('grid');if(!g)return;
+  if(!CATS.length){
+    g.innerHTML='<div class="aviso" style="grid-column:1/-1">Nenhum grupo disponível agora.</div>';
+    renderCarrinho();return;
+  }
   g.innerHTML=CATS.map(function(c){
     return '<button class="cat" onclick=\\'abrirCat('+JSON.stringify(c.categoria).replace(/'/g,"&#39;")+')\\'>'+
       esc(c.categoria)+'<span>'+c.disp+'</span></button>';
