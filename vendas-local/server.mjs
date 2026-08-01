@@ -634,12 +634,51 @@ async function lioConsultar(orderId) {
 }
 
 // ---- API de VENDA ----
+// ---- VARIANTES DO MESMO PRODUTO ----
+// No Consumer, "Dose/Garrafa" e o SABOR são o mesmo campo (PRODUTOTAMANHO):
+// "Absolut" tem 2 variantes, "T Gin" tem 17 frutas — e o preço muda em cada
+// uma (gin de R$ 25 a 29). Listar 17 linhas quase iguais é ruim de achar e
+// fácil de errar. Então a lista mostra UM "T Gin" e, ao tocar, pergunta qual.
+// Produto de variante única entra direto, sem pergunta nenhuma.
+function agruparVariantes(rows) {
+  const porProduto = new Map();
+  for (const r of rows) {
+    const k = r.produto_codigo != null ? 'p' + r.produto_codigo : 'v' + r.codigo_pdv;
+    if (!porProduto.has(k)) porProduto.set(k, []);
+    porProduto.get(k).push(r);
+  }
+  const out = [];
+  for (const vs of porProduto.values()) {
+    if (vs.length === 1) { out.push(vs[0]); continue; }
+    const disp = vs.filter((v) => !v.sem_estoque);
+    // a faixa de preço vem do que dá pra vender AGORA; se nada, do cadastro
+    const base = disp[0] || vs[0];
+    const precos = (disp.length ? disp : vs).map((v) => Number(v.preco || 0));
+    out.push({ grupo: true, produto_codigo: base.produto_codigo, nome: base.nome,
+      area_codigo: base.area_codigo, variantes: vs.length, disponiveis: disp.length,
+      preco: Math.min(...precos), preco_max: Math.max(...precos),
+      sem_estoque: disp.length === 0 });
+  }
+  // fora de estoque por último, depois nome — mesma ordem de antes
+  return out.sort((a, b) => (a.sem_estoque === b.sem_estoque
+    ? String(a.nome).localeCompare(String(b.nome), 'pt-BR')
+    : (a.sem_estoque ? 1 : -1)));
+}
+/** As variantes de um produto — só as que dá pra vender aparecem em primeiro. */
+async function apiVendaVariantes(produtoCodigo, cliente) {
+  const p = Number(produtoCodigo);
+  if (!(p > 0)) return { ok: false, erro: 'produto inválido' };
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
+    FROM produto_local WHERE produto_codigo=${p} ${soCliente(cliente)}
+    ORDER BY sem_estoque, preco, tamanho`;
+  return { ok: true, nome: rows[0]?.nome ?? null, produtos: rows };
+}
 async function apiVendaBusca(termo) {
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque FROM produto_local
-    WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 30`;
-  return { produtos: rows };
+    WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
+  return { produtos: agruparVariantes(rows) };
 }
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
 /** Filtro do cardápio do CLIENTE: respeita a flag do Consumer e a lista de
@@ -662,7 +701,7 @@ async function apiVendaCategoria(nome, cliente) {
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
     FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
     ORDER BY sem_estoque, nome`;
-  return { categoria: String(nome || ''), produtos: rows };
+  return { categoria: String(nome || ''), produtos: agruparVariantes(rows) };
 }
 /** Grupos que a casa escondeu do cardápio do cliente. */
 async function apiGruposOcultos() {
@@ -2604,11 +2643,36 @@ function fechaCat(){
   carregarCategorias();
 }
 function linhaProduto(p){
+  // GRUPO = produto com mais de uma variante (Dose/Garrafa, ou as frutas do
+  // gin). Mostra uma linha só e pergunta qual ao tocar — o preço muda por
+  // variante, então listar 17 linhas quase iguais só atrapalha.
+  if(p.grupo){
+    var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
+    if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+esc(p.nome)+
+      ' <small>· fora de estoque</small></span><span class="p">'+faixa+'</span></div>';
+    return '<div class="ri" onclick="escolherVariante('+p.produto_codigo+')">'+
+      '<span class="n">'+esc(p.nome)+' <small>· '+p.disponiveis+' opções</small></span>'+
+      '<span class="p">'+faixa+'</span></div>';
+  }
   var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
   if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+nm+' <small>· fora de estoque</small></span>'+
     '<span class="p">'+brl(p.preco)+'</span></div>';
   return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'>'+
     '<span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
+}
+async function escolherVariante(prod){
+  var d=await jget('/api/venda/variantes?p='+prod);
+  if(!d.ok||!d.produtos.length){alert('sem opções disponíveis');return}
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML='<div class="rh">'+esc(d.nome)+' — escolha</div>'+
+    d.produtos.map(function(v){
+      var rot=esc(v.tamanho||'padrão');
+      if(v.sem_estoque)return '<div class="ri fora"><span class="n">'+rot+' <small>· fora</small></span>'+
+        '<span class="p">'+brl(v.preco)+'</span></div>';
+      return '<div class="ri" onclick=\\'addItem('+JSON.stringify(v).replace(/'/g,'&#39;')+')\\'>'+
+        '<span class="n">'+rot+'</span><span class="p">'+brl(v.preco)+'</span></div>';
+    }).join('');
 }
 function mostrarProdutos(ps){
   var el=document.getElementById('res');if(!el)return;
@@ -2798,11 +2862,36 @@ function fechaCat(){
   carregarCategorias();
 }
 function linhaProduto(p){
+  // GRUPO = produto com mais de uma variante (Dose/Garrafa, ou as frutas do
+  // gin). Mostra uma linha só e pergunta qual ao tocar — o preço muda por
+  // variante, então listar 17 linhas quase iguais só atrapalha.
+  if(p.grupo){
+    var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
+    if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+esc(p.nome)+
+      ' <small>· fora de estoque</small></span><span class="p">'+faixa+'</span></div>';
+    return '<div class="ri" onclick="escolherVariante('+p.produto_codigo+')">'+
+      '<span class="n">'+esc(p.nome)+' <small>· '+p.disponiveis+' opções</small></span>'+
+      '<span class="p">'+faixa+'</span></div>';
+  }
   var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
   if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+nm+' <small>· fora de estoque</small></span>'+
     '<span class="p">'+brl(p.preco)+'</span></div>';
   return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'>'+
     '<span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
+}
+async function escolherVariante(prod){
+  var d=await jget('/api/venda/variantes?p='+prod);
+  if(!d.ok||!d.produtos.length){alert('sem opções disponíveis');return}
+  var el=document.getElementById('res');if(!el)return;
+  el.style.display='block';
+  el.innerHTML='<div class="rh">'+esc(d.nome)+' — escolha</div>'+
+    d.produtos.map(function(v){
+      var rot=esc(v.tamanho||'padrão');
+      if(v.sem_estoque)return '<div class="ri fora"><span class="n">'+rot+' <small>· fora</small></span>'+
+        '<span class="p">'+brl(v.preco)+'</span></div>';
+      return '<div class="ri" onclick=\\'addItem('+JSON.stringify(v).replace(/'/g,'&#39;')+')\\'>'+
+        '<span class="n">'+rot+'</span><span class="p">'+brl(v.preco)+'</span></div>';
+    }).join('');
 }
 function mostrarProdutos(ps){
   var el=document.getElementById('res');if(!el)return;
@@ -4350,12 +4439,28 @@ function buscarProd(v){
 function listar(ps,titulo){
   var h=titulo?'<div class="cabg"><button class="voltag" onclick="telaPedir()">◂ grupos</button><b>'+esc(titulo)+'</b></div>':'';
   h+=(ps&&ps.length)?ps.map(function(p){
+    var brl=function(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
+    // GRUPO: produto com várias variantes (Dose/Garrafa, ou a fruta do gin).
+    // Uma linha só; ao tocar, a tela pergunta qual — cada uma tem seu preço.
+    if(p.grupo){
+      var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
+      if(p.sem_estoque)return '<div class="pr off"><span class="pn">'+esc(p.nome)+
+        '<small>indisponível</small></span><span class="pv">'+faixa+'</span></div>';
+      return '<div class="pr" onclick="verVariantes('+p.produto_codigo+')">'+
+        '<span class="pn">'+esc(p.nome)+'<small>'+p.disponiveis+' opções · toque pra escolher</small></span>'+
+        '<span class="pv">'+faixa+'</span></div>';
+    }
     return '<div class="pr'+(p.sem_estoque?' off':'')+'"'+(p.sem_estoque?'':' onclick=\\'addCart('+JSON.stringify(p).replace(/'/g,"&#39;")+')\\'')+'>'+
       '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+
       (p.sem_estoque?'<small>indisponível</small>':'')+'</span>'+
-      '<span class="pv">R$ '+Number(p.preco).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</span></div>';
+      '<span class="pv">'+brl(p.preco)+'</span></div>';
   }).join(''):'<div class="mut" style="padding:14px 2px">nada encontrado</div>';
   document.getElementById('lst').innerHTML=h;
+}
+async function verVariantes(prod){
+  var d;try{d=await (await fetch('/api/venda/variantes?p='+prod+'&cliente=1',{cache:'no-store'})).json()}catch(e){return}
+  if(!d.ok||!d.produtos.length){alert('sem opções disponíveis agora');return}
+  listar(d.produtos, d.nome);
 }
 async function addCart(p){
   if(p.sem_estoque||p.disponivel===false)return;
@@ -5119,6 +5224,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
     if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/grupos-ocultos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGruposOcultos())); }
     if (req.method === 'POST' && p === '/api/grupo-ocultar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGrupoOcultar(body))); }
