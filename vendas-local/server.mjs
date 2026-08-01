@@ -783,12 +783,17 @@ async function apiVendaVariantes(produtoCodigo, cliente) {
     ORDER BY sem_estoque, preco, tamanho`;
   return { ok: true, nome: rows[0]?.nome ?? null, produtos: rows };
 }
-async function apiVendaBusca(termo) {
+async function apiVendaBusca(termo, cliente) {
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
+  // ⚠️ A BUSCA TAMBÉM FILTRA PRO CLIENTE. Ela não filtrava: bastava digitar
+  // "couvert" pra achar e pedir couvert, serviço, complemento interno — tudo
+  // que a casa marcou como fora do cardápio digital. A navegação por grupo já
+  // respeitava; a busca era a porta dos fundos.
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
-    FROM produto_local WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
+    FROM produto_local WHERE nome_busca LIKE ${t} ${soCliente(cliente)}
+    ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
   return { produtos: agruparVariantes(rows) };
 }
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
@@ -3311,6 +3316,21 @@ async function apiMesaPedir(body) {
   }
   const itens = Array.isArray(body.itens) ? body.itens.slice(0, 30) : [];
   if (!itens.length) return { ok: false, erro: 'sem itens' };
+  // ⚠️ O CLIENTE SÓ PEDE O QUE É DO CARDÁPIO DIGITAL. Esconder na tela não
+  // basta: sem esta checagem bastava forjar a chamada com o código do couvert.
+  // O garçom não passa por aqui — ele lança qualquer coisa, de propósito.
+  const pdvs = itens.map((i) => Number(i.codigo_pdv)).filter(Boolean);
+  if (pdvs.length) {
+    const ok = await sql`SELECT codigo_pdv FROM produto_local
+      WHERE codigo_pdv = ANY(${pdvs}) AND cardapio_digital
+        AND categoria NOT IN (SELECT categoria FROM grupo_oculto)`;
+    const liberados = new Set(ok.map((x) => Number(x.codigo_pdv)));
+    const barrado = pdvs.find((c) => !liberados.has(c));
+    if (barrado != null) {
+      const n = (await sql`SELECT nome FROM produto_local WHERE codigo_pdv=${barrado}`)[0];
+      return { ok: false, erro: `"${n?.nome || barrado}" não está disponível para pedido pelo celular. Chame o garçom.` };
+    }
+  }
   const r = await apiVendaEnviar({ numero, itens, junto: false }); // obs vai dentro de cada item
   if (r.ok) {
     // o garçom fica sabendo que a mesa pediu sozinha
@@ -4578,7 +4598,7 @@ function buscarProd(v){
   if(g)g.style.display='none';
   if(v.length<2)return;
   bdeb=setTimeout(async function(){
-    var d=await (await fetch('/api/venda/busca?q='+encodeURIComponent(v),{cache:'no-store'})).json();
+    var d=await (await fetch('/api/venda/busca?q='+encodeURIComponent(v)+'&cliente=1',{cache:'no-store'})).json();
     listar(d.produtos,null);
   },300);
 }
@@ -5462,7 +5482,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(await apiEntrega(a == null || a === '' ? null : Number(a))));
     }
-    if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
+    if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
     if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
