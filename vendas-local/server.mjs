@@ -13,7 +13,8 @@
 import http from 'node:http';
 import https from 'node:https';
 import { createHmac, createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync } from 'node:fs';
+import path from 'node:path';
 import os from 'node:os';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
@@ -274,6 +275,17 @@ async function initSchema() {
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
+  // QUEM BAIXOU: foto de quem tocou "Pronto"/"Entregue", com o que foi baixado.
+  // Sem login no KDS, a foto é a única referência de quem apertou — é o que
+  // permite apurar baixa indevida e resolver "entregaram na mesa errada".
+  // A imagem vai em disco (fotos/AAAA-MM-DD/<id>.jpg); aqui fica só o ponteiro,
+  // pra não inchar o banco com binário.
+  await sql`CREATE TABLE IF NOT EXISTS baixa_foto (id bigserial PRIMARY KEY,
+    criado_em timestamptz DEFAULT now(), acao text NOT NULL,
+    area_codigo integer, area_nome text, numero integer,
+    item_codigos bigint[], itens_nome text, n_itens integer DEFAULT 0,
+    arquivo text, sem_foto_motivo text)`;
+  await sql`CREATE INDEX IF NOT EXISTS baixa_foto_quando ON baixa_foto (criado_em DESC)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -1593,6 +1605,21 @@ async function marcar(body) {
   const col = campo === 'entregue' ? 'entregue_em' : 'pronto_em';
   const on = body.on !== false;
   const val = on ? new Date() : null;
+  // ⚠️ SEM FOTO NÃO BAIXA.
+  // Dar baixa é ato com consequência: o item sai da fila e o cliente é
+  // cobrado. Tem que ter autor. Sem câmera liberada, o tablet não opera —
+  // a checagem é AQUI, não na tela, pra não bastar burlar o navegador.
+  // Desfazer (on=false) não exige: é caminho de correção e travá-lo prenderia
+  // o erro no lugar.
+  let arqFoto = null;
+  if (on) {
+    arqFoto = body.foto ? guardaFoto(body.foto) : null;
+    if (!arqFoto) {
+      return { ok: false, sem_camera: true,
+        erro: 'Sem foto não dá baixa. Libere a câmera neste tablet.' +
+              (body.sem_foto ? ' — ' + String(body.sem_foto).slice(0, 140) : '') };
+    }
+  }
   let codigos = [];
   // lista explícita = "tudo pronto" de UMA rodada (não da comanda inteira,
   // senão baixaria item que ainda nem foi produzido de um lançamento posterior)
@@ -1632,7 +1659,64 @@ async function marcar(body) {
                 area_codigo=COALESCE(marca.area_codigo, EXCLUDED.area_codigo),
                 nome=COALESCE(marca.nome, EXCLUDED.nome)`;
   }
+  await registrarBaixa(campo, codigos, arqFoto, on);
   return { ok: true, n: codigos.length };
+}
+
+// ---- QUEM BAIXOU: a foto de quem tocou a tela ----
+//
+// Não há login no KDS: o tablet fica na praça e qualquer um encosta. A foto é
+// a única referência de QUEM apertou — é o que permite apurar baixa indevida
+// e resolver "entregaram na mesa errada" sem depender da memória de ninguém.
+//
+// ⚠️ SEM CÂMERA O TABLET NÃO OPERA. A baixa é recusada — decisão do dono: um
+// item sai da fila e o cliente é cobrado, então tem que ter autor.
+//
+// Consequência prática, e é séria: a câmera do navegador SÓ funciona em
+// contexto seguro (HTTPS ou localhost). A loja roda HTTP num IP da rede, então
+// CADA TABLET precisa da origem liberada antes de entrar em serviço:
+//   chrome://flags/#unsafely-treat-insecure-origin-as-secure
+//   -> http://IP:8790  -> Relaunch  -> aceitar a permissão da câmera
+// Tablet sem isso não dá baixa nenhuma. É de propósito, mas tem que estar
+// feito ANTES do serviço começar.
+const DIR_FOTOS = path.join(process.cwd(), 'fotos');
+function guardaFoto(dataUrl) {
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+  if (!m) return null;
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length || buf.length > 900_000) return null; // 900 KB: foto de baixa é pequena
+  const dia = new Date().toISOString().slice(0, 10);
+  const pasta = path.join(DIR_FOTOS, dia);
+  mkdirSync(pasta, { recursive: true });
+  const nome = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36) + '.jpg';
+  writeFileSync(path.join(pasta, nome), buf);
+  return dia + '/' + nome;
+}
+async function registrarBaixa(acao, codigos, arquivo, on) {
+  if (!on || !codigos.length) return;            // desmarcar não gera registro
+  try {
+    const its = await sql`SELECT ci.nome, ci.area_codigo, c.numero, a.nome AS area_nome
+      FROM comanda_item ci LEFT JOIN comanda c ON c.codigo=ci.comanda_codigo
+      LEFT JOIN area a ON a.codigo=ci.area_codigo
+      WHERE ci.item_codigo = ANY(${codigos})`;
+    const nomes = [...new Set(its.map((x) => x.nome).filter(Boolean))].join(', ').slice(0, 300);
+    await sql`INSERT INTO baixa_foto (acao, area_codigo, area_nome, numero, item_codigos, itens_nome, n_itens, arquivo, sem_foto_motivo)
+      VALUES (${acao}, ${its[0]?.area_codigo ?? null}, ${its[0]?.area_nome ?? null}, ${its[0]?.numero ?? null},
+              ${codigos}, ${nomes || null}, ${codigos.length}, ${arquivo}, ${null})`;
+  } catch (e) {
+    // a foto já está em disco e a baixa já foi aplicada; só o índice falhou
+    console.error('[baixa] não consegui indexar quem baixou:', e.message);
+  }
+}
+/** Últimas baixas, com quem apertou. */
+async function apiBaixas(limite, area) {
+  const n = Math.min(200, Math.max(1, Number(limite) || 60));
+  const filtro = area == null || area === '' ? sql`TRUE` : sql`area_codigo=${Number(area)}`;
+  const r = await sql`SELECT id, criado_em, acao, area_nome, numero, itens_nome, n_itens, arquivo, sem_foto_motivo
+    FROM baixa_foto WHERE ${filtro} ORDER BY criado_em DESC LIMIT ${n}`;
+  const semFoto = (await sql`SELECT COUNT(*) AS n FROM baixa_foto
+    WHERE arquivo IS NULL AND criado_em > now() - interval '1 day'`)[0];
+  return { baixas: r, sem_foto_24h: Number(semFoto?.n ?? 0) };
 }
 
 // ---- HTML (uma SPA; rota / = produção, /entrega = entrega) ----
@@ -1765,9 +1849,80 @@ function checaNovos(d){var atuais=new Set();(d.comandas||[]).forEach(function(c)
   _vistos=atuais;if(novo)apitar()}
 function irSelecao(){AREA=null;_vistos=null;history.replaceState(0,'','/');setView(selecao)}
 function irArea(cod){AREA={cod:cod};_vistos=null;history.replaceState(0,'','/?area='+cod);setView(kds)}
+/* ---- CÂMERA: quem tocou a tela ----
+   Sem login no KDS o tablet fica na praça e qualquer um encosta. A foto é a
+   única referência de quem apertou.
+   A câmera fica LIGADA de uma vez só: assim o toque não espera warm-up e o
+   Chrome não pede permissão a cada baixa.
+   ⚠️ getUserMedia exige contexto seguro. Em http://IP:8790 não existe, a menos
+   que a origem esteja liberada em chrome://flags. Sem câmera, a baixa
+   acontece do mesmo jeito — parar a cozinha seria pior — e fica registrada
+   com o motivo, que aparece em vermelho no topo até alguém resolver. */
+var CAM={stream:null,video:null,erro:null,pronta:false};
+async function ligaCamera(){
+  if(CAM.pronta)return;
+  if(!window.isSecureContext){
+    CAM.erro='a câmera exige HTTPS — libere esta origem em chrome://flags/#unsafely-treat-insecure-origin-as-secure';return}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    CAM.erro='este navegador não dá acesso à câmera';return}
+  try{
+    var s=await navigator.mediaDevices.getUserMedia({audio:false,
+      video:{facingMode:'user',width:{ideal:480},height:{ideal:360}}});
+    var v=document.createElement('video');
+    v.playsInline=true;v.muted=true;v.autoplay=true;v.srcObject=s;
+    v.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+    document.body.appendChild(v);
+    try{await v.play()}catch(e){}
+    CAM.stream=s;CAM.video=v;CAM.pronta=true;CAM.erro=null;
+  }catch(e){
+    CAM.erro=(e&&e.name==='NotAllowedError')
+      ? 'permissão da câmera negada neste tablet'
+      : 'não consegui abrir a câmera ('+((e&&e.name)||'erro')+')';
+  }
+}
+function fotoAgora(){
+  if(!CAM.pronta||!CAM.video)return null;
+  try{
+    var v=CAM.video;
+    if(!v.videoWidth)return null;                 // ainda não recebeu quadro
+    var w=320,h=Math.round(w*v.videoHeight/v.videoWidth);
+    var c=document.createElement('canvas');c.width=w;c.height=h;
+    c.getContext('2d').drawImage(v,0,0,w,h);
+    return c.toDataURL('image/jpeg',0.55);        // ~20 KB por baixa
+  }catch(e){return null}
+}
+function avisoCam(){
+  if(CAM.pronta)return '';
+  return '<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626">⚠ CÂMERA BLOQUEADA — não dá baixa</span>';
+}
+/* Sem câmera, a tela inteira para: não adianta deixar apertar e levar erro a
+   cada toque no meio do serviço. Mostra o que fazer e um botão pra tentar de
+   novo depois de liberar. */
+function telaSemCamera(){
+  document.getElementById('app').innerHTML=
+    '<div class="sel" style="max-width:760px"><h2 style="color:#dc2626;font-size:19px;font-weight:700">Câmera bloqueada — este tablet não pode dar baixa</h2>'+
+    '<div style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-top:14px;line-height:1.55">'+
+    '<div style="color:#a33;margin-bottom:12px">'+esc(CAM.erro||'a câmera não abriu')+'</div>'+
+    '<b>Como liberar neste aparelho:</b>'+
+    '<ol style="margin:8px 0 0;padding-left:20px">'+
+    '<li>Abrir <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code></li>'+
+    '<li>Colar <code>'+esc(location.origin)+'</code> no campo e marcar <b>Enabled</b></li>'+
+    '<li>Tocar em <b>Relaunch</b></li>'+
+    '<li>Voltar aqui e permitir a câmera quando o Chrome perguntar</li>'+
+    '</ol></div>'+
+    '<button class="abtn" style="margin-top:14px;border-top-color:#dc2626" onclick="tentarCamera()">'+
+    '<div class="an">Já liberei — tentar de novo</div></button></div>';
+}
+async function tentarCamera(){ CAM.erro=null;CAM.pronta=false;await ligaCamera();if(VIEW)VIEW(); }
 async function marca(campo,body){
-  body.campo=campo;body.on=true;
-  try{await fetch('/api/marca',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})}catch(e){}
+  // a foto sai ANTES do fetch: é o instante do toque que interessa
+  var f=fotoAgora();
+  if(!f){ await tentarCamera(); if(!CAM.pronta){telaSemCamera();return} f=fotoAgora(); }
+  if(!f){telaSemCamera();return}
+  body.campo=campo;body.on=true;body.foto=f;
+  var r=null;
+  try{r=await (await fetch('/api/marca',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})).json()}catch(e){}
+  if(r&&r.sem_camera){telaSemCamera();return}
   if(VIEW)VIEW();
 }
 function comandaHTML(c,modo,idx){
@@ -1826,6 +1981,8 @@ async function selecao(){
   }).join('')+'</div></div>';
 }
 async function kds(){
+  await ligaCamera();                       // quem baixar aqui fica registrado
+  if(!CAM.pronta){telaSemCamera();return}   // sem foto não opera
   var d=await (await fetch('/api/kds?area='+AREA.cod,{cache:'no-store'})).json();
   ESPERANDO=d.esperando||[];
   checaNovos(d); // pedido novo na área -> apita
@@ -1835,7 +1992,7 @@ async function kds(){
     '<h1>'+esc(d.area.nome)+' · <b>Produção</b></h1>'+
     '<span class="pill"><b>'+d.nItens+'</b> a produzir</span>'+
     (nCrit?'<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626"><b>'+nCrit+'</b> estourou o prazo</span>':'')+
-    '<span class="grow"></span>'+somBtn()+
+    '<span class="grow"></span>'+avisoCam()+somBtn()+
     '<a class="linkbtn" href="/tempos" title="tempo de preparo">⏱</a>'+
     '<a class="linkbtn go" href="/entrega">Entregas ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
@@ -1902,12 +2059,14 @@ async function selecaoEntrega(){
   }).join('')+'</div></div>';
 }
 async function entrega(){
+  await ligaCamera();                       // idem: quem entregou fica registrado
+  if(!CAM.pronta){telaSemCamera();return}
   var d=await (await fetch('/api/entrega?area='+AREA.cod,{cache:'no-store'})).json();
   checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
   var nome=(d.comandas[0]&&d.comandas[0].itens[0]&&d.comandas[0].itens[0].area_nome)||AREANOME[AREA.cod]||'';
   document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecaoEntrega()">◂ Estações</button>'+
     '<h1>🛎️ '+(nome?esc(nome)+' · ':'')+'<b>Entregas</b></h1>'+
-    '<span class="pill"><b>'+d.nComandas+'</b> comandas</span><span class="pill"><b>'+d.nItens+'</b> prontos</span><span class="grow"></span>'+somBtn()+
+    '<span class="pill"><b>'+d.nComandas+'</b> comandas</span><span class="pill"><b>'+d.nItens+'</b> prontos</span><span class="grow"></span>'+avisoCam()+somBtn()+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
   var corpo=d.comandas.length
@@ -3328,7 +3487,66 @@ carregarAtivos();setInterval(carregarAtivos,10000);
 </script></body></html>`;
 
 // ---- /tempos — configuração do tempo de preparo ----
-const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+// ---- /baixas — QUEM BAIXOU O QUÊ, com a foto de quem tocou a tela ----
+// A pergunta que o histórico do KDS não respondia: "quem apertou pronto nesse
+// item?". Serve pra apurar baixa indevida e pra resolver "entregaram na mesa
+// errada" sem depender da memória de ninguém.
+const BAIXAS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${LOJA_NOME} — Quem baixou</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green2:#0f8a3e;--red:#dc2626;--deliv:#2563eb}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 13px;font:inherit;font-size:14px;cursor:pointer;text-decoration:none}
+.grow{flex:1}
+.pill{font-size:12.5px;color:var(--mut);background:#f4f4f7;border:1px solid var(--line);border-radius:20px;padding:3px 11px}
+.pill.al{background:#dc2626;color:#fff;border-color:#dc2626}
+.wrap{max-width:1180px;margin:0 auto;padding:18px 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.cd{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.cd img{display:block;width:100%;height:170px;object-fit:cover;background:#111}
+.semf{height:170px;display:flex;align-items:center;justify-content:center;text-align:center;
+  background:#faeaea;color:#a33;font-size:12px;padding:14px;line-height:1.35}
+.cb{padding:11px 13px}
+.tp{display:inline-block;font-size:11px;font-weight:700;border-radius:20px;padding:2px 9px;margin-bottom:6px}
+.tp.pronto{background:#eafaf0;color:var(--green2)}.tp.entregue{background:#e8f0fe;color:var(--deliv)}
+.it{font-size:14px;line-height:1.3;margin-bottom:5px}
+.mt{font-size:12px;color:var(--mut);line-height:1.4}
+.vazio{padding:60px 20px;text-align:center;color:var(--mut)}
+</style></head><body>
+<header><a class="back" href="/">◂ Produção</a><h1>Quem <b>baixou</b></h1>
+<span class="grow"></span><span id="al"></span>
+<a class="back" href="/baixas" onclick="carrega();return false">atualizar</a></header>
+<div class="wrap"><div id="app" class="vazio">carregando…</div></div>
+<script>
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
+function hora(t){var d=new Date(t);return d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+async function carrega(){
+  var d;try{d=await (await fetch('/api/baixas?n=120',{cache:'no-store'})).json()}catch(e){return}
+  var al=document.getElementById('al');
+  al.innerHTML=d.sem_foto_24h
+    ? '<span class="pill al">'+d.sem_foto_24h+' baixa(s) sem foto nas últimas 24h</span>'
+    : '<span class="pill">todas com foto nas últimas 24h</span>';
+  var app=document.getElementById('app');
+  if(!d.baixas.length){app.className='vazio';app.innerHTML='nenhuma baixa registrada ainda';return}
+  app.className='grid';
+  app.innerHTML=d.baixas.map(function(b){
+    var img=b.arquivo
+      ? '<img src="/foto/'+esc(b.arquivo)+'" alt="quem baixou" loading="lazy">'
+      : '<div class="semf">sem foto<br><span style="font-size:11px">'+esc(b.sem_foto_motivo||'motivo não registrado')+'</span></div>';
+    return '<div class="cd">'+img+'<div class="cb">'+
+      '<span class="tp '+esc(b.acao)+'">'+(b.acao==='entregue'?'ENTREGOU':'FEZ / DEU PRONTO')+'</span>'+
+      '<div class="it">'+esc(b.itens_nome||'(item sem nome)')+'</div>'+
+      '<div class="mt">'+(b.numero!=null?'mesa/comanda <b>'+b.numero+'</b> · ':'')+
+        (b.n_itens>1?b.n_itens+' itens · ':'')+esc(b.area_nome||'sem praça')+'</div>'+
+      '<div class="mt">'+hora(b.criado_em)+'</div>'+
+    '</div></div>';
+  }).join('');
+}
+carrega();setInterval(carrega,15000);
+</script></body></html>\`;
+
+const TEMPOS_HTML = \`<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME} — Tempo de preparo</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
@@ -4456,6 +4674,19 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
+    // quem baixou o quê: lista e a foto em si
+    if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
+    if (p.startsWith('/foto/')) {
+      // caminho vem do banco, mas normalizo assim mesmo: nada de subir pasta
+      const rel = decodeURIComponent(p.slice(6));
+      if (!/^\d{4}-\d{2}-\d{2}\/[a-z0-9]+\.jpg$/i.test(rel)) { res.writeHead(400); return res.end('caminho inválido'); }
+      const arq = path.join(DIR_FOTOS, rel);
+      if (!existsSync(arq)) { res.writeHead(404); return res.end('não encontrada'); }
+      res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': statSync(arq).size,
+        'cache-control': 'private, max-age=3600' });
+      return createReadStream(arq).pipe(res);
+    }
+    if (p === '/baixas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(BAIXAS_HTML); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
     if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
