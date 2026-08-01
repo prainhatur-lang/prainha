@@ -202,13 +202,17 @@ async function initSchema() {
   await sql`INSERT INTO sync_estado (id) VALUES (1) ON CONFLICT DO NOTHING`;
   // --- VENDA (Fase 1) ---
   // catálogo local (cache do Firebird; a busca do garçom lê daqui — funciona offline)
-  await sql`CREATE TABLE IF NOT EXISTS produto_local (codigo_pdv integer PRIMARY KEY, produto_codigo integer, nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, atualizado timestamptz DEFAULT now())`;
+  // descricao/preparo do Consumer: 216 dos 2.041 produtos tem texto, e sao
+  // justamente os pratos principais — e o que o cliente le antes de pedir
+  await sql`CREATE TABLE IF NOT EXISTS produto_local (codigo_pdv integer PRIMARY KEY, produto_codigo integer, nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, descricao text, preparo text, atualizado timestamptz DEFAULT now())`;
   // nome+tamanho normalizado (sem acento, minusculo) — a busca do garcom usa esta coluna
   await addCol('produto_local', 'nome_busca text');
   // categoria = ETIQUETAS do Consumer (a mesma que monta o cardápio impresso).
   // sem_estoque: produto de estoque controlado que zerou — aparece CINZA, não some.
   await addCol('produto_local', 'categoria text');
   await addCol('produto_local', 'categoria_ordem integer');
+  await addCol('produto_local', 'descricao text');
+  await addCol('produto_local', 'preparo text');
   await addCol('produto_local', 'sem_estoque boolean DEFAULT false');
   await addCol('produto_local', 'cardapio_digital boolean DEFAULT true');
   // grupos que a CASA decidiu esconder do cliente, independente do Consumer
@@ -288,6 +292,12 @@ async function initSchema() {
     item_codigos bigint[], itens_nome text, n_itens integer DEFAULT 0,
     arquivo text, sem_foto_motivo text)`;
   await sql`CREATE INDEX IF NOT EXISTS baixa_foto_quando ON baixa_foto (criado_em DESC)`;
+  // FOTO DO PRODUTO. Vem do Consumer como arquivo <PRODUTOS.CODIGO>.jpg — a
+  // foto é do PRODUTO, não da variante: "T Gin" tem uma só, e as 17 frutas
+  // usam a mesma. Guardar no banco (e não em disco) mantém tudo num lugar só,
+  // entra no backup junto e não depende de caminho de pasta. São ~11 MB.
+  await sql`CREATE TABLE IF NOT EXISTS produto_foto (produto_codigo integer PRIMARY KEY,
+    mime text NOT NULL, bytes bytea NOT NULL, tam integer, atualizado timestamptz DEFAULT now())`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -388,7 +398,7 @@ async function espelhoCatalogo() {
   // Estoque controlado zerado NAO some: vem marcado e a tela mostra cinza.
   const r = await q(`SELECT pd.CODIGO PDV, p.CODIGO PROD, TRIM(p.NOME) NOME, TRIM(pt.DESCRICAO) TAM, pd.PRECOVENDA PV, p.CODIGOCOZINHA COZ, pd.COMANDAMOBILE CM,
       TRIM(e.DESCRICAO) CAT, e.ORDEM CATORD, p.ESTOQUECONTROLADO ECTRL, p.ESTOQUEATUAL EATU,
-      p.CARDAPIODIGITAL CARDIG
+      p.CARDAPIODIGITAL CARDIG, TRIM(p.DESCRICAO) DESCR, TRIM(p.MODOPREPARO) PREPARO
     FROM PRODUTODETALHE pd JOIN PRODUTOS p ON p.CODIGO=pd.CODIGOPRODUTO
     LEFT JOIN PRODUTOTAMANHO pt ON pt.CODIGO=pd.CODIGOPRODUTOTAMANHO
     LEFT JOIN ETIQUETAS e ON e.CODIGO=p.CODIGOETIQUETA AND e.DATADELETE IS NULL
@@ -405,6 +415,7 @@ async function espelhoCatalogo() {
     // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
     // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
     return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque,
+      descricao: T(x.DESCR) || null, preparo: T(x.PREPARO) || null,
       // flag do proprio Consumer: o que NAO e' de cardapio digital some da
       // tela do cliente (servico, a maioria dos complementos), mas o garcom
       // continua vendo tudo — ele precisa lancar qualquer coisa.
@@ -412,7 +423,7 @@ async function espelhoCatalogo() {
   });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
-    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'cardapio_digital')}`;
+    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
   });
   // Observacoes que a casa ja tem cadastradas, ligadas ao GRUPO do produto:
   // "Mal passada" aparece em Porcoes, "Com gelo e limao" em Refrigerantes.
@@ -655,6 +666,7 @@ function agruparVariantes(rows) {
     const base = disp[0] || vs[0];
     const precos = (disp.length ? disp : vs).map((v) => Number(v.preco || 0));
     out.push({ grupo: true, produto_codigo: base.produto_codigo, nome: base.nome,
+      descricao: base.descricao ?? null, tem_foto: !!base.tem_foto,
       area_codigo: base.area_codigo, variantes: vs.length, disponiveis: disp.length,
       preco: Math.min(...precos), preco_max: Math.max(...precos),
       sem_estoque: disp.length === 0 });
@@ -668,7 +680,8 @@ function agruparVariantes(rows) {
 async function apiVendaVariantes(produtoCodigo, cliente) {
   const p = Number(produtoCodigo);
   if (!(p > 0)) return { ok: false, erro: 'produto inválido' };
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE produto_codigo=${p} ${soCliente(cliente)}
     ORDER BY sem_estoque, preco, tamanho`;
   return { ok: true, nome: rows[0]?.nome ?? null, produtos: rows };
@@ -676,8 +689,9 @@ async function apiVendaVariantes(produtoCodigo, cliente) {
 async function apiVendaBusca(termo) {
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque FROM produto_local
-    WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local WHERE nome_busca LIKE ${t} ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
   return { produtos: agruparVariantes(rows) };
 }
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
@@ -698,7 +712,8 @@ async function apiVendaCategorias(cliente) {
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome, cliente) {
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
     ORDER BY sem_estoque, nome`;
   return { categoria: String(nome || ''), produtos: agruparVariantes(rows) };
@@ -4194,6 +4209,18 @@ body{padding-bottom:120px}
 .segs.alvos .seg{flex:1 1 46%;min-width:130px;text-align:left;padding:11px 12px;line-height:1.2;color:var(--ink)}
 .segs.alvos .seg small{display:block;color:var(--mut);font-size:12px;font-weight:400;margin-top:3px}
 .segs.alvos .seg.on small{color:var(--gold2)}
+/* foto do produto: miniatura na lista e a versão grande ao tocar */
+.pr .pfoto{width:52px;height:52px;object-fit:cover;border-radius:9px;flex:none;background:#eee;cursor:zoom-in}
+.pr .pn small.pdesc{display:block;color:var(--mut);font-size:11.5px;line-height:1.35;margin-top:2px;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+#lightbox{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.88);display:none;
+  align-items:center;justify-content:center;padding:18px}
+#lightbox .lbox{max-width:520px;width:100%;text-align:center}
+#lightbox img{width:100%;max-height:64vh;object-fit:contain;border-radius:14px;background:#111}
+#lightbox .lbt{color:#fff;font-size:19px;font-weight:700;margin-top:14px}
+#lightbox .lbd{color:#d9d9de;font-size:14px;line-height:1.5;margin-top:8px}
+#lightbox .lbf{color:#8a8a95;font-size:12px;margin-top:16px}
+
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
@@ -4440,22 +4467,45 @@ function listar(ps,titulo){
   var h=titulo?'<div class="cabg"><button class="voltag" onclick="telaPedir()">◂ grupos</button><b>'+esc(titulo)+'</b></div>':'';
   h+=(ps&&ps.length)?ps.map(function(p){
     var brl=function(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
+    // miniatura: a foto é do PRODUTO, então grupo e item usam a mesma
+    var mini=p.tem_foto
+      ? '<img class="pfoto" src="/produto-foto/'+p.produto_codigo+'" loading="lazy" alt="" '+
+        'onclick="event.stopPropagation();fotoGrande('+p.produto_codigo+',\\''+esc(String(p.nome).replace(/'/g,''))+'\\')">'
+      : '';
     // GRUPO: produto com várias variantes (Dose/Garrafa, ou a fruta do gin).
     // Uma linha só; ao tocar, a tela pergunta qual — cada uma tem seu preço.
     if(p.grupo){
       var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
       if(p.sem_estoque)return '<div class="pr off"><span class="pn">'+esc(p.nome)+
         '<small>indisponível</small></span><span class="pv">'+faixa+'</span></div>';
-      return '<div class="pr" onclick="verVariantes('+p.produto_codigo+')">'+
+      return '<div class="pr" onclick="verVariantes('+p.produto_codigo+')">'+mini+
         '<span class="pn">'+esc(p.nome)+'<small>'+p.disponiveis+' opções · toque pra escolher</small></span>'+
         '<span class="pv">'+faixa+'</span></div>';
     }
-    return '<div class="pr'+(p.sem_estoque?' off':'')+'"'+(p.sem_estoque?'':' onclick=\\'addCart('+JSON.stringify(p).replace(/'/g,"&#39;")+')\\'')+'>'+
+    return '<div class="pr'+(p.sem_estoque?' off':'')+'"'+(p.sem_estoque?'':' onclick=\\'addCart('+JSON.stringify(p).replace(/'/g,"&#39;")+')\\'')+'>'+mini+
       '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+
+      (p.descricao?'<small class="pdesc">'+esc(p.descricao)+'</small>':'')+
       (p.sem_estoque?'<small>indisponível</small>':'')+'</span>'+
       '<span class="pv">'+brl(p.preco)+'</span></div>';
   }).join(''):'<div class="mut" style="padding:14px 2px">nada encontrado</div>';
   document.getElementById('lst').innerHTML=h;
+}
+// Foto grande + a descrição do prato. Quem quer ver melhor toca na miniatura;
+// quem não quer não perde espaço na lista.
+async function fotoGrande(prod,nome){
+  var d=document.getElementById('lightbox');
+  if(!d){d=document.createElement('div');d.id='lightbox';document.body.appendChild(d);
+    d.onclick=function(){d.style.display='none'}}
+  var desc='';
+  try{
+    var r=await (await fetch('/api/venda/variantes?p='+prod+'&cliente=1',{cache:'no-store'})).json();
+    if(r.ok&&r.produtos.length&&r.produtos[0].descricao)desc=r.produtos[0].descricao;
+  }catch(e){}
+  d.style.display='flex';
+  d.innerHTML='<div class="lbox"><img src="/produto-foto/'+prod+'" alt="">'+
+    '<div class="lbt">'+esc(nome||'')+'</div>'+
+    (desc?'<div class="lbd">'+esc(desc)+'</div>':'')+
+    '<div class="lbf">toque pra fechar</div></div>';
 }
 async function verVariantes(prod){
   var d;try{d=await (await fetch('/api/venda/variantes?p='+prod+'&cliente=1',{cache:'no-store'})).json()}catch(e){return}
@@ -5151,6 +5201,16 @@ const server = http.createServer(async (req, res) => {
       return createReadStream(arq).pipe(res);
     }
     if (p === '/baixas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(BAIXAS_HTML); }
+    if (p.startsWith('/produto-foto/')) {
+      const cod = Number(p.slice(14).replace(/\.[a-z]+$/i, ''));
+      if (!(cod > 0)) { res.writeHead(400); return res.end('código inválido'); }
+      const f = (await sql`SELECT mime, bytes FROM produto_foto WHERE produto_codigo=${cod}`)[0];
+      if (!f) { res.writeHead(404); return res.end('sem foto'); }
+      // a foto do produto quase não muda: deixa o navegador guardar
+      res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length,
+        'cache-control': 'public, max-age=86400' });
+      return res.end(f.bytes);
+    }
     if (p === '/camera') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAMERA_HTML); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
     if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
@@ -5231,7 +5291,34 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404); res.end('not found');
   } catch (e) { res.writeHead(500); res.end('erro: ' + e.message); }
 });
+// Importa as fotos que o Consumer exporta (<PRODUTOS.CODIGO>.jpg numa pasta).
+//   node server.mjs --fotos C:\\fotos-produto
+// Roda, importa e sai — não sobe o servidor.
+async function importarFotos(dir) {
+  await initSchema();
+  const arqs = readdirSync(dir).filter((f) => /^\d+\.(jpg|jpeg|png|webp)$/i.test(f));
+  console.log(`[fotos] ${arqs.length} arquivo(s) em ${dir}`);
+  let ok = 0, pulou = 0;
+  for (const f of arqs) {
+    const cod = Number(f.split('.')[0]);
+    if (!(cod > 0)) { pulou++; continue; }
+    const ext = f.split('.').pop().toLowerCase();
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const b = readFileSync(path.join(dir, f));
+    if (!b.length || b.length > 3_000_000) { pulou++; continue; }
+    await sql`INSERT INTO produto_foto (produto_codigo, mime, bytes, tam, atualizado)
+      VALUES (${cod}, ${mime}, ${b}, ${b.length}, now())
+      ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
+        tam=EXCLUDED.tam, atualizado=now()`;
+    ok++;
+  }
+  const t = (await sql`SELECT count(*) n, sum(tam) b FROM produto_foto`)[0];
+  console.log(`[fotos] importadas ${ok}, puladas ${pulou} — banco tem ${t.n} fotos (${Math.round(Number(t.b||0)/1024/1024*10)/10} MB)`);
+  await sql.end();
+}
 async function main() {
+  const iF = process.argv.indexOf('--fotos');
+  if (iF > 0 && process.argv[iF + 1]) { await importarFotos(process.argv[iF + 1]); return; }
   await initSchema(); console.log('[schema] ok');
   server.listen(PORT, () => console.log(`KDS em http://localhost:${PORT}  (/=produção, /entrega=entrega, /venda=garçom)`));
   // HTTPS ao lado: é o endereço que libera a câmera nos tablets
