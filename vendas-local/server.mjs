@@ -2910,7 +2910,18 @@ async function apiSaidaConsultar(token) {
 // seria lido por qualquer um no Wi-Fi. Então a gente só monta um link ASSINADO
 // e manda o cliente pro app (Vercel), que já tem cartão com 3DS. Nenhum dado
 // de cartão passa por esta máquina.
-function cartaoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
+// CARTAO DESLIGADO POR PADRAO — e' decisao, nao esquecimento.
+// A ponte pro app esta pronta e configurada, mas a Cielo recusa: o 3DS devolve
+// 401 (produto nao ativado no EC) e a autorizacao direta devolve 002
+// "Transacao nao permitida". Chamado aberto com eles. Enquanto isso a tela
+// mostra o cartao apagado, em vez de deixar o cliente tentar e levar erro na
+// cara com a conta na mao.
+// Quando a Cielo liberar: CARTAO_ATIVO=true no start.bat e reiniciar.
+const CARTAO_ATIVO = process.env.CARTAO_ATIVO === 'true';
+/** Tem como cobrar no cartao AGORA (config + liberado). */
+function cartaoDisponivel() { return CARTAO_ATIVO && cartaoConfigurado(); }
+/** A ponte esta configurada — usado pra dizer "em breve" em vez de sumir. */
+function cartaoConfigurado() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
 function assinarMesa({ filialId, mesa, valorCentavos, ref, expira }) {
   return createHmac('sha256', PAGAR_MESA_SECRET)
     .update([filialId, mesa, valorCentavos, ref, expira].join('|')).digest('hex');
@@ -3023,19 +3034,36 @@ async function apiContaTexto(numero) {
     for (const v of vinc) {
       const cc = (await sql`SELECT codigo, nome FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
       if (!cc) continue;
-      const its = await sql`SELECT valor_total, tipo FROM comanda_item WHERE comanda_codigo=${cc.codigo}`;
+      // Os ITENS da comanda vão junto: sem eles o cupom mostrava só um total
+      // solto ("302 — R$ 17,60") e a pessoa não tinha como conferir o que
+      // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
+      const its = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
+        WHERE comanda_codigo=${cc.codigo} ORDER BY criado NULLS LAST, id`;
       const sub = its.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
+      // rastro da transferência: de onde essa comanda veio, quando e por quem
+      const tr = (await sql`SELECT de_numero, para_numero, criado_em, por, itens_movidos
+        FROM transferencia WHERE para_numero=${Number(v.comanda)} OR de_numero=${Number(v.comanda)}
+        ORDER BY criado_em DESC LIMIT 1`)[0] || null;
       comandas.push({ numero: Number(v.comanda), nome: idc?.nome_curto || v.nome_curto || cc.nome || null,
+        itens: its, transferencia: tr,
         subtotal: sub, servico: +(sub * TAXA_SERVICO / 100).toFixed(2),
         com_servico: +(sub * (1 + TAXA_SERVICO / 100)).toFixed(2) });
     }
   }
   const servico = +(total * TAXA_SERVICO / 100).toFixed(2);
   const comServico = +(total + servico).toFixed(2);
+  // ⚠️ O total da MESA é só do que foi lançado NELA. Cada comanda é uma conta
+  // separada no Consumer (PEDIDOS próprio), então o consumo dela NÃO entra
+  // aqui. O cupom mostrava "TOTAL 327,80" com uma comanda de 17,60 pendurada
+  // do lado, e quem lia somava errado. Por isso vai também o total geral —
+  // mesa + comandas — pra ninguém fechar a noite achando que cobrou tudo.
+  const totalComandas = comandas.reduce((s, c) => s + Number(c.com_servico || 0), 0);
+  const geral = +(comServico + totalComandas).toFixed(2);
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
     pessoas: c.qtd_pessoas, itens, comandas,
     total, taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
+    total_comandas: +totalComandas.toFixed(2), geral,
     pago, resta: Math.max(0, comServico - pago) };
 }
 const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3092,13 +3120,35 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
     '<div class="tot"><span>A PAGAR</span><span>'+brl(d.resta)+'</span></div>'}
   // Divisão por comanda: cada um vê o seu, já com o serviço somado
   if((d.comandas||[]).length){
-    h+='<hr><div style="text-align:center;font-weight:700;margin-bottom:4px">POR COMANDA</div>';
     d.comandas.forEach(function(c){
-      h+='<div class="it"><span class="q">'+c.numero+'</span>'+
-         '<span class="d">'+esc(c.nome||'sem nome')+'<br><span style="font-size:11px">'+
-         brl(c.subtotal)+' + '+brl(c.servico)+' serv.</span></span>'+
+      h+='<hr><div style="text-align:center;font-weight:700;margin-bottom:4px">COMANDA '+c.numero+
+         (c.nome?' · '+esc(c.nome):'')+'</div>';
+      // De onde veio: comanda transferida sem aviso vira discussão no caixa.
+      if(c.transferencia){
+        var t=c.transferencia;
+        var q=new Date(t.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+        h+='<div style="font-size:11px;text-align:center;margin-bottom:4px">'+
+           'transferida da '+(t.de_numero>=${COMANDA_DE}?'comanda ':'mesa ')+t.de_numero+
+           ' às '+q+(t.por?' por '+esc(t.por):'')+'</div>';
+      }
+      // OS ITENS da comanda. Antes saía só o total: "302 — R$ 17,60", sem
+      // nada pra conferir. Conferência de consumo precisa descrever o consumo.
+      var its=(c.itens||[]).filter(function(i){return i.tipo!==2});
+      if(!its.length) h+='<div class="it"><span class="d" style="font-size:11px">sem consumo lançado</span></div>';
+      its.forEach(function(i){
+        h+='<div class="it"><span class="q">'+Number(i.quantidade)+'x</span>'+
+           '<span class="d">'+esc(i.nome)+'</span>'+
+           '<span class="v">'+brl(i.valor_total)+'</span></div>';
+      });
+      h+='<div class="it"><span class="q"></span><span class="d" style="font-size:11px">'+
+         brl(c.subtotal)+' + '+brl(c.servico)+' serv.</span>'+
          '<span class="v"><b>'+brl(c.com_servico)+'</b></span></div>';
     });
+    // Mesa e comandas são contas SEPARADAS no Consumer. Sem esta linha, quem
+    // lê o cupom soma errado — o TOTAL de cima é só o da mesa.
+    h+='<hr><div class="tot"><span>TOTAL GERAL</span><b>'+brl(d.geral)+'</b></div>'+
+       '<div style="font-size:11px;text-align:center">mesa '+brl(d.com_servico)+
+       ' + comandas '+brl(d.total_comandas)+'</div>';
   }
   h+='<div class="pe">Serviço de '+d.taxa_servico+'% incluso no total.<br>Obrigado pela preferência!</div></div>';
   app.innerHTML=h;
@@ -3314,6 +3364,12 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
 .b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}.b.cart{background:#2563eb}
+/* forma de pagamento: legenda embaixo do nome, e o apagado pra forma que
+   ainda não está liberada — some do caminho sem sumir da tela, pra pessoa
+   entender que existe e não ficar procurando */
+.b small{display:block;font-size:13px;font-weight:400;opacity:.85;margin-top:3px}
+.b.off{background:#e6e6ec;color:#9a9aa4;cursor:not-allowed}
+.b.off small{opacity:1;color:#9a9aa4}
 .cont{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:14px;
   padding:12px 14px;margin-top:10px;font-size:15.5px}
 .cont span{flex:1}.cont b{min-width:30px;text-align:center;font-size:21px}
@@ -3487,7 +3543,7 @@ async function inicio(){
      '<button class="b g" onclick="verJaPedido()">📋 O que já pedi</button>'+
      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
      '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
-     '<button class="b pix" onclick="telaPix()">Pagar com Pix</button>'+
+     '<button class="b pix" onclick="telaPix()">💳 Pagar a conta</button>'+
      '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
      '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
      '<div class="mut" style="margin-top:22px">O garçom recebe seus pedidos e avisos na hora.</div>';
@@ -3853,17 +3909,40 @@ function pintaPagar(){
 function verContaAlvo(){var a=alvoPg();if(a===null)return;location.href='/conta/ver?n='+a}
 function setGorj(p){PGGORJ=p;pintaPagar()}
 function setPartes(k){PGPARTES=k;pintaPagar()}
+// Um botão só — "Pagar a conta". A escolha da forma vem depois, numa tela
+// própria: lá cabe explicar por que o cartão está apagado, o que no meio dos
+// valores viraria ruído.
+var PGSTATUS=null;
 async function botoesPagar(valor){
-  var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
-  var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
+  if(!PGSTATUS){
+    var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
+    var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
+    PGSTATUS={pix:st,cartao:ct};
+  }
   var el=document.getElementById('pgbtns');if(!el)return;
-  var h='';
-  // cobra do ALVO (mesa ou comanda escolhida), não sempre da mesa
-  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+alvoPg()+')">Pagar com Pix</button>';
-  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+alvoPg()+')">Pagar com cartão</button>';
-  if(!st.disponivel&&!ct.disponivel)h+='<div class="aviso">Pagamento pela tela ainda não está ligado. <b>Chame o garçom.</b></div>'+
-    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
-  el.innerHTML=h;
+  el.innerHTML=(PGSTATUS.pix.disponivel||PGSTATUS.cartao.disponivel)
+    ? '<button class="b pix" onclick="telaFormaPg()">Pagar a conta</button>'
+    : '<div class="aviso">Pagamento pela tela ainda não está ligado. <b>Chame o garçom.</b></div>'+
+      '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
+}
+function telaFormaPg(){
+  var v=calcPagar(), alvo=alvoPg(), st=PGSTATUS||{pix:{},cartao:{}};
+  var quem=(PGALVO==null)?('Mesa '+mesaAtual()):('Comanda '+PGALVO+(CONTA.nome?' · '+esc(CONTA.nome):''));
+  var h='<h1>Como você quer pagar</h1><div class="mesa">'+quem+'</div>'+
+    '<div class="valor">R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · dividido por '+PGPARTES:'total a pagar')+'</div>';
+  h+= st.pix.disponivel
+    ? '<button class="b pix" onclick="gerarPix('+alvo+')">Pix<small>o código aparece na tela · cai na hora</small></button>'
+    : '<button class="b pix off" disabled>Pix<small>indisponível agora</small></button>';
+  // Cartão apagado enquanto a Cielo não libera. Fica visível de propósito: a
+  // pessoa vê que existe e não fica procurando onde clicar.
+  h+= st.cartao.disponivel
+    ? '<button class="b cart" onclick="gerarCartao('+alvo+')">Cartão<small>crédito ou débito</small></button>'
+    : '<button class="b cart off" disabled>Cartão<small>'+
+      (st.cartao.motivo==='em breve'?'em breve — ainda não liberado':'não disponível aqui')+
+      '</small></button>';
+  h+='<button class="b g" onclick="pintaPagar()">Voltar</button>';
+  app(h);
 }
 async function gerarPix(n){
   app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
@@ -4270,7 +4349,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/saida/ativos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaAtivos())); }
     if (p === '/api/saida/consultar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaConsultar(u.searchParams.get('t') || ''))); }
     if (p === '/catraca') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CATRACA_HTML); }
-    if (p === '/api/cartao/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ disponivel: cartaoDisponivel() })); }
+    if (p === '/api/cartao/status') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({
+        disponivel: cartaoDisponivel(),
+        configurado: cartaoConfigurado(),
+        // a tela usa isto pra apagar o botão com uma explicação, em vez de sumir
+        motivo: cartaoDisponivel() ? null : (cartaoConfigurado() ? 'em breve' : 'não configurado'),
+      }));
+    }
     if (req.method === 'POST' && p === '/api/cartao/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoCobrar(body))); }
     if (p === '/api/cartao/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoConferir(u.searchParams.get('ref') || ''))); }
     if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
