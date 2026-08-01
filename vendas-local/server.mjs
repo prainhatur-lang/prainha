@@ -718,9 +718,15 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
   const n = Number(numero);
   if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, motivo: 'mesa inválida' };
   const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} LIMIT 1`)[0];
-  if (!c) return { ok: false, motivo: 'fechada', comanda_codigo: null,
-    aviso: 'Essa mesa foi fechada. Escaneie o QR de novo pra começar.' };
-  const atual = Number(c.codigo);
+  // atual = null quer dizer MESA VAZIA (ainda sem conta aberta), e isso NÃO é
+  // erro: o primeiro pedido do cliente é que abre a conta — apiVendaEnviar faz
+  // `if (!ped) ped = await fbCriarPedido(numero)`.
+  //
+  // ⚠️ Tratar mesa vazia como "fechada" fechava um LAÇO: a tela mandava
+  // escanear o QR de novo, mas escanear não abre conta nenhuma, então voltava
+  // a mesma mensagem pra sempre. Quem chegava numa mesa livre — o caso mais
+  // comum que existe — não conseguia nem ver o cardápio.
+  const atual = c ? Number(c.codigo) : null;
   // ⚠️ O TEMPO E' SEMPRE DO SERVIDOR (`agora`). O celular do cliente pode estar
   // com qualquer relogio — e o proprio servidor da loja pode estar errado. Como
   // os dois lados usavam relogios diferentes, a sessao nascia velha: o Windows
@@ -731,8 +737,13 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
   // primeira entrada: o cliente ainda nao tem sessao, devolve a atual
   if (comandaCliente == null) return { ok: true, comanda_codigo: atual, agora, validade_min: SESSAO_MESA_MIN };
   if (Number(comandaCliente) !== atual) {
+    // Aqui o cliente TINHA uma conta e ela mudou — a mesa virou. Reescanear
+    // resolve de verdade: na volta ele vem sem sessão e pega a conta atual
+    // (ou começa numa mesa vazia).
     return { ok: false, motivo: 'trocou', comanda_codigo: atual, agora,
-      aviso: 'Essa mesa foi fechada e aberta de novo. Escaneie o QR pra continuar.' };
+      aviso: atual == null
+        ? 'A conta desta mesa foi fechada. Escaneie o QR pra começar outra.'
+        : 'Essa mesa foi fechada e aberta de novo. Escaneie o QR pra continuar.' };
   }
   // sem `desde` (sessao recem-criada que ainda nao fixou o tempo): nao expira
   const min = desde != null && desde !== '' ? (agora - Number(desde)) / 60000 : 0;
