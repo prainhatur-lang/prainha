@@ -3403,6 +3403,12 @@ body{padding-bottom:120px}
 .seg{flex:1;min-width:64px;background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:11px 6px;
   font:inherit;font-size:14px;cursor:pointer;color:var(--mut)}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
+/* seletor do que pagar (mesa toda x cada comanda): cada opção mostra o valor,
+   pra pessoa escolher sem ter que fazer conta de cabeça */
+.segs.alvos{gap:8px;margin:10px 0 2px}
+.segs.alvos .seg{flex:1 1 46%;min-width:130px;text-align:left;padding:11px 12px;line-height:1.2;color:var(--ink)}
+.segs.alvos .seg small{display:block;color:var(--mut);font-size:12px;font-weight:400;margin-top:3px}
+.segs.alvos .seg.on small{color:var(--gold2)}
 </style></head><body><div class="wrap" id="app"></div>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
@@ -3768,14 +3774,34 @@ async function pintaJa(n){
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
 var PGGORJ=null, PGPARTES=1;   // gorjeta escolhida (null = a da casa) e em quantos divide
+// PGALVO = O QUE está sendo pago: null = a mesa inteira, ou o número da
+// comanda. A comanda existe justamente pra separar quem paga o quê — trazer
+// sempre a conta cheia obriga a mesa a fazer conta de cabeça e errar.
+// No Consumer a comanda é uma conta como outra qualquer (PEDIDOS.NUMERO), então
+// cobrar dela é a MESMA chamada, só mudando o número.
+var PGALVO=null, CONTAMESA=null;
+function alvoPg(){ return PGALVO==null ? mesaAtual() : PGALVO }
 async function telaPix(){
   var n=mesaAtual();if(n===null)return;
   app('<h1>Pagar</h1><div class="mesa">Mesa '+n+'</div><div class="mut">carregando sua conta…</div>');
   var c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json();
   if(!c.ok){app('<div class="ok"><div class="t">Conta não encontrada</div><div class="mut" style="margin-top:8px">'+
     esc(c.erro||'')+'</div></div><button class="b g" onclick="inicio()">Voltar</button>');return}
-  CONTA=c;if(PGGORJ===null)PGGORJ=c.taxa_servico;
+  CONTAMESA=c;PGALVO=null;CONTA=c;
+  if(PGGORJ===null)PGGORJ=c.taxa_servico;
   pintaPagar();
+}
+// Troca o alvo do pagamento. Recarrega a conta daquele número — o subtotal que
+// a mesa já traz serve pro botão, mas o que vale na hora de cobrar é a conta
+// de verdade (com o que já foi pago nela).
+async function setAlvoPg(num){
+  if(PGALVO===num)return;
+  PGPARTES=1;
+  var alvo=(num==null)?mesaAtual():num;
+  app('<h1>Pagar</h1><div class="mut">carregando…</div>');
+  var c=await (await fetch('/api/conta/texto?n='+alvo,{cache:'no-store'})).json();
+  if(!c.ok){alert(c.erro||'não consegui abrir essa conta');pintaPagar();return}
+  PGALVO=num;CONTA=c;pintaPagar();
 }
 var CONTA=null;
 function calcPagar(){
@@ -3788,7 +3814,22 @@ function calcPagar(){
 }
 function pintaPagar(){
   var v=calcPagar(), n=mesaAtual();
-  var h='<h1>Pagar</h1><div class="mesa">Mesa '+n+'</div>'+
+  var cmds=(CONTAMESA&&CONTAMESA.comandas)||[];
+  // Seletor do que pagar. Só aparece quando a mesa TEM comanda vinculada —
+  // numa mesa sem comanda ele seria só um botão inútil ocupando a tela.
+  var sel='';
+  if(cmds.length){
+    sel='<div class="tit2">O que você vai pagar</div><div class="segs alvos">'+
+      '<button class="seg'+(PGALVO==null?' on':'')+'" onclick="setAlvoPg(null)">A mesa toda'+
+        '<small>R$ '+Number(CONTAMESA.com_servico||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</small></button>'+
+      cmds.map(function(c){
+        return '<button class="seg'+(PGALVO===c.numero?' on':'')+'" onclick="setAlvoPg('+c.numero+')">'+
+          (c.nome?esc(c.nome):'Comanda '+c.numero)+
+          '<small>'+(c.nome?'comanda '+c.numero+' · ':'')+'R$ '+Number(c.com_servico||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</small></button>';
+      }).join('')+'</div>';
+  }
+  var titulo=(PGALVO==null)?('Mesa '+n):('Comanda '+PGALVO+(CONTA.nome?' · '+esc(CONTA.nome):'')+' · mesa '+n);
+  var h='<h1>Pagar</h1><div class="mesa">'+titulo+'</div>'+sel+
     '<div class="valor">R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
     '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · conta de R$ '+v.resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+' dividida por '+PGPARTES:'total a pagar')+'</div>'+
     '<div class="card"><div class="lin"><span>Consumo</span><b>R$ '+v.itens.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
@@ -3803,11 +3844,13 @@ function pintaPagar(){
     '</div>'+
     (PGPARTES>1?'<div class="mut" style="margin-top:8px">Cada pessoa paga a sua e a conta vai baixando sozinha. Quem pagar por último acerta a diferença.</div>':'');
   h+='<div id="pgbtns"></div>'+
-     '<button class="b ver" onclick="minhaConta()">🧾 Ver o detalhe da conta</button>'+
+     '<button class="b ver" onclick="verContaAlvo()">🧾 Ver o detalhe '+(PGALVO==null?'da conta':'da comanda '+PGALVO)+'</button>'+
      '<button class="b g" onclick="inicio()">Voltar</button>';
   app(h);
   botoesPagar(v.minha);
 }
+// O detalhe tem que ser o do que está sendo pago, não o da mesa inteira.
+function verContaAlvo(){var a=alvoPg();if(a===null)return;location.href='/conta/ver?n='+a}
 function setGorj(p){PGGORJ=p;pintaPagar()}
 function setPartes(k){PGPARTES=k;pintaPagar()}
 async function botoesPagar(valor){
@@ -3815,8 +3858,9 @@ async function botoesPagar(valor){
   var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
   var el=document.getElementById('pgbtns');if(!el)return;
   var h='';
-  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+mesaAtual()+')">Pagar com Pix</button>';
-  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+mesaAtual()+')">Pagar com cartão</button>';
+  // cobra do ALVO (mesa ou comanda escolhida), não sempre da mesa
+  if(st.disponivel)h+='<button class="b pix" onclick="gerarPix('+alvoPg()+')">Pagar com Pix</button>';
+  if(ct.disponivel)h+='<button class="b cart" onclick="gerarCartao('+alvoPg()+')">Pagar com cartão</button>';
   if(!st.disponivel&&!ct.disponivel)h+='<div class="aviso">Pagamento pela tela ainda não está ligado. <b>Chame o garçom.</b></div>'+
     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
   el.innerHTML=h;
