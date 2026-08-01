@@ -4368,7 +4368,7 @@ function revisarPedido(){
   var marcados=CART.filter(function(i){return i.junto}).length;
   var el=document.getElementById('cart');if(el)el.style.display='none';
   app('<h1>Confira seu pedido</h1>'+
-    '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a cozinha já começa a preparar</div>'+
+    '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a produção já começa a preparar</div>'+
     CART.map(function(i,ix){
       return '<div class="rev"><span class="rq">'+i.qtd+'x</span>'+
         '<span class="rn">'+esc(i.nome)+
@@ -4379,7 +4379,7 @@ function revisarPedido(){
     }).join('')+
     (varias&&marcados>1?'<div class="jdica"><b>'+marcados+' itens</b> vão sair ao mesmo tempo.</div>':'')+
     '<div class="revt"><span>total</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
-    '<button class="b" onclick="enviarPedido()">Confirmar e enviar pra cozinha</button>'+
+    '<button class="b" onclick="enviarPedido()">Confirmar e enviar</button>'+
     '<button class="b g" onclick="voltaDaRev()">Voltar e ajustar</button>');
 }
 function voltaDaRev(){ renderCarrinho(); telaPedir(); }
@@ -4401,7 +4401,7 @@ async function enviarPedido(){
     alert(r.erro||'não consegui enviar');return}
   CART=[];renderCarrinho();
   app('<div class="enviadao"><div class="tick">✓</div>'+
-    '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A COZINHA</div>'+
+    '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A PRODUÇÃO</div>'+
     '<div class="t3">'+r.n_itens+' item'+(r.n_itens>1?'s':'')+' · mesa '+n+'</div></div>'+
     '<button class="b ped" onclick="verJaPedido()">Ver o que já pedi</button>'+
     '<button class="b g" onclick="inicio()">Voltar ao início</button>');
@@ -4412,7 +4412,7 @@ function pararJa(){clearInterval(jaTmr);jaTmr=null}
 async function verJaPedido(){
   var n=mesaAtual();if(n===null)return;
   await pintaJa(n);
-  // ao vivo: o cliente ve o prato mudar de "na cozinha" pra "a caminho" sem
+  // ao vivo: o cliente ve o item mudar de "em produção" pra "a caminho" sem
   // ter que sair e voltar. Para sozinho quando ele troca de tela.
   clearInterval(jaTmr);
   jaTmr=setInterval(function(){ if(document.getElementById('jalista'))pintaJa(n); else pararJa(); },8000);
@@ -4420,7 +4420,7 @@ async function verJaPedido(){
 async function pintaJa(n){
   var d;try{d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json()}catch(e){return}
   var its=d.itens||[];
-  var est={preparando:'na cozinha',pronto:'pronto, a caminho',entregue:'já na mesa'};
+  var est={preparando:'em produção',pronto:'pronto, a caminho',entregue:'já na mesa'};
   var assinatura=its.map(function(i){return i.nome+i.estado}).join('|');
   var mudou=jaEstado&&jaEstado!==assinatura;
   jaEstado=assinatura;
