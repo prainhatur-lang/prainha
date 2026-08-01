@@ -4702,6 +4702,10 @@ function proximaPergunta(){
   p.preco=Number(PERGPROD.preco||0)+precoExtra();
   PERG=null;PERGPROD=null;
   poeNoCarrinho(p, nomes.join(', '), codigos);
+  // volta pro cardápio: quem acabou de adicionar quer escolher a PRÓXIMA
+  // coisa, não continuar olhando a pergunta que já respondeu. Mesmo caminho
+  // que confirmaObs faz no fluxo sem pergunta.
+  telaPedir();
 }
 async function addCartObs(p){
   // A casa ja tem observacoes cadastradas por grupo ("Mal passada" em Porcoes,
