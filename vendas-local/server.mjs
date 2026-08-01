@@ -4259,7 +4259,9 @@ async function carrega(){
 function bot(ix,campo,rot,valor,padrao){
   var efetivo=(valor===null||valor===undefined)?padrao:valor;
   var cls=(valor===null||valor===undefined)?'cb herda '+(efetivo?'on':'off'):'cb '+(efetivo?'on':'off');
-  return '<button class="'+cls+'" onclick="gira('+ix+',\''+campo+'\')">'+rot+'</button>';
+  // &quot; em vez de aspas escapadas: dentro de um template literal a barra
+  // some e o onclick sai quebrado. A entidade HTML atravessa intacta.
+  return '<button class="'+cls+'" onclick="gira('+ix+',&quot;'+campo+'&quot;)">'+rot+'</button>';
 }
 // ciclo: herdado -> sim -> não -> herdado. Sempre dá pra voltar ao padrão.
 async function gira(ix,campo){
@@ -5301,8 +5303,13 @@ function mandarZap(){
   var cod=(document.getElementById('cp')||{}).textContent||'';
   var v=(document.querySelector('#app .valor')||{}).textContent||'';
   var n=mesaAtual();
-  var txt='${LOJA_NOME} — mesa '+n+'\n'+
-    'Pix de '+v.trim()+'\n\n'+cod+'\n\n'+
+  // ATENCAO: a quebra de linha da mensagem precisa de DUAS barras neste
+  // arquivo, porque ele e um template literal. Com uma so, ela vira quebra de
+  // linha DE VERDADE no meio da string e derruba o script inteiro da tela.
+  // Nao escreva sequencia de escape nem em COMENTARIO aqui dentro: o comentario
+  // tambem e cortado, e o resto da linha vira codigo solto.
+  var txt='${LOJA_NOME} — mesa '+n+'\\n'+
+    'Pix de '+v.trim()+'\\n\\n'+cod+'\\n\\n'+
     'Cole no app do banco pra pagar a sua parte.';
   window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
 }
@@ -5836,7 +5843,32 @@ async function importarFotos(dir) {
   console.log(`[fotos] importadas ${ok}, puladas ${pulou} — banco tem ${t.n} fotos (${Math.round(Number(t.b||0)/1024/1024*10)/10} MB)`);
   await sql.end();
 }
+// ---- AS TELAS COMPILAM? ----
+// Este arquivo é um template literal gigante: uma barra a menos num '\\n' ou
+// uma crase solta viram caractere de verdade no HTML e derrubam o script
+// INTEIRO da tela — que continua respondendo HTTP 200, em branco. Já aconteceu
+// duas vezes hoje, e nas duas só descobri pelo usuário.
+// Agora o servidor avisa na partida, antes de alguém abrir a página.
+function conferirTelas() {
+  const telas = { '/': HTML, '/venda': VENDA_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML,
+    '/conta/ver': CONTAVER_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
+    '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML };
+  let ruins = 0;
+  for (const [rota, html] of Object.entries(telas)) {
+    if (typeof html !== 'string') continue;
+    const i = html.lastIndexOf('<script>'), j = html.lastIndexOf('</script>');
+    if (i < 0 || j < i) continue;
+    try {
+      new Function(html.slice(i + 8, j));            // só compila, não executa
+    } catch (e) {
+      ruins++;
+      console.error(`[telas] ⚠️  ${rota} NÃO COMPILA — a página vai abrir em branco: ${e.message}`);
+    }
+  }
+  console.log(ruins ? `[telas] ${ruins} tela(s) quebrada(s)` : '[telas] ok — todas compilam');
+}
 async function main() {
+  conferirTelas();
   const iF = process.argv.indexOf('--fotos');
   if (iF > 0 && process.argv[iF + 1]) { await importarFotos(process.argv[iF + 1]); return; }
   await initSchema(); console.log('[schema] ok');
