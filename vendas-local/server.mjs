@@ -2375,19 +2375,18 @@ async function salvarCliente(){
   if(ALVOID>=${COMANDA_DE})ALVO=ALVOID;
   await carregarMesa();
 }
-async function criarComanda(){
-  var c=Number((document.getElementById('ncmd')||{}).value);
-  if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
-  var cpf=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
-  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim()||null);
-  var body={mesa:MESA,comanda:c};
-  if(cpf.length===11)body.cpf=cpf;
-  if(nome)body.nome=nome;
-  if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
-  var r=await jpost('/api/venda/vincular',body);
-  if(!r.ok){alert(r.erro);return}
-  CPFINFO=null;ALVO=c;await carregarMesa();
-}
+// AQUI HAVIA UMA TERCEIRA criarComanda() QUEBRADA — removida.
+// Ela nao recebia parametro: lia o numero de um campo 'ncmd' que NENHUMA tela
+// desenha (a string 'ncmd' aparecia uma unica vez no arquivo inteiro,
+// justamente na linha que a lia). Como declaracao de funcao e' icada e a
+// ULTIMA vence, era essa que rodava — sombreando as duas versoes boas, que
+// recebem o numero por argumento. Resultado em producao na Prainha Bar: o
+// garcom clicava "+ comanda", digitava 305, e levava "Comanda de 300 a 400".
+// Sempre. O numero ia por argumento e era descartado; o campo inexistente
+// virava NaN. Sobra de uma tela antiga de abrir comanda com formulario.
+//
+// CUIDADO ao editar comentarios aqui dentro: este bloco vive DENTRO de um
+// template literal. Crase fecha a string e quebra o arquivo inteiro.
 function buscar(v){
   BUSCA=v;clearTimeout(debounce);
   // digitou = os grupos somem na hora e a lista fica só do que casa com o texto
