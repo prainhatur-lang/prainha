@@ -2629,6 +2629,46 @@ async function apiMesaPedir(body) {
   return r;
 }
 
+// ---- CLIENTE LEVANDO A PRÓPRIA COMANDA PRA OUTRA MESA ----
+//
+// Duas regras, e as duas valem AQUI no servidor, não na tela:
+//
+//  1. SÓ COMANDA. Mesa→mesa move itens de verdade no Consumer e é operação de
+//     garçom. O cliente não faz isso nem mandando na mão — a tela pode ser
+//     forjada, esta função não.
+//  2. SÓ IDENTIFICADO. Mover uma conta é dinheiro mudando de lugar: tem que
+//     sobrar o rastro de quem moveu. Sem cadastro (CPF ou telefone), devolve
+//     precisa_cadastro e a tela abre o cadastro antes de deixar seguir.
+//
+// O cadastro exigido aqui é o que preenche o "por" da transferência — o campo
+// que ninguém preenchia e que fazia o histórico não servir pra nada.
+async function apiMesaTransferir(body) {
+  if (!COMANDA_ATIVA) return { ok: false, erro: 'esta casa não trabalha com comanda' };
+  const comanda = Number(body.comanda), para = Number(body.para);
+  if (!(comanda >= COMANDA_MIN && comanda <= COMANDA_MAX)) {
+    return { ok: false, erro: `informe a sua comanda (${COMANDA_MIN} a ${COMANDA_MAX})` };
+  }
+  // destino tem que ser MESA. Comanda pra comanda não existe.
+  if (!(para >= 1 && para <= MESA_MAX)) {
+    return { ok: false, erro: `a comanda vai pra uma mesa (1 a ${MESA_MAX})` };
+  }
+  const conta = await sql`SELECT codigo FROM comanda WHERE numero=${comanda} LIMIT 1`;
+  if (!conta.length) return { ok: false, erro: `não há conta aberta na comanda ${comanda}` };
+
+  const id = (await sql`SELECT nome, nome_curto, cpf, telefone FROM identificacao
+    WHERE numero=${comanda} AND fechada_em IS NULL`)[0];
+  if (!id || !(id.cpf || id.telefone)) {
+    return { ok: false, precisa_cadastro: true, comanda,
+      erro: 'Pra levar a comanda pra outra mesa, identifique-se primeiro.' };
+  }
+  const r = await apiTransferir({ de: comanda, para, por: id.nome_curto || id.nome || null });
+  if (!r.ok) return r;
+  // o garçom precisa saber que a mesa mudou sem ele
+  await apiChamadoCriar({ mesa: para, tipo: 'garcom', origem: 'transferencia-cliente',
+    texto: 'comanda ' + comanda + ' veio pra cá' + (id.nome_curto ? ' (' + id.nome_curto + ')' : '') }).catch(() => {});
+  return { ...r, por: id.nome_curto || id.nome || null };
+}
+
 // ---- QR CODES das mesas (pra imprimir e colar) ----
 // O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
 // /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
@@ -3547,16 +3587,27 @@ async function inicio(){
      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
      '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
      '<button class="b pix" onclick="telaPix()">💳 Pagar a conta</button>'+
+     // só onde a casa trabalha com comanda; e o cliente move a COMANDA, nunca a mesa
+     (${COMANDA_ATIVA}?'<button class="b g" onclick="telaLevarComanda()">🔀 Levar minha comanda pra outra mesa</button>':'')+
      '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
      '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
      '<div class="mut" style="margin-top:22px">O garçom recebe seus pedidos e avisos na hora.</div>';
   app(h);renderCarrinho();
 }
 // ---- cadastro do cliente (tudo opcional) ----
-function telaCadastro(){
-  CADINFO=null;
+// telaCadastro({alvo, depois, motivo, exigeDoc})
+//   alvo ..... em QUE número gravar (a mesa, ou a comanda quando o cadastro é
+//              exigido pra levar a comanda). Sem isto, gravava sempre na mesa.
+//   depois ... o que fazer ao salvar (volta pro fluxo que pediu o cadastro)
+//   exigeDoc . CPF ou WhatsApp obrigatório (transferência precisa de rastro)
+var CADALVO=null, POSCAD=null, CADEXIGE=false;
+function telaCadastro(op){
+  CADINFO=null;op=op||{};
+  CADALVO=(op.alvo!=null)?op.alvo:null;
+  POSCAD=op.depois||null;
+  CADEXIGE=!!op.exigeDoc;
   app('<h1>Seu cadastro</h1>'+
-    '<div class="mut" style="margin:6px 0 16px">Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.</div>'+
+    '<div class="mut" style="margin:6px 0 16px">'+esc(op.motivo||'Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.')+'</div>'+
     '<div class="tit2" style="margin-top:0">CPF</div>'+
     '<input id="ccpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpfCli(this.value)">'+
     '<div id="cquem" class="mut" style="margin-top:9px">Digite o CPF que o nome vem sozinho.</div>'+
@@ -3613,19 +3664,81 @@ function olhaZap(v){
   m.style.color='#0f8a3e';m.textContent='✓ (' + d.slice(0,2) + ') ' + d.slice(2);
 }
 async function salvarCadastro(){
-  var n=mesaAtual();if(n===null)return;
+  // grava no ALVO: normalmente a mesa, mas a comanda quando o cadastro foi
+  // exigido pra levá-la — é lá que o servidor procura o rastro de quem moveu
+  var n=(CADALVO!=null)?CADALVO:mesaAtual();if(n===null)return;
   var cpf=((document.getElementById('ccpf')||{}).value||'').replace(/\\D/g,'');
   var zap=((document.getElementById('czap')||{}).value||'').replace(/\\D/g,'');
   var nome=CADINFO?CADINFO.nome:(((document.getElementById('cnome')||{}).value||'').trim());
   if(!nome){alert('Digite seu nome');return}
   if(zap&&zap.length<10){alert('O WhatsApp precisa do DDD (ex.: 79 seguido do número)');return}
+  if(CADEXIGE&&cpf.length!==11&&zap.length<10){
+    alert('Informe o CPF ou o WhatsApp — um dos dois basta.');return}
   var body={numero:n,nome:nome,cadastrar:true};
   if(cpf.length===11)body.cpf=cpf;
   if(zap.length>=10)body.telefone=zap;
   if(CADINFO&&CADINFO.contato_fb)body.contato_fb=CADINFO.contato_fb;
   var r=await post('/api/venda/identificar',body);
   if(!r.ok){alert(r.erro);return}
-  CADINFO=null;inicio();
+  var depois=POSCAD;
+  CADINFO=null;CADALVO=null;POSCAD=null;CADEXIGE=false;
+  if(depois)depois(); else inicio();
+}
+// ---- levar a própria comanda pra outra mesa ----
+// O cliente move só a COMANDA (a conta dele). Mesa inteira é operação de
+// garçom — e a trava está no servidor, não aqui.
+var LEVAR={comanda:null,para:null};
+async function telaLevarComanda(){
+  var n=mesaAtual();if(n===null)return;
+  if(!(await sessaoOk()))return;
+  app('<h1>Levar minha comanda</h1><div class="mut">carregando…</div>');
+  var c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json();
+  var cmds=(c.ok&&c.comandas)||[];
+  var h='<h1>Levar minha comanda</h1>'+
+    '<div class="mut" style="margin:6px 0 14px">Mudou de mesa? A comanda vai junto — o que você já consumiu continua nela.</div>';
+  if(cmds.length){
+    h+='<div class="tit2">Qual é a sua</div><div class="segs alvos">'+cmds.map(function(x){
+      return '<button class="seg'+(LEVAR.comanda===x.numero?' on':'')+'" onclick="escolheComanda('+x.numero+')">'+
+        (x.nome?esc(x.nome):'Comanda '+x.numero)+
+        '<small>comanda '+x.numero+' · R$ '+Number(x.com_servico||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</small></button>';
+    }).join('')+'</div>';
+  }
+  h+='<div class="tit2">Número da comanda</div>'+
+     '<input id="lvc" inputmode="numeric" placeholder="ex.: ${COMANDA_MIN + 5}" value="'+(LEVAR.comanda||'')+'">'+
+     '<div class="tit2">Pra qual mesa você foi</div>'+
+     '<input id="lvm" inputmode="numeric" placeholder="número da mesa (1 a ${MESA_MAX})">'+
+     '<button class="b" onclick="confirmaLevar()">Levar a comanda</button>'+
+     '<button class="b g" onclick="inicio()">Voltar</button>';
+  app(h);
+}
+function escolheComanda(c){LEVAR.comanda=c;telaLevarComanda()}
+async function confirmaLevar(){
+  var c=Number(((document.getElementById('lvc')||{}).value||LEVAR.comanda||0));
+  var m=Number(((document.getElementById('lvm')||{}).value||0));
+  if(!c){alert('Informe o número da sua comanda');return}
+  if(!m){alert('Informe a mesa pra onde você foi');return}
+  LEVAR.comanda=c;LEVAR.para=m;
+  var r=await post('/api/mesa/transferir',{comanda:c,para:m});
+  if(r.precisa_cadastro){
+    telaCadastro({alvo:c,exigeDoc:true,depois:levarDepoisDoCadastro,
+      motivo:'Pra levar a comanda pra outra mesa precisamos saber quem é você. CPF ou WhatsApp — um dos dois basta.'});
+    return;
+  }
+  if(!r.ok){alert(r.erro||'não consegui levar a comanda');return}
+  fimLevar(r);
+}
+async function levarDepoisDoCadastro(){
+  var r=await post('/api/mesa/transferir',{comanda:LEVAR.comanda,para:LEVAR.para});
+  if(!r.ok){alert(r.erro||'não consegui levar a comanda');return}
+  fimLevar(r);
+}
+function fimLevar(r){
+  // a sessão era da mesa antiga — agora o cliente está na nova
+  MESA=String(LEVAR.para);gravaSes({mesa:LEVAR.para,comanda:null,desde:null});
+  app('<div class="enviadao"><div class="tick">✓</div>'+
+    '<div class="t1">COMANDA '+LEVAR.comanda+'</div><div class="t2">AGORA É DA MESA '+LEVAR.para+'</div>'+
+    '<div class="t3">o que você já consumiu continua nela</div></div>'+
+    '<button class="b g" onclick="inicio()">Continuar</button>');
 }
 // ---- histórico: pedir de novo com um toque ----
 function telaHistorico(){
@@ -4390,6 +4503,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
+    // rota SÓ do cliente: comanda pra mesa, e só identificado. Diferente de
+    // /api/transferir (do garçom), que também move mesa inteira.
+    if (req.method === 'POST' && p === '/api/mesa/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaTransferir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
