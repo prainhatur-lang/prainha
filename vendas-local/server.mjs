@@ -603,18 +603,18 @@ async function fbGravarRespostas(ped, itemPai, it) {
     const op = porCodigo.get(Number(r));
     if (!op) continue;
     const v = fbNum(Number(op.preco || 0) * it.qtd);
-    const ins = await qi(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
+    const ins = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
         NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL,
         VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
       VALUES (${ped}, ${itemPai}, ${op.produto_pdv ? Number(op.produto_pdv) : 'NULL'},
         '${fbEsc(op.nome)}', ${fbNum(it.qtd)}, ${fbNum(op.preco || 0)}, ${v}, 0, 0, ${v},
         0, 2, 'NENHUM', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
     if (!ins.ok) { console.error('[resposta] ' + op.nome + ': ' + ins.err); continue; }
-    const g = await qi(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped}
+    const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped}
       AND CODIGOPAI=${itemPai} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
     const filho = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
     if (!filho) continue;
-    const lig = await qi(`INSERT INTO ITEMPEDIDOWIZARDOPCAO (CODIGOITEMPEDIDO, CODIGOWIZARDOPCAO)
+    const lig = await q(`INSERT INTO ITEMPEDIDOWIZARDOPCAO (CODIGOITEMPEDIDO, CODIGOWIZARDOPCAO)
       VALUES (${filho}, ${Number(r)})`);
     if (!lig.ok) console.error('[resposta] vínculo de "' + op.nome + '": ' + lig.err);
   }
