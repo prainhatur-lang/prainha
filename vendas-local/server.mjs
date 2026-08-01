@@ -3688,6 +3688,72 @@ carregarAtivos();setInterval(carregarAtivos,10000);
 </script></body></html>`;
 
 // ---- /tempos — configuração do tempo de preparo ----
+// ---- /camera — teste de 10 segundos, pra preparar cada tablet sem achismo ----
+// "Não seguro" na barra do Chrome é o rótulo normal de certificado próprio e
+// NÃO bloqueia a câmera. Esta página tira a dúvida: diz em português se o
+// aparelho está pronto, e mostra a foto que acabou de tirar.
+const CAMERA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${LOJA_NOME} — Testar câmera</title><style>
+:root{--ink:#1b1b20;--mut:#6e6e78;--line:#e3e3e9;--green2:#0f8a3e;--red:#dc2626;--gold2:#e0651a}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:#f2f2f5;color:var(--ink);padding:20px}
+.wrap{max-width:520px;margin:0 auto}
+h1{font-size:20px;margin:0 0 14px}
+.l{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin-bottom:9px;display:flex;gap:11px;align-items:flex-start}
+.l b{display:block;font-size:15px}.l span{font-size:13px;color:var(--mut);line-height:1.4}
+.ic{font-size:20px;line-height:1}
+.ok{border-left:4px solid var(--green2)}.ruim{border-left:4px solid var(--red)}
+.b{display:block;width:100%;border:0;border-radius:14px;font:inherit;font-size:17px;font-weight:700;padding:17px;margin-top:14px;color:#fff;background:var(--gold2);cursor:pointer}
+.b.v{background:var(--green2)}
+img{width:100%;border-radius:12px;margin-top:14px;display:block}
+code{background:#eee;padding:1px 5px;border-radius:5px;font-size:12px;word-break:break-all}
+</style></head><body><div class="wrap">
+<h1>Este tablet pode dar baixa?</h1>
+<div id="app">testando…</div>
+</div>
+<script>
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')};
+function linha(ok,titulo,txt){return '<div class="l '+(ok?'ok':'ruim')+'"><span class="ic">'+(ok?'✅':'❌')+
+  '</span><div><b>'+titulo+'</b><span>'+txt+'</span></div></div>'}
+async function testar(){
+  var h='';
+  var seg=window.isSecureContext;
+  h+=linha(seg,seg?'Endereço seguro':'Endereço NÃO é seguro',
+    seg?'Está em <code>'+esc(location.origin)+'</code>. O aviso "Não seguro" na barra do Chrome é normal com certificado próprio e não atrapalha.'
+       :'A câmera só funciona em <code>https</code>. Toque no botão abaixo pra abrir no endereço certo.');
+  var tem=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  h+=linha(tem,tem?'Navegador com câmera':'Navegador sem acesso à câmera',
+    tem?'O Chrome deste aparelho expõe a câmera.':'Atualize o Chrome ou use outro navegador.');
+  document.getElementById('app').innerHTML=h+'<div class="l"><span class="ic">⏳</span><div><b>Abrindo a câmera…</b><span>permita quando o Chrome perguntar</span></div></div>';
+  if(!seg||!tem){
+    var porta=Number(location.port||80)+1;
+    document.getElementById('app').innerHTML=h+
+      '<button class="b" onclick="location.href=\\'https://'+location.hostname+':'+porta+'/camera\\'">🔒 Abrir no endereço seguro</button>';
+    return;
+  }
+  try{
+    var s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:480}},audio:false});
+    var v=document.createElement('video');v.playsInline=true;v.muted=true;v.srcObject=s;
+    await v.play();
+    await new Promise(function(r){setTimeout(r,600)});
+    var c=document.createElement('canvas');c.width=320;c.height=Math.round(320*v.videoHeight/v.videoWidth);
+    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+    var img=c.toDataURL('image/jpeg',0.6);
+    s.getTracks().forEach(function(t){t.stop()});
+    document.getElementById('app').innerHTML=h+
+      linha(true,'Câmera funcionando','Esta é a foto que o sistema guardaria numa baixa. Tablet pronto.')+
+      '<img src="'+img+'" alt="foto de teste">'+
+      '<button class="b v" onclick="location.href=\\'/\\'">Ir para a produção</button>';
+  }catch(e){
+    document.getElementById('app').innerHTML=h+
+      linha(false,'Câmera recusada',(e&&e.name==='NotAllowedError')
+        ? 'A permissão foi negada neste aparelho. Toque no cadeado (ou no ⓘ) da barra de endereço, ache <b>Câmera</b> e mude para <b>Permitir</b>. Depois recarregue.'
+        : 'Erro: '+esc((e&&e.name)||e))+
+      '<button class="b" onclick="location.reload()">Testar de novo</button>';
+  }
+}
+testar();
+</script></body></html>`;
+
 // ---- /baixas — QUEM BAIXOU O QUÊ, com a foto de quem tocou a tela ----
 // A pergunta que o histórico do KDS não respondia: "quem apertou pronto nesse
 // item?". Serve pra apurar baixa indevida e pra resolver "entregaram na mesa
@@ -3746,9 +3812,9 @@ async function carrega(){
   }).join('');
 }
 carrega();setInterval(carrega,15000);
-</script></body></html>\`;
+</script></body></html>`;
 
-const TEMPOS_HTML = \`<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME} — Tempo de preparo</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
@@ -4889,6 +4955,7 @@ const server = http.createServer(async (req, res) => {
       return createReadStream(arq).pipe(res);
     }
     if (p === '/baixas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(BAIXAS_HTML); }
+    if (p === '/camera') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAMERA_HTML); }
     if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
     if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
