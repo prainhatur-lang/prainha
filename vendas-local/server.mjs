@@ -12,7 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import { createHmac, createHash } from 'node:crypto';
+import { createHmac, createHash, generateKeyPairSync, sign, randomBytes } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -1694,16 +1694,30 @@ async function marcar(body) {
 // HTTPS simplesmente não sobe e o sistema segue em HTTP (sem câmera).
 const PORT_HTTPS = Number(process.env.PORT_HTTPS || (Number(process.env.PORT || 8790) + 1));
 function achaOpenssl() {
-  const tentar = [process.env.OPENSSL_BIN, 'openssl'];
-  for (const base of ['C:\\Program Files\\PostgreSQL', 'C:\\Program Files (x86)\\PostgreSQL']) {
+  const tentar = [process.env.OPENSSL_BIN, 'openssl', 'openssl.exe'];
+  // PostgreSQL e Firebird trazem openssl; o Git for Windows também. Varro as
+  // versões instaladas em vez de chutar um número.
+  for (const base of [
+    'C:\\Program Files\\PostgreSQL', 'C:\\Program Files (x86)\\PostgreSQL',
+    'C:\\Program Files\\Firebird', 'C:\\Program Files (x86)\\Firebird',
+  ]) {
     try {
-      for (const v of readdirSync(base)) tentar.push(path.join(base, v, 'bin', 'openssl.exe'));
+      for (const v of readdirSync(base)) {
+        tentar.push(path.join(base, v, 'bin', 'openssl.exe'));
+        tentar.push(path.join(base, v, 'openssl.exe'));
+      }
     } catch { /* pasta não existe nesta máquina */ }
   }
-  tentar.push('C:\\Program Files\\Git\\usr\\bin\\openssl.exe');
+  for (const p of [
+    'C:\\Program Files\\Git\\usr\\bin\\openssl.exe',
+    'C:\\Program Files\\Git\\mingw64\\bin\\openssl.exe',
+    'C:\\Program Files (x86)\\Git\\usr\\bin\\openssl.exe',
+    'C:\\Windows\\System32\\OpenSSH\\openssl.exe',
+    'C:\\ProgramData\\chocolatey\\bin\\openssl.exe',
+  ]) tentar.push(p);
   for (const bin of tentar) {
     if (!bin) continue;
-    try { execFileSync(bin, ['version'], { stdio: 'ignore' }); return bin; } catch { /* próximo */ }
+    try { execFileSync(bin, ['version'], { stdio: 'ignore', timeout: 8000 }); return bin; } catch { /* próximo */ }
   }
   return null;
 }
@@ -1715,25 +1729,110 @@ function ipsLocais() {
   }
   return out;
 }
+// ---- certificado sem depender do openssl ----
+// A 0003 não tinha openssl e o HTTPS não subiu — com "sem câmera não baixa",
+// o certificado não pode depender de um programa que talvez não exista na
+// máquina. Então o X.509 é montado aqui, em DER, e assinado com o crypto do
+// próprio Node. É um autoassinado de rede interna: o navegador avisa uma vez
+// e a pessoa aceita.
+const B = (...x) => Buffer.concat(x.map((v) => (Buffer.isBuffer(v) ? v : Buffer.from(v))));
+function derLen(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  const b = []; let v = n;
+  while (v > 0) { b.unshift(v & 0xff); v >>= 8; }
+  return Buffer.from([0x80 | b.length, ...b]);
+}
+const tlv = (tag, conteudo) => B(Buffer.from([tag]), derLen(conteudo.length), conteudo);
+const derSeq = (...p) => tlv(0x30, B(...p));
+const derSet = (...p) => tlv(0x31, B(...p));
+function derInt(buf) {                       // inteiro positivo
+  let b = Buffer.isBuffer(buf) ? buf : Buffer.from([buf]);
+  while (b.length > 1 && b[0] === 0 && !(b[1] & 0x80)) b = b.subarray(1);
+  if (b[0] & 0x80) b = B(Buffer.from([0]), b);
+  return tlv(0x02, b);
+}
+function derOid(txt) {
+  const p = txt.split('.').map(Number);
+  const out = [p[0] * 40 + p[1]];
+  for (const n of p.slice(2)) {
+    const pilha = [n & 0x7f];
+    let v = n >> 7;
+    while (v > 0) { pilha.unshift((v & 0x7f) | 0x80); v >>= 7; }
+    out.push(...pilha);
+  }
+  return tlv(0x06, Buffer.from(out));
+}
+const derUtf8 = (s) => tlv(0x0c, Buffer.from(s, 'utf8'));
+const derBits = (b) => tlv(0x03, B(Buffer.from([0]), b));   // 0 bits não usados
+const derOctet = (b) => tlv(0x04, b);
+function derUtcTime(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return tlv(0x17, Buffer.from(
+    p(d.getUTCFullYear() % 100) + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+    p(d.getUTCHours()) + p(d.getUTCMinutes()) + p(d.getUTCSeconds()) + 'Z', 'ascii'));
+}
+const OID = { sha256RSA: '1.2.840.113549.1.1.11', cn: '2.5.4.3',
+  san: '2.5.29.17', basic: '2.5.29.19', keyUso: '2.5.29.15', extUso: '2.5.29.37', srv: '1.3.6.1.5.5.7.3.1' };
+function nomeX509(cn) { return derSeq(derSet(derSeq(derOid(OID.cn), derUtf8(cn)))); }
+function extensao(oid, critica, valor) {
+  return derSeq(derOid(oid), ...(critica ? [tlv(0x01, Buffer.from([0xff]))] : []), derOctet(valor));
+}
+function geraCertificado(cn, dns, ips) {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const spki = publicKey.export({ type: 'spki', format: 'der' });
+  const algo = derSeq(derOid(OID.sha256RSA), tlv(0x05, Buffer.alloc(0)));   // NULL
+  const agora = new Date(), fim = new Date(agora.getTime() + 3650 * 86400000);
+  // SAN: dNSName é [2] IA5String, iPAddress é [7] OCTET STRING (4 bytes)
+  const nomes = [
+    ...dns.map((d) => tlv(0x82, Buffer.from(d, 'ascii'))),
+    ...ips.map((ip) => tlv(0x87, Buffer.from(ip.split('.').map(Number)))),
+  ];
+  const exts = tlv(0xa3, derSeq(
+    extensao(OID.basic, true, derSeq()),                                  // CA:FALSE
+    extensao(OID.keyUso, true, derBits(Buffer.from([0xa0]))),             // digitalSignature+keyEncipherment
+    extensao(OID.extUso, false, derSeq(derOid(OID.srv))),                 // serverAuth
+    extensao(OID.san, false, derSeq(...nomes)),
+  ));
+  const tbs = derSeq(
+    tlv(0xa0, derInt(Buffer.from([2]))),                                  // v3
+    derInt(randomBytes(8)),                                               // serial
+    algo, nomeX509(cn), derSeq(derUtcTime(agora), derUtcTime(fim)), nomeX509(cn),
+    spki, exts,
+  );
+  const assinatura = sign('sha256', tbs, privateKey);
+  const der = derSeq(tbs, algo, derBits(assinatura));
+  const pem = (tipo, b) =>
+    `-----BEGIN ${tipo}-----\n${b.toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '')}\n-----END ${tipo}-----\n`;
+  return { cert: pem('CERTIFICATE', der), key: privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+}
 function certificado() {
   const dirC = path.join(process.cwd(), 'cert');
   const arqC = path.join(dirC, 'cert.pem'), arqK = path.join(dirC, 'key.pem');
   if (existsSync(arqC) && existsSync(arqK)) {
     try { return { cert: readFileSync(arqC), key: readFileSync(arqK) }; } catch { /* refaz */ }
   }
-  const ssl = achaOpenssl();
-  if (!ssl) { console.log('[https] openssl não encontrado — sobe só em HTTP (câmera não vai funcionar)'); return null; }
+  const ips = ipsLocais(), dns = ['localhost'];
+  const cn = (process.env.LOJA_NOME || 'prainha').replace(/[^\w-]/g, '') + '-vendas';
   try {
     mkdirSync(dirC, { recursive: true });
-    const san = ['DNS:localhost', 'IP:127.0.0.1', ...ipsLocais().map((x) => 'IP:' + x)].join(',');
+    const { cert, key } = geraCertificado(cn, dns, ['127.0.0.1', ...ips]);
+    writeFileSync(arqC, cert); writeFileSync(arqK, key);
+    console.log('[https] certificado próprio gerado para ' + ['localhost', '127.0.0.1', ...ips].join(', '));
+    return { cert: Buffer.from(cert), key: Buffer.from(key) };
+  } catch (e) {
+    console.log('[https] falhei em gerar o certificado (' + e.message + ') — tentando openssl…');
+  }
+  const ssl = achaOpenssl();
+  if (!ssl) { console.log('[https] sem openssl também — sobe só em HTTP, e aí a câmera não funciona'); return null; }
+  try {
+    const san = ['DNS:localhost', 'IP:127.0.0.1', ...ips.map((x) => 'IP:' + x)].join(',');
     execFileSync(ssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
-      '-keyout', arqK, '-out', arqC, '-days', '3650',
-      '-subj', '/CN=' + (process.env.LOJA_NOME || 'prainha') + '-vendas',
+      '-keyout', arqK, '-out', arqC, '-days', '3650', '-subj', '/CN=' + cn,
       '-addext', 'subjectAltName=' + san], { stdio: 'ignore' });
-    console.log('[https] certificado gerado para ' + san);
+    console.log('[https] certificado gerado via openssl para ' + san);
     return { cert: readFileSync(arqC), key: readFileSync(arqK) };
   } catch (e) {
-    console.log('[https] não consegui gerar o certificado: ' + e.message);
+    console.log('[https] openssl também falhou: ' + e.message);
     return null;
   }
 }
