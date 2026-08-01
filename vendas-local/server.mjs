@@ -1446,6 +1446,25 @@ async function apiAreas() {
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     GROUP BY a.codigo, a.nome
     ORDER BY a_produzir DESC, a.nome`;
+  // ⚠️ ITENS SEM PRAÇA. O produto sem cozinha atribuída no Consumer entra com
+  // area_codigo nulo, e o KDS só lista as praças cadastradas — o item ficava
+  // invisível PRA SEMPRE: ninguém produzia, e ele seguia contando atraso e
+  // pintando a mesa de amarelo. Foi assim que um abacaxi travou a mesa 45 sem
+  // aparecer em cozinha nenhuma.
+  // apiKds(0)/apiEntrega(0) já sabem ler essa faixa; faltava a tela oferecer.
+  const semArea = (await sql`
+    SELECT COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
+           COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS total,
+           COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+             AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
+             AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
+      FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+     WHERE ci.area_codigo IS NULL`)[0];
+  if (Number(semArea?.total ?? 0) > 0) {
+    rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
+      a_produzir: Number(semArea.a_produzir), total: Number(semArea.total),
+      a_entregar: Number(semArea.a_entregar) });
+  }
   const ent = (await sql`
     SELECT COUNT(*) AS n FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
@@ -1932,6 +1951,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .sel{padding:24px 20px;max-width:1050px;margin:0 auto}
 .sel h2{font-size:15px;color:var(--mut);font-weight:500;margin:0 0 16px;letter-spacing:.02em}
 .areas{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+.abtn.orfa{border-top-color:#e0651a}
 .abtn{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--roxo);border-radius:16px;padding:20px 18px;cursor:pointer;text-align:left;transition:.12s;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .abtn:hover{background:#fafafb;transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.1)}
 .abtn .an{font-size:20px;font-weight:700}.abtn .ap{margin-top:10px;font-size:13px;color:var(--mut)}
@@ -2190,8 +2210,12 @@ async function selecao(){
   var app=document.getElementById('app');
   if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
   app.innerHTML='<div class="sel"><h2>Escolha a sua área de produção</h2><div class="areas">'+d.areas.map(function(a){
-    return '<button class="abtn" onclick="irArea('+a.codigo+')"><div class="an">'+esc(a.nome)+'</div>'+
-      '<div class="ap"><b>'+a.a_produzir+'</b> a produzir · '+a.total+' no total</div></button>';
+    // "Sem praça definida" entra em laranja: é anomalia de cadastro, não uma
+    // praça de verdade. Sem ela o item ficava invisível e travava a mesa.
+    return '<button class="abtn'+(a.orfa?' orfa':'')+'" onclick="irArea('+a.codigo+')"><div class="an">'+
+      (a.orfa?'⚠ ':'')+esc(a.nome)+'</div>'+
+      '<div class="ap"><b>'+a.a_produzir+'</b> a produzir · '+a.total+' no total'+
+      (a.orfa?'<br>produto sem cozinha no Consumer':'')+'</div></button>';
   }).join('')+'</div></div>';
 }
 async function kds(){
@@ -2267,7 +2291,8 @@ async function selecaoEntrega(){
   var app=document.getElementById('app');
   if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
   app.innerHTML='<div class="sel"><h2>Escolha a sua estação de entrega</h2><div class="areas">'+d.areas.map(function(a){
-    return '<button class="abtn" onclick="irAreaEntrega('+a.codigo+')"><div class="an">'+esc(a.nome)+'</div>'+
+    return '<button class="abtn'+(a.orfa?' orfa':'')+'" onclick="irAreaEntrega('+a.codigo+')"><div class="an">'+
+      (a.orfa?'⚠ ':'')+esc(a.nome)+'</div>'+
       '<div class="ap"><b>'+(a.a_entregar||0)+'</b> pronto(s) pra levar</div></button>';
   }).join('')+'</div></div>';
 }
