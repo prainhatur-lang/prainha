@@ -589,6 +589,36 @@ async function apiVendaConta(body) {
     return { ok: false, erro: 'ação inválida' };
   } catch (e) { return { ok: false, erro: e.message }; }
 }
+/** As RESPOSTAS das perguntas, do jeito que o Consumer monta: cada resposta é
+ *  um ITEM-FILHO (CODIGOPAI + tipo 2), e é ESSE filho que aponta pra opção em
+ *  ITEMPEDIDOWIZARDOPCAO — cuja PK é só CODIGOITEMPEDIDO, ou seja, UMA opção
+ *  por item. Tentar empilhar as respostas no item pai dava violação de chave e
+ *  só a primeira entrava.
+ *  O preço da opção fica no FILHO; o pai continua com o preço do prato. */
+async function fbGravarRespostas(ped, itemPai, it) {
+  const ops = await sql`SELECT codigo, nome, preco, produto_pdv FROM wizard_opcao
+    WHERE codigo = ANY(${it.respostas})`;
+  const porCodigo = new Map(ops.map((x) => [Number(x.codigo), x]));
+  for (const r of it.respostas) {                 // na ordem em que foram escolhidas
+    const op = porCodigo.get(Number(r));
+    if (!op) continue;
+    const v = fbNum(Number(op.preco || 0) * it.qtd);
+    const ins = await qi(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
+        NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL,
+        VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
+      VALUES (${ped}, ${itemPai}, ${op.produto_pdv ? Number(op.produto_pdv) : 'NULL'},
+        '${fbEsc(op.nome)}', ${fbNum(it.qtd)}, ${fbNum(op.preco || 0)}, ${v}, 0, 0, ${v},
+        0, 2, 'NENHUM', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
+    if (!ins.ok) { console.error('[resposta] ' + op.nome + ': ' + ins.err); continue; }
+    const g = await qi(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped}
+      AND CODIGOPAI=${itemPai} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
+    const filho = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+    if (!filho) continue;
+    const lig = await qi(`INSERT INTO ITEMPEDIDOWIZARDOPCAO (CODIGOITEMPEDIDO, CODIGOWIZARDOPCAO)
+      VALUES (${filho}, ${Number(r)})`);
+    if (!lig.ok) console.error('[resposta] vínculo de "' + op.nome + '": ' + lig.err);
+  }
+}
 async function fbAtualizarTotal(ped) {
   const r = await q(`UPDATE PEDIDOS SET VALORTOTAL=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL) WHERE CODIGO=${ped}`);
   if (!r.ok) throw new Error('FB total: ' + r.err);
@@ -1077,6 +1107,23 @@ async function apiVendaEnviar(body) {
   // marca do envio inteiro, o que obrigava a mandar dois pedidos quando so
   // parte da mesa queria esperar.
   itens.forEach((it, ix) => { it.junto_item = pedidos[ix]?.junto === true; });
+  // RESPOSTAS DAS PERGUNTAS ("Ao ponto", "Arroz Biro-biro"): entram no
+  // DETALHES pra sair na comanda impressa — a cozinha precisa saber o ponto
+  // da carne — e os códigos vão pro Consumer em ITEMPEDIDOWIZARDOPCAO, que é
+  // onde o PDV guarda a mesma coisa.
+  for (const [ix, it] of itens.entries()) {
+    const cods = Array.isArray(pedidos[ix]?.respostas) ? pedidos[ix].respostas.map(Number).filter(Boolean) : [];
+    it.respostas = cods;
+    if (cods.length) {
+      const ops = await sql`SELECT codigo, nome, preco FROM wizard_opcao WHERE codigo = ANY(${cods})`;
+      const porCod = new Map(ops.map((x) => [Number(x.codigo), x]));
+      // na ordem em que o cliente respondeu, não na ordem do banco — senão o
+      // ponto da carne sai depois do acompanhamento na comanda impressa
+      const nomes = cods.map((c) => porCod.get(c)?.nome).filter(Boolean);
+      if (nomes.length && !it.obs) it.obs = nomes.join(' | ');
+      // o preço das opções fica nos itens-filho; o pai mantém o preço do prato
+    }
+  }
   const marcados = itens.filter((i) => i.junto_item);
   const areasJunto = [...new Set(marcados.map((i) => i.area_codigo).filter((a) => a != null))];
   // so faz sentido parear se os marcados estao em pracas DIFERENTES
@@ -1118,6 +1165,9 @@ async function apiVendaEnviar(body) {
     for (const it of itens) {
       const cod = await fbInserirItem(ped, it);
       if (grupo && it.junto_item && cod) paresGrupo.push({ item_codigo: cod, grupo, numero });
+      // mesmo lugar onde o PDV guarda as respostas — assim o Consumer enxerga
+      // o pedido do nosso app exatamente como enxerga o dele
+      if (cod && it.respostas?.length) await fbGravarRespostas(ped, cod, it);
     }
     if (paresGrupo.length > 1) {
       await sql`INSERT INTO item_junto ${sql(paresGrupo, 'item_codigo', 'grupo', 'numero')}
@@ -4203,6 +4253,8 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .pr{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);
   border-radius:11px;padding:12px 13px;margin-top:7px;cursor:pointer;font-size:15px}
 .pr:active{background:#faf5ef}
+.pr.escolhida{border-color:var(--gold2);background:rgba(224,101,26,.09)}
+.pr.escolhida .pn{color:var(--gold2);font-weight:700}
 .pr.off{opacity:.45;cursor:default;background:#fafafa}
 .pr .pn small{display:block;color:var(--mut);font-size:11.5px}
 .pr .pv{color:var(--gold2);font-weight:700;white-space:nowrap}
@@ -4575,8 +4627,83 @@ async function verVariantes(prod){
   if(!d.ok||!d.produtos.length){alert('sem opções disponíveis agora');return}
   listar(d.produtos, d.nome);
 }
+// ---- PERGUNTAS DO PRATO ----
+// "Qual o ponto da carne", "Qual o acompanhamento?" — vêm cadastradas no
+// Consumer, com mínimo e máximo de respostas, e algumas opções cobram a mais.
+// Sem responder, o cliente não pede sozinho metade dos pratos.
+var PERG=null, PERGIX=0, PERGRESP=null, PERGPROD=null;
 async function addCart(p){
   if(p.sem_estoque||p.disponivel===false)return;
+  var w=null;
+  try{w=await (await fetch('/api/venda/perguntas?pdv='+p.codigo_pdv,{cache:'no-store'})).json()}catch(e){}
+  if(w&&w.ok&&w.perguntas&&w.perguntas.length){
+    PERGPROD=p;PERG=w.perguntas;PERGIX=0;
+    PERGRESP=w.perguntas.map(function(){return []});
+    return pintaPergunta();
+  }
+  return addCartObs(p);
+}
+/** Quanto as respostas escolhidas somam ao preço do prato. */
+function precoExtra(){
+  var t=0;
+  (PERGRESP||[]).forEach(function(sel,i){
+    sel.forEach(function(c){
+      var o=PERG[i].opcoes.find(function(x){return x.codigo===c});
+      if(o)t+=Number(o.preco||0);
+    });
+  });
+  return t;
+}
+function pintaPergunta(){
+  var q=PERG[PERGIX], sel=PERGRESP[PERGIX];
+  var ilim=!q.max;                       // max 0 no Consumer = quantos quiser
+  var lim=(q.min===q.max&&q.min>0)?('escolha '+q.min)
+        :(ilim?(q.min?('pelo menos '+q.min):'opcional')
+              :('de '+q.min+' a '+q.max));
+  var ex=precoExtra();
+  app('<h1>'+esc(q.texto)+'</h1>'+
+    '<div class="mut" style="margin:6px 0 3px">'+esc(PERGPROD.nome)+' · '+lim+'</div>'+
+    '<div class="mut" style="margin-bottom:14px">'+(PERGIX+1)+' de '+PERG.length+
+      (ex>0?' · <b style="color:var(--gold2)">+ R$ '+ex.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b>':'')+'</div>'+
+    q.opcoes.map(function(o){
+      var on=sel.indexOf(o.codigo)>=0;
+      return '<div class="pr'+(on?' escolhida':'')+'" onclick="marcaOpcao('+o.codigo+')">'+
+        '<span class="pn">'+(on?'✓ ':'')+esc(o.nome)+'</span>'+
+        '<span class="pv">'+(Number(o.preco)>0
+          ?'+ R$ '+Number(o.preco).toLocaleString('pt-BR',{minimumFractionDigits:2}):'')+'</span></div>';
+    }).join('')+
+    '<button class="b ped" onclick="proximaPergunta()">'+
+      (PERGIX+1<PERG.length?'Continuar':'Adicionar ao pedido')+'</button>'+
+    '<button class="b g" onclick="'+(PERGIX>0?'voltaPergunta()':'cancelaPergunta()')+'">'+
+      (PERGIX>0?'◂ Voltar':'Cancelar')+'</button>');
+}
+function marcaOpcao(cod){
+  var q=PERG[PERGIX], sel=PERGRESP[PERGIX], i=sel.indexOf(cod);
+  if(i>=0){sel.splice(i,1);return pintaPergunta()}
+  var teto=q.max||99;
+  // teto 1 TROCA a escolha em vez de reclamar — é o caso mais comum
+  if(teto===1)sel.length=0;
+  else if(sel.length>=teto){alert('Escolha no máximo '+teto+'.');return}
+  sel.push(cod);pintaPergunta();
+}
+function voltaPergunta(){PERGIX--;pintaPergunta()}
+function cancelaPergunta(){PERG=null;PERGPROD=null;telaPedir()}
+function proximaPergunta(){
+  var q=PERG[PERGIX], sel=PERGRESP[PERGIX];
+  if(sel.length<(q.min||0)){alert('Escolha pelo menos '+q.min+'.');return}
+  if(PERGIX+1<PERG.length){PERGIX++;return pintaPergunta()}
+  // acabou: junta as respostas no item, com o preço já somado
+  var nomes=[], codigos=[];
+  PERGRESP.forEach(function(s,i){s.forEach(function(c){
+    var o=PERG[i].opcoes.find(function(x){return x.codigo===c});
+    if(o){nomes.push(o.nome);codigos.push(o.codigo)}
+  })});
+  var p={}; for(var k in PERGPROD)p[k]=PERGPROD[k];
+  p.preco=Number(PERGPROD.preco||0)+precoExtra();
+  PERG=null;PERGPROD=null;
+  poeNoCarrinho(p, nomes.join(', '), codigos);
+}
+async function addCartObs(p){
   // A casa ja tem observacoes cadastradas por grupo ("Mal passada" em Porcoes,
   // "Com gelo e limao" em Refrigerantes). Mostra as do grupo e deixa escrever.
   var d;try{d=await (await fetch('/api/observacoes?p='+p.codigo_pdv,{cache:'no-store'})).json()}catch(e){d={sugestoes:[]}}
@@ -4604,10 +4731,11 @@ function confirmaObs(){
   poeNoCarrinho(PEND,obs);PEND=null;PENDOBS='';
   telaPedir();
 }
-function poeNoCarrinho(p,obs){
+function poeNoCarrinho(p,obs,respostas){
   var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&(x.obs||'')===(obs||'')});
   if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho||null,
-    preco:Number(p.preco||0),qtd:1,obs:obs||'',area_codigo:p.area_codigo,junto:false});
+    preco:Number(p.preco||0),qtd:1,obs:obs||'',area_codigo:p.area_codigo,junto:false,
+    respostas:respostas||null});
   renderCarrinho();
 }
 function renderCarrinho(){
@@ -4674,7 +4802,8 @@ async function enviarPedido(){
   var n=mesaAtual();if(n===null)return;
   if(!(await sessaoOk()))return;
   var r=await post('/api/mesa/pedir',{mesa:n,sessao:SES&&SES.comanda,desde:SES&&SES.desde,
-    itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',junto:!!i.junto}})});
+    itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',
+      junto:!!i.junto,respostas:i.respostas||null}})});
   if(!r.ok){
     if(r.reescanear){ limpaSes(); telaReescanear(r.erro); return }
     alert(r.erro||'não consegui enviar');return}
