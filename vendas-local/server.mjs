@@ -4530,7 +4530,6 @@ function pintaPagar(){
     '<div class="tit2">Serviço</div><div class="segs">'+
       [10,15].map(function(p){return '<button class="seg'+(PGGORJ===p?' on':'')+'" onclick="setGorj('+p+')">'+p+'%</button>'}).join('')+
     '</div>'+
-    '<div class="mut" style="margin-top:6px;font-size:12.5px">Pra retirar o serviço, chame o garçom.</div>'+
     '<div class="tit2">Dividir por</div><div class="segs">'+
       [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
     '</div>'+
