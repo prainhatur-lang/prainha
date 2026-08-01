@@ -1597,6 +1597,27 @@ async function apiIdentificarSalvar(body) {
     try { contatoFb = await fbCriarContato({ nome, cpf, telefone: tel }); }
     catch (e) { return { ok: false, erro: e.message }; }
   }
+  // ---- O DONO DA MESA NÃO MUDA ----
+  // O primeiro que se cadastra fica responsável. Antes, o ON CONFLICT trocava
+  // nome e nome_curto em silêncio: o segundo a se identificar virava o dono, e
+  // a conta impressa saía no nome errado.
+  // A MESMA pessoa continua podendo completar o cadastro (dar o telefone
+  // depois do CPF) — só troca de pessoa é que é barrada.
+  const dono = (await sql`SELECT nome_curto, cpf, telefone, contato_fb FROM identificacao
+    WHERE numero=${numero} AND fechada_em IS NULL`)[0];
+  if (dono) {
+    const mesma = (cpf && dono.cpf === cpf)
+      || (tel && dono.telefone === tel)
+      || (contatoFb && Number(dono.contato_fb) === Number(contatoFb));
+    if (!mesma) {
+      const onde = numero >= COMANDA_DE ? 'comanda' : 'mesa';
+      return { ok: false, ja_tem_dono: true, dono: dono.nome_curto || null,
+        // nome_curto já termina em ponto ("Elison B.") — sem isto sai "B.."
+        erro: `Esta ${onde} já está no nome de ${dono.nome_curto || 'outra pessoa'}`.replace(/\.?$/, '.') +
+              (numero >= COMANDA_DE ? ' Peça uma comanda sua ao garçom.'
+                                    : ' Peça a sua comanda ao garçom pra pedir e pagar separado.') };
+    }
+  }
   await sql`INSERT INTO identificacao (numero, cpf, telefone, nome, nome_curto, contato_fb)
       VALUES (${numero}, ${cpf}, ${tel}, ${nome}, ${curto}, ${contatoFb})
     ON CONFLICT (numero) DO UPDATE SET cpf=COALESCE(EXCLUDED.cpf, identificacao.cpf),
