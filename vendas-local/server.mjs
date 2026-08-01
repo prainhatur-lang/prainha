@@ -454,14 +454,20 @@ async function fbCriarPedido(numero) {
 }
 async function fbInserirItem(ped, it) {
   const vt = fbNum(it.preco * it.qtd);
+  // O TAMANHO VAI NO NOME. "Germana" custa R$ 20 na dose e R$ 280 na garrafa —
+  // gravar só o nome fazia os dois virarem a mesma linha no KDS e na comanda
+  // impressa, e a cozinha não tinha como saber qual sair. O próprio Consumer
+  // grava assim ("Destilados Germana Dose"), então o nosso item fica igual ao
+  // que o PDV lança.
+  const nomeItem = [it.nome, it.tamanho].filter(Boolean).join(' ');
   // DETALHES é o que sai impresso embaixo do item na comanda da cozinha.
   // Vai a observação do garçom e, quando o pedido está espalhado por mais de
   // uma praça, o aviso pra sair junto. Caixa alta porque é cupom térmico.
   const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
   const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
   const r = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPRODUTO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL, VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
-    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(it.nome)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
-  if (!r.ok) throw new Error('FB item "' + it.nome + '": ' + r.err);
+    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(nomeItem)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
+  if (!r.ok) throw new Error('FB item "' + nomeItem + '": ' + r.err);
   // RETURNING crasha intermitente no FB4 — pega o recem-inserido. E' seguro
   // porque a fila serializa: ninguem inseriu no meio.
   const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
@@ -4382,8 +4388,8 @@ function confirmaObs(){
 }
 function poeNoCarrinho(p,obs){
   var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&(x.obs||'')===(obs||'')});
-  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,preco:Number(p.preco||0),qtd:1,obs:obs||'',
-    area_codigo:p.area_codigo,junto:false});
+  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho||null,
+    preco:Number(p.preco||0),qtd:1,obs:obs||'',area_codigo:p.area_codigo,junto:false});
   renderCarrinho();
 }
 function renderCarrinho(){
@@ -4400,6 +4406,7 @@ function renderCarrinho(){
   el.style.display='block';
   el.innerHTML='<div class="cin">'+CART.map(function(i,ix){
     return '<div class="ci"><span>'+i.qtd+'x '+esc(i.nome)+
+      (i.tamanho?' <b>'+esc(i.tamanho)+'</b>':'')+
       (i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+
       (i.junto?'<small class="jmark">⇄ sai junto</small>':'')+'</span>'+
       (varias?'<button class="jt'+(i.junto?' on':'')+'" onclick="togJuntoCli('+ix+')" title="servir junto">⇄</button>':'')+
@@ -4425,7 +4432,7 @@ function revisarPedido(){
     '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a produção já começa a preparar</div>'+
     CART.map(function(i,ix){
       return '<div class="rev"><span class="rq">'+i.qtd+'x</span>'+
-        '<span class="rn">'+esc(i.nome)+
+        '<span class="rn">'+esc(i.nome)+(i.tamanho?' <b>'+esc(i.tamanho)+'</b>':'')+
         (i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+
         (i.junto?'<small class="jmark">⇄ sai junto com os outros marcados</small>':'')+'</span>'+
         '<span class="rv">R$ '+(i.preco*i.qtd).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</span>'+
