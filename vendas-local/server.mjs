@@ -37,9 +37,18 @@ const INTERVALO_MS = 15000;
 // Janela do espelho. Era CURRENT_DATE puro, e isso apagava a casa inteira à
 // meia-noite: mesa aberta 23:30 sumia do KDS às 00:01, com item ainda na
 // cozinha. Num bar que fecha 2h da manhã isso acontece TODA noite.
-// Um dia pra trás cobre a virada. Quem tiver pedido esquecido aberto há mais
-// tempo pode baixar com ESPELHO_DIAS=0 (comportamento antigo).
-const ESPELHO_DIAS = Number(process.env.ESPELHO_DIAS ?? 1);
+//
+// ⚠️ POR QUE 7 DIAS E NÃO 1: a conta que o Consumer mantém aberta numa mesa
+// pode ser bem mais velha que a noite. Quando isso acontece, o pedido novo é
+// ANEXADO nela (fbAcharPedido acha a aberta) — e se a janela não alcançar a
+// data de abertura, o item entra no banco e NÃO APARECE em lugar nenhum: nem
+// no KDS, nem no "o que já pedi". Foi exatamente isso na 0003: pedido gravado
+// certo numa conta de 2 dias antes, e a tela vazia. Uma janela curta não
+// esconde o problema, esconde a única pista dele.
+//
+// Conta aberta há mais de uma semana é sujeira pra loja fechar, não coisa
+// pro sistema adivinhar. ESPELHO_DIAS=0 volta ao comportamento antigo.
+const ESPELHO_DIAS = Number(process.env.ESPELHO_DIAS ?? 7);
 const DESDE = ESPELHO_DIAS > 0 ? `CURRENT_DATE - ${ESPELHO_DIAS}` : 'CURRENT_DATE';
 const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
 // Uma comanda do Consumer é a MESA INTEIRA da noite — dois lançamentos
@@ -893,7 +902,21 @@ async function apiVendaEnviar(body) {
     VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando', ${junto && areas.length > 1}) RETURNING id`;
   try {
     let ped = await fbAcharPedido(numero);
-    if (!ped) ped = await fbCriarPedido(numero);
+    if (!ped) {
+      ped = await fbCriarPedido(numero);
+      // A pessoa pode ter se identificado numa mesa AINDA SEM CONTA — nesse
+      // momento não havia PEDIDOS pra carimbar, e o Consumer nunca ficava
+      // sabendo quem estava ali. Agora que a conta acabou de nascer, amarra.
+      // Sem isto o consumo dela não entra no histórico (CODIGOCONTATOCLIENTE
+      // é o que liga o pedido à pessoa, e é o que o CDC leva pro concilia).
+      try {
+        const id = (await sql`SELECT nome_curto, cpf, contato_fb FROM identificacao
+          WHERE numero=${numero} AND fechada_em IS NULL`)[0];
+        if (id && (id.nome_curto || id.cpf || id.contato_fb)) {
+          await fbIdentificarPedido(ped, { nome: id.nome_curto, cpf: id.cpf, contatoFb: id.contato_fb });
+        }
+      } catch (e) { console.error('[identificar] amarrar na conta nova falhou:', e.message); }
+    }
     const grupo = parear ? 'G' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36) : null;
     const paresGrupo = [];
     for (const it of itens) {
