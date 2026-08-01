@@ -3387,7 +3387,10 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .aviso{background:#fff7e3;border:1px solid #f0d68f;border-radius:14px;padding:15px;font-size:14.5px;line-height:1.5;margin:8px 0 4px}
 .qr{width:100%;max-width:280px;display:block;margin:16px auto;border-radius:12px;background:#fff;padding:10px}
 .copia{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px;font-family:Menlo,monospace;
-  font-size:11px;word-break:break-all;line-height:1.4;max-height:110px;overflow:auto}
+  font-size:11px;word-break:break-all;line-height:1.4;max-height:110px;overflow:auto;
+  /* precisa dar pra segurar e copiar na mão: em HTTP o copiar automático
+     nem sempre funciona, e este é o plano B do cliente */
+  -webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
 .b.ped{background:var(--gold2)}
 .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-top:12px}
 .card .lin{display:flex;justify-content:space-between;padding:4px 0;font-size:14.5px}
@@ -3954,7 +3957,7 @@ async function gerarPix(n){
     (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR Code Pix">':'')+
     '<div class="mut" style="margin:10px 0 6px">Ou copie o código:</div>'+
     '<div class="copia" id="cp">'+esc(r.copia_cola||'')+'</div>'+
-    '<button class="b" onclick="copiar()">Copiar código</button>'+
+    '<button class="b" id="btncp" onclick="copiar()">Copiar código</button>'+
     '<div id="pgst" class="mut" style="margin-top:14px">aguardando o pagamento…</div>'+
     '<button class="b g" onclick="pararPix()">Voltar</button>');
   vigiarPix(r.txid);
@@ -4063,10 +4066,56 @@ function vigiarCartao(ref){
     } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
   },5000);
 }
+// COPIAR O CÓDIGO PIX
+//
+// navigator.clipboard SÓ existe em contexto seguro: HTTPS ou localhost. A loja
+// roda em HTTP num IP da rede (http://192.168.x.x:8790), então lá ele é
+// undefined — o botão avisava "copiado" e não copiava nada, e a pessoa só
+// descobria no app do banco, sem ter o que colar.
+//
+// O execCommand('copy') é obsoleto, mas é o que funciona em HTTP. E o aviso
+// agora só aparece quando a cópia deu certo de verdade; falhando, o código
+// fica selecionado na tela pra pessoa copiar na mão.
+function copiaTexto(t){
+  if(navigator.clipboard&&window.isSecureContext){
+    return navigator.clipboard.writeText(t).then(function(){return true},function(){return copiaAntiga(t)});
+  }
+  return Promise.resolve(copiaAntiga(t));
+}
+function copiaAntiga(t){
+  try{
+    var ta=document.createElement('textarea');
+    ta.value=t;ta.setAttribute('readonly','');
+    ta.style.position='fixed';ta.style.top='0';ta.style.left='0';ta.style.opacity='0';
+    document.body.appendChild(ta);
+    ta.focus();ta.select();
+    try{ta.setSelectionRange(0,t.length)}catch(e){}   // iOS precisa disto
+    var ok=document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  }catch(e){return false}
+}
+/** Deixa o código selecionado na tela — último recurso quando nada copia. */
+function selecionaNaTela(el){
+  try{
+    var s=window.getSelection(),r=document.createRange();
+    r.selectNodeContents(el);s.removeAllRanges();s.addRange(r);
+  }catch(e){}
+}
 function copiar(){
-  var t=(document.getElementById('cp')||{}).textContent||'';
-  if(navigator.clipboard)navigator.clipboard.writeText(t);
-  alert('Código copiado. Cole no app do seu banco.');
+  var el=document.getElementById('cp'); if(!el)return;
+  var t=el.textContent||''; if(!t)return;
+  var btn=document.getElementById('btncp');
+  copiaTexto(t).then(function(ok){
+    if(ok){
+      if(btn){var antes=btn.textContent;btn.textContent='✓ Copiado — cole no app do banco';
+        setTimeout(function(){if(btn)btn.textContent=antes},2500)}
+      return;
+    }
+    // não deu: em vez de mentir, mostra o código pronto pra copiar na mão
+    selecionaNaTela(el);
+    if(btn)btn.textContent='segure no código acima e escolha Copiar';
+  });
 }
 function mesaAtual(){
   if(MESA)return Number(MESA);
