@@ -329,7 +329,17 @@ async function initSchema() {
 let ultimoStatus = { ok: false, comandas: 0, itens: 0 };
 async function espelho() {
   const az = await q(`SELECT CODIGO, TRIM(DESCRICAO) D FROM COZINHAS ORDER BY CODIGO`);
-  const c = await q(`SELECT CODIGO, NUMERO, CODIGOPEDIDOORIGEM ORI, TRIM(NOME) NOME, VALORTOTAL, SUBTOTALPAGO, QUANTIDADEPESSOAS QP, DATAABERTURA, CONTASOLICITADA CS FROM PEDIDOS WHERE DATAFECHAMENTO IS NULL AND DATADELETE IS NULL AND DATAABERTURA >= ${DESDE} ORDER BY NUMERO`);
+  // ⚠️ O PAGO VEM DA SOMA DE PAGAMENTOS, NÃO DE SUBTOTALPAGO.
+  // Conferido na base do Prainha Bar: o campo fica `null` mesmo em pedido
+  // quitado — o Consumer não o mantém. Lendo o campo, pagamento parcial não
+  // baixava nada: quem pagava R$ 40 de R$ 240 continuava vendo R$ 240, e
+  // dividir a conta entre várias pessoas nunca fechava.
+  const c = await q(`SELECT p.CODIGO, p.NUMERO, p.CODIGOPEDIDOORIGEM ORI, TRIM(p.NOME) NOME,
+      p.VALORTOTAL, p.QUANTIDADEPESSOAS QP, p.DATAABERTURA, p.CONTASOLICITADA CS,
+      (SELECT COALESCE(SUM(g.VALOR),0) FROM PAGAMENTOS g
+        WHERE g.CODIGOPEDIDO = p.CODIGO AND g.DATADELETE IS NULL) SUBTOTALPAGO
+    FROM PEDIDOS p WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL
+      AND p.DATAABERTURA >= ${DESDE} ORDER BY p.NUMERO`);
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
   const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
@@ -3863,6 +3873,22 @@ async function apiContaTexto(numero) {
   // aqui. O cupom mostrava "TOTAL 327,80" com uma comanda de 17,60 pendurada
   // do lado, e quem lia somava errado. Por isso vai também o total geral —
   // mesa + comandas — pra ninguém fechar a noite achando que cobrou tudo.
+  // OS PAGAMENTOS JÁ FEITOS, um a um. Numa conta rachada entre 6 pessoas,
+  // quem chega depois precisa ver o que já entrou pra saber o que falta —
+  // e o caixa precisa conferir sem abrir o Consumer.
+  let pagamentos = [];
+  try {
+    const ped = await fbAcharPedido(n);
+    if (ped) {
+      const r = await qi(`SELECT g.VALOR V, g.DATAPAGAMENTO Q, TRIM(g.OBSERVACAO) OBS,
+          TRIM(f.DESCRICAO) FORMA
+        FROM PAGAMENTOS g LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO = g.CODIGOFORMAPAGAMENTO
+        WHERE g.CODIGOPEDIDO = ${ped} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
+      if (r.ok) pagamentos = r.rows.map((x) => ({ valor: Number(x.V) || 0,
+        quando: x.Q || null, forma: (x.FORMA || '').trim() || null,
+        obs: (x.OBS || '').trim() || null }));
+    }
+  } catch { /* sem Firebird a conta ainda abre, só sem o detalhe */ }
   const totalComandas = comandas.reduce((s, c) => s + Number(c.com_servico || 0), 0);
   const pagoComandas = comandas.reduce((s, c) => s + Number(c.pago || 0), 0);
   const geral = +(comServico + totalComandas).toFixed(2);
@@ -3871,7 +3897,7 @@ async function apiContaTexto(numero) {
   // pesando no que a mesa deve.
   const pagoGeral = +(pago + pagoComandas).toFixed(2);
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
-    pessoas: c.qtd_pessoas, itens, comandas,
+    pessoas: c.qtd_pessoas, itens, comandas, pagamentos,
     total, taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
     total_comandas: +totalComandas.toFixed(2), geral,
     pago_comandas: +pagoComandas.toFixed(2), pago_geral: pagoGeral,
@@ -4415,6 +4441,7 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
 .b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}.b.cart{background:#2563eb}
+.b.zap{background:#25d366}
 /* forma de pagamento: legenda embaixo do nome, e o apagado pra forma que
    ainda não está liberada — some do caminho sem sumir da tela, pra pessoa
    entender que existe e não ficar procurando */
@@ -5090,7 +5117,7 @@ var PGGORJ=null, PGPARTES=1;   // gorjeta escolhida (null = a da casa) e em quan
 // sempre a conta cheia obriga a mesa a fazer conta de cabeça e errar.
 // No Consumer a comanda é uma conta como outra qualquer (PEDIDOS.NUMERO), então
 // cobrar dela é a MESMA chamada, só mudando o número.
-var PGALVO=null, CONTAMESA=null;
+var PGALVO=null, CONTAMESA=null, PGVALOR=null;
 function alvoPg(){ return PGALVO==null ? mesaAtual() : PGALVO }
 async function telaPix(){
   var n=mesaAtual();if(n===null)return;
@@ -5120,8 +5147,20 @@ function calcPagar(){
   var gorj=+(itens*PGGORJ/100).toFixed(2);
   var total=+(itens+gorj).toFixed(2);
   var resta=Math.max(0,+(total-(CONTA.pago||0)).toFixed(2));
-  var minha=+(resta/PGPARTES).toFixed(2);
+  // A divisão é sempre sobre o que FALTA, não sobre o total: numa conta
+  // rachada, quem paga depois já encontra o saldo menor. E quem quiser pagar
+  // mais que a sua parte digita o valor — a diferença some do que sobra pros
+  // outros, que é o rateio acontecendo sozinho.
+  var minha = (PGVALOR!=null) ? Math.min(PGVALOR, resta) : +(resta/PGPARTES).toFixed(2);
   return {itens:itens,gorj:gorj,total:total,resta:resta,minha:minha};
+}
+function setValorLivre(){
+  var v=prompt('Quanto você quer pagar? (falta R$ '+
+    calcPagar().resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+')');
+  if(v==null)return;
+  var n=Number(String(v).replace(/\./g,'').replace(',','.'));
+  if(!(n>0)){alert('Valor inválido');return}
+  PGVALOR=n;PGPARTES=1;pintaPagar();
 }
 function pintaPagar(){
   var v=calcPagar(), n=mesaAtual();
@@ -5153,8 +5192,22 @@ function pintaPagar(){
       [10,15].map(function(p){return '<button class="seg'+(PGGORJ===p?' on':'')+'" onclick="setGorj('+p+')">'+p+'%</button>'}).join('')+
     '</div>'+
     '<div class="tit2">Dividir por</div><div class="segs">'+
-      [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
+      [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k&&PGVALOR==null?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
+      '<button class="seg'+(PGVALOR!=null?' on':'')+'" onclick="setValorLivre()" style="flex:1 1 100%;margin-top:4px">'+
+        (PGVALOR!=null?'pagando R$ '+PGVALOR.toLocaleString('pt-BR',{minimumFractionDigits:2}):'outro valor')+'</button>'+
     '</div>'+
+    // O QUE JÁ ENTROU. Numa conta rachada, quem chega depois precisa ver o que
+    // os outros já pagaram — senão ninguém sabe se está pagando a mais.
+    ((CONTA.pagamentos&&CONTA.pagamentos.length)
+      ? '<div class="tit2">Já pago nesta conta</div><div class="card">'+
+        CONTA.pagamentos.map(function(g){
+          var h=g.quando?new Date(g.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+          return '<div class="lin"><span>'+esc(g.forma||'pagamento')+(h?' · '+h:'')+'</span>'+
+            '<b>R$ '+Number(g.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>';
+        }).join('')+
+        '<div class="lin"><span><b>ainda falta</b></span><b style="color:var(--gold2)">R$ '+
+          v.resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div></div>'
+      : '')+
     (PGPARTES>1?'<div class="mut" style="margin-top:8px">Cada pessoa paga a sua e a conta vai baixando sozinha. Quem pagar por último acerta a diferença.</div>':'');
   h+='<div id="pgbtns"></div>'+
      '<button class="b ver" onclick="verContaAlvo()">🧾 Ver o detalhe '+(PGALVO==null?'da conta':'da comanda '+PGALVO)+'</button>'+
@@ -5165,7 +5218,7 @@ function pintaPagar(){
 // O detalhe tem que ser o do que está sendo pago, não o da mesa inteira.
 function verContaAlvo(){var a=alvoPg();if(a===null)return;location.href='/conta/ver?n='+a}
 function setGorj(p){PGGORJ=p;pintaPagar()}
-function setPartes(k){PGPARTES=k;pintaPagar()}
+function setPartes(k){PGPARTES=k;PGVALOR=null;pintaPagar()}
 // Um botão só — "Pagar a conta". A escolha da forma vem depois, numa tela
 // própria: lá cabe explicar por que o cartão está apagado, o que no meio dos
 // valores viraria ruído.
@@ -5203,7 +5256,8 @@ function telaFormaPg(){
 }
 async function gerarPix(n){
   app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
-  var r=await post('/api/pix/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES});
+  var r=await post('/api/pix/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES,
+    valor:(PGVALOR!=null?calcPagar().minha:undefined)});
   if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui gerar')+'</div>'+
     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');return}
@@ -5212,12 +5266,25 @@ async function gerarPix(n){
     '<div class="mut" style="margin:10px 0 6px">Ou copie o código:</div>'+
     '<div class="copia" id="cp">'+esc(r.copia_cola||'')+'</div>'+
     '<button class="b" id="btncp" onclick="copiar()">Copiar código</button>'+
+    // Conta rachada: quem pagou a primeira parte manda o código pros outros
+    // seguirem. wa.me sem número deixa a pessoa escolher pra quem enviar —
+    // pode ser pra ela mesma, pra levar pro app do banco.
+    '<button class="b zap" onclick="mandarZap()">Enviar no WhatsApp</button>'+
     '<div id="pgst" class="mut" style="margin-top:14px">aguardando o pagamento…</div>'+
     '<button class="b g" onclick="pararPix()">Voltar</button>');
   vigiarPix(r.txid);
 }
 // Confirma sozinho: o cliente paga no app do banco e a tela avisa aqui.
 var pixTmr=null;
+function mandarZap(){
+  var cod=(document.getElementById('cp')||{}).textContent||'';
+  var v=(document.querySelector('#app .valor')||{}).textContent||'';
+  var n=mesaAtual();
+  var txt='${LOJA_NOME} — mesa '+n+'\n'+
+    'Pix de '+v.trim()+'\n\n'+cod+'\n\n'+
+    'Cole no app do banco pra pagar a sua parte.';
+  window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
+}
 function pararPix(){clearInterval(pixTmr);pixTmr=null;inicio()}
 function vigiarPix(txid){
   clearInterval(pixTmr);
