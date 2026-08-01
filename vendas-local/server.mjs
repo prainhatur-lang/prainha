@@ -13,9 +13,11 @@
 import http from 'node:http';
 import https from 'node:https';
 import { createHmac, createHash } from 'node:crypto';
-import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
+  readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
 import QRCode from 'qrcode-svg';
@@ -1679,6 +1681,63 @@ async function marcar(body) {
 //   -> http://IP:8790  -> Relaunch  -> aceitar a permissão da câmera
 // Tablet sem isso não dá baixa nenhuma. É de propósito, mas tem que estar
 // feito ANTES do serviço começar.
+// ---- HTTPS: é o que libera a câmera, sem mexer em flag nenhuma ----
+//
+// getUserMedia exige contexto seguro. Mandar cada tablet configurar
+// chrome://flags é frágil e ninguém lembra. Em vez disso o próprio servidor
+// sobe TAMBÉM em HTTPS, na porta seguinte: o aparelho aceita o aviso de
+// certificado UMA vez ("Avançado > Continuar") e a câmera passa a funcionar
+// como em qualquer site.
+//
+// O certificado é gerado aqui mesmo, na primeira vez, com o openssl que já
+// vem junto do PostgreSQL que o nosso instalador instala. Sem openssl, o
+// HTTPS simplesmente não sobe e o sistema segue em HTTP (sem câmera).
+const PORT_HTTPS = Number(process.env.PORT_HTTPS || (Number(process.env.PORT || 8790) + 1));
+function achaOpenssl() {
+  const tentar = [process.env.OPENSSL_BIN, 'openssl'];
+  for (const base of ['C:\\Program Files\\PostgreSQL', 'C:\\Program Files (x86)\\PostgreSQL']) {
+    try {
+      for (const v of readdirSync(base)) tentar.push(path.join(base, v, 'bin', 'openssl.exe'));
+    } catch { /* pasta não existe nesta máquina */ }
+  }
+  tentar.push('C:\\Program Files\\Git\\usr\\bin\\openssl.exe');
+  for (const bin of tentar) {
+    if (!bin) continue;
+    try { execFileSync(bin, ['version'], { stdio: 'ignore' }); return bin; } catch { /* próximo */ }
+  }
+  return null;
+}
+/** IPs desta máquina — vão no certificado, senão o navegador recusa o endereço. */
+function ipsLocais() {
+  const out = [];
+  for (const lista of Object.values(os.networkInterfaces())) {
+    for (const i of lista || []) if (i.family === 'IPv4' && !i.internal) out.push(i.address);
+  }
+  return out;
+}
+function certificado() {
+  const dirC = path.join(process.cwd(), 'cert');
+  const arqC = path.join(dirC, 'cert.pem'), arqK = path.join(dirC, 'key.pem');
+  if (existsSync(arqC) && existsSync(arqK)) {
+    try { return { cert: readFileSync(arqC), key: readFileSync(arqK) }; } catch { /* refaz */ }
+  }
+  const ssl = achaOpenssl();
+  if (!ssl) { console.log('[https] openssl não encontrado — sobe só em HTTP (câmera não vai funcionar)'); return null; }
+  try {
+    mkdirSync(dirC, { recursive: true });
+    const san = ['DNS:localhost', 'IP:127.0.0.1', ...ipsLocais().map((x) => 'IP:' + x)].join(',');
+    execFileSync(ssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', arqK, '-out', arqC, '-days', '3650',
+      '-subj', '/CN=' + (process.env.LOJA_NOME || 'prainha') + '-vendas',
+      '-addext', 'subjectAltName=' + san], { stdio: 'ignore' });
+    console.log('[https] certificado gerado para ' + san);
+    return { cert: readFileSync(arqC), key: readFileSync(arqK) };
+  } catch (e) {
+    console.log('[https] não consegui gerar o certificado: ' + e.message);
+    return null;
+  }
+}
+
 const DIR_FOTOS = path.join(process.cwd(), 'fotos');
 function guardaFoto(dataUrl) {
   const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
@@ -1708,6 +1767,35 @@ async function registrarBaixa(acao, codigos, arquivo, on) {
     console.error('[baixa] não consegui indexar quem baixou:', e.message);
   }
 }
+// GUARDA POR UM MÊS. Foto de funcionário é dado pessoal: serve pra apurar o
+// que aconteceu naquele turno, não pra virar acervo. Passado o prazo, a imagem
+// é apagada do disco — mas o REGISTRO fica (o quê, quando, qual praça, qual
+// mesa), que é histórico de operação e não identifica ninguém.
+const FOTO_DIAS = Number(process.env.FOTO_DIAS ?? 30);
+async function limparFotosAntigas() {
+  if (!(FOTO_DIAS > 0)) return;
+  try {
+    // as pastas são nomeadas AAAA-MM-DD, então comparação de texto já ordena
+    const corte = new Date(Date.now() - FOTO_DIAS * 86400000).toISOString().slice(0, 10);
+    let dias = 0, fotos = 0;
+    if (existsSync(DIR_FOTOS)) {
+      for (const dia of readdirSync(DIR_FOTOS)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || dia >= corte) continue;
+        const alvo = path.join(DIR_FOTOS, dia);
+        try { fotos += readdirSync(alvo).length; } catch { /* pasta some no meio: tudo bem */ }
+        rmSync(alvo, { recursive: true, force: true });
+        dias++;
+      }
+    }
+    const r = await sql`UPDATE baixa_foto
+      SET arquivo = NULL, sem_foto_motivo = ${'foto apagada — guardamos ' + FOTO_DIAS + ' dias'}
+      WHERE arquivo IS NOT NULL AND criado_em < now() - (${String(FOTO_DIAS)} || ' days')::interval`;
+    if (dias || r.count) console.log(`[fotos] limpeza: ${fotos} foto(s) em ${dias} dia(s), ${r.count} registro(s) marcados`);
+  } catch (e) {
+    console.error('[fotos] limpeza falhou:', e.message);
+  }
+}
+
 /** Últimas baixas, com quem apertou. */
 async function apiBaixas(limite, area) {
   const n = Math.min(200, Math.max(1, Number(limite) || 60));
@@ -1716,7 +1804,7 @@ async function apiBaixas(limite, area) {
     FROM baixa_foto WHERE ${filtro} ORDER BY criado_em DESC LIMIT ${n}`;
   const semFoto = (await sql`SELECT COUNT(*) AS n FROM baixa_foto
     WHERE arquivo IS NULL AND criado_em > now() - interval '1 day'`)[0];
-  return { baixas: r, sem_foto_24h: Number(semFoto?.n ?? 0) };
+  return { baixas: r, sem_foto_24h: Number(semFoto?.n ?? 0), guarda_dias: FOTO_DIAS };
 }
 
 // ---- HTML (uma SPA; rota / = produção, /entrega = entrega) ----
@@ -1898,18 +1986,32 @@ function avisoCam(){
 /* Sem câmera, a tela inteira para: não adianta deixar apertar e levar erro a
    cada toque no meio do serviço. Mostra o que fazer e um botão pra tentar de
    novo depois de liberar. */
+/* O caminho prático: um toque leva pro endereço seguro (https na porta
+   seguinte). O tablet aceita o aviso do certificado UMA vez e a câmera passa a
+   funcionar — sem mexer em chrome://flags, que nenhum botão consegue abrir. */
+function urlSegura(){
+  var porta=Number(location.port||80)+1;
+  return 'https://'+location.hostname+':'+porta+location.pathname+location.search;
+}
 function telaSemCamera(){
+  var jaHttps=(location.protocol==='https:');
   document.getElementById('app').innerHTML=
     '<div class="sel" style="max-width:760px"><h2 style="color:#dc2626;font-size:19px;font-weight:700">Câmera bloqueada — este tablet não pode dar baixa</h2>'+
-    '<div style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-top:14px;line-height:1.55">'+
-    '<div style="color:#a33;margin-bottom:12px">'+esc(CAM.erro||'a câmera não abriu')+'</div>'+
-    '<b>Como liberar neste aparelho:</b>'+
-    '<ol style="margin:8px 0 0;padding-left:20px">'+
-    '<li>Abrir <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code></li>'+
-    '<li>Colar <code>'+esc(location.origin)+'</code> no campo e marcar <b>Enabled</b></li>'+
-    '<li>Tocar em <b>Relaunch</b></li>'+
-    '<li>Voltar aqui e permitir a câmera quando o Chrome perguntar</li>'+
-    '</ol></div>'+
+    (jaHttps?'':
+      '<div style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-top:14px;line-height:1.55">'+
+      '<b>É rápido:</b> toque no botão abaixo. O Chrome vai avisar que o site não é conhecido — '+
+      'toque em <b>Avançado</b> e depois em <b>Continuar</b>. Só na primeira vez neste aparelho.'+
+      '<div class="mut" style="margin-top:8px;font-size:13px">É a nossa própria máquina da loja, na rede interna.</div>'+
+      '</div>'+
+      '<button class="abtn" style="margin-top:14px;border-top-color:var(--green);width:100%" '+
+      'onclick="location.href=\\''+urlSegura()+'\\'">'+
+      '<div class="an">🔒 Abrir no modo que libera a câmera</div>'+
+      '<div class="ap">'+esc(urlSegura())+'</div></button>')+
+    '<div style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-top:14px;line-height:1.5">'+
+    '<div style="color:#a33">'+esc(CAM.erro||'a câmera não abriu')+'</div>'+
+    (jaHttps?'<div class="mut" style="margin-top:8px;font-size:13px">Já está no endereço seguro. '+
+      'Toque no cadeado da barra de endereço e permita a <b>Câmera</b> para este site.</div>':'')+
+    '</div>'+
     '<button class="abtn" style="margin-top:14px;border-top-color:#dc2626" onclick="tentarCamera()">'+
     '<div class="an">Já liberei — tentar de novo</div></button></div>';
 }
@@ -3524,9 +3626,10 @@ function hora(t){var d=new Date(t);return d.toLocaleString('pt-BR',{day:'2-digit
 async function carrega(){
   var d;try{d=await (await fetch('/api/baixas?n=120',{cache:'no-store'})).json()}catch(e){return}
   var al=document.getElementById('al');
-  al.innerHTML=d.sem_foto_24h
+  al.innerHTML=(d.sem_foto_24h
     ? '<span class="pill al">'+d.sem_foto_24h+' baixa(s) sem foto nas últimas 24h</span>'
-    : '<span class="pill">todas com foto nas últimas 24h</span>';
+    : '<span class="pill">todas com foto nas últimas 24h</span>')+
+    ' <span class="pill">fotos guardadas por '+(d.guarda_dias||30)+' dias</span>';
   var app=document.getElementById('app');
   if(!d.baixas.length){app.className='vazio';app.innerHTML='nenhuma baixa registrada ainda';return}
   app.className='grid';
@@ -4768,8 +4871,19 @@ const server = http.createServer(async (req, res) => {
 async function main() {
   await initSchema(); console.log('[schema] ok');
   server.listen(PORT, () => console.log(`KDS em http://localhost:${PORT}  (/=produção, /entrega=entrega, /venda=garçom)`));
+  // HTTPS ao lado: é o endereço que libera a câmera nos tablets
+  const cred = certificado();
+  if (cred) {
+    https.createServer(cred, server.listeners('request')[0])
+      .listen(PORT_HTTPS, () => console.log(`[https] no ar em https://localhost:${PORT_HTTPS}  (necessário pra câmera)`))
+      .on('error', (e) => console.log('[https] não subiu: ' + e.message));
+  }
   loopEspelho();
   espelhoCatalogo().catch(() => {});
   setInterval(() => espelhoCatalogo().catch(() => {}), 5 * 60 * 1000);
+  // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
+  // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
+  limparFotosAntigas();
+  setInterval(limparFotosAntigas, 6 * 60 * 60 * 1000);
 }
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });
