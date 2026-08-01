@@ -3218,8 +3218,13 @@ async function interToken(c) {
  *  valor vindo do browser nunca vira cobrança sem passar por aqui. */
 function valorDaCobranca(conta, body) {
   const itens = Number(conta.total || 0);
-  // gorjeta: null/undefined = mantém os 10% da casa; número = o que o cliente escolheu
-  const pct = body.gorjeta_pct == null ? Number(conta.taxa_servico || 0) : Math.max(0, Math.min(30, Number(body.gorjeta_pct)));
+  // Gorjeta: null = o padrão da casa. O cliente pode dar MAIS, nunca menos —
+  // retirar o serviço é conversa com o garçom, não botão na tela. Sem este
+  // piso aqui, bastava forjar a chamada e pagar sem serviço.
+  const padrao = Number(conta.taxa_servico || 0);
+  const pct = body.gorjeta_pct == null
+    ? padrao
+    : Math.max(padrao, Math.min(30, Number(body.gorjeta_pct) || 0));
   const comGorjeta = +(itens * (1 + pct / 100)).toFixed(2);
   const restaTotal = Math.max(0, +(comGorjeta - Number(conta.pago || 0)).toFixed(2));
   if (restaTotal <= 0) return { erro: 'essa conta já está paga' };
@@ -4519,10 +4524,13 @@ function pintaPagar(){
     '<div class="card"><div class="lin"><span>Consumo</span><b>R$ '+v.itens.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
     (CONTA.pago>0?'<div class="lin"><span>já pago</span><b>− R$ '+Number(CONTA.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>':'')+
     '<div class="lin"><span>Serviço</span><b>R$ '+v.gorj.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div></div>'+
-    // A taxa de servico e' OPCIONAL por lei — a tela deixa tirar sem constranger.
+    // A taxa de serviço é opcional por lei, mas tirar não é decisão de tela:
+    // passa pelo garçom. Aqui o cliente só escolhe o padrão da casa ou dar
+    // mais — nunca menos.
     '<div class="tit2">Serviço</div><div class="segs">'+
-      [0,10,15].map(function(p){return '<button class="seg'+(PGGORJ===p?' on':'')+'" onclick="setGorj('+p+')">'+(p===0?'não incluir':p+'%')+'</button>'}).join('')+
+      [10,15].map(function(p){return '<button class="seg'+(PGGORJ===p?' on':'')+'" onclick="setGorj('+p+')">'+p+'%</button>'}).join('')+
     '</div>'+
+    '<div class="mut" style="margin-top:6px;font-size:12.5px">Pra retirar o serviço, chame o garçom.</div>'+
     '<div class="tit2">Dividir por</div><div class="segs">'+
       [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
     '</div>'+
