@@ -2112,7 +2112,12 @@ function telaSemCamera(){
       'Toque no cadeado da barra de endereço e permita a <b>Câmera</b> para este site.</div>':'')+
     '</div>'+
     '<button class="abtn" style="margin-top:14px;border-top-color:#dc2626" onclick="tentarCamera()">'+
-    '<div class="an">Já liberei — tentar de novo</div></button></div>';
+    '<div class="an">Já liberei — tentar de novo</div></button>'+
+    // sem esta saída a pessoa ficava presa no aviso, sem conseguir voltar
+    // pra fila — e a cozinha PRECISA continuar vendo o que tem pra fazer
+    '<button class="abtn" style="margin-top:10px" onclick="if(VIEW)VIEW()">'+
+    '<div class="an">◂ Voltar aos pedidos</div>'+
+    '<div class="ap">dá pra ver a fila; só a baixa é que exige a foto</div></button></div>';
 }
 async function tentarCamera(){ CAM.erro=null;CAM.pronta=false;await ligaCamera();if(VIEW)VIEW(); }
 async function marca(campo,body){
@@ -2182,8 +2187,7 @@ async function selecao(){
   }).join('')+'</div></div>';
 }
 async function kds(){
-  await ligaCamera();                       // quem baixar aqui fica registrado
-  if(!CAM.pronta){telaSemCamera();return}   // sem foto não opera
+  ligaCamera();   // quem baixar aqui fica registrado; a tela NÃO espera por ela
   var d=await (await fetch('/api/kds?area='+AREA.cod,{cache:'no-store'})).json();
   ESPERANDO=d.esperando||[];
   checaNovos(d); // pedido novo na área -> apita
@@ -2260,8 +2264,7 @@ async function selecaoEntrega(){
   }).join('')+'</div></div>';
 }
 async function entrega(){
-  await ligaCamera();                       // idem: quem entregou fica registrado
-  if(!CAM.pronta){telaSemCamera();return}
+  ligaCamera();   // idem: quem entregou fica registrado
   var d=await (await fetch('/api/entrega?area='+AREA.cod,{cache:'no-store'})).json();
   checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
   var nome=(d.comandas[0]&&d.comandas[0].itens[0]&&d.comandas[0].itens[0].area_nome)||AREANOME[AREA.cod]||'';
