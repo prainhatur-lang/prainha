@@ -296,6 +296,18 @@ async function initSchema() {
   // foto é do PRODUTO, não da variante: "T Gin" tem uma só, e as 17 frutas
   // usam a mesma. Guardar no banco (e não em disco) mantém tudo num lugar só,
   // entra no backup junto e não depende de caminho de pasta. São ~11 MB.
+  // ---- PERGUNTAS DO CONSUMER (o "wizard") ----
+  // "Qual o ponto da carne", "Qual o acompanhamento?", "Deseja mais algum
+  // molho?" — 109 perguntas, 511 opções, e o preço muda conforme a resposta.
+  // Sem isso o cliente não consegue pedir sozinho metade dos pratos.
+  // O nome da opção vem de OBSERVACAO (texto puro: "Ao ponto") ou do PRODUTO
+  // ligado ("Molho Gorgonzola") — DESCRICAO quase sempre está vazia.
+  await sql`CREATE TABLE IF NOT EXISTS wizard_pergunta (codigo integer PRIMARY KEY,
+    texto text, min integer DEFAULT 0, max integer DEFAULT 0)`;
+  await sql`CREATE TABLE IF NOT EXISTS wizard_opcao (codigo integer PRIMARY KEY,
+    pergunta integer NOT NULL, nome text, preco numeric DEFAULT 0, produto_pdv integer)`;
+  await sql`CREATE TABLE IF NOT EXISTS wizard_produto (codigo_pdv integer NOT NULL,
+    pergunta integer NOT NULL, ordem integer DEFAULT 0, PRIMARY KEY (codigo_pdv, pergunta))`;
   await sql`CREATE TABLE IF NOT EXISTS produto_foto (produto_codigo integer PRIMARY KEY,
     mime text NOT NULL, bytes bytea NOT NULL, tam integer, atualizado timestamptz DEFAULT now())`;
 }
@@ -380,6 +392,55 @@ async function loopEspelho() {
 }
 
 // ---- CATÁLOGO local (Firebird -> Postgres, a cada 5 min) ----
+/** Traz as perguntas do Consumer pro espelho local. Sai junto do catalogo,
+ *  no mesmo ciclo de 5 min — pergunta nova cadastrada la aparece aqui sozinha. */
+async function espelhoPerguntas() {
+  const pg = await q(`SELECT CODIGO, TRIM(DESCRICAO) D, QTDRESPOSTASMIN MN, QTDRESPOSTASMAX MX
+      FROM WIZARDPERGUNTAS WHERE DATADELETE IS NULL`);
+  if (!pg.ok) { console.error('[perguntas] ' + pg.err); return; }
+  // nome da opcao: DESCRICAO -> OBSERVACAO -> nome do PRODUTO ligado
+  const op = await q(`SELECT o.CODIGO, o.CODIGOWIZARDPERGUNTA PERG, o.PRECOPROMO PR,
+        o.CODIGOPRODUTODETALHE PD,
+        TRIM(COALESCE(NULLIF(TRIM(o.DESCRICAO),''), NULLIF(TRIM(o.OBSERVACAO),''), p.NOME)) NOME
+      FROM WIZARDOPCOES o
+      LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = o.CODIGOPRODUTODETALHE
+      LEFT JOIN PRODUTOS p ON p.CODIGO = pd.CODIGOPRODUTO
+      WHERE o.DATADELETE IS NULL`);
+  const lig = await q(`SELECT CODIGOPRODUTODETALHE PDV, CODIGOWIZARDPERGUNTA PERG, ORDEM
+      FROM WIZARD WHERE DATADELETE IS NULL`);
+  if (!op.ok || !lig.ok) { console.error('[perguntas] opcoes/ligacoes indisponiveis'); return; }
+  const perguntas = pg.rows.map((x) => ({ codigo: N(x.CODIGO), texto: T(x.D) || null,
+    min: N(x.MN) || 0, max: N(x.MX) || 0 }));
+  const opcoes = op.rows.map((x) => ({ codigo: N(x.CODIGO), pergunta: N(x.PERG),
+    nome: T(x.NOME) || null, preco: N(x.PR) || 0, produto_pdv: N(x.PD) || null }))
+    .filter((x) => x.nome);                       // opcao sem nome nao serve pra escolher
+  const ligacoes = lig.rows.map((x) => ({ codigo_pdv: N(x.PDV), pergunta: N(x.PERG), ordem: N(x.ORDEM) || 0 }))
+    .filter((x) => x.codigo_pdv && x.pergunta);
+  await sql.begin(async (sql) => {
+    await sql`TRUNCATE wizard_pergunta, wizard_opcao, wizard_produto`;
+    if (perguntas.length) await sql`INSERT INTO wizard_pergunta ${sql(perguntas, 'codigo', 'texto', 'min', 'max')}`;
+    if (opcoes.length) await sql`INSERT INTO wizard_opcao ${sql(opcoes, 'codigo', 'pergunta', 'nome', 'preco', 'produto_pdv')}`;
+    if (ligacoes.length) await sql`INSERT INTO wizard_produto ${sql(ligacoes, 'codigo_pdv', 'pergunta', 'ordem')} ON CONFLICT DO NOTHING`;
+  });
+  console.log(`[perguntas] ok — ${perguntas.length} perguntas, ${opcoes.length} opções, ${ligacoes.length} vínculos`);
+}
+/** As perguntas de UM item, prontas pra tela. Só as que têm opção. */
+async function apiPerguntas(codigoPdv) {
+  const pdv = Number(codigoPdv);
+  if (!(pdv > 0)) return { ok: false, erro: 'produto inválido' };
+  const ps = await sql`SELECT p.codigo, p.texto, p.min, p.max, wp.ordem
+    FROM wizard_produto wp JOIN wizard_pergunta p ON p.codigo = wp.pergunta
+    WHERE wp.codigo_pdv = ${pdv} ORDER BY wp.ordem, p.codigo`;
+  const out = [];
+  for (const p of ps) {
+    const ops = await sql`SELECT codigo, nome, preco FROM wizard_opcao
+      WHERE pergunta = ${p.codigo} ORDER BY preco, nome`;
+    if (!ops.length) continue;                    // pergunta sem opção não se responde
+    out.push({ codigo: p.codigo, texto: p.texto || 'Escolha',
+      min: Number(p.min) || 0, max: Number(p.max) || 0, opcoes: ops });
+  }
+  return { ok: true, perguntas: out };
+}
 async function espelhoCatalogo() {
   // SALDO REAL de estoque: PRODUTOS.ESTOQUEATUAL e' CAMPO MORTO no Consumer
   // (zero nos 501 produtos controlados, positivo em nenhum). Quem tem a verdade
@@ -425,6 +486,8 @@ async function espelhoCatalogo() {
     await sql`TRUNCATE produto_local`;
     if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
   });
+  // ---- perguntas do Consumer ----
+  await espelhoPerguntas();
   // Observacoes que a casa ja tem cadastradas, ligadas ao GRUPO do produto:
   // "Mal passada" aparece em Porcoes, "Com gelo e limao" em Refrigerantes.
   // A casa nao usa COMPLEMENTOS (tabela vazia) — e' por aqui que o cliente
@@ -5284,6 +5347,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
     if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
     if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/grupos-ocultos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGruposOcultos())); }
