@@ -337,18 +337,25 @@ async function espelho() {
   // mesa (SESSAO_MESA_MIN): dentro dessa janela a pessoa ainda esta ali, e
   // depois dela a sessao do celular ja teria caido de qualquer jeito.
   const numerosAbertos = comandas.map((c) => c.numero).filter((n) => n != null);
+  // ⚠️ A MESMA CARÊNCIA VALE PRA COMANDA RECÉM-ABERTA. O vínculo nasce quando
+  // o garçom abre a comanda, mas o PEDIDOS no Consumer só nasce no primeiro
+  // item lançado. Entre um e outro a comanda não está em numerosAbertos — e o
+  // sync, segundos depois, fechava o vínculo: o garçom abria a comanda, tocava
+  // nela e ela tinha sumido. Dentro da janela a comanda é nova, não órfã.
+  const carencia = sql`(${String(SESSAO_MESA_MIN)} || ' minutes')::interval`;
   if (numerosAbertos.length) {
     await sql`UPDATE mesa_comanda SET fechada_em = now()
-       WHERE fechada_em IS NULL AND (mesa <> ALL(${numerosAbertos}) OR comanda <> ALL(${numerosAbertos}))`;
+       WHERE fechada_em IS NULL AND (mesa <> ALL(${numerosAbertos}) OR comanda <> ALL(${numerosAbertos}))
+         AND aberta_em < now() - ${carencia}`;
     await sql`UPDATE identificacao SET fechada_em = now()
        WHERE fechada_em IS NULL AND numero <> ALL(${numerosAbertos})
-         AND criado_em < now() - (${String(SESSAO_MESA_MIN)} || ' minutes')::interval`;
+         AND criado_em < now() - ${carencia}`;
   } else {
-    // nenhuma mesa aberta (casa fechada): libera tudo
-    await sql`UPDATE mesa_comanda SET fechada_em = now() WHERE fechada_em IS NULL`;
+    // nenhuma mesa aberta (casa fechada): libera tudo que já passou da carência
+    await sql`UPDATE mesa_comanda SET fechada_em = now()
+       WHERE fechada_em IS NULL AND aberta_em < now() - ${carencia}`;
     await sql`UPDATE identificacao SET fechada_em = now()
-       WHERE fechada_em IS NULL
-         AND criado_em < now() - (${String(SESSAO_MESA_MIN)} || ' minutes')::interval`;
+       WHERE fechada_em IS NULL AND criado_em < now() - ${carencia}`;
   }
   ultimoStatus = { ok: true, comandas: comandas.length, itens: itens.length };
   return ultimoStatus;
@@ -848,7 +855,7 @@ async function apiJaPedido(numero) {
       WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
     for (const v of vinc) {
       const cc = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
-      if (!cc) continue;
+      if (!cc) continue;                       // sem conta ainda: nada pedido
       const its = await jaPedidoDe(cc.codigo);
       if (!its.length) continue;
       const idc = (await sql`SELECT nome_curto FROM identificacao
@@ -3494,12 +3501,15 @@ async function apiContaTexto(numero) {
     const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
       WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
     for (const v of vinc) {
-      const cc = (await sql`SELECT codigo, nome, subtotal_pago FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
-      if (!cc) continue;
+      // Comanda recém-aberta ainda não tem PEDIDOS no Consumer (ele nasce no
+      // primeiro item). Antes disso ela sumia da conta — o garçom abria e não
+      // via. Agora aparece zerada, que é a verdade: existe e não consumiu nada.
+      const cc = (await sql`SELECT codigo, nome, subtotal_pago FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0]
+        || { codigo: null, nome: null, subtotal_pago: 0 };
       // Os ITENS da comanda vão junto: sem eles o cupom mostrava só um total
       // solto ("302 — R$ 17,60") e a pessoa não tinha como conferir o que
       // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
-      const its = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
+      const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
         WHERE comanda_codigo=${cc.codigo} ORDER BY criado NULLS LAST, id`;
       const sub = its.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
@@ -4194,22 +4204,17 @@ function telaCadastro(op){
   POSCAD=op.depois||null;
   CADEXIGE=!!op.exigeDoc;
   app('<h1>Seu cadastro</h1>'+
-    '<div class="mut" style="margin:6px 0 16px">'+esc(op.motivo||'Tudo opcional. Serve pra guardar o que você gosta e agilizar sua próxima visita.')+'</div>'+
-    '<div class="tit2" style="margin-top:0">CPF</div>'+
+    '<div class="mut" style="margin:6px 0 16px">'+esc(op.motivo||'Precisamos do seu CPF pra abrir a conta. O nome vem sozinho.')+'</div>'+
+    '<div class="tit2" style="margin-top:0">CPF <span class="mut">(obrigatório)</span></div>'+
     '<input id="ccpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpfCli(this.value)">'+
     '<div id="cquem" class="mut" style="margin-top:9px">Digite o CPF que o nome vem sozinho.</div>'+
     '<div id="cpasso2"></div>'+
-    '<button class="b g" onclick="semCpf()">Não quero informar o CPF</button>'+
     '<button class="b g" onclick="inicio()">Agora não</button>');
   var el=document.getElementById('ccpf');if(el)el.focus();
 }
 var CADINFO=null, cadDeb=null;
-function semCpf(){
-  CADINFO=null;
-  document.getElementById('cquem').innerHTML='';
-  passo2Cli(null,true);
-  var i=document.getElementById('ccpf');if(i)i.value='';
-}
+// (removida a saída "não quero informar o CPF": o CPF virou obrigatório —
+// é ele que identifica quem está consumindo e o que a consulta ao SPC usa)
 function olhaCpfCli(v){
   CADINFO=null;clearTimeout(cadDeb);
   var d=String(v||'').replace(/\\D/g,'');
@@ -4236,9 +4241,9 @@ function olhaCpfCli(v){
 function passo2Cli(telFim, pedeNome){
   var p2=document.getElementById('cpasso2');if(!p2)return;
   p2.innerHTML=(pedeNome?'<div class="tit2">Seu nome</div><input id="cnome" placeholder="como quer ser chamado">':'')+
-    '<div class="tit2">WhatsApp'+(telFim?' <span class="mut">(temos o final '+esc(String(telFim).slice(-4))+')</span>':'')+'</div>'+
+    '<div class="tit2">WhatsApp <span class="mut">(opcional)</span>'+(telFim?' <span class="mut">· temos o final '+esc(String(telFim).slice(-4))+'</span>':'')+'</div>'+
     '<input id="czap" inputmode="numeric" placeholder="(79) 90000-0000" oninput="olhaZap(this.value)">'+
-    '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. Usamos pra avisar de reserva e mesa pronta.</div>'+
+    '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. Opcional, mas é por aqui que avisamos quando seu pedido sai e quando sua reserva está pronta.</div>'+
     '<button class="b" onclick="salvarCadastro()">Salvar</button>';
   var z=document.getElementById('czap');if(z)z.focus();
 }
@@ -4257,10 +4262,9 @@ async function salvarCadastro(){
   var cpf=((document.getElementById('ccpf')||{}).value||'').replace(/\\D/g,'');
   var zap=((document.getElementById('czap')||{}).value||'').replace(/\\D/g,'');
   var nome=CADINFO?CADINFO.nome:(((document.getElementById('cnome')||{}).value||'').trim());
+  if(cpf.length!==11){alert('O CPF é obrigatório pra abrir a conta.');return}
   if(!nome){alert('Digite seu nome');return}
   if(zap&&zap.length<10){alert('O WhatsApp precisa do DDD (ex.: 79 seguido do número)');return}
-  if(CADEXIGE&&cpf.length!==11&&zap.length<10){
-    alert('Informe o CPF ou o WhatsApp — um dos dois basta.');return}
   var body={numero:n,nome:nome,cadastrar:true};
   if(cpf.length===11)body.cpf=cpf;
   if(zap.length>=10)body.telefone=zap;
