@@ -1392,11 +1392,19 @@ async function apiChamadoCriar(body) {
   if (!TIPOS_CHAMADO.has(tipo)) return { ok: false, erro: 'tipo inválido' };
   const mesa = body.mesa == null ? null : Number(body.mesa);
   if (mesa != null && !(mesa >= 1 && mesa <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
-  // um chamado aberto por mesa+tipo: apertar o botão 5x não vira 5 alertas
-  const [ja] = await sql`SELECT id FROM chamado WHERE mesa IS NOT DISTINCT FROM ${mesa} AND tipo=${tipo} AND atendido_em IS NULL LIMIT 1`;
+  // Um chamado aberto por mesa+tipo: apertar o botão 5x não vira 5 alertas.
+  // ⚠️ Mas o aviso automático de "a mesa pediu pelo celular" NÃO pode engolir
+  // uma chamada de verdade — são coisas diferentes e o garçom reage diferente.
+  // Por isso a trava separa os dois: 'pedido' (automático) de 'chamada' (a
+  // pessoa apertou o botão).
+  const origem = String(body.origem || '').slice(0, 120) || null;
+  const auto = origem === 'pedido-cliente';
+  const [ja] = await sql`SELECT id FROM chamado
+    WHERE mesa IS NOT DISTINCT FROM ${mesa} AND tipo=${tipo} AND atendido_em IS NULL
+      AND (origem IS NOT DISTINCT FROM ${'pedido-cliente'}) = ${auto} LIMIT 1`;
   if (ja) return { ok: true, id: Number(ja.id), repetido: true };
   const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto)
-    VALUES (${mesa}, ${tipo}, ${String(body.origem || '').slice(0, 120) || null},
+    VALUES (${mesa}, ${tipo}, ${origem},
             ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null})
     RETURNING id`;
   return { ok: true, id: Number(r.id) };
@@ -2389,6 +2397,9 @@ input:focus{border-color:var(--gold2)}
 @keyframes pisca{0%,100%{background:#dc2626}50%{background:#8f1414}}
 @media (prefers-reduced-motion:reduce){.ch.rec{animation:none}}
 .ch.gar{background:#2563eb}
+/* aviso automático de pedido pelo celular: informa, mas não grita como uma
+   chamada de verdade — senão o garçom aprende a ignorar a faixa azul */
+.ch.gar.ped{background:#4b5563}
 .ri .n{font-size:15px}.ri .n small{color:var(--mut)}.ri .p{color:var(--gold2);font-weight:700;white-space:nowrap}
 .cart{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);box-shadow:0 -4px 18px rgba(0,0,0,.08);max-height:62vh;overflow:auto}
 .cart .in{max-width:560px;margin:0 auto;padding:10px 16px 14px}
@@ -2967,9 +2978,15 @@ async function puxarChamados(){
       '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">Vou lá</button></div>';
   });
   (d.garcom||[]).forEach(function(r){
-    h+='<div class="ch gar">🔔 '+(r.mesa?'Mesa '+r.mesa:'Alguém')+' chamou'+
+    // "pediu pelo celular" é aviso automático; "chamou" é gente com a mão
+    // levantada. Mostrar os dois como "chamou" fazia o garçom correr à toa —
+    // e ignorar o vermelho depois de algumas vezes.
+    var auto=(r.origem==='pedido-cliente');
+    h+='<div class="ch gar'+(auto?' ped':'')+'">'+(auto?'🍽 ':'🔔 ')+
+      (r.mesa?'Mesa '+r.mesa:'Alguém')+(auto?' pediu pelo celular':' chamou')+
       (r.ha_min>0?' · há '+r.ha_min+'min':' · agora')+
-      '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">Vou lá</button></div>';
+      (auto&&r.texto?' — '+esc(String(r.texto).replace('pediu pelo celular: ','')):'')+
+      '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">'+(auto?'Ok':'Vou lá')+'</button></div>';
   });
   el.innerHTML=h;
 }
