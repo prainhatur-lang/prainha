@@ -312,6 +312,15 @@ async function initSchema() {
     pergunta integer NOT NULL, nome text, preco numeric DEFAULT 0, produto_pdv integer)`;
   await sql`CREATE TABLE IF NOT EXISTS wizard_produto (codigo_pdv integer NOT NULL,
     pergunta integer NOT NULL, ordem integer DEFAULT 0, PRIMARY KEY (codigo_pdv, pergunta))`;
+  // ---- CONFIGURAÇÃO NOSSA DO PRODUTO ----
+  // Onde cada item aparece. Hoje o Consumer também tem essas flags, mas a
+  // ideia é virar com o NOSSO banco: aqui é que vai ficar a verdade.
+  // Fica FORA do produto_local de propósito — aquele é espelho e leva TRUNCATE
+  // a cada 5 min; isto aqui é cadastro e tem que sobreviver.
+  // null = "não mexeram, vale o padrão"; true/false = decisão da casa.
+  await sql`CREATE TABLE IF NOT EXISTS produto_config (codigo_pdv integer PRIMARY KEY,
+    cliente boolean, garcom boolean, caixa boolean, delivery boolean,
+    atualizado timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS produto_foto (produto_codigo integer PRIMARY KEY,
     mime text NOT NULL, bytes bytea NOT NULL, tam integer, atualizado timestamptz DEFAULT now())`;
 }
@@ -778,6 +787,62 @@ function agruparVariantes(rows) {
     ? String(a.nome).localeCompare(String(b.nome), 'pt-BR')
     : (a.sem_estoque ? 1 : -1)));
 }
+// ---- CADASTRO: onde cada produto aparece ----
+/** Lista pro cadastro: mostra a decisão da casa e, quando não há, o padrão
+ *  que veio do Consumer — pra ficar claro o que é escolha e o que é herança. */
+async function apiProdutos(termo, so) {
+  const t = '%' + semAcento(String(termo || '').trim()) + '%';
+  const filtro = so === 'sem-foto' ? sql`AND f.produto_codigo IS NULL`
+    : so === 'ajustados' ? sql`AND c.codigo_pdv IS NOT NULL` : sql``;
+  const rows = await sql`SELECT p.codigo_pdv, p.produto_codigo, p.nome, p.tamanho, p.preco,
+      p.categoria, p.sem_estoque, p.cardapio_digital AS padrao_cliente,
+      c.cliente, c.garcom, c.caixa, c.delivery,
+      (f.produto_codigo IS NOT NULL) AS tem_foto
+    FROM produto_local p
+    LEFT JOIN produto_config c ON c.codigo_pdv = p.codigo_pdv
+    LEFT JOIN produto_foto f ON f.produto_codigo = p.produto_codigo
+    WHERE p.nome_busca LIKE ${t} ${filtro}
+    ORDER BY p.categoria, p.nome, p.tamanho LIMIT 200`;
+  return { ok: true, produtos: rows };
+}
+/** Grava a decisão. null volta pro padrão do Consumer — dá pra desfazer. */
+async function apiProdutoSalvar(body) {
+  const pdv = Number(body.codigo_pdv);
+  if (!(pdv > 0)) return { ok: false, erro: 'produto inválido' };
+  const b = (v) => (v === true || v === false ? v : null);
+  const cfg = { cliente: b(body.cliente), garcom: b(body.garcom),
+    caixa: b(body.caixa), delivery: b(body.delivery) };
+  // tudo null = a casa desfez: some o registro e volta a valer o Consumer
+  if (Object.values(cfg).every((v) => v === null)) {
+    await sql`DELETE FROM produto_config WHERE codigo_pdv=${pdv}`;
+    return { ok: true, limpo: true };
+  }
+  await sql`INSERT INTO produto_config (codigo_pdv, cliente, garcom, caixa, delivery)
+      VALUES (${pdv}, ${cfg.cliente}, ${cfg.garcom}, ${cfg.caixa}, ${cfg.delivery})
+    ON CONFLICT (codigo_pdv) DO UPDATE SET cliente=EXCLUDED.cliente, garcom=EXCLUDED.garcom,
+      caixa=EXCLUDED.caixa, delivery=EXCLUDED.delivery, atualizado=now()`;
+  return { ok: true };
+}
+/** Troca a foto do PRODUTO (vale pra todas as variantes dele). */
+async function apiProdutoFoto(body) {
+  const prod = Number(body.produto_codigo);
+  if (!(prod > 0)) return { ok: false, erro: 'produto inválido' };
+  if (body.remover) {
+    await sql`DELETE FROM produto_foto WHERE produto_codigo=${prod}`;
+    return { ok: true, removida: true };
+  }
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(body.foto || ''));
+  if (!m) return { ok: false, erro: 'imagem inválida' };
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length || buf.length > 2_000_000) return { ok: false, erro: 'imagem muito grande (máx. 2 MB)' };
+  const mime = m[1] === 'png' ? 'image/png' : m[1] === 'webp' ? 'image/webp' : 'image/jpeg';
+  await sql`INSERT INTO produto_foto (produto_codigo, mime, bytes, tam, atualizado)
+      VALUES (${prod}, ${mime}, ${buf}, ${buf.length}, now())
+    ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
+      tam=EXCLUDED.tam, atualizado=now()`;
+  return { ok: true, tam: buf.length };
+}
+
 /** As variantes de um produto — só as que dá pra vender aparecem em primeiro. */
 async function apiVendaVariantes(produtoCodigo, cliente) {
   const p = Number(produtoCodigo);
@@ -804,9 +869,13 @@ async function apiVendaBusca(termo, cliente) {
 // Navegacao por categoria: o garcom nem sempre lembra o nome do produto.
 /** Filtro do cardápio do CLIENTE: respeita a flag do Consumer e a lista de
  *  grupos que a casa escondeu. O GARÇOM não passa por aqui — ele lança tudo. */
+// A NOSSA config manda; sem decisão registrada, vale a flag do Consumer.
+// O garçom não filtra por padrão — ele lança qualquer coisa —, só perde o que
+// a casa DESLIGAR explicitamente pra ele.
 const soCliente = (cliente) => (cliente
-  ? sql`AND cardapio_digital AND categoria NOT IN (SELECT categoria FROM grupo_oculto)`
-  : sql``);
+  ? sql`AND COALESCE((SELECT c.cliente FROM produto_config c WHERE c.codigo_pdv = produto_local.codigo_pdv), cardapio_digital)
+        AND categoria NOT IN (SELECT categoria FROM grupo_oculto)`
+  : sql`AND COALESCE((SELECT c.garcom FROM produto_config c WHERE c.codigo_pdv = produto_local.codigo_pdv), TRUE)`);
 async function apiVendaCategorias(cliente) {
   // Só grupo que tem o que vender AGORA. Grupo inteiro fora de estoque não
   // aparece — o garçom não deve tocar num grupo pra descobrir que está vazio.
@@ -4074,6 +4143,106 @@ testar();
 // A pergunta que o histórico do KDS não respondia: "quem apertou pronto nesse
 // item?". Serve pra apurar baixa indevida e pra resolver "entregaram na mesa
 // errada" sem depender da memória de ninguém.
+// ---- /produtos — CADASTRO: onde cada item aparece, e a foto ----
+// A verdade vai passar a ser o nosso banco. Hoje o Consumer ainda tem as
+// mesmas flags, então a tela mostra o padrão herdado dele e deixa a casa
+// decidir por cima — sem tocar no Consumer, e com "voltar ao padrão" sempre à
+// mão. Quando virar de vez, é só parar de olhar pro padrão.
+const PRODUTOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${LOJA_NOME} — Produtos</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green2:#0f8a3e;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 12px;font:inherit;font-size:14px;cursor:pointer;text-decoration:none}
+.grow{flex:1}
+input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9px 12px;border:1px solid var(--line);border-radius:10px}
+.wrap{max-width:1080px;margin:0 auto;padding:16px 18px 60px}
+.pi{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px 13px;margin-bottom:9px}
+.pi img,.pi .semf{width:56px;height:56px;border-radius:9px;object-fit:cover;flex:none;background:#eee;cursor:pointer}
+.pi .semf{display:flex;align-items:center;justify-content:center;color:#aaa;font-size:11px;text-align:center;line-height:1.2;border:1px dashed var(--line)}
+.pi .n{flex:1;min-width:150px;font-size:14.5px;line-height:1.3}
+.pi .n small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+.cn{display:flex;gap:6px;flex-wrap:wrap}
+.cb{border:1.5px solid var(--line);background:#fff;color:var(--mut);border-radius:9px;padding:6px 10px;font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.cb.on{border-color:var(--green2);background:#eafaf0;color:var(--green2);font-weight:700}
+.cb.off{border-color:var(--red);background:#fdeaea;color:var(--red);font-weight:700}
+.cb.herda{border-style:dashed}
+.vazio{padding:50px 20px;text-align:center;color:var(--mut)}
+.dica{background:#fff7e3;border:1px solid #f0d68f;color:#8a4b06;border-radius:11px;padding:10px 13px;font-size:13px;line-height:1.45;margin-bottom:14px}
+</style></head><body>
+<header><a class="back" href="/">◂ Produção</a><h1>Produtos <b>·</b> onde aparece</h1>
+<input type="search" id="q" placeholder="buscar produto…" oninput="buscar(this.value)">
+<select id="so" onchange="carrega()" style="font:inherit;padding:8px;border-radius:9px;border:1px solid var(--line)">
+  <option value="">todos</option><option value="sem-foto">sem foto</option><option value="ajustados">já ajustados</option>
+</select>
+<span class="grow"></span><span id="cnt" class="back"></span></header>
+<div class="wrap">
+<div class="dica"><b>Tracejado</b> = herdado do Consumer. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
+Clicando de novo volta ao herdado. Clique na foto pra trocar.</div>
+<div id="app" class="vazio">carregando…</div></div>
+<input type="file" id="arq" accept="image/*" style="display:none">
+<script>
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
+var LISTA=[], deb=null, FOTOALVO=null;
+function buscar(v){clearTimeout(deb);deb=setTimeout(carrega,300)}
+async function carrega(){
+  var q=document.getElementById('q').value, so=document.getElementById('so').value;
+  var d;try{d=await (await fetch('/api/produtos?q='+encodeURIComponent(q)+'&so='+so,{cache:'no-store'})).json()}catch(e){return}
+  LISTA=d.produtos||[];
+  document.getElementById('cnt').textContent=LISTA.length+' itens';
+  var app=document.getElementById('app');
+  if(!LISTA.length){app.className='vazio';app.innerHTML='nada encontrado';return}
+  app.className='';
+  app.innerHTML=LISTA.map(function(p,ix){
+    return '<div class="pi">'+
+      (p.tem_foto?'<img src="/produto-foto/'+p.produto_codigo+'?v='+Date.now()+'" onclick="trocaFoto('+ix+')">'
+                 :'<div class="semf" onclick="trocaFoto('+ix+')">sem<br>foto</div>')+
+      '<span class="n">'+esc(p.nome)+(p.tamanho?' <b>'+esc(p.tamanho)+'</b>':'')+
+        '<small>'+esc(p.categoria||'')+' · R$ '+Number(p.preco).toLocaleString('pt-BR',{minimumFractionDigits:2})+
+        (p.sem_estoque?' · sem estoque':'')+'</small></span>'+
+      '<span class="cn">'+
+        bot(ix,'cliente','Cliente',p.cliente,p.padrao_cliente)+
+        bot(ix,'garcom','Garçom',p.garcom,true)+
+        bot(ix,'caixa','Caixa',p.caixa,true)+
+        bot(ix,'delivery','Delivery',p.delivery,false)+
+      '</span></div>';
+  }).join('');
+}
+function bot(ix,campo,rot,valor,padrao){
+  var efetivo=(valor===null||valor===undefined)?padrao:valor;
+  var cls=(valor===null||valor===undefined)?'cb herda '+(efetivo?'on':'off'):'cb '+(efetivo?'on':'off');
+  return '<button class="'+cls+'" onclick="gira('+ix+',\''+campo+'\')">'+rot+'</button>';
+}
+// ciclo: herdado -> sim -> não -> herdado. Sempre dá pra voltar ao padrão.
+async function gira(ix,campo){
+  var p=LISTA[ix], v=p[campo];
+  p[campo]=(v===null||v===undefined)?true:(v===true?false:null);
+  var r=await (await fetch('/api/produto/salvar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({codigo_pdv:p.codigo_pdv,cliente:p.cliente,garcom:p.garcom,caixa:p.caixa,delivery:p.delivery})})).json();
+  if(!r.ok){alert(r.erro||'não consegui salvar');return}
+  carrega();
+}
+function trocaFoto(ix){FOTOALVO=LISTA[ix];document.getElementById('arq').click()}
+document.getElementById('arq').addEventListener('change',async function(ev){
+  var f=ev.target.files[0];if(!f||!FOTOALVO)return;
+  // reduz antes de mandar: foto de celular tem 4 MB e a tela só precisa de 600px
+  var img=new Image(), url=URL.createObjectURL(f);
+  img.onload=async function(){
+    var w=Math.min(600,img.width), h=Math.round(w*img.height/img.width);
+    var c=document.createElement('canvas');c.width=w;c.height=h;
+    c.getContext('2d').drawImage(img,0,0,w,h);
+    var r=await (await fetch('/api/produto/foto',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({produto_codigo:FOTOALVO.produto_codigo,foto:c.toDataURL('image/jpeg',0.82)})})).json();
+    URL.revokeObjectURL(url);
+    if(!r.ok){alert(r.erro||'não consegui salvar a foto');return}
+    FOTOALVO=null;ev.target.value='';carrega();
+  };
+  img.src=url;
+});
+carrega();
+</script></body></html>`;
+
 const BAIXAS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME} — Quem baixou</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green2:#0f8a3e;--red:#dc2626;--deliv:#2563eb}
@@ -4445,9 +4614,10 @@ async function inicio(){
   var h='<h1>'+saud+'</h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
     (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">');
   if(EU&&EU.identificado){
-    h+='<div class="card"><div class="lin"><span>Suas visitas</span><b>'+EU.visitas+'</b></div>'+
-       (EU.itens&&EU.itens.length?'<div class="lin"><span>Costuma pedir</span><b>'+esc(EU.itens[0].nome)+'</b></div>':'')+
-       '</div>';
+    // O contador de visitas saiu: é inteligência da casa sobre a pessoa, não
+    // serviço pra ela — e ninguém pediu pra ser contado. O botão "O que eu
+    // sempre peço", logo abaixo, já entrega o histórico de um jeito útil.
+    // (o número continua indo pro garçom, que é quem ganha em saber)
   } else {
     h+='<button class="b g" onclick="telaCadastro()">Quer se identificar? <span style="font-weight:400">(opcional)</span></button>';
   }
@@ -5541,6 +5711,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
     if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/produtos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutos(u.searchParams.get('q') || '', u.searchParams.get('so') || ''))); }
+    if (req.method === 'POST' && p === '/api/produto/salvar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoSalvar(body))); }
+    if (req.method === 'POST' && p === '/api/produto/foto') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoFoto(body))); }
+    if (p === '/produtos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUTOS_HTML); }
     if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
     if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1'))); }
