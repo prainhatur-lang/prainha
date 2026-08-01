@@ -33,6 +33,10 @@ const FB = {
   lowercase_keys: false, pageSize: 4096 };
 const sql = process.env.PG_URL ? postgres(process.env.PG_URL) : postgres({ host: '/tmp', port: 5432, database: 'vendas_local' });
 const PORT = Number(process.env.PORT || 8790);
+// A versão precisa existir ANTES dos blocos HTML: a tela do cliente carimba
+// ela na página pra saber quando o servidor mudou. Declarada depois, dava
+// "Cannot access 'VERSAO' before initialization" e o processo morria na partida.
+const VERSAO = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex').slice(0, 8);
 const INTERVALO_MS = 15000;
 // Janela de comandas do espelho. CURRENT_DATE = só o dia de HOJE (a partir de 00:00).
 // Se de madrugada faltar a virada (comanda aberta ontem à noite ainda aberta), trocar por:
@@ -5187,6 +5191,20 @@ async function reclamar(){
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='visible'&&MESA)sessaoOk();
 });
+// ---- VERSÃO NOVA NO SERVIDOR ----
+// O app é uma página só: navegar não recarrega nada, então o celular segue
+// rodando o JavaScript de quando abriu — mesmo com versão nova no ar. Isso já
+// fez três correções "não funcionarem" que estavam certas.
+// Confere de minuto em minuto e recarrega SOZINHO quando a versão muda, mas
+// só com o carrinho vazio e a tela parada: ninguém perde pedido pela metade.
+var VERSAO_MINHA='${VERSAO}';
+setInterval(async function(){
+  var v;try{v=await (await fetch('/api/versao',{cache:'no-store'})).json()}catch(e){return}
+  if(!v||!v.versao||v.versao===VERSAO_MINHA)return;
+  if(CART.length)return;                       // tem pedido montado: não mexe
+  if(document.visibilityState!=='visible')return;
+  location.reload();
+},60000);
 inicio();
 </script></body></html>`;
 
@@ -5363,7 +5381,6 @@ function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', 
 // VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
 // da loja pegou a atualizacao ou esta com pagina velha.
 const INICIADO_EM = new Date().toISOString();
-const VERSAO = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex').slice(0, 8);
 
 const server = http.createServer(async (req, res) => {
   try {
