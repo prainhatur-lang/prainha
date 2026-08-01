@@ -1276,7 +1276,11 @@ async function apiIdentificarSalvar(body) {
 async function apiHistorico(areaCod, modo) {
   const entrega = modo === 'entrega';
   const campo = entrega ? sql`m.entregue_em` : sql`m.pronto_em`;
-  const filtroArea = entrega ? sql`TRUE` : (areaCod === 0 ? sql`m.area_codigo IS NULL` : sql`m.area_codigo=${areaCod}`);
+  // O histórico da entrega também é por praça — senão o runner do bar vê
+  // saindo da cozinha e vice-versa, e o "quem baixou o quê" perde o sentido.
+  // areaCod null = tudo (só a compatibilidade antiga usa).
+  const filtroArea =
+    areaCod == null ? sql`TRUE` : areaCod === 0 ? sql`m.area_codigo IS NULL` : sql`m.area_codigo=${areaCod}`;
   const rows = await sql`
     SELECT m.item_codigo, m.nome, COALESCE(m.numero, c.numero) AS numero,
            m.pronto_em, m.entregue_em, m.criado_em, a.nome AS area_nome
@@ -1358,7 +1362,11 @@ async function apiAreas() {
   const rows = await sql`
     SELECT a.codigo, a.nome,
       COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
-      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS total
+      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS total,
+      -- pronto e ainda não entregue NESTA praça: é o que o runner dela tem na mão
+      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+        AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
+        AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
     FROM area a
     LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
@@ -1445,7 +1453,15 @@ async function apiKds(areaCod) {
 }
 
 // ---- API: ENTREGA (global) — itens prontos, FIFO por hora do "pronto" ----
-async function apiEntrega() {
+// A entrega é SEPARADA POR PRAÇA, igual à produção: quem corre o prato da
+// cozinha não é quem corre a bebida do bar. Uma tela só, com tudo misturado,
+// faz os dois runners disputarem a mesma fila e ninguém saber o que é seu.
+//   areaCod null .. tudo (compatibilidade; a tela nova sempre manda uma praça)
+//   areaCod 0 ..... itens sem praça definida
+//   areaCod N ..... só aquela praça
+async function apiEntrega(areaCod = null) {
+  const filtroArea =
+    areaCod == null ? sql`TRUE` : areaCod === 0 ? sql`ci.area_codigo IS NULL` : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas, a.nome AS area_nome
@@ -1455,6 +1471,7 @@ async function apiEntrega() {
     LEFT JOIN area a ON a.codigo = ci.area_codigo
     WHERE COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
       AND COALESCE(ci.entregue, m.entregue_em) IS NULL
+      AND ${filtroArea}
     ORDER BY COALESCE(ci.produzido, m.pronto_em), ci.id`;
   const r = agrupar(itens, 'pronto');
   await rotularComandas(r.comandas);
@@ -1814,22 +1831,49 @@ function faixaJunto(d){
   }).join(' · ');
   return '<div class="junto">⏱️ SAI JUNTO — '+txt+'</div>';
 }
-async function entrega(){
-  var d=await (await fetch('/api/entrega',{cache:'no-store'})).json();
-  checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
+// ENTREGA POR PRAÇA. Quem corre o prato da cozinha não é quem corre a bebida
+// do bar — uma tela só, com tudo junto, faz os dois runners disputarem a mesma
+// fila e nenhum saber o que é seu. Mesmo desenho da produção: escolhe a praça,
+// e o tablet daquela estação fica fixo nela (o ?area= sobrevive ao refresh).
+function irSelecaoEntrega(){AREA=null;_vistos=null;history.replaceState(0,'','/entrega');setView(selecaoEntrega)}
+function irAreaEntrega(cod){AREA={cod:cod};_vistos=null;history.replaceState(0,'','/entrega?area='+cod);setView(entrega)}
+async function selecaoEntrega(){
+  var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
   document.getElementById('hd').innerHTML='<a class="back" href="/">◂ Produção</a>'+
-    '<h1>🛎️ <b>Entregas</b></h1>'+
+    '<h1>🛎️ <b>Entregas</b></h1><span class="grow"></span>'+
+    '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
+  var app=document.getElementById('app');
+  if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
+  app.innerHTML='<div class="sel"><h2>Escolha a sua estação de entrega</h2><div class="areas">'+d.areas.map(function(a){
+    return '<button class="abtn" onclick="irAreaEntrega('+a.codigo+')"><div class="an">'+esc(a.nome)+'</div>'+
+      '<div class="ap"><b>'+(a.a_entregar||0)+'</b> pronto(s) pra levar</div></button>';
+  }).join('')+'</div></div>';
+}
+async function entrega(){
+  var d=await (await fetch('/api/entrega?area='+AREA.cod,{cache:'no-store'})).json();
+  checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
+  var nome=(d.comandas[0]&&d.comandas[0].itens[0]&&d.comandas[0].itens[0].area_nome)||AREANOME[AREA.cod]||'';
+  document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecaoEntrega()">◂ Estações</button>'+
+    '<h1>🛎️ '+(nome?esc(nome)+' · ':'')+'<b>Entregas</b></h1>'+
     '<span class="pill"><b>'+d.nComandas+'</b> comandas</span><span class="pill"><b>'+d.nItens+'</b> prontos</span><span class="grow"></span>'+somBtn()+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
   var corpo=d.comandas.length
     ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'entrega',ix)}).join('')+'</div>'
-    : '<div class="vazio">nada aguardando entrega ✅</div>';
+    : '<div class="vazio">nada aguardando entrega aqui ✅</div>';
   app.innerHTML='<div class="pal"><div class="main">'+corpo+'</div>'+
     '<aside class="hist" id="hist"><h3>Últimos que saíram</h3><div class="vaziinho">carregando…</div></aside></div>';
-  histLateral('/api/historico?modo=entrega');
+  histLateral('/api/historico?modo=entrega&area='+AREA.cod);
 }
-if(ENTREGA){setView(entrega)}
+// nome da praça pra quando a fila está vazia e não dá pra tirar de um item
+var AREANOME={};
+fetch('/api/areas',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+  (d.areas||[]).forEach(function(a){AREANOME[a.codigo]=a.nome});
+}).catch(function(){});
+if(ENTREGA){
+  var _pe=new URLSearchParams(location.search);var ae=_pe.get('area');
+  if(ae!==null&&ae!==''){AREA={cod:Number(ae)};setView(entrega)}else{setView(selecaoEntrega)}
+}
 else{var _p=new URLSearchParams(location.search);var a=_p.get('area');
   if(a!==null&&a!==''){AREA={cod:Number(a)};setView(kds)}else{irSelecao()}}
 </script></body></html>`;
@@ -4146,7 +4190,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
     if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiKds(Number(u.searchParams.get('area') || 0)))); }
-    if (p === '/api/entrega') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEntrega())); }
+    // ?area ausente = todas as praças (compatibilidade). Cuidado: Number('')
+    // e Number(null) dão 0, que aqui significa "sem praça definida" — por isso
+    // o teste é pela AUSÊNCIA do parâmetro, não pelo valor.
+    if (p === '/api/entrega') {
+      const a = u.searchParams.get('area');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiEntrega(a == null || a === '' ? null : Number(a))));
+    }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || ''))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
@@ -4155,7 +4206,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/mesa/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaSessao(u.searchParams.get('n'), u.searchParams.get('c'), u.searchParams.get('t')))); }
     if (p === '/api/ja-pedido') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiJaPedido(u.searchParams.get('n') || 0))); }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
-    if (p === '/api/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiHistorico(Number(u.searchParams.get('area') || 0), u.searchParams.get('modo') || 'producao'))); }
+    if (p === '/api/historico') {
+      const a = u.searchParams.get('area');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiHistorico(
+        a == null || a === '' ? null : Number(a),
+        u.searchParams.get('modo') || 'producao',
+      )));
+    }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
