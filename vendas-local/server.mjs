@@ -694,6 +694,18 @@ async function apiVendaMesa(mesa) {
   for (const i of ids) if (i.nome_curto) nomes[i.numero] = i.nome_curto; // identificacao ganha da antiga
   return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos };
 }
+/** A comanda tem dono? Vale o cadastro novo (identificacao) ou o antigo
+ *  (mesa_comanda, preenchido na hora de abrir). Basta CPF OU telefone — um
+ *  nome solto não identifica ninguém e não serve pra cobrar depois. */
+async function comandaIdentificada(numero) {
+  const n = Number(numero);
+  const id = (await sql`SELECT cpf, telefone, contato_fb FROM identificacao
+    WHERE numero=${n} AND fechada_em IS NULL`)[0];
+  if (id && (id.cpf || id.telefone || id.contato_fb)) return true;
+  const mc = (await sql`SELECT cpf, contato_fb FROM mesa_comanda
+    WHERE comanda=${n} AND fechada_em IS NULL`)[0];
+  return !!(mc && (mc.cpf || mc.contato_fb));
+}
 async function apiVendaVincular(body) {
   const mesa = Number(body.mesa), comanda = Number(body.comanda);
   if (!(mesa >= 1 && mesa <= MESA_MAX)) return { ok: false, erro: 'mesa inválida (1–' + MESA_MAX + ')' };
@@ -780,16 +792,15 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
 }
 
 /** O que a mesa JA pediu — evita pedir duas vezes a mesma coisa. */
-async function apiJaPedido(numero) {
-  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} LIMIT 1`)[0];
-  if (!c) return { itens: [] };
+/** Itens de UMA conta, já no formato que a tela do cliente mostra. */
+async function jaPedidoDe(contaCodigo) {
   const r = await sql`SELECT ci.nome, ci.quantidade, ci.detalhes, ci.tipo,
       COALESCE(ci.produzido, m.pronto_em) AS pronto, COALESCE(ci.entregue, m.entregue_em) AS entregue, ci.criado
     FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-    WHERE ci.comanda_codigo=${c.codigo} AND ci.tipo IS DISTINCT FROM 2
+    WHERE ci.comanda_codigo=${contaCodigo} AND ci.tipo IS DISTINCT FROM 2
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const agora = Date.now();
-  return { itens: r.map((x) => {
+  return r.map((x) => {
     // ">> SAI JUNTO C/ ..." e' recado pra COZINHA. O cliente nao precisa ver
     // como a casa se organiza por dentro — só a observação dele.
     const det = temMod(x.detalhes)
@@ -803,7 +814,37 @@ async function apiJaPedido(numero) {
       pedido_em: x.criado, pronto_em: x.pronto, entregue_em: x.entregue,
       espera_min: criado ? Math.max(0, Math.floor((agora - criado) / 60000)) : null,
     };
-  }) };
+  });
+}
+// O que a mesa já pediu — INCLUINDO as comandas vinculadas.
+// Antes lia só a conta da mesa, então a Heineken lançada na comanda 302 não
+// aparecia em lugar nenhum pro cliente: ele tinha pedido, o item existia, e a
+// tela dizia que não havia nada. Agora sai em blocos: primeiro a mesa, depois
+// cada comanda com o número, pra dar pra saber de quem foi o quê.
+async function apiJaPedido(numero) {
+  const n = Number(numero);
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+  const grupos = [];
+  if (c) {
+    const its = await jaPedidoDe(c.codigo);
+    if (its.length) grupos.push({ numero: n, tipo: 'mesa', nome: null, itens: its });
+  }
+  if (n < COMANDA_DE) {
+    const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
+      WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
+    for (const v of vinc) {
+      const cc = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
+      if (!cc) continue;
+      const its = await jaPedidoDe(cc.codigo);
+      if (!its.length) continue;
+      const idc = (await sql`SELECT nome_curto FROM identificacao
+        WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
+      grupos.push({ numero: Number(v.comanda), tipo: 'comanda',
+        nome: idc?.nome_curto || v.nome_curto || null, itens: its });
+    }
+  }
+  // `itens` continua saindo achatado pra não quebrar quem já consumia assim
+  return { grupos, itens: grupos.flatMap((g) => g.itens) };
 }
 
 // ---- TRANSFERIR comanda/mesa ----
@@ -865,6 +906,17 @@ async function apiVendaEnviar(body) {
   const mesa = ehComanda ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${numero} AND fechada_em IS NULL`)[0]?.mesa ?? null : numero;
   const pedidos = Array.isArray(body.itens) ? body.itens : [];
   if (!pedidos.length) return { ok: false, erro: 'sem itens' };
+  // ⚠️ COMANDA EXIGE CADASTRO — sempre, não só pra transferir.
+  // A comanda é conta em aberto no bar: a pessoa leva o cartão, consome a noite
+  // toda e paga no fim. Sem saber quem é, o que sobra pra casa é prejuízo
+  // anônimo. Então item nenhum entra numa comanda sem identificação.
+  // A trava fica AQUI, no lançamento, e não na tela de abrir: cobre todos os
+  // caminhos de uma vez — garçom, celular do cliente, qualquer um.
+  // Mesa não exige: quem senta na mesa está à vista e paga antes de sair.
+  if (ehComanda && !(await comandaIdentificada(numero))) {
+    return { ok: false, precisa_cadastro: true, numero,
+      erro: `A comanda ${numero} não tem cadastro. Identifique quem vai usar antes de lançar.` };
+  }
   // resolve cada item no catálogo local (preço/nome/área da NOSSA cópia — nunca confiar no client)
   const itens = [];
   for (const p of pedidos) {
@@ -2629,46 +2681,6 @@ async function apiMesaPedir(body) {
   return r;
 }
 
-// ---- CLIENTE LEVANDO A PRÓPRIA COMANDA PRA OUTRA MESA ----
-//
-// Duas regras, e as duas valem AQUI no servidor, não na tela:
-//
-//  1. SÓ COMANDA. Mesa→mesa move itens de verdade no Consumer e é operação de
-//     garçom. O cliente não faz isso nem mandando na mão — a tela pode ser
-//     forjada, esta função não.
-//  2. SÓ IDENTIFICADO. Mover uma conta é dinheiro mudando de lugar: tem que
-//     sobrar o rastro de quem moveu. Sem cadastro (CPF ou telefone), devolve
-//     precisa_cadastro e a tela abre o cadastro antes de deixar seguir.
-//
-// O cadastro exigido aqui é o que preenche o "por" da transferência — o campo
-// que ninguém preenchia e que fazia o histórico não servir pra nada.
-async function apiMesaTransferir(body) {
-  if (!COMANDA_ATIVA) return { ok: false, erro: 'esta casa não trabalha com comanda' };
-  const comanda = Number(body.comanda), para = Number(body.para);
-  if (!(comanda >= COMANDA_MIN && comanda <= COMANDA_MAX)) {
-    return { ok: false, erro: `informe a sua comanda (${COMANDA_MIN} a ${COMANDA_MAX})` };
-  }
-  // destino tem que ser MESA. Comanda pra comanda não existe.
-  if (!(para >= 1 && para <= MESA_MAX)) {
-    return { ok: false, erro: `a comanda vai pra uma mesa (1 a ${MESA_MAX})` };
-  }
-  const conta = await sql`SELECT codigo FROM comanda WHERE numero=${comanda} LIMIT 1`;
-  if (!conta.length) return { ok: false, erro: `não há conta aberta na comanda ${comanda}` };
-
-  const id = (await sql`SELECT nome, nome_curto, cpf, telefone FROM identificacao
-    WHERE numero=${comanda} AND fechada_em IS NULL`)[0];
-  if (!id || !(id.cpf || id.telefone)) {
-    return { ok: false, precisa_cadastro: true, comanda,
-      erro: 'Pra levar a comanda pra outra mesa, identifique-se primeiro.' };
-  }
-  const r = await apiTransferir({ de: comanda, para, por: id.nome_curto || id.nome || null });
-  if (!r.ok) return r;
-  // o garçom precisa saber que a mesa mudou sem ele
-  await apiChamadoCriar({ mesa: para, tipo: 'garcom', origem: 'transferencia-cliente',
-    texto: 'comanda ' + comanda + ' veio pra cá' + (id.nome_curto ? ' (' + id.nome_curto + ')' : '') }).catch(() => {});
-  return { ...r, por: id.nome_curto || id.nome || null };
-}
-
 // ---- QR CODES das mesas (pra imprimir e colar) ----
 // O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
 // /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
@@ -3072,7 +3084,7 @@ async function apiContaTexto(numero) {
     const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
       WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
     for (const v of vinc) {
-      const cc = (await sql`SELECT codigo, nome FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
+      const cc = (await sql`SELECT codigo, nome, subtotal_pago FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
       if (!cc) continue;
       // Os ITENS da comanda vão junto: sem eles o cupom mostrava só um total
       // solto ("302 — R$ 17,60") e a pessoa não tinha como conferir o que
@@ -3085,10 +3097,18 @@ async function apiContaTexto(numero) {
       const tr = (await sql`SELECT de_numero, para_numero, criado_em, por, itens_movidos
         FROM transferencia WHERE para_numero=${Number(v.comanda)} OR de_numero=${Number(v.comanda)}
         ORDER BY criado_em DESC LIMIT 1`)[0] || null;
+      // O QUE JÁ FOI PAGO NA COMANDA. Sem isto, quem pagava a comanda no Pix
+      // via a conta da mesa continuar cheia — o dinheiro tinha entrado e a
+      // mesa não sabia. Cada comanda é um PEDIDOS próprio no Consumer, com
+      // seu SUBTOTALPAGO; é ele que diz o que já foi quitado ali.
+      const comSvc = +(sub * (1 + TAXA_SERVICO / 100)).toFixed(2);
+      const pagoC = Number(cc.subtotal_pago || 0);
+      const restaC = Math.max(0, +(comSvc - pagoC).toFixed(2));
       comandas.push({ numero: Number(v.comanda), nome: idc?.nome_curto || v.nome_curto || cc.nome || null,
         itens: its, transferencia: tr,
         subtotal: sub, servico: +(sub * TAXA_SERVICO / 100).toFixed(2),
-        com_servico: +(sub * (1 + TAXA_SERVICO / 100)).toFixed(2) });
+        com_servico: comSvc,
+        pago: pagoC, resta: restaC, quitada: pagoC > 0 && restaC <= 0.009 });
     }
   }
   const servico = +(total * TAXA_SERVICO / 100).toFixed(2);
@@ -3099,11 +3119,18 @@ async function apiContaTexto(numero) {
   // do lado, e quem lia somava errado. Por isso vai também o total geral —
   // mesa + comandas — pra ninguém fechar a noite achando que cobrou tudo.
   const totalComandas = comandas.reduce((s, c) => s + Number(c.com_servico || 0), 0);
+  const pagoComandas = comandas.reduce((s, c) => s + Number(c.pago || 0), 0);
   const geral = +(comServico + totalComandas).toFixed(2);
+  // Quanto AINDA FALTA na mesa toda: o que já foi pago em qualquer comanda
+  // (ou na própria mesa) sai daqui. Comanda quitada não pode continuar
+  // pesando no que a mesa deve.
+  const pagoGeral = +(pago + pagoComandas).toFixed(2);
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
     pessoas: c.qtd_pessoas, itens, comandas,
     total, taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
     total_comandas: +totalComandas.toFixed(2), geral,
+    pago_comandas: +pagoComandas.toFixed(2), pago_geral: pagoGeral,
+    falta_geral: Math.max(0, +(geral - pagoGeral).toFixed(2)),
     pago, resta: Math.max(0, comServico - pago) };
 }
 const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3162,7 +3189,7 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
   if((d.comandas||[]).length){
     d.comandas.forEach(function(c){
       h+='<hr><div style="text-align:center;font-weight:700;margin-bottom:4px">COMANDA '+c.numero+
-         (c.nome?' · '+esc(c.nome):'')+'</div>';
+         (c.nome?' · '+esc(c.nome):'')+(c.quitada?' — PAGO':'')+'</div>';
       // De onde veio: comanda transferida sem aviso vira discussão no caixa.
       if(c.transferencia){
         var t=c.transferencia;
@@ -3183,12 +3210,25 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
       h+='<div class="it"><span class="q"></span><span class="d" style="font-size:11px">'+
          brl(c.subtotal)+' + '+brl(c.servico)+' serv.</span>'+
          '<span class="v"><b>'+brl(c.com_servico)+'</b></span></div>';
+      // Comanda paga tem que DIZER que foi paga — senão o valor dela continua
+      // na soma aos olhos de quem lê e a mesa parece dever o que já quitou.
+      if(c.pago>0){
+        h+='<div class="it"><span class="q"></span><span class="d" style="font-size:11px">já pago</span>'+
+           '<span class="v">− '+brl(c.pago)+'</span></div>';
+        if(c.resta>0.009) h+='<div class="it"><span class="q"></span>'+
+           '<span class="d" style="font-size:11px">falta nesta comanda</span>'+
+           '<span class="v"><b>'+brl(c.resta)+'</b></span></div>';
+      }
     });
     // Mesa e comandas são contas SEPARADAS no Consumer. Sem esta linha, quem
     // lê o cupom soma errado — o TOTAL de cima é só o da mesa.
     h+='<hr><div class="tot"><span>TOTAL GERAL</span><b>'+brl(d.geral)+'</b></div>'+
        '<div style="font-size:11px;text-align:center">mesa '+brl(d.com_servico)+
        ' + comandas '+brl(d.total_comandas)+'</div>';
+    if(d.pago_geral>0){
+      h+='<div class="lin"><span>já pago</span><b>− '+brl(d.pago_geral)+'</b></div>'+
+         '<div class="tot"><span>AINDA FALTA</span><b>'+brl(d.falta_geral)+'</b></div>';
+    }
   }
   h+='<div class="pe">Serviço de '+d.taxa_servico+'% incluso no total.<br>Obrigado pela preferência!</div></div>';
   app.innerHTML=h;
@@ -3487,6 +3527,11 @@ body{padding-bottom:120px}
 .enviadao .t2{font-size:31px;font-weight:800;letter-spacing:.02em;line-height:1.1}
 .enviadao .t3{font-size:15px;opacity:.9;margin-top:12px}
 /* o que ja pedi */
+/* cabeçalho de bloco no "já pedi": separa o que é da mesa do que é de cada
+   comanda, pra dar pra saber de quem foi o quê */
+.jcab{font-size:13px;font-weight:700;color:var(--gold2);margin:14px 0 6px;
+  padding-bottom:4px;border-bottom:1px solid var(--line)}
+.jcab:first-child{margin-top:0}
 .ja{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);
   border-left:4px solid #d2d2da;border-radius:11px;padding:12px 13px;margin-top:8px;font-size:15px}
 .ja.preparando{border-left-color:#e0a413}
@@ -3587,8 +3632,6 @@ async function inicio(){
      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
      '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
      '<button class="b pix" onclick="telaPix()">💳 Pagar a conta</button>'+
-     // só onde a casa trabalha com comanda; e o cliente move a COMANDA, nunca a mesa
-     (${COMANDA_ATIVA}?'<button class="b g" onclick="telaLevarComanda()">🔀 Levar minha comanda pra outra mesa</button>':'')+
      '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
      '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
      '<div class="mut" style="margin-top:22px">O garçom recebe seus pedidos e avisos na hora.</div>';
@@ -3683,62 +3726,6 @@ async function salvarCadastro(){
   var depois=POSCAD;
   CADINFO=null;CADALVO=null;POSCAD=null;CADEXIGE=false;
   if(depois)depois(); else inicio();
-}
-// ---- levar a própria comanda pra outra mesa ----
-// O cliente move só a COMANDA (a conta dele). Mesa inteira é operação de
-// garçom — e a trava está no servidor, não aqui.
-var LEVAR={comanda:null,para:null};
-async function telaLevarComanda(){
-  var n=mesaAtual();if(n===null)return;
-  if(!(await sessaoOk()))return;
-  app('<h1>Levar minha comanda</h1><div class="mut">carregando…</div>');
-  var c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json();
-  var cmds=(c.ok&&c.comandas)||[];
-  var h='<h1>Levar minha comanda</h1>'+
-    '<div class="mut" style="margin:6px 0 14px">Mudou de mesa? A comanda vai junto — o que você já consumiu continua nela.</div>';
-  if(cmds.length){
-    h+='<div class="tit2">Qual é a sua</div><div class="segs alvos">'+cmds.map(function(x){
-      return '<button class="seg'+(LEVAR.comanda===x.numero?' on':'')+'" onclick="escolheComanda('+x.numero+')">'+
-        (x.nome?esc(x.nome):'Comanda '+x.numero)+
-        '<small>comanda '+x.numero+' · R$ '+Number(x.com_servico||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</small></button>';
-    }).join('')+'</div>';
-  }
-  h+='<div class="tit2">Número da comanda</div>'+
-     '<input id="lvc" inputmode="numeric" placeholder="ex.: ${COMANDA_MIN + 5}" value="'+(LEVAR.comanda||'')+'">'+
-     '<div class="tit2">Pra qual mesa você foi</div>'+
-     '<input id="lvm" inputmode="numeric" placeholder="número da mesa (1 a ${MESA_MAX})">'+
-     '<button class="b" onclick="confirmaLevar()">Levar a comanda</button>'+
-     '<button class="b g" onclick="inicio()">Voltar</button>';
-  app(h);
-}
-function escolheComanda(c){LEVAR.comanda=c;telaLevarComanda()}
-async function confirmaLevar(){
-  var c=Number(((document.getElementById('lvc')||{}).value||LEVAR.comanda||0));
-  var m=Number(((document.getElementById('lvm')||{}).value||0));
-  if(!c){alert('Informe o número da sua comanda');return}
-  if(!m){alert('Informe a mesa pra onde você foi');return}
-  LEVAR.comanda=c;LEVAR.para=m;
-  var r=await post('/api/mesa/transferir',{comanda:c,para:m});
-  if(r.precisa_cadastro){
-    telaCadastro({alvo:c,exigeDoc:true,depois:levarDepoisDoCadastro,
-      motivo:'Pra levar a comanda pra outra mesa precisamos saber quem é você. CPF ou WhatsApp — um dos dois basta.'});
-    return;
-  }
-  if(!r.ok){alert(r.erro||'não consegui levar a comanda');return}
-  fimLevar(r);
-}
-async function levarDepoisDoCadastro(){
-  var r=await post('/api/mesa/transferir',{comanda:LEVAR.comanda,para:LEVAR.para});
-  if(!r.ok){alert(r.erro||'não consegui levar a comanda');return}
-  fimLevar(r);
-}
-function fimLevar(r){
-  // a sessão era da mesa antiga — agora o cliente está na nova
-  MESA=String(LEVAR.para);gravaSes({mesa:LEVAR.para,comanda:null,desde:null});
-  app('<div class="enviadao"><div class="tick">✓</div>'+
-    '<div class="t1">COMANDA '+LEVAR.comanda+'</div><div class="t2">AGORA É DA MESA '+LEVAR.para+'</div>'+
-    '<div class="t3">o que você já consumiu continua nela</div></div>'+
-    '<button class="b g" onclick="inicio()">Continuar</button>');
 }
 // ---- histórico: pedir de novo com um toque ----
 function telaHistorico(){
@@ -3928,17 +3915,25 @@ async function pintaJa(n){
     '<div class="mut" style="margin:6px 0 12px">Mesa '+n+' · '+its.length+' item(ns)'+
     (prontos?' · <b style="color:#0f8a3e">'+prontos+' a caminho</b>':'')+
     ' <span class="aovivo">ao vivo</span></div>'+
-    '<div id="jalista">'+(its.length?its.map(function(i){
-      var hora=function(t){return t?new Date(t).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):''};
-      var linha='pedido às '+hora(i.pedido_em);
-      if(i.estado==='preparando'&&i.espera_min!=null) linha+=' · há '+i.espera_min+' min';
-      if(i.pronto_em) linha+=' · pronto às '+hora(i.pronto_em);
-      if(i.entregue_em) linha+=' · entregue às '+hora(i.entregue_em);
-      return '<div class="ja '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
-        '<span class="n">'+esc(i.nome)+
-        (i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+
-        '<small class="hr">'+linha+'</small></span>'+
-        '<span class="st">'+est[i.estado]+'</span></div>';
+    // Em BLOCOS: a mesa primeiro, depois cada comanda com o número. O que foi
+    // lançado numa comanda não aparecia aqui — o cliente pedia a Heineken na
+    // comanda e a tela dizia que não havia nada pedido.
+    '<div id="jalista">'+(its.length?(d.grupos||[]).map(function(g){
+      var cab=(g.tipo==='comanda')
+        ? '<div class="jcab">Comanda '+g.numero+(g.nome?' · '+esc(g.nome):'')+'</div>'
+        : ((d.grupos||[]).length>1?'<div class="jcab">Mesa '+g.numero+'</div>':'');
+      return cab+g.itens.map(function(i){
+        var hora=function(t){return t?new Date(t).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):''};
+        var linha='pedido às '+hora(i.pedido_em);
+        if(i.estado==='preparando'&&i.espera_min!=null) linha+=' · há '+i.espera_min+' min';
+        if(i.pronto_em) linha+=' · pronto às '+hora(i.pronto_em);
+        if(i.entregue_em) linha+=' · entregue às '+hora(i.entregue_em);
+        return '<div class="ja '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
+          '<span class="n">'+esc(i.nome)+
+          (i.observacao?'<small class="obsv">✎ '+esc(i.observacao)+'</small>':'')+
+          '<small class="hr">'+linha+'</small></span>'+
+          '<span class="st">'+est[i.estado]+'</span></div>';
+      }).join('');
     }).join(''):'<div class="mut">nada pedido ainda</div>')+'</div>'+
     '<button class="b ped" onclick="pararJa();telaPedir()">Pedir mais</button>'+
     '<button class="b g" onclick="pararJa();inicio()">Voltar</button>');
@@ -4503,9 +4498,6 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
-    // rota SÓ do cliente: comanda pra mesa, e só identificado. Diferente de
-    // /api/transferir (do garçom), que também move mesa inteira.
-    if (req.method === 'POST' && p === '/api/mesa/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaTransferir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
