@@ -4659,6 +4659,12 @@ function precoExtra(){
   return t;
 }
 function pintaPergunta(){
+  // A barra do carrinho é fixa e cresce com os itens — com 2 itens ela passa
+  // de 280px e cobre os botões desta tela ("Adicionar ao pedido" sumia atrás).
+  // Enquanto responde a pergunta, o carrinho sai da frente; volta sozinho
+  // quando a tela muda, porque telaPedir/poeNoCarrinho chamam renderCarrinho.
+  var cc=document.getElementById('cart');
+  if(cc){cc.style.display='none';folgaCarrinho(cc)}
   var q=PERG[PERGIX], sel=PERGRESP[PERGIX];
   var ilim=!q.max;                       // max 0 no Consumer = quantos quiser
   var lim=(q.min===q.max&&q.min>0)?('escolha '+q.min)
@@ -4746,10 +4752,18 @@ function poeNoCarrinho(p,obs,respostas){
     respostas:respostas||null});
   renderCarrinho();
 }
+/** O carrinho é uma barra FIXA no rodapé. Com poucos itens cabia nos 120px de
+ *  padding do body; com 2 itens e o aviso do "sai junto" ela cresceu e passou
+ *  a cobrir os botões da tela — o "Adicionar ao pedido" sumia atrás dela.
+ *  Agora o espaço embaixo acompanha a altura real da barra. */
+function folgaCarrinho(el){
+  var h=(el&&el.style.display!=='none')?el.offsetHeight:0;
+  document.body.style.paddingBottom=(h?h+24:24)+'px';
+}
 function renderCarrinho(){
   var el=document.getElementById('cart');
   if(!el){el=document.createElement('div');el.id='cart';document.body.appendChild(el)}
-  if(!CART.length){el.style.display='none';return}
+  if(!CART.length){el.style.display='none';folgaCarrinho(el);return}
   var t=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
   var n=CART.reduce(function(s,i){return s+i.qtd},0);
   // "sai junto" so faz sentido quando o pedido cai em cozinhas diferentes —
@@ -4771,6 +4785,7 @@ function renderCarrinho(){
     : 'Quer que algo chegue junto com outro item? Toque no <b>⇄</b> dos dois.')+'</div>':'')+
   '<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
   '<button class="b" style="margin:0" onclick="revisarPedido()">Revisar e enviar</button></div>';
+  folgaCarrinho(el);
 }
 // REVISAO antes de mandar pra cozinha. O cliente pede sozinho, sem garcom pra
 // conferir — entao a ultima chance de pegar "2x" trocado ou item errado e'
@@ -4781,7 +4796,7 @@ function revisarPedido(){
   var pracas={};CART.forEach(function(i){if(i.area_codigo!=null)pracas[i.area_codigo]=1});
   var varias=Object.keys(pracas).length>1;
   var marcados=CART.filter(function(i){return i.junto}).length;
-  var el=document.getElementById('cart');if(el)el.style.display='none';
+  var el=document.getElementById('cart');if(el){el.style.display='none';folgaCarrinho(el)}
   app('<h1>Confira seu pedido</h1>'+
     '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a produção já começa a preparar</div>'+
     CART.map(function(i,ix){
