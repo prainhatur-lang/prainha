@@ -34,7 +34,13 @@ const INTERVALO_MS = 15000;
 // Janela de comandas do espelho. CURRENT_DATE = só o dia de HOJE (a partir de 00:00).
 // Se de madrugada faltar a virada (comanda aberta ontem à noite ainda aberta), trocar por:
 //   DATEADD(-16 HOUR TO CURRENT_TIMESTAMP)   (janela rolante de 16h, como o Consumer usa)
-const DESDE = 'CURRENT_DATE';
+// Janela do espelho. Era CURRENT_DATE puro, e isso apagava a casa inteira à
+// meia-noite: mesa aberta 23:30 sumia do KDS às 00:01, com item ainda na
+// cozinha. Num bar que fecha 2h da manhã isso acontece TODA noite.
+// Um dia pra trás cobre a virada. Quem tiver pedido esquecido aberto há mais
+// tempo pode baixar com ESPELHO_DIAS=0 (comportamento antigo).
+const ESPELHO_DIAS = Number(process.env.ESPELHO_DIAS ?? 1);
+const DESDE = ESPELHO_DIAS > 0 ? `CURRENT_DATE - ${ESPELHO_DIAS}` : 'CURRENT_DATE';
 const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
 // Uma comanda do Consumer é a MESA INTEIRA da noite — dois lançamentos
 // separados caem no mesmo PEDIDOS.CODIGO. Pra cozinha isso é errado: o que
@@ -3290,6 +3296,18 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .jmark{display:block;color:var(--gold2);font-size:11.5px;margin-top:2px;font-weight:700}
 .jdica{background:#fff7e3;border:1px solid #f0d68f;border-radius:10px;padding:9px 11px;font-size:12.5px;
   color:#8a4b06;margin-top:8px;line-height:1.4}
+/* revisao antes de enviar: linha grande, dedo grosso, valor visivel */
+.rev{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);
+  border-radius:12px;padding:12px 13px;margin-bottom:8px}
+.rev .rq{font-weight:800;color:var(--gold2);font-size:16px;min-width:34px}
+.rev .rn{flex:1;font-size:15px;line-height:1.25}
+.rev .rv{font-weight:700;white-space:nowrap;font-size:15px}
+.rev .rx{background:#f4f4f7;border:1px solid var(--line);color:var(--mut);border-radius:9px;
+  width:34px;height:34px;font:inherit;font-size:15px;cursor:pointer;flex:none}
+.rev .rx:active{background:#ffe9e9;color:var(--red)}
+.revt{display:flex;justify-content:space-between;align-items:center;margin:14px 0 4px;
+  padding-top:12px;border-top:1px dashed var(--line);font-size:17px}
+.revt b{font-size:21px;color:var(--gold2)}
 body{padding-bottom:120px}
 /* observacao do item: as sugestoes que a casa ja cadastrou pro grupo */
 .obsl{display:flex;flex-wrap:wrap;gap:8px}
@@ -3592,7 +3610,38 @@ function renderCarrinho(){
     ? '<b>'+marcados+' itens</b> vão sair ao mesmo tempo. Os outros vêm assim que ficarem prontos.'
     : 'Quer que algo chegue junto com outro item? Toque no <b>⇄</b> dos dois.')+'</div>':'')+
   '<div class="ct"><span>'+n+' itens</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
-  '<button class="b" style="margin:0" onclick="enviarPedido()">Enviar pedido</button></div>';
+  '<button class="b" style="margin:0" onclick="revisarPedido()">Revisar e enviar</button></div>';
+}
+// REVISAO antes de mandar pra cozinha. O cliente pede sozinho, sem garcom pra
+// conferir — entao a ultima chance de pegar "2x" trocado ou item errado e'
+// esta tela. Depois do envio o item ja esta impresso na praca.
+function revisarPedido(){
+  if(!CART.length)return;
+  var t=CART.reduce(function(s,i){return s+i.preco*i.qtd},0);
+  var pracas={};CART.forEach(function(i){if(i.area_codigo!=null)pracas[i.area_codigo]=1});
+  var varias=Object.keys(pracas).length>1;
+  var marcados=CART.filter(function(i){return i.junto}).length;
+  var el=document.getElementById('cart');if(el)el.style.display='none';
+  app('<h1>Confira seu pedido</h1>'+
+    '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a cozinha já começa a preparar</div>'+
+    CART.map(function(i,ix){
+      return '<div class="rev"><span class="rq">'+i.qtd+'x</span>'+
+        '<span class="rn">'+esc(i.nome)+
+        (i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+
+        (i.junto?'<small class="jmark">⇄ sai junto com os outros marcados</small>':'')+'</span>'+
+        '<span class="rv">R$ '+(i.preco*i.qtd).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</span>'+
+        '<button class="rx" onclick="tiraRev('+ix+')" title="tirar">✕</button></div>';
+    }).join('')+
+    (varias&&marcados>1?'<div class="jdica"><b>'+marcados+' itens</b> vão sair ao mesmo tempo.</div>':'')+
+    '<div class="revt"><span>total</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+    '<button class="b" onclick="enviarPedido()">Confirmar e enviar pra cozinha</button>'+
+    '<button class="b g" onclick="voltaDaRev()">Voltar e ajustar</button>');
+}
+function voltaDaRev(){ renderCarrinho(); telaPedir(); }
+function tiraRev(ix){
+  CART.splice(ix,1);
+  if(!CART.length){ renderCarrinho(); telaPedir(); return }
+  revisarPedido();
 }
 function togJuntoCli(ix){CART[ix].junto=!CART[ix].junto;renderCarrinho()}
 function mais(i){CART[i].qtd++;renderCarrinho()}
