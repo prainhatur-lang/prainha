@@ -810,7 +810,11 @@ async function apiVendaCategorias(cliente) {
       (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
     FROM produto_local WHERE TRUE ${soCliente(cliente)} GROUP BY categoria
     HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
-    ORDER BY categoria`;
+    -- A SEQUÊNCIA É A DO CONSUMER (ETIQUETAS.ORDEM), não alfabética. A casa
+    -- monta o cardápio numa hierarquia pensada — Drink, Petiscos, Parrilha,
+    -- Pratos, Moquecas, e só então a carta de bar. Ordenar por nome jogava
+    -- "Acompanhamentos" pro topo e enterrava "Pratos" no meio.
+    ORDER BY ordem, categoria`;
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome, cliente) {
