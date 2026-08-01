@@ -300,16 +300,26 @@ async function espelho() {
   //     com o nome de quem estava antes — confusao na comanda impressa e
   //     dado de gente que ja foi embora continuando na tela.
   //   · a sessao do celular tambem cai (ela compara o codigo da comanda)
+  //
+  // ⚠️ CARENCIA na identificacao: quem senta numa mesa VAZIA e se identifica
+  // antes de pedir nao tem conta aberta ainda — e o sync, rodando segundos
+  // depois, apagava o cadastro dele. Bastava atualizar a pagina pro nome
+  // sumir. Agora so fecha identificacao mais velha que a propria sessao da
+  // mesa (SESSAO_MESA_MIN): dentro dessa janela a pessoa ainda esta ali, e
+  // depois dela a sessao do celular ja teria caido de qualquer jeito.
   const numerosAbertos = comandas.map((c) => c.numero).filter((n) => n != null);
   if (numerosAbertos.length) {
     await sql`UPDATE mesa_comanda SET fechada_em = now()
        WHERE fechada_em IS NULL AND (mesa <> ALL(${numerosAbertos}) OR comanda <> ALL(${numerosAbertos}))`;
     await sql`UPDATE identificacao SET fechada_em = now()
-       WHERE fechada_em IS NULL AND numero <> ALL(${numerosAbertos})`;
+       WHERE fechada_em IS NULL AND numero <> ALL(${numerosAbertos})
+         AND criado_em < now() - (${String(SESSAO_MESA_MIN)} || ' minutes')::interval`;
   } else {
     // nenhuma mesa aberta (casa fechada): libera tudo
     await sql`UPDATE mesa_comanda SET fechada_em = now() WHERE fechada_em IS NULL`;
-    await sql`UPDATE identificacao SET fechada_em = now() WHERE fechada_em IS NULL`;
+    await sql`UPDATE identificacao SET fechada_em = now()
+       WHERE fechada_em IS NULL
+         AND criado_em < now() - (${String(SESSAO_MESA_MIN)} || ' minutes')::interval`;
   }
   ultimoStatus = { ok: true, comandas: comandas.length, itens: itens.length };
   return ultimoStatus;
@@ -2496,7 +2506,11 @@ async function apiClienteHistorico({ numero, contato }) {
     contatoFb = id?.contato_fb ?? null;
     nome = id?.nome_curto ?? null;
   }
-  if (!contatoFb) return { ok: true, identificado: false, itens: [], visitas: 0 };
+  // Sem contato no Consumer não há HISTÓRICO — mas a pessoa continua
+  // identificada. Devolver identificado:false aqui apagava o "Olá, Fulano" de
+  // quem se cadastrou com o Firebird fora do ar (fbCriarContato falha e o
+  // contato_fb fica nulo, mas o nome foi gravado do mesmo jeito).
+  if (!contatoFb) return { ok: true, identificado: !!nome, nome, itens: [], visitas: 0 };
   const r = await qi(`SELECT FIRST 12 TRIM(i.NOMEPRODUTO) NOME, i.CODIGOPRODUTODETALHE PDV,
       COUNT(*) VEZES, MAX(p.DATAABERTURA) ULT
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
