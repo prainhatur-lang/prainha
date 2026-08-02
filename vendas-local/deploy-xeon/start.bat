@@ -12,6 +12,15 @@ set "FB_PASSWORD=masterkey"
 set "PG_URL=postgres://prainha_app:Prainha_App_2026@127.0.0.1:5432/vendas_local"
 set "PORT=8790"
 
+REM --- consulta de CPF (SPC Brasil) ---
+REM O cadastro e' por CPF: o nome vem da consulta (casa -> ja atendidos ->
+REM outras filiais -> SPC). SEM as tres linhas abaixo o SPC fica desligado e
+REM quem nao e' cliente da casa aparece como "nao achei nome".
+REM Conferir se pegou: http://localhost:8790/api/cpf/status
+REM set "CPF_PROVEDOR=spc"
+REM set "SPC_USER=preencher"
+REM set "SPC_PASSWORD=preencher"
+
 set "NODE=C:\Program Files\nodejs\node.exe"
 if not exist "%NODE%" set "NODE=node"
 
