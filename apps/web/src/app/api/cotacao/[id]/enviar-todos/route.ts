@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { conviteCotacaoConfigurado, enviarConviteCotacao } from '@/lib/whatsapp-otp';
 
 export const runtime = 'nodejs';
@@ -61,7 +61,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))
-    .where(eq(schema.cotacaoFornecedor.cotacaoId, id));
+    // Só quem ainda não recebeu — evita reenvio duplicado ao reapertar "Enviar pra todos".
+    .where(and(eq(schema.cotacaoFornecedor.cotacaoId, id), isNull(schema.cotacaoFornecedor.linkEnviadoEm)));
 
   let enviados = 0;
   let semTelefone = 0;
