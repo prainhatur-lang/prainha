@@ -53,7 +53,9 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
       quantidade: schema.pedidoCompraItem.quantidade,
       valorTotal: schema.pedidoCompraItem.valorTotal,
       produtoNome: schema.produto.nome,
-      unidade: schema.produto.unidadeEstoque,
+      // Unidade DO ITEM do pedido, não a de estoque do produto — fornecedor
+      // pode vender em cx/pct enquanto o estoque controla em kg.
+      unidade: schema.pedidoCompraItem.unidade,
     })
     .from(schema.pedidoCompraItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
