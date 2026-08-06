@@ -2506,6 +2506,9 @@ async function apiEntrega(areaCod = null) {
   const agora = Date.now();
   for (const c of r.comandas) {
     c.aguarda_min = c.pronta_desde ? Math.max(0, Math.floor((agora - new Date(c.pronta_desde).getTime()) / 60000)) : null;
+    // idade TOTAL do pedido (desde o lançamento): só o aguarda_min "zerava" o
+    // relógio quando o prato chegava no passe — o runner precisa dos dois tempos.
+    c.pedido_min = c.chegada ? Math.max(0, Math.floor((agora - new Date(c.chegada).getTime()) / 60000)) : null;
     for (const i of c.itens) {
       i.prod_min = (i.criado && i.pronto_em) ? Math.max(0, Math.round((new Date(i.pronto_em).getTime() - new Date(i.criado).getTime()) / 60000)) : null;
     }
@@ -3118,9 +3121,14 @@ function comandaHTML(c,modo,idx){
   else if(modo!=='entrega'&&c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
   if(c.reclamou) badge+='<span class="flag">⚠ reclamou · adiantar</span>';
   if(esperandoNesta(c.numero)) badge+='<span class="flagj">sai junto</span>';
-  var tchip=modo==='entrega'
-    ? (c.aguarda_min!=null?'<span class="tchip">⏱ '+fmtMin(c.aguarda_min)+'</span>':'')
-    : (c.espera_min!=null?'<span class="tchip">⏱ '+fmtMin(c.espera_min)+'</span>':'');
+  // entrega mostra OS DOIS tempos: idade do pedido (lançamento) e espera no passe
+  var tchip='';
+  if(modo==='entrega'){
+    var tt=[];
+    if(c.pedido_min!=null)tt.push('⏱ pedido '+fmtMin(c.pedido_min));
+    if(c.aguarda_min!=null)tt.push('🛎 espera '+fmtMin(c.aguarda_min));
+    if(tt.length)tchip='<span class="tchip" style="text-align:right">'+tt.join('<br>')+'</span>';
+  }else if(c.espera_min!=null)tchip='<span class="tchip">⏱ '+fmtMin(c.espera_min)+'</span>';
   // 2ª via da mesma mesa: mostra a hora do lançamento pra não confundir
   if(c.rodada>0&&c.chegada) badge+='<span class="badge via">'+(c.rodada+1)+'ª via · '+
     new Date(c.chegada).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'</span>';
