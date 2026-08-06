@@ -43,12 +43,27 @@ export interface MatchCieloBancoResult {
   creditosSobrando: LancamentoBancoInput[];
 }
 
-/** Tipos de descricao do banco que sao candidatos a creditos da Cielo */
+/**
+ * Crédito do banco candidato a repasse de adquirente. Dois formatos convivem:
+ *  - CNAB (upload manual): descrição crua começando com "PIX RECEBIDO",
+ *    "RECEBIMENTO VENDAS DE CAR", "TED RECEBIDA";
+ *  - API do Inter (cron): "titulo - descricao", ex.
+ *    "Pix recebido - PIX RECEBIDO - Cp :00000000-CIELO S.A - INSTITUICAO..."
+ *    "Crédito domicílio cartão - RECEBIMENTO VENDAS DE CARTAO - ..."
+ * Por isso o match é por SUBSTRING case-insensitive, não por prefixo — em
+ * produção o prefixo deixava 100% dos repasses da API de fora (0 grupos pagos).
+ * Pix comum de cliente ("Pix recebido - Cp :123-FULANO") continua entrando
+ * como candidato — o subset-sum só consome o que fecha a conta do grupo.
+ */
 const DESCRICOES_CREDITOS_ADQUIRENTE = [
   'PIX RECEBIDO',
   'RECEBIMENTO VENDAS DE CAR',
   'TED RECEBIDA',
 ];
+const ehCreditoAdquirente = (descricao: string): boolean => {
+  const d = descricao.toUpperCase();
+  return DESCRICOES_CREDITOS_ADQUIRENTE.some((p) => d.includes(p));
+};
 
 export interface MatchCieloBancoOpts {
   /** Janela de dias (±) em torno da data prevista pra procurar o credito no banco.
@@ -91,8 +106,7 @@ export function matchCieloBanco(
   const credByDia = new Map<string, LancamentoBancoInput[]>();
   for (const l of lancamentos) {
     if (l.tipo !== 'C') continue;
-    const ehCandidato = DESCRICOES_CREDITOS_ADQUIRENTE.some((d) => l.descricao.startsWith(d));
-    if (!ehCandidato) continue;
+    if (!ehCreditoAdquirente(l.descricao)) continue;
     const arr = credByDia.get(l.dataMovimento) ?? [];
     arr.push(l);
     credByDia.set(l.dataMovimento, arr);
