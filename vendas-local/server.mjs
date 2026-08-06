@@ -12,12 +12,13 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import { createHmac, createHash, generateKeyPairSync, sign, randomBytes } from 'node:crypto';
+import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { deflateSync } from 'node:zlib';
 import Firebird from 'node-firebird';
 import postgres from 'postgres';
 import QRCode from 'qrcode-svg';
@@ -256,6 +257,15 @@ async function initSchema() {
     mesa integer, tipo text NOT NULL, origem text, nota integer, texto text,
     criado_em timestamptz DEFAULT now(), atendido_em timestamptz, atendido_por text)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_chamado_aberto ON chamado(atendido_em, criado_em)`;
+  // QUANDO A CONTA DE UMA MESA ACABOU. Serve pra matar a sessao do celular do
+  // cliente ANTERIOR: sem isto, quem estava na mesa 1 continuava com a tela
+  // colada nela depois do fechamento, e podia lancar na conta do proximo.
+  await sql`CREATE TABLE IF NOT EXISTS mesa_estado (numero integer PRIMARY KEY,
+    conta_codigo bigint, fechada_em timestamptz)`;
+  // ASSUNTO da reclamacao: demora, errado, frio, limpeza, outro. Sem isto o
+  // chamado chegava como texto solto e a equipe nao sabia se corria pra
+  // cozinha ou pro salao.
+  await addCol('chamado', 'assunto text');
   // TEMPO DE PREPARO: cada praça tem o seu (bebida sai em 5min, carne em 25).
   // Prato demorado soma minutos EXTRA por cima do tempo da praça dele.
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
@@ -275,12 +285,35 @@ async function initSchema() {
     criado_em timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS spc_cache (cpf_hash text PRIMARY KEY, nome text,
     criado_em timestamptz DEFAULT now())`;
+  // TUDO que a consulta devolve, cru. A consulta e' PAGA — jogar fora o resto
+  // da resposta e' desperdicio: nascimento, nome da mae, endereco e telefone
+  // vem junto e servem pra completar o cadastro sem perguntar nada ao cliente.
+  // Guarda o CPF (nao so o hash) porque agora o dado E' do cliente identificado
+  // e precisa ser recuperavel pra preencher ficha e NFC-e.
+  await addCol('spc_cache', 'cpf varchar(11)');
+  await addCol('spc_cache', 'bruto jsonb');
+  await addCol('spc_cache', 'nascimento date');
+  await addCol('spc_cache', 'mae text');
+  await addCol('spc_cache', 'telefone varchar(15)');
+  await addCol('spc_cache', 'endereco text');
+  await addCol('spc_cache', 'cidade text');
+  await addCol('spc_cache', 'uf varchar(2)');
+  await addCol('spc_cache', 'cep varchar(9)');
   // nome NULL = "o SPC ja foi consultado e nao devolveu nome util". Guardar
   // isso evita pagar de novo pelo mesmo CPF sem resposta.
   await sql`ALTER TABLE spc_cache ALTER COLUMN nome DROP NOT NULL`.catch(() => {});
   await sql`CREATE TABLE IF NOT EXISTS saida_qr (token text PRIMARY KEY, mesa integer,
     pessoas integer NOT NULL, adultos integer, criancas integer, usados integer NOT NULL DEFAULT 0,
     origem text, criado_em timestamptz DEFAULT now(), expira_em timestamptz, ultima_em timestamptz)`;
+  await addCol('saida_qr', 'carros integer NOT NULL DEFAULT 0');
+  // VEICULOS do passe: a cancela do patio le a placa (LPR) e precisa saber se
+  // aquele carro pode sair. Uma linha por carro, consumida na saida — do mesmo
+  // jeito que cada pessoa consome uma passagem na catraca.
+  await sql`CREATE TABLE IF NOT EXISTS saida_veiculo (id bigserial PRIMARY KEY,
+    token text NOT NULL, placa text NOT NULL, mesa integer,
+    criado_em timestamptz DEFAULT now(), liberada_em timestamptz)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS saida_veiculo_un ON saida_veiculo (token, placa)`;
+  await sql`CREATE INDEX IF NOT EXISTS saida_veiculo_placa ON saida_veiculo (placa)`;
   await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
@@ -323,6 +356,14 @@ async function initSchema() {
     atualizado timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS produto_foto (produto_codigo integer PRIMARY KEY,
     mime text NOT NULL, bytes bytea NOT NULL, tam integer, atualizado timestamptz DEFAULT now())`;
+  // ---- LOGIN DO GARÇOM (PIN próprio) ----
+  // Quem PODE entrar é definido pelo Consumer (permissão AcessarComandaMobile);
+  // a SENHA do Consumer é cifrada com chave embutida no .exe da RAL e não deu
+  // pra reverter — então a credencial aqui é um PIN nosso, com hash. O acesso
+  // continua restrito: só entra login que tenha a permissão de venda no Consumer.
+  await sql`CREATE TABLE IF NOT EXISTS garcom_pin (login text PRIMARY KEY, pin_hash text NOT NULL,
+    salt text NOT NULL, nome text, criado_em timestamptz DEFAULT now(), atualizado_em timestamptz DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -339,26 +380,56 @@ async function espelho() {
       (SELECT COALESCE(SUM(g.VALOR),0) FROM PAGAMENTOS g
         WHERE g.CODIGOPEDIDO = p.CODIGO AND g.DATADELETE IS NULL) SUBTOTALPAGO
     FROM PEDIDOS p WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL
-      AND p.DATAABERTURA >= ${DESDE} ORDER BY p.NUMERO`);
+      AND (p.DATAABERTURA >= ${DESDE} OR p.NUMERO > 0) ORDER BY p.NUMERO`);
+  // ⚠️ MESA ABERTA APARECE INDEPENDENTE DO DIA. O garçom tem que ver toda mesa
+  // com número real (NUMERO>0) aberta no Consumer, mesmo que a conta esteja
+  // aberta há semanas (regular com fiado, ou mesa esquecida a fechar). O filtro
+  // de ${DESDE} dias continua valendo só pro lixo de mesa=0 (entrega/online que
+  // nunca fechou — havia pedido aberto de 2023). Os itens dessas mesas antigas
+  // entram MARCADOS como entregues (ver ANTIGO abaixo) pra não cair na cozinha.
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
-  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA
+  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA, CASE WHEN p.DATAABERTURA >= ${DESDE} THEN 0 ELSE 1 END ANTIGO
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
     LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
     LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
-    WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL AND p.DATAABERTURA >= ${DESDE} AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
+    WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL AND (p.DATAABERTURA >= ${DESDE} OR p.NUMERO > 0) AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
   if (!it.ok) throw new Error('FB itens: ' + it.err);
 
   const areas = az.ok ? az.rows.map((x) => ({ codigo: N(x.CODIGO), nome: T(x.D) || ('Área ' + x.CODIGO) })) : [];
   const comandas = c.rows.map((x) => ({ codigo: N(x.CODIGO), numero: N(x.NUMERO), origem: N(x.ORI), nome: T(x.NOME), valor_total: N(x.VALORTOTAL) || 0, subtotal_pago: N(x.SUBTOTALPAGO) || 0, qtd_pessoas: N(x.QP), data_abertura: x.DATAABERTURA || null, conta_pedida: T(x.CS) === 'S' }));
-  const itens = it.rows.map((x) => ({ item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || null, entregue: x.ENTR || null }));
+  // Item de mesa ANTIGA (fora da janela de ${DESDE} dias, veio só porque a mesa
+  // tem número real): entra JÁ como produzido+entregue, senão os itens nunca
+  // baixados dessas contas velhas cairiam no "a produzir" da cozinha. O garçom
+  // ainda vê o item na mesa (como entregue); a cozinha não vê. Carimbo = a
+  // própria criação do item (histórico), com fallback pros campos do Consumer.
+  const itens = it.rows.map((x) => {
+    const antigo = Number(x.ANTIGO) === 1;
+    const feito = x.CRIADO || x.PROD || x.ENTR || null;
+    return { item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || (antigo ? feito : null), entregue: x.ENTR || (antigo ? feito : null) };
+  });
   // COMPLEMENTO (tipo 2) sai na cozinha do PRATO-PAI: se não tem área própria, herda a do pai (CODIGOPAI).
   const areaPorItem = new Map(itens.map((i) => [i.item_codigo, i.area_codigo]));
   for (const i of itens) {
     if (i.tipo === 2 && i.area_codigo == null && i.codigo_pai != null && areaPorItem.get(i.codigo_pai) != null) i.area_codigo = areaPorItem.get(i.codigo_pai);
   }
 
+  // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
+  // veio: numero cuja conta SUMIU (ou virou outra conta) teve a conta
+  // encerrada, e toda sessao de celular anterior a este instante morre.
+  // So carimba quando havia conta antes — mesa que ACABOU de abrir (null ->
+  // conta) nao pode matar a sessao de quem escaneou com a mesa vazia e pediu.
+  const antes = await sql`SELECT numero, codigo FROM comanda`;
+  const agoraPorNumero = new Map(comandas.map((c) => [Number(c.numero), Number(c.codigo)]));
+  const encerrados = antes
+    .filter((a) => a.codigo != null && agoraPorNumero.get(Number(a.numero)) !== Number(a.codigo))
+    .map((a) => Number(a.numero));
+
   await sql.begin(async (sql) => {
     if (areas.length) for (const a of areas) await sql`INSERT INTO area (codigo, nome) VALUES (${a.codigo}, ${a.nome}) ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome`;
+    for (const n of encerrados) {
+      await sql`INSERT INTO mesa_estado (numero, conta_codigo, fechada_em) VALUES (${n}, NULL, now())
+        ON CONFLICT (numero) DO UPDATE SET conta_codigo=NULL, fechada_em=now()`;
+    }
     await sql`TRUNCATE comanda, comanda_item`;
     if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
@@ -611,9 +682,12 @@ async function apiVendaConta(body) {
     if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbImprimirConta(ped);
       return { ok: true, pedido_fb: ped, msg: 'Conta enviada pra impressora do caixa.' }; }
     if (acao === 'fechar') { await fbPedirConta(ped, true);
-      return { ok: true, pedido_fb: ped, msg: 'Mesa marcada como “conta pedida”.' }; }
+      // espelho na hora: senao a tela do cliente so descobre no proximo sync
+      await sql`UPDATE comanda SET conta_pedida=true WHERE numero=${numero}`;
+      return { ok: true, pedido_fb: ped, msg: 'Conta pedida. Não entra mais lançamento.' }; }
     if (acao === 'reabrir') { await fbPedirConta(ped, false);
-      return { ok: true, pedido_fb: ped, msg: 'Mesa voltou pra em andamento.' }; }
+      await sql`UPDATE comanda SET conta_pedida=false WHERE numero=${numero}`;
+      return { ok: true, pedido_fb: ped, msg: 'Liberado. Pode lançar de novo.' }; }
     return { ok: false, erro: 'ação inválida' };
   } catch (e) { return { ok: false, erro: e.message }; }
 }
@@ -947,6 +1021,12 @@ async function apiVendaAbertas() {
   // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
   const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
+  // Nome do dono, pra aparecer embaixo do número na lista. identificacao ganha
+  // do cadastro antigo (mesa_comanda), igual em apiVendaMesa.
+  const nomePorNum = new Map();
+  for (const x of await sql`SELECT comanda AS numero, nome_curto FROM mesa_comanda WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
+  for (const x of await sql`SELECT numero, nome_curto FROM identificacao WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
+  for (const r of rows) r.nome = nomePorNum.get(Number(r.numero)) || null;
   return {
     mesas: rows.filter((x) => Number(x.numero) < COMANDA_DE),
     comandas: rows.filter((x) => Number(x.numero) >= COMANDA_DE).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
@@ -963,7 +1043,11 @@ async function apiVendaMesa(mesa) {
   const ids = await sql`SELECT numero, nome_curto FROM identificacao WHERE numero = ANY(${nums}) AND fechada_em IS NULL`;
   const nomes = Object.fromEntries(comandas.filter((x) => x.nome_curto).map((x) => [x.comanda, x.nome_curto]));
   for (const i of ids) if (i.nome_curto) nomes[i.numero] = i.nome_curto; // identificacao ganha da antiga
-  return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos };
+  // conta pedida: vem do ESPELHO (barato). apiVendaConta atualiza o espelho na
+  // hora, entao nao ha janela em que a tela mostre "aberta" com a conta pedida.
+  const cp = await sql`SELECT bool_or(conta_pedida) AS pedida FROM comanda WHERE numero = ANY(${numeros})`;
+  return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos,
+    conta_pedida: !!cp[0]?.pedida };
 }
 /** A comanda tem dono? Vale o cadastro novo (identificacao) ou o antigo
  *  (mesa_comanda, preenchido na hora de abrir). Basta CPF OU telefone — um
@@ -983,6 +1067,22 @@ async function apiVendaVincular(body) {
   if (!(comanda >= COMANDA_DE && comanda <= NUMERO_MAX)) return { ok: false, erro: 'comanda é de ' + COMANDA_MIN + ' a ' + COMANDA_MAX };
   const jaEm = await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${comanda} AND fechada_em IS NULL AND mesa<>${mesa}`;
   if (jaEm.length) return { ok: false, erro: 'comanda ' + comanda + ' já está na mesa ' + jaEm[0].mesa };
+  // ⚠️ COMANDA NAO NASCE VAZIA. A comanda e' conta em aberto que a pessoa leva
+  // no bolso e paga no fim — sem dono, e' prejuizo anonimo esperando acontecer.
+  // Antes a tela criava o vinculo e SO DEPOIS pedia o CPF; quem apertasse
+  // "voltar" deixava uma comanda solta, sem ninguem amarrado. Agora o vinculo
+  // so nasce com nome + (CPF ou telefone ou cadastro do Consumer).
+  // Vale so na CRIACAO: comanda que ja existe pode ser atualizada sem reenviar
+  // tudo (mudar de mesa, completar o telefone depois).
+  const jaExiste = (await sql`SELECT 1 FROM mesa_comanda WHERE comanda=${comanda} AND fechada_em IS NULL`).length > 0;
+  if (!jaExiste) {
+    const temNome = String(body.nome || '').trim().length > 1;
+    const temDoc = !!(body.cpf || body.telefone || body.contato_fb);
+    if (!temNome || !temDoc) {
+      return { ok: false, precisa_dono: true,
+        erro: 'A comanda ' + comanda + ' precisa do nome e do CPF (ou WhatsApp) de quem vai usar. Comanda sem dono não abre.' };
+    }
+  }
   // Quem está na comanda (opcional): CPF válido + nome do cadastro ou digitado.
   const cpf = body.cpf ? soDig(body.cpf) : null;
   if (cpf && !cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
@@ -1042,6 +1142,19 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
   // Devolvendo `agora`, o cliente guarda o tempo do servidor e a comparacao
   // fica servidor-contra-servidor, imune a relogio de aparelho.
   const agora = Date.now();
+  // ⚠️ A CONTA ANTERIOR ACABOU DEPOIS QUE ESTA SESSAO NASCEU?
+  // Tem que vir ANTES do atalho de primeira entrada logo abaixo — senao o
+  // celular com comanda=null (quem escaneou a mesa VAZIA) escapa por ali e
+  // segue valido pra sempre, inclusive depois de a mesa ser fechada e entregue
+  // a outra pessoa. Resolve por TEMPO, sem depender de o aparelho ter
+  // capturado o numero da conta.
+  if (desde != null && desde !== '') {
+    const fe = (await sql`SELECT fechada_em FROM mesa_estado WHERE numero=${n}`)[0];
+    if (fe?.fechada_em && new Date(fe.fechada_em).getTime() > Number(desde)) {
+      return { ok: false, motivo: 'fechou', comanda_codigo: atual, agora,
+        aviso: 'A conta desta mesa foi fechada. Escaneie o QR pra começar outra.' };
+    }
+  }
   // primeira entrada: o cliente ainda nao tem sessao, devolve a atual
   if (comandaCliente == null) return { ok: true, comanda_codigo: atual, agora, validade_min: SESSAO_MESA_MIN };
   if (Number(comandaCliente) !== atual) {
@@ -1170,11 +1283,50 @@ async function apiTransferencias() {
   return { transferencias: r };
 }
 
+/** A conta ja foi pedida? Le do FIREBIRD, nao do espelho: o espelho so
+ *  atualiza no proximo ciclo de sync, e nesse intervalo o garcom ja marcou
+ *  "conta pedida" e o cliente ainda conseguiria lancar. Quem manda e' o PDV.
+ *  Numa comanda vale a dela E a da mesa: se a MESA esta fechando, a comanda
+ *  pendurada nela tambem para. */
+async function contaPedidaDe(numero, mesa) {
+  const alvos = [Number(numero)];
+  if (mesa != null && Number(mesa) !== Number(numero)) alvos.push(Number(mesa));
+  for (const n of alvos) {
+    let ped;
+    try { ped = await fbAcharPedido(n); } catch { continue; }
+    if (!ped) continue;
+    // ⚠️ q(), NAO qi(). fbAcharPedido logo acima roda na fila q; trocar de fila
+    // no meio da mesma operacao trava as duas — foi o que pendurou o servidor
+    // no teste de 01/08.
+    const r = await q(`SELECT FIRST 1 CONTASOLICITADA CS FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
+    if (r.ok && r.rows.length && String(r.rows[0].CS || '').trim().toUpperCase() === 'S') {
+      return { pedida: true, onde: n, ehMesa: Number(n) !== Number(numero) };
+    }
+  }
+  return { pedida: false };
+}
+
 async function apiVendaEnviar(body) {
   const numero = Number(body.numero);
   if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const ehComanda = numero >= COMANDA_DE;
   const mesa = ehComanda ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${numero} AND fechada_em IS NULL`)[0]?.mesa ?? null : numero;
+
+  // ⚠️ CONTA PEDIDA = NAO ENTRA MAIS NADA. Vale pro cliente E pro garcom —
+  // e' por isso que a trava fica AQUI, no unico funil por onde os dois passam
+  // (/api/mesa/pedir do celular do cliente cai neste mesmo apiVendaEnviar).
+  // Item lancado depois da conta fechada nao e' cobrado de ninguem: ou a casa
+  // perde, ou o cliente e' surpreendido com um valor que ele ja conferiu. E
+  // com o passe de saida em jogo, pior ainda: a pessoa ja pagou, ja tem o QR,
+  // e um item novo deixaria a conta devendo de novo.
+  // Quem destrava e' a CASA, no botao "liberar novos pedidos" do garcom.
+  const trava = await contaPedidaDe(numero, mesa);
+  if (trava.pedida) {
+    return { ok: false, conta_pedida: true, onde: trava.onde,
+      erro: trava.ehMesa
+        ? `A conta da mesa ${trava.onde} já foi pedida — não dá pra lançar mais nada nesta comanda. Se o cliente quiser pedir de novo, o garçom libera na tela da mesa.`
+        : `A conta ${numero >= COMANDA_DE ? 'da comanda' : 'da mesa'} ${numero} já foi pedida. Pra lançar de novo, o garçom precisa liberar.` };
+  }
   const pedidos = Array.isArray(body.itens) ? body.itens : [];
   if (!pedidos.length) return { ok: false, erro: 'sem itens' };
   // ⚠️ COMANDA EXIGE CADASTRO — sempre, não só pra transferir.
@@ -1298,8 +1450,11 @@ async function apiConta(numero) {
   const servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
   const pago = await fbPagoDoPedido(ped);
   const mesa = n >= COMANDA_DE ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
+  // conta pedida: e' o que apaga o botao de lancar e acende o "liberar"
+  const cs = await qi(`SELECT FIRST 1 CONTASOLICITADA V FROM PEDIDOS WHERE CODIGO=${ped}`);
+  const contaPedida = cs.ok && cs.rows.length && String(cs.rows[0].V || '').trim().toUpperCase() === 'S';
   return {
-    ok: true, numero: n, mesa, pedido_fb: ped,
+    ok: true, numero: n, mesa, pedido_fb: ped, conta_pedida: contaPedida,
     itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO) })),
     total, servico, pago: +pago.toFixed(2), saldo: +(total - pago).toFixed(2),
     pagamentos: await sql`SELECT id, forma, valor, origem, nsu, status, criado_em FROM venda_pagamento WHERE pedido_fb=${ped} ORDER BY id`,
@@ -1406,12 +1561,52 @@ function nomeCurto(nome) {
 /** Cliente que já esteve na casa: nome sai de graça, sem consultar nada fora. */
 async function contatoPorCpf(cpf) {
   const c = soDig(cpf);
-  const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(NOME) NOME FROM CONTATOS
-    WHERE DATADELETE IS NULL AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') = '${c}'`);
+  // ⚠️ SÓ CLIENTE (TIPO='CF'). CONTATOS guarda cliente E colaborador no mesmo
+  // lugar, e o CPF 024.589.335-05 esta em 13 cadastros de GARÇOM (tipo 'AA') —
+  // alguem usou como preenchimento pra vencer o campo obrigatorio em 2019 e
+  // foi repetindo. Com FIRST 1 sem filtro, digitar esse CPF na comanda trazia
+  // "ROSANA", uma operadora, como se fosse a cliente. Na base ha 33 documentos
+  // repetidos assim.
+  const r = await qi(`SELECT CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(TIPO,'')) TIPO FROM CONTATOS
+    WHERE DATADELETE IS NULL AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') = '${c}'
+    ORDER BY CODIGO DESC`);
   // banco fora do ar NÃO é "cliente não cadastrado" — o garçom precisa saber a diferença
   if (!r.ok) throw new Error('cadastro indisponível: ' + r.err);
-  if (!r.rows.length) return null;
-  return { contato_fb: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME), fonte: 'consumer' };
+  const clientes = r.rows.filter((x) => String(x.TIPO || '').trim().toUpperCase() === 'CF');
+  // ⚠️ CPF que existe na casa SO como colaborador nao e' "nao encontrado" — e'
+  // "nao e' de cliente". A diferenca importa: devolvendo null, a busca seguia
+  // pras outras fontes e a base do GRUPO (nuvem), onde o mesmo nome errado ja
+  // tinha sido publicado, trazia "ROSANA" de volta. Nossa base e' quem manda
+  // sobre quem e' cliente AQUI, entao a busca para aqui.
+  if (!clientes.length) return r.rows.length ? { fonte: 'so_colaborador' } : null;
+  // ⚠️ CPF REPETIDO ENTRE CLIENTES: nao escolha por conta propria. Devolver um
+  // nome errado com cara de certo e' pior que nao devolver nada — o garcom
+  // aceita e a comanda sai no nome de outra pessoa.
+  if (clientes.length > 1) {
+    // ⚠️ CPF repetido nem sempre e' pessoa diferente. Quase sempre e' a MESMA
+    // pessoa cadastrada duas vezes com grafias diferentes ("Elson Vencimento de
+    // Bonfim" e "Elson Bonfim"). Perguntar nesse caso e' ruido: o garcom para,
+    // le dois nomes iguais e escolhe no chute.
+    // Regra: mesmo PRIMEIRO nome e mesmo ULTIMO sobrenome = mesma pessoa, e
+    // fica o cadastro com o nome mais completo. Nomes com raiz diferente
+    // ("Otavio Leite" x "Marcela Escariz", que existe de verdade na base) sao
+    // pessoas distintas e AI SIM tem que perguntar — o risco de sair a conta no
+    // nome errado e' real.
+    const chave = (nome) => {
+      const partes = String(nome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/[^A-Z ]/g, ' ').split(/\s+/)
+        .filter((x) => x && !/^(DA|DE|DO|DAS|DOS|E)$/.test(x));
+      return partes.length ? partes[0] + '|' + partes[partes.length - 1] : '';
+    };
+    const chaves = new Set(clientes.map((x) => chave(T(x.NOME))));
+    if (chaves.size === 1) {
+      const melhor = clientes.slice().sort((x, y) => T(y.NOME).length - T(x.NOME).length)[0];
+      return { contato_fb: Number(melhor.CODIGO), nome: T(melhor.NOME), fonte: 'consumer' };
+    }
+    return { contato_fb: null, nome: null, fonte: 'ambiguo',
+      candidatos: clientes.slice(0, 5).map((x) => T(x.NOME)) };
+  }
+  return { contato_fb: Number(clientes[0].CODIGO), nome: T(clientes[0].NOME), fonte: 'consumer' };
 }
 // Consulta externa: mesmo padrão do pagamento — trocável por env, sem mexer na
 // tela. 'off' (default) = só o cadastro local. 'spc' quando a credencial chegar.
@@ -1451,6 +1646,13 @@ async function clienteDoGrupo(cpf) {
 /** Publica na base do grupo — quem se identificar aqui é conhecido nas outras. */
 async function publicarNoGrupo({ cpf, nome, telefone, origem }) {
   if (!grupoDisponivel() || !cpf || !nome) return;
+  // ⚠️ Nao espalhar nome de colaborador pela rede. Foi assim que "ROSANA"
+  // chegou na base do grupo: a busca antiga trouxe a operadora, alguem
+  // confirmou, e o erro foi publicado pras outras filiais.
+  try {
+    const chk = await contatoPorCpf(cpf);
+    if (chk?.fonte === 'so_colaborador') return;
+  } catch { /* sem Firebird: nao publica por precaucao */ return; }
   const h = hashCpfGrupo(cpf);
   const e = Math.floor(Date.now() / 1000) + 120;
   await fetch(`${PAGAR_MESA_URL}/api/cliente-documento`, {
@@ -1469,6 +1671,53 @@ function ehStatusNaoNome(nome) {
   if (n.split(/\s+/).length > 7) return true; // frase, não nome
   return /\bcpf\b|nao existe|nao consta|nao localizad|situacao|regulariz|cancelad|suspens|falecid|inexistent|\bnula\b|\bpendente\b/.test(n);
 }
+/** Diagnostico da consulta externa, no mesmo espirito do pixStatus: diz se a
+ *  credencial EXISTE e se parece sadia, sem NUNCA devolver o valor. Serve pra
+ *  descobrir a distancia por que o SPC nao responde — aspas sobrando do .bat e
+ *  senha truncada dao "credencial recusada" e sao invisiveis de outro jeito. */
+function cpfStatus() {
+  const fmt = (v) => (v ? { tamanho: v.length, comeca: v.slice(0, 2) + '…',
+    aspas: /["']/.test(v), espaco: /^\s|\s$/.test(v) } : null);
+  return {
+    provedor: CPF_PROVEDOR,
+    ligado: CPF_PROVEDOR === 'spc',
+    url: SPC_URL,
+    produto: SPC_PRODUTO,
+    usuario: fmt(process.env.SPC_USER),
+    senha: fmt(process.env.SPC_PASSWORD),
+    cache: null,
+  };
+}
+/** Cata os campos uteis em QUALQUER lugar da resposta do SPC. Os produtos
+ *  mudam o formato (consumidorPessoaFisica, enderecos[], telefones[]…), entao
+ *  em vez de fixar um caminho a gente varre a arvore procurando as chaves —
+ *  e o JSON cru fica guardado de todo jeito. */
+function colhe(obj) {
+  const out = {};
+  const data = (v) => {
+    const m = /(\d{4})-(\d{2})-(\d{2})/.exec(String(v)) || /(\d{2})\/(\d{2})\/(\d{4})/.exec(String(v));
+    if (!m) return null;
+    return m[1].length === 4 ? `${m[1]}-${m[2]}-${m[3]}` : `${m[3]}-${m[2]}-${m[1]}`;
+  };
+  const anda = (o, prof) => {
+    if (!o || typeof o !== 'object' || prof > 6) return;
+    for (const [k, v] of Object.entries(o)) {
+      const K = k.toLowerCase();
+      if (v && typeof v === 'object') { anda(v, prof + 1); continue; }
+      const t = v == null ? '' : String(v).trim();
+      if (!t) continue;
+      if (!out.nascimento && /nascimento|dtnasc|datanasc/.test(K)) out.nascimento = data(t);
+      else if (!out.mae && /(nomemae|mae)$/.test(K)) out.mae = t;
+      else if (!out.telefone && /telefone|celular|fone/.test(K) && soDig(t).length >= 10) out.telefone = soDig(t).slice(0, 15);
+      else if (!out.endereco && /logradouro|endereco/.test(K)) out.endereco = t;
+      else if (!out.cidade && /cidade|municipio/.test(K)) out.cidade = t;
+      else if (!out.uf && /^uf$|estado|sigla/.test(K) && t.length === 2) out.uf = t.toUpperCase();
+      else if (!out.cep && /cep/.test(K) && soDig(t).length === 8) out.cep = soDig(t);
+    }
+  };
+  anda(obj, 0);
+  return out;
+}
 async function consultarCpfExterno(cpf) {
   if (CPF_PROVEDOR !== 'spc') return null;
   const user = process.env.SPC_USER, senha = process.env.SPC_PASSWORD;
@@ -1476,7 +1725,7 @@ async function consultarCpfExterno(cpf) {
   const doc = soDig(cpf);
   // Cache: o mesmo CPF não pode ser cobrado duas vezes. Guarda só o hash.
   const hash = createHash('sha256').update(doc).digest('hex');
-  const cache = (await sql`SELECT nome FROM spc_cache WHERE cpf_hash=${hash}`)[0];
+  const cache = (await sql`SELECT * FROM spc_cache WHERE cpf_hash=${hash}`)[0];
   if (cache) {
     // Já consultamos esse CPF antes. Se veio sem nome útil (ou com mensagem
     // de status, de quando o filtro ainda não existia), responde "não achei"
@@ -1485,18 +1734,26 @@ async function consultarCpfExterno(cpf) {
       if (cache.nome) await sql`UPDATE spc_cache SET nome=NULL WHERE cpf_hash=${hash}`.catch(() => {});
       return null;
     }
-    return { nome: cache.nome, fonte: 'spc-cache' };
+    return { nome: cache.nome, fonte: 'spc-cache',
+      nascimento: cache.nascimento || null, mae: cache.mae || null,
+      telefone: cache.telefone || null, endereco: cache.endereco || null,
+      cidade: cache.cidade || null, uf: cache.uf || null, cep: cache.cep || null };
   }
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 12000); // a mesa não pode esperar demais
+  // ⚠️ O documento vai FORMATADO (000.000.000-00), igual ao projeto da CDL onde
+  // esta consulta foi validada. Com os dígitos crus o SPC respondia "Cpf Nao
+  // Existe Na Base Recfederal..." pra CPF válido — o filtro descartava o
+  // "nome", o null ia pro cache, e o CPF nunca mais era procurado.
+  const docFmt = doc.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
   try {
     const r = await fetch(SPC_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json',
         authorization: 'Basic ' + Buffer.from(`${user}:${senha}`).toString('base64') },
       body: JSON.stringify({ codigoProduto: SPC_PRODUTO, tipoConsumidor: 'F',
-        documentoConsumidor: doc, codigoInsumoOpcional: [] }),
+        documentoConsumidor: docFmt, codigoInsumoOpcional: [] }),
       signal: ctrl.signal,
     });
     const j = await r.json().catch(() => null);
@@ -1508,13 +1765,39 @@ async function consultarCpfExterno(cpf) {
     }
     if (!r.ok) throw new Error('SPC HTTP ' + r.status);
     const pf = j?.result?.return_object?.resultado?.consumidor?.consumidorPessoaFisica;
-    const bruto = pf?.nome ? String(pf.nome).trim() : null;
-    const nome = bruto && !ehStatusNaoNome(bruto) ? bruto : null;
-    // grava SEMPRE (mesmo sem nome): a consulta já foi cobrada, não repetir
-    await sql`INSERT INTO spc_cache (cpf_hash, nome) VALUES (${hash}, ${nome})
-      ON CONFLICT (cpf_hash) DO UPDATE SET nome=EXCLUDED.nome`.catch(() => {});
-    return nome ? { nome, fonte: 'spc' } : null;
+    const cru = pf?.nome ? String(pf.nome).trim() : null;
+    const nome = cru && !ehStatusNaoNome(cru) ? cru : null;
+    // ⚠️ A CONSULTA E' PAGA — aproveita a resposta inteira, nao so o nome.
+    // Os nomes de campo variam entre produtos do SPC, entao a busca e' por
+    // aproximacao em toda a arvore, e o JSON cru fica guardado pra dar pra
+    // extrair o que faltar depois sem consultar (e sem pagar) de novo.
+    const extra = pf ? colhe(pf) : {};
+    // Só grava quando a resposta DISSE algo sobre a pessoa (pf presente).
+    // Resposta sem pf = formato inesperado/instabilidade — gravar esse "nada"
+    // custava a consulta pra sempre: o CPF ficava "não achei" até alguém
+    // limpar o cache na mão.
+    if (pf) await sql`INSERT INTO spc_cache (cpf_hash, cpf, nome, bruto, nascimento, mae, telefone, endereco, cidade, uf, cep)
+      VALUES (${hash}, ${doc}, ${nome}, ${pf ? JSON.stringify(pf) : null},
+              ${extra.nascimento || null}, ${extra.mae || null}, ${extra.telefone || null},
+              ${extra.endereco || null}, ${extra.cidade || null}, ${extra.uf || null}, ${extra.cep || null})
+      ON CONFLICT (cpf_hash) DO UPDATE SET cpf=EXCLUDED.cpf, nome=EXCLUDED.nome, bruto=EXCLUDED.bruto,
+        nascimento=EXCLUDED.nascimento, mae=EXCLUDED.mae, telefone=EXCLUDED.telefone,
+        endereco=EXCLUDED.endereco, cidade=EXCLUDED.cidade, uf=EXCLUDED.uf, cep=EXCLUDED.cep`.catch(() => {});
+    return nome ? { nome, fonte: 'spc', ...extra } : null;
   } finally { clearTimeout(t); }
+}
+/** Reparo 02/08/2026 — roda UMA vez, guardado por sentinela. Enquanto o
+ *  documento ia sem formato, o SPC respondia "não existe" pra CPF válido e o
+ *  cache guardava esse nada pra sempre. Apaga as entradas sem nome pra elas
+ *  terem nova chance com o formato certo; a sentinela impede repetir (e pagar
+ *  de novo por CPF realmente inexistente) a cada boot. */
+async function repararCacheSpc() {
+  const ja = await sql`SELECT 1 FROM spc_cache WHERE cpf_hash='reparo:documento-formatado'`;
+  if (ja.length) return;
+  const n = await sql`DELETE FROM spc_cache WHERE nome IS NULL`;
+  await sql`INSERT INTO spc_cache (cpf_hash) VALUES ('reparo:documento-formatado')
+    ON CONFLICT (cpf_hash) DO NOTHING`;
+  console.log(`[spc] cache: ${n.count} entrada(s) sem nome liberadas pra nova consulta`);
 }
 /** Telefone/WhatsApp como chave alternativa: nem todo cliente dá o CPF. */
 async function contatoPorTelefone(tel) {
@@ -1531,7 +1814,7 @@ async function contatoPorTelefone(tel) {
 }
 /** Cadastra o cliente no CONTATOS do Consumer — a trigger CONTATOS_BI gera o
  *  CODIGO. Assim ele existe pra fiado, NFC-e e pra próxima visita. */
-async function fbCriarContato({ nome, cpf, telefone }) {
+async function fbCriarContato({ nome, cpf, telefone, nascimento, endereco, cidade, uf, cep }) {
   const n = String(nome || '').trim().slice(0, 100);
   if (!n) throw new Error('nome é obrigatório pra cadastrar');
   const campos = ['NOME', 'TIPO', 'DATAINSERT', 'LIMITECREDITOCONTACORRENTE', 'SALDOATUALCONTACORRENTE',
@@ -1539,6 +1822,13 @@ async function fbCriarContato({ nome, cpf, telefone }) {
   const vals = [`'${fbEsc(n)}'`, `'CF'`, 'CURRENT_TIMESTAMP', '0', '0', '0', '0', `'N'`, `'N'`];
   if (cpf) { campos.push('CNPJOUCPF'); vals.push(`'${fbEsc(soDig(cpf))}'`); }
   if (telefone) { campos.push('FONECELULAR'); vals.push(`'${fbEsc(soDig(telefone))}'`); }
+  // O que a consulta trouxe entra no cadastro: ninguem precisa perguntar
+  // nascimento nem endereco pro cliente que ja esta com a conta na mao.
+  if (nascimento) { campos.push('DATANASCIMENTO'); vals.push(`'${fbEsc(nascimento)}'`); }
+  if (endereco) { campos.push('ENDERECO'); vals.push(`'${fbEsc(String(endereco).slice(0, 60))}'`); }
+  if (cidade) { campos.push('CIDADE'); vals.push(`'${fbEsc(String(cidade).slice(0, 40))}'`); }
+  if (uf) { campos.push('UF'); vals.push(`'${fbEsc(String(uf).slice(0, 2))}'`); }
+  if (cep) { campos.push('CEP'); vals.push(`'${fbEsc(soDig(cep))}'`); }
   const r = await qi(`INSERT INTO CONTATOS (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
   if (!r.ok) throw new Error('FB cadastrar cliente: ' + r.err);
   const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(NOME)='${fbEsc(n)}' ORDER BY CODIGO DESC`);
@@ -1550,25 +1840,51 @@ async function apiVendaIdentificar(cpf, telefone) {
     try {
       const t = await contatoPorTelefone(telefone);
       if (t) return { ok: true, ...t, nome_curto: nomeCurto(t.nome) };
-      return { ok: true, nome: null, fonte: 'nao_cadastrado' };
     } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
+    // ⚠️ SIMETRIA COM O CPF. O caminho do CPF ja consultava quem a gente mesmo
+    // identificou antes; o do telefone parava no Consumer. Resultado: o garcom
+    // cadastrava a pessoa com nome+CPF+WhatsApp, e no dia seguinte, procurando
+    // pelo WhatsApp, ela "nao existia". Os ultimos 8 digitos casam DDD e o 9
+    // extra, que variam do jeito que cada um digitou.
+    const ult8 = soDig(telefone).slice(-8);
+    const ja = (await sql`SELECT nome, contato_fb FROM identificacao
+      WHERE nome IS NOT NULL AND right(regexp_replace(coalesce(telefone,''), '\\D', '', 'g'), 8) = ${ult8}
+      ORDER BY criado_em DESC LIMIT 1`)[0];
+    if (ja?.nome) return { ok: true, nome: ja.nome, contato_fb: ja.contato_fb ?? null,
+      fonte: 'ja-atendido', nome_curto: nomeCurto(ja.nome) };
+    return { ok: true, nome: null, fonte: 'nao_cadastrado' };
   }
   if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido' };
+  let duplicado = null;   // CPF em cadastros conflitantes: pula o local, vai pro SPC
   // 1º) cadastro do Consumer — a base oficial da casa
   try {
     const local = await contatoPorCpf(cpf);
-    if (local) return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
+    // ⚠️ CPF que so existe como COLABORADOR: o nome do cadastro da casa nao
+    // serve (e' funcionario, nao cliente) e o ja-atendido/grupo tambem nao —
+    // foi por essas bases que "ROSANA" voltava depois de limpa. Mas a pessoa
+    // EXISTE e pode ser cliente (o dono tambem janta aqui): pula DIRETO pro
+    // SPC, que traz o nome oficial. Com "cadastrar" marcado ela vira cliente
+    // (CF) no Consumer e, da proxima vez, sai da base da casa como qualquer um.
+    if (local?.fonte === 'so_colaborador') duplicado = true;
+    // ⚠️ CPF E' CHAVE UNICA DE UMA PESSOA. Dois cadastros com o mesmo CPF e
+    // nomes diferentes = o dado local nao presta. Nao escolhe, nao pergunta:
+    // DESCARTA OS DOIS e segue pro SPC, que e' a fonte autoritativa. Perguntar
+    // ao garcom so transferia pra ele um erro de cadastro da casa.
+    // (Em 02/08 os 34 CPFs duplicados da base tiveram o documento removido —
+    // os clientes e o historico ficaram; so o CPF saiu.)
+    if (local?.fonte === 'ambiguo') duplicado = local.candidatos;
+    else if (local && local.fonte !== 'so_colaborador') return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
   } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
   // 2º) quem já identificamos em alguma mesa antes, mesmo sem cadastrar no
   //     Consumer. Sem isto, essa pessoa seria consultada (e cobrada) de novo.
-  const jaVisto = (await sql`SELECT nome, contato_fb FROM identificacao
+  const jaVisto = duplicado ? null : (await sql`SELECT nome, contato_fb FROM identificacao
     WHERE cpf=${soDig(cpf)} AND nome IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)[0];
   if (jaVisto?.nome) return { ok: true, nome: jaVisto.nome, contato_fb: jaVisto.contato_fb ?? null,
     fonte: 'ja-atendido', nome_curto: nomeCurto(jaVisto.nome) };
   // 3º) base do GRUPO: quem já foi identificado em QUALQUER filial. Um cliente
   //     conhecido no Tabuará não pode ser consultado de novo na Prainha Bar.
   try {
-    const grupo = await clienteDoGrupo(cpf);
+    const grupo = duplicado ? null : await clienteDoGrupo(cpf);
     if (grupo) return { ok: true, nome: grupo.nome, fonte: 'grupo',
       telefone_fim: grupo.telefone_fim, nome_curto: nomeCurto(grupo.nome) };
   } catch { /* sem internet: segue pro SPC, que também precisaria dela */ }
@@ -1594,7 +1910,16 @@ async function apiIdentificarSalvar(body) {
   let contatoFb = body.contato_fb ? Number(body.contato_fb) : null;
   // Cliente novo: cadastra no Consumer pra existir na próxima visita
   if (!contatoFb && body.cadastrar) {
-    try { contatoFb = await fbCriarContato({ nome, cpf, telefone: tel }); }
+    // recupera o que o SPC ja trouxe pra este CPF (cache — nao consulta de novo)
+    let ex = {};
+    if (cpf) {
+      const h = createHash('sha256').update(soDig(cpf)).digest('hex');
+      ex = (await sql`SELECT nascimento, endereco, cidade, uf, cep, telefone FROM spc_cache
+        WHERE cpf_hash=${h}`)[0] || {};
+    }
+    try { contatoFb = await fbCriarContato({ nome, cpf, telefone: tel || ex.telefone,
+      nascimento: ex.nascimento ? new Date(ex.nascimento).toISOString().slice(0, 10) : null,
+      endereco: ex.endereco, cidade: ex.cidade, uf: ex.uf, cep: ex.cep }); }
     catch (e) { return { ok: false, erro: e.message }; }
   }
   // ---- O DONO DA MESA NÃO MUDA ----
@@ -1632,6 +1957,224 @@ async function apiIdentificarSalvar(body) {
   // leva pra base do grupo: identificou aqui, é conhecido nas outras filiais
   publicarNoGrupo({ cpf, nome, telefone: tel, origem: contatoFb ? 'consumer' : 'manual' });
   return { ok: true, numero, nome_curto: curto, contato_fb: contatoFb, cadastrado: !!(body.cadastrar && contatoFb) };
+}
+
+// ================== LOGIN DO GARÇOM (PIN próprio) ==================
+// Quem PODE entrar vem do Consumer: só login ATIVO com a permissão
+// AcessarComandaMobile (PERMISSAO.CODIGO=53). A senha do Consumer é cifrada com
+// chave embutida no .exe da RAL e não deu pra reverter — então a credencial é
+// um PIN nosso (hash scrypt no Postgres). A lista de QUEM pode é a do Consumer.
+const PERM_COMANDA_MOBILE = 53;
+// Segredo pra assinar o token de sessão. Fica no Postgres pra sobreviver a
+// restart/deploy — senão todo deploy deslogava a loja inteira (e a gente faz
+// deploy toda hora). Carregado uma vez no boot.
+let GARCOM_SECRET = null;
+async function carregarGarcomSecret() {
+  const r = (await sql`SELECT valor FROM app_config WHERE chave='garcom_token_secret'`)[0];
+  if (r?.valor) { GARCOM_SECRET = r.valor; return; }
+  GARCOM_SECRET = randomBytes(32).toString('hex');
+  await sql`INSERT INTO app_config (chave, valor) VALUES ('garcom_token_secret', ${GARCOM_SECRET})
+    ON CONFLICT (chave) DO NOTHING`;
+  // corrida entre dois boots: relê pra ficar todo mundo com o mesmo
+  const r2 = (await sql`SELECT valor FROM app_config WHERE chave='garcom_token_secret'`)[0];
+  if (r2?.valor) GARCOM_SECRET = r2.valor;
+}
+const GARCOM_TOKEN_HORAS = Number(process.env.GARCOM_TOKEN_HORAS || 16); // um turno
+function garcomAssina(login, exp) {
+  return createHmac('sha256', GARCOM_SECRET || '').update(`${login}|${exp}`).digest('hex').slice(0, 32);
+}
+function garcomGeraToken(login) {
+  const exp = Date.now() + GARCOM_TOKEN_HORAS * 3600 * 1000;
+  return `${encodeURIComponent(login)}.${exp}.${garcomAssina(login, exp)}`;
+}
+function garcomVerificaToken(token) {
+  const t = String(token || '');
+  const parts = t.split('.');
+  if (parts.length !== 3) return null;
+  const login = decodeURIComponent(parts[0]); const exp = Number(parts[1]); const sig = parts[2];
+  if (!login || !(exp > Date.now())) return null;
+  const bom = garcomAssina(login, exp);
+  try { if (!timingSafeEqual(Buffer.from(sig), Buffer.from(bom))) return null; } catch { return null; }
+  return { login };
+}
+// Cache de 60s da lista de quem pode: evita bater no Firebird a cada ação.
+let _permCache = { em: 0, mapa: null };
+async function garcomPermitidos() {
+  if (_permCache.mapa && Date.now() - _permCache.em < 60000) return _permCache.mapa;
+  // Pode entrar: quem tem AcessarComandaMobile OU quem é ADMINISTRADOR — no
+  // Consumer o Administrador tem acesso a tudo, mesmo sem a permissão listada.
+  const r = await qi(`SELECT TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.NOME,'')) NOME
+    FROM VWUSUARIOS u
+    WHERE u.ATIVO='S' AND (
+      UPPER(TRIM(COALESCE(u.TIPO,'')))='ADMINISTRADOR'
+      OR EXISTS (SELECT 1 FROM ACESSO a WHERE a.USUARIO=u.CODIGO AND a.PERMISSAO=${PERM_COMANDA_MOBILE})
+    )`);
+  if (!r.ok) throw new Error('cadastro de usuários indisponível: ' + r.err);
+  const mapa = new Map();
+  for (const x of r.rows) { const l = T(x.LOGIN).toLowerCase(); if (l) mapa.set(l, T(x.NOME) || T(x.LOGIN)); }
+  _permCache = { em: Date.now(), mapa };
+  return mapa;
+}
+async function garcomPodeEntrar(login) {
+  const mapa = await garcomPermitidos();
+  const l = String(login || '').trim().toLowerCase();
+  return mapa.has(l) ? { ok: true, nome: mapa.get(l), login: l } : { ok: false };
+}
+function pinHash(pin, salt) { return scryptSync(String(pin), salt, 32).toString('hex'); }
+function pinConfere(pin, salt, hash) {
+  try { return timingSafeEqual(Buffer.from(pinHash(pin, salt), 'hex'), Buffer.from(hash, 'hex')); }
+  catch { return false; }
+}
+/** Sessão a partir do header x-garcom (ou ?t=). Retorna {login,nome} ou null.
+ *  Revalida a permissão no Consumer: tirou a permissão lá, cai aqui na hora. */
+async function garcomDaRequisicao(req, u) {
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  try { const pode = await garcomPodeEntrar(v.login); if (!pode.ok) return null; return { login: v.login, nome: pode.nome }; }
+  catch { return { login: v.login, nome: null }; } // Firebird fora: não desloga quem já entrou
+}
+// GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
+async function apiGarcomSessao(req, u) {
+  const g = await garcomDaRequisicao(req, u);
+  return g ? { ok: true, login: g.login, nome: g.nome } : { ok: false };
+}
+// POST /api/garcom/entrar {login, pin, pin2?}
+//  - login sem permissão no Consumer -> negado
+//  - primeira vez (sem PIN): exige pin==pin2 e cria
+//  - já tem PIN: confere
+async function apiGarcomEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  let pode;
+  try { pode = await garcomPodeEntrar(login); }
+  catch (e) { return { ok: false, erro: e.message }; }
+  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile. Fale com o gerente.' };
+  const atual = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`)[0];
+  if (!atual) {
+    // primeira vez: cria o PIN (precisa confirmar digitando de novo)
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    if (!pin2) return { ok: true, primeira_vez: true, nome: pode.nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${pode.nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true };
+  }
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), nome: pode.nome };
+}
+
+// ---- CAIXA: acesso e ajuste de conta (Bloco 1) ----
+// O caixa é a MESMA pessoa logando (mesmo PIN/token do garçom); o que muda é a
+// PERMISSÃO exigida, lida do Consumer: AbrirTelaPagamento (10)=entra no caixa;
+// AplicarDesconto (12)=pode dar desconto; ContaCorrente (16)=fiado (Bloco 2).
+// Administrador tem tudo. Assim "quem pode" é o que a loja já define no Consumer.
+const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16;
+async function permsDoUsuario(login) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return { ok: false };
+  const r = await qi(`SELECT TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.NOME,'')) NOME, TRIM(COALESCE(u.TIPO,'')) TIPO, a.PERMISSAO
+    FROM VWUSUARIOS u LEFT JOIN ACESSO a ON a.USUARIO=u.CODIGO
+    WHERE u.ATIVO='S' AND LOWER(TRIM(u.LOGIN))='${fbEsc(l)}'`);
+  if (!r.ok) throw new Error('cadastro de usuários indisponível: ' + r.err);
+  if (!r.rows.length) return { ok: false };
+  const admin = String(r.rows[0].TIPO || '').trim().toUpperCase() === 'ADMINISTRADOR';
+  const perms = new Set(r.rows.map((x) => Number(x.PERMISSAO)).filter(Boolean));
+  const tem = (cod) => admin || perms.has(cod);
+  return { ok: true, login: l, nome: T(r.rows[0].NOME) || l, admin,
+    caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO) };
+}
+async function caixaDaRequisicao(req, u) {
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  try { const p = await permsDoUsuario(v.login); return (p.ok && p.caixa) ? p : null; }
+  catch { return null; } // Firebird fora: melhor barrar o caixa do que liberar errado
+}
+async function apiCaixaSessao(req, u) {
+  const p = await caixaDaRequisicao(req, u);
+  return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado } : { ok: false };
+}
+async function apiCaixaEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  let p;
+  try { p = await permsDoUsuario(login); } catch (e) { return { ok: false, erro: e.message }; }
+  if (!p.ok || !p.caixa) return { ok: false, erro: 'Este login não tem acesso ao caixa. Fale com o gerente.' };
+  const atual = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`)[0];
+  if (!atual) {
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    if (!pin2) return { ok: true, primeira_vez: true, nome: p.nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, criado: true };
+  }
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado };
+}
+// Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
+// acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
+async function apiCaixaConta(n) {
+  const num = Number(n);
+  const ped = await fbAcharPedido(num);
+  if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
+  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const pago = await fbPagoDoPedido(ped);
+  const total = Number(p.T) || 0;
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${num} LIMIT 1`)[0];
+  const itens = c ? await sql`SELECT nome, quantidade, valor_total, detalhes FROM comanda_item
+    WHERE comanda_codigo=${c.codigo} AND tipo IS DISTINCT FROM 2 ORDER BY criado NULLS LAST, id` : [];
+  const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
+  return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
+    itens: itens.map((i) => ({ nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes })),
+    subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
+    total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
+}
+// Desconto/acréscimo SEGURO: ajusta o VALORTOTAL pelo delta exato e registra em
+// TOTALDESCONTO/TOTALACRESCIMO. Fica consistente com o total do Consumer sem
+// depender de recalcular a fórmula inteira (que não é limpa — serviço/entrega
+// interagem de formas diferentes por pedido). Só mexe nos campos do delta.
+async function apiCaixaAjuste(body, quem) {
+  const n = Number(body.numero);
+  const tipo = String(body.tipo || '');
+  const modo = String(body.modo || 'valor');
+  if (tipo === 'desconto' && !(quem && quem.desconto)) return { ok: false, erro: 'sem permissão de desconto (Aplicar Desconto)' };
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALDESCONTO DESC, TOTALACRESCIMO ACR, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
+  if (!p) return { ok: false, erro: 'pedido não encontrado' };
+  const itens = Number(p.ITENS) || 0, total = Number(p.TOT) || 0;
+  if (tipo === 'desconto') {
+    let delta = modo === 'pct' ? +(itens * (Number(body.valor) || 0) / 100).toFixed(2) : +Number(body.valor || 0).toFixed(2);
+    if (modo === 'pct' && !((Number(body.valor) || 0) > 0 && (Number(body.valor) || 0) <= 100)) return { ok: false, erro: 'percentual inválido (1 a 100)' };
+    if (!(delta > 0)) return { ok: false, erro: 'valor inválido' };
+    if (delta > total + 0.01) return { ok: false, erro: `desconto maior que o total (R$ ${total.toFixed(2)})` };
+    const novoDesc = +((Number(p.DESC) || 0) + delta).toFixed(2);
+    const novoTot = +(total - delta).toFixed(2);
+    const pct = itens > 0 ? +(novoDesc / itens * 100).toFixed(2) : 0;
+    const r = await qi(`UPDATE PEDIDOS SET TOTALDESCONTO=${fbNum(novoDesc)}, PERCENTUALDESCONTO=${fbNum(pct)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${ped}`);
+    if (!r.ok) return { ok: false, erro: 'FB desconto: ' + r.err };
+    espelho().catch(() => {});
+    return { ok: true, tipo, delta, novo_total: novoTot };
+  }
+  if (tipo === 'acrescimo') {
+    const delta = +Number(body.valor || 0).toFixed(2);
+    if (!(delta > 0)) return { ok: false, erro: 'valor inválido' };
+    const novoAcr = +((Number(p.ACR) || 0) + delta).toFixed(2);
+    const novoTot = +(total + delta).toFixed(2);
+    const r = await qi(`UPDATE PEDIDOS SET TOTALACRESCIMO=${fbNum(novoAcr)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${ped}`);
+    if (!r.ok) return { ok: false, erro: 'FB acréscimo: ' + r.err };
+    espelho().catch(() => {});
+    return { ok: true, tipo, delta, novo_total: novoTot };
+  }
+  return { ok: false, erro: 'tipo inválido' };
 }
 
 // ---- HISTÓRICO do que já saiu (últimas baixas) ----
@@ -1683,8 +2226,96 @@ async function apiTemposSalvar(body) {
   return { ok: false, erro: 'informe area_codigo ou codigo_pdv' };
 }
 
+/** REPARO AUTOMATICO: identificacao que veio de cadastro de COLABORADOR.
+ *
+ *  Ate 01/08/2026 contatoPorCpf() fazia SELECT FIRST 1 sem filtrar TIPO. Como
+ *  CONTATOS guarda cliente ('CF') e colaborador ('AA') na MESMA tabela, digitar
+ *  na comanda o CPF de preenchimento dos garcons (024.589.335-05, presente em
+ *  13 cadastros 'AA') trazia "ROSANA" — uma operadora — como se fosse a
+ *  cliente. O garcom confirmava e o nome errado era gravado em `identificacao`
+ *  e `mesa_comanda`.
+ *
+ *  Filtrar a origem NAO resolve o passado: a etapa 'ja-atendido' da busca le o
+ *  que NOS gravamos, entao o nome errado continua voltando. Isto limpa. Roda no
+ *  boot, e' idempotente e, sem colaborador vinculado, nao toca em nada. */
+async function repararNomesDeColaborador() {
+  const alvos = await sql`SELECT DISTINCT contato_fb FROM (
+      SELECT contato_fb FROM identificacao WHERE contato_fb IS NOT NULL
+      UNION ALL SELECT contato_fb FROM mesa_comanda WHERE contato_fb IS NOT NULL) t`;
+  if (!alvos.length) return;
+  const cods = alvos.map((x) => Number(x.contato_fb)).filter(Boolean);
+  if (!cods.length) return;
+  const r = await qi(`SELECT CODIGO, TRIM(COALESCE(TIPO,'')) TIPO, TRIM(NOME) NOME
+    FROM CONTATOS WHERE CODIGO IN (${cods.join(',')})`);
+  if (!r.ok) return;                       // Firebird fora do ar: tenta no proximo boot
+  const naoCliente = r.rows.filter((x) => String(x.TIPO || '').trim().toUpperCase() !== 'CF');
+  if (!naoCliente.length) return;
+  const ruins = naoCliente.map((x) => Number(x.CODIGO));
+  const a = await sql`DELETE FROM identificacao WHERE contato_fb = ANY(${ruins}) RETURNING numero`;
+  const b = await sql`UPDATE mesa_comanda SET nome=NULL, nome_curto=NULL, cpf=NULL, contato_fb=NULL
+    WHERE contato_fb = ANY(${ruins}) RETURNING comanda`;
+  if (a.length || b.length) {
+    console.log('[reparo] identificacao vinda de COLABORADOR removida: ' +
+      a.length + ' mesa(s)/comanda(s) em identificacao, ' + b.length + ' em mesa_comanda — ' +
+      naoCliente.map((x) => T(x.NOME) + ' (tipo ' + x.TIPO + ')').join(', '));
+  }
+}
+
+/** O mesmo estrago, mas nas linhas que ficaram SEM o vinculo do contato: sobra
+ *  so o CPF. Criterio seguro: apagar apenas quando aquele CPF existe no
+ *  Consumer e NENHUM dos cadastros dele e' cliente. CPF que nao existe la
+ *  (cliente novo digitado a mao pelo garcom) nao entra — nao ha o que casar. */
+/** Tira da base os cadastros que EU criei testando. Sao nomes que nao existem
+ *  no mundo real; ficaram amarrados a CPFs de gente de verdade e apareciam como
+ *  se fossem o nome da pessoa. Roda no boot, uma vez, e some. */
+async function limparTestes() {
+  const marcas = ['AUDITORIA TESTE', 'Joana Ribeiro da Silva', 'Carlos Teste da Silva', 'Maria Teste'];
+  const r = await sql`DELETE FROM identificacao WHERE nome = ANY(${marcas}) RETURNING numero, nome`;
+  const c = await sql`DELETE FROM mesa_comanda WHERE nome = ANY(${marcas}) RETURNING comanda`;
+  if (r.length || c.length) {
+    console.log('[reparo] cadastros de teste removidos: ' +
+      r.map((x) => x.nome + ' (mesa ' + x.numero + ')').join(', ') +
+      (c.length ? ' · ' + c.length + ' em mesa_comanda' : ''));
+  }
+}
+
+async function repararPorCpfDeColaborador() {
+  const cpfs = await sql`SELECT DISTINCT cpf FROM identificacao
+    WHERE cpf IS NOT NULL AND contato_fb IS NULL AND nome IS NOT NULL`;
+  if (!cpfs.length) return;
+  const lista = cpfs.map((x) => soDig(x.cpf)).filter((c) => c.length === 11);
+  if (!lista.length) return;
+  const r = await qi(`SELECT REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') DOC,
+      TRIM(COALESCE(TIPO,'')) TIPO FROM CONTATOS
+    WHERE DATADELETE IS NULL AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','')
+      IN (${lista.map((c) => `'${c}'`).join(',')})`);
+  if (!r.ok) return;
+  const porDoc = new Map();
+  for (const x of r.rows) {
+    const d = String(x.DOC || '').trim();
+    if (!porDoc.has(d)) porDoc.set(d, []);
+    porDoc.get(d).push(String(x.TIPO || '').trim().toUpperCase());
+  }
+  const ruins = [...porDoc.entries()]
+    .filter(([, tipos]) => tipos.length && !tipos.includes('CF'))
+    .map(([doc]) => doc);
+  if (!ruins.length) return;
+  const del = await sql`DELETE FROM identificacao WHERE cpf = ANY(${ruins}) AND contato_fb IS NULL RETURNING numero`;
+  if (del.length) console.log('[reparo] ' + del.length + ' identificacao(oes) com CPF que so existe como colaborador — removida(s)');
+}
+
 // ---- CHAMADOS da mesa (garçom / reclamação) ----
 const TIPOS_CHAMADO = new Set(['garcom', 'reclamacao']);
+// O que pode dar errado, na linguagem da casa. O rotulo vai pro KDS e pro
+// celular do garcom, entao e' curto e diz PRA ONDE correr.
+const ASSUNTOS = {
+  demora: 'DEMORA',
+  errado: 'VEIO ERRADO',
+  frio: 'VEIO FRIO',
+  faltou: 'FALTOU ALGO',
+  salao: 'MESA / LOUCA / LIMPEZA',
+  outro: 'OUTRO',
+};
 async function apiChamadoCriar(body) {
   const tipo = String(body.tipo || 'garcom');
   if (!TIPOS_CHAMADO.has(tipo)) return { ok: false, erro: 'tipo inválido' };
@@ -1697,18 +2328,24 @@ async function apiChamadoCriar(body) {
   // pessoa apertou o botão).
   const origem = String(body.origem || '').slice(0, 120) || null;
   const auto = origem === 'pedido-cliente';
+  const assunto = ASSUNTOS[String(body.assunto || '')] ? String(body.assunto) : null;
+  // ⚠️ A trava de repetido inclui o ASSUNTO. Sem isso, quem reclamou da demora
+  // e depois avisou que o prato veio frio tinha o segundo aviso engolido como
+  // "repetido" — sao dois problemas diferentes, e o segundo e' pior.
   const [ja] = await sql`SELECT id FROM chamado
     WHERE mesa IS NOT DISTINCT FROM ${mesa} AND tipo=${tipo} AND atendido_em IS NULL
+      AND assunto IS NOT DISTINCT FROM ${assunto}
       AND (origem IS NOT DISTINCT FROM ${'pedido-cliente'}) = ${auto} LIMIT 1`;
   if (ja) return { ok: true, id: Number(ja.id), repetido: true };
-  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto)
+  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto)
     VALUES (${mesa}, ${tipo}, ${origem},
-            ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null})
+            ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null},
+            ${assunto})
     RETURNING id`;
   return { ok: true, id: Number(r.id) };
 }
 async function apiChamados() {
-  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, criado_em FROM chamado
+  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, criado_em FROM chamado
     WHERE atendido_em IS NULL ORDER BY criado_em`;
   const agora = Date.now();
   const comIdade = rows.map((x) => ({ ...x, ha_min: Math.max(0, Math.floor((agora - new Date(x.criado_em).getTime()) / 60000)) }));
@@ -2622,6 +3259,23 @@ if(ENTREGA){
 }
 else{var _p=new URLSearchParams(location.search);var a=_p.get('area');
   if(a!==null&&a!==''){AREA={cod:Number(a)};setView(kds)}else{irSelecao()}}
+
+// ---- VERSAO NOVA NO SERVIDOR ----
+// ⚠️ SEM ISTO A TELA FICA CONGELADA NO CODIGO VELHO. Estas paginas sao uma so:
+// navegar nao recarrega nada, entao o aparelho segue rodando o JavaScript de
+// quando abriu — mesmo com o servidor ja atualizado. Em 02/08 isso fez varias
+// correcoes parecerem que "nao funcionaram": o servidor estava novo e o celular
+// do garcom, velho.
+// Recarrega sozinho quando a versao muda, mas so com a tela parada e sem
+// pedido montado — ninguem perde o que estava digitando.
+var VERSAO_MINHA='${VERSAO}';
+setInterval(async function(){
+  var v;try{v=await (await fetch('/api/versao',{cache:'no-store'})).json()}catch(e){return}
+  if(!v||!v.versao||v.versao===VERSAO_MINHA)return;
+  if(typeof CART!=='undefined'&&CART&&CART.length)return;
+  if(document.visibilityState!=='visible')return;
+  location.reload();
+},60000);
 </script></body></html>`;
 
 // ---- /venda — tela do garçom (mobile) ----
@@ -2641,6 +3295,7 @@ input:focus{border-color:var(--gold2)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
 .chip{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:9px 13px;font:inherit;font-size:14.5px;cursor:pointer;color:var(--ink)}
 .chip small{display:block;color:var(--mut);font-size:11px}
+.chip .dono{display:block;font-size:12.5px;font-weight:700;margin-top:1px}
 .chip.on{border-color:var(--gold2);background:rgba(224,101,26,.08);color:var(--gold2);font-weight:700}
 .chip.add{border-style:dashed;color:var(--mut)}
 .res{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:8px;overflow:hidden}
@@ -2677,6 +3332,26 @@ input:focus{border-color:var(--gold2)}
 .pt{width:9px;height:9px;border-radius:50%;display:inline-block}
 .pt.v{background:#15a34a}.pt.a{background:#e0a413}.pt.r{background:#dc2626}
 /* rodapé da mesa: imprimir / fechar / receber */
+/* consumo da mesa: mesma semantica de cor da tela do cliente —
+   VERMELHO a cozinha ainda faz · AMBAR pronto pra retirar · VERDE entregue */
+/* acao apagada: da pra ver que existe e por que nao da pra usar ainda */
+.ac.off{opacity:.45;background:#f2f2f5;color:#8a8a95;border-style:dashed}
+.ccab{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);
+  margin:14px 0 4px;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.ci{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);
+  border-left:4px solid #d2d2da;border-radius:11px;padding:11px 12px;margin-top:7px;font-size:15px}
+.ci .q{font-weight:700;color:var(--gold2);min-width:26px}
+.ci .n{flex:1}
+.ci .ob,.ci .hr{display:block;color:var(--mut);font-size:11.5px;margin-top:3px}
+.ci .st{font-size:11.5px;white-space:nowrap;align-self:center;font-weight:700}
+.ci.preparando{border-left-color:#d33a2c;background:#fffafa}
+.ci.preparando .st{color:#c0392b}
+.ci.pronto{border-left-color:#e0a413}
+.ci.pronto .st{color:#a97608}
+.ci.entregue{border-left-color:#17803d;background:#f8fcf9}
+.ci.entregue .st{color:#17803d}
+.avisoc{background:#fdecea;border:1.5px solid #f1b0a8;color:#a3271b;border-radius:11px;
+  padding:11px 13px;margin-top:12px;font-weight:700;font-size:14px}
 .acoes{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:8px 0 4px}
 .ac{background:#fff;border:1.5px solid var(--line);border-radius:13px;padding:14px 6px;font:inherit;
   font-size:19px;cursor:pointer;color:var(--ink);display:flex;flex-direction:column;align-items:center;gap:5px}
@@ -2738,7 +3413,7 @@ input:focus{border-color:var(--gold2)}
 .err{background:#fdeeee;border:1px solid #f3c1c1;border-radius:12px;padding:12px 14px;color:#a11;font-size:14px;margin-top:10px}
 .mut{color:var(--mut);font-size:13px}
 </style></head><body>
-<header><h1>${LOJA_HTML} · Venda</h1><span style="flex:1"></span><a class="back" href="/">KDS</a></header>
+<header><h1>${LOJA_HTML} · Venda</h1><span style="flex:1"></span><span id="gwho" class="mut" style="font-size:12.5px"></span><a class="back" href="/">KDS</a></header>
 <div id="chamados"></div>
 <div class="wrap" id="app"></div>
 <div class="cart" id="cart" style="display:none"><div class="in" id="cartin"></div></div>
@@ -2746,9 +3421,14 @@ input:focus{border-color:var(--gold2)}
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
 var brl=function(n){return 'R$ '+Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
 var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null, AREAS=null, JUNTO=false;
+// token do garçom logado — vai no header de toda chamada; o servidor exige nas
+// ações que mexem na conta (enviar/transferir/conta/vincular).
+var GTOK=null; try{GTOK=localStorage.getItem('garcom_tok')||null}catch(e){}
+function hdrs(x){var h=x||{}; if(GTOK)h['x-garcom']=GTOK; return h}
 function app(h){document.getElementById('app').innerHTML=h}
-async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
-async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
+async function jget(u){var r=await fetch(u,{cache:'no-store',headers:hdrs()}); if(r.status===401){sessaoCaiu();return {ok:false,erro:'sessão expirada',sem_sessao:true}} return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b)}); if(r.status===401){sessaoCaiu();return {ok:false,erro:'Sua sessão expirou — entre de novo.',sem_sessao:true}} return r.json()}
+function sessaoCaiu(){ try{localStorage.removeItem('garcom_tok')}catch(e){} GTOK=null; }
 
 async function telaMesa(){
   MESA=null;ALVO=null;CART=[];CATSEL=null;BUSCA='';renderCart();
@@ -2764,10 +3444,12 @@ async function telaMesa(){
   var h='';
   (d.mesas||[]).forEach(function(m){
     h+='<button class="chip st-'+(m.status||'andamento')+'" onclick="irPara('+m.numero+','+m.numero+')">Mesa '+m.numero+
+       (m.nome?'<b class="dono">'+esc(m.nome)+'</b>':'')+
        '<small>'+m.itens+' itens · '+brl(m.valor_total)+'</small></button>';
   });
   (d.comandas||[]).forEach(function(c){
     h+='<button class="chip st-'+(c.status||'andamento')+'" onclick="irPara('+(c.mesa||c.numero)+','+c.numero+')">Comanda '+c.numero+
+       (c.nome?'<b class="dono">'+esc(c.nome)+'</b>':'')+
        '<small>'+(c.mesa?'mesa '+c.mesa+' · ':'')+c.itens+' itens · '+brl(c.valor_total)+'</small></button>';
   });
   var a=document.getElementById('abertas');
@@ -2834,29 +3516,192 @@ async function carregarMesa(){
   });
   if(${COMANDA_ATIVA})chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
   var quemMesa=INFO.cliente;
+  // ABRIR A MESA MOSTRA O QUE A MESA JA CONSUMIU — nao o campo de busca.
+  // Quem chega na mesa e' perguntado "e o meu peixe?" antes de "quero pedir".
+  // Antes o garcom caia direto no buscador e tinha que sair da tela pra ver o
+  // consumo; agora e' o contrario, e "Pedir" abre a busca.
   app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
     '<div class="cliente" onclick="telaCliente('+MESA+')">'+
       (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
                :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
       '<span class="seta">›</span></div>'+
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
+    (INFO.conta_pedida
+      ? '<div class="avisoc">🔒 Conta pedida — não entra mais lançamento nesta mesa.</div>'+
+        '<button class="big" style="background:#17803d;margin-top:8px" '+
+        'onclick="acaoConta(\\'reabrir\\')">🔓 Liberar novos pedidos</button>'
+      : '<button class="big" style="margin-top:14px" onclick="telaPedirGarcom()">➕ Pedir</button>')+
+    '<div class="tit" style="margin-top:20px">Consumo <span id="cres" class="mut" style="font-weight:400"></span></div>'+
+    '<div id="consumo"><span class="mut">carregando…</span></div>'+
+    '<div id="msg"></div>'+
+    '<div class="tit" style="margin-top:22px">Conta</div>'+
+    // "Ver/imprimir" saiu: o consumo ja esta na tela acima, o garcom nao precisa
+    // abrir outra pagina pra ver o que ele acabou de ler. (A pagina /conta/ver
+    // continua existindo — e' o que o CLIENTE abre no celular dele.)
+    // Transferir fica NA LINHA da conta, do lado de "Pedir conta" (a .acoes tem
+    // 3 colunas). Embaixo sobra so o RECEBER (Pix) — a acao de toda noite.
+    '<div class="acoes">'+
+      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
+      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Pedir conta</span></button>'+
+      '<button class="ac" onclick="telaTransferir()">⇄<span>Transferir '+(ALVO>=${COMANDA_DE}?'comanda':'mesa')+'</span></button>'+
+    '</div>'+
+    '<button class="big" style="background:#17803d;margin-top:9px" onclick="telaReceber(null)">💳 Receber a conta <span style="font-weight:400">· Pix</span></button>'+
+    '<div class="mut" style="margin-top:8px">Cartão é na maquininha. O cliente também paga sozinho por Pix na tela da mesa dele.</div>');
+  pintaConsumo();
+}
+// O QUE A MESA JA CONSUMIU, com o estado de cada item.
+// Mesma leitura que o cliente ve no celular (/api/ja-pedido), pra garcom e
+// cliente nunca contarem historias diferentes na frente da mesa.
+var EST_G={preparando:'em produção',pronto:'pronto, retirar',entregue:'entregue'};
+async function pintaConsumo(){
+  var el=document.getElementById('consumo');if(!el)return;
+  var d;try{d=await jget('/api/ja-pedido?n='+MESA)}catch(e){el.innerHTML='<span class="mut">não consegui ler o consumo</span>';return}
+  var grupos=d.grupos||[], total=0, faltando=0;
+  var h=grupos.map(function(g){
+    var cab=(g.tipo==='comanda')
+      ? '<div class="ccab">Comanda '+g.numero+(g.nome?' · '+esc(g.nome):'')+'</div>'
+      : (grupos.length>1?'<div class="ccab">Mesa '+g.numero+'</div>':'');
+    return cab+(g.itens||[]).map(function(i){
+      total++; if(i.estado!=='entregue')faltando++;
+      var quando=(i.estado==='preparando'&&i.espera_min!=null)?('há '+i.espera_min+' min')
+        :(i.estado==='pronto'?'aguardando retirada':'');
+      return '<div class="ci '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
+        '<span class="n">'+esc(i.nome)+
+        (i.observacao?'<small class="ob">✎ '+esc(i.observacao)+'</small>':'')+
+        (quando?'<small class="hr">'+quando+'</small>':'')+'</span>'+
+        '<span class="st">'+EST_G[i.estado]+'</span></div>';
+    }).join('');
+  }).join('');
+  el.innerHTML=h||'<div class="mut" style="padding:10px 0">Nada lançado ainda nesta mesa.</div>';
+  var r=document.getElementById('cres');
+  if(r)r.textContent=total?('· '+total+' item(ns)'+(faltando?' · '+faltando+' ainda não entregue(s)':' · tudo entregue')):'';
+}
+// ---- RECEBER A CONTA (so Pix) ----
+// O garcom gera o QR no celular DELE e o cliente aponta a camera do app do
+// banco. Mesmo funil do Pix da tela do cliente: /api/pix/cobrar cobra com o
+// piso de servico imposto no servidor, /api/pix/conferir confirma e registra
+// no Consumer (forma Pix online) UMA vez so. Cartao segue na maquininha —
+// esta rede e' HTTP, numero de cartao nao passa por aqui.
+var RCB={conta:null,alvo:null,gorj:null,partes:1,valor:null,tmr:null,cobrado:0};
+function rcbPara(){if(RCB.tmr){clearInterval(RCB.tmr);RCB.tmr=null}}
+function rcbSair(){rcbPara();carregarMesa()}
+async function telaReceber(alvo){
+  rcbPara();
+  var st;try{st=await jget('/api/pix/status')}catch(e){st={}}
+  if(!st.disponivel){alert('Pix pela tela não está ligado nesta casa. Por enquanto, maquininha.');return}
+  RCB.alvo=(alvo==null)?null:Number(alvo);RCB.partes=1;RCB.valor=null;
+  var n=(RCB.alvo==null)?MESA:RCB.alvo;
+  app('<div class="mut" style="margin-top:14px">abrindo a conta…</div>');
+  var c=await jget('/api/conta/texto?n='+n);
+  if(!c.ok){alert(c.erro||'não consegui abrir essa conta');carregarMesa();return}
+  RCB.conta=c;RCB.gorj=Number(c.taxa_servico||10);
+  pintaReceber();
+}
+function moedaR(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
+function rcbCalc(){
+  var c=RCB.conta,itens=Number(c.total||0);
+  var gorj=+(itens*RCB.gorj/100).toFixed(2);
+  var resta=Math.max(0,+((itens+gorj)-Number(c.pago||0)).toFixed(2));
+  var cobrar=(RCB.valor!=null)?Math.min(RCB.valor,resta):+(resta/RCB.partes).toFixed(2);
+  return {itens:itens,gorj:gorj,resta:resta,cobrar:cobrar};
+}
+// Le "100", "100,50", "1.234,56", "R$ 80" — SEM regex de proposito: neste
+// arquivo (template literal) barra invertida em regex ja quebrou tela duas
+// vezes. split/join faz o mesmo servico sem escape nenhum.
+function rcbNumero(txt){
+  var t=String(txt||'').split(' ').join('').split('R$').join('').split('r$').join('');
+  if(t.indexOf(',')>=0){t=t.split('.').join('').split(',').join('.')}
+  var n=Number(t);return (isFinite(n)&&n>0)?n:null;
+}
+function rcbGorj(p){RCB.gorj=p;RCB.valor=null;pintaReceber()}
+function rcbPartes(k){RCB.partes=k;RCB.valor=null;pintaReceber()}
+// So atualiza o numero grande — redesenhar a tela toda roubava o foco do campo.
+function rcbDigitou(txt){
+  RCB.valor=rcbNumero(txt);
+  var el=document.getElementById('rcbv');
+  if(el)el.textContent=moedaR(rcbCalc().cobrar);
+}
+function pintaReceber(){
+  var v=rcbCalc();
+  var cmds=(INFO&&INFO.comandas)||[];
+  var chips='<button class="chip'+(RCB.alvo==null?' on':'')+'" onclick="telaReceber(null)">Mesa '+MESA+'</button>'+
+    cmds.map(function(cn){var quem=(INFO.nomes||{})[cn];
+      return '<button class="chip'+(RCB.alvo===cn?' on':'')+'" onclick="telaReceber('+cn+')">'+
+        (quem?esc(quem):'Comanda '+cn)+'</button>'}).join('');
+  var pagos=(RCB.conta.pagamentos||[]);
+  app('<button class="back" onclick="rcbSair()">◂ mesa '+MESA+'</button>'+
+    '<div class="tit" style="margin-top:12px">Receber de</div><div class="chips">'+chips+'</div>'+
+    '<div id="rcbv" style="font-size:34px;font-weight:800;margin:12px 0 2px">'+moedaR(v.cobrar)+'</div>'+
+    '<div class="mut">'+(RCB.valor!=null?'valor digitado — o resto continua na conta'
+      :(RCB.partes>1?'1/'+RCB.partes+' do que falta ('+moedaR(v.resta)+')'
+      :'consumo '+moedaR(v.itens)+' + serviço '+moedaR(v.gorj)+(Number(RCB.conta.pago||0)>0?' − já pago '+moedaR(RCB.conta.pago):'')))+'</div>'+
+    '<div class="tit" style="margin-top:16px">Serviço</div><div class="chips">'+
+      [10,15].map(function(p){return '<button class="chip'+(RCB.gorj===p?' on':'')+'" onclick="rcbGorj('+p+')">'+p+'%</button>'}).join('')+'</div>'+
+    '<div class="tit" style="margin-top:10px">Dividir por</div><div class="chips">'+
+      [1,2,3,4,5,6].map(function(k){return '<button class="chip'+(RCB.partes===k&&RCB.valor==null?' on':'')+'" onclick="rcbPartes('+k+')">'+k+'</button>'}).join('')+'</div>'+
+    '<div class="tit" style="margin-top:10px">Ou digite o valor</div>'+
+    '<input type="text" inputmode="decimal" placeholder="'+v.cobrar.toFixed(2).split('.').join(',')+'" oninput="rcbDigitou(this.value)">'+
+    (pagos.length?'<div class="mut" style="margin-top:8px">já entrou: '+pagos.map(function(g){return esc(g.forma||'pagto')+' '+moedaR(g.valor)}).join(' · ')+'</div>':'')+
+    '<button class="big" style="background:#17803d;margin-top:14px" onclick="rcbGerar()">Gerar o Pix</button>');
+}
+async function rcbGerar(){
+  var n=(RCB.alvo==null)?MESA:RCB.alvo,v=rcbCalc();
+  app('<div class="mut" style="margin-top:16px">gerando o código Pix…</div>');
+  var r=await jpost('/api/pix/cobrar',{mesa:n,gorjeta_pct:RCB.gorj,dividir_por:RCB.partes,
+    valor:(RCB.valor!=null?v.cobrar:undefined)});
+  if(!r.ok){alert(r.erro||'não consegui gerar o Pix');pintaReceber();return}
+  RCB.cobrado=Number(r.valor||0);
+  app('<button class="back" onclick="rcbVoltarDoQr()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:10px">Pix de '+((RCB.alvo==null)?('mesa '+MESA):('comanda '+RCB.alvo))+'</div>'+
+    '<div style="font-size:34px;font-weight:800;margin:6px 0 10px">'+moedaR(r.valor)+'</div>'+
+    (r.imagem?'<div style="background:#fff;border-radius:14px;padding:14px;display:inline-block"><img src="'+r.imagem+'" alt="QR Pix" style="display:block;width:min(70vw,300px)"></div>':'')+
+    '<div class="mut" style="margin:10px 0 4px">O cliente aponta a câmera do app do banco. A confirmação aparece aqui sozinha.</div>'+
+    '<div style="font-size:11px;word-break:break-all;background:rgba(255,255,255,.07);border-radius:10px;padding:10px;margin-top:6px" onclick="rcbSelec(this)">'+esc(r.copia_cola||'')+'</div>'+
+    '<div id="rcbst" style="margin-top:14px;font-weight:700">aguardando o pagamento…</div>');
+  rcbVigiar(r.txid);
+}
+function rcbVoltarDoQr(){rcbPara();telaReceber(RCB.alvo)}
+function rcbSelec(el){try{var rg=document.createRange();rg.selectNodeContents(el);var s=getSelection();s.removeAllRanges();s.addRange(rg)}catch(e){}}
+function rcbVigiar(txid){
+  rcbPara();
+  var tent=0,ocup=false;
+  RCB.tmr=setInterval(async function(){
+    if(++tent>120){rcbPara();var st=document.getElementById('rcbst');
+      if(st)st.textContent='não confirmou em 10 min — volte e gere outro código';return}
+    if(ocup)return;ocup=true;
+    var s;try{s=await jget('/api/pix/conferir?txid='+encodeURIComponent(txid))}
+    catch(e){ocup=false;return}
+    ocup=false;
+    if(s.ok&&s.pago){
+      rcbPara();
+      app('<div style="text-align:center;margin-top:40px">'+
+        '<div style="font-size:52px;color:#17c964">✓</div>'+
+        '<div style="font-size:26px;font-weight:800;margin-top:6px">Recebido '+moedaR(RCB.cobrado)+'</div>'+
+        '<div class="mut" style="margin-top:8px">Registrado na conta como Pix online.</div></div>'+
+        '<button class="big" style="margin-top:24px" onclick="carregarMesa()">Voltar pra mesa</button>');
+    }
+  },5000);
+}
+// A BUSCA agora e' uma tela a parte, aberta pelo botao "Pedir".
+async function telaPedirGarcom(){
+  renderCart();
+  var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
+    infoDe(MESA)+'</button>';
+  (INFO.comandas||[]).forEach(function(c){
+    var quem=(INFO.nomes||{})[c];
+    chips+='<button class="chip'+(ALVO===c?' on':'')+'" onclick="setAlvo('+c+')">'+
+      (quem?esc(quem):'Comanda '+c)+infoDe(c)+'</button>';
+  });
+  app('<button class="back" onclick="carregarMesa()">◂ voltar pra mesa '+MESA+'</button>'+
+    '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     '<div class="tit">Produto</div>'+
     '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
     '<div id="grupos"><div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
     '<div class="cats" id="cats"><span class="mut">carregando…</span></div></div>'+
     '<div class="res" id="res" style="display:none"></div>'+
-    '<div id="msg"></div>'+
-    '<div class="tit" style="margin-top:22px">Conta</div>'+
-    '<div class="acoes">'+
-      '<button class="ac" onclick="verConta()">👁<span>Ver / imprimir</span></button>'+
-      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
-      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
-    '</div>'+
-    '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
-      (ALVO>=${COMANDA_DE}?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
-    '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
+    '<div id="msg"></div>');
   var el=document.getElementById('busca');
-  el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
+  if(el)el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
   await carregarCategorias();
   if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL);
 }
@@ -2932,286 +3777,154 @@ function infoDe(n){
 function setAlvo(n){ALVO=n;carregarMesa()}
 // Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
 // pessoa não quiser dar, segue só com o número, como sempre foi.
+// A COMANDA SO NASCE COM DONO. Aqui a gente apenas GUARDA o numero e vai pedir
+// quem e' — o vinculo so e' criado la no salvar. Assim "voltar" no meio do
+// caminho nao deixa comanda solta na mesa, que foi o que aconteceu em 01/08.
+var NOVACOMANDA=null;
 function addComanda(){
   var c=prompt('Número da comanda (${COMANDA_MIN}–${COMANDA_MAX}):');if(!c)return;
   criarComanda(Number(c));
 }
 async function criarComanda(c){
   if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
-  var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
-  if(!r.ok){alert(r.erro);return}
-  ALVO=c;await carregarMesa();
-  telaCliente(c); // logo em seguida: quem vai usar essa comanda
+  NOVACOMANDA=c;
+  telaCliente(c);         // nada e' criado ainda — quem cria e' salvarCliente()
 }
 var CPFINFO=null,cpfDeb=null,ALVOID=null;
+// Esta tela e' SO de CPF. Existiu um seletor CPF/WhatsApp aqui — saiu em
+// 02/08: o CPF e' a chave, o WhatsApp vem depois, no passo 2. Ter dois modos
+// so criava a duvida de qual usar.
 // Identificar quem está no lugar — serve pra MESA e pra COMANDA.
 // CPF ou WhatsApp: o cliente dá o que quiser.
 function telaCliente(numero){
   ALVOID=Number(numero);CPFINFO=null;
-  app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
+  var nova=(NOVACOMANDA===ALVOID);
+  app('<button class="back" onclick="cancelarIdent()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=${COMANDA_DE}?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
-    '<div class="tit" style="margin-top:14px">CPF</div>'+
-    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
-    '<div id="quem" class="mut" style="margin-top:10px">Digite o CPF que o nome vem sozinho.</div>'+
-    '<div id="passo2"></div>'+
-    '<button class="mini" onclick="modoDoc(\\'tel\\')">Não tem CPF? usar o WhatsApp</button>');
+    (nova?'<div class="mut" style="margin:6px 0 10px">A comanda '+ALVOID+' só abre depois disto — '+
+      'sem dono ela não é criada.</div>':'')+
+
+    '<input type="text" id="ncpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="olhaCpf(this.value,this)">'+
+    '<div id="quem" class="mut" style="margin-top:10px">Digite o CPF — se ele já for conhecido, o nome vem sozinho.</div>'+
+    '<div id="passo2"></div>');
   var el=document.getElementById('ncpf');if(el)el.focus();
 }
-// CPF acha o nome; o WhatsApp vem DEPOIS, no passo 2 — é o que a casa usa
-// pra avisar de reserva, promoção e mesa pronta.
-var MODODOC='cpf';
-function modoDoc(m){
-  MODODOC=m;CPFINFO=null;
-  var i=document.getElementById('ncpf');
-  i.value='';i.placeholder=m==='cpf'?'000.000.000-00':'(79) 90000-0000';i.focus();
-  document.getElementById('quem').innerHTML=m==='cpf'
-    ? 'Digite o CPF que o nome vem sozinho.' : 'Digite o WhatsApp de quem já é cliente da casa.';
-  document.getElementById('passo2').innerHTML='';
-  var b=document.querySelector('.mini');
-  if(b)b.outerHTML='<button class="mini" onclick="modoDoc(\\''+(m==='cpf'?'tel':'cpf')+'\\')">'+
-    (m==='cpf'?'Não tem CPF? usar o WhatsApp':'Voltar a usar o CPF')+'</button>';
+// Sair sem salvar NAO pode deixar comanda pela metade.
+function cancelarIdent(){ NOVACOMANDA=null; carregarMesa(); }
+// Passo 2: o nome (quando nao veio do cadastro) e o WhatsApp.
+// O WhatsApp e' o que a casa usa pra avisar de reserva e mesa pronta — sem
+// pedir aqui, ele nunca entra: esta e' a unica hora em que a pessoa esta na
+// frente do garcom com o celular na mao.
+// ⚠️ AQUI NAO SE DIGITA NOME. Sao dois campos e ponto: CPF e WhatsApp.
+// O nome vem da consulta — cadastro da casa, quem ja atendemos, outras filiais
+// ou SPC. Pedir pro garcom digitar era transferir pra ele um problema nosso, e
+// ainda abria a porta pra grafia errada entrar na base (foi assim que a base
+// ganhou 34 CPFs duplicados com nomes diferentes).
+// Se a consulta nao trouxer nome, a tela DIZ isso e nao deixa salvar — comanda
+// sem dono e' o que a gente esta justamente evitando.
+function passo2(telFim){
+  var p2=document.getElementById('passo2');if(!p2)return;
+  p2.innerHTML='<div class="tit" style="margin-top:16px">WhatsApp <span class="mut" style="font-weight:400">'+
+      (telFim?'(temos o final '+esc(String(telFim).slice(-4))+')':'')+'</span></div>'+
+    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000">'+
+    '<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>'+
+    '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>'+
+    '<div class="mut" style="margin-top:8px">Serve pra avisar de reserva e mesa pronta.</div>';
+  var z=document.getElementById('nzap');if(z)z.focus();
 }
-function olhaCpf(v){
+// Consulta nao trouxe nome: explica e oferece tentar de novo. Sem campo de nome.
+function semNome(msg){
+  var p2=document.getElementById('passo2');if(!p2)return;
+  p2.innerHTML='<div class="mut" style="margin-top:12px">'+esc(msg)+'</div>'+
+    '<button class="big g" style="margin-top:10px" onclick="repetirBusca()">Consultar de novo</button>';
+}
+function repetirBusca(){
+  var i=document.getElementById('ncpf');if(!i)return;
+  var v=i.value;i.value='';olhaCpf('',i);i.value=v;olhaCpf(v,i);
+}
+// ---- CPF: confere na hora, no proprio aparelho ----
+// Digito verificador e' aritmetica pura: sem servidor, sem consulta paga, sem
+// internet. O servidor confere de novo — isto e' conforto, nao seguranca.
+// ⚠️ Esta funcao ja existiu numa SEGUNDA copia deste mesmo bloco, que era
+// codigo morto (declaracao de funcao e' icada e a ULTIMA vence). A copia foi
+// removida em 01/08. Se voltar a aparecer bloco repetido aqui, e' bug.
+function cpfOk(v){
+  var c=String(v||'').replace(/\\D/g,'');
+  if(c.length!==11)return false;
+  if(/^(\\d)\\1{10}$/.test(c))return false;
+  for(var k=0;k<2;k++){
+    var len=9+k, pos=10+k, soma=0;
+    for(var i=0;i<len;i++) soma+=Number(c[i])*(pos-i);
+    var d=(soma*10)%11; if(d===10)d=0;
+    if(d!==Number(c[len]))return false;
+  }
+  return true;
+}
+function mascaraCpf(inp){
+  var c=String(inp.value||'').replace(/\\D/g,'').slice(0,11);
+  var t=c;
+  if(c.length>9) t=c.slice(0,3)+'.'+c.slice(3,6)+'.'+c.slice(6,9)+'-'+c.slice(9);
+  else if(c.length>6) t=c.slice(0,3)+'.'+c.slice(3,6)+'.'+c.slice(6);
+  else if(c.length>3) t=c.slice(0,3)+'.'+c.slice(3);
+  if(inp.value!==t)inp.value=t;
+  inp.style.color = (c.length===11 && !cpfOk(c)) ? '#c0392b' : '';
+  return c;
+}
+function olhaCpf(v,inp){
   CPFINFO=null;clearTimeout(cpfDeb);
-  var d=String(v||'').replace(/\\D/g,'');
-  var q=document.getElementById('quem'),p2=document.getElementById('passo2');
-  if(!q)return;
-  var min=MODODOC==='cpf'?11:10;
-  if(d.length<min){q.style.color='';q.innerHTML=MODODOC==='cpf'?'Digite o CPF que o nome vem sozinho.':'Digite o WhatsApp de quem já é cliente.';if(p2)p2.innerHTML='';return}
+  var d=inp?mascaraCpf(inp):String(v||'').replace(/\\D/g,'');
+  var q=document.getElementById('quem');if(!q)return;
+  var min=11;
+  if(d.length===11&&!cpfOk(d)){
+    q.style.color='#c0392b';q.textContent='CPF não confere — confira os números.';return}
+  if(d.length<min){q.style.color='';q.innerHTML='Digite o CPF — o nome vem da consulta.';return}
   q.style.color='';q.textContent='consultando…';
   cpfDeb=setTimeout(async function(){
-    var r=await jget('/api/venda/identificar?'+(MODODOC==='cpf'?'cpf=':'tel=')+d);
+    var r=await jget('/api/venda/identificar?cpf='+d);
     if(!r.ok){q.style.color='#dc2626';q.textContent=r.erro||'inválido';return}
     q.style.color='';
-    if(r.nome){
-      CPFINFO=r;
-      q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b> — '+esc(r.nome)+
-        ' <span class="mut">('+fonteTexto(r.fonte)+')</span>';
-      passo2(r.telefone_fim);
-    } else if(r.fonte==='erro'){
-      q.innerHTML='<span style="color:#b45309">consulta indisponível — digite o nome</span>';
-      passo2(null,true);
-    } else {
-      q.innerHTML='<span class="mut">Não encontrado. Digite o nome:</span>';
-      passo2(null,true);
-    }
+    // O FLUXO E' UM SO: CPF -> o nome VEM. Da base da casa, de quem ja
+    // atendemos, das outras filiais ou do SPC — o garcom nao digita nome.
+    // Campo de nome so aparece quando NENHUMA fonte respondeu, e ai a tela
+    // diz por que, em vez de simplesmente pedir pra digitar.
+    if(r.nome){CPFINFO=r;
+      q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome)+'</b>'+
+        ' <span class="mut">· '+fonteTexto(r.fonte)+'</span>';
+      passo2(r.telefone_fim);}
+    else if(r.fonte==='erro'){
+      q.innerHTML='<span style="color:#b45309">A consulta não respondeu agora.</span>';
+      semNome('Sem o nome não dá pra abrir. Tente de novo em alguns segundos.'+
+        (r.aviso?' ('+r.aviso+')':''));}
+    else {
+      q.innerHTML='<span style="color:#b45309">Não achei nome para este CPF.</span>';
+      semNome('Confira se o número está certo. Se estiver, a consulta não encontrou esta pessoa.');}
   },500);
 }
 function fonteTexto(f){
   return f==='consumer'?'já é cliente da casa'
     :f==='grupo'?'já veio em outra unidade'
     :f==='ja-atendido'?'já atendido aqui'
-    :f==='spc'||f==='spc-cache'?'consulta externa':'cadastro';
-}
-// Passo 2: o WhatsApp. Se já conhecemos o final do número, mostra pra
-// confirmar em vez de fazer a pessoa ditar tudo de novo.
-function passo2(telFim, pedeNome){
-  var p2=document.getElementById('passo2');if(!p2)return;
-  p2.innerHTML=(pedeNome?'<input type="text" id="nnome" placeholder="nome completo" style="margin-top:10px">':'')+
-    '<div class="tit" style="margin-top:16px">WhatsApp'+(telFim?' <span class="mut">(temos o final '+esc(telFim.slice(-4))+')</span>':'')+'</div>'+
-    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000">'+
-    (pedeNome?'<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>':'')+
-    '<button class="big" onclick="salvarCliente()">Salvar</button>'+
-    '<div class="mut" style="margin-top:8px">O WhatsApp é opcional — serve pra avisar de reserva e mesa pronta.</div>';
-  var z=document.getElementById('nzap');if(z)z.focus();
+    :(f==='spc'||f==='spc-cache')?'consulta externa'
+    :f==='ambiguo'?'CPF repetido na base':'cadastro';
 }
 async function salvarCliente(){
   var doc=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
   var zap=((document.getElementById('nzap')||{}).value||'').replace(/\\D/g,'');
-  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim());
-  if(!nome){alert('Informe o nome');return}
+  var nome=CPFINFO?CPFINFO.nome:'';
+  if(!nome){alert('Digite o CPF primeiro — o nome vem da consulta.');return}
   var body={numero:ALVOID,nome:nome};
-  if(MODODOC==='cpf'&&doc.length===11)body.cpf=doc;
+  if(doc.length===11)body.cpf=doc;
   if(zap.length>=10)body.telefone=zap;
-  else if(MODODOC==='tel'&&doc.length>=10)body.telefone=doc;
   if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
   else if((document.getElementById('ncad')||{}).checked)body.cadastrar=true;
-  var r=await jpost('/api/venda/identificar',body);
-  if(!r.ok){alert(r.erro);return}
-  CPFINFO=null;
-  if(ALVOID>=${COMANDA_DE})ALVO=ALVOID;
-  await carregarMesa();
-}
-function rotuloAlvo(){return (ALVO>=${COMANDA_DE}?'da comanda '+ALVO:'da mesa '+MESA)}
-// conta na tela: imprime em qualquer impressora, ou só mostra pro cliente
-function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
-async function abrirMesa(){
-  var n=Number(document.getElementById('nmesa').value);
-  if(!(n>=1&&n<=${MESA_MAX})){alert('Mesa de 1 a ${MESA_MAX}');return}
-  MESA=n;ALVO=n;await carregarMesa();
-}
-async function carregarMesa(){
-  renderCart(); // a revisão esconde o carrinho fixo; voltando, ele reaparece
-  INFO=await jget('/api/venda/mesa?n='+MESA);
-  var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
-    infoDe(MESA)+'</button>';
-  INFO.comandas.forEach(function(c){
-    var quem=(INFO.nomes||{})[c];
-    chips+='<button class="chip'+(ALVO===c?' on':'')+'" onclick="setAlvo('+c+')">'+
-      (quem?esc(quem):'Comanda '+c)+(quem?' <span class="mut" style="font-weight:400">·'+c+'</span>':'')+
-      infoDe(c)+'</button>';
-  });
-  if(${COMANDA_ATIVA})chips+='<button class="chip add" onclick="addComanda()">+ comanda</button>';
-  var quemMesa=INFO.cliente;
-  app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
-    '<div class="cliente" onclick="telaCliente('+MESA+')">'+
-      (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
-               :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
-      '<span class="seta">›</span></div>'+
-    '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
-    '<div class="tit">Produto</div>'+
-    '<input type="search" id="busca" placeholder="buscar produto… (ex.: file, caipirinha)" value="'+esc(BUSCA)+'" oninput="buscar(this.value)">'+
-    '<div id="grupos"><div class="tit" style="margin-top:12px">ou escolha o grupo</div>'+
-    '<div class="cats" id="cats"><span class="mut">carregando…</span></div></div>'+
-    '<div class="res" id="res" style="display:none"></div>'+
-    '<div id="msg"></div>'+
-    '<div class="tit" style="margin-top:22px">Conta</div>'+
-    '<div class="acoes">'+
-      '<button class="ac" onclick="verConta()">👁<span>Ver / imprimir</span></button>'+
-      '<button class="ac" onclick="acaoConta(\\'imprimir\\')">🧾<span>Imprimir no caixa</span></button>'+
-      '<button class="ac" onclick="acaoConta(\\'fechar\\')">🔒<span>Conta pedida</span></button>'+
-    '</div>'+
-    '<button class="big" style="background:#5b5b66;margin-top:9px" onclick="telaTransferir()">⇄ Transferir '+
-      (ALVO>=${COMANDA_DE}?'comanda '+ALVO+' pra outra mesa':'a mesa '+MESA+' pra outra')+'</button>'+
-    '<div class="mut" style="margin-top:8px">O recebimento é na maquininha. O cliente também paga sozinho por Pix na tela da mesa.</div>');
-  var el=document.getElementById('busca');
-  el.addEventListener('keydown',function(e){if(e.key==='Escape'){this.value='';buscar('')}});
-  await carregarCategorias();
-  if(BUSCA)buscar(BUSCA); else if(CATSEL)verCat(CATSEL);
-}
-async function carregarCategorias(){
-  if(!CATS)CATS=(await jget('/api/venda/categorias')).categorias||[];
-  var el=document.getElementById('cats');if(!el)return;
-  el.innerHTML=CATS.map(function(c){
-    return '<button class="cat'+(CATSEL===c.categoria?' on':'')+'" onclick=\\'verCat('+JSON.stringify(c.categoria).replace(/'/g,'&#39;')+')\\'>'+
-      '<span class="nm">'+esc(c.categoria)+'</span><span class="qt">'+c.disp+'</span></button>';
-  }).join('');
-}
-// Escolheu o grupo: a grade INTEIRA sai da tela e fica só a lista do grupo,
-// com um botão de voltar. Ficar com 36 grupos por cima da lista empurrava os
-// produtos pra fora do alcance do polegar.
-async function verCat(nome){
-  CATSEL=nome;BUSCA='';
-  var b=document.getElementById('busca');if(b)b.value='';
-  var g=document.getElementById('grupos');if(g)g.style.display='none';
-  var d=await jget('/api/venda/categoria?c='+encodeURIComponent(nome));
-  var el=document.getElementById('res');if(!el)return;
-  el.style.display='block';
-  el.innerHTML='<div class="grupohd"><button class="voltag" onclick="fechaCat()">◂ grupos</button>'+
-    '<b>'+esc(nome)+'</b><span class="mut">'+(d.produtos||[]).length+' itens</span></div>'+
-    ((d.produtos&&d.produtos.length)?d.produtos.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>');
-}
-function fechaCat(){
-  CATSEL=null;
-  var r=document.getElementById('res');if(r)r.style.display='none';
-  var g=document.getElementById('grupos');if(g)g.style.display='';
-  carregarCategorias();
-}
-function linhaProduto(p){
-  // GRUPO = produto com mais de uma variante (Dose/Garrafa, ou as frutas do
-  // gin). Mostra uma linha só e pergunta qual ao tocar — o preço muda por
-  // variante, então listar 17 linhas quase iguais só atrapalha.
-  if(p.grupo){
-    var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
-    if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+esc(p.nome)+
-      ' <small>· fora de estoque</small></span><span class="p">'+faixa+'</span></div>';
-    return '<div class="ri" onclick="escolherVariante('+p.produto_codigo+')">'+
-      '<span class="n">'+esc(p.nome)+' <small>· '+p.disponiveis+' opções</small></span>'+
-      '<span class="p">'+faixa+'</span></div>';
+  // COMANDA NOVA: e' AQUI que ela nasce, com o dono junto. Se isto falhar,
+  // nada foi criado — nao sobra comanda solta.
+  if(NOVACOMANDA===ALVOID){
+    var v=await jpost('/api/venda/vincular',{mesa:MESA,comanda:ALVOID,
+      nome:nome,cpf:body.cpf||null,telefone:body.telefone||null,contato_fb:body.contato_fb||null});
+    if(!v.ok){alert(v.erro);return}
+    NOVACOMANDA=null;
   }
-  var nm=esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'');
-  if(p.sem_estoque)return '<div class="ri fora"><span class="n">'+nm+' <small>· fora de estoque</small></span>'+
-    '<span class="p">'+brl(p.preco)+'</span></div>';
-  return '<div class="ri" onclick=\\'addItem('+JSON.stringify(p).replace(/'/g,'&#39;')+')\\'>'+
-    '<span class="n">'+nm+'</span><span class="p">'+brl(p.preco)+'</span></div>';
-}
-async function escolherVariante(prod){
-  var d=await jget('/api/venda/variantes?p='+prod);
-  if(!d.ok||!d.produtos.length){alert('sem opções disponíveis');return}
-  var el=document.getElementById('res');if(!el)return;
-  el.style.display='block';
-  el.innerHTML='<div class="rh">'+esc(d.nome)+' — escolha</div>'+
-    d.produtos.map(function(v){
-      var rot=esc(v.tamanho||'padrão');
-      if(v.sem_estoque)return '<div class="ri fora"><span class="n">'+rot+' <small>· fora</small></span>'+
-        '<span class="p">'+brl(v.preco)+'</span></div>';
-      return '<div class="ri" onclick=\\'addItem('+JSON.stringify(v).replace(/'/g,'&#39;')+')\\'>'+
-        '<span class="n">'+rot+'</span><span class="p">'+brl(v.preco)+'</span></div>';
-    }).join('');
-}
-function mostrarProdutos(ps){
-  var el=document.getElementById('res');if(!el)return;
-  el.style.display='block';
-  el.innerHTML=(ps&&ps.length)?ps.map(linhaProduto).join(''):'<div class="ri"><span class="n mut">nada encontrado</span></div>';
-}
-function infoDe(n){
-  var a=(INFO.abertos||[]).find(function(x){return Number(x.numero)===n});
-  return a?'<small>'+a.itens+' itens · '+brl(a.valor_total)+'</small>':'<small>vazia</small>';
-}
-function setAlvo(n){ALVO=n;carregarMesa()}
-// Abrir comanda em 2 passos: número, depois QUEM é. O CPF é opcional — se a
-// pessoa não quiser dar, segue só com o número, como sempre foi.
-function addComanda(){
-  var c=prompt('Número da comanda (${COMANDA_MIN}–${COMANDA_MAX}):');if(!c)return;
-  criarComanda(Number(c));
-}
-async function criarComanda(c){
-  if(!(c>=${COMANDA_MIN}&&c<=${COMANDA_MAX})){alert('Comanda de ${COMANDA_MIN} a ${COMANDA_MAX}');return}
-  var r=await jpost('/api/venda/vincular',{mesa:MESA,comanda:c});
-  if(!r.ok){alert(r.erro);return}
-  ALVO=c;await carregarMesa();
-  telaCliente(c); // logo em seguida: quem vai usar essa comanda
-}
-var CPFINFO=null,cpfDeb=null,ALVOID=null;
-// Identificar quem está no lugar — serve pra MESA e pra COMANDA.
-// CPF ou WhatsApp: o cliente dá o que quiser.
-function telaCliente(numero){
-  ALVOID=Number(numero);CPFINFO=null;
-  app('<button class="back" onclick="carregarMesa()">◂ voltar</button>'+
-    '<div class="tit" style="margin-top:12px">Quem está '+(ALVOID>=${COMANDA_DE}?'na comanda '+ALVOID:'na mesa '+ALVOID)+'</div>'+
-    '<div class="segs"><button class="seg on" id="sgc" onclick="modoDoc(\\'cpf\\')">CPF</button>'+
-    '<button class="seg" id="sgt" onclick="modoDoc(\\'tel\\')">WhatsApp</button></div>'+
-    '<input type="text" id="ncpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpf(this.value)">'+
-    '<div id="quem" class="mut" style="margin-top:10px">O nome aparece na comanda impressa e na tela da cozinha.</div>'+
-    '<button class="big" onclick="salvarCliente()">Salvar</button>');
-  var el=document.getElementById('ncpf');if(el)el.focus();
-}
-function modoDoc(m){
-  MODODOC=m;CPFINFO=null;
-  document.getElementById('sgc').className='seg'+(m==='cpf'?' on':'');
-  document.getElementById('sgt').className='seg'+(m==='tel'?' on':'');
-  var i=document.getElementById('ncpf');
-  i.value='';i.placeholder=m==='cpf'?'000.000.000-00':'(79) 90000-0000';
-  var q=document.getElementById('quem');
-  q.style.color='';q.innerHTML='O nome aparece na comanda impressa e na tela da cozinha.';
-}
-function olhaCpf(v){
-  CPFINFO=null;clearTimeout(cpfDeb);
-  var d=String(v||'').replace(/\\D/g,'');
-  var q=document.getElementById('quem');if(!q)return;
-  var min=MODODOC==='cpf'?11:10;
-  if(d.length<min){q.style.color='';q.innerHTML='O nome aparece na comanda impressa e na tela da cozinha.';return}
-  q.style.color='';q.textContent='consultando…';
-  cpfDeb=setTimeout(async function(){
-    var r=await jget('/api/venda/identificar?'+(MODODOC==='cpf'?'cpf=':'tel=')+d);
-    if(!r.ok){q.style.color='#dc2626';q.textContent=r.erro||'inválido';return}
-    q.style.color='';
-    if(r.nome){CPFINFO=r;q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b> — '+esc(r.nome)+
-      ' <span class="mut">('+(r.fonte==='consumer'?'já é cliente da casa':'consulta externa')+')</span>';}
-    else if(r.fonte==='erro'){q.innerHTML='<span style="color:#b45309">consulta indisponível — dá pra digitar o nome</span>'+campoNome()}
-    else {q.innerHTML='<span class="mut">Não encontrado no cadastro. Digite o nome pra cadastrar:</span>'+campoNome()}
-  },500);
-}
-function campoNome(){return '<input type="text" id="nnome" placeholder="nome completo da pessoa" style="margin-top:8px">'+
-  '<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar no sistema pra próxima visita</label>'}
-async function salvarCliente(){
-  var doc=((document.getElementById('ncpf')||{}).value||'').replace(/\\D/g,'');
-  var nome=CPFINFO?CPFINFO.nome:(((document.getElementById('nnome')||{}).value||'').trim());
-  if(!nome){alert('Informe o nome (ou um CPF/WhatsApp já cadastrado)');return}
-  var body={numero:ALVOID,nome:nome};
-  if(MODODOC==='cpf'&&doc.length===11)body.cpf=doc; else if(doc.length>=10)body.telefone=doc;
-  if(CPFINFO&&CPFINFO.contato_fb)body.contato_fb=CPFINFO.contato_fb;
-  else if((document.getElementById('ncad')||{}).checked)body.cadastrar=true;
   var r=await jpost('/api/venda/identificar',body);
   if(!r.ok){alert(r.erro);return}
   CPFINFO=null;
@@ -3368,8 +4081,92 @@ async function atender(id,mesa){
   await puxarChamados();
   if(mesa){MESA=Number(mesa);ALVO=Number(mesa);carregarMesa()}
 }
-puxarChamados();setInterval(puxarChamados,15000);
-telaMesa();
+// ---- LOGIN DO GARÇOM ----
+// A comanda mobile não abre direto: só quem tem AcessarComandaMobile no
+// Consumer entra, com um PIN próprio (a senha do Consumer é cifrada e não deu
+// pra usar). O token fica no localStorage e sobrevive ao recarregar.
+var GNOME=null, chamTimer=null, LOGIN_TMP=null;
+async function iniciarVenda(){
+  var s=null; if(GTOK){ try{s=await jget('/api/garcom/sessao')}catch(e){} }
+  if(s&&s.ok){ entrarNoApp(s.nome||s.login); } else { GTOK=null; telaLogin(); }
+}
+function entrarNoApp(nome){
+  GNOME=nome;
+  var w=document.getElementById('gwho');
+  if(w)w.innerHTML=esc(nome||'')+' · <a href="#" onclick="sairGarcom();return false" style="color:var(--gold2)">sair</a>';
+  if(!chamTimer){ puxarChamados(); chamTimer=setInterval(puxarChamados,15000); }
+  telaMesa();
+}
+function sairGarcom(){
+  try{localStorage.removeItem('garcom_tok')}catch(e){} GTOK=null;GNOME=null;
+  if(chamTimer){clearInterval(chamTimer);chamTimer=null}
+  var c=document.getElementById('chamados');if(c)c.innerHTML='';
+  var w=document.getElementById('gwho');if(w)w.innerHTML='';
+  telaLogin();
+}
+function telaLogin(){
+  var c=document.getElementById('chamados');if(c)c.innerHTML='';
+  app('<div class="tit" style="margin-top:8px">Entrar na comanda</div>'+
+    '<input type="text" id="glogin" autocapitalize="none" autocorrect="off" autocomplete="username" placeholder="seu login do Consumer" value="'+(LOGIN_TMP?esc(LOGIN_TMP):'')+'">'+
+    '<div class="tit" style="margin-top:14px">PIN</div>'+
+    '<input type="password" id="gpin" inputmode="numeric" autocomplete="off" placeholder="4 a 8 números">'+
+    '<div id="gpin2wrap"></div>'+
+    '<div id="gmsg" class="mut" style="margin-top:9px;min-height:18px"></div>'+
+    '<button class="big" onclick="fazerLogin()">Entrar</button>'+
+    '<div class="mut" style="margin-top:12px">Só quem tem acesso à <b>Comanda Mobile</b> no Consumer. Na primeira vez, você cria seu PIN.</div>');
+  var gl=document.getElementById('glogin');
+  var gp=document.getElementById('gpin');
+  if(gl&&!LOGIN_TMP)gl.focus(); else if(gp)gp.focus();
+  if(gp)gp.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin()});
+  if(gl)gl.addEventListener('keydown',function(e){if(e.key==='Enter'){var x=document.getElementById('gpin');if(x)x.focus()}});
+}
+async function fazerLogin(){
+  var login=((document.getElementById('glogin')||{}).value||'').trim().toLowerCase();
+  var pin=((document.getElementById('gpin')||{}).value||'').replace(/\\D/g,'');
+  var p2el=document.getElementById('gpin2');
+  var pin2=p2el?((p2el.value||'').replace(/\\D/g,'')):null;
+  var msg=document.getElementById('gmsg');
+  function erro(t){if(msg){msg.style.color='#dc2626';msg.textContent=t}}
+  if(!login){erro('Digite seu login.');return}
+  if(pin.length<4){erro('O PIN tem de 4 a 8 números.');return}
+  if(msg){msg.style.color='';msg.textContent='entrando…'}
+  var body={login:login,pin:pin}; if(pin2!=null)body.pin2=pin2;
+  var r=await jpost('/api/garcom/entrar',body);
+  if(r.ok&&r.token){
+    try{localStorage.setItem('garcom_tok',r.token)}catch(e){}
+    GTOK=r.token;LOGIN_TMP=null; entrarNoApp(r.nome||login); return;
+  }
+  if(r.ok&&r.primeira_vez){
+    LOGIN_TMP=login;
+    var w=document.getElementById('gpin2wrap');
+    if(w&&!document.getElementById('gpin2'))
+      w.innerHTML='<div class="tit" style="margin-top:14px">Repita o PIN</div>'+
+        '<input type="password" id="gpin2" inputmode="numeric" autocomplete="off" placeholder="o mesmo PIN, pra confirmar">';
+    if(msg){msg.style.color='#9a6b06';msg.textContent='Primeira vez, '+esc(r.nome||login)+' — escolha um PIN e repita pra confirmar.'}
+    var p2=document.getElementById('gpin2');
+    if(p2){p2.focus();p2.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin()})}
+    return;
+  }
+  erro(r.erro||'não consegui entrar');
+}
+iniciarVenda();
+
+// ---- VERSAO NOVA NO SERVIDOR ----
+// ⚠️ SEM ISTO A TELA FICA CONGELADA NO CODIGO VELHO. Estas paginas sao uma so:
+// navegar nao recarrega nada, entao o aparelho segue rodando o JavaScript de
+// quando abriu — mesmo com o servidor ja atualizado. Em 02/08 isso fez varias
+// correcoes parecerem que "nao funcionaram": o servidor estava novo e o celular
+// do garcom, velho.
+// Recarrega sozinho quando a versao muda, mas so com a tela parada e sem
+// pedido montado — ninguem perde o que estava digitando.
+var VERSAO_MINHA='${VERSAO}';
+setInterval(async function(){
+  var v;try{v=await (await fetch('/api/versao',{cache:'no-store'})).json()}catch(e){return}
+  if(!v||!v.versao||v.versao===VERSAO_MINHA)return;
+  if(typeof CART!=='undefined'&&CART&&CART.length)return;
+  if(document.visibilityState!=='visible')return;
+  location.reload();
+},60000);
 </script></body></html>`;
 
 // ---- HISTÓRICO DE CONSUMO do cliente ----
@@ -3464,6 +4261,71 @@ function ipDaLoja() {
 }
 function qrSvg(texto, px = 150) {
   return new QRCode({ content: texto, padding: 0, width: px, height: px, ecl: 'M', join: true }).svg();
+}
+
+// ---- QR como PNG DE VERDADE ----
+// Por que existir, se ja temos SVG: o celular nao compartilha SVG. Segurar o
+// dedo numa <img> de PNG abre "Compartilhar imagem" no Android e "Adicionar as
+// Fotos" no iPhone — e' assim que o passe de saida vai pro WhatsApp de quem
+// esta indo embora. (navigator.share nao serve: a tela do cliente e' HTTP e
+// ele so existe em contexto seguro. E o wa.me nao anexa imagem: so leva texto.)
+// Escrito a mao com zlib, sem dependencia nova. Cinza de 1 bit: o QR de mesa
+// sai com ~400 bytes, contra 19 KB do SVG.
+const CRC_TAB = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TAB[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function pngChunk(tipo, dados) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(dados.length);
+  const corpo = Buffer.concat([Buffer.from(tipo, 'ascii'), dados]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(corpo));
+  return Buffer.concat([len, corpo, crc]);
+}
+/** PNG do QR. `px` e' o tamanho ALVO — o real vira multiplo inteiro do modulo,
+ *  senao o QR fica com quadradinhos de tamanhos diferentes e leitor ruim erra. */
+function qrPng(texto, px = 560) {
+  const q = new QRCode({ content: texto, padding: 0, width: px, height: px, ecl: 'M', join: true });
+  const m = q.qrcode.modules;            // ⚠️ indexado [x][y] — x e' COLUNA, y e' LINHA
+  const n = m.length;
+  const quiet = 4;                        // zona clara exigida pela norma
+  const total = n + quiet * 2;
+  const escala = Math.max(1, Math.floor(px / total));
+  const lado = total * escala;
+  const bpl = Math.ceil(lado / 8);        // bytes por linha (1 bit por pixel)
+  const raw = Buffer.alloc((bpl + 1) * lado);
+  for (let y = 0; y < lado; y++) {
+    const off = y * (bpl + 1);
+    raw[off] = 0;                         // filtro "none"
+    raw.fill(0xFF, off + 1, off + 1 + bpl); // fundo branco (bit 1 = claro)
+    const my = Math.floor(y / escala) - quiet;
+    if (my < 0 || my >= n) continue;
+    for (let x = 0; x < lado; x++) {
+      const mx = Math.floor(x / escala) - quiet;
+      if (mx < 0 || mx >= n) continue;
+      if (m[mx][my]) raw[off + 1 + (x >> 3)] &= ~(0x80 >> (x & 7)); // modulo preto
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(lado, 0); ihdr.writeUInt32BE(lado, 4);
+  ihdr[8] = 1;   // bit depth 1
+  ihdr[9] = 0;   // grayscale
+  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 async function apiQrcodes(de, ate) {
   const base = ipDaLoja();
@@ -3685,6 +4547,26 @@ async function apiPixCobrar(body) {
 // A catraca lê o mesmo QR a cada passagem e libera UMA por vez, até zerar.
 // Crianças de até 10 anos não entram na conta — passam com o responsável.
 const SAIDA_VALIDADE_MIN = Number(process.env.SAIDA_VALIDADE_MIN || 90);
+/** Placa em formato unico: so letra e numero, maiuscula. A cancela le
+ *  "ABC-1234", "abc1d23" e o cliente digita de qualquer jeito. */
+function normPlaca(x) { return String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 7); }
+function placaValida(x) { return /^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(normPlaca(x)); }
+
+/** A conta da mesa esta ZERADA?
+ *  Mede pelo CONSUMO, sem a taxa de servico: a taxa e opcional por lei, e
+ *  prender alguem na catraca por causa de gorjeta e' pior pra casa do que
+ *  liberar. Quem paga pelo app sempre paga 10% ou 15%, entao na pratica so
+ *  cai aqui quem quitou o consumo no caixa. */
+async function contaZerada(mesa) {
+  const c = await apiContaTexto(mesa);
+  if (!c.ok) return { zerada: false, erro: c.erro, falta: null };
+  const consumo = +(Number(c.total || 0)
+    + (c.comandas || []).reduce((s, x) => s + Number(x.subtotal || 0), 0)).toFixed(2);
+  const pago = Number(c.pago_geral || 0);
+  const falta = Math.max(0, +(consumo - pago).toFixed(2));
+  return { zerada: falta <= 0.009, falta, consumo, pago, falta_com_servico: Number(c.falta_geral || 0) };
+}
+
 async function apiSaidaGerar(body) {
   const mesa = Number(body.mesa);
   const adultos = Math.max(0, Math.min(50, Number(body.adultos) || 0));
@@ -3692,12 +4574,52 @@ async function apiSaidaGerar(body) {
   const pessoas = adultos + criancas;
   if (!(pessoas >= 1)) return { ok: false, erro: 'informe pelo menos 1 pessoa' };
   if (!(mesa >= 1 && mesa <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
+
+  // ⚠️ O PORTAO. So sai quem nao deve nada. Antes de 01/08 bastava confirmar
+  // UM pagamento — quem pagasse R$ 37 de uma conta de R$ 186 ganhava passe e
+  // saia pela catraca. A tela tambem trava, mas a trava que vale e' esta:
+  // a tela e' do cliente, o servidor e' da casa.
+  const z = await contaZerada(mesa);
+  if (!z.zerada) {
+    return { ok: false, falta: z.falta,
+      erro: z.erro || ('ainda faltam R$ ' + Number(z.falta || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })
+        + ' nesta conta. O passe de saída sai quando a conta zerar.') };
+  }
+
+  const placas = [...new Set((Array.isArray(body.placas) ? body.placas : [])
+    .map(normPlaca).filter(placaValida))];
   const token = 'S' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1e8).toString(36).toUpperCase();
-  await sql`INSERT INTO saida_qr (token, mesa, pessoas, adultos, criancas, origem, expira_em)
-    VALUES (${token}, ${mesa}, ${pessoas}, ${adultos}, ${criancas}, ${String(body.origem || '').slice(0, 20) || null},
+  await sql`INSERT INTO saida_qr (token, mesa, pessoas, adultos, criancas, carros, origem, expira_em)
+    VALUES (${token}, ${mesa}, ${pessoas}, ${adultos}, ${criancas}, ${placas.length},
+            ${String(body.origem || '').slice(0, 20) || null},
             now() + (${SAIDA_VALIDADE_MIN} || ' minutes')::interval)`;
-  return { ok: true, token, pessoas, adultos, criancas, validade_min: SAIDA_VALIDADE_MIN,
+  for (const pl of placas) {
+    await sql`INSERT INTO saida_veiculo (token, placa, mesa) VALUES (${token}, ${pl}, ${mesa})
+      ON CONFLICT (token, placa) DO NOTHING`;
+  }
+  return { ok: true, token, pessoas, adultos, criancas, placas, validade_min: SAIDA_VALIDADE_MIN,
     imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(token, 250)).toString('base64') };
+}
+
+/** A CANCELA do patio chama isto quando o LPR le uma placa.
+ *  Mesma trava do UPDATE condicional da catraca: duas leituras do mesmo carro
+ *  nao liberam duas vezes. */
+async function apiSaidaCancela(placa) {
+  const pl = normPlaca(placa);
+  if (!pl) return { ok: false, libera: false, motivo: 'sem placa' };
+  const r = await sql`UPDATE saida_veiculo v SET liberada_em = now()
+    FROM saida_qr q
+    WHERE v.token = q.token AND v.placa = ${pl} AND v.liberada_em IS NULL AND q.expira_em > now()
+    RETURNING v.placa, v.mesa, v.token`;
+  if (r.length) return { ok: true, libera: true, placa: pl, mesa: r[0].mesa };
+  // Por que nao liberou? A guarita precisa saber se e' "conta aberta" ou
+  // "ja saiu" — sao conversas diferentes com o cliente.
+  const j = (await sql`SELECT v.liberada_em, v.mesa, q.expira_em FROM saida_veiculo v
+    JOIN saida_qr q ON q.token = v.token WHERE v.placa = ${pl}
+    ORDER BY v.criado_em DESC LIMIT 1`)[0];
+  if (!j) return { ok: true, libera: false, placa: pl, motivo: 'sem passe de saída — a conta pode estar aberta' };
+  if (j.liberada_em) return { ok: true, libera: false, placa: pl, mesa: j.mesa, motivo: 'este carro já saiu' };
+  return { ok: true, libera: false, placa: pl, mesa: j.mesa, motivo: 'passe vencido' };
 }
 /** A CATRACA chama isto a cada leitura. Cada chamada consome UMA passagem. */
 async function apiSaidaPassar(token) {
@@ -3726,9 +4648,68 @@ async function apiSaidaAtivos() {
 async function apiSaidaConsultar(token) {
   const q = (await sql`SELECT * FROM saida_qr WHERE token=${String(token || '').toUpperCase()}`)[0];
   if (!q) return { ok: false, erro: 'não encontrado' };
+  // ⚠️ VENCIMENTO. Sem esta linha um passe vencido respondia ok:true e a tela
+  // do convidado mostrava o QR como se valesse — a pessoa so descobria na
+  // catraca, com a fila atras. apiSaidaPassar ja recusava; quem mentia era a
+  // consulta.
+  if (q.expira_em && new Date(q.expira_em).getTime() < Date.now()) {
+    return { ok: false, erro: 'passe vencido', vencido: true, mesa: q.mesa };
+  }
+  const veic = await sql`SELECT placa, liberada_em FROM saida_veiculo WHERE token=${q.token} ORDER BY id`;
   return { ok: true, mesa: q.mesa, pessoas: Number(q.pessoas), usados: Number(q.usados),
-    restantes: Number(q.pessoas) - Number(q.usados), expira_em: q.expira_em };
+    restantes: Number(q.pessoas) - Number(q.usados), expira_em: q.expira_em,
+    veiculos: veic.map((v) => ({ placa: v.placa, saiu: !!v.liberada_em })) };
 }
+
+// ---- /passe?t=CODIGO — o passe de saida compartilhado ----
+// Quem pagou a conta manda este link no zap pra quem vai embora antes. A pessoa
+// abre, mostra o QR na catraca e passa. E' o MESMO codigo da mesa: cada leitura
+// consome uma passagem, entao mandar pra tres pessoas nao cria tres passes.
+const PASSE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Passe de saida — ${LOJA_NOME}</title><style>
+*{box-sizing:border-box}body{margin:0;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:#f6f6f8;color:#1b1b1f;padding:22px 16px;text-align:center}
+.casa{color:#8a8a94;font-size:13px;letter-spacing:.12em;text-transform:uppercase}
+h1{font-size:25px;margin:8px 0 4px}
+.qr{width:min(74vw,300px);height:auto;background:#fff;border-radius:16px;padding:14px;margin:16px auto;display:block;
+  box-shadow:0 2px 14px rgba(0,0,0,.09)}
+.codigo{font-family:ui-monospace,Menlo,monospace;font-size:19px;letter-spacing:.06em;color:#5a5a66}
+.cx{background:#fff;border-radius:14px;padding:15px;margin:16px auto;max-width:420px;box-shadow:0 1px 8px rgba(0,0,0,.06)}
+.n{font-size:31px;font-weight:800;color:#c86a20}
+.mut{color:#6b6b76;font-size:14px}
+.mau{background:#fdecea;color:#a3271b;border-radius:14px;padding:18px;max-width:420px;margin:16px auto;font-weight:600}
+</style></head><body>
+<div class="casa">${LOJA_NOME}</div>
+<h1>Passe de saida</h1>
+<div id="app" class="mut">carregando…</div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+var T=new URLSearchParams(location.search).get('t')||'';
+async function pinta(){
+  var d;try{d=await (await fetch('/api/saida/consultar?t='+encodeURIComponent(T),{cache:'no-store'})).json()}
+  catch(e){return}
+  var el=document.getElementById('app');
+  if(!d.ok){el.innerHTML='<div class="mau">Este passe nao vale mais.<br><span style="font-weight:400">'+
+    'Peca um novo a quem pagou a conta.</span></div>';clearInterval(TMR);return}
+  if(d.restantes<=0){el.innerHTML='<div class="mau">Todas as passagens deste codigo ja foram usadas.</div>';
+    clearInterval(TMR);return}
+  el.innerHTML='<img class="qr" src="/api/saida/qr?t='+encodeURIComponent(T)+'" alt="QR de saida">'+
+    '<div class="codigo">'+esc(T)+'</div>'+
+    '<div class="cx"><div class="n">'+d.restantes+'</div>'+
+    '<div class="mut">'+(d.restantes===1?'passagem restante':'passagens restantes')+
+    ' &middot; mesa '+esc(d.mesa)+'</div></div>'+
+    ((d.veiculos&&d.veiculos.length)
+      ? '<div class="cx"><div class="mut">Carros</div>'+d.veiculos.map(function(v){
+          return '<div style="font-weight:700;font-size:18px;letter-spacing:.06em;margin-top:3px'+
+            (v.saiu?';color:#9a9aa4;text-decoration:line-through':'')+'">'+esc(v.placa)+
+            (v.saiu?' <span style="font-size:12px;letter-spacing:0">ja saiu</span>':'')+'</div>';
+        }).join('')+'</div>'
+      : '')+
+    '<div class="mut">Encoste o celular no leitor da catraca. Uma pessoa por vez.</div>';
+}
+var TMR=setInterval(pinta,4000);pinta();
+</script></body></html>`;
 
 // ---- CARTÃO: o cliente paga no concilia (HTTPS), não aqui ----
 // Este servidor roda em HTTP na rede da loja. Número de cartão digitado aqui
@@ -3822,11 +4803,27 @@ async function apiPixConferir(txid) {
     if (r.data?.status !== 'CONCLUIDA') return { ok: true, pago: false, status: r.data?.status || '?' };
     pago = true; e2e = r.data?.pix?.[0]?.endToEndId || null;
   }
-  await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e} WHERE txid=${String(txid)}`;
+  // ⚠️ DINHEIRO. Quem dá a baixa é ESTE update, não o SELECT lá em cima.
+  // O `pago_em IS NULL` faz do próprio UPDATE a trava: se duas conferidas
+  // chegarem juntas — e chegam, o polling é de 5s e a consulta na Cielo passa
+  // disso — só uma volta com linha e só ela registra o pagamento. Em 01/08 um
+  // Pix de R$ 37,28 entrou DUAS VEZES na conta do cliente por causa disso.
+  // Nunca separe a checagem da gravação aqui.
+  const claim = await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e}
+    WHERE txid=${String(txid)} AND pago_em IS NULL RETURNING txid`;
+  if (!claim.length) return { ok: true, pago: true, ja_registrado: true };
   try {
     const ped = await fbAcharPedido(Number(cob.mesa));
-    if (ped) await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
-      autorizacao: e2e, observacao: 'Pix do cliente (Inter) ' + txid });
+    const marca = 'Pix do cliente ' + txid;
+    if (ped) {
+      // Segunda trava, do lado do Consumer: se por qualquer caminho já existe
+      // um pagamento com este txid, não grava outro.
+      const dup = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS
+        WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(String(txid))}'`);
+      if (dup.ok && dup.rows.length) console.error('[pix] ' + txid + ' já estava no Consumer — não dupliquei');
+      else await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
+        autorizacao: e2e, observacao: marca });
+    }
   } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
   return { ok: true, pago: true, e2e };
 }
@@ -4557,9 +5554,16 @@ body{padding-bottom:120px}
 .jcab:first-child{margin-top:0}
 .ja{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);
   border-left:4px solid #d2d2da;border-radius:11px;padding:12px 13px;margin-top:8px;font-size:15px}
-.ja.preparando{border-left-color:#e0a413}
-.ja.pronto{border-left-color:#15a34a}
-.ja.entregue{border-left-color:#c8c8d0;opacity:.7}
+/* Cor conta a historia sem ler: VERMELHO = a cozinha ainda esta fazendo,
+   AMBAR = pronto, saindo, VERDE = ja esta na sua mesa. O estado antigo
+   deixava o entregue cinza e apagado, entao o que ja chegou parecia o que
+   menos importava — e' o contrario: e' o que tranquiliza. */
+.ja.preparando{border-left-color:#d33a2c;background:#fffafa}
+.ja.preparando .st{color:#c0392b;font-weight:700}
+.ja.pronto{border-left-color:#e0a413}
+.ja.pronto .st{color:#a97608;font-weight:700}
+.ja.entregue{border-left-color:#17803d;background:#f6fcf8}
+.ja.entregue .st{color:#17803d;font-weight:700}
 .ja .q{font-weight:700;color:var(--gold2);min-width:26px}
 .ja .n{flex:1}
 .ja .st{font-size:11.5px;color:var(--mut);white-space:nowrap;align-self:center}
@@ -4575,7 +5579,27 @@ body{padding-bottom:120px}
 .segs.alvos{gap:8px;margin:10px 0 2px}
 .segs.alvos .seg{flex:1 1 46%;min-width:130px;text-align:left;padding:11px 12px;line-height:1.2;color:var(--ink)}
 .segs.alvos .seg small{display:block;color:var(--mut);font-size:12px;font-weight:400;margin-top:3px}
+.avisoc{background:#fdecea;border:1.5px solid #f1b0a8;color:#a3271b;border-radius:11px;
+  padding:11px 13px;margin-top:10px;font-weight:700;font-size:14px}
 .segs.alvos .seg.on small{color:var(--gold2)}
+/* campo de valor livre: grande, teclado numérico, difícil de não achar */
+.vlivre{display:flex;align-items:center;gap:9px;background:#fff;border:1.5px solid var(--line);
+  border-radius:12px;padding:4px 12px;margin-top:2px}
+.vlivre span{color:var(--mut);font-size:17px;font-weight:700}
+.vlivre input{flex:1;border:0;outline:none;font:inherit;font-size:24px;font-weight:700;
+  padding:10px 0;color:var(--gold2);background:transparent;min-width:0}
+.b.op{background:#fff;color:var(--ink);border:1.5px solid var(--line);text-align:left;font-weight:600}
+.b.op:active{background:#f4f4f7}
+.itens{display:flex;flex-direction:column;gap:8px}
+.it{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;
+  background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;
+  font:inherit;text-align:left;cursor:pointer;color:var(--ink)}
+.it b{font-size:15.5px}
+.it span{color:var(--mut);font-size:12.5px}
+.it.on{border-color:#c0392b;background:#fdf3f1;box-shadow:0 0 0 3px rgba(192,57,43,.10)}
+.it.on b{color:#a3271b}
+.vlivre .vx{background:#f0f0f4;border:1px solid var(--line);color:var(--mut);border-radius:8px;
+  width:32px;height:32px;font:inherit;cursor:pointer;flex:none}
 /* foto do produto: miniatura na lista e a versão grande ao tocar */
 .pr .pfoto{width:52px;height:52px;object-fit:cover;border-radius:9px;flex:none;background:#eee;cursor:zoom-in}
 .pr .pn small.pdesc{display:block;color:var(--mut);font-size:11.5px;line-height:1.35;margin-top:2px;
@@ -4587,6 +5611,13 @@ body{padding-bottom:120px}
 #lightbox .lbt{color:#fff;font-size:19px;font-weight:700;margin-top:14px}
 #lightbox .lbd{color:#d9d9de;font-size:14px;line-height:1.5;margin-top:8px}
 #lightbox .lbf{color:#8a8a95;font-size:12px;margin-top:16px}
+/* botao redondo de fechar: o texto "toque pra fechar" sozinho nao parecia
+   clicavel e as pessoas ficavam presas na foto */
+#lightbox .lbx{position:fixed;top:14px;right:14px;width:44px;height:44px;border-radius:50%;
+  border:1.5px solid rgba(255,255,255,.35);background:rgba(0,0,0,.55);color:#fff;
+  font-size:21px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent}
+#lightbox .lbx:active{background:rgba(255,255,255,.2)}
 
 </style></head><body><div class="wrap" id="app"></div>
 <script>
@@ -4608,6 +5639,14 @@ function limpaSes(){ try{sessionStorage.removeItem('prainha_mesa')}catch(e){} SE
 // errado, e ja esteve: 4h de diferenca fazia toda sessao nascer expirada.
 if(MESA){ gravaSes({mesa:Number(MESA),comanda:null,desde:null}); }
 else { var g=lerSes(); if(g&&g.mesa){ MESA=String(g.mesa); SES=g; } }
+// ⚠️ A MESA MORA NA URL. Ela vivia so no sessionStorage, que e' POR ABA e some
+// quando o navegador descarta a aba. Fechando e reabrindo a tela o aparelho
+// podia restaurar OUTRA aba, de um escaneamento antigo, e o cliente que estava
+// na mesa 15 aparecia na mesa 1 — pedindo na conta de outra pessoa. Fixando o
+// numero na URL, o que o celular guarda no historico ja carrega a mesa certa,
+// e da pra CONFERIR o numero na barra de endereco quando houver duvida.
+if(MESA){ try{ if(new URLSearchParams(location.search).get('n')!==String(MESA))
+  history.replaceState({app:1},'','/mesa?n='+encodeURIComponent(MESA)); }catch(e){} }
 
 /** Confere com o servidor antes de qualquer acao que valha dinheiro.
  *  Guarda o "ok" por poucos segundos: inicio() e telaPedir() chamam em
@@ -4619,7 +5658,16 @@ async function sessaoOk(){
   var n=MESA?Number(MESA):null;
   if(!n)return true; // sem mesa ainda: a propria tela pede o numero
   if(Date.now()-_sesOk<6000)return true;
-  var q='/api/mesa/sessao?n='+n+(SES&&SES.comanda!=null?'&c='+SES.comanda+(SES.desde!=null?'&t='+SES.desde:''):'');
+  // ⚠️ NADA DE CRASE NESTE COMENTARIO: a tela inteira e' um template literal,
+  // e uma crase aqui fecha a string e derruba o arquivo (foi o que aconteceu
+  // ao escrever este proprio comentario, em 01/08).
+  // O t (quando a sessao nasceu) vai SEMPRE, mesmo sem comanda. Antes ele so
+  // era enviado junto com a comanda — entao o celular que pegou a mesa vazia
+  // nao mandava nada e o servidor nao tinha como saber que a mesa foi fechada
+  // depois. Era assim que o aparelho do cliente anterior continuava colado.
+  var q='/api/mesa/sessao?n='+n+
+    (SES&&SES.comanda!=null?'&c='+SES.comanda:'')+
+    (SES&&SES.desde!=null?'&t='+SES.desde:'');
   var r;try{r=await (await fetch(q,{cache:'no-store'})).json()}catch(e){return true} // sem rede: nao trava
   if(r.ok){
     // primeira validacao apos escanear: fixa qual conta estava aberta, mantendo
@@ -4696,8 +5744,8 @@ function telaCadastro(op){
   app('<h1>Seu cadastro</h1>'+
     '<div class="mut" style="margin:6px 0 16px">'+esc(op.motivo||'Precisamos do seu CPF pra abrir a conta. O nome vem sozinho.')+'</div>'+
     '<div class="tit2" style="margin-top:0">CPF <span class="mut">(obrigatório)</span></div>'+
-    '<input id="ccpf" inputmode="numeric" placeholder="000.000.000-00" oninput="olhaCpfCli(this.value)">'+
-    '<div id="cquem" class="mut" style="margin-top:9px">Digite o CPF que o nome vem sozinho.</div>'+
+    '<input id="ccpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="olhaCpfCli(this.value,this)">'+
+    '<div id="cquem" class="mut" style="margin-top:9px">Digite o CPF — o nome vem sozinho.</div>'+
     '<div id="cpasso2"></div>'+
     '<button class="b g" onclick="inicio()">Agora não</button>');
   var el=document.getElementById('ccpf');if(el)el.focus();
@@ -4705,12 +5753,45 @@ function telaCadastro(op){
 var CADINFO=null, cadDeb=null;
 // (removida a saída "não quero informar o CPF": o CPF virou obrigatório —
 // é ele que identifica quem está consumindo e o que a consulta ao SPC usa)
-function olhaCpfCli(v){
+// ---- CPF: confere na hora, no proprio aparelho ----
+// O digito verificador e' aritmetica pura: nao precisa de servidor, nem de
+// consulta paga, nem de internet. Errar um numero de telefone e' comum, e sem
+// isto a pessoa so descobria depois da ida-e-volta — ou nem descobria, e o CPF
+// errado ia parar na NFC-e. O servidor confere de novo: isto aqui e' conforto,
+// nao seguranca.
+function cpfOk(v){
+  var c=String(v||'').replace(/\\D/g,'');
+  if(c.length!==11)return false;
+  if(/^(\\d)\\1{10}$/.test(c))return false;   // 111.111.111-11 passa na conta e nao existe
+  for(var k=0;k<2;k++){
+    var len=9+k, pos=10+k, soma=0;
+    for(var i=0;i<len;i++) soma+=Number(c[i])*(pos-i);
+    var d=(soma*10)%11; if(d===10)d=0;
+    if(d!==Number(c[len]))return false;
+  }
+  return true;
+}
+// mostra 000.000.000-00 enquanto digita, pra pessoa conferir com o documento
+function mascaraCpf(inp){
+  var c=String(inp.value||'').replace(/\\D/g,'').slice(0,11);
+  var t=c;
+  if(c.length>9) t=c.slice(0,3)+'.'+c.slice(3,6)+'.'+c.slice(6,9)+'-'+c.slice(9);
+  else if(c.length>6) t=c.slice(0,3)+'.'+c.slice(3,6)+'.'+c.slice(6);
+  else if(c.length>3) t=c.slice(0,3)+'.'+c.slice(3);
+  if(inp.value!==t)inp.value=t;
+  inp.style.color = (c.length===11 && !cpfOk(c)) ? '#c0392b' : '';
+  return c;
+}
+function olhaCpfCli(v,inp){
   CADINFO=null;clearTimeout(cadDeb);
-  var d=String(v||'').replace(/\\D/g,'');
+  var d=inp?mascaraCpf(inp):String(v||'').replace(/\\D/g,'');
   var q=document.getElementById('cquem'), p2=document.getElementById('cpasso2');
   if(!q)return;
   if(d.length<11){q.style.color='';q.textContent='Digite o CPF que o nome vem sozinho.';if(p2)p2.innerHTML='';return}
+  // barra ANTES de perguntar ao servidor: CPF que nao fecha a conta nao existe
+  if(!cpfOk(d)){q.style.color='#c0392b';
+    q.textContent='Esse CPF não confere. Dê uma olhada nos números.';
+    if(p2)p2.innerHTML='';return}
   q.style.color='';q.textContent='consultando…';
   cadDeb=setTimeout(async function(){
     var r=await (await fetch('/api/venda/identificar?cpf='+d,{cache:'no-store'})).json();
@@ -4719,21 +5800,26 @@ function olhaCpfCli(v){
     if(r.nome){
       CADINFO=r;
       q.innerHTML='Olá, <b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b>!';
-      passo2Cli(r.telefone_fim,false);
+      passo2Cli(r.telefone_fim);
+    } else if(r.fonte==='erro'){
+      q.innerHTML='<span style="color:#b45309">A consulta não respondeu agora. Tente de novo em alguns segundos.</span>';
+      if(p2)p2.innerHTML='<button class="b g" onclick="olhaCpfCli(document.getElementById(\\'ccpf\\').value,document.getElementById(\\'ccpf\\'))">Consultar de novo</button>';
     } else {
-      q.innerHTML='<span class="mut">Primeira vez aqui? Só o nome então:</span>';
-      passo2Cli(null,true);
+      q.innerHTML='<span style="color:#b45309">Não achei nome para este CPF. Confira o número.</span>';
+      if(p2)p2.innerHTML='';
     }
   },500);
 }
 // WhatsApp: nao validamos se o numero existe, mas o DDD e' obrigatorio —
 // numero sem DDD nao serve pra avisar de reserva nem de mesa pronta.
-function passo2Cli(telFim, pedeNome){
+// Igual a tela do garcom: o cliente NAO digita nome. Ele digita o CPF, o nome
+// vem da consulta (cadastro da casa ou SPC), e embaixo o WhatsApp. Sao dois
+// campos e pronto.
+function passo2Cli(telFim){
   var p2=document.getElementById('cpasso2');if(!p2)return;
-  p2.innerHTML=(pedeNome?'<div class="tit2">Seu nome</div><input id="cnome" placeholder="como quer ser chamado">':'')+
-    '<div class="tit2">WhatsApp <span class="mut">(opcional)</span>'+(telFim?' <span class="mut">· temos o final '+esc(String(telFim).slice(-4))+'</span>':'')+'</div>'+
+  p2.innerHTML='<div class="tit2">WhatsApp'+(telFim?' <span class="mut">· temos o final '+esc(String(telFim).slice(-4))+'</span>':'')+'</div>'+
     '<input id="czap" inputmode="numeric" placeholder="(79) 90000-0000" oninput="olhaZap(this.value)">'+
-    '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. Opcional, mas é por aqui que avisamos quando seu pedido sai e quando sua reserva está pronta.</div>'+
+    '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. É por aqui que avisamos quando seu pedido sai e quando sua reserva está pronta.</div>'+
     '<button class="b" onclick="salvarCadastro()">Salvar</button>';
   var z=document.getElementById('czap');if(z)z.focus();
 }
@@ -4751,9 +5837,9 @@ async function salvarCadastro(){
   var n=(CADALVO!=null)?CADALVO:mesaAtual();if(n===null)return;
   var cpf=((document.getElementById('ccpf')||{}).value||'').replace(/\\D/g,'');
   var zap=((document.getElementById('czap')||{}).value||'').replace(/\\D/g,'');
-  var nome=CADINFO?CADINFO.nome:(((document.getElementById('cnome')||{}).value||'').trim());
+  var nome=CADINFO?CADINFO.nome:'';
   if(cpf.length!==11){alert('O CPF é obrigatório pra abrir a conta.');return}
-  if(!nome){alert('Digite seu nome');return}
+  if(!nome){alert('Digite o CPF e espere o nome aparecer.');return}
   if(zap&&zap.length<10){alert('O WhatsApp precisa do DDD (ex.: 79 seguido do número)');return}
   var body={numero:n,nome:nome,cadastrar:true};
   if(cpf.length===11)body.cpf=cpf;
@@ -4873,7 +5959,13 @@ async function fotoGrande(prod,nome){
   d.innerHTML='<div class="lbox"><img src="/produto-foto/'+prod+'" alt="">'+
     '<div class="lbt">'+esc(nome||'')+'</div>'+
     (desc?'<div class="lbd">'+esc(desc)+'</div>':'')+
-    '<div class="lbf">toque pra fechar</div></div>';
+    '<div class="lbf">toque em qualquer lugar pra fechar</div></div>'+
+    '<button class="lbx" onclick="fechaFoto(event)" aria-label="fechar">✕</button>';
+}
+function fechaFoto(e){
+  if(e)e.stopPropagation();
+  var d=document.getElementById('lightbox');
+  if(d)d.style.display='none';
 }
 async function verVariantes(prod){
   var d;try{d=await (await fetch('/api/venda/variantes?p='+prod+'&cliente=1',{cache:'no-store'})).json()}catch(e){return}
@@ -5177,14 +6269,36 @@ function calcPagar(){
   var minha = (PGVALOR!=null) ? Math.min(PGVALOR, resta) : +(resta/PGPARTES).toFixed(2);
   return {itens:itens,gorj:gorj,total:total,resta:resta,minha:minha};
 }
-function setValorLivre(){
-  var v=prompt('Quanto você quer pagar? (falta R$ '+
-    calcPagar().resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+')');
-  if(v==null)return;
-  var n=Number(String(v).replace(/\./g,'').replace(',','.'));
-  if(!(n>0)){alert('Valor inválido');return}
-  PGVALOR=n;PGPARTES=1;pintaPagar();
+// Digita e o valor grande em cima acompanha, sem redesenhar a tela toda —
+// redesenhar tirava o foco do campo a cada tecla.
+var vlDeb=null;
+/** Le valor em portugues e perdoa o resto: "R$ 100", "100,00", "1.234,56",
+ *  espaco sobrando. Antes um Number() cru virava NaN e a tela dizia so
+ *  "Valor invalido" — sem dizer o que estava errado. */
+function numeroBr(txt){
+  // As barras sao DOBRADAS de proposito: esta tela e' um template literal, e
+  // \\. vira . na hora de servir. Foi exatamente esse o bug do "Valor invalido"
+  // em 01/08: /\\./g chegava no navegador como /./g, que casa com TODO
+  // caractere — "100" virava string vazia e Number('') e' 0.
+  var t=String(txt||'').replace(/[^\\d.,]/g,'');
+  if(t.indexOf(',')>=0) t=t.replace(/\\./g,'').replace(',','.');
+  else if((t.match(/\\./g)||[]).length>1) t=t.replace(/\\.(?=.*\\.)/g,'');
+  var n=Number(t);
+  return (isFinite(n)&&n>0)?n:null;
 }
+function digitouValor(txt){
+  PGVALOR=numeroBr(txt);
+  var v=calcPagar();
+  var el=document.querySelector('#app .valor');
+  if(el)el.textContent='R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2});
+  var so=document.getElementById('vsobra');
+  if(so)so.textContent=(PGVALOR!=null&&PGVALOR<v.resta)
+    ? 'Depois deste pagamento ainda faltam R$ '+(v.resta-PGVALOR).toLocaleString('pt-BR',{minimumFractionDigits:2})+' na conta.'
+    : (PGVALOR!=null&&PGVALOR>=v.resta) ? 'Isto quita a conta.' : '';
+  clearTimeout(vlDeb);
+  vlDeb=setTimeout(function(){ if(document.activeElement&&document.activeElement.id==='vlivre')atualizaBotoes(); },400);
+}
+function atualizaBotoes(){ botoesPagar(calcPagar().minha) }
 function pintaPagar(){
   var v=calcPagar(), n=mesaAtual();
   var cmds=(CONTAMESA&&CONTAMESA.comandas)||[];
@@ -5216,9 +6330,18 @@ function pintaPagar(){
     '</div>'+
     '<div class="tit2">Dividir por</div><div class="segs">'+
       [1,2,3,4,5,6].map(function(k){return '<button class="seg'+(PGPARTES===k&&PGVALOR==null?' on':'')+'" onclick="setPartes('+k+')">'+k+'</button>'}).join('')+
-      '<button class="seg'+(PGVALOR!=null?' on':'')+'" onclick="setValorLivre()" style="flex:1 1 100%;margin-top:4px">'+
-        (PGVALOR!=null?'pagando R$ '+PGVALOR.toLocaleString('pt-BR',{minimumFractionDigits:2}):'outro valor')+'</button>'+
     '</div>'+
+    // Campo SEMPRE visível, não escondido atrás de um prompt: "não quero pagar
+    // 44, quero pagar 100" é caso comum numa conta rachada, e a pessoa tem que
+    // ver onde digitar sem procurar.
+    '<div class="tit2">Ou digite quanto você vai pagar</div>'+
+    '<div class="vlivre"><span>R$</span>'+
+      '<input id="vlivre" inputmode="decimal" placeholder="'+v.minha.toFixed(2).replace('.',',')+'" '+
+        'value="'+(PGVALOR!=null?PGVALOR.toFixed(2).replace('.',','):'')+'" '+
+        'oninput="digitouValor(this.value)">'+
+      (PGVALOR!=null?'<button class="vx" onclick="setPartes('+PGPARTES+')">✕</button>':'')+
+    '</div>'+
+    '<div id="vsobra" class="mut" style="margin-top:6px;font-size:12.5px"></div>'+
     // O QUE JÁ ENTROU. Numa conta rachada, quem chega depois precisa ver o que
     // os outros já pagaram — senão ninguém sabe se está pagando a mais.
     ((CONTA.pagamentos&&CONTA.pagamentos.length)
@@ -5292,41 +6415,100 @@ async function gerarPix(n){
     // Conta rachada: quem pagou a primeira parte manda o código pros outros
     // seguirem. wa.me sem número deixa a pessoa escolher pra quem enviar —
     // pode ser pra ela mesma, pra levar pro app do banco.
-    '<button class="b zap" onclick="mandarZap()">Enviar no WhatsApp</button>'+
+
     '<div id="pgst" class="mut" style="margin-top:14px">aguardando o pagamento…</div>'+
     '<button class="b g" onclick="pararPix()">Voltar</button>');
   vigiarPix(r.txid);
 }
 // Confirma sozinho: o cliente paga no app do banco e a tela avisa aqui.
 var pixTmr=null;
-function mandarZap(){
-  var cod=(document.getElementById('cp')||{}).textContent||'';
-  var v=(document.querySelector('#app .valor')||{}).textContent||'';
+// ---- MANDAR O PASSE PRA QUEM VAI EMBORA ----
+// Quem paga e' um so; quem SAI pode ser outro. Tres caminhos, nesta ordem:
+//
+//  1. navigator.share com ARQUIVO — manda a IMAGEM do QR de verdade. So existe
+//     em contexto seguro, e a tela do cliente e' HTTP (http://IP:8790), entao
+//     na loja isso praticamente nunca dispara. Fica pronto pro dia do HTTPS.
+//  2. wa.me com o CODIGO — sempre funciona. Vai o numero da mesa e o codigo;
+//     na catraca o codigo vale tanto quanto o QR.
+//  3. segurar o dedo na imagem — o proprio Android/iPhone oferece
+//     "Compartilhar imagem". E' o unico jeito de mandar a FOTO hoje.
+//
+// ⚠️ NAO mandamos link: o endereco e' um IP da rede da loja (192.168.x.x) e
+// morre pra quem estiver no 4G. Foi por isso que "esse link nao funcionou".
+// ⚠️ E nada de await ANTES do window.open — o navegador perde o gesto do
+// clique e bloqueia como popup. Por isso a imagem e' baixada ANTES, quando a
+// tela pinta.
+var QRBLOB=null;
+function preparaImagem(token){
+  QRBLOB=null;
+  try{
+    fetch('/api/saida/qr?t='+encodeURIComponent(token))
+      .then(function(r){return r.blob()})
+      .then(function(b){ QRBLOB=new File([b],'passe-'+token+'.png',{type:'image/png'}) })
+      .catch(function(){});
+  }catch(e){}
+}
+function mandarZap(token){
   var n=mesaAtual();
   // ATENCAO: a quebra de linha da mensagem precisa de DUAS barras neste
   // arquivo, porque ele e um template literal. Com uma so, ela vira quebra de
   // linha DE VERDADE no meio da string e derruba o script inteiro da tela.
   // Nao escreva sequencia de escape nem em COMENTARIO aqui dentro: o comentario
   // tambem e cortado, e o resto da linha vira codigo solto.
+  // ATENCAO: a quebra de linha precisa de DUAS barras neste arquivo, porque
+  // ele e' um template literal. Com uma so ela vira quebra DE VERDADE no meio
+  // da string e derruba o script inteiro da tela.
   var txt='${LOJA_NOME} — mesa '+n+'\\n'+
-    'Pix de '+v.trim()+'\\n\\n'+cod+'\\n\\n'+
-    'Cole no app do banco pra pagar a sua parte.';
+    'Conta paga. Passe de saída:\\n\\n'+token+'\\n\\n'+
+    'Mostre este código na catraca.';
+  if(QRBLOB&&navigator.canShare&&navigator.share){
+    try{ if(navigator.canShare({files:[QRBLOB]})){ navigator.share({files:[QRBLOB],text:txt}); return } }catch(e){}
+  }
   window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
 }
 function pararPix(){clearInterval(pixTmr);pixTmr=null;inicio()}
 function vigiarPix(txid){
   clearInterval(pixTmr);
-  var tentativas=0;
+  var tentativas=0,ocupado=false;
   pixTmr=setInterval(async function(){
     if(++tentativas>120){clearInterval(pixTmr);return} // ~10 min
-    var s;try{s=await (await fetch('/api/pix/conferir?txid='+encodeURIComponent(txid),{cache:'no-store'})).json()}catch(e){return}
+    if(ocupado)return; // a conferida anterior ainda nao voltou
+    ocupado=true;
+    var s;try{s=await (await fetch('/api/pix/conferir?txid='+encodeURIComponent(txid),{cache:'no-store'})).json()}
+    catch(e){return}finally{ocupado=false}
     if(s.ok&&s.pago){
       clearInterval(pixTmr);pixTmr=null;
-      telaPessoas('pix');
+      aposPagar('pix');
     }
   },5000);
 }
-// Pago: agora o QR da saida. Cada leitura na catraca libera uma pessoa.
+// Pagou — mas pagou TUDO? O passe de saida so nasce com a conta zerada.
+// Numa mesa rachada entre seis, o primeiro que paga a parte dele nao pode
+// sair levando o passe: quem fica ainda deve. Entao aqui a gente re-consulta
+// a conta (nao confia no que estava na tela antes do pagamento) e so oferece
+// o passe se nao faltar nada. O servidor barra de novo em /api/saida/gerar.
+async function aposPagar(origem){
+  var n=mesaAtual();if(n===null){inicio();return}
+  var c;try{c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json()}catch(e){c=null}
+  if(c&&c.ok){CONTAMESA=c;if(!PGALVO)CONTA=c}
+  var consumo=c&&c.ok?(Number(c.total||0)+(c.comandas||[]).reduce(function(s,x){return s+Number(x.subtotal||0)},0)):0;
+  var falta=c&&c.ok?Math.max(0,+(consumo-Number(c.pago_geral||0)).toFixed(2)):0;
+  if(falta>0.009){
+    app('<div class="ok"><div class="t">✓ Pagamento confirmado</div>'+
+      '<div class="mut" style="margin-top:6px">Obrigado! Entrou na conta da mesa.</div></div>'+
+      '<div class="cx" style="margin-top:18px;text-align:center">'+
+        '<div class="mut">Ainda falta nesta conta</div>'+
+        '<div class="valor" style="margin:2px 0 0">R$ '+falta.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+      '</div>'+
+      '<div class="mut" style="margin:14px 0 4px">O <b>passe de saída</b> sai quando a conta zerar. '+
+      'Quem ainda não pagou pode pagar pelo QR da mesa, ou chamar o garçom.</div>'+
+      '<button class="b" onclick="telaPix()">Pagar o que falta</button>'+
+      '<button class="b g" onclick="inicio()">Voltar ao início</button>');
+    return;
+  }
+  telaPessoas(origem);
+}
+// Conta zerada: agora o QR da saida. Cada leitura na catraca libera uma pessoa.
 // Crianca de ate 10 anos nao conta — passa junto com o responsavel.
 function telaPessoas(origem){
   app('<div class="ok"><div class="t">✓ Pagamento confirmado</div>'+
@@ -5338,26 +6520,76 @@ function telaPessoas(origem){
       '<button onclick="passo(\\'ad\\',-1)">−</button><b id="ad">1</b><button onclick="passo(\\'ad\\',1)">+</button></div>'+
     '<div class="cont"><span>Crianças acima de 10 anos</span>'+
       '<button onclick="passo(\\'cr\\',-1)">−</button><b id="cr">0</b><button onclick="passo(\\'cr\\',1)">+</button></div>'+
+    '<h1 style="margin-top:22px">Veio de carro?</h1>'+
+    '<div class="mut" style="margin:6px 0 14px">A cancela do estacionamento lê a placa. '+
+    'Sem a placa aqui, o carro para na saída e precisa chamar alguém.</div>'+
+    '<div class="cont"><span>Carros</span>'+
+      '<button onclick="passo(\\'ca\\',-1)">−</button><b id="ca">0</b><button onclick="passo(\\'ca\\',1)">+</button></div>'+
+    '<div id="placas"></div>'+
     '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>'+
     '<button class="b g" onclick="inicio()">Agora não</button>');
+  pintaPlacas();
 }
-var PES={ad:1,cr:0};
+var PES={ad:1,cr:0,ca:0};
 function passo(q,d){
-  PES[q]=Math.max(q==='ad'?1:0,Math.min(50,PES[q]+d));
+  var min=(q==='ad')?1:0;
+  PES[q]=Math.max(min,Math.min(q==='ca'?8:50,PES[q]+d));
   document.getElementById(q).textContent=PES[q];
+  if(q==='ca')pintaPlacas();
+}
+// Um campo por carro. Guarda o que ja foi digitado ao mudar a quantidade —
+// aumentar de 1 pra 2 nao pode apagar a placa que a pessoa ja escreveu.
+var PLACAS=[];
+function pintaPlacas(){
+  var el=document.getElementById('placas');if(!el)return;
+  var h='';
+  for(var i=0;i<PES.ca;i++){
+    h+='<div class="vlivre" style="margin-bottom:8px"><span>🚗</span>'+
+       '<input id="pl'+i+'" maxlength="8" autocapitalize="characters" autocomplete="off" '+
+       'placeholder="ABC1D23" value="'+(PLACAS[i]||'')+'" oninput="guardaPlaca('+i+',this)"></div>';
+  }
+  el.innerHTML=h;
+}
+function guardaPlaca(i,inp){
+  var v=String(inp.value||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,7);
+  if(inp.value!==v)inp.value=v;
+  PLACAS[i]=v;
+  // placa valida fica verde; a validacao de verdade e no servidor
+  inp.style.color=/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(v)?'#17803d':'';
 }
 async function gerarSaida(origem){
   var n=mesaAtual();if(n===null)return;
-  var r=await post('/api/saida/gerar',{mesa:n,adultos:PES.ad,criancas:PES.cr,origem:origem});
+  var pl=[];
+  for(var i=0;i<PES.ca;i++){var v=(PLACAS[i]||'').trim();if(v)pl.push(v)}
+  var faltando=[];
+  for(var j=0;j<PES.ca;j++) if(!/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(PLACAS[j]||'')) faltando.push(j+1);
+  if(faltando.length){
+    alert('Confira a placa do carro '+faltando.join(' e ')+'. São 7 caracteres, como ABC1D23 ou ABC1234.');
+    return;
+  }
+  var r=await post('/api/saida/gerar',{mesa:n,adultos:PES.ad,criancas:PES.cr,placas:pl,origem:origem});
   if(!r.ok){alert(r.erro||'não consegui gerar');return}
   app('<h1>Seu QR de saída</h1>'+
     '<div class="mut" style="margin:6px 0 2px">É <b>um código só</b> pra mesa toda. '+
     'Na catraca, cada pessoa encosta e passa — uma de cada vez.</div>'+
-    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR de saída">':'')+
+    '<img class="qr" id="qrimg" src="/api/saida/qr?t='+encodeURIComponent(r.token)+'" alt="QR de saída">'+
     '<div class="codigo">'+esc(r.token)+'</div>'+
     '<div id="prog"></div>'+
+    ((r.placas&&r.placas.length)
+      ? '<div class="cx" style="margin-top:12px"><div class="mut">Carros liberados na cancela</div>'+
+        '<div style="font-weight:700;font-size:18px;letter-spacing:.06em;margin-top:3px">'+
+        r.placas.map(esc).join(' · ')+'</div></div>'
+      : '')+
     '<div class="mut" style="margin-top:10px">Vale por '+r.validade_min+' minutos.</div>'+
+    '<button class="b zap" onclick="mandarZap(\\''+r.token+'\\')">Enviar no WhatsApp</button>'+
+    '<a class="b g" style="display:block;text-align:center;text-decoration:none" '+
+      'href="/api/saida/qr?t='+encodeURIComponent(r.token)+'" download="passe-'+r.token+'.png">'+
+      'Salvar a imagem do QR</a>'+
+    '<div class="mut" style="margin:2px 0 12px;font-size:12.5px">Pra mandar o <b>QR</b> pra alguém: '+
+    'segure o dedo na imagem acima e escolha <b>Compartilhar</b>. Se preferir, o botão do WhatsApp '+
+    'manda o <b>código</b> — na catraca ele vale igual.</div>'+
     '<button class="b g" onclick="pararSaida()">Voltar ao início</button>');
+  preparaImagem(r.token);
   vigiarSaida(r.token);
 }
 // O cliente vê na própria tela quantos já passaram — evita a dúvida de
@@ -5411,7 +6643,7 @@ function vigiarCartao(ref){
     var el=document.getElementById('pgst');
     if(s.ok&&s.pago){
       clearInterval(cartTmr);cartTmr=null;
-      telaPessoas('cartao');
+      aposPagar('cartao');
     } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
   },5000);
 }
@@ -5480,19 +6712,91 @@ async function chamar(){
   app('<div class="ok"><div class="t">✓ Garçom avisado</div><div class="mut" style="margin-top:8px">Ele já está a caminho da mesa '+n+'.</div></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
 }
+// ---- RECLAMACAO EM DOIS PASSOS ----
+// Antes era um campo de texto vazio: o cliente escrevia "demorou" e a cozinha
+// recebia isso sem saber DE QUE prato. Agora ele escolhe o assunto e, quando
+// o assunto tem a ver com comida, aponta o item na propria lista do que pediu.
+// O texto que chega no KDS sai pronto: "DEMORA - Pato confitado (32min)".
+var ASSUNTO=null, ITSEL={}, ITENS=[];
 function telaProblema(){
-  app('<h1>Como podemos ajudar?</h1>'+
-    '<div class="mut" style="margin:8px 0 16px">Conta rapidinho o que houve — a equipe é avisada na hora e vai até você.</div>'+
-    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+
-    '<input id="tx" placeholder="ex.: demora no pedido">'+
-    '<button class="b" onclick="reclamar()">Enviar</button>'+
+  ASSUNTO=null;ITSEL={};
+  app('<h1>O que aconteceu?</h1>'+
+    '<div class="mut" style="margin:8px 0 16px">Escolha o assunto — a equipe é avisada na hora.</div>'+
+    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa" style="margin-bottom:12px">')+
+    '<button class="b op" onclick="probItens(\\'demora\\')">⏱ Está demorando</button>'+
+    '<button class="b op" onclick="probItens(\\'errado\\')">🍽 Veio errado</button>'+
+    '<button class="b op" onclick="probItens(\\'frio\\')">🌡 Veio frio</button>'+
+    '<button class="b op" onclick="probItens(\\'faltou\\')">➖ Faltou alguma coisa</button>'+
+    '<button class="b op" onclick="probTexto(\\'salao\\')">🧹 Mesa, louça ou limpeza</button>'+
+    '<button class="b op" onclick="probTexto(\\'outro\\')">💬 Outro assunto</button>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
 }
-async function reclamar(){
+var TITULO={demora:'O que está demorando?',errado:'O que veio errado?',
+  frio:'O que veio frio?',faltou:'O que faltou?'};
+// Na DEMORA so faz sentido o que ainda nao chegou. Nos outros assuntos o
+// problema costuma ser justamente com o que JA chegou — entao a lista muda.
+async function probItens(assunto){
+  ASSUNTO=assunto;ITSEL={};
   var n=mesaAtual();if(n===null)return;
-  var t=(document.getElementById('tx')||{}).value||'';
-  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',texto:t});
-  app('<div class="ok"><div class="t">✓ Recebemos</div><div class="mut" style="margin-top:8px">Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.</div></div>'+
+  app('<h1>'+TITULO[assunto]+'</h1><div class="mut">carregando o seu pedido…</div>');
+  var d;try{d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json()}catch(e){d=null}
+  ITENS=[];
+  ((d&&d.grupos)||[]).forEach(function(g){
+    (g.itens||[]).forEach(function(i){
+      if(assunto==='demora'&&i.estado==='entregue')return;
+      ITENS.push({nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
+        onde:g.numero&&Number(g.numero)!==Number(n)?('comanda '+g.numero):null});
+    });
+  });
+  var lista=ITENS.length
+    ? ITENS.map(function(i,k){
+        var sub=(i.estado==='entregue'?'já entregue':i.estado==='pronto'?'pronto, saindo':'em produção')+
+          (i.min!=null?' · há '+i.min+'min':'')+(i.onde?' · '+i.onde:'');
+        return '<button class="it" id="it'+k+'" onclick="marcaIt('+k+')">'+
+          '<b>'+(i.qtd>1?i.qtd+'x ':'')+esc(i.nome)+'</b><span>'+sub+'</span></button>';
+      }).join('')
+    : '<div class="mut" style="margin:10px 0">'+(assunto==='demora'
+        ? 'Não achei nada em produção agora. Se mesmo assim está esperando, escreva abaixo.'
+        : 'Não achei itens no seu pedido. Escreva abaixo o que houve.')+'</div>';
+  app('<h1>'+TITULO[assunto]+'</h1>'+
+    (ITENS.length?'<div class="mut" style="margin:6px 0 12px">Toque no que tem problema. Pode marcar mais de um.</div>':'')+
+    '<div class="itens">'+lista+'</div>'+
+    '<input id="tx" placeholder="quer contar mais alguma coisa? (opcional)" style="margin-top:14px">'+
+    '<button class="b" onclick="enviarProblema()">Avisar a equipe</button>'+
+    '<button class="b g" onclick="telaProblema()">Voltar</button>');
+}
+function marcaIt(k){
+  ITSEL[k]=!ITSEL[k];
+  var el=document.getElementById('it'+k);if(el)el.className='it'+(ITSEL[k]?' on':'');
+}
+function probTexto(assunto){
+  ASSUNTO=assunto;ITSEL={};ITENS=[];
+  app('<h1>'+(assunto==='salao'?'Mesa, louça ou limpeza':'Conta pra gente')+'</h1>'+
+    '<div class="mut" style="margin:8px 0 14px">Escreva o que houve — alguém vai até a sua mesa.</div>'+
+    '<input id="tx" placeholder="'+(assunto==='salao'?'ex.: falta talher, mesa suja':'o que aconteceu?')+'">'+
+    '<button class="b" onclick="enviarProblema()">Avisar a equipe</button>'+
+    '<button class="b g" onclick="telaProblema()">Voltar</button>');
+}
+var ROTULO={demora:'DEMORA',errado:'VEIO ERRADO',frio:'VEIO FRIO',
+  faltou:'FALTOU',salao:'SALÃO',outro:'OUTRO'};
+async function enviarProblema(){
+  var n=mesaAtual();if(n===null)return;
+  var livre=((document.getElementById('tx')||{}).value||'').trim();
+  var marcados=Object.keys(ITSEL).filter(function(k){return ITSEL[k]}).map(function(k){
+    var i=ITENS[k];
+    return (i.qtd>1?i.qtd+'x ':'')+i.nome+(i.min!=null?' ('+i.min+'min)':'');
+  });
+  if(!marcados.length&&!livre&&ITENS.length){alert('Toque no item com problema, ou escreva o que houve.');return}
+  if(!marcados.length&&!livre){alert('Escreva o que houve.');return}
+  var txt=(ROTULO[ASSUNTO]||'PROBLEMA')+(marcados.length?' — '+marcados.join(', '):'')+
+    (livre?(marcados.length?' · ':' — ')+livre:'');
+  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',assunto:ASSUNTO,texto:txt});
+  app('<div class="ok"><div class="t">✓ Recebemos</div>'+
+    '<div class="mut" style="margin-top:8px">Desculpe pelo transtorno. '+
+    (ASSUNTO==='demora'?'A cozinha já foi avisada e o seu pedido passa na frente.'
+      :'A equipe já foi avisada e vem falar com você.')+'</div></div>'+
+    '<div class="cx" style="margin-top:14px"><div class="mut">O que avisamos</div>'+
+    '<div style="margin-top:3px">'+esc(txt)+'</div></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
 }
 // Voltar pro app depois de um tempo revalida: e' exatamente quando a mesa
@@ -5685,6 +6989,200 @@ async function poll(id,n){
 telaNumero();
 </script></body></html>`;
 
+// ---- /caixa — tela restrita (Bloco 1): login, abrir mesa, desconto/acréscimo, receber dinheiro ----
+const CAIXA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>${LOJA_NOME} — Caixa</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+h1{font-size:17px;margin:0}h1 b{color:var(--gold2)}
+.wrap{max-width:560px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+input{width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px}
+.num{font-size:24px;text-align:center}
+.big{width:100%;padding:15px;border:0;border-radius:12px;background:var(--green);color:#fff;font:inherit;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}
+.big.g{background:#5b5b66}.big.o{background:var(--gold2)}.big:disabled{opacity:.5}
+.it{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f4;font-size:14px}
+.it:last-child{border:0}
+.tot{display:flex;justify-content:space-between;font-size:15px;padding:5px 0}
+.tot.g{font-size:22px;font-weight:800;border-top:2px solid var(--line);margin-top:6px;padding-top:10px}
+.desc{color:var(--green2)}.acr{color:var(--gold2)}.saldo{color:var(--red)}.quit{color:var(--green2)}
+.mut{color:var(--mut);font-size:13px}.tit{font-weight:700;margin:14px 0 6px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.seg{padding:11px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font:inherit;cursor:pointer}
+.seg.on{border-color:var(--gold2);background:rgba(224,101,26,.08);color:var(--gold2);font-weight:700}
+.err{color:var(--red);font-size:13px;margin-top:6px}
+a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
+.lst{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.mchip{text-align:left;padding:10px 12px;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer;color:var(--ink)}
+.mchip b{display:block;font-size:13px}.mchip small{display:block;color:var(--mut);font-size:11px;margin-top:2px}
+.mchip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
+.mchip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
+.mchip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
+</style></head><body>
+<header><h1>${LOJA_NOME} <b>Caixa</b></h1><span id="hdr"></span></header>
+<div class="wrap" id="app"></div>
+<script>
+var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
+var NOME=null,PODE={desconto:false,fiado:false},MESA=null,CONTA=null,DMODO='valor';
+function app(h){document.getElementById('app').innerHTML=h}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
+function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
+async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
+function numBr(s){var t=String(s||'').replace(/[^\\d.,]/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)&&n>0?n:0}
+function setHdr(){var e=document.getElementById('hdr');if(e)e.innerHTML=NOME?('<span class="mut">'+esc(NOME)+'</span> · <a class="sair" onclick="sair()">sair</a>'):''}
+function sair(){try{localStorage.removeItem('caixa_tok')}catch(e){}TOK=null;NOME=null;setHdr();telaLogin()}
+async function inicio(){
+  var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado};abrir()}
+  else {TOK=null;telaLogin()}
+}
+function telaLogin(){
+  setHdr();
+  app('<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
+    '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos no Consumer.</div>'+
+    '<input id="lg" placeholder="seu login" autocapitalize="none">'+
+    '<input id="pn" class="num" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8">'+
+    '<div id="pn2box"></div>'+
+    '<button class="big" onclick="entrar()">Entrar</button>'+
+    '<div id="lerr" class="err"></div></div>');
+  var e=document.getElementById('lg');if(e)e.focus();
+}
+async function entrar(){
+  var login=(document.getElementById('lg')||{}).value||'';
+  var pin=((document.getElementById('pn')||{}).value||'').replace(/\\D/g,'');
+  var z=document.getElementById('pn2'); var pin2=z?(z.value||'').replace(/\\D/g,''):undefined;
+  var er=document.getElementById('lerr');er.textContent='';
+  var r=await jpost('/api/caixa/entrar',{login:login,pin:pin,pin2:pin2});
+  if(r.primeira_vez&&!r.token){
+    document.getElementById('pn2box').innerHTML='<div class="mut" style="margin-top:8px">Primeira vez — repita o PIN pra criar:</div>'+
+      '<input id="pn2" class="num" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px">';
+    er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y)y.focus();return;
+  }
+  if(!r.ok){er.textContent=r.erro||'não entrou';return}
+  TOK=r.token;try{localStorage.setItem('caixa_tok',TOK)}catch(e){}
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado};setHdr();abrir();
+}
+function abrir(){
+  setHdr();MESA=null;CONTA=null;
+  app('<div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div>'+
+    '<div id="lista" class="mut">carregando…</div>'+
+    '<div class="card" style="margin-top:12px"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
+    '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
+    '<button class="big" onclick="carregar()">Abrir</button>'+
+    '<div id="aerr" class="err"></div></div>');
+  var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
+  listar();
+}
+async function listar(){
+  var el=document.getElementById('lista');if(!el)return;
+  var d;try{d=await jget('/api/venda/abertas')}catch(e){el.textContent='não consegui listar as mesas';return}
+  var h='';
+  (d.mesas||[]).forEach(function(m){h+=mchip(m.numero,'Mesa '+m.numero,m)});
+  (d.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
+  el.innerHTML=h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
+}
+function mchip(num,lbl,m){
+  return '<button class="mchip st-'+(m.status||'andamento')+'" onclick="carregar('+num+')">'+lbl+
+    (m.nome?'<b>'+esc(m.nome)+'</b>':'')+'<small>'+(m.itens||0)+' itens · '+brl(m.valor_total)+'</small></button>';
+}
+async function carregar(n){
+  var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
+  if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
+  MESA=num;app('<div class="mut" style="padding:16px">abrindo…</div>');
+  var c=await jget('/api/caixa/conta?n='+num);
+  if(!c.ok){app('<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
+    '<button class="big g" onclick="abrir()">Voltar</button></div>');return}
+  CONTA=c;pinta();
+}
+function pinta(){
+  var c=CONTA;
+  var h='<button class="seg" style="margin-bottom:10px" onclick="abrir()">◂ outra mesa</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+
+      (c.nome?' · '+esc(c.nome):'')+'</div>';
+  h+=(c.itens||[]).map(function(i){return '<div class="it"><span>'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
+  h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
+  if(c.servico>0)h+='<div class="tot"><span>Serviço</span><b>'+brl(c.servico)+'</b></div>';
+  if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
+  if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
+  if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
+  h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
+  h+='<div class="card">';
+  h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="telaDesc()">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
+     '<button class="seg" onclick="telaAcr()">+ Acréscimo</button></div>';
+  h+='<button class="big" onclick="telaReceber()"'+(c.falta>0?'':' disabled')+'>💵 Receber em dinheiro</button>';
+  h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
+  app(h);
+}
+function telaDesc(){
+  DMODO='valor';
+  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Desconto na mesa '+MESA+'</div>'+
+    '<div class="row" style="margin-bottom:8px"><button class="seg on" id="dmv" onclick="setDM(\\'valor\\')">R$</button><button class="seg" id="dmp" onclick="setDM(\\'pct\\')">%</button></div>'+
+    '<input id="dv" class="num" inputmode="decimal" placeholder="quanto?">'+
+    '<div class="mut" id="dprev" style="margin-top:6px"></div>'+
+    '<button class="big o" onclick="aplicaDesc()">Aplicar desconto</button>'+
+    '<div id="derr" class="err"></div></div>');
+  var e=document.getElementById('dv');if(e){e.focus();e.addEventListener('input',prevDesc)}
+}
+function setDM(m){DMODO=m;document.getElementById('dmv').className='seg'+(m==='valor'?' on':'');document.getElementById('dmp').className='seg'+(m==='pct'?' on':'');prevDesc()}
+function prevDesc(){
+  var v=numBr((document.getElementById('dv')||{}).value);
+  var d=DMODO==='pct'?+(CONTA.subtotal*v/100).toFixed(2):v;
+  var el=document.getElementById('dprev');
+  if(el)el.textContent=d>0?('Desconto de '+brl(d)+' → novo total '+brl(Math.max(0,CONTA.total-d))):'';
+}
+async function aplicaDesc(){
+  var v=numBr((document.getElementById('dv')||{}).value);
+  if(!(v>0)){document.getElementById('derr').textContent='digite o valor';return}
+  var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'desconto',modo:DMODO,valor:v});
+  if(!r.ok){document.getElementById('derr').textContent=r.erro||'não deu';return}
+  await carregar(MESA);
+}
+function telaAcr(){
+  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Acréscimo (gorjeta a mais) — mesa '+MESA+'</div>'+
+    '<input id="av" class="num" inputmode="decimal" placeholder="quanto a mais? (R$)">'+
+    '<button class="big o" onclick="aplicaAcr()">Aplicar acréscimo</button>'+
+    '<div id="aerr2" class="err"></div></div>');
+  var e=document.getElementById('av');if(e)e.focus();
+}
+async function aplicaAcr(){
+  var v=numBr((document.getElementById('av')||{}).value);
+  if(!(v>0)){document.getElementById('aerr2').textContent='digite o valor';return}
+  var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'acrescimo',modo:'valor',valor:v});
+  if(!r.ok){document.getElementById('aerr2').textContent=r.erro||'não deu';return}
+  await carregar(MESA);
+}
+function telaReceber(){
+  var falta=CONTA.falta;
+  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Receber em dinheiro</div>'+
+    '<div class="mut">Falta '+brl(falta)+' na mesa '+MESA+'</div>'+
+    '<input id="rv" class="num" inputmode="decimal" value="'+falta.toFixed(2).replace('.',',')+'" style="margin-top:8px">'+
+    '<div class="mut" id="rtroco" style="margin-top:6px"></div>'+
+    '<button class="big" onclick="receber()">Confirmar recebimento</button>'+
+    '<div id="rerr" class="err"></div></div>');
+  var e=document.getElementById('rv');if(e){e.focus();e.addEventListener('input',troco)}
+}
+function troco(){
+  var v=numBr((document.getElementById('rv')||{}).value);
+  var el=document.getElementById('rtroco');
+  if(el)el.textContent=(v>CONTA.falta)?('Troco: '+brl(v-CONTA.falta)):'';
+}
+async function receber(){
+  var v=numBr((document.getElementById('rv')||{}).value);
+  if(!(v>0)){document.getElementById('rerr').textContent='digite o valor';return}
+  var reg=Math.min(v,CONTA.falta);
+  var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
+  if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
+  await carregar(MESA);
+}
+inicio();
+</script></body></html>`;
+
 function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
 
 // VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
@@ -5734,12 +7232,37 @@ const server = http.createServer(async (req, res) => {
       return res.end(f.bytes);
     }
     if (p === '/camera') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAMERA_HTML); }
-    if (req.method === 'POST' && p === '/api/venda/vincular') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVincular(body))); }
-    if (req.method === 'POST' && p === '/api/venda/transferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferir(body))); }
+    // ---- login do garçom (PIN) ----
+    if (req.method === 'POST' && p === '/api/garcom/entrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomEntrar(body))); }
+    if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
+    // ---- CAIXA (Bloco 1): login próprio + ações que exigem sessão de caixa ----
+    if (p.startsWith('/api/caixa/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method === 'POST' && p === '/api/caixa/entrar') return res.end(JSON.stringify(await apiCaixaEntrar(await readBody(req))));
+      if (p === '/api/caixa/sessao') return res.end(JSON.stringify(await apiCaixaSessao(req, u)));
+      const quem = await caixaDaRequisicao(req, u); // as demais exigem caixa logado
+      if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
+      if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0)));
+      if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/receber') { const b = await readBody(req); return res.end(JSON.stringify(await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' }))); }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // Ações da comanda mobile: só quem está logado (login com AcessarComandaMobile
+    // no Consumer). Leitura fica aberta; o que MEXE na conta exige sessão.
+    if (req.method === 'POST' && (p === '/api/venda/vincular' || p === '/api/venda/transferir'
+        || p === '/api/venda/conta' || p === '/api/venda/enviar')) {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      body._garcom = g.login;                 // quem fez a ação (auditoria)
+      const fn = p === '/api/venda/vincular' ? apiVendaVincular
+        : p === '/api/venda/transferir' ? apiTransferir
+        : p === '/api/venda/conta' ? apiVendaConta : apiVendaEnviar;
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await fn(body)));
+    }
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
-    if (req.method === 'POST' && p === '/api/venda/conta') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaConta(body))); }
-    if (req.method === 'POST' && p === '/api/venda/enviar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaEnviar(body))); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
+    if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
     if (p === '/api/conta') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/conta/pagar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaPagar(body))); }
@@ -5778,12 +7301,30 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
+    if (p === '/api/cpf/status') {
+      const st = cpfStatus();
+      try { st.cache = Number((await sql`SELECT count(*) n FROM spc_cache`)[0].n); } catch { /* segue */ }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(st));
+    }
     if (p === '/api/pix/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pixStatus())); }
     if (req.method === 'POST' && p === '/api/saida/gerar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaGerar(body))); }
     if (p === '/api/saida/passar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaPassar(u.searchParams.get('t') || u.searchParams.get('token') || ''))); }
+    if (p === '/api/saida/cancela') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaCancela(u.searchParams.get('placa') || u.searchParams.get('p') || ''))); }
     if (p === '/api/saida/ativos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaAtivos())); }
+    if (p === '/api/saida/qr') {
+      const t = String(u.searchParams.get('t') || '').toUpperCase();
+      if (!/^[A-Z0-9]{1,40}$/.test(t)) { res.writeHead(400); return res.end(); }
+      // PNG, nao SVG: e' o PNG que o celular sabe salvar e compartilhar no zap.
+      // O nome do arquivo leva a mesa, pra quem recebe saber do que se trata.
+      const png = qrPng(t, 640);
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length,
+        'cache-control': 'no-store',
+        'content-disposition': 'inline; filename="passe-' + t + '.png"' });
+      return res.end(png);
+    }
     if (p === '/api/saida/consultar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiSaidaConsultar(u.searchParams.get('t') || ''))); }
     if (p === '/catraca') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CATRACA_HTML); }
+    if (p === '/passe') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PASSE_HTML); }
     if (p === '/api/cartao/status') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({
@@ -5850,9 +7391,10 @@ async function importarFotos(dir) {
 // duas vezes hoje, e nas duas só descobri pelo usuário.
 // Agora o servidor avisa na partida, antes de alguém abrir a página.
 function conferirTelas() {
-  const telas = { '/': HTML, '/venda': VENDA_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML,
+  const telas = { '/': HTML, '/venda': VENDA_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
     '/conta/ver': CONTAVER_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
-    '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML };
+    '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
+      '/passe': PASSE_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
@@ -5872,6 +7414,14 @@ async function main() {
   const iF = process.argv.indexOf('--fotos');
   if (iF > 0 && process.argv[iF + 1]) { await importarFotos(process.argv[iF + 1]); return; }
   await initSchema(); console.log('[schema] ok');
+  await carregarGarcomSecret().catch((e) => console.error('[garcom] segredo: ' + e.message));
+  // limpa nome de colaborador que a busca antiga gravou como se fosse cliente
+  // ⚠️ Os dois sao INDEPENDENTES: encadear o segundo no fim do primeiro fazia
+  // ele nunca rodar, porque o primeiro sai cedo quando nao ha contato vinculado.
+  await repararNomesDeColaborador().catch((e) => console.error('[reparo] ' + e.message));
+  await repararPorCpfDeColaborador().catch((e) => console.error('[reparo] ' + e.message));
+  await limparTestes().catch((e) => console.error('[reparo] ' + e.message));
+  await repararCacheSpc().catch((e) => console.error('[reparo] ' + e.message));
   server.listen(PORT, () => console.log(`KDS em http://localhost:${PORT}  (/=produção, /entrega=entrega, /venda=garçom)`));
   // HTTPS ao lado: é o endereço que libera a câmera nos tablets
   const cred = certificado();

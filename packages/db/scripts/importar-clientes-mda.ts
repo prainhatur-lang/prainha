@@ -117,17 +117,21 @@ async function main() {
     if (!linhas.length) break;
     tLidos += linhas.length;
 
-    for (const x of linhas) {
-      const fim = String(x.whatsapp || '').replace(/\D/g, '').slice(-8);
-      if (!x.cpf_hash || fim.length !== 8) continue;
-      if (!DRY) {
-        // so preenche quem ainda nao tem telefone — nao sobrescreve o que a
-        // propria pessoa informou no balcao
-        const upd = await sql`UPDATE cliente_documento SET telefone_fim = ${fim}, atualizado_em = now()
-          WHERE organizacao_id = ${ORG} AND cpf_hash = ${x.cpf_hash} AND telefone_fim IS NULL`;
-        tGravados += upd.count;
-      } else tGravados++;
-    }
+    // UM update por pagina, nao por linha: 18 mil queries individuais esgotam
+    // as portas do sistema (EADDRNOTAVAIL) antes de terminar.
+    const pares = linhas
+      .map((x) => ({ h: x.cpf_hash, t: String(x.whatsapp || '').replace(/\D/g, '').slice(-8) }))
+      .filter((x) => x.h && x.t.length === 8);
+    if (pares.length && !DRY) {
+      // so preenche quem ainda nao tem telefone — nao sobrescreve o que a
+      // propria pessoa informou no balcao
+      const upd = await sql`
+        UPDATE cliente_documento c
+           SET telefone_fim = v.t, atualizado_em = now()
+          FROM (VALUES ${sql(pares.map((x) => [x.h, x.t]))}) AS v(h, t)
+         WHERE c.organizacao_id = ${ORG} AND c.cpf_hash = v.h AND c.telefone_fim IS NULL`;
+      tGravados += upd.count;
+    } else if (DRY) tGravados += pares.length;
     de += PAGINA;
   }
   console.log(`  votantes com WhatsApp    : ${tLidos}`);
