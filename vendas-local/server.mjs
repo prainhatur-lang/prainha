@@ -2145,7 +2145,10 @@ async function apiCaixaAjuste(body, quem) {
   const n = Number(body.numero);
   const tipo = String(body.tipo || '');
   const modo = String(body.modo || 'valor');
-  if (tipo === 'desconto' && !(quem && quem.desconto)) return { ok: false, erro: 'sem permissão de desconto (Aplicar Desconto)' };
+  // desconto E acréscimo caem na MESMA permissão do Consumer: 12 = "Aplicar
+  // Descontos / Modificar Taxas" (acréscimo é mexer em taxa). Sem a trava,
+  // qualquer login de caixa alterava o total da conta.
+  if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALDESCONTO DESC, TOTALACRESCIMO ACR, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
@@ -7027,13 +7030,25 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .mchip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
 .mchip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
 .mchip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
+.mchip.sel{border-color:var(--gold2);box-shadow:0 0 0 2px rgba(224,101,26,.22)}
+/* celular: um painel por vez (mesa aberta esconde a lista); o convite "toque
+   numa mesa" só faz sentido quando os dois painéis estão visíveis */
+@media (max-width:899px){body.m #lado{display:none}.ph{display:none}}
+/* tablet deitado: caixa clássico em DUAS colunas — mesas à esquerda (sempre
+   de pé), conta e ações à direita. Sem vai-e-volta de tela. */
+@media (min-width:900px){
+  .wrap{max-width:1200px;display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start}
+  .wrap.solo{display:block;max-width:560px}
+  #lado{position:sticky;top:66px;max-height:calc(100vh - 80px);overflow:auto}
+  .lst{grid-template-columns:1fr 1fr}
+}
 </style></head><body>
 <header><h1>${LOJA_NOME} <b>Caixa</b></h1><span id="hdr"></span></header>
 <div class="wrap" id="app"></div>
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
 var NOME=null,PODE={desconto:false,fiado:false},MESA=null,CONTA=null,DMODO='valor';
-function app(h){document.getElementById('app').innerHTML=h}
+var TELA='login',MESAS=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -7041,21 +7056,70 @@ async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});re
 async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
 function numBr(s){var t=String(s||'').replace(/[^\\d.,]/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)&&n>0?n:0}
 function setHdr(){var e=document.getElementById('hdr');if(e)e.innerHTML=NOME?('<span class="mut">'+esc(NOME)+'</span> · <a class="sair" onclick="sair()">sair</a>'):''}
-function sair(){try{localStorage.removeItem('caixa_tok')}catch(e){}TOK=null;NOME=null;setHdr();telaLogin()}
+function sair(){try{localStorage.removeItem('caixa_tok')}catch(e){}TOK=null;NOME=null;MESA=null;CONTA=null;TELA='login';setHdr();render()}
+/* ---- DOIS painéis ----
+   #lado = mesas abertas (fica de pé o tempo todo, se renova a cada 10s)
+   #main = conta e ações da mesa escolhida
+   No tablet deitado os dois vivem lado a lado (CSS >=900px): toca na mesa à
+   esquerda, recebe à direita. No celular, um painel por vez (body.m). */
+function irTela(t){TELA=t;render()}
+function render(){
+  var app=document.getElementById('app');
+  app.className='wrap'+(TELA==='login'?' solo':'');
+  document.body.className=(TELA!=='login'&&TELA!=='home')?'m':'';
+  if(!document.getElementById('lado')||!document.getElementById('main'))
+    app.innerHTML='<div id="lado"></div><div id="main"></div>';
+  pintaLado();pintaMain();
+}
+function pintaLado(){
+  var el=document.getElementById('lado');if(!el)return;
+  if(TELA==='login'){el.innerHTML='';return}
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
+    '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
+    '<button class="big" onclick="carregar()">Abrir</button>'+
+    '<div id="aerr" class="err"></div></div>';
+  var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
+}
+function chips(){
+  if(MESAS==null)return '<span class="mut">carregando…</span>';
+  var h='';
+  (MESAS.mesas||[]).forEach(function(m){h+=mchip(m.numero,'Mesa '+m.numero,m)});
+  (MESAS.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
+  return h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
+}
+function mchip(num,lbl,m){
+  return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+lbl+
+    (m.nome?'<b>'+esc(m.nome)+'</b>':'')+'<small>'+(m.itens||0)+' itens · '+brl(m.valor_total)+'</small></button>';
+}
+async function listar(){
+  // renova SÓ o miolo da lista: o campo "digite o número" pode estar em uso
+  try{MESAS=await jget('/api/venda/abertas')}catch(e){return}
+  var el=document.getElementById('lista');if(el)el.innerHTML=chips();
+}
+function pintaMain(){
+  var el=document.getElementById('main');if(!el)return;
+  if(TELA==='login')return telaLogin(el);
+  if(TELA==='home'){el.innerHTML='<div class="card ph"><div class="mut">👈 Toque numa mesa pra abrir a conta.</div></div>';return}
+  if(TELA==='conta')return pinta(el);
+  if(TELA==='desc')return telaDesc(el);
+  if(TELA==='acr')return telaAcr(el);
+  if(TELA==='rec')return telaReceber(el);
+}
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado};abrir()}
-  else {TOK=null;telaLogin()}
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado};TELA='home';setHdr();render();listar()}
+  else {TOK=null;TELA='login';render()}
 }
-function telaLogin(){
+function telaLogin(el){
   setHdr();
-  app('<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
     '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos no Consumer.</div>'+
     '<input id="lg" placeholder="seu login" autocapitalize="none">'+
     '<input id="pn" class="num" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8">'+
     '<div id="pn2box"></div>'+
     '<button class="big" onclick="entrar()">Entrar</button>'+
-    '<div id="lerr" class="err"></div></div>');
+    '<div id="lerr" class="err"></div></div>';
   var e=document.getElementById('lg');if(e)e.focus();
 }
 async function entrar(){
@@ -7071,43 +7135,26 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado};setHdr();abrir();
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado};
+  setHdr();TELA='home';MESAS=null;render();listar();
 }
-function abrir(){
-  setHdr();MESA=null;CONTA=null;
-  app('<div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div>'+
-    '<div id="lista" class="mut">carregando…</div>'+
-    '<div class="card" style="margin-top:12px"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
-    '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
-    '<button class="big" onclick="carregar()">Abrir</button>'+
-    '<div id="aerr" class="err"></div></div>');
-  var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
-  listar();
-}
-async function listar(){
-  var el=document.getElementById('lista');if(!el)return;
-  var d;try{d=await jget('/api/venda/abertas')}catch(e){el.textContent='não consegui listar as mesas';return}
-  var h='';
-  (d.mesas||[]).forEach(function(m){h+=mchip(m.numero,'Mesa '+m.numero,m)});
-  (d.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
-  el.innerHTML=h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
-}
-function mchip(num,lbl,m){
-  return '<button class="mchip st-'+(m.status||'andamento')+'" onclick="carregar('+num+')">'+lbl+
-    (m.nome?'<b>'+esc(m.nome)+'</b>':'')+'<small>'+(m.itens||0)+' itens · '+brl(m.valor_total)+'</small></button>';
-}
+function voltarMesas(){MESA=null;CONTA=null;irTela('home')}
 async function carregar(n){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
   if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
-  MESA=num;app('<div class="mut" style="padding:16px">abrindo…</div>');
+  if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
+  MESA=num;irTela('conta');
   var c=await jget('/api/caixa/conta?n='+num);
-  if(!c.ok){app('<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
-    '<button class="big g" onclick="abrir()">Voltar</button></div>');return}
-  CONTA=c;pinta();
+  if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
+    '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
+  CONTA=c;
+  if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
+  var el2=document.getElementById('lista');if(el2)el2.innerHTML=chips(); // marca o chip escolhido
 }
-function pinta(){
+function pinta(el){
   var c=CONTA;
-  var h='<button class="seg" style="margin-bottom:10px" onclick="abrir()">◂ outra mesa</button>'+
+  if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+
       (c.nome?' · '+esc(c.nome):'')+'</div>';
   h+=(c.itens||[]).map(function(i){return '<div class="it"><span>'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
@@ -7118,21 +7165,22 @@ function pinta(){
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
   h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
   h+='<div class="card">';
-  h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="telaDesc()">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
-     '<button class="seg" onclick="telaAcr()">+ Acréscimo</button></div>';
-  h+='<button class="big" onclick="telaReceber()"'+(c.falta>0?'':' disabled')+'>💵 Receber em dinheiro</button>';
+  // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
+  h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
+     (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
+  h+='<button class="big" onclick="irTela(\\'rec\\')"'+(c.falta>0?'':' disabled')+'>💵 Receber em dinheiro</button>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
-  app(h);
+  el.innerHTML=h;
 }
-function telaDesc(){
+function telaDesc(el){
   DMODO='valor';
-  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Desconto na mesa '+MESA+'</div>'+
     '<div class="row" style="margin-bottom:8px"><button class="seg on" id="dmv" onclick="setDM(\\'valor\\')">R$</button><button class="seg" id="dmp" onclick="setDM(\\'pct\\')">%</button></div>'+
     '<input id="dv" class="num" inputmode="decimal" placeholder="quanto?">'+
     '<div class="mut" id="dprev" style="margin-top:6px"></div>'+
     '<button class="big o" onclick="aplicaDesc()">Aplicar desconto</button>'+
-    '<div id="derr" class="err"></div></div>');
+    '<div id="derr" class="err"></div></div>';
   var e=document.getElementById('dv');if(e){e.focus();e.addEventListener('input',prevDesc)}
 }
 function setDM(m){DMODO=m;document.getElementById('dmv').className='seg'+(m==='valor'?' on':'');document.getElementById('dmp').className='seg'+(m==='pct'?' on':'');prevDesc()}
@@ -7149,12 +7197,12 @@ async function aplicaDesc(){
   if(!r.ok){document.getElementById('derr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
-function telaAcr(){
-  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+function telaAcr(el){
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Acréscimo (gorjeta a mais) — mesa '+MESA+'</div>'+
     '<input id="av" class="num" inputmode="decimal" placeholder="quanto a mais? (R$)">'+
     '<button class="big o" onclick="aplicaAcr()">Aplicar acréscimo</button>'+
-    '<div id="aerr2" class="err"></div></div>');
+    '<div id="aerr2" class="err"></div></div>';
   var e=document.getElementById('av');if(e)e.focus();
 }
 async function aplicaAcr(){
@@ -7164,15 +7212,15 @@ async function aplicaAcr(){
   if(!r.ok){document.getElementById('aerr2').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
-function telaReceber(){
+function telaReceber(el){
   var falta=CONTA.falta;
-  app('<button class="seg" style="margin-bottom:10px" onclick="pinta()">◂ voltar</button>'+
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Receber em dinheiro</div>'+
     '<div class="mut">Falta '+brl(falta)+' na mesa '+MESA+'</div>'+
     '<input id="rv" class="num" inputmode="decimal" value="'+falta.toFixed(2).replace('.',',')+'" style="margin-top:8px">'+
     '<div class="mut" id="rtroco" style="margin-top:6px"></div>'+
     '<button class="big" onclick="receber()">Confirmar recebimento</button>'+
-    '<div id="rerr" class="err"></div></div>');
+    '<div id="rerr" class="err"></div></div>';
   var e=document.getElementById('rv');if(e){e.focus();e.addEventListener('input',troco)}
 }
 function troco(){
@@ -7188,6 +7236,22 @@ async function receber(){
   if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
+/* o caixa fica horas ligado: a lista e a conta na tela se renovam sozinhas.
+   A conta SÓ quando é a tela ativa — nunca por cima de um valor sendo digitado
+   (desconto/acréscimo/receber não são tocados pelo timer). */
+setInterval(function(){
+  if(document.hidden||!TOK||TELA==='login')return;
+  listar();
+  if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA).then(function(c){
+    if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)){CONTA=c;pintaMain()}}).catch(function(){});
+},10000);
+// versão nova no servidor -> recarrega, mas nunca no meio de uma conta aberta
+var VERSAO_MINHA='${VERSAO}';
+setInterval(function(){
+  if(document.hidden||(TELA!=='home'&&TELA!=='login'))return;
+  fetch('/api/versao',{cache:'no-store'}).then(function(r){return r.json()}).then(function(v){
+    if(v&&v.versao&&v.versao!==VERSAO_MINHA)location.reload()}).catch(function(){});
+},60000);
 inicio();
 </script></body></html>`;
 
