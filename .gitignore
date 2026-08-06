@@ -63,3 +63,6 @@ agente-local/.cache/
 
 # Output de scripts read-only de exploração
 insumos-atual.csv
+
+# AppleDouble do macOS em volume externo
+._*

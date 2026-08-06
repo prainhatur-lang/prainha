@@ -2,15 +2,19 @@
 //
 // CIELO03 = Captura e Previsão  -> equivale ao CSV "Vendas Detalhado"
 // CIELO04 = Liquidação e Pagamento -> equivale ao CSV "Recebíveis Detalhado"
+// CIELO16 = Pix -> recebíveis Pix (registro tipo 8, que também pode vir no 04)
 //
 // Devolve as MESMAS interfaces dos parsers de CSV (CieloVendaRow /
 // CieloRecebivelRow) de propósito: assim todo o pipeline que já existe
 // (auto-split por EC, dedup, conciliação) funciona sem alteração.
 //
-// Layout validado campo a campo contra arquivos reais de 29/07/2026 e cruzado
-// com os pagamentos do PDV: autorização bateu em 16/16 linhas e o NSU também
-// (ver GOTCHA do zero à esquerda abaixo). Especificação: manual v15 da Cielo,
-// seção "TIPOS DE REGISTROS E ESTRUTURA".
+// Layout validado duas vezes:
+// - campo a campo contra arquivos reais de 29/07/2026, cruzado com os
+//   pagamentos do PDV: autorização bateu em 16/16 linhas e o NSU também
+//   (ver GOTCHA do zero à esquerda abaixo);
+// - contra o kit oficial de teste da Cielo (ArquivoTeste_ExtratoEletronico.zip,
+//   manual v15.15), que cobre voucher, antecipação ARV, Pix e bloqueio/
+//   desbloqueio de Pix — são os fixtures de cielo-edi.test.ts.
 
 import type { CieloVendaRow } from './cielo-vendas';
 import type { CieloRecebivelRow } from './cielo-recebiveis';
@@ -23,19 +27,20 @@ const E = {
   parcela: [18, 19],
   totalParcelas: [20, 21],
   autorizacao: [22, 27],
-  tipoLancamento: [28, 29],
+  tipoLancamento: [28, 29], // posting type — tabela II do manual
   chaveUr: [30, 129],
   codigoTransacao: [130, 151],
   formaPagamento: [156, 158],
   nsu: [176, 181],
   tid: [192, 211],
-  valorBruto: [248, 260],
+  valorBruto: [248, 260], // valor TOTAL da venda (parcelado: soma das parcelas)
+  valorBrutoParcela: [262, 274], // valor bruto da parcela/lançamento liberado
   valorLiquido: [276, 288],
   valorTaxa: [290, 302],
   hora: [471, 476], // HHMMSS
   dataAutorizacao: [566, 573], // ddMMyyyy
   dataCaptura: [574, 581], // ddMMyyyy
-  dataPrevista: [630, 637], // ddMMyyyy — vencimento/previsão de pagamento
+  dataPrevista: [630, 637], // ddMMyyyy — vencimento ORIGINAL (não muda em reapresentação)
 } as const;
 
 /** Posições do registro D — UR/Agenda (o crédito que cai no banco). */
@@ -44,7 +49,79 @@ const D = {
   valorBruto: [73, 85],
   valorTaxa: [87, 99],
   valorLiquido: [101, 113],
+  dataPagamento: [268, 275], // ddMMyyyy — data REAL do pagamento (atualiza em reapresentação)
 } as const;
+
+/** Posições do registro 8 — transação Pix (arquivos 04 e 16). */
+const P = {
+  estabelecimento: [2, 11],
+  tipoTransacao: [12, 13], // 01=Pix 02=ajuste a crédito 03=ajuste a débito
+  dataTransacao: [14, 19], // yyMMdd
+  pixId: [26, 61],
+  nsu: [62, 67],
+  dataPagamento: [68, 73], // yyMMdd
+  valorBruto: [75, 87],
+  valorTaxa: [89, 101],
+  valorLiquido: [103, 115],
+  statusTransferencia: [223, 224],
+} as const;
+
+/**
+ * Posting types (tabela II) que são VENDA. Todo o resto — ajustes,
+ * cancelamento, chargeback, aluguel de POS, cessão, gravame, ARV — não é
+ * captura de venda. O kit de teste da Cielo prova o perigo: o CIELO03 de
+ * 19/02 traz um débito de antecipação ARV (posting 49, NSU 000000) que sem
+ * este filtro viraria uma "venda" de R$ -238,45 em venda_adquirente.
+ */
+const POSTING_VENDA = new Set(['01', '02', '03', '42']);
+
+/**
+ * Rótulo de status pros lançamentos do CIELO04 que não são venda. Eles FICAM
+ * no recebível de propósito: são os débitos/créditos que explicam o líquido
+ * do dia (ex.: venda antecipada entra +238,45 e o débito ARV -238,45 → zero
+ * na conta, exatamente o que o extrato do banco mostra). A conciliação já
+ * trata valor negativo como tarifa/débito da Cielo, não como exceção.
+ */
+const STATUS_POSTING: Record<string, string> = {
+  '04': 'Ajuste débito',
+  '05': 'Ajuste crédito',
+  '06': 'Cancelamento',
+  '07': 'Cancelamento revertido',
+  '08': 'Chargeback',
+  '09': 'Chargeback revertido',
+  '10': 'Tarifa equipamento',
+  '11': 'Antecipação (cessão)',
+  '13': 'Gravame débito',
+  '14': 'Gravame crédito',
+  '15': 'Compensação débito',
+  '16': 'Compensação crédito',
+  '17': 'Cessão revertida',
+  '18': 'Cessão revertida',
+  '49': 'Antecipação ARV',
+  '50': 'Antecipação ARV',
+  '51': 'Antecipação ARV',
+  '52': 'Antecipação ARV',
+  '53': 'Antecipação ARV',
+  '54': 'Antecipação ARV',
+};
+
+/**
+ * Status da transferência Pix (registro 8, posições 223-224). Pelo manual,
+ * só 01 (liquidado na Conta Cielo) e 05 (liquidado na conta principal)
+ * valem como pago; o resto precisa de confirmação — o rótulo fica na coluna
+ * status pro operador ver.
+ */
+const STATUS_PIX: Record<string, string> = {
+  '01': 'Pago',
+  '05': 'Pago',
+  '02': 'Em transferência',
+  '03': 'Transferência negada',
+  '04': 'Dados bancários inválidos',
+  '06': 'Bloqueado',
+  '07': 'Desbloqueado',
+  '08': 'Liquidação judicial',
+  '09': 'Compensado',
+};
 
 const rec = (linha: string, campo: readonly [number, number]): string =>
   linha.slice(campo[0] - 1, campo[1]).trim();
@@ -62,6 +139,13 @@ function data(linha: string, campo: readonly [number, number]): string {
   const s = rec(linha, campo);
   if (!/^\d{8}$/.test(s)) return '';
   return `${s.slice(0, 2)}/${s.slice(2, 4)}/${s.slice(4)}`;
+}
+
+/** yyMMdd (datas do registro 8/Pix) -> dd/mm/yyyy. */
+function dataYY(linha: string, campo: readonly [number, number]): string {
+  const s = rec(linha, campo);
+  if (!/^\d{6}$/.test(s)) return '';
+  return `${s.slice(4)}/${s.slice(2, 4)}/20${s.slice(0, 2)}`;
 }
 
 function hora(linha: string, campo: readonly [number, number]): string {
@@ -117,7 +201,7 @@ function formaPagamento(bandeira: string, tipoLiq: string, parcelas: string): st
 }
 
 export interface CieloEdiInfo {
-  tipoArquivo: string; // CIELO03 | CIELO04 | CIELO09 | CIELO15
+  tipoArquivo: string; // CIELO03 | CIELO04 | CIELO09 | CIELO15 | CIELO16
   matriz: string;
   dataProcessamento: string; // dd/mm/yyyy
   sequencial: string;
@@ -159,56 +243,107 @@ export function parseCieloEdiVendas(content: Buffer | string): CieloVendaRow[] {
   if (info.tipoArquivo !== 'CIELO03') {
     throw new Error(
       `Esperado CIELO03 (Captura e Previsão) mas o arquivo é ${info.tipoArquivo}. ` +
-        'CIELO04 é o de pagamentos/recebíveis.',
+        'CIELO04/CIELO16 são os de pagamentos/recebíveis.',
     );
   }
-  return linhasDeTipo(content, 'E').map((l) => {
-    const bandeira = rec(l, E.bandeira);
-    return {
-      data: data(l, E.dataCaptura) || data(l, E.dataAutorizacao),
-      hora: hora(l, E.hora),
-      estabelecimento: rec(l, E.estabelecimento),
-      formaPagamento: formaPagamento(bandeira, rec(l, E.tipoLiquidacao), rec(l, E.totalParcelas)),
-      bandeira: BANDEIRAS[bandeira] ?? bandeira,
-      valorBruto: valor(l, E.valorBruto),
-      valorLiquido: valor(l, E.valorLiquido),
-      valorTaxa: Math.abs(valor(l, E.valorTaxa)),
-      autorizacao: rec(l, E.autorizacao),
-      nsu: normalizaNsu(rec(l, E.nsu)),
-      tid: rec(l, E.tid) || null,
-      dataPrevistaPagamento: data(l, E.dataPrevista),
-    };
-  });
+  return (
+    linhasDeTipo(content, 'E')
+      // só capturas de venda (ver POSTING_VENDA) e, em parcelado, só a
+      // 1ª parcela — o CIELO03 repete um registro E por parcela da MESMA
+      // venda (mesmo NSU/autorização) e a venda é uma só. valorBruto é o
+      // total da venda, que é o que casa com o PDV; valorLiquido/valorTaxa
+      // são os da 1ª parcela (limitação aceita: parcelado é raro no bar).
+      .filter(
+        (l) => POSTING_VENDA.has(rec(l, E.tipoLancamento)) && Number(rec(l, E.parcela)) <= 1,
+      )
+      .map((l) => {
+        const bandeira = rec(l, E.bandeira);
+        return {
+          data: data(l, E.dataCaptura) || data(l, E.dataAutorizacao),
+          hora: hora(l, E.hora),
+          estabelecimento: rec(l, E.estabelecimento),
+          formaPagamento: formaPagamento(bandeira, rec(l, E.tipoLiquidacao), rec(l, E.totalParcelas)),
+          bandeira: BANDEIRAS[bandeira] ?? bandeira,
+          valorBruto: valor(l, E.valorBruto),
+          valorLiquido: valor(l, E.valorLiquido),
+          valorTaxa: Math.abs(valor(l, E.valorTaxa)),
+          autorizacao: rec(l, E.autorizacao),
+          nsu: normalizaNsu(rec(l, E.nsu)),
+          tid: rec(l, E.tid) || null,
+          dataPrevistaPagamento: data(l, E.dataPrevista),
+        };
+      })
+  );
 }
 
-/** CIELO04 (Liquidação e Pagamento) -> recebíveis, no mesmo formato do CSV. */
+/** Registro 8 (Pix) -> recebível, no mesmo formato do CSV. */
+function pixParaRecebivel(l: string): CieloRecebivelRow {
+  return {
+    dataPagamento: dataYY(l, P.dataPagamento),
+    dataVenda: dataYY(l, P.dataTransacao),
+    estabelecimento: rec(l, P.estabelecimento),
+    formaPagamento: 'Pix',
+    bandeira: 'Pix',
+    valorBruto: valor(l, P.valorBruto),
+    valorTaxa: Math.abs(valor(l, P.valorTaxa)),
+    valorLiquido: valor(l, P.valorLiquido),
+    // Pix não tem código de autorização; entra o Pix ID (único por transação,
+    // ajustes têm o próprio) — garante a dedupe do unique (nsu, data, autorização),
+    // que com autorização NULL não deduplicaria nada no Postgres.
+    autorizacao: rec(l, P.pixId),
+    nsu: normalizaNsu(rec(l, P.nsu)),
+    status: STATUS_PIX[rec(l, P.statusTransferencia)] ?? 'Pix',
+  };
+}
+
+/**
+ * CIELO04 (Liquidação e Pagamento) e CIELO16 (Pix) -> recebíveis, no mesmo
+ * formato do CSV. No 04 entram os registros E (cartão/voucher, inclusive os
+ * lançamentos que não são venda — ver STATUS_POSTING) e os registros 8 (Pix
+ * liquidado); no 16 só existem registros 8.
+ */
 export function parseCieloEdiRecebiveis(content: Buffer | string): CieloRecebivelRow[] {
   const info = lerCabecalhoEdi(content);
   if (!info) throw new Error('Arquivo EDI sem header (registro 0).');
-  if (info.tipoArquivo !== 'CIELO04') {
+  if (info.tipoArquivo !== 'CIELO04' && info.tipoArquivo !== 'CIELO16') {
     throw new Error(
-      `Esperado CIELO04 (Liquidação e Pagamento) mas o arquivo é ${info.tipoArquivo}. ` +
+      `Esperado CIELO04 (Liquidação e Pagamento) ou CIELO16 (Pix) mas o arquivo é ${info.tipoArquivo}. ` +
         'CIELO03 é o de vendas.',
     );
   }
-  // Os registros E do CIELO04 são o detalhe transacional de cada UR paga —
-  // é esse nível que casa 1:1 com a venda (mesma autorização/NSU).
-  return linhasDeTipo(content, 'E').map((l) => {
-    const bandeira = rec(l, E.bandeira);
-    return {
-      dataPagamento: data(l, E.dataPrevista),
-      dataVenda: data(l, E.dataCaptura) || data(l, E.dataAutorizacao),
-      estabelecimento: rec(l, E.estabelecimento),
-      formaPagamento: formaPagamento(bandeira, rec(l, E.tipoLiquidacao), rec(l, E.totalParcelas)),
-      bandeira: BANDEIRAS[bandeira] ?? bandeira,
-      valorBruto: valor(l, E.valorBruto),
-      valorTaxa: Math.abs(valor(l, E.valorTaxa)),
-      valorLiquido: valor(l, E.valorLiquido),
-      autorizacao: rec(l, E.autorizacao),
-      nsu: normalizaNsu(rec(l, E.nsu)),
-      status: 'Pago',
-    };
-  });
+  const texto = typeof content === 'string' ? content : content.toString('latin1');
+  const rows: CieloRecebivelRow[] = [];
+  // O CIELO04 vem agrupado: registro D (a UR paga) seguido dos seus E. É o D
+  // que tem a data REAL do pagamento — o campo do E é o vencimento original,
+  // que fica pra trás quando o pagamento é reapresentado.
+  let dataPagamentoUr = '';
+  for (const l of texto.split(/\r?\n/)) {
+    if (l.length < 300) continue;
+    if (l.startsWith('D')) {
+      dataPagamentoUr = data(l, D.dataPagamento);
+    } else if (l.startsWith('E')) {
+      const bandeira = rec(l, E.bandeira);
+      const posting = rec(l, E.tipoLancamento);
+      rows.push({
+        dataPagamento: dataPagamentoUr || data(l, E.dataPrevista),
+        dataVenda: data(l, E.dataCaptura) || data(l, E.dataAutorizacao),
+        estabelecimento: rec(l, E.estabelecimento),
+        formaPagamento: formaPagamento(bandeira, rec(l, E.tipoLiquidacao), rec(l, E.totalParcelas)),
+        bandeira: BANDEIRAS[bandeira] ?? bandeira,
+        // bruto da PARCELA/lançamento (não o total da venda): é o que liquida
+        // nesta UR — pro ARV do kit de teste, é onde mora o -238,45.
+        valorBruto: valor(l, E.valorBrutoParcela),
+        valorTaxa: Math.abs(valor(l, E.valorTaxa)),
+        valorLiquido: valor(l, E.valorLiquido),
+        autorizacao: rec(l, E.autorizacao),
+        nsu: normalizaNsu(rec(l, E.nsu)),
+        status: STATUS_POSTING[posting] ?? 'Pago',
+      });
+    } else if (l.startsWith('8')) {
+      rows.push(pixParaRecebivel(l));
+    }
+  }
+  return rows;
 }
 
 /**
@@ -222,11 +357,13 @@ export function parseCieloEdiUrs(content: Buffer | string): Array<{
   valorBruto: number;
   valorTaxa: number;
   valorLiquido: number;
+  dataPagamento: string;
 }> {
   return linhasDeTipo(content, 'D').map((l) => ({
     estabelecimento: rec(l, D.estabelecimento),
     valorBruto: valor(l, D.valorBruto),
     valorTaxa: Math.abs(valor(l, D.valorTaxa)),
     valorLiquido: valor(l, D.valorLiquido),
+    dataPagamento: data(l, D.dataPagamento),
   }));
 }

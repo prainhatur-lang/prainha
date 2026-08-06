@@ -9,6 +9,7 @@ import {
   parseCnab240Inter,
   extrairIdentificacaoCnab,
   ehArquivoEdi,
+  lerCabecalhoEdi,
   parseCieloEdiVendas,
   parseCieloEdiRecebiveis,
 } from '@concilia/conciliador/parsers';
@@ -576,6 +577,17 @@ export function detectarTipo(conteudo: Buffer): 'CIELO_VENDAS' | 'CIELO_RECEBIVE
   let buf = conteudo;
   if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
     buf = buf.subarray(3);
+  }
+
+  // --- EDI posicional do Extrato Eletrônico (o que a API da Cielo devolve e o
+  //     que se baixa em "Extrato Eletrônico" no portal). Identifica pelo header
+  //     (registro 0). ehArquivoEdi exige "CIELO\d\d", então CNAB (começa com
+  //     077) e CSV não caem aqui. ---
+  if (ehArquivoEdi(buf)) {
+    const tipoEdi = lerCabecalhoEdi(buf)!.tipoArquivo;
+    if (tipoEdi === 'CIELO03') return 'CIELO_VENDAS';
+    if (tipoEdi === 'CIELO04' || tipoEdi === 'CIELO16') return 'CIELO_RECEBIVEIS';
+    return null; // CIELO09/15 etc.: sem suporte — melhor recusar que classificar errado
   }
 
   // Sniff nos primeiros 8KB em ambos encodings (headers Cielo variam)

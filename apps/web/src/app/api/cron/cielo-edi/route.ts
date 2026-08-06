@@ -11,19 +11,27 @@
 // em vez de falhar em silencio — o log diz se o problema e' deles ou nosso.
 
 import { NextResponse } from 'next/server';
+import { db, schema } from '@concilia/db';
+import { eq } from 'drizzle-orm';
 import { credenciaisEdi, listarArquivos, baixarArquivo, diagnosticar } from '@/lib/cielo-edi';
-import { processarCieloVendas, processarCieloRecebiveis } from '@/lib/processadores';
+import {
+  processarCieloVendas,
+  processarCieloRecebiveis,
+  extrairEcsCielo,
+  mapearEcParaFilial,
+  type RoteamentoEc,
+} from '@/lib/processadores';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-/** CIELO03 = vendas · CIELO04 = recebiveis. Os demais layouts ficam de fora. */
+/** CIELO03 = vendas · CIELO04 = recebiveis · CIELO16 = Pix (recebiveis). */
 function classificar(nome: string, tipo: string): 'vendas' | 'recebiveis' | null {
   const s = (nome + ' ' + tipo).toUpperCase();
   if (s.includes('CIELO03')) return 'vendas';
-  if (s.includes('CIELO04')) return 'recebiveis';
+  if (s.includes('CIELO04') || s.includes('CIELO16')) return 'recebiveis';
   return null;
 }
 
@@ -59,6 +67,16 @@ export async function GET(req: Request) {
     );
   }
 
+  // Nome da filial default (a da env) pro auto-split por EC: com hierarquia de
+  // grupo comercial na Cielo, um arquivo só pode trazer ECs das DUAS filiais —
+  // o roteamento manda cada linha pra filial dona do EC (aprendida do
+  // histórico), igual o upload manual já faz. EC inédito cai na filial da env.
+  const [filialDefault] = await db
+    .select({ nome: schema.filial.nome })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+
   const resultados: Array<Record<string, unknown>> = [];
   for (const arq of arquivos) {
     const tipo = classificar(arq.nome, arq.tipo);
@@ -66,10 +84,15 @@ export async function GET(req: Request) {
     try {
       const conteudo = await baixarArquivo(cred, arq);
       const storagePath = `cielo-edi/${arq.data || fim}/${arq.nome || arq.id}`;
+      const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
+      const rot: RoteamentoEc = {
+        mapaEc: await mapearEcParaFilial(ecs),
+        filialNomePadrao: filialDefault?.nome ?? '',
+      };
       const resumo =
         tipo === 'vendas'
-          ? await processarCieloVendas(filialId, conteudo, storagePath)
-          : await processarCieloRecebiveis(filialId, conteudo, storagePath);
+          ? await processarCieloVendas(filialId, conteudo, storagePath, rot)
+          : await processarCieloRecebiveis(filialId, conteudo, storagePath, rot);
       resultados.push({ arquivo: arq.nome || arq.id, tipo, ...resumo });
     } catch (e) {
       resultados.push({ arquivo: arq.nome || arq.id, tipo, erro: (e as Error).message });
