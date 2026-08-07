@@ -89,17 +89,6 @@
         android:dividerHeight="1dp"
         android:background="#FFFFFF" />
 
-    <!-- Totais ao vivo do Firebird -->
-    <TextView
-        android:id="@+id/resumo"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#FFFFFF"
-        android:textSize="15sp"
-        android:textStyle="bold"
-        android:textColor="#111827"
-        android:padding="10dp" />
-
     <TextView
         android:id="@+id/lioStatus"
         android:layout_width="match_parent"

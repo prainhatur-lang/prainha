@@ -177,7 +177,8 @@ object Cupom {
         if (extras.isNotEmpty()) {
             blocos.add(Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20))
         }
-        blocos.add(Lio.Bloco("Emitido ${agoraBr()}\n\n\n", tamanho = 16))
+        // 6 pulinhos: o papel sai inteiro da boca da impressora sem puxar.
+        blocos.add(Lio.Bloco("Emitido ${agoraBr()}\n\n\n\n\n\n", tamanho = 16))
         return blocos
     }
 }

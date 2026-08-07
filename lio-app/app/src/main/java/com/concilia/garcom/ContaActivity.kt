@@ -40,7 +40,6 @@ class ContaActivity : AppCompatActivity() {
     private lateinit var comandasBox: LinearLayout
     private lateinit var lista: ListView
     private lateinit var vazio: TextView
-    private lateinit var resumo: TextView
     private lateinit var lancarBtn: Button
     private lateinit var conferenciaBtn: Button
     private lateinit var contaPedidaBtn: Button
@@ -60,7 +59,6 @@ class ContaActivity : AppCompatActivity() {
         comandasBox = findViewById(R.id.comandas)
         lista = findViewById(R.id.itens)
         vazio = findViewById(R.id.contaVazia)
-        resumo = findViewById(R.id.resumo)
         lancarBtn = findViewById(R.id.lancar)
         conferenciaBtn = findViewById(R.id.conferencia)
         contaPedidaBtn = findViewById(R.id.contaPedida)
@@ -143,6 +141,14 @@ class ContaActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** Linha de total no FIM da lista — rola junto com os itens, em colunas. */
+    private data class Resumo(
+        val rotulo: String,
+        val valor: String,
+        val destaque: Boolean = false,
+        val vermelho: Boolean = false,
+    )
+
     private fun mostrarConta(c: Api.Conta?) {
         if (c == null) {
             // Mesa vazia: sem conta no Consumer ainda — o primeiro envio abre.
@@ -150,20 +156,16 @@ class ContaActivity : AppCompatActivity() {
             adapter.notifyDataSetChanged()
             vazio.visibility = View.VISIBLE
             vazio.text = "Sem conta aberta — lance o primeiro item"
-            resumo.text = ""
             badge.visibility = View.GONE
         } else {
-            // Itens + pagamentos como lançamentos individuais (em vermelho).
+            // Itens, depois os pagamentos (vermelho), e por último o FECHAMENTO
+            // organizado — tudo na MESMA lista, como um extrato.
             val linhas = mutableListOf<Any>()
             linhas.addAll(c.itens)
             linhas.addAll(c.pagamentos.filter { it.status == "ok" })
-            adapter.linhas = linhas
-            adapter.notifyDataSetChanged()
-            vazio.visibility = if (linhas.isEmpty()) View.VISIBLE else View.GONE
-            if (linhas.isEmpty()) vazio.text = "Conta aberta, sem itens"
-            badge.visibility = if (c.contaPedida) View.VISIBLE else View.GONE
+
             // Consumo + serviço − pago = saldo, SEMPRE com os 10% à vista.
-            // Antes de pedir a conta o serviço é estimativa (*); ao pedir, o
+            // Antes de pedir a conta o serviço é estimativa; ao pedir, o
             // servidor aplica no pedido e os números viram os oficiais.
             val taxa = Session.taxaServico(this)
             val taxaTxt = if (taxa == Math.floor(taxa)) taxa.toInt().toString() else taxa.toString()
@@ -172,21 +174,27 @@ class ContaActivity : AppCompatActivity() {
             val svc = if (aplicado) c.servico else Math.round(consumo * taxa) / 100.0
             val totalCom = consumo + svc
             val saldoExibe = if (aplicado) c.saldo else totalCom - c.pago
-            val resumoTxt = StringBuilder()
-            resumoTxt.append("Consumo ${Cupom.brl(consumo)} + Serviço $taxaTxt% ${Cupom.brl(svc)}${if (aplicado) "" else " *"}")
-            resumoTxt.append("\nTotal ${Cupom.brl(totalCom)}")
-            if (c.pago > 0) resumoTxt.append(" − Pago ${Cupom.brl(c.pago)}")
-            resumoTxt.append("\nSALDO ${Cupom.brl(saldoExibe)}")
-            if (!aplicado) resumoTxt.append("\n* o serviço entra no pedido ao pedir a conta")
-            // Mesa com comandas: a tela mostra o RESULTADO FINAL igual ao cupom
-            // (senão a mesa diz 171 e a conta impressa diz 222 — divergência).
+            linhas.add(Resumo("Consumo", Cupom.brl(consumo)))
+            linhas.add(Resumo("Serviço $taxaTxt%" + (if (aplicado) "" else " (entra ao pedir a conta)"), Cupom.brl(svc)))
+            linhas.add(Resumo("Total", Cupom.brl(totalCom)))
+            if (c.pago > 0) linhas.add(Resumo("Pago", "− " + Cupom.brl(c.pago), vermelho = true))
+            linhas.add(Resumo("SALDO", Cupom.brl(saldoExibe), destaque = true))
+
+            // Mesa com comandas: o RESULTADO FINAL igual ao cupom (senão a mesa
+            // diz 171 e a conta impressa diz 222 — divergência).
             val t = resumoGeral
             val nComandas = t?.optJSONArray("comandas")?.length() ?: 0
             if (t != null && nComandas > 0) {
-                resumoTxt.append("\nGERAL c/ $nComandas comanda(s) ${Cupom.brl(t.optDouble("geral", 0.0))}")
-                resumoTxt.append("  ·  FALTA ${Cupom.brl(t.optDouble("falta_geral", 0.0))}")
+                linhas.add(Resumo("Comandas na mesa ($nComandas)", Cupom.brl(t.optDouble("total_comandas", 0.0))))
+                linhas.add(Resumo("GERAL mesa+comandas", Cupom.brl(t.optDouble("geral", 0.0))))
+                linhas.add(Resumo("FALTA GERAL", Cupom.brl(t.optDouble("falta_geral", 0.0)), destaque = true))
             }
-            resumo.text = resumoTxt.toString()
+
+            adapter.linhas = linhas
+            adapter.notifyDataSetChanged()
+            vazio.visibility = if (c.itens.isEmpty()) View.VISIBLE else View.GONE
+            if (c.itens.isEmpty()) vazio.text = "Conta aberta, sem itens"
+            badge.visibility = if (c.contaPedida) View.VISIBLE else View.GONE
         }
         atualizarBotoes()
     }
@@ -890,11 +898,17 @@ class ContaActivity : AppCompatActivity() {
             val v = convertView ?: layoutInflater.inflate(R.layout.item_conta, parent, false)
             val nomeTxt = v.findViewById<TextView>(R.id.nome)
             val valorTxt = v.findViewById<TextView>(R.id.valor)
+            // Views recicladas: sempre resetar estilo antes de aplicar o da linha.
+            val preto = 0xFF111827.toInt()
+            val vermelho = 0xFFDC2626.toInt()
+            nomeTxt.setTypeface(null, android.graphics.Typeface.NORMAL)
+            valorTxt.setTypeface(null, android.graphics.Typeface.BOLD)
+            nomeTxt.textSize = 14f
+            valorTxt.textSize = 14f
+            nomeTxt.setTextColor(preto)
+            valorTxt.setTextColor(preto)
             when (val l = linhas[position]) {
                 is Api.ItemConta -> {
-                    val preto = 0xFF111827.toInt()
-                    nomeTxt.setTextColor(preto)
-                    valorTxt.setTextColor(preto)
                     if (l.tipo == 2) {
                         nomeTxt.text = "    + ${l.nome}"
                         valorTxt.text = if (l.valor > 0) Cupom.brl(l.valor) else ""
@@ -905,12 +919,24 @@ class ContaActivity : AppCompatActivity() {
                     }
                 }
                 is Api.PagFeito -> {
-                    val vermelho = 0xFFDC2626.toInt()
                     val hora = Cupom.horaBr(l.criadoEm)
                     nomeTxt.text = "Pago" + (if (hora.isNotBlank()) " $hora" else "") + " · ${l.forma}"
                     nomeTxt.setTextColor(vermelho)
                     valorTxt.text = "− ${Cupom.brl(l.valor)}"
                     valorTxt.setTextColor(vermelho)
+                }
+                is Resumo -> {
+                    nomeTxt.text = l.rotulo
+                    valorTxt.text = l.valor
+                    if (l.vermelho) {
+                        nomeTxt.setTextColor(vermelho)
+                        valorTxt.setTextColor(vermelho)
+                    }
+                    if (l.destaque) {
+                        nomeTxt.setTypeface(null, android.graphics.Typeface.BOLD)
+                        nomeTxt.textSize = 17f
+                        valorTxt.textSize = 17f
+                    }
                 }
             }
             return v
