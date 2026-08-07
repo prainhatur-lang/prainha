@@ -52,9 +52,27 @@ object Descoberta {
         if (!v.has("versao")) return null
         val cfg = httpGet("$base/api/config", 1500)
         val nome = cfg?.optString("loja")?.takeIf { it.isNotBlank() && cfg.optBoolean("ok") }
+            ?: nomePelaPagina(base)
             ?: base.removePrefix("http://").removePrefix("https://")
         return Servidor(base, nome)
     }
+
+    /** Servidor antigo (sem /api/config): o nome sai do <title> da página
+     *  /venda — "Prainha Bar — Venda" vira "Prainha Bar". */
+    private fun nomePelaPagina(base: String): String? = try {
+        val c = URL("$base/venda").openConnection() as HttpURLConnection
+        c.connectTimeout = 1500
+        c.readTimeout = 1500
+        val inicio = ByteArray(4096)
+        val lidos = c.inputStream.use { it.read(inicio) }
+        c.disconnect()
+        if (lidos <= 0) null else {
+            val html = String(inicio, 0, lidos, Charsets.UTF_8)
+            Regex("<title>([^<]+)</title>").find(html)?.groupValues?.get(1)
+                ?.replace(Regex("\\s*[—–-]\\s*(Venda|KDS)\\s*$"), "")
+                ?.trim()?.takeIf { it.isNotBlank() }
+        }
+    } catch (_: Exception) { null }
 
     /**
      * Varre as sub-redes locais + os `extras` (IPs conhecidos/salvos). Chama

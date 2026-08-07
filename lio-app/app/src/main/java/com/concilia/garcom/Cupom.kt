@@ -35,6 +35,19 @@ object Cupom {
         } catch (_: Exception) { iso.take(16).replace("T", " ") }
     }
 
+    /** ISO (UTC) → "21:14" em BRT — hora dos lançamentos de pagamento. */
+    fun horaBr(iso: String?): String {
+        if (iso.isNullOrBlank()) return ""
+        return try {
+            val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            f.timeZone = TimeZone.getTimeZone("UTC")
+            val d = f.parse(iso.take(19)) ?: return ""
+            val o = SimpleDateFormat("HH:mm", Locale.US)
+            o.timeZone = TimeZone.getTimeZone("America/Sao_Paulo")
+            o.format(d)
+        } catch (_: Exception) { "" }
+    }
+
     fun agoraBr(): String {
         val o = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US)
         o.timeZone = TimeZone.getTimeZone("America/Sao_Paulo")

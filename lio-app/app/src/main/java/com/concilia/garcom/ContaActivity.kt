@@ -6,6 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -13,14 +14,17 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import org.json.JSONObject
 
 // Conta da mesa/comanda — números AO VIVO do Firebird (GET /api/conta).
-// Daqui o garçom: lança itens (ProdutosActivity), pede a conta (trava novos
-// lançamentos), imprime a conferência na térmica da maquininha, e RECEBE no
-// terminal (Order Manager SDK) — integral ou parcial. Pagamento aprovado:
-// entra na fila de pendentes ANTES do registro, registra no vendas-local
-// (retry 3x) e sai da fila — dinheiro capturado não se perde nem duplica.
+// Daqui o garçom: lança itens (ProdutosActivity), pede/libera a conta,
+// imprime a conferência na térmica, identifica o cliente, vincula comanda,
+// transfere/junta mesas (menu ⋯) e RECEBE no terminal (Order Manager SDK) —
+// integral ou parcial. Pagamento aprovado entra na fila de pendentes ANTES
+// do registro no vendas-local (retry 3x) e só sai depois da confirmação —
+// dinheiro capturado não se perde nem duplica.
+//
+// A lista mostra os itens E os pagamentos como LANÇAMENTOS individuais
+// (hora + forma, em vermelho, valor negativo); o rodapé mostra o SALDO.
 class ContaActivity : AppCompatActivity() {
 
     private var numero = 0
@@ -41,7 +45,7 @@ class ContaActivity : AppCompatActivity() {
     private lateinit var receberBtn: Button
     private lateinit var lioStatus: TextView
 
-    private val adapter = ItemAdapter()
+    private val adapter = LinhaAdapter()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,6 +67,7 @@ class ContaActivity : AppCompatActivity() {
 
         titulo.text = if (ehComanda) "Comanda $numero" else "Mesa $numero"
         findViewById<Button>(R.id.voltar).setOnClickListener { finish() }
+        findViewById<Button>(R.id.maisAcoes).setOnClickListener { mostrarMaisAcoes() }
         lancarBtn.setOnClickListener { lancar() }
         conferenciaBtn.setOnClickListener { imprimirConferencia() }
         contaPedidaBtn.setOnClickListener { alternarContaPedida() }
@@ -117,6 +122,10 @@ class ContaActivity : AppCompatActivity() {
                     conta = c
                     mostrarConta(c)
                     mostrarComandas(info)
+                    // Nome de quem está na mesa, quando identificado.
+                    val nome = info?.nomes?.get(numero.toString())
+                    titulo.text = (if (ehComanda) "Comanda $numero" else "Mesa $numero") +
+                        (if (!nome.isNullOrBlank()) " · $nome" else "")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -130,24 +139,27 @@ class ContaActivity : AppCompatActivity() {
     private fun mostrarConta(c: Api.Conta?) {
         if (c == null) {
             // Mesa vazia: sem conta no Consumer ainda — o primeiro envio abre.
-            adapter.itens = emptyList()
+            adapter.linhas = emptyList()
             adapter.notifyDataSetChanged()
             vazio.visibility = View.VISIBLE
             vazio.text = "Sem conta aberta — lance o primeiro item"
             resumo.text = ""
             badge.visibility = View.GONE
         } else {
-            adapter.itens = c.itens
+            // Itens + pagamentos como lançamentos individuais (em vermelho).
+            val linhas = mutableListOf<Any>()
+            linhas.addAll(c.itens)
+            linhas.addAll(c.pagamentos.filter { it.status == "ok" })
+            adapter.linhas = linhas
             adapter.notifyDataSetChanged()
-            vazio.visibility = if (c.itens.isEmpty()) View.VISIBLE else View.GONE
-            if (c.itens.isEmpty()) vazio.text = "Conta aberta, sem itens"
+            vazio.visibility = if (linhas.isEmpty()) View.VISIBLE else View.GONE
+            if (linhas.isEmpty()) vazio.text = "Conta aberta, sem itens"
             badge.visibility = if (c.contaPedida) View.VISIBLE else View.GONE
-            val linhas = mutableListOf(
-                "Total ${Cupom.brl(c.total)}  ·  serviço ${Cupom.brl(c.servico)}",
-            )
-            if (c.pago > 0) linhas.add("Pago ${Cupom.brl(c.pago)}")
-            linhas.add("FALTA ${Cupom.brl(c.saldo)}")
-            resumo.text = linhas.joinToString("\n")
+            // Serviço zerado não vira "R$ 0,00" — só aparece quando o PDV aplicou.
+            val cab = if (c.servico > 0)
+                "Consumo ${Cupom.brl(c.total - c.servico)}  ·  Serviço ${Cupom.brl(c.servico)}  ·  Total ${Cupom.brl(c.total)}"
+            else "Total ${Cupom.brl(c.total)}"
+            resumo.text = "$cab\nSALDO ${Cupom.brl(c.saldo)}"
         }
         atualizarBotoes()
     }
@@ -224,6 +236,188 @@ class ContaActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- menu ⋯: identificar / vincular comanda / transferir-juntar ----
+
+    private fun mostrarMaisAcoes() {
+        data class Acao(val rotulo: String, val executar: () -> Unit)
+        val acoes = mutableListOf<Acao>()
+        acoes.add(Acao("👤 Identificar cliente") { dialogIdentificar() })
+        if (!ehComanda && Session.comandaAtiva(this)) {
+            acoes.add(Acao("🧾 Vincular comanda a esta mesa") { dialogVincular() })
+        }
+        acoes.add(Acao(if (ehComanda) "🔁 Mudar a comanda de mesa" else "🔁 Transferir/juntar em outra mesa") { dialogTransferir() })
+        AlertDialog.Builder(this)
+            .setTitle(titulo.text)
+            .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun campo(hint: String, tipo: Int = android.text.InputType.TYPE_CLASS_TEXT): EditText {
+        val e = EditText(this)
+        e.hint = hint
+        e.inputType = tipo
+        return e
+    }
+
+    private fun caixa(vararg views: View): LinearLayout {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(20), dp(8), dp(20), 0)
+        views.forEach {
+            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        return box
+    }
+
+    /** Nome/CPF/WhatsApp de quem está na mesa (busca o nome na casa/grupo/SPC). */
+    private fun dialogIdentificar() {
+        val nomeIn = campo("Nome")
+        val cpfIn = campo("CPF (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val telIn = campo("WhatsApp (com DDD)", android.text.InputType.TYPE_CLASS_PHONE)
+        val cadastrarCb = CheckBox(this)
+        cadastrarCb.text = "Cadastrar como cliente da casa"
+        cadastrarCb.isChecked = true
+        val buscarBtn = Button(this)
+        buscarBtn.text = "🔍 Buscar nome pelo CPF/telefone"
+        buscarBtn.isAllCaps = false
+        buscarBtn.setOnClickListener {
+            val cpf = cpfIn.text.toString().trim()
+            val tel = telIn.text.toString().trim()
+            if (cpf.isBlank() && tel.isBlank()) {
+                Toast.makeText(this, "Preencha CPF ou WhatsApp antes", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            buscarBtn.isEnabled = false
+            Thread {
+                val r = Api.identificarBuscar(Session.servidor(this), cpf.ifBlank { null }, tel.ifBlank { null })
+                runOnUiThread {
+                    buscarBtn.isEnabled = true
+                    val nome = r?.optStringOrNull("nome")
+                    if (nome != null) {
+                        nomeIn.setText(nome)
+                        Toast.makeText(this, "Achou: $nome", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, r?.optStringOrNull("aviso") ?: "Não achei — digite o nome", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }.start()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Quem está ${if (ehComanda) "na comanda" else "na mesa"} $numero?")
+            .setView(caixa(nomeIn, cpfIn, telIn, buscarBtn, cadastrarCb))
+            .setPositiveButton("Salvar") { _, _ ->
+                val nome = nomeIn.text.toString().trim()
+                if (nome.isBlank()) { Toast.makeText(this, "Informe o nome", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+                Thread {
+                    try {
+                        val r = Api.identificarSalvar(
+                            Session.servidor(this), numero, nome,
+                            cpfIn.text.toString().trim().ifBlank { null },
+                            telIn.text.toString().trim().ifBlank { null },
+                            cadastrarCb.isChecked,
+                        )
+                        runOnUiThread {
+                            when {
+                                r.optBoolean("ok") -> {
+                                    Toast.makeText(this, "✓ ${r.optString("nome_curto", nome)}", Toast.LENGTH_SHORT).show()
+                                    carregar()
+                                }
+                                r.optBoolean("ja_tem_dono") -> AlertDialog.Builder(this)
+                                    .setMessage("Já tem dono: ${r.optString("dono")}. O dono não muda por aqui — confira o CPF/telefone.")
+                                    .setPositiveButton("OK", null).show()
+                                else -> Toast.makeText(this, r.optStringOrNull("erro") ?: "Não salvou", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Pendura uma comanda nesta mesa (criação exige dono: nome + CPF/WhatsApp). */
+    private fun dialogVincular() {
+        val comandaIn = campo("Nº da comanda (${Session.comandaMin(this)}–${Session.numeroMax(this)})", android.text.InputType.TYPE_CLASS_NUMBER)
+        val nomeIn = campo("Nome do dono (obrigatório se for nova)")
+        val cpfIn = campo("CPF (ou WhatsApp abaixo)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val telIn = campo("WhatsApp (com DDD)", android.text.InputType.TYPE_CLASS_PHONE)
+        AlertDialog.Builder(this)
+            .setTitle("Vincular comanda à mesa $numero")
+            .setView(caixa(comandaIn, nomeIn, cpfIn, telIn))
+            .setPositiveButton("Vincular") { _, _ ->
+                val cNum = comandaIn.text.toString().trim().toIntOrNull()
+                if (cNum == null) { Toast.makeText(this, "Número da comanda inválido", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+                val tk = Session.token(this) ?: return@setPositiveButton logout()
+                Thread {
+                    try {
+                        val r = Api.vincular(
+                            Session.servidor(this), tk, numero, cNum,
+                            nomeIn.text.toString().trim().ifBlank { null },
+                            cpfIn.text.toString().trim().ifBlank { null },
+                            telIn.text.toString().trim().ifBlank { null },
+                        )
+                        runOnUiThread {
+                            when {
+                                r.optBoolean("ok") -> {
+                                    Toast.makeText(this, "✓ Comanda $cNum na mesa $numero" +
+                                        (r.optStringOrNull("nome_curto")?.let { " ($it)" } ?: ""), Toast.LENGTH_SHORT).show()
+                                    carregar()
+                                }
+                                r.optBoolean("precisa_dono") -> AlertDialog.Builder(this)
+                                    .setMessage(r.optString("erro")).setPositiveButton("OK", null).show()
+                                else -> Toast.makeText(this, r.optStringOrNull("erro") ?: "Não vinculou", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } catch (e: Api.SemSessao) {
+                        runOnUiThread { logout() }
+                    } catch (e: Exception) {
+                        runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Comanda→mesa muda o vínculo; mesa→mesa move TODOS os itens (juntar). */
+    private fun dialogTransferir() {
+        val paraIn = campo("Nº da mesa destino", android.text.InputType.TYPE_CLASS_NUMBER)
+        val aviso = TextView(this)
+        aviso.textSize = 13f
+        aviso.text = if (ehComanda) "A comanda $numero passa a ser da mesa escolhida."
+        else "TODOS os itens da mesa $numero vão pro destino — as comandas penduradas vão junto."
+        AlertDialog.Builder(this)
+            .setTitle(if (ehComanda) "Mudar comanda de mesa" else "Transferir / juntar mesas")
+            .setView(caixa(aviso, paraIn))
+            .setPositiveButton("Transferir") { _, _ ->
+                val para = paraIn.text.toString().trim().toIntOrNull()
+                if (para == null) { Toast.makeText(this, "Informe a mesa destino", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+                val tk = Session.token(this) ?: return@setPositiveButton logout()
+                Thread {
+                    try {
+                        val r = Api.transferir(Session.servidor(this), tk, numero, para, Session.login(this))
+                        runOnUiThread {
+                            if (r.optBoolean("ok")) {
+                                Toast.makeText(this, r.optString("msg", "Transferido!"), Toast.LENGTH_LONG).show()
+                                if (r.optString("tipo") == "mesa") finish() else carregar()
+                            } else {
+                                Toast.makeText(this, r.optStringOrNull("erro") ?: "Não transferiu", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } catch (e: Api.SemSessao) {
+                        runOnUiThread { logout() }
+                    } catch (e: Exception) {
+                        runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
     // ---- conferência impressa na térmica da maquininha ----
     private fun imprimirConferencia() {
         conferenciaBtn.isEnabled = false
@@ -268,7 +462,7 @@ class ContaActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Receber quanto?")
-            .setMessage("Falta ${Cupom.brl(c.saldo)}. Valor menor = pagamento parcial (rachar conta).")
+            .setMessage("Saldo ${Cupom.brl(c.saldo)}. Valor menor = pagamento parcial (rachar conta).")
             .setView(box)
             .setPositiveButton("Cobrar") { _, _ ->
                 val valor = input.text.toString().trim().replace(".", "").replace(",", ".").toDoubleOrNull()
@@ -428,23 +622,39 @@ class ContaActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private inner class ItemAdapter : BaseAdapter() {
-        var itens: List<Api.ItemConta> = emptyList()
-        override fun getCount() = itens.size
-        override fun getItem(position: Int) = itens[position]
+    /** Linhas da conta: Api.ItemConta (preto) ou Api.PagFeito (vermelho, "−"). */
+    private inner class LinhaAdapter : BaseAdapter() {
+        var linhas: List<Any> = emptyList()
+        override fun getCount() = linhas.size
+        override fun getItem(position: Int) = linhas[position]
         override fun getItemId(position: Int) = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val v = convertView ?: layoutInflater.inflate(R.layout.item_conta, parent, false)
-            val it = itens[position]
             val nomeTxt = v.findViewById<TextView>(R.id.nome)
-            if (it.tipo == 2) {
-                nomeTxt.text = "    + ${it.nome}"
-                v.findViewById<TextView>(R.id.valor).text = if (it.valor > 0) Cupom.brl(it.valor) else ""
-            } else {
-                val q = if (it.qtd == Math.floor(it.qtd)) it.qtd.toInt().toString() else it.qtd.toString()
-                nomeTxt.text = "${q}x ${it.nome}"
-                v.findViewById<TextView>(R.id.valor).text = Cupom.brl(it.valor)
+            val valorTxt = v.findViewById<TextView>(R.id.valor)
+            when (val l = linhas[position]) {
+                is Api.ItemConta -> {
+                    val preto = 0xFF111827.toInt()
+                    nomeTxt.setTextColor(preto)
+                    valorTxt.setTextColor(preto)
+                    if (l.tipo == 2) {
+                        nomeTxt.text = "    + ${l.nome}"
+                        valorTxt.text = if (l.valor > 0) Cupom.brl(l.valor) else ""
+                    } else {
+                        val q = if (l.qtd == Math.floor(l.qtd)) l.qtd.toInt().toString() else l.qtd.toString()
+                        nomeTxt.text = "${q}x ${l.nome}"
+                        valorTxt.text = Cupom.brl(l.valor)
+                    }
+                }
+                is Api.PagFeito -> {
+                    val vermelho = 0xFFDC2626.toInt()
+                    val hora = Cupom.horaBr(l.criadoEm)
+                    nomeTxt.text = "Pago" + (if (hora.isNotBlank()) " $hora" else "") + " · ${l.forma}"
+                    nomeTxt.setTextColor(vermelho)
+                    valorTxt.text = "− ${Cupom.brl(l.valor)}"
+                    valorTxt.setTextColor(vermelho)
+                }
             }
             return v
         }

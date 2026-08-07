@@ -31,6 +31,14 @@
             android:textStyle="bold"
             android:textColor="#FFFFFF" />
 
+        <Button
+            android:id="@+id/maisAcoes"
+            android:layout_width="44dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:text="⋯"
+            android:textSize="18sp" />
+
         <TextView
             android:id="@+id/badge"
             android:layout_width="wrap_content"

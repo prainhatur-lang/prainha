@@ -48,7 +48,7 @@ object Api {
     )
 
     data class ItemConta(val nome: String, val qtd: Double, val valor: Double, val tipo: Int)
-    data class PagFeito(val forma: String, val valor: Double, val nsu: String?, val status: String)
+    data class PagFeito(val forma: String, val valor: Double, val nsu: String?, val status: String, val criadoEm: String?)
 
     /** Conta AO VIVO do Firebird (/api/conta) — números reais pra cobrar. */
     data class Conta(
@@ -236,7 +236,8 @@ object Api {
             saldo = j.optDouble("saldo", 0.0),
             pagamentos = (0 until pags.length()).mapNotNull { i ->
                 val o = pags.optJSONObject(i) ?: return@mapNotNull null
-                PagFeito(o.optString("forma"), o.optDouble("valor", 0.0), o.optStringOrNull("nsu"), o.optString("status"))
+                PagFeito(o.optString("forma"), o.optDouble("valor", 0.0), o.optStringOrNull("nsu"),
+                    o.optString("status"), o.optStringOrNull("criado_em"))
             },
         )
     }
@@ -380,6 +381,40 @@ object Api {
             quitada = j.optBoolean("quitada", false),
             erro = j.optStringOrNull("erro"),
         )
+    }
+
+    // -------- ações da mesa: transferir / vincular comanda / identificar --------
+
+    /** Junta/move: comanda→mesa muda só o vínculo; mesa→mesa move TODOS os
+     *  itens no Consumer (e as comandas penduradas vão junto). */
+    @Throws(IOException::class)
+    fun transferir(base: String, token: String, de: Int, para: Int, por: String?): JSONObject =
+        postJson("$base/api/venda/transferir", token,
+            JSONObject().put("de", de).put("para", para).put("por", por ?: ""))
+
+    /** Pendura a comanda na mesa. Na CRIAÇÃO o servidor exige dono
+     *  (nome + CPF ou WhatsApp); comanda existente só muda de mesa. */
+    @Throws(IOException::class)
+    fun vincular(base: String, token: String, mesa: Int, comanda: Int, nome: String?, cpf: String?, telefone: String?): JSONObject {
+        val b = JSONObject().put("mesa", mesa).put("comanda", comanda)
+        if (!nome.isNullOrBlank()) b.put("nome", nome)
+        if (!cpf.isNullOrBlank()) b.put("cpf", cpf)
+        if (!telefone.isNullOrBlank()) b.put("telefone", telefone)
+        return postJson("$base/api/venda/vincular", token, b)
+    }
+
+    /** Nome pelo CPF/telefone (cadastro da casa → já-atendidos → grupo → SPC). */
+    fun identificarBuscar(base: String, cpf: String?, tel: String?): JSONObject? = try {
+        getJson("$base/api/venda/identificar?cpf=${enc(cpf ?: "")}&tel=${enc(tel ?: "")}")
+    } catch (_: Exception) { null }
+
+    /** Carimba quem está na mesa/comanda; cadastrar=true vira cliente da casa. */
+    @Throws(IOException::class)
+    fun identificarSalvar(base: String, numero: Int, nome: String, cpf: String?, telefone: String?, cadastrar: Boolean): JSONObject {
+        val b = JSONObject().put("numero", numero).put("nome", nome).put("cadastrar", cadastrar)
+        if (!cpf.isNullOrBlank()) b.put("cpf", cpf)
+        if (!telefone.isNullOrBlank()) b.put("telefone", telefone)
+        return postJson("$base/api/venda/identificar", null, b)
     }
 
     /** Body do /api/lio/pagar a partir de um pagamento aprovado no terminal. */
