@@ -55,10 +55,11 @@ android {
         // conta, GERAL mesa+comandas na tela (= cupom), chips de comanda
         // grandes com valor, rodapé uniforme, revisão obrigatória do pedido
         // e identificar bloqueado quando já tem dono.
-        // 1.6.1: fechamento da conta vira as ÚLTIMAS LINHAS da lista (rola com
-        // os itens, em colunas), não um rodapé fixo espremido.
-        versionCode = 11
-        versionName = "1.6.1"
+        // 1.7.0: Receber IDÊNTICO ao do celular — consumo + serviço escolhido
+        // (chips 10%/15%) − pago, Dividir por 1–6, ou valor digitado; o
+        // servidor aceita o teto com serviço (permitir_servico).
+        versionCode = 12
+        versionName = "1.7.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

@@ -674,62 +674,134 @@ class ContaActivity : AppCompatActivity() {
     }
 
     // ---- RECEBER no terminal ----
-    // Dialog com o valor + atalhos de rateio (Tudo, ÷2…÷5) e campo livre pra
-    // parcial → UI nativa de pagamento da Cielo → registra no vendas-local.
-    // Rachar em N: cada pessoa é um Receber; o saldo cai a cada pagamento e
-    // no último usa-se "Tudo" (fecha os centavos que sobraram da divisão).
+    // ESPELHO da tela Receber do celular (telaReceber/rcbCalc do vendas-local):
+    // consumo + serviço ESCOLHIDO (chips 10%/15%) − já pago, "Dividir por"
+    // 1–6, ou valor digitado. O servidor aceita o teto com serviço
+    // (permitir_servico no /api/lio/pagar) — não depende de pedir a conta.
     private fun receber() {
         val c = conta ?: return
         if (!lioReady || cobrando) return
+        Thread {
+            val texto = try { Api.contaTexto(Session.servidor(this), numero) } catch (_: Exception) { null }
+            runOnUiThread { dialogReceber(c, texto) }
+        }.start()
+    }
 
-        val input = EditText(this)
-        input.inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-        input.textSize = 22f
-        fun poe(v: Double) = input.setText(String.format(java.util.Locale.US, "%.2f", v).replace(".", ","))
-        poe(c.saldo)
+    private fun dialogReceber(c: Api.Conta, texto: org.json.JSONObject?) {
+        // Consumo da PRÓPRIA conta (mesa OU comanda) — mesma base do celular.
+        val aplicado = c.servico > 0
+        val itens = texto?.optDouble("total", -1.0)?.takeIf { it >= 0 }
+            ?: (if (aplicado) c.total - c.servico else c.total)
+        val pago = c.pago
+        var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
+        var partes = 1
+        var valorDig: Double? = null
 
-        val chips = LinearLayout(this)
-        chips.orientation = LinearLayout.HORIZONTAL
-        fun chip(rotulo: String, valor: Double) {
+        val valorTxt = TextView(this)
+        valorTxt.textSize = 34f
+        valorTxt.setTypeface(null, android.graphics.Typeface.BOLD)
+        valorTxt.setTextColor(0xFF111827.toInt())
+        val subTxt = TextView(this)
+        subTxt.textSize = 13f
+        subTxt.setTextColor(0xFF6B7280.toInt())
+
+        fun rotulo(t: String): TextView {
+            val v = TextView(this)
+            v.text = t
+            v.textSize = 13f
+            v.setTypeface(null, android.graphics.Typeface.BOLD)
+            v.setPadding(0, dp(10), 0, dp(2))
+            return v
+        }
+        val gorjBtns = mutableListOf<Pair<Int, Button>>()
+        val partesBtns = mutableListOf<Pair<Int, Button>>()
+        fun chipRow(): LinearLayout {
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            return row
+        }
+        fun chip(row: LinearLayout, texto: String): Button {
             val b = Button(this)
-            b.text = rotulo
-            b.textSize = 13f
+            b.text = texto
+            b.textSize = 14f
             b.isAllCaps = false
-            val lp = LinearLayout.LayoutParams(0, dp(42))
+            val lp = LinearLayout.LayoutParams(0, dp(44))
             lp.weight = 1f
             lp.marginEnd = dp(4)
             b.layoutParams = lp
-            b.setOnClickListener { poe(valor) }
-            chips.addView(b)
+            row.addView(b)
+            return b
         }
-        chip("Tudo", c.saldo)
-        for (n in 2..5) chip("÷$n", Math.round(c.saldo / n * 100) / 100.0)
 
-        val dica = TextView(this)
-        dica.textSize = 12f
-        dica.setTextColor(0xFF6B7280.toInt())
-        dica.text = (if (c.servico <= 0) "⚠ Peça a conta primeiro pra incluir os 10% no saldo.\n" else "") +
-            "Rachar: um Receber por pessoa — o saldo vai caindo. No último, use Tudo."
+        fun calc(): Triple<Double, Double, Double> {
+            val svc = Math.round(itens * gorj) / 100.0
+            val resta = Math.max(0.0, Math.round((itens + svc - pago) * 100) / 100.0)
+            val cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
+            return Triple(svc, resta, cobrar)
+        }
+        fun pinta() {
+            val (svc, resta, cobrar) = calc()
+            valorTxt.text = Cupom.brl(cobrar)
+            subTxt.text = when {
+                valorDig != null -> "valor digitado — o resto continua na conta"
+                partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
+                else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
+                    (if (pago > 0) " − já pago ${Cupom.brl(pago)}" else "")
+            }
+            gorjBtns.forEach { (p, b) ->
+                b.setBackgroundColor(if (p == gorj) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
+                b.setTextColor(if (p == gorj) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
+            }
+            partesBtns.forEach { (k, b) ->
+                val on = k == partes && valorDig == null
+                b.setBackgroundColor(if (on) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
+                b.setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
+            }
+        }
+
+        val gorjRow = chipRow()
+        listOf(10, 15).forEach { p ->
+            val b = chip(gorjRow, "$p%")
+            b.setOnClickListener { gorj = p; valorDig = null; pinta() }
+            gorjBtns.add(p to b)
+        }
+        val partesRow = chipRow()
+        (1..6).forEach { k ->
+            val b = chip(partesRow, "$k")
+            b.setOnClickListener { partes = k; valorDig = null; pinta() }
+            partesBtns.add(k to b)
+        }
+        val digIn = campo("Ou digite o valor", android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        digIn.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val t = (s?.toString() ?: "").trim().replace(".", "").replace(",", ".")
+                valorDig = t.toDoubleOrNull()?.takeIf { it > 0 }
+                pinta()
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+        })
 
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(dp(20), dp(8), dp(20), 0)
-        box.addView(chips, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        box.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        box.addView(dica, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        listOf(
+            valorTxt, subTxt,
+            rotulo("Serviço"), gorjRow,
+            rotulo("Dividir por"), partesRow,
+            digIn,
+        ).forEach {
+            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        pinta()
 
         AlertDialog.Builder(this)
-            .setTitle("Receber — saldo ${Cupom.brl(c.saldo)}")
+            .setTitle("Receber — ${titulo.text}")
             .setView(box)
-            .setPositiveButton("Cobrar") { _, _ ->
-                val valor = input.text.toString().trim().replace(".", "").replace(",", ".").toDoubleOrNull()
-                if (valor == null || valor <= 0) {
-                    Toast.makeText(this, "Valor inválido", Toast.LENGTH_SHORT).show()
-                } else if (valor > c.saldo + 0.01) {
-                    Toast.makeText(this, "Maior que o saldo (${Cupom.brl(c.saldo)})", Toast.LENGTH_LONG).show()
-                } else {
-                    cobrarNoTerminal(Math.round(valor * 100))
-                }
+            .setPositiveButton("💳 Cobrar") { _, _ ->
+                val (_, _, cobrar) = calc()
+                if (cobrar <= 0.009) Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
+                else cobrarNoTerminal(Math.round(cobrar * 100))
             }
             .setNegativeButton("Cancelar", null)
             .show()

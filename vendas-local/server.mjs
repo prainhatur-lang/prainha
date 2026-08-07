@@ -1529,8 +1529,16 @@ async function apiContaPagar(body) {
   if (!fp) return { ok: false, erro: 'forma inválida' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
-  const saldo = +((Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0) - (await fbPagoDoPedido(ped))).toFixed(2);
-  if (valor > saldo + 0.01) return { ok: false, erro: `valor maior que o saldo (R$ ${saldo.toFixed(2)})` };
+  const cab = (await qi(`SELECT VALORTOTAL, VALORTOTALITENS FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const pagoAtual = await fbPagoDoPedido(ped);
+  const saldo = +((Number(cab.VALORTOTAL) || 0) - pagoAtual).toFixed(2);
+  // Maquininha (permitir_servico): cobra consumo + serviço ESCOLHIDO na hora
+  // (10/15%, os mesmos chips do Pix da tela do celular) — o teto acompanha,
+  // mesmo quando o serviço não está gravado no pedido.
+  const teto = body.permitir_servico
+    ? Math.max(saldo, +(((Number(cab.VALORTOTALITENS) || 0) * 1.15) - pagoAtual).toFixed(2))
+    : saldo;
+  if (valor > teto + 0.01) return { ok: false, erro: `valor maior que o saldo (R$ ${Math.max(saldo, 0).toFixed(2)})` };
 
   const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
     VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado') RETURNING id`;
@@ -1603,6 +1611,7 @@ async function apiLioPagar(body, garcom) {
   }
   return apiContaPagar({
     numero: n, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
+    permitir_servico: true,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     observacao: `Prainha LIO · ${garcom.login}`,
   });
