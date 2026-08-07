@@ -1,14 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- O vendas-local roda em HTTP :8790 na LAN da loja (o instalador só abre
-     essa porta no firewall). Cleartext é liberado SÓ pros servidores das
-     lojas; todo o resto do tráfego exige HTTPS (ex.: túnel público usado
-     na certificação). Loja nova/IP novo = adicionar aqui e gerar APK novo. -->
+<!-- O vendas-local roda em HTTP :8790 na LAN da loja, e o IP muda de loja pra
+     loja — o app DESCOBRE o servidor varrendo a sub-rede (Descoberta.kt), então
+     o cleartext precisa valer pra qualquer IP local. O NSC do Android não
+     aceita faixa (CIDR); a trava fica no CÓDIGO: http:// só é aceito pra IP
+     privado RFC1918 (Descoberta.ipPrivado — validado no login e na varredura).
+     Pra internet (túnel de certificação etc.) é sempre https://. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <!-- Prainha Bar (Xeon) -->
-        <domain includeSubdomains="false">10.0.0.252</domain>
-        <!-- Tabuará -->
-        <domain includeSubdomains="false">192.168.10.60</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

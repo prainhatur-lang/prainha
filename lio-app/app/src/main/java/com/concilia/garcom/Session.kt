@@ -15,10 +15,12 @@ object Session {
     private const val K_LOJA = "loja"
     private const val K_PODE_DESCONTO = "pode_desconto"
 
-    // Servidores conhecidos (mesmos IPs liberados no network_security_config).
+    // RESERVA pra quando a descoberta automática não achar nada (VPN, rede
+    // errada) — o caminho normal é a varredura da sub-rede (Descoberta.kt),
+    // que mostra o nome que o próprio servidor reporta.
     val SERVIDORES = listOf(
-        Pair("Prainha Bar", "http://10.0.0.252:8790"),
-        Pair("Tabuará", "http://192.168.10.60:8790"),
+        Pair("Prainha Bar (10.0.0.252)", "http://10.0.0.252:8790"),
+        Pair("Tabuará (192.168.10.60)", "http://192.168.10.60:8790"),
     )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

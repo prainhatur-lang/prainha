@@ -45,9 +45,9 @@ android {
         // SDK, integral ou parcial) com baixa no Concilia (NSU/authCode/bandeira)
         // e recibo impresso.
         // A versão que a Store enxerga é ESTA (do manifest) — renomear o .apk
-        // não muda nada. 1.1.0 = build com credenciais do Dev Console.
-        versionCode = 3
-        versionName = "1.1.0"
+        // não muda nada. 1.2.0 = descoberta automática do servidor na rede.
+        versionCode = 4
+        versionName = "1.2.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

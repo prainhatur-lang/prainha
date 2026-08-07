@@ -23,9 +23,11 @@ vendas-local nas lojas** (ZIP + .bat, ver `vendas-local/deploy-xeon/LEIA-ME.txt`
 - **Fila de pendentes** (`Pendentes.kt`): pagamento aprovado entra na fila ANTES
   do registro; só sai quando o servidor confirmar. Rede caiu = reenvia da tela
   de mesas. Dinheiro capturado não se perde nem duplica (dedup por NSU no servidor).
-- **Cleartext só pros IPs das lojas** (`network_security_config.xml`):
-  10.0.0.252 (Prainha Bar) e 192.168.10.60 (Tabuará). Loja nova/IP novo = editar
-  o XML e gerar APK novo. URLs `https://` (túnel de certificação) sempre funcionam.
+- **Servidor descoberto sozinho** (`Descoberta.kt`): a tela de login varre a
+  sub-rede do Wi-Fi na porta 8790, confirma com `/api/versao` e mostra o nome
+  que a própria loja reporta (`/api/config`) — loja nova/IP novo aparece sem
+  mexer no app. Cleartext liberado no NSC, com trava no código: `http://` só
+  pra IP privado (RFC1918); internet (túnel de certificação) é sempre `https://`.
 - **Build dir fora do SSD exFAT** (`~/.concilia-lio-build`) — AppleDouble (`._*`)
   quebra o AGP.
 - **Fora da maquininha** o app vira consulta/lançamento (bind falha → botão de
