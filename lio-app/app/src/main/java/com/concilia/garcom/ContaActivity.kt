@@ -280,14 +280,14 @@ class ContaActivity : AppCompatActivity() {
                 .show()
             return
         }
-        // Pedir a conta: trava lançamentos e imprime — com rateio opcional.
-        val pessoasIn = campo("Dividir por quantas pessoas? (opcional)", android.text.InputType.TYPE_CLASS_NUMBER)
+        // Pedir a conta: trava lançamentos e imprime — com rateio nos botões.
+        val div = escolhaDivisao()
         AlertDialog.Builder(this)
             .setTitle("Pedir a conta?")
             .setMessage("Trava novos lançamentos e imprime a conta completa aqui na maquininha.")
-            .setView(caixa(pessoasIn))
+            .setView(caixa(div.view))
             .setPositiveButton("Pedir e imprimir") { _, _ ->
-                executarAcaoConta(tk, "fechar", pessoasIn.text.toString().trim().toIntOrNull())
+                executarAcaoConta(tk, "fechar", div.valor())
             }
             .setNegativeButton("Não", null)
             .show()
@@ -648,14 +648,64 @@ class ContaActivity : AppCompatActivity() {
     }
 
     // ---- conta/conferência impressa na térmica da maquininha ----
+
+    /** "Dividir por" com BOTÕES [1..5] + campo pra número maior — nada de
+     *  digitar no caso comum. valor() devolve null quando não há rateio (1). */
+    private class EscolhaDivisao(val view: LinearLayout, val valor: () -> Int?)
+
+    private fun escolhaDivisao(): EscolhaDivisao {
+        var escolhido = 1
+        val botoes = mutableListOf<Pair<Int, Button>>()
+        val maisIn = campo("Mais que 5? Digite aqui", android.text.InputType.TYPE_CLASS_NUMBER)
+        fun pinta() {
+            val digitado = maisIn.text.toString().trim().toIntOrNull()
+            botoes.forEach { (n, b) ->
+                val on = digitado == null && n == escolhido
+                b.setBackgroundColor(if (on) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
+                b.setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
+            }
+        }
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        (1..5).forEach { n ->
+            val b = Button(this)
+            b.text = "$n"
+            b.textSize = 15f
+            val lp = LinearLayout.LayoutParams(0, dp(46))
+            lp.weight = 1f
+            lp.marginEnd = dp(4)
+            b.layoutParams = lp
+            b.setOnClickListener { escolhido = n; maisIn.setText(""); pinta() }
+            row.addView(b)
+            botoes.add(n to b)
+        }
+        maisIn.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) { pinta() }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        val rot = TextView(this)
+        rot.text = "Dividir por"
+        rot.textSize = 13f
+        rot.setTypeface(null, android.graphics.Typeface.BOLD)
+        rot.setPadding(0, dp(8), 0, dp(2))
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        listOf<View>(rot, row, maisIn).forEach {
+            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        pinta()
+        return EscolhaDivisao(box) {
+            (maisIn.text.toString().trim().toIntOrNull() ?: escolhido).takeIf { it > 1 }
+        }
+    }
+
     private fun imprimirConferencia() {
-        val pessoasIn = campo("Dividir por quantas pessoas? (opcional)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val div = escolhaDivisao()
         AlertDialog.Builder(this)
             .setTitle("Imprimir conferência")
-            .setView(caixa(pessoasIn))
-            .setPositiveButton("Imprimir") { _, _ ->
-                imprimirConta("CONFERÊNCIA", pessoasIn.text.toString().trim().toIntOrNull())
-            }
+            .setView(caixa(div.view))
+            .setPositiveButton("🖨 Imprimir") { _, _ -> imprimirConta("CONFERÊNCIA", div.valor()) }
             .setNegativeButton("Cancelar", null)
             .show()
     }

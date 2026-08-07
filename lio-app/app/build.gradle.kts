@@ -61,8 +61,10 @@ android {
         // 1.8.0: passe de saída na maquininha (QR da catraca em N vias +
         // placas pra cancela LPR, mesa e comanda) e o botão Receber já
         // mostrando o saldo COM os 10% (no dialog dá pra subir pra 15).
-        versionCode = 14
-        versionName = "1.8.0"
+        // 1.8.1: "Dividir por" com botões 1–5 (+ campo pra mais) na conferência
+        // e no pedir conta — sem digitar no caso comum.
+        versionCode = 15
+        versionName = "1.8.1"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
