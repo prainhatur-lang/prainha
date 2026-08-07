@@ -12,11 +12,28 @@
 // CIELO_EDI_CERT_B64 / CIELO_EDI_KEY_B64. Em desenvolvimento aceita tambem os
 // caminhos CIELO_EDI_CERT_PATH / CIELO_EDI_KEY_PATH.
 //
-// ⚠️ ESTADO EM 31/07/2026: o endpoint responde 504 Gateway Time-out. O
-// certificado E' aceito (header x-cert-status: ok) e o gateway roteia (caminho
-// inexistente devolve 404), ou seja o backend do EDI e' que esta fora. Este
-// codigo esta pronto e testado contra o erro; quando a Cielo subir o servico,
-// basta o cron rodar.
+// ⚠️ ESTADO EM 07/08/2026 — falta UMA informacao pra isto funcionar.
+//
+// O 504 de 31/07 era URL errada: o caminho certo tem hifen a mais
+// ("...edi-link-exp-external", nao "...edi-linkexp-external"). Corrigido em
+// CIELO_EDI_BASE, o gateway responde de verdade — e diz o que quer:
+//
+//   sem Authorization           -> 400 {"error":"JWT Token is required."}
+//   Bearer <JWT nosso, HS256>   -> 401 {"error":"Invalid token."}
+//
+// Ou seja: o JWT tem que ser EMITIDO PELA CIELO, nao assinado por nos. Foram
+// testados (07/08) e descartados: HS256 com a CIELO_EDI_HMAC_KEY em 4 formatos
+// de claim, o ACCESS_TOKEN como Bearer direto, Basic auth, e os endpoints de
+// token /v1/token, /oauth/access-token e consent/v1 no proprio gateway.
+//
+// O authorization server documentado (api2.cielo.com.br/consent/v1/oauth/
+// access-token) responde, mas recusa nossas credenciais: "Client Id ... is
+// invalid" — o par client_id/secret que temos e' de outro registro/gateway.
+//
+// FALTA: a URL do endpoint de token do EDI (e se o fluxo e' client_credentials
+// ou authorization_code com consentimento do lojista). So o suporte da Cielo
+// responde isso. Enquanto nao vem, o caminho de producao e' baixar os arquivos
+// no portal e subir no /upload — que le EDI direto desde 062629d.
 
 import https from 'node:https';
 import { readFileSync } from 'node:fs';
@@ -89,19 +106,27 @@ function requisitar(cred: CieloEdiCredenciais, url: URL, aceita: string): Promis
   });
 }
 
-/** Erro com o diagnostico ja pronto — 504 aqui e' indisponibilidade DELES. */
+/** Erro com o diagnostico ja pronto — separa "eles fora" de "credencial nossa". */
 function erroDaResposta(r: Resposta, onde: string): Error {
   const certOk = String(r.headers['x-cert-status'] ?? '');
+  const corpo = r.body.toString('utf8');
   if (r.status === 504 || r.status === 502 || r.status === 503) {
     return new Error(
       `Cielo EDI indisponivel (${onde}): HTTP ${r.status}` +
         (certOk ? ` — o certificado foi aceito (x-cert-status: ${certOk}), o servico deles e' que nao responde` : ''),
     );
   }
+  // O gateway pede um JWT emitido por eles; ver o bloco de estado no topo.
+  if (/JWT Token is required|Invalid token/i.test(corpo)) {
+    return new Error(
+      `Cielo EDI (${onde}): falta o JWT emitido pela Cielo — HTTP ${r.status} ${corpo.replace(/\s+/g, ' ').slice(0, 80)}. ` +
+        'Pendente: endpoint de token do EDI (pedir ao suporte). Use o /upload com os arquivos do portal enquanto isso.',
+    );
+  }
   if (r.status === 401 || r.status === 403) {
     return new Error(`Cielo EDI recusou as credenciais (${onde}): HTTP ${r.status}`);
   }
-  return new Error(`Cielo EDI (${onde}): HTTP ${r.status} — ${r.body.toString('utf8').slice(0, 200)}`);
+  return new Error(`Cielo EDI (${onde}): HTTP ${r.status} — ${corpo.slice(0, 200)}`);
 }
 
 export type ArquivoEdi = { nome: string; tipo: string; data: string; url?: string; id?: string };
