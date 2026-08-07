@@ -371,7 +371,14 @@ object Api {
      */
     @Throws(IOException::class)
     fun lioPagar(base: String, token: String, body: JSONObject): PagarRes {
-        val j = postJson("$base/api/lio/pagar", token, body)
+        val j = try {
+            postJson("$base/api/lio/pagar", token, body)
+        } catch (e: IOException) {
+            // 404 = servidor da loja de versão antiga, sem a rota — não é rede.
+            if ((e.message ?: "").contains("404"))
+                throw IOException("Servidor da loja desatualizado (sem /api/lio/pagar) — rode a atualização do vendas-local")
+            throw e
+        }
         if (!j.optBoolean("ok") && j.optBoolean("sem_sessao")) throw SemSessao()
         return PagarRes(
             ok = j.optBoolean("ok", false),
