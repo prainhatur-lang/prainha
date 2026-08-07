@@ -214,7 +214,7 @@ class ContaActivity : AppCompatActivity() {
         val tk = Session.token(this) ?: return logout()
         val acao = if (c.contaPedida) "reabrir" else "fechar"
         val msg = if (c.contaPedida) "Liberar a conta pra lançar de novo?"
-        else "Pedir a conta? Trava novos lançamentos."
+        else "Pedir a conta? Trava novos lançamentos e imprime a conta completa aqui na maquininha."
         AlertDialog.Builder(this)
             .setMessage(msg)
             .setPositiveButton("Sim") { _, _ ->
@@ -224,6 +224,8 @@ class ContaActivity : AppCompatActivity() {
                         runOnUiThread {
                             Toast.makeText(this, r.optString("msg", r.optString("erro", "ok")), Toast.LENGTH_SHORT).show()
                             carregar()
+                            // Conta pedida = conta na mão: imprime na hora, com tudo.
+                            if (acao == "fechar" && r.optBoolean("ok")) imprimirConta("CONTA")
                         }
                     } catch (e: Api.SemSessao) {
                         runOnUiThread { logout() }
@@ -418,8 +420,10 @@ class ContaActivity : AppCompatActivity() {
             .show()
     }
 
-    // ---- conferência impressa na térmica da maquininha ----
-    private fun imprimirConferencia() {
+    // ---- conta/conferência impressa na térmica da maquininha ----
+    private fun imprimirConferencia() = imprimirConta("CONFERÊNCIA")
+
+    private fun imprimirConta(rotulo: String) {
         conferenciaBtn.isEnabled = false
         Thread {
             try {
@@ -427,7 +431,7 @@ class ContaActivity : AppCompatActivity() {
                 val corpo = Cupom.montar(j, ehComanda)
                 runOnUiThread {
                     Lio.imprimirCupom(
-                        this, Session.loja(this) + " · CONFERÊNCIA", corpo,
+                        this, Session.loja(this) + " · " + rotulo, corpo,
                         onOk = { runOnUiThread { conferenciaBtn.isEnabled = true } },
                         onErro = { msg ->
                             runOnUiThread {

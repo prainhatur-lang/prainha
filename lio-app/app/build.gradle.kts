@@ -49,10 +49,11 @@ android {
         // loja em vez de IP (título da página em servidor antigo), pagamentos
         // como lançamentos em vermelho + SALDO, serviço zerado some, e o menu
         // ⋯ (identificar cliente, vincular comanda, transferir/juntar mesas).
-        // 1.3.1: mensagem certa quando o servidor da loja é antigo (404 na
-        // rota de pagamento não é "sem rede" — é vendas-local desatualizado).
-        versionCode = 6
-        versionName = "1.3.1"
+        // 1.4.0: "Pedir conta" imprime a conta completa na própria maquininha
+        // — itens com preço unitário, blocos por comanda, pagamentos com hora,
+        // total geral e rateio por pessoa.
+        versionCode = 7
+        versionName = "1.4.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
