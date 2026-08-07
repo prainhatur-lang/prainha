@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F3F4F6">
+
+    <!-- Cabeçalho -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#0C7091"
+        android:padding="10dp">
+
+        <Button
+            android:id="@+id/voltar"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="‹ Mesas"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/titulo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="10dp"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+
+        <TextView
+            android:id="@+id/badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CONTA PEDIDA"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:textColor="#7F1D1D"
+            android:background="#FECACA"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Comandas penduradas na mesa -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:id="@+id/comandas"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="6dp" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/contaVazia"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:padding="18dp"
+        android:textSize="14sp"
+        android:textColor="#6B7280"
+        android:visibility="gone" />
+
+    <ListView
+        android:id="@+id/itens"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:divider="#E5E7EB"
+        android:dividerHeight="1dp"
+        android:background="#FFFFFF" />
+
+    <!-- Totais ao vivo do Firebird -->
+    <TextView
+        android:id="@+id/resumo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:textColor="#111827"
+        android:padding="10dp" />
+
+    <TextView
+        android:id="@+id/lioStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="12sp"
+        android:textColor="#6B7280"
+        android:paddingTop="4dp" />
+
+    <!-- Ações -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <Button
+            android:id="@+id/lancar"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1.2"
+            android:text="＋ Lançar itens"
+            android:textSize="13sp"
+            android:textColor="#FFFFFF"
+            android:background="#15803D" />
+
+        <Button
+            android:id="@+id/conferencia"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="🖨 Conta"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/contaPedida"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="Pedir conta"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/receber"
+        android:layout_width="match_parent"
+        android:layout_height="58dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginBottom="8dp"
+        android:text="💳 Receber"
+        android:textSize="17sp"
+        android:textStyle="bold"
+        android:textColor="#FFFFFF"
+        android:background="#0C7091" />
+</LinearLayout>

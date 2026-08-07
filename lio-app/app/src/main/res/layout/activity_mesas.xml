@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F3F4F6">
+
+    <!-- Cabeçalho: loja + garçom/versão + sair -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#0C7091"
+        android:padding="10dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/lojaNome"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF" />
+
+            <TextView
+                android:id="@+id/garcomNome"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:textColor="#CFEAF2" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/sair"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="Sair"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Baixas pendentes (pagamento capturado sem registro) -->
+    <TextView
+        android:id="@+id/pendentes"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FEF3C7"
+        android:textColor="#92400E"
+        android:textSize="13sp"
+        android:padding="10dp"
+        android:visibility="gone" />
+
+    <!-- Abrir mesa pelo número -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <EditText
+            android:id="@+id/numero"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:hint="Nº da mesa ou comanda"
+            android:inputType="number"
+            android:background="#FFFFFF"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
+
+        <Button
+            android:id="@+id/abrir"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="6dp"
+            android:text="Abrir"
+            android:textColor="#FFFFFF"
+            android:background="#0C7091" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/listaVazia"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:padding="18dp"
+        android:textSize="14sp"
+        android:textColor="#6B7280"
+        android:visibility="gone" />
+
+    <GridView
+        android:id="@+id/lista"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:numColumns="3"
+        android:horizontalSpacing="6dp"
+        android:verticalSpacing="6dp"
+        android:padding="8dp"
+        android:clipToPadding="false" />
+</LinearLayout>

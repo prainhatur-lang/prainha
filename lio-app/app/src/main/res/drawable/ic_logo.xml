@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo do Prainha Caixa (tela de login): círculo azul-mar com sol e onda. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="72dp"
+    android:height="72dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <path
+        android:pathData="M48,48m-46,0a46,46 0,1 1,92 0a46,46 0,1 1,-92 0"
+        android:fillColor="#0C7091" />
+    <path
+        android:pathData="M62,26m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0"
+        android:fillColor="#FFC94D" />
+    <path
+        android:pathData="M14,56 C 24,48 32,62 42,55 C 51,49 59,61 68,55 C 74,51 79,56 82,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M20,70 C 29,64 36,74 45,69 C 53,64 61,73 69,68"
+        android:strokeColor="#B3FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

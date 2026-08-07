@@ -1461,18 +1461,22 @@ async function apiConta(numero) {
   };
 }
 
-/** Registra um pagamento. body: {numero, forma, valor, modo, nsu?, autorizacao?, bandeira?} */
+/** Registra um pagamento. body: {numero, forma, valor, modo, nsu?, autorizacao?, bandeira?,
+ *  origem?, observacao?, pix_online?} — os três últimos vêm do app da maquininha (/api/lio/pagar). */
 async function apiContaPagar(body) {
   const n = Number(body.numero);
   const valor = +Number(body.valor || 0).toFixed(2);
   const forma = String(body.forma || '').toLowerCase(); // dinheiro|credito|debito|pix
   const modo = String(body.modo || 'manual').toLowerCase(); // manual|lio
+  const origem = String(body.origem || modo); // o que fica no log (ex.: 'lio-sdk')
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
   const MAPA = {
     dinheiro: { cod: FORMA.DINHEIRO, nome: 'Dinheiro' },
     credito: { cod: FORMA.CREDITO, nome: 'Cartão de Crédito' },
     debito: { cod: FORMA.DEBITO, nome: 'Cartão de Débito' },
-    pix: { cod: FORMA.PIX_MANUAL, nome: 'Pix Manual' },
+    // Pix cobrado NA maquininha liquida pela Cielo (canal adquirente) → Pix
+    // Online; Pix avulso conferido no app do banco continua Pix Manual.
+    pix: body.pix_online ? { cod: FORMA.PIX_ONLINE, nome: 'Pix Online' } : { cod: FORMA.PIX_MANUAL, nome: 'Pix Manual' },
   };
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
@@ -1482,7 +1486,7 @@ async function apiContaPagar(body) {
   if (valor > saldo + 0.01) return { ok: false, erro: `valor maior que o saldo (R$ ${saldo.toFixed(2)})` };
 
   const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
-    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${modo}, 'iniciado') RETURNING id`;
+    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado') RETURNING id`;
 
   let dados = { nsu: body.nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null };
   try {
@@ -1496,7 +1500,7 @@ async function apiContaPagar(body) {
     // modo manual: já foi cobrado na maquininha, só registramos
     const pagFb = await fbInserirPagamento(ped, {
       forma_codigo: fp.cod, valor, nsu: dados.nsu, autorizacao: dados.autorizacao,
-      bandeira: dados.bandeira, observacao: 'Prainha Vendas',
+      bandeira: dados.bandeira, observacao: body.observacao || 'Prainha Vendas',
     });
     await sql`UPDATE venda_pagamento SET status='ok', nsu=${dados.nsu}, autorizacao=${dados.autorizacao},
       bandeira=${dados.bandeira}, pagamento_fb=${pagFb} WHERE id=${log.id}`;
@@ -1525,6 +1529,46 @@ async function apiContaConferir(pagamentoId) {
   await sql`UPDATE venda_pagamento SET status='ok', nsu=${r.nsu}, autorizacao=${r.autorizacao},
     bandeira=${r.bandeira}, pagamento_fb=${pagFb} WHERE id=${p.id}`;
   return { ok: true, pago: true, nsu: r.nsu, autorizacao: r.autorizacao, pagamento_fb: pagFb };
+}
+
+// ---- LIO/DX8000: baixa do que o APP DA MAQUININHA (lio-app) já cobrou ----
+// O cartão foi cobrado NO terminal (Order Manager SDK); aqui é só o registro.
+// O app reenvia em caso de falha de rede — dinheiro capturado não pode nem
+// sumir nem dobrar — então antes de gravar a rota deduplica pelo NSU: primeiro
+// no log local, depois no próprio PAGAMENTOS (cobre a janela em que o Consumer
+// gravou mas o UPDATE do log falhou). Sem NSU (raro), não há chave — registra.
+async function apiLioPagar(body, garcom) {
+  const n = Number(body.numero);
+  const valor = +Number(body.valor || 0).toFixed(2);
+  const nsu = String(body.nsu || '').trim();
+  if (nsu) {
+    const [dup] = await sql`SELECT id, pagamento_fb FROM venda_pagamento
+      WHERE numero=${n} AND nsu=${nsu} AND valor=${valor} AND origem='lio-sdk' AND status='ok'
+        AND criado_em > now() - interval '2 days' LIMIT 1`;
+    if (dup) return { ok: true, ja_registrado: true, pagamento_id: dup.id, pagamento_fb: dup.pagamento_fb };
+    const nsuNum = Number(nsu.replace(/\D/g, '')) || null;
+    const ped = nsuNum != null ? await fbAcharPedido(n).catch(() => null) : null;
+    if (ped) {
+      // ⚠️ q(), NÃO qi(): fbAcharPedido logo acima roda na fila q (ver contaPedidaDe).
+      const r = await q(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${Number(ped)} AND NSUTRANSACAO=${nsuNum} AND VALOR=${fbNum(valor)} AND DATADELETE IS NULL`);
+      if (r.ok && r.rows.length) return { ok: true, ja_registrado: true, pagamento_fb: Number(r.rows[0].CODIGO) };
+    }
+  }
+  return apiContaPagar({
+    numero: n, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
+    nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
+    observacao: `Prainha LIO · ${garcom.login}`,
+  });
+}
+
+// Config da loja pros clientes nativos (app da maquininha): limites de
+// numeração, nome da casa e taxa de serviço — até aqui esses valores só
+// existiam interpolados nos HTML na partida do servidor.
+function apiConfig() {
+  return { ok: true, loja: LOJA_NOME, versao: VERSAO, mesa_max: MESA_MAX,
+    comanda_ativa: COMANDA_ATIVA, comanda_min: COMANDA_ATIVA ? COMANDA_MIN : 0,
+    comanda_max: COMANDA_ATIVA ? COMANDA_MAX : 0, numero_max: NUMERO_MAX,
+    taxa_servico: TAXA_SERVICO };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -7279,6 +7323,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('x-app-versao', VERSAO);
 
     if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
+    if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
@@ -7318,6 +7363,13 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/receber') { const b = await readBody(req); return res.end(JSON.stringify(await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' }))); }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
+    if (req.method === 'POST' && p === '/api/lio/pagar') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioPagar(body, g)));
     }
     // Ações da comanda mobile: só quem está logado (login com AcessarComandaMobile
     // no Consumer). Leitura fica aberta; o que MEXE na conta exige sessão.
