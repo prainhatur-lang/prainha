@@ -1,19 +1,20 @@
 // GET /api/cron/cielo-edi
 //
 // Busca sozinho os arquivos do EDI Extrato Eletronico da Cielo (CIELO03 =
-// vendas, CIELO04 = recebiveis) e processa pelos MESMOS parsers do /upload —
-// o que hoje e' feito baixando a mao no portal.
+// vendas, CIELO04 = recebiveis, CIELO16 = Pix) e processa pelos MESMOS
+// parsers do /upload — o que antes era feito baixando a mao no portal.
 //
 // Janela de 10 dias com overlap de proposito: arquivo que a Cielo publica
 // atrasado ainda entra, e a dedupe do processador cuida da repeticao.
 //
-// ⚠️ Enquanto a API da Cielo estiver com 504, esta rota devolve o diagnostico
-// em vez de falhar em silencio — o log diz se o problema e' deles ou nosso.
+// Roda 11:30/21:30 (janela em que a Cielo publica), ANTES do extrato-inter e
+// da conciliacao-diaria — a ordem importa: conciliar antes de ingerir e'
+// conciliar contra dado velho.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { credenciaisEdi, listarArquivos, baixarArquivo, diagnosticar } from '@/lib/cielo-edi';
+import { credenciaisEdi, gerarLinks, baixarArquivo, obterToken } from '@/lib/cielo-edi';
 import {
   processarCieloVendas,
   processarCieloRecebiveis,
@@ -28,8 +29,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 /** CIELO03 = vendas · CIELO04 = recebiveis · CIELO16 = Pix (recebiveis). */
-function classificar(nome: string, tipo: string): 'vendas' | 'recebiveis' | null {
-  const s = (nome + ' ' + tipo).toUpperCase();
+function classificar(nome: string): 'vendas' | 'recebiveis' | null {
+  const s = nome.toUpperCase();
   if (s.includes('CIELO03')) return 'vendas';
   if (s.includes('CIELO04') || s.includes('CIELO16')) return 'recebiveis';
   return null;
@@ -56,21 +57,21 @@ export async function GET(req: Request) {
 
   let arquivos;
   try {
-    arquivos = await listarArquivos(cred, inicio, fim);
+    // Um token so pra toda a execucao (vale 600s).
+    const token = await obterToken(cred);
+    arquivos = await gerarLinks(cred, inicio, fim, undefined, token);
   } catch (e) {
-    // nao e' erro nosso: devolve o diagnostico pra saber de quem e' a falha
-    const diag = await diagnosticar(cred).catch(() => null);
     console.error('[cielo-edi]', (e as Error).message);
     return NextResponse.json(
-      { ok: false, erro: (e as Error).message, diagnostico: diag, janela: { inicio, fim } },
+      { ok: false, erro: (e as Error).message, janela: { inicio, fim } },
       { status: 200 },
     );
   }
 
   // Nome da filial default (a da env) pro auto-split por EC: com hierarquia de
-  // grupo comercial na Cielo, um arquivo só pode trazer ECs das DUAS filiais —
+  // grupo comercial na Cielo, um arquivo so pode trazer ECs das DUAS filiais —
   // o roteamento manda cada linha pra filial dona do EC (aprendida do
-  // histórico), igual o upload manual já faz. EC inédito cai na filial da env.
+  // historico), igual o upload manual ja faz. EC inedito cai na filial da env.
   const [filialDefault] = await db
     .select({ nome: schema.filial.nome })
     .from(schema.filial)
@@ -79,11 +80,11 @@ export async function GET(req: Request) {
 
   const resultados: Array<Record<string, unknown>> = [];
   for (const arq of arquivos) {
-    const tipo = classificar(arq.nome, arq.tipo);
+    const tipo = classificar(arq.nome);
     if (!tipo) continue;
     try {
       const conteudo = await baixarArquivo(cred, arq);
-      const storagePath = `cielo-edi/${arq.data || fim}/${arq.nome || arq.id}`;
+      const storagePath = `cielo-edi/${arq.data || fim}/${arq.nome}`;
       const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
       const rot: RoteamentoEc = {
         mapaEc: await mapearEcParaFilial(ecs),
@@ -93,9 +94,9 @@ export async function GET(req: Request) {
         tipo === 'vendas'
           ? await processarCieloVendas(filialId, conteudo, storagePath, rot)
           : await processarCieloRecebiveis(filialId, conteudo, storagePath, rot);
-      resultados.push({ arquivo: arq.nome || arq.id, tipo, ...resumo });
+      resultados.push({ arquivo: arq.nome, tipo, ...resumo });
     } catch (e) {
-      resultados.push({ arquivo: arq.nome || arq.id, tipo, erro: (e as Error).message });
+      resultados.push({ arquivo: arq.nome, tipo, erro: (e as Error).message });
     }
   }
 
