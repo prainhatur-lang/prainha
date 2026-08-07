@@ -168,43 +168,38 @@ object Lio {
         )
     }
 
+    /** Um trecho do cupom com estilo próprio (tudo centralizado no papel). */
+    data class Bloco(val texto: String, val negrito: Boolean = false, val tamanho: Int = 20)
+
     /**
-     * Imprime um cupom na térmica da maquininha: título centralizado em
-     * negrito + corpo alinhado à esquerda + avanço de papel. Fora da
+     * Imprime o cupom em blocos estilizados na térmica da maquininha —
+     * títulos em negrito, corpo centralizado, avanço curto no fim. Fora da
      * maquininha o serviço não existe — onErro é chamado e a UI avisa.
      */
-    fun imprimirCupom(
+    fun imprimirBlocos(
         context: Context,
-        titulo: String,
-        corpo: String,
+        blocos: List<Bloco>,
         onOk: () -> Unit,
         onErro: (mensagem: String) -> Unit,
     ) {
         try {
             val pm = PrinterManager(context)
-            val centroBold = mapOf(
+            fun estilo(b: Bloco) = mapOf(
                 PrinterAttributes.KEY_ALIGN to PrinterAttributes.VAL_ALIGN_CENTER,
-                PrinterAttributes.KEY_TYPEFACE to 1,
-                PrinterAttributes.KEY_TEXT_SIZE to 24,
+                PrinterAttributes.KEY_TYPEFACE to (if (b.negrito) 1 else 0),
+                PrinterAttributes.KEY_TEXT_SIZE to b.tamanho,
             )
-            val corpoEstilo = mapOf(
-                PrinterAttributes.KEY_ALIGN to PrinterAttributes.VAL_ALIGN_LEFT,
-                PrinterAttributes.KEY_TYPEFACE to 0,
-                PrinterAttributes.KEY_TEXT_SIZE to 20,
-            )
-            pm.printText("\n$titulo\n", centroBold, object : PrinterListener {
-                override fun onPrintSuccess() {
-                    // PrinterListener.onError recebe Throwable? (anulável) — com
-                    // Throwable não compila ("overrides nothing").
-                    pm.printText(corpo + "\n\n\n\n", corpoEstilo, object : PrinterListener {
-                        override fun onPrintSuccess() { onOk() }
-                        override fun onError(e: Throwable?) { onErro(e?.message ?: "Falha na impressão") }
-                        override fun onWithoutPaper() { onErro("Maquininha sem papel") }
-                    })
-                }
-                override fun onError(e: Throwable?) { onErro(e?.message ?: "Falha na impressão") }
-                override fun onWithoutPaper() { onErro("Maquininha sem papel") }
-            })
+            // PrinterListener.onError recebe Throwable? (anulável) — com
+            // Throwable não compila ("overrides nothing").
+            fun passo(i: Int) {
+                if (i >= blocos.size) { onOk(); return }
+                pm.printText(blocos[i].texto, estilo(blocos[i]), object : PrinterListener {
+                    override fun onPrintSuccess() { passo(i + 1) }
+                    override fun onError(e: Throwable?) { onErro(e?.message ?: "Falha na impressão") }
+                    override fun onWithoutPaper() { onErro("Maquininha sem papel") }
+                })
+            }
+            passo(0)
         } catch (e: Exception) {
             onErro("Impressora indisponível (fora da maquininha?)")
         }

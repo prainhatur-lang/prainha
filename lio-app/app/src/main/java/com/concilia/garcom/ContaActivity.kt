@@ -30,6 +30,8 @@ class ContaActivity : AppCompatActivity() {
     private var numero = 0
     private var ehComanda = false
     private var conta: Api.Conta? = null
+    private var nomeAtual: String? = null      // quem já está identificado aqui
+    private var resumoGeral: org.json.JSONObject? = null  // /api/conta/texto: mesa + comandas
     private var lioReady = false
     private var cobrando = false
 
@@ -117,15 +119,20 @@ class ContaActivity : AppCompatActivity() {
         Thread {
             try {
                 val c = Api.conta(base, numero)
-                val info = if (!ehComanda) try { Api.mesaInfo(base, numero) } catch (_: Exception) { null } else null
+                // Nomes vêm da mesa: a da conta (mesa) ou a mesa da comanda.
+                val mesaConsulta = if (ehComanda) c?.mesa else numero
+                val info = if (mesaConsulta != null) try { Api.mesaInfo(base, mesaConsulta) } catch (_: Exception) { null } else null
+                // O GERAL (mesa + comandas penduradas) vem do mesmo lugar do
+                // cupom — a tela tem que bater com a conta impressa.
+                val texto = if (!ehComanda && c != null) try { Api.contaTexto(base, numero) } catch (_: Exception) { null } else null
                 runOnUiThread {
                     conta = c
+                    resumoGeral = texto
                     mostrarConta(c)
-                    mostrarComandas(info)
-                    // Nome de quem está na mesa, quando identificado.
-                    val nome = info?.nomes?.get(numero.toString())
+                    mostrarComandas(if (ehComanda) null else info)
+                    nomeAtual = info?.nomes?.get(numero.toString())?.takeIf { it.isNotBlank() }
                     titulo.text = (if (ehComanda) "Comanda $numero" else "Mesa $numero") +
-                        (if (!nome.isNullOrBlank()) " · $nome" else "")
+                        (nomeAtual?.let { " · $it" } ?: "")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -155,11 +162,31 @@ class ContaActivity : AppCompatActivity() {
             vazio.visibility = if (linhas.isEmpty()) View.VISIBLE else View.GONE
             if (linhas.isEmpty()) vazio.text = "Conta aberta, sem itens"
             badge.visibility = if (c.contaPedida) View.VISIBLE else View.GONE
-            // Serviço zerado não vira "R$ 0,00" — só aparece quando o PDV aplicou.
-            val cab = if (c.servico > 0)
-                "Consumo ${Cupom.brl(c.total - c.servico)}  ·  Serviço ${Cupom.brl(c.servico)}  ·  Total ${Cupom.brl(c.total)}"
-            else "Total ${Cupom.brl(c.total)}"
-            resumo.text = "$cab\nSALDO ${Cupom.brl(c.saldo)}"
+            // Consumo + serviço − pago = saldo, SEMPRE com os 10% à vista.
+            // Antes de pedir a conta o serviço é estimativa (*); ao pedir, o
+            // servidor aplica no pedido e os números viram os oficiais.
+            val taxa = Session.taxaServico(this)
+            val taxaTxt = if (taxa == Math.floor(taxa)) taxa.toInt().toString() else taxa.toString()
+            val aplicado = c.servico > 0
+            val consumo = if (aplicado) c.total - c.servico else c.total
+            val svc = if (aplicado) c.servico else Math.round(consumo * taxa) / 100.0
+            val totalCom = consumo + svc
+            val saldoExibe = if (aplicado) c.saldo else totalCom - c.pago
+            val resumoTxt = StringBuilder()
+            resumoTxt.append("Consumo ${Cupom.brl(consumo)} + Serviço $taxaTxt% ${Cupom.brl(svc)}${if (aplicado) "" else " *"}")
+            resumoTxt.append("\nTotal ${Cupom.brl(totalCom)}")
+            if (c.pago > 0) resumoTxt.append(" − Pago ${Cupom.brl(c.pago)}")
+            resumoTxt.append("\nSALDO ${Cupom.brl(saldoExibe)}")
+            if (!aplicado) resumoTxt.append("\n* o serviço entra no pedido ao pedir a conta")
+            // Mesa com comandas: a tela mostra o RESULTADO FINAL igual ao cupom
+            // (senão a mesa diz 171 e a conta impressa diz 222 — divergência).
+            val t = resumoGeral
+            val nComandas = t?.optJSONArray("comandas")?.length() ?: 0
+            if (t != null && nComandas > 0) {
+                resumoTxt.append("\nGERAL c/ $nComandas comanda(s) ${Cupom.brl(t.optDouble("geral", 0.0))}")
+                resumoTxt.append("  ·  FALTA ${Cupom.brl(t.optDouble("falta_geral", 0.0))}")
+            }
+            resumo.text = resumoTxt.toString()
         }
         atualizarBotoes()
     }
@@ -168,13 +195,26 @@ class ContaActivity : AppCompatActivity() {
         comandasBox.removeAllViews()
         val cs = info?.comandas ?: emptyList()
         comandasBox.visibility = if (cs.isEmpty()) View.GONE else View.VISIBLE
+        // Valor de cada comanda no chip (mesma fonte do cupom) — o garçom vê
+        // na mesa que existem comandas penduradas e quanto cada uma deve.
+        val valores = mutableMapOf<Int, String>()
+        resumoGeral?.optJSONArray("comandas")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val c = arr.optJSONObject(i) ?: continue
+                valores[c.optInt("numero")] =
+                    if (c.optBoolean("quitada")) "paga" else Cupom.brl(c.optDouble("resta", c.optDouble("com_servico", 0.0)))
+            }
+        }
         cs.forEach { cNum ->
             val b = Button(this)
-            b.text = "C$cNum" + (info?.nomes?.get(cNum.toString())?.let { " · $it" } ?: "")
-            b.textSize = 12f
+            b.text = "C$cNum" + (info?.nomes?.get(cNum.toString())?.let { " · $it" } ?: "") +
+                (valores[cNum]?.let { " · $it" } ?: "")
+            // Botão GRANDE (tamanho dos botões de ação) — é alvo de toque frequente.
+            b.textSize = 15f
             b.isAllCaps = false
-            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
-            lp.marginEnd = dp(6)
+            b.setPadding(dp(16), 0, dp(16), 0)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(52))
+            lp.marginEnd = dp(8)
             b.layoutParams = lp
             b.setOnClickListener {
                 val i = Intent(this, ContaActivity::class.java)
@@ -200,7 +240,7 @@ class ContaActivity : AppCompatActivity() {
         contaPedidaBtn.text = if (c?.contaPedida == true) "Liberar conta" else "Pedir conta"
         // Conta pedida trava lançamento novo (regra do servidor).
         lancarBtn.isEnabled = !(c?.contaPedida ?: false)
-        lancarBtn.text = if (c?.contaPedida == true) "Conta pedida" else "＋ Lançar itens"
+        lancarBtn.text = if (c?.contaPedida == true) "Conta pedida" else "＋ Lançar"
     }
 
     private fun lancar() {
@@ -212,20 +252,86 @@ class ContaActivity : AppCompatActivity() {
     private fun alternarContaPedida() {
         val c = conta ?: return
         val tk = Session.token(this) ?: return logout()
-        val acao = if (c.contaPedida) "reabrir" else "fechar"
-        val msg = if (c.contaPedida) "Liberar a conta pra lançar de novo?"
-        else "Pedir a conta? Trava novos lançamentos e imprime a conta completa aqui na maquininha."
+        if (c.contaPedida) {
+            AlertDialog.Builder(this)
+                .setMessage("Liberar a conta pra lançar de novo?")
+                .setPositiveButton("Sim") { _, _ -> executarAcaoConta(tk, "reabrir", null) }
+                .setNegativeButton("Não", null)
+                .show()
+            return
+        }
+        // Pedir a conta: trava lançamentos e imprime — com rateio opcional.
+        val pessoasIn = campo("Dividir por quantas pessoas? (opcional)", android.text.InputType.TYPE_CLASS_NUMBER)
         AlertDialog.Builder(this)
-            .setMessage(msg)
-            .setPositiveButton("Sim") { _, _ ->
+            .setTitle("Pedir a conta?")
+            .setMessage("Trava novos lançamentos e imprime a conta completa aqui na maquininha.")
+            .setView(caixa(pessoasIn))
+            .setPositiveButton("Pedir e imprimir") { _, _ ->
+                executarAcaoConta(tk, "fechar", pessoasIn.text.toString().trim().toIntOrNull())
+            }
+            .setNegativeButton("Não", null)
+            .show()
+    }
+
+    private fun executarAcaoConta(tk: String, acao: String, pessoas: Int?) {
+        Thread {
+            try {
+                val r = Api.acaoConta(Session.servidor(this), tk, numero, acao)
+                runOnUiThread {
+                    Toast.makeText(this, r.optString("msg", r.optString("erro", "ok")), Toast.LENGTH_SHORT).show()
+                    carregar()
+                    // Conta pedida = conta na mão: imprime na hora, com tudo.
+                    if (acao == "fechar" && r.optBoolean("ok")) imprimirConta("CONTA", pessoas)
+                }
+            } catch (e: Api.SemSessao) {
+                runOnUiThread { logout() }
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    // ---- menu ⋯: identificar / vincular comanda / transferir-juntar ----
+
+    private fun mostrarMaisAcoes() {
+        data class Acao(val rotulo: String, val executar: () -> Unit)
+        val acoes = mutableListOf<Acao>()
+        // Já identificado: o dono não muda por aqui (mesma regra do celular).
+        val dono = nomeAtual
+        if (dono == null) acoes.add(Acao("👤 Identificar cliente") { dialogIdentificar() })
+        else acoes.add(Acao("👤 $dono · já identificado") {
+            Toast.makeText(this, "O dono não muda por aqui — já identificado: $dono", Toast.LENGTH_LONG).show()
+        })
+        if (!ehComanda && Session.comandaAtiva(this)) {
+            acoes.add(Acao("🧾 Vincular comanda a esta mesa") { dialogVincular() })
+        }
+        acoes.add(Acao(if (ehComanda) "🔁 Mudar a comanda de mesa" else "🔁 Transferir/juntar em outra mesa") { dialogTransferir() })
+        // Comanda quitada/zerada pode ser LIBERADA (o número volta pro bolso).
+        if (ehComanda && (conta?.saldo ?: 0.0) <= 0.009) {
+            acoes.add(Acao("✔ Dar baixa na comanda") { darBaixaComanda() })
+        }
+        AlertDialog.Builder(this)
+            .setTitle(titulo.text)
+            .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun darBaixaComanda() {
+        val tk = Session.token(this) ?: return logout()
+        AlertDialog.Builder(this)
+            .setMessage("Dar baixa na comanda $numero? O número fica livre pra outro cliente.")
+            .setPositiveButton("Dar baixa") { _, _ ->
                 Thread {
                     try {
-                        val r = Api.acaoConta(Session.servidor(this), tk, numero, acao)
+                        val r = Api.comandaBaixa(Session.servidor(this), tk, numero)
                         runOnUiThread {
-                            Toast.makeText(this, r.optString("msg", r.optString("erro", "ok")), Toast.LENGTH_SHORT).show()
-                            carregar()
-                            // Conta pedida = conta na mão: imprime na hora, com tudo.
-                            if (acao == "fechar" && r.optBoolean("ok")) imprimirConta("CONTA")
+                            if (r.optBoolean("ok")) {
+                                Toast.makeText(this, r.optString("msg", "Comanda liberada."), Toast.LENGTH_LONG).show()
+                                finish()
+                            } else {
+                                Toast.makeText(this, r.optStringOrNull("erro") ?: "Não deu baixa", Toast.LENGTH_LONG).show()
+                            }
                         }
                     } catch (e: Api.SemSessao) {
                         runOnUiThread { logout() }
@@ -234,24 +340,7 @@ class ContaActivity : AppCompatActivity() {
                     }
                 }.start()
             }
-            .setNegativeButton("Não", null)
-            .show()
-    }
-
-    // ---- menu ⋯: identificar / vincular comanda / transferir-juntar ----
-
-    private fun mostrarMaisAcoes() {
-        data class Acao(val rotulo: String, val executar: () -> Unit)
-        val acoes = mutableListOf<Acao>()
-        acoes.add(Acao("👤 Identificar cliente") { dialogIdentificar() })
-        if (!ehComanda && Session.comandaAtiva(this)) {
-            acoes.add(Acao("🧾 Vincular comanda a esta mesa") { dialogVincular() })
-        }
-        acoes.add(Acao(if (ehComanda) "🔁 Mudar a comanda de mesa" else "🔁 Transferir/juntar em outra mesa") { dialogTransferir() })
-        AlertDialog.Builder(this)
-            .setTitle(titulo.text)
-            .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
-            .setNegativeButton("Fechar", null)
+            .setNegativeButton("Cancelar", null)
             .show()
     }
 
@@ -455,6 +544,22 @@ class ContaActivity : AppCompatActivity() {
                 val tk = Session.token(this) ?: return@setOnClickListener logout()
                 Thread {
                     try {
+                        // Comanda já ABERTA (nesta ou noutra mesa) não se recadastra —
+                        // o dono não muda. Transfira de mesa ou dê baixa nela antes.
+                        val emUso = try {
+                            Api.abertas(Session.servidor(this)).second.firstOrNull { it.numero == cNum }
+                        } catch (_: Exception) { null }
+                        if (emUso != null) {
+                            runOnUiThread {
+                                AlertDialog.Builder(this)
+                                    .setMessage("A comanda $cNum já está aberta" +
+                                        (emUso.mesa?.let { " na mesa $it" } ?: "") +
+                                        (emUso.nome?.let { " ($it)" } ?: "") +
+                                        ". O dono não muda — transfira de mesa ou dê baixa nela.")
+                                    .setPositiveButton("OK", null).show()
+                            }
+                            return@Thread
+                        }
                         val r = Api.vincular(Session.servidor(this), tk, numero, cNum, nome, cpf, tel, achado.contatoFb)
                         if (r.optBoolean("ok") && nome != null) {
                             // Carimba o dono na comanda recém-vinculada (mesmo passo do celular).
@@ -521,17 +626,27 @@ class ContaActivity : AppCompatActivity() {
     }
 
     // ---- conta/conferência impressa na térmica da maquininha ----
-    private fun imprimirConferencia() = imprimirConta("CONFERÊNCIA")
+    private fun imprimirConferencia() {
+        val pessoasIn = campo("Dividir por quantas pessoas? (opcional)", android.text.InputType.TYPE_CLASS_NUMBER)
+        AlertDialog.Builder(this)
+            .setTitle("Imprimir conferência")
+            .setView(caixa(pessoasIn))
+            .setPositiveButton("Imprimir") { _, _ ->
+                imprimirConta("CONFERÊNCIA", pessoasIn.text.toString().trim().toIntOrNull())
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
 
-    private fun imprimirConta(rotulo: String) {
+    private fun imprimirConta(rotulo: String, pessoas: Int?) {
         conferenciaBtn.isEnabled = false
         Thread {
             try {
                 val j = Api.contaTexto(Session.servidor(this), numero)
-                val corpo = Cupom.montar(j, ehComanda)
+                val blocos = Cupom.montarBlocos(j, ehComanda, Session.loja(this), rotulo, pessoas)
                 runOnUiThread {
-                    Lio.imprimirCupom(
-                        this, Session.loja(this) + " · " + rotulo, corpo,
+                    Lio.imprimirBlocos(
+                        this, blocos,
                         onOk = { runOnUiThread { conferenciaBtn.isEnabled = true } },
                         onErro = { msg ->
                             runOnUiThread {
@@ -585,7 +700,8 @@ class ContaActivity : AppCompatActivity() {
         val dica = TextView(this)
         dica.textSize = 12f
         dica.setTextColor(0xFF6B7280.toInt())
-        dica.text = "Rachar: um Receber por pessoa — o saldo vai caindo. No último, use Tudo."
+        dica.text = (if (c.servico <= 0) "⚠ Peça a conta primeiro pra incluir os 10% no saldo.\n" else "") +
+            "Rachar: um Receber por pessoa — o saldo vai caindo. No último, use Tudo."
 
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
@@ -726,20 +842,28 @@ class ContaActivity : AppCompatActivity() {
 
     private fun imprimirRecibo(pagamentos: List<Lio.PagamentoLio>) {
         Thread {
-            val extras = mutableListOf("RECIBO DE PAGAMENTO")
+            val extras = mutableListOf<String>()
             pagamentos.forEach { p ->
                 extras.add("${p.forma.uppercase()} ${p.bandeira} ${Cupom.brl(p.valorCentavos / 100.0)}".trim())
                 if (p.nsu.isNotBlank()) extras.add("NSU ${p.nsu} AUT ${p.autorizacao}")
             }
-            val corpo = try {
-                Cupom.montar(Api.contaTexto(Session.servidor(this), numero), ehComanda, extras)
+            val blocos = try {
+                Cupom.montarBlocos(
+                    Api.contaTexto(Session.servidor(this), numero), ehComanda,
+                    Session.loja(this), "RECIBO", null, extras,
+                )
             } catch (_: Exception) {
                 // Conta já fechada/indisponível: recibo mínimo, só do pagamento.
-                extras.joinToString("\n") + "\n" + (if (ehComanda) "Comanda" else "Mesa") + " $numero\n" + Cupom.agoraBr()
+                listOf(
+                    Lio.Bloco("\n${Session.loja(this)}\nRECIBO", negrito = true, tamanho = 22),
+                    Lio.Bloco((if (ehComanda) "COMANDA" else "MESA") + " $numero", negrito = true, tamanho = 26),
+                    Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20),
+                    Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n", tamanho = 16),
+                )
             }
             runOnUiThread {
-                Lio.imprimirCupom(
-                    this, Session.loja(this), corpo,
+                Lio.imprimirBlocos(
+                    this, blocos,
                     onOk = { runOnUiThread { Toast.makeText(this, "Recibo impresso!", Toast.LENGTH_SHORT).show() } },
                     onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } }
                 )

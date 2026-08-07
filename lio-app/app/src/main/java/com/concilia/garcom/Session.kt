@@ -50,6 +50,9 @@ object Session {
             .apply()
     }
 
+    fun taxaServico(ctx: Context): Double =
+        prefs(ctx).getString("taxa_servico", null)?.toDoubleOrNull() ?: 10.0
+
     fun mesaMax(ctx: Context): Int = prefs(ctx).getInt("mesa_max", 299)
     fun comandaAtiva(ctx: Context): Boolean = prefs(ctx).getBoolean("comanda_ativa", true)
     fun comandaMin(ctx: Context): Int = prefs(ctx).getInt("comanda_min", 300)

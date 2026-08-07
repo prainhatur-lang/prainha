@@ -120,8 +120,8 @@
             android:id="@+id/lancar"
             android:layout_width="0dp"
             android:layout_height="50dp"
-            android:layout_weight="1.2"
-            android:text="＋ Lançar itens"
+            android:layout_weight="1"
+            android:text="＋ Lançar"
             android:textSize="13sp"
             android:textColor="#FFFFFF"
             android:background="#15803D" />

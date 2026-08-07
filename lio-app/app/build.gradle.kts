@@ -49,11 +49,14 @@ android {
         // loja em vez de IP (título da página em servidor antigo), pagamentos
         // como lançamentos em vermelho + SALDO, serviço zerado some, e o menu
         // ⋯ (identificar cliente, vincular comanda, transferir/juntar mesas).
-        // 1.5.1: identificar/vincular iguais à comanda do celular — CPF → o
-        // nome VEM da consulta (casa/já-atendidos/grupo/SPC); nome manual só
-        // quando nenhuma fonte responde. contato_fb aproveitado no cadastro.
-        versionCode = 9
-        versionName = "1.5.1"
+        // 1.6.0: rodada de campo na 0003 — cupom centralizado em blocos (mesa
+        // e FALTA em negrito, sem observações, rateio por N pessoas, avanço
+        // curto), serviço de 10% na tela e aplicado no pedido ao pedir a
+        // conta, GERAL mesa+comandas na tela (= cupom), chips de comanda
+        // grandes com valor, rodapé uniforme, revisão obrigatória do pedido
+        // e identificar bloqueado quando já tem dono.
+        versionCode = 10
+        versionName = "1.6.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

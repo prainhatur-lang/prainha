@@ -80,7 +80,8 @@ class ProdutosActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
         carrinhoTxt.setOnClickListener { revisarCarrinho() }
-        enviarBtn.setOnClickListener { enviar() }
+        // Revisão OBRIGATÓRIA antes de mandar pra cozinha (igual ao celular).
+        enviarBtn.setOnClickListener { revisarCarrinho() }
 
         atualizarCarrinho()
         carregarCategorias()
@@ -334,18 +335,30 @@ class ProdutosActivity : AppCompatActivity() {
         carrinhoTxt.text = "$n item(ns) · ${Cupom.brl(total)}  (toque pra revisar)"
     }
 
+    // Revisão do pedido (o mesmo passo homologado da comanda do celular):
+    // confere item a item, tira o que errou, e SÓ o ENVIAR daqui dispara o
+    // envio de verdade pra cozinha.
     private fun revisarCarrinho() {
         if (carrinho.isEmpty()) return
         val rotulos = carrinho.map {
             "${it.qtd}x ${it.nome} · ${Cupom.brl(it.total)}" + (it.obs?.let { o -> "\n   $o" } ?: "")
         }.toTypedArray()
+        val total = carrinho.sumOf { it.total }
         AlertDialog.Builder(this)
-            .setTitle("Carrinho — toque pra remover")
+            .setTitle("Revisão — ${carrinho.sumOf { it.qtd }} item(ns) · ${Cupom.brl(total)}")
             .setItems(rotulos) { _, pos ->
-                carrinho.removeAt(pos)
-                atualizarCarrinho()
+                AlertDialog.Builder(this)
+                    .setMessage("Tirar \"${carrinho[pos].nome}\" do pedido?")
+                    .setPositiveButton("Tirar") { _, _ ->
+                        carrinho.removeAt(pos)
+                        atualizarCarrinho()
+                        if (carrinho.isNotEmpty()) revisarCarrinho()
+                    }
+                    .setNegativeButton("Não") { _, _ -> revisarCarrinho() }
+                    .show()
             }
-            .setNegativeButton("Fechar", null)
+            .setPositiveButton("✔ ENVIAR") { _, _ -> enviar() }
+            .setNegativeButton("Continuar lançando", null)
             .show()
     }
 

@@ -669,6 +669,30 @@ async function fbPedirConta(ped, on = true) {
   const r = await qi(`UPDATE PEDIDOS SET CONTASOLICITADA='${on ? 'S' : 'N'}' WHERE CODIGO=${Number(ped)}`);
   if (!r.ok) throw new Error('FB pedir conta: ' + r.err);
 }
+/** Ao PEDIR a conta, os 10% entram no PEDIDO (TOTALSERVICO + VALORTOTAL) —
+ *  mesma mecânica do ajuste do caixa. Com isso tela, cobrança e cupom batem
+ *  no mesmo número (o saldo cobrável passa a incluir o serviço). Se o PDV já
+ *  aplicou serviço (TOTALSERVICO > 0), não mexe. Liberar a conta REMOVE de
+ *  novo: o recálculo de total dos lançamentos (fbAtualizarTotal) zera o
+ *  VALORTOTAL pro SUM dos itens, e serviço órfão viraria conta errada. */
+async function fbAplicarServico(ped) {
+  if (!(TAXA_SERVICO > 0)) return 0;
+  const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  if (!p) return 0;
+  if ((Number(p.SVC) || 0) > 0.009) return Number(p.SVC);
+  const svc = +((Number(p.ITENS) || 0) * TAXA_SERVICO / 100).toFixed(2);
+  if (!(svc > 0)) return 0;
+  const novoTot = +((Number(p.TOT) || 0) + svc).toFixed(2);
+  const r = await qi(`UPDATE PEDIDOS SET TOTALSERVICO=${fbNum(svc)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${Number(ped)}`);
+  return r.ok ? svc : 0;
+}
+async function fbRemoverServico(ped) {
+  const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  const svc = Number(p?.SVC) || 0;
+  if (!(svc > 0.009)) return;
+  const novoTot = +((Number(p.TOT) || 0) - svc).toFixed(2);
+  await qi(`UPDATE PEDIDOS SET TOTALSERVICO=0, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${Number(ped)}`);
+}
 /** As três ações do rodapé da mesa. NÃO fecha o pedido no Consumer:
  *  quem encerra e emite a nota continua sendo ele. */
 async function apiVendaConta(body) {
@@ -679,18 +703,41 @@ async function apiVendaConta(body) {
   try { ped = await fbAcharPedido(numero); } catch (e) { return { ok: false, erro: e.message }; }
   if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_DE ? 'comanda ' : 'mesa ') + numero };
   try {
-    if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbImprimirConta(ped);
+    if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbAplicarServico(ped); await fbImprimirConta(ped);
+      espelho().catch(() => {});
       return { ok: true, pedido_fb: ped, msg: 'Conta enviada pra impressora do caixa.' }; }
-    if (acao === 'fechar') { await fbPedirConta(ped, true);
+    if (acao === 'fechar') { await fbPedirConta(ped, true); await fbAplicarServico(ped);
       // espelho na hora: senao a tela do cliente so descobre no proximo sync
       await sql`UPDATE comanda SET conta_pedida=true WHERE numero=${numero}`;
+      espelho().catch(() => {});
       return { ok: true, pedido_fb: ped, msg: 'Conta pedida. Não entra mais lançamento.' }; }
-    if (acao === 'reabrir') { await fbPedirConta(ped, false);
+    if (acao === 'reabrir') { await fbPedirConta(ped, false); await fbRemoverServico(ped);
       await sql`UPDATE comanda SET conta_pedida=false WHERE numero=${numero}`;
+      espelho().catch(() => {});
       return { ok: true, pedido_fb: ped, msg: 'Liberado. Pode lançar de novo.' }; }
     return { ok: false, erro: 'ação inválida' };
   } catch (e) { return { ok: false, erro: e.message }; }
 }
+/** BAIXA de comanda: libera o número quando a conta está zerada/paga.
+ *  (Comanda aberta por engano, ou cliente que pagou e devolveu o cartão.)
+ *  Com saldo, barra — recebe primeiro, baixa depois. */
+async function apiComandaBaixa(body) {
+  const n = Number(body.comanda);
+  if (!(COMANDA_ATIVA && n >= COMANDA_DE && n <= COMANDA_MAX)) return { ok: false, erro: 'comanda inválida' };
+  let ped = null;
+  try { ped = await fbAcharPedido(n); } catch (e) { return { ok: false, erro: e.message }; }
+  if (ped) {
+    const tot = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+    const pago = await fbPagoDoPedido(ped);
+    const saldo = +(tot - pago).toFixed(2);
+    if (saldo > 0.009) return { ok: false, erro: `comanda com saldo (R$ ${saldo.toFixed(2)}) — receba antes de dar baixa` };
+  }
+  await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
+  await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
+  espelho().catch(() => {});
+  return { ok: true, comanda: n, msg: `Comanda ${n} liberada.` };
+}
+
 /** As RESPOSTAS das perguntas, do jeito que o Consumer monta: cada resposta é
  *  um ITEM-FILHO (CODIGOPAI + tipo 2), e é ESSE filho que aponta pra opção em
  *  ITEMPEDIDOWIZARDOPCAO — cuja PK é só CODIGOITEMPEDIDO, ou seja, UMA opção
@@ -7374,14 +7421,15 @@ const server = http.createServer(async (req, res) => {
     // Ações da comanda mobile: só quem está logado (login com AcessarComandaMobile
     // no Consumer). Leitura fica aberta; o que MEXE na conta exige sessão.
     if (req.method === 'POST' && (p === '/api/venda/vincular' || p === '/api/venda/transferir'
-        || p === '/api/venda/conta' || p === '/api/venda/enviar')) {
+        || p === '/api/venda/conta' || p === '/api/venda/enviar' || p === '/api/venda/comanda-baixa')) {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       const body = await readBody(req);
       body._garcom = g.login;                 // quem fez a ação (auditoria)
       const fn = p === '/api/venda/vincular' ? apiVendaVincular
         : p === '/api/venda/transferir' ? apiTransferir
-        : p === '/api/venda/conta' ? apiVendaConta : apiVendaEnviar;
+        : p === '/api/venda/conta' ? apiVendaConta
+        : p === '/api/venda/comanda-baixa' ? apiComandaBaixa : apiVendaEnviar;
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await fn(body)));
     }
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }

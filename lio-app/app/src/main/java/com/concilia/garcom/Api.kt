@@ -411,6 +411,11 @@ object Api {
         return postJson("$base/api/venda/vincular", token, b)
     }
 
+    /** Libera o número da comanda (zerada/paga). O servidor barra se tiver saldo. */
+    @Throws(IOException::class)
+    fun comandaBaixa(base: String, token: String, comanda: Int): JSONObject =
+        postJson("$base/api/venda/comanda-baixa", token, JSONObject().put("comanda", comanda))
+
     /** Nome pelo CPF/telefone (cadastro da casa → já-atendidos → grupo → SPC). */
     fun identificarBuscar(base: String, cpf: String?, tel: String?): JSONObject? = try {
         getJson("$base/api/venda/identificar?cpf=${enc(cpf ?: "")}&tel=${enc(tel ?: "")}")
