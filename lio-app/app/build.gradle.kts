@@ -44,10 +44,10 @@ android {
         // cardápio, conferência, e receber na mesa pelo terminal (Order Manager
         // SDK, integral ou parcial) com baixa no Concilia (NSU/authCode/bandeira)
         // e recibo impresso.
-        // 1.0.1: mesmo app, agora com as credenciais do Dev Console embutidas —
-        // a Store não salva upload com o mesmo versionCode do anterior.
-        versionCode = 2
-        versionName = "1.0.1"
+        // A versão que a Store enxerga é ESTA (do manifest) — renomear o .apk
+        // não muda nada. 1.1.0 = build com credenciais do Dev Console.
+        versionCode = 3
+        versionName = "1.1.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
