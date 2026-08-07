@@ -31,6 +31,7 @@ class ContaActivity : AppCompatActivity() {
     private var ehComanda = false
     private var conta: Api.Conta? = null
     private var nomeAtual: String? = null      // quem já está identificado aqui
+    private var infoAtual: Api.MesaInfo? = null           // comandas da mesa (chips)
     private var resumoGeral: org.json.JSONObject? = null  // /api/conta/texto: mesa + comandas
     private var lioReady = false
     private var cobrando = false
@@ -125,6 +126,7 @@ class ContaActivity : AppCompatActivity() {
                 val texto = if (!ehComanda && c != null) try { Api.contaTexto(base, numero) } catch (_: Exception) { null } else null
                 runOnUiThread {
                     conta = c
+                    infoAtual = if (ehComanda) null else info
                     resumoGeral = texto
                     mostrarConta(c)
                     mostrarComandas(if (ehComanda) null else info)
@@ -679,20 +681,34 @@ class ContaActivity : AppCompatActivity() {
     // 1–6, ou valor digitado. O servidor aceita o teto com serviço
     // (permitir_servico no /api/lio/pagar) — não depende de pedir a conta.
     private fun receber() {
-        val c = conta ?: return
-        if (!lioReady || cobrando) return
+        if (conta == null || !lioReady || cobrando) return
+        abrirReceber(numero)
+    }
+
+    /** Abre o Receber de um ALVO (a própria conta OU uma comanda da mesa) —
+     *  os chips "Receber de" trocam de alvo, igual à tela do celular. */
+    private fun abrirReceber(alvo: Int) {
         Thread {
-            val texto = try { Api.contaTexto(Session.servidor(this), numero) } catch (_: Exception) { null }
-            runOnUiThread { dialogReceber(c, texto) }
+            val base = Session.servidor(this)
+            val texto = try { Api.contaTexto(base, alvo) } catch (_: Exception) { null }
+            val cAlvo = if (alvo == numero) conta else try { Api.conta(base, alvo) } catch (_: Exception) { null }
+            runOnUiThread {
+                if (texto == null && cAlvo == null) {
+                    Toast.makeText(this, "Sem conta aberta no $alvo", Toast.LENGTH_SHORT).show()
+                } else {
+                    dialogReceber(alvo, cAlvo, texto)
+                }
+            }
         }.start()
     }
 
-    private fun dialogReceber(c: Api.Conta, texto: org.json.JSONObject?) {
-        // Consumo da PRÓPRIA conta (mesa OU comanda) — mesma base do celular.
-        val aplicado = c.servico > 0
+    private fun dialogReceber(alvo: Int, cAlvo: Api.Conta?, texto: org.json.JSONObject?) {
+        // Consumo da conta do ALVO (mesa ou comanda) — mesma base do celular.
+        val aplicado = (cAlvo?.servico ?: 0.0) > 0
         val itens = texto?.optDouble("total", -1.0)?.takeIf { it >= 0 }
-            ?: (if (aplicado) c.total - c.servico else c.total)
-        val pago = c.pago
+            ?: (cAlvo?.let { if (aplicado) it.total - it.servico else it.total } ?: 0.0)
+        val pago = cAlvo?.pago ?: texto?.optDouble("pago", 0.0) ?: 0.0
+        var dlg: AlertDialog? = null
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
         var valorDig: Double? = null
@@ -771,6 +787,33 @@ class ContaActivity : AppCompatActivity() {
             b.setOnClickListener { partes = k; valorDig = null; pinta() }
             partesBtns.add(k to b)
         }
+
+        // "Receber de": a mesa e cada comanda pendurada (igual ao celular) —
+        // cada comanda é um PEDIDO próprio no Consumer, então é um pagamento
+        // por conta: cobra a mesa, depois cada comanda, trocando de chip.
+        val alvos = mutableListOf(numero)
+        if (!ehComanda) alvos.addAll(infoAtual?.comandas ?: emptyList())
+        val valoresComanda = mutableMapOf<Int, String>()
+        resumoGeral?.optJSONArray("comandas")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val cc = arr.optJSONObject(i) ?: continue
+                valoresComanda[cc.optInt("numero")] =
+                    if (cc.optBoolean("quitada")) "paga" else Cupom.brl(cc.optDouble("resta", 0.0))
+            }
+        }
+        val alvoRow = chipRow()
+        if (alvos.size > 1) alvos.forEach { a ->
+            val rot = (if (a == numero) "Mesa $a" else "C$a") + (valoresComanda[a]?.let { "\n$it" } ?: "")
+            val b = chip(alvoRow, rot)
+            b.textSize = 12f
+            if (a == alvo) {
+                b.setBackgroundColor(0xFF0C7091.toInt())
+                b.setTextColor(0xFFFFFFFF.toInt())
+            }
+            b.setOnClickListener {
+                if (a != alvo) { dlg?.dismiss(); abrirReceber(a) }
+            }
+        }
         val digIn = campo("Ou digite o valor", android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL)
         digIn.addTextChangedListener(object : android.text.TextWatcher {
             override fun afterTextChanged(s: android.text.Editable?) {
@@ -785,47 +828,66 @@ class ContaActivity : AppCompatActivity() {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(dp(20), dp(8), dp(20), 0)
-        listOf(
+        val views = mutableListOf<View>()
+        if (alvos.size > 1) { views.add(rotulo("Receber de")); views.add(alvoRow) }
+        views.addAll(listOf(
             valorTxt, subTxt,
             rotulo("Serviço"), gorjRow,
             rotulo("Dividir por"), partesRow,
             digIn,
-        ).forEach {
+        ))
+        views.forEach {
             box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         pinta()
 
-        AlertDialog.Builder(this)
-            .setTitle("Receber — ${titulo.text}")
+        val ehComandaAlvo = Session.ehComanda(this, alvo)
+        val nomeAlvo = texto?.optStringOrNull("nome")
+        dlg = AlertDialog.Builder(this)
+            .setTitle("Receber — " + (if (ehComandaAlvo) "Comanda $alvo" else "Mesa $alvo") +
+                (nomeAlvo?.let { " · $it" } ?: ""))
             .setView(box)
             .setPositiveButton("💳 Cobrar") { _, _ ->
                 val (_, _, cobrar) = calc()
                 if (cobrar <= 0.009) Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
-                else cobrarNoTerminal(Math.round(cobrar * 100))
+                else cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), Math.round(cobrar * 100))
             }
             .setNegativeButton("Cancelar", null)
-            .show()
+            .create()
+        dlg?.show()
     }
 
-    private fun cobrarNoTerminal(valorCentavos: Long) {
-        val c = conta ?: return
+    /** Itens reais da conta do alvo pro pedido da LIO (o certificador confere). */
+    private fun linhasDoAlvo(texto: org.json.JSONObject?, cAlvo: Api.Conta?): List<Lio.Linha> {
+        val arr = texto?.optJSONArray("itens")
+        if (arr != null && arr.length() > 0) {
+            val out = mutableListOf<Lio.Linha>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optInt("tipo", 1) == 2) continue
+                val q = o.optDouble("quantidade", 1.0)
+                val qTxt = if (q == Math.floor(q)) q.toInt().toString() else q.toString()
+                out.add(Lio.Linha("${qTxt}x " + o.optString("nome"), Math.round(o.optDouble("valor_total", 0.0) * 100)))
+            }
+            if (out.isNotEmpty()) return out
+        }
+        return (cAlvo?.itens ?: emptyList()).filter { it.tipo != 2 }.map {
+            val q = if (it.qtd == Math.floor(it.qtd)) it.qtd.toInt().toString() else it.qtd.toString()
+            Lio.Linha("${q}x ${it.nome}", Math.round(it.valor * 100))
+        }
+    }
+
+    private fun cobrarNoTerminal(alvo: Int, linhas: List<Lio.Linha>, valorCentavos: Long) {
         cobrando = true
         atualizarBotoes()
 
-        // Itens REAIS da conta no pedido da LIO (o certificador confere) —
-        // pais somados com serviço; o valor cobrado pode ser parcial.
-        val linhas = c.itens.filter { it.tipo != 2 }.map {
-            val q = if (it.qtd == Math.floor(it.qtd)) it.qtd.toInt().toString() else it.qtd.toString()
-            Lio.Linha("${q}x ${it.nome}", Math.round(it.valor * 100))
-        } + (if (c.servico > 0) listOf(Lio.Linha("Serviço", Math.round(c.servico * 100))) else emptyList())
-
-        val ref = (if (ehComanda) "COMANDA-" else "MESA-") + numero
+        val ref = (if (Session.ehComanda(this, alvo)) "COMANDA-" else "MESA-") + alvo
         Lio.cobrar(
             ref = ref,
             linhas = linhas,
             valorCentavos = valorCentavos,
             onInicio = { /* a UI de pagamento da Cielo assume a tela */ },
-            onPago = { _, pagamentos -> registrarPagamentos(pagamentos) },
+            onPago = { _, pagamentos -> registrarPagamentos(alvo, pagamentos) },
             onCancelado = {
                 runOnUiThread {
                     cobrando = false
@@ -846,7 +908,7 @@ class ContaActivity : AppCompatActivity() {
     // Aprovado no terminal → fila de pendentes ANTES, registro com retry, e só
     // então sai da fila. Rede caiu nesse meio tempo: fica pendente e a tela de
     // mesas reenvia — o pagamento nunca se perde.
-    private fun registrarPagamentos(pagamentos: List<Lio.PagamentoLio>) {
+    private fun registrarPagamentos(alvo: Int, pagamentos: List<Lio.PagamentoLio>) {
         val tk = Session.token(this)
         val base = Session.servidor(this)
         Thread {
@@ -854,7 +916,7 @@ class ContaActivity : AppCompatActivity() {
             var registrouTudo = true
             var ultimoErro: String? = null
             for (p in pagamentos) {
-                val body = Api.bodyPagamento(numero, p)
+                val body = Api.bodyPagamento(alvo, p)
                 val id = Pendentes.adicionar(this, body)
                 var okEste = false
                 for (tentativa in 1..3) {
@@ -885,12 +947,13 @@ class ContaActivity : AppCompatActivity() {
             runOnUiThread {
                 cobrando = false
                 carregar()
-                mostrarResultado(totalPago, pagamentos, registrouTudo, quitada, ultimoErro)
+                mostrarResultado(alvo, totalPago, pagamentos, registrouTudo, quitada, ultimoErro)
             }
         }.start()
     }
 
     private fun mostrarResultado(
+        alvo: Int,
         totalCentavos: Long,
         pagamentos: List<Lio.PagamentoLio>,
         registrou: Boolean,
@@ -904,7 +967,9 @@ class ContaActivity : AppCompatActivity() {
                 (if (mask4.isNotBlank()) " **** $mask4" else "") +
                 (if (it.nsu.isNotBlank()) "\nNSU ${it.nsu} · AUT ${it.autorizacao}" else "")
         } ?: ""
-        val msg = StringBuilder("Recebido ${Cupom.brl(totalCentavos / 100.0)}\n$detalhe")
+        val msg = StringBuilder("Recebido ${Cupom.brl(totalCentavos / 100.0)}" +
+            (if (alvo != numero) " (${if (Session.ehComanda(this, alvo)) "comanda" else "mesa"} $alvo)" else "") +
+            "\n$detalhe")
         if (quitada) msg.append("\n\n🎉 Conta quitada!")
         if (!registrou) msg.append(
             "\n\n⚠️ O pagamento foi APROVADO na maquininha mas ainda não foi registrado no sistema" +
@@ -914,13 +979,14 @@ class ContaActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(if (registrou) "✅ Pago!" else "⚠️ Pago — registro pendente")
             .setMessage(msg.toString())
-            .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(pagamentos) }
+            .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(alvo, pagamentos) }
             .setNegativeButton("OK", null)
             .setCancelable(false)
             .show()
     }
 
-    private fun imprimirRecibo(pagamentos: List<Lio.PagamentoLio>) {
+    private fun imprimirRecibo(alvo: Int, pagamentos: List<Lio.PagamentoLio>) {
+        val ehComandaAlvo = Session.ehComanda(this, alvo)
         Thread {
             val extras = mutableListOf<String>()
             pagamentos.forEach { p ->
@@ -929,16 +995,16 @@ class ContaActivity : AppCompatActivity() {
             }
             val blocos = try {
                 Cupom.montarBlocos(
-                    Api.contaTexto(Session.servidor(this), numero), ehComanda,
+                    Api.contaTexto(Session.servidor(this), alvo), ehComandaAlvo,
                     Session.loja(this), "RECIBO", null, extras,
                 )
             } catch (_: Exception) {
                 // Conta já fechada/indisponível: recibo mínimo, só do pagamento.
                 listOf(
                     Lio.Bloco("\n${Session.loja(this)}\nRECIBO", negrito = true, tamanho = 22),
-                    Lio.Bloco((if (ehComanda) "COMANDA" else "MESA") + " $numero", negrito = true, tamanho = 26),
+                    Lio.Bloco((if (ehComandaAlvo) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
                     Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20),
-                    Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n", tamanho = 16),
+                    Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
                 )
             }
             runOnUiThread {
