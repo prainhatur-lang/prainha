@@ -55,23 +55,28 @@ fi
 
 DEX=$(mktemp -d)
 unzip -o -q "$APK" 'classes*.dex' -d "$DEX"
+# strings extraídas UMA vez pra arquivo. Grepar arquivo (e não pipe) importa:
+# com pipefail, `… | strings | grep -q` leva SIGPIPE quando o grep sai no
+# primeiro match e o check "falha" mesmo tendo achado — aconteceu aqui.
+STR="$DEX/strings.txt"
+cat "$DEX"/classes*.dex | strings > "$STR"
 
 # 2. ZERO WebView (PCI do DX8000 — reprovação real da v1 do CupomPro).
 #    Única referência tolerada ao pacote android.webkit: MimeTypeMap.
-WEBKIT=$(cat "$DEX"/classes*.dex | strings | grep 'android/webkit' | grep -v 'MimeTypeMap' | sort -u || true)
+WEBKIT=$(grep 'android/webkit' "$STR" | grep -v 'MimeTypeMap' | sort -u || true)
 if [ -n "$WEBKIT" ]; then
   echo "❌ REFERÊNCIA A WEBVIEW NO DEX (certificação reprova):"; echo "$WEBKIT"; rm -rf "$DEX"; exit 1
 fi
 echo "✓ zero android.webkit no dex"
 
 # 3. SDK Cielo embarcado
-CIELO_N=$(cat "$DEX"/classes*.dex | strings | grep -c 'cielo/sdk' || true)
+CIELO_N=$(grep -c 'cielo/sdk' "$STR" || true)
 [ "$CIELO_N" -gt 0 ] || { echo "❌ SDK Cielo não encontrado no dex"; rm -rf "$DEX"; exit 1; }
 echo "✓ SDK Cielo no dex ($CIELO_N refs)"
 
 # 4. Credencial embutida (BuildConfig)
 if [ -n "$CID" ]; then
-  if cat "$DEX"/classes*.dex | strings | grep -q "$CID"; then
+  if grep -q "$CID" "$STR"; then
     echo "✓ CIELO_CLIENT_ID embutido no APK"
   else
     echo "❌ CIELO_CLIENT_ID não está no APK (BuildConfig quebrado?)"; rm -rf "$DEX"; exit 1
