@@ -411,6 +411,17 @@ object Api {
         return postJson("$base/api/venda/vincular", token, b)
     }
 
+    /** Passe de saída (exige conta ZERADA — o servidor valida e diz o que
+     *  falta): 1 token com N passagens de pessoa na catraca + placas pra
+     *  cancela LPR. O QR impresso carrega o próprio token. */
+    @Throws(IOException::class)
+    fun saidaGerar(base: String, numero: Int, adultos: Int, criancas: Int, placas: List<String>): JSONObject {
+        val b = JSONObject().put("mesa", numero).put("adultos", adultos)
+            .put("criancas", criancas).put("origem", "lio")
+        if (placas.isNotEmpty()) b.put("placas", JSONArray(placas))
+        return postJson("$base/api/saida/gerar", null, b)
+    }
+
     /** Libera o número da comanda (zerada/paga). O servidor barra se tiver saldo. */
     @Throws(IOException::class)
     fun comandaBaixa(base: String, token: String, comanda: Int): JSONObject =

@@ -168,8 +168,9 @@ object Lio {
         )
     }
 
-    /** Um trecho do cupom com estilo próprio (tudo centralizado no papel). */
-    data class Bloco(val texto: String, val negrito: Boolean = false, val tamanho: Int = 20)
+    /** Um trecho do cupom com estilo próprio (tudo centralizado no papel).
+     *  Com `qr` preenchido, o bloco imprime um QR CODE (texto é ignorado). */
+    data class Bloco(val texto: String = "", val negrito: Boolean = false, val tamanho: Int = 20, val qr: String? = null)
 
     /**
      * Imprime o cupom em blocos estilizados na térmica da maquininha —
@@ -193,11 +194,14 @@ object Lio {
             // Throwable não compila ("overrides nothing").
             fun passo(i: Int) {
                 if (i >= blocos.size) { onOk(); return }
-                pm.printText(blocos[i].texto, estilo(blocos[i]), object : PrinterListener {
+                val ouvinte = object : PrinterListener {
                     override fun onPrintSuccess() { passo(i + 1) }
                     override fun onError(e: Throwable?) { onErro(e?.message ?: "Falha na impressão") }
                     override fun onWithoutPaper() { onErro("Maquininha sem papel") }
-                })
+                }
+                val b = blocos[i]
+                if (b.qr != null) pm.printQrCode(b.qr, 380, PrinterAttributes.VAL_ALIGN_CENTER, ouvinte)
+                else pm.printText(b.texto, estilo(b), ouvinte)
             }
             passo(0)
         } catch (e: Exception) {

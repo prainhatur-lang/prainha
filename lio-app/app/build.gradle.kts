@@ -58,11 +58,11 @@ android {
         // 1.7.0: Receber IDÊNTICO ao do celular — consumo + serviço escolhido
         // (chips 10%/15%) − pago, Dividir por 1–6, ou valor digitado; o
         // servidor aceita o teto com serviço (permitir_servico).
-        // 1.7.1: Receber ganha "Receber de" (mesa + cada comanda, com o que
-        // falta em cada) — a mesa 15 mostra 171,99 E os chips das comandas
-        // que completam os 222,39; um pagamento por conta, igual ao celular.
-        versionCode = 13
-        versionName = "1.7.1"
+        // 1.8.0: passe de saída na maquininha (QR da catraca em N vias +
+        // placas pra cancela LPR, mesa e comanda) e o botão Receber já
+        // mostrando o saldo COM os 10% (no dialog dá pra subir pra 15).
+        versionCode = 14
+        versionName = "1.8.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

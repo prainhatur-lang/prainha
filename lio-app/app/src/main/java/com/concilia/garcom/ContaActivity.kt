@@ -235,14 +235,24 @@ class ContaActivity : AppCompatActivity() {
         }
     }
 
+    /** Saldo JÁ com o serviço (10% padrão): o Receber nunca aparece sem os 10%
+     *  — no dialog dá pra subir pra 15%, nunca ficar abaixo de 10. */
+    private fun saldoComServico(c: Api.Conta): Double {
+        if (c.servico > 0) return c.saldo
+        val taxa = Session.taxaServico(this)
+        val svc = Math.round(c.total * taxa) / 100.0
+        return Math.max(0.0, Math.round((c.total + svc - c.pago) * 100) / 100.0)
+    }
+
     private fun atualizarBotoes() {
         val c = conta
-        val temSaldo = c != null && c.saldo > 0.009
+        val saldoExibe = c?.let { saldoComServico(it) } ?: 0.0
+        val temSaldo = saldoExibe > 0.009
         receberBtn.visibility = if (lioReady) View.VISIBLE else View.GONE
         receberBtn.isEnabled = lioReady && temSaldo && !cobrando
         receberBtn.text = when {
             cobrando -> "💳 Aguardando pagamento…"
-            temSaldo -> "💳 Receber ${Cupom.brl(c!!.saldo)}"
+            temSaldo -> "💳 Receber ${Cupom.brl(saldoExibe)}"
             else -> "💳 Receber"
         }
         conferenciaBtn.isEnabled = c != null
@@ -320,6 +330,8 @@ class ContaActivity : AppCompatActivity() {
         if (ehComanda && (conta?.saldo ?: 0.0) <= 0.009) {
             acoes.add(Acao("✔ Dar baixa na comanda") { darBaixaComanda() })
         }
+        // Passe de saída (catraca + cancela) — o servidor exige conta zerada.
+        acoes.add(Acao("🚗 Passe de saída") { dialogPasse(numero) })
         AlertDialog.Builder(this)
             .setTitle(titulo.text)
             .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
@@ -976,13 +988,84 @@ class ContaActivity : AppCompatActivity() {
                 (erro?.let { " ($it)" } ?: "") +
                 ". Ele ficou na fila — reenvie na tela de mesas assim que a rede voltar."
         )
-        AlertDialog.Builder(this)
+        val b = AlertDialog.Builder(this)
             .setTitle(if (registrou) "✅ Pago!" else "⚠️ Pago — registro pendente")
             .setMessage(msg.toString())
             .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(alvo, pagamentos) }
             .setNegativeButton("OK", null)
             .setCancelable(false)
+        // Conta quitada = hora do passe de saída (catraca/cancela do pátio).
+        if (quitada) b.setNeutralButton("🚗 Passe de saída") { _, _ -> dialogPasse(alvo) }
+        b.show()
+    }
+
+    // ---- passe de saída: QR da catraca (N passagens) + placas pra cancela ----
+    private fun dialogPasse(alvo: Int) {
+        val adultosIn = campo("Adultos", android.text.InputType.TYPE_CLASS_NUMBER)
+        adultosIn.setText("2")
+        val criancasIn = campo("Crianças", android.text.InputType.TYPE_CLASS_NUMBER)
+        criancasIn.setText("0")
+        val placasIn = campo("Placas dos carros (opcional, separadas por espaço)")
+        placasIn.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        val viasIn = campo("Quantas vias imprimir?", android.text.InputType.TYPE_CLASS_NUMBER)
+        viasIn.setText("1")
+        AlertDialog.Builder(this)
+            .setTitle("🚗 Passe de saída — " + (if (Session.ehComanda(this, alvo)) "comanda" else "mesa") + " $alvo")
+            .setView(caixa(adultosIn, criancasIn, placasIn, viasIn))
+            .setPositiveButton("Gerar e imprimir") { _, _ ->
+                val adultos = adultosIn.text.toString().trim().toIntOrNull() ?: 0
+                val criancas = criancasIn.text.toString().trim().toIntOrNull() ?: 0
+                val placas = placasIn.text.toString().split(Regex("[,;\\s]+")).map { it.trim() }.filter { it.isNotBlank() }
+                val vias = (viasIn.text.toString().trim().toIntOrNull() ?: 1).coerceIn(1, 6)
+                Thread {
+                    try {
+                        val r = Api.saidaGerar(Session.servidor(this), alvo, adultos, criancas, placas)
+                        runOnUiThread {
+                            if (!r.optBoolean("ok")) {
+                                AlertDialog.Builder(this)
+                                    .setMessage(r.optStringOrNull("erro") ?: "Não deu pra gerar o passe")
+                                    .setPositiveButton("OK", null).show()
+                            } else {
+                                imprimirPasses(alvo, r, vias)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
             .show()
+    }
+
+    /** Imprime `vias` cópias do MESMO passe — cada escaneada na catraca
+     *  consome 1 das N passagens; os carros saem pela placa na cancela. */
+    private fun imprimirPasses(alvo: Int, r: org.json.JSONObject, vias: Int) {
+        val token = r.optString("token")
+        val pessoas = r.optInt("pessoas", 1)
+        val validade = r.optInt("validade_min", 90)
+        val placasArr = r.optJSONArray("placas")
+        val placas = (0 until (placasArr?.length() ?: 0)).mapNotNull { placasArr?.optString(it) }
+        fun via(i: Int) {
+            if (i > vias) {
+                Toast.makeText(this, "✓ Passe impresso ($vias via/s)", Toast.LENGTH_LONG).show()
+                return
+            }
+            val blocos = mutableListOf(
+                Lio.Bloco("\n${Session.loja(this)}\nPASSE DE SAÍDA", negrito = true, tamanho = 22),
+                Lio.Bloco((if (Session.ehComanda(this, alvo)) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
+                Lio.Bloco("Vale $pessoas pessoa(s) · $validade min" +
+                    (if (placas.isNotEmpty()) "\nCarros: ${placas.joinToString(" ")}" else ""), tamanho = 18),
+                Lio.Bloco(qr = token),
+                Lio.Bloco("Apresente o QR na catraca" +
+                    (if (placas.isNotEmpty()) "\nCancela libera pela placa" else "") +
+                    (if (vias > 1) "\nvia $i/$vias" else "") + "\n\n\n\n\n\n", tamanho = 16),
+            )
+            Lio.imprimirBlocos(this, blocos,
+                onOk = { runOnUiThread { via(i + 1) } },
+                onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+        }
+        via(1)
     }
 
     private fun imprimirRecibo(alvo: Int, pagamentos: List<Lio.PagamentoLio>) {
