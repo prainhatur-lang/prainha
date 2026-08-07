@@ -29,13 +29,15 @@ val keystorePath = conf("KEYSTORE_FILE").replaceFirst("^~".toRegex(), System.get
 val keystoreOk = keystorePath.isNotBlank() && File(keystorePath).exists()
 
 android {
-    namespace = "com.prainha.lio"
+    namespace = "com.concilia.garcom"
     // LIO V3 = Android 8.1 (API 27); DX8000 = Android 10+. minSdk 25 é o
     // mínimo exigido pelo Order Manager SDK 2.5.5.
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.prainha.lio"
+        // ID imutável depois do primeiro upload na Cielo Store — decidido junto
+        // com o nome: o app é do PRODUTO (Concilia), o Prainha é a filial.
+        applicationId = "com.concilia.garcom"
         minSdk = 25
         targetSdk = 34
         // v1.0.0 — a venda do garçom NA maquininha: abrir mesa, lançar itens do

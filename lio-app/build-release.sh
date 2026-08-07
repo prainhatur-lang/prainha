@@ -3,7 +3,7 @@
 # Uso: ./build-release.sh          (na pasta lio-app)
 #
 # Lê tudo de secrets.properties (ver secrets.properties.example).
-# Sai em dist/prainha-lio-v<versão>.apk — é ESSE arquivo que sobe na Cielo.
+# Sai em dist/concilia-garcom-v<versão>.apk — é ESSE arquivo que sobe na Cielo.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -81,7 +81,7 @@ rm -rf "$DEX"
 
 VERSION="$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')"
 mkdir -p dist
-OUT="dist/prainha-lio-v$VERSION.apk"
+OUT="dist/concilia-garcom-v$VERSION.apk"
 cp "$APK" "$OUT"
 echo ""
 echo "✅ $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' ')) — pronto pro Dev Console da Cielo."

@@ -5,7 +5,7 @@
 -dontobfuscate
 
 # Nossas classes (activities vêm do manifest; mantém tudo por clareza — é minúsculo).
--keep class com.prainha.lio.** { *; }
+-keep class com.concilia.garcom.** { *; }
 
 # SDK Cielo LIO (Order Manager 2.5.5): comunicação AIDL com o serviço de
 # pagamento do terminal + serialização Gson dos domínios. R8 não pode

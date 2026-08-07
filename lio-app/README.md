@@ -1,4 +1,4 @@
-# Prainha Garçom — app da maquininha Cielo (LIO V3 / DX8000)
+# Concilia Garçom — app da maquininha Cielo (LIO V3 / DX8000)
 
 A **venda do garçom rodando DENTRO da maquininha**: abrir mesa, lançar itens do
 cardápio (com wizard de perguntas do Consumer), conferência impressa na térmica,
@@ -35,7 +35,7 @@ vendas-local nas lojas** (ZIP + .bat, ver `vendas-local/deploy-xeon/LEIA-ME.txt`
 
 ```bash
 cd lio-app
-./build-release.sh          # release assinado + 4 verificações → dist/prainha-lio-vX.Y.Z.apk
+./build-release.sh          # release assinado + 4 verificações → dist/concilia-garcom-vX.Y.Z.apk
 ```
 
 Debug (sem credenciais Cielo, pra testar em celular):
@@ -60,7 +60,7 @@ Copie de `secrets.properties.example`. Falta preencher **CIELO_CLIENT_ID** e
 ## O que o ELISON precisa fazer (o app não anda sem isso)
 
 1. **Dev Console** — `desenvolvedores.cielo.com.br` → Dev Console → **Cadastrar
-   Nova App** (nome: Prainha Garçom) → copiar **Client ID** e **Access Token**
+   Nova App** (nome: Concilia Garçom) → copiar **Client ID** e **Access Token**
    → colar em `lio-app/secrets.properties` → rodar `./build-release.sh`.
 2. **Cielo Store** — `www.cieloliostore.com.br` → criar o app como **loja
    PRIVADA** (sistema interno) → subir o APK de `dist/`, o ícone

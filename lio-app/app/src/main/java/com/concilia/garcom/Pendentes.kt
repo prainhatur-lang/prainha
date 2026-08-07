@@ -1,4 +1,4 @@
-package com.prainha.lio
+package com.concilia.garcom
 
 import android.content.Context
 import org.json.JSONArray
@@ -10,7 +10,7 @@ import org.json.JSONObject
 // e só sai depois do backend confirmar. A MesasActivity reenvia ao abrir e
 // mostra um aviso enquanto houver pendência.
 object Pendentes {
-    private const val PREFS = "prainha_lio_pendentes"
+    private const val PREFS = "concilia_garcom_pendentes"
     private const val K_FILA = "fila"
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

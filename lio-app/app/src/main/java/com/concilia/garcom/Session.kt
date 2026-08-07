@@ -1,4 +1,4 @@
-package com.prainha.lio
+package com.concilia.garcom
 
 import android.content.Context
 
@@ -7,7 +7,7 @@ import android.content.Context
 // O token do vendas-local vale GARCOM_TOKEN_HORAS (16h default) — expirou,
 // a API devolve sem_sessao e o app volta pro login.
 object Session {
-    private const val PREFS = "prainha_lio"
+    private const val PREFS = "concilia_garcom"
     private const val K_TOKEN = "token"
     private const val K_LOGIN = "login"
     private const val K_NOME = "nome"
