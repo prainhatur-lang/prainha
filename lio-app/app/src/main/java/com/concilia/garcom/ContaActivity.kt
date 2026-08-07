@@ -272,61 +272,143 @@ class ContaActivity : AppCompatActivity() {
         return box
     }
 
-    /** Nome/CPF/WhatsApp de quem está na mesa (busca o nome na casa/grupo/SPC). */
-    private fun dialogIdentificar() {
-        val nomeIn = campo("Nome")
-        val cpfIn = campo("CPF (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
-        val telIn = campo("WhatsApp (com DDD)", android.text.InputType.TYPE_CLASS_PHONE)
-        val cadastrarCb = CheckBox(this)
-        cadastrarCb.text = "Cadastrar como cliente da casa"
-        cadastrarCb.isChecked = true
-        val buscarBtn = Button(this)
-        buscarBtn.text = "🔍 Buscar nome pelo CPF/telefone"
-        buscarBtn.isAllCaps = false
-        buscarBtn.setOnClickListener {
-            val cpf = cpfIn.text.toString().trim()
-            val tel = telIn.text.toString().trim()
-            if (cpf.isBlank() && tel.isBlank()) {
-                Toast.makeText(this, "Preencha CPF ou WhatsApp antes", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            buscarBtn.isEnabled = false
-            Thread {
-                val r = Api.identificarBuscar(Session.servidor(this), cpf.ifBlank { null }, tel.ifBlank { null })
-                runOnUiThread {
-                    buscarBtn.isEnabled = true
-                    val nome = r?.optStringOrNull("nome")
-                    if (nome != null) {
-                        nomeIn.setText(nome)
-                        Toast.makeText(this, "Achou: $nome", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, r?.optStringOrNull("aviso") ?: "Não achei — digite o nome", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }.start()
+    // O FLUXO É UM SÓ (igual à tela do celular): CPF → o nome VEM — da base da
+    // casa, de quem já atendemos, das outras filiais ou do SPC. O garçom não
+    // digita nome; o campo manual só aparece quando NENHUMA fonte respondeu.
+
+    private class Achado {
+        var nome: String? = null
+        var contatoFb: Int? = null
+    }
+
+    private fun cpfValido(c: String): Boolean {
+        if (c.length != 11 || c.all { it == c[0] }) return false
+        for (k in 0..1) {
+            val len = 9 + k
+            val pos = 10 + k
+            var soma = 0
+            for (i in 0 until len) soma += (c[i] - '0') * (pos - i)
+            var d = (soma * 10) % 11
+            if (d == 10) d = 0
+            if (d != c[len] - '0') return false
         }
-        AlertDialog.Builder(this)
+        return true
+    }
+
+    private fun fonteTexto(f: String?): String = when (f) {
+        "consumer" -> "já é cliente da casa"
+        "grupo" -> "já veio em outra unidade"
+        "ja-atendido" -> "já atendido aqui"
+        "spc", "spc-cache" -> "consulta externa"
+        "ambiguo" -> "CPF repetido na base"
+        else -> "cadastro"
+    }
+
+    /** Liga a consulta automática: 11 dígitos válidos → busca (500ms) → nome. */
+    private fun ligarConsultaCpf(cpfIn: EditText, status: TextView, nomeManual: EditText, achado: Achado) {
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        var pendente: Runnable? = null
+        val cinza = 0xFF6B7280.toInt()
+        val verde = 0xFF0F8A3E.toInt()
+        val ambar = 0xFFB45309.toInt()
+        val vermelho = 0xFFDC2626.toInt()
+        status.text = "Digite o CPF — o nome vem da consulta."
+        cpfIn.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                pendente?.let { h.removeCallbacks(it) }
+                achado.nome = null
+                achado.contatoFb = null
+                nomeManual.visibility = View.GONE
+                val d = (s?.toString() ?: "").filter { it.isDigit() }
+                if (d.length < 11) {
+                    status.setTextColor(cinza)
+                    status.text = "Digite o CPF — o nome vem da consulta."
+                    return
+                }
+                if (!cpfValido(d)) {
+                    status.setTextColor(vermelho)
+                    status.text = "CPF não confere — confira os números."
+                    return
+                }
+                status.setTextColor(cinza)
+                status.text = "consultando…"
+                val r = Runnable {
+                    Thread {
+                        val resp = Api.identificarBuscar(Session.servidor(this@ContaActivity), d, null)
+                        runOnUiThread {
+                            val nome = resp?.optStringOrNull("nome")
+                            when {
+                                resp == null || !resp.optBoolean("ok") -> {
+                                    status.setTextColor(vermelho)
+                                    status.text = resp?.optStringOrNull("erro") ?: "A consulta não respondeu."
+                                }
+                                nome != null -> {
+                                    achado.nome = nome
+                                    achado.contatoFb = if (resp.isNull("contato_fb")) null else resp.optInt("contato_fb")
+                                    status.setTextColor(verde)
+                                    status.text = "✓ $nome · ${fonteTexto(resp.optStringOrNull("fonte"))}"
+                                }
+                                resp.optString("fonte") == "erro" -> {
+                                    status.setTextColor(ambar)
+                                    status.text = "A consulta não respondeu agora — digite o nome:"
+                                    nomeManual.visibility = View.VISIBLE
+                                }
+                                else -> {
+                                    status.setTextColor(ambar)
+                                    status.text = "Não achei nome pra este CPF. Se o número está certo, digite o nome:"
+                                    nomeManual.visibility = View.VISIBLE
+                                }
+                            }
+                        }
+                    }.start()
+                }
+                pendente = r
+                h.postDelayed(r, 500)
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+    }
+
+    /** Quem está na mesa/comanda: CPF → nome automático (fluxo do celular). */
+    private fun dialogIdentificar() {
+        val achado = Achado()
+        val status = TextView(this)
+        status.textSize = 13f
+        val cpfIn = campo("CPF (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val zapIn = campo("WhatsApp com DDD (opcional)", android.text.InputType.TYPE_CLASS_PHONE)
+        val nomeManual = campo("Nome")
+        nomeManual.visibility = View.GONE
+        ligarConsultaCpf(cpfIn, status, nomeManual, achado)
+
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Quem está ${if (ehComanda) "na comanda" else "na mesa"} $numero?")
-            .setView(caixa(nomeIn, cpfIn, telIn, buscarBtn, cadastrarCb))
-            .setPositiveButton("Salvar") { _, _ ->
-                val nome = nomeIn.text.toString().trim()
-                if (nome.isBlank()) { Toast.makeText(this, "Informe o nome", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+            .setView(caixa(status, cpfIn, zapIn, nomeManual))
+            .setPositiveButton("Salvar", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val nome = achado.nome
+                    ?: nomeManual.text.toString().trim().takeIf { nomeManual.visibility == View.VISIBLE && it.isNotBlank() }
+                if (nome == null) {
+                    Toast.makeText(this, "Digite o CPF — o nome vem da consulta.", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val cpf = cpfIn.text.toString().filter { it.isDigit() }.takeIf { it.length == 11 }
+                val tel = zapIn.text.toString().filter { it.isDigit() }.takeIf { it.length >= 10 }
                 Thread {
                     try {
-                        val r = Api.identificarSalvar(
-                            Session.servidor(this), numero, nome,
-                            cpfIn.text.toString().trim().ifBlank { null },
-                            telIn.text.toString().trim().ifBlank { null },
-                            cadastrarCb.isChecked,
-                        )
+                        val r = Api.identificarSalvar(Session.servidor(this), numero, nome, cpf, tel, achado.contatoFb, cadastrar = true)
                         runOnUiThread {
                             when {
                                 r.optBoolean("ok") -> {
                                     Toast.makeText(this, "✓ ${r.optString("nome_curto", nome)}", Toast.LENGTH_SHORT).show()
                                     carregar()
+                                    dlg.dismiss()
                                 }
                                 r.optBoolean("ja_tem_dono") -> AlertDialog.Builder(this)
-                                    .setMessage("Já tem dono: ${r.optString("dono")}. O dono não muda por aqui — confira o CPF/telefone.")
+                                    .setMessage("Já tem dono: ${r.optString("dono")}. O dono não muda por aqui — confira o CPF.")
                                     .setPositiveButton("OK", null).show()
                                 else -> Toast.makeText(this, r.optStringOrNull("erro") ?: "Não salvou", Toast.LENGTH_LONG).show()
                             }
@@ -336,37 +418,55 @@ class ContaActivity : AppCompatActivity() {
                     }
                 }.start()
             }
-            .setNegativeButton("Cancelar", null)
-            .show()
+        }
+        dlg.show()
     }
 
-    /** Pendura uma comanda nesta mesa (criação exige dono: nome + CPF/WhatsApp). */
+    /** Comanda nova nasce COM o dono (CPF → nome), igual ao celular:
+     *  vincular + identificar na sequência — falhou, não sobra comanda solta. */
     private fun dialogVincular() {
+        val achado = Achado()
         val comandaIn = campo("Nº da comanda (${Session.comandaMin(this)}–${Session.numeroMax(this)})", android.text.InputType.TYPE_CLASS_NUMBER)
-        val nomeIn = campo("Nome do dono (obrigatório se for nova)")
-        val cpfIn = campo("CPF (ou WhatsApp abaixo)", android.text.InputType.TYPE_CLASS_NUMBER)
-        val telIn = campo("WhatsApp (com DDD)", android.text.InputType.TYPE_CLASS_PHONE)
-        AlertDialog.Builder(this)
+        val status = TextView(this)
+        status.textSize = 13f
+        val cpfIn = campo("CPF do dono (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val zapIn = campo("WhatsApp com DDD (opcional)", android.text.InputType.TYPE_CLASS_PHONE)
+        val nomeManual = campo("Nome")
+        nomeManual.visibility = View.GONE
+        ligarConsultaCpf(cpfIn, status, nomeManual, achado)
+
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Vincular comanda à mesa $numero")
-            .setView(caixa(comandaIn, nomeIn, cpfIn, telIn))
-            .setPositiveButton("Vincular") { _, _ ->
+            .setView(caixa(comandaIn, status, cpfIn, zapIn, nomeManual))
+            .setPositiveButton("Vincular", null)
+            .setNegativeButton("Cancelar", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val cNum = comandaIn.text.toString().trim().toIntOrNull()
-                if (cNum == null) { Toast.makeText(this, "Número da comanda inválido", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
-                val tk = Session.token(this) ?: return@setPositiveButton logout()
+                if (cNum == null) {
+                    Toast.makeText(this, "Número da comanda inválido", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val nome = achado.nome
+                    ?: nomeManual.text.toString().trim().takeIf { nomeManual.visibility == View.VISIBLE && it.isNotBlank() }
+                val cpf = cpfIn.text.toString().filter { it.isDigit() }.takeIf { it.length == 11 }
+                val tel = zapIn.text.toString().filter { it.isDigit() }.takeIf { it.length >= 10 }
+                val tk = Session.token(this) ?: return@setOnClickListener logout()
                 Thread {
                     try {
-                        val r = Api.vincular(
-                            Session.servidor(this), tk, numero, cNum,
-                            nomeIn.text.toString().trim().ifBlank { null },
-                            cpfIn.text.toString().trim().ifBlank { null },
-                            telIn.text.toString().trim().ifBlank { null },
-                        )
+                        val r = Api.vincular(Session.servidor(this), tk, numero, cNum, nome, cpf, tel, achado.contatoFb)
+                        if (r.optBoolean("ok") && nome != null) {
+                            // Carimba o dono na comanda recém-vinculada (mesmo passo do celular).
+                            try { Api.identificarSalvar(Session.servidor(this), cNum, nome, cpf, tel, achado.contatoFb, cadastrar = true) } catch (_: Exception) { }
+                        }
                         runOnUiThread {
                             when {
                                 r.optBoolean("ok") -> {
                                     Toast.makeText(this, "✓ Comanda $cNum na mesa $numero" +
                                         (r.optStringOrNull("nome_curto")?.let { " ($it)" } ?: ""), Toast.LENGTH_SHORT).show()
                                     carregar()
+                                    dlg.dismiss()
                                 }
                                 r.optBoolean("precisa_dono") -> AlertDialog.Builder(this)
                                     .setMessage(r.optString("erro")).setPositiveButton("OK", null).show()
@@ -380,8 +480,8 @@ class ContaActivity : AppCompatActivity() {
                     }
                 }.start()
             }
-            .setNegativeButton("Cancelar", null)
-            .show()
+        }
+        dlg.show()
     }
 
     /** Comanda→mesa muda o vínculo; mesa→mesa move TODOS os itens (juntar). */

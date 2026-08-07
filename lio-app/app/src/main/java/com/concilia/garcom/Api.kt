@@ -402,11 +402,12 @@ object Api {
     /** Pendura a comanda na mesa. Na CRIAÇÃO o servidor exige dono
      *  (nome + CPF ou WhatsApp); comanda existente só muda de mesa. */
     @Throws(IOException::class)
-    fun vincular(base: String, token: String, mesa: Int, comanda: Int, nome: String?, cpf: String?, telefone: String?): JSONObject {
+    fun vincular(base: String, token: String, mesa: Int, comanda: Int, nome: String?, cpf: String?, telefone: String?, contatoFb: Int?): JSONObject {
         val b = JSONObject().put("mesa", mesa).put("comanda", comanda)
         if (!nome.isNullOrBlank()) b.put("nome", nome)
         if (!cpf.isNullOrBlank()) b.put("cpf", cpf)
         if (!telefone.isNullOrBlank()) b.put("telefone", telefone)
+        if (contatoFb != null) b.put("contato_fb", contatoFb)
         return postJson("$base/api/venda/vincular", token, b)
     }
 
@@ -415,12 +416,15 @@ object Api {
         getJson("$base/api/venda/identificar?cpf=${enc(cpf ?: "")}&tel=${enc(tel ?: "")}")
     } catch (_: Exception) { null }
 
-    /** Carimba quem está na mesa/comanda; cadastrar=true vira cliente da casa. */
+    /** Carimba quem está na mesa/comanda. Mesmo body da tela do celular:
+     *  contato_fb quando a consulta achou na casa; senão cadastrar=true
+     *  (vira cliente no Consumer pra próxima visita). */
     @Throws(IOException::class)
-    fun identificarSalvar(base: String, numero: Int, nome: String, cpf: String?, telefone: String?, cadastrar: Boolean): JSONObject {
-        val b = JSONObject().put("numero", numero).put("nome", nome).put("cadastrar", cadastrar)
+    fun identificarSalvar(base: String, numero: Int, nome: String, cpf: String?, telefone: String?, contatoFb: Int?, cadastrar: Boolean): JSONObject {
+        val b = JSONObject().put("numero", numero).put("nome", nome)
         if (!cpf.isNullOrBlank()) b.put("cpf", cpf)
         if (!telefone.isNullOrBlank()) b.put("telefone", telefone)
+        if (contatoFb != null) b.put("contato_fb", contatoFb) else if (cadastrar) b.put("cadastrar", true)
         return postJson("$base/api/venda/identificar", null, b)
     }
 

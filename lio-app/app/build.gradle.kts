@@ -49,10 +49,11 @@ android {
         // loja em vez de IP (título da página em servidor antigo), pagamentos
         // como lançamentos em vermelho + SALDO, serviço zerado some, e o menu
         // ⋯ (identificar cliente, vincular comanda, transferir/juntar mesas).
-        // 1.5.0: Receber com atalhos de rateio (Tudo, ÷2…÷5) + campo livre —
-        // rachar a conta é um Receber por pessoa, saldo caindo a cada um.
-        versionCode = 8
-        versionName = "1.5.0"
+        // 1.5.1: identificar/vincular iguais à comanda do celular — CPF → o
+        // nome VEM da consulta (casa/já-atendidos/grupo/SPC); nome manual só
+        // quando nenhuma fonte responde. contato_fb aproveitado no cadastro.
+        versionCode = 9
+        versionName = "1.5.1"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
