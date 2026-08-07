@@ -49,11 +49,10 @@ android {
         // loja em vez de IP (título da página em servidor antigo), pagamentos
         // como lançamentos em vermelho + SALDO, serviço zerado some, e o menu
         // ⋯ (identificar cliente, vincular comanda, transferir/juntar mesas).
-        // 1.4.0: "Pedir conta" imprime a conta completa na própria maquininha
-        // — itens com preço unitário, blocos por comanda, pagamentos com hora,
-        // total geral e rateio por pessoa.
-        versionCode = 7
-        versionName = "1.4.0"
+        // 1.5.0: Receber com atalhos de rateio (Tudo, ÷2…÷5) + campo livre —
+        // rachar a conta é um Receber por pessoa, saldo caindo a cada um.
+        versionCode = 8
+        versionName = "1.5.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

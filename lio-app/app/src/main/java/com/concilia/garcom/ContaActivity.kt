@@ -451,22 +451,51 @@ class ContaActivity : AppCompatActivity() {
     }
 
     // ---- RECEBER no terminal ----
-    // Dialog com o valor (default = saldo; editar = parcial/rachar) → UI nativa
-    // de pagamento da Cielo → registra no vendas-local com NSU/bandeira.
+    // Dialog com o valor + atalhos de rateio (Tudo, ÷2…÷5) e campo livre pra
+    // parcial → UI nativa de pagamento da Cielo → registra no vendas-local.
+    // Rachar em N: cada pessoa é um Receber; o saldo cai a cada pagamento e
+    // no último usa-se "Tudo" (fecha os centavos que sobraram da divisão).
     private fun receber() {
         val c = conta ?: return
         if (!lioReady || cobrando) return
 
         val input = EditText(this)
         input.inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-        input.setText(String.format(java.util.Locale.US, "%.2f", c.saldo).replace(".", ","))
+        input.textSize = 22f
+        fun poe(v: Double) = input.setText(String.format(java.util.Locale.US, "%.2f", v).replace(".", ","))
+        poe(c.saldo)
+
+        val chips = LinearLayout(this)
+        chips.orientation = LinearLayout.HORIZONTAL
+        fun chip(rotulo: String, valor: Double) {
+            val b = Button(this)
+            b.text = rotulo
+            b.textSize = 13f
+            b.isAllCaps = false
+            val lp = LinearLayout.LayoutParams(0, dp(42))
+            lp.weight = 1f
+            lp.marginEnd = dp(4)
+            b.layoutParams = lp
+            b.setOnClickListener { poe(valor) }
+            chips.addView(b)
+        }
+        chip("Tudo", c.saldo)
+        for (n in 2..5) chip("÷$n", Math.round(c.saldo / n * 100) / 100.0)
+
+        val dica = TextView(this)
+        dica.textSize = 12f
+        dica.setTextColor(0xFF6B7280.toInt())
+        dica.text = "Rachar: um Receber por pessoa — o saldo vai caindo. No último, use Tudo."
+
         val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
         box.setPadding(dp(20), dp(8), dp(20), 0)
+        box.addView(chips, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         box.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        box.addView(dica, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         AlertDialog.Builder(this)
-            .setTitle("Receber quanto?")
-            .setMessage("Saldo ${Cupom.brl(c.saldo)}. Valor menor = pagamento parcial (rachar conta).")
+            .setTitle("Receber — saldo ${Cupom.brl(c.saldo)}")
             .setView(box)
             .setPositiveButton("Cobrar") { _, _ ->
                 val valor = input.text.toString().trim().replace(".", "").replace(",", ".").toDoubleOrNull()
