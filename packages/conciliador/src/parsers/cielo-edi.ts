@@ -57,6 +57,7 @@ const P = {
   estabelecimento: [2, 11],
   tipoTransacao: [12, 13], // 01=Pix 02=ajuste a crédito 03=ajuste a débito
   dataTransacao: [14, 19], // yyMMdd
+  hora: [20, 25], // HHMMSS
   pixId: [26, 61],
   nsu: [62, 67],
   dataPagamento: [68, 73], // yyMMdd
@@ -236,14 +237,47 @@ function linhasDeTipo(content: Buffer | string, tipo: string): string[] {
   return texto.split(/\r?\n/).filter((l) => l.startsWith(tipo) && l.length > 300);
 }
 
-/** CIELO03 (Captura e Previsão) -> vendas, no mesmo formato do CSV. */
+/**
+ * Registro 8 (Pix) -> VENDA. O Pix da maquininha não aparece no CIELO03: a
+ * Cielo só o reporta no CIELO16, que é um arquivo de liquidação. Sem gerar a
+ * venda a partir dele, o pagamento "Pix Online" do PDV nunca acha par e vira
+ * exceção — eram 149 numa quinzena só no Prainha.
+ *
+ * Só transação tipo 01 (Pix) vira venda; 02/03 são ajustes de uma venda que
+ * já existe (bloqueio judicial, estorno) e entram apenas como recebível.
+ */
+function pixParaVenda(l: string): CieloVendaRow {
+  return {
+    data: dataYY(l, P.dataTransacao),
+    hora: hora(l, P.hora),
+    estabelecimento: rec(l, P.estabelecimento),
+    formaPagamento: 'Pix',
+    bandeira: 'Pix',
+    valorBruto: valor(l, P.valorBruto),
+    valorLiquido: valor(l, P.valorLiquido),
+    valorTaxa: Math.abs(valor(l, P.valorTaxa)),
+    // mesmo par (nsu, autorização=PixID) do recebível — assim a perna
+    // Vendas×Agenda casa por NSU+data igual aos cartões.
+    autorizacao: rec(l, P.pixId),
+    nsu: normalizaNsu(rec(l, P.nsu)),
+    tid: null,
+    dataPrevistaPagamento: dataYY(l, P.dataPagamento),
+  };
+}
+
+/** CIELO03 (Captura/Previsão) e CIELO16 (Pix) -> vendas, no formato do CSV. */
 export function parseCieloEdiVendas(content: Buffer | string): CieloVendaRow[] {
   const info = lerCabecalhoEdi(content);
   if (!info) throw new Error('Arquivo EDI sem header (registro 0).');
+  if (info.tipoArquivo === 'CIELO16') {
+    return linhasDeTipo(content, '8')
+      .filter((l) => rec(l, P.tipoTransacao) === '01')
+      .map(pixParaVenda);
+  }
   if (info.tipoArquivo !== 'CIELO03') {
     throw new Error(
-      `Esperado CIELO03 (Captura e Previsão) mas o arquivo é ${info.tipoArquivo}. ` +
-        'CIELO04/CIELO16 são os de pagamentos/recebíveis.',
+      `Esperado CIELO03 (Captura e Previsão) ou CIELO16 (Pix) mas o arquivo é ${info.tipoArquivo}. ` +
+        'CIELO04 é o de pagamentos.',
     );
   }
   return (

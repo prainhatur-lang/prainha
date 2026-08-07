@@ -88,6 +88,35 @@ describe('parseCieloEdiVendas (CIELO03)', () => {
   });
 });
 
+describe('parseCieloEdiVendas (CIELO16 — o Pix também é venda)', () => {
+  it('gera venda só das transações Pix, ignorando os ajustes', () => {
+    // 16 registros: 15 Pix (tipo 01) + 1 ajuste a débito do bloqueio (tipo 03)
+    const vendas = parseCieloEdiVendas(cielo16);
+    expect(vendas).toHaveLength(15);
+    expect(vendas.every((v) => v.formaPagamento === 'Pix' && v.bandeira === 'Pix')).toBe(true);
+  });
+
+  it('a venda Pix carrega o mesmo par (nsu, autorização) do recebível', () => {
+    const [venda] = parseCieloEdiVendas(cielo16);
+    const rec = parseCieloEdiRecebiveis(cielo16).find((r) => r.nsu === venda!.nsu)!;
+    expect(venda).toMatchObject({
+      data: '02/03/2026',
+      estabelecimento: '1234567890',
+      valorBruto: 200,
+      valorTaxa: 0.1,
+      valorLiquido: 199.9,
+      nsu: '656547',
+      autorizacao: 'E9040088820260302131856721392001',
+      dataPrevistaPagamento: '02/03/2026',
+    });
+    expect(venda!.autorizacao).toBe(rec.autorizacao);
+  });
+
+  it('o desbloqueio (ajuste a crédito) não vira venda nova', () => {
+    expect(parseCieloEdiVendas(cielo16Desbloqueio)).toHaveLength(0);
+  });
+});
+
 describe('parseCieloEdiRecebiveis (CIELO04)', () => {
   it('lê venda paga e débito ARV, líquido do dia = zero', () => {
     const rec = parseCieloEdiRecebiveis(cielo04);

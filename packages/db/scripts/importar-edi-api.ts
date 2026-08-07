@@ -33,11 +33,14 @@ const inicio = new Date(Date.now() - DIAS * 86_400_000).toLocaleDateString('en-C
   timeZone: 'America/Sao_Paulo',
 });
 
-const classificar = (nome: string): 'vendas' | 'recebiveis' | null => {
+// CIELO16 (Pix) alimenta os DOIS lados: venda (pro PDV casar) e recebível
+// (pro banco casar) — o Pix da maquininha não aparece no CIELO03.
+const classificar = (nome: string): Array<'vendas' | 'recebiveis'> => {
   const s = nome.toUpperCase();
-  if (s.includes('CIELO03')) return 'vendas';
-  if (s.includes('CIELO04') || s.includes('CIELO16')) return 'recebiveis';
-  return null;
+  if (s.includes('CIELO03')) return ['vendas'];
+  if (s.includes('CIELO04')) return ['recebiveis'];
+  if (s.includes('CIELO16')) return ['vendas', 'recebiveis'];
+  return [];
 };
 
 console.log(`janela ${inicio} -> ${hoje}`);
@@ -48,24 +51,32 @@ console.log(`${arquivos.length} arquivo(s) disponiveis\n`);
 let vendasIns = 0;
 let recebIns = 0;
 for (const arq of arquivos) {
-  const tipo = classificar(arq.nome);
-  if (!tipo) continue;
+  const tipos = classificar(arq.nome);
+  if (tipos.length === 0) continue;
+  let conteudo: Buffer;
   try {
-    const conteudo = await baixarArquivo(cred, arq);
-    const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
-    const rot = { mapaEc: await mapearEcParaFilial(ecs), filialNomePadrao: '' };
-    const storagePath = `cielo-edi/${arq.data}/${arq.nome}`;
-    const r =
-      tipo === 'vendas'
-        ? await processarCieloVendas(filialPadrao, conteudo, storagePath, rot)
-        : await processarCieloRecebiveis(filialPadrao, conteudo, storagePath, rot);
-    if (tipo === 'vendas') vendasIns += r.registrosInseridos;
-    else recebIns += r.registrosInseridos;
-    console.log(
-      `${arq.nome}: ${r.registrosInseridos}/${r.registrosLidos} novos · ECs ${(r.estabelecimentos ?? []).join(',')}`,
-    );
+    conteudo = await baixarArquivo(cred, arq);
   } catch (e) {
-    console.error(`${arq.nome}: ERRO ${(e as Error).message}`);
+    console.error(`${arq.nome}: ERRO no download ${(e as Error).message}`);
+    continue;
+  }
+  const storagePath = `cielo-edi/${arq.data}/${arq.nome}`;
+  for (const tipo of tipos) {
+    try {
+      const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
+      const rot = { mapaEc: await mapearEcParaFilial(ecs), filialNomePadrao: '' };
+      const r =
+        tipo === 'vendas'
+          ? await processarCieloVendas(filialPadrao, conteudo, storagePath, rot)
+          : await processarCieloRecebiveis(filialPadrao, conteudo, storagePath, rot);
+      if (tipo === 'vendas') vendasIns += r.registrosInseridos;
+      else recebIns += r.registrosInseridos;
+      console.log(
+        `${arq.nome} [${tipo}]: ${r.registrosInseridos}/${r.registrosLidos} novos · ECs ${(r.estabelecimentos ?? []).join(',')}`,
+      );
+    } catch (e) {
+      console.error(`${arq.nome} [${tipo}]: ERRO ${(e as Error).message}`);
+    }
   }
 }
 console.log(`\ntotal novo: ${vendasIns} vendas · ${recebIns} recebiveis`);

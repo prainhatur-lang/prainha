@@ -28,12 +28,17 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-/** CIELO03 = vendas · CIELO04 = recebiveis · CIELO16 = Pix (recebiveis). */
-function classificar(nome: string): 'vendas' | 'recebiveis' | null {
+/**
+ * CIELO03 = vendas · CIELO04 = recebiveis · CIELO16 = Pix, que e' os DOIS: o
+ * Pix da maquininha nao aparece no CIELO03, entao o mesmo arquivo alimenta a
+ * venda (pro PDV casar) e o recebivel (pro banco casar).
+ */
+function classificar(nome: string): Array<'vendas' | 'recebiveis'> {
   const s = nome.toUpperCase();
-  if (s.includes('CIELO03')) return 'vendas';
-  if (s.includes('CIELO04') || s.includes('CIELO16')) return 'recebiveis';
-  return null;
+  if (s.includes('CIELO03')) return ['vendas'];
+  if (s.includes('CIELO04')) return ['recebiveis'];
+  if (s.includes('CIELO16')) return ['vendas', 'recebiveis'];
+  return [];
 }
 
 export async function GET(req: Request) {
@@ -80,23 +85,31 @@ export async function GET(req: Request) {
 
   const resultados: Array<Record<string, unknown>> = [];
   for (const arq of arquivos) {
-    const tipo = classificar(arq.nome);
-    if (!tipo) continue;
+    const tipos = classificar(arq.nome);
+    if (tipos.length === 0) continue;
+    let conteudo: Buffer;
     try {
-      const conteudo = await baixarArquivo(cred, arq);
-      const storagePath = `cielo-edi/${arq.data || fim}/${arq.nome}`;
-      const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
-      const rot: RoteamentoEc = {
-        mapaEc: await mapearEcParaFilial(ecs),
-        filialNomePadrao: filialDefault?.nome ?? '',
-      };
-      const resumo =
-        tipo === 'vendas'
-          ? await processarCieloVendas(filialId, conteudo, storagePath, rot)
-          : await processarCieloRecebiveis(filialId, conteudo, storagePath, rot);
-      resultados.push({ arquivo: arq.nome, tipo, ...resumo });
+      conteudo = await baixarArquivo(cred, arq);
     } catch (e) {
-      resultados.push({ arquivo: arq.nome, tipo, erro: (e as Error).message });
+      resultados.push({ arquivo: arq.nome, erro: (e as Error).message });
+      continue;
+    }
+    const storagePath = `cielo-edi/${arq.data || fim}/${arq.nome}`;
+    for (const tipo of tipos) {
+      try {
+        const ecs = extrairEcsCielo(conteudo, tipo === 'vendas' ? 'CIELO_VENDAS' : 'CIELO_RECEBIVEIS');
+        const rot: RoteamentoEc = {
+          mapaEc: await mapearEcParaFilial(ecs),
+          filialNomePadrao: filialDefault?.nome ?? '',
+        };
+        const resumo =
+          tipo === 'vendas'
+            ? await processarCieloVendas(filialId, conteudo, storagePath, rot)
+            : await processarCieloRecebiveis(filialId, conteudo, storagePath, rot);
+        resultados.push({ arquivo: arq.nome, tipo, ...resumo });
+      } catch (e) {
+        resultados.push({ arquivo: arq.nome, tipo, erro: (e as Error).message });
+      }
     }
   }
 
