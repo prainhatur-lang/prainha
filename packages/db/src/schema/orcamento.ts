@@ -41,6 +41,9 @@ export const orcamentoEvento = pgTable(
     filialId: uuid('filial_id')
       .notNull()
       .references(() => filial.id, { onDelete: 'cascade' }),
+    /** Ambiente do evento dentro da filial (ex: "Terraço" no Prainha Bar,
+     *  área somenteEventos da reservaConfig). Null = a casa/filial toda. */
+    local: varchar('local', { length: 100 }),
     /** Nome do cliente/empresa que pediu o orçamento. */
     clienteNome: varchar('cliente_nome', { length: 200 }).notNull(),
     clienteTelefone: varchar('cliente_telefone', { length: 30 }),

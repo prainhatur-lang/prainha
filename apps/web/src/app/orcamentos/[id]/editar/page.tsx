@@ -9,6 +9,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { numeroOrcamento } from '@/lib/orcamentos';
+import { montarLocaisEvento } from '@/lib/orcamentos-server';
 import { FormOrcamento, type OrcamentoInicial } from '../../form-orcamento';
 
 export const dynamic = 'force-dynamic';
@@ -39,9 +40,12 @@ export default async function EditarOrcamentoPage(props: {
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((f) => f.id === o.filialId)) redirect('/orcamentos');
 
+  const locais = await montarLocaisEvento(filiais);
+
   const inicial: OrcamentoInicial = {
     id: o.id,
     filialId: o.filialId,
+    local: o.local ?? '',
     clienteNome: o.clienteNome,
     clienteTelefone: o.clienteTelefone ?? '',
     dataEvento: o.dataEvento,
@@ -70,10 +74,7 @@ export default async function EditarOrcamentoPage(props: {
             Editar orçamento Nº {numeroOrcamento(o.numero)}
           </h1>
         </div>
-        <FormOrcamento
-          filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-          inicial={inicial}
-        />
+        <FormOrcamento locais={locais} inicial={inicial} />
       </section>
     </main>
   );

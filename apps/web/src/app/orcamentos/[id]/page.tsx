@@ -71,6 +71,11 @@ export default async function OrcamentoDocPage(props: {
             <p className="font-serif text-3xl font-bold tracking-tight text-slate-900">
               {filial.nome}
             </p>
+            {o.local && (
+              <p className="mt-0.5 text-sm font-semibold uppercase tracking-widest text-emerald-700">
+                {o.local}
+              </p>
+            )}
             <p className="mt-1 text-xs text-slate-500">CNPJ {maskCnpj(filial.cnpj)}</p>
           </div>
           <div className="text-right">
@@ -96,6 +101,14 @@ export default async function OrcamentoDocPage(props: {
             )}
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            {o.local && (
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Local
+                </p>
+                <p className="text-sm font-semibold text-slate-900">{o.local}</p>
+              </div>
+            )}
             <div>
               <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
                 Data do evento

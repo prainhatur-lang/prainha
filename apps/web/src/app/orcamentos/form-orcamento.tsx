@@ -2,8 +2,9 @@
 
 // Formulário de orçamento de evento — usado em /orcamentos/novo e /orcamentos/[id]/editar.
 // Preenche, vê o total ao vivo e gera o documento pronto pra imprimir/PDF.
+// Pratos e sobremesa têm busca no cardápio real (Consumer) da filial escolhida.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
@@ -11,18 +12,15 @@ import {
   calcularTotais,
   diaSemanaBr,
   parseValor,
+  type LocalOpt,
   type PratoOrcamento,
 } from '@/lib/orcamentos';
-
-export interface FilialOpt {
-  id: string;
-  nome: string;
-}
 
 /** Valores iniciais (edição) — dinheiro como string BR já formatada ou ''. */
 export interface OrcamentoInicial {
   id?: string;
   filialId: string;
+  local: string;
   clienteNome: string;
   clienteTelefone: string;
   dataEvento: string;
@@ -40,7 +38,7 @@ export interface OrcamentoInicial {
 }
 
 interface Props {
-  filiais: FilialOpt[];
+  locais: LocalOpt[];
   inicial: OrcamentoInicial;
 }
 
@@ -51,11 +49,103 @@ interface PratoForm {
   qtd: string;
 }
 
-export function FormOrcamento({ filiais, inicial }: Props) {
+const chave = (filialId: string, local: string | null) => `${filialId}|${local ?? ''}`;
+
+const inputCls =
+  'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none';
+const labelCls = 'mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500';
+
+/** Input com sugestões do cardápio da filial (busca conforme digita).
+ *  Livre: também aceita qualquer texto fora do menu. */
+function InputMenu({
+  value,
+  onChange,
+  filialId,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  filialId: string;
+  placeholder?: string;
+  className?: string;
+}) {
+  const [sugestoes, setSugestoes] = useState<string[]>([]);
+  const [aberto, setAberto] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function digitar(v: string) {
+    onChange(v);
+    if (timer.current) clearTimeout(timer.current);
+    const q = v.trim();
+    if (q.length < 2) {
+      setSugestoes([]);
+      setAberto(false);
+      return;
+    }
+    timer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/api/orcamentos/menu?f=${filialId}&q=${encodeURIComponent(q)}`,
+          { cache: 'no-store' },
+        );
+        if (!r.ok) return;
+        const d = await r.json();
+        const nomes: string[] = Array.isArray(d?.nomes) ? d.nomes : [];
+        setSugestoes(nomes);
+        setAberto(nomes.length > 0);
+      } catch {
+        // busca é só conveniência — falha não bloqueia digitação livre
+      }
+    }, 250);
+  }
+
+  return (
+    <div className={`relative ${className ?? ''}`}>
+      <input
+        value={value}
+        onChange={(e) => digitar(e.target.value)}
+        onBlur={() => setTimeout(() => setAberto(false), 150)}
+        placeholder={placeholder}
+        className={inputCls}
+      />
+      {aberto && (
+        <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+          {sugestoes.map((n) => (
+            <li key={n}>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(n);
+                  setAberto(false);
+                }}
+                className="block w-full px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                {n}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function FormOrcamento({ locais, inicial }: Props) {
   const router = useRouter();
   const editando = !!inicial.id;
 
-  const [filialId, setFilialId] = useState(inicial.filialId);
+  const [localKey, setLocalKey] = useState(() => {
+    const k = chave(inicial.filialId, inicial.local || null);
+    return locais.some((l) => chave(l.filialId, l.local) === k)
+      ? k
+      : chave(locais[0].filialId, locais[0].local);
+  });
+  const localSel =
+    locais.find((l) => chave(l.filialId, l.local) === localKey) ?? locais[0];
+  const filialId = localSel.filialId;
+
   const [clienteNome, setClienteNome] = useState(inicial.clienteNome);
   const [clienteTelefone, setClienteTelefone] = useState(inicial.clienteTelefone);
   const [dataEvento, setDataEvento] = useState(inicial.dataEvento);
@@ -110,6 +200,7 @@ export function FormOrcamento({ filiais, inicial }: Props) {
     try {
       const body = {
         filialId,
+        local: localSel.local,
         clienteNome: clienteNome.trim(),
         clienteTelefone: clienteTelefone.trim() || null,
         dataEvento,
@@ -150,10 +241,6 @@ export function FormOrcamento({ filiais, inicial }: Props) {
     }
   }
 
-  const inputCls =
-    'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none';
-  const labelCls = 'mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500';
-
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       <div className="space-y-6">
@@ -161,17 +248,17 @@ export function FormOrcamento({ filiais, inicial }: Props) {
         <fieldset className="rounded-lg border border-slate-200 bg-white p-4">
           <legend className="px-1 text-sm font-semibold text-slate-900">Evento</legend>
           <div className="grid gap-4 sm:grid-cols-2">
-            {filiais.length > 1 && (
+            {locais.length > 1 && (
               <div className="sm:col-span-2">
-                <label className={labelCls}>Restaurante</label>
+                <label className={labelCls}>Local do evento</label>
                 <select
-                  value={filialId}
-                  onChange={(e) => setFilialId(e.target.value)}
+                  value={localKey}
+                  onChange={(e) => setLocalKey(e.target.value)}
                   className={inputCls}
                 >
-                  {filiais.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.nome}
+                  {locais.map((l) => (
+                    <option key={chave(l.filialId, l.local)} value={chave(l.filialId, l.local)}>
+                      {l.label}
                     </option>
                   ))}
                 </select>
@@ -245,15 +332,18 @@ export function FormOrcamento({ filiais, inicial }: Props) {
             />
           </div>
 
+          <p className="mb-2 text-xs text-slate-400">
+            Digite pra buscar no cardápio da casa — ou escreva um prato fora do menu.
+          </p>
           <div className="space-y-3">
             {pratos.map((p, i) => (
               <div key={i} className="rounded-md border border-slate-200 bg-slate-50 p-3">
                 <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-                  <input
+                  <InputMenu
                     value={p.nome}
-                    onChange={(e) => alterarPrato(i, { nome: e.target.value })}
+                    onChange={(v) => alterarPrato(i, { nome: v })}
+                    filialId={filialId}
                     placeholder={`Prato ${i + 1} — ex: Camarão no bafo`}
-                    className={inputCls}
                   />
                   <button
                     type="button"
@@ -319,11 +409,12 @@ export function FormOrcamento({ filiais, inicial }: Props) {
               Sobremesa incluída
             </label>
             {sobremesaIncluida && (
-              <input
+              <InputMenu
                 value={sobremesaDescricao}
-                onChange={(e) => setSobremesaDescricao(e.target.value)}
+                onChange={setSobremesaDescricao}
+                filialId={filialId}
                 placeholder="Qual? Ex: Cartola de banana com sorvete"
-                className={`${inputCls} mt-2`}
+                className="mt-2"
               />
             )}
           </div>
@@ -418,6 +509,10 @@ export function FormOrcamento({ filiais, inicial }: Props) {
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Resumo</h2>
           <dl className="space-y-2 text-sm">
+            <div className="flex justify-between gap-2">
+              <dt className="text-slate-500">Local</dt>
+              <dd className="text-right font-medium text-slate-800">{localSel.label}</dd>
+            </div>
             {dataEvento && (
               <div className="flex justify-between gap-2">
                 <dt className="text-slate-500">Data</dt>

@@ -57,6 +57,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.clienteNome = nome;
   }
   if (b?.clienteTelefone !== undefined) set.clienteTelefone = txt(b.clienteTelefone, 30);
+  if (b?.local !== undefined) set.local = txt(b.local, 100);
+  if (b?.filialId !== undefined) {
+    // Trocar de filial exige acesso à filial nova também.
+    if (typeof b.filialId !== 'string') {
+      return NextResponse.json({ error: 'filial inválida' }, { status: 400 });
+    }
+    const filiais = await filiaisDoUsuario(user.id);
+    if (!filiais.some((f) => f.id === b.filialId)) {
+      return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
+    }
+    set.filialId = b.filialId;
+  }
   if (b?.dataEvento !== undefined) {
     if (typeof b.dataEvento !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.dataEvento)) {
       return NextResponse.json({ error: 'data do evento inválida' }, { status: 400 });

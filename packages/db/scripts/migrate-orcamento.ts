@@ -18,6 +18,7 @@ async function main() {
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       numero serial,
       filial_id uuid NOT NULL REFERENCES filial(id) ON DELETE CASCADE,
+      local varchar(100),
       cliente_nome varchar(200) NOT NULL,
       cliente_telefone varchar(30),
       data_evento date NOT NULL,

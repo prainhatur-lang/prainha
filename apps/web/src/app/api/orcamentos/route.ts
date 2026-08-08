@@ -53,6 +53,7 @@ export async function POST(request: Request) {
     .insert(schema.orcamentoEvento)
     .values({
       filialId,
+      local: txt(b?.local, 100),
       clienteNome,
       clienteTelefone: txt(b?.clienteTelefone, 30),
       dataEvento,

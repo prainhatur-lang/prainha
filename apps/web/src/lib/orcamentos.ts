@@ -13,6 +13,15 @@ export interface PratoOrcamento {
 
 export type StatusOrcamento = 'aberto' | 'enviado' | 'aceito' | 'recusado';
 
+/** Uma opção de local do evento: a filial inteira ou um ambiente só-eventos
+ *  dela (ex: Terraço no Prainha Bar). */
+export interface LocalOpt {
+  filialId: string;
+  /** Nome do ambiente. Null = a casa/filial toda. */
+  local: string | null;
+  label: string;
+}
+
 export const STATUS_ORCAMENTO: Record<StatusOrcamento, { label: string; cor: string }> = {
   aberto: { label: 'Aberto', cor: 'bg-slate-100 text-slate-700' },
   enviado: { label: 'Enviado', cor: 'bg-blue-100 text-blue-700' },

@@ -7,6 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { AppHeader } from '@/components/app-header';
 import { diasAtrasBr } from '@/lib/datas';
+import { montarLocaisEvento } from '@/lib/orcamentos-server';
 import { FormOrcamento, type OrcamentoInicial } from '../form-orcamento';
 
 export const dynamic = 'force-dynamic';
@@ -38,8 +39,11 @@ export default async function NovoOrcamentoPage() {
     );
   }
 
+  const locais = await montarLocaisEvento(filiais);
+
   const inicial: OrcamentoInicial = {
     filialId: filiais[0].id,
+    local: '',
     clienteNome: '',
     clienteTelefone: '',
     dataEvento: '',
@@ -67,10 +71,7 @@ export default async function NovoOrcamentoPage() {
           </Link>
           <h1 className="mt-1 text-xl font-bold text-slate-900">Novo orçamento de evento</h1>
         </div>
-        <FormOrcamento
-          filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-          inicial={inicial}
-        />
+        <FormOrcamento locais={locais} inicial={inicial} />
       </section>
     </main>
   );
