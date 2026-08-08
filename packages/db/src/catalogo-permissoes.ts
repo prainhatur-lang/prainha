@@ -152,6 +152,26 @@ export const PERMISSOES: PermissaoDef[] = [
   // === Orcamentos de eventos/grupos ===
   ...crud('orcamento', 'orçamentos de eventos', []),
 
+  // === Atendimento WhatsApp (Nina) ===
+  {
+    codigo: 'atendimento.read',
+    modulo: 'atendimento',
+    acao: 'read',
+    descricao: 'Ver conversas do WhatsApp e leads de evento',
+  },
+  {
+    codigo: 'atendimento.responder',
+    modulo: 'atendimento',
+    acao: 'responder',
+    descricao: 'Assumir conversas e responder como equipe',
+  },
+  {
+    codigo: 'atendimento.config',
+    modulo: 'atendimento',
+    acao: 'config',
+    descricao: 'Configurar a Nina (persona, conhecimento, espaços, equipe)',
+  },
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

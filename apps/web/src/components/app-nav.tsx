@@ -54,6 +54,14 @@ const GRUPOS: Grupo[] = [
     ],
   },
   {
+    label: 'Atendimento',
+    links: [
+      { label: 'Conversas (Nina)', href: '/atendimento', perm: 'atendimento.read' },
+      { label: 'Leads de evento', href: '/atendimento/eventos', perm: 'atendimento.read' },
+      { label: 'Configuração da Nina', href: '/atendimento/config', perm: 'atendimento.config' },
+    ],
+  },
+  {
     label: 'Folha da equipe',
     links: [
       { label: 'Folhas semanais', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },
