@@ -329,16 +329,19 @@ export async function rodarConciliacaoOperadora(opts: {
         tipo: TIPO_OPERADORA.DIVERGENCIA_VALOR,
         severidade: ehFormaDivergente ? 'BAIXA' : autoAceita ? 'BAIXA' : 'MEDIA',
         descricao: ehFormaDivergente
-          ? `${pedidoTxt(pdv)} — Forma divergente: PDV "${pdv.formaPagamento}" vs Cielo "${cielo.formaPagamento ?? '?'}" (valor R$ ${pdv.valor.toFixed(2)} confere exato). Provavel erro de cadastro do garçom.`
+          ? `${pedidoTxt(pdv)} — Forma corrigida automaticamente: PDV marcou "${pdv.formaPagamento}", na Cielo é "${cielo.formaPagamento ?? '?'}" (valor R$ ${pdv.valor.toFixed(2)} e data conferem exatos). Vale a da Cielo.`
           : autoAceita
             ? `${pedidoTxt(pdv)} — Match automatico: PDV R$ ${pdv.valor.toFixed(2)} = Cielo R$ ${cielo.valorBruto.toFixed(2)} mesma data. Forma PDV: ${pdv.formaPagamento}, forma Cielo: ${cielo.formaPagamento ?? '?'}.`
             : `${pedidoTxt(pdv)} — PDV R$ ${pdv.valor.toFixed(2)} vs Cielo R$ ${cielo.valorBruto.toFixed(2)} (diff ${diff > 0 ? '+' : ''}${diff.toFixed(2)}). NSU ${pdv.nsu}.`,
         valor: String(pdv.valor),
-        // Forma divergente NAO auto-aceita (precisa user revisar pra saber se
-        // foi mesmo erro de cadastro ou dois pagamentos distintos coincidindo).
-        aceitaEm: autoAceita && !ehFormaDivergente ? new Date() : null,
+        // Forma divergente com valor E data exatos tambem eh auto-aceita: a
+        // Cielo eh a fonte da verdade da forma, entao isso eh erro de cadastro
+        // do garcom, nao ambiguidade. Fica registrada (com motivo) pra virar
+        // relatorio de retreinamento, mas nao ocupa a fila de pendencias.
+        aceitaEm: autoAceita || ehFormaDivergente ? new Date() : null,
+        motivo: ehFormaDivergente ? 'FORMA_ERRADA_GARCOM' : null,
         observacao: ehFormaDivergente
-          ? 'Valor e data conferem exatos. Diferença é só na categoria da forma — confirme manualmente se é o mesmo pagamento.'
+          ? 'Aceita automaticamente: valor e data batem exatos, só a categoria da forma difere. Aplicada a forma da Cielo no pagamento.'
           : autoAceita
             ? 'Aceita automaticamente: valor e data batem exatos, forma divergente ajustada para usar a da Cielo.'
             : null,
@@ -530,7 +533,10 @@ export async function rodarConciliacaoOperadora(opts: {
         (cielo.formaPagamento ?? '').trim().toLowerCase();
       const ehFormaDivergente = valorBate && formasDiferem && deltaDias <= 1;
       const autoAceita = Math.abs(diff) <= tolAutoAceite && deltaDias <= 1;
-      if (autoAceita && !ehFormaDivergente && formasDiferem) {
+      // Todo caso auto-aceito com forma diferente (inclusive o de forma
+      // divergente puro) passa a valer a forma da Cielo no pagamento — eh o
+      // que faz a perna do banco classificar Pix/cartao corretamente.
+      if ((autoAceita || ehFormaDivergente) && formasDiferem) {
         const v = vendasPorIdLookup.get(cielo.id);
         if (v) {
           updatesEfetivas.push({
