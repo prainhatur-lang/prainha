@@ -178,6 +178,7 @@ export async function rodarConciliacaoOperadora(opts: {
         nsu: schema.vendaAdquirente.nsu,
         valorBruto: schema.vendaAdquirente.valorBruto,
         dataVenda: schema.vendaAdquirente.dataVenda,
+        horaVenda: schema.vendaAdquirente.horaVenda,
         formaPagamento: schema.vendaAdquirente.formaPagamento,
         bandeira: schema.vendaAdquirente.bandeira,
         autorizacao: schema.vendaAdquirente.autorizacao,
@@ -291,6 +292,16 @@ export async function rodarConciliacaoOperadora(opts: {
 
     // Monta excecoes
     const novasExcecoes: Array<typeof schema.excecao.$inferInsert> = [];
+    /** Matches que ESTE orquestrador cria fora do engine — hoje so o
+     *  casamento por horario das vendas Cielo que ficariam sem PDV. */
+    const matchesPorHorario: Array<typeof schema.matchPdvCielo.$inferInsert> = [];
+    /** forma+bandeira da Cielo a gravar em pagamento.forma_efetiva */
+    const updatesEfetivas: Array<{
+      pagamentoId: string;
+      forma: string | null;
+      bandeira: string | null;
+    }> = [];
+    const vendasPorIdLookup = new Map(vendasRaw.map((v) => [v.id, v]));
 
     const pedidoTxt = (p: { codigoPedidoExterno?: number | null }) =>
       p.codigoPedidoExterno ? `Pedido #${p.codigoPedidoExterno}` : 'Pedido ?';
@@ -407,7 +418,32 @@ export async function rodarConciliacaoOperadora(opts: {
       forma: string | null;
       dentroDoPool: boolean;
       nsu: string | null;
+      /** instante do pagamento — usado como chave forte quando falta NSU */
+      quando: Date | null;
     };
+
+    /**
+     * Minutos entre a venda da Cielo e o pagamento do PDV. Vale como
+     * evidencia forte: dois pagamentos do MESMO valor exato a poucos minutos
+     * um do outro sao o mesmo evento, mesmo sem NSU nem forma (caso classico
+     * do pedido aberto num dia e fechado no outro, e do bug do CDC que manda
+     * forma=null). Retorna null quando falta hora dos dois lados.
+     */
+    const minutosEntre = (
+      dataVenda: string,
+      horaVenda: string | null,
+      pagamentoEm: Date | null,
+    ): number | null => {
+      if (!horaVenda || !pagamentoEm) return null;
+      const hhmm = horaVenda.match(/^(\d{2}):(\d{2})/);
+      if (!hhmm) return null;
+      const venda = new Date(`${dataVenda}T${hhmm[1]}:${hhmm[2]}:00-03:00`);
+      if (Number.isNaN(venda.getTime())) return null;
+      return Math.abs(venda.getTime() - pagamentoEm.getTime()) / 60_000;
+    };
+    /** Janela de horario que dispensa NSU. 20min cobre o atraso entre a
+     *  autorizacao na maquininha e o fechamento da conta no PDV. */
+    const JANELA_MINUTOS = 20;
     // Candidatos agrupados por DIA; o valor casa com a MESMA tolerância que o
     // engine usa (max(absoluta, valor*percentual) dos parâmetros da filial) —
     // cobre centavos de gorjeta/arredondamento (ex: PDV 381,48 vs Cielo 381,40).
@@ -436,9 +472,13 @@ export async function rodarConciliacaoOperadora(opts: {
         forma: p.formaPagamento,
         dentroDoPool: false,
         nsu: p.nsu,
+        quando: p.dataPagamento ?? null,
       });
     }
     // (2) órfãos do pool (sem match; NSU divergente) — segunda preferência
+    const horaPorPagamento = new Map(
+      pagamentosRaw.map((p) => [p.id, p.dataPagamento ?? null]),
+    );
     for (const pdv of result.pdvSemCielo) {
       addCandidato(pdv.dataPagamento ?? null, {
         id: pdv.id,
@@ -447,6 +487,7 @@ export async function rodarConciliacaoOperadora(opts: {
         forma: pdv.formaPagamento || null,
         dentroDoPool: true,
         nsu: pdv.nsu ?? null,
+        quando: horaPorPagamento.get(pdv.id) ?? null,
       });
     }
 
@@ -471,8 +512,39 @@ export async function rodarConciliacaoOperadora(opts: {
         if (melhorIdx >= 0) sug = bucket.splice(melhorIdx, 1)[0];
       }
       const diffSug = sug ? +(sug.valor - cielo.valorBruto).toFixed(2) : 0;
+
+      // Match automatico por HORARIO: valor exato + poucos minutos de
+      // distancia identificam o mesmo evento sem precisar de NSU. Resolve o
+      // caso classico do pedido aberto num dia e fechado no outro, e o do
+      // pagamento que o CDC manda sem forma e sem NSU. Fora dessa janela
+      // continua sendo sugestao pro usuario confirmar.
+      const minutos =
+        sug && v ? minutosEntre(v.dataVenda, v.horaVenda, sug.quando) : null;
+      if (sug && cielo.id && Math.abs(diffSug) < 0.01 && minutos != null && minutos <= JANELA_MINUTOS) {
+        matchesPorHorario.push({
+          filialId,
+          pagamentoId: sug.id,
+          vendaAdquirenteId: cielo.id,
+          nivelMatch: '3',
+          autoRevogavel: null,
+          criadoPor: 'AUTO',
+          diffValor: '0.00',
+          observacao: `Casado por valor exato e horario (${Math.round(minutos)} min entre a venda na Cielo e o fechamento no PDV)${sug.forma ? '' : ' — pagamento sem forma/NSU no PDV'}.`,
+        });
+        // a forma da Cielo passa a valer no pagamento (o PDV nao informou)
+        const vendaCielo = vendasPorIdLookup.get(cielo.id);
+        if (vendaCielo) {
+          updatesEfetivas.push({
+            pagamentoId: sug.id,
+            forma: vendaCielo.formaPagamento ?? null,
+            bandeira: vendaCielo.bandeira ?? null,
+          });
+        }
+        continue; // nao vira excecao
+      }
+
       const sugTxt = sug
-        ? ` SUGESTÃO: ${sug.pedido ? `Pedido #${sug.pedido}` : 'pagamento'} de R$ ${sug.valor.toFixed(2)} no mesmo dia${Math.abs(diffSug) >= 0.01 ? ` (diff R$ ${Math.abs(diffSug).toFixed(2)})` : ''}, forma ${sug.forma ? `"${sug.forma}"` : 'não informada (lançamento manual, sem TEF)'}${sug.dentroDoPool ? `, NSU divergente (${sug.nsu ?? '—'})` : ', sem NSU'} — provável par. Confirme e resolva.`
+        ? ` SUGESTÃO: ${sug.pedido ? `Pedido #${sug.pedido}` : 'pagamento'} de R$ ${sug.valor.toFixed(2)} no mesmo dia${Math.abs(diffSug) >= 0.01 ? ` (diff R$ ${Math.abs(diffSug).toFixed(2)})` : ''}${minutos != null ? `, ${Math.round(minutos)} min de diferença` : ''}, forma ${sug.forma ? `"${sug.forma}"` : 'não informada (lançamento manual, sem TEF)'}${sug.dentroDoPool ? `, NSU divergente (${sug.nsu ?? '—'})` : ', sem NSU'} — provável par. Confirme e resolva.`
         : '';
       novasExcecoes.push({
         filialId,
@@ -496,12 +568,6 @@ export async function rodarConciliacaoOperadora(opts: {
     //  2) Auto-aceita com formas diferentes (rodarConciliacaoOperadora setou aceitaEm)
     // Pra divergencia manual NAO setamos aqui — o user aceita via API e a
     // popular acontece no PATCH /api/excecoes/[id].
-    const vendasPorIdLookup = new Map(vendasRaw.map((v) => [v.id, v]));
-    const updatesEfetivas: Array<{
-      pagamentoId: string;
-      forma: string | null;
-      bandeira: string | null;
-    }> = [];
     for (const m of result.matched) {
       if (!m.cielo.id) continue;
       const v = vendasPorIdLookup.get(m.cielo.id);
@@ -565,7 +631,7 @@ export async function rodarConciliacaoOperadora(opts: {
     // Persiste matches novos em match_pdv_cielo. Niveis 1-3 sao firmes;
     // 4-5 sao auto_revogavel (podem ser quebrados em rodada futura quando
     // aparecer NSU). Cada nivel da engine entra como tal.
-    const matchesPersistir = result.matched.map((m) => {
+    const matchesPersistir: Array<typeof schema.matchPdvCielo.$inferInsert> = result.matched.map((m) => {
       const nivel = m.nivel;
       const revogavel = nivel >= 4;
       return {
@@ -578,6 +644,8 @@ export async function rodarConciliacaoOperadora(opts: {
         diffValor: m.diff.toFixed(2),
       };
     }).filter((row) => row.vendaAdquirenteId);
+    // Os casados por horario entram junto — mesma tabela, mesmo onConflict.
+    matchesPersistir.push(...matchesPorHorario);
     if (matchesPersistir.length > 0) {
       await db
         .insert(schema.matchPdvCielo)
@@ -591,10 +659,20 @@ export async function rodarConciliacaoOperadora(opts: {
       (m) => m.matchType === 'NSU' || m.matchType === 'NSU_AUTH',
     );
     const matchedDV = result.matched.filter((m) => m.matchType === 'DATA_VALOR');
+    // O que virou match por horario sai de "Cielo sem PDV" e entra em
+    // conciliados — senao o resumo reporta como pendencia algo ja casado.
+    const casadosPorHorario = new Set(matchesPorHorario.map((m) => m.vendaAdquirenteId));
+    const cieloSemPdvFinal = cieloSemPdvNoRange.filter(
+      (c) => !c.id || !casadosPorHorario.has(c.id),
+    );
+    const valorPorHorario = cieloSemPdvNoRange
+      .filter((c) => c.id && casadosPorHorario.has(c.id))
+      .reduce((s, c) => s + c.valorBruto, 0);
+
     const resumo: OperadoraResumo = {
       conciliados: {
-        qtd: result.matched.length,
-        valor: result.matched.reduce((s, m) => s + m.pdv.valor, 0),
+        qtd: result.matched.length + matchesPorHorario.length,
+        valor: result.matched.reduce((s, m) => s + m.pdv.valor, 0) + valorPorHorario,
       },
       conciliadosNsu: {
         qtd: matchedNsu.length,
@@ -613,8 +691,8 @@ export async function rodarConciliacaoOperadora(opts: {
         valor: sum(result.pdvSemCielo),
       },
       cieloSemPdv: {
-        qtd: cieloSemPdvNoRange.length,
-        valor: cieloSemPdvNoRange.reduce((s, v) => s + v.valorBruto, 0),
+        qtd: cieloSemPdvFinal.length,
+        valor: cieloSemPdvFinal.reduce((s, v) => s + v.valorBruto, 0),
       },
     };
 
