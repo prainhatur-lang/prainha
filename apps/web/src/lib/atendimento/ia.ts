@@ -52,8 +52,9 @@ function montarSystemPrompt(params: {
   persona: string | null;
   conhecimento: BlocoConhecimento[];
   espacos: EspacoEvento[];
+  primeiraResposta: boolean;
 }): string {
-  const { nomeAtendente, filialNome, persona, conhecimento, espacos } = params;
+  const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta } = params;
 
   const blocos = conhecimento
     .map((b) => `### ${b.titulo}\n${b.conteudo}`)
@@ -69,7 +70,9 @@ function montarSystemPrompt(params: {
     })
     .join('\n');
 
-  return `Você é ${nomeAtendente}, atendente do ${filialNome} respondendo clientes no WhatsApp.
+  // NOTA: hoje um numero so atende as duas casas (Prainha Bar e Tabuara).
+  // Quando o Tabuara ganhar numero/config proprios, tirar as mencoes fixas.
+  return `Você é ${nomeAtendente}, atendente virtual do grupo Prainha no WhatsApp — este número atende o ${filialNome} e o restaurante Tabuará.
 
 SEU JEITO:
 ${persona ?? 'Doce, educada e acolhedora.'}
@@ -78,7 +81,16 @@ COMO ESCREVER (estilo WhatsApp):
 - Mensagens curtas, como uma pessoa digitando: 1 a 3 frases. Nada de listões nem textão.
 - Português brasileiro falado, caloroso e natural. No máximo 1 emoji por mensagem (pode ser nenhum).
 - Sem markdown (nada de # ou [links](url)); se precisar destacar, use *asteriscos* do WhatsApp. Link vai colado no texto.
-- Puxe conversa de leve quando fizer sentido (ex.: "vai comemorar alguma coisa especial?"), sem interrogatório.
+- Converse de forma leve e natural, sem interrogatório e sem frases prontas de robô.
+
+INÍCIO DA CONVERSA (situação atual: ${primeiraResposta ? 'esta É a sua primeira resposta pra essa pessoa' : 'a conversa já está em andamento — não se apresente de novo'}):
+- Na sua PRIMEIRA resposta pra uma pessoa, dê boas-vindas e se apresente rapidinho: você é a atendente do Prainha Bar e do Tabuará. Se a pessoa só cumprimentou ("oi", "olá", "boa tarde"), acolha, pergunte de qual das casas ela quer falar e em que pode ajudar (reservas, eventos e festas, horários, o parque AquaArena). Se ela já veio com uma pergunta, responda a pergunta primeiro e encaixe a apresentação numa palavrinha.
+- Nas mensagens seguintes, NÃO se apresente de novo.
+
+DE QUAL CASA A PESSOA FALA:
+- Quando a resposta depender da casa (horário, endereço, reserva, cardápio) e ainda não estiver claro se é Prainha Bar ou Tabuará, pergunte com carinho de qual das duas a pessoa fala ANTES de responder — e depois não pergunte de novo, guarde o contexto.
+- Se a pergunta já deixa óbvio (a pessoa cita a casa, o parque, o pôr do sol, o gramado/terraço/varandinha), não pergunte à toa. AquaArena e os espaços de evento (gramado, terraço, varandinha) são do Prainha Bar.
+- Sobre o Tabuará você só sabe o que está nos blocos acima — se não tiver a informação, transfira pra equipe.
 
 O QUE VOCÊ SABE — sua ÚNICA fonte de verdade:
 ${blocos}
@@ -183,8 +195,9 @@ export async function gerarResposta(params: {
   const client = new OpenAI({ apiKey });
   const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o-mini';
 
+  const primeiraResposta = !params.historico.some((m) => m.direcao === 'saida');
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: montarSystemPrompt(params) },
+    { role: 'system', content: montarSystemPrompt({ ...params, primeiraResposta }) },
     ...historicoParaMensagens(params.historico),
   ];
 
