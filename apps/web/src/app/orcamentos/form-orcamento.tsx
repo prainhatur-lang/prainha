@@ -34,6 +34,7 @@ export interface OrcamentoInicial {
   sobremesaDescricao: string;
   taxaEspaco: string;
   taxaExclusividade: string;
+  entradaValor: string;
   observacoes: string;
   condicoes: string;
   validoAte: string;
@@ -182,6 +183,7 @@ export function FormOrcamento({ locais, inicial }: Props) {
     inicial.taxaExclusividade !== '',
   );
   const [taxaExclusividade, setTaxaExclusividade] = useState(inicial.taxaExclusividade);
+  const [entradaValor, setEntradaValor] = useState(inicial.entradaValor);
   const [observacoes, setObservacoes] = useState(inicial.observacoes);
   const [condicoes, setCondicoes] = useState(inicial.condicoes);
   const [validoAte, setValidoAte] = useState(inicial.validoAte);
@@ -262,6 +264,7 @@ export function FormOrcamento({ locais, inicial }: Props) {
         sobremesaDescricao: sobremesaIncluida ? sobremesaDescricao.trim() || null : null,
         taxaEspaco: cobrarEspaco ? parseValor(taxaEspaco) : null,
         taxaExclusividade: cobrarExclusividade ? parseValor(taxaExclusividade) : null,
+        entradaValor: parseValor(entradaValor),
         observacoes: observacoes.trim() || null,
         condicoes: condicoes.trim() || null,
         validoAte: validoAte || null,
@@ -518,6 +521,33 @@ export function FormOrcamento({ locais, inicial }: Props) {
                 />
               )}
             </div>
+            <div className="border-t border-slate-100 pt-3">
+              <label className={labelCls}>Entrada (sinal) pra reservar a data</label>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={entradaValor}
+                  onChange={(e) => setEntradaValor(e.target.value)}
+                  placeholder="R$ — vazio = sem entrada"
+                  inputMode="decimal"
+                  className={`${inputCls} max-w-[180px]`}
+                />
+                {totais.total != null && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEntradaValor(((totais.total ?? 0) / 2).toFixed(2).replace('.', ','))
+                    }
+                    className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                  >
+                    usar 50% ({brl((totais.total ?? 0) / 2)})
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                O cliente paga esse valor via Pix no link de aceite — pagar vale como aceite
+                do orçamento.
+              </p>
+            </div>
           </div>
         </fieldset>
 
@@ -608,6 +638,12 @@ export function FormOrcamento({ locais, inicial }: Props) {
                 {totais.total != null ? brl(totais.total) : 'a combinar'}
               </dd>
             </div>
+            {parseValor(entradaValor) != null && (
+              <div className="flex justify-between gap-2 text-sm">
+                <dt className="text-slate-500">Entrada no aceite (Pix)</dt>
+                <dd className="font-mono text-slate-700">{brl(parseValor(entradaValor))}</dd>
+              </div>
+            )}
           </dl>
 
           {erro && (

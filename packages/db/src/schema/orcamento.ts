@@ -67,6 +67,26 @@ export const orcamentoEvento = pgTable(
     condicoes: text('condicoes'),
     /** Data limite de validade do orçamento (YYYY-MM-DD). */
     validoAte: date('valido_ate'),
+    /** Valor da entrada (sinal) pra reservar a data (R$). Null = sem entrada. */
+    entradaValor: numeric('entrada_valor', { precision: 10, scale: 2 }),
+    /** Token do link público de aceite+pagamento (/orcamento/[token]). */
+    aceiteToken: text('aceite_token').unique(),
+    /** Quando o cliente aceitou o orçamento pelo link. */
+    aceiteEm: timestamp('aceite_em', { withTimezone: true }),
+    /** Nome digitado por quem aceitou. */
+    aceiteNome: varchar('aceite_nome', { length: 200 }),
+    /** IP de quem aceitou (evidência do aceite). */
+    aceiteIp: varchar('aceite_ip', { length: 64 }),
+    /** Pix da entrada via Cielo: null (não gerado) | aguardando | pago | reembolsado */
+    pagamentoStatus: varchar('pagamento_status', { length: 20 }),
+    /** PaymentId da Cielo, pra consultar/estornar. */
+    pagamentoId: varchar('pagamento_id', { length: 50 }),
+    /** Pix copia-e-cola. */
+    pagamentoQrcode: text('pagamento_qrcode'),
+    /** Imagem do QR em base64 (a Cielo já manda pronta). */
+    pagamentoQrcodeImg: text('pagamento_qrcode_img'),
+    /** Quando a entrada foi paga. */
+    pagoEm: timestamp('pago_em', { withTimezone: true }),
     /** Workflow: aberto | enviado | aceito | recusado */
     status: varchar('status', { length: 20 }).notNull().default('aberto'),
     /** Email de quem criou (auditoria leve). */

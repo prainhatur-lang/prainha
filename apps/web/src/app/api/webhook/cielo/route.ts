@@ -10,6 +10,26 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { queryCieloPayment, refundCieloPayment } from '@/lib/cielo';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
+import { marcarOrcamentoEntradaPaga } from '@/lib/orcamentos-server';
+
+/** Entrada de orçamento de evento paga/estornada via webhook. Best-effort. */
+async function processarOrcamento(paymentId: string): Promise<void> {
+  const [orc] = await db
+    .select({ id: schema.orcamentoEvento.id, pagamentoStatus: schema.orcamentoEvento.pagamentoStatus })
+    .from(schema.orcamentoEvento)
+    .where(eq(schema.orcamentoEvento.pagamentoId, paymentId))
+    .limit(1);
+  if (!orc) return;
+  const cielo = await queryCieloPayment(paymentId);
+  if (cielo.status === 'pago' && orc.pagamentoStatus !== 'pago') {
+    await marcarOrcamentoEntradaPaga(orc.id);
+  } else if (cielo.status !== 'pendente' && cielo.status !== orc.pagamentoStatus) {
+    await db
+      .update(schema.orcamentoEvento)
+      .set({ pagamentoStatus: cielo.status })
+      .where(eq(schema.orcamentoEvento.id, orc.id));
+  }
+}
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,7 +57,11 @@ export async function POST(request: NextRequest) {
 
   try {
     const [reserva] = await db.select().from(schema.reserva).where(eq(schema.reserva.pagamentoId, paymentId)).limit(1);
-    if (!reserva) return NextResponse.json({ ok: true });
+    if (!reserva) {
+      // Não é reserva — pode ser entrada de orçamento de evento.
+      await processarOrcamento(paymentId);
+      return NextResponse.json({ ok: true });
+    }
 
     const cielo = await queryCieloPayment(paymentId);
 

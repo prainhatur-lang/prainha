@@ -69,6 +69,10 @@ export async function proxy(request: NextRequest) {
   // pagina recusa link adulterado ou vencido). Existe porque o servidor da
   // loja roda em HTTP e nao pode capturar cartao.
   const isPagarMesaPublico = path === '/pagar-mesa';
+  // /orcamento/[token] (singular; o painel interno eh /orcamentos) eh a
+  // pagina publica do orcamento de evento: cliente aceita o contrato e paga
+  // a entrada via Pix. Token na URL identifica o orcamento; sem login.
+  const isOrcamentoPublico = path.startsWith('/orcamento/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -80,7 +84,8 @@ export async function proxy(request: NextRequest) {
     isAvaliarPublico ||
     isReservarPublico ||
     isCotacaoPublica ||
-    isPagarMesaPublico;
+    isPagarMesaPublico ||
+    isOrcamentoPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

@@ -90,6 +90,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (b?.sobremesaDescricao !== undefined) set.sobremesaDescricao = txt(b.sobremesaDescricao, 500);
   if (b?.taxaEspaco !== undefined) set.taxaEspaco = dinheiro(b.taxaEspaco);
   if (b?.taxaExclusividade !== undefined) set.taxaExclusividade = dinheiro(b.taxaExclusividade);
+  if (b?.entradaValor !== undefined) set.entradaValor = dinheiro(b.entradaValor);
   if (b?.observacoes !== undefined) set.observacoes = txt(b.observacoes, 4000);
   if (b?.condicoes !== undefined) set.condicoes = txt(b.condicoes, 4000);
   if (b?.validoAte !== undefined) {

@@ -55,6 +55,7 @@ export default async function NovoOrcamentoPage() {
     sobremesaDescricao: '',
     taxaEspaco: '',
     taxaExclusividade: '',
+    entradaValor: '',
     observacoes: '',
     condicoes: CONDICOES_PADRAO,
     // Validade padrão: 15 dias a partir de hoje (diasAtrasBr negativo = futuro).

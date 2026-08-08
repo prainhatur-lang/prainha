@@ -57,6 +57,7 @@ export default async function EditarOrcamentoPage(props: {
     sobremesaDescricao: o.sobremesaDescricao ?? '',
     taxaEspaco: brStr(o.taxaEspaco),
     taxaExclusividade: brStr(o.taxaExclusividade),
+    entradaValor: brStr(o.entradaValor),
     observacoes: o.observacoes ?? '',
     condicoes: o.condicoes ?? '',
     validoAte: o.validoAte ?? '',

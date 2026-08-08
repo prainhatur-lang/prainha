@@ -1,5 +1,6 @@
 // POST /api/orcamentos — cria um orçamento de evento.
 
+import { randomBytes } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
@@ -68,6 +69,8 @@ export async function POST(request: Request) {
       observacoes: txt(b?.observacoes, 4000),
       condicoes: txt(b?.condicoes, 4000),
       validoAte,
+      entradaValor: dinheiro(b?.entradaValor),
+      aceiteToken: randomBytes(32).toString('hex'),
       criadoPor: user.email ?? null,
     })
     .returning({ id: schema.orcamentoEvento.id });

@@ -29,6 +29,7 @@
     "migrate:lista-espera": "tsx scripts/migrate-lista-espera.ts",
     "migrate:orcamento": "tsx scripts/migrate-orcamento.ts",
     "migrate:orcamento-local": "tsx scripts/migrate-orcamento-local.ts",
+    "migrate:orcamento-aceite": "tsx scripts/migrate-orcamento-aceite.ts",
     "migrate:origem-importacao-len": "tsx scripts/migrate-origem-importacao-len.ts",
     "migrate:compras": "tsx scripts/migrate-compras.ts",
     "migrate:cotacao": "tsx scripts/migrate-cotacao.ts",

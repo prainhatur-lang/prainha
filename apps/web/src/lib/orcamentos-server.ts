@@ -1,7 +1,7 @@
 // Helpers server-side do módulo de orçamentos.
 
 import { db, schema } from '@concilia/db';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { LocalOpt } from '@/lib/orcamentos';
 
 /**
@@ -29,4 +29,31 @@ export async function montarLocaisEvento(
     }
   }
   return locais;
+}
+
+/**
+ * Marca a entrada do orçamento como paga (Pix Cielo confirmado). Pagar a
+ * entrada VALE como aceite: registra o aceite se ainda não tinha e muda o
+ * status pra 'aceito'. Idempotente. Usada pelo polling público e pelo
+ * webhook da Cielo.
+ */
+export async function marcarOrcamentoEntradaPaga(orcamentoId: string): Promise<void> {
+  const [o] = await db
+    .select()
+    .from(schema.orcamentoEvento)
+    .where(eq(schema.orcamentoEvento.id, orcamentoId))
+    .limit(1);
+  if (!o || o.pagamentoStatus === 'pago') return;
+
+  await db
+    .update(schema.orcamentoEvento)
+    .set({
+      pagamentoStatus: 'pago',
+      pagoEm: new Date(),
+      status: 'aceito',
+      aceiteEm: o.aceiteEm ?? new Date(),
+      aceiteNome: o.aceiteNome ?? o.clienteNome,
+      atualizadoEm: sql`now()`,
+    })
+    .where(eq(schema.orcamentoEvento.id, orcamentoId));
 }
