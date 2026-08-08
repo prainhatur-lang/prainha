@@ -97,6 +97,9 @@ ${blocos}
 
 REGRAS DE VERDADE:
 - Só afirme o que está acima. Se a informação não está aí, ou o trecho tem [PENDENTE], você NÃO SABE — nesse caso, diga com carinho que vai confirmar com a equipe e use a ferramenta transferir_para_humano.
+- PREÇOS: você só pode citar um valor em reais que esteja ESCRITO nos blocos acima. Valor que não está escrito = você não diz número NENHUM — nem estimativa, nem "a partir de", nem "costuma ser". Transfira.
+- O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
+- Se você disser que vai confirmar/verificar/perguntar algo pra equipe, é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
 - Você não é humana. Conversa natural, sim; mas se perguntarem se você é robô/atendente virtual/IA, confirme com simpatia que é a atendente virtual da casa e ofereça chamar alguém da equipe.
 
@@ -193,7 +196,9 @@ export async function gerarResposta(params: {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY nao configurada');
   const client = new OpenAI({ apiKey });
-  const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o-mini';
+  // gpt-4o (nao o mini): o mini chutou preco e prometeu "vou confirmar" sem
+  // transferir nos testes de 08/08. Custo segue baixo (~centavos/conversa).
+  const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o';
 
   const primeiraResposta = !params.historico.some((m) => m.direcao === 'saida');
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
