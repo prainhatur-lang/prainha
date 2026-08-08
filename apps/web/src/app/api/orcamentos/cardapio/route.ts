@@ -1,11 +1,11 @@
-// GET /api/orcamentos/menu?f=<filialId>&q=<busca> — busca pratos no cardápio
-// real do Consumer (produto_variante × produto, mesma fonte das bebidas da
-// reserva). Só NOMES — o preço sincronizado é desatualizado (ver comentário
-// em /api/reservar/[token]/bebidas); o valor do orçamento é por pessoa.
+// GET /api/orcamentos/cardapio?f=<filialId> — cardápio completo (ativo) da
+// filial pro modal de escolha com checkbox no orçamento. Só nomes, limpos e
+// deduplicados, em ordem alfabética. (Categorias do Consumer — ETIQUETAS —
+// ainda não são sincronizadas; quando forem, agrupar aqui.)
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
@@ -13,29 +13,16 @@ import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-// translate() cobre acento dos dois lados sem depender da extensão unaccent.
-const ACENTOS = 'áàãâäéêëíîïóòõôöúùûüçÁÀÃÂÄÉÊËÍÎÏÓÒÕÔÖÚÙÛÜÇ';
-const SEM_ACENTO = 'aaaaaeeeiiiooooouuuucaaaaaeeeiiiooooouuuuc';
-
-
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('orcamento.read');
   if (error) return error;
 
   const url = new URL(request.url);
   const f = url.searchParams.get('f') ?? '';
-  const q = (url.searchParams.get('q') ?? '').trim();
-  if (!/^[0-9a-f-]{36}$/i.test(f) || q.length < 2) {
-    return NextResponse.json({ nomes: [] });
-  }
+  if (!/^[0-9a-f-]{36}$/i.test(f)) return NextResponse.json({ itens: [] });
 
   const filiais = await filiaisDoUsuario(user.id);
-  if (!filiais.some((fil) => fil.id === f)) {
-    return NextResponse.json({ nomes: [] });
-  }
-
-  // Sem % e _ do usuário dentro do LIKE.
-  const busca = '%' + normalizarNome(q).replace(/[%_]/g, '') + '%';
+  if (!filiais.some((fil) => fil.id === f)) return NextResponse.json({ itens: [] });
 
   const rows = await db
     .select({ nome: schema.produto.nome })
@@ -53,24 +40,20 @@ export async function GET(request: Request) {
         isNull(schema.produtoVariante.dataPausado),
         isNull(schema.produtoVariante.dataDelete),
         or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
-        sql`lower(translate(${schema.produto.nome}, ${ACENTOS}, ${SEM_ACENTO})) LIKE ${busca}`,
       ),
-    )
-    .orderBy(schema.produto.nome)
-    .limit(60);
+    );
 
-  // Dedupe por nome normalizado (variantes com/sem acento).
   const vistos = new Set<string>();
-  const nomes: string[] = [];
+  const itens: string[] = [];
   for (const r of rows) {
     const limpo = limparNomeProduto(r.nome);
     if (!limpo) continue;
     const chave = normalizarNome(limpo);
     if (vistos.has(chave)) continue;
     vistos.add(chave);
-    nomes.push(limpo);
-    if (nomes.length >= 15) break;
+    itens.push(limpo);
   }
+  itens.sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
-  return NextResponse.json({ nomes });
+  return NextResponse.json({ itens });
 }

@@ -15,6 +15,7 @@ import {
   type LocalOpt,
   type PratoOrcamento,
 } from '@/lib/orcamentos';
+import { CardapioModal } from './cardapio-modal';
 
 /** Valores iniciais (edição) — dinheiro como string BR já formatada ou ''. */
 export interface OrcamentoInicial {
@@ -175,6 +176,7 @@ export function FormOrcamento({ locais, inicial }: Props) {
   const [validoAte, setValidoAte] = useState(inicial.validoAte);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [cardapioAberto, setCardapioAberto] = useState(false);
 
   const nPessoas = Math.max(1, parseInt(pessoas, 10) || 1);
   const totais = useMemo(
@@ -190,6 +192,30 @@ export function FormOrcamento({ locais, inicial }: Props) {
 
   function alterarPrato(i: number, patch: Partial<PratoForm>) {
     setPratos((atual) => atual.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+  }
+
+  /** Aplica a seleção feita no modal do cardápio: adiciona os marcados e
+   *  remove pratos do catálogo que foram desmarcados (pratos digitados fora
+   *  do menu ficam intactos). */
+  function aplicarCardapio(selecionados: string[], catalogo: string[]) {
+    const catSet = new Set(catalogo);
+    const selSet = new Set(selecionados);
+    setPratos((atual) => {
+      let manter = atual.filter((p) => {
+        const n = p.nome.trim();
+        return !n || !catSet.has(n) || selSet.has(n);
+      });
+      const existentes = new Set(manter.map((p) => p.nome.trim()).filter(Boolean));
+      const novos: PratoForm[] = selecionados
+        .filter((n) => catSet.has(n) && !existentes.has(n))
+        .map((n) => ({ nome: n, descricao: '', regime: 'livre' as const, qtd: '' }));
+      if (novos.length > 0) manter = manter.filter((p) => p.nome.trim());
+      const resultado = [...manter, ...novos];
+      return resultado.length > 0
+        ? resultado
+        : [{ nome: '', descricao: '', regime: 'livre', qtd: '' }];
+    });
+    setCardapioAberto(false);
   }
 
   async function salvar() {
@@ -388,15 +414,24 @@ export function FormOrcamento({ locais, inicial }: Props) {
                 </div>
               </div>
             ))}
-            <button
-              type="button"
-              onClick={() =>
-                setPratos((atual) => [...atual, { nome: '', descricao: '', regime: 'livre', qtd: '' }])
-              }
-              className="rounded-md border border-dashed border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:border-slate-400 hover:bg-slate-50"
-            >
-              + Adicionar prato
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setCardapioAberto(true)}
+                className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                📖 Escolher do cardápio
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setPratos((atual) => [...atual, { nome: '', descricao: '', regime: 'livre', qtd: '' }])
+                }
+                className="rounded-md border border-dashed border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+              >
+                + Adicionar prato avulso
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 border-t border-slate-100 pt-4">
@@ -579,6 +614,15 @@ export function FormOrcamento({ locais, inicial }: Props) {
           </Link>
         </div>
       </aside>
+
+      {cardapioAberto && (
+        <CardapioModal
+          filialId={filialId}
+          selecionadosIniciais={pratos.map((p) => p.nome.trim()).filter(Boolean)}
+          onFechar={() => setCardapioAberto(false)}
+          onAplicar={aplicarCardapio}
+        />
+      )}
     </div>
   );
 }

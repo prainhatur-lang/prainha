@@ -88,6 +88,24 @@ export function numeroOrcamento(n: number): string {
   return String(n).padStart(4, '0');
 }
 
+/** Minúsculo e sem acento — pra busca e dedupe de nomes de produto. */
+export function normalizarNome(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+/**
+ * Limpa nome de produto do Consumer pra exibição: tira pontuação de ordenação
+ * do começo (".Becks") e o prefixo "T " (variante de cardápio do Terraço —
+ * mesmo prato duplicado). Null = vazio depois da limpeza.
+ */
+export function limparNomeProduto(nome: string | null | undefined): string | null {
+  const limpo = (nome ?? '').trim().replace(/^[.*\s]+/, '').replace(/^T\s+/, '');
+  return limpo || null;
+}
+
 /** Sanitiza a lista de pratos vinda do body JSON (uso nas rotas de API). */
 export function sanitizarPratos(v: unknown): PratoOrcamento[] {
   if (!Array.isArray(v)) return [];
