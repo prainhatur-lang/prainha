@@ -9,6 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { buscarNumeroExibicao } from '@/lib/atendimento/zap';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,6 +35,20 @@ export async function GET(request: Request) {
     .select()
     .from(schema.whatsappNumero)
     .where(eq(schema.whatsappNumero.filialId, alvo));
+
+  // Preenche o numero de exibicao a partir da Meta na primeira visita
+  // (o token so existe em producao — por isso nao veio no seed).
+  for (const n of numeros) {
+    if (n.numeroExibicao) continue;
+    const exibicao = await buscarNumeroExibicao(n.phoneNumberId);
+    if (exibicao) {
+      n.numeroExibicao = exibicao;
+      await db
+        .update(schema.whatsappNumero)
+        .set({ numeroExibicao: exibicao.replace(/\D/g, '').slice(0, 20) })
+        .where(eq(schema.whatsappNumero.phoneNumberId, n.phoneNumberId));
+    }
+  }
 
   return NextResponse.json({
     config: config ?? null,

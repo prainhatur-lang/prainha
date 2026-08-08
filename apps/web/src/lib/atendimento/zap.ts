@@ -71,6 +71,23 @@ export async function marcarLidaComDigitando(
   }
 }
 
+/** Busca o numero de exibicao (display_phone_number) de um phone_number_id
+ *  na Meta — usado pelo painel pra preencher whatsapp_numero.numero_exibicao. */
+export async function buscarNumeroExibicao(phoneNumberId: string): Promise<string | null> {
+  if (!token()) return null;
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/${versao()}/${phoneNumberId}?fields=display_phone_number`,
+      { headers: { Authorization: `Bearer ${token()}` } },
+    );
+    if (!r.ok) return null;
+    const j = (await r.json()) as { display_phone_number?: string };
+    return j.display_phone_number ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Baixa uma midia recebida (audio, imagem...): GET /{media_id} da o url
  *  temporario, e o download exige o mesmo Bearer. */
 export async function baixarMidia(
