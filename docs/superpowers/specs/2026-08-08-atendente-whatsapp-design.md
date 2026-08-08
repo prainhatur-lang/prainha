@@ -13,10 +13,16 @@ corrigível pelo Elison num painel dentro do Concilia.
 
 ## Decisões tomadas (com o Elison, 08/08)
 
-1. **Número:** o atendente responde no número público do Prainha,
-   **(79) 99600-7289**, que será migrado pra Cloud API da Meta (Fase 2). O
-   número deixa de funcionar no app do celular; respostas manuais passam pro
-   painel. Tabuará entra depois com o número próprio (Fase 3).
+1. **Número (revisado 08/08, ideia do Elison):** Nina mora no número que **já
+   está na Cloud API** (ex-número do Tabuará, `phone_id 1055094051031714`) —
+   **nenhuma migração necessária**. Ele atende as DUAS casas: no modelo fica
+   mapeado pra filial Prainha, e a base de conhecimento ganha um bloco
+   "Tabuará". Divulgação (Fase 2): site, Instagram e Google passam a apontar o
+   wa.me desse número como o WhatsApp de atendimento, e o display name na Meta
+   é verificado/renomeado pra refletir as casas (ex.: "Prainha Bar"; renomear
+   pede aprovação da Meta). O número público (79) 99600-7289 continua no
+   celular com atendimento manual, como hoje; migrá-lo vira opção futura
+   (checklist no apêndice).
 2. **Quando não sabe / cliente pede pessoa:** transfere — pausa o bot naquela
    conversa e notifica a equipe no WhatsApp com resumo. Equipe responde pelo
    painel.
@@ -62,6 +68,11 @@ Cliente manda msg → Meta → POST /api/whatsapp/webhook
   8. Debounce ~6s: espera; se chegou mensagem mais nova nessa conversa, aborta
      (a mais nova é quem gera). Evita responder mensagem picada.
   9. conversa.status='humano' ou config.ativo=false → não gera resposta.
+     GUARD DE FORNECEDOR: o mesmo número fala com fornecedores (cotação/
+     pedido). Telefone que bate com fornecedor cadastrado → Nina NÃO responde;
+     a conversa fica marcada 'fornecedor' no painel e os botões de template
+     seguem o fluxo atual. Cliente de reserva que responde ao lembrete cai na
+     Nina normalmente (desejável — ela tira dúvidas gerais).
  10. Gera resposta (LLM + persona + conhecimento + ferramentas), envia pelo
      phone_number_id da conversa, salva saída com o wa_message_id retornado.
 ```
@@ -111,7 +122,9 @@ unique(filial_id, telefone)
   robô → se apresenta como atendente virtual e oferece a equipe; eventos:
   coleta os dados ao longo da conversa (sem interrogatório) e registra o lead
   quando tiver o essencial (tipo + data aproximada + nº de pessoas); reserva de
-  mesa → manda o link do site; nunca pede dado sensível nem trata pagamento.
+  mesa NOVA → manda o link do site; dúvida sobre reserva JÁ FEITA (mudar,
+  confirmar, cancelar fora dos botões) → transferir pra equipe (v1 não consulta
+  reservas); nunca pede dado sensível nem trata pagamento.
 - **Ferramentas (function calling):**
   - `registrar_lead_evento(tipo, data, hora, pessoas, espaco, nome, observacoes)`
     → INSERT em `evento_lead` + aviso à equipe.
@@ -144,8 +157,10 @@ painel** · AquaArena: status/preços **Elison confirma no painel** (site diz
 (destaques: Camarão Paris, moqueca, picanha Angus, drink Prainha Sunset) ·
 Música ao vivo · Reservas de mesa: link do site · Espaços de evento: gramado
 (casamentos, ar livre), terraço (fechado no dia a dia; eventos com ~50
-sentadas), varandinha (15–20 pessoas) · Instagram @prainha.se · A validação
-final do conteúdo é do Elison, no painel — é assim que ele "corrige" a Nina.
+sentadas), varandinha (15–20 pessoas) · Instagram @prainha.se · Bloco
+**Tabuará** (endereço, horários, diferenças pro Prainha): nasce com um
+esqueleto e o Elison preenche no painel · A validação final do conteúdo é do
+Elison, no painel — é assim que ele "corrige" a Nina.
 
 ## Painel (menu "Atendimento" no Concilia)
 
@@ -189,21 +204,25 @@ IA: ~R$0,05–0,15/conversa (dezenas de reais/mês no volume esperado).
 WhatsApp: respostas dentro da janela de 24h grátis; avisos à equipe via
 template = centavos. Sem mensalidade nova.
 
-## Fase 2 — migração do número público (checklist ops, executar só após Fase 1 aprovada)
+## Fases de entrega (revisadas 08/08 — sem migração de número)
 
-1. Backup do histórico no celular atual, se desejado (será perdido no aparelho).
-2. Business Manager → adicionar (79) 99600-7289 na **mesma WABA** (templates
-   valem pra qualquer número dela).
-3. No celular: WhatsApp → apagar conta (libera o número da app).
-4. Registrar o número na Cloud API (verificação SMS/ligação), PIN 2FA, display
-   name "Prainha Bar".
-5. Cadastrar o novo `phone_number_id` em `whatsapp_numero` → filial Prainha,
-   `atendente_ativo=true`.
-6. Testar ponta a ponta; fazer fora de pico. Fluxos internos (cotação, pedido,
-   lembrete de reserva) **continuam no número interno atual** — nada muda neles.
+- **Fase 1 — construir e aprovar:** tudo desta spec, rodando no número já
+  integrado (o da Nina). Testes reais com o celular do Elison até ele aprovar o
+  comportamento. Fluxos internos (cotação, pedido, lembrete) seguem no mesmo
+  número, intocados — o guard de fornecedor evita conflito.
+- **Fase 2 — divulgar:** verificar/renomear o display name na Meta (ex.:
+  "Prainha Bar") e apontar os canais — site prainhabar.com, Instagram das duas
+  casas, Google — pro wa.me do número da Nina.
+- **Fase 3 — opcional, futuro:** separar o Tabuará num número próprio (novo
+  registro na WABA → filial Tabuará, base de conhecimento própria) e/ou migrar
+  o número público do Prainha (apêndice abaixo).
 
-**Fase 3:** repetir pro número do Tabuará → filial Tabuará, com base de
-conhecimento própria.
+## Apêndice — migração opcional do (79) 99600-7289 (só se um dia fizer sentido)
+
+Backup do histórico do aparelho → adicionar o número na mesma WABA → apagar a
+conta no app do celular → registrar na Cloud API (SMS + PIN 2FA, display name)
+→ cadastrar o `phone_number_id` em `whatsapp_numero`. O número deixa de
+funcionar no app do celular. Fazer fora de pico.
 
 ## Testes (Fase 1)
 
