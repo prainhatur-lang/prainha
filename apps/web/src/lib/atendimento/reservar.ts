@@ -71,9 +71,11 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
           : mesas.length;
       const disponiveis = Math.max(0, limite - ocupadas.size);
       const maiorMesa = Math.max(...mesas.map((m) => m.lugares));
+      const lug = mesas.map((m) => m.lugares).sort((a, b) => a - b);
+      const duasMaiores = lug.slice(-2).reduce((s, x) => s + x, 0);
       livres = disponiveis === 0
         ? 'LOTADA'
-        : `${disponiveis} mesa(s) disponível(is), maior mesa comporta ${maiorMesa} pessoas`;
+        : `${disponiveis} mesa(s) disponível(is); maior mesa: ${maiorMesa} pessoas; juntando 2 mesas atende grupo de até ${duasMaiores}`;
     } else {
       livres = 'disponível';
     }
@@ -140,8 +142,11 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     return `${areaCfg.nome} aceita reserva só até ${areaCfg.horaLimite}. Sugira um horário até essa hora.`;
   }
 
-  // Alocação de mesa — mesma regra do site: menor mesa livre que cabe o grupo.
+  // Alocação de mesa — menor mesa livre que cabe o grupo (regra do site).
+  // Grupo maior que qualquer mesa: JUNTA DUAS mesas (mesa + mesaJuntada, o
+  // mesmo recurso que a recepção usa no admin). 3+ mesas = equipe.
   let mesaAlocada: string | null = null;
+  let mesaJuntadaAlocada: string | null = null;
   const mesas = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
   if (mesas.length > 0) {
     const ocupadas = await mesasOcupadas({
@@ -158,15 +163,34 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
       return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
     }
     const ordenadas = mesas.slice().sort((a, b) => a.lugares - b.lugares);
-    const cabem = ordenadas.filter((m) => m.lugares >= pessoas);
-    if (cabem.length === 0) {
-      return `Não há mesa pra ${pessoas} pessoas em ${areaCfg.nome} (grupos grandes: transfira pra equipe avaliar juntar mesas).`;
+    const livres = ordenadas.filter((m) => !ocupadas.has(String(m.numero)));
+    const unica = livres.find((m) => m.lugares >= pessoas);
+    if (unica) {
+      mesaAlocada = String(unica.numero);
+    } else {
+      // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
+      let par: [typeof livres[number], typeof livres[number]] | null = null;
+      if (limite - ocupadas.size >= 2) {
+        for (let i = 0; i < livres.length; i++) {
+          for (let j = i + 1; j < livres.length; j++) {
+            const soma = livres[i].lugares + livres[j].lugares;
+            if (soma >= pessoas && (!par || soma < par[0].lugares + par[1].lugares)) {
+              par = [livres[i], livres[j]];
+            }
+          }
+        }
+      }
+      if (par) {
+        mesaAlocada = String(par[0].numero);
+        mesaJuntadaAlocada = String(par[1].numero);
+      } else {
+        const duasMaiores = ordenadas.slice(-2).reduce((s, m) => s + m.lugares, 0);
+        if (pessoas > duasMaiores) {
+          return `Grupo de ${pessoas} não cabe em ${areaCfg.nome} nem juntando 2 mesas (máximo juntando duas: ${duasMaiores}). Ofereça outra área com mesas maiores ou transfira pra equipe (3 mesas ou mais é com humanos).`;
+        }
+        return `${areaCfg.nome} sem mesas suficientes livres pra ${pessoas} pessoas em ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
+      }
     }
-    const livre = cabem.find((m) => !ocupadas.has(String(m.numero)));
-    if (!livre) {
-      return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
-    }
-    mesaAlocada = String(livre.numero);
   }
 
   const valorAtual = typeof cfg.valorAtual === 'number' ? cfg.valorAtual : 0;
@@ -182,6 +206,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     status: 'pendente',
     area: areaCfg.nome,
     mesa: mesaAlocada,
+    mesaJuntada: mesaJuntadaAlocada,
     canal: 'whatsapp',
     observacao: p.observacao?.trim() ? `${p.observacao.trim().slice(0, 1900)} (via Nina)` : 'Reserva feita pela Nina (WhatsApp)',
     valor: String(valorAtual.toFixed(2)),
@@ -214,5 +239,10 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     // best-effort — a reserva já está criada
   }
 
-  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaAlocada ? ` (mesa ${mesaAlocada})` : ''}, em nome de ${nome}. Gratuita. Confirme ao cliente em uma frase e avise que a mesa fica guardada por 15 minutos após o horário.`;
+  const mesaTxt = mesaJuntadaAlocada
+    ? ` (mesas ${mesaAlocada} + ${mesaJuntadaAlocada} juntadas pro grupo)`
+    : mesaAlocada
+      ? ` (mesa ${mesaAlocada})`
+      : '';
+  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nome}. Gratuita. Confirme ao cliente em uma frase e avise que a mesa fica guardada por 15 minutos após o horário.`;
 }
