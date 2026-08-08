@@ -63,7 +63,7 @@ export async function POST(req: Request) {
       for (const change of changes) {
         const value = (change as {
           value?: {
-            metadata?: { phone_number_id?: string };
+            metadata?: { phone_number_id?: string; display_phone_number?: string };
             contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>;
             messages?: unknown[];
             statuses?: Array<{ id?: string; status?: string; errors?: Array<{ title?: string; message?: string }> }>;
@@ -101,6 +101,21 @@ export async function POST(req: Request) {
           }
           // Mensagem comum -> atendimento da Nina
           await tratarMensagemComum(msg, value?.metadata?.phone_number_id, value?.contacts);
+        }
+        // Auto-preenche o numero de exibicao (a Meta manda no metadata de todo
+        // evento) — poupa depender do painel/Graph pra saber o numero real.
+        const meta = value?.metadata;
+        if (meta?.phone_number_id && meta.display_phone_number) {
+          await db
+            .update(schema.whatsappNumero)
+            .set({ numeroExibicao: meta.display_phone_number.replace(/\D/g, '').slice(0, 20) })
+            .where(
+              and(
+                eq(schema.whatsappNumero.phoneNumberId, meta.phone_number_id),
+                sql`${schema.whatsappNumero.numeroExibicao} IS NULL`,
+              ),
+            )
+            .catch(() => {});
         }
       }
     }
