@@ -149,6 +149,9 @@ export const PERMISSOES: PermissaoDef[] = [
   // === Lista de espera (recepcao) ===
   ...crud('lista_espera', 'lista de espera', []),
 
+  // === Orcamentos de eventos/grupos ===
+  ...crud('orcamento', 'orçamentos de eventos', []),
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({
@@ -169,6 +172,9 @@ const RESERVAS_FILA_OPERACIONAL = [
   'lista_espera.read',
   'lista_espera.create',
   'lista_espera.update',
+  'orcamento.read',
+  'orcamento.create',
+  'orcamento.update',
 ];
 
 /** Grupos pre-prontos do sistema com lista de permissoes (codigos). */

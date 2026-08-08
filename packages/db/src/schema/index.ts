@@ -24,6 +24,7 @@ export * from './consumer_operacional';
 export * from './avaliacao';
 export * from './reserva';
 export * from './lista-espera';
+export * from './orcamento';
 export * from './patio';
 export * from './cobranca-mesa';
 export * from './cliente-documento';
