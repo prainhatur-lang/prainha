@@ -12,6 +12,7 @@ import {
   calcularTotais,
   diaSemanaBr,
   parseValor,
+  type CardapioItem,
   type LocalOpt,
   type PratoOrcamento,
 } from '@/lib/orcamentos';
@@ -57,21 +58,25 @@ const inputCls =
 const labelCls = 'mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500';
 
 /** Input com sugestões do cardápio da filial (busca conforme digita).
- *  Livre: também aceita qualquer texto fora do menu. */
+ *  Livre: também aceita qualquer texto fora do menu. Ao escolher uma
+ *  sugestão, `onPick` (quando passado) recebe o item completo — usado pra
+ *  preencher a descrição do prato junto. */
 function InputMenu({
   value,
   onChange,
+  onPick,
   filialId,
   placeholder,
   className,
 }: {
   value: string;
   onChange: (v: string) => void;
+  onPick?: (item: CardapioItem) => void;
   filialId: string;
   placeholder?: string;
   className?: string;
 }) {
-  const [sugestoes, setSugestoes] = useState<string[]>([]);
+  const [sugestoes, setSugestoes] = useState<CardapioItem[]>([]);
   const [aberto, setAberto] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -92,9 +97,9 @@ function InputMenu({
         );
         if (!r.ok) return;
         const d = await r.json();
-        const nomes: string[] = Array.isArray(d?.nomes) ? d.nomes : [];
-        setSugestoes(nomes);
-        setAberto(nomes.length > 0);
+        const itens: CardapioItem[] = Array.isArray(d?.itens) ? d.itens : [];
+        setSugestoes(itens);
+        setAberto(itens.length > 0);
       } catch {
         // busca é só conveniência — falha não bloqueia digitação livre
       }
@@ -111,19 +116,25 @@ function InputMenu({
         className={inputCls}
       />
       {aberto && (
-        <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-          {sugestoes.map((n) => (
-            <li key={n}>
+        <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+          {sugestoes.map((item) => (
+            <li key={item.nome}>
               <button
                 type="button"
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  onChange(n);
+                  if (onPick) onPick(item);
+                  else onChange(item.nome);
                   setAberto(false);
                 }}
-                className="block w-full px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+                className="block w-full px-3 py-1.5 text-left hover:bg-slate-50"
               >
-                {n}
+                <span className="block text-sm text-slate-800">{item.nome}</span>
+                {item.descricao && (
+                  <span className="block truncate text-xs text-slate-400">
+                    {item.descricao}
+                  </span>
+                )}
               </button>
             </li>
           ))}
@@ -194,11 +205,12 @@ export function FormOrcamento({ locais, inicial }: Props) {
     setPratos((atual) => atual.map((p, j) => (j === i ? { ...p, ...patch } : p)));
   }
 
-  /** Aplica a seleção feita no modal do cardápio: adiciona os marcados e
-   *  remove pratos do catálogo que foram desmarcados (pratos digitados fora
-   *  do menu ficam intactos). */
-  function aplicarCardapio(selecionados: string[], catalogo: string[]) {
-    const catSet = new Set(catalogo);
+  /** Aplica a seleção feita no modal do cardápio: adiciona os marcados (já
+   *  com a descrição do Consumer) e remove pratos do catálogo que foram
+   *  desmarcados (pratos digitados fora do menu ficam intactos). */
+  function aplicarCardapio(selecionados: string[], catalogo: CardapioItem[]) {
+    const catSet = new Set(catalogo.map((c) => c.nome));
+    const descrPorNome = new Map(catalogo.map((c) => [c.nome, c.descricao ?? '']));
     const selSet = new Set(selecionados);
     setPratos((atual) => {
       let manter = atual.filter((p) => {
@@ -208,7 +220,12 @@ export function FormOrcamento({ locais, inicial }: Props) {
       const existentes = new Set(manter.map((p) => p.nome.trim()).filter(Boolean));
       const novos: PratoForm[] = selecionados
         .filter((n) => catSet.has(n) && !existentes.has(n))
-        .map((n) => ({ nome: n, descricao: '', regime: 'livre' as const, qtd: '' }));
+        .map((n) => ({
+          nome: n,
+          descricao: descrPorNome.get(n) ?? '',
+          regime: 'livre' as const,
+          qtd: '',
+        }));
       if (novos.length > 0) manter = manter.filter((p) => p.nome.trim());
       const resultado = [...manter, ...novos];
       return resultado.length > 0
@@ -368,6 +385,9 @@ export function FormOrcamento({ locais, inicial }: Props) {
                   <InputMenu
                     value={p.nome}
                     onChange={(v) => alterarPrato(i, { nome: v })}
+                    onPick={(item) =>
+                      alterarPrato(i, { nome: item.nome, descricao: item.descricao ?? '' })
+                    }
                     filialId={filialId}
                     placeholder={`Prato ${i + 1} — ex: Camarão no bafo`}
                   />

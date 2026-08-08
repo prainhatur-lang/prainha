@@ -96,13 +96,22 @@ export function normalizarNome(s: string): string {
     .toLowerCase();
 }
 
+/** Item do cardápio do Consumer pro orçamento (nome + descrição do prato). */
+export interface CardapioItem {
+  nome: string;
+  descricao?: string;
+}
+
 /**
  * Limpa nome de produto do Consumer pra exibição: tira pontuação de ordenação
  * do começo (".Becks") e o prefixo "T " (variante de cardápio do Terraço —
- * mesmo prato duplicado). Null = vazio depois da limpeza.
+ * mesmo prato duplicado). Null = vazio depois da limpeza, ou produto
+ * soft-deletado por convenção de nome ("* Excluído * ...").
  */
 export function limparNomeProduto(nome: string | null | undefined): string | null {
-  const limpo = (nome ?? '').trim().replace(/^[.*\s]+/, '').replace(/^T\s+/, '');
+  const cru = (nome ?? '').trim();
+  if (/^\W*exclu[ií]do\b/i.test(cru)) return null;
+  const limpo = cru.replace(/^[.*\s]+/, '').replace(/^T\s+/, '');
   return limpo || null;
 }
 

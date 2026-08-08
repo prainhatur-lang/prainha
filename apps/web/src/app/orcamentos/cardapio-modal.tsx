@@ -5,18 +5,19 @@
 // prato do orçamento (e desmarcar remove o prato correspondente).
 
 import { useEffect, useMemo, useState } from 'react';
-import { normalizarNome } from '@/lib/orcamentos';
+import { normalizarNome, type CardapioItem } from '@/lib/orcamentos';
 
 // Cache por filial na sessão — o cardápio não muda no meio do preenchimento.
-const cache = new Map<string, string[]>();
+const cache = new Map<string, CardapioItem[]>();
 
 interface Props {
   filialId: string;
   /** Nomes de pratos já presentes no orçamento (pré-marcados). */
   selecionadosIniciais: string[];
   onFechar: () => void;
-  /** Recebe a seleção final + o catálogo carregado (pra saber o que remover). */
-  onAplicar: (selecionados: string[], catalogo: string[]) => void;
+  /** Recebe a seleção final + o catálogo carregado (pra saber o que remover
+   *  e preencher as descrições dos pratos novos). */
+  onAplicar: (selecionados: string[], catalogo: CardapioItem[]) => void;
 }
 
 export function CardapioModal({
@@ -25,7 +26,7 @@ export function CardapioModal({
   onFechar,
   onAplicar,
 }: Props) {
-  const [itens, setItens] = useState<string[] | null>(cache.get(filialId) ?? null);
+  const [itens, setItens] = useState<CardapioItem[] | null>(cache.get(filialId) ?? null);
   const [erro, setErro] = useState(false);
   const [filtro, setFiltro] = useState('');
   const [sel, setSel] = useState<Set<string>>(() => new Set(selecionadosIniciais));
@@ -40,7 +41,7 @@ export function CardapioModal({
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelado) return;
-        const arr: string[] = Array.isArray(d?.itens) ? d.itens : [];
+        const arr: CardapioItem[] = Array.isArray(d?.itens) ? d.itens : [];
         cache.set(filialId, arr);
         setItens(arr);
       })
@@ -63,7 +64,13 @@ export function CardapioModal({
   const visiveis = useMemo(() => {
     if (!itens) return [];
     const q = normalizarNome(filtro.trim());
-    return q ? itens.filter((n) => normalizarNome(n).includes(q)) : itens;
+    if (!q) return itens;
+    // Busca no nome E na descrição (ex: "milanesa" acha pelo preparo).
+    return itens.filter(
+      (item) =>
+        normalizarNome(item.nome).includes(q) ||
+        (item.descricao && normalizarNome(item.descricao).includes(q)),
+    );
   }, [itens, filtro]);
 
   function alternar(nome: string) {
@@ -75,7 +82,7 @@ export function CardapioModal({
     });
   }
 
-  const qtdNoCardapio = itens ? itens.filter((n) => sel.has(n)).length : 0;
+  const qtdNoCardapio = itens ? itens.filter((item) => sel.has(item.nome)).length : 0;
 
   let ultimaLetra = '';
 
@@ -123,25 +130,32 @@ export function CardapioModal({
               direto no formulário.
             </p>
           )}
-          {visiveis.map((nome) => {
-            const letra = normalizarNome(nome.charAt(0)).toUpperCase() || '#';
+          {visiveis.map((item) => {
+            const letra = normalizarNome(item.nome.charAt(0)).toUpperCase() || '#';
             const mostraLetra = letra !== ultimaLetra;
             ultimaLetra = letra;
             return (
-              <div key={nome}>
+              <div key={item.nome}>
                 {mostraLetra && (
                   <p className="sticky top-0 -mx-4 border-b border-slate-100 bg-slate-50 px-4 py-1 text-[11px] font-bold uppercase text-slate-400">
                     {letra}
                   </p>
                 )}
-                <label className="flex cursor-pointer items-center gap-2.5 rounded px-1 py-1.5 text-sm text-slate-800 hover:bg-slate-50">
+                <label className="flex cursor-pointer items-start gap-2.5 rounded px-1 py-1.5 hover:bg-slate-50">
                   <input
                     type="checkbox"
-                    checked={sel.has(nome)}
-                    onChange={() => alternar(nome)}
-                    className="h-4 w-4 shrink-0"
+                    checked={sel.has(item.nome)}
+                    onChange={() => alternar(item.nome)}
+                    className="mt-0.5 h-4 w-4 shrink-0"
                   />
-                  {nome}
+                  <span className="min-w-0">
+                    <span className="block text-sm text-slate-800">{item.nome}</span>
+                    {item.descricao && (
+                      <span className="block text-xs leading-snug text-slate-400">
+                        {item.descricao}
+                      </span>
+                    )}
+                  </span>
                 </label>
               </div>
             );

@@ -8,7 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
+import { limparNomeProduto, normalizarNome, type CardapioItem } from '@/lib/orcamentos';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   if (!filiais.some((fil) => fil.id === f)) return NextResponse.json({ itens: [] });
 
   const rows = await db
-    .select({ nome: schema.produto.nome })
+    .select({ nome: schema.produto.nome, descricao: schema.produto.descricao })
     .from(schema.produtoVariante)
     .innerJoin(
       schema.produto,
@@ -43,17 +43,19 @@ export async function GET(request: Request) {
       ),
     );
 
-  const vistos = new Set<string>();
-  const itens: string[] = [];
+  // Dedupe por nome normalizado; entre variantes duplicadas, fica a que TEM
+  // descrição (a descrição do prato vem do Consumer e sai no orçamento).
+  const porChave = new Map<string, CardapioItem>();
   for (const r of rows) {
     const limpo = limparNomeProduto(r.nome);
     if (!limpo) continue;
+    const descricao = (r.descricao ?? '').trim() || undefined;
     const chave = normalizarNome(limpo);
-    if (vistos.has(chave)) continue;
-    vistos.add(chave);
-    itens.push(limpo);
+    const atual = porChave.get(chave);
+    if (!atual) porChave.set(chave, { nome: limpo, descricao });
+    else if (!atual.descricao && descricao) porChave.set(chave, { nome: atual.nome, descricao });
   }
-  itens.sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const itens = [...porChave.values()].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
 
   return NextResponse.json({ itens });
 }

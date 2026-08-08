@@ -1,14 +1,14 @@
 // GET /api/orcamentos/menu?f=<filialId>&q=<busca> — busca pratos no cardápio
 // real do Consumer (produto_variante × produto, mesma fonte das bebidas da
-// reserva). Só NOMES — o preço sincronizado é desatualizado (ver comentário
-// em /api/reservar/[token]/bebidas); o valor do orçamento é por pessoa.
+// reserva). Nome + descrição do prato — SEM preço: o preço sincronizado é
+// desatualizado (ver /api/reservar/[token]/bebidas); o valor é por pessoa.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
+import { limparNomeProduto, normalizarNome, type CardapioItem } from '@/lib/orcamentos';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,19 +26,19 @@ export async function GET(request: Request) {
   const f = url.searchParams.get('f') ?? '';
   const q = (url.searchParams.get('q') ?? '').trim();
   if (!/^[0-9a-f-]{36}$/i.test(f) || q.length < 2) {
-    return NextResponse.json({ nomes: [] });
+    return NextResponse.json({ itens: [] });
   }
 
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((fil) => fil.id === f)) {
-    return NextResponse.json({ nomes: [] });
+    return NextResponse.json({ itens: [] });
   }
 
   // Sem % e _ do usuário dentro do LIKE.
   const busca = '%' + normalizarNome(q).replace(/[%_]/g, '') + '%';
 
   const rows = await db
-    .select({ nome: schema.produto.nome })
+    .select({ nome: schema.produto.nome, descricao: schema.produto.descricao })
     .from(schema.produtoVariante)
     .innerJoin(
       schema.produto,
@@ -59,18 +59,19 @@ export async function GET(request: Request) {
     .orderBy(schema.produto.nome)
     .limit(60);
 
-  // Dedupe por nome normalizado (variantes com/sem acento).
-  const vistos = new Set<string>();
-  const nomes: string[] = [];
+  // Dedupe por nome normalizado (variantes com/sem acento), preferindo a
+  // variante que tem descrição.
+  const porChave = new Map<string, CardapioItem>();
   for (const r of rows) {
     const limpo = limparNomeProduto(r.nome);
     if (!limpo) continue;
+    const descricao = (r.descricao ?? '').trim() || undefined;
     const chave = normalizarNome(limpo);
-    if (vistos.has(chave)) continue;
-    vistos.add(chave);
-    nomes.push(limpo);
-    if (nomes.length >= 15) break;
+    const atual = porChave.get(chave);
+    if (!atual) porChave.set(chave, { nome: limpo, descricao });
+    else if (!atual.descricao && descricao) porChave.set(chave, { nome: atual.nome, descricao });
   }
+  const itens = [...porChave.values()].slice(0, 15);
 
-  return NextResponse.json({ nomes });
+  return NextResponse.json({ itens });
 }
