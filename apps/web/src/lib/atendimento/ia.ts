@@ -23,9 +23,20 @@ export interface DadosLeadEvento {
   observacoes: string | null;
 }
 
+export interface DadosReservaMesa {
+  data: string; // YYYY-MM-DD
+  hora: string; // HH:MM
+  pessoas: number;
+  area: string;
+  nome: string;
+  observacao: string | null;
+}
+
 export interface ExecutoresFerramentas {
   registrarLead: (dados: DadosLeadEvento) => Promise<string>;
   transferir: (motivo: string, resumo: string) => Promise<string>;
+  consultarDisponibilidade: (data: string) => Promise<string>;
+  criarReserva: (dados: DadosReservaMesa) => Promise<string>;
 }
 
 export interface RespostaNina {
@@ -80,8 +91,8 @@ ${persona ?? 'Doce, educada e acolhedora.'}
 COMO ESCREVER (estilo WhatsApp):
 - Mensagens curtas, como uma pessoa digitando: 1 a 3 frases. Nada de listões nem textão.
 - Português brasileiro falado, caloroso e natural.
-- EMOJI: quase nunca. O padrão é SEM emoji; no máximo 1 a cada 3-4 mensagens, e só quando couber de verdade (nunca em resposta sobre preço ou regra). Emoji em toda mensagem entrega na hora que é robô.
-- Não feche toda mensagem com frase pronta ("qualquer coisa estou aqui!", "posso ajudar em mais algo?"). Termine natural, varie — ou simplesmente termine.
+- EMOJI: o padrão é NENHUM. No máximo 1 em momento de comemoração (reserva fechada, aniversário) — e nunca mais de um na mesma conversa. Emoji repetido entrega robô na hora.
+- PROIBIDO fechar mensagem com frase pronta ("se precisar estou aqui!", "qualquer coisa é só chamar!") — isso empurra o cliente pra fora da conversa. Enquanto o assunto está aberto, termine com a próxima pergunta natural do raciocínio, ou simplesmente termine a frase. SÓ quando o assunto se concluir de verdade (reserva fechada, dúvida respondida e cliente satisfeito), aí sim pergunte UMA vez se pode ajudar em mais alguma coisa.
 - Sem markdown (nada de # ou [links](url)); se precisar destacar, use *asteriscos* do WhatsApp. Link vai colado no texto.
 - Converse de forma leve e natural, sem interrogatório e sem frases prontas de robô.
 
@@ -119,8 +130,17 @@ QUANDO TRANSFERIR (transferir_para_humano):
 - Assunto sobre reserva JÁ FEITA (mudar, cancelar, confirmar fora dos botões) ou pagamento.
 Depois de transferir, avise em uma frase gentil que alguém da equipe já vai falar com a pessoa por aqui mesmo.
 
+RESERVA DE MESA — VOCÊ MESMA CRIA:
+- Você consegue criar a reserva direto na conversa, nas áreas SEM taxa (Areia e Deck Superior). Colete: data, horário, quantidade de pessoas e nome. O telefone é o deste WhatsApp — não peça.
+- Ofereça as áreas pelo clima, como quem convida: mesa na areia de frente pro rio e pertinho do parque (Areia), vista do alto no Deck Superior, ou o lounge exclusivo com garçom só do grupo (esse tem taxa e fecha pelo site).
+- Use consultar_disponibilidade_reserva pra saber vaga antes de sugerir área/dia — ela lê as reservas que já existem.
+- ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, em nome de Ana — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
+- Lounge: não crie por aqui — explique a taxa (R$ 100 dia útil / R$ 250 sáb-dom, com garçom exclusivo) e mande concluir em reservas.prainhabar.com (o Pix é pago lá).
+- Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).
+- Datas relativas ("amanhã", "sábado que vem") você converte pra YYYY-MM-DD usando a data/hora de AGORA informada acima.
+- Mudar ou cancelar reserva JÁ FEITA: transfira pra equipe.
+
 OUTROS:
-- Reserva de mesa NOVA: mande o link do site que está nos blocos acima.
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever.
 - Nunca peça documentos, senhas ou dados de pagamento.
 - Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".`;
@@ -145,6 +165,41 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacoes: { type: 'string', description: 'resumo do que a pessoa quer, em 1-2 frases' },
         },
         required: ['tipo_evento', 'observacoes'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_disponibilidade_reserva',
+      description:
+        'Consulta as vagas de reserva de mesa numa data (lê as reservas já existentes). Use antes de sugerir área/horário ou quando o cliente perguntar se tem vaga.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'Data desejada, YYYY-MM-DD' },
+        },
+        required: ['data'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'criar_reserva',
+      description:
+        'Cria a reserva de mesa de verdade no sistema (só áreas sem taxa: Areia, Deck Superior). Chame SOMENTE depois de confirmar data, hora, pessoas, área e nome com o cliente e receber o sim.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'YYYY-MM-DD' },
+          hora: { type: 'string', description: 'HH:MM' },
+          pessoas: { type: 'number', description: 'quantidade de pessoas' },
+          area: { type: 'string', description: 'Areia ou Deck Superior' },
+          nome: { type: 'string', description: 'nome de quem reserva' },
+          observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
+        },
+        required: ['data', 'hora', 'pessoas', 'area', 'nome'],
       },
     },
   },
@@ -211,7 +266,9 @@ export async function gerarResposta(params: {
   let transferiu = false;
   let leadRegistrado = false;
 
-  for (let rodada = 0; rodada < 3; rodada++) {
+  // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
+  // fechar com texto (cada tool call consome uma rodada).
+  for (let rodada = 0; rodada < 5; rodada++) {
     const resp = await client.chat.completions.create({
       model: modelo,
       messages: mensagens,
@@ -244,6 +301,17 @@ export async function gerarResposta(params: {
             observacoes: String(args.observacoes ?? '') || null,
           });
           leadRegistrado = true;
+        } else if (tc.function.name === 'consultar_disponibilidade_reserva') {
+          resultado = await params.executores.consultarDisponibilidade(String(args.data ?? ''));
+        } else if (tc.function.name === 'criar_reserva') {
+          resultado = await params.executores.criarReserva({
+            data: String(args.data ?? ''),
+            hora: String(args.hora ?? ''),
+            pessoas: Number(args.pessoas) || 0,
+            area: String(args.area ?? ''),
+            nome: String(args.nome ?? ''),
+            observacao: String(args.observacao ?? '') || null,
+          });
         } else if (tc.function.name === 'transferir_para_humano') {
           resultado = await params.executores.transferir(
             String(args.motivo ?? 'não informado'),

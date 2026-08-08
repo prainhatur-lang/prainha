@@ -13,6 +13,7 @@ import { gerarResposta, type MsgHistorico } from './ia';
 import { enviarTexto, marcarLidaComDigitando, baixarMidia } from './zap';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
+import { consultarDisponibilidade, criarReservaWhatsApp } from './reservar';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -207,6 +208,19 @@ export async function processarEntrada(params: {
         });
         return 'Lead registrado. Confirme ao cliente que a equipe vai entrar em contato pra fechar os detalhes.';
       },
+      consultarDisponibilidade: (data: string) => consultarDisponibilidade(entrada.filialId, data),
+      criarReserva: (dados: import('./ia').DadosReservaMesa) =>
+        criarReservaWhatsApp({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          data: dados.data,
+          hora: dados.hora,
+          pessoas: dados.pessoas,
+          area: dados.area,
+          nome: dados.nome,
+          observacao: dados.observacao,
+        }),
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)

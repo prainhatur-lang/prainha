@@ -235,9 +235,20 @@ funcionar no app do celular. Fazer fora de pico.
   humano, áudio. Painel: assumir/devolver, editar conhecimento e ver a resposta
   mudar. Limpar dados de teste depois.
 
+## Adendo 08/08 — reserva de mesa na conversa (pedido do Elison nos testes)
+
+A Nina ganhou as ferramentas `consultar_disponibilidade_reserva` e
+`criar_reserva` (`lib/atendimento/reservar.ts`), espelhando as regras do
+fluxo público (data/hora futuras, exceções, janela, horaLimite, alocação da
+menor mesa livre, teto percentualReserva) — áreas SEM taxa criam direto
+(canal 'whatsapp', confirmação + tolerância + lembrete same-day iguais aos do
+site); Lounge (taxa via Pix) segue pro site. Ela oferece as áreas pelo clima
+(areia de frente pro rio / deck com vista / lounge exclusivo) e confirma os
+dados antes de criar.
+
 ## Fora do escopo (v1) / Futuro
 
-Criar ou consultar reserva de mesa dentro da conversa (v1 manda o link) ·
+Consultar ou alterar reserva JÁ FEITA na conversa (transfere pra equipe) ·
 resumo diário no zap do Elison · interpretar imagens · tempo real por
 websocket (v1 é polling) · coexistência app+API da Meta (beta) · catálogo /
 pagamento no WhatsApp.
