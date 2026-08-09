@@ -12,9 +12,10 @@
 //  - canal: 'whatsapp'.
 
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
+import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import {
@@ -87,6 +88,71 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
   }
   const jan = cfg.atendimento ? `Horários aceitos: ${cfg.atendimento.inicio} às ${cfg.atendimento.fim}. ` : '';
   return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${jan}Reserva comum é gratuita hoje.`;
+}
+
+/** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO
+ *  telefone da conversa — a mesma garantia do botão "cancelar" do lembrete
+ *  (só quem tem o zap da reserva cancela). data desambigua se houver várias. */
+export async function cancelarReservaWhatsApp(p: {
+  filialId: string;
+  telefone: string;
+  data?: string | null;
+}): Promise<string> {
+  const suf = p.telefone.replace(/\D/g, '').slice(-8);
+  if (suf.length < 8) return 'Telefone da conversa inválido — transfira pra equipe.';
+
+  const ativas = await db
+    .select({
+      id: schema.reserva.id,
+      data: schema.reserva.data,
+      hora: schema.reserva.hora,
+      area: schema.reserva.area,
+      mesa: schema.reserva.mesa,
+      mesaJuntada: schema.reserva.mesaJuntada,
+      pessoas: schema.reserva.pessoas,
+      status: schema.reserva.status,
+      nome: schema.reserva.clienteNome,
+    })
+    .from(schema.reserva)
+    .where(
+      and(
+        eq(schema.reserva.filialId, p.filialId),
+        sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
+        sql`${schema.reserva.status} IN ('pendente', 'confirmada')`,
+        sql`${schema.reserva.data} >= current_date`,
+      ),
+    )
+    .orderBy(schema.reserva.data, schema.reserva.hora)
+    .limit(5);
+
+  if (ativas.length === 0) {
+    return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
+  }
+
+  let alvo = ativas[0];
+  if (p.data) {
+    const daData = ativas.filter((r) => String(r.data) === p.data);
+    if (daData.length === 0) {
+      return `Não achei reserva ativa em ${dataBr(p.data)}. As ativas são: ${ativas.map((r) => `${dataBr(String(r.data))} às ${r.hora} (${r.area})`).join('; ')}. Pergunte qual o cliente quer cancelar.`;
+    }
+    alvo = daData[0];
+  } else if (ativas.length > 1) {
+    return `O cliente tem ${ativas.length} reservas ativas: ${ativas.map((r) => `${dataBr(String(r.data))} às ${r.hora} (${r.area}, ${r.pessoas} pessoas)`).join('; ')}. Pergunte QUAL cancelar e chame de novo com a data.`;
+  }
+
+  await db
+    .update(schema.reserva)
+    .set({ status: 'cancelada', atualizadoEm: sql`now()` })
+    .where(eq(schema.reserva.id, alvo.id));
+  await registrarAlteracoesReserva(
+    alvo.id,
+    { status: alvo.status },
+    { status: 'cancelada' },
+    { tipo: 'cliente', nome: 'cliente via Nina (WhatsApp)' },
+  );
+
+  const mesas = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
+  return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada. Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
 }
 
 export interface DadosCriarReserva {

@@ -13,7 +13,7 @@ import { gerarResposta, type MsgHistorico } from './ia';
 import { enviarTexto, marcarLidaComDigitando, baixarMidia } from './zap';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
-import { consultarDisponibilidade, criarReservaWhatsApp } from './reservar';
+import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp } from './reservar';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -221,6 +221,8 @@ export async function processarEntrada(params: {
           nome: dados.nome,
           observacao: dados.observacao,
         }),
+      cancelarReserva: (data: string | null) =>
+        cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)

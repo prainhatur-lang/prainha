@@ -37,6 +37,7 @@ export interface ExecutoresFerramentas {
   transferir: (motivo: string, resumo: string) => Promise<string>;
   consultarDisponibilidade: (data: string) => Promise<string>;
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
+  cancelarReserva: (data: string | null) => Promise<string>;
 }
 
 export interface RespostaNina {
@@ -83,7 +84,7 @@ function montarSystemPrompt(params: {
 
   // NOTA: hoje um numero so atende as duas casas (Prainha Bar e Tabuara).
   // Quando o Tabuara ganhar numero/config proprios, tirar as mencoes fixas.
-  return `Você é ${nomeAtendente}, atendente virtual do grupo Prainha no WhatsApp — este número atende o ${filialNome} e o restaurante Tabuará.
+  return `Você é ${nomeAtendente}, atendente do grupo Prainha no WhatsApp — este número atende o ${filialNome} e o restaurante Tabuará. Não diga que é "virtual" ou robô por conta própria — se apresente só como "${nomeAtendente}, do atendimento do Prainha".
 
 SEU JEITO:
 ${persona ?? 'Doce, educada e acolhedora.'}
@@ -114,7 +115,7 @@ REGRAS DE VERDADE:
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
 - Se você disser que vai confirmar/verificar/perguntar algo pra equipe, é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
-- Você não é humana. Conversa natural, sim; mas se perguntarem se você é robô/atendente virtual/IA, confirme com simpatia que é a atendente virtual da casa e ofereça chamar alguém da equipe.
+- Você não se apresenta como robô nem como "virtual" — é só "${nomeAtendente}, do atendimento". MAS se o cliente perguntar DIRETAMENTE se você é robô/IA/pessoa de verdade, não minta: confirme com simpatia e leveza, e ofereça chamar alguém da equipe se preferir.
 
 ESPAÇOS PARA EVENTOS (casamentos, aniversários, confraternizações):
 ${espacosTxt || '- (nenhum espaço cadastrado — colete o interesse e transfira pra equipe)'}
@@ -139,7 +140,9 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.
 - Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).
 - Datas relativas ("amanhã", "sábado que vem") você converte pra YYYY-MM-DD usando a data/hora de AGORA informada acima.
-- Mudar ou cancelar reserva JÁ FEITA: transfira pra equipe.
+- CANCELAR reserva: você mesma cancela com cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
+- REMARCAR: cancele a atual e crie a nova (confirmando os dados novos).
+- Outras mudanças (passar pra outro nome/telefone, dúvida de pagamento): transfira pra equipe.
 
 OUTROS:
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever.
@@ -201,6 +204,20 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
         },
         required: ['data', 'hora', 'pessoas', 'area', 'nome'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancelar_reserva',
+      description:
+        'Cancela uma reserva ativa (pendente/confirmada) do telefone DESTA conversa. Sem data: se houver uma só, cancela; se houver várias, devolve a lista pra você perguntar qual. Chame só depois do cliente confirmar que quer cancelar.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'YYYY-MM-DD da reserva a cancelar (omitir se o cliente só tem uma)' },
+        },
       },
     },
   },
@@ -313,6 +330,8 @@ export async function gerarResposta(params: {
             nome: String(args.nome ?? ''),
             observacao: String(args.observacao ?? '') || null,
           });
+        } else if (tc.function.name === 'cancelar_reserva') {
+          resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
         } else if (tc.function.name === 'transferir_para_humano') {
           resultado = await params.executores.transferir(
             String(args.motivo ?? 'não informado'),
