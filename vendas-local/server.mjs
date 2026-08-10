@@ -373,6 +373,13 @@ async function initSchema() {
   // separadas (Petisco e Cozinha podem apontar pro MESMO IP; Drinks pra outro).
   // Praça sem linha usa a impressora geral (a do caixa) como padrão.
   await sql`CREATE TABLE IF NOT EXISTS praca_impressora (area_codigo integer PRIMARY KEY, ip text NOT NULL)`;
+  // ---- AUDITORIA DE CANCELAMENTO (relatório de controle) ----
+  // O Consumer só carimba DATADELETE (sem quem/por quê — conferido na base
+  // real). Quem cancelou, o quê, quando, o motivo, o STATUS do item na hora
+  // (a_produzir/pronto/entregue) e o gerente que autorizou ficam AQUI.
+  await sql`CREATE TABLE IF NOT EXISTS cancelamento (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), login text, gerente text, numero integer, pedido_fb integer,
+    item_codigo bigint, nome text, valor numeric, status_item text, motivo text)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -2442,7 +2449,15 @@ async function garcomDaRequisicao(req, u) {
   const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
   const v = garcomVerificaToken(tok);
   if (!v) return null;
-  try { const pode = await garcomPodeEntrar(v.login); if (!pode.ok) return null; return { login: v.login, nome: pode.nome }; }
+  try {
+    const pode = await garcomPodeEntrar(v.login);
+    if (pode.ok) return { login: v.login, nome: pode.nome };
+    // o CAIXA também vende ("abre mesa e lança como na maquininha"): quem tem
+    // PedidosCaixa (5) no Consumer entra na venda mesmo sem a Comanda Mobile
+    const p = await permsDoUsuario(v.login);
+    if (p.ok && p.pedidos) return { login: v.login, nome: p.nome };
+    return null;
+  }
   catch { return { login: v.login, nome: null }; } // Firebird fora: não desloga quem já entrou
 }
 // GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
@@ -2460,9 +2475,13 @@ async function apiGarcomEntrar(body) {
   if (!login) return { ok: false, erro: 'informe o login' };
   if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
   let pode;
-  try { pode = await garcomPodeEntrar(login); }
+  try {
+    pode = await garcomPodeEntrar(login);
+    // quem tem PedidosCaixa (5) entra também — o caixa lança como na maquininha
+    if (!pode.ok) { const p = await permsDoUsuario(login); if (p.ok && p.pedidos) pode = { ok: true, nome: p.nome }; }
+  }
   catch (e) { return { ok: false, erro: e.message }; }
-  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile. Fale com o gerente.' };
+  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile nem a Pedidos no Caixa. Fale com o gerente.' };
   const atual = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`)[0];
   if (!atual) {
     // primeira vez: cria o PIN (precisa confirmar digitando de novo)
@@ -2483,10 +2502,13 @@ async function apiGarcomEntrar(body) {
 // PERMISSÃO exigida, lida do Consumer: AbrirTelaPagamento (10)=entra no caixa;
 // AplicarDesconto (12)=pode dar desconto; ContaCorrente (16)=fiado (Bloco 2).
 // Administrador tem tudo. Assim "quem pode" é o que a loja já define no Consumer.
-const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16;
+const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16, PERM_PEDIDO_CAIXA = 5;
 // controle de caixa: 1 = operação completa, 30 = simplificada (abrir/fechar),
 // 48 = pode fechar com saldo divergente do esperado
 const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48;
+// 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
+// todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
+const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
 async function permsDoUsuario(login) {
   const l = String(login || '').trim().toLowerCase();
   if (!l) return { ok: false };
@@ -2501,7 +2523,9 @@ async function permsDoUsuario(login) {
   return { ok: true, login: l, nome: T(r.rows[0].NOME) || l, admin,
     caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
     abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
-    divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE) };
+    divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
+    pedidos: tem(PERM_PEDIDO_CAIXA),
+    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
 }
 async function caixaDaRequisicao(req, u) {
   const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
@@ -2513,7 +2537,8 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente } : { ok: false };
+    pode_abrir: p.abrir, pode_divergente: p.divergente,
+    pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
   const login = String(body.login || '').trim().toLowerCase();
@@ -2531,10 +2556,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -2546,11 +2571,17 @@ async function apiCaixaConta(n) {
   const pago = await fbPagoDoPedido(ped);
   const total = Number(p.T) || 0;
   const c = (await sql`SELECT codigo FROM comanda WHERE numero=${num} LIMIT 1`)[0];
-  const itens = c ? await sql`SELECT nome, quantidade, valor_total, detalhes FROM comanda_item
-    WHERE comanda_codigo=${c.codigo} AND tipo IS DISTINCT FROM 2 ORDER BY criado NULLS LAST, id` : [];
+  // status efetivo (Consumer OU baixa do KDS) vai junto: cancelar item pronto/
+  // entregue muda de liturgia na tela (dupla senha)
+  const itens = c ? await sql`SELECT ci.item_codigo, ci.nome, ci.quantidade, ci.valor_total, ci.detalhes,
+      CASE WHEN ci.entregue IS NOT NULL OR k.entregue_em IS NOT NULL THEN 'entregue'
+           WHEN ci.produzido IS NOT NULL OR k.pronto_em IS NOT NULL THEN 'pronto'
+           ELSE 'a_produzir' END AS status
+    FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
+    WHERE ci.comanda_codigo=${c.codigo} AND ci.tipo IS DISTINCT FROM 2 ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
   return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
-    itens: itens.map((i) => ({ nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes })),
+    itens: itens.map((i) => ({ item_codigo: Number(i.item_codigo) || null, nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes, status: i.status })),
     subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
     total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
 }
@@ -2595,6 +2626,132 @@ async function apiCaixaAjuste(body, quem) {
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
   return { ok: false, erro: 'tipo inválido' };
+}
+
+// ---- CANCELAMENTO no caixa (excluir item / pedido inteiro) ----
+// Permissões do Consumer: 22 = Excluir Item, 28 = Excluir Pedido (na 0003 a 28
+// é só da LILIAN). Item que JÁ ESTÁ pronto ou entregue exige DUAS senhas: o
+// PIN do caixa logado + o PIN de um GERENTE (Administrador ou quem tem a 28);
+// se o próprio caixa já é gerente, o PIN dele cobre as duas figuras.
+// O Consumer só carimba DATADELETE; total sai por DELTA (nunca refaz a fórmula
+// — mesma regra do desconto). Estorno de pagamento (31) NÃO acontece aqui:
+// cancelar jamais deixa o total abaixo do que já entrou.
+async function statusDoItem(item) {
+  const fb = (await qi(`SELECT DATAHORAPRODUZIDO P, DATAHORAENTREGUE E FROM ITENSPEDIDO WHERE CODIGO=${Number(item)}`)).rows?.[0] || {};
+  const mk = (await sql`SELECT pronto_em, entregue_em FROM marca WHERE item_codigo=${Number(item)}`)[0] || {};
+  return (fb.E || mk.entregue_em) ? 'entregue' : (fb.P || mk.pronto_em) ? 'pronto' : 'a_produzir';
+}
+/** Valida a dupla senha. Devolve o login do gerente que autorizou, ou {erro}. */
+async function validarDuplaSenha(body, quem, status) {
+  const pinCx = String(body.caixa_pin || '').replace(/\D/g, '');
+  if (!pinCx) return { precisa: true, erro: 'Item já ' + status + ' — digite o SEU PIN e a autorização do gerente.' };
+  const meu = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${quem.login}`)[0];
+  if (!meu || !pinConfere(pinCx, meu.salt, meu.pin_hash)) return { precisa: true, erro: 'O seu PIN não confere.' };
+  if (quem.admin || quem.excluir_pedido) return { gerente: quem.login }; // o caixa JÁ é gerente
+  const gl = String(body.gerente_login || '').trim().toLowerCase();
+  const gp = String(body.gerente_pin || '').replace(/\D/g, '');
+  if (!gl || !gp) return { precisa: true, erro: 'Falta a autorização do gerente.' };
+  const gpin = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${gl}`)[0];
+  if (!gpin || !pinConfere(gp, gpin.salt, gpin.pin_hash)) return { precisa: true, erro: 'PIN do gerente não confere.' };
+  let g; try { g = await permsDoUsuario(gl); } catch (e) { return { erro: 'não deu pra validar o gerente: ' + e.message }; }
+  if (!(g.ok && (g.admin || g.excluir_pedido))) return { precisa: true, erro: gl + ' não é gerente (precisa de Administrador ou Excluir Pedido no Consumer).' };
+  return { gerente: gl };
+}
+/** Aviso no papel pra praça quando o cupom do item já tinha saído. */
+async function cupomCancelado(itens, numero) {
+  try {
+    const modo = await cfgGet('producao_modo', 'kds');
+    if (modo !== 'ambos' && modo !== 'impressora') return;
+    const ipGeral = (await cfgGet('impressora_ip', '')).trim();
+    const porPraca = new Map((await sql`SELECT area_codigo, ip FROM praca_impressora`)
+      .map((r) => [Number(r.area_codigo), String(r.ip).trim()]).filter(([, v]) => v));
+    const cods = itens.map((i) => Number(i.item_codigo)).filter(Boolean);
+    if (!cods.length) return;
+    const ja = await sql`SELECT item_codigo FROM comanda_impressa WHERE item_codigo = ANY(${cods})`;
+    const jaSet = new Set(ja.map((x) => Number(x.item_codigo)));
+    const grupos = new Map();
+    for (const it of itens) {
+      if (!jaSet.has(Number(it.item_codigo))) continue;
+      const k = it.area_codigo ?? 's';
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k).push(it);
+    }
+    for (const g of grupos.values()) {
+      const ip = porPraca.get(Number(g[0].area_codigo)) || ipGeral;
+      if (!ip) continue;
+      const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn('** CANCELADO **'), IMP.norm, IMP.negFim, IMP.esquerda, impTraco(),
+        IMP.neg, IMP.grande, impLn(impRotulo(numero, null)), IMP.norm, IMP.negFim, impLn(impHm()), impTraco()];
+      for (const it of g) b.push(IMP.neg, IMP.alto, impLn(impQtd(it.quantidade) + ' ' + (it.nome || '')), IMP.norm, IMP.negFim);
+      b.push(impTraco(), IMP.neg, impLn('NÃO PRODUZIR / TIRAR DA FILA'), IMP.negFim, IMP.corte);
+      await imprimirRaw(ip, Buffer.concat(b), 'cancelado ' + numero);
+    }
+  } catch (e) { console.error('[impressora] cancelado:', e.message); }
+}
+async function apiCaixaCancelarItem(body, quem) {
+  if (!(quem && quem.excluir_item)) return { ok: false, erro: 'sem permissão (Excluir Item do Pedido)' };
+  const numero = Number(body.numero), item = Number(body.item_codigo);
+  if (!(numero > 0 && item > 0)) return { ok: false, erro: 'dados inválidos' };
+  const ped = await fbAcharPedido(numero);
+  if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
+  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
+  if (!p) return { ok: false, erro: 'pedido não encontrado' };
+  if ((Number(p.S) || 0) > 0.009) return { ok: false, erro: 'A conta está com o serviço aplicado. Reabra a conta e cancele de novo.' };
+  const status = await statusDoItem(item);
+  let gerente = null;
+  if (status !== 'a_produzir') {
+    const v = await validarDuplaSenha(body, quem, status);
+    if (!v.gerente) return { ok: false, precisa_gerente: !!v.precisa, status, erro: v.erro };
+    gerente = v.gerente;
+  }
+  const rit = await qi(`SELECT CODIGO, VALORTOTAL, TRIM(NOMEPRODUTO) NOME, QUANTIDADE FROM ITENSPEDIDO
+    WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
+  const alvos = rit.rows || [];
+  const principal = alvos.find((x) => Number(x.CODIGO) === item);
+  if (!principal) return { ok: false, erro: 'esse item não está mais na conta' };
+  const valor = alvos.reduce((s, x) => s + (Number(x.VALORTOTAL) || 0), 0);
+  const pago = await fbPagoDoPedido(ped);
+  const novoItens = +((Number(p.I) || 0) - valor).toFixed(2);
+  const novoTot = +((Number(p.T) || 0) - valor).toFixed(2);
+  if (novoTot < -0.009) return { ok: false, erro: 'cancelar esse item deixaria o total negativo (tem desconto — ajuste antes)' };
+  if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorno é no Consumer)` };
+  const rd = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
+  if (!rd.ok) return { ok: false, erro: 'FB excluir: ' + rd.err };
+  const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
+  if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${T(principal.NOME)}, ${valor}, ${status}, ${T(body.motivo)})`;
+  const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
+    WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
+  cupomCancelado(areaRows, numero).catch(() => {});
+  espelho().catch(() => {});
+  return { ok: true, valor, status, novo_total: Math.max(0, novoTot) };
+}
+async function apiCaixaCancelarPedido(body, quem) {
+  if (!(quem && quem.excluir_pedido)) return { ok: false, erro: 'sem permissão (Excluir Pedido)' };
+  const numero = Number(body.numero);
+  if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
+  const ped = await fbAcharPedido(numero);
+  if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
+  const pago = await fbPagoDoPedido(ped);
+  if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorno é no Consumer, aqui não` };
+  const tot = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+  // o aviso pras praças sai ANTES do pedido sumir do espelho
+  const vivos = await sql`SELECT ci.item_codigo, ci.area_codigo, ci.nome, ci.quantidade FROM comanda_item ci
+    JOIN comanda c ON c.codigo = ci.comanda_codigo
+    WHERE c.numero=${numero} AND ci.tipo IS DISTINCT FROM 2 AND ci.produzido IS NULL AND ci.entregue IS NULL`;
+  const rd = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${ped}`);
+  if (!rd.ok) return { ok: false, erro: 'FB excluir pedido: ' + rd.err };
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
+    VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)})`;
+  cupomCancelado(vivos, numero).catch(() => {});
+  espelho().catch(() => {});
+  return { ok: true, valor: tot };
+}
+/** Relatório de controle: o que foi cancelado, por quem, autorizado por quem. */
+async function apiCaixaCancelamentos() {
+  const rows = await sql`SELECT quando, login, gerente, numero, nome, valor, status_item, motivo
+    FROM cancelamento WHERE quando > now() - interval '30 days' ORDER BY quando DESC LIMIT 200`;
+  return { ok: true, cancelamentos: rows };
 }
 // Fecha o pedido DO JEITO QUE O CONSUMER FECHA — conferido em pedidos reais
 // fechados pelo próprio Consumer na 0003: fechar = gravar DATAFECHAMENTO
@@ -4646,7 +4803,11 @@ function entrarNoApp(nome){
   var w=document.getElementById('gwho');
   if(w)w.innerHTML=esc(nome||'')+' · <a href="#" onclick="sairGarcom();return false" style="color:var(--gold2)">sair</a>';
   if(!chamTimer){ puxarChamados(); chamTimer=setInterval(puxarChamados,15000); }
-  telaMesa();
+  // vindo do CAIXA (?mesa=N&volta=caixa): já cai na mesa, com o caminho de volta
+  var q=new URLSearchParams(location.search);
+  if(q.get('volta')==='caixa'&&w)w.innerHTML='<a href="/caixa" style="color:var(--gold2);font-weight:700">◂ caixa</a> · '+w.innerHTML;
+  var pm=Number(q.get('mesa')||0);
+  if(pm>0)irPara(pm,pm); else telaMesa();
 }
 function sairGarcom(){
   try{localStorage.removeItem('garcom_tok')}catch(e){} GTOK=null;GNOME=null;
@@ -7608,6 +7769,7 @@ input{width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-r
 .seg{padding:11px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font:inherit;cursor:pointer}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.08);color:var(--gold2);font-weight:700}
 .err{color:var(--red);font-size:13px;margin-top:6px}
+.x{background:none;border:1px solid #eda3a3;color:var(--red);border-radius:7px;padding:1px 7px;font-size:12px;cursor:pointer;margin-right:3px}
 a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .lst{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .mchip{text-align:left;padding:10px 12px;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer;color:var(--ink)}
@@ -7632,7 +7794,7 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 <div class="wrap" id="app"></div>
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
-var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false},MESA=null,CONTA=null,DMODO='valor';
+var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
 var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
@@ -7641,7 +7803,7 @@ async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});re
 async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
 function numBr(s){var t=String(s||'').replace(/[^\\d.,]/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)&&n>0?n:0}
 function setHdr(){var e=document.getElementById('hdr');if(e)e.innerHTML=NOME?('<span class="mut">'+esc(NOME)+'</span> · <a class="sair" onclick="sair()">sair</a>'):''}
-function sair(){try{localStorage.removeItem('caixa_tok')}catch(e){}TOK=null;NOME=null;MESA=null;CONTA=null;TELA='login';setHdr();render()}
+function sair(){try{localStorage.removeItem('caixa_tok');localStorage.removeItem('garcom_tok')}catch(e){}TOK=null;NOME=null;MESA=null;CONTA=null;TELA='login';setHdr();render()}
 /* ---- DOIS painéis ----
    #lado = mesas abertas (fica de pé o tempo todo, se renova a cada 10s)
    #main = conta e ações da mesa escolhida
@@ -7684,7 +7846,8 @@ function pintaLado(){
     '<div class="card"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
     '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
     '<button class="big" onclick="carregar()">Abrir</button>'+
-    '<div id="aerr" class="err"></div></div>';
+    '<div id="aerr" class="err"></div>'+
+    '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 relatório de cancelamentos</a></div></div>';
   var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
 }
 function chips(){
@@ -7717,10 +7880,14 @@ function pintaMain(){
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
   if(TELA==='rel')return telaRel(el);
+  if(TELA==='canc')return telaCancItem(el);
+  if(TELA==='cancrel')return telaCancRel(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente};TELA='home';setHdr();render();listar();cxEstado()}
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+    try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
+    TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
 }
 function telaLogin(el){
@@ -7746,8 +7913,8 @@ async function entrar(){
     er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y)y.focus();return;
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
-  TOK=r.token;try{localStorage.setItem('caixa_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente};
+  TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 function voltarMesas(){MESA=null;CONTA=null;irTela('home')}
@@ -7758,6 +7925,7 @@ async function carregar(n){
   MESA=num;irTela('conta');
   var c=await jget('/api/caixa/conta?n='+num);
   if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
+    (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
   CONTA=c;
   if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
@@ -7769,7 +7937,12 @@ function pinta(el){
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+
       (c.nome?' · '+esc(c.nome):'')+'</div>';
-  h+=(c.itens||[]).map(function(i){return '<div class="it"><span>'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
+  h+=(c.itens||[]).map(function(i,ix){
+    return '<div class="it"><span>'+
+      (PODE.cancItem&&i.item_codigo?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
+      i.quantidade+'× '+esc(i.nome)+
+      (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
+      '</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
   if(c.servico>0)h+='<div class="tot"><span>Serviço</span><b>'+brl(c.servico)+'</b></div>';
   if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
@@ -7780,10 +7953,12 @@ function pinta(el){
   // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
   h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
+  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar produtos</button>';
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
   if(c.falta>0)h+='<button class="big" onclick="irTela(\\'rec\\')">💵 Receber em dinheiro</button>';
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
   h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
+  if(PODE.cancPed&&!(c.pago>0))h+='<button class="big" style="background:#fff;color:var(--red);border:1.5px solid #eda3a3" onclick="cancPedido()">🗑 Cancelar o pedido inteiro</button>';
   h+='<div id="cerr" class="err"></div>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
   el.innerHTML=h;
@@ -7922,6 +8097,79 @@ async function imprimirCx(btn){
   if(!r.ok){alert(r.erro||'não imprimiu');return}
   await carregar(MESA); // a conta volta já com o serviço aplicado
 }
+/* ---- LANÇAR PRODUTOS: manda pro /venda (mesmo login/token) já na mesa ---- */
+function lancarCx(){location.href='/venda?mesa='+MESA+'&volta=caixa'}
+function lancarNum(n){location.href='/venda?mesa='+n+'&volta=caixa'}
+/* ---- CANCELAR ITEM (pronto/entregue = dupla senha) e PEDIDO INTEIRO ---- */
+function cancItem(ix){
+  var i=(CONTA&&CONTA.itens||[])[ix];if(!i)return;
+  CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:i.quantidade,valor:i.valor_total,status:i.status||'a_produzir'};
+  irTela('canc');
+}
+function telaCancItem(el){
+  var i=CANCIT;if(!i){irTela('conta');return}
+  var precisa=i.status!=='a_produzir';
+  var h='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Cancelar item — mesa/comanda '+MESA+'</div>'+
+    '<div class="it"><span>'+i.qtd+'× '+esc(i.nome)+'</span><b>'+brl(i.valor)+'</b></div>'+
+    (precisa?'<div class="err" style="margin-top:8px">Este item já está <b>'+(i.status==='entregue'?'ENTREGUE':'PRONTO')+'</b>. '+
+      'Precisa de DUAS senhas: o seu PIN e a autorização do gerente.</div>':'')+
+    '<input id="cmot" placeholder="motivo (opcional)" style="margin-top:10px">';
+  if(precisa){
+    h+='<input id="cpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="SEU PIN ('+esc(NOME||'')+')" style="margin-top:8px">';
+    if(!PODE.cancPed)h+='<div class="row" style="margin-top:8px">'+
+      '<input id="cglog" placeholder="login do gerente" autocapitalize="none">'+
+      '<input id="cgpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="PIN do gerente"></div>';
+    else h+='<div class="mut" style="margin-top:6px">Você já é gerente — só o seu PIN basta.</div>';
+  }
+  h+='<button class="big" style="background:var(--red)" onclick="doCancItem(this)">Cancelar este item</button>'+
+    '<div id="cierr" class="err"></div></div>';
+  el.innerHTML=h;
+}
+async function doCancItem(btn){
+  var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:(document.getElementById('cmot')||{}).value||''};
+  var cp=document.getElementById('cpin');if(cp)b.caixa_pin=cp.value||'';
+  var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
+  var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
+  btn.disabled=true;
+  var r=await jpost('/api/caixa/cancelar-item',b);
+  btn.disabled=false;
+  if(!r.ok){
+    // o servidor manda o status REAL (a tela podia estar velha): re-pinta já exigindo as senhas
+    if(r.precisa_gerente&&CANCIT.status==='a_produzir'){CANCIT.status=r.status||'pronto';pintaMain()}
+    var e=document.getElementById('cierr');if(e)e.textContent=r.erro||'não cancelou';return;
+  }
+  CANCIT=null;await carregar(MESA);
+}
+async function cancPedido(){
+  var mot=prompt('CANCELAR O PEDIDO INTEIRO da mesa/comanda '+MESA+' — motivo? (opcional)');
+  if(mot===null)return;
+  if(!confirm('Tem certeza? A conta inteira some (no Consumer também). Isso cai no relatório de cancelamentos.'))return;
+  var r=await jpost('/api/caixa/cancelar-pedido',{numero:MESA,motivo:mot||''});
+  if(!r.ok){alert(r.erro||'não cancelou');return}
+  FLASH='Pedido da mesa/comanda '+MESA+' cancelado ('+brl(r.valor)+').';
+  voltarMesas();listar();
+}
+/* ---- RELATÓRIO DE CONTROLE dos cancelamentos ---- */
+async function telaCancRel(el){
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button><div class="card"><div class="mut">carregando…</div></div>';
+  var d=await jget('/api/caixa/cancelamentos');
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">🗒 Cancelamentos (30 dias)</div>';
+  if(!d.ok||!(d.cancelamentos||[]).length)h+='<div class="mut">nenhum cancelamento registrado.</div>';
+  else d.cancelamentos.forEach(function(x){
+    var q=new Date(x.quando);
+    var quando=('0'+q.getDate()).slice(-2)+'/'+('0'+(q.getMonth()+1)).slice(-2)+' '+('0'+q.getHours()).slice(-2)+':'+('0'+q.getMinutes()).slice(-2);
+    h+='<div class="it"><span>'+quando+' · '+(x.numero||'—')+' · '+esc(x.nome||'')+
+      '<small class="mut" style="display:block">por '+esc(x.login||'?')+
+      (x.gerente&&x.gerente!==x.login?' · autorizou: '+esc(x.gerente):'')+
+      (x.status_item&&x.status_item!=='a_produzir'&&x.status_item!=='pedido'?' · estava '+esc(x.status_item):'')+
+      (x.motivo?' · "'+esc(x.motivo)+'"':'')+'</small></span>'+
+      '<b>'+brl(x.valor)+'</b></div>';
+  });
+  h+='</div>';
+  el.innerHTML=h;
+}
 /* o caixa fica horas ligado: a lista e a conta na tela se renovam sozinhas.
    A conta SÓ quando é a tela ativa — nunca por cima de um valor sendo digitado
    (desconto/acréscimo/receber não são tocados pelo timer). */
@@ -8024,6 +8272,9 @@ const server = http.createServer(async (req, res) => {
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
+      if (req.method === 'POST' && p === '/api/caixa/cancelar-item') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarItem(b, quem))); }
+      if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
+      if (p === '/api/caixa/cancelamentos') return res.end(JSON.stringify(await apiCaixaCancelamentos()));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
