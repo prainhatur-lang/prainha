@@ -79,11 +79,11 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
   b.push({
     texto:
       `${d.razaoSocial}\nCNPJ ${formatarDocumento(d.cnpj)}  IE ${d.ie}\n${d.endereco}`,
-    tamanho: 16,
+    tamanho: 18,
   });
   b.push({
     texto: `${traco}\nDANFE NFC-e - Documento Auxiliar\nda Nota Fiscal de Consumidor\nEletronica\n${traco}`,
-    tamanho: 16,
+    tamanho: 18,
   });
 
   if (d.ambiente === 2) {
@@ -114,7 +114,7 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
     linhas.push(` ${qtd} ${un} x ${brl(unit)}`);
     if ((it.valorDesconto ?? 0) > 0.004) linhas.push(lr(' desconto', '-' + brl(it.valorDesconto!), w));
   }
-  b.push({ texto: linhas.join('\n'), tamanho: 16 });
+  b.push({ texto: linhas.join('\n'), tamanho: 18 });
 
   // totais
   const tot: string[] = [traco];
@@ -124,7 +124,7 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
   tot.push(lr('Subtotal', brl(subtotal), w));
   if (d.valorDesconto > 0.004) tot.push(lr('Desconto', '-' + brl(d.valorDesconto), w));
   if (d.valorOutro > 0.004) tot.push(lr('Servico/Acrescimo', brl(d.valorOutro), w));
-  b.push({ texto: tot.join('\n'), tamanho: 16 });
+  b.push({ texto: tot.join('\n'), tamanho: 18 });
   b.push({ texto: lr('TOTAL', brl(d.valorTotal), Math.min(w, 24)), negrito: true, tamanho: 22 });
 
   // pagamentos
@@ -134,7 +134,7 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
     pag.push(lr(TPAG_NOME[p.tPag] ?? 'Outros', brl(p.valor), w));
   }
   if ((d.valorTroco ?? 0) > 0.004) pag.push(lr('Troco', brl(d.valorTroco!), w));
-  b.push({ texto: pag.join('\n') + `\n${traco}`, tamanho: 16 });
+  b.push({ texto: pag.join('\n') + `\n${traco}`, tamanho: 18 });
 
   // consumidor
   b.push({
@@ -142,7 +142,7 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
       ? `CONSUMIDOR ${d.destDocumento.length === 14 ? 'CNPJ' : 'CPF'} ${formatarDocumento(d.destDocumento)}`
       : 'CONSUMIDOR NAO IDENTIFICADO',
     negrito: true,
-    tamanho: 16,
+    tamanho: 18,
   });
 
   // identificação da nota
@@ -150,14 +150,14 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
   ident.push(`NFC-e n. ${d.numero}  Serie ${d.serie}`);
   if (d.emitidaEm) ident.push(`Emissao ${d.emitidaEm}`);
   if (d.mesa) ident.push(`${d.mesa}`);
-  b.push({ texto: ident.join('\n'), tamanho: 16 });
+  b.push({ texto: ident.join('\n'), tamanho: 18 });
 
   // consulta + chave
   b.push({
     texto:
       `Consulte pela Chave de Acesso em\n${d.urlChave || ''}\n` +
       chaveFormatada(d.chave),
-    tamanho: 14,
+    tamanho: 16,
   });
 
   // QR code
@@ -169,13 +169,13 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
       texto:
         `Protocolo de autorizacao\n${d.protocolo}` +
         (d.autorizadaEm ? `\n${d.autorizadaEm}` : ''),
-      tamanho: 14,
+      tamanho: 16,
     });
   }
 
-  if (d.infoExtra) b.push({ texto: d.infoExtra, tamanho: 14 });
+  if (d.infoExtra) b.push({ texto: d.infoExtra, tamanho: 16 });
 
-  b.push({ texto: 'Tributos incidentes cf. Lei 12.741/2012\n\n\n\n\n', tamanho: 12 });
+  b.push({ texto: 'Tributos incidentes cf. Lei 12.741/2012\n\n\n\n\n', tamanho: 14 });
 
   return b;
 }
