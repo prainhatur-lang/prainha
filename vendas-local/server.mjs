@@ -4157,7 +4157,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .c.atrasado .tchip{color:var(--red);font-weight:800}
 @keyframes pisca{50%{opacity:.35}}
 .ptime{font-size:11px;color:var(--mut);margin-left:6px;white-space:nowrap}
-</style></head><body>
+</style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header id="hd"></header><div id="app"></div>
 <script>
 var ENTREGA = location.pathname.replace(/\\/+$/,'')==='/entrega';
@@ -4628,7 +4628,7 @@ input.kalvo{border-color:var(--gold2)}
 .ok .t{font-size:18px;font-weight:800;color:var(--green2)}
 .err{background:#fdeeee;border:1px solid #f3c1c1;border-radius:12px;padding:12px 14px;color:#a11;font-size:14px;margin-top:10px}
 .mut{color:var(--mut);font-size:13px}
-</style></head><body>
+</style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header><h1>${LOJA_HTML} · Venda</h1><span style="flex:1"></span><span id="gwho" class="mut" style="font-size:12.5px"></span><a class="back" href="/">KDS</a></header>
 <div id="chamados"></div>
 <div class="wrap" id="app"></div>
@@ -8333,7 +8333,7 @@ input.kalvo{border-color:var(--gold2)}
   #lado{position:sticky;top:66px;max-height:calc(100vh - 80px);overflow:auto}
   .lst{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
 }
-</style></head><body>
+</style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header><h1>${LOJA_NOME} <b>Caixa</b></h1><span id="hdr"></span></header>
 <div class="wrap" id="app"></div>
 <script>
@@ -9021,6 +9021,15 @@ const server = http.createServer(async (req, res) => {
         icons: [{ src: '/app-icon.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
                 { src: '/app-icon.png?g=512', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }],
       }));
+    }
+    // O Chrome só instala como APP (sem barra de endereço) se houver service
+    // worker com handler de fetch. Este é o mínimo: repassa tudo pra rede — a
+    // loja é local, cache offline aqui só criaria tela velha na mão do garçom.
+    if (p === '/sw.js') {
+      res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' });
+      return res.end("self.addEventListener('install',function(e){self.skipWaiting()});\n" +
+        "self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim())});\n" +
+        "self.addEventListener('fetch',function(e){e.respondWith(fetch(e.request))});\n");
     }
     if (p === '/app-icon.png') {
       const n = Number(u.searchParams.get('g')) === 512 ? 512 : 192;
