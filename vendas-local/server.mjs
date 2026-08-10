@@ -7656,10 +7656,31 @@ function render(){
     app.innerHTML='<div id="lado"></div><div id="main"></div>';
   pintaLado();pintaMain();
 }
+/* banner do MEU caixa: aberto (fundo/dinheiro na gaveta) ou fechado. É a
+   porta de abrir/fechar o dia e do relatório. */
+function bannerCx(){
+  if(!CXE||!CXE.ok)return '';
+  if(CXE.aberto){var a=CXE.aberto;
+    return '<div class="tit" style="margin-top:0">🧰 Seu caixa · <b style="color:var(--green2)">ABERTO</b></div>'+
+      '<div class="mut">fundo '+brl(a.fundo)+' · dinheiro recebido '+brl(a.dinheiro)+
+      (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
+      '<div class="row" style="margin-top:8px"><button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+      '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
+  return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
+    (PODE.abrir
+      ?'<div class="row" style="margin-top:4px"><button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+       '<button class="seg on" onclick="irTela(\\'abrircx\\')">Abrir caixa</button></div>'
+      :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
+}
+async function cxEstado(){
+  try{var r=await jget('/api/caixa/estado');if(r&&r.ok)CXE=r}catch(e){}
+  var b=document.getElementById('cxbx');if(b)b.innerHTML=bannerCx();
+}
 function pintaLado(){
   var el=document.getElementById('lado');if(!el)return;
   if(TELA==='login'){el.innerHTML='';return}
-  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
+  el.innerHTML='<div class="card" id="cxbx">'+bannerCx()+'</div>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
     '<div class="card"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
     '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
     '<button class="big" onclick="carregar()">Abrir</button>'+
@@ -7693,10 +7714,13 @@ function pintaMain(){
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
   if(TELA==='rec')return telaReceber(el);
+  if(TELA==='abrircx')return telaAbrirCx(el);
+  if(TELA==='fechacx')return telaFechaCx(el);
+  if(TELA==='rel')return telaRel(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado};TELA='home';setHdr();render();listar()}
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente};TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
 }
 function telaLogin(el){
@@ -7723,8 +7747,8 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado};
-  setHdr();TELA='home';MESAS=null;render();listar();
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente};
+  setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 function voltarMesas(){MESA=null;CONTA=null;irTela('home')}
 async function carregar(n){
@@ -7835,6 +7859,62 @@ async function fecharConta(){
   FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
   voltarMesas();listar();
 }
+/* ---- abrir/fechar o MEU caixa + relatório do dia ---- */
+function telaAbrirCx(el){
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Abrir o meu caixa</div>'+
+    '<div class="mut">Fundo de troco que entra na gaveta (pode ser 0):</div>'+
+    '<input id="cxf" class="num" inputmode="decimal" placeholder="R$ 0,00" style="margin-top:8px">'+
+    '<button class="big" onclick="acaoAbrirCx()">Abrir caixa</button>'+
+    '<div id="cxerr" class="err"></div></div>';
+  var e=document.getElementById('cxf');if(e)e.focus();
+}
+async function acaoAbrirCx(){
+  var v=numBr((document.getElementById('cxf')||{}).value);
+  var r=await jpost('/api/caixa/abrir',{fundo:v||0});
+  if(!r.ok){document.getElementById('cxerr').textContent=r.erro||'não abriu';return}
+  FLASH='✓ Caixa aberto'+(v?' com fundo de '+brl(v):' sem fundo')+'. Bom serviço!';
+  await cxEstado();voltarMesas();
+}
+function telaFechaCx(el){
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa</div>'+
+    '<div class="mut">Conte TODO o dinheiro da gaveta (com o fundo) e informe. A conferência com o esperado sai na hora.</div>'+
+    '<input id="cxc" class="num" inputmode="decimal" placeholder="quanto tem na gaveta?" style="margin-top:8px">'+
+    '<button class="big o" onclick="acaoFechaCx()">Conferir e fechar</button>'+
+    '<div id="cxerr2" class="err"></div></div>';
+  var e=document.getElementById('cxc');if(e)e.focus();
+}
+async function acaoFechaCx(){
+  var raw=((document.getElementById('cxc')||{}).value||'').trim();
+  if(raw===''){document.getElementById('cxerr2').textContent='conte a gaveta e digite o total';return}
+  var r=await jpost('/api/caixa/fechar-caixa',{contado:numBr(raw)});
+  var er=document.getElementById('cxerr2');
+  if(!r.ok){er.textContent=(r.erro||'não fechou')+(r.divergente?' — esperado: '+brl(r.esperado):'');return}
+  FLASH='✓ Caixa fechado. Esperado '+brl(r.esperado)+' · contado '+brl(r.contado)+
+    (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
+  await cxEstado();voltarMesas();
+}
+async function telaRel(el){
+  el.innerHTML='<div class="mut" style="padding:16px">montando o relatório…</div>';
+  var d;try{d=await jget('/api/caixa/relatorio')}catch(e){}
+  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'sem relatório agora')+'</div></div>';return}
+  var tot=0;d.formas.forEach(function(f){tot+=f.valor});
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">📊 Hoje, por forma de pagamento</div>';
+  h+=d.formas.map(function(f){return '<div class="it"><span>'+esc(f.nome)+' <span class="mut">('+f.n+'×)</span></span><b>'+brl(f.valor)+'</b></div>'}).join('')||'<div class="mut">nenhum pagamento hoje ainda</div>';
+  h+='<div class="tot g"><span>Total</span><b>'+brl(tot)+'</b></div></div>';
+  h+='<div class="card"><div class="tit" style="margin-top:0">Caixas do dia</div>'+
+    (d.caixas.map(function(c){
+      var st=c.fechado_em
+        ?('fechado · esperado '+brl(c.esperado||0)+' · contado '+brl(c.contado==null?0:c.contado))
+        :'<b style="color:var(--green2)">ABERTO</b> · fundo '+brl(c.fundo);
+      return '<div class="it"><span>'+esc(c.quem||('caixa '+c.codigo))+'</span><span style="text-align:right;font-size:12.5px">'+st+'</span></div>';
+    }).join('')||'<div class="mut">nenhum caixa hoje</div>')+'</div>';
+  if(d.movs.length)h+='<div class="card"><div class="tit" style="margin-top:0">Entradas/saídas da gaveta</div>'+
+    d.movs.map(function(m){return '<div class="it"><span>'+esc(m.obs||'—')+'</span><b>'+(m.saida?'− '+brl(m.saida):'+ '+brl(m.entrada))+'</b></div>'}).join('')+'</div>';
+  el.innerHTML=h;
+}
 async function imprimirCx(btn){
   if(btn){btn.disabled=true;btn.textContent='🧾 Imprimindo…'}
   var r=await jpost('/api/caixa/imprimir',{numero:MESA});
@@ -7848,6 +7928,7 @@ async function imprimirCx(btn){
 setInterval(function(){
   if(document.hidden||!TOK||TELA==='login')return;
   listar();
+  TICK++;if(TICK%3===0)cxEstado(); // banner do caixa a cada 30s
   if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA).then(function(c){
     if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)){CONTA=c;pintaMain()}}).catch(function(){});
 },10000);
