@@ -2947,7 +2947,6 @@ async function apiCaixaCancelarItem(body, quem) {
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
-  if ((Number(p.S) || 0) > 0.009) return { ok: false, erro: 'A conta está com o serviço aplicado. Reabra a conta e cancele de novo.' };
   const status = await statusDoItem(item);
   let gerente = null;
   if (status !== 'a_produzir') {
@@ -2962,13 +2961,24 @@ async function apiCaixaCancelarItem(body, quem) {
   if (!principal) return { ok: false, erro: 'esse item não está mais na conta' };
   const valor = alvos.reduce((s, x) => s + (Number(x.VALORTOTAL) || 0), 0);
   const pago = await fbPagoDoPedido(ped);
-  const novoItens = +((Number(p.I) || 0) - valor).toFixed(2);
-  const novoTot = +((Number(p.T) || 0) - valor).toFixed(2);
+  // serviço aplicado NÃO trava mais o cancelamento (a conta pedida tem os 10%
+  // e a mesa continua ABERTA — travar aqui era só atrito): o item leva junto a
+  // fatia PROPORCIONAL do serviço, por delta — a fórmula nunca é refeita.
+  const itensAtual = Number(p.I) || 0, servAtual = Number(p.S) || 0;
+  let servDelta = 0;
+  if (servAtual > 0.009 && itensAtual > 0.009) {
+    servDelta = +(valor * (servAtual / itensAtual)).toFixed(2);
+    // cancelou o último item (ou arredondou além): zera o serviço sem sobra de centavos
+    if (itensAtual - valor <= 0.009 || servDelta > servAtual) servDelta = servAtual;
+  }
+  const novoItens = +(itensAtual - valor).toFixed(2);
+  const novoServ = +(servAtual - servDelta).toFixed(2);
+  const novoTot = +((Number(p.T) || 0) - valor - servDelta).toFixed(2);
   if (novoTot < -0.009) return { ok: false, erro: 'cancelar esse item deixaria o total negativo (tem desconto — ajuste antes)' };
   if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorno é no Consumer)` };
   const rd = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
   if (!rd.ok) return { ok: false, erro: 'FB excluir: ' + rd.err };
-  const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
+  const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, TOTALSERVICO=${fbNum(Math.max(0, novoServ))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
   if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
     VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${T(principal.NOME)}, ${valor}, ${status}, ${T(body.motivo)})`;
@@ -2976,7 +2986,25 @@ async function apiCaixaCancelarItem(body, quem) {
     WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
   cupomCancelado(areaRows, numero).catch(() => {});
   espelho().catch(() => {});
-  return { ok: true, valor, status, novo_total: Math.max(0, novoTot) };
+  return { ok: true, valor, status, servico_removido: servDelta, novo_total: Math.max(0, novoTot) };
+}
+/** Destrava os botões de cancelar na tela (a "dificuldade" pedida pelo dono):
+ *  os ✕ ficam ESCONDIDOS até um GERENTE (Administrador ou Excluir Pedido)
+ *  autorizar com o PIN — caixa comum chama o gerente; caixa que já é gerente
+ *  usa o próprio PIN. O server só valida; quem lembra do destrave é a tela. */
+async function apiCaixaLiberarCancel(body, quem) {
+  if (!(quem && quem.excluir_item)) return { ok: false, erro: 'sem permissão de cancelar (Excluir Item do Pedido)' };
+  const souGerente = !!(quem.admin || quem.excluir_pedido);
+  const gerente = souGerente ? quem.login : String(body.gerente_login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!gerente || !pin) return { ok: false, erro: 'informe login e PIN de quem autoriza' };
+  const reg = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${gerente}`)[0];
+  if (!reg || !pinConfere(pin, reg.salt, reg.pin_hash)) return { ok: false, erro: 'PIN não confere' };
+  if (!souGerente) {
+    let g; try { g = await permsDoUsuario(gerente); } catch (e) { return { ok: false, erro: 'não deu pra validar o gerente: ' + e.message }; }
+    if (!(g.ok && (g.admin || g.excluir_pedido))) return { ok: false, erro: gerente + ' não pode autorizar (precisa Administrador ou Excluir Pedido)' };
+  }
+  return { ok: true, autorizou: gerente };
 }
 async function apiCaixaCancelarPedido(body, quem) {
   if (!(quem && quem.excluir_pedido)) return { ok: false, erro: 'sem permissão (Excluir Pedido)' };
@@ -8047,7 +8075,7 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
 var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
-var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0;
+var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0,CANCEL_ON=false;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -8133,6 +8161,7 @@ function pintaMain(){
   if(TELA==='fechacx')return telaFechaCx(el);
   if(TELA==='rel')return telaRel(el);
   if(TELA==='canc')return telaCancItem(el);
+  if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
 }
 async function inicio(){
@@ -8169,10 +8198,11 @@ async function entrar(){
   NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
-function voltarMesas(){MESA=null;CONTA=null;irTela('home')}
+function voltarMesas(){MESA=null;CONTA=null;CANCEL_ON=false;irTela('home')}
 async function carregar(n){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
   if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
+  if(MESA==null||Number(num)!==Number(MESA))CANCEL_ON=false; // trocou de mesa: trava de novo
   if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
   MESA=num;irTela('conta');
   var c=await jget('/api/caixa/conta?n='+num);
@@ -8191,7 +8221,7 @@ function pinta(el){
       (c.nome?' · '+esc(c.nome):'')+'</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
-      (PODE.cancItem&&i.item_codigo?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
+      (CANCEL_ON&&PODE.cancItem&&i.item_codigo?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
       i.quantidade+'× '+esc(i.nome)+
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
       '</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
@@ -8210,10 +8240,31 @@ function pinta(el){
   if(c.falta>0)h+='<button class="big" onclick="irTela(\\'rec\\')">💵 Receber em dinheiro</button>';
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
   h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
-  if(PODE.cancPed&&!(c.pago>0))h+='<button class="big" style="background:#fff;color:var(--red);border:1.5px solid #eda3a3" onclick="cancPedido()">🗑 Cancelar o pedido inteiro</button>';
+  // cancelamentos ficam ATRÁS do cadeado: gerente libera, os ✕ aparecem
+  if(CANCEL_ON&&PODE.cancPed&&!(c.pago>0))h+='<button class="big" style="background:#fff;color:var(--red);border:1.5px solid #eda3a3" onclick="cancPedido()">🗑 Cancelar o pedido inteiro</button>';
   h+='<div id="cerr" class="err"></div>';
+  if(PODE.cancItem&&!CANCEL_ON)h+='<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'libcanc\\')">🔒 cancelar item…</a></div>';
+  if(CANCEL_ON)h+='<div style="margin-top:10px;text-align:right;font-size:13px"><b style="color:var(--red)">🔓 cancelamentos liberados nesta mesa</b> · <a class="sair" onclick="CANCEL_ON=false;pintaMain()">travar</a></div>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
   el.innerHTML=h;
+}
+function telaLibCanc(el){
+  var souG=!!PODE.cancPed; // gerente local = admin ou Excluir Pedido (o server revalida)
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">🔒 Liberar cancelamentos — mesa '+MESA+'</div>'+
+    '<div class="mut">'+(souG?'Confirme com o SEU PIN.':'Cancelar item é ação de gerente: chame quem autoriza pra digitar o login e o PIN dele.')+'</div>'+
+    (souG?'':'<input id="lcl" placeholder="login do gerente" autocapitalize="none" style="margin-top:8px">')+
+    '<input id="lcp" class="num" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px">'+
+    '<button class="big o" onclick="liberaCanc()">Liberar os botões de cancelar</button>'+
+    '<div id="lcerr" class="err"></div></div>';
+  var e=document.getElementById(souG?'lcp':'lcl');if(e)e.focus();
+}
+async function liberaCanc(){
+  var b={pin:((document.getElementById('lcp')||{}).value||'')};
+  var l=document.getElementById('lcl');if(l)b.gerente_login=l.value||'';
+  var r=await jpost('/api/caixa/liberar-cancel',b);
+  if(!r.ok){document.getElementById('lcerr').textContent=r.erro||'não liberou';return}
+  CANCEL_ON=true;irTela('conta');
 }
 function telaDesc(el){
   DMODO='valor';
@@ -8591,6 +8642,7 @@ const server = http.createServer(async (req, res) => {
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
+      if (req.method === 'POST' && p === '/api/caixa/liberar-cancel') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaLiberarCancel(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-item') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarItem(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
       if (p === '/api/caixa/cancelamentos') return res.end(JSON.stringify(await apiCaixaCancelamentos()));
