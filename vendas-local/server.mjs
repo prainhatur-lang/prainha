@@ -2239,12 +2239,84 @@ async function apiNfceInfo(nRaw) {
   let ped = null;
   try { ped = await fbAcharPedidoNfce(numero); } catch { /* FB fora */ }
   if (!ped) return { ok: true, ativo: true, sem_pedido: true };
-  const jaTem = (await sql`SELECT chave, nfce_numero, serie, status FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+  const jaTem = (await sql`SELECT chave, nfce_numero, serie, status, erro FROM nfce_log WHERE pedido_fb=${ped}`)[0];
   const docSugerido = await nfceDocSugerido(numero, ped).catch(() => null);
+  const falhou = jaTem && (jaTem.status === 'REJEITADA' || jaTem.status === 'PENDENTE_ENVIO' || jaTem.status === 'ERRO');
   return { ok: true, ativo: true, pedido: ped, ambiente: nfceStatusCache.ambiente,
     emitida: !!(jaTem && jaTem.status === 'AUTORIZADA'),
+    na_fila: !!(jaTem && jaTem.status === 'PENDENTE_ENVIO'),
     nota: jaTem ? { chave: jaTem.chave, numero: Number(jaTem.nfce_numero) || null, serie: Number(jaTem.serie) || null, status: jaTem.status } : null,
+    ultima_falha: falhou ? { status: jaTem.status, erro: jaTem.erro || null } : null,
     documento_sugerido: docSugerido };
+}
+/** Miolo da emissão — usado pela tela (caixa/LIO) e pela FILA de reenvio.
+ *  Falha de transporte (loja sem internet, central/SEFAZ fora) NUNCA é erro
+ *  final: vira PENDENTE_ENVIO e o loopNfceFila reenvia sozinho (o central é
+ *  idempotente e consulta a chave antes de reenviar — não duplica nota).
+ *  A mesa NÃO depende disto: o fechamento já aconteceu antes. */
+async function nfceEmitirCore({ ped, numero, documento, destino, solicitante }) {
+  const doc = soDig(documento || '');
+  let dados;
+  try { dados = await nfceDadosDoPedido(ped, numero); }
+  catch (e) { return { ok: false, erro: e.message }; }
+
+  const pedidoChave = 'fb:' + ped;
+  const e = Math.floor(Date.now() / 1000) + 300;
+  const rotulo = impRotulo(numero, null);
+  let resp = null;
+  let falhaTransporte = null;
+  try {
+    const r = await fetch(`${PAGAR_MESA_URL}/api/nfce/emitir`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        f: FILIAL_ID, e, s: nfceAssina(pedidoChave, e),
+        pedido: {
+          pedidoChave, mesa: rotulo, documento: doc || null,
+          itens: dados.itens, pagamentos: dados.pagamentos,
+          infoExtra: rotulo + ' - Pedido ' + ped + ' - ' + LOJA_NOME,
+          solicitadoPor: solicitante || null,
+        },
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
+    resp = await r.json().catch(() => null);
+    if (!resp) falhaTransporte = 'central respondeu HTTP ' + r.status + ' sem JSON';
+  } catch (err) { falhaTransporte = err.message; }
+
+  if (!resp || !resp.ok) {
+    // transitório (rede/SEFAZ fora) = fila; rejeição de verdade = parar e mostrar
+    const transitorio = !!falhaTransporte || !!(resp && resp.transitorio);
+    const msg = falhaTransporte || (resp && resp.erro) || 'falha na emissão';
+    const status = transitorio ? 'PENDENTE_ENVIO' : 'REJEITADA';
+    await sql`INSERT INTO nfce_log (pedido_fb, numero, dest_documento, status, erro, solicitado_por)
+      VALUES (${ped}, ${numero}, ${doc || null}, ${status}, ${String(msg).slice(0, 300)}, ${solicitante || null})
+      ON CONFLICT (pedido_fb) DO UPDATE SET dest_documento=EXCLUDED.dest_documento, status=EXCLUDED.status,
+        erro=EXCLUDED.erro, solicitado_por=COALESCE(EXCLUDED.solicitado_por, nfce_log.solicitado_por), quando=now()`;
+    if (transitorio) {
+      return { ok: false, pendente: true,
+        erro: 'Sem resposta da SEFAZ/central agora. A nota ficou NA FILA e será emitida sozinha — a mesa já está liberada.' };
+    }
+    return { ok: false, erro: msg, pendencias: resp && resp.pendencias };
+  }
+
+  const n = resp.nota || {};
+  await sql`INSERT INTO nfce_log (pedido_fb, numero, chave, nfce_numero, serie, ambiente, dest_documento, valor, status, erro, solicitado_por)
+    VALUES (${ped}, ${numero}, ${n.chave || null}, ${n.numero || null}, ${n.serie || null}, ${n.ambiente || null}, ${n.destDocumento || null}, ${n.valorTotal || null}, ${'AUTORIZADA'}, ${null}, ${solicitante || null})
+    ON CONFLICT (pedido_fb) DO UPDATE SET chave=EXCLUDED.chave, nfce_numero=EXCLUDED.nfce_numero, serie=EXCLUDED.serie,
+      ambiente=EXCLUDED.ambiente, dest_documento=EXCLUDED.dest_documento, valor=EXCLUDED.valor, status='AUTORIZADA', erro=NULL, quando=now()`;
+
+  // DANFE: caixa e fila imprimem na térmica da loja; lio imprime na maquininha
+  let impresso = false, impErro = null;
+  if (destino === 'caixa' || destino === 'fila') {
+    try {
+      const ip = (await cfgGet('impressora_ip', '')).trim();
+      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || []), 'DANFE NFC-e ' + rotulo); impresso = true; }
+      else impErro = 'sem impressora configurada';
+    } catch (e2) { impErro = e2.message; }
+  }
+  return { ok: true, ja_existia: !!resp.jaExistia, impresso, imp_erro: impErro,
+    nota: { chave: n.chave, numero: n.numero, serie: n.serie, valor: n.valorTotal },
+    blocos: destino === 'lio' ? (resp.danfe32 || []) : undefined };
 }
 /** Emite (ou reimprime — o central é idempotente por pedido). */
 async function apiNfceEmitir(body, quem) {
@@ -2255,60 +2327,31 @@ async function apiNfceEmitir(body, quem) {
   if (!ped) return { ok: false, erro: 'não achei pedido recente no número ' + numero };
   const doc = soDig(body.documento || '');
   if (doc && !(doc.length === 11 || doc.length === 14)) return { ok: false, erro: 'CPF/CNPJ incompleto' };
-
-  let dados;
-  try { dados = await nfceDadosDoPedido(ped, numero); }
-  catch (e) { return { ok: false, erro: e.message }; }
-
-  const pedidoChave = 'fb:' + ped;
-  const e = Math.floor(Date.now() / 1000) + 300;
-  const rotulo = impRotulo(numero, null);
-  let resp;
+  return nfceEmitirCore({ ped, numero, documento: doc, destino, solicitante: (quem && quem.login) || null });
+}
+// ---- FILA de reenvio: nota que não saiu (rede/SEFAZ fora) tenta de novo
+// sozinha a cada 2 min, por até 48h. Sucesso imprime o DANFE na térmica do
+// caixa. REJEITADA não entra aqui (precisa de gente: corrigir e re-emitir).
+let nfceFilaRodando = false;
+async function loopNfceFila() {
+  if (nfceFilaRodando) return; nfceFilaRodando = true;
   try {
-    const r = await fetch(`${PAGAR_MESA_URL}/api/nfce/emitir`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        f: FILIAL_ID, e, s: nfceAssina(pedidoChave, e),
-        pedido: {
-          pedidoChave, mesa: rotulo, documento: doc || null,
-          itens: dados.itens, pagamentos: dados.pagamentos,
-          infoExtra: rotulo + ' - Pedido ' + ped + ' - ' + LOJA_NOME,
-          solicitadoPor: (quem && quem.login) || null,
-        },
-      }),
-      signal: AbortSignal.timeout(45000),
-    });
-    resp = await r.json();
-  } catch (err) {
-    await sql`INSERT INTO nfce_log (pedido_fb, numero, status, erro, solicitado_por) VALUES (${ped}, ${numero}, ${'ERRO'}, ${String(err.message).slice(0, 300)}, ${(quem && quem.login) || null})
-      ON CONFLICT (pedido_fb) DO UPDATE SET status='ERRO', erro=EXCLUDED.erro, quando=now()`;
-    return { ok: false, erro: 'central não respondeu (' + err.message + ') — tente de novo' };
-  }
-
-  if (!resp || !resp.ok) {
-    const msg = (resp && resp.erro) || 'falha na emissão';
-    await sql`INSERT INTO nfce_log (pedido_fb, numero, status, erro, solicitado_por) VALUES (${ped}, ${numero}, ${'REJEITADA'}, ${String(msg).slice(0, 300)}, ${(quem && quem.login) || null})
-      ON CONFLICT (pedido_fb) DO UPDATE SET status='REJEITADA', erro=EXCLUDED.erro, quando=now()`;
-    return { ok: false, erro: msg, pendencias: resp && resp.pendencias };
-  }
-
-  const n = resp.nota || {};
-  await sql`INSERT INTO nfce_log (pedido_fb, numero, chave, nfce_numero, serie, ambiente, dest_documento, valor, status, erro, solicitado_por)
-    VALUES (${ped}, ${numero}, ${n.chave || null}, ${n.numero || null}, ${n.serie || null}, ${n.ambiente || null}, ${n.destDocumento || null}, ${n.valorTotal || null}, ${'AUTORIZADA'}, ${null}, ${(quem && quem.login) || null})
-    ON CONFLICT (pedido_fb) DO UPDATE SET chave=EXCLUDED.chave, nfce_numero=EXCLUDED.nfce_numero, serie=EXCLUDED.serie,
-      ambiente=EXCLUDED.ambiente, dest_documento=EXCLUDED.dest_documento, valor=EXCLUDED.valor, status='AUTORIZADA', erro=NULL, quando=now()`;
-
-  let impresso = false, impErro = null;
-  if (destino === 'caixa') {
-    try {
-      const ip = (await cfgGet('impressora_ip', '')).trim();
-      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || []), 'DANFE NFC-e ' + rotulo); impresso = true; }
-      else impErro = 'sem impressora configurada';
-    } catch (e2) { impErro = e2.message; }
-  }
-  return { ok: true, ja_existia: !!resp.jaExistia, impresso, imp_erro: impErro,
-    nota: { chave: n.chave, numero: n.numero, serie: n.serie, valor: n.valorTotal },
-    blocos: destino === 'lio' ? (resp.danfe32 || []) : undefined };
+    if (!grupoDisponivel()) return;
+    const fila = await sql`SELECT pedido_fb, numero, dest_documento, solicitado_por FROM nfce_log
+      WHERE status='PENDENTE_ENVIO' AND quando > now() - interval '48 hours'
+      ORDER BY quando LIMIT 5`;
+    if (!fila.length) return;
+    if (!(await nfceAtiva())) return;
+    for (const f of fila) {
+      try {
+        const r = await nfceEmitirCore({ ped: Number(f.pedido_fb), numero: Number(f.numero),
+          documento: f.dest_documento || null, destino: 'fila', solicitante: f.solicitado_por || 'fila' });
+        if (r.ok) console.log(`[nfce] fila: nota do pedido ${f.pedido_fb} saiu (nº ${r.nota?.numero})${r.impresso ? ' e impressa' : ''}`);
+        else if (!r.pendente) console.log(`[nfce] fila: pedido ${f.pedido_fb} rejeitado — parou de tentar: ${r.erro}`);
+      } catch (e) { console.error('[nfce] fila:', e.message); }
+    }
+  } catch (e) { console.error('[nfce] fila:', e.message); }
+  finally { nfceFilaRodando = false; }
 }
 // ---- DANFE em ESC/POS: blocos de texto + QR raster (GS v 0) ----
 // O QR NÃO usa o comando nativo (GS ( k) porque a genérica 80mm nem sempre
@@ -8266,7 +8309,7 @@ function telaLogin(el){
   el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
     '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos no Consumer.</div>'+
     '<input id="lg" placeholder="seu login" autocapitalize="none">'+
-    '<input id="pn" class="num" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8">'+
+    '<input id="pn" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8">'+
     '<div id="pn2box"></div>'+
     '<button class="big" onclick="entrar()">Entrar</button>'+
     '<div id="lerr" class="err"></div></div>';
@@ -8280,7 +8323,7 @@ async function entrar(){
   var r=await jpost('/api/caixa/entrar',{login:login,pin:pin,pin2:pin2});
   if(r.primeira_vez&&!r.token){
     document.getElementById('pn2box').innerHTML='<div class="mut" style="margin-top:8px">Primeira vez — repita o PIN pra criar:</div>'+
-      '<input id="pn2" class="num" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px">';
+      '<input id="pn2" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px">';
     er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y)y.focus();return;
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
@@ -8298,6 +8341,7 @@ async function carregar(n){
   var c=await jget('/api/caixa/conta?n='+num);
   if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
     (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
+    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (12h)</button>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
   CONTA=c;
   if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
@@ -8344,7 +8388,7 @@ function telaLibCanc(el){
     '<div class="card"><div class="tit" style="margin-top:0">🔒 Liberar cancelamentos — mesa '+MESA+'</div>'+
     '<div class="mut">'+(souG?'Confirme com o SEU PIN.':'Cancelar item é ação de gerente: chame quem autoriza pra digitar o login e o PIN dele.')+'</div>'+
     (souG?'':'<input id="lcl" placeholder="login do gerente" autocapitalize="none" style="margin-top:8px">')+
-    '<input id="lcp" class="num" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px">'+
+    '<input id="lcp" class="num" type="password" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px">'+
     '<button class="big o" onclick="liberaCanc()">Liberar os botões de cancelar</button>'+
     '<div id="lcerr" class="err"></div></div>';
   var e=document.getElementById(souG?'lcp':'lcl');if(e)e.focus();
@@ -8458,9 +8502,15 @@ function nfceDialog(mesa,info){
       '<div class="mut">NFC-e nº '+info.nota.numero+' (série '+info.nota.serie+') deste pedido já foi autorizada.</div>'+
       '<button class="big g" onclick="nfceEmitir('+mesa+',null)">🖨 Reimprimir DANFE</button>'+
       '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">Fechar</button>';
+  }else if(info.na_fila){
+    h+='<div class="tit" style="margin-top:0">🕐 Nota na fila</div>'+
+      '<div class="mut">A NFC-e deste pedido está aguardando a SEFAZ/central responder — o sistema reenvia sozinho a cada 2 min e imprime quando sair. A mesa já está liberada.</div>'+
+      '<button class="big g" onclick="nfceEmitir('+mesa+',null)">⚡ Tentar agora</button>'+
+      '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">OK</button>';
   }else{
     h+='<div class="tit" style="margin-top:0">🧾 Emitir nota fiscal (NFC-e)?</div>'+
       (info.ambiente===2?'<div class="mut" style="color:#b45309">ambiente de HOMOLOGAÇÃO — sem valor fiscal</div>':'')+
+      (info.ultima_falha?'<div class="err" style="display:block">Tentativa anterior falhou: '+esc(info.ultima_falha.erro||info.ultima_falha.status)+'</div>':'')+
       '<div class="mut" style="margin-top:6px">CPF ou CNPJ na nota (opcional):</div>'+
       '<input id="nfcedoc" class="num" inputmode="numeric" placeholder="só números — vazio = sem CPF" value="'+doc+'" style="margin-top:8px">'+
       (doc?'<div class="mut" style="margin-top:4px">↑ do cadastro do cliente: '+nfceDocFmt(doc)+' — confirme ou apague</div>':'')+
@@ -8481,10 +8531,17 @@ async function nfceEmitir(mesa,doc){
   if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">🧾 Emitindo NFC-e…</div><div class="mut">falando com a SEFAZ — segura uns segundos</div>';
   try{
     var r=await jpost('/api/nfce/emitir',{numero:mesa,documento:doc,destino:'caixa'});
+    if(!r.ok&&r.pendente){
+      // SEFAZ/central fora do ar: a nota ficou na FILA e sai sozinha — não é erro
+      if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">🕐 Nota na fila</div>'+
+        '<div class="mut">'+esc(r.erro)+'</div>'+
+        '<button class="big" onclick="nfceFecha();nfceDepois()">OK</button>';
+      return;
+    }
     if(!r.ok){
       if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">✗ Nota não saiu</div>'+
         '<div class="err" style="display:block">'+esc(r.erro||'falhou')+'</div>'+
-        '<div class="mut">A conta continua fechada. Dá pra tentar de novo abrindo a mesa no painel.</div>'+
+        '<div class="mut">A conta continua fechada e a mesa liberada. Corrija o motivo e tente de novo pela própria mesa.</div>'+
         '<button class="big" onclick="nfceFecha();nfceDepois()">OK</button>';
       return;
     }
@@ -9028,6 +9085,9 @@ async function main() {
   loopEspelho();
   espelhoCatalogo().catch(() => {});
   setInterval(() => espelhoCatalogo().catch(() => {}), 5 * 60 * 1000);
+  // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
+  setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
+  setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
   // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
   limparFotosAntigas();

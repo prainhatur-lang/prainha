@@ -8,6 +8,96 @@ import { desc, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { formatarDocumento } from '@/lib/nfce/documento';
 import { AcoesNota } from './acoes';
+import { XmlsDownload } from './xmls-download';
+
+/** Cobertura fiscal: pedido fechado do espelho × nota do Concilia × nota que o
+ *  Consumer emitiu (nf_venda). O que sobra é "sem nota" — o que o contador
+ *  precisa enxergar. */
+interface CoberturaDia {
+  filial_id: string;
+  dia: string;
+  pedidos: number;
+  valor: string;
+  com_nossa: number;
+  com_consumer: number;
+  sem_nota: number;
+  valor_sem: string;
+}
+
+interface PedidoSemNota {
+  filial_id: string;
+  numero: number | null;
+  codigo_externo: number;
+  fechado_em: string;
+  valor: string;
+}
+
+async function cobertura(filialIds: string[]): Promise<CoberturaDia[]> {
+  if (!filialIds.length) return [];
+  const r = await db.execute(sql`
+    SELECT p.filial_id::text AS filial_id,
+           to_char(p.data_fechamento AT TIME ZONE 'America/Maceio', 'YYYY-MM-DD') AS dia,
+           count(*)::int AS pedidos,
+           COALESCE(sum(p.valor_total), 0)::text AS valor,
+           count(*) FILTER (WHERE EXISTS (
+             SELECT 1 FROM nfce_emitida n
+             WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
+               AND n.status = 'AUTORIZADA'))::int AS com_nossa,
+           count(*) FILTER (WHERE NOT EXISTS (
+             SELECT 1 FROM nfce_emitida n
+             WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
+               AND n.status = 'AUTORIZADA')
+             AND EXISTS (
+             SELECT 1 FROM nf_venda nv
+             WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
+               AND nv.codigo_pedido_externo = p.codigo_externo))::int AS com_consumer,
+           count(*) FILTER (WHERE NOT EXISTS (
+             SELECT 1 FROM nfce_emitida n
+             WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
+               AND n.status = 'AUTORIZADA')
+             AND NOT EXISTS (
+             SELECT 1 FROM nf_venda nv
+             WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
+               AND nv.codigo_pedido_externo = p.codigo_externo))::int AS sem_nota,
+           COALESCE(sum(p.valor_total) FILTER (WHERE NOT EXISTS (
+             SELECT 1 FROM nfce_emitida n
+             WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
+               AND n.status = 'AUTORIZADA')
+             AND NOT EXISTS (
+             SELECT 1 FROM nf_venda nv
+             WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
+               AND nv.codigo_pedido_externo = p.codigo_externo)), 0)::text AS valor_sem
+    FROM pedido p
+    WHERE p.filial_id = ANY(${filialIds}::uuid[])
+      AND p.data_fechamento >= now() - interval '14 days'
+      AND COALESCE(p.valor_total, 0) > 0
+    GROUP BY 1, 2
+    ORDER BY 2 DESC, 1
+  `);
+  return r as unknown as CoberturaDia[];
+}
+
+async function pedidosSemNota(filialIds: string[]): Promise<PedidoSemNota[]> {
+  if (!filialIds.length) return [];
+  const r = await db.execute(sql`
+    SELECT p.filial_id::text AS filial_id, p.numero, p.codigo_externo,
+           to_char(p.data_fechamento AT TIME ZONE 'America/Maceio', 'DD/MM HH24:MI') AS fechado_em,
+           COALESCE(p.valor_total, 0)::text AS valor
+    FROM pedido p
+    WHERE p.filial_id IN ${filialIds}
+      AND p.data_fechamento >= now() - interval '48 hours'
+      AND COALESCE(p.valor_total, 0) > 0
+      AND NOT EXISTS (SELECT 1 FROM nfce_emitida n
+        WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
+          AND n.status IN ('AUTORIZADA', 'PENDENTE'))
+      AND NOT EXISTS (SELECT 1 FROM nf_venda nv
+        WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
+          AND nv.codigo_pedido_externo = p.codigo_externo)
+    ORDER BY p.data_fechamento DESC
+    LIMIT 60
+  `);
+  return r as unknown as PedidoSemNota[];
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -60,6 +150,8 @@ export default async function NfcePage() {
 
   const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const pendentesFiscais = notas.filter((n) => n.status === 'REJEITADA' || n.status === 'ERRO');
+  const cob = await cobertura(ids);
+  const semNota = await pedidosSemNota(ids);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -104,6 +196,88 @@ export default async function NfcePage() {
             deve ser inutilizado até o dia 10 do mês seguinte.
           </div>
         )}
+
+        {/* ---- visão do contador: cobertura pedido × nota ---- */}
+        <h2 className="mt-10 text-lg font-bold text-slate-900">Cobertura fiscal (14 dias)</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Pedidos fechados no PDV × notas emitidas (pelo Concilia ou pelo Consumer). "Sem nota"
+          inclui o que estiver na fila de reenvio da loja até a nota sair.
+        </p>
+        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-100 text-left">
+              <tr>
+                <th className="px-3 py-2 font-medium text-slate-700">Dia</th>
+                <th className="px-3 py-2 font-medium text-slate-700">Filial</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Pedidos</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Vendido</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Nota Concilia</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Nota Consumer</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Sem nota</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">R$ sem nota</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cob.map((c, i) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5 whitespace-nowrap text-slate-700">
+                    {c.dia.slice(8, 10)}/{c.dia.slice(5, 7)}
+                  </td>
+                  <td className="px-3 py-1.5 text-slate-700">{nomePorFilial.get(c.filial_id) ?? '—'}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{c.pedidos}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{brl(Number(c.valor))}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-emerald-700">{c.com_nossa}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-slate-500">{c.com_consumer}</td>
+                  <td className={`px-3 py-1.5 text-right font-mono font-semibold ${c.sem_nota > 0 ? 'text-rose-700' : 'text-slate-400'}`}>
+                    {c.sem_nota}
+                  </td>
+                  <td className={`px-3 py-1.5 text-right font-mono ${Number(c.valor_sem) > 0 ? 'text-rose-700' : 'text-slate-400'}`}>
+                    {brl(Number(c.valor_sem))}
+                  </td>
+                </tr>
+              ))}
+              {cob.length === 0 && (
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-500">Sem pedidos fechados nos últimos 14 dias.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {semNota.length > 0 && (
+          <details className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+              Pedidos sem nota nas últimas 48h ({semNota.length}) — clique pra ver
+            </summary>
+            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+              {semNota.map((p, i) => (
+                <div key={i} className="flex justify-between rounded border border-slate-100 px-3 py-1.5 text-xs">
+                  <span className="text-slate-700">
+                    {nomePorFilial.get(p.filial_id) ?? ''} · {p.numero ? `mesa/comanda ${p.numero}` : `pedido ${p.codigo_externo}`} · {p.fechado_em}
+                  </span>
+                  <span className="font-mono text-slate-900">{brl(Number(p.valor))}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              Pra emitir depois: no caixa da loja, digite o número da mesa (mesmo fechada) e use
+              "🧾 NFC-e do último pedido fechado".
+            </p>
+          </details>
+        )}
+
+        {/* ---- XMLs do mês pro contador ---- */}
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-slate-900">📦 XMLs do mês (contador)</h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Baixa um ZIP com os XMLs autorizados (e cancelados) da filial no mês — é a guarda
+            legal que vai pra escrituração.
+          </p>
+          <div className="mt-3 space-y-2">
+            {filiais.map((f) => (
+              <XmlsDownload key={f.id} filialId={f.id} nome={f.nome} />
+            ))}
+          </div>
+        </div>
 
         <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-xs">

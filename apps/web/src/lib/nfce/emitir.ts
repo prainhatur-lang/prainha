@@ -58,7 +58,14 @@ export type EmitirResultado =
       danfe32: DanfeBloco[];
       danfe48: DanfeBloco[];
     }
-  | { ok: false; erro: string; cstat?: string; pendencias?: string[] };
+  | {
+      ok: false;
+      erro: string;
+      cstat?: string;
+      pendencias?: string[];
+      /** Falha de transporte (SEFAZ/rede) — o vendas-local põe na fila e reenvia. */
+      transitorio?: boolean;
+    };
 
 type NfceRow = typeof schema.nfceEmitida.$inferSelect;
 
@@ -453,6 +460,7 @@ export async function emitirNfcePedido(
       .where(eq(schema.nfceEmitida.id, rowId));
     return {
       ok: false,
+      transitorio: true,
       erro: 'SEFAZ não respondeu — a nota NÃO foi perdida; tente emitir de novo que o sistema confere antes de reenviar',
     };
   }

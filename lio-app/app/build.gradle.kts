@@ -70,6 +70,9 @@ android {
         // Fechar), pergunta se o cliente quer nota fiscal; valida CPF/CNPJ
         // (ou confirma o do cadastro), o central emite na SEFAZ e o DANFE
         // com QR Code sai na impressora da própria maquininha.
+        // 1.9.1: SEFAZ fora do ar não é erro — a nota cai na FILA da loja
+        // (reenvio automático a cada 2 min; DANFE sai na térmica do caixa)
+        // e a tela avisa com calma. Erro real ensina a reemissão pelo caixa.
         versionCode = 19
         versionName = "1.9.1"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")

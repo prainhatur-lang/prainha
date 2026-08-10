@@ -1292,11 +1292,24 @@ class ContaActivity : AppCompatActivity() {
                 val r = Api.nfceEmitir(Session.servidor(this), tk, alvo, documento)
                 runOnUiThread {
                     espera.dismiss()
+                    if (!r.ok && r.pendente) {
+                        // SEFAZ fora do ar: ficou na fila da loja — segue o baile
+                        AlertDialog.Builder(this)
+                            .setTitle("🕐 Nota na fila")
+                            .setMessage("SEFAZ/central sem resposta agora. A nota ficou na fila da loja " +
+                                "e será emitida sozinha (o DANFE sai na impressora do caixa). " +
+                                "A mesa já está liberada — pode seguir.")
+                            .setPositiveButton("OK") { _, _ -> depois() }
+                            .setOnCancelListener { depois() }
+                            .show()
+                        return@runOnUiThread
+                    }
                     if (!r.ok) {
                         AlertDialog.Builder(this)
                             .setTitle("✗ Nota não saiu")
                             .setMessage((r.erro ?: "falhou") +
-                                "\n\nA conta segue fechada — a nota pode ser emitida depois pelo caixa (mesmo pedido não duplica).")
+                                "\n\nA conta segue fechada e a mesa liberada. Dá pra emitir depois: no caixa, " +
+                                "digite o número da mesa e use \"NFC-e do último pedido fechado\".")
                             .setPositiveButton("OK") { _, _ -> depois() }
                             .setOnCancelListener { depois() }
                             .show()

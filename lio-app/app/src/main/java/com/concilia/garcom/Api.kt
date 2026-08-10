@@ -459,6 +459,9 @@ object Api {
     data class NfceResultado(
         val ok: Boolean,
         val erro: String?,
+        /** SEFAZ/central fora do ar: a nota ficou na FILA da loja e sai sozinha
+         *  (imprime na térmica do caixa quando autorizar). Não é erro. */
+        val pendente: Boolean,
         val notaNumero: Int?,
         val blocos: List<Lio.Bloco>,
     )
@@ -489,6 +492,7 @@ object Api {
         return NfceResultado(
             ok = j.optBoolean("ok"),
             erro = j.optStringOrNull("erro"),
+            pendente = j.optBoolean("pendente"),
             notaNumero = j.optJSONObject("nota")?.let { if (it.isNull("numero")) null else it.optInt("numero") },
             blocos = blocos,
         )
