@@ -3217,16 +3217,9 @@ async function apiCaixaFechar(nRaw) {
   const falta = +(total - pago).toFixed(2);
   if (falta > 0.01) return { ok: false, erro: `ainda falta R$ ${falta.toFixed(2)} — receba antes de fechar` };
   await fbFecharPedido(ped);
-  // NOTA FISCAL: fechar a conta é o gatilho único da NFC-e (caixa, maquininha
-  // e Pix caem todos aqui). Sai em segundo plano — nota lenta não pode segurar
-  // a mesa — e o core é idempotente por pedido. Com a NFC-e desligada na
-  // config fiscal, nfceAtiva() devolve false e nada acontece.
-  nfceAtiva().then(async (on) => {
-    if (!on) return;
-    const doc = await nfceDocSugerido(n, ped).catch(() => null);
-    const r = await nfceEmitirCore({ ped, numero: n, documento: doc || '', destino: 'caixa', solicitante: 'auto' });
-    if (!r.ok) console.error('[nfce] auto ' + n + ': ' + (r.erro || 'falhou'));
-  }).catch(() => {});
+  // A NOTA NÃO SAI SOZINHA (decisão do dono): fechar libera a mesa e a tela
+  // PERGUNTA se emite — nem toda conta leva nota, e emitir sem pedir tira a
+  // escolha de quem está no caixa. Quem oferece é o nfceOferecer da tela.
   // fecha o lado local na hora (o espelho faria isso no próximo ciclo)
   await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
   await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
@@ -8470,6 +8463,7 @@ function pintaMain(){
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
   if(TELA==='rec')return telaReceber(el);
+  if(TELA==='pix')return; // desenhada pelo pixCaixa()
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
   if(TELA==='rel')return telaRel(el);
@@ -8513,7 +8507,7 @@ async function entrar(){
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
-function voltarMesas(){MESA=null;CONTA=null;CANCEL_ON=false;irTela('home');
+function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;irTela('home');
   setTimeout(function(){window.scrollTo(0,HOME_Y)},0)} // volta NO MESMO lugar da lista
 async function carregar(n){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
@@ -8555,7 +8549,10 @@ function pinta(el){
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
   if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar · ⇄ transferir · 🪪 dono/comanda</button>';
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
-  if(c.falta>0)h+='<button class="big" onclick="irTela(\\'rec\\')">💵 Receber em dinheiro</button>';
+  if(c.falta>0){
+    h+='<div class="row"><button class="big" style="margin-top:0" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
+       '<button class="big" style="margin-top:0;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+  }
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
   h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
   // cancelamentos ficam ATRÁS do cadeado: gerente libera, os ✕ aparecem
@@ -8608,6 +8605,41 @@ async function aplicaDesc(){
   var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'desconto',modo:DMODO,valor:v});
   if(!r.ok){document.getElementById('derr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
+}
+/* ---- PIX NO CAIXA ----
+   A forma de pagamento é escolha do cliente: o caixa tem que aceitar as duas.
+   Mesma cobrança do garçom (/api/pix/cobrar), QR na tela do caixa, e a
+   confirmação chega sozinha — quando cai, o servidor já fecha a conta e a
+   tela oferece a nota. */
+var PIXT=null;
+function pixPara(){if(PIXT){clearInterval(PIXT);PIXT=null}}
+async function pixCaixa(){
+  TELA='pix';
+  var el=document.getElementById('main');
+  el.innerHTML='<div class="mut" style="padding:16px">gerando o código Pix…</div>';
+  var r=await jpost('/api/pix/cobrar',{mesa:MESA,valor:CONTA.falta});
+  if(!r.ok){el.innerHTML='<div class="card"><div class="err">'+esc(r.erro||'não consegui gerar o Pix')+'</div>'+
+    '<button class="big g" onclick="irTela(\\'conta\\')">Voltar</button></div>';return}
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="pixPara();irTela(\\'conta\\')">◂ voltar</button>'+
+    '<div class="card" style="text-align:center"><div class="tit" style="margin-top:0">Pix · '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+'</div>'+
+    '<div style="font-size:32px;font-weight:800;margin:4px 0 10px">'+brl(r.valor)+'</div>'+
+    (r.imagem?'<img src="'+r.imagem+'" alt="QR Pix" style="width:min(60vw,260px);display:block;margin:0 auto">':'')+
+    '<div class="mut" style="margin-top:10px">O cliente aponta a câmera do app do banco. A confirmação aparece aqui sozinha.</div>'+
+    '<div style="font-size:11px;word-break:break-all;background:#f7f7fa;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">'+esc(r.copia_cola||'')+'</div>'+
+    '<div id="pixst" style="margin-top:12px;font-weight:700;color:var(--mut)">aguardando o pagamento…</div></div>';
+  var cobrado=Number(r.valor||0),tent=0,ocup=false;
+  pixPara();
+  PIXT=setInterval(async function(){
+    if(++tent>120){pixPara();var s0=document.getElementById('pixst');if(s0)s0.textContent='não confirmou em 10 min — volte e gere outro código';return}
+    if(ocup)return;ocup=true;
+    var s;try{s=await jget('/api/pix/conferir?txid='+encodeURIComponent(r.txid))}catch(e){ocup=false;return}
+    ocup=false;
+    if(s.ok&&s.pago){
+      pixPara();
+      FLASH='✓ Pix de '+brl(cobrado)+' recebido — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';
+      nfceOferecer(MESA,function(){voltarMesas();listar()});
+    }
+  },4000);
 }
 function telaAcr(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+

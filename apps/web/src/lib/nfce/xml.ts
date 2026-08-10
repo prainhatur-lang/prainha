@@ -234,13 +234,17 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
   const detPags = pags
     .map((p) => {
       const tPag = /^\d{2}$/.test(p.tPag) ? p.tPag : '99';
-      const card =
-        tPag === '03' || tPag === '04'
-          ? `<card><tpIntegra>2</tpIntegra>` +
-            (p.tBand && /^\d{2}$/.test(p.tBand) ? tag('tBand', p.tBand) : '') +
-            (p.cAut ? tag('cAut', texto(p.cAut, 20)) : '') +
-            `</card>`
-          : '';
+      // A SEFAZ exige o grupo card em TODO pagamento eletrônico, não só
+      // cartão: Pix (17) sem ele volta com a rejeição 391 ("não informados os
+      // dados do cartão"). tpIntegra 2 = não integrado ao sistema de automação;
+      // bandeira e autorização só existem em cartão e continuam opcionais.
+      const ELETRONICO = new Set(['03', '04', '10', '11', '12', '13', '15', '16', '17']);
+      const card = ELETRONICO.has(tPag)
+        ? `<card><tpIntegra>2</tpIntegra>` +
+          (p.tBand && /^\d{2}$/.test(p.tBand) ? tag('tBand', p.tBand) : '') +
+          (p.cAut ? tag('cAut', texto(p.cAut, 20)) : '') +
+          `</card>`
+        : '';
       return `<detPag><indPag>0</indPag>${tag('tPag', tPag)}${tag('vPag', f2(p.valor))}${card}</detPag>`;
     })
     .join('');
