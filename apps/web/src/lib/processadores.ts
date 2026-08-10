@@ -270,6 +270,65 @@ function formatarCnpj(cnpj: string): string {
   return `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12, 14)}`;
 }
 
+/**
+ * A MESMA venda pode chegar por duas fontes com datas diferentes: o CSV do
+ * portal usa a data da venda e o EDI usa a data de captura do lote. Como o
+ * bar fecha de madrugada, a captura cai no dia seguinte — e a unique da
+ * tabela inclui data_venda, entao as duas passariam. Aqui filtramos: se ja
+ * existe a mesma venda (nsu + autorizacao + valor) a ate 1 dia de distancia,
+ * a nova nao entra.
+ *
+ * Custou 73 linhas duplicadas e ~200 excecoes falsas antes de ser notado.
+ */
+async function filtrarVendasJaExistentes(
+  filialId: string,
+  linhas: Array<{ nsu: string; autorizacao: string | null; valorBruto: string; dataVenda: string }>,
+): Promise<Set<number>> {
+  const ignorar = new Set<number>();
+  const datas = linhas.map((l) => l.dataVenda).filter(Boolean).sort();
+  if (datas.length === 0) return ignorar;
+  const de = new Date(datas[0] + 'T00:00:00-03:00');
+  de.setDate(de.getDate() - 1);
+  const ate = new Date(datas[datas.length - 1] + 'T00:00:00-03:00');
+  ate.setDate(ate.getDate() + 1);
+
+  const existentes = await db
+    .select({
+      nsu: schema.vendaAdquirente.nsu,
+      autorizacao: schema.vendaAdquirente.autorizacao,
+      valorBruto: schema.vendaAdquirente.valorBruto,
+      dataVenda: schema.vendaAdquirente.dataVenda,
+    })
+    .from(schema.vendaAdquirente)
+    .where(
+      and(
+        eq(schema.vendaAdquirente.filialId, filialId),
+        eq(schema.vendaAdquirente.adquirente, ADQUIRENTE_CIELO),
+        drizzleSql`${schema.vendaAdquirente.dataVenda} >= ${de.toISOString().slice(0, 10)}`,
+        drizzleSql`${schema.vendaAdquirente.dataVenda} <= ${ate.toISOString().slice(0, 10)}`,
+      ),
+    );
+  if (existentes.length === 0) return ignorar;
+
+  // chave sem a data; a proximidade e conferida depois
+  const porChave = new Map<string, string[]>();
+  for (const e of existentes) {
+    const k = `${e.nsu}|${e.autorizacao ?? ''}|${Number(e.valorBruto).toFixed(2)}`;
+    const arr = porChave.get(k) ?? [];
+    arr.push(e.dataVenda);
+    porChave.set(k, arr);
+  }
+  const dias = (a: string, b: string) =>
+    Math.abs(new Date(a + 'T00:00:00').getTime() - new Date(b + 'T00:00:00').getTime()) / 86_400_000;
+
+  linhas.forEach((l, i) => {
+    const k = `${l.nsu}|${l.autorizacao ?? ''}|${Number(l.valorBruto).toFixed(2)}`;
+    const jaTem = porChave.get(k);
+    if (jaTem?.some((d) => dias(d, l.dataVenda) <= 1)) ignorar.add(i);
+  });
+  return ignorar;
+}
+
 /** Processa Vendas Detalhado Cielo */
 export async function processarCieloVendas(
   filialId: string,
@@ -326,10 +385,22 @@ export async function processarCieloVendas(
 
   let inseridosTotal = 0;
   const porFilial: NonNullable<ResumoProcessamento['porFilial']> = [];
-  for (const g of grupos.values()) {
+  for (const [filialIdGrupo, g] of grupos) {
+    // tira as que ja existem com a data deslocada pela virada de lote
+    const jaExistem = await filtrarVendasJaExistentes(
+      filialIdGrupo,
+      g.dados.map((d) => ({
+        nsu: d.nsu,
+        autorizacao: d.autorizacao ?? null,
+        valorBruto: String(d.valorBruto),
+        dataVenda: String(d.dataVenda),
+      })),
+    );
+    const aInserir = g.dados.filter((_, i) => !jaExistem.has(i));
+
     let ins = 0;
-    for (let i = 0; i < g.dados.length; i += CHUNK_SIZE) {
-      const chunk = g.dados.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < aInserir.length; i += CHUNK_SIZE) {
+      const chunk = aInserir.slice(i, i + CHUNK_SIZE);
       const r = await db.insert(schema.vendaAdquirente).values(chunk).onConflictDoNothing().returning({ id: schema.vendaAdquirente.id });
       ins += r.length;
     }
