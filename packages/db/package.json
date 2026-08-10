@@ -65,6 +65,7 @@
     "migrate:cobranca-mesa": "tsx scripts/migrate-cobranca-mesa.ts",
     "migrate:cliente-documento": "tsx scripts/migrate-cliente-documento.ts",
     "migrate:atendimento": "tsx scripts/migrate-atendimento.ts",
+    "migrate:nfce": "tsx scripts/migrate-nfce.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
   },
   "dependencies": {

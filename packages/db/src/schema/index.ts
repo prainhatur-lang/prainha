@@ -28,4 +28,5 @@ export * from './orcamento';
 export * from './patio';
 export * from './cobranca-mesa';
 export * from './cliente-documento';
+export * from './nfce';
 export * from './atendimento';

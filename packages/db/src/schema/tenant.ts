@@ -150,6 +150,64 @@ export interface ReservaConfig {
   };
 }
 
+/** Endereço fiscal do emitente (vai no XML da NFC-e). */
+export interface FiscalEndereco {
+  logradouro: string;
+  numero: string;
+  complemento?: string;
+  bairro: string;
+  /** Código IBGE do município, 7 dígitos. Aracaju = 2800308. */
+  codigoMunicipio: string;
+  municipio: string;
+  /** Sigla, ex: SE. */
+  uf: string;
+  /** Só dígitos, 8. */
+  cep: string;
+  /** Telefone (só dígitos, com DDD), opcional. */
+  fone?: string;
+}
+
+/** Defaults fiscais de item quando o produto do Consumer não tem os campos. */
+export interface FiscalPadraoItem {
+  /** NCM 8 dígitos. Comida preparada = 21069090. */
+  ncm: string;
+  /** CFOP da venda presencial. 5102 revenda / 5101 produção própria. */
+  cfop: string;
+  /** CSOSN (Simples Nacional). 102 = sem crédito; 500 = ICMS-ST já recolhido. */
+  csosn: string;
+  /** Origem da mercadoria (0 = nacional). */
+  origem?: string;
+}
+
+/** Config de emissão de NFC-e da filial (modelo 65, direto na SEFAZ/SVRS).
+ *  O certificado A1 vem de certificado_filial (o mesmo da distribuição DF-e).
+ *  O CSC (id + token) o contador/dono gera no portal da SEFAZ-SE. */
+export interface FiscalConfig {
+  /** Liga o fluxo de NFC-e (perguntar ao fechar conta). */
+  ativo?: boolean;
+  /** 1 = produção, 2 = homologação. Comece em 2 até validar. */
+  ambiente?: 1 | 2;
+  /** Série da NFC-e emitida por aqui. Use uma série DIFERENTE da que o
+   *  Consumer usa/usou (ex: 3) pra nunca colidir numeração. */
+  serie?: number;
+  razaoSocial?: string;
+  nomeFantasia?: string;
+  /** Inscrição estadual (só dígitos). */
+  ie?: string;
+  /** Código de Regime Tributário: 1 = Simples Nacional, 3 = Regime Normal. */
+  crt?: 1 | 3;
+  endereco?: FiscalEndereco;
+  /** CSC de produção (id numérico + token) — portal SEFAZ-SE. */
+  cscId?: string;
+  cscToken?: string;
+  /** CSC de homologação. */
+  cscIdHom?: string;
+  cscTokenHom?: string;
+  padraoItem?: FiscalPadraoItem;
+  /** Responsável técnico (infRespTec). Opcional; algumas UFs exigem. */
+  respTec?: { cnpj: string; contato: string; email: string; fone: string };
+}
+
 export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   nome: varchar('nome', { length: 200 }).notNull(),
@@ -204,6 +262,8 @@ export const filial = pgTable(
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),
     /** Config do setor de reservas: espacos/areas + hora limite por espaco. */
     reservaConfig: jsonb('reserva_config').$type<ReservaConfig>(),
+    /** Config de emissão de NFC-e (IE, CRT, série, CSC, endereço fiscal). */
+    fiscalConfig: jsonb('fiscal_config').$type<FiscalConfig>(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

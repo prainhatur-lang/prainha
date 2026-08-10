@@ -368,7 +368,9 @@ class ContaActivity : AppCompatActivity() {
                         runOnUiThread {
                             if (r.optBoolean("ok")) {
                                 Toast.makeText(this, "✓ Conta fechada — liberada!", Toast.LENGTH_LONG).show()
-                                finish()
+                                // Fechou = hora de oferecer a nota fiscal (some
+                                // se a NFC-e estiver desligada no painel).
+                                nfcePerguntar(numero) { finish() }
                             } else {
                                 Toast.makeText(this, r.optStringOrNull("erro") ?: "Não fechou", Toast.LENGTH_LONG).show()
                             }
@@ -1054,7 +1056,16 @@ class ContaActivity : AppCompatActivity() {
             runOnUiThread {
                 cobrando = false
                 carregar()
-                mostrarResultado(alvo, totalPago, pagamentos, registrouTudo, quitada, ultimoErro)
+                // Quitou (e o servidor já fechou a conta): pergunta a NFC-e
+                // ANTES do resultado — o cliente ainda está na frente do garçom
+                // pra responder e ditar o CPF. Recibo/passe vêm em seguida.
+                if (registrouTudo && quitada) {
+                    nfcePerguntar(alvo) {
+                        mostrarResultado(alvo, totalPago, pagamentos, registrouTudo, quitada, ultimoErro)
+                    }
+                } else {
+                    mostrarResultado(alvo, totalPago, pagamentos, registrouTudo, quitada, ultimoErro)
+                }
             }
         }.start()
     }
@@ -1191,6 +1202,131 @@ class ContaActivity : AppCompatActivity() {
                     onOk = { runOnUiThread { Toast.makeText(this, "Recibo impresso!", Toast.LENGTH_SHORT).show() } },
                     onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } }
                 )
+            }
+        }.start()
+    }
+
+    // ---- NFC-e: pergunta ao fechar a conta (caixa manda; a lei também) ----
+    // O fechamento JÁ aconteceu quando a pergunta aparece — "Sem nota", erro ou
+    // SEFAZ fora do ar nunca desfazem nada; dá pra emitir depois pelo caixa.
+
+    /** Dígito verificador de CPF (11) e CNPJ (14) — validação local, sem rede. */
+    private fun nfceDocValido(d: String): Boolean {
+        if (d.all { it == d[0] }) return false
+        if (d.length == 11) {
+            fun dv(p: Int): Int {
+                var s = 0
+                for (i in 0 until p) s += (d[i] - '0') * (p + 1 - i)
+                return ((s * 10) % 11) % 10
+            }
+            return dv(9) == d[9] - '0' && dv(10) == d[10] - '0'
+        }
+        if (d.length == 14) {
+            fun dv(base: String): Int {
+                var s = 0; var p = 2
+                for (i in base.length - 1 downTo 0) { s += (base[i] - '0') * p; p = if (p == 9) 2 else p + 1 }
+                val r = s % 11
+                return if (r < 2) 0 else 11 - r
+            }
+            return dv(d.substring(0, 12)) == d[12] - '0' && dv(d.substring(0, 13)) == d[13] - '0'
+        }
+        return false
+    }
+
+    /** Consulta se a NFC-e está ligada e mostra a pergunta. `depois` roda SEMPRE
+     *  ao final do fluxo (emitiu, recusou ou nem perguntou). */
+    private fun nfcePerguntar(alvo: Int, depois: () -> Unit) {
+        val tk = Session.token(this) ?: return depois()
+        Thread {
+            val info = Api.nfceInfo(Session.servidor(this), tk, alvo)
+            runOnUiThread {
+                if (info == null || isFinishing) { depois(); return@runOnUiThread }
+                nfceDialog(alvo, info, info.documentoSugerido, depois)
+            }
+        }.start()
+    }
+
+    private fun nfceDialog(alvo: Int, info: Api.NfceInfo, docInicial: String?, depois: () -> Unit) {
+        if (info.emitida) {
+            AlertDialog.Builder(this)
+                .setTitle("🧾 Nota já emitida")
+                .setMessage("A NFC-e nº ${info.notaNumero ?: "?"} deste pedido já foi autorizada.")
+                .setPositiveButton("🖨 Reimprimir DANFE") { _, _ -> nfceEmitirNota(alvo, null, depois) }
+                .setNegativeButton("OK") { _, _ -> depois() }
+                .setOnCancelListener { depois() }
+                .show()
+            return
+        }
+        val docIn = campo("CPF/CNPJ (vazio = sem CPF)", android.text.InputType.TYPE_CLASS_NUMBER)
+        if (!docInicial.isNullOrBlank()) docIn.setText(docInicial)
+        val msg = StringBuilder("Cliente quer nota? Informe o CPF/CNPJ ou deixe vazio.")
+        if (!info.documentoSugerido.isNullOrBlank()) msg.append("\nCPF do cadastro já preenchido — confirme ou apague.")
+        if (info.homologacao) msg.append("\n(ambiente de HOMOLOGAÇÃO — sem valor fiscal)")
+        AlertDialog.Builder(this)
+            .setTitle("🧾 Emitir nota fiscal (NFC-e)?")
+            .setMessage(msg.toString())
+            .setView(caixa(docIn))
+            .setPositiveButton("✓ Emitir nota") { _, _ ->
+                val doc = docIn.text.toString().filter { it.isDigit() }
+                if (doc.isNotEmpty() && !nfceDocValido(doc)) {
+                    Toast.makeText(this, "CPF/CNPJ inválido — confira os dígitos", Toast.LENGTH_LONG).show()
+                    nfceDialog(alvo, info, doc, depois) // reabre com o que foi digitado
+                    return@setPositiveButton
+                }
+                nfceEmitirNota(alvo, doc.ifEmpty { null }, depois)
+            }
+            .setNegativeButton("Sem nota") { _, _ -> depois() }
+            .setOnCancelListener { depois() }
+            .show()
+    }
+
+    private fun nfceEmitirNota(alvo: Int, documento: String?, depois: () -> Unit) {
+        val tk = Session.token(this) ?: return depois()
+        val espera = AlertDialog.Builder(this)
+            .setMessage("🧾 Emitindo NFC-e — falando com a SEFAZ…")
+            .setCancelable(false)
+            .create()
+        espera.show()
+        Thread {
+            try {
+                val r = Api.nfceEmitir(Session.servidor(this), tk, alvo, documento)
+                runOnUiThread {
+                    espera.dismiss()
+                    if (!r.ok) {
+                        AlertDialog.Builder(this)
+                            .setTitle("✗ Nota não saiu")
+                            .setMessage((r.erro ?: "falhou") +
+                                "\n\nA conta segue fechada — a nota pode ser emitida depois pelo caixa (mesmo pedido não duplica).")
+                            .setPositiveButton("OK") { _, _ -> depois() }
+                            .setOnCancelListener { depois() }
+                            .show()
+                        return@runOnUiThread
+                    }
+                    if (r.blocos.isEmpty()) {
+                        Toast.makeText(this, "✓ NFC-e nº ${r.notaNumero ?: ""} autorizada", Toast.LENGTH_LONG).show()
+                        depois(); return@runOnUiThread
+                    }
+                    Lio.imprimirBlocos(this, r.blocos,
+                        onOk = { runOnUiThread {
+                            Toast.makeText(this, "✓ NFC-e nº ${r.notaNumero ?: ""} impressa", Toast.LENGTH_LONG).show()
+                            depois()
+                        } },
+                        onErro = { m -> runOnUiThread {
+                            Toast.makeText(this, "NFC-e autorizada; impressão falhou: $m", Toast.LENGTH_LONG).show()
+                            depois()
+                        } })
+                }
+            } catch (e: Api.SemSessao) {
+                runOnUiThread { espera.dismiss(); logout() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    espera.dismiss()
+                    AlertDialog.Builder(this)
+                        .setMessage("Erro: ${e.message}\nTente de novo — o sistema confere antes de reenviar, não duplica a nota.")
+                        .setPositiveButton("OK") { _, _ -> depois() }
+                        .setOnCancelListener { depois() }
+                        .show()
+                }
             }
         }.start()
     }

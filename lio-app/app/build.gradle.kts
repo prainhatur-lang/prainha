@@ -66,8 +66,12 @@ android {
         // servidor já fecha sozinho; este botão resolve as quitadas antigas.
         // 1.8.3: conta quitada mostra SALDO 0 (não estima 10% sobre conta paga
         // — serviço é opcional, mesma regra do passe de saída).
-        versionCode = 17
-        versionName = "1.8.3"
+        // 1.9.0: NFC-e — ao fechar a conta (pagamento que quita OU botão
+        // Fechar), pergunta se o cliente quer nota fiscal; valida CPF/CNPJ
+        // (ou confirma o do cadastro), o central emite na SEFAZ e o DANFE
+        // com QR Code sai na impressora da própria maquininha.
+        versionCode = 18
+        versionName = "1.9.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

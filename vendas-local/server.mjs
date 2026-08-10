@@ -380,6 +380,12 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cancelamento (id bigserial PRIMARY KEY,
     quando timestamptz DEFAULT now(), login text, gerente text, numero integer, pedido_fb integer,
     item_codigo bigint, nome text, valor numeric, status_item text, motivo text)`;
+  // NFC-e emitida pelo Concilia (log local — a verdade fiscal mora no central):
+  // serve pro "já tem nota" na tela e pra reimpressão sem repetir a pergunta.
+  await sql`CREATE TABLE IF NOT EXISTS nfce_log (
+    pedido_fb bigint PRIMARY KEY, numero integer, quando timestamptz DEFAULT now(),
+    chave text, nfce_numero integer, serie integer, ambiente integer,
+    dest_documento text, valor numeric, status text, erro text, solicitado_por text)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -2078,6 +2084,252 @@ async function publicarNoGrupo({ cpf, nome, telefone, origem }) {
     body: JSON.stringify({ h, f: FILIAL_ID, e, s: assinaGrupo(h, e), nome, tel: telefone || '', origem: origem || 'manual' }),
     signal: AbortSignal.timeout(5000),
   }).catch(() => {}); // publicar é best-effort: não pode travar o atendimento
+}
+
+// ---- NFC-e (emitida pelo CENTRAL, oferecida ao fechar a conta) ----
+// O vendas-local NÃO fala com a SEFAZ: junta itens/pagamentos do pedido no
+// Firebird (com NCM/CFOP que o contador mantém no Consumer), manda pro
+// app.prainhabar.com assinado com o MESMO segredo do /pagar-mesa, e imprime
+// o DANFE que volta pronto em blocos (térmica 48 col aqui; a LIO imprime os
+// blocos de 32 na própria maquininha). Liga/desliga na config fiscal do
+// painel central — a loja descobre sozinha (cache de 5 min), sem env novo.
+function nfceAssina(pedidoChave, expira) {
+  return createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, pedidoChave, String(expira)].join('|')).digest('hex');
+}
+let nfceStatusCache = { quando: 0, ativo: false, ambiente: 2 };
+async function nfceAtiva() {
+  if (!grupoDisponivel()) return false;
+  if (Date.now() - nfceStatusCache.quando < 5 * 60e3) return nfceStatusCache.ativo;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q2 = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('status', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/nfce/emitir?${q2}`, { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    nfceStatusCache = { quando: Date.now(), ativo: !!(j && j.ok && j.ativo), ambiente: j?.ambiente || 2 };
+  } catch { nfceStatusCache = { quando: Date.now() - 4 * 60e3, ativo: nfceStatusCache.ativo, ambiente: nfceStatusCache.ambiente }; }
+  return nfceStatusCache.ativo;
+}
+/** A nota vem DEPOIS do fechamento — o fbAcharPedido (só abertos) não serve.
+ *  Pega o aberto ou o fechado mais recente do número (janela de 12h). */
+async function fbAcharPedidoNfce(numero) {
+  const aberto = await fbAcharPedido(numero).catch(() => null);
+  if (aberto) return aberto;
+  const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATADELETE IS NULL
+    AND DATAFECHAMENTO > DATEADD(-12 HOUR TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+  if (!r.ok) throw new Error('FB pedido p/ nota: ' + r.err);
+  return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+}
+/** CPF/CNPJ que o cliente já deu antes (identificação da mesa ou Consumer). */
+async function nfceDocSugerido(numero, ped) {
+  const p = (await qi(`SELECT TRIM(COALESCE(NUMERODOCUMENTODESTINATARIO,'')) DOC FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  const doFb = soDig(p?.DOC || '');
+  if (doFb.length === 11 || doFb.length === 14) return doFb;
+  const i = (await sql`SELECT cpf FROM identificacao WHERE numero=${Number(numero)} AND cpf IS NOT NULL
+    AND criado_em > now() - interval '12 hours' ORDER BY criado_em DESC LIMIT 1`)[0];
+  if (i?.cpf && soDig(i.cpf).length === 11) return soDig(i.cpf);
+  const mc = (await sql`SELECT cpf FROM mesa_comanda WHERE comanda=${Number(numero)} AND cpf IS NOT NULL
+    AND aberta_em > now() - interval '12 hours' ORDER BY aberta_em DESC LIMIT 1`)[0];
+  if (mc?.cpf && soDig(mc.cpf).length === 11) return soDig(mc.cpf);
+  return null;
+}
+const NFCE_TPAG = { 1: '01', 3: '03', 4: '04', 18: '20', 21: '17' }; // Consumer -> tPag da NFe
+function nfceTBand(bandeira) {
+  const b = String(bandeira || '').toLowerCase();
+  if (b.includes('visa')) return '01';
+  if (b.includes('master')) return '02';
+  if (b.includes('amex') || b.includes('american')) return '03';
+  if (b.includes('diners')) return '05';
+  if (b.includes('elo')) return '06';
+  if (b.includes('hiper')) return '07';
+  if (b.includes('cabal')) return '09';
+  return '99';
+}
+/** Junta o payload da nota a partir do PEDIDOS/ITENSPEDIDO/PAGAMENTOS.
+ *  vNF alvo = VALORTOTAL do pedido (o que o cliente pagou de fato): o
+ *  desconto/acréscimo é recalibrado por cima dos itens pra fechar exato. */
+async function nfceDadosDoPedido(ped, numero) {
+  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T
+    FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  if (!p) throw new Error('pedido não encontrado no Consumer');
+  const it = await qi(`SELECT i.CODIGO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT,
+      i.CODIGOITEMPEDIDOTIPO TIPO, i.CODIGOPRODUTODETALHE PDV, pr.NCM, pr.CFOP
+    FROM ITENSPEDIDO i
+    LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
+    LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
+    WHERE i.CODIGOPEDIDO=${Number(ped)} AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
+  if (!it.ok) throw new Error('FB itens p/ nota: ' + it.err);
+  const itens = it.rows
+    .map((r) => ({
+      codigo: String(r.PDV || r.CODIGO || ''), descricao: T(r.NOME) || 'ITEM',
+      quantidade: Number(r.QTD) || 0, valorTotal: +(Number(r.VT) || 0).toFixed(2),
+      ncm: T(r.NCM) || undefined, cfop: T(r.CFOP) || undefined,
+    }))
+    .filter((x) => x.quantidade > 0 && x.valorTotal > 0);
+  if (!itens.length) throw new Error('pedido sem itens com valor');
+
+  const r2c = (v) => Math.round(v * 100) / 100;
+  const base = r2c(itens.reduce((s, x) => s + x.valorTotal, 0));
+  const alvo = r2c(Number(p.T) || 0);
+  let extra = r2c((Number(p.S) || 0) + (Number(p.A) || 0));
+  let desc = r2c(base + extra - alvo);
+  if (desc < 0) { extra = r2c(extra - desc); desc = 0; } // acréscimo não mapeado: vira vOutro
+  if (desc > 0) {
+    // rateia o desconto proporcional ao item; o resto de centavo vai no último
+    let acumulado = 0;
+    itens.forEach((x, ix) => {
+      const d = ix === itens.length - 1 ? r2c(desc - acumulado) : r2c(desc * (x.valorTotal / base));
+      x.valorDesconto = Math.min(d, x.valorTotal); acumulado = r2c(acumulado + x.valorDesconto);
+    });
+  }
+  if (extra > 0) itens[0].valorOutro = extra; // serviço/acréscimo (vOutro no 1º item)
+
+  const pg = await qi(`SELECT g.VALOR, g.CODIGOFORMAPAGAMENTO F, g.NSUTRANSACAO NSU
+    FROM PAGAMENTOS g WHERE g.CODIGOPEDIDO=${Number(ped)} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
+  if (!pg.ok) throw new Error('FB pagamentos p/ nota: ' + pg.err);
+  const bandeiras = await sql`SELECT nsu, bandeira FROM venda_pagamento
+    WHERE pedido_fb=${Number(ped)} AND status='ok' AND bandeira IS NOT NULL`;
+  const bandPorNsu = new Map(bandeiras.map((b) => [String(b.nsu || ''), b.bandeira]));
+  const pagamentos = pg.rows
+    .map((g) => {
+      const tPag = NFCE_TPAG[Number(g.F)] || '99';
+      const nsu = g.NSU != null ? String(g.NSU) : '';
+      const out = { tPag, valor: +(Number(g.VALOR) || 0).toFixed(2) };
+      if (tPag === '03' || tPag === '04') {
+        const band = bandPorNsu.get(nsu);
+        if (band) out.tBand = nfceTBand(band);
+        if (nsu && nsu !== '0') out.cAut = nsu.slice(0, 20);
+      }
+      return out;
+    })
+    .filter((x) => x.valor > 0);
+  if (!pagamentos.length) throw new Error('pedido sem pagamentos — receba antes de emitir a nota');
+
+  return { itens, pagamentos, total: alvo };
+}
+/** Pergunta da tela: tem nota? tem CPF já informado? NFC-e está ligada? */
+async function apiNfceInfo(nRaw) {
+  const numero = Number(nRaw);
+  const ativo = await nfceAtiva();
+  if (!ativo) return { ok: true, ativo: false };
+  let ped = null;
+  try { ped = await fbAcharPedidoNfce(numero); } catch { /* FB fora */ }
+  if (!ped) return { ok: true, ativo: true, sem_pedido: true };
+  const jaTem = (await sql`SELECT chave, nfce_numero, serie, status FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+  const docSugerido = await nfceDocSugerido(numero, ped).catch(() => null);
+  return { ok: true, ativo: true, pedido: ped, ambiente: nfceStatusCache.ambiente,
+    emitida: !!(jaTem && jaTem.status === 'AUTORIZADA'),
+    nota: jaTem ? { chave: jaTem.chave, numero: Number(jaTem.nfce_numero) || null, serie: Number(jaTem.serie) || null, status: jaTem.status } : null,
+    documento_sugerido: docSugerido };
+}
+/** Emite (ou reimprime — o central é idempotente por pedido). */
+async function apiNfceEmitir(body, quem) {
+  const numero = Number(body.numero);
+  const destino = String(body.destino || 'caixa'); // caixa = imprime na térmica; lio = devolve blocos 32
+  if (!(await nfceAtiva())) return { ok: false, erro: 'NFC-e desligada na config fiscal do painel' };
+  const ped = await fbAcharPedidoNfce(numero);
+  if (!ped) return { ok: false, erro: 'não achei pedido recente no número ' + numero };
+  const doc = soDig(body.documento || '');
+  if (doc && !(doc.length === 11 || doc.length === 14)) return { ok: false, erro: 'CPF/CNPJ incompleto' };
+
+  let dados;
+  try { dados = await nfceDadosDoPedido(ped, numero); }
+  catch (e) { return { ok: false, erro: e.message }; }
+
+  const pedidoChave = 'fb:' + ped;
+  const e = Math.floor(Date.now() / 1000) + 300;
+  const rotulo = impRotulo(numero, null);
+  let resp;
+  try {
+    const r = await fetch(`${PAGAR_MESA_URL}/api/nfce/emitir`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        f: FILIAL_ID, e, s: nfceAssina(pedidoChave, e),
+        pedido: {
+          pedidoChave, mesa: rotulo, documento: doc || null,
+          itens: dados.itens, pagamentos: dados.pagamentos,
+          infoExtra: rotulo + ' - Pedido ' + ped + ' - ' + LOJA_NOME,
+          solicitadoPor: (quem && quem.login) || null,
+        },
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
+    resp = await r.json();
+  } catch (err) {
+    await sql`INSERT INTO nfce_log (pedido_fb, numero, status, erro, solicitado_por) VALUES (${ped}, ${numero}, ${'ERRO'}, ${String(err.message).slice(0, 300)}, ${(quem && quem.login) || null})
+      ON CONFLICT (pedido_fb) DO UPDATE SET status='ERRO', erro=EXCLUDED.erro, quando=now()`;
+    return { ok: false, erro: 'central não respondeu (' + err.message + ') — tente de novo' };
+  }
+
+  if (!resp || !resp.ok) {
+    const msg = (resp && resp.erro) || 'falha na emissão';
+    await sql`INSERT INTO nfce_log (pedido_fb, numero, status, erro, solicitado_por) VALUES (${ped}, ${numero}, ${'REJEITADA'}, ${String(msg).slice(0, 300)}, ${(quem && quem.login) || null})
+      ON CONFLICT (pedido_fb) DO UPDATE SET status='REJEITADA', erro=EXCLUDED.erro, quando=now()`;
+    return { ok: false, erro: msg, pendencias: resp && resp.pendencias };
+  }
+
+  const n = resp.nota || {};
+  await sql`INSERT INTO nfce_log (pedido_fb, numero, chave, nfce_numero, serie, ambiente, dest_documento, valor, status, erro, solicitado_por)
+    VALUES (${ped}, ${numero}, ${n.chave || null}, ${n.numero || null}, ${n.serie || null}, ${n.ambiente || null}, ${n.destDocumento || null}, ${n.valorTotal || null}, ${'AUTORIZADA'}, ${null}, ${(quem && quem.login) || null})
+    ON CONFLICT (pedido_fb) DO UPDATE SET chave=EXCLUDED.chave, nfce_numero=EXCLUDED.nfce_numero, serie=EXCLUDED.serie,
+      ambiente=EXCLUDED.ambiente, dest_documento=EXCLUDED.dest_documento, valor=EXCLUDED.valor, status='AUTORIZADA', erro=NULL, quando=now()`;
+
+  let impresso = false, impErro = null;
+  if (destino === 'caixa') {
+    try {
+      const ip = (await cfgGet('impressora_ip', '')).trim();
+      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || []), 'DANFE NFC-e ' + rotulo); impresso = true; }
+      else impErro = 'sem impressora configurada';
+    } catch (e2) { impErro = e2.message; }
+  }
+  return { ok: true, ja_existia: !!resp.jaExistia, impresso, imp_erro: impErro,
+    nota: { chave: n.chave, numero: n.numero, serie: n.serie, valor: n.valorTotal },
+    blocos: destino === 'lio' ? (resp.danfe32 || []) : undefined };
+}
+// ---- DANFE em ESC/POS: blocos de texto + QR raster (GS v 0) ----
+// O QR NÃO usa o comando nativo (GS ( k) porque a genérica 80mm nem sempre
+// implementa: rasteriza os módulos do qrcode-svg (4px/módulo + quiet zone)
+// e centraliza no papel de 576 px (72 bytes/linha).
+function nfceQrRaster(texto) {
+  const qr = new QRCode({ content: texto, padding: 0, width: 200, height: 200, ecl: 'M', join: true });
+  const mods = qr.qrcode.modules;
+  const n = mods.length, escala = 4, quiet = 16;
+  const px = n * escala + quiet * 2;
+  const bytesLinha = Math.ceil(px / 8);
+  const cheio = 72; // 576 px úteis nas 80mm — centraliza com pad de bytes
+  const pad = Math.max(0, Math.floor((cheio - bytesLinha) / 2));
+  const larg = Math.min(cheio, bytesLinha + pad);
+  const out = Buffer.alloc(larg * px);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    if (!mods[y][x]) continue;
+    for (let dy = 0; dy < escala; dy++) {
+      const py = quiet + y * escala + dy;
+      for (let dx = 0; dx < escala; dx++) {
+        const p2 = quiet + x * escala + dx + pad * 8;
+        out[py * larg + (p2 >> 3)] |= 0x80 >> (p2 & 7);
+      }
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x1d, 0x76, 0x30, 0x00, larg & 0xff, (larg >> 8) & 0xff, px & 0xff, (px >> 8) & 0xff]),
+    out,
+    Buffer.from([0x0a]),
+  ]);
+}
+function nfceBlocosEscpos(blocos) {
+  const b = [IMP.init, IMP.centro];
+  for (const bl of blocos || []) {
+    if (bl.qr) { b.push(nfceQrRaster(bl.qr)); continue; }
+    const linhas = String(bl.texto || '').split('\n');
+    const grande = (Number(bl.tamanho) || 16) >= 21 && linhas.every((l) => l.length <= 24);
+    const alto = !grande && (Number(bl.tamanho) || 16) >= 21;
+    if (bl.negrito) b.push(IMP.neg);
+    if (grande) b.push(IMP.grande); else if (alto) b.push(IMP.alto);
+    for (const l of linhas) b.push(impLn(l));
+    if (grande || alto) b.push(IMP.norm);
+    if (bl.negrito) b.push(IMP.negFim);
+  }
+  b.push(IMP.corte);
+  return Buffer.concat(b);
 }
 
 /** O SPC devolve o STATUS do CPF dentro do campo `nome`. Sem isto, um CPF
@@ -8025,14 +8277,81 @@ async function receber(){
   var reg=Math.min(v,CONTA.falta);
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
   if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
-  if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';voltarMesas();listar();return}
+  if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
 }
 async function fecharConta(){
   var r=await jpost('/api/caixa/fechar',{numero:MESA});
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
   FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
-  voltarMesas();listar();
+  nfceOferecer(MESA,function(){voltarMesas();listar()});
+}
+/* ---- NFC-e: oferta da nota ao fechar a conta ----
+   O fechamento JÁ aconteceu quando o diálogo aparece — recusar/errar a nota
+   nunca desfaz nada. "Sem nota" ou fora do ar = segue a vida normal. */
+function nfceDocOk(d){d=String(d||'').replace(/\\D/g,'');
+  if(/^(\\d)\\1+$/.test(d))return false;
+  if(d.length===11){var f=function(p){var s=0;for(var i=0;i<p;i++)s+=+d[i]*(p+1-i);return ((s*10)%11)%10};return f(9)===+d[9]&&f(10)===+d[10]}
+  if(d.length===14){var g=function(b){var s=0,q=2;for(var i=b.length-1;i>=0;i--){s+=+b[i]*q;q=q===9?2:q+1}var r=s%11;return r<2?0:11-r};return g(d.slice(0,12))===+d[12]&&g(d.slice(0,13))===+d[13]}
+  return false}
+function nfceDocFmt(d){d=String(d||'').replace(/\\D/g,'');
+  if(d.length===11)return d.slice(0,3)+'.'+d.slice(3,6)+'.'+d.slice(6,9)+'-'+d.slice(9);
+  if(d.length===14)return d.slice(0,2)+'.'+d.slice(2,5)+'.'+d.slice(5,8)+'/'+d.slice(8,12)+'-'+d.slice(12);
+  return d}
+function nfceFecha(){var o=document.getElementById('nfceov');if(o)o.remove()}
+function nfceOferecer(mesa,depois){
+  window.nfceDepois=depois||function(){};
+  jget('/api/nfce/info?n='+mesa).then(function(i){
+    if(!i||!i.ok||!i.ativo||i.sem_pedido){nfceDepois();return}
+    nfceDialog(mesa,i);
+  }).catch(function(){nfceDepois()});
+}
+function nfceDialog(mesa,info){
+  nfceFecha();
+  var ov=document.createElement('div');ov.id='nfceov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
+  var doc=info.documento_sugerido||'';
+  var h='<div class="card" style="max-width:430px;width:100%;margin:0">';
+  if(info.emitida&&info.nota){
+    h+='<div class="tit" style="margin-top:0">🧾 Nota já emitida</div>'+
+      '<div class="mut">NFC-e nº '+info.nota.numero+' (série '+info.nota.serie+') deste pedido já foi autorizada.</div>'+
+      '<button class="big g" onclick="nfceEmitir('+mesa+',null)">🖨 Reimprimir DANFE</button>'+
+      '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">Fechar</button>';
+  }else{
+    h+='<div class="tit" style="margin-top:0">🧾 Emitir nota fiscal (NFC-e)?</div>'+
+      (info.ambiente===2?'<div class="mut" style="color:#b45309">ambiente de HOMOLOGAÇÃO — sem valor fiscal</div>':'')+
+      '<div class="mut" style="margin-top:6px">CPF ou CNPJ na nota (opcional):</div>'+
+      '<input id="nfcedoc" class="num" inputmode="numeric" placeholder="só números — vazio = sem CPF" value="'+doc+'" style="margin-top:8px">'+
+      (doc?'<div class="mut" style="margin-top:4px">↑ do cadastro do cliente: '+nfceDocFmt(doc)+' — confirme ou apague</div>':'')+
+      '<div id="nfceerr" class="err"></div>'+
+      '<button class="big" onclick="nfceEmitirDoInput('+mesa+')">✓ Emitir nota</button>'+
+      '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">Sem nota</button>';
+  }
+  ov.innerHTML=h+'</div>';
+  document.body.appendChild(ov);
+}
+function nfceEmitirDoInput(mesa){
+  var v=((document.getElementById('nfcedoc')||{}).value||'').replace(/\\D/g,'');
+  if(v&&!nfceDocOk(v)){document.getElementById('nfceerr').textContent='CPF/CNPJ inválido — confira os dígitos';return}
+  nfceEmitir(mesa,v||null);
+}
+async function nfceEmitir(mesa,doc){
+  var ov=document.getElementById('nfceov');
+  if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">🧾 Emitindo NFC-e…</div><div class="mut">falando com a SEFAZ — segura uns segundos</div>';
+  try{
+    var r=await jpost('/api/nfce/emitir',{numero:mesa,documento:doc,destino:'caixa'});
+    if(!r.ok){
+      if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">✗ Nota não saiu</div>'+
+        '<div class="err" style="display:block">'+esc(r.erro||'falhou')+'</div>'+
+        '<div class="mut">A conta continua fechada. Dá pra tentar de novo abrindo a mesa no painel.</div>'+
+        '<button class="big" onclick="nfceFecha();nfceDepois()">OK</button>';
+      return;
+    }
+    FLASH=(FLASH?FLASH+' ':'')+'🧾 NFC-e nº '+r.nota.numero+(r.impresso?' impressa.':' autorizada'+(r.imp_erro?' (impressão: '+r.imp_erro+')':'')+'.');
+    nfceFecha();nfceDepois();
+  }catch(e2){
+    if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">✗ Erro</div><div class="err" style="display:block">'+esc(e2.message)+'</div><button class="big" onclick="nfceFecha();nfceDepois()">OK</button>';
+  }
 }
 /* ---- abrir/fechar o MEU caixa + relatório do dia ---- */
 function telaAbrirCx(el){
@@ -8276,6 +8595,16 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
       if (p === '/api/caixa/cancelamentos') return res.end(JSON.stringify(await apiCaixaCancelamentos()));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // ---- NFC-e: oferecida ao fechar a conta (caixa E maquininha) ----
+    // Aceita sessão de garçom OU de caixa (os dois usam o header x-garcom).
+    if (p === '/api/nfce/info' || (req.method === 'POST' && p === '/api/nfce/emitir')) {
+      let quem = await garcomDaRequisicao(req, u);
+      if (!quem) { const cx = await caixaDaRequisicao(req, u); if (cx) quem = { login: cx.login, nome: cx.nome }; }
+      if (!quem) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/api/nfce/info') return res.end(JSON.stringify(await apiNfceInfo(u.searchParams.get('n') || 0)));
+      return res.end(JSON.stringify(await apiNfceEmitir(await readBody(req), quem)));
     }
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
     if (req.method === 'POST' && p === '/api/lio/pagar') {

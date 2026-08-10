@@ -108,12 +108,13 @@ object Api {
         urlStr: String,
         token: String? = null,
         body: JSONObject? = null,
+        readTimeoutMs: Int = TIMEOUT,
     ): Pair<Int, String> {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = method
             conn.connectTimeout = TIMEOUT
-            conn.readTimeout = TIMEOUT
+            conn.readTimeout = readTimeoutMs
             if (token != null) conn.setRequestProperty("x-garcom", token)
             if (body != null) {
                 conn.doOutput = true
@@ -432,6 +433,66 @@ object Api {
     @Throws(IOException::class)
     fun lioFechar(base: String, token: String, numero: Int): JSONObject =
         postJson("$base/api/lio/fechar", token, JSONObject().put("numero", numero))
+
+    // -------- NFC-e (nota fiscal oferecida ao fechar a conta) --------
+
+    data class NfceInfo(
+        val emitida: Boolean,
+        val notaNumero: Int?,
+        val documentoSugerido: String?,
+        val homologacao: Boolean,
+    )
+
+    /** NFC-e ligada pra esta loja? Já tem nota? CPF do cadastro? null =
+     *  desligada/servidor antigo/fora do ar → o app simplesmente não pergunta. */
+    fun nfceInfo(base: String, token: String, numero: Int): NfceInfo? = try {
+        val j = getJson("$base/api/nfce/info?n=$numero", token)
+        if (!j.optBoolean("ok") || !j.optBoolean("ativo") || j.optBoolean("sem_pedido")) null
+        else NfceInfo(
+            emitida = j.optBoolean("emitida"),
+            notaNumero = j.optJSONObject("nota")?.optInt("numero"),
+            documentoSugerido = j.optStringOrNull("documento_sugerido"),
+            homologacao = j.optInt("ambiente", 2) == 2,
+        )
+    } catch (_: Exception) { null }
+
+    data class NfceResultado(
+        val ok: Boolean,
+        val erro: String?,
+        val notaNumero: Int?,
+        val blocos: List<Lio.Bloco>,
+    )
+
+    /** Emite (ou reimprime — o servidor é idempotente por pedido) e devolve o
+     *  DANFE em blocos pra sair na impressora da própria maquininha. Timeout
+     *  longo: a cadeia loja → central → SEFAZ pode levar vários segundos. */
+    @Throws(IOException::class)
+    fun nfceEmitir(base: String, token: String, numero: Int, documento: String?): NfceResultado {
+        val b = JSONObject().put("numero", numero).put("destino", "lio")
+        if (!documento.isNullOrBlank()) b.put("documento", documento)
+        val (code, resp) = http("POST", "$base/api/nfce/emitir", token, b, readTimeoutMs = 60000)
+        if (code == 401) throw SemSessao()
+        if (code !in 200..299) throw IOException("Servidor respondeu $code")
+        val j = JSONObject(resp)
+        val arr = j.optJSONArray("blocos")
+        val blocos = mutableListOf<Lio.Bloco>()
+        if (arr != null) for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val qr = o.optStringOrNull("qr")
+            if (qr != null) blocos.add(Lio.Bloco(qr = qr))
+            else blocos.add(Lio.Bloco(
+                texto = o.optString("texto", ""),
+                negrito = o.optBoolean("negrito", false),
+                tamanho = o.optInt("tamanho", 18),
+            ))
+        }
+        return NfceResultado(
+            ok = j.optBoolean("ok"),
+            erro = j.optStringOrNull("erro"),
+            notaNumero = j.optJSONObject("nota")?.let { if (it.isNull("numero")) null else it.optInt("numero") },
+            blocos = blocos,
+        )
+    }
 
     /** Nome pelo CPF/telefone (cadastro da casa → já-atendidos → grupo → SPC). */
     fun identificarBuscar(base: String, cpf: String?, tel: String?): JSONObject? = try {

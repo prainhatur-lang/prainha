@@ -135,6 +135,26 @@ export const PERMISSOES: PermissaoDef[] = [
     escopo: 'organizacao',
   },
 
+  // === Fiscal: NFC-e emitida pelo Concilia ===
+  {
+    codigo: 'nfce.read',
+    modulo: 'nfce',
+    acao: 'read',
+    descricao: 'Ver NFC-e emitidas (painel fiscal)',
+  },
+  {
+    codigo: 'nfce.emitir',
+    modulo: 'nfce',
+    acao: 'emitir',
+    descricao: 'Emitir/reenviar NFC-e pelo painel',
+  },
+  {
+    codigo: 'nfce.cancelar',
+    modulo: 'nfce',
+    acao: 'cancelar',
+    descricao: 'Cancelar e inutilizar NFC-e',
+  },
+
   // === Reputacao / avaliacoes de clientes ===
   ...crud('avaliacao', 'avaliações de clientes', [
     { acao: 'configurar', descricao: 'Configurar link do Google, corte e QR codes' },
