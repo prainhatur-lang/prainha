@@ -3217,6 +3217,16 @@ async function apiCaixaFechar(nRaw) {
   const falta = +(total - pago).toFixed(2);
   if (falta > 0.01) return { ok: false, erro: `ainda falta R$ ${falta.toFixed(2)} — receba antes de fechar` };
   await fbFecharPedido(ped);
+  // NOTA FISCAL: fechar a conta é o gatilho único da NFC-e (caixa, maquininha
+  // e Pix caem todos aqui). Sai em segundo plano — nota lenta não pode segurar
+  // a mesa — e o core é idempotente por pedido. Com a NFC-e desligada na
+  // config fiscal, nfceAtiva() devolve false e nada acontece.
+  nfceAtiva().then(async (on) => {
+    if (!on) return;
+    const doc = await nfceDocSugerido(n, ped).catch(() => null);
+    const r = await nfceEmitirCore({ ped, numero: n, documento: doc || '', destino: 'caixa', solicitante: 'auto' });
+    if (!r.ok) console.error('[nfce] auto ' + n + ': ' + (r.erro || 'falhou'));
+  }).catch(() => {});
   // fecha o lado local na hora (o espelho faria isso no próximo ciclo)
   await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
   await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
@@ -6067,8 +6077,18 @@ async function apiPixConferir(txid) {
       const dup = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS
         WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(String(txid))}'`);
       if (dup.ok && dup.rows.length) console.error('[pix] ' + txid + ' já estava no Consumer — não dupliquei');
-      else await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
-        autorizacao: e2e, observacao: marca });
+      else {
+        const pagFb = await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
+          autorizacao: e2e, observacao: marca });
+        // o log LOCAL também precisa do Pix: é dele que sai a lista
+        // "Pagamentos" da mesa e da conta impressa — sem isto o cliente pagava
+        // e o garçom não via o lançamento na tela.
+        await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
+          VALUES (${Number(cob.mesa)}, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${Number(cob.valor)}, ${'pix-cliente'}, ${'ok'}, ${e2e || null}, ${pagFb})`;
+      }
+      // quitou pelo Pix = mesmo ato final do dinheiro e da maquininha: fecha o
+      // pedido e libera a mesa (o apiCaixaFechar barra sozinho se faltar).
+      try { await apiCaixaFechar(Number(cob.mesa)); } catch { /* parcial: segue aberta */ }
     }
   } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
   return { ok: true, pago: true, e2e };
