@@ -1086,7 +1086,16 @@ async function fbCaixaAberto() {
   return Number(r.rows[0].CODIGO);
 }
 async function fbInserirPagamento(ped, pg) {
-  const caixa = await fbCaixaAberto();
+  // Regra do dono: DINHEIRO só entra no caixa DO OPERADOR (o chamador manda
+  // pg.caixa_codigo do caixa dele — sem caixa aberto, não recebe). Cartão/Pix
+  // nunca travam por caixa: caem no aberto que houver, ou o sistema abre o
+  // caixa "ser" sozinho (pagamento sem CODIGOCAIXA não existe na prática:
+  // 2 em 185 mil no banco real — então aqui sempre tem caixa).
+  let caixa = pg.caixa_codigo || null;
+  if (!caixa) {
+    if (Number(pg.forma_codigo) === FORMA.DINHEIRO) throw new Error('dinheiro exige caixa aberto do operador — abra o seu caixa');
+    caixa = await fbCaixaAbertoOuSistema();
+  }
   const nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
   const campos = ['CODIGOPEDIDO', 'CODIGOFORMAPAGAMENTO', 'VALOR', 'DATAPAGAMENTO', 'CODIGOCAIXA', 'CODIGOCATEGORIACONTAS', 'PERCENTUALTAXA', 'INTEGRADOAUTOMACAO', 'OBSERVACAO'];
   const vals = [String(ped), String(pg.forma_codigo), fbNum(pg.valor), 'CURRENT_TIMESTAMP', String(caixa), '1', '0', "'1'", `'${fbEsc(pg.observacao || 'Prainha Vendas')}'`];
@@ -1851,6 +1860,7 @@ async function apiContaPagar(body) {
     const pagFb = await fbInserirPagamento(ped, {
       forma_codigo: fp.cod, valor, nsu: dados.nsu, autorizacao: dados.autorizacao,
       bandeira: dados.bandeira, observacao: body.observacao || 'Prainha Vendas',
+      caixa_codigo: body.caixa_codigo || null,
     });
     await sql`UPDATE venda_pagamento SET status='ok', nsu=${dados.nsu}, autorizacao=${dados.autorizacao},
       bandeira=${dados.bandeira}, pagamento_fb=${pagFb} WHERE id=${log.id}`;
@@ -1904,12 +1914,18 @@ async function apiLioPagar(body, garcom) {
       if (r.ok && r.rows.length) return { ok: true, ja_registrado: true, pagamento_fb: Number(r.rows[0].CODIGO) };
     }
   }
-  return apiContaPagar({
+  const r = await apiContaPagar({
     numero: n, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     observacao: `Prainha LIO · ${garcom.login}`,
   });
+  // Quitou pela maquininha = mesmo ato final do caixa (commit 625761e): fecha
+  // o pedido do jeito que o Consumer fecha e libera a mesa/comanda na hora.
+  if (r.ok && r.quitada) {
+    try { const f = await apiCaixaFechar(n); r.fechada = !!f.ok; } catch { r.fechada = false; }
+  }
+  return r;
 }
 
 // Config da loja pros clientes nativos (app da maquininha): limites de
@@ -2468,6 +2484,9 @@ async function apiGarcomEntrar(body) {
 // AplicarDesconto (12)=pode dar desconto; ContaCorrente (16)=fiado (Bloco 2).
 // Administrador tem tudo. Assim "quem pode" é o que a loja já define no Consumer.
 const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16;
+// controle de caixa: 1 = operação completa, 30 = simplificada (abrir/fechar),
+// 48 = pode fechar com saldo divergente do esperado
+const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48;
 async function permsDoUsuario(login) {
   const l = String(login || '').trim().toLowerCase();
   if (!l) return { ok: false };
@@ -2480,7 +2499,9 @@ async function permsDoUsuario(login) {
   const perms = new Set(r.rows.map((x) => Number(x.PERMISSAO)).filter(Boolean));
   const tem = (cod) => admin || perms.has(cod);
   return { ok: true, login: l, nome: T(r.rows[0].NOME) || l, admin,
-    caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO) };
+    caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
+    abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
+    divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE) };
 }
 async function caixaDaRequisicao(req, u) {
   const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
@@ -2491,7 +2512,8 @@ async function caixaDaRequisicao(req, u) {
 }
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
-  return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado } : { ok: false };
+  return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
+    pode_abrir: p.abrir, pode_divergente: p.divergente } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
   const login = String(body.login || '').trim().toLowerCase();
@@ -2509,10 +2531,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -2599,6 +2621,103 @@ async function apiCaixaFechar(nRaw) {
   await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
   espelho().catch(() => {});
   return { ok: true, fechada: true };
+}
+
+// ---- CONTROLE DE CAIXA: abertura/fechamento diário + relatório ----
+// O Consumer trabalha com UM CAIXA POR OPERADOR/TURNO (conferido no banco da
+// 0003): CAIXA(CODIGOUSUARIO, DATAABERTURA, SALDOINICIAL=fundo de troco,
+// DATAFECHAMENTO, SALDOFINAL=esperado, SALDOFINALINFORMADO=contado,
+// OBSERVACAO "Aberto às HH:MM por NOME"). Replicamos exatamente esse formato.
+function fbHoraLocal() {
+  return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Maceio' });
+}
+async function fbUsuarioCodigo(login) {
+  const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(COALESCE(NOME,'')) NOME FROM VWUSUARIOS WHERE ATIVO='S' AND LOWER(TRIM(LOGIN))='${fbEsc(String(login || '').toLowerCase())}'`);
+  if (!r.ok || !r.rows.length) return null;
+  return { codigo: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME) };
+}
+async function fbCaixaDoOperador(login) {
+  const u = await fbUsuarioCodigo(login);
+  if (!u) return null;
+  const r = await qi(`SELECT FIRST 1 CODIGO, DATAABERTURA, SALDOINICIAL FROM CAIXA WHERE CODIGOUSUARIO=${u.codigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
+  if (!r.ok || !r.rows.length) return null;
+  return { codigo: Number(r.rows[0].CODIGO), desde: r.rows[0].DATAABERTURA, fundo: Number(r.rows[0].SALDOINICIAL) || 0, usuario: u };
+}
+async function fbAbrirCaixa(usuarioCodigo, fundo, obs) {
+  const r = await qi(`INSERT INTO CAIXA (CODIGOUSUARIO, DATAABERTURA, SALDOINICIAL, OBSERVACAO) VALUES (${usuarioCodigo}, CURRENT_TIMESTAMP, ${fbNum(fundo)}, '${fbEsc(obs)}')`);
+  if (!r.ok) throw new Error('FB abrir caixa: ' + r.err);
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE CODIGOUSUARIO=${usuarioCodigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
+  return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+}
+// Caixa pro pagamento ELETRÔNICO: o aberto que houver; sem nenhum, abre o do
+// usuário "ser" (sistema) sozinho — a maquininha não pode travar por caixa.
+async function fbCaixaAbertoOuSistema() {
+  try { return await fbCaixaAberto(); } catch { /* nenhum aberto: abre o do sistema */ }
+  const s = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='ser' AND ATIVO='S'`);
+  if (!s.ok || !s.rows.length) throw new Error('nenhum caixa aberto e não achei o usuário do sistema (ser)');
+  const cod = await fbAbrirCaixa(Number(s.rows[0].CODIGO), 0, `Aberto automaticamente às ${fbHoraLocal()} (maquininha/Pix, sem caixa aberto)`);
+  if (cod == null) throw new Error('não consegui abrir o caixa automático');
+  return cod;
+}
+/** O que passou pela GAVETA deste caixa (pra conferência do fechamento). */
+async function fbResumoCaixa(caixaCodigo) {
+  const din = await qi(`SELECT COALESCE(SUM(VALOR),0) V FROM PAGAMENTOS WHERE CODIGOCAIXA=${caixaCodigo} AND CODIGOFORMAPAGAMENTO=${FORMA.DINHEIRO} AND DATADELETE IS NULL`);
+  const mov = await qi(`SELECT COALESCE(SUM(COALESCE(VALORENTRADA,0)),0) E, COALESCE(SUM(COALESCE(VALORSAIDA,0)),0) S FROM CAIXAOPERACAO WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL`);
+  return { dinheiro: Number(din.rows?.[0]?.V) || 0, entradas: Number(mov.rows?.[0]?.E) || 0, saidas: Number(mov.rows?.[0]?.S) || 0 };
+}
+async function apiCaixaEstado(quem) {
+  const cx = await fbCaixaDoOperador(quem.login);
+  if (!cx) return { ok: true, aberto: null };
+  const r = await fbResumoCaixa(cx.codigo);
+  const esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
+  return { ok: true, aberto: { codigo: cx.codigo, desde: cx.desde, fundo: cx.fundo,
+    dinheiro: +r.dinheiro.toFixed(2), entradas: r.entradas, saidas: r.saidas, esperado } };
+}
+async function apiCaixaAbrir(body, quem) {
+  if (!quem.abrir) return { ok: false, erro: 'sem permissão de abrir caixa (Operação de caixa no Consumer)' };
+  if (await fbCaixaDoOperador(quem.login)) return { ok: false, erro: 'você já tem um caixa aberto — feche antes de abrir outro' };
+  const fundo = +Number(body.fundo || 0).toFixed(2);
+  if (!(fundo >= 0)) return { ok: false, erro: 'fundo inválido' };
+  const u = await fbUsuarioCodigo(quem.login);
+  if (!u) return { ok: false, erro: 'não achei seu usuário no Consumer' };
+  const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`);
+  return { ok: true, codigo: cod, fundo };
+}
+async function apiCaixaFecharCaixa(body, quem) {
+  const cx = await fbCaixaDoOperador(quem.login);
+  if (!cx) return { ok: false, erro: 'você não tem caixa aberto' };
+  const r = await fbResumoCaixa(cx.codigo);
+  const esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
+  if (body.contado == null || body.contado === '') return { ok: false, erro: 'conte a gaveta e informe o total' };
+  const contado = +Number(body.contado).toFixed(2);
+  if (!(contado >= 0)) return { ok: false, erro: 'valor contado inválido' };
+  const dif = +(contado - esperado).toFixed(2);
+  // bateu = fecha; divergiu = só quem tem a permissão 48 (ou operação
+  // completa/admin) confirma — é a mesma regra do Consumer
+  if (Math.abs(dif) > 0.01 && !quem.divergente)
+    return { ok: false, divergente: true, esperado, contado, dif,
+      erro: `o contado difere do esperado em R$ ${dif.toFixed(2)} — chame quem pode fechar divergente` };
+  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(contado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
+  if (!up.ok) return { ok: false, erro: 'FB fechar caixa: ' + up.err };
+  return { ok: true, esperado, contado, dif };
+}
+// Relatório do DIA (desde 00:00 da loja): por forma, caixas e gaveta.
+async function apiCaixaRelatorio() {
+  const formas = await qi(`SELECT p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) NOME, SUM(p.VALOR) V, COUNT(*) N
+    FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
+    WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= CURRENT_DATE
+    GROUP BY p.CODIGOFORMAPAGAMENTO, f.DESCRICAO ORDER BY 3 DESC`);
+  if (!formas.ok) return { ok: false, erro: 'FB relatório: ' + formas.err };
+  const caixas = await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME, u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, c.SALDOINICIAL, c.SALDOFINAL, c.SALDOFINALINFORMADO
+    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO
+    WHERE c.DATAABERTURA >= CURRENT_DATE OR c.DATAFECHAMENTO IS NULL ORDER BY c.CODIGO DESC`);
+  const movs = await qi(`SELECT o.CODIGOCAIXA CX, o.DATAOPERACAO DT, COALESCE(o.VALORENTRADA,0) E, COALESCE(o.VALORSAIDA,0) S, TRIM(COALESCE(o.OBSERVACAO,'')) OBS
+    FROM CAIXAOPERACAO o WHERE o.DATADELETE IS NULL AND o.DATAOPERACAO >= CURRENT_DATE ORDER BY o.CODIGO DESC`);
+  return { ok: true,
+    formas: (formas.rows || []).map((x) => ({ codigo: Number(x.F), nome: T(x.NOME) || ('forma ' + x.F), valor: +(Number(x.V) || 0).toFixed(2), n: Number(x.N) })),
+    caixas: (caixas.ok ? caixas.rows : []).map((x) => ({ codigo: Number(x.CODIGO), quem: T(x.QUEM), aberto_em: x.DATAABERTURA, fechado_em: x.DATAFECHAMENTO,
+      fundo: Number(x.SALDOINICIAL) || 0, esperado: x.SALDOFINAL == null ? null : Number(x.SALDOFINAL), contado: x.SALDOFINALINFORMADO == null ? null : Number(x.SALDOFINALINFORMADO) })),
+    movs: (movs.ok ? movs.rows : []).map((x) => ({ caixa: Number(x.CX), quando: x.DT, entrada: Number(x.E) || 0, saida: Number(x.S) || 0, obs: T(x.OBS) })) };
 }
 
 // ---- HISTÓRICO do que já saiu (últimas baixas) ----
@@ -7513,8 +7632,8 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 <div class="wrap" id="app"></div>
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
-var NOME=null,PODE={desconto:false,fiado:false},MESA=null,CONTA=null,DMODO='valor';
-var TELA='login',MESAS=null,FLASH=null;
+var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false},MESA=null,CONTA=null,DMODO='valor';
+var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -7806,12 +7925,21 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/receber') {
         const b = await readBody(req);
-        const r = await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' });
+        // dinheiro entra na gaveta de QUEM está logado — sem o caixa dele
+        // aberto, não recebe (regra do dono: abertura só pra quem pega dinheiro)
+        const cx = await fbCaixaDoOperador(quem.login);
+        if (!cx) return res.end(JSON.stringify({ ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' }));
+        const r = await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual',
+          caixa_codigo: cx.codigo, observacao: 'Caixa · ' + (quem.nome || quem.login) });
         // caixa que recebe é caixa que libera: quitou -> fecha o pedido na hora
         if (r.ok && r.quitada) { const f = await apiCaixaFechar(b.numero); r.fechada = !!f.ok; }
         return res.end(JSON.stringify(r));
       }
       if (req.method === 'POST' && p === '/api/caixa/fechar') return res.end(JSON.stringify(await apiCaixaFechar((await readBody(req)).numero)));
+      if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
+      if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
