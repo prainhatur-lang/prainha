@@ -4072,7 +4072,7 @@ async function apiBaixas(limite, area) {
 }
 
 // ---- HTML (uma SPA; rota / = produção, /entrega = entrega) ----
-const HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/app.webmanifest?t=kds"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — KDS</title><style>
 :root{--bg:#f2f2f5;--card:#ffffff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--deliv:#2563eb;--mesa:#c0850f;--roxo:#6d5bd0;--roxo2:#5a49bd}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
@@ -4490,7 +4490,7 @@ setInterval(async function(){
 </script></body></html>`;
 
 // ---- /venda — tela do garçom (mobile) ----
-const VENDA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+const VENDA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="manifest" href="/app.webmanifest?t=venda"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Venda</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--roxo:#6d5bd0}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:120px}
@@ -8280,7 +8280,7 @@ telaNumero();
 </script></body></html>`;
 
 // ---- /caixa — tela restrita (Bloco 1): login, abrir mesa, desconto/acréscimo, receber dinheiro ----
-const CAIXA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+const CAIXA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="manifest" href="/app.webmanifest?t=caixa"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Caixa</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
@@ -8946,6 +8946,39 @@ setInterval(function(){
 inicio();
 </script></body></html>`;
 
+// Ícone do atalho: PNG gerado aqui (zlib do próprio Node), sem arquivo nem
+// dependência — quadrado na cor da casa com uma faixa clara no meio.
+let _iconeCache = new Map();
+function iconePng(n) {
+  if (_iconeCache.has(n)) return _iconeCache.get(n);
+  const crcTab = [];
+  for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); crcTab[i] = c >>> 0; }
+  const crc = (buf) => { let c = 0xFFFFFFFF; for (const b of buf) c = crcTab[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  const chunk = (tipo, dados) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(dados.length);
+    const corpo = Buffer.concat([Buffer.from(tipo, 'latin1'), dados]);
+    const c = Buffer.alloc(4); c.writeUInt32BE(crc(corpo));
+    return Buffer.concat([len, corpo, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(n, 0); ihdr.writeUInt32BE(n, 4);
+  ihdr[8] = 8; ihdr[9] = 2; // 8 bits, RGB
+  const linhas = [];
+  const faixa0 = Math.floor(n * 0.42), faixa1 = Math.floor(n * 0.58);
+  for (let y = 0; y < n; y++) {
+    const l = Buffer.alloc(1 + n * 3); // filtro 0 + pixels
+    for (let x = 0; x < n; x++) {
+      const dentro = y >= faixa0 && y < faixa1 && x > n * 0.18 && x < n * 0.82;
+      const [r, g, b] = dentro ? [255, 255, 255] : [224, 101, 26]; // laranja da casa
+      l[1 + x * 3] = r; l[2 + x * 3] = g; l[3 + x * 3] = b;
+    }
+    linhas.push(l);
+  }
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(linhas))), chunk('IEND', Buffer.alloc(0))]);
+  _iconeCache.set(n, png);
+  return png;
+}
 function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
 
 // VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
@@ -8969,6 +9002,31 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('expires', '0');
     res.setHeader('x-app-versao', VERSAO);
 
+    // ---- ATALHO DE TELA CHEIA (sem barra de endereço) ----
+    // "Adicionar à tela inicial" só abre em modo app quando existe manifest
+    // com display=standalone. O ?t= diz QUAL tela o atalho abre, então o mesmo
+    // servidor vira "app do caixa", "app do KDS" e "app da entrega".
+    if (p === '/app.webmanifest') {
+      const t = String(u.searchParams.get('t') || 'kds');
+      const TELAS = { caixa: { nome: LOJA_NOME + ' Caixa', start: '/caixa' },
+        venda: { nome: LOJA_NOME + ' Garçom', start: '/venda' },
+        entrega: { nome: LOJA_NOME + ' Entrega', start: '/entrega' },
+        kds: { nome: LOJA_NOME + ' Produção', start: '/' } };
+      const cfg = TELAS[t] || TELAS.kds;
+      res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        name: cfg.nome, short_name: cfg.nome.split(' ').pop(), start_url: cfg.start, scope: '/',
+        display: 'fullscreen', display_override: ['fullscreen', 'standalone'],
+        orientation: 'landscape', background_color: '#f2f2f5', theme_color: '#1b1b20',
+        icons: [{ src: '/app-icon.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+                { src: '/app-icon.png?g=512', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }],
+      }));
+    }
+    if (p === '/app-icon.png') {
+      const n = Number(u.searchParams.get('g')) === 512 ? 512 : 192;
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' });
+      return res.end(iconePng(n));
+    }
     if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
     if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
