@@ -3181,15 +3181,46 @@ async function apiCaixaMovimento(body, quem) {
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
   const motivo = String(body.motivo || '').trim();
   if (!motivo) return { ok: false, erro: 'diga o motivo — sangria sem motivo não existe' };
+  // sangria registra QUEM LEVA o dinheiro (regra do dono): o caixa entrega pra
+  // alguém, e é esse alguém que responde pelo valor até chegar no cofre
+  const leva = String(body.quem_leva || '').trim();
+  if (body.tipo === 'sangria' && !leva) return { ok: false, erro: 'diga QUEM está levando o dinheiro' };
   if (m.campo === 'VALORSAIDA') {
     const r = await fbResumoCaixa(cx.codigo);
     const gaveta = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
     if (valor > gaveta + 0.009) return { ok: false, erro: `a gaveta não tem esse valor (esperado: R$ ${gaveta.toFixed(2)})` };
   }
-  const ins = await qi(`INSERT INTO CAIXAOPERACAO (CODIGOCAIXA, CODIGOFORMAPAGAMENTO, DATAOPERACAO, ${m.campo}, OBSERVACAO, TIPO)
-    VALUES (${cx.codigo}, ${FORMA.DINHEIRO}, CURRENT_TIMESTAMP, ${fbNum(valor)}, '${fbEsc(motivo + ' · ' + (quem.nome || quem.login))}', '${m.tipo}')`);
+  // DESPESA cria a conta a pagar linkada ao FORNECEDOR, idêntico ao Consumer
+  // (conferido no banco: categoria 32, competência 'cx', parcela 1/1, paga na
+  // hora, descrição "Saída do caixa N . motivo" — até vale-transporte é assim,
+  // com o funcionário cadastrado como fornecedor)
+  let contasPagar = null;
+  if (body.tipo === 'despesa') {
+    const forn = Number(body.fornecedor_codigo) || 0;
+    if (!forn) return { ok: false, erro: 'busque e escolha quem está recebendo (fornecedor/pessoa)' };
+    const desc = `Saída do caixa ${cx.codigo} . ${motivo}`;
+    const insCp = await qi(`INSERT INTO CONTASPAGAR (CODIGOCATEGORIACONTAS, CODIGOFORNECEDOR, PARCELA, TOTALPARCELAS, DATAVENCIMENTO, VALOR, DATAPAGAMENTO, VALORPAGO, DATACADASTRO, COMPETENCIA, DESCRICAO, OBSERVACAO)
+      VALUES (32, ${forn}, 1, 1, CURRENT_DATE, ${fbNum(valor)}, CURRENT_DATE, ${fbNum(valor)}, CURRENT_TIMESTAMP, 'cx', '${fbEsc(desc)}', 'Conta criada automaticamente ao executar saída do caixa.')`);
+    if (!insCp.ok) return { ok: false, erro: 'FB conta a pagar: ' + insCp.err };
+    const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTASPAGAR WHERE CODIGOFORNECEDOR=${forn} AND COMPETENCIA='cx' ORDER BY CODIGO DESC`);
+    contasPagar = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  }
+  const obs = (body.tipo === 'sangria' ? 'levou: ' + leva + ' · ' : '') + motivo + ' · ' + (quem.nome || quem.login);
+  const campos = ['CODIGOCAIXA', 'CODIGOFORMAPAGAMENTO', 'DATAOPERACAO', m.campo, 'OBSERVACAO', 'TIPO'];
+  const vals = [String(cx.codigo), String(FORMA.DINHEIRO), 'CURRENT_TIMESTAMP', fbNum(valor), `'${fbEsc(obs)}'`, `'${m.tipo}'`];
+  if (contasPagar != null) { campos.push('CODIGOCONTASPAGAR'); vals.push(String(contasPagar)); }
+  const ins = await qi(`INSERT INTO CAIXAOPERACAO (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
   if (!ins.ok) return { ok: false, erro: 'FB movimento: ' + ins.err };
-  return { ok: true, tipo: body.tipo, valor };
+  return { ok: true, tipo: body.tipo, valor, contas_pagar: contasPagar };
+}
+/** Busca de fornecedor pra despesa da gaveta (funcionário também é fornecedor). */
+async function apiCaixaFornecedores(qRaw) {
+  const t = String(qRaw || '').trim().toUpperCase();
+  if (t.length < 2) return { ok: true, fornecedores: [] };
+  const r = await qi(`SELECT FIRST 12 CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC FROM FORNECEDORES
+    WHERE DATADELETE IS NULL AND UPPER(NOME) LIKE '%${fbEsc(t)}%' ORDER BY NOME`);
+  if (!r.ok) return { ok: false, erro: r.err };
+  return { ok: true, fornecedores: r.rows.map((x) => ({ codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC) })) };
 }
 // Relatório do DIA (desde 00:00 da loja): por forma, caixas e gaveta.
 async function apiCaixaRelatorio() {
@@ -8500,29 +8531,57 @@ async function acaoFechaCx(){
   await cxEstado();voltarMesas();
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
-var MOVT='sangria';
+var MOVT='sangria',FORN=null;
 function telaMov(el){
-  MOVT='sangria';
+  MOVT='sangria';FORN=null;
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">↕ Gaveta do meu caixa</div>'+
     '<div class="row" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:8px">'+
       '<button class="seg on" id="mv-sangria" onclick="setMov(\\'sangria\\')">Sangria</button>'+
       '<button class="seg" id="mv-despesa" onclick="setMov(\\'despesa\\')">Despesa</button>'+
       '<button class="seg" id="mv-suprimento" onclick="setMov(\\'suprimento\\')">Suprimento</button></div>'+
-    '<div class="mut" id="mvdica">Sangria = retirar dinheiro da gaveta pro cofre.</div>'+
+    '<div class="mut" id="mvdica"></div>'+
+    '<div id="mvxtra"></div>'+
     '<input id="mvv" class="num" inputmode="decimal" placeholder="quanto? (R$)" style="margin-top:8px">'+
     '<input id="mvm" placeholder="motivo (obrigatório)" style="margin-top:8px">'+
     '<button class="big o" onclick="acaoMov()">Confirmar</button>'+
     '<div id="mverr" class="err"></div></div>';
-  var e=document.getElementById('mvv');if(e)e.focus();
+  setMov('sangria');
 }
 function setMov(t){
-  MOVT=t;
+  MOVT=t;FORN=null;
   ['sangria','despesa','suprimento'].forEach(function(k){var b=document.getElementById('mv-'+k);if(b)b.className='seg'+(k===t?' on':'')});
   var d=document.getElementById('mvdica');
   if(d)d.textContent=t==='sangria'?'Sangria = retirar dinheiro da gaveta pro cofre.'
-    :t==='despesa'?'Despesa = pagamento feito com dinheiro da gaveta (ex.: vale-transporte).'
+    :t==='despesa'?'Despesa = pagamento com dinheiro da gaveta. Escolha QUEM recebe (funcionário também é cadastrado como fornecedor).'
     :'Suprimento = dinheiro ENTRANDO na gaveta (troco, reforço).';
+  var x=document.getElementById('mvxtra');
+  if(!x)return;
+  if(t==='sangria')x.innerHTML='<input id="mvleva" placeholder="QUEM está levando o dinheiro? (obrigatório)" style="margin-top:8px">';
+  else if(t==='despesa')x.innerHTML='<input id="mvfq" placeholder="buscar fornecedor/pessoa… (2+ letras)" style="margin-top:8px" oninput="buscaForn()">'+
+    '<div id="mvfl"></div><div id="mvfsel" class="mut" style="margin-top:4px"></div>';
+  else x.innerHTML='';
+}
+var _fT=null;
+function buscaForn(){
+  clearTimeout(_fT);
+  _fT=setTimeout(async function(){
+    var q=((document.getElementById('mvfq')||{}).value||'').trim();
+    var l=document.getElementById('mvfl');if(!l)return;
+    if(q.length<2){l.innerHTML='';return}
+    var r;try{r=await jget('/api/caixa/fornecedores?q='+encodeURIComponent(q))}catch(e){return}
+    if(!r.ok){l.innerHTML='<div class="err">'+esc(r.erro||'busca falhou')+'</div>';return}
+    l.innerHTML=r.fornecedores.length
+      ? '<div class="lst" style="grid-template-columns:1fr;margin-top:6px">'+r.fornecedores.map(function(f){
+          return '<button class="mchip" onclick="escolheForn('+f.codigo+',\\''+esc(f.nome).replace(/'/g,'')+'\\')"><b>'+esc(f.nome)+'</b>'+(f.doc?'<small>'+esc(f.doc)+'</small>':'')+'</button>'}).join('')+'</div>'
+      : '<div class="mut" style="margin-top:6px">ninguém com esse nome — cadastre o fornecedor no Consumer primeiro</div>';
+  },300);
+}
+function escolheForn(c,n){
+  FORN={codigo:c,nome:n};
+  var l=document.getElementById('mvfl');if(l)l.innerHTML='';
+  var q=document.getElementById('mvfq');if(q)q.value=n;
+  var s=document.getElementById('mvfsel');if(s)s.innerHTML='✓ recebe: <b>'+esc(n)+'</b>';
 }
 async function acaoMov(){
   var v=numBr((document.getElementById('mvv')||{}).value);
@@ -8530,9 +8589,19 @@ async function acaoMov(){
   var er=document.getElementById('mverr');
   if(!(v>0)){er.textContent='digite o valor';return}
   if(!m){er.textContent='diga o motivo';return}
-  var r=await jpost('/api/caixa/movimento',{tipo:MOVT,valor:v,motivo:m});
+  var b={tipo:MOVT,valor:v,motivo:m};
+  if(MOVT==='sangria'){
+    b.quem_leva=((document.getElementById('mvleva')||{}).value||'').trim();
+    if(!b.quem_leva){er.textContent='diga QUEM está levando o dinheiro';return}
+  }
+  if(MOVT==='despesa'){
+    if(!FORN){er.textContent='busque e escolha quem está recebendo';return}
+    b.fornecedor_codigo=FORN.codigo;
+  }
+  var r=await jpost('/api/caixa/movimento',b);
   if(!r.ok){er.textContent=r.erro||'não deu';return}
-  FLASH='✓ '+(MOVT==='suprimento'?'Suprimento de ':MOVT==='sangria'?'Sangria de ':'Despesa de ')+brl(v)+' registrada na gaveta.';
+  FLASH='✓ '+(MOVT==='suprimento'?'Suprimento de ':MOVT==='sangria'?'Sangria de ':'Despesa de ')+brl(v)+
+    (MOVT==='sangria'?' — levou '+b.quem_leva:MOVT==='despesa'?' — pra '+FORN.nome+' (conta a pagar criada)':'')+'.';
   await cxEstado();voltarMesas();
 }
 async function telaRel(el){
@@ -8734,6 +8803,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
+      if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
