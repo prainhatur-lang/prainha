@@ -8513,10 +8513,12 @@ function nfceDialog(mesa,info){
   var doc=info.documento_sugerido||'';
   var h='<div class="card" style="max-width:430px;width:100%;margin:0">';
   if(info.emitida&&info.nota){
+    // O caixa imprime SÓ na emissão. 2ª via do DANFE é papel da administração:
+    // painel do Concilia → Movimentação → NFC-e emitidas → 🖨 DANFE.
     h+='<div class="tit" style="margin-top:0">🧾 Nota já emitida</div>'+
-      '<div class="mut">NFC-e nº '+info.nota.numero+' (série '+info.nota.serie+') deste pedido já foi autorizada.</div>'+
-      '<button class="big g" onclick="nfceEmitir('+mesa+',null)">🖨 Reimprimir DANFE</button>'+
-      '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">Fechar</button>';
+      '<div class="mut">NFC-e nº '+info.nota.numero+' (série '+info.nota.serie+') deste pedido já foi autorizada.'+
+      '<br>2ª via do DANFE: no Concilia (app.prainhabar.com) → Movimentação → NFC-e emitidas → 🖨 DANFE.</div>'+
+      '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceFecha();nfceDepois()">OK</button>';
   }else if(info.na_fila){
     h+='<div class="tit" style="margin-top:0">🕐 Nota na fila</div>'+
       '<div class="mut">A NFC-e deste pedido está aguardando a SEFAZ/central responder — o sistema reenvia sozinho a cada 2 min e imprime quando sair. A mesa já está liberada.</div>'+

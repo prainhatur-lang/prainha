@@ -171,10 +171,10 @@ function fmtDataBr(iso: string | Date | null | undefined): string | null {
   return `${p(brt.getUTCDate())}/${p(brt.getUTCMonth() + 1)}/${brt.getUTCFullYear()} ${p(brt.getUTCHours())}:${p(brt.getUTCMinutes())}:${p(brt.getUTCSeconds())}`;
 }
 
-/** Monta a resposta (nota + DANFE nas duas larguras) a partir da linha do banco. */
-export function respostaDaNota(row: NfceRow, cfg: FiscalConfig, cnpj: string, jaExistia: boolean) {
+/** DadosDanfe a partir da linha do banco (usado na emissão e na 2ª via do painel). */
+export function dadosDanfeDaNota(row: NfceRow, cfg: FiscalConfig, cnpj: string) {
   const e = cfg.endereco!;
-  const dados = {
+  return {
     razaoSocial: cfg.razaoSocial ?? '',
     nomeFantasia: cfg.nomeFantasia ?? null,
     cnpj,
@@ -205,6 +205,11 @@ export function respostaDaNota(row: NfceRow, cfg: FiscalConfig, cnpj: string, ja
     infoExtra: row.infoExtra,
     cancelada: row.status === 'CANCELADA',
   };
+}
+
+/** Monta a resposta (nota + DANFE nas duas larguras) a partir da linha do banco. */
+export function respostaDaNota(row: NfceRow, cfg: FiscalConfig, cnpj: string, jaExistia: boolean) {
+  const dados = dadosDanfeDaNota(row, cfg, cnpj);
   return {
     ok: true as const,
     jaExistia,
