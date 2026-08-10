@@ -12,6 +12,7 @@ import android.widget.EditText
 import android.widget.GridView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 // Grade de mesas/comandas abertas (GET /api/venda/abertas — espelho local,
@@ -51,7 +52,7 @@ class MesasActivity : AppCompatActivity() {
             (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME
         findViewById<Button>(R.id.sair).setOnClickListener { logout() }
         findViewById<Button>(R.id.abrir).setOnClickListener { abrirDigitada() }
-        pendentesBanner.setOnClickListener { reenviarPendentes() }
+        pendentesBanner.setOnClickListener { dialogPendentes() }
 
         lista.adapter = adapter
         lista.setOnItemClickListener { _, _, pos, _ -> abrirConta(adapter.itens[pos].numero) }
@@ -115,7 +116,37 @@ class MesasActivity : AppCompatActivity() {
     private fun atualizarPendentes() {
         val n = Pendentes.quantidade(this)
         pendentesBanner.visibility = if (n > 0) View.VISIBLE else View.GONE
-        if (n > 0) pendentesBanner.text = "⚠ $n pagamento(s) da maquininha sem registro — toque pra reenviar"
+        if (n > 0) pendentesBanner.text = "⚠ $n pagamento(s) da maquininha sem registro — toque pra resolver"
+    }
+
+    /** Toque no aviso: lista os pendentes e oferece reenviar OU descartar
+     *  (descartar = pedido foi cancelado, ex.: teste — não registra nunca). */
+    private fun dialogPendentes() {
+        val itens = Pendentes.listar(this)
+        if (itens.isEmpty()) { atualizarPendentes(); return }
+        val resumo = itens.joinToString("\n") { p ->
+            val n = p.optInt("numero")
+            "• ${if (Session.ehComanda(this, n)) "Comanda" else "Mesa"} $n — " +
+                Cupom.brl(p.optDouble("valor", 0.0)) + " (${p.optString("forma")})" +
+                (p.optString("nsu").takeIf { it.isNotBlank() }?.let { " · NSU $it" } ?: "")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("${itens.size} pagamento(s) sem registro")
+            .setMessage(resumo + "\n\nREENVIAR tenta registrar de novo.\nDESCARTAR apaga da fila sem registrar — só pra pedido cancelado (testes).")
+            .setPositiveButton("Reenviar") { _, _ -> reenviarPendentes() }
+            .setNegativeButton("Descartar todos") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setMessage("Descartar ${itens.size} pagamento(s)? Eles NÃO serão registrados no sistema.")
+                    .setPositiveButton("Descartar") { _, _ ->
+                        Pendentes.limpar(this)
+                        atualizarPendentes()
+                        Toast.makeText(this, "Fila limpa", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Voltar", null)
+                    .show()
+            }
+            .setNeutralButton("Fechar", null)
+            .show()
     }
 
     private fun reenviarPendentes(silencioso: Boolean = false) {

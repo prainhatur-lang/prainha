@@ -48,4 +48,8 @@ object Pendentes {
     }
 
     fun quantidade(ctx: Context): Int = fila(ctx).length()
+
+    /** Esvazia a fila — pra pendente de pedido CANCELADO (ex.: teste), que
+     *  nunca vai registrar. O pagamento não entra no sistema. */
+    fun limpar(ctx: Context) = salvar(ctx, JSONArray())
 }

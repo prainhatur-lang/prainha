@@ -70,8 +70,8 @@ android {
         // Fechar), pergunta se o cliente quer nota fiscal; valida CPF/CNPJ
         // (ou confirma o do cadastro), o central emite na SEFAZ e o DANFE
         // com QR Code sai na impressora da própria maquininha.
-        versionCode = 18
-        versionName = "1.9.0"
+        versionCode = 19
+        versionName = "1.9.1"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
