@@ -51,6 +51,7 @@ class MesasActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.garcomNome).text =
             (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME
         findViewById<Button>(R.id.sair).setOnClickListener { logout() }
+        findViewById<Button>(R.id.fechamentoDia).setOnClickListener { dialogFechamento() }
         findViewById<Button>(R.id.abrir).setOnClickListener { abrirDigitada() }
         pendentesBanner.setOnClickListener { dialogPendentes() }
 
@@ -174,6 +175,103 @@ class MesasActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    // ---- Fechamento do dia: SISTEMA × TERMINAL, NSU a NSU ----
+    // A promessa do caixa-só-maquininha: se os dois lados batem, não há o que
+    // conferir na mão. O lado do terminal vem do catálogo do SDK; se a
+    // plataforma não suportar a listagem, a tela mostra só o lado do sistema
+    // (que já serve pra bater contra o Resumo de Vendas da própria Cielo).
+    private fun dialogFechamento() {
+        val tk = Session.token(this) ?: return logout()
+        val espera = AlertDialog.Builder(this).setMessage("🧾 Conferindo o dia…").setCancelable(false).create()
+        espera.show()
+        val prosseguir = {
+            Thread {
+                val resumo = try {
+                    Api.lioResumoDia(Session.servidor(this), tk)
+                } catch (e: Api.SemSessao) {
+                    runOnUiThread { espera.dismiss(); logout() }
+                    null
+                } catch (e: Exception) { null }
+                if (resumo != null) {
+                    val term = Lio.vendasDoTerminal()
+                    runOnUiThread { espera.dismiss(); mostrarFechamento(resumo, term) }
+                } else if (Session.token(this) != null) {
+                    runOnUiThread {
+                        espera.dismiss()
+                        Toast.makeText(this, "Servidor não respondeu o resumo do dia (atualize o vendas-local?)", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+        }
+        // O lado do terminal exige o serviço de pagamento conectado.
+        if (Lio.configured() && !Lio.pronto) Lio.bind(this, onReady = { prosseguir() }, onError = { prosseguir() })
+        else prosseguir()
+    }
+
+    private fun mostrarFechamento(resumo: org.json.JSONObject, term: List<Lio.VendaTerminal>?) {
+        val qtd = resumo.optInt("qtd")
+        val total = resumo.optDouble("total", 0.0)
+        val sb = StringBuilder("SISTEMA hoje: $qtd pagamento(s) · ${Cupom.brl(total)}")
+        resumo.optJSONObject("formas")?.let { f ->
+            f.keys().forEach { k ->
+                val o = f.optJSONObject(k) ?: return@forEach
+                sb.append("\n  $k: ${o.optInt("qtd")} · ${Cupom.brl(o.optDouble("total", 0.0))}")
+            }
+        }
+        val pags = resumo.optJSONArray("pagamentos")
+        val nsusServidor = mutableSetOf<String>()
+        if (pags != null) for (i in 0 until pags.length()) {
+            pags.optJSONObject(i)?.optStringOrNull("nsu")?.let { nsusServidor.add(it) }
+        }
+
+        if (term == null) {
+            sb.append("\n\nTERMINAL: listagem indisponível — confira contra o Resumo de Vendas da própria maquininha (app Cielo).")
+        } else {
+            val hoje = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("America/Sao_Paulo") }
+                .format(java.util.Date())
+            val comData = term.any { it.dia != null }
+            val termHoje = if (comData) term.filter { it.dia == hoje } else emptyList()
+            if (!comData) {
+                sb.append("\n\nTERMINAL: ${term.size} venda(s) no catálogo (sem data legível — comparação só pelo NSU).")
+                val semPar = nsusServidor.filter { nsu -> term.none { it.nsu == nsu } }
+                if (semPar.isEmpty()) sb.append("\n✓ Todos os registros de hoje têm par no terminal.")
+                else sb.append("\n⚠ Registrados HOJE sem par no terminal: NSU ${semPar.joinToString(", ")}")
+            } else {
+                val totalTerm = termHoje.sumOf { it.valorCentavos } / 100.0
+                sb.append("\n\nTERMINAL hoje: ${termHoje.size} venda(s) · ${Cupom.brl(totalTerm)}")
+                val semRegistro = termHoje.filter { it.nsu !in nsusServidor }
+                val nsusTerm = termHoje.map { it.nsu }.toSet()
+                val semPar = nsusServidor.filter { it !in nsusTerm }
+                when {
+                    semRegistro.isEmpty() && semPar.isEmpty() && termHoje.size == qtd ->
+                        sb.append("\n\n✅ BATEU — terminal e sistema idênticos, caixa conferido.")
+                    else -> {
+                        if (semRegistro.isNotEmpty()) sb.append("\n⚠ No TERMINAL sem registro no sistema:\n" +
+                            semRegistro.joinToString("\n") { "  NSU ${it.nsu} · ${Cupom.brl(it.valorCentavos / 100.0)}" })
+                        if (semPar.isNotEmpty()) sb.append("\n⚠ No SISTEMA sem par no terminal: NSU ${semPar.joinToString(", ")}")
+                    }
+                }
+            }
+        }
+
+        val texto = sb.toString()
+        AlertDialog.Builder(this)
+            .setTitle("🧾 Fechamento do dia")
+            .setMessage(texto)
+            .setPositiveButton("🖨 Imprimir") { _, _ ->
+                Lio.imprimirBlocos(this, listOf(
+                    Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DO DIA", negrito = true, tamanho = 22),
+                    Lio.Bloco(Cupom.agoraBr(), tamanho = 16),
+                    Lio.Bloco(texto, tamanho = 18),
+                    Lio.Bloco("\n\n\n\n", tamanho = 12),
+                ), onOk = { runOnUiThread { Toast.makeText(this, "Fechamento impresso!", Toast.LENGTH_SHORT).show() } },
+                    onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
     }
 
     private fun logout() {

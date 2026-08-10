@@ -434,6 +434,12 @@ object Api {
     fun lioFechar(base: String, token: String, numero: Int): JSONObject =
         postJson("$base/api/lio/fechar", token, JSONObject().put("numero", numero))
 
+    /** Fechamento do dia: o que o app registrou HOJE (qtd/total/por forma,
+     *  com os NSUs) — a tela compara com as vendas do próprio terminal. */
+    @Throws(IOException::class)
+    fun lioResumoDia(base: String, token: String): JSONObject =
+        getJson("$base/api/lio/resumo-dia", token)
+
     // -------- NFC-e (nota fiscal oferecida ao fechar a conta) --------
 
     data class NfceInfo(

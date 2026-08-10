@@ -37,6 +37,14 @@
         </LinearLayout>
 
         <Button
+            android:id="@+id/fechamentoDia"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:text="🧾 Dia"
+            android:textSize="12sp" />
+
+        <Button
             android:id="@+id/sair"
             android:layout_width="wrap_content"
             android:layout_height="36dp"

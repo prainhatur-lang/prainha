@@ -79,6 +79,45 @@ object Lio {
 
     val pronto: Boolean get() = bound
 
+    /** Uma venda PAGA do catálogo deste terminal (pro fechamento do dia). */
+    data class VendaTerminal(val nsu: String, val valorCentavos: Long, val dia: String?)
+
+    /**
+     * Lista as vendas pagas registradas NESTE terminal. A assinatura de
+     * getOrders varia entre plataformas — qualquer falha devolve null e a
+     * tela do fechamento segue só com o lado do servidor.
+     */
+    fun vendasDoTerminal(): List<VendaTerminal>? {
+        val om = orderManager ?: return null
+        if (!bound) return null
+        val orders = try { om.getOrders(200, 0, null, null) } catch (_: Throwable) {
+            try { om.getOrders(0, 200, null, null) } catch (_: Throwable) { null }
+        } ?: return null
+        val out = mutableListOf<VendaTerminal>()
+        for (o in orders) {
+            val pags = try { o.payments } catch (_: Throwable) { null } ?: continue
+            for (p in pags) {
+                val nsu = try { p.cieloCode } catch (_: Throwable) { null } ?: continue
+                if (nsu.isBlank()) continue
+                val valor = try { p.amount } catch (_: Throwable) { 0L }
+                val dia = diaDe(try { p.requestDate } catch (_: Throwable) { null })
+                out.add(VendaTerminal(nsu, valor, dia))
+            }
+        }
+        return out
+    }
+
+    /** requestDate em formatos comuns → "yyyy-MM-dd"; null se ilegível. */
+    private fun diaDe(s: String?): String? {
+        if (s.isNullOrBlank()) return null
+        Regex("(\\d{4})-(\\d{2})-(\\d{2})").find(s)?.let { return it.value }
+        Regex("(\\d{2})/(\\d{2})/(\\d{4})").find(s)?.let { m ->
+            val (d, mo, y) = m.destructured
+            return "$y-$mo-$d"
+        }
+        return null
+    }
+
     /**
      * Dispara a cobrança NA MAQUININHA: cria o pedido com os itens REAIS da
      * conta (o certificador confere), e abre a UI nativa de pagamento da

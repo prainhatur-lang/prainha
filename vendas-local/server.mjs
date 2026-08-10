@@ -1985,6 +1985,37 @@ async function apiLioPagar(body, garcom) {
   return r;
 }
 
+// FECHAMENTO DO DIA da maquininha: tudo que o app registrou hoje (origem
+// lio-sdk), por forma e com NSUs — a tela do app compara com as vendas do
+// próprio terminal e o caixa fecha sem conferência manual. Dia em horário
+// de Sergipe (UTC-3 fixo): meia-noite local = 03:00Z.
+async function apiLioResumoDia(u) {
+  const dataParam = String((u && u.searchParams.get('data')) || '').trim();
+  let inicio;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dataParam)) inicio = new Date(dataParam + 'T03:00:00Z');
+  else {
+    inicio = new Date();
+    if (inicio.getUTCHours() < 3) inicio.setUTCDate(inicio.getUTCDate() - 1);
+    inicio.setUTCHours(3, 0, 0, 0);
+  }
+  const fim = new Date(inicio.getTime() + 24 * 3600 * 1000);
+  const rows = await sql`SELECT criado_em, numero, forma, valor, nsu FROM venda_pagamento
+    WHERE origem='lio-sdk' AND status='ok' AND criado_em >= ${inicio} AND criado_em < ${fim}
+    ORDER BY criado_em`;
+  const formas = {};
+  let total = 0;
+  for (const r of rows) {
+    const f = r.forma || '?';
+    formas[f] = formas[f] || { qtd: 0, total: 0 };
+    formas[f].qtd += 1;
+    formas[f].total = +(formas[f].total + Number(r.valor)).toFixed(2);
+    total = +(total + Number(r.valor)).toFixed(2);
+  }
+  return { ok: true, inicio: inicio.toISOString(), qtd: rows.length, total, formas,
+    pagamentos: rows.map((r) => ({ criado_em: r.criado_em, numero: r.numero, forma: r.forma,
+      valor: Number(r.valor), nsu: r.nsu || null })) };
+}
+
 // Config da loja pros clientes nativos (app da maquininha): limites de
 // numeração, nome da casa e taxa de serviço — até aqui esses valores só
 // existiam interpolados nos HTML na partida do servidor.
@@ -8951,6 +8982,12 @@ const server = http.createServer(async (req, res) => {
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       const body = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioPagar(body, g)));
+    }
+    // Fechamento do dia da maquininha (leitura; exige garçom logado).
+    if (p === '/api/lio/resumo-dia') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioResumoDia(u)));
     }
     // Fechar conta QUITADA pela maquininha (mesmo ato final do caixa — o
     // apiCaixaFechar barra sozinho se ainda faltar dinheiro).
