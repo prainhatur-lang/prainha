@@ -18,15 +18,15 @@
     },
     {
       "path": "/api/cron/cielo-edi",
-      "schedule": "30 11,21 * * *"
+      "schedule": "30 14,0 * * *"
     },
     {
       "path": "/api/cron/extrato-inter",
-      "schedule": "50 11,21 * * *"
+      "schedule": "50 14,0 * * *"
     },
     {
       "path": "/api/cron/conciliacao-diaria",
-      "schedule": "10 12,22 * * *"
+      "schedule": "10 15,1 * * *"
     }
   ]
 }
