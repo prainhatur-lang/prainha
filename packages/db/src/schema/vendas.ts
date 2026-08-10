@@ -185,5 +185,7 @@ export const pedidoItem = pgTable(
     uniqCodigo: unique('uq_pedido_item_filial_codigo').on(t.filialId, t.codigoExterno),
     pedidoIdx: index('idx_pedido_item_pedido').on(t.filialId, t.codigoPedidoExterno),
     produtoIdx: index('idx_pedido_item_produto').on(t.filialId, t.codigoProdutoExterno),
+    // FK uuid do join com pedido — sem isso, consultas por período varrem a tabela inteira
+    pedidoFkIdx: index('idx_pedido_item_pedido_id').on(t.pedidoId),
   }),
 );

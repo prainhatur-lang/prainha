@@ -104,6 +104,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Relatório consolidado', href: '/relatorio', perm: 'relatorio.read' },
       { label: 'Estoque', href: '/relatorios/estoque', perm: 'relatorio.read' },
       { label: 'Movimentos de estoque', href: '/relatorios/movimentos', perm: 'relatorio.read' },
+      { label: 'Insumos mais utilizados', href: '/relatorios/insumos', perm: 'relatorio.read' },
       { label: 'Produção (perda por cozinheiro)', href: '/relatorios/producao', perm: 'relatorio.read' },
       { label: 'DRE', href: '/relatorios/dre', perm: 'relatorio.read' },
       { label: 'Fechamento mensal (histórico)', href: '/relatorios/fechamento-mensal', perm: 'relatorio.read' },
