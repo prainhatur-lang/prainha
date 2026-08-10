@@ -4351,6 +4351,7 @@ async function selecao(){
   // toca cai no PIN, então cozinha não entra por engano)
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
     '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
+    '<a class="linkbtn" href="/tablet" title="instalar em tela cheia / atualizar">⚙</a>'+
     '<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
@@ -8979,6 +8980,102 @@ function iconePng(n) {
   _iconeCache.set(n, png);
   return png;
 }
+const TABLET_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="/app.webmanifest?t=caixa"><meta name="mobile-web-app-capable" content="yes">
+<title>${LOJA_NOME} — Ajustar este tablet</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
+header{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:10px}
+h1{font-size:17px;margin:0}h1 b{color:var(--gold2)}
+a.back{color:var(--mut);text-decoration:none;font-size:14px}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+.tit{font-weight:700;margin:0 0 8px}
+.mut{color:var(--mut);font-size:14px;line-height:1.5}
+.big{width:100%;padding:15px;border:0;border-radius:12px;background:var(--green);color:#fff;font:inherit;font-size:16px;font-weight:700;cursor:pointer;margin-top:10px}
+.big.g{background:#5b5b66}.big.o{background:var(--gold2)}.big:disabled{opacity:.45}
+.end{display:flex;align-items:center;gap:8px;background:#f7f7fa;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:14px;word-break:break-all}
+.end button{flex:0 0 auto;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font:inherit;font-size:13px;cursor:pointer}
+ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
+.st{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.pill{font-size:12.5px;border-radius:20px;padding:4px 11px;border:1px solid var(--line);background:#f4f4f7;color:var(--mut)}
+.pill.ok{background:#eafaf0;color:var(--green2);border-color:#8ed4a8}
+.pill.no{background:#fdf2f2;color:var(--red);border-color:#eda3a3}
+</style></head><body>
+<header><a class="back" href="/">◂ voltar</a><h1>${LOJA_HTML} · <b>Ajustar este tablet</b></h1></header>
+<div class="wrap">
+  <div class="card"><div class="tit">Como este tablet está agora</div><div class="st" id="st"></div>
+    <div class="mut" id="dica" style="margin-top:10px"></div>
+    <button class="big" id="binst" onclick="instalar()" style="display:none">📲 Instalar em tela cheia</button>
+    <button class="big g" onclick="atualizar()">🔄 Atualizar o sistema agora</button>
+  </div>
+  <div class="card"><div class="tit">1 · Liberar este endereço no Chrome</div>
+    <div class="mut">É o que deixa o tablet instalar o app em tela cheia <b>e</b> usar a câmera. Uma vez por aparelho.</div>
+    <div class="end"><span id="flagurl"></span><button onclick="copiar('flagurl',this)">copiar</button></div>
+    <ol>
+      <li>Abra uma aba e vá em <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b></li>
+      <li>Cole o endereço acima no campo de texto</li>
+      <li>Troque <b>Disabled</b> por <b>Enabled</b></li>
+      <li>Toque em <b>Relaunch</b> (o Chrome reinicia)</li>
+    </ol>
+    <div class="end"><span id="flaglink">chrome://flags/#unsafely-treat-insecure-origin-as-secure</span><button onclick="copiar('flaglink',this)">copiar</button></div>
+  </div>
+  <div class="card"><div class="tit">2 · Instalar a tela como app</div>
+    <div class="mut">Depois do passo 1: volte na tela que este tablet vai usar, toque nos <b>⋮</b> (canto superior direito) e escolha <b>Instalar app</b>. Abra sempre pelo ícone novo — sem barra de endereço.</div>
+    <div class="mut" style="margin-top:8px">Se aparecer só "Adicionar à tela inicial", espere 5 segundos na página e tente de novo.</div>
+  </div>
+  <div class="card"><div class="tit">Endereços desta loja</div>
+    <div class="mut">Toque pra abrir, ou copie pra digitar em outro aparelho.</div>
+    <div class="end"><span id="e1"></span><button onclick="ir('e1')">abrir</button><button onclick="copiar('e1',this)">copiar</button></div>
+    <div class="end"><span id="e2"></span><button onclick="ir('e2')">abrir</button><button onclick="copiar('e2',this)">copiar</button></div>
+    <div class="end"><span id="e3"></span><button onclick="ir('e3')">abrir</button><button onclick="copiar('e3',this)">copiar</button></div>
+    <div class="end"><span id="e4"></span><button onclick="ir('e4')">abrir</button><button onclick="copiar('e4',this)">copiar</button></div>
+  </div>
+  <div class="card"><div class="tit">Não conseguiu de jeito nenhum?</div>
+    <div class="mut">Instale o app <b>Fully Kiosk Browser</b> (grátis, Play Store), abra as configurações dele, ponha o endereço do caixa em <b>Start URL</b> e ligue o <b>Kiosk Mode</b>. Ele abre em tela cheia sempre, trava o tablet no sistema e reabre sozinho se cair.</div>
+  </div>
+</div>
+<script>
+var PROMPT=null;
+var base=location.protocol+'//'+location.host;
+window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();PROMPT=e;pinta()});
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function pinta(){
+  var seguro=window.isSecureContext;
+  var app=window.matchMedia('(display-mode: fullscreen)').matches||window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+  var sw=('serviceWorker' in navigator)&&!!navigator.serviceWorker.controller;
+  document.getElementById('st').innerHTML=
+    '<span class="pill '+(app?'ok':'no')+'">'+(app?'✓ abrindo como app':'✕ ainda com a barra do navegador')+'</span>'+
+    '<span class="pill '+(seguro?'ok':'no')+'">'+(seguro?'✓ endereço liberado':'✕ endereço não liberado (passo 1)')+'</span>'+
+    '<span class="pill '+(sw?'ok':'')+'">'+(sw?'✓ pronto pra instalar':'aguardando registro…')+'</span>';
+  var d=document.getElementById('dica');
+  d.innerHTML=app?'Este tablet já está do jeito certo. 👌'
+    :(!seguro?'Faça o <b>passo 1</b> abaixo — sem ele o Chrome não instala o app nem libera a câmera.'
+    :(PROMPT?'Tudo pronto: toque no botão verde pra instalar.'
+    :'Endereço liberado. Toque nos <b>⋮</b> do Chrome e escolha <b>Instalar app</b> (se não aparecer, espere 5s e recarregue).'));
+  document.getElementById('binst').style.display=(PROMPT&&!app)?'block':'none';
+}
+async function instalar(){ if(!PROMPT)return; PROMPT.prompt(); try{await PROMPT.userChoice}catch(e){} PROMPT=null; pinta(); }
+async function atualizar(){
+  try{ var rs=await navigator.serviceWorker.getRegistrations(); for(var i=0;i<rs.length;i++)await rs[i].unregister(); }catch(e){}
+  location.reload(true);
+}
+function copiar(id,btn){
+  var t=document.getElementById(id).textContent;
+  var ok=function(){var v=btn.textContent;btn.textContent='copiado!';setTimeout(function(){btn.textContent=v},1500)};
+  if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(t).then(ok,manual);
+  else manual();
+  function manual(){var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy');ok()}catch(e){}a.remove()}
+}
+function ir(id){location.href=document.getElementById(id).textContent}
+document.getElementById('flagurl').textContent='http://'+location.hostname+':8790';
+document.getElementById('e1').textContent=base+'/caixa';
+document.getElementById('e2').textContent=base+'/';
+document.getElementById('e3').textContent=base+'/entrega';
+document.getElementById('e4').textContent=base+'/venda';
+pinta();setInterval(pinta,3000);
+</script></body></html>`;
+
 function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
 
 // VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
@@ -9051,6 +9148,7 @@ const server = http.createServer(async (req, res) => {
         'cache-control': 'private, max-age=3600' });
       return createReadStream(arq).pipe(res);
     }
+    if (p === '/tablet') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TABLET_HTML); }
     if (p === '/baixas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(BAIXAS_HTML); }
     if (p.startsWith('/produto-foto/')) {
       const cod = Number(p.slice(14).replace(/\.[a-z]+$/i, ''));
@@ -9281,7 +9379,7 @@ async function importarFotos(dir) {
 // duas vezes hoje, e nas duas só descobri pelo usuário.
 // Agora o servidor avisa na partida, antes de alguém abrir a página.
 function conferirTelas() {
-  const telas = { '/': HTML, '/venda': VENDA_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
+  const telas = { '/': HTML, '/venda': VENDA_HTML, '/tablet': TABLET_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
     '/conta/ver': CONTAVER_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
       '/passe': PASSE_HTML };
