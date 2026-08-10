@@ -1845,6 +1845,13 @@ async function apiConta(numero) {
   };
 }
 
+// Cartão/Pix DIGITADOS estão DESLIGADOS por decisão (10/08/2026): com a
+// maquininha integrada, NSU na mão é furo no batimento automático (e fraude
+// fácil). Só entra pagamento com prova: maquininha (lio-sdk), ponte lio e
+// Pix online. Dinheiro segue permitido (conferência é a gaveta do caixa).
+// EMERGÊNCIA (maquininha quebrada): PAGAMENTO_MANUAL=on no start.bat religa.
+const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
+
 /** Registra um pagamento. body: {numero, forma, valor, modo, nsu?, autorizacao?, bandeira?,
  *  origem?, observacao?, pix_online?} — os três últimos vêm do app da maquininha (/api/lio/pagar). */
 async function apiContaPagar(body) {
@@ -1854,6 +1861,11 @@ async function apiContaPagar(body) {
   const modo = String(body.modo || 'manual').toLowerCase(); // manual|lio
   const origem = String(body.origem || modo); // o que fica no log (ex.: 'lio-sdk')
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+  const integrado = origem === 'lio-sdk' || modo === 'lio' || body.pix_online === true;
+  if (PAGAMENTO_MANUAL !== 'on' && forma !== 'dinheiro' && !integrado) {
+    return { ok: false, erro: 'Lançamento manual de cartão/Pix está desligado — receba pela ' +
+      'maquininha (ou Pix da tela). Emergência: PAGAMENTO_MANUAL=on no start.bat e reiniciar.' };
+  }
   const MAPA = {
     dinheiro: { cod: FORMA.DINHEIRO, nome: 'Dinheiro' },
     credito: { cod: FORMA.CREDITO, nome: 'Cartão de Crédito' },
