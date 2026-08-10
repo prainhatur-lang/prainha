@@ -2781,8 +2781,8 @@ async function apiGarcomEntrar(body) {
 // Administrador tem tudo. Assim "quem pode" é o que a loja já define no Consumer.
 const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16, PERM_PEDIDO_CAIXA = 5;
 // controle de caixa: 1 = operação completa, 30 = simplificada (abrir/fechar),
-// 48 = pode fechar com saldo divergente do esperado
-const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48;
+// 48 = pode fechar com saldo divergente do esperado, 26 = entradas/saídas da gaveta
+const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48, PERM_MOVIMENTO = 26;
 // 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
 // todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
 const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
@@ -2800,6 +2800,7 @@ async function permsDoUsuario(login) {
   return { ok: true, login: l, nome: T(r.rows[0].NOME) || l, admin,
     caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
     abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
+    movimentar: tem(PERM_ABRIR_COMPLETO) || tem(PERM_MOVIMENTO),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
     excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
@@ -2814,7 +2815,7 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente,
+    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar,
     pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
@@ -2833,10 +2834,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -3164,6 +3165,31 @@ async function apiCaixaFecharCaixa(body, quem) {
   const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(contado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
   if (!up.ok) return { ok: false, erro: 'FB fechar caixa: ' + up.err };
   return { ok: true, esperado, contado, dif };
+}
+// Sangria/despesa/suprimento — mexe na GAVETA do operador logado. Tipos do
+// Consumer (conferidos em 16,5 mil operações reais do banco da 0003):
+//   S = sangria (retirada pro cofre, as grandes) · D = despesa paga da gaveta
+//   (vale-transporte etc.) · A = entrada/suprimento. Motivo é obrigatório.
+async function apiCaixaMovimento(body, quem) {
+  if (!(quem && quem.movimentar)) return { ok: false, erro: 'sem permissão (Caixa > Realizar entradas e saídas)' };
+  const cx = await fbCaixaDoOperador(quem.login);
+  if (!cx) return { ok: false, erro: 'abra o SEU caixa antes de mexer na gaveta' };
+  const MAPA = { sangria: { tipo: 'S', campo: 'VALORSAIDA' }, despesa: { tipo: 'D', campo: 'VALORSAIDA' }, suprimento: { tipo: 'A', campo: 'VALORENTRADA' } };
+  const m = MAPA[String(body.tipo || '')];
+  if (!m) return { ok: false, erro: 'tipo inválido' };
+  const valor = +Number(body.valor || 0).toFixed(2);
+  if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+  const motivo = String(body.motivo || '').trim();
+  if (!motivo) return { ok: false, erro: 'diga o motivo — sangria sem motivo não existe' };
+  if (m.campo === 'VALORSAIDA') {
+    const r = await fbResumoCaixa(cx.codigo);
+    const gaveta = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
+    if (valor > gaveta + 0.009) return { ok: false, erro: `a gaveta não tem esse valor (esperado: R$ ${gaveta.toFixed(2)})` };
+  }
+  const ins = await qi(`INSERT INTO CAIXAOPERACAO (CODIGOCAIXA, CODIGOFORMAPAGAMENTO, DATAOPERACAO, ${m.campo}, OBSERVACAO, TIPO)
+    VALUES (${cx.codigo}, ${FORMA.DINHEIRO}, CURRENT_TIMESTAMP, ${fbNum(valor)}, '${fbEsc(motivo + ' · ' + (quem.nome || quem.login))}', '${m.tipo}')`);
+  if (!ins.ok) return { ok: false, erro: 'FB movimento: ' + ins.err };
+  return { ok: true, tipo: body.tipo, valor };
 }
 // Relatório do DIA (desde 00:00 da loja): por forma, caixas e gaveta.
 async function apiCaixaRelatorio() {
@@ -8133,7 +8159,9 @@ function bannerCx(){
     return '<div class="tit" style="margin-top:0">🧰 Seu caixa · <b style="color:var(--green2)">ABERTO</b></div>'+
       '<div class="mut">fundo '+brl(a.fundo)+' · dinheiro recebido '+brl(a.dinheiro)+
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
-      '<div class="row" style="margin-top:8px"><button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+      '<div class="row" style="margin-top:8px'+(PODE.mov?';grid-template-columns:1fr 1fr 1fr':'')+'">'+
+      '<button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+      (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
       '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
@@ -8187,13 +8215,14 @@ function pintaMain(){
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
   if(TELA==='rel')return telaRel(el);
+  if(TELA==='mov')return telaMov(el);
   if(TELA==='canc')return telaCancItem(el);
   if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -8222,7 +8251,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 function voltarMesas(){MESA=null;CONTA=null;CANCEL_ON=false;irTela('home')}
@@ -8467,6 +8496,42 @@ async function acaoFechaCx(){
     (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
   await cxEstado();voltarMesas();
 }
+/* ---- gaveta: sangria / despesa / suprimento ---- */
+var MOVT='sangria';
+function telaMov(el){
+  MOVT='sangria';
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">↕ Gaveta do meu caixa</div>'+
+    '<div class="row" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:8px">'+
+      '<button class="seg on" id="mv-sangria" onclick="setMov(\\'sangria\\')">Sangria</button>'+
+      '<button class="seg" id="mv-despesa" onclick="setMov(\\'despesa\\')">Despesa</button>'+
+      '<button class="seg" id="mv-suprimento" onclick="setMov(\\'suprimento\\')">Suprimento</button></div>'+
+    '<div class="mut" id="mvdica">Sangria = retirar dinheiro da gaveta pro cofre.</div>'+
+    '<input id="mvv" class="num" inputmode="decimal" placeholder="quanto? (R$)" style="margin-top:8px">'+
+    '<input id="mvm" placeholder="motivo (obrigatório)" style="margin-top:8px">'+
+    '<button class="big o" onclick="acaoMov()">Confirmar</button>'+
+    '<div id="mverr" class="err"></div></div>';
+  var e=document.getElementById('mvv');if(e)e.focus();
+}
+function setMov(t){
+  MOVT=t;
+  ['sangria','despesa','suprimento'].forEach(function(k){var b=document.getElementById('mv-'+k);if(b)b.className='seg'+(k===t?' on':'')});
+  var d=document.getElementById('mvdica');
+  if(d)d.textContent=t==='sangria'?'Sangria = retirar dinheiro da gaveta pro cofre.'
+    :t==='despesa'?'Despesa = pagamento feito com dinheiro da gaveta (ex.: vale-transporte).'
+    :'Suprimento = dinheiro ENTRANDO na gaveta (troco, reforço).';
+}
+async function acaoMov(){
+  var v=numBr((document.getElementById('mvv')||{}).value);
+  var m=((document.getElementById('mvm')||{}).value||'').trim();
+  var er=document.getElementById('mverr');
+  if(!(v>0)){er.textContent='digite o valor';return}
+  if(!m){er.textContent='diga o motivo';return}
+  var r=await jpost('/api/caixa/movimento',{tipo:MOVT,valor:v,motivo:m});
+  if(!r.ok){er.textContent=r.erro||'não deu';return}
+  FLASH='✓ '+(MOVT==='suprimento'?'Suprimento de ':MOVT==='sangria'?'Sangria de ':'Despesa de ')+brl(v)+' registrada na gaveta.';
+  await cxEstado();voltarMesas();
+}
 async function telaRel(el){
   el.innerHTML='<div class="mut" style="padding:16px">montando o relatório…</div>';
   var d;try{d=await jget('/api/caixa/relatorio')}catch(e){}
@@ -8665,6 +8730,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
