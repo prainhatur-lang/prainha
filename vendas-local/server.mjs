@@ -4180,7 +4180,10 @@ function comandaHTML(c,modo,idx){
 }
 async function selecao(){
   var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
+  // menu da casa: a tela inicial é a porta de tudo — caixa entra aqui (quem
+  // toca cai no PIN, então cozinha não entra por engano)
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
+    '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
     '<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
