@@ -9,10 +9,16 @@
 import { createHash } from 'node:crypto';
 
 const URLS: Record<string, { qr: [string, string]; consulta: [string, string] }> = {
-  // [produção, homologação]
+  // [produção, homologação] — valores EXATOS que a SEFAZ valida (rejeição 395
+  // se divergir, até no http/https). Fonte: ACBrNFeServicos.ini — SE usa o
+  // consultarNFCe.jsp como endpoint do QR v2 (não /nfce/qrcode: com esse a
+  // SVRS devolveu 395 em produção, 10/08/2026).
   SE: {
-    qr: ['https://www.nfce.se.gov.br/nfce/qrcode', 'https://www.hom.nfe.se.gov.br/nfce/qrcode'],
-    consulta: ['www.nfce.se.gov.br/nfce/consulta', 'www.hom.nfe.se.gov.br/nfce/consulta'],
+    qr: [
+      'http://www.nfce.se.gov.br/portal/consultarNFCe.jsp',
+      'http://www.hom.nfe.se.gov.br/portal/consultarNFCe.jsp',
+    ],
+    consulta: ['http://www.nfce.se.gov.br/nfce/consulta', 'http://www.hom.nfe.se.gov.br/nfce/consulta'],
   },
 };
 

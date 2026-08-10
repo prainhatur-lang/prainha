@@ -1094,19 +1094,24 @@ class ContaActivity : AppCompatActivity() {
                 (erro?.let { " ($it)" } ?: "") +
                 ". Ele ficou na fila — reenvie na tela de mesas assim que a rede voltar."
         )
+        // Conta DA TELA quitada = o pedido já foi fechado pelo servidor; depois
+        // do resultado (e do recibo/passe, se pedirem) a tela volta SOZINHA
+        // pras mesas — ficar numa mesa morta parecia travado ("aguardando
+        // pagamento" de conta que já fechou).
+        val fecharAoSair = quitada && alvo == numero
         val b = AlertDialog.Builder(this)
             .setTitle(if (registrou) "✅ Pago!" else "⚠️ Pago — registro pendente")
             .setMessage(msg.toString())
-            .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(alvo, pagamentos) }
-            .setNegativeButton("OK", null)
+            .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(alvo, pagamentos, fecharAoSair) }
+            .setNegativeButton("OK") { _, _ -> if (fecharAoSair) finish() }
             .setCancelable(false)
         // Conta quitada = hora do passe de saída (catraca/cancela do pátio).
-        if (quitada) b.setNeutralButton("🚗 Passe de saída") { _, _ -> dialogPasse(alvo) }
+        if (quitada) b.setNeutralButton("🚗 Passe de saída") { _, _ -> dialogPasse(alvo, fecharAoSair) }
         b.show()
     }
 
     // ---- passe de saída: QR da catraca (N passagens) + placas pra cancela ----
-    private fun dialogPasse(alvo: Int) {
+    private fun dialogPasse(alvo: Int, fecharDepois: Boolean = false) {
         val adultosIn = campo("Adultos", android.text.InputType.TYPE_CLASS_NUMBER)
         adultosIn.setText("2")
         val criancasIn = campo("Crianças", android.text.InputType.TYPE_CLASS_NUMBER)
@@ -1130,9 +1135,10 @@ class ContaActivity : AppCompatActivity() {
                             if (!r.optBoolean("ok")) {
                                 AlertDialog.Builder(this)
                                     .setMessage(r.optStringOrNull("erro") ?: "Não deu pra gerar o passe")
-                                    .setPositiveButton("OK", null).show()
+                                    .setPositiveButton("OK") { _, _ -> if (fecharDepois) finish() }
+                                    .show()
                             } else {
-                                imprimirPasses(alvo, r, vias)
+                                imprimirPasses(alvo, r, vias, fecharDepois)
                             }
                         }
                     } catch (e: Exception) {
@@ -1140,13 +1146,13 @@ class ContaActivity : AppCompatActivity() {
                     }
                 }.start()
             }
-            .setNegativeButton("Cancelar", null)
+            .setNegativeButton("Cancelar") { _, _ -> if (fecharDepois) finish() }
             .show()
     }
 
     /** Imprime `vias` cópias do MESMO passe — cada escaneada na catraca
      *  consome 1 das N passagens; os carros saem pela placa na cancela. */
-    private fun imprimirPasses(alvo: Int, r: org.json.JSONObject, vias: Int) {
+    private fun imprimirPasses(alvo: Int, r: org.json.JSONObject, vias: Int, fecharDepois: Boolean = false) {
         val token = r.optString("token")
         val pessoas = r.optInt("pessoas", 1)
         val validade = r.optInt("validade_min", 90)
@@ -1155,6 +1161,7 @@ class ContaActivity : AppCompatActivity() {
         fun via(i: Int) {
             if (i > vias) {
                 Toast.makeText(this, "✓ Passe impresso ($vias via/s)", Toast.LENGTH_LONG).show()
+                if (fecharDepois) finish()
                 return
             }
             val blocos = mutableListOf(
@@ -1174,7 +1181,7 @@ class ContaActivity : AppCompatActivity() {
         via(1)
     }
 
-    private fun imprimirRecibo(alvo: Int, pagamentos: List<Lio.PagamentoLio>) {
+    private fun imprimirRecibo(alvo: Int, pagamentos: List<Lio.PagamentoLio>, fecharDepois: Boolean = false) {
         val ehComandaAlvo = Session.ehComanda(this, alvo)
         Thread {
             val extras = mutableListOf<String>()
@@ -1199,8 +1206,14 @@ class ContaActivity : AppCompatActivity() {
             runOnUiThread {
                 Lio.imprimirBlocos(
                     this, blocos,
-                    onOk = { runOnUiThread { Toast.makeText(this, "Recibo impresso!", Toast.LENGTH_SHORT).show() } },
-                    onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } }
+                    onOk = { runOnUiThread {
+                        Toast.makeText(this, "Recibo impresso!", Toast.LENGTH_SHORT).show()
+                        if (fecharDepois) finish()
+                    } },
+                    onErro = { m -> runOnUiThread {
+                        Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+                        if (fecharDepois) finish()
+                    } }
                 )
             }
         }.start()
