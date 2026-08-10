@@ -8274,13 +8274,20 @@ input{width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-r
 .err{color:var(--red);font-size:13px;margin-top:6px}
 .x{background:none;border:1px solid #eda3a3;color:var(--red);border-radius:7px;padding:1px 7px;font-size:12px;cursor:pointer;margin-right:3px}
 a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
-.lst{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
-.mchip{text-align:left;padding:10px 12px;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer;color:var(--ink)}
-.mchip b{display:block;font-size:13px}.mchip small{display:block;color:var(--mut);font-size:11px;margin-top:2px}
+.lst{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
+.mchip{text-align:center;padding:8px 4px;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer;color:var(--ink)}
+.mchip .mn{display:block;font-size:19px;font-weight:800;line-height:1.1}
+.mchip b{display:block;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mchip small{display:block;color:var(--mut);font-size:10.5px;margin-top:1px}
 .mchip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
 .mchip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
 .mchip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
 .mchip.sel{border-color:var(--gold2);box-shadow:0 0 0 2px rgba(224,101,26,.22)}
+/* teclado numérico PRÓPRIO (POS): botões grandes, teclado do Android nem abre */
+.kp{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.kp button{padding:14px 0;font:inherit;font-size:22px;font-weight:800;border:1.5px solid var(--line);border-radius:12px;background:#fff;cursor:pointer}
+.kp button:active{background:#f0f0f4}
+input.kalvo{border-color:var(--gold2)}
 /* celular: um painel por vez (mesa aberta esconde a lista); o convite "toque
    numa mesa" só faz sentido quando os dois painéis estão visíveis */
 @media (max-width:899px){body.m #lado{display:none}.ph{display:none}}
@@ -8290,7 +8297,7 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
   .wrap{max-width:1200px;display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start}
   .wrap.solo{display:block;max-width:560px}
   #lado{position:sticky;top:66px;max-height:calc(100vh - 80px);overflow:auto}
-  .lst{grid-template-columns:1fr 1fr}
+  .lst{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
 }
 </style></head><body>
 <header><h1>${LOJA_NOME} <b>Caixa</b></h1><span id="hdr"></span></header>
@@ -8305,6 +8312,22 @@ function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
 async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
 async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
 function numBr(s){var t=String(s||'').replace(/[^\\d.,]/g,'');if(t.indexOf(',')>=0)t=t.replace(/\\./g,'').replace(',','.');var n=Number(t);return isFinite(n)&&n>0?n:0}
+/* teclado numérico da casa: campo de valor/PIN é readonly — o do Android
+   ocupava metade da tela e errava fácil. Toque no campo escolhe o alvo. */
+var KP_ALVO=null;
+function kpAlvo(el){KP_ALVO=el.id;document.querySelectorAll('input.kalvo').forEach(function(x){x.classList.remove('kalvo')});el.classList.add('kalvo')}
+function kpHtml(alvo){KP_ALVO=alvo;
+  return '<div class="kp">'+['7','8','9','4','5','6','1','2','3',',','0','⌫'].map(function(k){
+    return '<button type="button" onclick="kpT(\\''+(k==='⌫'?'back':k)+'\\')">'+k+'</button>'}).join('')+'</div>';}
+function kpT(k){
+  var e=KP_ALVO&&document.getElementById(KP_ALVO);if(!e)return;
+  var v=e.value||'';
+  if(k==='back')v=v.slice(0,-1);
+  else if(k===','){if(v.indexOf(',')<0)v+=(v?',':'0,')}
+  else v+=k;
+  e.value=v;
+  e.dispatchEvent(new Event('input'));
+}
 function setHdr(){var e=document.getElementById('hdr');if(e)e.innerHTML=NOME?('<span class="mut">'+esc(NOME)+'</span> · <a class="sair" onclick="sair()">sair</a>'):''}
 function sair(){try{localStorage.removeItem('caixa_tok');localStorage.removeItem('garcom_tok')}catch(e){}TOK=null;NOME=null;MESA=null;CONTA=null;TELA='login';setHdr();render()}
 /* ---- DOIS painéis ----
@@ -8346,6 +8369,7 @@ async function cxEstado(){
 function pintaLado(){
   var el=document.getElementById('lado');if(!el)return;
   if(TELA==='login'){el.innerHTML='';return}
+  var st=el.scrollTop; // repintar não pode jogar a lista de volta pro topo
   el.innerHTML='<div class="card" id="cxbx">'+bannerCx()+'</div>'+
     '<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
     '<div class="card"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
@@ -8354,6 +8378,7 @@ function pintaLado(){
     '<div id="aerr" class="err"></div>'+
     '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 relatório de cancelamentos</a></div></div>';
   var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
+  el.scrollTop=st;
 }
 function chips(){
   if(MESAS==null)return '<span class="mut">carregando…</span>';
@@ -8363,8 +8388,13 @@ function chips(){
   return h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
 }
 function mchip(num,lbl,m){
-  return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+lbl+
-    (m.nome?'<b>'+esc(m.nome)+'</b>':'')+'<small>'+(m.itens||0)+' itens · '+brl(m.valor_total)+'</small></button>';
+  // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
+  // olho de longe, nome e valor pequenos embaixo
+  var com=Number(num)>=${COMANDA_DE};
+  return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+
+    '<span class="mn">'+(com?'C':'')+num+'</span>'+
+    (m.nome?'<b>'+esc(m.nome)+'</b>':'')+
+    '<small>'+brl(m.valor_total)+'</small></button>';
 }
 async function listar(){
   // renova SÓ o miolo da lista: o campo "digite o número" pode estar em uso
@@ -8402,8 +8432,8 @@ function telaLogin(el){
   el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
     '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos no Consumer.</div>'+
     '<input id="lg" placeholder="seu login" autocapitalize="none">'+
-    '<input id="pn" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8">'+
-    '<div id="pn2box"></div>'+
+    '<input id="pn" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8" readonly onclick="kpAlvo(this)">'+
+    '<div id="pn2box"></div>'+kpHtml('pn')+
     '<button class="big" onclick="entrar()">Entrar</button>'+
     '<div id="lerr" class="err"></div></div>';
   var e=document.getElementById('lg');if(e)e.focus();
@@ -8416,7 +8446,7 @@ async function entrar(){
   var r=await jpost('/api/caixa/entrar',{login:login,pin:pin,pin2:pin2});
   if(r.primeira_vez&&!r.token){
     document.getElementById('pn2box').innerHTML='<div class="mut" style="margin-top:8px">Primeira vez — repita o PIN pra criar:</div>'+
-      '<input id="pn2" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px">';
+      '<input id="pn2" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px" readonly onclick="kpAlvo(this)">';
     er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y)y.focus();return;
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
@@ -8424,10 +8454,13 @@ async function entrar(){
   NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
-function voltarMesas(){MESA=null;CONTA=null;CANCEL_ON=false;irTela('home')}
+var HOME_Y=0;
+function voltarMesas(){MESA=null;CONTA=null;CANCEL_ON=false;irTela('home');
+  setTimeout(function(){window.scrollTo(0,HOME_Y)},0)} // volta NO MESMO lugar da lista
 async function carregar(n){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
   if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
+  if(TELA==='home')HOME_Y=window.scrollY||0; // pra voltar no mesmo ponto da lista
   if(MESA==null||Number(num)!==Number(MESA))CANCEL_ON=false; // trocou de mesa: trava de novo
   if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
   MESA=num;irTela('conta');
@@ -8481,7 +8514,7 @@ function telaLibCanc(el){
     '<div class="card"><div class="tit" style="margin-top:0">🔒 Liberar cancelamentos — mesa '+MESA+'</div>'+
     '<div class="mut">'+(souG?'Confirme com o SEU PIN.':'Cancelar item é ação de gerente: chame quem autoriza pra digitar o login e o PIN dele.')+'</div>'+
     (souG?'':'<input id="lcl" placeholder="login do gerente" autocapitalize="none" style="margin-top:8px">')+
-    '<input id="lcp" class="num" type="password" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px">'+
+    '<input id="lcp" class="num" type="password" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('lcp')+
     '<button class="big o" onclick="liberaCanc()">Liberar os botões de cancelar</button>'+
     '<div id="lcerr" class="err"></div></div>';
   var e=document.getElementById(souG?'lcp':'lcl');if(e)e.focus();
@@ -8498,7 +8531,7 @@ function telaDesc(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Desconto na mesa '+MESA+'</div>'+
     '<div class="row" style="margin-bottom:8px"><button class="seg on" id="dmv" onclick="setDM(\\'valor\\')">R$</button><button class="seg" id="dmp" onclick="setDM(\\'pct\\')">%</button></div>'+
-    '<input id="dv" class="num" inputmode="decimal" placeholder="quanto?">'+
+    '<input id="dv" class="num" inputmode="decimal" placeholder="quanto?" readonly onclick="kpAlvo(this)">'+kpHtml('dv')+
     '<div class="mut" id="dprev" style="margin-top:6px"></div>'+
     '<button class="big o" onclick="aplicaDesc()">Aplicar desconto</button>'+
     '<div id="derr" class="err"></div></div>';
@@ -8521,7 +8554,7 @@ async function aplicaDesc(){
 function telaAcr(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Acréscimo (gorjeta a mais) — mesa '+MESA+'</div>'+
-    '<input id="av" class="num" inputmode="decimal" placeholder="quanto a mais? (R$)">'+
+    '<input id="av" class="num" inputmode="decimal" placeholder="quanto a mais? (R$)" readonly onclick="kpAlvo(this)">'+kpHtml('av')+
     '<button class="big o" onclick="aplicaAcr()">Aplicar acréscimo</button>'+
     '<div id="aerr2" class="err"></div></div>';
   var e=document.getElementById('av');if(e)e.focus();
@@ -8538,7 +8571,7 @@ function telaReceber(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Receber em dinheiro</div>'+
     '<div class="mut">Falta '+brl(falta)+' na mesa '+MESA+'</div>'+
-    '<input id="rv" class="num" inputmode="decimal" value="'+falta.toFixed(2).replace('.',',')+'" style="margin-top:8px">'+
+    '<input id="rv" class="num" inputmode="decimal" value="'+falta.toFixed(2).replace('.',',')+'" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('rv')+
     '<div class="mut" id="rtroco" style="margin-top:6px"></div>'+
     '<button class="big" onclick="receber()">Confirmar recebimento</button>'+
     '<div id="rerr" class="err"></div></div>';
@@ -8651,7 +8684,7 @@ function telaAbrirCx(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Abrir o meu caixa</div>'+
     '<div class="mut">Fundo de troco que entra na gaveta (pode ser 0):</div>'+
-    '<input id="cxf" class="num" inputmode="decimal" placeholder="R$ 0,00" style="margin-top:8px">'+
+    '<input id="cxf" class="num" inputmode="decimal" placeholder="R$ 0,00" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('cxf')+
     '<button class="big" onclick="acaoAbrirCx()">Abrir caixa</button>'+
     '<div id="cxerr" class="err"></div></div>';
   var e=document.getElementById('cxf');if(e)e.focus();
@@ -8667,7 +8700,7 @@ function telaFechaCx(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa</div>'+
     '<div class="mut">Conte TODO o dinheiro da gaveta (com o fundo) e informe. A conferência com o esperado sai na hora.</div>'+
-    '<input id="cxc" class="num" inputmode="decimal" placeholder="quanto tem na gaveta?" style="margin-top:8px">'+
+    '<input id="cxc" class="num" inputmode="decimal" placeholder="quanto tem na gaveta?" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('cxc')+
     '<button class="big o" onclick="acaoFechaCx()">Conferir e fechar</button>'+
     '<div id="cxerr2" class="err"></div></div>';
   var e=document.getElementById('cxc');if(e)e.focus();
@@ -8694,7 +8727,7 @@ function telaMov(el){
       '<button class="seg" id="mv-suprimento" onclick="setMov(\\'suprimento\\')">Suprimento</button></div>'+
     '<div class="mut" id="mvdica"></div>'+
     '<div id="mvxtra"></div>'+
-    '<input id="mvv" class="num" inputmode="decimal" placeholder="quanto? (R$)" style="margin-top:8px">'+
+    '<input id="mvv" class="num" inputmode="decimal" placeholder="quanto? (R$)" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('mvv')+
     '<input id="mvm" placeholder="motivo (obrigatório)" style="margin-top:8px">'+
     '<button class="big o" onclick="acaoMov()">Confirmar</button>'+
     '<div id="mverr" class="err"></div></div>';
