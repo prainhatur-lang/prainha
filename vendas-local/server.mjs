@@ -2246,8 +2246,10 @@ async function apiNfceInfo(nRaw) {
   let ped = null;
   try { ped = await fbAcharPedidoNfce(numero); } catch { /* FB fora */ }
   if (!ped) return { ok: true, ativo: true, sem_pedido: true };
-  const jaTem = (await sql`SELECT chave, nfce_numero, serie, status, erro FROM nfce_log WHERE pedido_fb=${ped}`)[0];
-  const docSugerido = await nfceDocSugerido(numero, ped).catch(() => null);
+  const jaTem = (await sql`SELECT chave, nfce_numero, serie, status, erro, dest_documento FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+  // CPF pedido na tentativa anterior tem prioridade sobre o do cadastro
+  const docSugerido = (jaTem && soDig(jaTem.dest_documento || '')) ||
+    (await nfceDocSugerido(numero, ped).catch(() => null));
   const falhou = jaTem && (jaTem.status === 'REJEITADA' || jaTem.status === 'PENDENTE_ENVIO' || jaTem.status === 'ERRO');
   return { ok: true, ativo: true, pedido: ped, ambiente: nfceStatusCache.ambiente,
     emitida: !!(jaTem && jaTem.status === 'AUTORIZADA'),
@@ -2332,8 +2334,14 @@ async function apiNfceEmitir(body, quem) {
   if (!(await nfceAtiva())) return { ok: false, erro: 'NFC-e desligada na config fiscal do painel' };
   const ped = await fbAcharPedidoNfce(numero);
   if (!ped) return { ok: false, erro: 'não achei pedido recente no número ' + numero };
-  const doc = soDig(body.documento || '');
+  let doc = soDig(body.documento || '');
   if (doc && !(doc.length === 11 || doc.length === 14)) return { ok: false, erro: 'CPF/CNPJ incompleto' };
+  // Reenvio/reimpressão sem documento na chamada (botão "Tentar agora" etc):
+  // mantém o CPF que o cliente pediu na tentativa anterior — não se perde.
+  if (!doc) {
+    const log = (await sql`SELECT dest_documento FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+    if (log && log.dest_documento) doc = soDig(log.dest_documento);
+  }
   return nfceEmitirCore({ ped, numero, documento: doc, destino, solicitante: (quem && quem.login) || null });
 }
 // ---- FILA de reenvio: nota que não saiu (rede/SEFAZ fora) tenta de novo
