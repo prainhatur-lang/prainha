@@ -9,9 +9,15 @@
 // RecepcaoEvento4 (cancelamento, cOrgao=28), NfeInutilizacao4, NfeStatusServico4.
 
 import { request } from 'node:https';
+import { rootCertificates } from 'node:tls';
 import { SignedXml } from 'xml-crypto';
 import { XMLParser } from 'fast-xml-parser';
 import type { PemCert } from '@/lib/sefaz-evento';
+import { CADEIA_ICP_BRASIL } from './cadeia-icp-brasil';
+
+/** Trust store = raízes públicas padrão + raízes ICP-Brasil (a SVRS usa cert
+ *  da AC SERPRO sob a Raiz Brasileira v10 — fora do bundle do Node). */
+const CA_SEFAZ = [...rootCertificates, ...CADEIA_ICP_BRASIL];
 
 const BASE_PROD = 'https://nfce.svrs.rs.gov.br/ws';
 const BASE_HOM = 'https://nfce-homologacao.svrs.rs.gov.br/ws';
@@ -72,6 +78,7 @@ function postSoap(opts: {
         path: u.pathname,
         cert: opts.pem.certPem,
         key: opts.pem.privateKeyPem,
+        ca: CA_SEFAZ,
         minVersion: 'TLSv1.2',
         headers: {
           'Content-Type': 'application/soap+xml; charset=utf-8',

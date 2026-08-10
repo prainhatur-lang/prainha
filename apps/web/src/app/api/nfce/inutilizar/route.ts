@@ -54,7 +54,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const ctxR = await contextoFiscal(nota.filialId);
+  // inutilizar não depende de config completa (nem de CSC) — só do certificado
+  const ctxR = await contextoFiscal(nota.filialId, { paraEmitir: false });
   if (!ctxR.ok) return NextResponse.json({ ok: false, erro: ctxR.erro }, { status: 422 });
 
   try {

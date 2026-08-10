@@ -85,7 +85,9 @@ interface ContextoFiscal {
   tpAmb: 1 | 2;
   serie: number;
   cUF: number;
-  csc: { id: string; token: string };
+  /** Null quando o CSC do ambiente ainda não foi configurado — emissão exige;
+   *  teste de conexão/cancelamento/inutilização funcionam sem. */
+  csc: { id: string; token: string } | null;
   pem: PemCert;
 }
 
@@ -97,10 +99,14 @@ async function baixarPfx(path: string): Promise<Buffer> {
   return Buffer.from(await data.arrayBuffer());
 }
 
-/** Carrega filial + config + certificado prontos pra falar com a SEFAZ. */
+/** Carrega filial + config + certificado prontos pra falar com a SEFAZ.
+ *  `paraEmitir: false` (teste de conexão, cancelamento, inutilização) não
+ *  exige config completa — só certificado + UF; CSC vai null se faltar. */
 export async function contextoFiscal(
   filialId: string,
+  opts: { paraEmitir?: boolean } = {},
 ): Promise<{ ok: true; ctx: ContextoFiscal } | { ok: false; erro: string; pendencias?: string[] }> {
+  const paraEmitir = opts.paraEmitir !== false;
   const [fil] = await db
     .select({ id: schema.filial.id, cnpj: schema.filial.cnpj, cfg: schema.filial.fiscalConfig })
     .from(schema.filial)
@@ -109,11 +115,13 @@ export async function contextoFiscal(
   if (!fil) return { ok: false, erro: 'filial não encontrada' };
 
   const cfg = fil.cfg ?? null;
-  const pend = pendenciasConfig(cfg);
-  if (pend.length > 0) {
-    return { ok: false, erro: `config fiscal incompleta: ${pend.join('; ')}`, pendencias: pend };
+  if (paraEmitir) {
+    const pend = pendenciasConfig(cfg);
+    if (pend.length > 0) {
+      return { ok: false, erro: `config fiscal incompleta: ${pend.join('; ')}`, pendencias: pend };
+    }
   }
-  const c = cfg as FiscalConfig;
+  const c = (cfg ?? {}) as FiscalConfig;
 
   const cUF = UF_CODIGO[(c.endereco?.uf ?? 'SE').toUpperCase()];
   if (!cUF) return { ok: false, erro: `UF inválida na config fiscal: ${c.endereco?.uf}` };
@@ -130,6 +138,8 @@ export async function contextoFiscal(
   }
 
   const tpAmb: 1 | 2 = c.ambiente === 1 ? 1 : 2;
+  const cscId = tpAmb === 1 ? c.cscId : c.cscIdHom;
+  const cscToken = tpAmb === 1 ? c.cscToken : c.cscTokenHom;
   return {
     ok: true,
     ctx: {
@@ -139,10 +149,7 @@ export async function contextoFiscal(
       tpAmb,
       serie: c.serie && c.serie > 0 ? c.serie : 3,
       cUF,
-      csc:
-        tpAmb === 1
-          ? { id: c.cscId!, token: c.cscToken! }
-          : { id: c.cscIdHom!, token: c.cscTokenHom! },
+      csc: cscId && cscToken ? { id: cscId, token: cscToken } : null,
       pem,
     },
   };
@@ -264,6 +271,10 @@ export async function emitirNfcePedido(
   const ctxR = await contextoFiscal(filialId);
   if (!ctxR.ok) return { ok: false, erro: ctxR.erro, pendencias: ctxR.pendencias };
   const ctx = ctxR.ctx;
+  if (!ctx.csc) {
+    // pendenciasConfig já barra isso; guarda extra pro tipo (e pra corrida de config)
+    return { ok: false, erro: `CSC de ${ctx.tpAmb === 1 ? 'produção' : 'homologação'} não configurado` };
+  }
 
   // documento do consumidor (o vendas-local já validou; revalida por segurança)
   let doc: string | null = null;

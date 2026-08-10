@@ -3,6 +3,7 @@
 // Form da config fiscal (NFC-e) de uma filial + botão de teste na SEFAZ.
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { FiscalConfig } from '@concilia/db/schema';
 
 const vazio: FiscalConfig = {
@@ -44,6 +45,7 @@ export function FiscalForm({
   filialId: string;
   inicial: FiscalConfig | null;
 }) {
+  const router = useRouter();
   const [cfg, setCfg] = useState<FiscalConfig>({ ...vazio, ...(inicial ?? {}) });
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -108,6 +110,7 @@ export function FiscalForm({
         setMsg({ ok: false, texto: `Erro salvando: ${JSON.stringify(j.details?.fieldErrors ?? j.error)}` });
       } else {
         setMsg({ ok: true, texto: 'Config salva.' });
+        router.refresh(); // atualiza a lista de pendências do card
       }
     } catch (e) {
       setMsg({ ok: false, texto: `Erro: ${(e as Error).message}` });
@@ -127,18 +130,19 @@ export function FiscalForm({
       });
       const j = await r.json();
       if (j.ok) {
+        const falta = j.pendencias?.length ? ` · pra emitir ainda falta: ${j.pendencias.join('; ')}` : '';
         setMsg({
           ok: true,
-          texto: `✓ SEFAZ em operação (${j.cStat} ${j.xMotivo}) — ambiente ${j.ambiente}, série ${j.serie}`,
+          texto: `✓ Certificado + SEFAZ OK (${j.cStat} ${j.xMotivo}) — ambiente ${j.ambiente}, série ${j.serie}${falta}`,
         });
       } else {
         setMsg({
           ok: false,
-          texto: j.pendencias?.length
-            ? `Pendências: ${j.pendencias.join('; ')}`
-            : `Falhou: ${j.erro ?? `${j.cStat} ${j.xMotivo}`}`,
+          texto: `Falhou: ${j.erro ?? `${j.cStat} ${j.xMotivo}`}` +
+            (j.pendencias?.length ? ` · pendências: ${j.pendencias.join('; ')}` : ''),
         });
       }
+      router.refresh();
     } catch (e) {
       setMsg({ ok: false, texto: `Erro: ${(e as Error).message}` });
     } finally {
