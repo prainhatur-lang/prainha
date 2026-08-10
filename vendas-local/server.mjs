@@ -694,12 +694,13 @@ async function fbPedirConta(ped, on = true) {
   const r = await qi(`UPDATE PEDIDOS SET CONTASOLICITADA='${on ? 'S' : 'N'}' WHERE CODIGO=${Number(ped)}`);
   if (!r.ok) throw new Error('FB pedir conta: ' + r.err);
 }
-/** Ao PEDIR a conta, os 10% entram no PEDIDO (TOTALSERVICO + VALORTOTAL) —
- *  mesma mecânica do ajuste do caixa. Com isso tela, cobrança e cupom batem
- *  no mesmo número (o saldo cobrável passa a incluir o serviço). Se o PDV já
- *  aplicou serviço (TOTALSERVICO > 0), não mexe. Liberar a conta REMOVE de
- *  novo: o recálculo de total dos lançamentos (fbAtualizarTotal) zera o
- *  VALORTOTAL pro SUM dos itens, e serviço órfão viraria conta errada. */
+/** Garante os 10% no PEDIDO (TOTALSERVICO + VALORTOTAL). REGRA DA CASA
+ *  (dono, 10/08): toda conta JÁ NASCE com o serviço — não espera "pedir a
+ *  conta". O fbAtualizarTotal aplica/recalcula a cada lançamento; esta função
+ *  cobre pedido que nunca passou por lá (mesa aberta pelo Consumer) na hora
+ *  em que o caixa abre a conta. Se já tem serviço (>0), não mexe. Tirar o
+ *  serviço de um cliente = desconto no caixa, com permissão — não existe
+ *  conta "sem os 10%". */
 async function fbAplicarServico(ped) {
   if (!(TAXA_SERVICO > 0)) return 0;
   const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
@@ -745,7 +746,8 @@ async function apiVendaConta(body) {
       await sql`UPDATE comanda SET conta_pedida=true WHERE numero=${numero}`;
       espelho().catch(() => {});
       return { ok: true, pedido_fb: ped, msg: 'Conta pedida. Não entra mais lançamento.' }; }
-    if (acao === 'reabrir') { await fbPedirConta(ped, false); await fbRemoverServico(ped);
+    // reabrir NÃO tira mais o serviço: os 10% são permanentes (regra da casa)
+    if (acao === 'reabrir') { await fbPedirConta(ped, false);
       await sql`UPDATE comanda SET conta_pedida=false WHERE numero=${numero}`;
       espelho().catch(() => {});
       return { ok: true, pedido_fb: ped, msg: 'Liberado. Pode lançar de novo.' }; }
@@ -803,15 +805,17 @@ async function fbGravarRespostas(ped, itemPai, it) {
   }
 }
 async function fbAtualizarTotal(ped) {
-  // VALORTOTALITENS acompanha (o Consumer mantém esse campo; a gente também
-  // tem que manter): sem ele, o teto da maquininha (itens×1,15), o Subtotal do
-  // caixa e o % de desconto quebram em pedido criado por nós. E o VALORTOTAL
-  // preserva serviço/desconto/acréscimo já aplicados — antes eram apagados se
-  // um item entrasse depois da conta pedida.
-  const r = await q(`UPDATE PEDIDOS SET
-    VALORTOTALITENS=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL),
-    VALORTOTAL=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL)
-      + COALESCE(TOTALSERVICO,0) - COALESCE(TOTALDESCONTO,0) + COALESCE(TOTALACRESCIMO,0) + COALESCE(VALORENTREGA,0)
+  // Recalcula o pedido inteiro a cada lançamento, mantendo os campos que o
+  // Consumer mantém (VALORTOTALITENS alimenta o teto da maquininha, o
+  // Subtotal do caixa e o % de desconto). REGRA DA CASA (dono, 10/08): o
+  // SERVIÇO DE 10% acompanha o consumo desde o primeiro item — não espera
+  // "pedir a conta" — e é recalculado aqui a cada item que entra ou sai.
+  const s = await q(`SELECT COALESCE(SUM(VALORTOTAL),0) V FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
+  if (!s.ok) throw new Error('FB total (soma): ' + s.err);
+  const itens = Number(s.rows?.[0]?.V) || 0;
+  const svc = TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
+  const r = await q(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(itens)}, TOTALSERVICO=${fbNum(svc)}, PERCENTUALTAXASERVICO=${fbNum(TAXA_SERVICO)},
+    VALORTOTAL=${fbNum(itens)} + ${fbNum(svc)} - COALESCE(TOTALDESCONTO,0) + COALESCE(TOTALACRESCIMO,0) + COALESCE(VALORENTREGA,0)
     WHERE CODIGO=${ped}`);
   if (!r.ok) throw new Error('FB total: ' + r.err);
 }
@@ -2840,6 +2844,8 @@ async function apiCaixaConta(n) {
   const num = Number(n);
   const ped = await fbAcharPedido(num);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
+  // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
+  await fbAplicarServico(ped).catch(() => {});
   const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
   const pago = await fbPagoDoPedido(ped);
   const total = Number(p.T) || 0;
