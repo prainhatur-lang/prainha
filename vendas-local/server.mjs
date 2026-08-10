@@ -4585,6 +4585,11 @@ input:focus{border-color:var(--gold2)}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
 .chk{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:14px;color:var(--mut);cursor:pointer}
 .chk input{width:20px;height:20px}
+/* teclado numérico da casa: o do Android tapava a tela inteira no CPF/WhatsApp */
+.kp{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.kp button{padding:14px 0;font:inherit;font-size:22px;font-weight:800;border:1.5px solid var(--line);border-radius:12px;background:#fff;cursor:pointer}
+.kp button:active{background:#f0f0f4}
+input.kalvo{border-color:var(--gold2)}
 .mini{background:none;border:0;color:var(--mut);font:inherit;font-size:13.5px;text-decoration:underline;
   cursor:pointer;padding:10px 0;width:100%;text-align:center}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
@@ -4646,7 +4651,7 @@ async function telaMesa(){
   app('<div class="tit">Mesas abertas — toque pra lançar</div>'+
     '<div class="chips" id="abertas"><span class="mut">carregando…</span></div>'+
     '<div class="tit" style="margin-top:18px">Ou digite o número</div>'+
-    '<input type="number" id="nmesa" inputmode="numeric" placeholder="ex.: 5">'+
+    '<input type="text" id="nmesa" inputmode="numeric" placeholder="ex.: 5" readonly onclick="kpAlvo(this)">'+kpHtml('nmesa')+
     '<button class="big" onclick="abrirMesa()">Abrir mesa</button>'+
     '<div class="mut" style="margin-top:14px">${COMANDA_ATIVA ? 'A <b>mesa</b> é o lugar; a <b>comanda (' + COMANDA_MIN + '–' + COMANDA_MAX + ')</b> é a pessoa. Dentro da mesa dá pra abrir comandas.' : 'Cada <b>mesa</b> tem a sua própria conta.'}</div>');
   var el=document.getElementById('nmesa');
@@ -4689,7 +4694,7 @@ function telaTransferir(){
     '<div class="mut" style="margin-bottom:12px">'+(ehComanda
       ? 'A comanda passa a pertencer a outra mesa. Os itens continuam nela.'
       : 'Todos os itens da mesa '+MESA+' vão pra mesa nova, e as comandas dela vão junto.')+'</div>'+
-    '<input type="number" id="dest" inputmode="numeric" placeholder="número da mesa de destino">'+
+    '<input type="text" id="dest" inputmode="numeric" placeholder="número da mesa de destino" readonly onclick="kpAlvo(this)">'+kpHtml('dest')+
     '<button class="big" onclick="confirmarTransf()">Transferir</button>'+
     '<div id="msg"></div>');
   var el=document.getElementById('dest');if(el)el.focus();
@@ -5015,7 +5020,7 @@ function telaCliente(numero){
     (nova?'<div class="mut" style="margin:6px 0 10px">A comanda '+ALVOID+' só abre depois disto — '+
       'sem dono ela não é criada.</div>':'')+
 
-    '<input type="text" id="ncpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="olhaCpf(this.value,this)">'+
+    '<input type="text" id="ncpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" readonly onclick="kpAlvo(this)">'+kpHtml('ncpf')+
     '<div id="quem" class="mut" style="margin-top:10px">Digite o CPF — se ele já for conhecido, o nome vem sozinho.</div>'+
     '<div id="passo2"></div>');
   var el=document.getElementById('ncpf');if(el)el.focus();
@@ -5035,13 +5040,26 @@ function cancelarIdent(){ NOVACOMANDA=null; carregarMesa(); }
 // sem dono e' o que a gente esta justamente evitando.
 function passo2(telFim){
   var p2=document.getElementById('passo2');if(!p2)return;
-  p2.innerHTML='<div class="tit" style="margin-top:16px">WhatsApp <span class="mut" style="font-weight:400">'+
-      (telFim?'(temos o final '+esc(String(telFim).slice(-4))+')':'')+'</span></div>'+
-    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000">'+
+  // JÁ TEM WHATSAPP CADASTRADO -> não pede de novo (pedido do dono): mostra o
+  // final que a casa tem e segue. Trocar o número é um toque, pra quem mudou.
+  if(telFim){
+    p2.innerHTML='<div class="tit" style="margin-top:16px">WhatsApp</div>'+
+      '<div class="mut">Já temos o número desta pessoa (final '+esc(String(telFim).slice(-4))+') — não precisa digitar.</div>'+
+      '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>'+
+      '<div style="margin-top:10px;text-align:right"><a style="color:var(--mut);text-decoration:underline;cursor:pointer" onclick="trocarZap()">trocar o número</a></div>';
+    return;
+  }
+  p2.innerHTML='<div class="tit" style="margin-top:16px">WhatsApp</div>'+
+    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000" readonly onclick="kpAlvo(this)">'+kpHtml('nzap')+
     '<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>'+
     '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>'+
     '<div class="mut" style="margin-top:8px">Serve pra avisar de reserva e mesa pronta.</div>';
-  var z=document.getElementById('nzap');if(z)z.focus();
+}
+function trocarZap(){
+  var p2=document.getElementById('passo2');if(!p2)return;
+  p2.innerHTML='<div class="tit" style="margin-top:16px">Novo WhatsApp</div>'+
+    '<input type="text" id="nzap" inputmode="numeric" placeholder="(79) 90000-0000" readonly onclick="kpAlvo(this)">'+kpHtml('nzap')+
+    '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>';
 }
 // Consulta nao trouxe nome: explica e oferece tentar de novo. Sem campo de nome.
 function semNome(msg){
@@ -5070,6 +5088,18 @@ function cpfOk(v){
     if(d!==Number(c[len]))return false;
   }
   return true;
+}
+/* teclado numérico próprio: campo readonly, o do Android nem abre. */
+var KP_ALVO=null;
+function kpAlvo(el){KP_ALVO=el.id;document.querySelectorAll('input.kalvo').forEach(function(x){x.classList.remove('kalvo')});el.classList.add('kalvo')}
+function kpHtml(alvo){KP_ALVO=alvo;
+  return '<div class="kp">'+['7','8','9','4','5','6','1','2','3','0','⌫'].map(function(k){
+    return '<button type="button" onclick="kpT(\\''+(k==='⌫'?'back':k)+'\\')">'+k+'</button>'}).join('')+'</div>';}
+function kpT(k){
+  var e=KP_ALVO&&document.getElementById(KP_ALVO);if(!e)return;
+  if(k==='back')e.value=(e.value||'').replace(/.$/,'');
+  else e.value=(e.value||'')+k;
+  if(e.id==='ncpf')olhaCpf(e.value,e); else e.dispatchEvent(new Event('input'));
 }
 function mascaraCpf(inp){
   var c=String(inp.value||'').replace(/\\D/g,'').slice(0,11);
@@ -8291,10 +8321,14 @@ input.kalvo{border-color:var(--gold2)}
 /* celular: um painel por vez (mesa aberta esconde a lista); o convite "toque
    numa mesa" só faz sentido quando os dois painéis estão visíveis */
 @media (max-width:899px){body.m #lado{display:none}.ph{display:none}}
-/* tablet deitado: caixa clássico em DUAS colunas — mesas à esquerda (sempre
-   de pé), conta e ações à direita. Sem vai-e-volta de tela. */
+/* HOME: as MESAS dominam a tela (regra do dono: mesa é o trabalho, caixa é
+   apoio) — grade cheia à esquerda, busca com teclado POS "do lado", e o
+   cartão do caixa ABAIXO das mesas. Telas de conta: duas colunas clássicas. */
+.wrap.home{max-width:1400px}
 @media (min-width:900px){
   .wrap{max-width:1200px;display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start}
+  .wrap.home{max-width:1400px;grid-template-columns:minmax(0,1fr) 300px}
+  .wrap.home #hside{position:sticky;top:66px}
   .wrap.solo{display:block;max-width:560px}
   #lado{position:sticky;top:66px;max-height:calc(100vh - 80px);overflow:auto}
   .lst{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
@@ -8338,8 +8372,20 @@ function sair(){try{localStorage.removeItem('caixa_tok');localStorage.removeItem
 function irTela(t){TELA=t;render()}
 function render(){
   var app=document.getElementById('app');
-  app.className='wrap'+(TELA==='login'?' solo':'');
   document.body.className=(TELA!=='login'&&TELA!=='home')?'m':'';
+  if(TELA==='login'){app.className='wrap solo';app.innerHTML='<div id="main"></div>';pintaMain();return}
+  if(TELA==='home'){
+    app.className='wrap home';
+    app.innerHTML='<div id="hgrid">'+
+      (FLASH?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(FLASH)+'</div>':'')+
+      '<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
+      '<div class="card" id="cxbx">'+bannerCx()+'</div></div>'+
+      '<div id="hside"><div class="card"><div class="tit" style="margin-top:0">Nº da mesa</div>'+
+      '<input id="nm" class="num" inputmode="numeric" placeholder="número" readonly onclick="kpAlvo(this)">'+kpHtml('nm')+
+      '<button class="big" onclick="carregar()">Abrir</button><div id="aerr" class="err"></div>'+
+      '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 cancelamentos</a></div></div></div>';
+    FLASH=null;return}
+  app.className='wrap';
   if(!document.getElementById('lado')||!document.getElementById('main'))
     app.innerHTML='<div id="lado"></div><div id="main"></div>';
   pintaLado();pintaMain();
@@ -8370,14 +8416,8 @@ function pintaLado(){
   var el=document.getElementById('lado');if(!el)return;
   if(TELA==='login'){el.innerHTML='';return}
   var st=el.scrollTop; // repintar não pode jogar a lista de volta pro topo
-  el.innerHTML='<div class="card" id="cxbx">'+bannerCx()+'</div>'+
-    '<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
-    '<div class="card"><div class="tit" style="margin-top:0">Ou digite o número</div>'+
-    '<input id="nm" class="num" inputmode="numeric" placeholder="nº da mesa/comanda">'+
-    '<button class="big" onclick="carregar()">Abrir</button>'+
-    '<div id="aerr" class="err"></div>'+
-    '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 relatório de cancelamentos</a></div></div>';
-  var e=document.getElementById('nm');if(e)e.addEventListener('keydown',function(ev){if(ev.key==='Enter')carregar()});
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Mesas</div><div id="lista">'+chips()+'</div>'+
+    '<button class="seg" style="margin-top:8px;width:100%" onclick="voltarMesas()">◂ todas as mesas · caixa</button></div>';
   el.scrollTop=st;
 }
 function chips(){
@@ -8404,10 +8444,7 @@ async function listar(){
 function pintaMain(){
   var el=document.getElementById('main');if(!el)return;
   if(TELA==='login')return telaLogin(el);
-  if(TELA==='home'){
-    el.innerHTML=(FLASH?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(FLASH)+'</div>':'')+
-      '<div class="card ph"><div class="mut">👈 Toque numa mesa pra abrir a conta.</div></div>';
-    FLASH=null;return}
+  if(TELA==='home')return; // home é desenhada direto no render()
   if(TELA==='conta')return pinta(el);
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
@@ -8495,7 +8532,7 @@ function pinta(el){
   // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
   h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
-  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar produtos</button>';
+  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar · ⇄ transferir · 🪪 dono/comanda</button>';
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
   if(c.falta>0)h+='<button class="big" onclick="irTela(\\'rec\\')">💵 Receber em dinheiro</button>';
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
