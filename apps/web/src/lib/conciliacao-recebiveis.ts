@@ -149,6 +149,27 @@ export async function rodarConciliacaoRecebiveis(opts: {
     const vendasByNsuData = new Set(vendas.map((v) => keyNsuData(v.nsu, v.dataVenda)));
     const naRangeNominal = (d: string) => d >= dataInicio && d <= dataFim && !fechados.has(d);
 
+    /**
+     * Índice só por NSU, pro fallback da VIRADA DE DIA. O bar fecha de
+     * madrugada: a Cielo autoriza a venda no dia D e fecha o lote no D+1,
+     * então o CIELO03 traz data_venda = D e o CIELO04 traz D+1 pro MESMO
+     * NSU. Sem esse fallback a venda vira "sem agenda" e a agenda vira "sem
+     * venda" — o mesmo dinheiro contado como dois problemas. Medido em
+     * 10/08/2026: 73 de 75 VENDA_SEM_AGENDA eram exatamente isso.
+     */
+    const recByNsu = new Map<string, (typeof recebiveis)[number][]>();
+    for (const r of recebiveis) {
+      const arr = recByNsu.get(r.nsu) ?? [];
+      arr.push(r);
+      recByNsu.set(r.nsu, arr);
+    }
+    /** Distância em dias entre duas datas YYYY-MM-DD. */
+    const distanciaDias = (a: string, b: string | null): number => {
+      if (!b) return Infinity;
+      const ms = new Date(a + 'T00:00:00').getTime() - new Date(b + 'T00:00:00').getTime();
+      return Math.abs(ms) / 86_400_000;
+    };
+
     const matched: Array<{
       venda: (typeof vendas)[number];
       recebivel: (typeof recebiveis)[number];
@@ -170,6 +191,25 @@ export async function rodarConciliacaoRecebiveis(opts: {
       );
       if (!r && candidatos.length > 0) r = candidatos[0];
 
+      // 2. Fallback da virada de dia: mesmo NSU + MESMO VALOR EXATO a até 1
+      //    dia de distância. Exige valor exato de propósito — é o que impede
+      //    de colar num NSU reciclado semanas depois.
+      if (!r) {
+        r = recByNsu
+          .get(v.nsu)
+          ?.filter(
+            (x) =>
+              !recUsados.has(x.id) &&
+              Math.abs(Number(x.valorBruto) - Number(v.valorBruto)) < TOL &&
+              distanciaDias(v.dataVenda, x.dataVenda) <= 1,
+          )
+          // o mais próximo primeiro
+          .sort(
+            (a, b) =>
+              distanciaDias(v.dataVenda, a.dataVenda) - distanciaDias(v.dataVenda, b.dataVenda),
+          )[0];
+      }
+
       if (!r) {
         vendaSemAgenda.push(v);
         continue;
@@ -183,10 +223,16 @@ export async function rodarConciliacaoRecebiveis(opts: {
     for (const r of recebiveis) {
       if (!r.dataVenda || !naRangeNominal(r.dataVenda)) continue;
       if (recUsados.has(r.id)) continue;
-      // AgendaSemVenda: nao tem venda pra esse NSU+data em lugar nenhum.
+      // AgendaSemVenda: nao tem venda pra esse NSU em lugar nenhum — nem no
+      // dia, nem em D±1 (mesma virada de lote do fallback acima).
       // Se o recebivel for tarifa/aluguel (valor negativo ou NSU vazio), vai
       // pra categoria TARIFA_CIELO em vez de AGENDA_SEM_VENDA.
-      if (!vendasByNsuData.has(keyNsuData(r.nsu, r.dataVenda))) {
+      const temVendaPorPerto =
+        vendasByNsuData.has(keyNsuData(r.nsu, r.dataVenda)) ||
+        vendas.some(
+          (v) => v.nsu === r.nsu && distanciaDias(v.dataVenda, r.dataVenda) <= 1,
+        );
+      if (!temVendaPorPerto) {
         if (ehTarifa(r)) {
           tarifas.push(r);
         } else {
