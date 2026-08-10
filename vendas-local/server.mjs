@@ -369,6 +369,10 @@ async function initSchema() {
   // comanda_item leva TRUNCATE a cada espelho; o "já saiu na impressora" vive
   // aqui, chaveado por ITENSPEDIDO.CODIGO (estável — mesmo esquema da `marca`).
   await sql`CREATE TABLE IF NOT EXISTS comanda_impressa (item_codigo bigint PRIMARY KEY, impresso_em timestamptz DEFAULT now())`;
+  // qual impressora atende CADA praça — cozinhas separadas têm impressoras
+  // separadas (Petisco e Cozinha podem apontar pro MESMO IP; Drinks pra outro).
+  // Praça sem linha usa a impressora geral (a do caixa) como padrão.
+  await sql`CREATE TABLE IF NOT EXISTS praca_impressora (area_codigo integer PRIMARY KEY, ip text NOT NULL)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -892,8 +896,11 @@ async function imprimirComandasNovas() {
   try {
     const modo = await cfgGet('producao_modo', 'kds');
     if (modo !== 'ambos' && modo !== 'impressora') return;
-    const ip = (await cfgGet('impressora_ip', '')).trim();
-    if (!ip) return;
+    const ipGeral = (await cfgGet('impressora_ip', '')).trim();
+    // cada praça imprime na SUA impressora; sem IP próprio, cai na geral
+    const porPraca = new Map((await sql`SELECT area_codigo, ip FROM praca_impressora`)
+      .map((r) => [Number(r.area_codigo), String(r.ip).trim()]).filter(([, v]) => v));
+    if (!ipGeral && !porPraca.size) return;
     const novos = await sql`
       SELECT ci.item_codigo, ci.codigo_pai, ci.tipo, ci.nome, ci.quantidade, ci.detalhes,
              ci.criado, ci.area_codigo, ci.comanda_codigo, a.nome AS area_nome,
@@ -939,6 +946,14 @@ async function imprimirComandasNovas() {
       }
       for (const itens of grupos.values()) {
         const um = itens[0];
+        const marcar = itens.flatMap((x) => [Number(x.item_codigo), ...(comps.get(Number(x.item_codigo)) || []).map((c2) => Number(c2.item_codigo))]);
+        const ipDest = porPraca.get(Number(um.area_codigo)) || ipGeral;
+        if (!ipDest) {
+          // praça sem impressora nenhuma (nem própria, nem geral): o KDS cobre;
+          // marca pra não ficar re-checando esses itens a cada ciclo
+          await sql`INSERT INTO comanda_impressa ${sql(marcar.map((v) => ({ item_codigo: v })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
+          continue;
+        }
         let rotulo = impRotulo(um.numero, um.origem);
         const mesaV = mesaDaComanda.get(Number(um.numero));
         if (mesaV) rotulo += ' · MESA ' + mesaV;
@@ -956,10 +971,12 @@ async function imprimirComandasNovas() {
         }
         if (itens.some((x) => junto.has(Number(x.item_codigo)))) b.push(impTraco(), IMP.neg, impLn('>> SERVIR JUNTO (grupo em mais de uma praça)'), IMP.negFim);
         b.push(IMP.corte);
-        await imprimirRaw(ip, Buffer.concat(b), 'comanda ' + rotulo);
-        const marcar = itens.flatMap((x) => [Number(x.item_codigo), ...(comps.get(Number(x.item_codigo)) || []).map((c2) => Number(c2.item_codigo))]);
+        // impressora de UMA praça fora do ar não trava as outras: o grupo que
+        // falhou fica sem marca e o próximo ciclo tenta de novo
+        try { await imprimirRaw(ipDest, Buffer.concat(b), 'comanda ' + rotulo + ' (' + (um.area_nome || 'sem praça') + ')'); }
+        catch (e) { console.error('[impressora] comanda falhou:', rotulo, '→', ipDest, '—', e.message); continue; }
         await sql`INSERT INTO comanda_impressa ${sql(marcar.map((v) => ({ item_codigo: v })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
-        console.log('[impressora] comanda:', rotulo, '—', marcar.length, 'item(ns)');
+        console.log('[impressora] comanda:', rotulo, '→', ipDest, '—', marcar.length, 'item(ns)');
       }
     }
     if (Date.now() - impLimpouEm > 3600e3) {
@@ -1008,11 +1025,22 @@ async function cupomConta(numero, ped) {
 
 // ---- config e teste da impressora (tela /tempos) ----
 async function apiImpressora() {
-  return { ok: true, ip: await cfgGet('impressora_ip', ''), modo: await cfgGet('producao_modo', 'kds'), ultimo: impUltimo };
+  const pracas = await sql`SELECT a.codigo, a.nome, pi.ip FROM area a
+    LEFT JOIN praca_impressora pi ON pi.area_codigo=a.codigo ORDER BY a.nome`;
+  return { ok: true, ip: await cfgGet('impressora_ip', ''), modo: await cfgGet('producao_modo', 'kds'),
+    pracas: pracas.map((x) => ({ codigo: Number(x.codigo), nome: x.nome, ip: (x.ip || '').trim() })), ultimo: impUltimo };
 }
+const impIpValido = (ip) => !ip || /^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(ip);
 async function apiImpressoraSalvar(body) {
   const ip = String(body.ip ?? '').trim();
-  if (ip && !/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(ip)) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+  if (!impIpValido(ip)) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+  // {area_codigo, ip} = impressora DA PRAÇA (vazio remove; volta pra geral)
+  if (body.area_codigo != null) {
+    if (!ip) await sql`DELETE FROM praca_impressora WHERE area_codigo=${Number(body.area_codigo)}`;
+    else await sql`INSERT INTO praca_impressora (area_codigo, ip) VALUES (${Number(body.area_codigo)}, ${ip})
+      ON CONFLICT (area_codigo) DO UPDATE SET ip=EXCLUDED.ip`;
+    return { ok: true };
+  }
   const modo = ['kds', 'ambos', 'impressora'].includes(String(body.modo)) ? String(body.modo) : null;
   const antes = await cfgGet('producao_modo', 'kds');
   await cfgSet('impressora_ip', ip);
@@ -1025,17 +1053,23 @@ async function apiImpressoraSalvar(body) {
   }
   return { ok: true, ip, modo: modo || antes };
 }
-async function apiImpressoraTeste() {
-  const ip = (await cfgGet('impressora_ip', '')).trim();
-  if (!ip) return { ok: false, erro: 'preencha o IP da impressora primeiro' };
+async function apiImpressoraTeste(body) {
+  let ip = '', onde = 'geral (caixa)';
+  if (body && body.area_codigo != null) {
+    const r = (await sql`SELECT a.nome, pi.ip FROM area a LEFT JOIN praca_impressora pi ON pi.area_codigo=a.codigo
+      WHERE a.codigo=${Number(body.area_codigo)}`)[0];
+    ip = (r?.ip || '').trim() || (await cfgGet('impressora_ip', '')).trim();
+    onde = (r?.nome || 'praça ' + body.area_codigo) + (r?.ip ? '' : ' (usando a geral)');
+  } else ip = (await cfgGet('impressora_ip', '')).trim();
+  if (!ip) return { ok: false, erro: 'sem impressora: preencha o IP da praça ou o geral' };
   const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm, IMP.negFim, impLn('teste da impressora'), IMP.esquerda, impTraco(),
+    impLn(impLR('Praça do teste:', onde)),
     impLn('Acentuação: ção põe água café útil ÁÉÍÓÚ Ç'),
     impLn('123456789012345678901234567890123456789012345678'),
     impLn('(48 números acima — devem caber numa linha só)'),
-    impLn(impLR('esquerda', 'direita')),
     IMP.neg, IMP.alto, impLn('A comanda sai neste tamanho'), IMP.norm, IMP.negFim,
     impTraco(), IMP.centro, impLn(new Date().toLocaleString('pt-BR')), IMP.corte];
-  try { await imprimirRaw(ip, Buffer.concat(b), 'teste'); return { ok: true }; }
+  try { await imprimirRaw(ip, Buffer.concat(b), 'teste ' + onde); return { ok: true, ip }; }
   catch (e) { return { ok: false, erro: e.message }; }
 }
 
@@ -5754,27 +5788,42 @@ async function pintaImp(){
   var d=await jget('/api/impressora');
   var el=document.getElementById('imp');if(!el)return;
   var m=d.modo||'kds';
-  el.innerHTML='<div class="l"><div class="nm">Onde a comanda aparece<small>KDS = as telas/tablets · impressora = cupom na térmica</small></div>'+
+  var algumaPraca=(d.pracas||[]).some(function(a){return a.ip});
+  var h='<div class="l"><div class="nm">Onde a comanda aparece<small>KDS = as telas/tablets · impressora = cupom na térmica</small></div>'+
     '<select id="imodo" onchange="salvaImp()" style="font:inherit;font-size:15px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff">'+
       '<option value="kds"'+(m==='kds'?' selected':'')+'>Só no KDS</option>'+
       '<option value="ambos"'+(m==='ambos'?' selected':'')+'>KDS + impressora</option>'+
       '<option value="impressora"'+(m==='impressora'?' selected':'')+'>Só na impressora</option>'+
     '</select><span class="ok" id="ok-im"></span></div>'+
-    '<div class="l"><div class="nm">IP da impressora térmica<small>na rede da loja, porta 9100 · a conta do caixa também sai nela</small></div>'+
+    '<div class="l"><div class="nm">Impressora do caixa (a conta sai nela)<small>e padrão de praça sem impressora própria</small></div>'+
     '<input id="iip" type="text" value="'+esc(d.ip||'')+'" placeholder="192.168.10.9" style="width:150px;text-align:left" onchange="salvaImp()">'+
-    '<button class="back" style="cursor:pointer" onclick="testeImp()">testar</button></div>'+
-    (m!=='kds'&&!d.ip?'<div class="l" style="color:#dc2626;font-size:13.5px">Modo com impressora, mas SEM IP — comanda não vai sair. Preencha o IP.</div>':'')+
-    (d.ultimo&&d.ultimo.quando?'<div class="l mut" style="font-size:12.5px">última impressão: '+(d.ultimo.ok?'ok':'FALHOU — '+esc(d.ultimo.erro||''))+' ('+esc(d.ultimo.oque||'')+')</div>':'');
+    '<button class="back" style="cursor:pointer" onclick="testeImp()">testar</button></div>';
+  (d.pracas||[]).forEach(function(a){
+    h+='<div class="l"><div class="nm">'+esc(a.nome)+'<small>'+(a.ip?('imprime em '+esc(a.ip)):(d.ip?('sem IP próprio — usa a do caixa ('+esc(d.ip)+')'):'sem impressora'))+'</small></div>'+
+      '<input type="text" value="'+esc(a.ip||'')+'" placeholder="IP da praça" style="width:150px;text-align:left" onchange="salvaImpPraca('+a.codigo+',this.value)">'+
+      '<button class="back" style="cursor:pointer" onclick="testeImp('+a.codigo+')">testar</button>'+
+      '<span class="ok" id="ok-ip'+a.codigo+'"></span></div>';
+  });
+  if(m!=='kds'&&!d.ip&&!algumaPraca)h+='<div class="l" style="color:#dc2626;font-size:13.5px">Modo com impressora, mas NENHUM IP preenchido — comanda não vai sair em papel.</div>';
+  if(d.ultimo&&d.ultimo.quando)h+='<div class="l mut" style="font-size:12.5px">última impressão: '+(d.ultimo.ok?'ok':'FALHOU — '+esc(d.ultimo.erro||''))+' ('+esc(d.ultimo.oque||'')+')</div>';
+  el.innerHTML=h;
 }
 async function salvaImp(){
   var r=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
-  if(!r.ok){alert(r.erro||'não salvou');return}
+  if(!r.ok){alert(r.erro||'não salvou');pintaImp();return}
   await pintaImp();marcaOk('ok-im');
 }
-async function testeImp(){
-  var r0=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
-  if(!r0.ok){alert(r0.erro||'não salvou');return}
-  var r=await jpost('/api/impressora/teste',{});
+async function salvaImpPraca(cod,v){
+  var r=await jpost('/api/impressora',{area_codigo:cod,ip:(v||'').trim()});
+  if(!r.ok){alert(r.erro||'não salvou');pintaImp();return}
+  await pintaImp();marcaOk('ok-ip'+cod);
+}
+async function testeImp(cod){
+  if(cod==null){
+    var r0=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
+    if(!r0.ok){alert(r0.erro||'não salvou');return}
+  }
+  var r=await jpost('/api/impressora/teste',cod!=null?{area_codigo:cod}:{});
   alert(r.ok?'Enviado! Confere o cupom na impressora.':(r.erro||'não imprimiu'));
   pintaImp();
 }
@@ -7827,7 +7876,7 @@ const server = http.createServer(async (req, res) => {
     // POST antes do GET: o `if` sem checar método engoliria o POST
     if (req.method === 'POST' && p === '/api/tempos') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTemposSalvar(body))); }
     if (p === '/api/tempos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTempos())); }
-    if (req.method === 'POST' && p === '/api/impressora/teste') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiImpressoraTeste())); }
+    if (req.method === 'POST' && p === '/api/impressora/teste') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiImpressoraTeste(body))); }
     if (p === '/api/impressora') { res.writeHead(200, { 'content-type': 'application/json' }); if (req.method === 'POST') return res.end(JSON.stringify(await apiImpressoraSalvar(await readBody(req)))); return res.end(JSON.stringify(await apiImpressora())); }
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
