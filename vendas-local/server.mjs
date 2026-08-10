@@ -989,7 +989,14 @@ async function imprimirComandasNovas() {
         for (const it of itens) {
           const nome = (Number(it.tipo) === 2 ? '+ ' : '') + (it.nome || '');
           b.push(IMP.neg, IMP.alto, impLn(impQtd(it.quantidade) + ' ' + nome), IMP.norm, IMP.negFim);
-          for (const d of impDetalhes(it.detalhes)) b.push(IMP.alto, impLn('   > ' + d), IMP.norm);
+          // resposta de pergunta JÁ sai como filho "+" logo abaixo — não repete
+          // na linha ">" (o cupom saía "com açucar" duas vezes). Observação
+          // digitada pelo garçom não é filho, então continua saindo.
+          const nomesFilhos = new Set((comps.get(Number(it.item_codigo)) || []).map((c2) => String(c2.nome || '').trim().toLowerCase()));
+          for (const d of impDetalhes(it.detalhes)) {
+            const resto = d.split(' | ').filter((seg) => !nomesFilhos.has(seg.trim().toLowerCase())).join(' | ');
+            if (resto) b.push(IMP.alto, impLn('   > ' + resto), IMP.norm);
+          }
           for (const c2 of comps.get(Number(it.item_codigo)) || []) {
             b.push(IMP.alto, impLn('   + ' + (Number(c2.quantidade) > 1 ? impQtd(c2.quantidade) + ' ' : '') + (c2.nome || '')), IMP.norm);
             for (const d of impDetalhes(c2.detalhes)) b.push(impLn('     > ' + d));
