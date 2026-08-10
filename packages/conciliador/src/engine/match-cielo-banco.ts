@@ -115,6 +115,63 @@ export function matchCieloBanco(
   // Set global de creditos ja consumidos por algum grupo
   const usados = new Set<LancamentoBancoInput>();
 
+  // ---------------------------------------------------------------------
+  // PASSO 0 — Pix casa 1:1, antes de qualquer subset-sum.
+  //
+  // O Pix cai INDIVIDUALMENTE no extrato (uma linha por transacao, com o
+  // valor liquido exato). Somar o dia inteiro e procurar a combinacao exata
+  // e' pior em dois sentidos: se falta um pedaco do credito, o grupo INTEIRO
+  // fica pendente (medido em 01/08/2026: R$ 2.736,52 previstos, R$ 2.629,58
+  // no extrato — faltavam R$ 106,94 e os 20 Pix do dia caiam juntos); e o
+  // subset-sum ainda pode achar uma combinacao "certa por acaso" com
+  // creditos que sao de outro dia.
+  //
+  // Casando um a um sobra exatamente a diferenca real, que e' o que o
+  // operador precisa ver.
+  // ---------------------------------------------------------------------
+  const pixCasados = new Map<string, LancamentoBancoInput>(); // nsu -> credito
+  for (const [key, items] of recPorGrupo) {
+    if (!key.endsWith('|PIX')) continue;
+    const [dataPagamento] = key.split('|') as [string];
+    // do dia exato pra fora, pra preferir o credito do proprio dia
+    const ordem: number[] = [0];
+    for (let d = 1; d <= janela; d++) {
+      ordem.push(d);
+      ordem.push(-d);
+    }
+    for (const r of items) {
+      let achado: LancamentoBancoInput | undefined;
+      for (const delta of ordem) {
+        const arr = credByDia.get(addDias(dataPagamento, delta)) ?? [];
+        achado = arr.find((c) => !usados.has(c) && Math.abs(c.valor - r.valorLiquido) < 0.005);
+        if (achado) break;
+      }
+      if (achado) {
+        usados.add(achado);
+        pixCasados.set(r.nsu, achado);
+        nsusPagos.add(r.nsu);
+      }
+    }
+  }
+  // Tira do agrupamento os Pix ja resolvidos; grupo que zerou vira completo.
+  for (const [key, items] of [...recPorGrupo]) {
+    if (!key.endsWith('|PIX')) continue;
+    const casados = items.filter((r) => pixCasados.has(r.nsu));
+    const sobrando = items.filter((r) => !pixCasados.has(r.nsu));
+    if (casados.length > 0) {
+      const [dataPagamento] = key.split('|') as [string];
+      gruposCompletos.push({
+        dataPagamento,
+        tipo: 'PIX',
+        qtdRecebiveis: casados.length,
+        valorTotal: +casados.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2),
+        lancamentosBanco: casados.map((r) => pixCasados.get(r.nsu)!),
+      });
+    }
+    if (sobrando.length === 0) recPorGrupo.delete(key);
+    else recPorGrupo.set(key, sobrando);
+  }
+
   // Processa grupos em ordem CRONOLOGICA real (nao lexicografica sobre
   // DD/MM/YYYY que daria 01/01 -> 01/02 -> 01/03 -> 02/01). Converte pra
   // YYYY-MM-DD antes de ordenar.
