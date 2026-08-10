@@ -12,6 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync } from 'node:fs';
@@ -364,6 +365,10 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS garcom_pin (login text PRIMARY KEY, pin_hash text NOT NULL,
     salt text NOT NULL, nome text, criado_em timestamptz DEFAULT now(), atualizado_em timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
+  // ---- COMANDA JÁ IMPRESSA na térmica ----
+  // comanda_item leva TRUNCATE a cada espelho; o "já saiu na impressora" vive
+  // aqui, chaveado por ITENSPEDIDO.CODIGO (estável — mesmo esquema da `marca`).
+  await sql`CREATE TABLE IF NOT EXISTS comanda_impressa (item_codigo bigint PRIMARY KEY, impresso_em timestamptz DEFAULT now())`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -474,6 +479,9 @@ async function espelho() {
        WHERE fechada_em IS NULL AND criado_em < now() - ${carencia}`;
   }
   ultimoStatus = { ok: true, comandas: comandas.length, itens: itens.length };
+  // a comanda na térmica pega carona em TODO refresh do espelho (o do loop e
+  // os manuais do lançamento): pedido novo imprime na hora, sem esperar 15s
+  imprimirComandasNovas().catch((e) => console.error('[impressora] comanda:', e.message));
   return ultimoStatus;
 }
 // watchdog: o espelho NUNCA pode travar o loop em silêncio (bug do node-firebird em queda de VPN).
@@ -703,9 +711,18 @@ async function apiVendaConta(body) {
   try { ped = await fbAcharPedido(numero); } catch (e) { return { ok: false, erro: e.message }; }
   if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_DE ? 'comanda ' : 'mesa ') + numero };
   try {
-    if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbAplicarServico(ped); await fbImprimirConta(ped);
+    if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbAplicarServico(ped);
+      // térmica direta configurada? imprime daqui, sem depender da fila do
+      // Consumer. Se o socket falhar, cai no caminho antigo (PEDIDOIMPRESSAO).
+      let msg = 'Conta enviada pra impressora do caixa.'; let direto = false;
+      const ipConta = (await cfgGet('impressora_ip', '')).trim();
+      if (ipConta) {
+        try { await imprimirRaw(ipConta, await cupomConta(numero, ped), 'conta ' + numero); direto = true; msg = 'Conta impressa.'; }
+        catch (e) { console.error('[impressora] conta:', e.message); }
+      }
+      if (!direto) await fbImprimirConta(ped);
       espelho().catch(() => {});
-      return { ok: true, pedido_fb: ped, msg: 'Conta enviada pra impressora do caixa.' }; }
+      return { ok: true, pedido_fb: ped, msg }; }
     if (acao === 'fechar') { await fbPedirConta(ped, true); await fbAplicarServico(ped);
       // espelho na hora: senao a tela do cliente so descobre no proximo sync
       await sql`UPDATE comanda SET conta_pedida=true WHERE numero=${numero}`;
@@ -776,6 +793,250 @@ async function fbJobCozinha(ped) {
   const r = await q(`INSERT INTO PEDIDOIMPRESSAO (INSERIDOEM, CODIGOPEDIDO, CODIGOTIPOIMPRESSAO, CODIGOORIGEMIMPRESSAO, CODIGOSITUACAOIMPRESSAO, AUTORIZADOEM)
     VALUES (CURRENT_TIMESTAMP, ${ped}, 1, 0, 2, CURRENT_TIMESTAMP)`);
   if (!r.ok) throw new Error('FB job impressão: ' + r.err);
+}
+
+// ---- IMPRESSORA TÉRMICA (ESC/POS cru na rede, porta 9100) ----
+// Térmica genérica de 80mm = 48 colunas na fonte A. Sem driver e sem a fila do
+// Consumer: abre socket TCP e manda os bytes. Config POR LOJA (app_config):
+//   producao_modo = kds | ambos | impressora  — onde a COMANDA da cozinha sai
+//   impressora_ip = 192.168.10.9[:9100]       — vazio = loja sem impressora
+// A CONTA do caixa imprime direto sempre que impressora_ip existir; se o socket
+// falhar, cai no caminho antigo (PEDIDOIMPRESSAO, a impressora do Consumer).
+async function cfgGet(chave, def = '') {
+  const r = (await sql`SELECT valor FROM app_config WHERE chave=${chave}`)[0];
+  return r ? r.valor : def;
+}
+async function cfgSet(chave, valor) {
+  await sql`INSERT INTO app_config (chave, valor) VALUES (${chave}, ${String(valor)})
+    ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor`;
+}
+const IMP_COLS = 48;
+// CP850: a página de código clássica das térmicas pro pt-BR. O que não estiver
+// nela sai sem acento (e, em último caso, '?') — nunca lixo.
+const IMP_CP850 = { 'á': 0xA0, 'é': 0x82, 'í': 0xA1, 'ó': 0xA2, 'ú': 0xA3, 'à': 0x85, 'è': 0x8A, 'ì': 0x8D, 'ò': 0x95, 'ù': 0x97, 'â': 0x83, 'ê': 0x88, 'î': 0x8C, 'ô': 0x93, 'û': 0x96, 'ã': 0xC6, 'õ': 0xE4, 'ç': 0x87, 'ü': 0x81, 'ö': 0x94, 'ä': 0x84, 'ñ': 0xA4, 'Á': 0xB5, 'É': 0x90, 'Í': 0xD6, 'Ó': 0xE0, 'Ú': 0xE9, 'À': 0xB7, 'Â': 0xB6, 'Ê': 0xD2, 'Î': 0xD7, 'Ô': 0xE2, 'Û': 0xEA, 'Ã': 0xC7, 'Õ': 0xE5, 'Ç': 0x80, 'Ü': 0x9A, 'Ñ': 0xA5, 'º': 0xA7, 'ª': 0xA6, '°': 0xF8, '·': 0xFA, '—': 0x2D, '–': 0x2D };
+function impTexto(s) {
+  const out = [];
+  for (const ch of String(s ?? '')) {
+    const c = ch.codePointAt(0);
+    if (c === 0x0A || (c >= 0x20 && c < 0x7F)) { out.push(c); continue; }
+    if (IMP_CP850[ch] != null) { out.push(IMP_CP850[ch]); continue; }
+    const sem = (ch.normalize('NFD').replace(/[̀-ͯ]/g, '') || '?')[0];
+    const c2 = sem.codePointAt(0);
+    out.push(c2 >= 0x20 && c2 < 0x7F ? c2 : 0x3F);
+  }
+  return Buffer.from(out);
+}
+const IMP = {
+  // reset + FS. (desliga o modo caractere chinês — a genérica liga NELE e come
+  // os bytes acentuados aos pares, virava tudo '?') + codepage CP850
+  init: Buffer.from([0x1b, 0x40, 0x1c, 0x2e, 0x1b, 0x74, 0x02]),
+  centro: Buffer.from([0x1b, 0x61, 1]), esquerda: Buffer.from([0x1b, 0x61, 0]),
+  neg: Buffer.from([0x1b, 0x45, 1]), negFim: Buffer.from([0x1b, 0x45, 0]),
+  alto: Buffer.from([0x1d, 0x21, 0x01]),    // 2× altura (continua 48 col)
+  grande: Buffer.from([0x1d, 0x21, 0x11]),  // 2× altura E largura (24 col)
+  norm: Buffer.from([0x1d, 0x21, 0x00]),
+  corte: Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x1d, 0x56, 0x42, 0x00]),
+};
+const impLn = (s = '') => Buffer.concat([impTexto(s), Buffer.from([0x0a])]);
+const impTraco = () => impLn('-'.repeat(IMP_COLS));
+function impLR(esq, dir, cols = IMP_COLS) {
+  esq = String(esq); dir = String(dir);
+  const sobra = cols - esq.length - dir.length;
+  if (sobra >= 1) return esq + ' '.repeat(sobra) + dir;
+  return esq.slice(0, Math.max(1, cols - dir.length - 3)) + '.. ' + dir;
+}
+// nome que não cabe na linha do preço: sai inteiro (a impressora quebra) e o
+// valor vai sozinho na linha de baixo, encostado à direita
+function impLinhasItem(esq, dir) {
+  if (String(esq).length + String(dir).length + 1 <= IMP_COLS) return [impLR(esq, dir)];
+  return [String(esq), ' '.repeat(Math.max(0, IMP_COLS - String(dir).length)) + String(dir)];
+}
+const impMoeda = (v) => 'R$ ' + (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+const impQtd = (q) => { const n = Number(q) || 0; return (n % 1 ? n.toLocaleString('pt-BR') : String(n)) + 'x'; };
+const impHm = (d) => new Date(d || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+function impDetalhes(d) { return String(d || '').split(/\r?\n/).map((x) => x.trim()).filter((x) => temMod(x)); }
+function impRotulo(numero, origem) {
+  const n = Number(numero) || 0;
+  if (COMANDA_ATIVA && n >= COMANDA_DE && n <= COMANDA_MAX) return 'COMANDA ' + n;
+  if (DELIVERY_ORIGENS.has(Number(origem))) return String(ORIGEM_NOME[Number(origem)] || 'Delivery').toUpperCase() + (n > 0 ? ' ' + n : '');
+  if (n > 0) return 'MESA ' + n;
+  return String(ORIGEM_NOME[Number(origem)] || 'Balcão').toUpperCase();
+}
+let impUltimo = { quando: null, ok: null, erro: null, oque: null };
+function imprimirRaw(ipCfg, buf, oque) {
+  return new Promise((resolve, reject) => {
+    const [host, porta] = String(ipCfg).trim().split(':');
+    const s = net.connect({ host, port: Number(porta) || 9100, timeout: 5000 });
+    let fim = false;
+    const acaba = (erro) => {
+      if (fim) return; fim = true;
+      try { s.destroy(); } catch { /* já morreu */ }
+      impUltimo = { quando: new Date().toISOString(), ok: !erro, erro: erro ? erro.message : null, oque: oque || null };
+      if (erro) reject(erro); else resolve(true);
+    };
+    s.on('timeout', () => acaba(new Error('impressora não respondeu (5s) — confira IP e cabo')));
+    s.on('error', (e) => acaba(new Error('impressora: ' + e.message)));
+    // porta 9100 é cega (não confirma nada): conectou e entregou os bytes, foi
+    s.on('connect', () => s.end(buf));
+    s.on('finish', () => acaba(null));
+  });
+}
+
+// ---- COMANDA na térmica: o que apareceu de NOVO no espelho e ainda não saiu.
+// Roda de carona em todo refresh do espelho. Chaveia por ITENSPEDIDO.CODIGO na
+// comanda_impressa (durável), então pega pedido lançado pelo app E direto no
+// Consumer. Impressora fora do ar = não marca; o próximo ciclo tenta de novo.
+let impRodando = false, impLimpouEm = 0;
+async function imprimirComandasNovas() {
+  if (impRodando) return; impRodando = true;
+  try {
+    const modo = await cfgGet('producao_modo', 'kds');
+    if (modo !== 'ambos' && modo !== 'impressora') return;
+    const ip = (await cfgGet('impressora_ip', '')).trim();
+    if (!ip) return;
+    const novos = await sql`
+      SELECT ci.item_codigo, ci.codigo_pai, ci.tipo, ci.nome, ci.quantidade, ci.detalhes,
+             ci.criado, ci.area_codigo, ci.comanda_codigo, a.nome AS area_nome,
+             c.numero, c.origem, c.nome AS cliente
+        FROM comanda_item ci
+        JOIN comanda c ON c.codigo = ci.comanda_codigo
+        LEFT JOIN area a ON a.codigo = ci.area_codigo
+        LEFT JOIN comanda_impressa fe ON fe.item_codigo = ci.item_codigo
+        LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
+       WHERE fe.item_codigo IS NULL AND ci.produzido IS NULL AND ci.entregue IS NULL
+         AND (k.item_codigo IS NULL OR (k.pronto_em IS NULL AND k.entregue_em IS NULL))
+       ORDER BY ci.item_codigo`;
+    if (novos.length) {
+      // impressora religada horas depois: comanda velha não sai (a cozinha já
+      // se virou de outro jeito); marca como vista e segue só com o fresco
+      const velhos = novos.filter((x) => x.criado && Date.now() - new Date(x.criado).getTime() > 3 * 3600e3);
+      if (velhos.length) await sql`INSERT INTO comanda_impressa ${sql(velhos.map((x) => ({ item_codigo: x.item_codigo })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
+      const velhosSet = new Set(velhos.map((x) => Number(x.item_codigo)));
+      const frescos = novos.filter((x) => !velhosSet.has(Number(x.item_codigo)));
+      const codigos = new Set(frescos.map((x) => Number(x.item_codigo)));
+      // complemento (tipo 2) sai indentado dentro do prato-pai; sem pai na
+      // leva (pai já impresso antes), sai sozinho com um "+" na frente
+      const comps = new Map();
+      for (const x of frescos) {
+        if (Number(x.tipo) === 2 && x.codigo_pai != null && codigos.has(Number(x.codigo_pai))) {
+          if (!comps.has(Number(x.codigo_pai))) comps.set(Number(x.codigo_pai), []);
+          comps.get(Number(x.codigo_pai)).push(x);
+        }
+      }
+      const principais = frescos.filter((x) => !(Number(x.tipo) === 2 && codigos.has(Number(x.codigo_pai))));
+      // comanda vinculada a mesa: a cozinha precisa saber AONDE entregar
+      const numsCom = [...new Set(principais.map((x) => Number(x.numero)).filter((n) => COMANDA_ATIVA && n >= COMANDA_DE && n <= COMANDA_MAX))];
+      const vinc = numsCom.length ? await sql`SELECT comanda, mesa FROM mesa_comanda WHERE comanda = ANY(${numsCom}) AND fechada_em IS NULL` : [];
+      const mesaDaComanda = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
+      const juntoRows = codigos.size ? await sql`SELECT item_codigo FROM item_junto WHERE item_codigo = ANY(${[...codigos]})` : [];
+      const junto = new Set(juntoRows.map((r) => Number(r.item_codigo)));
+      // um cupom por mesa+praça — a leva que o garçom mandou de uma vez
+      const grupos = new Map();
+      for (const x of principais) {
+        const k = x.comanda_codigo + '|' + (x.area_codigo ?? 's');
+        if (!grupos.has(k)) grupos.set(k, []);
+        grupos.get(k).push(x);
+      }
+      for (const itens of grupos.values()) {
+        const um = itens[0];
+        let rotulo = impRotulo(um.numero, um.origem);
+        const mesaV = mesaDaComanda.get(Number(um.numero));
+        if (mesaV) rotulo += ' · MESA ' + mesaV;
+        const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn((um.area_nome || 'Sem praça').toUpperCase()), IMP.norm, IMP.negFim, IMP.esquerda, impTraco(),
+          IMP.neg, IMP.grande, impLn(rotulo), IMP.norm, IMP.negFim,
+          impLn([um.cliente, impHm(um.criado)].filter(Boolean).join(' · ')), impTraco()];
+        for (const it of itens) {
+          const nome = (Number(it.tipo) === 2 ? '+ ' : '') + (it.nome || '');
+          b.push(IMP.neg, IMP.alto, impLn(impQtd(it.quantidade) + ' ' + nome), IMP.norm, IMP.negFim);
+          for (const d of impDetalhes(it.detalhes)) b.push(IMP.alto, impLn('   > ' + d), IMP.norm);
+          for (const c2 of comps.get(Number(it.item_codigo)) || []) {
+            b.push(IMP.alto, impLn('   + ' + (Number(c2.quantidade) > 1 ? impQtd(c2.quantidade) + ' ' : '') + (c2.nome || '')), IMP.norm);
+            for (const d of impDetalhes(c2.detalhes)) b.push(impLn('     > ' + d));
+          }
+        }
+        if (itens.some((x) => junto.has(Number(x.item_codigo)))) b.push(impTraco(), IMP.neg, impLn('>> SERVIR JUNTO (grupo em mais de uma praça)'), IMP.negFim);
+        b.push(IMP.corte);
+        await imprimirRaw(ip, Buffer.concat(b), 'comanda ' + rotulo);
+        const marcar = itens.flatMap((x) => [Number(x.item_codigo), ...(comps.get(Number(x.item_codigo)) || []).map((c2) => Number(c2.item_codigo))]);
+        await sql`INSERT INTO comanda_impressa ${sql(marcar.map((v) => ({ item_codigo: v })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
+        console.log('[impressora] comanda:', rotulo, '—', marcar.length, 'item(ns)');
+      }
+    }
+    if (Date.now() - impLimpouEm > 3600e3) {
+      impLimpouEm = Date.now();
+      await sql`DELETE FROM comanda_impressa WHERE impresso_em < now() - interval '30 days'`;
+    }
+  } finally { impRodando = false; }
+}
+
+// ---- CONTA na térmica: números REAIS do PEDIDOS (desconto/acréscimo/serviço,
+// os mesmos da tela do caixa) + itens/comandas/pagamentos do apiContaTexto.
+async function cupomConta(numero, ped) {
+  const ct = await apiContaTexto(numero).catch(() => ({ ok: false }));
+  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0] || {};
+  let pago = 0; try { pago = await fbPagoDoPedido(ped); } catch { /* sem FB agora: segue sem o pago */ }
+  const subtotal = Number(p.I) || 0, servico = Number(p.S) || 0, desconto = Number(p.D) || 0, acrescimo = Number(p.A) || 0, total = Number(p.T) || 0;
+  const falta = Math.max(0, +(total - pago).toFixed(2));
+  const nome = (ct.ok && ct.nome) || T(p.NOME) || null;
+  const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm, IMP.negFim,
+    impLn('CONFERÊNCIA DE CONSUMO - não é doc. fiscal'), IMP.esquerda, impTraco(),
+    IMP.neg, IMP.alto, impLn(impRotulo(numero, null) + (nome ? ' · ' + nome : '')), IMP.norm, IMP.negFim,
+    impLn(new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })), impTraco()];
+  if (ct.ok) for (const it of ct.itens || []) {
+    if (Number(it.tipo) === 2) { b.push(impLn('    + ' + (it.nome || ''))); continue; }
+    for (const l of impLinhasItem(impQtd(it.quantidade) + ' ' + (it.nome || ''), (Number(it.valor_total) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))) b.push(impLn(l));
+  }
+  if (ct.ok && (ct.itens || []).length) b.push(impTraco());
+  b.push(impLn(impLR('Subtotal', impMoeda(subtotal))));
+  if (servico > 0) b.push(impLn(impLR('Serviço (' + TAXA_SERVICO + '%)', impMoeda(servico))));
+  if (desconto > 0) b.push(impLn(impLR('Desconto', '- ' + impMoeda(desconto))));
+  if (acrescimo > 0) b.push(impLn(impLR('Acréscimo', impMoeda(acrescimo))));
+  if (pago > 0) b.push(impLn(impLR('Já pago', '- ' + impMoeda(pago))));
+  b.push(IMP.neg, IMP.alto, impLn(impLR(pago > 0 ? 'FALTA PAGAR' : 'TOTAL', impMoeda(falta))), IMP.norm, IMP.negFim);
+  if (ct.ok && (ct.pagamentos || []).length) {
+    b.push(impTraco(), impLn('Pagamentos:'));
+    for (const g of ct.pagamentos) b.push(impLn(impLR('  ' + (g.forma || 'pagamento'), impMoeda(g.valor))));
+  }
+  if (ct.ok && (ct.comandas || []).length) {
+    b.push(impTraco(), impLn('Comandas nesta mesa (contas separadas):'));
+    for (const cc of ct.comandas) b.push(impLn(impLR('  ' + cc.numero + (cc.nome ? ' ' + String(cc.nome).slice(0, 18) : ''), cc.quitada ? 'paga' : impMoeda(cc.resta))));
+    b.push(IMP.neg, impLn(impLR('Mesa + comandas', impMoeda(ct.geral))), IMP.negFim);
+  }
+  b.push(impTraco(), IMP.centro, impLn('Obrigado pela preferência!'), IMP.corte);
+  return Buffer.concat(b);
+}
+
+// ---- config e teste da impressora (tela /tempos) ----
+async function apiImpressora() {
+  return { ok: true, ip: await cfgGet('impressora_ip', ''), modo: await cfgGet('producao_modo', 'kds'), ultimo: impUltimo };
+}
+async function apiImpressoraSalvar(body) {
+  const ip = String(body.ip ?? '').trim();
+  if (ip && !/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(ip)) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+  const modo = ['kds', 'ambos', 'impressora'].includes(String(body.modo)) ? String(body.modo) : null;
+  const antes = await cfgGet('producao_modo', 'kds');
+  await cfgSet('impressora_ip', ip);
+  if (modo) {
+    await cfgSet('producao_modo', modo);
+    // ligou a impressão AGORA: o que já estava na casa não imprime (senão sai
+    // um bolo de cupom velho de uma vez) — só pedido novo daqui pra frente
+    if (modo !== 'kds' && antes === 'kds')
+      await sql`INSERT INTO comanda_impressa (item_codigo) SELECT item_codigo FROM comanda_item ON CONFLICT (item_codigo) DO NOTHING`;
+  }
+  return { ok: true, ip, modo: modo || antes };
+}
+async function apiImpressoraTeste() {
+  const ip = (await cfgGet('impressora_ip', '')).trim();
+  if (!ip) return { ok: false, erro: 'preencha o IP da impressora primeiro' };
+  const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm, IMP.negFim, impLn('teste da impressora'), IMP.esquerda, impTraco(),
+    impLn('Acentuação: ção põe água café útil ÁÉÍÓÚ Ç'),
+    impLn('123456789012345678901234567890123456789012345678'),
+    impLn('(48 números acima — devem caber numa linha só)'),
+    impLn(impLR('esquerda', 'direita')),
+    IMP.neg, IMP.alto, impLn('A comanda sai neste tamanho'), IMP.norm, IMP.negFim,
+    impTraco(), IMP.centro, impLn(new Date().toLocaleString('pt-BR')), IMP.corte];
+  try { await imprimirRaw(ip, Buffer.concat(b), 'teste'); return { ok: true }; }
+  catch (e) { return { ok: false, erro: e.message }; }
 }
 
 // ---- PAGAMENTO no Consumer (Fase 2, Rota A) ----
@@ -5488,7 +5749,35 @@ var D=null,tmr={};
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}
-async function carregar(){D=await jget('/api/tempos');pinta();pintaGrupos()}
+async function carregar(){D=await jget('/api/tempos');pinta();pintaGrupos();pintaImp()}
+async function pintaImp(){
+  var d=await jget('/api/impressora');
+  var el=document.getElementById('imp');if(!el)return;
+  var m=d.modo||'kds';
+  el.innerHTML='<div class="l"><div class="nm">Onde a comanda aparece<small>KDS = as telas/tablets · impressora = cupom na térmica</small></div>'+
+    '<select id="imodo" onchange="salvaImp()" style="font:inherit;font-size:15px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff">'+
+      '<option value="kds"'+(m==='kds'?' selected':'')+'>Só no KDS</option>'+
+      '<option value="ambos"'+(m==='ambos'?' selected':'')+'>KDS + impressora</option>'+
+      '<option value="impressora"'+(m==='impressora'?' selected':'')+'>Só na impressora</option>'+
+    '</select><span class="ok" id="ok-im"></span></div>'+
+    '<div class="l"><div class="nm">IP da impressora térmica<small>na rede da loja, porta 9100 · a conta do caixa também sai nela</small></div>'+
+    '<input id="iip" type="text" value="'+esc(d.ip||'')+'" placeholder="192.168.10.9" style="width:150px;text-align:left" onchange="salvaImp()">'+
+    '<button class="back" style="cursor:pointer" onclick="testeImp()">testar</button></div>'+
+    (m!=='kds'&&!d.ip?'<div class="l" style="color:#dc2626;font-size:13.5px">Modo com impressora, mas SEM IP — comanda não vai sair. Preencha o IP.</div>':'')+
+    (d.ultimo&&d.ultimo.quando?'<div class="l mut" style="font-size:12.5px">última impressão: '+(d.ultimo.ok?'ok':'FALHOU — '+esc(d.ultimo.erro||''))+' ('+esc(d.ultimo.oque||'')+')</div>':'');
+}
+async function salvaImp(){
+  var r=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
+  if(!r.ok){alert(r.erro||'não salvou');return}
+  await pintaImp();marcaOk('ok-im');
+}
+async function testeImp(){
+  var r0=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
+  if(!r0.ok){alert(r0.erro||'não salvou');return}
+  var r=await jpost('/api/impressora/teste',{});
+  alert(r.ok?'Enviado! Confere o cupom na impressora.':(r.erro||'não imprimiu'));
+  pintaImp();
+}
 async function pintaGrupos(){
   var d=await jget('/api/grupos-ocultos');
   var el=document.getElementById('grupos');if(!el)return;
@@ -5501,7 +5790,9 @@ async function pintaGrupos(){
 }
 async function togGrupo(cat,visivel){await jpost('/api/grupo-ocultar',{categoria:cat,oculto:!visivel})}
 function pinta(){
-  var h='<div class="mut">Quanto tempo cada praça tem pra entregar. Passou disso, o pedido fica <b>vermelho</b> no KDS. '+
+  var h='<h2 style="margin-top:0">Comanda — KDS e impressora</h2>'+
+    '<div class="card" id="imp" style="padding:2px 16px">carregando…</div>'+
+    '<div class="mut" style="margin-top:26px">Quanto tempo cada praça tem pra entregar. Passou disso, o pedido fica <b>vermelho</b> no KDS. '+
     'Passou do <b>dobro</b>, o alarme fica mais alto e insistente.</div>'+
     '<h2>Por praça</h2><div class="card">';
   D.areas.forEach(function(a){
@@ -7269,6 +7560,7 @@ function pinta(el){
   h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
   h+='<button class="big" onclick="irTela(\\'rec\\')"'+(c.falta>0?'':' disabled')+'>💵 Receber em dinheiro</button>';
+  h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
   el.innerHTML=h;
 }
@@ -7335,6 +7627,13 @@ async function receber(){
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
   if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
+}
+async function imprimirCx(btn){
+  if(btn){btn.disabled=true;btn.textContent='🧾 Imprimindo…'}
+  var r=await jpost('/api/caixa/imprimir',{numero:MESA});
+  if(btn){btn.disabled=false;btn.textContent='🧾 Imprimir conta'}
+  if(!r.ok){alert(r.erro||'não imprimiu');return}
+  await carregar(MESA); // a conta volta já com o serviço aplicado
 }
 /* o caixa fica horas ligado: a lista e a conta na tela se renovam sozinhas.
    A conta SÓ quando é a tela ativa — nunca por cima de um valor sendo digitado
@@ -7418,6 +7717,9 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0)));
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/receber') { const b = await readBody(req); return res.end(JSON.stringify(await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' }))); }
+      // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
+      // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
+      if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
@@ -7525,6 +7827,8 @@ const server = http.createServer(async (req, res) => {
     // POST antes do GET: o `if` sem checar método engoliria o POST
     if (req.method === 'POST' && p === '/api/tempos') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTemposSalvar(body))); }
     if (p === '/api/tempos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTempos())); }
+    if (req.method === 'POST' && p === '/api/impressora/teste') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiImpressoraTeste())); }
+    if (p === '/api/impressora') { res.writeHead(200, { 'content-type': 'application/json' }); if (req.method === 'POST') return res.end(JSON.stringify(await apiImpressoraSalvar(await readBody(req)))); return res.end(JSON.stringify(await apiImpressora())); }
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
     if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
