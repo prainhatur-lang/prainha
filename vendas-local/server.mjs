@@ -2574,6 +2574,32 @@ async function apiCaixaAjuste(body, quem) {
   }
   return { ok: false, erro: 'tipo inválido' };
 }
+// Fecha o pedido DO JEITO QUE O CONSUMER FECHA — conferido em pedidos reais
+// fechados pelo próprio Consumer na 0003: fechar = gravar DATAFECHAMENTO
+// (CONTASOLICITADA volta pra 'N'; SUBTOTALPAGO/VALORTROCO ficam como estão).
+// A quitação é responsabilidade do CHAMADOR — aqui só se fecha.
+async function fbFecharPedido(ped) {
+  const r = await qi(`UPDATE PEDIDOS SET DATAFECHAMENTO=CURRENT_TIMESTAMP, CONTASOLICITADA='N' WHERE CODIGO=${ped} AND DATAFECHAMENTO IS NULL`);
+  if (!r.ok) throw new Error('FB fechar: ' + r.err);
+}
+// Fechar a conta é o ato final do caixa: o pedido sai das listas (garçom,
+// caixa, Consumer) e a mesa fica livre pro próximo cliente. Só com a conta
+// QUITADA — receber dinheiro é outra rota; esta não movimenta valor nenhum.
+async function apiCaixaFechar(nRaw) {
+  const n = Number(nRaw);
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const total = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+  const pago = await fbPagoDoPedido(ped);
+  const falta = +(total - pago).toFixed(2);
+  if (falta > 0.01) return { ok: false, erro: `ainda falta R$ ${falta.toFixed(2)} — receba antes de fechar` };
+  await fbFecharPedido(ped);
+  // fecha o lado local na hora (o espelho faria isso no próximo ciclo)
+  await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
+  await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
+  espelho().catch(() => {});
+  return { ok: true, fechada: true };
+}
 
 // ---- HISTÓRICO do que já saiu (últimas baixas) ----
 // Serve pra desfazer engano: "quem deu baixa nesse item, que horas, que mesa?".
@@ -7488,7 +7514,7 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
 var NOME=null,PODE={desconto:false,fiado:false},MESA=null,CONTA=null,DMODO='valor';
-var TELA='login',MESAS=null;
+var TELA='login',MESAS=null,FLASH=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -7540,7 +7566,10 @@ async function listar(){
 function pintaMain(){
   var el=document.getElementById('main');if(!el)return;
   if(TELA==='login')return telaLogin(el);
-  if(TELA==='home'){el.innerHTML='<div class="card ph"><div class="mut">👈 Toque numa mesa pra abrir a conta.</div></div>';return}
+  if(TELA==='home'){
+    el.innerHTML=(FLASH?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(FLASH)+'</div>':'')+
+      '<div class="card ph"><div class="mut">👈 Toque numa mesa pra abrir a conta.</div></div>';
+    FLASH=null;return}
   if(TELA==='conta')return pinta(el);
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
@@ -7608,8 +7637,11 @@ function pinta(el){
   // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
   h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
-  h+='<button class="big" onclick="irTela(\\'rec\\')"'+(c.falta>0?'':' disabled')+'>💵 Receber em dinheiro</button>';
+  // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
+  if(c.falta>0)h+='<button class="big" onclick="irTela(\\'rec\\')">💵 Receber em dinheiro</button>';
+  else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
   h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
+  h+='<div id="cerr" class="err"></div>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
   el.innerHTML=h;
 }
@@ -7675,7 +7707,14 @@ async function receber(){
   var reg=Math.min(v,CONTA.falta);
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
   if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
+  if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';voltarMesas();listar();return}
   await carregar(MESA);
+}
+async function fecharConta(){
+  var r=await jpost('/api/caixa/fechar',{numero:MESA});
+  if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
+  FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
+  voltarMesas();listar();
 }
 async function imprimirCx(btn){
   if(btn){btn.disabled=true;btn.textContent='🧾 Imprimindo…'}
@@ -7765,7 +7804,14 @@ const server = http.createServer(async (req, res) => {
       if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
       if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0)));
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
-      if (req.method === 'POST' && p === '/api/caixa/receber') { const b = await readBody(req); return res.end(JSON.stringify(await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' }))); }
+      if (req.method === 'POST' && p === '/api/caixa/receber') {
+        const b = await readBody(req);
+        const r = await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual' });
+        // caixa que recebe é caixa que libera: quitou -> fecha o pedido na hora
+        if (r.ok && r.quitada) { const f = await apiCaixaFechar(b.numero); r.fechada = !!f.ok; }
+        return res.end(JSON.stringify(r));
+      }
+      if (req.method === 'POST' && p === '/api/caixa/fechar') return res.end(JSON.stringify(await apiCaixaFechar((await readBody(req)).numero)));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
