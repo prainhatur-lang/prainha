@@ -59,7 +59,7 @@ export function AcoesNota({
 
   return (
     <div className="flex flex-wrap gap-1.5">
-      {(status === 'AUTORIZADA' || status === 'CANCELADA') && (
+      {status === 'AUTORIZADA' && (
         <a
           href={`/fiscal/nfce/${id}/danfe`}
           className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"

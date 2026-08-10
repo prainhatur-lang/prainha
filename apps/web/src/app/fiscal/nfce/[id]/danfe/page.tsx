@@ -37,6 +37,24 @@ export default async function DanfePage({ params }: { params: Promise<{ id: stri
     .limit(1);
   if (!acesso) notFound();
 
+  // DANFE cancelado não se reimprime — documento sem valor não circula.
+  if (nota.status !== 'AUTORIZADA') {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100">
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-lg font-semibold text-slate-900">Sem 2ª via</p>
+          <p className="mt-2 max-w-sm text-sm text-slate-600">
+            Esta NFC-e está <b>{nota.status}</b> — DANFE cancelado/não autorizado não é
+            reimpresso. O XML continua disponível no painel pro contador.
+          </p>
+          <a href="/fiscal/nfce" className="mt-4 inline-block text-sm text-slate-700 underline">
+            ◂ voltar ao painel
+          </a>
+        </div>
+      </main>
+    );
+  }
+
   const [fil] = await db
     .select({ cnpj: schema.filial.cnpj, cfg: schema.filial.fiscalConfig })
     .from(schema.filial)
