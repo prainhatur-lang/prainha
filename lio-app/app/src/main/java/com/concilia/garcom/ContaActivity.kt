@@ -169,18 +169,28 @@ class ContaActivity : AppCompatActivity() {
             // Consumo + serviço − pago = saldo, SEMPRE com os 10% à vista.
             // Antes de pedir a conta o serviço é estimativa; ao pedir, o
             // servidor aplica no pedido e os números viram os oficiais.
+            // QUITADA (pago ≥ consumo) = saldo zero — não se estima serviço
+            // sobre conta paga (serviço é opcional; regra do passe de saída).
             val taxa = Session.taxaServico(this)
             val taxaTxt = if (taxa == Math.floor(taxa)) taxa.toInt().toString() else taxa.toString()
             val aplicado = c.servico > 0
+            val quitada = c.saldo <= 0.009
             val consumo = if (aplicado) c.total - c.servico else c.total
-            val svc = if (aplicado) c.servico else Math.round(consumo * taxa) / 100.0
-            val totalCom = consumo + svc
-            val saldoExibe = if (aplicado) c.saldo else totalCom - c.pago
             linhas.add(Resumo("Consumo", Cupom.brl(consumo)))
-            linhas.add(Resumo("Serviço $taxaTxt%" + (if (aplicado) "" else " (entra ao pedir a conta)"), Cupom.brl(svc)))
-            linhas.add(Resumo("Total", Cupom.brl(totalCom)))
-            if (c.pago > 0) linhas.add(Resumo("Pago", "− " + Cupom.brl(c.pago), vermelho = true))
-            linhas.add(Resumo("SALDO", Cupom.brl(saldoExibe), destaque = true))
+            if (quitada) {
+                if (aplicado) linhas.add(Resumo("Serviço", Cupom.brl(c.servico)))
+                linhas.add(Resumo("Total", Cupom.brl(c.total)))
+                if (c.pago > 0) linhas.add(Resumo("Pago", "− " + Cupom.brl(c.pago), vermelho = true))
+                linhas.add(Resumo("SALDO — QUITADA", Cupom.brl(0.0), destaque = true))
+            } else {
+                val svc = if (aplicado) c.servico else Math.round(consumo * taxa) / 100.0
+                val totalCom = consumo + svc
+                val saldoExibe = if (aplicado) c.saldo else totalCom - c.pago
+                linhas.add(Resumo("Serviço $taxaTxt%" + (if (aplicado) "" else " (entra ao pedir a conta)"), Cupom.brl(svc)))
+                linhas.add(Resumo("Total", Cupom.brl(totalCom)))
+                if (c.pago > 0) linhas.add(Resumo("Pago", "− " + Cupom.brl(c.pago), vermelho = true))
+                linhas.add(Resumo("SALDO", Cupom.brl(saldoExibe), destaque = true))
+            }
 
             // Mesa com comandas: o RESULTADO FINAL igual ao cupom (senão a mesa
             // diz 171 e a conta impressa diz 222 — divergência).
@@ -236,8 +246,11 @@ class ContaActivity : AppCompatActivity() {
     }
 
     /** Saldo JÁ com o serviço (10% padrão): o Receber nunca aparece sem os 10%
-     *  — no dialog dá pra subir pra 15%, nunca ficar abaixo de 10. */
+     *  — no dialog dá pra subir pra 15%, nunca ficar abaixo de 10.
+     *  Conta QUITADA (pago ≥ consumo) é saldo ZERO: serviço é opcional por lei
+     *  (mesma regra do passe de saída) — não se estima 10% sobre conta paga. */
     private fun saldoComServico(c: Api.Conta): Double {
+        if (c.saldo <= 0.009) return 0.0
         if (c.servico > 0) return c.saldo
         val taxa = Session.taxaServico(this)
         val svc = Math.round(c.total * taxa) / 100.0

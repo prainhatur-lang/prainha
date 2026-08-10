@@ -64,8 +64,10 @@ android {
         // 1.8.2: "Fechar conta (quitada)" no menu ⋯ — ato final do caixa pela
         // maquininha (rota /api/lio/fechar). Quitou na hora do pagamento, o
         // servidor já fecha sozinho; este botão resolve as quitadas antigas.
-        versionCode = 16
-        versionName = "1.8.2"
+        // 1.8.3: conta quitada mostra SALDO 0 (não estima 10% sobre conta paga
+        // — serviço é opcional, mesma regra do passe de saída).
+        versionCode = 17
+        versionName = "1.8.3"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
