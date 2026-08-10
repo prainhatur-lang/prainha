@@ -18,6 +18,23 @@ export function AcoesNota({
 }) {
   const router = useRouter();
   const [ocupado, setOcupado] = useState(false);
+  const [naFila, setNaFila] = useState(false);
+
+  async function imprimirNaLoja() {
+    setOcupado(true);
+    try {
+      const r = await fetch('/api/nfce/reimprimir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const j = await r.json();
+      if (j.ok) setNaFila(true);
+      else window.alert(j.erro ?? 'falhou');
+    } finally {
+      setOcupado(false);
+    }
+  }
 
   async function cancelar() {
     const justificativa = window.prompt(
@@ -60,12 +77,23 @@ export function AcoesNota({
   return (
     <div className="flex flex-wrap gap-1.5">
       {status === 'AUTORIZADA' && (
-        <a
-          href={`/fiscal/nfce/${id}/danfe`}
-          className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-        >
-          🖨 DANFE
-        </a>
+        <>
+          <button
+            onClick={imprimirNaLoja}
+            disabled={ocupado || naFila}
+            className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+            title="Imprime na térmica do caixa da filial (sai em ~20s)"
+          >
+            {naFila ? '✓ na fila da loja' : '🖨 DANFE na loja'}
+          </button>
+          <a
+            href={`/fiscal/nfce/${id}/danfe`}
+            className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-100"
+            title="Ver na tela / imprimir pelo navegador"
+          >
+            ver
+          </a>
+        </>
       )}
       {temXml && (
         <a

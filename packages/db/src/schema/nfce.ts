@@ -125,6 +125,29 @@ export const nfceEmitida = pgTable(
   }),
 );
 
+/** Fila de reimpressão de DANFE: o painel (administração) enfileira, o
+ *  vendas-local da filial puxa (~20s) e imprime na térmica do caixa —
+ *  o browser não alcança a impressora da loja; a loja alcança. */
+export const nfceReimpressao = pgTable(
+  'nfce_reimpressao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    nfceId: uuid('nfce_id')
+      .notNull()
+      .references(() => nfceEmitida.id, { onDelete: 'cascade' }),
+    status: varchar('status', { length: 12 }).notNull().default('PENDENTE'), // PENDENTE|IMPRESSA
+    solicitadoPor: varchar('solicitado_por', { length: 60 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    impressoEm: timestamp('impresso_em', { withTimezone: true }),
+  },
+  (t) => ({
+    pendIdx: index('nfce_reimp_pend_idx').on(t.filialId, t.status, t.criadoEm),
+  }),
+);
+
 /** Numeração por (filial, série, ambiente). ultimo_numero = último alocado;
  *  aloca com INSERT ... ON CONFLICT DO UPDATE SET ultimo_numero+1 RETURNING
  *  (atômico, sem transação explícita). Pra começar de um número específico

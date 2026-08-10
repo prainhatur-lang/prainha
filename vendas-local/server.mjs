@@ -2368,6 +2368,41 @@ async function loopNfceFila() {
   } catch (e) { console.error('[nfce] fila:', e.message); }
   finally { nfceFilaRodando = false; }
 }
+// ---- FILA DE REIMPRESSÃO vinda do painel: o botão "DANFE na loja" do
+// Concilia enfileira no central; aqui a gente puxa (~20s), imprime na
+// térmica do caixa e confirma. Sem impressora/erro = não confirma, tenta
+// no próximo ciclo (o central descarta jobs com mais de 24h).
+let nfceImpRodando = false;
+async function loopNfceImpressao() {
+  if (nfceImpRodando || !grupoDisponivel()) return; nfceImpRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q2 = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('fila', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/nfce/fila-impressao?${q2}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json().catch(() => null);
+    if (!j || !j.ok || !(j.jobs || []).length) return;
+    const ip = (await cfgGet('impressora_ip', '')).trim();
+    if (!ip) return; // sem impressora configurada: deixa na fila
+    const feitos = [];
+    for (const job of j.jobs) {
+      try {
+        await imprimirRaw(ip, nfceBlocosEscpos(job.blocos || []), '2ª via ' + (job.rotulo || 'DANFE'));
+        feitos.push(job.id);
+        console.log('[nfce] 2ª via impressa:', job.rotulo);
+      } catch (e2) { console.error('[nfce] 2ª via falhou:', e2.message); }
+    }
+    if (feitos.length) {
+      const e3 = Math.floor(Date.now() / 1000) + 120;
+      await fetch(`${PAGAR_MESA_URL}/api/nfce/fila-impressao`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e: e3, s: nfceAssina('fila', e3), ids: feitos }),
+        signal: AbortSignal.timeout(10000),
+      }).catch(() => {}); // não confirmou = reimprime no próximo ciclo (papel a mais, nota a menos não)
+    }
+  } catch { /* central fora: próximo ciclo */ }
+  finally { nfceImpRodando = false; }
+}
+
 // ---- DANFE em ESC/POS: blocos de texto + QR raster (GS v 0) ----
 // O QR NÃO usa o comando nativo (GS ( k) porque a genérica 80mm nem sempre
 // implementa: rasteriza os módulos do qrcode-svg (4px/módulo + quiet zone)
@@ -9105,6 +9140,8 @@ async function main() {
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
+  // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa
+  setInterval(() => loopNfceImpressao().catch(() => {}), 20 * 1000);
   // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
   // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
   limparFotosAntigas();
