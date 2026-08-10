@@ -68,7 +68,7 @@ async function cobertura(filialIds: string[]): Promise<CoberturaDia[]> {
              WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
                AND nv.codigo_pedido_externo = p.codigo_externo)), 0)::text AS valor_sem
     FROM pedido p
-    WHERE p.filial_id = ANY(${filialIds}::uuid[])
+    WHERE p.filial_id IN ${filialIds}
       AND p.data_fechamento >= now() - interval '14 days'
       AND COALESCE(p.valor_total, 0) > 0
     GROUP BY 1, 2
