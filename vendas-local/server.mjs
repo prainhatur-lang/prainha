@@ -803,7 +803,16 @@ async function fbGravarRespostas(ped, itemPai, it) {
   }
 }
 async function fbAtualizarTotal(ped) {
-  const r = await q(`UPDATE PEDIDOS SET VALORTOTAL=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL) WHERE CODIGO=${ped}`);
+  // VALORTOTALITENS acompanha (o Consumer mantém esse campo; a gente também
+  // tem que manter): sem ele, o teto da maquininha (itens×1,15), o Subtotal do
+  // caixa e o % de desconto quebram em pedido criado por nós. E o VALORTOTAL
+  // preserva serviço/desconto/acréscimo já aplicados — antes eram apagados se
+  // um item entrasse depois da conta pedida.
+  const r = await q(`UPDATE PEDIDOS SET
+    VALORTOTALITENS=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL),
+    VALORTOTAL=(SELECT COALESCE(SUM(VALORTOTAL),0) FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL)
+      + COALESCE(TOTALSERVICO,0) - COALESCE(TOTALDESCONTO,0) + COALESCE(TOTALACRESCIMO,0) + COALESCE(VALORENTREGA,0)
+    WHERE CODIGO=${ped}`);
   if (!r.ok) throw new Error('FB total: ' + r.err);
 }
 async function fbJobCozinha(ped) {
@@ -1852,10 +1861,22 @@ async function apiContaPagar(body) {
   // Maquininha (permitir_servico): cobra consumo + serviço ESCOLHIDO na hora
   // (10/15%, os mesmos chips do Pix da tela do celular) — o teto acompanha,
   // mesmo quando o serviço não está gravado no pedido.
+  // pedido criado por nós pode ter VALORTOTALITENS nulo (histórico): o total
+  // serve de base — senão o teto desabava pro saldo e a maquininha com 10%
+  // era recusada ("valor maior que o saldo")
+  const baseItens = Number(cab.VALORTOTALITENS) || Number(cab.VALORTOTAL) || 0;
   const teto = body.permitir_servico
-    ? Math.max(saldo, +(((Number(cab.VALORTOTALITENS) || 0) * 1.15) - pagoAtual).toFixed(2))
+    ? Math.max(saldo, +((baseItens * 1.15) - pagoAtual).toFixed(2))
     : saldo;
   if (valor > teto + 0.01) return { ok: false, erro: `valor maior que o saldo (R$ ${Math.max(saldo, 0).toFixed(2)})` };
+  // o serviço escolhido NA MAQUININHA entra no pedido: sem isso ficava
+  // pago > total (o R$ do serviço existia no PAGAMENTOS e não no PEDIDOS,
+  // descasando relatório e nota)
+  if (body.permitir_servico && modo !== 'lio' && valor > saldo + 0.009) {
+    const extra = +(valor - saldo).toFixed(2);
+    const rs = await qi(`UPDATE PEDIDOS SET TOTALSERVICO=COALESCE(TOTALSERVICO,0)+${fbNum(extra)}, VALORTOTAL=COALESCE(VALORTOTAL,0)+${fbNum(extra)} WHERE CODIGO=${ped}`);
+    if (!rs.ok) return { ok: false, erro: 'FB serviço da maquininha: ' + rs.err };
+  }
 
   const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
     VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado') RETURNING id`;
