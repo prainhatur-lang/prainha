@@ -61,10 +61,11 @@ android {
         // 1.8.0: passe de saída na maquininha (QR da catraca em N vias +
         // placas pra cancela LPR, mesa e comanda) e o botão Receber já
         // mostrando o saldo COM os 10% (no dialog dá pra subir pra 15).
-        // 1.8.1: "Dividir por" com botões 1–5 (+ campo pra mais) na conferência
-        // e no pedir conta — sem digitar no caso comum.
-        versionCode = 15
-        versionName = "1.8.1"
+        // 1.8.2: "Fechar conta (quitada)" no menu ⋯ — ato final do caixa pela
+        // maquininha (rota /api/lio/fechar). Quitou na hora do pagamento, o
+        // servidor já fecha sozinho; este botão resolve as quitadas antigas.
+        versionCode = 16
+        versionName = "1.8.2"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

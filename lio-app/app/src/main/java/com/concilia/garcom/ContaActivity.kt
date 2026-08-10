@@ -326,9 +326,13 @@ class ContaActivity : AppCompatActivity() {
             acoes.add(Acao("🧾 Vincular comanda a esta mesa") { dialogVincular() })
         }
         acoes.add(Acao(if (ehComanda) "🔁 Mudar a comanda de mesa" else "🔁 Transferir/juntar em outra mesa") { dialogTransferir() })
-        // Comanda quitada/zerada pode ser LIBERADA (o número volta pro bolso).
-        if (ehComanda && (conta?.saldo ?: 0.0) <= 0.009) {
-            acoes.add(Acao("✔ Dar baixa na comanda") { darBaixaComanda() })
+        // Conta QUITADA: fechar = ato final do caixa (some da grade, libera).
+        if (conta != null && (conta?.saldo ?: 1.0) <= 0.009) {
+            acoes.add(Acao("✔ Fechar conta (quitada)") { dialogFechar() })
+        }
+        // Comanda vinculada SEM pedido: só solta o número (não há o que fechar).
+        if (ehComanda && conta == null) {
+            acoes.add(Acao("✔ Dar baixa na comanda (vazia)") { darBaixaComanda() })
         }
         // Passe de saída (catraca + cancela) — o servidor exige conta zerada.
         acoes.add(Acao("🚗 Passe de saída") { dialogPasse(numero) })
@@ -336,6 +340,34 @@ class ContaActivity : AppCompatActivity() {
             .setTitle(titulo.text)
             .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
             .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun dialogFechar() {
+        val tk = Session.token(this) ?: return logout()
+        AlertDialog.Builder(this)
+            .setMessage("Fechar a conta ${titulo.text}? Ela some da grade e a " +
+                (if (ehComanda) "comanda" else "mesa") + " fica livre.")
+            .setPositiveButton("Fechar") { _, _ ->
+                Thread {
+                    try {
+                        val r = Api.lioFechar(Session.servidor(this), tk, numero)
+                        runOnUiThread {
+                            if (r.optBoolean("ok")) {
+                                Toast.makeText(this, "✓ Conta fechada — liberada!", Toast.LENGTH_LONG).show()
+                                finish()
+                            } else {
+                                Toast.makeText(this, r.optStringOrNull("erro") ?: "Não fechou", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } catch (e: Api.SemSessao) {
+                        runOnUiThread { logout() }
+                    } catch (e: Exception) {
+                        runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show() }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancelar", null)
             .show()
     }
 

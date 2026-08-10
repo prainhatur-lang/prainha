@@ -427,6 +427,12 @@ object Api {
     fun comandaBaixa(base: String, token: String, comanda: Int): JSONObject =
         postJson("$base/api/venda/comanda-baixa", token, JSONObject().put("comanda", comanda))
 
+    /** Fecha a conta QUITADA (ato final do caixa: pedido fecha no Consumer e a
+     *  mesa/comanda some da grade). O servidor barra se ainda faltar dinheiro. */
+    @Throws(IOException::class)
+    fun lioFechar(base: String, token: String, numero: Int): JSONObject =
+        postJson("$base/api/lio/fechar", token, JSONObject().put("numero", numero))
+
     /** Nome pelo CPF/telefone (cadastro da casa → já-atendidos → grupo → SPC). */
     fun identificarBuscar(base: String, cpf: String?, tel: String?): JSONObject? = try {
         getJson("$base/api/venda/identificar?cpf=${enc(cpf ?: "")}&tel=${enc(tel ?: "")}")

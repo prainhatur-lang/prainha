@@ -8033,6 +8033,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioPagar(body, g)));
     }
+    // Fechar conta QUITADA pela maquininha (mesmo ato final do caixa — o
+    // apiCaixaFechar barra sozinho se ainda faltar dinheiro).
+    if (req.method === 'POST' && p === '/api/lio/fechar') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCaixaFechar(Number(body.numero))));
+    }
     // Ações da comanda mobile: só quem está logado (login com AcessarComandaMobile
     // no Consumer). Leitura fica aberta; o que MEXE na conta exige sessão.
     if (req.method === 'POST' && (p === '/api/venda/vincular' || p === '/api/venda/transferir'
