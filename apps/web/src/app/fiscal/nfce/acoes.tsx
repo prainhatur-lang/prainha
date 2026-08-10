@@ -38,7 +38,7 @@ export function AcoesNota({
 
   async function cancelar() {
     const justificativa = window.prompt(
-      'Justificativa do cancelamento (mín. 15 caracteres):',
+      'Cancelar NFC-e — ATENÇÃO: a SEFAZ-SE só aceita até 30 MINUTOS após a autorização.\n\nJustificativa (mín. 15 caracteres):',
       'Erro na emissao da nota fiscal',
     );
     if (!justificativa) return;
