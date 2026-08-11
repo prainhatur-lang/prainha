@@ -5182,6 +5182,10 @@ input.kalvo{border-color:var(--gold2)}
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
 var brl=function(n){return 'R$ '+Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
 var MESA=null, INFO=null, ALVO=null, CART=[], BUSCA='', debounce=null, CATS=null, CATSEL=null, AREAS=null, JUNTO=false;
+// veio do CAIXA (?volta=caixa): "outra mesa"/"trocar mesa" devolvem pra tela
+// do caixa (mesas + número), não pro seletor do vendedor
+var VOLTA=new URLSearchParams(location.search).get('volta');
+function outraMesa(){if(VOLTA==='caixa'){location.href='/caixa';return}telaMesa()}
 // token do garçom logado — vai no header de toda chamada; o servidor exige nas
 // ações que mexem na conta (enviar/transferir/conta/vincular).
 var GTOK=null; try{GTOK=localStorage.getItem('garcom_tok')||null}catch(e){}
@@ -5281,7 +5285,7 @@ async function carregarMesa(){
   // Quem chega na mesa e' perguntado "e o meu peixe?" antes de "quero pedir".
   // Antes o garcom caia direto no buscador e tinha que sair da tela pra ver o
   // consumo; agora e' o contrario, e "Pedir" abre a busca.
-  app('<button class="back" onclick="telaMesa()">◂ trocar mesa</button>'+
+  app('<button class="back" onclick="outraMesa()">'+(VOLTA==='caixa'?'◂ caixa':'◂ trocar mesa')+'</button>'+
     '<div class="cliente" onclick="telaCliente('+MESA+')">'+
       (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
                :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
@@ -5906,7 +5910,7 @@ async function enviar(){
       '<div class="mut" style="margin-top:6px">'+(r.numero>=${COMANDA_DE}?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
       ' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>'+
       '<button class="big" onclick="carregarMesa()">Continuar nesta mesa</button>'+
-      '<button class="big" style="background:#888" onclick="telaMesa()">Outra mesa</button>');
+      '<button class="big" style="background:#888" onclick="outraMesa()">'+(VOLTA==='caixa'?'◂ Voltar pro caixa':'Outra mesa')+'</button>');
   } else {
     var m=document.getElementById('msg');
     if(m)m.innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';
