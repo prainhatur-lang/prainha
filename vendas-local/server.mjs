@@ -9306,7 +9306,7 @@ async function carregar(n){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
   if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
   if(TELA==='home')HOME_Y=window.scrollY||0; // pra voltar no mesmo ponto da lista
-  if(MESA==null||Number(num)!==Number(MESA))CANCEL_ON=false; // trocou de mesa: trava de novo
+  if(MESA==null||Number(num)!==Number(MESA)){CANCEL_ON=false;PAGON=false} // trocou de mesa: trava de novo
   if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
   MESA=num;irTela('conta');
   var c=await jget('/api/caixa/conta?n='+num);
@@ -9322,8 +9322,12 @@ function pinta(el){
   var c=CONTA;
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
-    '<div class="card"><div class="tit" style="margin-top:0">'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+
-      (c.nome?' · '+esc(c.nome):'')+'</div>';
+    '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span>'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+(c.nome?' · '+esc(c.nome):'')+'</span>'+
+      '<span style="flex:1"></span>'+
+      '<button class="seg" onclick="lancarCx()">👤 '+(c.nome?'cliente':'identificar')+'</button>'+
+      (c.numero<${COMANDA_DE}?'<button class="seg" onclick="lancarCx()">🪪 comanda</button>':'')+
+    '</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
       (CANCEL_ON&&PODE.cancItem&&i.item_codigo&&i.tipo!==2?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
@@ -9338,17 +9342,23 @@ function pinta(el){
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
   h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
   h+='<div class="card">';
-  // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
-  h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
-     (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
-  // rótulo enxuto (pedido do dono): transferir e dono/comanda continuam LÁ
-  // DENTRO da tela de lançar — o botão não precisa anunciar tudo
-  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar itens</button>';
-  // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
+  // ORDEM DO USO REAL (regra do dono, 11/08): lançar/transferir/pedir conta na
+  // frente; dinheiro/desconto moram dentro de 💰 Pagamento — pagar é o ato
+  // mais raro do caixa, não o primeiro botão.
+  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
+  h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
+     '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
   if(c.falta>0){
-    h+='<div class="row"><button class="big" style="margin-top:0" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
-       '<button class="big" style="margin-top:0;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+    h+='<button class="big" style="background:#0b5c8a" onclick="PAGON=!PAGON;pintaMain()">💰 Pagamento '+(PAGON?'▴':'▾')+'</button>';
+    if(PAGON){
+      // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
+      h+='<div class="row" style="margin-top:6px">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
+         (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
+      h+='<div class="row"><button class="big" style="margin-top:6px" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
+         '<button class="big" style="margin-top:6px;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+    }
   }
+  // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
   h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
   // cancelamentos ficam ATRÁS do cadeado: gerente libera, os ✕ aparecem
@@ -9701,6 +9711,42 @@ async function imprimirCx(btn){
   if(btn){btn.disabled=false;btn.textContent='🧾 Imprimir conta'}
   if(!r.ok){alert(r.erro||'não imprimiu');return}
   await carregar(MESA); // a conta volta já com o serviço aplicado
+}
+/* ---- TRANSFERIR e PEDIR CONTA direto do caixa ---- */
+var PAGON=false; // seção 💰 Pagamento aberta/fechada na tela da mesa
+function transfCx(){
+  var ov=document.createElement('div');ov.id='trov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML='<div class="card" style="max-width:380px;width:100%;margin:0">'+
+    '<div class="tit" style="margin-top:0">⇄ Transferir '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' '+MESA+'</div>'+
+    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Tudo desta mesa vai pra qual mesa?')+'</div>'+
+    '<input id="trdest" class="num" inputmode="numeric" placeholder="mesa destino" style="margin-top:8px">'+
+    '<button class="big" onclick="doTransfCx(this)">Transferir</button>'+
+    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="document.getElementById(\\'trov\\').remove()">Voltar</button>'+
+    '<div id="trerr" class="err"></div></div>';
+  document.body.appendChild(ov);
+  var e=document.getElementById('trdest');if(e)e.focus();
+}
+async function doTransfCx(btn){
+  var d=Number(((document.getElementById('trdest')||{}).value||'').replace(/\\D/g,''));
+  var er=document.getElementById('trerr');
+  if(!(d>0)){if(er)er.textContent='digite a mesa destino';return}
+  btn.disabled=true;
+  var r=await jpost('/api/venda/transferir',{de:MESA,para:d,por:NOME||''});
+  btn.disabled=false;
+  if(!r||!r.ok){if(er)er.textContent=(r&&r.erro)||'não transferiu';return}
+  var o=document.getElementById('trov');if(o)o.remove();
+  FLASH='✓ '+(r.msg||('Transferido pra mesa '+d+'.'));
+  voltarMesas();listar();
+}
+async function pedirContaCx(btn){
+  btn.disabled=true;
+  var r=await jpost('/api/caixa/pedir-conta',{numero:MESA});
+  btn.disabled=false;
+  var e=document.getElementById('cerr');
+  if(!r||!r.ok){if(e){e.style.color='';e.textContent=(r&&r.erro)||'não deu'}return}
+  if(e){e.style.color='#0a7d38';e.textContent='✓ Conta pedida — serviço aplicado e conferência impressa. Novos lançamentos travados.'}
+  await carregar(MESA);
 }
 /* ---- BLOQUEIO por inatividade: 5 min parado = pede o PIN (só o PIN — o
    operador continua o mesmo; é pro caixa largado não ficar aberto). */
@@ -10128,6 +10174,9 @@ const server = http.createServer(async (req, res) => {
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
+      // pedir a conta pelo caixa = mesmo ato do garçom: aplica o serviço,
+      // trava novos lançamentos e imprime a conferência
+      if (req.method === 'POST' && p === '/api/caixa/pedir-conta') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'fechar' }))); }
       if (req.method === 'POST' && p === '/api/caixa/liberar-cancel') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaLiberarCancel(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-item') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarItem(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
