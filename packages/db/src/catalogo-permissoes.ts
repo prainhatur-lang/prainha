@@ -192,6 +192,11 @@ export const PERMISSOES: PermissaoDef[] = [
     descricao: 'Configurar a Nina (persona, conhecimento, espaços, equipe)',
   },
 
+  // === Delivery / pedidos online do site ===
+  ...crud('delivery', 'delivery (pedidos, cardápio e cupons)', [
+    { acao: 'configurar', descricao: 'Configurar delivery (horários, taxas, frete grátis)' },
+  ]),
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

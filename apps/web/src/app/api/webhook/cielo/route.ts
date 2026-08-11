@@ -11,15 +11,20 @@ import { eq } from 'drizzle-orm';
 import { queryCieloPayment, refundCieloPayment } from '@/lib/cielo';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
 import { marcarOrcamentoEntradaPaga } from '@/lib/orcamentos-server';
+import { marcarDeliveryPedidoPago } from '@/lib/delivery/pedido';
 
-/** Entrada de orçamento de evento paga/estornada via webhook. Best-effort. */
-async function processarOrcamento(paymentId: string): Promise<void> {
+/** Entrada de orçamento de evento paga/estornada via webhook. Best-effort.
+ *  Se não for orçamento, cai pro pedido de delivery. */
+async function processarOrcamento(paymentId: string, origin: string): Promise<void> {
   const [orc] = await db
     .select({ id: schema.orcamentoEvento.id, pagamentoStatus: schema.orcamentoEvento.pagamentoStatus })
     .from(schema.orcamentoEvento)
     .where(eq(schema.orcamentoEvento.pagamentoId, paymentId))
     .limit(1);
-  if (!orc) return;
+  if (!orc) {
+    await processarDelivery(paymentId, origin);
+    return;
+  }
   const cielo = await queryCieloPayment(paymentId);
   if (cielo.status === 'pago' && orc.pagamentoStatus !== 'pago') {
     await marcarOrcamentoEntradaPaga(orc.id);
@@ -28,6 +33,29 @@ async function processarOrcamento(paymentId: string): Promise<void> {
       .update(schema.orcamentoEvento)
       .set({ pagamentoStatus: cielo.status })
       .where(eq(schema.orcamentoEvento.id, orc.id));
+  }
+}
+
+/** Pedido de delivery pago/estornado via webhook. Best-effort. */
+async function processarDelivery(paymentId: string, origin: string): Promise<void> {
+  const [ped] = await db
+    .select({
+      id: schema.deliveryPedido.id,
+      status: schema.deliveryPedido.status,
+      pagamentoStatus: schema.deliveryPedido.pagamentoStatus,
+    })
+    .from(schema.deliveryPedido)
+    .where(eq(schema.deliveryPedido.pagamentoId, paymentId))
+    .limit(1);
+  if (!ped) return;
+  const cielo = await queryCieloPayment(paymentId);
+  if (cielo.status === 'pago' && ped.status === 'pendente_pagamento') {
+    await marcarDeliveryPedidoPago(ped.id, origin);
+  } else if (cielo.status !== 'pendente' && cielo.status !== ped.pagamentoStatus) {
+    await db
+      .update(schema.deliveryPedido)
+      .set({ pagamentoStatus: cielo.status })
+      .where(eq(schema.deliveryPedido.id, ped.id));
   }
 }
 
@@ -58,8 +86,8 @@ export async function POST(request: NextRequest) {
   try {
     const [reserva] = await db.select().from(schema.reserva).where(eq(schema.reserva.pagamentoId, paymentId)).limit(1);
     if (!reserva) {
-      // Não é reserva — pode ser entrada de orçamento de evento.
-      await processarOrcamento(paymentId);
+      // Não é reserva — pode ser orçamento de evento ou pedido de delivery.
+      await processarOrcamento(paymentId, new URL(request.url).origin);
       return NextResponse.json({ ok: true });
     }
 

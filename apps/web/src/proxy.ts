@@ -8,11 +8,20 @@ const RESERVAS_HOST = 'reservas.prainhabar.com';
 const RESERVAS_TOKEN_PRAINHA_BAR =
   '023c8170d59b84fff285540e88584fbf5d00db5606fd1e65deda36fb1df54ac6';
 
+// Subdomínio amigável do delivery. delivery.prainhabar.com (root) abre o
+// cardápio público (/delivery). Requer o CNAME no DNS + domínio na Vercel.
+const DELIVERY_HOST = 'delivery.prainhabar.com';
+
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
   if (hostname === RESERVAS_HOST && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = `/reservar/${RESERVAS_TOKEN_PRAINHA_BAR}`;
+    return NextResponse.rewrite(url);
+  }
+  if (hostname === DELIVERY_HOST && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/delivery';
     return NextResponse.rewrite(url);
   }
 
@@ -73,6 +82,9 @@ export async function proxy(request: NextRequest) {
   // pagina publica do orcamento de evento: cliente aceita o contrato e paga
   // a entrada via Pix. Token na URL identifica o orcamento; sem login.
   const isOrcamentoPublico = path.startsWith('/orcamento/');
+  // /delivery é o cardápio/checkout público de pedidos online (sem login).
+  // O painel interno é /delivery-admin (protegido, fora desta lista).
+  const isDeliveryPublico = path === '/delivery' || path.startsWith('/delivery/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -85,7 +97,8 @@ export async function proxy(request: NextRequest) {
     isReservarPublico ||
     isCotacaoPublica ||
     isPagarMesaPublico ||
-    isOrcamentoPublico;
+    isOrcamentoPublico ||
+    isDeliveryPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

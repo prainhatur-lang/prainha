@@ -30,3 +30,4 @@ export * from './cobranca-mesa';
 export * from './cliente-documento';
 export * from './nfce';
 export * from './atendimento';
+export * from './delivery-online';

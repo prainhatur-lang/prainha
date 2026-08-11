@@ -63,6 +63,15 @@ const GRUPOS: Grupo[] = [
     ],
   },
   {
+    label: 'Delivery',
+    links: [
+      { label: 'Pedidos', href: '/delivery-admin', perm: 'delivery.read' },
+      { label: 'Cardápio do delivery', href: '/delivery-admin/cardapio', perm: 'delivery.read' },
+      { label: 'Cupons', href: '/delivery-admin/cupons', perm: 'delivery.read' },
+      { label: 'Configuração do delivery', href: '/delivery-admin/config', perm: 'delivery.configurar' },
+    ],
+  },
+  {
     label: 'Folha da equipe',
     links: [
       { label: 'Folhas semanais', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },

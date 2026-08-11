@@ -5649,11 +5649,87 @@ function buscar(v){
     mostrarProdutos(d.produtos);
   },250);
 }
-function addItem(p){
+// ---- PERGUNTAS DO PRATO (wizard do Consumer) ----
+// "Ponto da carne?", "Com gelo?" — as MESMAS perguntas do cardápio do cliente
+// e da maquininha. O garçom/caixa lançava sem responder e a cozinha ficava
+// adivinhando; agora o item só entra no carrinho depois do mínimo respondido.
+var PERG=null,PERGIX=0,PERGRESP=null,PERGPROD=null;
+async function addItem(p){
   if(p.sem_estoque)return;
-  var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&!x.obs});
-  if(j)j.qtd++;else CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho,preco:Number(p.preco),qtd:1,obs:'',area_codigo:p.area_codigo});
+  var w=null;
+  try{w=await (await fetch('/api/venda/perguntas?pdv='+p.codigo_pdv,{cache:'no-store'})).json()}catch(e){}
+  if(w&&w.ok&&w.perguntas&&w.perguntas.length){
+    PERGPROD=p;PERG=w.perguntas;PERGIX=0;
+    PERGRESP=w.perguntas.map(function(){return []});
+    return pintaPerg();
+  }
+  addDireto(p,null,null,0);
+}
+function addDireto(p,obs,respostas,extra){
+  if(!obs&&!respostas){
+    var j=CART.find(function(x){return x.codigo_pdv===p.codigo_pdv&&!x.obs&&!x.respostas});
+    if(j){j.qtd++;renderCart();return}
+  }
+  CART.push({codigo_pdv:p.codigo_pdv,nome:p.nome,tamanho:p.tamanho,preco:Number(p.preco)+(extra||0),qtd:1,obs:obs||'',area_codigo:p.area_codigo,respostas:respostas||null});
   renderCart();
+}
+function pergExtra(){
+  var t=0;
+  (PERGRESP||[]).forEach(function(sel,i){sel.forEach(function(c){
+    var o=PERG[i].opcoes.find(function(x){return x.codigo===c});
+    if(o)t+=Number(o.preco||0);
+  })});
+  return t;
+}
+function pergFecha(){var o=document.getElementById('pgov');if(o)o.remove();PERG=null;PERGPROD=null}
+function pintaPerg(){
+  var q=PERG[PERGIX],sel=PERGRESP[PERGIX];
+  var ilim=!q.max;
+  var lim=(q.min===q.max&&q.min>0)?('escolha '+q.min):(ilim?(q.min?('pelo menos '+q.min):'opcional'):('de '+q.min+' a '+q.max));
+  var ex=pergExtra();
+  var h='<div style="max-width:520px;width:100%;max-height:88vh;overflow:auto;background:#fff;border-radius:14px;padding:16px" onclick="event.stopPropagation()">'+
+    '<div style="font-size:19px;font-weight:800;color:#111">'+esc(q.texto)+'</div>'+
+    '<div class="mut" style="margin:4px 0 10px">'+esc(PERGPROD.nome)+' · '+lim+' · '+(PERGIX+1)+' de '+PERG.length+
+      (ex>0?' · <b>+ '+brl(ex)+'</b>':'')+'</div>'+
+    q.opcoes.map(function(o){
+      var on=sel.indexOf(o.codigo)>=0;
+      return '<div onclick="pergMarca('+o.codigo+')" style="display:flex;justify-content:space-between;gap:8px;padding:12px;border:2px solid '+(on?'#0a7d38':'#ddd')+';border-radius:10px;margin-bottom:8px;font-weight:'+(on?'800':'500')+';color:#111;cursor:pointer">'+
+        '<span>'+(on?'✓ ':'')+esc(o.nome)+'</span>'+
+        '<span>'+(Number(o.preco)>0?'+ '+brl(Number(o.preco)):'')+'</span></div>';
+    }).join('')+
+    '<button class="big" onclick="pergProx()">'+(PERGIX+1<PERG.length?'Continuar':'Adicionar ao pedido')+'</button>'+
+    '<button class="big" style="background:#888" onclick="'+(PERGIX>0?'pergVolta()':'pergFecha()')+'">'+(PERGIX>0?'◂ Voltar':'Cancelar')+'</button>'+
+    '</div>';
+  var ov=document.getElementById('pgov');
+  if(!ov){
+    ov=document.createElement('div');ov.id='pgov';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;display:flex;align-items:center;justify-content:center;padding:14px';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML=h;
+}
+function pergMarca(cod){
+  var q=PERG[PERGIX],sel=PERGRESP[PERGIX],i=sel.indexOf(cod);
+  if(i>=0){sel.splice(i,1);return pintaPerg()}
+  var teto=q.max||99;
+  if(teto===1)sel.length=0;
+  else if(sel.length>=teto){alert('Escolha no máximo '+teto+'.');return}
+  sel.push(cod);pintaPerg();
+}
+function pergVolta(){PERGIX--;pintaPerg()}
+function pergProx(){
+  var q=PERG[PERGIX],sel=PERGRESP[PERGIX];
+  if(sel.length<(q.min||0)){alert('Escolha pelo menos '+q.min+'.');return}
+  if(PERGIX+1<PERG.length){PERGIX++;return pintaPerg()}
+  var nomes=[],codigos=[];
+  PERGRESP.forEach(function(s,i){s.forEach(function(c){
+    var o=PERG[i].opcoes.find(function(x){return x.codigo===c});
+    if(o){nomes.push(o.nome);codigos.push(o.codigo)}
+  })});
+  var p=PERGPROD,ex=pergExtra();
+  pergFecha();
+  // mesmo contrato do cardápio do cliente: obs = nomes escolhidos, respostas = códigos
+  addDireto(p,nomes.join(', '),codigos,ex);
 }
 // REVISAO: nada vai pra cozinha sem passar por aqui. O garcom anota a mesa
 // inteira, confere item por item com a mesa e so entao confirma.
@@ -5730,7 +5806,7 @@ async function enviar(){
   if(!CART.length)return;
   var btn=document.getElementById('btnenviar')||document.querySelector('.big.verde');
   if(btn){btn.disabled=true;btn.textContent='Enviando…'}
-  var r=await jpost('/api/venda/enviar',{numero:ALVO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs,junto:!!i.junto}})});
+  var r=await jpost('/api/venda/enviar',{numero:ALVO,itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs,junto:!!i.junto,respostas:i.respostas||null}})});
   if(r.ok){
     CART=[];JUNTO=false;renderCart();
     app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+

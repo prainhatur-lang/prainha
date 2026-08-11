@@ -208,6 +208,81 @@ export interface FiscalConfig {
   respTec?: { cnpj: string; contato: string; email: string; fone: string };
 }
 
+/** Faixa de taxa de entrega por distância em linha reta (km). */
+export interface DeliveryFaixa {
+  /** Vale até esta distância (km, inclusive). */
+  ateKm: number;
+  /** Taxa de entrega em R$. */
+  taxa: number;
+}
+
+/** Janela de funcionamento do delivery (HH:MM). */
+export interface DeliveryJanela {
+  abre: string;
+  fecha: string;
+}
+
+/** Config do delivery/pedidos online por filial (site público /delivery). */
+export interface DeliveryConfig {
+  /** Liga o delivery no site. Desligado = loja não aparece. */
+  ativo?: boolean;
+  /** Pausa temporária ("hoje lotou") — loja aparece mas não aceita pedido. */
+  pausado?: boolean;
+  /** Slug da URL pública: /delivery/<slug>. Ex: "prainha". */
+  slug?: string;
+  /** Nome exibido no topo (default: nome da filial). */
+  titulo?: string;
+  /** Frase curta abaixo do título. */
+  subtitulo?: string;
+  /** Banner de aviso/promoção no topo do cardápio. */
+  avisoTopo?: string;
+  /** WhatsApp de contato exibido pro cliente (só dígitos, com DDD). */
+  whatsapp?: string;
+  /** Endereço da loja — lat/lng são a origem do cálculo de distância. */
+  endereco?: {
+    cep?: string;
+    rua?: string;
+    numero?: string;
+    bairro?: string;
+    cidade?: string;
+    uf?: string;
+    lat?: number;
+    lng?: number;
+  };
+  /** Aceita retirada no balcão. */
+  retiradaAtiva?: boolean;
+  /** Aceita entrega. */
+  entregaAtiva?: boolean;
+  /** Valor mínimo do pedido em R$ (subtotal, sem frete). Null = sem mínimo. */
+  pedidoMinimo?: number | null;
+  /** Faixas de taxa por distância em linha reta, ordenadas por ateKm.
+   *  Endereço além da última faixa = fora da área de entrega. */
+  faixasEntrega?: DeliveryFaixa[];
+  /** Frete grátis por DISTÂNCIA: grátis até este km. Null = desligado. */
+  gratisAteKm?: number | null;
+  /** Frete grátis por PROMOÇÃO: subtotal >= este valor. Null = desligado. */
+  gratisAcimaDe?: number | null;
+  /** Frete grátis na PRIMEIRA COMPRA do telefone nesta filial. */
+  gratisPrimeiraCompra?: boolean;
+  /** Janelas de funcionamento por dia da semana (0=domingo .. 6=sábado).
+   *  Dia ausente/vazio = fechado. */
+  horarios?: Record<number, DeliveryJanela[]>;
+  /** Intervalo entre horários agendáveis, em minutos (default 30). */
+  slotMinutos?: number;
+  /** Antecedência mínima pra agendar, em minutos (default 45). */
+  antecedenciaMinutos?: number;
+  /** Agenda aberta por quantos dias à frente (default 7, contando hoje). */
+  diasFuturos?: number;
+  /** Datas fechadas (YYYY-MM-DD) — feriado, evento privado. */
+  diasFechados?: string[];
+  /** Estimativa de preparo exibida pro cliente (min–max, em minutos). */
+  tempoPreparoMin?: number;
+  tempoPreparoMax?: number;
+  /** Formas de pagamento online (default: ambas ativas). */
+  pixAtivo?: boolean;
+  cartaoAtivo?: boolean;
+}
+
 export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   nome: varchar('nome', { length: 200 }).notNull(),
@@ -264,6 +339,8 @@ export const filial = pgTable(
     reservaConfig: jsonb('reserva_config').$type<ReservaConfig>(),
     /** Config de emissão de NFC-e (IE, CRT, série, CSC, endereço fiscal). */
     fiscalConfig: jsonb('fiscal_config').$type<FiscalConfig>(),
+    /** Config do delivery/pedidos online (site público /delivery). */
+    deliveryConfig: jsonb('delivery_config').$type<DeliveryConfig>(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
