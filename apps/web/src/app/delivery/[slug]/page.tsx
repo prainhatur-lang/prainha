@@ -6,6 +6,7 @@ import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq } from 'drizzle-orm';
 import { lojaDeliveryPorSlug, abertaAgora, agendaDelivery } from '@/lib/delivery/config';
+import { saldosDasVariantes, semDisponibilidade } from '@/lib/delivery/estoque';
 import { CardapioClient } from './cardapio-client';
 
 export const dynamic = 'force-dynamic';
@@ -42,12 +43,21 @@ export default async function DeliveryLojaPage(props: {
       esgotado: schema.deliveryItem.esgotado,
       destaque: schema.deliveryItem.destaque,
       ordem: schema.deliveryItem.ordem,
+      varianteId: schema.deliveryItem.varianteId,
+      checarEstoque: schema.deliveryItem.checarEstoque,
     })
     .from(schema.deliveryItem)
     .where(
       and(eq(schema.deliveryItem.filialId, loja.filialId), eq(schema.deliveryItem.ativo, true)),
     )
     .orderBy(asc(schema.deliveryItem.ordem), asc(schema.deliveryItem.nome));
+
+  // Estoque real do Consumer: item vinculado a produto que controla estoque e
+  // está zerado sai como esgotado sozinho, sem ninguém marcar no painel.
+  const saldos = await saldosDasVariantes(
+    loja.filialId,
+    itens.filter((i) => i.checarEstoque && i.varianteId).map((i) => i.varianteId!),
+  );
 
   const { dias, asapDisponivel } = agendaDelivery(loja.config);
   const c = loja.config;
@@ -85,7 +95,7 @@ export default async function DeliveryLojaPage(props: {
             descricao: i.descricao,
             precoCentavos: Math.round(Number(i.preco) * 100),
             fotoUrl: i.fotoUrl,
-            esgotado: i.esgotado,
+            esgotado: semDisponibilidade(i, saldos),
             destaque: i.destaque,
           })),
       }))}

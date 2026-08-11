@@ -17,6 +17,7 @@ import {
   haversineKm,
 } from './frete';
 import { validarCupom } from './cupom';
+import { saldosDasVariantes, semDisponibilidade } from './estoque';
 
 /** Minutos até um pedido sem pagamento expirar sozinho. */
 const EXPIRA_PENDENTE_MIN = 40;
@@ -120,10 +121,19 @@ export async function criarPedidoDelivery(params: {
       preco: schema.deliveryItem.preco,
       ativo: schema.deliveryItem.ativo,
       esgotado: schema.deliveryItem.esgotado,
+      varianteId: schema.deliveryItem.varianteId,
+      checarEstoque: schema.deliveryItem.checarEstoque,
     })
     .from(schema.deliveryItem)
     .where(and(eq(schema.deliveryItem.filialId, filialId), inArray(schema.deliveryItem.id, ids)));
   const porId = new Map(doBanco.map((i) => [i.id, i]));
+
+  // Saldo real no Consumer, conferido AGORA (o cardápio pode ter sido
+  // carregado faz tempo e o estoque virou nesse meio-tempo).
+  const saldos = await saldosDasVariantes(
+    filialId,
+    doBanco.filter((i) => i.checarEstoque && i.varianteId).map((i) => i.varianteId!),
+  );
 
   let subtotalCentavos = 0;
   const itensPedido: Array<{
@@ -138,10 +148,18 @@ export async function criarPedidoDelivery(params: {
     if (!item || !item.ativo) {
       return { ok: false, erro: 'Um item do carrinho saiu do cardápio — revise o pedido.' };
     }
-    if (item.esgotado) {
-      return { ok: false, erro: `"${item.nome}" esgotou — remova do carrinho.` };
-    }
     const qtd = Number.isInteger(i.qtd) && i.qtd > 0 ? Math.min(i.qtd, 99) : 1;
+    if (semDisponibilidade(item, saldos, qtd)) {
+      const s = item.varianteId ? saldos.get(item.varianteId) : undefined;
+      const restam = s?.controlado ? (s.saldo ?? 0) : null;
+      return {
+        ok: false,
+        erro:
+          restam != null && restam > 0
+            ? `Só temos ${restam} de "${item.nome}" agora — ajuste a quantidade.`
+            : `"${item.nome}" esgotou — remova do carrinho.`,
+      };
+    }
     const precoUnit = centavos(item.preco);
     subtotalCentavos += precoUnit * qtd;
     itensPedido.push({

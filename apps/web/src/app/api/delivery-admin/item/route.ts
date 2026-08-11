@@ -49,6 +49,8 @@ export async function POST(request: Request) {
       nome,
       descricao: typeof b.descricao === 'string' ? b.descricao.trim().slice(0, 600) || null : null,
       preco,
+      precoIfood: precoValido(b?.precoIfood),
+      checarEstoque: b.checarEstoque !== false,
       fotoUrl: typeof b.fotoUrl === 'string' ? b.fotoUrl.slice(0, 500) : null,
       fotoPath: typeof b.fotoPath === 'string' ? b.fotoPath.slice(0, 300) : null,
       varianteId: typeof b.varianteId === 'string' ? b.varianteId : null,
@@ -84,6 +86,11 @@ export async function PATCH(request: Request) {
     if (!p) return NextResponse.json({ error: 'preço inválido' }, { status: 400 });
     set.preco = p;
   }
+  if (b.precoIfood !== undefined) {
+    // string vazia / null = não vende no iFood (limpa o preço).
+    set.precoIfood = precoValido(b.precoIfood);
+  }
+  if (typeof b.checarEstoque === 'boolean') set.checarEstoque = b.checarEstoque;
   if (typeof b.categoriaId === 'string') set.categoriaId = b.categoriaId;
   if (typeof b.ativo === 'boolean') set.ativo = b.ativo;
   if (typeof b.esgotado === 'boolean') set.esgotado = b.esgotado;

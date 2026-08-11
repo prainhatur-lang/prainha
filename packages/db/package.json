@@ -69,6 +69,7 @@
     "migrate:nfce-reimpressao": "tsx scripts/migrate-nfce-reimpressao.ts",
     "migrate:idx-pedido-item-fk": "tsx scripts/migrate-idx-pedido-item-fk.ts",
     "migrate:delivery": "tsx scripts/migrate-delivery.ts",
+    "migrate:delivery-precos-estoque": "tsx scripts/migrate-delivery-precos-estoque.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
   },
   "dependencies": {

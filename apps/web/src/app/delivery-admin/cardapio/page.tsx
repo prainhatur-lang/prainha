@@ -53,6 +53,8 @@ export default async function CardapioDeliveryPage(props: {
     .where(eq(schema.deliveryCategoria.filialId, filial.id))
     .orderBy(asc(schema.deliveryCategoria.ordem), asc(schema.deliveryCategoria.nome));
 
+  // Preço do salão e saldo vêm ao vivo do espelho do Consumer (left join:
+  // item criado à mão, sem vínculo, simplesmente não tem esses números).
   const itens = await db
     .select({
       id: schema.deliveryItem.id,
@@ -60,13 +62,23 @@ export default async function CardapioDeliveryPage(props: {
       nome: schema.deliveryItem.nome,
       descricao: schema.deliveryItem.descricao,
       preco: schema.deliveryItem.preco,
+      precoIfood: schema.deliveryItem.precoIfood,
+      checarEstoque: schema.deliveryItem.checarEstoque,
+      varianteId: schema.deliveryItem.varianteId,
       fotoUrl: schema.deliveryItem.fotoUrl,
       ativo: schema.deliveryItem.ativo,
       esgotado: schema.deliveryItem.esgotado,
       destaque: schema.deliveryItem.destaque,
       ordem: schema.deliveryItem.ordem,
+      precoSalao: schema.produtoVariante.precoVenda,
+      estoqueControlado: schema.produtoVariante.estoqueControlado,
+      estoqueAtual: schema.produtoVariante.estoqueAtual,
     })
     .from(schema.deliveryItem)
+    .leftJoin(
+      schema.produtoVariante,
+      eq(schema.produtoVariante.id, schema.deliveryItem.varianteId),
+    )
     .where(eq(schema.deliveryItem.filialId, filial.id))
     .orderBy(asc(schema.deliveryItem.ordem), asc(schema.deliveryItem.nome));
 
@@ -78,7 +90,16 @@ export default async function CardapioDeliveryPage(props: {
         filialNome={filial.nome}
         filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
         categorias={categorias}
-        itens={itens}
+        itens={itens.map((i) => ({
+          ...i,
+          precoSalaoCentavos:
+            i.precoSalao != null ? Math.round(Number(i.precoSalao) * 100) : null,
+          estoqueControlado: i.estoqueControlado === true,
+          estoqueAtual:
+            i.estoqueControlado === true && i.estoqueAtual != null
+              ? Number(i.estoqueAtual)
+              : null,
+        }))}
         podeCriar={podeCriar}
         podeEditar={podeEditar}
         podeDeletar={podeDeletar}

@@ -78,8 +78,17 @@ export const deliveryItem = pgTable(
       .references(() => deliveryCategoria.id, { onDelete: 'cascade' }),
     nome: varchar('nome', { length: 160 }).notNull(),
     descricao: text('descricao'),
-    /** Preço no delivery (R$). */
+    /** Preço no delivery PRÓPRIO (R$) — o que o site cobra. */
     preco: numeric('preco', { precision: 10, scale: 2 }).notNull(),
+    /** Preço no iFood (R$). Null = não vende no iFood / usa o do delivery.
+     *  O site nunca cobra este valor; existe pra manter os três canais
+     *  (salão, delivery próprio, iFood) na mesma tela. O preço do salão não
+     *  fica aqui — é lido ao vivo do PDV pelo varianteId. */
+    precoIfood: numeric('preco_ifood', { precision: 10, scale: 2 }),
+    /** Quando vinculado a um produto do salão que CONTROLA estoque, esgota
+     *  sozinho ao zerar o saldo. Produto sem controle de estoque no Consumer
+     *  (prato preparado) ignora isto. */
+    checarEstoque: boolean('checar_estoque').notNull().default(true),
     /** URL pública da foto (Supabase Storage, bucket "cardapio"). */
     fotoUrl: text('foto_url'),
     /** Path no storage (pra deletar junto com o item). */
