@@ -564,30 +564,42 @@ const IFOOD_ORIGEM = 4; // mesmo código de origem que o Consumer usa pro iFood
 let ifoodStatus = { ativo: false, pareado: false, ultimo_ok: null, ultimo_erro: null, abertos: 0 };
 
 async function ifoodConf() {
+  // DOIS tipos de app, e o fluxo de autenticação muda inteiro:
+  //   centralizado — a loja é do mesmo dono do app: client_credentials e pronto.
+  //   distribuído  — a loja autoriza o app no Portal do Parceiro (é assim que o
+  //                  Consumer está autorizado na Prainha Bar), e aí vale
+  //                  userCode → authorization_code → refresh_token rotativo.
+  const modo = await cfgGet('ifood_auth', 'centralizado');
+  const clientId = process.env.IFOOD_CLIENT_ID || (await cfgGet('ifood_client_id', ''));
+  const clientSecret = process.env.IFOOD_CLIENT_SECRET || (await cfgGet('ifood_client_secret', ''));
+  const refreshToken = await cfgGet('ifood_refresh_token', '');
   return {
     ativo: (await cfgGet('ifood_ativo', '0')) === '1',
     autoConfirmar: (await cfgGet('ifood_auto_confirmar', '1')) === '1',
-    clientId: process.env.IFOOD_CLIENT_ID || (await cfgGet('ifood_client_id', '')),
-    clientSecret: process.env.IFOOD_CLIENT_SECRET || (await cfgGet('ifood_client_secret', '')),
+    modo, clientId, clientSecret, refreshToken,
     merchantId: await cfgGet('ifood_merchant_id', ''),
-    refreshToken: await cfgGet('ifood_refresh_token', ''),
+    // "pronto pra falar com o iFood": no centralizado basta a credencial;
+    // no distribuído só depois que a loja autorizar.
+    pronto: !!(clientId && clientSecret) && (modo === 'centralizado' || !!refreshToken),
   };
 }
 
-/** Token de acesso. Vale 6h; renovo com 10 min de folga pra nunca cair no meio
- *  de um polling. O refresh_token é rotativo — o iFood devolve um novo a cada
- *  renovação, e perder ele significa parear a loja de novo na mão. */
+/** Token de acesso. Vale ~6h; renovo com 10 min de folga pra nunca cair no meio
+ *  de um polling. No distribuído o refresh_token é rotativo — o iFood devolve um
+ *  novo a cada renovação, e perder ele significa parear a loja de novo na mão. */
 async function ifoodToken(forcar = false) {
   const c = await ifoodConf();
   if (!c.clientId || !c.clientSecret) throw new Error('sem client_id/client_secret do iFood');
   const cache = await cfgGet('ifood_access_token', '');
   const expira = Number(await cfgGet('ifood_token_expira', '0'));
   if (!forcar && cache && Date.now() < expira - 10 * 60 * 1000) return cache;
-  if (!c.refreshToken) throw new Error('loja não pareada — gere o código na tela /ifood');
-  const corpo = new URLSearchParams({
-    grantType: 'refresh_token', clientId: c.clientId, clientSecret: c.clientSecret,
-    refreshToken: c.refreshToken,
-  });
+  if (c.modo !== 'centralizado' && !c.refreshToken) throw new Error('loja não pareada — gere o código na tela /ifood');
+  const corpo = c.modo === 'centralizado'
+    ? new URLSearchParams({ grantType: 'client_credentials', clientId: c.clientId, clientSecret: c.clientSecret })
+    : new URLSearchParams({
+      grantType: 'refresh_token', clientId: c.clientId, clientSecret: c.clientSecret,
+      refreshToken: c.refreshToken,
+    });
   const r = await fetch(IFOOD_BASE + '/authentication/v1.0/oauth/token', {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: corpo,
   });
@@ -618,6 +630,18 @@ async function ifoodApi(caminho, { metodo = 'GET', corpo = null, headers = {}, c
     if (!r.ok) throw new Error('iFood ' + metodo + ' ' + caminho + ' → ' + r.status + ': ' + txt.slice(0, 300));
     return j;
   }
+}
+
+/** Testa a credencial e descobre as lojas que ela enxerga. É o passo que diz
+ *  se o app é centralizado (client_credentials passa) e qual merchant usar. */
+async function ifoodTestar() {
+  try {
+    await ifoodToken(true);
+    const lojas = await ifoodApi('/merchant/v1.0/merchants');
+    const lista = (Array.isArray(lojas) ? lojas : []).map((m) => ({ id: m.id, nome: m.name || m.corporateName }));
+    if (lista.length === 1) await cfgSet('ifood_merchant_id', lista[0].id);
+    return { ok: true, lojas: lista };
+  } catch (e) { return { ok: false, erro: String(e.message).slice(0, 300) }; }
 }
 
 // ---- pareamento da loja (app distribuído, o mesmo fluxo do Consumer) ----
@@ -877,7 +901,7 @@ async function projetarIfood() {
 async function loopIfood() {
   try {
     const c = await ifoodConf();
-    if (c.ativo && c.refreshToken) {
+    if (c.ativo && c.pronto) {
       await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
       // a comanda do iFood sai no papel pelo mesmo caminho da comanda da mesa
       await imprimirComandasNovas().catch((e) => console.error('[ifood] impressora:', e.message));
@@ -896,7 +920,7 @@ async function apiIfood() {
     WHERE p.recebido_em > now() - interval '2 days'
     ORDER BY (p.concluido_em IS NULL AND p.cancelado_em IS NULL) DESC, p.recebido_em DESC LIMIT 60`;
   return {
-    ok: true, ativo: c.ativo, auto_confirmar: c.autoConfirmar,
+    ok: true, ativo: c.ativo, auto_confirmar: c.autoConfirmar, modo: c.modo, pronto: c.pronto,
     tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
     client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
     status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
@@ -918,10 +942,18 @@ async function apiIfoodSalvar(b) {
   if (b.merchant_id != null) await cfgSet('ifood_merchant_id', String(b.merchant_id).trim());
   if (b.auto_confirmar != null) await cfgSet('ifood_auto_confirmar', b.auto_confirmar ? '1' : '0');
   if (b.codigo_pdv != null) await cfgSet('ifood_codigo_pdv', b.codigo_pdv === 'produto' ? 'produto' : 'variante');
+  if (b.modo != null) {
+    await cfgSet('ifood_auth', b.modo === 'distribuido' ? 'distribuido' : 'centralizado');
+    await cfgSet('ifood_access_token', ''); // token do modo anterior não serve
+  }
   if (b.ativo != null) {
     const c = await ifoodConf();
-    // ligar sem pareamento só encheria o log de erro a cada 30s
-    if (b.ativo && !c.refreshToken) return { ok: false, erro: 'pareie a loja no iFood antes de ligar' };
+    // ligar sem credencial válida só encheria o log de erro a cada 30s
+    if (b.ativo && !c.pronto) {
+      return { ok: false, erro: c.modo === 'centralizado'
+        ? 'preencha e teste a credencial antes de ligar'
+        : 'pareie a loja no iFood antes de ligar' };
+    }
     await cfgSet('ifood_ativo', b.ativo ? '1' : '0');
   }
   return { ok: true };
@@ -7075,7 +7107,7 @@ function pinta(){
   if(!d.ativo)h+='<div class="aviso"><b>Integração desligada.</b> Enquanto estiver assim, quem recebe os pedidos do iFood é o Consumer — nada muda na operação. Ligue só depois de autorizar esta loja no Portal do Parceiro: o iFood aceita <b>uma integradora por loja</b>, e ao autorizar aqui o Consumer para de receber.</div>';
   // ---- estado ----
   h+='<h2>Situação</h2><div class="card">'+
-    '<div class="l"><div class="nm">Receber pedidos do iFood aqui<small>'+(d.pareado?'loja pareada':'ainda não pareada — faça o passo 2 abaixo')+'</small></div>'+
+    '<div class="l"><div class="nm">Receber pedidos do iFood aqui<small>'+(d.pronto?'credencial pronta':'falta credencial — passos abaixo')+'</small></div>'+
       '<button class="b '+(d.ativo?'o':'')+'" onclick="liga('+(d.ativo?'0':'1')+')">'+(d.ativo?'desligar':'ligar')+'</button></div>'+
     '<div class="l"><div class="nm">Aceitar o pedido automaticamente<small>o iFood cobra tempo de aceite; no manual alguém precisa apertar Confirmar em cada pedido</small></div>'+
       '<input type="checkbox" id="auto" '+(d.auto_confirmar?'checked':'')+' onchange="salvar({auto_confirmar:this.checked})" style="width:20px;height:20px"></div>'+
@@ -7089,18 +7121,26 @@ function pinta(){
     '</div>';
   // ---- credencial ----
   h+='<h2>1 · Credencial do app (Portal do Desenvolvedor)</h2><div class="card">'+
+    '<div class="l"><div class="nm">Tipo do app<small>centralizado = a loja é do mesmo dono do app (não precisa parear). distribuído = a loja autoriza no Portal do Parceiro, como o Consumer está hoje.</small></div>'+
+      '<select onchange="salvar({modo:this.value})">'+
+        '<option value="centralizado"'+(d.modo!=='distribuido'?' selected':'')+'>centralizado</option>'+
+        '<option value="distribuido"'+(d.modo==='distribuido'?' selected':'')+'>distribuído</option>'+
+      '</select></div>'+
     '<div class="l"><div class="nm">client_id<small>'+(d.tem_credencial?'gravado':'cole o do seu app')+'</small></div>'+
       '<input id="cid" value="'+esc(d.client_id)+'" placeholder="uuid do app" style="width:290px"></div>'+
     '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta</small></div>'+
       '<input id="csec" type="password" placeholder="••••••••" style="width:290px"></div>'+
     '<div class="l"><div class="nm">Loja (merchant_id)<small>preenche sozinho quando o pareamento acha uma loja só</small></div>'+
       '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
-    '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button><span class="mut" id="okc"></span></div>'+
-    '</div>';
-  // ---- pareamento ----
-  h+='<h2>2 · Autorizar a loja</h2><div class="card"><div class="l"><div class="nm">'+
-    (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho que o Consumer usou pra ser autorizado</small>')+
-    '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par"></div></div>';
+    '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button>'+
+      '<button class="b o" onclick="testar()">testar e achar a loja</button><span class="mut" id="okc"></span></div>'+
+    '<div id="tst"></div></div>';
+  // ---- pareamento: só existe no app distribuído ----
+  if(d.modo==='distribuido'){
+    h+='<h2>2 · Autorizar a loja</h2><div class="card"><div class="l"><div class="nm">'+
+      (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho que o Consumer usou pra ser autorizado</small>')+
+      '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par"></div></div>';
+  }
   // ---- pedidos ----
   h+='<h2>Pedidos <span class="mut">('+d.pedidos.length+')</span></h2><div class="card" id="peds">';
   if(!d.pedidos.length)h+='<div class="pd mut">Nenhum pedido ainda. Quando a integração estiver ligada e autorizada, o pedido aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha.</div>';
@@ -7146,6 +7186,15 @@ async function salvarCred(){
   await jpost('/api/ifood/salvar',b);
   document.getElementById('okc').textContent='salvo';
   await carregar();
+}
+async function testar(){
+  var r=await jpost('/api/ifood/testar');
+  await carregar(); // re-renderiza: o merchant_id pode ter sido preenchido sozinho
+  var el=document.getElementById('tst');if(!el)return;
+  if(!r.ok){el.innerHTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';return}
+  el.innerHTML='<div class="pd"><div class="mut">Credencial ok. Lojas que ela enxerga:</div>'+
+    (r.lojas.length?r.lojas.map(function(l){return '<div style="margin-top:6px"><b>'+esc(l.nome)+'</b><br><span class="mut">'+esc(l.id)+'</span></div>'}).join('')
+      :'<div style="margin-top:6px;color:#dc2626">nenhuma — a loja ainda não está vinculada a este app</div>')+'</div>';
 }
 async function parear(){
   var r=await jpost('/api/ifood/parear');
@@ -9952,6 +10001,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (p === '/api/ifood') return res.end(JSON.stringify(await apiIfood()));
       if (req.method === 'POST' && p === '/api/ifood/salvar') return res.end(JSON.stringify(await apiIfoodSalvar(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ifood/testar') return res.end(JSON.stringify(await ifoodTestar()));
       if (req.method === 'POST' && p === '/api/ifood/parear') return res.end(JSON.stringify(await ifoodParear()));
       if (req.method === 'POST' && p === '/api/ifood/concluir') return res.end(JSON.stringify(await ifoodConcluirPareamento((await readBody(req)).codigo)));
       if (req.method === 'POST' && p === '/api/ifood/comando') {
