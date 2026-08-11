@@ -1,13 +1,16 @@
-// GET  /api/delivery-admin/importar-salao?filialId= — TODOS os produtos do
-//      salão (espelho do Consumer) numa lista só, com preço do salão e o
-//      saldo real de estoque, pra marcar no checkbox o que entra no delivery.
+// GET  /api/delivery-admin/importar-salao?filialId=&origem= — TODOS os produtos
+//      do salão (espelho do Consumer) numa lista só, com preço e saldo real de
+//      estoque, pra marcar no checkbox o que entra no delivery.
+//      `origem` permite puxar o catálogo de OUTRA filial da organização (loja
+//      nova que ainda não tem PDV sincronizado copia o cardápio da irmã).
+//      Também devolve as filiais disponíveis com a contagem de produtos.
 // POST — cria os itens escolhidos. Aceita categoria existente (categoriaId)
 //      OU nome de categoria nova (categoriaNova), criada na hora — assim dá
 //      pra trazer produto sem ter categoria montada antes.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
@@ -19,11 +22,16 @@ export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('delivery.read');
   if (error) return error;
 
-  const filialId = new URL(request.url).searchParams.get('filialId') ?? '';
+  const url = new URL(request.url);
+  const filialId = url.searchParams.get('filialId') ?? '';
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((f) => f.id === filialId)) {
-    return NextResponse.json({ itens: [], categorias: [] });
+    return NextResponse.json({ itens: [], categorias: [], filiaisOrigem: [] });
   }
+
+  // De qual filial vêm os produtos. Default: a própria. Só filial acessível.
+  const origemParam = url.searchParams.get('origem') ?? '';
+  const origemId = filiais.some((f) => f.id === origemParam) ? origemParam : filialId;
 
   const rows = await db
     .select({
@@ -46,7 +54,7 @@ export async function GET(request: Request) {
     )
     .where(
       and(
-        eq(schema.produtoVariante.filialId, filialId),
+        eq(schema.produtoVariante.filialId, origemId),
         isNull(schema.produtoVariante.dataPausado),
         isNull(schema.produtoVariante.dataDelete),
         or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
@@ -109,7 +117,45 @@ export async function GET(request: Request) {
     .where(eq(schema.deliveryCategoria.filialId, filialId))
     .orderBy(asc(schema.deliveryCategoria.ordem), asc(schema.deliveryCategoria.nome));
 
-  return NextResponse.json({ itens, categorias });
+  // Quantos produtos cada filial acessível tem — mostra na hora de escolher a
+  // origem que "Prainha Mar (0)" está sem PDV sincronizado.
+  const contagens = await db
+    .select({
+      filialId: schema.produtoVariante.filialId,
+      total: sql<number>`count(*)::int`,
+    })
+    .from(schema.produtoVariante)
+    .innerJoin(
+      schema.produto,
+      and(
+        eq(schema.produto.filialId, schema.produtoVariante.filialId),
+        eq(schema.produto.codigoExterno, schema.produtoVariante.codigoProdutoExterno),
+      ),
+    )
+    .where(
+      and(
+        inArray(
+          schema.produtoVariante.filialId,
+          filiais.map((f) => f.id),
+        ),
+        isNull(schema.produtoVariante.dataPausado),
+        isNull(schema.produtoVariante.dataDelete),
+        or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
+      ),
+    )
+    .groupBy(schema.produtoVariante.filialId);
+  const porFilial = new Map(contagens.map((c) => [c.filialId, c.total]));
+
+  return NextResponse.json({
+    itens,
+    categorias,
+    origemId,
+    filiaisOrigem: filiais.map((f) => ({
+      id: f.id,
+      nome: f.nome,
+      produtos: porFilial.get(f.id) ?? 0,
+    })),
+  });
 }
 
 export async function POST(request: Request) {
@@ -135,6 +181,12 @@ export async function POST(request: Request) {
   if (!filiais.some((f) => f.id === filialId)) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
   }
+
+  // Produto copiado de OUTRA filial entra sem vínculo com a variante: o preço
+  // e o estoque da loja irmã não valem aqui. Vira item independente, que é o
+  // certo pra loja nova que ainda não tem PDV próprio sincronizado.
+  const origemId = typeof b?.origemFilialId === 'string' ? b.origemFilialId : filialId;
+  const manterVinculo = origemId === filialId;
 
   // Categoria nova: reusa se já existir uma com o mesmo nome (evita duplicar
   // "Bebidas" toda vez que o usuário importa de novo).
@@ -189,7 +241,8 @@ export async function POST(request: Request) {
             ? o.descricao.trim().slice(0, 600)
             : null,
         preco: preco.toFixed(2),
-        varianteId: typeof o?.varianteId === 'string' ? o.varianteId : null,
+        varianteId:
+          manterVinculo && typeof o?.varianteId === 'string' ? o.varianteId : null,
       };
     })
     .filter((l): l is LinhaItem => l != null)

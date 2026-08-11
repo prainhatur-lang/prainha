@@ -105,6 +105,10 @@ export function CardapioAdminClient({
   const [soComEstoque, setSoComEstoque] = useState(false);
   const [destinoId, setDestinoId] = useState<string>('');
   const [destinoNova, setDestinoNova] = useState('');
+  const [origemId, setOrigemId] = useState<string>(filialId);
+  const [filiaisOrigem, setFiliaisOrigem] = useState<
+    Array<{ id: string; nome: string; produtos: number }>
+  >([]);
 
   function ok(texto: string) {
     setMsg(texto);
@@ -189,21 +193,32 @@ export function CardapioAdminClient({
     }
   }
 
+  const carregarProdutos = useCallback(
+    async (origem: string) => {
+      setSalao(null);
+      const r = await fetch(
+        `/api/delivery-admin/importar-salao?filialId=${filialId}&origem=${origem}`,
+        { cache: 'no-store' },
+      );
+      const d = await r.json().catch(() => ({ itens: [] }));
+      setSalao(d.itens ?? []);
+      if (Array.isArray(d.filiaisOrigem)) setFiliaisOrigem(d.filiaisOrigem);
+      if (typeof d.origemId === 'string') setOrigemId(d.origemId);
+    },
+    [filialId],
+  );
+
   const abrirJanela = useCallback(
     async (categoriaPreferida?: string) => {
       setJanelaAberta(true);
-      setSalao(null);
       setSelecionados(new Set());
       setBuscaSalao('');
       setDestinoId(categoriaPreferida ?? categorias[0]?.id ?? '');
       setDestinoNova('');
-      const r = await fetch(`/api/delivery-admin/importar-salao?filialId=${filialId}`, {
-        cache: 'no-store',
-      });
-      const d = await r.json().catch(() => ({ itens: [] }));
-      setSalao(d.itens ?? []);
+      setOrigemId(filialId);
+      await carregarProdutos(filialId);
     },
-    [filialId, categorias],
+    [filialId, categorias, carregarProdutos],
   );
 
   // Abre a janela direto quando a URL tem ?produtos=1 (link de "Trazer produtos")
@@ -246,6 +261,7 @@ export function CardapioAdminClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filialId,
+          origemFilialId: origemId,
           categoriaId: destinoNova.trim() ? undefined : destinoId,
           categoriaNova: destinoNova.trim() || undefined,
           itens: escolhidos,
@@ -561,6 +577,35 @@ export function CardapioAdminClient({
               </button>
             </div>
 
+            {filiaisOrigem.length > 1 ? (
+              <div className="mt-2">
+                <label className={lblCls}>Puxar os produtos de</label>
+                <select
+                  value={origemId}
+                  onChange={(e) => {
+                    setOrigemId(e.target.value);
+                    setSelecionados(new Set());
+                    void carregarProdutos(e.target.value);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {filiaisOrigem.map((f) => (
+                    <option key={f.id} value={f.id} disabled={f.produtos === 0}>
+                      {f.nome} ({f.produtos} produtos)
+                      {f.id === filialId ? ' — esta loja' : ''}
+                      {f.produtos === 0 ? ' — sem PDV sincronizado' : ''}
+                    </option>
+                  ))}
+                </select>
+                {origemId !== filialId ? (
+                  <p className="mt-1 text-[11px] text-amber-700">
+                    Copiando de outra loja: os itens entram soltos, sem seguir o preço nem o
+                    estoque de lá.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <input
               value={buscaSalao}
               onChange={(e) => setBuscaSalao(e.target.value)}
@@ -617,6 +662,13 @@ export function CardapioAdminClient({
             <div className="mt-2 flex-1 overflow-y-auto rounded-lg border border-slate-200">
               {salao === null ? (
                 <p className="p-6 text-center text-sm text-slate-500">Carregando produtos…</p>
+              ) : salao.length === 0 ? (
+                <p className="p-6 text-center text-sm text-slate-500">
+                  Esta loja não tem produtos vindos do PDV.
+                  {filiaisOrigem.some((f) => f.id !== filialId && f.produtos > 0)
+                    ? ' Escolha outra loja no seletor acima pra copiar o cardápio dela, ou cadastre os itens do zero.'
+                    : ' Cadastre os itens do zero pelo botão "+ Item do zero".'}
+                </p>
               ) : salaoFiltrado.length === 0 ? (
                 <p className="p-6 text-center text-sm text-slate-500">
                   Nada encontrado com esses filtros.
