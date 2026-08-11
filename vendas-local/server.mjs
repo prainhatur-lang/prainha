@@ -7200,7 +7200,8 @@ async function parear(){
   var r=await jpost('/api/ifood/parear');
   var el=document.getElementById('par');
   if(!r.ok){el.innerHTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';return}
-  el.innerHTML='<div class="pd"><div class="mut">1. Abra o portal e cole este código:</div>'+
+  el.innerHTML='<div class="pd"><div class="mut">1. Abra o portal e cole este código '+
+    '<b>(vale '+Math.round((r.expira_seg||600)/60)+' minutos)</b>:</div>'+
     '<div class="cod">'+esc(r.codigo)+'</div>'+
     '<a class="b" style="text-decoration:none;display:inline-block" target="_blank" href="'+esc(r.url)+'">abrir o Portal do Parceiro</a>'+
     '<div class="mut" style="margin-top:12px">2. Autorize a loja. O portal devolve um <b>código de autorização</b> — cole abaixo:</div>'+
