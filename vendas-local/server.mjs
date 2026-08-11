@@ -721,6 +721,41 @@ async function ifoodAplicarEvento(orderId, code, c) {
   }
 }
 
+/** O "Código de PDV" que o cardápio do iFood carrega em cada item é o que diz
+ *  em QUAL praça o prato sai. Só que no Consumer existem DOIS códigos e eles se
+ *  sobrepõem quase inteiros (na Prainha, 2042 números valem nos dois):
+ *    · PRODUTODETALHE.CODIGO — a variante (o nosso produto_local.codigo_pdv)
+ *    · PRODUTOS.CODIGO       — o produto (o nosso produto_local.produto_codigo)
+ *  Chutar "tenta um, senão o outro" mandaria o PRATO ERRADO pra cozinha sem
+ *  ninguém perceber. Então a fonte é a config ifood_codigo_pdv, e o NOME vindo
+ *  do iFood serve de conferência: se não bate com o produto que o código achou,
+ *  o item sai avisado — melhor a cozinha ler um alerta do que fritar outra coisa. */
+function parecido(a, b) {
+  const t = (s) => new Set(semAcento(String(s || '')).split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+  const A = t(a), B = t(b);
+  if (!A.size || !B.size) return true; // sem nome pra comparar: não acusa à toa
+  let n = 0; for (const w of A) if (B.has(w)) n++;
+  return n / Math.min(A.size, B.size) >= 0.34;
+}
+async function ifoodResolverProduto(cod, nomeIfood) {
+  if (!cod) return { codigo_pdv: null, area_codigo: null, aviso: '[SEM CÓDIGO DE PDV]' };
+  const modo = await cfgGet('ifood_codigo_pdv', 'variante');
+  const porVariante = modo !== 'produto';
+  const acha = async (v) => (await sql`SELECT codigo_pdv, produto_codigo, nome, area_codigo FROM produto_local
+    WHERE ${v ? sql`codigo_pdv` : sql`produto_codigo`}=${cod} ORDER BY codigo_pdv LIMIT 1`)[0];
+  const p = await acha(porVariante);
+  if (!p) {
+    // não existe no espaço configurado: se existir no outro, o cadastro do
+    // cardápio está no formato oposto — dizer isso poupa caça ao erro
+    const outro = await acha(!porVariante);
+    return { codigo_pdv: null, area_codigo: null,
+      aviso: outro ? '[CÓDIGO ' + cod + ' PARECE SER DE ' + (porVariante ? 'PRODUTO' : 'VARIANTE') + ' — ajuste em /ifood]'
+                   : '[CÓDIGO ' + cod + ' NÃO EXISTE AQUI]' };
+  }
+  return { codigo_pdv: p.codigo_pdv, area_codigo: p.area_codigo,
+    aviso: parecido(nomeIfood, p.nome) ? null : '[CONFERIR: código ' + cod + ' aqui é "' + p.nome + '"]' };
+}
+
 /** Detalhe do pedido → nossas tabelas. Reescreve os itens: pedido editado no
  *  iFood (item em falta, troca) chega como evento novo e tem que refletir. */
 async function ifoodBaixarPedido(orderId) {
@@ -751,19 +786,15 @@ async function ifoodBaixarPedido(orderId) {
       taxa_entrega=EXCLUDED.taxa_entrega, pago_online=EXCLUDED.pago_online,
       agendado_para=EXCLUDED.agendado_para, payload=EXCLUDED.payload`;
 
-  // "Código de PDV" cadastrado no cardápio do iFood = nosso codigo_pdv. É ele
-  // que diz em QUAL praça o item sai. Sem ele o prato cai sem cozinha — por
-  // isso o aviso vai no próprio texto do item, onde a cozinha vê.
   const itens = [];
   for (const [i, it] of (o.items || []).entries()) {
     const cod = Number(String(it.externalCode || '').replace(/\D/g, '')) || null;
-    const [pl] = cod ? await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${cod}` : [];
+    const alvo = await ifoodResolverProduto(cod, it.name);
     const extras = (it.options || []).map((op) => (Number(op.quantity) > 1 ? op.quantity + 'x ' : '') + op.name).join(', ');
-    const det = [extras, it.observations].filter(Boolean).join(' · ')
-      + (cod && !pl ? ' [SEM PRODUTO LOCAL ' + cod + ']' : (!cod ? ' [SEM CÓDIGO DE PDV]' : ''));
-    itens.push({ pedido_id: o.id, seq: i, codigo_pdv: cod, nome: it.name || 'item',
+    const det = [extras, it.observations, alvo.aviso].filter(Boolean).join(' · ');
+    itens.push({ pedido_id: o.id, seq: i, codigo_pdv: alvo.codigo_pdv, nome: it.name || 'item',
       quantidade: Number(it.quantity || 1), valor_total: Number(it.totalPrice ?? it.price ?? 0) || 0,
-      detalhes: det.trim() || null, area_codigo: pl?.area_codigo ?? null });
+      detalhes: det.trim() || null, area_codigo: alvo.area_codigo });
   }
   // item_codigo é bigserial e o KDS guarda "pronto/entregue" por ele: trocar os
   // itens reabre o que já foi marcado. Só reescreve quando MUDOU de verdade.
@@ -869,6 +900,7 @@ async function apiIfood() {
     tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
     client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
     status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
+    codigo_pdv: await cfgGet('ifood_codigo_pdv', 'variante'),
     pedidos: peds.map((p) => ({
       id: p.id, display_id: p.display_id, status: p.status, tipo: p.tipo, modo_entrega: p.modo_entrega,
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
@@ -885,6 +917,7 @@ async function apiIfoodSalvar(b) {
   if (b.client_secret != null && String(b.client_secret).trim()) await cfgSet('ifood_client_secret', String(b.client_secret).trim());
   if (b.merchant_id != null) await cfgSet('ifood_merchant_id', String(b.merchant_id).trim());
   if (b.auto_confirmar != null) await cfgSet('ifood_auto_confirmar', b.auto_confirmar ? '1' : '0');
+  if (b.codigo_pdv != null) await cfgSet('ifood_codigo_pdv', b.codigo_pdv === 'produto' ? 'produto' : 'variante');
   if (b.ativo != null) {
     const c = await ifoodConf();
     // ligar sem pareamento só encheria o log de erro a cada 30s
@@ -7046,6 +7079,11 @@ function pinta(){
       '<button class="b '+(d.ativo?'o':'')+'" onclick="liga('+(d.ativo?'0':'1')+')">'+(d.ativo?'desligar':'ligar')+'</button></div>'+
     '<div class="l"><div class="nm">Aceitar o pedido automaticamente<small>o iFood cobra tempo de aceite; no manual alguém precisa apertar Confirmar em cada pedido</small></div>'+
       '<input type="checkbox" id="auto" '+(d.auto_confirmar?'checked':'')+' onchange="salvar({auto_confirmar:this.checked})" style="width:20px;height:20px"></div>'+
+    '<div class="l"><div class="nm">Código de PDV do cardápio<small>o número que já está cadastrado no cardápio do iFood. No Consumer existem dois e eles se sobrepõem — se marcar errado, o pedido vira o prato errado. O item sempre sai conferido pelo nome.</small></div>'+
+      '<select onchange="salvar({codigo_pdv:this.value})">'+
+        '<option value="variante"'+(d.codigo_pdv!=='produto'?' selected':'')+'>variante (PRODUTODETALHE)</option>'+
+        '<option value="produto"'+(d.codigo_pdv==='produto'?' selected':'')+'>produto (PRODUTOS)</option>'+
+      '</select></div>'+
     '<div class="l"><div class="nm">Última consulta<small>'+(d.status.ultimo_erro?('<span style="color:#dc2626">'+esc(d.status.ultimo_erro)+'</span>'):('a cada '+d.poll_seg+'s'))+'</small></div>'+
       '<span class="mut">'+(d.status.ultimo_ok?hora(d.status.ultimo_ok):'—')+'</span></div>'+
     '</div>';
