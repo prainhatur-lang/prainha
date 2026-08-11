@@ -2256,7 +2256,18 @@ async function apiVendaEnviar(body) {
     }
     const grupo = parear ? 'G' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36) : null;
     const paresGrupo = [];
+    // 1 LINHA POR UNIDADE: "2x arroz" virava uma linha só (QUANTIDADE=2) e o
+    // cancelamento no caixa só conseguia derrubar as duas de uma vez. Cada
+    // unidade INTEIRA vira sua própria linha (obs/respostas replicadas) —
+    // cancela uma, marca pronto uma a uma no KDS. Quantidade fracionada
+    // (item por kg) continua numa linha só.
+    const unidades = [];
     for (const it of itens) {
+      if (Number.isInteger(it.qtd) && it.qtd > 1) {
+        for (let u = 0; u < it.qtd; u++) unidades.push({ ...it, qtd: 1 });
+      } else unidades.push(it);
+    }
+    for (const it of unidades) {
       const cod = await fbInserirItem(ped, it);
       if (grupo && it.junto_item && cod) paresGrupo.push({ item_codigo: cod, grupo, numero });
       // mesmo lugar onde o PDV guarda as respostas — assim o Consumer enxerga
