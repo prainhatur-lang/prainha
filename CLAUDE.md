@@ -19,6 +19,7 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
    - Cria `packages/db/scripts/migrate-<nome>.ts` (copia o padrão de outro: ALTER ... IF NOT EXISTS, idempotente, usa `DATABASE_URL_DIRECT`).
    - Adiciona o target em `packages/db/package.json` (`"migrate:<nome>": "tsx scripts/migrate-<nome>.ts"`).
    - Roda: `pnpm --filter @concilia/db migrate:<nome>`.
+   - **CREATE TABLE nova → SEMPRE terminar com `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY`** (ENABLE, nunca FORCE). Sem isso a anon key do Supabase lê/escreve a tabela via PostgREST (aconteceu 2x: jun + ago/2026 — as tabelas da Nina/eventos vazaram). Conserto rápido: `pnpm --filter @concilia/db migrate:rls` (idempotente, pega todas).
 4. **Timezone BRT.** Use os helpers de `@/lib/datas` (`hojeBr()`, `diasAtrasBr(n)`, `dateToBrYmd`) — NUNCA `new Date().toISOString().slice(0,10)` (bug recorrente em prod). `diasAtrasBr(-1)` = amanhã.
 5. **Typecheck antes de commitar:** `pnpm --filter @concilia/web typecheck`.
 
