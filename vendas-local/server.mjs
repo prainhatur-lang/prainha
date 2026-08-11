@@ -386,6 +386,40 @@ async function initSchema() {
     pedido_fb bigint PRIMARY KEY, numero integer, quando timestamptz DEFAULT now(),
     chave text, nfce_numero integer, serie integer, ambiente integer,
     dest_documento text, valor numeric, status text, erro text, solicitado_por text)`;
+
+  // ---- iFood: pedido que chega DIRETO na loja, sem passar pelo Consumer ----
+  // Enquanto o Consumer for a integradora, estas tabelas ficam vazias e nada
+  // aqui roda (ifood_ativo=0). Quando a loja for autorizada no NOSSO app, o
+  // pedido do iFood deixa de existir no Firebird — ele passa a nascer aqui.
+  await sql`CREATE TABLE IF NOT EXISTS ifood_pedido (
+    id text PRIMARY KEY,
+    seq bigserial UNIQUE,
+    display_id text, merchant_id text,
+    status text, tipo text, modo_entrega text,
+    cliente_nome text, cliente_fone text, endereco text,
+    total numeric, taxa_entrega numeric, pago_online boolean,
+    agendado_para timestamptz, criado_em timestamptz,
+    recebido_em timestamptz DEFAULT now(),
+    confirmado_em timestamptz, despachado_em timestamptz,
+    concluido_em timestamptz, cancelado_em timestamptz,
+    cancel_pedido_em timestamptz, cancel_motivo text,
+    erro text, payload jsonb)`;
+  // item_codigo é NEGATIVO de propósito: o espelho do Firebird só tem código
+  // positivo, então o pedido do iFood convive com ele nas mesmas tabelas
+  // (comanda/comanda_item) sem risco de colisão — e o KDS, a entrega, o
+  // "marca" e a impressora continuam funcionando sem saber que é iFood.
+  await sql`CREATE TABLE IF NOT EXISTS ifood_item (
+    item_codigo bigserial PRIMARY KEY,
+    pedido_id text NOT NULL REFERENCES ifood_pedido(id) ON DELETE CASCADE,
+    seq integer, codigo_pdv integer, nome text, quantidade numeric,
+    valor_total numeric, detalhes text, area_codigo integer)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ifood_item_pedido ON ifood_item (pedido_id)`;
+  // evento só sai do polling depois de PERSISTIDO aqui. Se o processo cair no
+  // meio, o iFood devolve o mesmo evento no próximo ciclo — e o PK evita
+  // processar duas vezes.
+  await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
+    id text PRIMARY KEY, code text, order_id text,
+    recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
@@ -457,6 +491,10 @@ async function espelho() {
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
     await sql`UPDATE sync_estado SET ultimo_ok=now(), ultimo_erro=null, comandas=${comandas.length}, itens=${itens.length} WHERE id=1`;
   });
+  // O TRUNCATE acima leva junto o pedido do iFood (que não vem do Firebird):
+  // reinjeta agora. FORA da transação de propósito — erro na projeção do iFood
+  // não pode abortar o espelho e deixar as MESAS sem atualizar.
+  await projetarIfood().catch((e) => console.error('[ifood] projeção:', e.message));
 
   // ---- FECHOU A MESA, LIBERA TUDO QUE ESTAVA PRESO A ELA ----
   // O espelho so traz pedido ABERTO. Se a mesa sumiu daqui, ela fechou no
@@ -508,6 +546,352 @@ async function loopEspelho() {
   try { const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo'); console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`); }
   catch (e) { ultimoStatus = { ...ultimoStatus, ok: false }; await sql`UPDATE sync_estado SET ultimo_erro=${String(e.message).slice(0, 200)} WHERE id=1`.catch(() => {}); console.error('[espelho] ERRO:', e.message); }
   finally { setTimeout(loopEspelho, INTERVALO_MS); }
+}
+
+// ==================== iFood (integração direta) ====================
+// Hoje quem integra é o Consumer: o pedido do iFood nasce no Firebird e o
+// espelho acima o traz como comanda origem=4. O iFood só aceita UMA
+// integradora por loja — quando a loja for autorizada no NOSSO app, o Consumer
+// para de receber e o pedido passa a nascer AQUI.
+//
+// Por isso tudo abaixo nasce DESLIGADO (ifood_ativo=0): enquanto você não
+// parear a loja na tela /ifood, nenhuma chamada sai e nada muda na operação.
+const IFOOD_BASE = process.env.IFOOD_BASE || 'https://merchant-api.ifood.com.br';
+// 30s é o intervalo que o iFood manda usar e também o limite: uma chamada a
+// cada 30s por token. Abaixo disso vem 429 e o cliente é bloqueado.
+const IFOOD_POLL_MS = Number(process.env.IFOOD_POLL_MS || 30000);
+const IFOOD_ORIGEM = 4; // mesmo código de origem que o Consumer usa pro iFood
+let ifoodStatus = { ativo: false, pareado: false, ultimo_ok: null, ultimo_erro: null, abertos: 0 };
+
+async function ifoodConf() {
+  return {
+    ativo: (await cfgGet('ifood_ativo', '0')) === '1',
+    autoConfirmar: (await cfgGet('ifood_auto_confirmar', '1')) === '1',
+    clientId: process.env.IFOOD_CLIENT_ID || (await cfgGet('ifood_client_id', '')),
+    clientSecret: process.env.IFOOD_CLIENT_SECRET || (await cfgGet('ifood_client_secret', '')),
+    merchantId: await cfgGet('ifood_merchant_id', ''),
+    refreshToken: await cfgGet('ifood_refresh_token', ''),
+  };
+}
+
+/** Token de acesso. Vale 6h; renovo com 10 min de folga pra nunca cair no meio
+ *  de um polling. O refresh_token é rotativo — o iFood devolve um novo a cada
+ *  renovação, e perder ele significa parear a loja de novo na mão. */
+async function ifoodToken(forcar = false) {
+  const c = await ifoodConf();
+  if (!c.clientId || !c.clientSecret) throw new Error('sem client_id/client_secret do iFood');
+  const cache = await cfgGet('ifood_access_token', '');
+  const expira = Number(await cfgGet('ifood_token_expira', '0'));
+  if (!forcar && cache && Date.now() < expira - 10 * 60 * 1000) return cache;
+  if (!c.refreshToken) throw new Error('loja não pareada — gere o código na tela /ifood');
+  const corpo = new URLSearchParams({
+    grantType: 'refresh_token', clientId: c.clientId, clientSecret: c.clientSecret,
+    refreshToken: c.refreshToken,
+  });
+  const r = await fetch(IFOOD_BASE + '/authentication/v1.0/oauth/token', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: corpo,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('token iFood ' + r.status + ': ' + (j.error?.message || JSON.stringify(j).slice(0, 200)));
+  await cfgSet('ifood_access_token', j.accessToken);
+  await cfgSet('ifood_token_expira', String(Date.now() + Number(j.expiresIn || 21600) * 1000));
+  if (j.refreshToken) await cfgSet('ifood_refresh_token', j.refreshToken);
+  return j.accessToken;
+}
+
+/** Chamada autenticada. 401 renova o token e repete UMA vez — token expirado
+ *  no meio do expediente não pode virar pedido perdido. */
+async function ifoodApi(caminho, { metodo = 'GET', corpo = null, headers = {}, cru = false } = {}) {
+  let tentou = false;
+  for (;;) {
+    const tk = await ifoodToken(tentou);
+    const r = await fetch(IFOOD_BASE + caminho, {
+      method: metodo,
+      headers: { authorization: 'Bearer ' + tk, ...(corpo ? { 'content-type': 'application/json' } : {}), ...headers },
+      body: corpo ? JSON.stringify(corpo) : undefined,
+    });
+    if (r.status === 401 && !tentou) { tentou = true; continue; }
+    if (cru) return r;
+    if (r.status === 204 || r.status === 202) return {};
+    const txt = await r.text();
+    const j = txt ? JSON.parse(txt) : {};
+    if (!r.ok) throw new Error('iFood ' + metodo + ' ' + caminho + ' → ' + r.status + ': ' + txt.slice(0, 300));
+    return j;
+  }
+}
+
+// ---- pareamento da loja (app distribuído, o mesmo fluxo do Consumer) ----
+/** Passo 1: pede o código que você digita no Portal do Parceiro. */
+async function ifoodParear() {
+  const c = await ifoodConf();
+  if (!c.clientId) return { ok: false, erro: 'preencha o client_id antes' };
+  const r = await fetch(IFOOD_BASE + '/authentication/v1.0/oauth/userCode', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ clientId: c.clientId }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, erro: 'iFood ' + r.status + ': ' + JSON.stringify(j).slice(0, 200) };
+  // o verifier é a metade secreta do par: sem ele o código autorizado não vira token
+  await cfgSet('ifood_code_verifier', j.authorizationCodeVerifier || '');
+  return { ok: true, codigo: j.userCode, url: j.verificationUrlComplete || j.verificationUrl, expira_seg: j.expiresIn };
+}
+
+/** Passo 2: você autoriza no portal, ele mostra um código, e ele vira token. */
+async function ifoodConcluirPareamento(authorizationCode) {
+  const c = await ifoodConf();
+  const verifier = await cfgGet('ifood_code_verifier', '');
+  if (!authorizationCode) return { ok: false, erro: 'cole o código que o portal mostrou' };
+  if (!verifier) return { ok: false, erro: 'gere o código de novo (o pareamento expirou)' };
+  const r = await fetch(IFOOD_BASE + '/authentication/v1.0/oauth/token', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grantType: 'authorization_code', clientId: c.clientId, clientSecret: c.clientSecret,
+      authorizationCode: String(authorizationCode).trim(), authorizationCodeVerifier: verifier,
+    }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, erro: 'iFood ' + r.status + ': ' + JSON.stringify(j).slice(0, 250) };
+  await cfgSet('ifood_access_token', j.accessToken || '');
+  await cfgSet('ifood_refresh_token', j.refreshToken || '');
+  await cfgSet('ifood_token_expira', String(Date.now() + Number(j.expiresIn || 21600) * 1000));
+  // já descobre a loja: com uma só, dispensa configuração manual do merchantId
+  try {
+    const lojas = await ifoodApi('/merchant/v1.0/merchants');
+    if (Array.isArray(lojas) && lojas.length === 1) await cfgSet('ifood_merchant_id', lojas[0].id);
+    return { ok: true, lojas: (lojas || []).map((m) => ({ id: m.id, nome: m.name })) };
+  } catch { return { ok: true, lojas: [] }; }
+}
+
+// ---- recebimento: polling a cada 30s ----
+const IFOOD_ST = { PLC: 'PLACED', CFM: 'CONFIRMED', DSP: 'DISPATCHED', CON: 'CONCLUDED', CAN: 'CANCELLED',
+  RTP: 'READY_TO_PICKUP', SPS: 'SEPARATION_STARTED', CAR: 'CANCELLATION_REQUESTED' };
+
+async function ifoodPoll() {
+  const c = await ifoodConf();
+  if (!c.ativo) { ifoodStatus = { ...ifoodStatus, ativo: false }; return; }
+  const h = c.merchantId ? { 'x-polling-merchants': c.merchantId } : {};
+  const r = await ifoodApi('/order/v1.0/events:polling', { headers: h, cru: true });
+  if (!r.ok && r.status !== 204) throw new Error('polling ' + r.status + ': ' + (await r.text()).slice(0, 200));
+  // 204 = nada novo, e é o caso NORMAL. Ainda assim segue pra projeção: é ela
+  // que faz o agendado entrar na hora certa, que devolve o pedido pra cozinha
+  // se o espelho tiver truncado, e que tira da tela o que já concluiu.
+  const eventos = r.status === 204 ? [] : await r.json();
+  const paraAck = [];
+  for (const ev of eventos || []) {
+    const code = IFOOD_ST[ev.code] || ev.code || ev.fullCode || '';
+    // PERSISTE PRIMEIRO, dá o ack DEPOIS: se o processo morrer aqui, o iFood
+    // devolve o evento no próximo ciclo e o PK evita processar duas vezes.
+    const novo = await sql`INSERT INTO ifood_evento (id, code, order_id) VALUES (${ev.id}, ${code}, ${ev.orderId})
+      ON CONFLICT (id) DO NOTHING RETURNING id`;
+    paraAck.push({ id: ev.id });
+    if (!novo.length) continue; // já tratado antes
+    try {
+      await ifoodAplicarEvento(ev.orderId, code, c);
+      await sql`UPDATE ifood_evento SET ack_em=now() WHERE id=${ev.id}`;
+    } catch (e) {
+      await sql`UPDATE ifood_evento SET erro=${String(e.message).slice(0, 250)} WHERE id=${ev.id}`;
+      console.error('[ifood] evento', code, ev.orderId, '—', e.message);
+    }
+  }
+  if (paraAck.length) {
+    await ifoodApi('/order/v1.0/events/acknowledgment', { metodo: 'POST', corpo: paraAck }).catch((e) =>
+      console.error('[ifood] ack falhou:', e.message));
+  }
+  await projetarIfood();
+  const [ab] = await sql`SELECT count(*)::int n FROM ifood_pedido WHERE concluido_em IS NULL AND cancelado_em IS NULL`;
+  ifoodStatus = { ativo: true, pareado: true, ultimo_ok: new Date().toISOString(), ultimo_erro: null, abertos: ab?.n || 0 };
+}
+
+async function ifoodAplicarEvento(orderId, code, c) {
+  if (!orderId) return;
+  if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId);
+  const carimbo = { CONFIRMED: 'confirmado_em', DISPATCHED: 'despachado_em', CONCLUDED: 'concluido_em', CANCELLED: 'cancelado_em' }[code];
+  if (carimbo) {
+    await sql`UPDATE ifood_pedido SET status=${code}, ${sql(carimbo)}=COALESCE(${sql(carimbo)}, now()) WHERE id=${orderId}`;
+  } else if (code === 'CANCELLATION_REQUESTED') {
+    // cliente pediu pra cancelar: NÃO decide sozinho — a loja aceita ou nega
+    await sql`UPDATE ifood_pedido SET cancel_pedido_em=now() WHERE id=${orderId}`;
+  } else if (code) {
+    await sql`UPDATE ifood_pedido SET status=${code} WHERE id=${orderId}`;
+  }
+  // aceitar o pedido é o que tira ele da fila do cliente. Manual atrasa e o
+  // iFood cobra tempo de aceite — por isso o padrão é confirmar sozinho.
+  if (code === 'PLACED' && c.autoConfirmar) {
+    await ifoodComando(orderId, 'confirmar').catch((e) => console.error('[ifood] auto-confirmar:', e.message));
+  }
+}
+
+/** Detalhe do pedido → nossas tabelas. Reescreve os itens: pedido editado no
+ *  iFood (item em falta, troca) chega como evento novo e tem que refletir. */
+async function ifoodBaixarPedido(orderId) {
+  const o = await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId));
+  const ent = o.delivery || {};
+  const end = ent.deliveryAddress || {};
+  const endereco = [end.formattedAddress || [end.streetName, end.streetNumber].filter(Boolean).join(', '),
+    end.complement, end.neighborhood, end.reference].filter(Boolean).join(' · ') || null;
+  const pago = (o.payments?.methods || []).some((m) => String(m.type).toUpperCase() === 'ONLINE') || Number(o.payments?.prepaid || 0) > 0;
+  const linha = {
+    id: o.id, display_id: o.displayId || null, merchant_id: o.merchant?.id || null,
+    status: o.status || 'PLACED', tipo: o.orderType || 'DELIVERY',
+    // quem leva: IFOOD (entregador da plataforma) ou MERCHANT (nosso motoboy).
+    // Muda o comando de saída: readyToPickup num caso, dispatch no outro.
+    modo_entrega: ent.deliveredBy || (o.orderType === 'TAKEOUT' ? 'CLIENTE' : null),
+    cliente_nome: o.customer?.name || null,
+    cliente_fone: o.customer?.phone?.number || null,
+    endereco, total: Number(o.total?.orderAmount ?? 0) || 0,
+    taxa_entrega: Number(o.total?.deliveryFee ?? 0) || 0, pago_online: pago,
+    agendado_para: o.schedule?.deliveryDateTimeStart || null,
+    criado_em: o.createdAt || null, payload: JSON.stringify(o),
+  };
+  await sql`INSERT INTO ifood_pedido ${sql(linha)}
+    ON CONFLICT (id) DO UPDATE SET
+      display_id=EXCLUDED.display_id, merchant_id=EXCLUDED.merchant_id, status=EXCLUDED.status,
+      tipo=EXCLUDED.tipo, modo_entrega=EXCLUDED.modo_entrega, cliente_nome=EXCLUDED.cliente_nome,
+      cliente_fone=EXCLUDED.cliente_fone, endereco=EXCLUDED.endereco, total=EXCLUDED.total,
+      taxa_entrega=EXCLUDED.taxa_entrega, pago_online=EXCLUDED.pago_online,
+      agendado_para=EXCLUDED.agendado_para, payload=EXCLUDED.payload`;
+
+  // "Código de PDV" cadastrado no cardápio do iFood = nosso codigo_pdv. É ele
+  // que diz em QUAL praça o item sai. Sem ele o prato cai sem cozinha — por
+  // isso o aviso vai no próprio texto do item, onde a cozinha vê.
+  const itens = [];
+  for (const [i, it] of (o.items || []).entries()) {
+    const cod = Number(String(it.externalCode || '').replace(/\D/g, '')) || null;
+    const [pl] = cod ? await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${cod}` : [];
+    const extras = (it.options || []).map((op) => (Number(op.quantity) > 1 ? op.quantity + 'x ' : '') + op.name).join(', ');
+    const det = [extras, it.observations].filter(Boolean).join(' · ')
+      + (cod && !pl ? ' [SEM PRODUTO LOCAL ' + cod + ']' : (!cod ? ' [SEM CÓDIGO DE PDV]' : ''));
+    itens.push({ pedido_id: o.id, seq: i, codigo_pdv: cod, nome: it.name || 'item',
+      quantidade: Number(it.quantity || 1), valor_total: Number(it.totalPrice ?? it.price ?? 0) || 0,
+      detalhes: det.trim() || null, area_codigo: pl?.area_codigo ?? null });
+  }
+  // item_codigo é bigserial e o KDS guarda "pronto/entregue" por ele: trocar os
+  // itens reabre o que já foi marcado. Só reescreve quando MUDOU de verdade.
+  const atuais = await sql`SELECT seq, codigo_pdv, nome, quantidade, detalhes FROM ifood_item WHERE pedido_id=${o.id} ORDER BY seq`;
+  const chave = (l) => l.map((x) => [x.seq, x.codigo_pdv, x.nome, Number(x.quantidade), x.detalhes].join('|')).join('¬');
+  if (chave(atuais) !== chave(itens)) {
+    await sql`DELETE FROM ifood_item WHERE pedido_id=${o.id}`;
+    if (itens.length) await sql`INSERT INTO ifood_item ${sql(itens, 'pedido_id', 'seq', 'codigo_pdv', 'nome', 'quantidade', 'valor_total', 'detalhes', 'area_codigo')}`;
+  }
+  return linha;
+}
+
+// ---- controle: os comandos que mudam o pedido lá no iFood ----
+const IFOOD_ACOES = {
+  confirmar: 'confirm', despachar: 'dispatch', pronto: 'readyToPickup',
+  cancelar: 'requestCancellation', aceitar_cancel: 'acceptCancellation', negar_cancel: 'denyCancellation',
+};
+async function ifoodComando(orderId, acao, extra = null) {
+  const caminho = IFOOD_ACOES[acao];
+  if (!caminho) return { ok: false, erro: 'ação desconhecida' };
+  await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho, { metodo: 'POST', corpo: extra });
+  // O iFood responde 202: o status só vale quando o evento correspondente
+  // voltar no polling. O carimbo local aqui é otimista, pra tela não ficar
+  // parada 30s — o evento depois confirma (ou corrige).
+  const campo = { confirmar: 'confirmado_em', despachar: 'despachado_em' }[acao];
+  if (campo) await sql`UPDATE ifood_pedido SET ${sql(campo)}=COALESCE(${sql(campo)}, now()) WHERE id=${orderId}`;
+  if (acao === 'cancelar') await sql`UPDATE ifood_pedido SET cancelado_em=now() WHERE id=${orderId}`;
+  if (acao === 'aceitar_cancel') await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_pedido_em=NULL WHERE id=${orderId}`;
+  if (acao === 'negar_cancel') await sql`UPDATE ifood_pedido SET cancel_pedido_em=NULL WHERE id=${orderId}`;
+  return { ok: true };
+}
+
+/** O PULO DO GATO: o pedido do iFood entra nas MESMAS tabelas do espelho, com
+ *  código negativo (o Firebird só tem positivo). Assim o KDS, a tela de
+ *  entrega, o "marca" de pronto/entregue e a impressora de comanda funcionam
+ *  sem saber que existe iFood — origem=4 já é lida como delivery lá em cima.
+ *
+ *  Roda em DOIS momentos: logo depois do espelho (que dá TRUNCATE nas duas
+ *  tabelas) e a cada polling. O segundo é o que garante pedido na cozinha
+ *  mesmo com o Consumer/Firebird fora do ar. */
+async function projetarIfood() {
+  const peds = await sql`SELECT * FROM ifood_pedido
+    WHERE cancelado_em IS NULL AND concluido_em IS NULL
+      AND (agendado_para IS NULL OR agendado_para <= now() + interval '1 hour')
+      AND recebido_em > now() - interval '2 days'`;
+  if (!peds.length) {
+    await sql.begin(async (t) => {
+      await t`DELETE FROM comanda_item WHERE comanda_codigo < 0`;
+      await t`DELETE FROM comanda WHERE codigo < 0`;
+    });
+    return 0;
+  }
+  const ids = peds.map((p) => p.id);
+  const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id = ANY(${ids}) ORDER BY pedido_id, seq`;
+  const comandas = peds.map((p) => ({
+    codigo: -Number(p.seq), numero: 0, origem: IFOOD_ORIGEM,
+    // o nome carrega o que a cozinha e a entrega precisam ler de relance
+    nome: ('iFood #' + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : '')).trim(),
+    valor_total: Number(p.total || 0), subtotal_pago: p.pago_online ? Number(p.total || 0) : 0,
+    qtd_pessoas: 1, data_abertura: p.criado_em || p.recebido_em, conta_pedida: false,
+  }));
+  const porId = new Map(peds.map((p) => [p.id, p]));
+  const linhas = itens.map((i) => ({
+    item_codigo: -Number(i.item_codigo), codigo_pai: null,
+    comanda_codigo: -Number(porId.get(i.pedido_id).seq), codigo_pdv: i.codigo_pdv,
+    criado: porId.get(i.pedido_id).criado_em || porId.get(i.pedido_id).recebido_em,
+    nome: i.nome, quantidade: Number(i.quantidade || 1), valor_total: Number(i.valor_total || 0),
+    tipo: 1, detalhes: i.detalhes, area_codigo: i.area_codigo, produzido: null, entregue: null,
+  }));
+  const gravar = async (t) => {
+    await t`DELETE FROM comanda_item WHERE comanda_codigo < 0`;
+    await t`DELETE FROM comanda WHERE codigo < 0`;
+    await t`INSERT INTO comanda ${t(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
+    if (linhas.length) await t`INSERT INTO comanda_item ${t(linhas, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
+  };
+  await sql.begin(gravar);
+  return comandas.length;
+}
+
+async function loopIfood() {
+  try {
+    const c = await ifoodConf();
+    if (c.ativo && c.refreshToken) {
+      await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
+      // a comanda do iFood sai no papel pelo mesmo caminho da comanda da mesa
+      await imprimirComandasNovas().catch((e) => console.error('[ifood] impressora:', e.message));
+    }
+  } catch (e) {
+    ifoodStatus = { ...ifoodStatus, ultimo_erro: String(e.message).slice(0, 200) };
+    console.error('[ifood] ERRO:', e.message);
+  } finally { setTimeout(loopIfood, IFOOD_POLL_MS); }
+}
+
+/** Tela /ifood: estado + pedidos abertos, no mesmo formato da lista do Consumer. */
+async function apiIfood() {
+  const c = await ifoodConf();
+  const peds = await sql`SELECT p.*, (SELECT count(*)::int FROM ifood_item i WHERE i.pedido_id=p.id) itens
+    FROM ifood_pedido p
+    WHERE p.recebido_em > now() - interval '2 days'
+    ORDER BY (p.concluido_em IS NULL AND p.cancelado_em IS NULL) DESC, p.recebido_em DESC LIMIT 60`;
+  return {
+    ok: true, ativo: c.ativo, auto_confirmar: c.autoConfirmar,
+    tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
+    client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
+    status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
+    pedidos: peds.map((p) => ({
+      id: p.id, display_id: p.display_id, status: p.status, tipo: p.tipo, modo_entrega: p.modo_entrega,
+      cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
+      total: Number(p.total || 0), taxa: Number(p.taxa_entrega || 0), pago_online: p.pago_online,
+      itens: p.itens, recebido_em: p.recebido_em, agendado_para: p.agendado_para,
+      confirmado: !!p.confirmado_em, despachado: !!p.despachado_em,
+      concluido: !!p.concluido_em, cancelado: !!p.cancelado_em, cancel_pedido: !!p.cancel_pedido_em,
+    })),
+  };
+}
+
+async function apiIfoodSalvar(b) {
+  if (b.client_id != null) await cfgSet('ifood_client_id', String(b.client_id).trim());
+  if (b.client_secret != null && String(b.client_secret).trim()) await cfgSet('ifood_client_secret', String(b.client_secret).trim());
+  if (b.merchant_id != null) await cfgSet('ifood_merchant_id', String(b.merchant_id).trim());
+  if (b.auto_confirmar != null) await cfgSet('ifood_auto_confirmar', b.auto_confirmar ? '1' : '0');
+  if (b.ativo != null) {
+    const c = await ifoodConf();
+    // ligar sem pareamento só encheria o log de erro a cada 30s
+    if (b.ativo && !c.refreshToken) return { ok: false, erro: 'pareie a loja no iFood antes de ligar' };
+    await cfgSet('ifood_ativo', b.ativo ? '1' : '0');
+  }
+  return { ok: true };
 }
 
 // ---- CATÁLOGO local (Firebird -> Postgres, a cada 5 min) ----
@@ -6604,6 +6988,154 @@ async function carrega(){
 carrega();setInterval(carrega,15000);
 </script></body></html>`;
 
+const IFOOD_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${LOJA_NOME} — iFood</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--red:#ea1d2c;--green:#15a34a}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:13px 20px;display:flex;align-items:center;gap:12px}
+h1{font-size:18px;margin:0}h1 b{color:var(--red)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 13px;font:inherit;font-size:14px;text-decoration:none}
+.wrap{max-width:860px;margin:0 auto;padding:22px 20px 60px}
+h2{font-size:15px;color:var(--mut);font-weight:500;margin:26px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.l{display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid #f1f1f5}
+.l:first-child{border-top:0}.l .nm{flex:1;font-size:15.5px}
+.l .nm small{display:block;color:var(--mut);font-size:12.5px;line-height:1.5}
+input,select{font:inherit;font-size:15px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}
+input:focus{outline:none;border-color:var(--red)}
+.b{background:var(--red);color:#fff;border:0;border-radius:10px;padding:9px 15px;font:inherit;font-size:14.5px;cursor:pointer}
+.b.g{background:var(--green)}.b.o{background:#f0f0f4;color:var(--ink);border:1px solid var(--line)}
+.b[disabled]{opacity:.45;cursor:default}
+.tag{font-size:12px;font-weight:700;padding:3px 9px;border-radius:99px;background:#f0f0f4;color:var(--mut)}
+.tag.on{background:#dcfce7;color:#166534}.tag.off{background:#fee2e2;color:#991b1b}
+.pd{padding:14px 16px;border-top:1px solid #f1f1f5}
+.pd .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.pd .n{font-weight:700;font-size:16px}
+.pd .end{color:var(--mut);font-size:13.5px;margin-top:3px;line-height:1.5}
+.acoes{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.mut{color:var(--mut);font-size:13.5px;line-height:1.6}
+.aviso{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:12px;padding:13px 15px;font-size:13.5px;line-height:1.6;margin-bottom:18px}
+.cod{font-size:30px;font-weight:800;letter-spacing:3px;color:var(--red);margin:8px 0}
+</style></head><body>
+<header><a class="back" href="/">◂ KDS</a><h1>i<b>Food</b></h1><span id="est" class="tag">—</span></header>
+<div class="wrap" id="app">carregando…</div>
+<script>
+var D=null;
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function din(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
+function hora(s){if(!s)return '';var d=new Date(s);return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
+async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b||{})})).json()}
+async function carregar(){D=await jget('/api/ifood');pinta()}
+function situacao(p){
+  if(p.cancelado)return['Cancelado','off'];
+  if(p.cancel_pedido)return['Cliente pediu cancelamento','off'];
+  if(p.concluido)return['Concluído','on'];
+  if(p.despachado)return['Saiu para entrega','on'];
+  if(p.confirmado)return['Em produção','on'];
+  return ['Aguardando aceite',''];
+}
+function pinta(){
+  var d=D,h='';
+  document.getElementById('est').className='tag '+(d.ativo?'on':'off');
+  document.getElementById('est').textContent=d.ativo?'ligado':'desligado';
+  if(!d.ativo)h+='<div class="aviso"><b>Integração desligada.</b> Enquanto estiver assim, quem recebe os pedidos do iFood é o Consumer — nada muda na operação. Ligue só depois de autorizar esta loja no Portal do Parceiro: o iFood aceita <b>uma integradora por loja</b>, e ao autorizar aqui o Consumer para de receber.</div>';
+  // ---- estado ----
+  h+='<h2>Situação</h2><div class="card">'+
+    '<div class="l"><div class="nm">Receber pedidos do iFood aqui<small>'+(d.pareado?'loja pareada':'ainda não pareada — faça o passo 2 abaixo')+'</small></div>'+
+      '<button class="b '+(d.ativo?'o':'')+'" onclick="liga('+(d.ativo?'0':'1')+')">'+(d.ativo?'desligar':'ligar')+'</button></div>'+
+    '<div class="l"><div class="nm">Aceitar o pedido automaticamente<small>o iFood cobra tempo de aceite; no manual alguém precisa apertar Confirmar em cada pedido</small></div>'+
+      '<input type="checkbox" id="auto" '+(d.auto_confirmar?'checked':'')+' onchange="salvar({auto_confirmar:this.checked})" style="width:20px;height:20px"></div>'+
+    '<div class="l"><div class="nm">Última consulta<small>'+(d.status.ultimo_erro?('<span style="color:#dc2626">'+esc(d.status.ultimo_erro)+'</span>'):('a cada '+d.poll_seg+'s'))+'</small></div>'+
+      '<span class="mut">'+(d.status.ultimo_ok?hora(d.status.ultimo_ok):'—')+'</span></div>'+
+    '</div>';
+  // ---- credencial ----
+  h+='<h2>1 · Credencial do app (Portal do Desenvolvedor)</h2><div class="card">'+
+    '<div class="l"><div class="nm">client_id<small>'+(d.tem_credencial?'gravado':'cole o do seu app')+'</small></div>'+
+      '<input id="cid" value="'+esc(d.client_id)+'" placeholder="uuid do app" style="width:290px"></div>'+
+    '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta</small></div>'+
+      '<input id="csec" type="password" placeholder="••••••••" style="width:290px"></div>'+
+    '<div class="l"><div class="nm">Loja (merchant_id)<small>preenche sozinho quando o pareamento acha uma loja só</small></div>'+
+      '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
+    '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button><span class="mut" id="okc"></span></div>'+
+    '</div>';
+  // ---- pareamento ----
+  h+='<h2>2 · Autorizar a loja</h2><div class="card"><div class="l"><div class="nm">'+
+    (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho que o Consumer usou pra ser autorizado</small>')+
+    '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par"></div></div>';
+  // ---- pedidos ----
+  h+='<h2>Pedidos <span class="mut">('+d.pedidos.length+')</span></h2><div class="card" id="peds">';
+  if(!d.pedidos.length)h+='<div class="pd mut">Nenhum pedido ainda. Quando a integração estiver ligada e autorizada, o pedido aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha.</div>';
+  d.pedidos.forEach(function(p){
+    var s=situacao(p);
+    h+='<div class="pd"><div class="top"><span class="n">#'+esc(p.display_id||'')+'</span>'+
+      '<span class="tag '+s[1]+'">'+s[0]+'</span>'+
+      '<span class="mut">'+hora(p.recebido_em)+' · '+p.itens+' item(ns) · '+din(p.total)+(p.pago_online?' · pago no app':' · A RECEBER')+'</span></div>'+
+      '<div class="end">'+esc(p.cliente||'sem nome')+(p.fone?' · '+esc(p.fone):'')+
+      (p.endereco?'<br>'+esc(p.endereco):'')+
+      (p.agendado_para?'<br>agendado para '+hora(p.agendado_para):'')+
+      (p.modo_entrega==='MERCHANT'?'<br><b>entrega nossa</b>':(p.modo_entrega==='IFOOD'?'<br>entregador do iFood':''))+'</div>';
+    if(!p.concluido&&!p.cancelado){
+      h+='<div class="acoes">';
+      if(p.cancel_pedido){
+        h+='<button class="b" onclick="cmd(\\''+p.id+'\\',\\'aceitar_cancel\\')">aceitar cancelamento</button>'+
+           '<button class="b o" onclick="cmd(\\''+p.id+'\\',\\'negar_cancel\\')">negar</button>';
+      }else{
+        if(!p.confirmado)h+='<button class="b g" onclick="cmd(\\''+p.id+'\\',\\'confirmar\\')">confirmar</button>';
+        if(p.confirmado&&!p.despachado){
+          h+=(p.modo_entrega==='MERCHANT')
+            ?'<button class="b" onclick="cmd(\\''+p.id+'\\',\\'despachar\\')">saiu para entrega</button>'
+            :'<button class="b" onclick="cmd(\\''+p.id+'\\',\\'pronto\\')">pronto para retirada</button>';
+        }
+        h+='<button class="b o" onclick="cmd(\\''+p.id+'\\',\\'cancelar\\')">cancelar</button>';
+      }
+      h+='</div>';
+    }
+    h+='</div>';
+  });
+  h+='</div>';
+  document.getElementById('app').innerHTML=h;
+}
+async function salvar(b){await jpost('/api/ifood/salvar',b);await carregar()}
+async function liga(v){
+  var r=await jpost('/api/ifood/salvar',{ativo:v==='1'||v===1});
+  if(!r.ok&&r.erro)alert(r.erro);
+  await carregar();
+}
+async function salvarCred(){
+  var b={client_id:document.getElementById('cid').value,merchant_id:document.getElementById('mid').value};
+  var s=document.getElementById('csec').value;if(s)b.client_secret=s;
+  await jpost('/api/ifood/salvar',b);
+  document.getElementById('okc').textContent='salvo';
+  await carregar();
+}
+async function parear(){
+  var r=await jpost('/api/ifood/parear');
+  var el=document.getElementById('par');
+  if(!r.ok){el.innerHTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';return}
+  el.innerHTML='<div class="pd"><div class="mut">1. Abra o portal e cole este código:</div>'+
+    '<div class="cod">'+esc(r.codigo)+'</div>'+
+    '<a class="b" style="text-decoration:none;display:inline-block" target="_blank" href="'+esc(r.url)+'">abrir o Portal do Parceiro</a>'+
+    '<div class="mut" style="margin-top:12px">2. Autorize a loja. O portal devolve um <b>código de autorização</b> — cole abaixo:</div>'+
+    '<div class="acoes"><input id="acode" placeholder="código de autorização" style="width:280px">'+
+    '<button class="b g" onclick="concluir()">concluir</button></div></div>';
+}
+async function concluir(){
+  var r=await jpost('/api/ifood/concluir',{codigo:document.getElementById('acode').value});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  alert('Loja autorizada.'+((r.lojas&&r.lojas.length>1)?' Escolha o merchant_id da loja certa: '+r.lojas.map(function(l){return l.nome+' = '+l.id}).join(' | '):''));
+  await carregar();
+}
+async function cmd(id,acao){
+  var txt={confirmar:'Confirmar este pedido?',cancelar:'CANCELAR este pedido no iFood?',despachar:'Marcar que saiu para entrega?',pronto:'Marcar pronto para retirada?',aceitar_cancel:'Aceitar o cancelamento pedido pelo cliente?',negar_cancel:'Negar o cancelamento?'}[acao];
+  if(!confirm(txt))return;
+  var r=await jpost('/api/ifood/comando',{id:id,acao:acao});
+  if(!r.ok)alert(r.erro||'não deu');
+  await carregar();
+}
+carregar();setInterval(carregar,15000);
+</script></body></html>`;
+
 const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME} — Tempo de preparo</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a}
@@ -9378,6 +9910,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
     if (p === '/api/conta/texto') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0))); }
+    if (p.startsWith('/api/ifood')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/api/ifood') return res.end(JSON.stringify(await apiIfood()));
+      if (req.method === 'POST' && p === '/api/ifood/salvar') return res.end(JSON.stringify(await apiIfoodSalvar(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ifood/parear') return res.end(JSON.stringify(await ifoodParear()));
+      if (req.method === 'POST' && p === '/api/ifood/concluir') return res.end(JSON.stringify(await ifoodConcluirPareamento((await readBody(req)).codigo)));
+      if (req.method === 'POST' && p === '/api/ifood/comando') {
+        const b = await readBody(req);
+        // erro do iFood vira mensagem na tela, não 500: quem está no caixa
+        // precisa LER o motivo (pedido já cancelado, janela de aceite vencida)
+        try { return res.end(JSON.stringify(await ifoodComando(b.id, b.acao))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
+    }
+    if (p === '/ifood') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(IFOOD_HTML); }
     if (p === '/tempos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TEMPOS_HTML); }
     // POST antes do GET: o `if` sem checar método engoliria o POST
     if (req.method === 'POST' && p === '/api/tempos') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTemposSalvar(body))); }
@@ -9471,6 +10019,9 @@ async function main() {
       .on('error', (e) => console.log('[https] não subiu: ' + e.message));
   }
   loopEspelho();
+  // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
+  // Desligado (o padrão), o loop apenas acorda e volta a dormir.
+  loopIfood();
   espelhoCatalogo().catch(() => {});
   setInterval(() => espelhoCatalogo().catch(() => {}), 5 * 60 * 1000);
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
