@@ -22,10 +22,11 @@ export const runtime = 'nodejs';
 const TIPO_PRODUTO = 1;
 const TIPO_PRODUTO_POR_TAMANHO = 5;
 
-/** O cardápio do Terraço vive como cópia com prefixo "T " e preço próprio
- *  (394 das 974 variantes da Prainha Bar). limparNomeProduto tira o prefixo,
- *  então sem esta marca a lista mostra duas linhas iguais com preços
- *  diferentes e não dá pra saber qual é qual. */
+/** O cardápio do Terraço vive no Consumer como cópia com prefixo "T " e preço
+ *  próprio (394 das 974 variantes da Prainha Bar). O delivery NÃO usa essa
+ *  lista — decisão do dono — então ela fica fora da janela de produtos. Sem
+ *  esse corte a lista ainda mostraria duas linhas iguais com preços
+ *  diferentes, já que limparNomeProduto remove o prefixo. */
 function ehDoTerraco(nomeCru: string | null | undefined): boolean {
   return /^T\s+/.test((nomeCru ?? '').replace(/^[.*\s]+/, ''));
 }
@@ -104,15 +105,14 @@ export async function GET(request: Request) {
     }
   >();
   for (const r of rows) {
+    if (ehDoTerraco(r.nome)) continue;
     const limpo = limparNomeProduto(r.nome);
     if (!limpo) continue;
     const precoNum = Number(r.preco ?? r.precoProduto ?? 0);
     if (!Number.isFinite(precoNum) || precoNum <= 0) continue;
     const precoCentavos = Math.round(precoNum * 100);
     const tamanho = (r.tamanho ?? '').trim() || null;
-    const terraco = ehDoTerraco(r.nome);
-    const nomeCompleto =
-      (tamanho ? `${limpo} — ${tamanho}` : limpo) + (terraco ? ' (Terraço)' : '');
+    const nomeCompleto = tamanho ? `${limpo} — ${tamanho}` : limpo;
     const chave = `${normalizarNome(nomeCompleto)}|${precoCentavos}`;
     const controlado = r.estoqueControlado === true;
     const cand = {
@@ -175,6 +175,9 @@ export async function GET(request: Request) {
         isNull(schema.produtoVariante.dataPausado),
         isNull(schema.produtoVariante.dataDelete),
         or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
+        // Mesmo recorte da lista, senão o seletor promete produto que não vem.
+        inArray(schema.produto.codigoProdutoTipo, [TIPO_PRODUTO, TIPO_PRODUTO_POR_TAMANHO]),
+        sql`regexp_replace(${schema.produto.nome}, '^[.*[:space:]]+', '') !~ '^T[[:space:]]'`,
       ),
     )
     .groupBy(schema.produtoVariante.filialId);
