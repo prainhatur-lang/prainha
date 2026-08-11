@@ -1396,8 +1396,12 @@ async function imprimirComandasNovas() {
       const velhosSet = new Set(velhos.map((x) => Number(x.item_codigo)));
       const frescos = novos.filter((x) => !velhosSet.has(Number(x.item_codigo)));
       const codigos = new Set(frescos.map((x) => Number(x.item_codigo)));
-      // complemento (tipo 2) sai indentado dentro do prato-pai; sem pai na
-      // leva (pai já impresso antes), sai sozinho com um "+" na frente
+      // complemento (tipo 2) sai indentado dentro do prato-pai — e NUNCA como
+      // cupom próprio. A corrida do espelho fazia o filho chegar um ciclo
+      // depois do pai e sair um cupom órfão ("1x com gelo" sozinho na mesa 1):
+      //  - pai JÁ impresso: as respostas já saíram na linha ">" do pai (obs) —
+      //    marca o filho atrasado como visto, sem papel
+      //  - pai ainda NÃO impresso: segura o filho pro cupom do pai no próximo ciclo
       const comps = new Map();
       for (const x of frescos) {
         if (Number(x.tipo) === 2 && x.codigo_pai != null && codigos.has(Number(x.codigo_pai))) {
@@ -1405,7 +1409,15 @@ async function imprimirComandasNovas() {
           comps.get(Number(x.codigo_pai)).push(x);
         }
       }
-      const principais = frescos.filter((x) => !(Number(x.tipo) === 2 && codigos.has(Number(x.codigo_pai))));
+      const semPai = frescos.filter((x) => Number(x.tipo) === 2 && x.codigo_pai != null && !codigos.has(Number(x.codigo_pai)));
+      const paisSemPai = [...new Set(semPai.map((x) => Number(x.codigo_pai)))];
+      const paisImpressos = paisSemPai.length
+        ? new Set((await sql`SELECT item_codigo FROM comanda_impressa WHERE item_codigo = ANY(${paisSemPai})`).map((r) => Number(r.item_codigo)))
+        : new Set();
+      const tardios = semPai.filter((x) => paisImpressos.has(Number(x.codigo_pai)));
+      if (tardios.length) await sql`INSERT INTO comanda_impressa ${sql(tardios.map((x) => ({ item_codigo: x.item_codigo })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
+      // filho com pai: só sai dentro do cupom do pai (comps); nunca como principal
+      const principais = frescos.filter((x) => !(Number(x.tipo) === 2 && x.codigo_pai != null));
       // comanda vinculada a mesa: a cozinha precisa saber AONDE entregar
       const numsCom = [...new Set(principais.map((x) => Number(x.numero)).filter((n) => COMANDA_ATIVA && n >= COMANDA_DE && n <= COMANDA_MAX))];
       const vinc = numsCom.length ? await sql`SELECT comanda, mesa FROM mesa_comanda WHERE comanda = ANY(${numsCom}) AND fechada_em IS NULL` : [];
