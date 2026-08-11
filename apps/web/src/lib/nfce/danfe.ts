@@ -162,6 +162,11 @@ export function montarDanfeBlocos(d: DadosDanfe, largura: number): DanfeBloco[] 
 
   // QR code
   if (d.qrcode) b.push({ qr: d.qrcode });
+  // A base de consulta da SEFAZ-SE ingere a nota com horas de atraso — sem o
+  // aviso, QR recem-impresso escaneado na hora parece "invalido" (104/234).
+  if (d.qrcode && !d.cancelada) {
+    b.push({ texto: 'QR disponivel p/ consulta no site\nem ate algumas horas (nota ja autorizada)', tamanho: 12 });
+  }
 
   // protocolo
   if (d.protocolo) {
