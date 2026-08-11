@@ -18,6 +18,18 @@ import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// PRODUTOTIPO do Consumer. A casa só vende estes dois no cardápio.
+const TIPO_PRODUTO = 1;
+const TIPO_PRODUTO_POR_TAMANHO = 5;
+
+/** O cardápio do Terraço vive como cópia com prefixo "T " e preço próprio
+ *  (394 das 974 variantes da Prainha Bar). limparNomeProduto tira o prefixo,
+ *  então sem esta marca a lista mostra duas linhas iguais com preços
+ *  diferentes e não dá pra saber qual é qual. */
+function ehDoTerraco(nomeCru: string | null | undefined): boolean {
+  return /^T\s+/.test((nomeCru ?? '').replace(/^[.*\s]+/, ''));
+}
+
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('delivery.read');
   if (error) return error;
@@ -43,6 +55,8 @@ export async function GET(request: Request) {
       estoqueControlado: schema.produtoVariante.estoqueControlado,
       estoqueAtual: schema.produtoVariante.estoqueAtual,
       codigoCozinha: schema.produto.codigoCozinha,
+      tipo: schema.produto.codigoProdutoTipo,
+      tamanho: schema.produtoTamanho.descricao,
     })
     .from(schema.produtoVariante)
     .innerJoin(
@@ -52,17 +66,30 @@ export async function GET(request: Request) {
         eq(schema.produto.codigoExterno, schema.produtoVariante.codigoProdutoExterno),
       ),
     )
+    .leftJoin(
+      schema.produtoTamanho,
+      eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId),
+    )
     .where(
       and(
         eq(schema.produtoVariante.filialId, origemId),
         isNull(schema.produtoVariante.dataPausado),
         isNull(schema.produtoVariante.dataDelete),
         or(eq(schema.produto.descontinuado, false), isNull(schema.produto.descontinuado)),
+        // A casa só vende PRODUTO (1) e PRODUTO POR TAMANHO (5). Insumo,
+        // complemento, combo e serviço não são itens de cardápio.
+        inArray(schema.produto.codigoProdutoTipo, [TIPO_PRODUTO, TIPO_PRODUTO_POR_TAMANHO]),
       ),
     );
 
-  // Dedupe por nome normalizado; entre variantes iguais fica a que tem
-  // descrição (a descrição vem do Consumer e serve de texto do cardápio).
+  // Cada TAMANHO é um item de venda próprio, com preço próprio: "Absolut"
+  // existe como Dose (R$22) e Garrafa (R$250), e "Cachaça" tem 17 sabores de
+  // R$20 a R$27. Por isso o tamanho entra no NOME e na chave de dedupe —
+  // colapsar por nome puro escolheria um preço arbitrário e poderia vender a
+  // garrafa pelo preço da dose.
+  //
+  // Dedupe só junta o que é duplicata de verdade: mesmo nome, mesmo tamanho
+  // E mesmo preço (o Consumer tem linhas repetidas assim).
   const porChave = new Map<
     string,
     {
@@ -70,6 +97,7 @@ export async function GET(request: Request) {
       nome: string;
       descricao: string | null;
       precoCentavos: number;
+      tamanho: string | null;
       estoqueControlado: boolean;
       estoqueAtual: number | null;
       codigoCozinha: number | null;
@@ -80,13 +108,19 @@ export async function GET(request: Request) {
     if (!limpo) continue;
     const precoNum = Number(r.preco ?? r.precoProduto ?? 0);
     if (!Number.isFinite(precoNum) || precoNum <= 0) continue;
-    const chave = normalizarNome(limpo);
+    const precoCentavos = Math.round(precoNum * 100);
+    const tamanho = (r.tamanho ?? '').trim() || null;
+    const terraco = ehDoTerraco(r.nome);
+    const nomeCompleto =
+      (tamanho ? `${limpo} — ${tamanho}` : limpo) + (terraco ? ' (Terraço)' : '');
+    const chave = `${normalizarNome(nomeCompleto)}|${precoCentavos}`;
     const controlado = r.estoqueControlado === true;
     const cand = {
       varianteId: r.varianteId,
-      nome: limpo,
+      nome: nomeCompleto,
       descricao: (r.descricao ?? '').trim() || null,
-      precoCentavos: Math.round(precoNum * 100),
+      precoCentavos,
+      tamanho,
       estoqueControlado: controlado,
       estoqueAtual: controlado && r.estoqueAtual != null ? Number(r.estoqueAtual) : null,
       codigoCozinha: r.codigoCozinha ?? null,
