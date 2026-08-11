@@ -2272,18 +2272,10 @@ async function apiVendaEnviar(body) {
     }
     const grupo = parear ? 'G' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36) : null;
     const paresGrupo = [];
-    // 1 LINHA POR UNIDADE: "2x arroz" virava uma linha só (QUANTIDADE=2) e o
-    // cancelamento no caixa só conseguia derrubar as duas de uma vez. Cada
-    // unidade INTEIRA vira sua própria linha (obs/respostas replicadas) —
-    // cancela uma, marca pronto uma a uma no KDS. Quantidade fracionada
-    // (item por kg) continua numa linha só.
-    const unidades = [];
+    // "5x arroz" fica numa LINHA SÓ (QUANTIDADE=5), como o Consumer grava —
+    // o cancelamento PARCIAL no caixa reduz a quantidade da linha (o split
+    // em 5 linhas foi testado em 11/08 e rejeitado pelo dono: poluía a conta).
     for (const it of itens) {
-      if (Number.isInteger(it.qtd) && it.qtd > 1) {
-        for (let u = 0; u < it.qtd; u++) unidades.push({ ...it, qtd: 1 });
-      } else unidades.push(it);
-    }
-    for (const it of unidades) {
       const cod = await fbInserirItem(ped, it);
       if (grupo && it.junto_item && cod) paresGrupo.push({ item_codigo: cod, grupo, numero });
       // mesmo lugar onde o PDV guarda as respostas — assim o Consumer enxerga
@@ -3613,7 +3605,15 @@ async function apiCaixaCancelarItem(body, quem) {
   const alvos = rit.rows || [];
   const principal = alvos.find((x) => Number(x.CODIGO) === item);
   if (!principal) return { ok: false, erro: 'esse item não está mais na conta' };
-  const valor = alvos.reduce((s, x) => s + (Number(x.VALORTOTAL) || 0), 0);
+  // CANCELAMENTO PARCIAL: "lancei 5, cancela 2" — a linha continua com 3.
+  // body.qtd = quantas unidades cancelar; ausente/maior que a linha = tudo.
+  const qtdLinha = Number(principal.QUANTIDADE) || 1;
+  const qtdCanc = Math.min(qtdLinha, Math.max(1, Math.round(Number(body.qtd) || qtdLinha)));
+  const parcial = qtdCanc < qtdLinha && Number.isInteger(qtdLinha);
+  const valorLinha = Number(principal.VALORTOTAL) || 0;
+  const valor = parcial
+    ? +(valorLinha * (qtdCanc / qtdLinha)).toFixed(2)
+    : alvos.reduce((s, x) => s + (Number(x.VALORTOTAL) || 0), 0);
   const pago = await fbPagoDoPedido(ped);
   // serviço aplicado NÃO trava mais o cancelamento (a conta pedida tem os 10%
   // e a mesa continua ABERTA — travar aqui era só atrito): o item leva junto a
@@ -3630,17 +3630,40 @@ async function apiCaixaCancelarItem(body, quem) {
   const novoTot = +((Number(p.T) || 0) - valor - servDelta).toFixed(2);
   if (novoTot < -0.009) return { ok: false, erro: 'cancelar esse item deixaria o total negativo (tem desconto — ajuste antes)' };
   if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorno é no Consumer)` };
-  const rd = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
-  if (!rd.ok) return { ok: false, erro: 'FB excluir: ' + rd.err };
+  if (parcial) {
+    // reduz a quantidade da linha; VALORITEM acompanha o VALORTOTAL (mesma
+    // convenção do write-back). Filhos (respostas) ficam — valem pra linha.
+    const resta = qtdLinha - qtdCanc;
+    const novoVt = +(valorLinha - valor).toFixed(2);
+    const rp = await qi(`UPDATE ITENSPEDIDO SET QUANTIDADE=${fbNum(resta)}, VALORITEM=${fbNum(novoVt)}, VALORTOTAL=${fbNum(novoVt)}
+      WHERE CODIGO=${item} AND DATADELETE IS NULL`);
+    if (!rp.ok) return { ok: false, erro: 'FB reduzir quantidade: ' + rp.err };
+  } else {
+    const rd = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
+    if (!rd.ok) return { ok: false, erro: 'FB excluir: ' + rd.err };
+  }
   const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, TOTALSERVICO=${fbNum(Math.max(0, novoServ))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
   if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
+  const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + T(principal.NOME);
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${T(principal.NOME)}, ${valor}, ${status}, ${T(body.motivo)})`;
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)})`;
   const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
     WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
-  cupomCancelado(areaRows, numero).catch(() => {});
+  cupomCancelado(parcial
+    ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
+    : areaRows, numero).catch(() => {});
   espelho().catch(() => {});
-  return { ok: true, valor, status, servico_removido: servDelta, novo_total: Math.max(0, novoTot) };
+  return { ok: true, valor, status, parcial, qtd_cancelada: qtdCanc, restam: parcial ? qtdLinha - qtdCanc : 0,
+    servico_removido: servDelta, novo_total: Math.max(0, novoTot) };
+}
+/** Desbloqueio da tela do caixa: valida SÓ o PIN de quem já está logado
+ *  (o token continua o mesmo — o bloqueio é pra caixa largado, não logout). */
+async function apiCaixaDesbloquear(body, quem) {
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!pin) return { ok: false, erro: 'digite o PIN' };
+  const reg = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${quem.login}`)[0];
+  if (!reg || !pinConfere(pin, reg.salt, reg.pin_hash)) return { ok: false, erro: 'PIN não confere' };
+  return { ok: true };
 }
 /** Destrava os botões de cancelar na tela (a "dificuldade" pedida pelo dono):
  *  os ✕ ficam ESCONDIDOS até um GERENTE (Administrador ou Excluir Pedido)
@@ -9675,6 +9698,35 @@ async function imprimirCx(btn){
   if(!r.ok){alert(r.erro||'não imprimiu');return}
   await carregar(MESA); // a conta volta já com o serviço aplicado
 }
+/* ---- BLOQUEIO por inatividade: 5 min parado = pede o PIN (só o PIN — o
+   operador continua o mesmo; é pro caixa largado não ficar aberto). */
+var IDLE_MS=5*60*1000, ultAtiv=Date.now(), BLOQ=false;
+['click','touchstart','keydown','input'].forEach(function(ev){document.addEventListener(ev,function(){if(!BLOQ)ultAtiv=Date.now()},true)});
+setInterval(function(){if(!BLOQ&&NOME&&Date.now()-ultAtiv>IDLE_MS)bloquear()},15000);
+function bloquear(){
+  if(BLOQ)return;BLOQ=true;
+  var ov=document.createElement('div');ov.id='lockov';
+  ov.style.cssText='position:fixed;inset:0;background:#0f172a;z-index:200;display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML='<div style="max-width:340px;width:100%;text-align:center;color:#e2e8f0">'+
+    '<div style="font-size:44px">🔒</div>'+
+    '<div style="font-size:20px;font-weight:800;margin-top:6px">Caixa bloqueado</div>'+
+    '<div style="opacity:.75;margin-top:4px">'+esc(NOME||'')+' — digite seu PIN pra voltar</div>'+
+    '<input id="lockpin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="PIN" style="margin-top:14px;width:100%;padding:14px;border-radius:10px;border:0;font-size:22px;text-align:center;letter-spacing:6px">'+
+    '<button class="big" style="margin-top:10px" onclick="desbloquear()">Desbloquear</button>'+
+    '<div id="lockerr" class="err" style="display:block;min-height:18px"></div></div>';
+  document.body.appendChild(ov);
+  var e=document.getElementById('lockpin');
+  if(e){e.focus();e.addEventListener('keydown',function(k){if(k.key==='Enter')desbloquear()})}
+}
+async function desbloquear(){
+  var pin=((document.getElementById('lockpin')||{}).value||'').replace(/\\D/g,'');
+  if(!pin){document.getElementById('lockerr').textContent='digite o PIN';return}
+  var r=await jpost('/api/caixa/desbloquear',{pin:pin});
+  if(r&&r.sem_sessao){location.reload();return}
+  if(!r||!r.ok){var e=document.getElementById('lockerr');if(e)e.textContent=(r&&r.erro)||'PIN não confere';var i=document.getElementById('lockpin');if(i){i.value='';i.focus()}return}
+  var o=document.getElementById('lockov');if(o)o.remove();
+  BLOQ=false;ultAtiv=Date.now();
+}
 /* ---- LANÇAR PRODUTOS: manda pro /venda (mesmo login/token) já na mesa ---- */
 function lancarCx(){location.href='/venda?mesa='+MESA+'&volta=caixa'}
 function lancarNum(n){location.href='/venda?mesa='+n+'&volta=caixa'}
@@ -9700,16 +9752,27 @@ function motivoDe(sel){
 function selMotivoItem(v){MOTSEL=v;pintaMain()}
 function cancItem(ix){
   var i=(CONTA&&CONTA.itens||[])[ix];if(!i)return;
-  CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:i.quantidade,valor:i.valor_total,status:i.status||'a_produzir'};
+  var q=Math.round(Number(i.quantidade)||1);
+  CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:q,valor:i.valor_total,status:i.status||'a_produzir',
+    resta:(q>1?q-1:null)}; // lançou 5, quer cancelar 2: ajusta o que FICA (3)
   MOTSEL=null;
   irTela('canc');
 }
+function cancMenos(){if(CANCIT&&CANCIT.resta>0){CANCIT.resta--;pintaMain()}}
+function cancMais(){if(CANCIT&&CANCIT.resta<CANCIT.qtd-1){CANCIT.resta++;pintaMain()}}
 function telaCancItem(el){
   var i=CANCIT;if(!i){irTela('conta');return}
   var precisa=i.status!=='a_produzir';
   var h='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Cancelar item — mesa/comanda '+MESA+'</div>'+
     '<div class="it"><span>'+i.qtd+'× '+esc(i.nome)+'</span><b>'+brl(i.valor)+'</b></div>'+
+    (i.qtd>1?'<div class="mut" style="margin-top:10px">Quantos FICAM na conta?</div>'+
+      '<div class="row" style="align-items:center;gap:12px;margin-top:6px">'+
+        '<button type="button" class="seg" style="font-size:22px;min-width:52px" onclick="cancMenos()">−</button>'+
+        '<b style="font-size:26px;min-width:40px;text-align:center">'+i.resta+'</b>'+
+        '<button type="button" class="seg" style="font-size:22px;min-width:52px" onclick="cancMais()">+</button>'+
+        '<span class="mut">serão cancelados <b>'+(i.qtd-i.resta)+'</b> de '+i.qtd+'</span>'+
+      '</div>':'')+
     (precisa?'<div class="err" style="margin-top:8px">Este item já está <b>'+(i.status==='entregue'?'ENTREGUE':'PRONTO')+'</b>. '+
       'Precisa de DUAS senhas: o seu PIN e a autorização do gerente.</div>':'')+
     chipsMotivoHtml(MOTSEL,'selMotivoItem');
@@ -9728,6 +9791,7 @@ async function doCancItem(btn){
   var mot=motivoDe(MOTSEL);
   if(!mot){var e0=document.getElementById('cierr');if(e0)e0.textContent='escolha o motivo do cancelamento';return}
   var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:mot};
+  if(CANCIT.resta!=null)b.qtd=CANCIT.qtd-CANCIT.resta;
   var cp=document.getElementById('cpin');if(cp)b.caixa_pin=cp.value||'';
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
   var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
@@ -10050,6 +10114,7 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify(r));
       }
       if (req.method === 'POST' && p === '/api/caixa/fechar') return res.end(JSON.stringify(await apiCaixaFechar((await readBody(req)).numero)));
+      if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
