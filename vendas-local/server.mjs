@@ -2023,27 +2023,43 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
 /** O que a mesa JA pediu — evita pedir duas vezes a mesma coisa. */
 /** Itens de UMA conta, já no formato que a tela do cliente mostra. */
 async function jaPedidoDe(contaCodigo) {
-  const r = await sql`SELECT ci.nome, ci.quantidade, ci.detalhes, ci.tipo,
+  const r = await sql`SELECT ci.item_codigo, ci.codigo_pai, ci.nome, ci.quantidade, ci.detalhes, ci.tipo,
       COALESCE(ci.produzido, m.pronto_em) AS pronto, COALESCE(ci.entregue, m.entregue_em) AS entregue, ci.criado
     FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-    WHERE ci.comanda_codigo=${contaCodigo} AND ci.tipo IS DISTINCT FROM 2
+    WHERE ci.comanda_codigo=${contaCodigo}
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const agora = Date.now();
-  return r.map((x) => {
+  const pais = [];
+  const porCodigo = new Map();
+  for (const x of r) {
+    if (Number(x.tipo) === 2) continue; // complementos penduram no pai (abaixo)
     // ">> SAI JUNTO C/ ..." e' recado pra COZINHA. O cliente nao precisa ver
     // como a casa se organiza por dentro — só a observação dele.
     const det = temMod(x.detalhes)
       ? String(x.detalhes).split('|').map((p) => p.trim()).filter((p) => p && !/^>>/.test(p)).join(' · ')
       : '';
     const criado = x.criado ? new Date(x.criado).getTime() : null;
-    return {
+    const it = {
       nome: x.nome, quantidade: Number(x.quantidade) || 1,
       observacao: det || null,
+      complementos: [],
       estado: x.entregue ? 'entregue' : x.pronto ? 'pronto' : 'preparando',
       pedido_em: x.criado, pronto_em: x.pronto, entregue_em: x.entregue,
       espera_min: criado ? Math.max(0, Math.floor((agora - criado) / 60000)) : null,
     };
-  });
+    pais.push(it);
+    if (x.item_codigo != null) porCodigo.set(Number(x.item_codigo), it);
+  }
+  // filho (tipo 2) aparece embaixo do pai — sem repetir o que a observação
+  // do wizard já diz ("1 copo · com gelo" não sai duas vezes)
+  for (const x of r) {
+    if (Number(x.tipo) !== 2) continue;
+    const pai = x.codigo_pai != null ? porCodigo.get(Number(x.codigo_pai)) : null;
+    const nome = String(x.nome || '').trim();
+    if (!pai || !nome) continue;
+    if (!(pai.observacao || '').toLowerCase().includes(nome.toLowerCase())) pai.complementos.push(nome);
+  }
+  return pais;
 }
 // O que a mesa já pediu — INCLUINDO as comandas vinculadas.
 // Antes lia só a conta da mesa, então a Heineken lançada na comanda 302 não
@@ -3461,15 +3477,17 @@ async function apiCaixaConta(n) {
   const c = (await sql`SELECT codigo FROM comanda WHERE numero=${num} LIMIT 1`)[0];
   // status efetivo (Consumer OU baixa do KDS) vai junto: cancelar item pronto/
   // entregue muda de liturgia na tela (dupla senha)
-  const itens = c ? await sql`SELECT ci.item_codigo, ci.nome, ci.quantidade, ci.valor_total, ci.detalhes,
+  // complementos (tipo 2) VÊM JUNTO: o caixa precisa ver "com gelo"/"1 copo"
+  // pendurados no prato — sem eles a conta parecia só "os itens secos"
+  const itens = c ? await sql`SELECT ci.item_codigo, ci.codigo_pai, ci.tipo, ci.nome, ci.quantidade, ci.valor_total, ci.detalhes,
       CASE WHEN ci.entregue IS NOT NULL OR k.entregue_em IS NOT NULL THEN 'entregue'
            WHEN ci.produzido IS NOT NULL OR k.pronto_em IS NOT NULL THEN 'pronto'
            ELSE 'a_produzir' END AS status
     FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
-    WHERE ci.comanda_codigo=${c.codigo} AND ci.tipo IS DISTINCT FROM 2 ORDER BY ci.criado NULLS LAST, ci.id` : [];
+    WHERE ci.comanda_codigo=${c.codigo} ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
   return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
-    itens: itens.map((i) => ({ item_codigo: Number(i.item_codigo) || null, nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes, status: i.status })),
+    itens: itens.map((i) => ({ item_codigo: Number(i.item_codigo) || null, tipo: Number(i.tipo) || 1, codigo_pai: i.codigo_pai != null ? Number(i.codigo_pai) : null, nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes, status: i.status })),
     subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
     total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
 }
@@ -4151,8 +4169,16 @@ async function apiKds(areaCod) {
       i.esperando_par = { praca: e?.praca || 'outra praça', item: e?.item_pronto || null };
     }
   }
+  // CANCELADO ANTES DE FICAR PRONTO: o item sumia do KDS sem aviso e a
+  // cozinha seguia fazendo. Sobe em banner grandão por 10 min (todas as
+  // praças veem — cancelamento é raro e alto é o objetivo).
+  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+      round(extract(epoch from (now()-quando))/60)::int AS min_atras
+    FROM cancelamento
+    WHERE quando > now() - interval '10 minutes' AND status_item IN ('a_produzir','pedido')
+    ORDER BY quando DESC LIMIT 6`;
   return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r,
-    esperando, reclamacoes: ch.reclamacoes, online: ultimoStatus.ok };
+    esperando, reclamacoes: ch.reclamacoes, cancelados, online: ultimoStatus.ok };
 }
 
 // ---- API: ENTREGA (global) — itens prontos, FIFO por hora do "pronto" ----
@@ -4188,7 +4214,14 @@ async function apiEntrega(areaCod = null) {
       i.prod_min = (i.criado && i.pronto_em) ? Math.max(0, Math.round((new Date(i.pronto_em).getTime() - new Date(i.criado).getTime()) / 60000)) : null;
     }
   }
-  return { ...r, online: ultimoStatus.ok };
+  // CANCELADO DEPOIS DE PRONTO (e antes de entregar): o prato estava no passe
+  // esperando runner — o aviso evita levar comida cancelada pra mesa.
+  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+      round(extract(epoch from (now()-quando))/60)::int AS min_atras
+    FROM cancelamento
+    WHERE quando > now() - interval '10 minutes' AND status_item IN ('pronto','pedido')
+    ORDER BY quando DESC LIMIT 6`;
+  return { ...r, cancelados, online: ultimoStatus.ok };
 }
 
 /** Quebra os itens de uma comanda em RODADAS de lançamento.
@@ -4856,7 +4889,7 @@ async function kds(){
     '<a class="linkbtn go" href="/entrega">Entregas ▸</a>'+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
-  var topo=faixaReclamacao(d)+faixaJunto(d);
+  var topo=faixaCancelado(d,'NÃO produzir — tirar da fila')+faixaReclamacao(d)+faixaJunto(d);
   var corpo=d.comandas.length
     ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>'
     : '<div class="vazio">tudo produzido nesta área ✅</div>';
@@ -4890,6 +4923,18 @@ function faixaReclamacao(d){
   return '<div class="alerta">⚠️ ATENÇÃO '+mesas+
     '<span class="sub">Cliente reclamou — adiante o que for dessa mesa.'+
     (txts.length?' — '+txts.join(' · '):'')+'</span></div>';
+}
+// CANCELADO com item ainda na fila: banner GRANDE no topo. Sem isso o item
+// sumia do KDS no ciclo seguinte e a cozinha seguia fazendo (ou o runner
+// levava prato cancelado pra mesa).
+function faixaCancelado(d,acao){
+  var cs=d.cancelados||[];if(!cs.length)return '';
+  return cs.map(function(c){
+    var onde=(Number(c.numero)>=${COMANDA_DE}?'COMANDA ':'MESA ')+c.numero;
+    var oq=(c.status_item==='pedido')?'PEDIDO INTEIRO CANCELADO':('CANCELADO: '+esc(c.nome||'item'));
+    return '<div class="alerta" style="background:#7f1d1d;border-color:#dc2626;color:#fff;font-size:26px;line-height:1.25">🚫 '+onde+' — '+oq+
+      '<span class="sub" style="color:#fecaca">'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — '+acao+'</span></div>';
+  }).join('');
 }
 // A outra praça já entregou a parte dela: o que sair daqui está segurando o pedido.
 function faixaJunto(d){
@@ -4931,6 +4976,7 @@ async function entrega(){
   var corpo=d.comandas.length
     ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'entrega',ix)}).join('')+'</div>'
     : '<div class="vazio">nada aguardando entrega aqui ✅</div>';
+  corpo=faixaCancelado(d,'NÃO levar — retirar do passe')+corpo;
   app.innerHTML='<div class="pal"><div class="main">'+corpo+'</div>'+
     '<aside class="hist" id="hist"><h3>Últimos que saíram</h3><div class="vaziinho">carregando…</div></aside></div>';
   histLateral('/api/historico?modo=entrega&area='+AREA.cod);
@@ -5260,6 +5306,7 @@ async function pintaConsumo(){
       return '<div class="ci '+i.estado+'"><span class="q">'+i.quantidade+'x</span>'+
         '<span class="n">'+esc(i.nome)+
         (i.observacao?'<small class="ob">✎ '+esc(i.observacao)+'</small>':'')+
+        (i.complementos&&i.complementos.length?'<small class="ob">+ '+i.complementos.map(esc).join(' · ')+'</small>':'')+
         (quando?'<small class="hr">'+quando+'</small>':'')+'</span>'+
         '<span class="st">'+EST_G[i.estado]+'</span></div>';
     }).join('');
@@ -9252,10 +9299,11 @@ function pinta(el){
       (c.nome?' · '+esc(c.nome):'')+'</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
-      (CANCEL_ON&&PODE.cancItem&&i.item_codigo?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
-      i.quantidade+'× '+esc(i.nome)+
+      (CANCEL_ON&&PODE.cancItem&&i.item_codigo&&i.tipo!==2?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
+      (i.tipo===2?'<span style="display:inline-block;width:22px"></span>+ ':i.quantidade+'× ')+esc(i.nome)+
+      (i.tipo!==2&&i.detalhes&&i.detalhes!=='NENHUM'?'<small class="mut" style="display:block;padding-left:22px">✎ '+esc(String(i.detalhes).split('|').map(function(s){return s.trim()}).filter(function(s){return s&&s!=='NENHUM'&&s.indexOf('>>')!==0}).join(' · '))+'</small>':'')+
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
-      '</span><b>'+brl(i.valor_total)+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
+      '</span><b>'+(i.tipo===2&&!(i.valor_total>0)?'':brl(i.valor_total))+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
   if(c.servico>0)h+='<div class="tot"><span>Serviço</span><b>'+brl(c.servico)+'</b></div>';
   if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
@@ -9266,7 +9314,9 @@ function pinta(el){
   // desconto e acréscimo = a MESMA permissão do Consumer (12: Descontos/Taxas)
   h+='<div class="row">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
      (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
-  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar · ⇄ transferir · 🪪 dono/comanda</button>';
+  // rótulo enxuto (pedido do dono): transferir e dono/comanda continuam LÁ
+  // DENTRO da tela de lançar — o botão não precisa anunciar tudo
+  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Lançar itens</button>';
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
   if(c.falta>0){
     h+='<div class="row"><button class="big" style="margin-top:0" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
@@ -9629,9 +9679,29 @@ async function imprimirCx(btn){
 function lancarCx(){location.href='/venda?mesa='+MESA+'&volta=caixa'}
 function lancarNum(n){location.href='/venda?mesa='+n+'&volta=caixa'}
 /* ---- CANCELAR ITEM (pronto/entregue = dupla senha) e PEDIDO INTEIRO ---- */
+/* ---- MOTIVOS DE CANCELAMENTO padronizados ----
+   O texto livre virava "teste"/"" e o relatório não dizia ONDE a perda nasce
+   (salão, cozinha, cliente, estoque). Motivo agora é obrigatório e vem de
+   uma lista fixa — "Outro…" abre o texto livre pra exceção de verdade. */
+var MOTIVOS_CANC=['Lançamento errado do garçom','Cozinha errou o pedido','Cliente recusou o prato','Cliente desistiu / mudou o pedido','Produto em falta','Demora no preparo'];
+var MOTSEL=null,MOTPED=null;
+function chipsMotivoHtml(sel,fn){
+  return '<div class="mut" style="margin-top:10px">Motivo do cancelamento (obrigatório):</div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+
+    MOTIVOS_CANC.map(function(m,ix){return '<button type="button" class="seg'+(sel===ix?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'('+ix+')">'+m+'</button>'}).join('')+
+    '<button type="button" class="seg'+(sel==='O'?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'(\\'O\\')">Outro…</button></div>'+
+    (sel==='O'?'<input id="cmot" placeholder="qual o motivo?" style="margin-top:8px">':'');
+}
+function motivoDe(sel){
+  if(sel==null)return null;
+  if(sel==='O'){var t=((document.getElementById('cmot')||{}).value||'').trim();return t?('Outro: '+t):null}
+  return MOTIVOS_CANC[sel];
+}
+function selMotivoItem(v){MOTSEL=v;pintaMain()}
 function cancItem(ix){
   var i=(CONTA&&CONTA.itens||[])[ix];if(!i)return;
   CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:i.quantidade,valor:i.valor_total,status:i.status||'a_produzir'};
+  MOTSEL=null;
   irTela('canc');
 }
 function telaCancItem(el){
@@ -9642,7 +9712,7 @@ function telaCancItem(el){
     '<div class="it"><span>'+i.qtd+'× '+esc(i.nome)+'</span><b>'+brl(i.valor)+'</b></div>'+
     (precisa?'<div class="err" style="margin-top:8px">Este item já está <b>'+(i.status==='entregue'?'ENTREGUE':'PRONTO')+'</b>. '+
       'Precisa de DUAS senhas: o seu PIN e a autorização do gerente.</div>':'')+
-    '<input id="cmot" placeholder="motivo (opcional)" style="margin-top:10px">';
+    chipsMotivoHtml(MOTSEL,'selMotivoItem');
   if(precisa){
     h+='<input id="cpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="SEU PIN ('+esc(NOME||'')+')" style="margin-top:8px">';
     if(!PODE.cancPed)h+='<div class="row" style="margin-top:8px">'+
@@ -9655,7 +9725,9 @@ function telaCancItem(el){
   el.innerHTML=h;
 }
 async function doCancItem(btn){
-  var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:(document.getElementById('cmot')||{}).value||''};
+  var mot=motivoDe(MOTSEL);
+  if(!mot){var e0=document.getElementById('cierr');if(e0)e0.textContent='escolha o motivo do cancelamento';return}
+  var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:mot};
   var cp=document.getElementById('cpin');if(cp)b.caixa_pin=cp.value||'';
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
   var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
@@ -9669,12 +9741,33 @@ async function doCancItem(btn){
   }
   CANCIT=null;await carregar(MESA);
 }
-async function cancPedido(){
-  var mot=prompt('CANCELAR O PEDIDO INTEIRO da mesa/comanda '+MESA+' — motivo? (opcional)');
-  if(mot===null)return;
-  if(!confirm('Tem certeza? A conta inteira some (no Consumer também). Isso cai no relatório de cancelamentos.'))return;
-  var r=await jpost('/api/caixa/cancelar-pedido',{numero:MESA,motivo:mot||''});
-  if(!r.ok){alert(r.erro||'não cancelou');return}
+function cancPedido(){MOTPED=null;pintaMotivoPedido()}
+function selMotivoPed(v){MOTPED=v;pintaMotivoPedido()}
+function fechaMotivoPed(){var o=document.getElementById('mcov');if(o)o.remove()}
+function pintaMotivoPedido(){
+  var ov=document.getElementById('mcov');
+  if(!ov){
+    ov=document.createElement('div');ov.id='mcov';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML='<div class="card" style="max-width:430px;width:100%;margin:0;max-height:88vh;overflow:auto">'+
+    '<div class="tit" style="margin-top:0">🗑 Cancelar o pedido INTEIRO — mesa/comanda '+MESA+'</div>'+
+    '<div class="mut">A conta inteira some (no Consumer também) e cai no relatório de cancelamentos.</div>'+
+    chipsMotivoHtml(MOTPED,'selMotivoPed')+
+    '<button class="big" style="background:var(--red)" onclick="doCancPedido(this)">Confirmar cancelamento</button>'+
+    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="fechaMotivoPed()">Voltar</button>'+
+    '<div id="cperr" class="err"></div></div>';
+}
+async function doCancPedido(btn){
+  var mot=motivoDe(MOTPED);
+  var er=document.getElementById('cperr');
+  if(!mot){if(er)er.textContent='escolha o motivo do cancelamento';return}
+  btn.disabled=true;
+  var r=await jpost('/api/caixa/cancelar-pedido',{numero:MESA,motivo:mot});
+  btn.disabled=false;
+  if(!r.ok){if(er)er.textContent=r.erro||'não cancelou';return}
+  fechaMotivoPed();
   FLASH='Pedido da mesa/comanda '+MESA+' cancelado ('+brl(r.valor)+').';
   voltarMesas();listar();
 }
