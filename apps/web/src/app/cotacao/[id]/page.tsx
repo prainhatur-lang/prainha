@@ -109,10 +109,22 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
     respostasPorItem.get(r.cotacaoItemId)!.push(r);
   }
 
-  // Vencedor por item: menor preco_unitario_normalizado entre as respostas (sem filtro de marca aceita ainda)
+  // Vencedor por item: menor preço normalizado ENTRE AS MARCAS ACEITAS.
+  // Item com marca definida ignora quem cotou marca proibida ou sem marca —
+  // mesma regra de calcularAlocacaoCotacao, pra tela e aprovação baterem.
   function vencedorDoItem(itemId: string) {
     const rs = respostasPorItem.get(itemId) ?? [];
-    const validas = rs.filter((r) => r.precoUnitarioNormalizado != null);
+    const item = itens.find((i) => i.id === itemId);
+    const aceitas = (item?.marcasAceitas ?? '')
+      .split('|')
+      .map((m) => m.trim().toLowerCase())
+      .filter(Boolean);
+    const validas = rs.filter((r) => {
+      if (r.precoUnitarioNormalizado == null) return false;
+      if (aceitas.length === 0) return true;
+      const marca = (r.marcaNome ?? '').trim().toLowerCase();
+      return !!marca && aceitas.includes(marca);
+    });
     if (validas.length === 0) return null;
     return validas.reduce((min, r) =>
       Number(r.precoUnitarioNormalizado) < Number(min.precoUnitarioNormalizado) ? r : min,

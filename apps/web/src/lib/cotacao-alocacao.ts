@@ -70,6 +70,7 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
       produtoId: schema.cotacaoItem.produtoId,
       quantidade: schema.cotacaoItem.quantidade,
       unidade: schema.cotacaoItem.unidade,
+      marcasAceitas: schema.cotacaoItem.marcasAceitas,
       produtoNome: schema.produto.nome,
     })
     .from(schema.cotacaoItem)
@@ -119,10 +120,29 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
       ),
     );
 
+  // MARCA ACEITA MANDA: item com marcas definidas só considera resposta que
+  // cotou uma delas. Sem isso o mais barato ganhava mesmo com marca proibida
+  // (o arroz Biju ganhava de Camil/Tio João/Tio Urbano) — a restrição existia
+  // no cadastro e no formulário, mas o cálculo do vencedor ignorava.
+  const aceitasPorItem = new Map<string, string[]>();
+  for (const it of itens) {
+    const lista = (it.marcasAceitas ?? '')
+      .split('|')
+      .map((m) => m.trim().toLowerCase())
+      .filter(Boolean);
+    if (lista.length > 0) aceitasPorItem.set(it.id, lista);
+  }
+
   // Agrupa respostas por item, ordenado por preco asc
   const respostasOrdenadasPorItem = new Map<string, typeof respostas>();
   for (const r of respostas) {
     if (r.precoUnitarioNormalizado == null) continue;
+    const aceitas = aceitasPorItem.get(r.cotacaoItemId);
+    if (aceitas) {
+      const marca = (r.marcaNome ?? '').trim().toLowerCase();
+      // sem marca ou marca fora da lista → nem entra na disputa
+      if (!marca || !aceitas.includes(marca)) continue;
+    }
     if (!respostasOrdenadasPorItem.has(r.cotacaoItemId))
       respostasOrdenadasPorItem.set(r.cotacaoItemId, []);
     respostasOrdenadasPorItem.get(r.cotacaoItemId)!.push(r);
