@@ -9,6 +9,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq } from 'drizzle-orm';
+import { normalizaMarca } from '@/lib/cotacao-alocacao';
 
 interface Body {
   respostas: Array<{
@@ -97,7 +98,7 @@ export async function POST(
         .split('|')
         .map((m) => m.trim())
         .filter(Boolean);
-      if (aceitas.length > 0 && !aceitas.some((a) => a.toLowerCase() === marca.toLowerCase())) {
+      if (aceitas.length > 0 && !aceitas.some((a) => normalizaMarca(a) === normalizaMarca(marca))) {
         marcaForaDaLista.push(`${item.produtoNome} (aceitas: ${aceitas.join(', ')})`);
       }
     }

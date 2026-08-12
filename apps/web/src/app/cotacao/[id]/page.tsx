@@ -11,7 +11,7 @@ import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
-import { calcularAlocacaoCotacao } from '@/lib/cotacao-alocacao';
+import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
 
 export const dynamic = 'force-dynamic';
 
@@ -117,12 +117,12 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
     const item = itens.find((i) => i.id === itemId);
     const aceitas = (item?.marcasAceitas ?? '')
       .split('|')
-      .map((m) => m.trim().toLowerCase())
+      .map(normalizaMarca)
       .filter(Boolean);
     const validas = rs.filter((r) => {
       if (r.precoUnitarioNormalizado == null) return false;
       if (aceitas.length === 0) return true;
-      const marca = (r.marcaNome ?? '').trim().toLowerCase();
+      const marca = normalizaMarca(r.marcaNome);
       return !!marca && aceitas.includes(marca);
     });
     if (validas.length === 0) return null;

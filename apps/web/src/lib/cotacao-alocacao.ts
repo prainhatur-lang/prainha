@@ -10,6 +10,17 @@
 import { db, schema } from '@concilia/db';
 import { eq, inArray } from 'drizzle-orm';
 
+/** Compara marca ignorando acento, espaço e caixa: "Dragao" = "Dragão",
+ *  "Bom bril" = "Bombril". Fornecedor digita no celular — exigir grafia
+ *  exata descartava resposta legítima (e a mais barata). */
+export function normalizaMarca(s: string | null | undefined): string {
+  return (s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
 export interface ItemAlocado {
   itemId: string;
   produtoId: string;
@@ -128,7 +139,7 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
   for (const it of itens) {
     const lista = (it.marcasAceitas ?? '')
       .split('|')
-      .map((m) => m.trim().toLowerCase())
+      .map(normalizaMarca)
       .filter(Boolean);
     if (lista.length > 0) aceitasPorItem.set(it.id, lista);
   }
@@ -139,7 +150,7 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
     if (r.precoUnitarioNormalizado == null) continue;
     const aceitas = aceitasPorItem.get(r.cotacaoItemId);
     if (aceitas) {
-      const marca = (r.marcaNome ?? '').trim().toLowerCase();
+      const marca = normalizaMarca(r.marcaNome);
       // sem marca ou marca fora da lista → nem entra na disputa
       if (!marca || !aceitas.includes(marca)) continue;
     }
