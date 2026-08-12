@@ -6,6 +6,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
+import { formatDateTime } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,15 +53,19 @@ export default async function CotacaoListPage(props: { searchParams: Promise<SP>
       abertaEm: schema.cotacao.abertaEm,
       fechaEm: schema.cotacao.fechaEm,
       criadoEm: schema.cotacao.criadoEm,
+      // ATENÇÃO: a coluna da query externa vai QUALIFICADA (cotacao.id) em texto.
+      // Interpolar ${schema.cotacao.id} aqui gera só "id", que dentro da subquery
+      // resolve pro id da própria tabela interna (cotacao_item.id) — a condição
+      // nunca casa e o contador dava 0 em tudo, sem erro nenhum.
       qtdItens: sql<number>`(
-        SELECT COUNT(*)::int FROM cotacao_item ci WHERE ci.cotacao_id = ${schema.cotacao.id}
+        SELECT COUNT(*)::int FROM cotacao_item ci WHERE ci.cotacao_id = cotacao.id
       )`,
       qtdFornecedores: sql<number>`(
-        SELECT COUNT(*)::int FROM cotacao_fornecedor cf WHERE cf.cotacao_id = ${schema.cotacao.id}
+        SELECT COUNT(*)::int FROM cotacao_fornecedor cf WHERE cf.cotacao_id = cotacao.id
       )`,
       qtdRespondidas: sql<number>`(
         SELECT COUNT(*)::int FROM cotacao_fornecedor cf
-        WHERE cf.cotacao_id = ${schema.cotacao.id} AND cf.status = 'RESPONDIDA'
+        WHERE cf.cotacao_id = cotacao.id AND cf.status = 'RESPONDIDA'
       )`,
     })
     .from(schema.cotacao)
@@ -140,12 +145,8 @@ export default async function CotacaoListPage(props: { searchParams: Promise<SP>
                       <td className="px-3 py-2 text-right">
                         {c.qtdRespondidas}/{c.qtdFornecedores}
                       </td>
-                      <td className="px-3 py-2 text-slate-600">
-                        {c.abertaEm ? new Date(c.abertaEm).toLocaleString('pt-BR') : '—'}
-                      </td>
-                      <td className="px-3 py-2 text-slate-600">
-                        {c.fechaEm ? new Date(c.fechaEm).toLocaleString('pt-BR') : '—'}
-                      </td>
+                      <td className="px-3 py-2 text-slate-600">{formatDateTime(c.abertaEm)}</td>
+                      <td className="px-3 py-2 text-slate-600">{formatDateTime(c.fechaEm)}</td>
                       <td className="px-3 py-2 text-right">
                         <Link
                           href={`/cotacao/${c.id}`}

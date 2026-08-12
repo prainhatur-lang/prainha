@@ -38,9 +38,10 @@ export default async function PainelCozinheiroPage(props: {
       enviadaEm: schema.ordemProducao.enviadaEm,
       marcadaProntaEm: schema.ordemProducao.marcadaProntaEm,
       tokenPublico: schema.ordemProducao.tokenPublico,
-      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoEntrada} WHERE ${schema.ordemProducaoEntrada.ordemProducaoId} = ${schema.ordemProducao.id})`,
-      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoSaida} WHERE ${schema.ordemProducaoSaida.ordemProducaoId} = ${schema.ordemProducao.id})`,
-      qtdFotos: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoFoto} WHERE ${schema.ordemProducaoFoto.ordemProducaoId} = ${schema.ordemProducao.id})`,
+      // ordem_producao.id qualificado em texto (ver comentário em /movimento/producao)
+      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ordem_producao_entrada e WHERE e.ordem_producao_id = ordem_producao.id)`,
+      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ordem_producao_saida s WHERE s.ordem_producao_id = ordem_producao.id)`,
+      qtdFotos: sql<number>`(SELECT COUNT(*)::int FROM ordem_producao_foto f WHERE f.ordem_producao_id = ordem_producao.id)`,
     })
     .from(schema.ordemProducao)
     .where(

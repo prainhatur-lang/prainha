@@ -59,8 +59,9 @@ export default async function TemplatesProducaoPage(props: {
       ativo: schema.templateOp.ativo,
       vezesUsado: schema.templateOp.vezesUsado,
       atualizadoEm: schema.templateOp.atualizadoEm,
-      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.templateOpEntrada} WHERE ${schema.templateOpEntrada.templateId} = ${schema.templateOp.id})`,
-      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.templateOpSaida} WHERE ${schema.templateOpSaida.templateId} = ${schema.templateOp.id})`,
+      // template_op.id qualificado em texto (ver comentário em /movimento/producao)
+      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM template_op_entrada e WHERE e.template_id = template_op.id)`,
+      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM template_op_saida s WHERE s.template_id = template_op.id)`,
     })
     .from(schema.templateOp)
     .where(where)

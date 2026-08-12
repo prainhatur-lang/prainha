@@ -48,6 +48,19 @@ export function PreencherForm(props: {
     e.preventDefault();
     setErro(null);
 
+    // Marca é OBRIGATÓRIA em item com preço: a casa não compra marca qualquer.
+    // Quando o item tem marcas aceitas, o campo vira lista fechada (select).
+    const semMarca = props.itens.filter(
+      (i) => respostas[i.id]?.precoUnitario.trim() && !respostas[i.id]?.marca.trim(),
+    );
+    if (semMarca.length > 0) {
+      setErro(
+        `Informe a marca de: ${semMarca.map((i) => i.produtoNome).join(', ')}. ` +
+          'Se não tiver a marca, deixe o preço em branco.',
+      );
+      return;
+    }
+
     const respArr = props.itens
       .map((i) => {
         const r = respostas[i.id];
@@ -177,21 +190,30 @@ export function PreencherForm(props: {
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Marca {i.marcasAceitas?.length ? '(uma das aceitas)' : ''}
+                        Marca <span className="text-rose-600">*</span>{' '}
+                        {i.marcasAceitas?.length ? '(só as aceitas)' : ''}
                       </label>
-                      <input
-                        type="text"
-                        list={i.marcasAceitas?.length ? `marcas-${i.id}` : undefined}
-                        placeholder={i.marcasAceitas?.[0] ?? 'opcional'}
-                        value={respostas[i.id]?.marca ?? ''}
-                        onChange={(e) => setCampo(i.id, 'marca', e.target.value)}
-                        className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
-                      />
                       {i.marcasAceitas?.length ? (
-                        <datalist id={`marcas-${i.id}`}>
-                          {i.marcasAceitas.map((m) => <option key={m} value={m} />)}
-                        </datalist>
-                      ) : null}
+                        // Lista fechada: item com marca definida não aceita substituto
+                        <select
+                          value={respostas[i.id]?.marca ?? ''}
+                          onChange={(e) => setCampo(i.id, 'marca', e.target.value)}
+                          className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                        >
+                          <option value="">selecione…</option>
+                          {i.marcasAceitas.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="obrigatório"
+                          value={respostas[i.id]?.marca ?? ''}
+                          onChange={(e) => setCampo(i.id, 'marca', e.target.value)}
+                          className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                        />
+                      )}
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">

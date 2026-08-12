@@ -61,6 +61,49 @@ export async function POST(
 
   const respostas = Array.isArray(body.respostas) ? body.respostas : [];
 
+  // MARCA OBRIGATÓRIA (validação no servidor, não só no formulário): item com
+  // preço tem que vir com marca, e quando o item define marcas aceitas a marca
+  // informada precisa ser uma delas. A casa não compra marca qualquer.
+  if (respostas.length > 0) {
+    const itens = await db
+      .select({
+        id: schema.cotacaoItem.id,
+        marcasAceitas: schema.cotacaoItem.marcasAceitas,
+        produtoNome: schema.produto.nome,
+      })
+      .from(schema.cotacaoItem)
+      .innerJoin(schema.produto, eq(schema.produto.id, schema.cotacaoItem.produtoId))
+      .where(eq(schema.cotacaoItem.cotacaoId, cot.id));
+    const porItem = new Map(itens.map((i) => [i.id, i]));
+
+    const semMarca: string[] = [];
+    const marcaForaDaLista: string[] = [];
+    for (const r of respostas) {
+      const item = porItem.get(r.cotacaoItemId);
+      if (!item) continue;
+      const marca = (r.marca ?? '').trim();
+      if (!marca) {
+        semMarca.push(item.produtoNome ?? 'item');
+        continue;
+      }
+      const aceitas = (item.marcasAceitas ?? '')
+        .split('|')
+        .map((m) => m.trim())
+        .filter(Boolean);
+      if (aceitas.length > 0 && !aceitas.some((a) => a.toLowerCase() === marca.toLowerCase())) {
+        marcaForaDaLista.push(`${item.produtoNome} (aceitas: ${aceitas.join(', ')})`);
+      }
+    }
+    if (semMarca.length > 0 || marcaForaDaLista.length > 0) {
+      const partes = [
+        semMarca.length ? `Informe a marca de: ${semMarca.join(', ')}.` : '',
+        marcaForaDaLista.length ? `Marca não aceita em: ${marcaForaDaLista.join('; ')}.` : '',
+        'Se não tiver a marca pedida, deixe o preço em branco.',
+      ].filter(Boolean);
+      return NextResponse.json({ error: partes.join(' ') }, { status: 400 });
+    }
+  }
+
   // Limpa respostas anteriores deste fornecedor pra esta cotacao (re-submit substitui)
   await db
     .delete(schema.cotacaoRespostaItem)

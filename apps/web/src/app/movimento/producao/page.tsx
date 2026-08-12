@@ -158,8 +158,10 @@ export default async function ProducaoPage(props: { searchParams: Promise<SP> })
       divergenciaPercentual: schema.ordemProducao.divergenciaPercentual,
       concluidaEm: schema.ordemProducao.concluidaEm,
       marcadaProntaEm: schema.ordemProducao.marcadaProntaEm,
-      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoEntrada} WHERE ${schema.ordemProducaoEntrada.ordemProducaoId} = ${schema.ordemProducao.id})`,
-      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ${schema.ordemProducaoSaida} WHERE ${schema.ordemProducaoSaida.ordemProducaoId} = ${schema.ordemProducao.id})`,
+      // ordem_producao.id qualificado em texto: interpolar a coluna gera "id" e a
+      // subquery casa com o id da própria tabela interna (contador dava 0 sempre).
+      qtdEntradas: sql<number>`(SELECT COUNT(*)::int FROM ordem_producao_entrada e WHERE e.ordem_producao_id = ordem_producao.id)`,
+      qtdSaidas: sql<number>`(SELECT COUNT(*)::int FROM ordem_producao_saida s WHERE s.ordem_producao_id = ordem_producao.id)`,
     })
     .from(schema.ordemProducao)
     .where(where)
