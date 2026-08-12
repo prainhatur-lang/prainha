@@ -9317,6 +9317,68 @@ async function carregar(n){
   CONTA=c;
   if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
   var el2=document.getElementById('lista');if(el2)el2.innerHTML=chips(); // marca o chip escolhido
+  // mesa: busca as comandas penduradas (contas separadas) e re-pinta com elas
+  if(num<${COMANDA_DE}){
+    try{
+      var ct=await jget('/api/conta/texto?n='+num);
+      if(ct&&ct.ok&&CONTA&&Number(CONTA.numero)===Number(num)){
+        CONTA.comandas_mesa=ct.comandas||[];CONTA.geral=(ct.comandas&&ct.comandas.length)?ct.geral:null;
+        if(TELA==='conta'&&Number(MESA)===Number(num))pintaMain();
+      }
+    }catch(e){}
+  }
+}
+/* ---- IDENTIFICAR na própria tela (overlay): CPF ou WhatsApp → busca o nome
+   (casa → já-atendidos → grupo → SPC) → confirma → o chip vira o nome. */
+var IDACH=null;
+function identCx(){
+  var ov=document.createElement('div');ov.id='idov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML='<div class="card" style="max-width:400px;width:100%;margin:0;max-height:88vh;overflow:auto">'+
+    '<div class="tit" style="margin-top:0">👤 Identificar — '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' '+MESA+'</div>'+
+    '<div class="mut">CPF ou WhatsApp — o sistema acha o nome sozinho.</div>'+
+    '<input id="iddoc" class="num" inputmode="numeric" placeholder="CPF ou WhatsApp (só números)" style="margin-top:8px">'+
+    '<button class="big" onclick="identBusca(this)">🔎 Buscar</button>'+
+    '<div id="idres"></div>'+
+    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="document.getElementById(\\'idov\\').remove()">Voltar</button>'+
+    '<div id="iderr" class="err"></div></div>';
+  document.body.appendChild(ov);
+  var e=document.getElementById('iddoc');if(e)e.focus();
+}
+async function identBusca(btn){
+  var v=((document.getElementById('iddoc')||{}).value||'').replace(/\\D/g,'');
+  var er=document.getElementById('iderr');if(er)er.textContent='';
+  if(v.length<10){if(er)er.textContent='digite o CPF (11) ou o WhatsApp com DDD';return}
+  var ehCpf=(v.length===11);
+  btn.disabled=true;
+  var r=await jget('/api/venda/identificar?cpf='+(ehCpf?v:'')+'&tel='+(ehCpf?'':v));
+  if(ehCpf&&(!r||!r.ok)){r=await jget('/api/venda/identificar?cpf=&tel='+v);ehCpf=false} // 11 dígitos que não é CPF: tenta como fone
+  btn.disabled=false;
+  IDACH={cpf:ehCpf?v:null,tel:ehCpf?null:v,contato_fb:(r&&r.contato_fb)||null,nome:(r&&r.nome)||null};
+  var res=document.getElementById('idres');if(!res)return;
+  if(r&&r.nome){
+    res.innerHTML='<div class="it" style="margin-top:8px"><span><b>'+esc(r.nome)+'</b><small class="mut" style="display:block">'+esc(r.fonte||'')+'</small></span><b></b></div>'+
+      '<button class="big" style="background:#0a7d38" onclick="identSalva(this,false)">✓ É essa pessoa — identificar</button>';
+  }else{
+    res.innerHTML='<div class="mut" style="margin-top:8px">'+((r&&r.aviso)?esc(r.aviso)+' — ':'')+'não achei. Digita o nome:</div>'+
+      '<input id="idnome" placeholder="nome do cliente" style="margin-top:6px">'+
+      '<button class="big" style="background:#0a7d38" onclick="identSalva(this,true)">✓ Cadastrar e identificar</button>';
+  }
+}
+async function identSalva(btn,novo){
+  var nome=(IDACH&&IDACH.nome)||((document.getElementById('idnome')||{}).value||'').trim();
+  var er=document.getElementById('iderr');
+  if(!nome){if(er)er.textContent='sem nome não dá';return}
+  btn.disabled=true;
+  var b={numero:MESA,nome:nome};
+  if(IDACH&&IDACH.cpf)b.cpf=IDACH.cpf;
+  if(IDACH&&IDACH.tel)b.telefone=IDACH.tel;
+  if(IDACH&&IDACH.contato_fb)b.contato_fb=IDACH.contato_fb;else if(novo)b.cadastrar=true;
+  var r=await jpost('/api/venda/identificar',b);
+  btn.disabled=false;
+  if(!r||!r.ok){if(er)er.textContent=(r&&r.erro)||'não salvou';return}
+  var o=document.getElementById('idov');if(o)o.remove();
+  await carregar(MESA);
 }
 function pinta(el){
   var c=CONTA;
@@ -9325,8 +9387,9 @@ function pinta(el){
     '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
       '<span>'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+(c.nome?' · '+esc(c.nome):'')+'</span>'+
       '<span style="flex:1"></span>'+
-      '<button class="seg" onclick="lancarCx()">👤 '+(c.nome?'cliente':'identificar')+'</button>'+
-      (c.numero<${COMANDA_DE}?'<button class="seg" onclick="lancarCx()">🪪 comanda</button>':'')+
+      // comandas da mesa como chips ao lado do número — um toque troca a conta
+      (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
+      '<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>'+
     '</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
@@ -9341,6 +9404,16 @@ function pinta(el){
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
   h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
+  // MESA COM COMANDAS PENDURADAS: cada uma listada aqui, um toque abre a conta
+  // dela (contas separadas — quem paga é cada comanda; o GERAL soma tudo)
+  if(c.comandas_mesa&&c.comandas_mesa.length){
+    h+='<div class="card"><div class="tit" style="margin-top:0">Comandas nesta mesa</div>'+
+      c.comandas_mesa.map(function(cc){return '<button style="display:flex;justify-content:space-between;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid #eee;padding:12px 2px;font:inherit;font-size:16px;cursor:pointer" onclick="carregar('+cc.numero+')">'+
+        '<span><b>Comanda '+cc.numero+'</b>'+(cc.nome?' · '+esc(cc.nome):'')+'</span>'+
+        '<b>'+(cc.quitada?'✓ paga':brl(cc.resta))+'</b></button>'}).join('')+
+      (c.geral!=null?'<div class="tot g"><span>Mesa + comandas</span><b>'+brl(c.geral)+'</b></div>':'')+
+      '</div>';
+  }
   h+='<div class="card">';
   // ORDEM DO USO REAL (regra do dono, 11/08): lançar/transferir/pedir conta na
   // frente; dinheiro/desconto moram dentro de 💰 Pagamento — pagar é o ato
@@ -9360,7 +9433,6 @@ function pinta(el){
   }
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
   else h+='<button class="big" onclick="fecharConta()">✓ Fechar conta e liberar a mesa</button>';
-  h+='<button class="big g" onclick="imprimirCx(this)">🧾 Imprimir conta</button>';
   // cancelamentos ficam ATRÁS do cadeado: gerente libera, os ✕ aparecem
   if(CANCEL_ON&&PODE.cancPed&&!(c.pago>0))h+='<button class="big" style="background:#fff;color:var(--red);border:1.5px solid #eda3a3" onclick="cancPedido()">🗑 Cancelar o pedido inteiro</button>';
   h+='<div id="cerr" class="err"></div>';
@@ -9740,12 +9812,14 @@ async function doTransfCx(btn){
   voltarMesas();listar();
 }
 async function pedirContaCx(btn){
+  // pedir = imprimir: os dois aplicam o serviço e travam lançamentos; este
+  // também manda a conferência pra térmica (botão único, sem duplicata)
   btn.disabled=true;
-  var r=await jpost('/api/caixa/pedir-conta',{numero:MESA});
+  var r=await jpost('/api/caixa/imprimir',{numero:MESA});
   btn.disabled=false;
   var e=document.getElementById('cerr');
   if(!r||!r.ok){if(e){e.style.color='';e.textContent=(r&&r.erro)||'não deu'}return}
-  if(e){e.style.color='#0a7d38';e.textContent='✓ Conta pedida — serviço aplicado e conferência impressa. Novos lançamentos travados.'}
+  if(e){e.style.color='#0a7d38';e.textContent='✓ Conta pedida — 10% aplicado, lançamentos travados e conferência impressa.'}
   await carregar(MESA);
 }
 /* ---- BLOQUEIO por inatividade: 5 min parado = pede o PIN (só o PIN — o
