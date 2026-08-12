@@ -13,7 +13,7 @@
 //  cotacao_resposta_item (preço por marca preenchido pelo fornecedor) ->
 //  pedido_compra (vencedor consolidado) -> nota_compra (NF que chega).
 
-import { pgTable, uuid, varchar, boolean, timestamp, index, integer, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, boolean, timestamp, index, integer, numeric, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 import { produto } from './vendas';
@@ -57,6 +57,30 @@ export const produtoMarcaAceita = pgTable(
     uniqProdMarca: unique('uq_pma_produto_marca').on(t.produtoId, t.marcaId),
     produtoIdx: index('idx_pma_produto').on(t.filialId, t.produtoId),
     marcaIdx: index('idx_pma_marca').on(t.filialId, t.marcaId),
+  }),
+);
+
+/** Como o produto é vendido no atacado: fardo 30x1kg, caixa 12x1L, balde
+ *  14,5kg... qtd_na_unidade_estoque converte a embalagem pra unidade do
+ *  estoque. Fonte: NOTA (extraído das NFs), WEB (verificado no atacado),
+ *  DONO (informado). É o dicionário que evita "2 fardos" virarem "2 kg". */
+export const produtoEmbalagem = pgTable(
+  'produto_embalagem',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id')
+      .notNull()
+      .references(() => produto.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 80 }).notNull(),
+    qtdNaUnidadeEstoque: numeric('qtd_na_unidade_estoque', { precision: 14, scale: 4 }).notNull(),
+    padrao: boolean('padrao').notNull().default(false),
+    fonte: varchar('fonte', { length: 10 }).notNull().default('DONO'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqProdEmb: unique('uq_prod_emb').on(t.produtoId, t.nome),
+    produtoIdx: index('idx_prod_emb_produto').on(t.filialId, t.produtoId),
   }),
 );
 

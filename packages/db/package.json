@@ -70,6 +70,7 @@
     "migrate:idx-pedido-item-fk": "tsx scripts/migrate-idx-pedido-item-fk.ts",
     "migrate:cotacao-embalagem": "tsx scripts/migrate-cotacao-embalagem.ts",
     "migrate:produto-classificacao": "tsx scripts/migrate-produto-classificacao.ts",
+    "migrate:produto-embalagem": "tsx scripts/migrate-produto-embalagem.ts",
     "migrate:delivery": "tsx scripts/migrate-delivery.ts",
     "migrate:delivery-precos-estoque": "tsx scripts/migrate-delivery-precos-estoque.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
