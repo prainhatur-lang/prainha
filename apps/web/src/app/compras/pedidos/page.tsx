@@ -166,7 +166,11 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                   const badge = BADGE_STATUS[p.status] ?? BADGE_STATUS.GERADO;
                   return (
                     <tr key={p.id} className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium text-slate-900">#{p.numero}</td>
+                      <td className="px-3 py-2 font-medium">
+                        <Link href={`/compras/pedidos/${p.id}`} className="text-blue-600 hover:underline">
+                          #{p.numero}
+                        </Link>
+                      </td>
                       <td className="px-3 py-2 text-slate-700">{p.fornecedorNome}</td>
                       <td className="px-3 py-2">
                         <span className={`rounded px-1.5 py-0.5 ${badge.cls}`}>{badge.label}</span>
