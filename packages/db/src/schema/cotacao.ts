@@ -89,6 +89,17 @@ export const cotacaoItem = pgTable(
     /** Snapshot das marcas aceitas no momento da criacao (CSV separado por |).
      *  Vazio = qualquer marca aceita. */
     marcasAceitas: text('marcas_aceitas'),
+    /** Embalagem/tamanho que a casa quer ("caixa 18 kg", "balde 14,5 kg",
+     *  "fardo 30x1kg"). O fornecedor responde dizendo como ELE vende
+     *  (cotacao_resposta_item.unidadeFornecedor + fatorConversao) e o sistema
+     *  normaliza pra comparar. Sem isso, "1 kg" x "5 litros" viravam preços
+     *  incomparáveis e o vencedor saía errado. */
+    embalagemEsperada: varchar('embalagem_esperada', { length: 80 }),
+    /** Classificação pedida, escolhida entre as cadastradas em
+     *  produto_classificacao ("Maduro", "Caixa 2 (média)", "Grande"). Garante
+     *  que todo fornecedor cote a MESMA coisa — senão um cota tomate verde,
+     *  outro cota maduro, e a comparação de preço mente. */
+    classificacao: varchar('classificacao', { length: 60 }),
     /** Observacao livre pro fornecedor (ex: "preferencialmente fresco"). */
     observacao: text('observacao'),
     /** Apos selecao do vencedor, aponta pra resposta vencedora. Null enquanto pendente. */
@@ -161,8 +172,8 @@ export const cotacaoRespostaItem = pgTable(
     /** Preco unitario na unidade do cotacao_item.unidade.
      *  null = fornecedor nao tem o item essa semana. */
     precoUnitario: numeric('preco_unitario', { precision: 14, scale: 4 }),
-    /** Unidade que o fornecedor cotou (cx, fardo, un, kg). */
-    unidadeFornecedor: varchar('unidade_fornecedor', { length: 10 }),
+    /** Como o fornecedor vende ("caixa 18 kg", "fardo 30x1kg", "un"). */
+    unidadeFornecedor: varchar('unidade_fornecedor', { length: 40 }),
     /** Fator de conversao da unidade do fornecedor pra unidade do item.
      *  Ex: cotou 1 fardo = 12 un, fator = 12, preco_unitario_normalizado = preco_unit / 12 */
     fatorConversao: numeric('fator_conversao', { precision: 14, scale: 6 }).notNull().default('1'),

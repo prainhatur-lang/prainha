@@ -13,7 +13,7 @@
 //  cotacao_resposta_item (preço por marca preenchido pelo fornecedor) ->
 //  pedido_compra (vencedor consolidado) -> nota_compra (NF que chega).
 
-import { pgTable, uuid, varchar, boolean, timestamp, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, boolean, timestamp, index, integer, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 import { produto } from './vendas';
@@ -57,5 +57,27 @@ export const produtoMarcaAceita = pgTable(
     uniqProdMarca: unique('uq_pma_produto_marca').on(t.produtoId, t.marcaId),
     produtoIdx: index('idx_pma_produto').on(t.filialId, t.produtoId),
     marcaIdx: index('idx_pma_marca').on(t.filialId, t.marcaId),
+  }),
+);
+
+/** Classificações possíveis de um produto — o que muda o preço sem mudar o
+ *  produto: cebola caixa 1/2/3, tomate verde/verdoso/maduro, batata
+ *  pequena/média/grande. Ao montar a cotação escolhe-se UMA, que vai em
+ *  cotacao_item.classificacao, pra todo fornecedor cotar a mesma coisa. */
+export const produtoClassificacao = pgTable(
+  'produto_classificacao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id')
+      .notNull()
+      .references(() => produto.id, { onDelete: 'cascade' }),
+    valor: varchar('valor', { length: 60 }).notNull(),
+    ordem: integer('ordem').notNull().default(0),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqProdClassif: unique('uq_prod_classif').on(t.produtoId, t.valor),
+    produtoIdx: index('idx_prod_classif_produto').on(t.filialId, t.produtoId),
   }),
 );

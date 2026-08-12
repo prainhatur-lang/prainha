@@ -9,19 +9,41 @@ interface Item {
   quantidade: string;
   unidade: string;
   marcasAceitas: string[] | null;
+  embalagemEsperada: string | null;
+  classificacao: string | null;
   observacao: string | null;
 }
 
 interface RespostaInicial {
   precoUnitario: string;
   marca: string;
+  embalagem: string;
+  qtdPorEmbalagem: string;
   observacao: string;
 }
 
-interface RespostaItem {
-  precoUnitario: string;
-  marca: string;
-  observacao: string;
+type RespostaItem = RespostaInicial;
+
+const VAZIA: RespostaItem = {
+  precoUnitario: '',
+  marca: '',
+  embalagem: '',
+  qtdPorEmbalagem: '',
+  observacao: '',
+};
+
+/** Máscara de moeda: o fornecedor digita 1749 e vira 17,49. Era daqui que saía
+ *  preço 100x errado — "1749" entrava como mil setecentos e quarenta e nove. */
+function mascaraMoeda(valor: string): string {
+  const digitos = valor.replace(/\D/g, '').slice(0, 11);
+  if (!digitos) return '';
+  const n = Number(digitos) / 100;
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function moedaParaNumero(valor: string): number {
+  const limpo = valor.replace(/\./g, '').replace(',', '.');
+  return Number(limpo);
 }
 
 export function PreencherForm(props: {
@@ -32,7 +54,7 @@ export function PreencherForm(props: {
   const [respostas, setRespostas] = useState<Record<string, RespostaItem>>(() => {
     const init: Record<string, RespostaItem> = {};
     for (const i of props.itens) {
-      init[i.id] = props.respostasIniciais[i.id] ?? { precoUnitario: '', marca: '', observacao: '' };
+      init[i.id] = props.respostasIniciais[i.id] ?? { ...VAZIA };
     }
     return init;
   });
@@ -61,19 +83,40 @@ export function PreencherForm(props: {
       return;
     }
 
+    // Embalagem também é obrigatória: sem saber em que embalagem ele vende,
+    // "R$ 58,90" tanto pode ser o quilo quanto o balde de 14,5 kg.
+    const semEmbalagem = props.itens.filter(
+      (i) => respostas[i.id]?.precoUnitario.trim() && !respostas[i.id]?.embalagem.trim(),
+    );
+    if (semEmbalagem.length > 0) {
+      setErro(
+        `Diga em que embalagem você vende: ${semEmbalagem.map((i) => i.produtoNome).join(', ')}.`,
+      );
+      return;
+    }
+
     const respArr = props.itens
       .map((i) => {
         const r = respostas[i.id];
-        const preco = r.precoUnitario.trim().replace(',', '.');
-        if (!preco) return null; // pula itens sem preço (= não tem)
-        const num = Number(preco);
-        if (!Number.isFinite(num) || num < 0) {
+        if (!r.precoUnitario.trim()) return null; // sem preço = não tem o item
+        const num = moedaParaNumero(r.precoUnitario);
+        if (!Number.isFinite(num) || num <= 0) {
           throw new Error(`Preço inválido em "${i.produtoNome}"`);
+        }
+        // Quanto vem na embalagem, na unidade do pedido (kg/un/l).
+        // Vazio = ele vende na mesma unidade do pedido (fator 1).
+        const fator = r.qtdPorEmbalagem.trim()
+          ? moedaParaNumero(r.qtdPorEmbalagem)
+          : 1;
+        if (!Number.isFinite(fator) || fator <= 0) {
+          throw new Error(`Quantidade por embalagem inválida em "${i.produtoNome}"`);
         }
         return {
           cotacaoItemId: i.id,
           precoUnitario: num,
           marca: r.marca.trim() || null,
+          embalagem: r.embalagem.trim() || null,
+          qtdPorEmbalagem: fator,
           observacao: r.observacao.trim() || null,
         };
       })
@@ -159,8 +202,13 @@ export function PreencherForm(props: {
                   <div className="mb-2 flex items-baseline justify-between gap-2">
                     <div>
                       <span className="font-medium text-slate-900">{i.produtoNome}</span>
+                      {i.classificacao && (
+                        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                          {i.classificacao}
+                        </span>
+                      )}
                       <span className="ml-2 text-xs text-slate-500">
-                        Quantidade: <strong>{i.quantidade} {i.unidade}</strong>
+                        Quero: <strong>{i.quantidade} {i.embalagemEsperada ?? i.unidade}</strong>
                       </span>
                     </div>
                     {i.marcasAceitas && i.marcasAceitas.length > 0 && (
@@ -177,16 +225,57 @@ export function PreencherForm(props: {
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Preço unitário (R$ / {i.unidade})
+                        Você vende em qual embalagem? <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={i.embalagemEsperada ?? 'ex: caixa, fardo, balde, unidade'}
+                        value={respostas[i.id]?.embalagem ?? ''}
+                        onChange={(e) => setCampo(i.id, 'embalagem', e.target.value)}
+                        className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-700">
+                        Quanto vem nela? ({i.unidade})
                       </label>
                       <input
                         type="text"
                         inputMode="decimal"
-                        placeholder="ex: 12,50"
-                        value={respostas[i.id]?.precoUnitario ?? ''}
-                        onChange={(e) => setCampo(i.id, 'precoUnitario', e.target.value)}
+                        placeholder={`ex: 18 (deixe vazio se vende por ${i.unidade})`}
+                        value={respostas[i.id]?.qtdPorEmbalagem ?? ''}
+                        onChange={(e) => setCampo(i.id, 'qtdPorEmbalagem', e.target.value)}
                         className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
                       />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-700">
+                        Preço da embalagem (R$) <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0,00"
+                        value={respostas[i.id]?.precoUnitario ?? ''}
+                        onChange={(e) =>
+                          setCampo(i.id, 'precoUnitario', mascaraMoeda(e.target.value))
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                      />
+                      {respostas[i.id]?.precoUnitario && respostas[i.id]?.qtdPorEmbalagem && (
+                        <p className="mt-0.5 text-[10px] text-emerald-700">
+                          ={' '}
+                          {(
+                            moedaParaNumero(respostas[i.id].precoUnitario) /
+                            (moedaParaNumero(respostas[i.id].qtdPorEmbalagem) || 1)
+                          ).toLocaleString('pt-BR', {
+                            style: 'currency',
+                            currency: 'BRL',
+                            maximumFractionDigits: 4,
+                          })}{' '}
+                          por {i.unidade}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">

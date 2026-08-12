@@ -8,13 +8,18 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 
 interface Body {
   respostas: Array<{
     cotacaoItemId: string;
+    /** Preço DA EMBALAGEM que o fornecedor vende (não da unidade do pedido). */
     precoUnitario: number;
     marca: string | null;
+    /** Como ele vende: "caixa 18 kg", "fardo", "un". */
+    embalagem?: string | null;
+    /** Quanto vem na embalagem, na unidade do pedido. 1 = vende na mesma unidade. */
+    qtdPorEmbalagem?: number | null;
     observacao: string | null;
   }>;
 }
@@ -69,6 +74,8 @@ export async function POST(
       .select({
         id: schema.cotacaoItem.id,
         marcasAceitas: schema.cotacaoItem.marcasAceitas,
+        unidade: schema.cotacaoItem.unidade,
+        produtoId: schema.cotacaoItem.produtoId,
         produtoNome: schema.produto.nome,
       })
       .from(schema.cotacaoItem)
@@ -94,10 +101,39 @@ export async function POST(
         marcaForaDaLista.push(`${item.produtoNome} (aceitas: ${aceitas.join(', ')})`);
       }
     }
-    if (semMarca.length > 0 || marcaForaDaLista.length > 0) {
+    // Rede de segurança contra preço fora da realidade (vírgula esquecida):
+    // compara o normalizado com a última nota fiscal do mesmo produto. 20x pra
+    // cima ou pra baixo é erro de digitação, não negociação.
+    const precoAbsurdo: string[] = [];
+    for (const r of respostas) {
+      const item = porItem.get(r.cotacaoItemId);
+      if (!item?.produtoId) continue;
+      const fator =
+        r.qtdPorEmbalagem != null && Number(r.qtdPorEmbalagem) > 0 ? Number(r.qtdPorEmbalagem) : 1;
+      const normalizado = Number(r.precoUnitario) / fator;
+      if (!Number.isFinite(normalizado) || normalizado <= 0) continue;
+      const [ultima] = await db
+        .select({ valor: schema.notaCompraItem.valorUnitario })
+        .from(schema.notaCompraItem)
+        .innerJoin(schema.notaCompra, eq(schema.notaCompra.id, schema.notaCompraItem.notaCompraId))
+        .where(eq(schema.notaCompraItem.produtoId, item.produtoId))
+        .orderBy(desc(schema.notaCompra.dataEmissao))
+        .limit(1);
+      const ref = ultima?.valor != null ? Number(ultima.valor) : null;
+      if (!ref || ref <= 0) continue;
+      if (normalizado > ref * 20 || normalizado < ref / 20) {
+        precoAbsurdo.push(
+          `${item.produtoNome}: R$ ${normalizado.toFixed(2)} por ${item.unidade} ` +
+            `(última compra foi R$ ${ref.toFixed(2)}) — confira a vírgula e a embalagem`,
+        );
+      }
+    }
+
+    if (semMarca.length > 0 || marcaForaDaLista.length > 0 || precoAbsurdo.length > 0) {
       const partes = [
         semMarca.length ? `Informe a marca de: ${semMarca.join(', ')}.` : '',
         marcaForaDaLista.length ? `Marca não aceita em: ${marcaForaDaLista.join('; ')}.` : '',
+        precoAbsurdo.length ? `Preço fora do esperado — ${precoAbsurdo.join('; ')}.` : '',
         'Se não tiver a marca pedida, deixe o preço em branco.',
       ].filter(Boolean);
       return NextResponse.json({ error: partes.join(' ') }, { status: 400 });
@@ -129,18 +165,23 @@ export async function POST(
   if (respostas.length > 0) {
     for (const r of respostas) {
       const marcaId = await acharOuCriarMarca(r.marca);
-      // fator_conversao default 1 (fornecedor cota direto na unidade do item).
-      // Quando integrar com produto_fornecedor, podemos sugerir fator a partir do historico.
+      // Fornecedor cota o preço DA EMBALAGEM dele + quanto vem nela. O
+      // normalizado (preço por unidade do pedido) é o que permite comparar
+      // quem vende em caixa de 18 kg com quem vende no quilo.
       const precoNum = Number(r.precoUnitario);
+      const fator =
+        r.qtdPorEmbalagem != null && Number(r.qtdPorEmbalagem) > 0
+          ? Number(r.qtdPorEmbalagem)
+          : 1;
       await db.insert(schema.cotacaoRespostaItem).values({
         cotacaoFornecedorId: cf.id,
         cotacaoItemId: r.cotacaoItemId,
         marcaId,
         marcaTextoLivre: marcaId ? null : r.marca ?? null,
         precoUnitario: String(precoNum),
-        precoUnitarioNormalizado: String(precoNum), // fator = 1 -> normalizado = unitario
-        unidadeFornecedor: null, // fornecedor cotou direto na unidade do item
-        fatorConversao: '1',
+        precoUnitarioNormalizado: String(precoNum / fator),
+        unidadeFornecedor: r.embalagem?.slice(0, 40) ?? null,
+        fatorConversao: String(fator),
         observacao: r.observacao,
       });
     }

@@ -65,6 +65,8 @@ export default async function PreencherCotacaoPage(props: {
       quantidade: schema.cotacaoItem.quantidade,
       unidade: schema.cotacaoItem.unidade,
       marcasAceitas: schema.cotacaoItem.marcasAceitas,
+      embalagemEsperada: schema.cotacaoItem.embalagemEsperada,
+      classificacao: schema.cotacaoItem.classificacao,
       observacao: schema.cotacaoItem.observacao,
       produtoNome: schema.produto.nome,
       categoria: schema.produto.categoriaCompras,
@@ -128,17 +130,27 @@ export default async function PreencherCotacaoPage(props: {
                 ? i.marcasAceitas.split('|').filter(Boolean)
                 : null,
             }))}
-            respostasIniciais={respostas.reduce<Record<string, { precoUnitario: string; marca: string; observacao: string }>>(
-              (acc, r) => {
-                acc[r.cotacaoItemId] = {
-                  precoUnitario: r.precoUnitario != null ? String(r.precoUnitario) : '',
-                  marca: r.marcaTextoLivre ?? '',
-                  observacao: r.observacao ?? '',
-                };
-                return acc;
-              },
-              {},
-            )}
+            respostasIniciais={respostas.reduce<
+              Record<
+                string,
+                {
+                  precoUnitario: string;
+                  marca: string;
+                  embalagem: string;
+                  qtdPorEmbalagem: string;
+                  observacao: string;
+                }
+              >
+            >((acc, r) => {
+              acc[r.cotacaoItemId] = {
+                precoUnitario: r.precoUnitario != null ? String(r.precoUnitario) : '',
+                marca: r.marcaTextoLivre ?? '',
+                embalagem: r.unidadeFornecedor ?? '',
+                qtdPorEmbalagem: r.fatorConversao != null ? String(r.fatorConversao) : '',
+                observacao: r.observacao ?? '',
+              };
+              return acc;
+            }, {})}
           />
         )}
       </div>
