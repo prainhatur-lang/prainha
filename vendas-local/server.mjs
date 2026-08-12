@@ -1341,6 +1341,55 @@ function impRotulo(numero, origem) {
   if (n > 0) return 'MESA ' + n;
   return String(ORIGEM_NOME[Number(origem)] || 'Balcão').toUpperCase();
 }
+/** Sonda a térmica: conecta (ligada?) e pergunta o papel via DLE EOT 4.
+ *  Nem toda genérica responde ao status — sem resposta em 450ms, garante só
+ *  que está ligada. Bits (padrão Epson): 0x60 = sem papel, 0x0C = acabando. */
+function impStatus(ipCfg) {
+  return new Promise((resolve) => {
+    const [host, porta] = String(ipCfg).trim().split(':');
+    const s = net.connect({ host, port: Number(porta) || 9100, timeout: 1500 });
+    let done = false, timer = null;
+    const fim = (r) => { if (done) return; done = true; clearTimeout(timer); try { s.destroy(); } catch { /* já era */ } resolve(r); };
+    s.on('timeout', () => fim({ ligada: false, erro: 'não responde (desligada ou fora da rede)' }));
+    s.on('error', (e) => fim({ ligada: false, erro: e.code === 'ECONNREFUSED' ? 'recusou conexão' : e.message }));
+    s.on('connect', () => {
+      s.write(Buffer.from([0x10, 0x04, 0x04]));
+      timer = setTimeout(() => fim({ ligada: true, papel: null }), 450);
+    });
+    s.on('data', (b) => {
+      const st = b[0] ?? 0;
+      if (st & 0x60) return fim({ ligada: true, papel: 'sem_papel' });
+      if (st & 0x0c) return fim({ ligada: true, papel: 'acabando' });
+      fim({ ligada: true, papel: 'ok' });
+    });
+  });
+}
+/** Avisos prontos pro lançamento: sonda as impressoras das praças envolvidas.
+ *  O cupom que falhar SAI SOZINHO quando a impressora voltar (fila do espelho)
+ *  — o aviso é pra praça não ficar às cegas enquanto isso. */
+async function avisosImpressora(areaCods) {
+  const modo = await cfgGet('producao_modo', 'kds');
+  if (modo !== 'ambos' && modo !== 'impressora') return [];
+  const ipGeral = (await cfgGet('impressora_ip', '')).trim();
+  const porPraca = new Map((await sql`SELECT area_codigo, ip FROM praca_impressora`)
+    .map((r) => [Number(r.area_codigo), String(r.ip).trim()]).filter(([, v]) => v));
+  const nomes = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [Number(a.codigo), a.nome]));
+  const alvos = new Map();
+  for (const a of new Set((areaCods || []).filter((x) => x != null).map(Number))) {
+    const ip = porPraca.get(a) || ipGeral;
+    if (!ip) continue;
+    if (!alvos.has(ip)) alvos.set(ip, []);
+    alvos.get(ip).push(nomes.get(a) || ('praça ' + a));
+  }
+  const avisos = [];
+  await Promise.all([...alvos.entries()].map(async ([ip, pracas]) => {
+    const st = await impStatus(ip);
+    if (!st.ligada) avisos.push('🖨 Impressora de ' + pracas.join('/') + ' NÃO RESPONDE (' + ip + ') — o cupom sai sozinho quando ela voltar; avise a praça!');
+    else if (st.papel === 'sem_papel') avisos.push('🖨 Impressora de ' + pracas.join('/') + ' SEM PAPEL — troque a bobina!');
+    else if (st.papel === 'acabando') avisos.push('🖨 Impressora de ' + pracas.join('/') + ': papel ACABANDO — deixe a bobina à mão');
+  }));
+  return avisos;
+}
 let impUltimo = { quando: null, ok: null, erro: null, oque: null };
 function imprimirRaw(ipCfg, buf, oque) {
   return new Promise((resolve, reject) => {
@@ -2290,7 +2339,9 @@ async function apiVendaEnviar(body) {
     await fbJobCozinha(ped);
     await sql`UPDATE venda_envio SET status='ok', pedido_fb=${ped} WHERE id=${log.id}`;
     espelho().catch(() => {}); // KDS atualiza já, sem esperar os 15s
-    return { ok: true, pedido_fb: ped, numero, mesa, total, n_itens: itens.length };
+    // impressora da praça desligada/sem papel? avisa QUEM LANÇOU, na hora
+    const avisosImp = await avisosImpressora(itens.map((i) => i.area_codigo)).catch(() => []);
+    return { ok: true, pedido_fb: ped, numero, mesa, total, n_itens: itens.length, avisos_impressora: avisosImp };
   } catch (e) {
     await sql`UPDATE venda_envio SET status='erro', erro=${String(e.message).slice(0, 300)} WHERE id=${log.id}`;
     return { ok: false, erro: 'Falha ao gravar no Consumer: ' + e.message + ' (lançamento guardado localmente, id ' + log.id + ')' };
@@ -3478,7 +3529,33 @@ async function apiCaixaConta(n) {
     FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
     WHERE ci.comanda_codigo=${c.codigo} ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
+  // COMANDAS DA MESA vêm JUNTO (atômico): o refresher de 10s substitui a CONTA
+  // inteira — enriquecer no cliente fazia as comandas piscarem e sumirem.
+  let comandasMesa = null, geral = null;
+  if (num < COMANDA_DE) {
+    const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda WHERE mesa=${num} AND fechada_em IS NULL ORDER BY comanda`;
+    if (vinc.length) {
+      comandasMesa = [];
+      geral = Math.max(0, +(total - pago).toFixed(2));
+      for (const v of vinc) {
+        const cn = Number(v.comanda);
+        let totC = 0, pagoC = 0;
+        try {
+          const pedC = await fbAcharPedido(cn);
+          if (pedC) {
+            totC = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${pedC}`)).rows?.[0]?.VALORTOTAL) || 0;
+            pagoC = await fbPagoDoPedido(pedC);
+          }
+        } catch { /* FB instável: mostra a comanda sem valores */ }
+        const resta = Math.max(0, +(totC - pagoC).toFixed(2));
+        const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${cn} AND fechada_em IS NULL`)[0];
+        comandasMesa.push({ numero: cn, nome: idc?.nome_curto || v.nome_curto || null, resta, quitada: resta <= 0.009 && totC > 0 });
+        geral = +(geral + resta).toFixed(2);
+      }
+    }
+  }
   return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
+    comandas_mesa: comandasMesa, geral,
     itens: itens.map((i) => ({ item_codigo: Number(i.item_codigo) || null, tipo: Number(i.tipo) || 1, codigo_pai: i.codigo_pai != null ? Number(i.codigo_pai) : null, nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes, status: i.status })),
     subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
     total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
@@ -5909,6 +5986,7 @@ async function enviar(){
     app('<div class="ok"><div class="t">✓ Enviado pra cozinha</div>'+
       '<div class="mut" style="margin-top:6px">'+(r.numero>=${COMANDA_DE}?'Comanda '+r.numero+(r.mesa?' · Mesa '+r.mesa:''):'Mesa '+r.numero)+
       ' · '+r.n_itens+' item(ns) · '+brl(r.total)+' · pedido #'+r.pedido_fb+'</div></div>'+
+      (r.avisos_impressora&&r.avisos_impressora.length?'<div class="avisoc" style="margin-top:10px;font-size:16px"><b>'+r.avisos_impressora.map(esc).join('</b><br><b>')+'</b></div>':'')+
       '<button class="big" onclick="carregarMesa()">Continuar nesta mesa</button>'+
       '<button class="big" style="background:#888" onclick="outraMesa()">'+(VOLTA==='caixa'?'◂ Voltar pro caixa':'Outra mesa')+'</button>');
   } else {
@@ -9314,19 +9392,9 @@ async function carregar(n){
     (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (12h)</button>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
-  CONTA=c;
+  CONTA=c; // já vem com comandas_mesa/geral do servidor (atômico — sem piscar)
   if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
   var el2=document.getElementById('lista');if(el2)el2.innerHTML=chips(); // marca o chip escolhido
-  // mesa: busca as comandas penduradas (contas separadas) e re-pinta com elas
-  if(num<${COMANDA_DE}){
-    try{
-      var ct=await jget('/api/conta/texto?n='+num);
-      if(ct&&ct.ok&&CONTA&&Number(CONTA.numero)===Number(num)){
-        CONTA.comandas_mesa=ct.comandas||[];CONTA.geral=(ct.comandas&&ct.comandas.length)?ct.geral:null;
-        if(TELA==='conta'&&Number(MESA)===Number(num))pintaMain();
-      }
-    }catch(e){}
-  }
 }
 /* ---- IDENTIFICAR na própria tela (overlay): CPF ou WhatsApp → busca o nome
    (casa → já-atendidos → grupo → SPC) → confirma → o chip vira o nome. */
