@@ -204,9 +204,13 @@ export async function POST(req: Request) {
             cidade: drizzleSql`excluded.cidade`,
             uf: drizzleSql`excluded.uf`,
             cep: drizzleSql`excluded.cep`,
-            email: drizzleSql`excluded.email`,
-            fonePrincipal: drizzleSql`excluded.fone_principal`,
-            foneSecundario: drizzleSql`excluded.fone_secundario`,
+            // Contatos: só sobrescreve se o Consumer mandar valor. Vindo vazio,
+            // PRESERVA o cadastrado no concilia (telefone de cotação/pedido no
+            // WhatsApp) — mesma proteção que o CDC já tem em concilia-mappers.
+            // Sem isso o sync apagava o fone toda madrugada (Marcelino, Paixão).
+            email: drizzleSql`COALESCE(NULLIF(excluded.email, ''), ${schema.fornecedor.email})`,
+            fonePrincipal: drizzleSql`COALESCE(NULLIF(excluded.fone_principal, ''), ${schema.fornecedor.fonePrincipal})`,
+            foneSecundario: drizzleSql`COALESCE(NULLIF(excluded.fone_secundario, ''), ${schema.fornecedor.foneSecundario})`,
             rgOuIe: drizzleSql`excluded.rg_ou_ie`,
             dataDelete: drizzleSql`excluded.data_delete`,
             versaoReg: drizzleSql`excluded.versao_reg`,
@@ -452,8 +456,10 @@ export async function POST(req: Request) {
           set: {
             cpfOuCnpj: drizzleSql`excluded.cpf_ou_cnpj`,
             nome: drizzleSql`excluded.nome`,
-            email: drizzleSql`excluded.email`,
-            telefone: drizzleSql`excluded.telefone`,
+            // Mesma proteção do fornecedor: contato vazio no Consumer não apaga
+            // o que foi cadastrado aqui (usado no OTP/lembrete de reserva).
+            email: drizzleSql`COALESCE(NULLIF(excluded.email, ''), ${schema.cliente.email})`,
+            telefone: drizzleSql`COALESCE(NULLIF(excluded.telefone, ''), ${schema.cliente.telefone})`,
             saldoAtualContaCorrente: drizzleSql`excluded.saldo_atual_conta_corrente`,
             limiteCreditoContaCorrente: drizzleSql`excluded.limite_credito_conta_corrente`,
             arquivarFiado: drizzleSql`excluded.arquivar_fiado`,
