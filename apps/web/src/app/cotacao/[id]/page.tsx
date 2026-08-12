@@ -6,7 +6,7 @@ import { db, schema } from '@concilia/db';
 import { eq, asc, inArray } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { AppHeader } from '@/components/app-header';
-import { brl } from '@/lib/format';
+import { brl, formatDateTime } from '@/lib/format';
 import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
@@ -157,7 +157,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               <span className={`rounded px-1.5 py-0.5 ${badge.cls}`}>{badge.label}</span>
               {c.fechaEm && (
                 <span>
-                  Fecha em: <strong>{new Date(c.fechaEm).toLocaleString('pt-BR')}</strong>
+                  Fecha em: <strong>{formatDateTime(c.fechaEm)}</strong>
                 </span>
               )}
               <span>
@@ -313,13 +313,13 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                   <td className="px-3 py-2 font-medium text-slate-900">{f.fornecedorNome}</td>
                   <td className="px-3 py-2 text-slate-700">{f.status}</td>
                   <td className="px-3 py-2 text-slate-600">
-                    {f.linkEnviadoEm ? new Date(f.linkEnviadoEm).toLocaleString('pt-BR') : '—'}
+                    {formatDateTime(f.linkEnviadoEm)}
                   </td>
                   <td className="px-3 py-2 text-slate-600">
-                    {f.linkAbertoEm ? new Date(f.linkAbertoEm).toLocaleString('pt-BR') : '—'}
+                    {formatDateTime(f.linkAbertoEm)}
                   </td>
                   <td className="px-3 py-2 text-slate-600">
-                    {f.respondidoEm ? new Date(f.respondidoEm).toLocaleString('pt-BR') : '—'}
+                    {formatDateTime(f.respondidoEm)}
                   </td>
                   <td className="px-3 py-2 text-center">
                     <EnviarWhatsappButton
