@@ -84,7 +84,9 @@ class ContaActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        Lio.unbind()
+        // NÃO desligar o serviço da maquininha aqui: o bind é global do app
+        // (applicationContext). Abrir a comanda a partir da mesa e voltar
+        // derrubava o serviço da tela de baixo — "maquininha indisponível".
         super.onDestroy()
     }
 
@@ -1111,18 +1113,48 @@ class ContaActivity : AppCompatActivity() {
     }
 
     // ---- passe de saída: QR da catraca (N passagens) + placas pra cancela ----
+    /** PRIMEIRO confere a quitação (o servidor barra passe de conta em aberto)
+     *  — só abre o formulário quando o passe realmente pode sair. */
     private fun dialogPasse(alvo: Int, fecharDepois: Boolean = false) {
-        val adultosIn = campo("Adultos", android.text.InputType.TYPE_CLASS_NUMBER)
-        adultosIn.setText("2")
+        val espera = AlertDialog.Builder(this).setMessage("🚗 Conferindo a conta…").setCancelable(false).create()
+        espera.show()
+        Thread {
+            val texto = try { Api.contaTexto(Session.servidor(this), alvo) } catch (_: Exception) { null }
+            runOnUiThread {
+                espera.dismiss()
+                val falta = texto?.optDouble("falta_geral", texto.optDouble("resta", 0.0)) ?: 0.0
+                if (texto != null && falta > 0.009) {
+                    AlertDialog.Builder(this)
+                        .setTitle("🚗 Passe de saída")
+                        .setMessage("A conta ainda tem ${Cupom.brl(falta)} em aberto.\n\n" +
+                            "O passe só sai com a conta ZERADA — é ele que libera as pessoas na " +
+                            "catraca e os carros na cancela. Receba primeiro e peça de novo.")
+                        .setPositiveButton("OK") { _, _ -> if (fecharDepois) finish() }
+                        .show()
+                } else {
+                    formularioPasse(alvo, texto?.optInt("pessoas", 0) ?: 0, fecharDepois)
+                }
+            }
+        }.start()
+    }
+
+    private fun formularioPasse(alvo: Int, pessoasConta: Int, fecharDepois: Boolean) {
+        val explica = TextView(this)
+        explica.textSize = 13f
+        explica.setTextColor(0xFF374151.toInt())
+        explica.text = "O QR libera as PESSOAS na catraca (uma passagem por pessoa). " +
+            "As placas liberam os CARROS na cancela automática, pela leitura da placa."
+        val adultosIn = campo("Adultos saindo", android.text.InputType.TYPE_CLASS_NUMBER)
+        adultosIn.setText("${if (pessoasConta > 0) pessoasConta else 2}")
         val criancasIn = campo("Crianças", android.text.InputType.TYPE_CLASS_NUMBER)
         criancasIn.setText("0")
-        val placasIn = campo("Placas dos carros (opcional, separadas por espaço)")
+        val placasIn = campo("Placas dos carros — ex.: ABC1D23 (vazio = sem carro)")
         placasIn.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-        val viasIn = campo("Quantas vias imprimir?", android.text.InputType.TYPE_CLASS_NUMBER)
+        val viasIn = campo("Vias impressas do MESMO QR (1 por grupo)", android.text.InputType.TYPE_CLASS_NUMBER)
         viasIn.setText("1")
         AlertDialog.Builder(this)
-            .setTitle("🚗 Passe de saída — " + (if (Session.ehComanda(this, alvo)) "comanda" else "mesa") + " $alvo")
-            .setView(caixa(adultosIn, criancasIn, placasIn, viasIn))
+            .setTitle("🚗 Passe — " + (if (Session.ehComanda(this, alvo)) "comanda" else "mesa") + " $alvo · conta zerada ✓")
+            .setView(caixa(explica, adultosIn, criancasIn, placasIn, viasIn))
             .setPositiveButton("Gerar e imprimir") { _, _ ->
                 val adultos = adultosIn.text.toString().trim().toIntOrNull() ?: 0
                 val criancas = criancasIn.text.toString().trim().toIntOrNull() ?: 0
@@ -1150,14 +1182,41 @@ class ContaActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Sem impressora (celular / térmica falhou): o passe vai pro WhatsApp —
+     *  a página /passe?t= vira o QR da catraca na tela do cliente. */
+    private fun fallbackPasse(token: String, pessoas: Int, fecharDepois: Boolean) {
+        val url = Session.servidor(this) + "/passe?t=" + token
+        AlertDialog.Builder(this)
+            .setTitle("Passe gerado — sem impressora aqui")
+            .setMessage("Vale $pessoas pessoa(s). Mande o link pro WhatsApp do cliente: " +
+                "a tela do celular dele vira o QR da catraca.\n\n$url")
+            .setPositiveButton("📱 WhatsApp") { _, _ ->
+                val msg = "Passe de saída — ${Session.loja(this)}: $url"
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://wa.me/?text=${android.net.Uri.encode(msg)}")))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "WhatsApp indisponível neste aparelho", Toast.LENGTH_LONG).show()
+                }
+                if (fecharDepois) finish()
+            }
+            .setNegativeButton("OK") { _, _ -> if (fecharDepois) finish() }
+            .show()
+    }
+
     /** Imprime `vias` cópias do MESMO passe — cada escaneada na catraca
-     *  consome 1 das N passagens; os carros saem pela placa na cancela. */
+     *  consome 1 das N passagens; os carros saem pela placa na cancela.
+     *  Fora da maquininha, cai direto pro link de WhatsApp. */
     private fun imprimirPasses(alvo: Int, r: org.json.JSONObject, vias: Int, fecharDepois: Boolean = false) {
         val token = r.optString("token")
         val pessoas = r.optInt("pessoas", 1)
         val validade = r.optInt("validade_min", 90)
         val placasArr = r.optJSONArray("placas")
         val placas = (0 until (placasArr?.length() ?: 0)).mapNotNull { placasArr?.optString(it) }
+        if (!Lio.pronto) {
+            fallbackPasse(token, pessoas, fecharDepois)
+            return
+        }
         fun via(i: Int) {
             if (i > vias) {
                 Toast.makeText(this, "✓ Passe impresso ($vias via/s)", Toast.LENGTH_LONG).show()
@@ -1176,7 +1235,13 @@ class ContaActivity : AppCompatActivity() {
             )
             Lio.imprimirBlocos(this, blocos,
                 onOk = { runOnUiThread { via(i + 1) } },
-                onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                onErro = { m ->
+                    runOnUiThread {
+                        Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+                        // Térmica falhou no meio: o cliente ainda leva o passe.
+                        fallbackPasse(token, pessoas, fecharDepois)
+                    }
+                })
         }
         via(1)
     }

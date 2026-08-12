@@ -10342,6 +10342,20 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioPagar(body, g)));
     }
+    // MANUTENÇÃO: reconstrói os totais de um pedido desgarrado (a mesa 1 de
+    // 11/08 tinha VALORTOTAL=13,10 com itens somando 21 — corrompida por
+    // deltas de antes do recálculo canônico). Usa o próprio fbAtualizarTotal.
+    if (req.method === 'POST' && p === '/api/lio/recalcular') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const ped = await fbAcharPedido(Number(body.numero)).catch(() => null);
+      if (!ped) return res.end(JSON.stringify({ ok: false, erro: 'não há pedido aberto nesse número' }));
+      try { await fbAtualizarTotal(ped); espelho().catch(() => {}); } catch (e) { return res.end(JSON.stringify({ ok: false, erro: e.message })); }
+      const t = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+      return res.end(JSON.stringify({ ok: true, itens: Number(t.I) || 0, servico: Number(t.S) || 0, total: Number(t.T) || 0 }));
+    }
     // Fechamento do dia da maquininha (leitura; exige garçom logado).
     if (p === '/api/lio/resumo-dia') {
       const g = await garcomDaRequisicao(req, u);

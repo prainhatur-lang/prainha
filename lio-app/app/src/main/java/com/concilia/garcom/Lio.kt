@@ -58,12 +58,16 @@ object Lio {
     fun bind(context: Context, onReady: () -> Unit, onError: (Throwable) -> Unit) {
         if (!configured()) { onError(IllegalStateException("Credenciais Cielo não configuradas")); return }
         if (bound) { onReady(); return }
+        // applicationContext SEMPRE: o bind é GLOBAL do app. Amarrar na
+        // Activity derrubava o serviço quando uma tela filha fechava (mesa →
+        // comanda → voltar → "maquininha indisponível" na hora de receber).
+        val app = context.applicationContext
         val om = OrderManager(
             Credentials(BuildConfig.CIELO_CLIENT_ID, BuildConfig.CIELO_ACCESS_TOKEN),
-            context
+            app
         )
         orderManager = om
-        om.bind(context, object : ServiceBindListener {
+        om.bind(app, object : ServiceBindListener {
             override fun onServiceBound() { bound = true; onReady() }
             override fun onServiceBoundError(throwable: Throwable) { bound = false; onError(throwable) }
             override fun onServiceUnbound() { bound = false }
