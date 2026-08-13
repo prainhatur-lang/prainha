@@ -415,6 +415,71 @@ class ContaActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- WhatsApp com PAÍS (bandeirinha +DDI) — turista também é cliente ----
+    // BR (+55) mantém o padrão da casa: salva DDD+número, sem o 55. Outro
+    // país: salva DDI+número completo (o telefone só é usado em consulta e
+    // cadastro — o servidor nunca monta link wa.me com ele, conferido).
+    private val PAISES_ZAP = listOf(
+        "🇧🇷" to "55", "🇦🇷" to "54", "🇺🇾" to "598", "🇵🇾" to "595", "🇨🇱" to "56",
+        "🇧🇴" to "591", "🇵🇪" to "51", "🇨🇴" to "57", "🇺🇸" to "1", "🇲🇽" to "52",
+        "🇵🇹" to "351", "🇪🇸" to "34", "🇫🇷" to "33", "🇮🇹" to "39", "🇩🇪" to "49", "🇬🇧" to "44",
+    )
+
+    private class CampoZap(
+        val view: LinearLayout,
+        /** Padrão da casa (cadastro): BR sem o 55; gringo com DDI. */
+        val valor: () -> String?,
+        /** Sempre DDI+número (wa.me exige o país, inclusive no Brasil). */
+        val valorComDdi: () -> String?,
+    )
+
+    private fun campoZap(): CampoZap {
+        var idx = 0
+        val btn = Button(this)
+        btn.textSize = 14f
+        btn.isAllCaps = false
+        val input = campo("WhatsApp com DDD (opcional)", android.text.InputType.TYPE_CLASS_PHONE)
+        fun pinta() {
+            val (bandeira, ddi) = PAISES_ZAP[idx]
+            btn.text = "$bandeira +$ddi"
+            input.hint = if (ddi == "55") "WhatsApp com DDD (opcional)" else "WhatsApp (sem o +$ddi)"
+        }
+        btn.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("País do WhatsApp")
+                .setItems(PAISES_ZAP.map { "${it.first}  +${it.second}" }.toTypedArray()) { _, pos ->
+                    idx = pos
+                    pinta()
+                }
+                .show()
+        }
+        pinta()
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = android.view.Gravity.CENTER_VERTICAL
+        row.addView(btn, LinearLayout.LayoutParams(dp(100), dp(48)))
+        val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.weight = 1f
+        row.addView(input, lp)
+        return CampoZap(
+            row,
+            valor = {
+                val d = input.text.toString().filter { it.isDigit() }
+                val ddi = PAISES_ZAP[idx].second
+                when {
+                    d.isEmpty() -> null
+                    ddi == "55" -> d.takeIf { it.length >= 10 }
+                    else -> (ddi + d).takeIf { d.length >= 7 }
+                }
+            },
+            valorComDdi = {
+                val d = input.text.toString().filter { it.isDigit() }
+                val ddi = PAISES_ZAP[idx].second
+                d.takeIf { it.length >= 7 }?.let { ddi + it }
+            },
+        )
+    }
+
     private fun campo(hint: String, tipo: Int = android.text.InputType.TYPE_CLASS_TEXT): EditText {
         val e = EditText(this)
         e.hint = hint
@@ -536,14 +601,14 @@ class ContaActivity : AppCompatActivity() {
         val status = TextView(this)
         status.textSize = 13f
         val cpfIn = campo("CPF (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
-        val zapIn = campo("WhatsApp com DDD (opcional)", android.text.InputType.TYPE_CLASS_PHONE)
+        val zap = campoZap()
         val nomeManual = campo("Nome")
         nomeManual.visibility = View.GONE
         ligarConsultaCpf(cpfIn, status, nomeManual, achado)
 
         val dlg = AlertDialog.Builder(this)
             .setTitle("Quem está ${if (ehComanda) "na comanda" else "na mesa"} $numero?")
-            .setView(caixa(status, cpfIn, zapIn, nomeManual))
+            .setView(caixa(status, cpfIn, zap.view, nomeManual))
             .setPositiveButton("Salvar", null)
             .setNegativeButton("Cancelar", null)
             .create()
@@ -556,7 +621,7 @@ class ContaActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 val cpf = cpfIn.text.toString().filter { it.isDigit() }.takeIf { it.length == 11 }
-                val tel = zapIn.text.toString().filter { it.isDigit() }.takeIf { it.length >= 10 }
+                val tel = zap.valor()
                 Thread {
                     try {
                         val r = Api.identificarSalvar(Session.servidor(this), numero, nome, cpf, tel, achado.contatoFb, cadastrar = true)
@@ -590,14 +655,14 @@ class ContaActivity : AppCompatActivity() {
         val status = TextView(this)
         status.textSize = 13f
         val cpfIn = campo("CPF do dono (só números)", android.text.InputType.TYPE_CLASS_NUMBER)
-        val zapIn = campo("WhatsApp com DDD (opcional)", android.text.InputType.TYPE_CLASS_PHONE)
+        val zap = campoZap()
         val nomeManual = campo("Nome")
         nomeManual.visibility = View.GONE
         ligarConsultaCpf(cpfIn, status, nomeManual, achado)
 
         val dlg = AlertDialog.Builder(this)
             .setTitle("Vincular comanda à mesa $numero")
-            .setView(caixa(comandaIn, status, cpfIn, zapIn, nomeManual))
+            .setView(caixa(comandaIn, status, cpfIn, zap.view, nomeManual))
             .setPositiveButton("Vincular", null)
             .setNegativeButton("Cancelar", null)
             .create()
@@ -611,7 +676,7 @@ class ContaActivity : AppCompatActivity() {
                 val nome = achado.nome
                     ?: nomeManual.text.toString().trim().takeIf { nomeManual.visibility == View.VISIBLE && it.isNotBlank() }
                 val cpf = cpfIn.text.toString().filter { it.isDigit() }.takeIf { it.length == 11 }
-                val tel = zapIn.text.toString().filter { it.isDigit() }.takeIf { it.length >= 10 }
+                val tel = zap.valor()
                 val tk = Session.token(this) ?: return@setOnClickListener logout()
                 Thread {
                     try {
@@ -913,16 +978,25 @@ class ContaActivity : AppCompatActivity() {
             }
         }
         val alvoRow = chipRow()
-        if (alvos.size > 1) alvos.forEach { a ->
-            val rot = (if (a == numero) "Mesa $a" else "C$a") + (valoresComanda[a]?.let { "\n$it" } ?: "")
-            val b = chip(alvoRow, rot)
-            b.textSize = 12f
-            if (a == alvo) {
-                b.setBackgroundColor(0xFF0C7091.toInt())
-                b.setTextColor(0xFFFFFFFF.toInt())
-            }
-            b.setOnClickListener {
-                if (a != alvo) { dlg?.dismiss(); abrirReceber(a) }
+        if (alvos.size > 1) {
+            // TUDO: mesa + comandas numa PASSADA só — um NSU, baixas rateadas
+            // por conta (o conciliador central agrupa pelo NSU).
+            val bTudo = chip(alvoRow, "💳 TUDO")
+            bTudo.textSize = 12f
+            bTudo.setBackgroundColor(0xFF15803D.toInt())
+            bTudo.setTextColor(0xFFFFFFFF.toInt())
+            bTudo.setOnClickListener { dlg?.dismiss(); abrirReceberTudo() }
+            alvos.forEach { a ->
+                val rot = (if (a == numero) "Mesa $a" else "C$a") + (valoresComanda[a]?.let { "\n$it" } ?: "")
+                val b = chip(alvoRow, rot)
+                b.textSize = 12f
+                if (a == alvo) {
+                    b.setBackgroundColor(0xFF0C7091.toInt())
+                    b.setTextColor(0xFFFFFFFF.toInt())
+                }
+                b.setOnClickListener {
+                    if (a != alvo) { dlg?.dismiss(); abrirReceber(a) }
+                }
             }
         }
         val digIn = campo("Ou digite o valor", android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL)
@@ -966,6 +1040,207 @@ class ContaActivity : AppCompatActivity() {
             .setNegativeButton("Cancelar", null)
             .create()
         dlg?.show()
+    }
+
+    // ---- RECEBER TUDO: mesa + comandas numa passada só ----
+    // Uma transação no terminal (um NSU) e o servidor recebe uma baixa POR
+    // CONTA com esse NSU — cada pedido quita e fecha; o conciliador central
+    // agrupa as parcelas pelo NSU pra casar com a venda única da Cielo.
+    // Só integral (rachar continua no Receber de cada conta).
+
+    private data class ParcelaTudo(val numero: Int, val consumo: Double, val pago: Double)
+
+    private fun abrirReceberTudo() {
+        val base = Session.servidor(this)
+        Thread {
+            val alvos = mutableListOf(numero)
+            alvos.addAll(infoAtual?.comandas ?: emptyList())
+            val parcelas = mutableListOf<ParcelaTudo>()
+            for (a in alvos) {
+                val c = try { if (a == numero) conta else Api.conta(base, a) } catch (_: Exception) { null } ?: continue
+                val consumo = if (c.servico > 0) c.total - c.servico else c.total
+                parcelas.add(ParcelaTudo(a, consumo, c.pago))
+            }
+            runOnUiThread {
+                if (parcelas.size < 2) Toast.makeText(this, "Sem comandas com conta aberta pra somar", Toast.LENGTH_SHORT).show()
+                else dialogReceberTudo(parcelas)
+            }
+        }.start()
+    }
+
+    private fun dialogReceberTudo(parcelas: List<ParcelaTudo>) {
+        var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
+
+        fun restaDe(p: ParcelaTudo): Long {
+            val svc = Math.round(p.consumo * gorj) / 100.0
+            return Math.max(0L, Math.round((p.consumo + svc - p.pago) * 100))
+        }
+
+        val valorTxt = TextView(this)
+        valorTxt.textSize = 34f
+        valorTxt.setTypeface(null, android.graphics.Typeface.BOLD)
+        valorTxt.setTextColor(0xFF111827.toInt())
+        val subTxt = TextView(this)
+        subTxt.textSize = 13f
+        subTxt.setTextColor(0xFF6B7280.toInt())
+
+        val gorjRow = LinearLayout(this)
+        gorjRow.orientation = LinearLayout.HORIZONTAL
+        val gorjBtns = mutableListOf<Pair<Int, Button>>()
+        listOf(10, 15).forEach { pct ->
+            val b = Button(this)
+            b.text = "$pct%"
+            b.textSize = 14f
+            b.isAllCaps = false
+            val lp = LinearLayout.LayoutParams(0, dp(44))
+            lp.weight = 1f
+            lp.marginEnd = dp(4)
+            b.layoutParams = lp
+            gorjRow.addView(b)
+            gorjBtns.add(pct to b)
+        }
+        fun pinta() {
+            val total = parcelas.sumOf { restaDe(it) }
+            valorTxt.text = Cupom.brl(total / 100.0)
+            subTxt.text = parcelas.joinToString("\n") { p ->
+                (if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}") +
+                    ": ${Cupom.brl(restaDe(p) / 100.0)}"
+            } + "\n(uma passada de cartão; cada conta quita e fecha)"
+            gorjBtns.forEach { (pct, b) ->
+                b.setBackgroundColor(if (pct == gorj) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
+                b.setTextColor(if (pct == gorj) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
+            }
+        }
+        gorjBtns.forEach { (pct, b) -> b.setOnClickListener { gorj = pct; pinta() } }
+        pinta()
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(20), dp(8), dp(20), 0)
+        listOf<View>(valorTxt, subTxt, gorjRow).forEach {
+            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("💳 Receber TUDO — mesa + comandas")
+            .setView(box)
+            .setPositiveButton("💳 Cobrar") { _, _ ->
+                val vivas = parcelas.map { it to restaDe(it) }.filter { it.second > 0 }
+                val total = vivas.sumOf { it.second }
+                if (total <= 0) { Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+                cobrando = true
+                atualizarBotoes()
+                val linhas = vivas.map { (p, cents) ->
+                    Lio.Linha(if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}", cents)
+                }
+                Lio.cobrar(
+                    ref = "MESA-$numero-TUDO",
+                    linhas = linhas,
+                    valorCentavos = total,
+                    onInicio = { },
+                    onPago = { _, pagamentos -> registrarRateio(vivas.map { it.first.numero to it.second }, pagamentos) },
+                    onCancelado = {
+                        runOnUiThread {
+                            cobrando = false
+                            atualizarBotoes()
+                            Toast.makeText(this, "Pagamento cancelado", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onErro = { m ->
+                        runOnUiThread {
+                            cobrando = false
+                            atualizarBotoes()
+                            Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                )
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Uma baixa POR CONTA, todas com o NSU da passada única. Cada parcela
+     *  entra na fila de pendentes antes e só sai confirmada — igual ao fluxo
+     *  normal. NFC-e: por pedido, depois, pelo caixa (rateio não emite). */
+    private fun registrarRateio(parcelas: List<Pair<Int, Long>>, pagamentos: List<Lio.PagamentoLio>) {
+        val p = pagamentos.firstOrNull()
+        if (p == null) {
+            runOnUiThread { cobrando = false; atualizarBotoes() }
+            return
+        }
+        val tk = Session.token(this)
+        val base = Session.servidor(this)
+        Thread {
+            var ok = 0
+            var falha = 0
+            var ultimoErro: String? = null
+            for ((alvoP, cents) in parcelas) {
+                val body = org.json.JSONObject()
+                    .put("numero", alvoP)
+                    .put("forma", p.forma)
+                    .put("valor", cents / 100.0)
+                    .put("nsu", p.nsu)
+                    .put("autorizacao", p.autorizacao)
+                    .put("bandeira", p.bandeira)
+                val id = Pendentes.adicionar(this, body)
+                var okEste = false
+                for (t in 1..3) {
+                    try {
+                        if (tk == null) throw Api.SemSessao()
+                        val r = Api.lioPagar(base, tk, body)
+                        if (r.ok || r.jaRegistrado) { okEste = true; Pendentes.remover(this, id) }
+                        else ultimoErro = r.erro
+                        break
+                    } catch (e: Api.SemSessao) {
+                        ultimoErro = e.message
+                        break
+                    } catch (e: Exception) {
+                        ultimoErro = e.message
+                        try { Thread.sleep(2000L * t) } catch (_: InterruptedException) { }
+                    }
+                }
+                if (okEste) ok++ else falha++
+            }
+            runOnUiThread {
+                cobrando = false
+                carregar()
+                val total = parcelas.sumOf { it.second }
+                val msg = StringBuilder(
+                    "Recebido ${Cupom.brl(total / 100.0)} em UMA passada\n" +
+                        "${p.forma.uppercase()} ${p.bandeira}" +
+                        (if (p.nsu.isNotBlank()) " · NSU ${p.nsu}" else "") +
+                        "\n\nBaixas: $ok de ${parcelas.size} contas" +
+                        (if (falha == 0) " — todas quitadas e fechadas ✓" else ""),
+                )
+                if (falha > 0) msg.append(
+                    "\n⚠ $falha parcela(s) na fila" + (ultimoErro?.let { " ($it)" } ?: "") +
+                        " — reenvie na tela de mesas.",
+                )
+                msg.append("\n\nNota fiscal: emita por conta pelo caixa, se pedirem.")
+                AlertDialog.Builder(this)
+                    .setTitle(if (falha == 0) "✅ Tudo pago!" else "⚠️ Pago — baixas pendentes")
+                    .setMessage(msg.toString())
+                    .setPositiveButton("🖨 Comprovante") { _, _ ->
+                        Lio.imprimirBlocos(this, listOf(
+                            Lio.Bloco("\n${Session.loja(this)}\nPAGAMENTO ÚNICO", negrito = true, tamanho = 22),
+                            Lio.Bloco("MESA $numero + COMANDAS", negrito = true, tamanho = 24),
+                            Lio.Bloco(parcelas.joinToString("\n") { (n, c) ->
+                                (if (n == numero) "Mesa $n" else "Comanda $n") + "  " + Cupom.brl(c / 100.0)
+                            } + "\nTOTAL ${Cupom.brl(total / 100.0)}" +
+                                "\n${p.forma.uppercase()} ${p.bandeira}" +
+                                (if (p.nsu.isNotBlank()) "\nNSU ${p.nsu} AUT ${p.autorizacao}" else ""), tamanho = 20),
+                            Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
+                        ), onOk = { runOnUiThread { if (falha == 0) finish() } },
+                            onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                    }
+                    .setNeutralButton("📱 Zap") { _, _ ->
+                        dialogZapComprovante(numero, total, pagamentos, quitada = false, fecharAoSair = falha == 0)
+                    }
+                    .setNegativeButton("OK") { _, _ -> if (falha == 0) finish() }
+                    .setCancelable(false)
+                    .show()
+            }
+        }.start()
     }
 
     /** Itens reais da conta do alvo pro pedido da LIO (o certificador confere). */
@@ -1107,9 +1382,60 @@ class ContaActivity : AppCompatActivity() {
             .setPositiveButton("🖨 Recibo") { _, _ -> imprimirRecibo(alvo, pagamentos, fecharAoSair) }
             .setNegativeButton("OK") { _, _ -> if (fecharAoSair) finish() }
             .setCancelable(false)
-        // Conta quitada = hora do passe de saída (catraca/cancela do pátio).
-        if (quitada) b.setNeutralButton("🚗 Passe de saída") { _, _ -> dialogPasse(alvo, fecharAoSair) }
+            // Comprovante no zap do cliente (com país — turista também paga).
+            // Quitada: ao sair do zap, o passe de saída é oferecido na sequência.
+            .setNeutralButton("📱 Zap") { _, _ ->
+                dialogZapComprovante(alvo, totalCentavos, pagamentos, quitada, fecharAoSair)
+            }
         b.show()
+        // Quitada continua com o passe a um toque: ⋯ da mesa ou após o Zap.
+    }
+
+    /** Envia o comprovante do cartão pro WhatsApp do cliente — número com a
+     *  bandeirinha do país (wa.me exige DDI). Sem número: abre o WhatsApp pra
+     *  escolher o contato. Na maquininha sem WhatsApp instalado, o aparelho
+     *  avisa — aí o caminho é o recibo impresso. */
+    private fun dialogZapComprovante(
+        alvo: Int,
+        totalCentavos: Long,
+        pagamentos: List<Lio.PagamentoLio>,
+        quitada: Boolean,
+        fecharAoSair: Boolean,
+    ) {
+        val p = pagamentos.firstOrNull()
+        val texto = buildString {
+            append("*${Session.loja(this@ContaActivity)}*\n")
+            append("Comprovante — ${if (Session.ehComanda(this@ContaActivity, alvo)) "Comanda" else "Mesa"} $alvo\n")
+            append(Cupom.brl(totalCentavos / 100.0))
+            if (p != null) {
+                append(" · ${p.forma.uppercase()} ${p.bandeira}")
+                if (p.mask.isNotBlank()) append(" **** ${p.mask.takeLast(4)}")
+                if (p.nsu.isNotBlank()) append("\nNSU ${p.nsu} · AUT ${p.autorizacao}")
+            }
+            append("\n${Cupom.agoraBr()}")
+        }
+        val zap = campoZap()
+        val depois = {
+            if (quitada) dialogPasse(alvo, fecharAoSair) else if (fecharAoSair) finish()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("📱 Comprovante por WhatsApp")
+            .setMessage("Número do cliente (troque o país na bandeirinha) — ou envie sem número e escolha o contato.")
+            .setView(caixa(zap.view))
+            .setPositiveButton("Enviar") { _, _ ->
+                val num = zap.valorComDdi()
+                val uri = if (num != null) "https://wa.me/$num?text=${android.net.Uri.encode(texto)}"
+                else "https://wa.me/?text=${android.net.Uri.encode(texto)}"
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(uri)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "WhatsApp indisponível neste aparelho — use o recibo impresso", Toast.LENGTH_LONG).show()
+                }
+                depois()
+            }
+            .setNegativeButton("Voltar") { _, _ -> depois() }
+            .setCancelable(false)
+            .show()
     }
 
     // ---- passe de saída: QR da catraca (N passagens) + placas pra cancela ----

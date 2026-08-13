@@ -76,8 +76,8 @@ android {
         // 1.9.2: conta da tela quitou = depois do resultado (e do recibo/
         // passe/nota, mesmo com erro) a tela VOLTA SOZINHA pras mesas —
         // ficava presa na mesa morta mostrando "aguardando pagamento".
-        versionCode = 23
-        versionName = "1.9.5"
+        versionCode = 24
+        versionName = "1.10.0"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

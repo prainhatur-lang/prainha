@@ -215,18 +215,52 @@ export async function rodarConciliacaoOperadora(opts: {
         .where(inArray(schema.matchPdvCielo.id, idsRevogaveis));
     }
 
+    // ---- RATEIO POR NSU (maquininha: mesa + comandas numa passada só) ----
+    // Uma transação no terminal (um NSU) vira N baixas no PDV — uma por
+    // pedido (mesa e cada comanda). O par com a venda Cielo é 1:1 (unique
+    // dos dois lados), então: a PARCELA PRINCIPAL (maior valor) entra no
+    // pool com o valor SOMADO do grupo e leva o match nível 1; as irmãs
+    // saem do pool e ganham exceção AUTO-ACEITA auditável (tipo RATEIO_NSU)
+    // apontando a mesma venda. Grupo só existe quando o app rateia — venda
+    // avulsa nunca repete NSU+autorização+dia.
+    const chaveNsu = (p: (typeof pagamentos)[number]) =>
+      `${p.nsu}|${p.numeroAutorizacao ?? ''}|${p.dataPagamento ? dateToBrYmd(p.dataPagamento) : ''}`;
+    const gruposPorChave = new Map<string, typeof pagamentos>();
+    for (const p of pagamentos) {
+      if (!p.nsu) continue;
+      const arr = gruposPorChave.get(chaveNsu(p));
+      if (arr) arr.push(p);
+      else gruposPorChave.set(chaveNsu(p), [p]);
+    }
+    /** id do pagamento principal → parcelas-irmãs (fora do pool) */
+    const irmasPorPrimary = new Map<string, typeof pagamentos>();
+    /** id do principal → valor somado do grupo */
+    const valorGrupo = new Map<string, number>();
+    const idsIrmas = new Set<string>();
+    for (const grupo of gruposPorChave.values()) {
+      if (grupo.length < 2) continue;
+      const ordenado = [...grupo].sort((a, b) => Number(b.valor) - Number(a.valor));
+      const primary = ordenado[0];
+      const irmas = ordenado.slice(1);
+      irmasPorPrimary.set(primary.id, irmas);
+      valorGrupo.set(primary.id, +grupo.reduce((s, p) => s + Number(p.valor), 0).toFixed(2));
+      irmas.forEach((p) => idsIrmas.add(p.id));
+    }
+
     // Roda matcher (NSU + fallback data+valor+forma)
     const result = matchPdvCielo(
-      pagamentos.map((p) => ({
-        id: p.id,
-        nsu: p.nsu,
-        valor: Number(p.valor),
-        formaPagamento: p.formaPagamento ?? '',
-        // data em BRT pra bater com venda_adquirente.dataVenda (BRT).
-        dataPagamento: p.dataPagamento ? dateToBrYmd(p.dataPagamento) : undefined,
-        codigoPedidoExterno: p.codigoPedidoExterno ?? null,
-        numeroAutorizacao: p.numeroAutorizacao ?? null,
-      })),
+      pagamentos
+        .filter((p) => !idsIrmas.has(p.id))
+        .map((p) => ({
+          id: p.id,
+          nsu: p.nsu,
+          valor: valorGrupo.get(p.id) ?? Number(p.valor),
+          formaPagamento: p.formaPagamento ?? '',
+          // data em BRT pra bater com venda_adquirente.dataVenda (BRT).
+          dataPagamento: p.dataPagamento ? dateToBrYmd(p.dataPagamento) : undefined,
+          codigoPedidoExterno: p.codigoPedidoExterno ?? null,
+          numeroAutorizacao: p.numeroAutorizacao ?? null,
+        })),
       vendas.map((v) => ({
         id: v.id,
         nsu: v.nsu,
@@ -305,6 +339,52 @@ export async function rodarConciliacaoOperadora(opts: {
 
     const pedidoTxt = (p: { codigoPedidoExterno?: number | null }) =>
       p.codigoPedidoExterno ? `Pedido #${p.codigoPedidoExterno}` : 'Pedido ?';
+
+    // Parcelas-irmãs do rateio por NSU: exceção que JÁ NASCE aceita — o
+    // dinheiro delas está dentro do match do par principal. Dedupe por
+    // pagamento (rodadas seguintes não duplicam).
+    if (idsIrmas.size > 0) {
+      const jaTem = new Set(
+        (
+          await db
+            .select({ pagamentoId: schema.excecao.pagamentoId })
+            .from(schema.excecao)
+            .where(
+              and(
+                eq(schema.excecao.filialId, filialId),
+                eq(schema.excecao.tipo, 'RATEIO_NSU'),
+                inArray(schema.excecao.pagamentoId, [...idsIrmas]),
+              ),
+            )
+        ).map((e) => e.pagamentoId),
+      );
+      const vendaDoPrimary = new Map<string, string | undefined>();
+      for (const m of result.matched) vendaDoPrimary.set(m.pdv.id, m.cielo.id);
+      for (const d of result.divergenciaValor) vendaDoPrimary.set(d.pdv.id, d.cielo.id);
+      for (const [primaryId, irmas] of irmasPorPrimary) {
+        const primary = pagamentos.find((p) => p.id === primaryId);
+        for (const irma of irmas) {
+          if (jaTem.has(irma.id)) continue;
+          novasExcecoes.push({
+            filialId,
+            processo: PROCESSO_OPERADORA,
+            pagamentoId: irma.id,
+            vendaAdquirenteId: vendaDoPrimary.get(primaryId) ?? null,
+            tipo: 'RATEIO_NSU',
+            severidade: 'info',
+            valor: String(irma.valor),
+            descricao:
+              `${pedidoTxt(irma)} — parcela de R$ ${Number(irma.valor).toFixed(2)} do rateio da ` +
+              `maquininha (NSU ${irma.nsu}, mesa+comandas numa passada). A venda Cielo casa no ` +
+              `par principal (${primary ? pedidoTxt(primary) : 'pedido ?'}, grupo de ` +
+              `R$ ${(valorGrupo.get(primaryId) ?? 0).toFixed(2)}).`,
+            aceitaEm: new Date(),
+            motivo: 'OUTRO',
+            observacao: 'aceita automaticamente: rateio mesa+comandas da maquininha',
+          });
+        }
+      }
+    }
 
     for (const { pdv, cielo, diff } of result.divergenciaValor) {
       // Auto-aceita quando |diff| <= toleranciaAutoAceite (default R$ 0,90)
