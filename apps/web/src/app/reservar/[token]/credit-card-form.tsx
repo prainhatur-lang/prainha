@@ -107,13 +107,10 @@ export function CreditCardForm({
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [authenticating3DS, setAuthenticating3DS] = useState(false);
-  const [mpiReady, setMpiReady] = useState(false);
   const mpiConfigRef = useRef<{ accessToken: string } | null>(null);
-  // O SDK lê o access token do DOM UMA única vez, no parse do script, e cada
-  // sessão vale UM authenticate (token expira em ~20min). Estes refs decidem
-  // quando remontar o SDK do zero.
-  const sdkBornRef = useRef(0);
-  const sdkUsadoRef = useRef(false);
+  // Resolve quando o Cardinal termina o setup (callback onReady do SDK) —
+  // o sinal de que dá pra chamar bpmpi_authenticate().
+  const readyResolverRef = useRef<(() => void) | null>(null);
   const threeDsResolverRef = useRef<((v: ThreeDSResult | null) => void) | null>(null);
   // Qual callback do SDK disparou. Sem isto, "cartão não participa do 3DS" e
   // "emissor negou" viram a mesma mensagem e não dá pra diagnosticar nada.
@@ -123,13 +120,14 @@ export function CreditCardForm({
   const cleanNumber = cardNumber.replace(/\s/g, '');
   const brand = cleanNumber.length >= 4 ? detectBrand(cleanNumber) : '';
 
-  /** Monta (ou REMONTA) o SDK da Braspag do zero. O script auto-executa
-   *  bpmpi_load() no PARSE e lê o token do input `.bpmpi_accesstoken` uma
-   *  única vez ali (removendo o nó); depois disso o bpmpi_load() público é
-   *  no-op ("Resources already loaded"). Então: token fresco no input ANTES
-   *  de injetar o script, e recarregar = trocar o <script> inteiro. Era isso
-   *  que causava o 401/MPI900: o script entrava antes do input existir e a
-   *  sessão ficava pra sempre com Bearer vazio. */
+  /** Monta o SDK da Braspag do zero — chamado NO SUBMIT, nunca no load.
+   *  O script auto-executa bpmpi_load() no PARSE e lê os inputs bpmpi_* do
+   *  DOM uma única vez ali (o accesstoken ele até remove do DOM); depois
+   *  disso o bpmpi_load() público é no-op ("Resources already loaded").
+   *  Montar no load quebrava de dois jeitos: o token entrava atrasado
+   *  (Bearer vazio → 401) e o orderNumber/amount nem existiam (init
+   *  inválida). No submit todos os inputs já estão no DOM, e cada tentativa
+   *  troca o <script> inteiro = sessão nova com token fresco. */
   async function montarSdk(): Promise<boolean> {
     try {
       const res = await fetch(urlMpiToken);
@@ -158,10 +156,7 @@ export function CreditCardForm({
         script.onerror = () => resolve(false);
         document.head.appendChild(script);
       });
-      if (!ok) return false;
-      sdkBornRef.current = Date.now();
-      sdkUsadoRef.current = false;
-      return true;
+      return ok;
     } catch {
       return false;
     }
@@ -172,9 +167,8 @@ export function CreditCardForm({
   // onload faz o pagamento travar em "Autenticando..." mesmo com o banco
   // aprovando.
   useEffect(() => {
-    if (mpiReady) return;
-    let cancelled = false;
     const resolverRef = threeDsResolverRef;
+    const readyRef = readyResolverRef;
 
     window.bpmpi_config = function () {
       const cfg = mpiConfigRef.current;
@@ -183,6 +177,10 @@ export function CreditCardForm({
         environment: 'PRD',
         AccessToken: cfg?.accessToken || '',
         accessToken: cfg?.accessToken || '',
+        onReady: function () {
+          readyRef.current?.();
+          readyRef.current = null;
+        },
         onSuccess: function (result: BpmpiResult) {
           resolverRef.current?.({
             Cavv: result?.Cavv || result?.cavv || '',
@@ -239,17 +237,7 @@ export function CreditCardForm({
       };
     };
 
-    (async () => {
-      const ok = await montarSdk();
-      if (cancelled) return;
-      if (ok) setMpiReady(true);
-      else setError('Falha ao inicializar autenticação do cartão');
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mpiReady]);
+  }, []);
 
   /** CEP completo preenche rua, bairro, cidade e UF. Digitar endereco inteiro
    *  no celular, na mesa, e' onde a pessoa desiste de pagar. Se o ViaCEP nao
@@ -279,22 +267,21 @@ export function CreditCardForm({
   async function authenticate3DS(): Promise<ThreeDSResult | null> {
     if (typeof window === 'undefined') return null;
 
-    // Sessão do MPI vale UM authenticate e o token expira em ~20min. Se já
-    // gastou (retry) ou envelheceu (a pessoa demorou digitando), remonta o
-    // SDK — bpmpi_load() de novo NÃO serve, é no-op depois do primeiro parse.
-    const envelheceu = Date.now() - sdkBornRef.current > 15 * 60_000;
-    if (sdkUsadoRef.current || envelheceu) {
-      const ok = await montarSdk();
-      if (!ok) {
-        motivoRef.current = 'error';
-        detalheRef.current = 'remontagem do SDK falhou';
-        return null;
-      }
-      // o parse já disparou o /v2/3ds/init; respiro pro Cardinal se armar
-      await new Promise((r) => setTimeout(r, 1500));
+    // SDK novo a cada tentativa (sessão vale UM authenticate e o token
+    // expira). O onReady (setupComplete do Cardinal) diz a hora de ir; se
+    // não vier em 8s, tenta mesmo assim — no pior caso cai no fallback.
+    const pronto = new Promise<void>((resolve) => {
+      readyResolverRef.current = resolve;
+      window.setTimeout(resolve, 8000);
+    });
+    const ok = await montarSdk();
+    if (!ok) {
+      motivoRef.current = 'error';
+      detalheRef.current = 'montagem do SDK falhou';
+      return null;
     }
+    await pronto;
     if (!window.bpmpi_authenticate) return null;
-    sdkUsadoRef.current = true;
 
     return new Promise((resolve) => {
       threeDsResolverRef.current = resolve;
@@ -331,11 +318,6 @@ export function CreditCardForm({
     const month = expiryDigits.slice(0, 2);
     const year = `20${expiryDigits.slice(2)}`;
 
-    if (!mpiReady) {
-      setError('Carregando autenticação segura... aguarde alguns segundos e tente de novo.');
-      setProcessing(false);
-      return;
-    }
     setAuthenticating3DS(true);
     const auth = await authenticate3DS();
     setAuthenticating3DS(false);
@@ -413,37 +395,36 @@ export function CreditCardForm({
       )}
 
       {/* Inputs ocultos lidos pelo SDK Braspag MPI 3DS via document.querySelector
-          — não vem do retorno de bpmpi_config, esses campos são obrigatórios aqui.
-          O bpmpi_accesstoken NÃO está aqui de propósito: o SDK remove esse nó do
-          DOM no parse, então ele é criado imperativamente em montarSdk(). */}
-      {mpiReady && (
-        <div style={{ display: 'none' }} aria-hidden="true">
-          <input className="bpmpi_auth" value="true" readOnly />
-          <input className="bpmpi_cardnumber" value={cleanNumber} readOnly />
-          <input className="bpmpi_cardexpirationmonth" value={expMonthForMpi} readOnly />
-          <input className="bpmpi_cardexpirationyear" value={expYearForMpi} readOnly />
-          <input className="bpmpi_ordernumber" value={orderIdForMpi} readOnly />
-          <input className="bpmpi_currency" value="BRL" readOnly />
-          <input className="bpmpi_totalamount" value={amountForMpi} readOnly />
-          <input className="bpmpi_installments" value="1" readOnly />
-          <input className="bpmpi_paymentmethod" value={cardType === 'DebitCard' ? 'Debit' : 'Credit'} readOnly />
-          <input className="bpmpi_orderdate" value={new Date().toISOString().slice(0, 10).replace(/-/g, '')} readOnly />
-          <input className="bpmpi_order_productcode" value="PHY" readOnly />
-          <input
-            className="bpmpi_merchant_url"
-            value={typeof window !== 'undefined' ? window.location.origin : 'https://app.prainhabar.com'}
-            readOnly
-          />
-          <input className="bpmpi_billto_contactname" value={holder.trim().toUpperCase() || 'CLIENTE'} readOnly />
-          <input className="bpmpi_billto_phonenumber" value={fone.replace(/\D/g, '')} readOnly />
-          <input className="bpmpi_billto_email" value={email.trim()} readOnly />
-          <input className="bpmpi_billto_street1" value={street} readOnly />
-          <input className="bpmpi_billto_city" value={city} readOnly />
-          <input className="bpmpi_billto_state" value={state} readOnly />
-          <input className="bpmpi_billto_zipcode" value={cep.replace(/\D/g, '')} readOnly />
-          <input className="bpmpi_billto_country" value="BR" readOnly />
-        </div>
-      )}
+          no PARSE do script (injetado só no submit) — não vem do retorno de
+          bpmpi_config, esses campos são obrigatórios aqui, ANTES do script.
+          O bpmpi_accesstoken NÃO está aqui de propósito: o SDK remove esse nó
+          do DOM ao ler, então ele é criado imperativamente em montarSdk(). */}
+      <div style={{ display: 'none' }} aria-hidden="true">
+        <input className="bpmpi_auth" value="true" readOnly />
+        <input className="bpmpi_cardnumber" value={cleanNumber} readOnly />
+        <input className="bpmpi_cardexpirationmonth" value={expMonthForMpi} readOnly />
+        <input className="bpmpi_cardexpirationyear" value={expYearForMpi} readOnly />
+        <input className="bpmpi_ordernumber" value={orderIdForMpi} readOnly />
+        <input className="bpmpi_currency" value="BRL" readOnly />
+        <input className="bpmpi_totalamount" value={amountForMpi} readOnly />
+        <input className="bpmpi_installments" value="1" readOnly />
+        <input className="bpmpi_paymentmethod" value={cardType === 'DebitCard' ? 'Debit' : 'Credit'} readOnly />
+        <input className="bpmpi_orderdate" value={new Date().toISOString().slice(0, 10).replace(/-/g, '')} readOnly />
+        <input className="bpmpi_order_productcode" value="PHY" readOnly />
+        <input
+          className="bpmpi_merchant_url"
+          value={typeof window !== 'undefined' ? window.location.origin : 'https://app.prainhabar.com'}
+          readOnly
+        />
+        <input className="bpmpi_billto_contactname" value={holder.trim().toUpperCase() || 'CLIENTE'} readOnly />
+        <input className="bpmpi_billto_phonenumber" value={fone.replace(/\D/g, '')} readOnly />
+        <input className="bpmpi_billto_email" value={email.trim()} readOnly />
+        <input className="bpmpi_billto_street1" value={street} readOnly />
+        <input className="bpmpi_billto_city" value={city} readOnly />
+        <input className="bpmpi_billto_state" value={state} readOnly />
+        <input className="bpmpi_billto_zipcode" value={cep.replace(/\D/g, '')} readOnly />
+        <input className="bpmpi_billto_country" value="BR" readOnly />
+      </div>
 
       <div className="flex gap-2">
         <button
