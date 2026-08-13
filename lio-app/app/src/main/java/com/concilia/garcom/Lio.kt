@@ -244,23 +244,24 @@ object Lio {
                 }
                 val b = blocos[i]
                 if (b.qr != null) {
-                    // QR não pode DERRUBAR o cupom (o DANFE já saiu meio impresso
-                    // em campo): falhou no 380, tenta menor; falhou de novo,
-                    // imprime aviso e SEGUE — o resto do documento sai inteiro.
-                    pm.printQrCode(b.qr, 380, PrinterAttributes.VAL_ALIGN_CENTER, object : PrinterListener {
-                        override fun onPrintSuccess() { passo(i + 1) }
-                        override fun onWithoutPaper() { onErro("Maquininha sem papel") }
-                        override fun onError(e: Throwable?) {
-                            pm.printQrCode(b.qr, 300, PrinterAttributes.VAL_ALIGN_CENTER, object : PrinterListener {
-                                override fun onPrintSuccess() { passo(i + 1) }
-                                override fun onWithoutPaper() { onErro("Maquininha sem papel") }
-                                override fun onError(e2: Throwable?) {
-                                    pm.printText("[QR indisponivel nesta via]\n",
-                                        estilo(Bloco(tamanho = 16)), ouvinte)
-                                }
-                            })
-                        }
-                    })
+                    // QR desenhado por nós (zxing) e impresso como IMAGEM — o
+                    // printQrCode do SDK não imprime em campo (saiu o DANFE sem
+                    // QR na loja; o CupomPro tem a mesma cicatriz). E o QR não
+                    // pode DERRUBAR o cupom: qualquer falha imprime aviso e
+                    // SEGUE — o resto do documento sai inteiro.
+                    val aviso = {
+                        pm.printText("[QR indisponivel nesta via]\n",
+                            estilo(Bloco(tamanho = 16)), ouvinte)
+                    }
+                    val bmp = Qr.bitmap(b.qr, 360)
+                    if (bmp == null) aviso() else {
+                        val centro = mapOf(PrinterAttributes.KEY_ALIGN to PrinterAttributes.VAL_ALIGN_CENTER)
+                        pm.printImage(bmp, centro, object : PrinterListener {
+                            override fun onPrintSuccess() { passo(i + 1) }
+                            override fun onWithoutPaper() { onErro("Maquininha sem papel") }
+                            override fun onError(e: Throwable?) { aviso() }
+                        })
+                    }
                 } else pm.printText(b.texto, estilo(b), ouvinte)
             }
             passo(0)

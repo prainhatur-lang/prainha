@@ -76,8 +76,11 @@ android {
         // 1.9.2: conta da tela quitou = depois do resultado (e do recibo/
         // passe/nota, mesmo com erro) a tela VOLTA SOZINHA pras mesas —
         // ficava presa na mesa morta mostrando "aguardando pagamento".
-        versionCode = 24
-        versionName = "1.10.0"
+        // 1.10.1: QR do DANFE/passe desenhado no app (zxing) e impresso como
+        // IMAGEM — o printQrCode do SDK da Cielo não imprime em campo (cupom
+        // saía com o aviso mas sem o QR; mesma lição já aprendida no CupomPro).
+        versionCode = 25
+        versionName = "1.10.1"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
@@ -119,4 +122,7 @@ dependencies {
     // lio-app/sdk/ (repo Maven local declarado no settings.gradle.kts).
     // Puxa transitivamente: kotlinx-coroutines, gson e cielo.smart:event-tracker.
     implementation("com.cielo.lio:order-manager:2.5.5")
+    // Gera o QR (DANFE, passe) como Bitmap — impresso via printImage, porque o
+    // printQrCode do SDK não imprime em campo. Java puro, zero WebView.
+    implementation("com.google.zxing:core:3.5.3")
 }
