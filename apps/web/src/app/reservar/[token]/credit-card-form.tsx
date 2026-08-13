@@ -108,8 +108,12 @@ export function CreditCardForm({
   const [processing, setProcessing] = useState(false);
   const [authenticating3DS, setAuthenticating3DS] = useState(false);
   const [mpiReady, setMpiReady] = useState(false);
-  const [mpiToken, setMpiToken] = useState('');
   const mpiConfigRef = useRef<{ accessToken: string } | null>(null);
+  // O SDK lê o access token do DOM UMA única vez, no parse do script, e cada
+  // sessão vale UM authenticate (token expira em ~20min). Estes refs decidem
+  // quando remontar o SDK do zero.
+  const sdkBornRef = useRef(0);
+  const sdkUsadoRef = useRef(false);
   const threeDsResolverRef = useRef<((v: ThreeDSResult | null) => void) | null>(null);
   // Qual callback do SDK disparou. Sem isto, "cartão não participa do 3DS" e
   // "emissor negou" viram a mesma mensagem e não dá pra diagnosticar nada.
@@ -119,10 +123,54 @@ export function CreditCardForm({
   const cleanNumber = cardNumber.replace(/\s/g, '');
   const brand = cleanNumber.length >= 4 ? detectBrand(cleanNumber) : '';
 
-  // Carrega SDK Braspag MPI + token. window.bpmpi_config PRECISA existir
-  // ANTES do script BP.Mpi carregar — o SDK registra os callbacks de
-  // notificação no parse. Definir depois do onload faz o pagamento travar
-  // em "Autenticando..." mesmo com o banco aprovando.
+  /** Monta (ou REMONTA) o SDK da Braspag do zero. O script auto-executa
+   *  bpmpi_load() no PARSE e lê o token do input `.bpmpi_accesstoken` uma
+   *  única vez ali (removendo o nó); depois disso o bpmpi_load() público é
+   *  no-op ("Resources already loaded"). Então: token fresco no input ANTES
+   *  de injetar o script, e recarregar = trocar o <script> inteiro. Era isso
+   *  que causava o 401/MPI900: o script entrava antes do input existir e a
+   *  sessão ficava pra sempre com Bearer vazio. */
+  async function montarSdk(): Promise<boolean> {
+    try {
+      const res = await fetch(urlMpiToken);
+      if (!res.ok) return false;
+      const data = await res.json();
+      mpiConfigRef.current = { accessToken: data.accessToken };
+
+      // Input imperativo, fora do JSX: o SDK REMOVE o nó no parse e o React
+      // não pode dar diff num filho que sumiu por baixo dele.
+      let input = document.querySelector<HTMLInputElement>('input.bpmpi_accesstoken');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'hidden';
+        input.className = 'bpmpi_accesstoken';
+        document.body.appendChild(input);
+      }
+      input.value = data.accessToken;
+
+      document.querySelector('script[data-bpmpi]')?.remove();
+      const ok = await new Promise<boolean>((resolve) => {
+        const script = document.createElement('script');
+        script.src = data.scriptUrl;
+        script.async = true;
+        script.dataset.bpmpi = 'true';
+        script.onload = () => resolve(true);
+        script.onerror = () => resolve(false);
+        document.head.appendChild(script);
+      });
+      if (!ok) return false;
+      sdkBornRef.current = Date.now();
+      sdkUsadoRef.current = false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // window.bpmpi_config PRECISA existir ANTES do script BP.Mpi carregar — o
+  // SDK registra os callbacks de notificação no parse. Definir depois do
+  // onload faz o pagamento travar em "Autenticando..." mesmo com o banco
+  // aprovando.
   useEffect(() => {
     if (mpiReady) return;
     let cancelled = false;
@@ -191,30 +239,12 @@ export function CreditCardForm({
       };
     };
 
-    async function load() {
-      try {
-        const res = await fetch(urlMpiToken);
-        if (!res.ok) throw new Error('Falha ao obter token de segurança');
-        const data = await res.json();
-        if (cancelled) return;
-        mpiConfigRef.current = { accessToken: data.accessToken };
-        setMpiToken(data.accessToken);
-        if (!document.querySelector('script[data-bpmpi]')) {
-          const script = document.createElement('script');
-          script.src = data.scriptUrl;
-          script.async = true;
-          script.dataset.bpmpi = 'true';
-          script.onload = () => !cancelled && setMpiReady(true);
-          script.onerror = () => !cancelled && setError('Falha ao carregar segurança da Cielo');
-          document.head.appendChild(script);
-        } else {
-          setMpiReady(true);
-        }
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message || 'Falha ao inicializar autenticação do cartão');
-      }
-    }
-    load();
+    (async () => {
+      const ok = await montarSdk();
+      if (cancelled) return;
+      if (ok) setMpiReady(true);
+      else setError('Falha ao inicializar autenticação do cartão');
+    })();
     return () => {
       cancelled = true;
     };
@@ -247,23 +277,24 @@ export function CreditCardForm({
   }
 
   async function authenticate3DS(): Promise<ThreeDSResult | null> {
-    if (typeof window === 'undefined' || !window.bpmpi_authenticate) return null;
+    if (typeof window === 'undefined') return null;
 
-    // Token MPI é consumido a cada bpmpi_authenticate — busca um FRESCO
-    // agora (o do mount pode já ter sido usado numa tentativa anterior).
-    try {
-      const res = await fetch(urlMpiToken);
-      if (res.ok) {
-        const data = await res.json();
-        if (mpiConfigRef.current) mpiConfigRef.current.accessToken = data.accessToken;
-        setMpiToken(data.accessToken);
-        await new Promise((r) => setTimeout(r, 100));
-        window.bpmpi_load?.();
-        await new Promise((r) => setTimeout(r, 300));
+    // Sessão do MPI vale UM authenticate e o token expira em ~20min. Se já
+    // gastou (retry) ou envelheceu (a pessoa demorou digitando), remonta o
+    // SDK — bpmpi_load() de novo NÃO serve, é no-op depois do primeiro parse.
+    const envelheceu = Date.now() - sdkBornRef.current > 15 * 60_000;
+    if (sdkUsadoRef.current || envelheceu) {
+      const ok = await montarSdk();
+      if (!ok) {
+        motivoRef.current = 'error';
+        detalheRef.current = 'remontagem do SDK falhou';
+        return null;
       }
-    } catch (err) {
-      console.error('[mpi-token refresh]', err);
+      // o parse já disparou o /v2/3ds/init; respiro pro Cardinal se armar
+      await new Promise((r) => setTimeout(r, 1500));
     }
+    if (!window.bpmpi_authenticate) return null;
+    sdkUsadoRef.current = true;
 
     return new Promise((resolve) => {
       threeDsResolverRef.current = resolve;
@@ -382,11 +413,12 @@ export function CreditCardForm({
       )}
 
       {/* Inputs ocultos lidos pelo SDK Braspag MPI 3DS via document.querySelector
-          — não vem do retorno de bpmpi_config, esses campos são obrigatórios aqui. */}
-      {mpiReady && mpiToken && (
+          — não vem do retorno de bpmpi_config, esses campos são obrigatórios aqui.
+          O bpmpi_accesstoken NÃO está aqui de propósito: o SDK remove esse nó do
+          DOM no parse, então ele é criado imperativamente em montarSdk(). */}
+      {mpiReady && (
         <div style={{ display: 'none' }} aria-hidden="true">
           <input className="bpmpi_auth" value="true" readOnly />
-          <input className="bpmpi_accesstoken" value={mpiToken} readOnly />
           <input className="bpmpi_cardnumber" value={cleanNumber} readOnly />
           <input className="bpmpi_cardexpirationmonth" value={expMonthForMpi} readOnly />
           <input className="bpmpi_cardexpirationyear" value={expYearForMpi} readOnly />
