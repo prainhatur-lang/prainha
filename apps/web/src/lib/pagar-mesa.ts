@@ -20,7 +20,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  *
  *  Checado no SERVIDOR: o browser diz se autenticou, e browser não é fonte
  *  confiável pra decidir limite de risco. */
-export const SEM_3DS_TETO_CENTAVOS = Number(process.env.SEM_3DS_TETO_CENTAVOS ?? 5000);
+export const SEM_3DS_TETO_CENTAVOS = Number(process.env.SEM_3DS_TETO_CENTAVOS ?? 3000);
 
 export type PagarMesaParams = {
   filialId: string;
