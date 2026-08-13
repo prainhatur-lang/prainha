@@ -56,6 +56,39 @@ function detectBrand(number: string): string {
   return 'Visa';
 }
 
+/** Pro 3DS o telefone vai como DDI+número (só dígitos). Turista com cartão
+ *  estrangeiro tem celular estrangeiro — travar em +55 esfriava a análise
+ *  de risco do emissor à toa. Brasil primeiro; o resto em ordem de nome. */
+const PAISES_FONE = [
+  { ddi: '55', flag: '🇧🇷', nome: 'Brasil' },
+  { ddi: '49', flag: '🇩🇪', nome: 'Alemanha' },
+  { ddi: '54', flag: '🇦🇷', nome: 'Argentina' },
+  { ddi: '61', flag: '🇦🇺', nome: 'Austrália' },
+  { ddi: '32', flag: '🇧🇪', nome: 'Bélgica' },
+  { ddi: '591', flag: '🇧🇴', nome: 'Bolívia' },
+  { ddi: '56', flag: '🇨🇱', nome: 'Chile' },
+  { ddi: '86', flag: '🇨🇳', nome: 'China' },
+  { ddi: '57', flag: '🇨🇴', nome: 'Colômbia' },
+  { ddi: '82', flag: '🇰🇷', nome: 'Coreia do Sul' },
+  { ddi: '593', flag: '🇪🇨', nome: 'Equador' },
+  { ddi: '34', flag: '🇪🇸', nome: 'Espanha' },
+  { ddi: '1', flag: '🇺🇸', nome: 'EUA/Canadá' },
+  { ddi: '33', flag: '🇫🇷', nome: 'França' },
+  { ddi: '31', flag: '🇳🇱', nome: 'Holanda' },
+  { ddi: '353', flag: '🇮🇪', nome: 'Irlanda' },
+  { ddi: '972', flag: '🇮🇱', nome: 'Israel' },
+  { ddi: '39', flag: '🇮🇹', nome: 'Itália' },
+  { ddi: '81', flag: '🇯🇵', nome: 'Japão' },
+  { ddi: '52', flag: '🇲🇽', nome: 'México' },
+  { ddi: '595', flag: '🇵🇾', nome: 'Paraguai' },
+  { ddi: '51', flag: '🇵🇪', nome: 'Peru' },
+  { ddi: '351', flag: '🇵🇹', nome: 'Portugal' },
+  { ddi: '44', flag: '🇬🇧', nome: 'Reino Unido' },
+  { ddi: '41', flag: '🇨🇭', nome: 'Suíça' },
+  { ddi: '598', flag: '🇺🇾', nome: 'Uruguai' },
+  { ddi: '58', flag: '🇻🇪', nome: 'Venezuela' },
+];
+
 interface Props {
   token: string;
   reservaId: string;
@@ -95,6 +128,7 @@ export function CreditCardForm({
   // O 3DS 2.0 manda telefone e e-mail do titular na analise de risco do
   // emissor. Iam vazios, e o SDK devolvia onError sem autenticar nada.
   const [fone, setFone] = useState('');
+  const [foneDdi, setFoneDdi] = useState('55');
   const [email, setEmail] = useState('');
   const [cardType, setCardType] = useState<'CreditCard' | 'DebitCard'>('CreditCard');
   const [street, setStreet] = useState('');
@@ -417,7 +451,7 @@ export function CreditCardForm({
           readOnly
         />
         <input className="bpmpi_billto_contactname" value={holder.trim().toUpperCase() || 'CLIENTE'} readOnly />
-        <input className="bpmpi_billto_phonenumber" value={fone.replace(/\D/g, '')} readOnly />
+        <input className="bpmpi_billto_phonenumber" value={fone ? foneDdi + fone.replace(/\D/g, '') : ''} readOnly />
         <input className="bpmpi_billto_email" value={email.trim()} readOnly />
         <input className="bpmpi_billto_street1" value={street} readOnly />
         <input className="bpmpi_billto_city" value={city} readOnly />
@@ -479,14 +513,31 @@ export function CreditCardForm({
       <div className="flex gap-3">
         <div className="flex-1">
           <label className={lbl}>Celular</label>
-          <input
-            value={fone}
-            onChange={(e) => setFone(e.target.value.replace(/\D/g, '').slice(0, 11))}
-            placeholder="79900000000"
-            inputMode="numeric"
-            autoComplete="tel"
-            className={inp}
-          />
+          <div className="flex gap-1.5">
+            <select
+              value={foneDdi}
+              onChange={(e) => {
+                setFoneDdi(e.target.value);
+                if (e.target.value !== '55') setFone((f) => f.slice(0, 14));
+              }}
+              aria-label="País do celular"
+              className="mt-1.5 flex-none rounded-xl border border-[#e2c9a0] bg-white px-1.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20"
+            >
+              {PAISES_FONE.map((p) => (
+                <option key={p.ddi} value={p.ddi} title={p.nome}>
+                  {p.flag} +{p.ddi}
+                </option>
+              ))}
+            </select>
+            <input
+              value={fone}
+              onChange={(e) => setFone(e.target.value.replace(/\D/g, '').slice(0, foneDdi === '55' ? 11 : 14))}
+              placeholder={foneDdi === '55' ? '79900000000' : 'só números'}
+              inputMode="numeric"
+              autoComplete="tel-national"
+              className={`${inp} min-w-0`}
+            />
+          </div>
         </div>
         <div className="flex-1">
           <label className={lbl}>E-mail</label>
