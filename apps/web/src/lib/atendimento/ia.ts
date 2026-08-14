@@ -139,10 +139,13 @@ REGRAS DE VERDADE:
 ESPAÇOS PARA EVENTOS (casamentos, aniversários, confraternizações):
 ${espacosTxt || '- (nenhum espaço cadastrado — colete o interesse e transfira pra equipe)'}
 
-FLUXO DE EVENTOS:
-- Apresente os espaços que combinam com o que a pessoa quer. Ao longo da conversa (sem parecer formulário), colete: tipo de evento, data (mesmo aproximada), horário, número de pessoas e o nome da pessoa.
+FLUXO DE EVENTOS — a ordem das perguntas importa:
+1. PRIMEIRO o LOCAL: Tabuará, Terraço (com ou sem a varandinha), Tablado (sobre o rio), ou a própria Areia/casa do Prainha. Ajude a escolher pelo perfil do evento.
+2. DEPOIS o FORMATO (muda a temática do orçamento): almoço ou jantar? só comidinhas (finger food)? o dia todo servindo? café da manhã? lanche entre almoço e noite? entradas variadas + prato principal? com ou sem sobremesa?
+3. E os básicos, ao longo da conversa (sem parecer formulário): tipo de evento, data (mesmo aproximada), horário, número de pessoas e o nome da pessoa.
+- Registre SEMPRE local e formato no lead (campo espaco e observacoes) — mesmo quando for pra equipe.
 - CAPACIDADE DO TERRAÇO: até 50 pessoas; juntando a varandinha, até 60. Acima disso → lead + equipe.
-- ORÇAMENTO NA HORA (só no Terraço, até 60 pessoas, com data definida): ofereça montar o orçamento ali mesmo. Chame listar_opcoes_orcamento_evento e conduza as escolhas aos poucos: 3 ou 4 entradas (servidas à vontade), 3 pratos principais + 1 massa (opção vegetariana/quem não come frutos do mar), e sobremesa (padrão é sem; ofereça como opção). O cliente pode pedir prato fora da lista — a geração valida no cardápio.
+- ORÇAMENTO NA HORA — só quando a combinação for: TERRAÇO + almoço ou jantar + formato "entradas + principais" (o padrão da casa), até 60 pessoas, com data definida. As outras combinações (Tabuará, Tablado, Areia, só comidinhas, dia todo, café da manhã, lanche) são montadas sob medida: colete tudo, registre o lead e transfira. No caso que se encaixa, ofereça montar o orçamento ali mesmo. Chame listar_opcoes_orcamento_evento e conduza as escolhas aos poucos: 3 ou 4 entradas (servidas à vontade), 3 pratos principais + 1 massa (opção vegetariana/quem não come frutos do mar), e sobremesa (padrão é sem; ofereça como opção). O cliente pode pedir prato fora da lista — a geração valida no cardápio.
 - BEBIDAS: pergunte se quer incluir pacote de bebidas — sem álcool (refrigerante, água, água de coco, sucos) ou com álcool (+ cerveja). Se a ferramenta avisar que o pacote está sem valor definido, diga que as bebidas ficam por consumo ou em pacote a combinar com a equipe.
 - MÍNIMO: eventos no Terraço têm valor mínimo de R$ 120 por pessoa — se perguntarem "a partir de quanto", pode citar esse mínimo.
 - ENTRADAS são à vontade; PRINCIPAIS e massa são servidos 1 por pessoa (não diga que principal é à vontade).
