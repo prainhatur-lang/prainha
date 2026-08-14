@@ -91,6 +91,7 @@ export async function POST(req: Request) {
             video?: { id?: string; caption?: string };
             document?: { id?: string; caption?: string; filename?: string };
             sticker?: { id?: string };
+            reaction?: { message_id?: string; emoji?: string };
             button?: { payload?: string; text?: string };
             interactive?: { button_reply?: { id?: string } };
           };
@@ -140,6 +141,7 @@ async function tratarMensagemComum(
     video?: { id?: string; caption?: string };
     document?: { id?: string; caption?: string; filename?: string };
     sticker?: { id?: string };
+    reaction?: { message_id?: string; emoji?: string };
   },
   phoneNumberId: string | undefined,
   contacts: Array<{ wa_id?: string; profile?: { name?: string } }> | undefined,
@@ -185,8 +187,15 @@ async function tratarMensagemComum(
       tipo = 'outro';
       mediaId = msg.sticker?.id ?? null;
       break;
+    case 'reaction':
+      // Reação (👍 etc.) na mensagem — registra no transcript, Nina NÃO
+      // responde (reagir não pede resposta; ela chutava "áudio" antes).
+      tipo = 'reacao';
+      corpo = msg.reaction?.emoji ?? '(reação)';
+      break;
     default:
-      tipo = 'outro';
+      // Guarda o tipo REAL da Meta pra enxergarmos o próximo formato novo.
+      tipo = (msg.type ?? 'outro').slice(0, 20);
   }
   if (tipo === 'texto' && !corpo) return;
 
@@ -203,6 +212,9 @@ async function tratarMensagemComum(
 
   const registro = await registrarEntrada(entrada);
   if (!registro) return; // reentrega (dedupe)
+
+  // Reação não pede resposta — fica só no transcript.
+  if (tipo === 'reacao') return;
 
   if (!registro.deveResponder) {
     // Conversa de fornecedor (ou assumida pela equipe): a Nina não responde,
