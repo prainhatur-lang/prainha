@@ -159,6 +159,23 @@ export function RespostasClient(props: {
     }
   }
 
+  async function salvarQuantidade(item: Item, valor: string) {
+    const qtd = moedaParaNumero(valor);
+    if (!Number.isFinite(qtd) || qtd <= 0 || qtd === Number(item.quantidade)) return;
+    try {
+      const resp = await fetch(`/api/cotacao/${props.cotacaoId}/alterar-item`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cotacaoItemId: item.id, quantidade: qtd }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
+      router.refresh();
+    } catch (e) {
+      alert(`Não consegui alterar a quantidade: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   async function zerarResposta(f: Forn) {
     if (confirmandoZerar !== f.cfId) {
       setConfirmandoZerar(f.cfId);
@@ -368,9 +385,30 @@ export function RespostasClient(props: {
                 <tr key={item.id} className="border-t border-slate-100 align-top">
                   <td className="sticky left-0 z-10 bg-white px-3 py-2">
                     <div className="font-medium text-slate-900">{item.produtoNome}</div>
-                    <div className="text-[10px] text-slate-500">
-                      {item.quantidade} {item.embalagemEsperada ?? item.unidade}
-                      {item.classificacao && ` · ${item.classificacao}`}
+                    <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                      {props.podeEditar ? (
+                        // Quantidade editável direto aqui: corrige "1 kg" que
+                        // era pra ser 20 antes de aprovar (Enter ou sair salva)
+                        <input
+                          defaultValue={item.quantidade}
+                          inputMode="decimal"
+                          className="w-14 rounded border border-slate-200 px-1 py-0.5 text-[10px]"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              (e.target as HTMLInputElement).blur();
+                            }
+                          }}
+                          onBlur={(e) => salvarQuantidade(item, e.target.value)}
+                          title="Quantidade do pedido — edite e saia do campo pra salvar"
+                        />
+                      ) : (
+                        <span>{item.quantidade}</span>
+                      )}
+                      <span>
+                        {item.embalagemEsperada ?? item.unidade}
+                        {item.classificacao && ` · ${item.classificacao}`}
+                      </span>
                     </div>
                     {item.marcasAceitas.length > 0 && (
                       <div className="text-[10px] text-slate-400">

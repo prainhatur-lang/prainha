@@ -5,7 +5,7 @@
 
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
-import { and, eq, asc } from 'drizzle-orm';
+import { and, eq, asc, inArray } from 'drizzle-orm';
 import { PreencherForm } from './preencher-form';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
@@ -64,6 +64,7 @@ export default async function PreencherCotacaoPage(props: {
   const itensTodos = await db
     .select({
       id: schema.cotacaoItem.id,
+      produtoId: schema.cotacaoItem.produtoId,
       quantidade: schema.cotacaoItem.quantidade,
       unidade: schema.cotacaoItem.unidade,
       marcasAceitas: schema.cotacaoItem.marcasAceitas,
@@ -81,6 +82,34 @@ export default async function PreencherCotacaoPage(props: {
   // Item que o gestor tirou da cotação DESTE fornecedor nem aparece pra ele.
   const excluidos = (await lerExclusoesPorCotacao(cf.cotacaoId)).get(cf.id) ?? new Set<string>();
   const itens = itensTodos.filter((i) => !excluidos.has(i.id));
+
+  // Pré-definições de embalagem (tabela de conversões produto_embalagem):
+  // "fardo 30 kg", "caixa 12x1L"... viram opções prontas no seletor do
+  // fornecedor, com o fator já calculado — ele escolhe em vez de digitar.
+  const embalagensRows =
+    itens.length === 0
+      ? []
+      : await db
+          .select({
+            produtoId: schema.produtoEmbalagem.produtoId,
+            nome: schema.produtoEmbalagem.nome,
+            qtd: schema.produtoEmbalagem.qtdNaUnidadeEstoque,
+            padrao: schema.produtoEmbalagem.padrao,
+          })
+          .from(schema.produtoEmbalagem)
+          .where(
+            inArray(
+              schema.produtoEmbalagem.produtoId,
+              itens.map((i) => i.produtoId),
+            ),
+          );
+  const embalagensPorProduto = new Map<string, Array<{ nome: string; qtd: number }>>();
+  for (const e of embalagensRows.sort((a, b) => Number(b.padrao) - Number(a.padrao))) {
+    const qtd = Number(e.qtd);
+    if (!Number.isFinite(qtd) || qtd <= 0) continue;
+    if (!embalagensPorProduto.has(e.produtoId)) embalagensPorProduto.set(e.produtoId, []);
+    embalagensPorProduto.get(e.produtoId)!.push({ nome: e.nome, qtd });
+  }
 
   // Respostas existentes (caso fornecedor esteja editando antes do prazo)
   const respostas = await db
@@ -153,6 +182,7 @@ export default async function PreencherCotacaoPage(props: {
               marcasAceitas: i.marcasAceitas
                 ? i.marcasAceitas.split('|').filter(Boolean)
                 : null,
+              embalagens: embalagensPorProduto.get(i.produtoId) ?? [],
             }))}
             respostasIniciais={respostas.reduce<
               Record<

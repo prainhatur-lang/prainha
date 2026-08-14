@@ -12,6 +12,9 @@ interface Item {
   embalagemEsperada: string | null;
   classificacao: string | null;
   observacao: string | null;
+  /** Pré-definições da tabela de conversões (produto_embalagem): o fornecedor
+   *  escolhe "fardo 30 kg" / "caixa 12x1L" com o fator JÁ calculado. */
+  embalagens: Array<{ nome: string; qtd: number }>;
 }
 
 interface RespostaInicial {
@@ -75,8 +78,13 @@ function nomePacote(unidade: string): string {
   return 'embalagem fechada (mais de 1)';
 }
 
-/** Fator de conversão calculado a partir da escolha estruturada. */
-function fatorDe(r: RespostaItem): number {
+/** Fator de conversão calculado a partir da escolha estruturada.
+ *  tipoPreco 'emb:N' = N-ésima embalagem pré-definida do item (fator pronto). */
+function fatorDe(r: RespostaItem, item: Item): number {
+  if (r.tipoPreco.startsWith('emb:')) {
+    const emb = item.embalagens[Number(r.tipoPreco.slice(4))];
+    return emb ? emb.qtd : NaN;
+  }
   if (r.tipoPreco === 'ml') {
     const ml = moedaParaNumero(r.qtdPorEmbalagem);
     return ml > 0 ? ml / 1000 : NaN;
@@ -88,10 +96,14 @@ function fatorDe(r: RespostaItem): number {
   return 1;
 }
 
-function rotuloEmbalagem(r: RespostaItem, unidade: string): string {
+function rotuloEmbalagem(r: RespostaItem, item: Item): string {
+  if (r.tipoPreco.startsWith('emb:')) {
+    const emb = item.embalagens[Number(r.tipoPreco.slice(4))];
+    if (emb) return emb.nome.slice(0, 40);
+  }
   if (r.tipoPreco === 'ml') return `embalagem ${r.qtdPorEmbalagem} ml`;
-  if (r.tipoPreco === 'pacote') return `embalagem c/ ${r.qtdPorEmbalagem} ${unidade}`;
-  return unidade;
+  if (r.tipoPreco === 'pacote') return `embalagem c/ ${r.qtdPorEmbalagem} ${item.unidade}`;
+  return item.unidade;
 }
 
 export function PreencherForm(props: {
@@ -158,7 +170,8 @@ export function PreencherForm(props: {
     const semQuantidade = props.itens.filter((i) => {
       const r = respostas[i.id];
       if (!r?.precoUnitario.trim()) return false;
-      return r.tipoPreco !== 'unidade' && !(moedaParaNumero(r.qtdPorEmbalagem) > 0);
+      if (r.tipoPreco === 'unidade' || r.tipoPreco.startsWith('emb:')) return false;
+      return !(moedaParaNumero(r.qtdPorEmbalagem) > 0);
     });
     if (semQuantidade.length > 0) {
       setErro(
@@ -186,7 +199,7 @@ export function PreencherForm(props: {
           if (!Number.isFinite(num) || num <= 0) {
             throw new Error(`Preço inválido em "${i.produtoNome}"`);
           }
-          const fator = fatorDe(r);
+          const fator = fatorDe(r, i);
           if (!Number.isFinite(fator) || fator <= 0) {
             throw new Error(`Quantidade por embalagem inválida em "${i.produtoNome}"`);
           }
@@ -194,7 +207,7 @@ export function PreencherForm(props: {
             cotacaoItemId: i.id,
             precoUnitario: num,
             marca: r.marca.trim() || null,
-            embalagem: rotuloEmbalagem(r, i.unidade),
+            embalagem: rotuloEmbalagem(r, i),
             qtdPorEmbalagem: fator,
             observacao: r.observacao.trim() || null,
           };
@@ -344,10 +357,16 @@ export function PreencherForm(props: {
                         className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
                       >
                         <option value="unidade">1 {nomeUnidade(i.unidade)}</option>
+                        {/* Pré-definições da casa (tabela de conversões): fator pronto */}
+                        {i.embalagens.map((e, idx) => (
+                          <option key={idx} value={`emb:${idx}`}>
+                            {e.nome} ({e.qtd} {i.unidade})
+                          </option>
+                        ))}
                         {ehLitro(i.unidade) && (
                           <option value="ml">embalagem em ml (750 ml, 600 ml…)</option>
                         )}
-                        <option value="pacote">{nomePacote(i.unidade)}</option>
+                        <option value="pacote">outra: {nomePacote(i.unidade)}</option>
                       </select>
                       {i.embalagemEsperada && (
                         <p className="mt-0.5 text-[10px] text-slate-500">
@@ -355,7 +374,7 @@ export function PreencherForm(props: {
                         </p>
                       )}
                     </div>
-                    {(respostas[i.id]?.tipoPreco ?? 'unidade') !== 'unidade' && (
+                    {['ml', 'pacote'].includes(respostas[i.id]?.tipoPreco ?? 'unidade') && (
                       <div>
                         <label className="block text-[11px] font-medium text-slate-700">
                           {respostas[i.id]?.tipoPreco === 'ml'
@@ -393,7 +412,7 @@ export function PreencherForm(props: {
                       {(() => {
                         const r = respostas[i.id];
                         if (!r?.precoUnitario.trim()) return null;
-                        const f = fatorDe(r);
+                        const f = fatorDe(r, i);
                         if (!Number.isFinite(f) || f <= 0 || f === 1) return null;
                         return (
                           <p className="mt-0.5 text-[10px] text-emerald-700">
