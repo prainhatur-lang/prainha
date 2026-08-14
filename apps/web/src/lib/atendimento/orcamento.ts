@@ -28,10 +28,11 @@ const PISO_POR_PESSOA = 120;
 // Teto da trava: orçamentos reais da casa (casamento 50p R$350/p, SEBRAE
 // 70p R$335/p — com bebidas/serviço) balizam o teto em 400.
 const FAIXA_MAX_PESSOA = 400;
-// Pacotes de bebida POR PESSOA (null = ainda sem valor definido pelo Elison —
-// enquanto isso a Nina oferece "por consumo ou pacote a combinar").
-const PACOTE_BEBIDA_SEM_ALCOOL: number | null = null; // refri, água, água de coco, sucos
-const PACOTE_BEBIDA_COM_ALCOOL: number | null = null; // + cerveja (e o que o Elison definir)
+// Pacotes de bebida POR PESSOA — valores aprovados pelo Elison em 14/08
+// ("pode gravar" nas faixas 30-40 / 60-80; gravados os pontos médios).
+// Uísque/vinho/open bar completo continua sob medida com a equipe.
+const PACOTE_BEBIDA_SEM_ALCOOL: number | null = 35; // refri, água, água de coco, sucos
+const PACOTE_BEBIDA_COM_ALCOOL: number | null = 70; // + cerveja
 const TAXA_TERRACO = 1000;
 const CAP_TERRACO = 50;
 const CAP_TERRACO_COM_VARANDA = 60;
