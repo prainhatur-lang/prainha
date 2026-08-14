@@ -7,13 +7,17 @@
 // /api/cotacao/[id]/registrar-resposta.
 //
 // Body: { cotacaoFornecedorId, texto }
-// Requer ANTHROPIC_API_KEY no ambiente (Vercel > Settings > Env Vars).
 //
-// Nota: chamada via fetch direto (sem @anthropic-ai/sdk) de propósito — este
+// IA: usa ANTHROPIC_API_KEY (Claude, preferido — créditos do dono) quando
+// existir; senão cai pra OPENAI_API_KEY (gpt-4o, a mesma chave da Nina, que
+// JÁ está na Vercel). Assim o botão funciona hoje sem configurar nada.
+//
+// Nota: Claude via fetch direto (sem @anthropic-ai/sdk) de propósito — este
 // deploy sai de um clone sem node_modules e adicionar dependência sem atualizar
-// o pnpm-lock quebraria o build da Vercel.
+// o pnpm-lock quebraria o build da Vercel. O pacote openai já é dependência.
 
 import { NextResponse } from 'next/server';
+import OpenAI from 'openai';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
@@ -80,6 +84,74 @@ interface ItemCtx {
   classificacao: string | null;
 }
 
+/** Chama a IA disponível e devolve o JSON (string) da interpretação.
+ *  Claude quando ANTHROPIC_API_KEY existe; senão gpt-4o via OPENAI_API_KEY. */
+async function chamarIA(userMsg: string): Promise<string> {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        max_tokens: 8000,
+        // Tarefa mecânica de extração: esforço baixo = resposta em segundos.
+        output_config: {
+          effort: 'low',
+          format: { type: 'json_schema', schema: SCHEMA_SAIDA },
+        },
+        system: SYSTEM,
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+    if (!resp.ok) {
+      const errTxt = await resp.text().catch(() => '');
+      throw new Error(`Claude HTTP ${resp.status}: ${errTxt.slice(0, 300)}`);
+    }
+    const data = (await resp.json()) as {
+      stop_reason?: string;
+      content?: Array<{ type: string; text?: string }>;
+    };
+    if (data.stop_reason === 'refusal') throw new Error('Claude recusou o texto');
+    const texto = data.content?.find((b) => b.type === 'text')?.text;
+    if (!texto) throw new Error('Claude nao devolveu texto');
+    return texto;
+  }
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (openaiKey) {
+    const client = new OpenAI({ apiKey: openaiKey });
+    const resp = await client.chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 8000,
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: userMsg },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'cotacao_interpretada',
+          strict: true,
+          schema: SCHEMA_SAIDA as unknown as Record<string, unknown>,
+        },
+      },
+    });
+    const msg = resp.choices[0]?.message;
+    if (msg?.refusal) throw new Error('gpt-4o recusou o texto');
+    if (!msg?.content) throw new Error('gpt-4o nao devolveu texto');
+    return msg.content;
+  }
+
+  throw new Error(
+    'Nenhuma chave de IA configurada (ANTHROPIC_API_KEY ou OPENAI_API_KEY) na Vercel.',
+  );
+}
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -87,17 +159,6 @@ export async function POST(
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          'ANTHROPIC_API_KEY não configurada. Crie uma chave em platform.claude.com (Chaves de API) e adicione na Vercel: Settings > Environment Variables > ANTHROPIC_API_KEY (Production) e faça redeploy.',
-      },
-      { status: 501 },
-    );
-  }
 
   const { id: cotacaoId } = await params;
   let body: { cotacaoFornecedorId?: string; texto?: string };
@@ -160,45 +221,15 @@ export async function POST(
     `Itens da cotação:\n${JSON.stringify(itens)}\n\n` +
     `Texto do fornecedor:\n"""\n${texto}\n"""`;
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-5',
-      max_tokens: 8000,
-      // Tarefa mecânica de extração: esforço baixo = resposta em segundos.
-      output_config: {
-        effort: 'low',
-        format: { type: 'json_schema', schema: SCHEMA_SAIDA },
-      },
-      system: SYSTEM,
-      messages: [{ role: 'user', content: userMsg }],
-    }),
-  });
-
-  if (!resp.ok) {
-    const errTxt = await resp.text().catch(() => '');
-    console.error('interpretar-resposta: API Claude falhou', resp.status, errTxt.slice(0, 500));
+  let textoSaida: string;
+  try {
+    textoSaida = await chamarIA(userMsg);
+  } catch (e) {
+    console.error('interpretar-resposta: IA falhou', e);
     return NextResponse.json(
-      { error: `IA indisponível agora (HTTP ${resp.status}). Tente de novo em instantes.` },
+      { error: `IA indisponível agora (${e instanceof Error ? e.message : e}). Tente de novo em instantes.` },
       { status: 502 },
     );
-  }
-
-  const data = (await resp.json()) as {
-    stop_reason?: string;
-    content?: Array<{ type: string; text?: string }>;
-  };
-  if (data.stop_reason === 'refusal') {
-    return NextResponse.json({ error: 'A IA recusou este texto. Confira o conteúdo colado.' }, { status: 502 });
-  }
-  const textoSaida = data.content?.find((b) => b.type === 'text')?.text;
-  if (!textoSaida) {
-    return NextResponse.json({ error: 'IA não devolveu resultado. Tente de novo.' }, { status: 502 });
   }
 
   let parsed: {
