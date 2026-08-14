@@ -84,8 +84,12 @@ function montarSystemPrompt(params: {
   conhecimento: BlocoConhecimento[];
   espacos: EspacoEvento[];
   primeiraResposta: boolean;
+  retomada?: boolean;
 }): string {
-  const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta } = params;
+  const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
+  const blocoRetomada = retomada
+    ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente usando as ferramentas (consultar_cardapio, consultar_mesa, disponibilidade etc.) e responda com a informação CONCRETA.\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Se as ferramentas e os blocos realmente não resolverem, aí use transferir_para_humano — mas só depois de TENTAR com as ferramentas.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
+    : '';
 
   const blocos = conhecimento
     .map((b) => `### ${b.titulo}\n${b.conteudo}`)
@@ -181,7 +185,7 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 OUTROS:
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever.
 - Nunca peça documentos, senhas ou dados de pagamento.
-- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".`;
+- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoRetomada}`;
 }
 
 const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -400,6 +404,7 @@ export async function gerarResposta(params: {
   historico: MsgHistorico[];
   executores: ExecutoresFerramentas;
   modo?: 'cliente' | 'fornecedor';
+  retomada?: boolean;
 }): Promise<RespostaNina> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY nao configurada');

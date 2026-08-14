@@ -144,6 +144,7 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
     if (!numero) return;
 
     await processarEntrada({
+      retomada: true,
       registro: { conversaId, mensagemId: ultima.id, deveResponder: true },
       entrada: {
         phoneNumberId: numero.phoneNumberId,
@@ -166,6 +167,9 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
 export async function processarEntrada(params: {
   registro: EntradaRegistrada;
   entrada: EntradaWebhook;
+  /** true quando a equipe DEVOLVEU a conversa com pergunta pendente — a Nina
+   *  precisa RESOLVER agora (ferramentas), proibida de re-prometer retorno. */
+  retomada?: boolean;
 }): Promise<void> {
   const { registro, entrada } = params;
   try {
@@ -334,6 +338,7 @@ export async function processarEntrada(params: {
           historico,
           executores,
           modo,
+          retomada: params.retomada === true,
         });
       } catch {
         resposta = await gerarResposta({
@@ -345,6 +350,7 @@ export async function processarEntrada(params: {
           historico,
           executores,
           modo,
+          retomada: params.retomada === true,
         });
       }
       texto = resposta.texto;
