@@ -83,10 +83,15 @@ export function PreencherForm(props: {
       return;
     }
 
-    // Embalagem também é obrigatória: sem saber em que embalagem ele vende,
-    // "R$ 58,90" tanto pode ser o quilo quanto o balde de 14,5 kg.
+    // Embalagem é obrigatória SÓ quando o item pede embalagem específica
+    // (fardo, caixa, balde). Em item vendido na unidade do pedido (ex.:
+    // bebidas por garrafa) o campo é opcional — exigir em 35 garrafas fez o
+    // Fasouto travar no envio da cotação de bebidas e desistir sem gravar.
     const semEmbalagem = props.itens.filter(
-      (i) => respostas[i.id]?.precoUnitario.trim() && !respostas[i.id]?.embalagem.trim(),
+      (i) =>
+        i.embalagemEsperada &&
+        respostas[i.id]?.precoUnitario.trim() &&
+        !respostas[i.id]?.embalagem.trim(),
     );
     if (semEmbalagem.length > 0) {
       setErro(
@@ -225,7 +230,8 @@ export function PreencherForm(props: {
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Você vende em qual embalagem? <span className="text-rose-600">*</span>
+                        Você vende em qual embalagem?{' '}
+                        {i.embalagemEsperada ? <span className="text-rose-600">*</span> : <span className="text-slate-400">(opcional)</span>}
                       </label>
                       <input
                         type="text"
