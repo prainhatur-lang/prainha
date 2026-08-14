@@ -3,13 +3,17 @@
 // PATCH — { status: 'bot' | 'humano' | 'encerrada' } (assumir/devolver/encerrar).
 
 import { NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { asc, eq, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { responderPendenteAposDevolucao } from '@/lib/atendimento/motor';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// Devolver pra Nina dispara a resposta do pendente no after() (debounce + IA).
+export const maxDuration = 60;
 
 async function carregarConversaDoUsuario(userId: string, id: string) {
   const [conversa] = await db
@@ -75,6 +79,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       atualizadoEm: sql`now()`,
     })
     .where(eq(schema.atendimentoConversa.id, id));
+
+  // Devolveu pra Nina com pergunta do cliente sem resposta? Ela responde já.
+  if (status === 'bot') {
+    after(() => responderPendenteAposDevolucao(id));
+  }
 
   return NextResponse.json({ ok: true, status });
 }

@@ -109,6 +109,57 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Ao DEVOLVER a conversa pra Nina com pergunta do cliente sem resposta
+ *  (última mensagem é 'entrada'), ela responde o pendente na hora — sem
+ *  esperar o cliente escrever de novo. Chamada pelo PATCH do painel. */
+export async function responderPendenteAposDevolucao(conversaId: string): Promise<void> {
+  try {
+    const [conversa] = await db
+      .select()
+      .from(schema.atendimentoConversa)
+      .where(eq(schema.atendimentoConversa.id, conversaId))
+      .limit(1);
+    if (!conversa || conversa.status !== 'bot') return;
+
+    const [ultima] = await db
+      .select()
+      .from(schema.atendimentoMensagem)
+      .where(eq(schema.atendimentoMensagem.conversaId, conversaId))
+      .orderBy(desc(schema.atendimentoMensagem.criadoEm))
+      .limit(1);
+    if (!ultima || ultima.direcao !== 'entrada') return; // nada pendente
+
+    const [numero] = await db
+      .select()
+      .from(schema.whatsappNumero)
+      .where(
+        and(
+          eq(schema.whatsappNumero.filialId, conversa.filialId),
+          eq(schema.whatsappNumero.atendenteAtivo, true),
+        ),
+      )
+      .limit(1);
+    if (!numero) return;
+
+    await processarEntrada({
+      registro: { conversaId, mensagemId: ultima.id, deveResponder: true },
+      entrada: {
+        phoneNumberId: numero.phoneNumberId,
+        filialId: conversa.filialId,
+        telefone: conversa.telefone,
+        nomeCliente: conversa.nomeCliente,
+        waMessageId: ultima.waMessageId ?? '',
+        tipo: ultima.tipo,
+        corpo: ultima.corpo,
+        // corpo já traz a transcrição quando foi áudio — não re-baixa mídia
+        mediaId: null,
+      },
+    });
+  } catch {
+    // best-effort — devolver nunca pode falhar por causa disso
+  }
+}
+
 /** Roda depois do 200: transcricao, debounce, IA, envio. Nunca lanca. */
 export async function processarEntrada(params: {
   registro: EntradaRegistrada;
