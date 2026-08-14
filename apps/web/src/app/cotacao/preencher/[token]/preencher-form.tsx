@@ -100,6 +100,33 @@ export function PreencherForm(props: {
       return;
     }
 
+    // Contradição embalagem × quantidade: "vendo em unidade" + "vêm 12 nela"
+    // não existe — foi assim que o Old Parr de R$ 149,90 a garrafa virou
+    // R$ 12,49 (preço da garrafa dividido por 12). Se a embalagem é a própria
+    // unidade, a quantidade tem que ficar vazia (ou 1); se vem mais de 1, a
+    // embalagem tem que dizer qual é (caixa, fardo...).
+    const UNIDADES_SOLTAS = new Set([
+      'un', 'und', 'unid', 'unidade', 'u', 'garrafa', 'gf',
+      'kg', 'kilo', 'quilo', 'g', 'grama',
+      'l', 'lt', 'litro', 'ml',
+    ]);
+    const contraditorios = props.itens.filter((i) => {
+      const r = respostas[i.id];
+      if (!r?.precoUnitario.trim()) return false;
+      const emb = r.embalagem.trim().toLowerCase().replace(/[.\s]+$/, '');
+      const qtd = r.qtdPorEmbalagem.trim() ? moedaParaNumero(r.qtdPorEmbalagem) : 1;
+      return UNIDADES_SOLTAS.has(emb) && qtd > 1;
+    });
+    if (contraditorios.length > 0) {
+      setErro(
+        `Confira ${contraditorios.map((i) => i.produtoNome).join(', ')}: você disse que ` +
+          'vende por unidade/kg/litro, mas que vem mais de 1 na embalagem. ' +
+          'Se o preço é de 1, apague o campo "Quanto vem nela?". ' +
+          'Se o preço é do pacote, escreva a embalagem (ex: "caixa c/ 12").',
+      );
+      return;
+    }
+
     const respArr = props.itens
       .map((i) => {
         const r = respostas[i.id];

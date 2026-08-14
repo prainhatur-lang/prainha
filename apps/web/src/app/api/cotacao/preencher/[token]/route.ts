@@ -108,6 +108,35 @@ export async function POST(
         marcaForaDaLista.push(`${item.produtoNome} (aceitas: ${aceitas.join(', ')})`);
       }
     }
+    // Contradição embalagem × quantidade: "vendo em unidade" + "vêm 12 nela"
+    // divide o preço da garrafa por 12 e gera preço falso (Old Parr a 12,49).
+    const UNIDADES_SOLTAS = new Set([
+      'un', 'und', 'unid', 'unidade', 'u', 'garrafa', 'gf',
+      'kg', 'kilo', 'quilo', 'g', 'grama', 'l', 'lt', 'litro', 'ml',
+    ]);
+    const embalagemContraditoria: string[] = [];
+    for (const r of respostas) {
+      const item = porItem.get(r.cotacaoItemId);
+      if (!item) continue;
+      const emb = (r.embalagem ?? '').trim().toLowerCase().replace(/[.\s]+$/, '');
+      const qtd = r.qtdPorEmbalagem != null ? Number(r.qtdPorEmbalagem) : 1;
+      if (emb && UNIDADES_SOLTAS.has(emb) && qtd > 1) {
+        embalagemContraditoria.push(item.produtoNome ?? 'item');
+      }
+    }
+    if (embalagemContraditoria.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            `Confira ${embalagemContraditoria.join(', ')}: você disse que vende por ` +
+            'unidade/kg/litro, mas que vem mais de 1 na embalagem. Se o preço é de 1, ' +
+            'apague o campo "Quanto vem nela?". Se o preço é do pacote, escreva a ' +
+            'embalagem (ex: "caixa c/ 12").',
+        },
+        { status: 400 },
+      );
+    }
+
     // Rede de segurança contra preço fora da realidade (vírgula esquecida):
     // compara o normalizado com a última nota fiscal do mesmo produto. 20x pra
     // cima ou pra baixo é erro de digitação, não negociação.
