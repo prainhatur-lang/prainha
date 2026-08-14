@@ -38,6 +38,7 @@ export interface ExecutoresFerramentas {
   consultarDisponibilidade: (data: string) => Promise<string>;
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
+  consultarCardapio: (termo: string) => Promise<string>;
 }
 
 export interface RespostaNina {
@@ -111,7 +112,8 @@ ${blocos}
 
 REGRAS DE VERDADE:
 - Só afirme o que está acima. Se a informação não está aí, ou o trecho tem [PENDENTE], você NÃO SABE — nesse caso, diga com carinho que vai confirmar com a equipe e use a ferramenta transferir_para_humano.
-- PREÇOS: você só pode citar um valor em reais que esteja ESCRITO nos blocos acima. Valor que não está escrito = você não diz número NENHUM — nem estimativa, nem "a partir de", nem "costuma ser". Transfira.
+- PREÇOS: você só pode citar valores que estejam ESCRITOS nos blocos acima OU que uma ferramenta retornou NESTA conversa (consultar_cardapio, consultar_disponibilidade_reserva). Fora isso, número nenhum — nem estimativa, nem "a partir de", nem "costuma ser".
+- PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: prainha.menudino.com.br. Não despeje o cardápio inteiro — responda só o que foi perguntado.
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
 - Se você disser que vai confirmar/verificar/perguntar algo pra equipe, é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
@@ -204,6 +206,21 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
         },
         required: ['data', 'hora', 'pessoas', 'area', 'nome'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_cardapio',
+      description:
+        'Busca pratos/bebidas no cardápio oficial com PREÇO atual do sistema (mesma base do Menudino). Use SEMPRE que perguntarem prato, preço, porção ou "o que tem de X". Busque por 1-2 palavras-chave (ex.: "moqueca", "peixe", "camarão").',
+      parameters: {
+        type: 'object',
+        properties: {
+          termo: { type: 'string', description: 'palavra(s)-chave do prato, sem frase completa' },
+        },
+        required: ['termo'],
       },
     },
   },
@@ -330,6 +347,8 @@ export async function gerarResposta(params: {
             nome: String(args.nome ?? ''),
             observacao: String(args.observacao ?? '') || null,
           });
+        } else if (tc.function.name === 'consultar_cardapio') {
+          resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
         } else if (tc.function.name === 'transferir_para_humano') {

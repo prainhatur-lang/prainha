@@ -14,6 +14,7 @@ import { enviarTexto, marcarLidaComDigitando, baixarMidia } from './zap';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
 import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp } from './reservar';
+import { consultarCardapio } from './cardapio';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -221,6 +222,7 @@ export async function processarEntrada(params: {
           nome: dados.nome,
           observacao: dados.observacao,
         }),
+      consultarCardapio: (termo: string) => consultarCardapio(entrada.filialId, termo),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {
