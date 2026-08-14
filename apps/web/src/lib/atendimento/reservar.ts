@@ -90,6 +90,29 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
   return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${jan}Reserva comum é gratuita hoje.`;
 }
 
+/** Onde fica uma mesa (área + lugares) — pra "mesa X fica em qual parte?". */
+export async function consultarMesa(filialId: string, numeroMesa: string): Promise<string> {
+  const num = (numeroMesa ?? '').replace(/\D/g, '');
+  if (!num) return 'Número de mesa inválido — pergunte o número ao cliente.';
+  const [filial] = await db
+    .select({ reservaConfig: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const areas = filial?.reservaConfig?.areas ?? [];
+  for (const a of areas) {
+    const mesas = (a.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
+    const m = mesas.find((x) => String(x.numero) === num);
+    if (m) {
+      return `Mesa ${num}: fica na área ${a.nome}, com ${m.lugares} lugares.${a.somenteEventos ? ' (área reservada só pra eventos)' : ''}`;
+    }
+  }
+  return `Mesa ${num} não está no mapa de reservas. Áreas e faixas: ${areas
+    .filter((a) => (a.mesas ?? []).length > 0)
+    .map((a) => `${a.nome} (${(a.mesas ?? [])[0]?.numero}–${(a.mesas ?? []).slice(-1)[0]?.numero})`)
+    .join(', ')}. Confirme o número com o cliente ou transfira.`;
+}
+
 /** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO
  *  telefone da conversa — a mesma garantia do botão "cancelar" do lembrete
  *  (só quem tem o zap da reserva cancela). data desambigua se houver várias. */

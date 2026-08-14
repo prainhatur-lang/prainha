@@ -12,6 +12,8 @@ import { numeroOrcamento, type StatusOrcamento } from '@/lib/orcamentos';
 import { DocOrcamento } from '../doc-orcamento';
 import { DocActions } from './doc-actions';
 import { LinkAceiteBox } from './link-aceite-box';
+import { ConferenciaBox } from './conferencia-box';
+import { hojeBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,6 +70,10 @@ export default async function OrcamentoDocPage(props: {
           pagamentoStatus={o.pagamentoStatus}
           pagoEm={o.pagoEm ? o.pagoEm.toISOString() : null}
         />
+      )}
+
+      {String(o.dataEvento) <= hojeBr() && (
+        <ConferenciaBox id={o.id} podeEditar={podeEditar} />
       )}
 
       <DocOrcamento

@@ -13,7 +13,7 @@ import { gerarResposta, type MsgHistorico } from './ia';
 import { enviarTexto, marcarLidaComDigitando, baixarMidia } from './zap';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
-import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp } from './reservar';
+import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp, consultarMesa } from './reservar';
 import { consultarCardapio } from './cardapio';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 
@@ -242,6 +242,7 @@ export async function processarEntrada(params: {
           bebidas: dados.bebidas,
           observacoes: dados.observacoes,
         }),
+      consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {

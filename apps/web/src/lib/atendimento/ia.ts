@@ -52,6 +52,7 @@ export interface ExecutoresFerramentas {
   consultarDisponibilidade: (data: string) => Promise<string>;
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
+  consultarMesa: (numero: string) => Promise<string>;
   consultarCardapio: (termo: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
@@ -169,6 +170,8 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.
 - Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).
 - Datas relativas ("amanhã", "sábado que vem") você converte pra YYYY-MM-DD usando a data/hora de AGORA informada acima.
+- "MESA X FICA ONDE?": use consultar_mesa — responde a área e os lugares na hora (não transfira por isso).
+- Cliente reservou numa área e quer outra coisa (ex.: quer lugar coberto e a mesa é na Areia): confirme o que a pessoa quer e REMANEJE você mesma — cancelar_reserva + criar_reserva na área certa, avisando a mesa nova.
 - CANCELAR reserva: você mesma cancela com cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
 - REMARCAR: cancele a atual e crie a nova (confirmando os dados novos).
 - Outras mudanças (passar pra outro nome/telefone, dúvida de pagamento): transfira pra equipe.
@@ -282,6 +285,21 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           termo: { type: 'string', description: 'palavra(s)-chave do prato, sem frase completa' },
         },
         required: ['termo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_mesa',
+      description:
+        'Diz em qual ÁREA fica uma mesa e quantos lugares tem (mapa oficial de reservas). Use quando o cliente citar um número de mesa ("a mesa 105 fica onde?").',
+      parameters: {
+        type: 'object',
+        properties: {
+          numero: { type: 'string', description: 'número da mesa' },
+        },
+        required: ['numero'],
       },
     },
   },
@@ -428,6 +446,8 @@ export async function gerarResposta(params: {
           });
         } else if (tc.function.name === 'consultar_cardapio') {
           resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));
+        } else if (tc.function.name === 'consultar_mesa') {
+          resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
         } else if (tc.function.name === 'transferir_para_humano') {

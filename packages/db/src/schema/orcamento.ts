@@ -35,6 +35,22 @@ export interface PratoOrcamento {
   secao?: 'entrada' | 'principal' | 'sobremesa' | 'bebida_sem_alcool' | 'bebida_com_alcool';
 }
 
+/** Resultado da conferência pós-evento: cobrado × consumido no PDV. */
+export interface ConferenciaOrcamento {
+  /** ids (uuid) das comandas (tabela pedido) somadas. */
+  pedidoIds: string[];
+  /** Soma do valor_total das comandas (consumo real a preço de cardápio). */
+  consumido: number;
+  /** Total do orçamento no momento da conferência (pessoas×valorPessoa+taxas). Null = a combinar. */
+  cobrado: number | null;
+  /** consumido / pessoas do orçamento. */
+  mediaPessoa: number;
+  /** (cobrado − consumido) / consumido × 100. Null quando cobrado é null. */
+  desvioPct: number | null;
+  conferidoEm: string; // ISO
+  conferidoPor?: string | null;
+}
+
 export const orcamentoEvento = pgTable(
   'orcamento_evento',
   {
@@ -93,6 +109,8 @@ export const orcamentoEvento = pgTable(
     /** Workflow: aberto | enviado | aceito | recusado */
     status: varchar('status', { length: 20 }).notNull().default('aberto'),
     /** Email de quem criou (auditoria leve). */
+    /** Conferência pós-evento (cobrado × consumido no PDV). Null = não conferido. */
+    conferencia: jsonb('conferencia').$type<ConferenciaOrcamento>(),
     criadoPor: varchar('criado_por', { length: 160 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
