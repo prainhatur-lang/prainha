@@ -7,7 +7,6 @@
 // Usado pelo Claude/ops pra intervenções pontuais; não é chamado pela UI.
 
 import { NextResponse } from 'next/server';
-import { after } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { responderPendenteAposDevolucao } from '@/lib/atendimento/motor';
@@ -40,6 +39,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'token inválido' }, { status: 403 });
   }
 
-  after(() => responderPendenteAposDevolucao(conversaId));
-  return NextResponse.json({ ok: true });
+  // Síncrono de propósito: quem chama é script de ops (sem pressa) e o
+  // after() desta rota era encerrado antes de rodar (só o webhook e o PATCH
+  // do painel usam after). maxDuration 60 cobre debounce + IA + envio.
+  await responderPendenteAposDevolucao(conversaId);
+  return NextResponse.json({ ok: true, executado: true });
 }
