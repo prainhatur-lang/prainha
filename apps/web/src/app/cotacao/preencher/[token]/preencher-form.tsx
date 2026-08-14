@@ -22,7 +22,14 @@ interface RespostaInicial {
   observacao: string;
 }
 
-type RespostaItem = RespostaInicial;
+/** tipoPreco: DE QUÊ é o preço digitado. O fornecedor ESCOLHE em vez de
+ *  escrever — foi texto livre que deixou "Und" + "vêm 12" dividir o preço da
+ *  garrafa por 12. 'unidade' = 1 un/kg/L (default); 'ml' = embalagem em
+ *  mililitros (só item em litro); 'pacote' = caixa/fardo fechado (pede quantos
+ *  un/kg/L vêm). O fator de conversão sai calculado, nunca digitado solto. */
+interface RespostaItem extends RespostaInicial {
+  tipoPreco: string;
+}
 
 const VAZIA: RespostaItem = {
   precoUnitario: '',
@@ -30,6 +37,7 @@ const VAZIA: RespostaItem = {
   embalagem: '',
   qtdPorEmbalagem: '',
   observacao: '',
+  tipoPreco: 'unidade',
 };
 
 /** Máscara de moeda: o fornecedor digita 1749 e vira 17,49. Era daqui que saía
@@ -46,6 +54,46 @@ function moedaParaNumero(valor: string): number {
   return Number(limpo);
 }
 
+function ehLitro(unidade: string): boolean {
+  const t = unidade.toLowerCase();
+  return t === 'l' || t === 'lt' || t === 'litro';
+}
+
+function nomeUnidade(unidade: string): string {
+  const t = unidade.toLowerCase();
+  if (t === 'un' || t === 'und' || t === 'unid') return 'unidade';
+  if (ehLitro(t)) return 'litro';
+  if (t === 'g') return 'grama';
+  return unidade;
+}
+
+function nomePacote(unidade: string): string {
+  const t = unidade.toLowerCase();
+  if (t === 'un' || t === 'und' || t === 'unid') return 'caixa/pacote fechado (várias unidades)';
+  if (t === 'kg') return 'fardo/saco/caixa (vários kg)';
+  if (ehLitro(t)) return 'caixa/fardo (vários litros)';
+  return 'embalagem fechada (mais de 1)';
+}
+
+/** Fator de conversão calculado a partir da escolha estruturada. */
+function fatorDe(r: RespostaItem): number {
+  if (r.tipoPreco === 'ml') {
+    const ml = moedaParaNumero(r.qtdPorEmbalagem);
+    return ml > 0 ? ml / 1000 : NaN;
+  }
+  if (r.tipoPreco === 'pacote') {
+    const q = moedaParaNumero(r.qtdPorEmbalagem);
+    return q > 0 ? q : NaN;
+  }
+  return 1;
+}
+
+function rotuloEmbalagem(r: RespostaItem, unidade: string): string {
+  if (r.tipoPreco === 'ml') return `embalagem ${r.qtdPorEmbalagem} ml`;
+  if (r.tipoPreco === 'pacote') return `embalagem c/ ${r.qtdPorEmbalagem} ${unidade}`;
+  return unidade;
+}
+
 export function PreencherForm(props: {
   token: string;
   itens: Item[];
@@ -54,7 +102,24 @@ export function PreencherForm(props: {
   const [respostas, setRespostas] = useState<Record<string, RespostaItem>>(() => {
     const init: Record<string, RespostaItem> = {};
     for (const i of props.itens) {
-      init[i.id] = props.respostasIniciais[i.id] ?? { ...VAZIA };
+      const r = props.respostasIniciais[i.id];
+      if (!r) {
+        init[i.id] = { ...VAZIA };
+        continue;
+      }
+      // Deriva a escolha estruturada da resposta gravada (fator salvo)
+      const fator = r.qtdPorEmbalagem.trim() ? moedaParaNumero(r.qtdPorEmbalagem) : 1;
+      if (!Number.isFinite(fator) || fator === 1 || fator <= 0) {
+        init[i.id] = { ...r, qtdPorEmbalagem: '', tipoPreco: 'unidade' };
+      } else if (ehLitro(i.unidade) && fator < 1) {
+        init[i.id] = {
+          ...r,
+          qtdPorEmbalagem: String(Math.round(fator * 1000)),
+          tipoPreco: 'ml',
+        };
+      } else {
+        init[i.id] = { ...r, tipoPreco: 'pacote' };
+      }
     }
     return init;
   });
@@ -83,76 +148,58 @@ export function PreencherForm(props: {
       return;
     }
 
-    // Embalagem é obrigatória SÓ quando o item pede embalagem específica
-    // (fardo, caixa, balde). Em item vendido na unidade do pedido (ex.:
-    // bebidas por garrafa) o campo é opcional — exigir em 35 garrafas fez o
-    // Fasouto travar no envio da cotação de bebidas e desistir sem gravar.
-    const semEmbalagem = props.itens.filter(
-      (i) =>
-        i.embalagemEsperada &&
-        respostas[i.id]?.precoUnitario.trim() &&
-        !respostas[i.id]?.embalagem.trim(),
-    );
-    if (semEmbalagem.length > 0) {
-      setErro(
-        `Diga em que embalagem você vende: ${semEmbalagem.map((i) => i.produtoNome).join(', ')}.`,
-      );
-      return;
-    }
-
-    // Contradição embalagem × quantidade: "vendo em unidade" + "vêm 12 nela"
-    // não existe — foi assim que o Old Parr de R$ 149,90 a garrafa virou
-    // R$ 12,49 (preço da garrafa dividido por 12). Se a embalagem é a própria
-    // unidade, a quantidade tem que ficar vazia (ou 1); se vem mais de 1, a
-    // embalagem tem que dizer qual é (caixa, fardo...).
-    const UNIDADES_SOLTAS = new Set([
-      'un', 'und', 'unid', 'unidade', 'u', 'garrafa', 'gf',
-      'kg', 'kilo', 'quilo', 'g', 'grama',
-      'l', 'lt', 'litro', 'ml',
-    ]);
-    const contraditorios = props.itens.filter((i) => {
+    // A escolha estruturada ("o preço é de: 1 kg | fardo com X kg | ...") já
+    // elimina a ambiguidade que os campos livres de embalagem tinham — a única
+    // validação necessária é a quantidade da embalagem fechada.
+    const semQuantidade = props.itens.filter((i) => {
       const r = respostas[i.id];
       if (!r?.precoUnitario.trim()) return false;
-      const emb = r.embalagem.trim().toLowerCase().replace(/[.\s]+$/, '');
-      const qtd = r.qtdPorEmbalagem.trim() ? moedaParaNumero(r.qtdPorEmbalagem) : 1;
-      return UNIDADES_SOLTAS.has(emb) && qtd > 1;
+      return r.tipoPreco !== 'unidade' && !(moedaParaNumero(r.qtdPorEmbalagem) > 0);
     });
-    if (contraditorios.length > 0) {
+    if (semQuantidade.length > 0) {
       setErro(
-        `Confira ${contraditorios.map((i) => i.produtoNome).join(', ')}: você disse que ` +
-          'vende por unidade/kg/litro, mas que vem mais de 1 na embalagem. ' +
-          'Se o preço é de 1, apague o campo "Quanto vem nela?". ' +
-          'Se o preço é do pacote, escreva a embalagem (ex: "caixa c/ 12").',
+        `Diga quanto vem na embalagem de: ${semQuantidade
+          .map((i) => i.produtoNome)
+          .join(', ')} (ml, kg ou unidades — conforme o que você escolheu).`,
       );
       return;
     }
 
-    const respArr = props.itens
-      .map((i) => {
-        const r = respostas[i.id];
-        if (!r.precoUnitario.trim()) return null; // sem preço = não tem o item
-        const num = moedaParaNumero(r.precoUnitario);
-        if (!Number.isFinite(num) || num <= 0) {
-          throw new Error(`Preço inválido em "${i.produtoNome}"`);
-        }
-        // Quanto vem na embalagem, na unidade do pedido (kg/un/l).
-        // Vazio = ele vende na mesma unidade do pedido (fator 1).
-        const fator = r.qtdPorEmbalagem.trim()
-          ? moedaParaNumero(r.qtdPorEmbalagem)
-          : 1;
-        if (!Number.isFinite(fator) || fator <= 0) {
-          throw new Error(`Quantidade por embalagem inválida em "${i.produtoNome}"`);
-        }
-        return {
-          cotacaoItemId: i.id,
-          precoUnitario: num,
-          marca: r.marca.trim() || null,
-          embalagem: r.embalagem.trim() || null,
-          qtdPorEmbalagem: fator,
-          observacao: r.observacao.trim() || null,
-        };
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
+    let respArr: Array<{
+      cotacaoItemId: string;
+      precoUnitario: number;
+      marca: string | null;
+      embalagem: string | null;
+      qtdPorEmbalagem: number;
+      observacao: string | null;
+    }>;
+    try {
+      respArr = props.itens
+        .map((i) => {
+          const r = respostas[i.id];
+          if (!r.precoUnitario.trim()) return null; // sem preço = não tem o item
+          const num = moedaParaNumero(r.precoUnitario);
+          if (!Number.isFinite(num) || num <= 0) {
+            throw new Error(`Preço inválido em "${i.produtoNome}"`);
+          }
+          const fator = fatorDe(r);
+          if (!Number.isFinite(fator) || fator <= 0) {
+            throw new Error(`Quantidade por embalagem inválida em "${i.produtoNome}"`);
+          }
+          return {
+            cotacaoItemId: i.id,
+            precoUnitario: num,
+            marca: r.marca.trim() || null,
+            embalagem: rotuloEmbalagem(r, i.unidade),
+            qtdPorEmbalagem: fator,
+            observacao: r.observacao.trim() || null,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+    } catch (err) {
+      setErro((err as Error).message);
+      return;
+    }
 
     if (respArr.length === 0) {
       setErro('Preencha pelo menos 1 item, ou clique em "não tenho nada essa semana"');
@@ -257,50 +304,52 @@ export function PreencherForm(props: {
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Esse preço é de quê?{' '}
-                        {i.embalagemEsperada ? <span className="text-rose-600">*</span> : <span className="text-slate-400">(opcional)</span>}
+                        O preço que você vai dar é de:
                       </label>
-                      <input
-                        type="text"
-                        list={`embalagens-${i.id}`}
-                        placeholder={i.embalagemEsperada ?? `ex: ${i.unidade}, caixa, fardo, garrafa`}
-                        value={respostas[i.id]?.embalagem ?? ''}
-                        onChange={(e) => setCampo(i.id, 'embalagem', e.target.value)}
+                      {/* Escolha fechada em vez de texto livre: o default é a
+                          unidade base (1 un / 1 kg / 1 L) e a embalagem fechada
+                          pergunta quantos vêm — o fator sai calculado. */}
+                      <select
+                        value={respostas[i.id]?.tipoPreco ?? 'unidade'}
+                        onChange={(e) => setCampo(i.id, 'tipoPreco', e.target.value)}
                         className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
-                      />
-                      {/* Sugestões pra tirar a ambiguidade do preço: unitário?
-                          kg? garrafa 750ml? caixa c/ 12? fardo c/ 30 kg? */}
-                      <datalist id={`embalagens-${i.id}`}>
-                        <option value={i.unidade} />
-                        <option value="unidade" />
-                        <option value="kg" />
-                        <option value="garrafa 750 ml" />
-                        <option value="garrafa 1 L" />
-                        <option value="garrafa 2 L" />
-                        <option value="caixa c/ 6" />
-                        <option value="caixa c/ 12" />
-                        <option value="caixa c/ 20" />
-                        <option value="fardo c/ 10 kg" />
-                        <option value="fardo c/ 30 kg" />
-                        <option value="balde" />
-                      </datalist>
+                      >
+                        <option value="unidade">1 {nomeUnidade(i.unidade)}</option>
+                        {ehLitro(i.unidade) && (
+                          <option value="ml">embalagem em ml (750 ml, 600 ml…)</option>
+                        )}
+                        <option value="pacote">{nomePacote(i.unidade)}</option>
+                      </select>
+                      {i.embalagemEsperada && (
+                        <p className="mt-0.5 text-[10px] text-slate-500">
+                          A casa costuma comprar: {i.embalagemEsperada}
+                        </p>
+                      )}
                     </div>
+                    {(respostas[i.id]?.tipoPreco ?? 'unidade') !== 'unidade' && (
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-700">
+                          {respostas[i.id]?.tipoPreco === 'ml'
+                            ? 'Quantos ml tem a embalagem?'
+                            : `Quantos ${i.unidade} vêm na embalagem?`}{' '}
+                          <span className="text-rose-600">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder={respostas[i.id]?.tipoPreco === 'ml' ? 'ex: 750' : 'ex: 12'}
+                          value={respostas[i.id]?.qtdPorEmbalagem ?? ''}
+                          onChange={(e) => setCampo(i.id, 'qtdPorEmbalagem', e.target.value)}
+                          className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                        />
+                      </div>
+                    )}
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Quanto vem nela? ({i.unidade})
-                      </label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder={`ex: 18 (deixe vazio se vende por ${i.unidade})`}
-                        value={respostas[i.id]?.qtdPorEmbalagem ?? ''}
-                        onChange={(e) => setCampo(i.id, 'qtdPorEmbalagem', e.target.value)}
-                        className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-700">
-                        Preço da embalagem (R$) <span className="text-rose-600">*</span>
+                        {(respostas[i.id]?.tipoPreco ?? 'unidade') === 'unidade'
+                          ? `Preço de 1 ${nomeUnidade(i.unidade)} (R$)`
+                          : 'Preço da embalagem (R$)'}{' '}
+                        <span className="text-rose-600">*</span>
                       </label>
                       <input
                         type="text"
@@ -312,20 +361,23 @@ export function PreencherForm(props: {
                         }
                         className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
                       />
-                      {respostas[i.id]?.precoUnitario && respostas[i.id]?.qtdPorEmbalagem && (
-                        <p className="mt-0.5 text-[10px] text-emerald-700">
-                          ={' '}
-                          {(
-                            moedaParaNumero(respostas[i.id].precoUnitario) /
-                            (moedaParaNumero(respostas[i.id].qtdPorEmbalagem) || 1)
-                          ).toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                            maximumFractionDigits: 4,
-                          })}{' '}
-                          por {i.unidade}
-                        </p>
-                      )}
+                      {(() => {
+                        const r = respostas[i.id];
+                        if (!r?.precoUnitario.trim()) return null;
+                        const f = fatorDe(r);
+                        if (!Number.isFinite(f) || f <= 0 || f === 1) return null;
+                        return (
+                          <p className="mt-0.5 text-[10px] text-emerald-700">
+                            ={' '}
+                            {(moedaParaNumero(r.precoUnitario) / f).toLocaleString('pt-BR', {
+                              style: 'currency',
+                              currency: 'BRL',
+                              maximumFractionDigits: 4,
+                            })}{' '}
+                            por {i.unidade}
+                          </p>
+                        );
+                      })()}
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
