@@ -7,6 +7,7 @@ import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { and, eq, asc } from 'drizzle-orm';
 import { PreencherForm } from './preencher-form';
+import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,7 +60,7 @@ export default async function PreencherCotacaoPage(props: {
       );
   }
 
-  const itens = await db
+  const itensTodos = await db
     .select({
       id: schema.cotacaoItem.id,
       quantidade: schema.cotacaoItem.quantidade,
@@ -76,10 +77,23 @@ export default async function PreencherCotacaoPage(props: {
     .where(eq(schema.cotacaoItem.cotacaoId, cf.cotacaoId))
     .orderBy(asc(schema.produto.categoriaCompras), asc(schema.produto.nome));
 
+  // Item que o gestor tirou da cotação DESTE fornecedor nem aparece pra ele.
+  const excluidos = (await lerExclusoesPorCotacao(cf.cotacaoId)).get(cf.id) ?? new Set<string>();
+  const itens = itensTodos.filter((i) => !excluidos.has(i.id));
+
   // Respostas existentes (caso fornecedor esteja editando antes do prazo)
   const respostas = await db
-    .select()
+    .select({
+      cotacaoItemId: schema.cotacaoRespostaItem.cotacaoItemId,
+      precoUnitario: schema.cotacaoRespostaItem.precoUnitario,
+      marcaTextoLivre: schema.cotacaoRespostaItem.marcaTextoLivre,
+      unidadeFornecedor: schema.cotacaoRespostaItem.unidadeFornecedor,
+      fatorConversao: schema.cotacaoRespostaItem.fatorConversao,
+      observacao: schema.cotacaoRespostaItem.observacao,
+      marcaNome: schema.marca.nome,
+    })
     .from(schema.cotacaoRespostaItem)
+    .leftJoin(schema.marca, eq(schema.marca.id, schema.cotacaoRespostaItem.marcaId))
     .where(eq(schema.cotacaoRespostaItem.cotacaoFornecedorId, cf.id));
 
   const expirou = cotacao.fechaEm && new Date() > new Date(cotacao.fechaEm);
@@ -115,11 +129,16 @@ export default async function PreencherCotacaoPage(props: {
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
             Esta cotação já fechou. Não é mais possível responder.
           </div>
-        ) : jaRespondeu ? (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">
-            Você já enviou suas respostas. Obrigado!
-          </div>
         ) : (
+          <>
+          {jaRespondeu && (
+            // Resposta enviada NÃO tranca o formulário: errou um preço, corrige
+            // e reenvia até o fechamento (reenvio substitui a resposta inteira).
+            <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              ✓ Você já enviou suas respostas. Se precisar corrigir algo, altere abaixo e
+              envie de novo — vale a última versão enviada.
+            </div>
+          )}
           <PreencherForm
             token={token}
             itens={itens.map((i) => ({
@@ -143,15 +162,22 @@ export default async function PreencherCotacaoPage(props: {
               >
             >((acc, r) => {
               acc[r.cotacaoItemId] = {
-                precoUnitario: r.precoUnitario != null ? String(r.precoUnitario) : '',
-                marca: r.marcaTextoLivre ?? '',
+                precoUnitario:
+                  r.precoUnitario != null
+                    ? Number(r.precoUnitario).toFixed(2).replace('.', ',')
+                    : '',
+                marca: r.marcaNome ?? r.marcaTextoLivre ?? '',
                 embalagem: r.unidadeFornecedor ?? '',
-                qtdPorEmbalagem: r.fatorConversao != null ? String(r.fatorConversao) : '',
+                qtdPorEmbalagem:
+                  r.fatorConversao != null && Number(r.fatorConversao) !== 1
+                    ? String(Number(r.fatorConversao)).replace('.', ',')
+                    : '',
                 observacao: r.observacao ?? '',
               };
               return acc;
             }, {})}
           />
+          </>
         )}
       </div>
     </main>

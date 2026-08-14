@@ -12,6 +12,7 @@ import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
+import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,9 +103,16 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
           ),
         );
 
+  // Item excluído da cotação de um fornecedor não aparece nem disputa aqui
+  // (mesma regra da alocação — tela e aprovação têm que bater).
+  const exclusoes = await lerExclusoesPorCotacao(id);
+  const respostasVisiveis = respostasAll.filter(
+    (r) => !exclusoes.get(r.cotacaoFornecedorId)?.has(r.cotacaoItemId),
+  );
+
   // Agrupa respostas por cotacaoItemId
   const respostasPorItem = new Map<string, typeof respostasAll>();
-  for (const r of respostasAll) {
+  for (const r of respostasVisiveis) {
     if (!respostasPorItem.has(r.cotacaoItemId)) respostasPorItem.set(r.cotacaoItemId, []);
     respostasPorItem.get(r.cotacaoItemId)!.push(r);
   }
@@ -165,9 +173,17 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               </span>
             </div>
           </div>
-          {(c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') && (
-            <AprovarButton cotacaoId={c.id} />
-          )}
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/cotacao/${c.id}/respostas`}
+              className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-800 hover:bg-sky-100"
+            >
+              📋 Respostas & colar do WhatsApp
+            </Link>
+            {(c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') && (
+              <AprovarButton cotacaoId={c.id} />
+            )}
+          </div>
         </div>
 
         {/* Preview da alocação (antes de aprovar) */}

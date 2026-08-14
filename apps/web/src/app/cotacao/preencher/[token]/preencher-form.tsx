@@ -230,16 +230,33 @@ export function PreencherForm(props: {
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
-                        Você vende em qual embalagem?{' '}
+                        Esse preço é de quê?{' '}
                         {i.embalagemEsperada ? <span className="text-rose-600">*</span> : <span className="text-slate-400">(opcional)</span>}
                       </label>
                       <input
                         type="text"
-                        placeholder={i.embalagemEsperada ?? 'ex: caixa, fardo, balde, unidade'}
+                        list={`embalagens-${i.id}`}
+                        placeholder={i.embalagemEsperada ?? `ex: ${i.unidade}, caixa, fardo, garrafa`}
                         value={respostas[i.id]?.embalagem ?? ''}
                         onChange={(e) => setCampo(i.id, 'embalagem', e.target.value)}
                         className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
                       />
+                      {/* Sugestões pra tirar a ambiguidade do preço: unitário?
+                          kg? garrafa 750ml? caixa c/ 12? fardo c/ 30 kg? */}
+                      <datalist id={`embalagens-${i.id}`}>
+                        <option value={i.unidade} />
+                        <option value="unidade" />
+                        <option value="kg" />
+                        <option value="garrafa 750 ml" />
+                        <option value="garrafa 1 L" />
+                        <option value="garrafa 2 L" />
+                        <option value="caixa c/ 6" />
+                        <option value="caixa c/ 12" />
+                        <option value="caixa c/ 20" />
+                        <option value="fardo c/ 10 kg" />
+                        <option value="fardo c/ 30 kg" />
+                        <option value="balde" />
+                      </datalist>
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">

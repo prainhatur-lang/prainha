@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq } from 'drizzle-orm';
 import { normalizaMarca } from '@/lib/cotacao-alocacao';
+import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
 interface Body {
   respostas: Array<{
@@ -65,7 +66,12 @@ export async function POST(
     return NextResponse.json({ error: 'json invalido' }, { status: 400 });
   }
 
-  const respostas = Array.isArray(body.respostas) ? body.respostas : [];
+  // Item que o gestor tirou da cotação deste fornecedor não entra, mesmo que
+  // venha no payload (form aberto antes da exclusão).
+  const excluidos = (await lerExclusoesPorCotacao(cot.id)).get(cf.id) ?? new Set<string>();
+  const respostas = (Array.isArray(body.respostas) ? body.respostas : []).filter(
+    (r) => !excluidos.has(r.cotacaoItemId),
+  );
 
   // MARCA OBRIGATÓRIA (validação no servidor, não só no formulário): item com
   // preço tem que vir com marca, e quando o item define marcas aceitas a marca

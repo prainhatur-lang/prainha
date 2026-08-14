@@ -9,6 +9,7 @@
 
 import { db, schema } from '@concilia/db';
 import { eq, inArray } from 'drizzle-orm';
+import { lerExclusoesPorCotacao } from './cotacao-exclusao';
 
 /** Compara marca ignorando acento, espaço e caixa: "Dragao" = "Dragão",
  *  "Bom bril" = "Bombril". Fornecedor digita no celular — exigir grafia
@@ -144,10 +145,14 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
     if (lista.length > 0) aceitasPorItem.set(it.id, lista);
   }
 
+  // Item excluído da cotação de um fornecedor (gestor tirou) não disputa.
+  const exclusoes = await lerExclusoesPorCotacao(cotacaoId);
+
   // Agrupa respostas por item, ordenado por preco asc
   const respostasOrdenadasPorItem = new Map<string, typeof respostas>();
   for (const r of respostas) {
     if (r.precoUnitarioNormalizado == null) continue;
+    if (exclusoes.get(r.cotacaoFornecedorId)?.has(r.cotacaoItemId)) continue;
     const aceitas = aceitasPorItem.get(r.cotacaoItemId);
     if (aceitas) {
       const marca = normalizaMarca(r.marcaNome);

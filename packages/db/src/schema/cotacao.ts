@@ -135,6 +135,12 @@ export const cotacaoFornecedor = pgTable(
     respondidoEm: timestamp('respondido_em', { withTimezone: true }),
     /** PENDENTE | RESPONDIDA | NAO_RESPONDEU (apos timeout) */
     status: varchar('status', { length: 20 }).notNull().default('PENDENTE'),
+    // NOTA: existe tambem a coluna itens_excluidos (jsonb, array de
+    // cotacao_item_id) criada por migrate-cotacao-exclusao — de proposito FORA
+    // do schema drizzle: e acessada so por SQL cru em
+    // apps/web/src/lib/cotacao-exclusao.ts, que tolera a coluna nao existir
+    // ainda (o app a cria sob demanda). Mapear aqui quebraria todo
+    // select() cheio desta tabela caso o deploy chegue antes do ALTER.
     observacao: text('observacao'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
