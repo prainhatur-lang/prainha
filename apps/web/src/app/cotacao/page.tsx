@@ -110,6 +110,38 @@ export default async function CotacaoListPage(props: { searchParams: Promise<SP>
           </div>
         )}
 
+        {/* Cotação que fechou e ninguém aprovou NÃO pode ficar invisível:
+            sem aprovar, nenhum pedido é gerado nem enviado — o filé de peixe
+            da #6 ficou 2 dias parado assim sem ninguém notar. */}
+        {(() => {
+          const paradas = cotacoes.filter(
+            (c) =>
+              (c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') &&
+              c.fechaEm &&
+              new Date(c.fechaEm) < new Date(),
+          );
+          if (paradas.length === 0) return null;
+          return (
+            <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4">
+              <p className="text-sm font-semibold text-rose-900">
+                ⚠ {paradas.length} cotação(ões) fechada(s) SEM aprovação — nenhum pedido foi
+                gerado nem enviado:
+              </p>
+              <ul className="mt-1 space-y-0.5 text-xs text-rose-800">
+                {paradas.map((c) => (
+                  <li key={c.id}>
+                    <Link href={`/cotacao/${c.id}`} className="underline">
+                      Cotação #{c.numero}
+                    </Link>{' '}
+                    — fechou {formatDateTime(c.fechaEm)} · {c.qtdRespondidas}/{c.qtdFornecedores}{' '}
+                    responderam. Abra e clique em <strong>Aprovar</strong> (ou cancele).
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })()}
+
         {cotacoes.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center">
             <p className="text-sm text-slate-500">

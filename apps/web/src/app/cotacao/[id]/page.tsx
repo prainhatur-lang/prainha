@@ -186,6 +186,18 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
           </div>
         </div>
 
+        {/* Cotação fechada sem aprovação = pedidos NÃO existem. Gritar. */}
+        {(c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') &&
+          c.fechaEm &&
+          new Date(c.fechaEm) < new Date() && (
+            <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4 text-sm text-rose-900">
+              <strong>⚠ Esta cotação fechou em {formatDateTime(c.fechaEm)} e ainda não foi
+              aprovada.</strong>{' '}
+              Nenhum pedido foi gerado nem enviado aos fornecedores. Revise a pré-visualização
+              abaixo e clique em <strong>Aprovar e gerar pedidos</strong>.
+            </div>
+          )}
+
         {/* Preview da alocação (antes de aprovar) */}
         {previewAprovacao && previewAprovacao.porFornecedor.length > 0 && (
           <section className="mb-6 rounded-xl border border-violet-200 bg-violet-50 p-5">
