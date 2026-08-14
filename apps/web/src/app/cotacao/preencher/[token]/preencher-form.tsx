@@ -249,11 +249,11 @@ export function PreencherForm(props: {
                       </div>
                     )}
                   </div>
-                  {i.observacao && (
-                    <p className="mb-2 rounded bg-slate-50 p-1.5 text-[11px] text-slate-700">
-                      {i.observacao}
-                    </p>
-                  )}
+                  {/* Observação do item NÃO aparece pro fornecedor: virou campo
+                      de uso interno (estoque "tem 1 na casa" etc.) e vazava
+                      informação da casa. Instrução pro fornecedor vai em
+                      classificacao/embalagemEsperada ou na observação da
+                      cotação (cabeçalho). */}
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">

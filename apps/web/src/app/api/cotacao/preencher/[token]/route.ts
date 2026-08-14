@@ -157,10 +157,12 @@ export async function POST(
         .limit(1);
       const ref = ultima?.valor != null ? Number(ultima.valor) : null;
       if (!ref || ref <= 0) continue;
+      // Mensagem SEM o valor de referência: dizer "última compra foi R$ X"
+      // contava pro fornecedor quanto a casa pagou — vaza poder de negociação.
       if (normalizado > ref * 20 || normalizado < ref / 20) {
         precoAbsurdo.push(
-          `${item.produtoNome}: R$ ${normalizado.toFixed(2)} por ${item.unidade} ` +
-            `(última compra foi R$ ${ref.toFixed(2)}) — confira a vírgula e a embalagem`,
+          `${item.produtoNome}: deu R$ ${normalizado.toFixed(2)} por ${item.unidade} — ` +
+            `confira a vírgula e o campo "Quanto vem nela?"`,
         );
       }
     }
