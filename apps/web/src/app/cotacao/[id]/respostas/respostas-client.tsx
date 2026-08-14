@@ -43,6 +43,8 @@ interface Forn {
   status: string;
   respondidoEm: string | null;
   linkAbertoEm: string | null;
+  /** Observação da convocação — hoje carrega "Taxa de frete: R$ X" */
+  frete: string | null;
 }
 interface Resp {
   cfId: string;
@@ -80,6 +82,10 @@ export function RespostasClient(props: {
     return m;
   });
   const [salvandoExclusao, setSalvandoExclusao] = useState<string | null>(null);
+  // Zerar resposta: confirmação em 2 cliques no próprio botão (sem dialog
+  // nativo). 1º clique arma, 2º executa; desarma sozinho em 5s.
+  const [confirmandoZerar, setConfirmandoZerar] = useState<string | null>(null);
+  const [zerando, setZerando] = useState(false);
 
   // ----- modal colar resposta -----
   const [modalForn, setModalForn] = useState<Forn | null>(null);
@@ -150,6 +156,36 @@ export function RespostasClient(props: {
       alert(`Não consegui ${excluir ? 'excluir' : 'restaurar'}: ${e instanceof Error ? e.message : e}`);
     } finally {
       setSalvandoExclusao(null);
+    }
+  }
+
+  async function zerarResposta(f: Forn) {
+    if (confirmandoZerar !== f.cfId) {
+      setConfirmandoZerar(f.cfId);
+      setTimeout(() => setConfirmandoZerar((atual) => (atual === f.cfId ? null : atual)), 5000);
+      return;
+    }
+    setConfirmandoZerar(null);
+    setZerando(true);
+    try {
+      const resp = await fetch(`/api/cotacao/${props.cotacaoId}/zerar-resposta`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cotacaoFornecedorId: f.cfId }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
+      alert(
+        `Respostas de ${f.nome} apagadas — ele pode preencher de novo pelo MESMO link.` +
+          (j.novaFechaEm
+            ? ` A cotação estava fechada e foi reaberta até ${new Date(j.novaFechaEm).toLocaleString('pt-BR')}.`
+            : ''),
+      );
+      router.refresh();
+    } catch (e) {
+      alert(`Não consegui zerar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setZerando(false);
     }
   }
 
@@ -293,13 +329,33 @@ export function RespostasClient(props: {
                         ? `abriu ${f.linkAbertoEm}, não enviou`
                         : 'não abriu o link'}
                   </div>
+                  {f.frete && (
+                    <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
+                      🚚 {f.frete}
+                    </div>
+                  )}
                   {props.podeEditar && (
-                    <button
-                      onClick={() => abrirModal(f)}
-                      className="mt-1 rounded border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 hover:bg-sky-100"
-                    >
-                      📋 Colar resposta
-                    </button>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <button
+                        onClick={() => abrirModal(f)}
+                        className="rounded border border-sky-300 bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 hover:bg-sky-100"
+                      >
+                        📋 Colar resposta
+                      </button>
+                      {f.status === 'RESPONDIDA' && (
+                        <button
+                          onClick={() => zerarResposta(f)}
+                          disabled={zerando}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:opacity-50 ${
+                            confirmandoZerar === f.cfId
+                              ? 'border-rose-500 bg-rose-600 text-white'
+                              : 'border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                          }`}
+                        >
+                          {confirmandoZerar === f.cfId ? 'confirma apagar tudo?' : '🗑 zerar resposta'}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </th>
               ))}

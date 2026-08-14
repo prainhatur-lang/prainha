@@ -74,6 +74,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       linkEnviadoEm: schema.cotacaoFornecedor.linkEnviadoEm,
       linkAbertoEm: schema.cotacaoFornecedor.linkAbertoEm,
       respondidoEm: schema.cotacaoFornecedor.respondidoEm,
+      observacaoCf: schema.cotacaoFornecedor.observacao,
       fornecedorNome: schema.fornecedor.nome,
       fonePrincipal: schema.fornecedor.fonePrincipal,
     })
@@ -338,7 +339,12 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
             <tbody>
               {fornecedores.map((f) => (
                 <tr key={f.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium text-slate-900">{f.fornecedorNome}</td>
+                  <td className="px-3 py-2 font-medium text-slate-900">
+                    {f.fornecedorNome}
+                    {f.observacaoCf && (
+                      <div className="text-[10px] font-normal text-amber-700">🚚 {f.observacaoCf}</div>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-slate-700">{f.status}</td>
                   <td className="px-3 py-2 text-slate-600">
                     {formatDateTime(f.linkEnviadoEm)}

@@ -48,6 +48,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
       status: schema.cotacaoFornecedor.status,
       respondidoEm: schema.cotacaoFornecedor.respondidoEm,
       linkAbertoEm: schema.cotacaoFornecedor.linkAbertoEm,
+      observacao: schema.cotacaoFornecedor.observacao,
       nome: schema.fornecedor.nome,
     })
     .from(schema.cotacaoFornecedor)
@@ -124,6 +125,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
             status: f.status,
             respondidoEm: f.respondidoEm ? formatDateTime(f.respondidoEm) : null,
             linkAbertoEm: f.linkAbertoEm ? formatDateTime(f.linkAbertoEm) : null,
+            frete: f.observacao,
           }))}
           respostas={respostas.map((r) => ({
             cfId: r.cfId,

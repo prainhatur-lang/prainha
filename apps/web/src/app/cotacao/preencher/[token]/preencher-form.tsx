@@ -98,6 +98,7 @@ export function PreencherForm(props: {
   token: string;
   itens: Item[];
   respostasIniciais: Record<string, RespostaInicial>;
+  freteInicial?: string;
 }) {
   const [respostas, setRespostas] = useState<Record<string, RespostaItem>>(() => {
     const init: Record<string, RespostaItem> = {};
@@ -126,6 +127,9 @@ export function PreencherForm(props: {
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [sucesso, setSucesso] = useState(false);
+  // Frete é UM valor total da entrega (o "táxi"), não por item. Começa em
+  // 0,00 explícito: o fornecedor declara zero ou troca pelo valor que cobra.
+  const [frete, setFrete] = useState(props.freteInicial || '0,00');
 
   function setCampo(itemId: string, campo: keyof RespostaItem, valor: string) {
     setRespostas((prev) => ({ ...prev, [itemId]: { ...prev[itemId], [campo]: valor } }));
@@ -211,7 +215,10 @@ export function PreencherForm(props: {
       const r = await fetch(`/api/cotacao/preencher/${props.token}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ respostas: respArr }),
+        body: JSON.stringify({
+          respostas: respArr,
+          taxaFrete: frete.trim() ? moedaParaNumero(frete) : null,
+        }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -268,6 +275,28 @@ export function PreencherForm(props: {
 
   return (
     <form onSubmit={enviar} className="space-y-4">
+      {/* Regra importantíssima do dono: preço é o valor FINAL. Frete à parte
+          tem campo próprio, em cima, pra não vir escondido no preço depois. */}
+      <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4">
+        <p className="text-sm font-semibold text-amber-900">
+          ⚠ IMPORTANTE: informe o valor FINAL de cada item — com todos os impostos e o frete
+          já incluídos.
+        </p>
+        <div className="mt-3">
+          <label className="block text-[11px] font-medium text-amber-900">
+            Taxa de frete/entrega (valor TOTAL da entrega, não por item — ex: táxi). Se não
+            cobra, deixe 0,00:
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={frete}
+            onChange={(e) => setFrete(mascaraMoeda(e.target.value))}
+            className="mt-1 w-48 rounded border border-amber-300 bg-white px-2 py-1 text-sm"
+          />
+        </div>
+      </div>
+
       {Object.entries(porCategoria)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([cat, lista]) => (

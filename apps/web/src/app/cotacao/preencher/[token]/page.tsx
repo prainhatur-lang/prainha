@@ -27,6 +27,7 @@ export default async function PreencherCotacaoPage(props: {
       fornecedorId: schema.cotacaoFornecedor.fornecedorId,
       status: schema.cotacaoFornecedor.status,
       respondidoEm: schema.cotacaoFornecedor.respondidoEm,
+      observacao: schema.cotacaoFornecedor.observacao,
     })
     .from(schema.cotacaoFornecedor)
     .where(eq(schema.cotacaoFornecedor.tokenPublico, token))
@@ -141,6 +142,10 @@ export default async function PreencherCotacaoPage(props: {
           )}
           <PreencherForm
             token={token}
+            freteInicial={
+              // Frete gravado como "Taxa de frete: R$ 12,34" na observação da convocação
+              /Taxa de frete: R\$ ?([\d.,]+)/.exec(cf.observacao ?? '')?.[1] ?? ''
+            }
             itens={itens.map((i) => ({
               ...i,
               produtoNome: i.produtoNome ?? '',

@@ -13,6 +13,8 @@ import { normalizaMarca } from '@/lib/cotacao-alocacao';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
 interface Body {
+  /** Taxa de frete/entrega cobrada à parte (R$). null/0 = não cobra. */
+  taxaFrete?: number | null;
   respostas: Array<{
     cotacaoItemId: string;
     /** Preço DA EMBALAGEM que o fornecedor vende (não da unidade do pedido). */
@@ -225,12 +227,18 @@ export async function POST(
     }
   }
 
-  // Marca como RESPONDIDA
+  // Marca como RESPONDIDA. Frete à parte vai na observação da convocação
+  // (formato fixo "Taxa de frete: R$ X" — parseado no prefill e nas telas).
+  const freteNum = body.taxaFrete != null ? Number(body.taxaFrete) : 0;
   await db
     .update(schema.cotacaoFornecedor)
     .set({
       status: 'RESPONDIDA',
       respondidoEm: new Date(),
+      observacao:
+        Number.isFinite(freteNum) && freteNum > 0
+          ? `Taxa de frete: R$ ${freteNum.toFixed(2).replace('.', ',')}`
+          : null,
     })
     .where(eq(schema.cotacaoFornecedor.id, cf.id));
 
