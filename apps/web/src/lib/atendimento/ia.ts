@@ -367,7 +367,7 @@ const FERRAMENTAS_FORNECEDOR: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: { type: 'object', properties: {} },
     },
   },
-  FERRAMENTAS.find((f) => f.function.name === 'transferir_para_humano')!,
+  FERRAMENTAS.find((f) => f.type === 'function' && f.function.name === 'transferir_para_humano')!,
 ];
 
 /** Prompt do MODO FORNECEDOR: o mesmo número dispara cotações/pedidos — a
