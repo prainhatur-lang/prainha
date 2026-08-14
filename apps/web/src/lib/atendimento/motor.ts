@@ -246,6 +246,7 @@ export async function processarEntrada(params: {
 
     let texto: string | null = null;
     let transferiu = false;
+    let leadRegistrado = false;
     try {
       let resposta;
       try {
@@ -271,6 +272,7 @@ export async function processarEntrada(params: {
       }
       texto = resposta.texto;
       transferiu = resposta.transferiu;
+      leadRegistrado = resposta.leadRegistrado;
       if (!texto) {
         texto = transferiu
           ? 'Prontinho! Já chamei alguém da equipe pra falar contigo por aqui mesmo, tá? 😊'
@@ -282,6 +284,27 @@ export async function processarEntrada(params: {
       texto = 'Oi! Vou pedir pra alguém da equipe te responder já já, tá bom? 😊';
       transferiu = true;
       console.error('nina: falha ao gerar resposta', e);
+    }
+
+    // REDE DE SEGURANÇA: prometeu retorno sem transferir = transfere à força.
+    // O prompt já proíbe, mas o modelo escorrega (12/08: cliente celíaca ouviu
+    // "vou verificar com a equipe e já retorno" e ninguém foi avisado — ficou
+    // 2 dias no vácuo). Lead registrado não conta: a equipe já é avisada.
+    if (
+      !transferiu &&
+      !leadRegistrado &&
+      texto &&
+      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])/i.test(
+        texto,
+      )
+    ) {
+      await executores
+        .transferir(
+          'Nina prometeu retorno',
+          'A Nina disse ao cliente que ia confirmar algo com a equipe — assumir e dar o retorno.',
+        )
+        .catch(() => {});
+      transferiu = true;
     }
 
     const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
