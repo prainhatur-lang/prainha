@@ -14,6 +14,8 @@ export interface ItemCardapio {
   preco: number;
   preco_delivery: number | null;
   preco_ifood: number | null;
+  /** false = vendido na casa mas não aparece no Menudino. */
+  no_cardapio_online?: boolean;
   descr: string;
 }
 
@@ -48,12 +50,17 @@ export async function buscarItensCardapio(
   // Preços por canal: salão = produto_variante; delivery próprio e iFood =
   // delivery_item (quando o cardápio do delivery estiver preenchido). Itens
   // sem delivery_item mostram só o preço de salão.
+  // Filtro de canal: menu_dino é só o cardápio ONLINE (305 itens); a casa
+  // vende ~990 (comanda do garçom / balcão / cardápio digital) — ex.: Peixe
+  // Inteiro frito, bebidas por dose, sobremesas. A Nina enxerga TUDO que é
+  // vendável; o campo no_cardapio_online diferencia na resposta.
   return (await db.execute(sql`
     SELECT p.nome,
            COALESCE(t.descricao, t.sigla, '') AS tamanho,
            pv.preco_venda::float AS preco,
            di.preco::float AS preco_delivery,
            di.preco_ifood::float AS preco_ifood,
+           pv.menu_dino AS no_cardapio_online,
            LEFT(COALESCE(p.descricao, ''), 140) AS descr
     FROM produto_variante pv
     JOIN produto p ON p.id = pv.produto_id
@@ -61,14 +68,14 @@ export async function buscarItensCardapio(
     LEFT JOIN delivery_item di
       ON di.variante_id = pv.id AND di.filial_id = p.filial_id AND di.ativo
     WHERE p.filial_id = ${filialId}
-      AND pv.menu_dino
+      AND (pv.menu_dino OR pv.comanda_mobile OR pv.desktop OR pv.cardapio_digital)
       AND pv.data_delete IS NULL
       AND pv.data_pausado IS NULL
       AND (p.descontinuado IS NOT TRUE)
       AND (p.data_pausado IS NULL)
       AND pv.preco_venda > 0
       AND ${where}
-    ORDER BY p.nome, pv.preco_venda
+    ORDER BY pv.menu_dino DESC, p.nome, pv.preco_venda
     LIMIT ${limite}
   `)) as unknown as ItemCardapio[];
 }
@@ -95,7 +102,8 @@ export async function consultarCardapio(filialId: string, termo: string): Promis
       const preco = canais.length > 0 ? `no restaurante ${rs(l.preco)} · ${canais.join(' · ')}` : rs(l.preco);
       if (canais.length > 0) temMultiCanal = true;
       const d = l.descr.trim() ? ` — ${l.descr.trim()}` : '';
-      return `- ${l.nome.trim()}${tam}: ${preco}${d}`;
+      const fora = l.no_cardapio_online === false ? ' [servido na casa; não aparece no cardápio online]' : '';
+      return `- ${l.nome.trim()}${tam}: ${preco}${d}${fora}`;
     })
     .join('\n');
   const avisoCanal = temMultiCanal
