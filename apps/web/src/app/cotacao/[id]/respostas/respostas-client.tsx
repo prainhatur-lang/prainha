@@ -159,9 +159,13 @@ export function RespostasClient(props: {
     }
   }
 
+  // itemId -> 'salvando' | 'ok' (some sozinho) — feedback visual do auto-save
+  const [qtdStatus, setQtdStatus] = useState<Record<string, 'salvando' | 'ok'>>({});
+
   async function salvarQuantidade(item: Item, valor: string) {
     const qtd = moedaParaNumero(valor);
     if (!Number.isFinite(qtd) || qtd <= 0 || qtd === Number(item.quantidade)) return;
+    setQtdStatus((p) => ({ ...p, [item.id]: 'salvando' }));
     try {
       const resp = await fetch(`/api/cotacao/${props.cotacaoId}/alterar-item`, {
         method: 'POST',
@@ -170,8 +174,23 @@ export function RespostasClient(props: {
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
+      setQtdStatus((p) => ({ ...p, [item.id]: 'ok' }));
+      setTimeout(
+        () =>
+          setQtdStatus((p) => {
+            const novo = { ...p };
+            delete novo[item.id];
+            return novo;
+          }),
+        3000,
+      );
       router.refresh();
     } catch (e) {
+      setQtdStatus((p) => {
+        const novo = { ...p };
+        delete novo[item.id];
+        return novo;
+      });
       alert(`Não consegui alterar a quantidade: ${e instanceof Error ? e.message : e}`);
     }
   }
@@ -404,6 +423,12 @@ export function RespostasClient(props: {
                         />
                       ) : (
                         <span>{item.quantidade}</span>
+                      )}
+                      {qtdStatus[item.id] === 'salvando' && (
+                        <span className="text-slate-400">salvando…</span>
+                      )}
+                      {qtdStatus[item.id] === 'ok' && (
+                        <span className="font-semibold text-emerald-600">✓ salvo</span>
                       )}
                       <span>
                         {item.embalagemEsperada ?? item.unidade}
