@@ -200,8 +200,16 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   if (!nome) return 'Falta o nome de quem reserva — pergunte ao cliente.';
 
   if (p.data < hojeBr()) return 'Essa data já passou. Peça uma data futura.';
-  if (p.data === hojeBr() && p.hora < horaAgoraBr()) {
-    return 'Essa hora já passou hoje. Peça um horário mais tarde ou outro dia.';
+  if (p.data === hojeBr()) {
+    const agora = horaAgoraBr();
+    const [h1, m1] = p.hora.split(':').map(Number);
+    const [h0, m0] = agora.split(':').map(Number);
+    const minutosAte = h1 * 60 + m1 - (h0 * 60 + m0);
+    // Regra da casa (Elison 14/08): em cima da hora não se reserva mais —
+    // o cliente vem direto e a recepção acomoda na mesa disponível.
+    if (minutosAte < 60) {
+      return 'Em cima da hora não fazemos mais reserva pra hoje (mínimo 1 hora de antecedência). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.';
+    }
   }
 
   const [filial] = await db
@@ -216,7 +224,9 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     return `Sem vagas pra ${dataBr(p.data)} (data fechada). Ofereça outro dia.`;
   }
   const janela = await foraDaJanelaAtendimento(cfg, p.data, p.hora);
-  if (janela.bloqueado) return `Bloqueado: ${janela.motivo}`;
+  if (janela.bloqueado) {
+    return `Bloqueado: ${janela.motivo} Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).`;
+  }
 
   const areaCfg = cfg.areas.find((a) => a.nome.toLowerCase() === p.area.trim().toLowerCase());
   if (!areaCfg || !areaCfg.ativo || areaCfg.somenteEventos) {
