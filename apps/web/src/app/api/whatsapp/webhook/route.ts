@@ -18,6 +18,8 @@ import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { enviarTextoWhatsApp } from '@/lib/whatsapp-otp';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
+import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
+import { enviarTexto } from '@/lib/atendimento/zap';
 import {
   registrarEntrada,
   processarEntrada,
@@ -201,9 +203,46 @@ async function tratarMensagemComum(
 
   const registro = await registrarEntrada(entrada);
   if (!registro) return; // reentrega (dedupe)
-  if (!registro.deveResponder) return; // humano/fornecedor cuidando
+
+  if (!registro.deveResponder) {
+    // Conversa de fornecedor (ou assumida pela equipe): a Nina não responde,
+    // MAS pergunta de dados de faturamento ("qual CNPJ pra tirar o pedido?")
+    // tem resposta automática — o Victor da Saraiva ficou 2 dias sem isso.
+    if (tipo === 'texto' && corpo && perguntaFaturamento(corpo)) {
+      after(() => responderFaturamento(entrada, registro.conversaId));
+    }
+    return;
+  }
 
   after(() => processarEntrada({ registro, entrada }));
+}
+
+/** Responde na hora com os dados de faturamento da filial e registra a
+ *  mensagem na conversa (a janela de 24h está aberta — o fornecedor acabou
+ *  de escrever). Nunca lança. */
+async function responderFaturamento(entrada: EntradaWebhook, conversaId: string): Promise<void> {
+  try {
+    const dados = await dadosFaturamentoTexto(entrada.filialId);
+    if (!dados) return;
+    const texto = `${dados}\n\nQualquer outra dúvida, é só falar que a equipe responde por aqui. 🙏`;
+    const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
+    await db.insert(schema.atendimentoMensagem).values({
+      conversaId,
+      waMessageId: envio.waMessageId,
+      direcao: 'saida',
+      autor: 'bot',
+      tipo: 'texto',
+      corpo: texto,
+      statusEnvio: envio.erro ? 'erro' : 'enviada',
+      erro: envio.erro ?? null,
+    });
+    await db
+      .update(schema.atendimentoConversa)
+      .set({ ultimaMsgEm: sql`now()`, atualizadoEm: sql`now()` })
+      .where(eq(schema.atendimentoConversa.id, conversaId));
+  } catch (e) {
+    console.error('responderFaturamento falhou', e);
+  }
 }
 
 async function tratarPayload(payload: string, from: string | null) {
@@ -217,11 +256,18 @@ async function tratarPayload(payload: string, from: string | null) {
       .update(schema.pedidoCompra)
       .set({ status: novo, atualizadoEm: sql`now()` })
       .where(and(eq(schema.pedidoCompra.id, token), sql`${schema.pedidoCompra.status} NOT IN ('CANCELADO')`))
-      .returning({ numero: schema.pedidoCompra.numero });
+      .returning({ numero: schema.pedidoCompra.numero, filialId: schema.pedidoCompra.filialId });
     if (upd.length && from) {
-      const msg = acao === 'ped_ok'
-        ? `✅ Pedido nº ${upd[0].numero} confirmado. Obrigado!`
-        : `Ok, registramos que o pedido nº ${upd[0].numero} não poderá ser atendido. Obrigado pelo retorno.`;
+      // Ao confirmar, já manda os dados de faturamento junto — o fornecedor
+      // não precisa perguntar "qual CNPJ pra tirar o pedido?" (Victor/Saraiva
+      // ficou 2 dias esperando essa resposta no pedido #9).
+      let msg: string;
+      if (acao === 'ped_ok') {
+        const dados = await dadosFaturamentoTexto(upd[0].filialId).catch(() => null);
+        msg = `✅ Pedido nº ${upd[0].numero} confirmado. Obrigado!${dados ? `\n\n${dados}` : ''}`;
+      } else {
+        msg = `Ok, registramos que o pedido nº ${upd[0].numero} não poderá ser atendido. Obrigado pelo retorno.`;
+      }
       await enviarTextoWhatsApp(from, msg).catch(() => {});
     }
     return;

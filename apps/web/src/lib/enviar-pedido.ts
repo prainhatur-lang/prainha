@@ -5,6 +5,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { pedidoCompraConfigurado, enviarPedidoCompra } from '@/lib/whatsapp-otp';
+import { dadosFaturamentoLinha } from '@/lib/dados-faturamento';
 
 function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -33,6 +34,7 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
       numero: schema.pedidoCompra.numero,
       status: schema.pedidoCompra.status,
       valorTotal: schema.pedidoCompra.valorTotal,
+      filialId: schema.pedidoCompra.filialId,
       filialNome: schema.filial.nome,
       fornecedorNome: schema.fornecedor.nome,
       fornecedorFone: schema.fornecedor.fonePrincipal,
@@ -65,12 +67,17 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
     .map((i) => `${i.produtoNome} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade} = ${brl(Number(i.valorTotal))}`)
     .join('; ');
 
+  // Dados de faturamento JUNTO com o pedido — o fornecedor não precisa
+  // perguntar "qual CNPJ pra tirar o pedido?" (linha única: parâmetro de
+  // template da Meta não aceita quebra de linha).
+  const faturamento = await dadosFaturamentoLinha(p.filialId).catch(() => null);
+
   try {
     await enviarPedidoCompra(tel, {
       fornecedor: (p.fornecedorNome ?? '').split(' ')[0] || 'tudo bem',
       filial: p.filialNome ?? 'Prainha',
       numero: String(p.numero),
-      itens: itensStr || '(itens no sistema)',
+      itens: `${itensStr || '(itens no sistema)'}${faturamento ? `; ${faturamento}` : ''}`,
       total: p.valorTotal != null ? brl(Number(p.valorTotal)) : '—',
       pedidoId, // p/ o payload dos botões Confirmar/Não consigo
     });

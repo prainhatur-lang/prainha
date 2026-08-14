@@ -195,6 +195,43 @@ export function AtendimentoClient(props: {
         </div>
       </div>
 
+      {/* Fornecedor esperando resposta não pode ficar invisível: o Victor da
+          Saraiva perguntou o CNPJ do pedido e ficou 2 dias sem resposta. */}
+      {(() => {
+        const LIMITE_MS = 3 * 3600 * 1000;
+        const esperando = conversas.filter(
+          (c) =>
+            (c.status === 'fornecedor' || c.status === 'humano') &&
+            c.naoLidas > 0 &&
+            c.ultimaMsgClienteEm &&
+            Date.now() - new Date(c.ultimaMsgClienteEm).getTime() > LIMITE_MS,
+        );
+        if (esperando.length === 0) return null;
+        return (
+          <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-3">
+            <p className="text-sm font-semibold text-rose-900">
+              ⚠ {esperando.length} conversa(s) esperando resposta há mais de 3 horas:
+            </p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {esperando.map((c) => {
+                const horas = Math.floor(
+                  (Date.now() - new Date(c.ultimaMsgClienteEm!).getTime()) / 3600000,
+                );
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelecionada(c.id)}
+                    className="rounded border border-rose-300 bg-white px-2 py-1 text-xs text-rose-800 hover:bg-rose-100"
+                  >
+                    {c.nomeCliente || c.telefone} · {horas >= 24 ? `${Math.floor(horas / 24)}d` : `${horas}h`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[320px_1fr]">
         {/* Lista de conversas */}
         <div className="max-h-[75vh] overflow-y-auto rounded-lg border border-slate-200 bg-white">
