@@ -33,6 +33,7 @@ export interface DadosOrcamentoEvento {
   principais: string[];
   massa: string | null;
   sobremesa: string | null;
+  bebidas: 'nenhuma' | 'sem_alcool' | 'com_alcool';
   observacoes: string | null;
 }
 
@@ -142,7 +143,10 @@ FLUXO DE EVENTOS:
 - Apresente os espaços que combinam com o que a pessoa quer. Ao longo da conversa (sem parecer formulário), colete: tipo de evento, data (mesmo aproximada), horário, número de pessoas e o nome da pessoa.
 - CAPACIDADE DO TERRAÇO: até 50 pessoas; juntando a varandinha, até 60. Acima disso → lead + equipe.
 - ORÇAMENTO NA HORA (só no Terraço, até 60 pessoas, com data definida): ofereça montar o orçamento ali mesmo. Chame listar_opcoes_orcamento_evento e conduza as escolhas aos poucos: 3 ou 4 entradas (servidas à vontade), 3 pratos principais + 1 massa (opção vegetariana/quem não come frutos do mar), e sobremesa (padrão é sem; ofereça como opção). O cliente pode pedir prato fora da lista — a geração valida no cardápio.
-- Com tudo confirmado numa frase de resumo e o SIM do cliente, chame gerar_orcamento_evento e mande o resumo com o valor e o LINK pro cliente ver o documento e aceitar. Bebidas não estão inclusas (por consumo, ou pacote a combinar com a equipe) — diga isso junto.
+- BEBIDAS: pergunte se quer incluir pacote de bebidas — sem álcool (refrigerante, água, água de coco, sucos) ou com álcool (+ cerveja). Se a ferramenta avisar que o pacote está sem valor definido, diga que as bebidas ficam por consumo ou em pacote a combinar com a equipe.
+- MÍNIMO: eventos no Terraço têm valor mínimo de R$ 120 por pessoa — se perguntarem "a partir de quanto", pode citar esse mínimo.
+- ENTRADAS são à vontade; PRINCIPAIS e massa são servidos 1 por pessoa (não diga que principal é à vontade).
+- Com tudo confirmado numa frase de resumo e o SIM do cliente, chame gerar_orcamento_evento e mande o resumo com o valor por pessoa, o que inclui (dividido: entradas / principais / sobremesa / bebidas / espaço) e o LINK pro cliente ver o documento e aceitar.
 - Se a ferramenta responder TRAVA (valor fora da faixa), espaço sem taxa fixa (gramado/varandinha sozinha) ou capacidade estourada: NÃO cite valor — registre o lead e transfira pra equipe.
 - Evento sem data ainda, cliente só pesquisando, ou pedido complexo (casamento com decoração, corporativo com café/coquetel/exclusividade, open bar): registre o lead com o que tiver e transfira — esses são montados sob medida pela equipe.
 - Perguntas de preço de espaço SEM preço informado acima: diga que a equipe confirma o valor certinho e registre o lead.
@@ -256,6 +260,7 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           principais: { type: 'array', items: { type: 'string' }, description: 'exatamente 3 pratos principais' },
           massa: { type: 'string', description: 'nome da massa (opção vegetariana)' },
           sobremesa: { type: 'string', description: 'nome da sobremesa, ou omitir se sem sobremesa' },
+          bebidas: { type: 'string', enum: ['nenhuma', 'sem_alcool', 'com_alcool'], description: 'pacote de bebidas escolhido (nenhuma = por consumo)' },
           observacoes: { type: 'string', description: 'pedidos especiais do cliente' },
         },
         required: ['espaco', 'data', 'pessoas', 'nomeCliente', 'entradas', 'principais'],
@@ -413,6 +418,9 @@ export async function gerarResposta(params: {
             principais: Array.isArray(args.principais) ? args.principais.map(String) : [],
             massa: String(args.massa ?? '') || null,
             sobremesa: String(args.sobremesa ?? '') || null,
+            bebidas: (['nenhuma', 'sem_alcool', 'com_alcool'] as const).includes(args.bebidas as never)
+              ? (args.bebidas as 'nenhuma' | 'sem_alcool' | 'com_alcool')
+              : 'nenhuma',
             observacoes: String(args.observacoes ?? '') || null,
           });
         } else if (tc.function.name === 'consultar_cardapio') {

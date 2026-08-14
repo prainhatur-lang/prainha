@@ -22,10 +22,16 @@ import { buscarItensCardapio, type ItemCardapio } from './cardapio';
 // Fatores da regra "média" (mudar aqui recalibra a Nina; futuro: painel).
 const ENTRADA_PORCAO_A_CADA = 3; // 1 porção de cada entrada a cada 3 pessoas
 const PRINCIPAL_PORCOES_POR_PESSOA = 1; // equivalente individual por pessoa
-// Faixa da trava: orçamentos reais da casa (casamento 50p R$350/p, SEBRAE
+// Piso comercial (Elison, 14/08): evento no Terraço não sai por menos de
+// R$ 120/pessoa — conta abaixo disso é elevada ao piso, não bloqueada.
+const PISO_POR_PESSOA = 120;
+// Teto da trava: orçamentos reais da casa (casamento 50p R$350/p, SEBRAE
 // 70p R$335/p — com bebidas/serviço) balizam o teto em 400.
-const FAIXA_MIN_PESSOA = 80; // R$ — trava de segurança
 const FAIXA_MAX_PESSOA = 400;
+// Pacotes de bebida POR PESSOA (null = ainda sem valor definido pelo Elison —
+// enquanto isso a Nina oferece "por consumo ou pacote a combinar").
+const PACOTE_BEBIDA_SEM_ALCOOL: number | null = null; // refri, água, água de coco, sucos
+const PACOTE_BEBIDA_COM_ALCOOL: number | null = null; // + cerveja (e o que o Elison definir)
 const TAXA_TERRACO = 1000;
 const CAP_TERRACO = 50;
 const CAP_TERRACO_COM_VARANDA = 60;
@@ -100,6 +106,7 @@ export interface PedidoOrcamento {
   principais: string[];
   massa: string | null;
   sobremesa: string | null; // nome da sobremesa ou null = sem
+  bebidas: 'nenhuma' | 'sem_alcool' | 'com_alcool';
   observacoes: string | null;
 }
 
@@ -140,6 +147,26 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     return `Não achei no cardápio: ${naoAchou.join('; ')}. Confirme o nome com o cliente (ou use consultar_cardapio) e gere de novo.`;
   }
 
+  // Bebidas: só entram com valor de pacote definido
+  let custoBebidas = 0;
+  let bebidaNota = '';
+  let bebidaSecao: 'bebida_sem_alcool' | 'bebida_com_alcool' | null = null;
+  if (p.bebidas === 'sem_alcool') {
+    if (PACOTE_BEBIDA_SEM_ALCOOL == null) {
+      bebidaNota = ' OBS: pacote de bebidas ainda SEM VALOR definido — o orçamento saiu SEM bebidas (por consumo, ou pacote a combinar com a equipe); avise o cliente assim.';
+    } else {
+      custoBebidas = PACOTE_BEBIDA_SEM_ALCOOL;
+      bebidaSecao = 'bebida_sem_alcool';
+    }
+  } else if (p.bebidas === 'com_alcool') {
+    if (PACOTE_BEBIDA_COM_ALCOOL == null) {
+      bebidaNota = ' OBS: pacote de bebidas ainda SEM VALOR definido — o orçamento saiu SEM bebidas (por consumo, ou pacote a combinar com a equipe); avise o cliente assim.';
+    } else {
+      custoBebidas = PACOTE_BEBIDA_COM_ALCOOL;
+      bebidaSecao = 'bebida_com_alcool';
+    }
+  }
+
   // Cálculo da comida POR PESSOA (regra média)
   const custoEntradas = entradas.reduce((s, e) => s + e.preco, 0) / ENTRADA_PORCAO_A_CADA;
   const principaisTodos = massa ? [...principais, massa] : principais;
@@ -147,22 +174,41 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     principaisTodos.reduce((s, i) => s + precoPorPessoa(i), 0) / principaisTodos.length;
   const custoPrincipais = mediaPrincipal * PRINCIPAL_PORCOES_POR_PESSOA;
   const custoSobremesa = sobremesa ? sobremesa.preco : 0;
-  const comidaPorPessoa = custoEntradas + custoPrincipais + custoSobremesa;
+  const comidaPorPessoa = custoEntradas + custoPrincipais + custoSobremesa + custoBebidas;
 
-  // Valor por pessoa "cheio" (com espaço rateado) — arredonda pra cima em R$5
+  // Valor por pessoa "cheio" (com espaço rateado): arredonda pra cima em R$5
+  // e aplica o PISO de R$ 120/pessoa.
   const totalSemArredondar = comidaPorPessoa * pessoas + TAXA_TERRACO;
-  const porPessoaCheio = Math.ceil(totalSemArredondar / pessoas / 5) * 5;
+  const calculado = Math.ceil(totalSemArredondar / pessoas / 5) * 5;
+  const porPessoaCheio = Math.max(calculado, PISO_POR_PESSOA);
+  const pisoAplicado = porPessoaCheio > calculado;
   const valorPessoaDoc = Math.max(porPessoaCheio - TAXA_TERRACO / pessoas, 0);
   const totalFinal = valorPessoaDoc * pessoas + TAXA_TERRACO;
 
-  if (porPessoaCheio < FAIXA_MIN_PESSOA || porPessoaCheio > FAIXA_MAX_PESSOA) {
-    return `TRAVA: o cálculo deu R$ ${porPessoaCheio.toFixed(0)} por pessoa (fora da faixa ${FAIXA_MIN_PESSOA}–${FAIXA_MAX_PESSOA}). NÃO cite esse valor — registre o lead e transfira pra equipe montar o orçamento.`;
+  if (porPessoaCheio > FAIXA_MAX_PESSOA) {
+    return `TRAVA: o cálculo deu R$ ${porPessoaCheio.toFixed(0)} por pessoa (acima do teto de ${FAIXA_MAX_PESSOA}). NÃO cite esse valor — registre o lead e transfira pra equipe montar o orçamento.`;
   }
 
+  // Entradas à vontade; principais e massa servidos 1 por pessoa (regra da
+  // casa — "à vontade" no doc é só pras entradas).
   const pratos = [
-    ...entradas.map((e) => ({ nome: e.nome, descricao: e.descr || undefined, regime: 'livre' as const })),
-    ...principais.map((i) => ({ nome: i.nome, descricao: i.descr || undefined, regime: 'livre' as const })),
-    ...(massa ? [{ nome: massa.nome, descricao: massa.descr || undefined, regime: 'livre' as const }] : []),
+    ...entradas.map((e) => ({ nome: e.nome, descricao: e.descr || undefined, regime: 'livre' as const, secao: 'entrada' as const })),
+    ...principais.map((i) => ({ nome: i.nome, descricao: i.descr || undefined, regime: 'limitado' as const, qtd: '1 por pessoa', secao: 'principal' as const })),
+    ...(massa
+      ? [{ nome: massa.nome, descricao: (massa.descr || '') + (massa.descr ? ' — ' : '') + 'opção vegetariana', regime: 'limitado' as const, qtd: '1 por pessoa', secao: 'principal' as const }]
+      : []),
+    ...(sobremesa
+      ? [{ nome: sobremesa.nome, descricao: sobremesa.descr || undefined, regime: 'limitado' as const, qtd: '1 por pessoa', secao: 'sobremesa' as const }]
+      : []),
+    ...(bebidaSecao === 'bebida_sem_alcool'
+      ? [{ nome: 'Refrigerante, água, água de coco e sucos', regime: 'livre' as const, secao: 'bebida_sem_alcool' as const }]
+      : []),
+    ...(bebidaSecao === 'bebida_com_alcool'
+      ? [
+          { nome: 'Refrigerante, água, água de coco e sucos', regime: 'livre' as const, secao: 'bebida_sem_alcool' as const },
+          { nome: 'Cerveja', regime: 'livre' as const, secao: 'bebida_com_alcool' as const },
+        ]
+      : []),
   ];
 
   const aceiteToken = randomBytes(32).toString('hex');
@@ -193,9 +239,15 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
 
   const rs = (v: number) => `R$ ${v.toFixed(2).replace('.', ',')}`;
   const sob = sobremesa ? `com sobremesa (${sobremesa.nome})` : 'sem sobremesa';
+  const composicao =
+    `Composição por pessoa: entradas ${rs(custoEntradas)} · principais ${rs(custoPrincipais)}` +
+    (custoSobremesa > 0 ? ` · sobremesa ${rs(custoSobremesa)}` : '') +
+    (custoBebidas > 0 ? ` · bebidas ${rs(custoBebidas)}` : '') +
+    ` · espaço rateado ${rs(TAXA_TERRACO / pessoas)}`;
   return (
     `ORÇAMENTO CRIADO: Terraço, ${p.data.split('-').reverse().join('/')}${p.hora ? ` às ${p.hora}` : ''}, ${pessoas} pessoas, ${sob}. ` +
-    `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo). ` +
-    `Válido por ${VALIDADE_DIAS} dias. Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
+    `${composicao}. ` +
+    `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo${pisoAplicado ? ` — a conta deu ${rs(calculado)} e foi elevada ao mínimo de ${rs(PISO_POR_PESSOA)}/pessoa` : ''}). ` +
+    `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
 }

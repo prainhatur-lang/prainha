@@ -30,6 +30,9 @@ export interface PratoOrcamento {
   regime: 'livre' | 'limitado';
   /** Quantidade quando limitado — texto livre (ex: "1 por pessoa", "6 travessas"). */
   qtd?: string;
+  /** Seção do documento (Entradas/Principais/Sobremesa/Bebidas...). Ausente =
+   *  lista única sem seções (orçamentos antigos continuam iguais). */
+  secao?: 'entrada' | 'principal' | 'sobremesa' | 'bebida_sem_alcool' | 'bebida_com_alcool';
 }
 
 export const orcamentoEvento = pgTable(

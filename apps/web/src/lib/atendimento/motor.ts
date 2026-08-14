@@ -239,6 +239,7 @@ export async function processarEntrada(params: {
           principais: dados.principais,
           massa: dados.massa,
           sobremesa: dados.sobremesa,
+          bebidas: dados.bebidas,
           observacoes: dados.observacoes,
         }),
       cancelarReserva: (data: string | null) =>

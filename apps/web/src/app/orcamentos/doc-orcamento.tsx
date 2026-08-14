@@ -114,25 +114,56 @@ export function DocOrcamento({ o, filialNome, filialCnpj, linkAceite }: Props) {
         {pratos.length === 0 ? (
           <p className="text-sm text-slate-500">Cardápio a definir com o cliente.</p>
         ) : (
-          <ul className="space-y-2.5">
-            {pratos.map((p, i) => (
-              <li key={i} className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{p.nome}</p>
-                  {p.descricao && <p className="text-xs text-slate-500">{p.descricao}</p>}
-                </div>
-                <span
-                  className={`mt-0.5 shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-                    p.regime === 'livre'
-                      ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
-                      : 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
-                  }`}
-                >
-                  {p.regime === 'livre' ? 'à vontade' : p.qtd || 'quantidade limitada'}
-                </span>
-              </li>
-            ))}
-          </ul>
+          (() => {
+            // Com secao presente, agrupa em blocos (Entradas / Principais /
+            // Sobremesa / Bebidas) — orçamentos antigos (sem secao) seguem
+            // como lista única.
+            const ROTULOS: Array<[string, string]> = [
+              ['entrada', 'Entradas'],
+              ['principal', 'Pratos principais'],
+              ['sobremesa', 'Sobremesa'],
+              ['bebida_sem_alcool', 'Bebidas sem álcool'],
+              ['bebida_com_alcool', 'Bebidas com álcool'],
+            ];
+            const temSecao = pratos.some((p) => p.secao);
+            const grupos: Array<[string | null, typeof pratos]> = temSecao
+              ? ROTULOS.map(([chave, rotulo]) => [rotulo, pratos.filter((p) => (p.secao ?? 'principal') === chave)] as [string, typeof pratos]).filter(
+                  ([, itens]) => itens.length > 0,
+                )
+              : [[null, pratos]];
+            return (
+              <div className="space-y-5">
+                {grupos.map(([rotulo, itens]) => (
+                  <div key={rotulo ?? 'todos'}>
+                    {rotulo && (
+                      <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+                        {rotulo}
+                      </p>
+                    )}
+                    <ul className="space-y-2.5">
+                      {itens.map((p, i) => (
+                        <li key={i} className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{p.nome}</p>
+                            {p.descricao && <p className="text-xs text-slate-500">{p.descricao}</p>}
+                          </div>
+                          <span
+                            className={`mt-0.5 shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                              p.regime === 'livre'
+                                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                                : 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+                            }`}
+                          >
+                            {p.regime === 'livre' ? 'à vontade' : p.qtd || 'quantidade limitada'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            );
+          })()
         )}
         <p className="mt-4 text-sm text-slate-700">
           <span className="font-semibold">Sobremesa:</span>{' '}
