@@ -19,6 +19,9 @@ export const reserva = pgTable(
     clienteNome: varchar('cliente_nome', { length: 200 }).notNull(),
     /** Telefone/WhatsApp do cliente (so digitos quando possivel). */
     clienteTelefone: varchar('cliente_telefone', { length: 30 }),
+    /** CPF de quem reservou (11 dígitos) — a Nina pede CPF em vez de nome e
+     *  resolve o nome pelo cadastro do cliente. Null em reservas antigas/site. */
+    clienteCpf: varchar('cliente_cpf', { length: 14 }),
     /** Numero de pessoas da reserva. */
     pessoas: integer('pessoas').notNull().default(1),
     /** Data da reserva (YYYY-MM-DD). */

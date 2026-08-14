@@ -66,6 +66,7 @@
     "migrate:cliente-documento": "tsx scripts/migrate-cliente-documento.ts",
     "migrate:atendimento": "tsx scripts/migrate-atendimento.ts",
     "migrate:orcamento-conferencia": "tsx scripts/migrate-orcamento-conferencia.ts",
+    "migrate:reserva-cpf": "tsx scripts/migrate-reserva-cpf.ts",
     "migrate:nfce": "tsx scripts/migrate-nfce.ts",
     "migrate:nfce-reimpressao": "tsx scripts/migrate-nfce-reimpressao.ts",
     "migrate:idx-pedido-item-fk": "tsx scripts/migrate-idx-pedido-item-fk.ts",

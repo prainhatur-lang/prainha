@@ -35,6 +35,18 @@ function dataBr(ymd: string): string {
   return ymd.split('-').reverse().join('/');
 }
 
+/** Validação padrão de CPF (dígitos verificadores). */
+function cpfValido(cpf: string): boolean {
+  const d = cpf.replace(/\D/g, '');
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  for (const t of [9, 10]) {
+    let s = 0;
+    for (let i = 0; i < t; i++) s += parseInt(d[i], 10) * (t + 1 - i);
+    if (((s * 10) % 11) % 10 !== parseInt(d[t], 10)) return false;
+  }
+  return true;
+}
+
 /** Resumo de vagas por área numa data — texto pro modelo falar com o cliente. */
 export async function consultarDisponibilidade(filialId: string, data: string): Promise<string> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return 'Data inválida — use o formato YYYY-MM-DD.';
@@ -186,7 +198,12 @@ export interface DadosCriarReserva {
   hora: string; // HH:MM
   pessoas: number;
   area: string;
-  nome: string;
+  /** CPF de quem reserva (preferido — o nome sai do cadastro). */
+  cpf?: string | null;
+  /** Nome: só quando o cliente não quer dar CPF, ou pra reserva em outro nome. */
+  nome?: string | null;
+  /** Nome do perfil do WhatsApp (fallback de exibição). */
+  nomePerfil?: string | null;
   observacao?: string | null;
 }
 
@@ -196,8 +213,33 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
   if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
   const pessoas = Math.min(Math.max(Math.round(p.pessoas), 1), 99);
-  const nome = p.nome.trim().slice(0, 200);
-  if (!nome) return 'Falta o nome de quem reserva — pergunte ao cliente.';
+
+  // Identificação: CPF preferido (nome sai do cadastro do cliente); nome só
+  // como fallback. Regra do Elison 14/08 — reserva sem identificação não sai.
+  const cpfDigitos = (p.cpf ?? '').replace(/\D/g, '');
+  let clienteCpf: string | null = null;
+  let nome = (p.nome ?? '').trim().slice(0, 200);
+  if (cpfDigitos) {
+    if (!cpfValido(cpfDigitos)) {
+      return 'CPF inválido (dígito verificador não bate) — peça pro cliente conferir os 11 dígitos.';
+    }
+    clienteCpf = cpfDigitos;
+    if (!nome) {
+      const [cli] = (await db.execute(sql`
+        SELECT nome FROM cliente
+        WHERE filial_id = ${p.filialId}
+          AND data_delete IS NULL
+          AND regexp_replace(coalesce(cpf_ou_cnpj, ''), '\\D', '', 'g') = ${cpfDigitos}
+        LIMIT 1
+      `)) as unknown as Array<{ nome: string | null }>;
+      if (cli?.nome?.trim()) nome = cli.nome.trim().slice(0, 200);
+    }
+  }
+  if (!nome) nome = (p.nomePerfil ?? '').trim().slice(0, 200);
+  if (!clienteCpf && !nome) {
+    return 'Falta identificar a reserva: peça o CPF do cliente (preferido — o nome sai do cadastro). Se ele não quiser informar, peça o nome.';
+  }
+  if (!nome) nome = 'Cliente WhatsApp';
 
   if (p.data < hojeBr()) return 'Essa data já passou. Peça uma data futura.';
   if (p.data === hojeBr()) {
@@ -299,6 +341,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     filialId: p.filialId,
     clienteNome: nome,
     clienteTelefone: p.telefone,
+    clienteCpf,
     pessoas,
     data: p.data,
     hora: p.hora,
@@ -338,10 +381,34 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     // best-effort — a reserva já está criada
   }
 
+  // CPF novo e cadastro do cliente sem CPF: mesmo write-back do site
+  // (agente atualiza o Consumer). Best-effort, nunca trava a reserva.
+  if (clienteCpf) {
+    try {
+      const local = p.telefone.slice(-11);
+      const [cli] = (await db.execute(sql`
+        SELECT codigo_externo, cpf_ou_cnpj FROM cliente
+        WHERE filial_id = ${p.filialId} AND data_delete IS NULL
+          AND regexp_replace(coalesce(telefone, ''), '\\D', '', 'g') LIKE ${'%' + local}
+        LIMIT 1
+      `)) as unknown as Array<{ codigo_externo: number | null; cpf_ou_cnpj: string | null }>;
+      if (cli && cli.codigo_externo && !cli.cpf_ou_cnpj?.trim()) {
+        await db.insert(schema.agenteComando).values({
+          filialId: p.filialId,
+          tipo: 'atualizar_cliente',
+          payload: { codigoExterno: cli.codigo_externo, campos: { cnpjOuCpf: clienteCpf } },
+        });
+      }
+    } catch {
+      // write-back é bônus
+    }
+  }
+
   const mesaTxt = mesaJuntadaAlocada
     ? ` (mesas ${mesaAlocada} + ${mesaJuntadaAlocada} juntadas pro grupo)`
     : mesaAlocada
       ? ` (mesa ${mesaAlocada})`
       : '';
-  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nome}. Gratuita. Confirme ao cliente em uma frase e avise que a mesa fica guardada por 15 minutos após o horário.`;
+  const cpfTxt = clienteCpf ? ` (CPF final ${clienteCpf.slice(-3)})` : '';
+  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
 }

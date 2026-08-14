@@ -42,7 +42,8 @@ export interface DadosReservaMesa {
   hora: string; // HH:MM
   pessoas: number;
   area: string;
-  nome: string;
+  cpf: string | null;
+  nome: string | null;
   observacao: string | null;
 }
 
@@ -168,10 +169,11 @@ QUANDO TRANSFERIR (transferir_para_humano):
 Depois de transferir, avise em uma frase gentil que alguém da equipe já vai falar com a pessoa por aqui mesmo.
 
 RESERVA DE MESA — VOCÊ MESMA CRIA:
-- Você consegue criar a reserva direto na conversa, nas áreas SEM taxa (Areia e Deck Superior). Colete: data, horário, quantidade de pessoas e nome. O telefone é o deste WhatsApp — não peça.
+- Você consegue criar a reserva direto na conversa, nas áreas SEM taxa (Areia e Deck Superior). Colete: data, horário, quantidade de pessoas e o CPF de quem reserva (NÃO peça nome — o sistema acha pelo CPF no cadastro; NÃO peça telefone — avise que a confirmação chega neste próprio WhatsApp).
+- CPF na conversa: peça com leveza ("me passa só o CPF pra deixar a reserva no seu nome"). Cliente não quer informar? Tudo bem — aí sim peça o nome. NUNCA repita o CPF completo de volta na conversa: cite no máximo os 3 últimos dígitos.
 - Ofereça as áreas pelo clima, como quem convida: mesa na areia de frente pro rio e pertinho do parque (Areia), vista do alto no Deck Superior, ou o lounge exclusivo com garçom só do grupo (esse tem taxa e fecha pelo site).
 - Use consultar_disponibilidade_reserva pra saber vaga antes de sugerir área/dia — ela lê as reservas que já existem.
-- ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, em nome de Ana — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
+- ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, no CPF final 123 — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
 - NUNCA diga "vou confirmar/fazer sua reserva" antes da ferramenta retornar RESERVA CRIADA — a confirmação vem DEPOIS do resultado, nunca como promessa.
 - PEDIDO PRA HOJE EM CIMA DA HORA (menos de 1h de antecedência, ou já no fim da janela do dia): não fique oferecendo outros horários de hoje — a regra da casa é: a essa altura não se faz mais reserva pra hoje, MAS é só vir direto que a recepção acomoda numa mesa disponível na chegada (reservar não é obrigatório, e o pôr do sol é por ordem de chegada). Convide a pessoa a vir.
 - Lounge: não crie por aqui — explique a taxa (R$ 100 dia útil / R$ 250 sáb-dom, com garçom exclusivo) e mande concluir em reservas.prainhabar.com (o Pix é pago lá).
@@ -240,10 +242,11 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           hora: { type: 'string', description: 'HH:MM' },
           pessoas: { type: 'number', description: 'quantidade de pessoas' },
           area: { type: 'string', description: 'Areia ou Deck Superior' },
-          nome: { type: 'string', description: 'nome de quem reserva' },
+          cpf: { type: 'string', description: 'CPF de quem reserva (11 dígitos) — preferido; o nome sai do cadastro' },
+          nome: { type: 'string', description: 'só se o cliente não quiser informar CPF, ou quiser a reserva em outro nome' },
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
         },
-        required: ['data', 'hora', 'pessoas', 'area', 'nome'],
+        required: ['data', 'hora', 'pessoas', 'area'],
       },
     },
   },
@@ -481,7 +484,8 @@ export async function gerarResposta(params: {
             hora: String(args.hora ?? ''),
             pessoas: Number(args.pessoas) || 0,
             area: String(args.area ?? ''),
-            nome: String(args.nome ?? ''),
+            cpf: String(args.cpf ?? '') || null,
+            nome: String(args.nome ?? '') || null,
             observacao: String(args.observacao ?? '') || null,
           });
         } else if (tc.function.name === 'listar_opcoes_orcamento_evento') {
