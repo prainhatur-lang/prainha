@@ -23,6 +23,19 @@ export interface DadosLeadEvento {
   observacoes: string | null;
 }
 
+export interface DadosOrcamentoEvento {
+  espaco: string;
+  data: string; // YYYY-MM-DD
+  hora: string | null;
+  pessoas: number;
+  nomeCliente: string;
+  entradas: string[];
+  principais: string[];
+  massa: string | null;
+  sobremesa: string | null;
+  observacoes: string | null;
+}
+
 export interface DadosReservaMesa {
   data: string; // YYYY-MM-DD
   hora: string; // HH:MM
@@ -39,6 +52,8 @@ export interface ExecutoresFerramentas {
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
   consultarCardapio: (termo: string) => Promise<string>;
+  listarOpcoesOrcamento: () => Promise<string>;
+  gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
 }
 
 export interface RespostaNina {
@@ -125,7 +140,11 @@ ${espacosTxt || '- (nenhum espaço cadastrado — colete o interesse e transfira
 
 FLUXO DE EVENTOS:
 - Apresente os espaços que combinam com o que a pessoa quer. Ao longo da conversa (sem parecer formulário), colete: tipo de evento, data (mesmo aproximada), horário, número de pessoas e o nome da pessoa.
-- Quando tiver pelo menos tipo + data (ou "sem data ainda") + número aproximado de pessoas, chame registrar_lead_evento. Depois confirme pro cliente que a equipe vai entrar em contato pra fechar os detalhes.
+- CAPACIDADE DO TERRAÇO: até 50 pessoas; juntando a varandinha, até 60. Acima disso → lead + equipe.
+- ORÇAMENTO NA HORA (só no Terraço, até 60 pessoas, com data definida): ofereça montar o orçamento ali mesmo. Chame listar_opcoes_orcamento_evento e conduza as escolhas aos poucos: 3 ou 4 entradas (servidas à vontade), 3 pratos principais + 1 massa (opção vegetariana/quem não come frutos do mar), e sobremesa (padrão é sem; ofereça como opção). O cliente pode pedir prato fora da lista — a geração valida no cardápio.
+- Com tudo confirmado numa frase de resumo e o SIM do cliente, chame gerar_orcamento_evento e mande o resumo com o valor e o LINK pro cliente ver o documento e aceitar. Bebidas não estão inclusas (por consumo, ou pacote a combinar com a equipe) — diga isso junto.
+- Se a ferramenta responder TRAVA (valor fora da faixa), espaço sem taxa fixa (gramado/varandinha sozinha) ou capacidade estourada: NÃO cite valor — registre o lead e transfira pra equipe.
+- Evento sem data ainda, cliente só pesquisando, ou pedido complexo (casamento com decoração, corporativo com café/coquetel/exclusividade, open bar): registre o lead com o que tiver e transfira — esses são montados sob medida pela equipe.
 - Perguntas de preço de espaço SEM preço informado acima: diga que a equipe confirma o valor certinho e registre o lead.
 
 QUANDO TRANSFERIR (transferir_para_humano):
@@ -207,6 +226,39 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
         },
         required: ['data', 'hora', 'pessoas', 'area', 'nome'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_opcoes_orcamento_evento',
+      description:
+        'Lista as opções do cardápio pro cliente montar o orçamento de evento no Terraço: ~8 entradas (escolhe 3-4), principais (escolhe 3), massas (1, opção vegetariana) e sobremesas (opcional). Chame quando o cliente topar montar o orçamento.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gerar_orcamento_evento',
+      description:
+        'Gera o orçamento de evento de verdade (só Terraço): calcula com os preços do cardápio + taxa do espaço e devolve valor e link de aceite. Chame SOMENTE com as escolhas confirmadas pelo cliente (3-4 entradas, 3 principais, massa, sobremesa ou não, data, pessoas, nome).',
+      parameters: {
+        type: 'object',
+        properties: {
+          espaco: { type: 'string', description: 'ex.: Terraço' },
+          data: { type: 'string', description: 'YYYY-MM-DD' },
+          hora: { type: 'string', description: 'HH:MM (opcional)' },
+          pessoas: { type: 'number' },
+          nomeCliente: { type: 'string' },
+          entradas: { type: 'array', items: { type: 'string' }, description: '3 ou 4 nomes de entradas' },
+          principais: { type: 'array', items: { type: 'string' }, description: 'exatamente 3 pratos principais' },
+          massa: { type: 'string', description: 'nome da massa (opção vegetariana)' },
+          sobremesa: { type: 'string', description: 'nome da sobremesa, ou omitir se sem sobremesa' },
+          observacoes: { type: 'string', description: 'pedidos especiais do cliente' },
+        },
+        required: ['espaco', 'data', 'pessoas', 'nomeCliente', 'entradas', 'principais'],
       },
     },
   },
@@ -347,6 +399,21 @@ export async function gerarResposta(params: {
             area: String(args.area ?? ''),
             nome: String(args.nome ?? ''),
             observacao: String(args.observacao ?? '') || null,
+          });
+        } else if (tc.function.name === 'listar_opcoes_orcamento_evento') {
+          resultado = await params.executores.listarOpcoesOrcamento();
+        } else if (tc.function.name === 'gerar_orcamento_evento') {
+          resultado = await params.executores.gerarOrcamento({
+            espaco: String(args.espaco ?? ''),
+            data: String(args.data ?? ''),
+            hora: String(args.hora ?? '') || null,
+            pessoas: Number(args.pessoas) || 0,
+            nomeCliente: String(args.nomeCliente ?? ''),
+            entradas: Array.isArray(args.entradas) ? args.entradas.map(String) : [],
+            principais: Array.isArray(args.principais) ? args.principais.map(String) : [],
+            massa: String(args.massa ?? '') || null,
+            sobremesa: String(args.sobremesa ?? '') || null,
+            observacoes: String(args.observacoes ?? '') || null,
           });
         } else if (tc.function.name === 'consultar_cardapio') {
           resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));

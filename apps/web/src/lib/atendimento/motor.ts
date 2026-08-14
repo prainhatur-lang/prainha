@@ -15,6 +15,7 @@ import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
 import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp } from './reservar';
 import { consultarCardapio } from './cardapio';
+import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -223,6 +224,23 @@ export async function processarEntrada(params: {
           observacao: dados.observacao,
         }),
       consultarCardapio: (termo: string) => consultarCardapio(entrada.filialId, termo),
+      listarOpcoesOrcamento: () => listarOpcoesOrcamento(entrada.filialId),
+      gerarOrcamento: (dados: import('./ia').DadosOrcamentoEvento) =>
+        gerarOrcamentoEvento({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          nomeCliente: dados.nomeCliente,
+          espaco: dados.espaco,
+          data: dados.data,
+          hora: dados.hora,
+          pessoas: dados.pessoas,
+          entradas: dados.entradas,
+          principais: dados.principais,
+          massa: dados.massa,
+          sobremesa: dados.sobremesa,
+          observacoes: dados.observacoes,
+        }),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {

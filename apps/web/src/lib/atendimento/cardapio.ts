@@ -8,6 +8,15 @@ import { sql } from 'drizzle-orm';
 
 const LINK_CARDAPIO = 'https://prainha.menudino.com.br';
 
+export interface ItemCardapio {
+  nome: string;
+  tamanho: string;
+  preco: number;
+  preco_delivery: number | null;
+  preco_ifood: number | null;
+  descr: string;
+}
+
 /** Minúsculas sem acento — espelha o translate() usado no SQL. */
 function dobrar(s: string): string {
   return s
@@ -16,25 +25,30 @@ function dobrar(s: string): string {
     .replace(/[̀-ͯ]/g, '');
 }
 
-export async function consultarCardapio(filialId: string, termo: string): Promise<string> {
+/** Busca crua no cardápio ativo. termo vazio = lista tudo (até o limite).
+ *  Usada pela consulta da conversa e pelo orçamento de evento. */
+export async function buscarItensCardapio(
+  filialId: string,
+  termo: string,
+  limite = 12,
+): Promise<ItemCardapio[]> {
   const palavras = dobrar(termo ?? '')
     .split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9]/g, ''))
     .filter((w) => w.length >= 3)
     .slice(0, 4);
-  if (palavras.length === 0) {
-    return `Termo de busca vazio. Busque por uma palavra do prato (ex.: "moqueca", "camarão", "robalo"). Cardápio completo com fotos: ${LINK_CARDAPIO}`;
-  }
 
   // Acha itens cujo nome+descrição contém TODAS as palavras (sem acento).
   const alvo = sql`translate(lower(coalesce(p.nome, '') || ' ' || coalesce(p.descricao, '')), 'áàãâäéèêëíìîïóòõôöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')`;
-  const condicoes = palavras.map((w) => sql`${alvo} LIKE ${'%' + w + '%'}`);
-  const where = condicoes.reduce((a, b) => sql`${a} AND ${b}`);
+  const where =
+    palavras.length === 0
+      ? sql`TRUE`
+      : palavras.map((w) => sql`${alvo} LIKE ${'%' + w + '%'}`).reduce((a, b) => sql`${a} AND ${b}`);
 
   // Preços por canal: salão = produto_variante; delivery próprio e iFood =
   // delivery_item (quando o cardápio do delivery estiver preenchido). Itens
-  // sem delivery_item mostram só o preço de salão — comportamento de hoje.
-  const linhas = (await db.execute(sql`
+  // sem delivery_item mostram só o preço de salão.
+  return (await db.execute(sql`
     SELECT p.nome,
            COALESCE(t.descricao, t.sigla, '') AS tamanho,
            pv.preco_venda::float AS preco,
@@ -55,16 +69,17 @@ export async function consultarCardapio(filialId: string, termo: string): Promis
       AND pv.preco_venda > 0
       AND ${where}
     ORDER BY p.nome, pv.preco_venda
-    LIMIT 12
-  `)) as unknown as Array<{
-    nome: string;
-    tamanho: string;
-    preco: number;
-    preco_delivery: number | null;
-    preco_ifood: number | null;
-    descr: string;
-  }>;
+    LIMIT ${limite}
+  `)) as unknown as ItemCardapio[];
+}
 
+export async function consultarCardapio(filialId: string, termo: string): Promise<string> {
+  const temTermo = dobrar(termo ?? '').replace(/[^a-z0-9\s]/g, '').trim().length >= 3;
+  if (!temTermo) {
+    return `Termo de busca vazio. Busque por uma palavra do prato (ex.: "moqueca", "camarão", "robalo"). Cardápio completo com fotos: ${LINK_CARDAPIO}`;
+  }
+
+  const linhas = await buscarItensCardapio(filialId, termo, 12);
   if (linhas.length === 0) {
     return `Nenhum item do cardápio bate com "${termo}". Tente outra palavra (ex.: "moqueca", "camarão", "picanha") — ou mande o cliente ver o cardápio completo com fotos: ${LINK_CARDAPIO}`;
   }
