@@ -15,6 +15,7 @@ import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
 import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp, consultarMesa } from './reservar';
 import { consultarCardapio } from './cardapio';
+import { consultarCotacoesFornecedor } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 
 const DEBOUNCE_MS = 6_000;
@@ -101,7 +102,8 @@ export async function registrarEntrada(e: EntradaWebhook): Promise<EntradaRegist
   return {
     conversaId: conversa.id,
     mensagemId: inserted[0].id,
-    deveResponder: conversa.status === 'bot',
+    // Fornecedor tambem recebe resposta (modo proprio: explica cotacao/pedido)
+    deveResponder: conversa.status === 'bot' || conversa.status === 'fornecedor',
   };
 }
 
@@ -208,7 +210,8 @@ export async function processarEntrada(params: {
       .from(schema.atendimentoConversa)
       .where(eq(schema.atendimentoConversa.id, registro.conversaId))
       .limit(1);
-    if (!conversa || conversa.status !== 'bot') return;
+    if (!conversa || (conversa.status !== 'bot' && conversa.status !== 'fornecedor')) return;
+    const modo: 'cliente' | 'fornecedor' = conversa.status === 'fornecedor' ? 'fornecedor' : 'cliente';
 
     const [config] = await db
       .select()
@@ -294,6 +297,7 @@ export async function processarEntrada(params: {
           observacoes: dados.observacoes,
         }),
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
+      consultarCotacoesFornecedor: () => consultarCotacoesFornecedor(entrada.telefone),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {
@@ -329,6 +333,7 @@ export async function processarEntrada(params: {
           espacos: config.espacosEvento ?? [],
           historico,
           executores,
+          modo,
         });
       } catch {
         resposta = await gerarResposta({
@@ -339,6 +344,7 @@ export async function processarEntrada(params: {
           espacos: config.espacosEvento ?? [],
           historico,
           executores,
+          modo,
         });
       }
       texto = resposta.texto;

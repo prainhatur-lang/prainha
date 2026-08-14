@@ -53,6 +53,7 @@ export interface ExecutoresFerramentas {
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
+  consultarCotacoesFornecedor: () => Promise<string>;
   consultarCardapio: (termo: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
@@ -355,7 +356,41 @@ function historicoParaMensagens(
   return out;
 }
 
-/** Gera a resposta da Nina. Executa ferramentas via callbacks (max 3 rodadas). */
+// Modo fornecedor usa só estas duas ferramentas (nada de reserva/cardápio).
+const FERRAMENTAS_FORNECEDOR: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_cotacoes_fornecedor',
+      description:
+        'Identifica o fornecedor pelo telefone da conversa e lista as cotações PENDENTES dele (itens, quantidades, embalagem, marcas aceitas e o link de resposta) + pedidos recentes. Chame antes de responder qualquer dúvida.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  FERRAMENTAS.find((f) => f.function.name === 'transferir_para_humano')!,
+];
+
+/** Prompt do MODO FORNECEDOR: o mesmo número dispara cotações/pedidos — a
+ *  Nina explica a cotação e o link de resposta, mas NUNCA negocia. */
+function montarPromptFornecedor(nomeAtendente: string, filialNome: string): string {
+  return `Você é ${nomeAtendente}, do ${filialNome}, falando com um FORNECEDOR cadastrado (não é cliente do restaurante).
+
+CONTEXTO: este número dispara as cotações de preço e os pedidos de compra da casa. O fornecedor pode ter dúvida sobre itens, quantidades, unidades, embalagens, marcas aceitas, prazo ou como responder pelo link.
+
+COMO AGIR:
+- Tom objetivo, cordial e direto — sem emoji, sem curiosidades, mensagens curtas.
+- PRIMEIRO chame consultar_cotacoes_fornecedor pra saber quem é e o que está pendente. Responda só com o que a ferramenta trouxer.
+- Explique como responder: abrir o link, preencher o preço de cada item que tiver (pode deixar em branco o que não trabalha) e enviar.
+- Se ele disser que não consegue atender/não tem o item: agradeça e diga que pode deixar em branco no link, ou registre e transfira pra equipe de compras.
+- NUNCA negocie preço, quantidade, prazo ou condição de pagamento; NUNCA prometa compra, alteração de pedido ou exceção — isso é com a equipe de compras: use transferir_para_humano com um resumo.
+- Dúvida fora de cotação/pedido (financeiro, boleto, entrega específica): transferir_para_humano.
+- Nunca invente item, número ou valor. Se a ferramenta não trouxer, diga que vai passar pra equipe e transfira.
+
+AGORA (Brasília): ${agoraBrtLegivel()}.
+Sua resposta final é a mensagem enviada no WhatsApp do fornecedor.`;
+}
+
+/** Gera a resposta da Nina. Executa ferramentas via callbacks (max 5 rodadas). */
 export async function gerarResposta(params: {
   nomeAtendente: string;
   filialNome: string;
@@ -364,6 +399,7 @@ export async function gerarResposta(params: {
   espacos: EspacoEvento[];
   historico: MsgHistorico[];
   executores: ExecutoresFerramentas;
+  modo?: 'cliente' | 'fornecedor';
 }): Promise<RespostaNina> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY nao configurada');
@@ -372,9 +408,14 @@ export async function gerarResposta(params: {
   // transferir nos testes de 08/08. Custo segue baixo (~centavos/conversa).
   const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o';
 
+  const modo = params.modo ?? 'cliente';
   const primeiraResposta = !params.historico.some((m) => m.direcao === 'saida');
+  const system =
+    modo === 'fornecedor'
+      ? montarPromptFornecedor(params.nomeAtendente, params.filialNome)
+      : montarSystemPrompt({ ...params, primeiraResposta });
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: montarSystemPrompt({ ...params, primeiraResposta }) },
+    { role: 'system', content: system },
     ...historicoParaMensagens(params.historico),
   ];
 
@@ -387,7 +428,7 @@ export async function gerarResposta(params: {
     const resp = await client.chat.completions.create({
       model: modelo,
       messages: mensagens,
-      tools: FERRAMENTAS,
+      tools: modo === 'fornecedor' ? FERRAMENTAS_FORNECEDOR : FERRAMENTAS,
       temperature: 0.6,
       max_tokens: 400,
     });
@@ -447,6 +488,8 @@ export async function gerarResposta(params: {
           });
         } else if (tc.function.name === 'consultar_cardapio') {
           resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));
+        } else if (tc.function.name === 'consultar_cotacoes_fornecedor') {
+          resultado = await params.executores.consultarCotacoesFornecedor();
         } else if (tc.function.name === 'consultar_mesa') {
           resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
         } else if (tc.function.name === 'cancelar_reserva') {
