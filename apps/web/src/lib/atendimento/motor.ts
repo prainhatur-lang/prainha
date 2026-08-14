@@ -10,7 +10,8 @@
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { gerarResposta, type MsgHistorico } from './ia';
-import { enviarTexto, marcarLidaComDigitando, baixarMidia } from './zap';
+import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from './zap';
+import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
 import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp, consultarMesa } from './reservar';
@@ -252,7 +253,28 @@ export async function processarEntrada(params: {
 
     const numerosEquipe = config.numerosEquipe ?? [];
 
+    let audioEnviado = false;
     const executores = {
+      enviarAudioVoz: async (textoFala: string) => {
+        const fala = (textoFala ?? '').trim();
+        if (!fala) return 'Texto vazio — não enviei áudio. Responda por texto.';
+        const buf = await gerarAudioNina(fala);
+        if (!buf) return 'Não consegui gerar o áudio agora — responda por texto normal.';
+        const env = await enviarAudio(entrada.phoneNumberId, entrada.telefone, buf);
+        await db.insert(schema.atendimentoMensagem).values({
+          conversaId: registro.conversaId,
+          waMessageId: env.waMessageId,
+          direcao: 'saida',
+          autor: 'bot',
+          tipo: 'audio',
+          corpo: fala,
+          statusEnvio: env.erro ? 'erro' : 'enviada',
+          erro: env.erro ?? null,
+        });
+        if (env.erro) return `Falha ao enviar o áudio (${env.erro}) — responda por texto normal.`;
+        audioEnviado = true;
+        return 'ÁUDIO ENVIADO com a sua voz. Pode encerrar sem texto, ou complementar com UMA frase curta se fizer falta.';
+      },
       registrarLead: async (dados: import('./ia').DadosLeadEvento) => {
         await db.insert(schema.eventoLead).values({
           filialId: entrada.filialId,
@@ -365,7 +387,8 @@ export async function processarEntrada(params: {
       texto = resposta.texto;
       transferiu = resposta.transferiu;
       leadRegistrado = resposta.leadRegistrado;
-      if (!texto) {
+      // Sem texto E sem áudio enviado = fallback; áudio sozinho é resposta válida.
+      if (!texto && !audioEnviado) {
         texto = transferiu
           ? 'Prontinho! Já chamei alguém da equipe pra falar contigo por aqui mesmo, tá? 😊'
           : 'Oi! Só um minutinho que já te respondo 😊';
@@ -399,17 +422,19 @@ export async function processarEntrada(params: {
       transferiu = true;
     }
 
-    const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
-    await db.insert(schema.atendimentoMensagem).values({
-      conversaId: registro.conversaId,
-      waMessageId: envio.waMessageId,
-      direcao: 'saida',
-      autor: 'bot',
-      tipo: 'texto',
-      corpo: texto,
-      statusEnvio: envio.erro ? 'erro' : 'enviada',
-      erro: envio.erro ?? null,
-    });
+    if (texto) {
+      const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
+      await db.insert(schema.atendimentoMensagem).values({
+        conversaId: registro.conversaId,
+        waMessageId: envio.waMessageId,
+        direcao: 'saida',
+        autor: 'bot',
+        tipo: 'texto',
+        corpo: texto,
+        statusEnvio: envio.erro ? 'erro' : 'enviada',
+        erro: envio.erro ?? null,
+      });
+    }
     await db
       .update(schema.atendimentoConversa)
       .set({ ultimaMsgEm: sql`now()`, atualizadoEm: sql`now()` })

@@ -71,6 +71,55 @@ export async function marcarLidaComDigitando(
   }
 }
 
+/** Envia MENSAGEM DE VOZ (ogg/opus): sobe a mídia e dispara type audio. */
+export async function enviarAudio(
+  phoneNumberId: string,
+  para: string,
+  audio: Buffer,
+): Promise<{ waMessageId: string | null; erro?: string }> {
+  if (!token()) return { waMessageId: null, erro: 'WHATSAPP_TOKEN/META ausente' };
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', 'audio/ogg');
+    form.append(
+      'file',
+      new Blob([new Uint8Array(audio)], { type: 'audio/ogg; codecs=opus' }),
+      'nina.ogg',
+    );
+    const up = await fetch(`https://graph.facebook.com/${versao()}/${phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+      body: form,
+    });
+    const upJson = (await up.json().catch(() => null)) as
+      | { id?: string; error?: { message?: string } }
+      | null;
+    if (!up.ok || !upJson?.id) {
+      return { waMessageId: null, erro: `upload ${up.status}: ${upJson?.error?.message ?? '?'}` };
+    }
+    const resp = await fetch(`https://graph.facebook.com/${versao()}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: para,
+        type: 'audio',
+        audio: { id: upJson.id },
+      }),
+    });
+    const json = (await resp.json().catch(() => null)) as
+      | { messages?: Array<{ id?: string }>; error?: { message?: string } }
+      | null;
+    if (!resp.ok) {
+      return { waMessageId: null, erro: `${resp.status}: ${json?.error?.message ?? 'erro'}` };
+    }
+    return { waMessageId: json?.messages?.[0]?.id ?? null };
+  } catch (e) {
+    return { waMessageId: null, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Busca o numero de exibicao (display_phone_number) de um phone_number_id
  *  na Meta — usado pelo painel pra preencher whatsapp_numero.numero_exibicao. */
 export async function buscarNumeroExibicao(phoneNumberId: string): Promise<string | null> {

@@ -55,6 +55,7 @@ export interface ExecutoresFerramentas {
   cancelarReserva: (data: string | null) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
+  enviarAudioVoz: (texto: string) => Promise<string>;
   consultarCardapio: (termo: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
@@ -186,6 +187,13 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - REMARCAR: cancele a atual e crie a nova (confirmando os dados novos).
 - Outras mudanças (passar pra outro nome/telefone, dúvida de pagamento): transfira pra equipe.
 
+MENSAGEM DE VOZ (enviar_audio_voz):
+- Você pode mandar um audiozinho com a SUA voz em momento de carinho: agradecer um elogio (repassando que vai contar pra equipe), parabenizar aniversário/conquista, ou um bem-vindo especial. É um mimo — raro e curto (1 a 2 frases).
+- NUNCA em áudio: preço, número, horário, link, endereço, CPF — tudo isso vai por escrito.
+- Máximo 1 áudio por conversa (se o histórico mostrar "[você enviou este áudio]", NÃO mande outro).
+- Escreva o texto do jeito que se fala ("Ai, que alegria ler isso!..."), sem emoji.
+- Depois do áudio, encerre sem texto ou complemente com UMA frase escrita se precisar.
+
 OUTROS:
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever — mas NUNCA presuma o tipo: se não sabe o que era, diga só que não conseguiu abrir por aqui. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
 - Nunca peça documentos, senhas ou dados de pagamento.
@@ -302,6 +310,24 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'enviar_audio_voz',
+      description:
+        'Envia uma MENSAGEM DE VOZ sua (voz da Nina) pro cliente. Use RARAMENTE, só em momento de carinho: agradecer um elogio, parabenizar, boas-vindas especial. Nunca pra preço, número, link ou endereço. Máximo 1 por conversa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          texto: {
+            type: 'string',
+            description: 'exatamente o que será falado — 1 a 2 frases curtas, escritas como se fala',
+          },
+        },
+        required: ['texto'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'consultar_mesa',
       description:
         'Diz em qual ÁREA fica uma mesa e quantos lugares tem (mapa oficial de reservas). Use quando o cliente citar um número de mesa ("a mesa 105 fica onde?").',
@@ -359,6 +385,8 @@ function historicoParaMensagens(
       else conteudo = `[cliente enviou ${m.tipo}]`;
     } else if (m.direcao === 'entrada' && m.tipo === 'audio') {
       conteudo = `[áudio transcrito] ${corpo}`;
+    } else if (m.direcao === 'saida' && m.tipo === 'audio') {
+      conteudo = `[você enviou este áudio] ${corpo}`;
     }
     out.push({ role: m.direcao === 'entrada' ? 'user' : 'assistant', content: conteudo });
   }
@@ -510,6 +538,8 @@ export async function gerarResposta(params: {
           resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));
         } else if (tc.function.name === 'consultar_cotacoes_fornecedor') {
           resultado = await params.executores.consultarCotacoesFornecedor();
+        } else if (tc.function.name === 'enviar_audio_voz') {
+          resultado = await params.executores.enviarAudioVoz(String(args.texto ?? ''));
         } else if (tc.function.name === 'consultar_mesa') {
           resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
         } else if (tc.function.name === 'cancelar_reserva') {
