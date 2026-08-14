@@ -159,13 +159,28 @@ export function RespostasClient(props: {
     }
   }
 
-  // itemId -> 'salvando' | 'ok' (some sozinho) — feedback visual do auto-save
-  const [qtdStatus, setQtdStatus] = useState<Record<string, 'salvando' | 'ok'>>({});
+  // itemId -> feedback do auto-save. NUNCA alert(): erro em blur repetido vira
+  // tempestade de pop-up e "derruba" a página — o aviso é inline e discreto.
+  const [qtdStatus, setQtdStatus] = useState<
+    Record<string, { tipo: 'salvando' | 'ok' | 'erro'; msg?: string }>
+  >({});
+
+  function limparQtdStatus(itemId: string, aposMs: number) {
+    setTimeout(
+      () =>
+        setQtdStatus((p) => {
+          const novo = { ...p };
+          delete novo[itemId];
+          return novo;
+        }),
+      aposMs,
+    );
+  }
 
   async function salvarQuantidade(item: Item, valor: string) {
     const qtd = moedaParaNumero(valor);
     if (!Number.isFinite(qtd) || qtd <= 0 || qtd === Number(item.quantidade)) return;
-    setQtdStatus((p) => ({ ...p, [item.id]: 'salvando' }));
+    setQtdStatus((p) => ({ ...p, [item.id]: { tipo: 'salvando' } }));
     try {
       const resp = await fetch(`/api/cotacao/${props.cotacaoId}/alterar-item`, {
         method: 'POST',
@@ -174,24 +189,15 @@ export function RespostasClient(props: {
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
-      setQtdStatus((p) => ({ ...p, [item.id]: 'ok' }));
-      setTimeout(
-        () =>
-          setQtdStatus((p) => {
-            const novo = { ...p };
-            delete novo[item.id];
-            return novo;
-          }),
-        3000,
-      );
+      setQtdStatus((p) => ({ ...p, [item.id]: { tipo: 'ok' } }));
+      limparQtdStatus(item.id, 3000);
       router.refresh();
     } catch (e) {
-      setQtdStatus((p) => {
-        const novo = { ...p };
-        delete novo[item.id];
-        return novo;
-      });
-      alert(`Não consegui alterar a quantidade: ${e instanceof Error ? e.message : e}`);
+      setQtdStatus((p) => ({
+        ...p,
+        [item.id]: { tipo: 'erro', msg: e instanceof Error ? e.message : String(e) },
+      }));
+      limparQtdStatus(item.id, 6000);
     }
   }
 
@@ -424,11 +430,16 @@ export function RespostasClient(props: {
                       ) : (
                         <span>{item.quantidade}</span>
                       )}
-                      {qtdStatus[item.id] === 'salvando' && (
+                      {qtdStatus[item.id]?.tipo === 'salvando' && (
                         <span className="text-slate-400">salvando…</span>
                       )}
-                      {qtdStatus[item.id] === 'ok' && (
+                      {qtdStatus[item.id]?.tipo === 'ok' && (
                         <span className="font-semibold text-emerald-600">✓ salvo</span>
+                      )}
+                      {qtdStatus[item.id]?.tipo === 'erro' && (
+                        <span className="font-semibold text-rose-600" title={qtdStatus[item.id]?.msg}>
+                          ⚠ {qtdStatus[item.id]?.msg?.slice(0, 60) ?? 'não salvou'}
+                        </span>
                       )}
                       <span>
                         {item.embalagemEsperada ?? item.unidade}
