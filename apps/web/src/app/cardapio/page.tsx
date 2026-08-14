@@ -25,20 +25,22 @@ export default async function CardapioPage(props: {
   const sp = await props.searchParams;
   const filialId = sp.filialId ?? FILIAL_PRAINHA;
 
+  // Inclui pausados (marcados): "peixe inteiro" some do Menudino quando está
+  // pausado no PDV, mas o selo de restrição fica pronto pra quando voltar.
   const linhas = (await db.execute(sql`
-    SELECT DISTINCT p.id, p.nome, LEFT(COALESCE(p.descricao, ''), 160) AS descricao
+    SELECT p.id, p.nome, LEFT(COALESCE(p.descricao, ''), 160) AS descricao,
+           BOOL_AND(pv.data_pausado IS NOT NULL OR p.data_pausado IS NOT NULL) AS pausado
     FROM produto_variante pv
     JOIN produto p ON p.id = pv.produto_id
     WHERE p.filial_id = ${filialId}
       AND pv.menu_dino
       AND pv.data_delete IS NULL
-      AND pv.data_pausado IS NULL
       AND (p.descontinuado IS NOT TRUE)
-      AND (p.data_pausado IS NULL)
       AND pv.preco_venda > 0
+    GROUP BY p.id, p.nome, p.descricao
     ORDER BY p.nome
     LIMIT 800
-  `)) as unknown as Array<{ id: string; nome: string; descricao: string }>;
+  `)) as unknown as Array<{ id: string; nome: string; descricao: string; pausado: boolean }>;
 
   const restricoes = await lerRestricoes();
 
@@ -58,6 +60,7 @@ export default async function CardapioPage(props: {
             id: l.id,
             nome: l.nome,
             descricao: l.descricao,
+            pausado: l.pausado,
             semGluten: restricoes.get(l.id)?.semGluten ?? false,
             semLactose: restricoes.get(l.id)?.semLactose ?? false,
             obs: restricoes.get(l.id)?.obs ?? '',

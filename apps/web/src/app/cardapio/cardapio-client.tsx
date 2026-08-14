@@ -10,6 +10,8 @@ interface ItemCardapio {
   id: string;
   nome: string;
   descricao: string;
+  /** Pausado no PDV — não aparece no cardápio público, mas o selo fica pronto. */
+  pausado: boolean;
   semGluten: boolean;
   semLactose: boolean;
   obs: string;
@@ -102,7 +104,14 @@ export function CardapioClient(props: { itens: ItemCardapio[] }) {
             className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-2.5"
           >
             <div className="min-w-0">
-              <div className="text-sm font-medium text-slate-900">{i.nome}</div>
+              <div className={`text-sm font-medium ${i.pausado ? 'text-slate-400' : 'text-slate-900'}`}>
+                {i.nome}
+                {i.pausado && (
+                  <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                    pausado no PDV
+                  </span>
+                )}
+              </div>
               {i.descricao && (
                 <div className="truncate text-[11px] text-slate-500">{i.descricao}</div>
               )}
