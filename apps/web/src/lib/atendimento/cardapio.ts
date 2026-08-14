@@ -31,14 +31,21 @@ export async function consultarCardapio(filialId: string, termo: string): Promis
   const condicoes = palavras.map((w) => sql`${alvo} LIKE ${'%' + w + '%'}`);
   const where = condicoes.reduce((a, b) => sql`${a} AND ${b}`);
 
+  // Preços por canal: salão = produto_variante; delivery próprio e iFood =
+  // delivery_item (quando o cardápio do delivery estiver preenchido). Itens
+  // sem delivery_item mostram só o preço de salão — comportamento de hoje.
   const linhas = (await db.execute(sql`
     SELECT p.nome,
            COALESCE(t.descricao, t.sigla, '') AS tamanho,
            pv.preco_venda::float AS preco,
+           di.preco::float AS preco_delivery,
+           di.preco_ifood::float AS preco_ifood,
            LEFT(COALESCE(p.descricao, ''), 140) AS descr
     FROM produto_variante pv
     JOIN produto p ON p.id = pv.produto_id
     LEFT JOIN produto_tamanho t ON t.id = pv.produto_tamanho_id
+    LEFT JOIN delivery_item di
+      ON di.variante_id = pv.id AND di.filial_id = p.filial_id AND di.ativo
     WHERE p.filial_id = ${filialId}
       AND pv.menu_dino
       AND pv.data_delete IS NULL
@@ -49,19 +56,35 @@ export async function consultarCardapio(filialId: string, termo: string): Promis
       AND ${where}
     ORDER BY p.nome, pv.preco_venda
     LIMIT 12
-  `)) as unknown as Array<{ nome: string; tamanho: string; preco: number; descr: string }>;
+  `)) as unknown as Array<{
+    nome: string;
+    tamanho: string;
+    preco: number;
+    preco_delivery: number | null;
+    preco_ifood: number | null;
+    descr: string;
+  }>;
 
   if (linhas.length === 0) {
     return `Nenhum item do cardápio bate com "${termo}". Tente outra palavra (ex.: "moqueca", "camarão", "picanha") — ou mande o cliente ver o cardápio completo com fotos: ${LINK_CARDAPIO}`;
   }
 
+  const rs = (v: number) => `R$ ${v.toFixed(2).replace('.', ',')}`;
+  let temMultiCanal = false;
   const itens = linhas
     .map((l) => {
       const tam = l.tamanho ? ` (${l.tamanho})` : '';
-      const preco = `R$ ${l.preco.toFixed(2).replace('.', ',')}`;
+      const canais: string[] = [];
+      if (l.preco_delivery && l.preco_delivery > 0) canais.push(`delivery ${rs(l.preco_delivery)}`);
+      if (l.preco_ifood && l.preco_ifood > 0) canais.push(`iFood ${rs(l.preco_ifood)}`);
+      const preco = canais.length > 0 ? `no restaurante ${rs(l.preco)} · ${canais.join(' · ')}` : rs(l.preco);
+      if (canais.length > 0) temMultiCanal = true;
       const d = l.descr.trim() ? ` — ${l.descr.trim()}` : '';
       return `- ${l.nome.trim()}${tam}: ${preco}${d}`;
     })
     .join('\n');
-  return `Itens do cardápio oficial (preço atual do sistema):\n${itens}\nCardápio completo com fotos: ${LINK_CARDAPIO}`;
+  const avisoCanal = temMultiCanal
+    ? '\nATENÇÃO: item com preço por canal — se o cliente ainda não disse se é pra consumir no restaurante, pedir entrega ou pelo iFood, PERGUNTE antes e cite só o preço do canal dele.'
+    : '';
+  return `Itens do cardápio oficial (preço atual do sistema):\n${itens}${avisoCanal}\nCardápio completo com fotos: ${LINK_CARDAPIO}`;
 }
