@@ -423,6 +423,15 @@ export async function gerarResposta(params: {
     { role: 'system', content: system },
     ...historicoParaMensagens(params.historico),
   ];
+  // Retomada: a ordem vai como ÚLTIMA mensagem (posição vence a gravidade do
+  // histórico — no topo do prompt o modelo repetia a promessa antiga).
+  if (params.retomada) {
+    mensagens.push({
+      role: 'system',
+      content:
+        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta que ficou pendente do cliente. Use as ferramentas (consultar_cardapio etc.) NESTA resposta e entregue a informação concreta (ex.: preços dos peixes do cardápio). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — isso já foi dito e não aconteceu. Sem emoji. Se as ferramentas não tiverem a resposta, chame transferir_para_humano.',
+    });
+  }
 
   let transferiu = false;
   let leadRegistrado = false;
