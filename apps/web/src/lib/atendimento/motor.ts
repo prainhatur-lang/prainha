@@ -115,6 +115,7 @@ function sleep(ms: number): Promise<void> {
  *  (última mensagem é 'entrada'), ela responde o pendente na hora — sem
  *  esperar o cliente escrever de novo. Chamada pelo PATCH do painel. */
 export async function responderPendenteAposDevolucao(conversaId: string): Promise<void> {
+  console.log('[nina] retomada iniciada', conversaId);
   try {
     const [conversa] = await db
       .select()
@@ -129,7 +130,10 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
       .where(eq(schema.atendimentoMensagem.conversaId, conversaId))
       .orderBy(desc(schema.atendimentoMensagem.criadoEm))
       .limit(1);
-    if (!ultima || ultima.direcao !== 'entrada') return; // nada pendente
+    if (!ultima || ultima.direcao !== 'entrada') {
+      console.log('[nina] retomada: nada pendente', conversaId);
+      return;
+    }
 
     const [numero] = await db
       .select()
@@ -143,6 +147,7 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
       .limit(1);
     if (!numero) return;
 
+    console.log('[nina] retomada: processando', conversaId);
     await processarEntrada({
       retomada: true,
       registro: { conversaId, mensagemId: ultima.id, deveResponder: true },
@@ -158,8 +163,9 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
         mediaId: null,
       },
     });
-  } catch {
+  } catch (e) {
     // best-effort — devolver nunca pode falhar por causa disso
+    console.error('[nina] retomada falhou:', e instanceof Error ? e.message : e);
   }
 }
 
@@ -340,7 +346,8 @@ export async function processarEntrada(params: {
           modo,
           retomada: params.retomada === true,
         });
-      } catch {
+      } catch (e1) {
+        console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
           filialNome,
