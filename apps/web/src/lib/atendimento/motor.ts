@@ -14,7 +14,13 @@ import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from '.
 import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
-import { consultarDisponibilidade, criarReservaWhatsApp, cancelarReservaWhatsApp, consultarMesa } from './reservar';
+import {
+  consultarDisponibilidade,
+  criarReservaWhatsApp,
+  remarcarReservaWhatsApp,
+  cancelarReservaWhatsApp,
+  consultarMesa,
+} from './reservar';
 import { consultarCardapio } from './cardapio';
 import { consultarCotacoesFornecedor } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
@@ -332,6 +338,17 @@ export async function processarEntrada(params: {
         }),
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
       consultarCotacoesFornecedor: () => consultarCotacoesFornecedor(entrada.telefone),
+      remarcarReserva: (dados: import('./ia').DadosRemarcarReserva) =>
+        remarcarReservaWhatsApp({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          dataAtual: dados.dataAtual,
+          novaData: dados.novaData,
+          novaHora: dados.novaHora,
+          novasPessoas: dados.novasPessoas,
+          novaArea: dados.novaArea,
+        }),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       transferir: async (motivo: string, resumo: string) => {

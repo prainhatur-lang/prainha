@@ -139,14 +139,15 @@ export interface ReservaConfig {
   bebidas?: string[];
   /** Janela de atendimento do SISTEMA de reserva (independe da área/mesa) —
    *  fora dela o site não aceita NENHUM pedido, pra data nenhuma.
-   *  `fimHojeFimDeSemana` é um corte extra, só quando a DATA PEDIDA é HOJE
-   *  e hoje é fim de semana/feriado (a casa enche mais rápido nesses dias)
-   *  — reservar um fds/feriado FUTURO com antecedência usa `fim` normal,
-   *  não é afetado por esse corte. Ausente = sem restrição de horário. */
+   *  `fimHojeFimDeSemana` é o fim da janela em SÁBADO, DOMINGO e FERIADO: a
+   *  hora da reserva não passa dele nesses dias, mesmo pedida com semanas de
+   *  antecedência (tarde de fds é por ordem de chegada). Ele também corta o
+   *  pedido do MESMO DIA pela hora real de agora.
+   *  Ausente = sem restrição de horário. */
   atendimento?: {
     inicio: string; // HH:MM, todo dia — janela geral abre
-    fim: string; // HH:MM, todo dia — janela geral fecha
-    fimHojeFimDeSemana: string; // HH:MM, corte extra só p/ pedido do MESMO DIA em fds/feriado
+    fim: string; // HH:MM, dia de semana — janela geral fecha
+    fimHojeFimDeSemana: string; // HH:MM, fim da janela em sáb/dom/feriado
   };
 }
 

@@ -200,12 +200,6 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
 
   const areaSel = areas.find((a) => a.nome === espaco);
   const limite = areaSel?.horaLimite ?? null;
-  // Hora pedida precisa caber no horaLimite do espaço E na janela de
-  // atendimento do restaurante (se configurada).
-  const horaInvalida = !!(
-    (limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite) ||
-    (atendimento && /^\d{2}:\d{2}$/.test(hora) && (hora < atendimento.inicio || hora > atendimento.fim))
-  );
   const gratis = valorAtual === 0;
 
   // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a
@@ -214,6 +208,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
   const [diaFechado, setDiaFechado] = useState(false);
   const [motivoFechado, setMotivoFechado] = useState<string | null>(null);
+  // Até que hora ESTA data aceita reserva (vem do servidor: em sábado, domingo
+  // e feriado a janela fecha mais cedo que nos dias de semana).
+  const [horaMaxDia, setHoraMaxDia] = useState<string | null>(atendimento?.fim ?? null);
+
+  // Hora pedida precisa caber no horaLimite do espaço E na janela de
+  // atendimento do restaurante (se configurada) — o fim da janela é o do DIA.
+  const fimDoDia = horaMaxDia ?? atendimento?.fim ?? null;
+  const horaInvalida = !!(
+    (limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite) ||
+    (atendimento && /^\d{2}:\d{2}$/.test(hora) && (hora < atendimento.inicio || (fimDoDia && hora > fimDoDia)))
+  );
 
   // Horários oferecidos em combo (não digitados) — do início da janela de
   // atendimento (ou 11h, padrão, se não configurada) até o mais cedo entre
@@ -231,7 +236,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       inicioMin = Math.max(inicioMin, proximoSlot);
     }
     const fimEspaco = fimStr ?? '22:00';
-    const fimJanela = atendimento?.fim ?? '22:00';
+    const fimJanela = fimDoDia ?? '22:00';
     const fimEfetivo = fimEspaco < fimJanela ? fimEspaco : fimJanela;
     const [hFim, mFim] = fimEfetivo.split(':').map(Number);
     const fimMin = hFim * 60 + mFim;
@@ -251,7 +256,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       setHora(horariosDisponiveis[0] ?? '17:00');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [espaco, limite]);
+  }, [espaco, limite, horaMaxDia]);
 
   // Ao trocar a data, sempre volta pro primeiro horário disponível do dia
   // (em vez de manter o horário anterior, que pode confundir o cliente).
@@ -281,6 +286,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         if (cancel) return;
         setDiaFechado(!!d?.fechado);
         setMotivoFechado(typeof d?.motivo === 'string' ? d.motivo : null);
+        setHoraMaxDia(typeof d?.horaMax === 'string' ? d.horaMax : (atendimento?.fim ?? null));
         if (!Array.isArray(d?.areas)) return;
         const m: Record<string, { total: number; livres: number }> = {};
         for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres };
@@ -316,8 +322,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const minData = hojeIndisponivel ? amanha : hoje;
 
   function msgHoraInvalida(): string {
-    if (atendimento && (hora < atendimento.inicio || hora > atendimento.fim)) {
-      return `Reservas só de ${atendimento.inicio} às ${atendimento.fim}.`;
+    if (atendimento && fimDoDia && hora > fimDoDia && fimDoDia !== atendimento.fim) {
+      return `Sábado, domingo e feriado a reserva vai só até ${fimDoDia} — depois disso é só chegar que a recepção acomoda.`;
+    }
+    if (atendimento && (hora < atendimento.inicio || (fimDoDia && hora > fimDoDia))) {
+      return `Reservas só de ${atendimento.inicio} às ${fimDoDia}.`;
     }
     return `${espaco} aceita reserva só até ${limite}`;
   }

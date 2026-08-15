@@ -12,12 +12,13 @@
 //  - canal: 'whatsapp'.
 
 import { db, schema } from '@concilia/db';
+import type { AreaReserva, ReservaConfig } from '@concilia/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
-import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
+import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import {
   enviarConfirmacaoReserva,
   enviarAvisoTolerancia,
@@ -98,7 +99,17 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
     const limiteHora = area.horaLimite ? ` (reserva só até ${area.horaLimite})` : '';
     linhas.push(`- ${area.nome}: ${livres}${limiteHora}${taxa}`);
   }
-  const jan = cfg.atendimento ? `Horários aceitos: ${cfg.atendimento.inicio} às ${cfg.atendimento.fim}. ` : '';
+  // A janela do dia muda em sáb/dom/feriado (fecha mais cedo) — o modelo
+  // precisa saber ANTES de sugerir horário, senão oferece tarde de sábado que
+  // a criação vai recusar.
+  const maxDoDia = await horaMaximaDoDia(cfg, data);
+  let jan = '';
+  if (cfg.atendimento && maxDoDia) {
+    jan = `Horários aceitos NESSE DIA: ${cfg.atendimento.inicio} às ${maxDoDia}. `;
+    if (maxDoDia !== cfg.atendimento.fim) {
+      jan += `(sábado, domingo e feriado a reserva vai só até ${maxDoDia} — depois disso é por ordem de chegada, convide a pessoa a vir direto). `;
+    }
+  }
   return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${jan}Reserva comum é gratuita hoje.`;
 }
 
@@ -125,18 +136,13 @@ export async function consultarMesa(filialId: string, numeroMesa: string): Promi
     .join(', ')}. Confirme o número com o cliente ou transfira.`;
 }
 
-/** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO
- *  telefone da conversa — a mesma garantia do botão "cancelar" do lembrete
- *  (só quem tem o zap da reserva cancela). data desambigua se houver várias. */
-export async function cancelarReservaWhatsApp(p: {
-  filialId: string;
-  telefone: string;
-  data?: string | null;
-}): Promise<string> {
-  const suf = p.telefone.replace(/\D/g, '').slice(-8);
-  if (suf.length < 8) return 'Telefone da conversa inválido — transfira pra equipe.';
-
-  const ativas = await db
+/** Reservas ativas (pendente/confirmada, de hoje em diante) do MESMO telefone
+ *  da conversa — a mesma garantia do botão "cancelar" do lembrete: só quem tem
+ *  o zap da reserva mexe nela. Usada por cancelar e remarcar. */
+async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
+  const suf = telefone.replace(/\D/g, '').slice(-8);
+  if (suf.length < 8) return null;
+  return db
     .select({
       id: schema.reserva.id,
       data: schema.reserva.data,
@@ -147,11 +153,12 @@ export async function cancelarReservaWhatsApp(p: {
       pessoas: schema.reserva.pessoas,
       status: schema.reserva.status,
       nome: schema.reserva.clienteNome,
+      cancelToken: schema.reserva.cancelToken,
     })
     .from(schema.reserva)
     .where(
       and(
-        eq(schema.reserva.filialId, p.filialId),
+        eq(schema.reserva.filialId, filialId),
         sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
         sql`${schema.reserva.status} IN ('pendente', 'confirmada')`,
         sql`${schema.reserva.data} >= current_date`,
@@ -159,6 +166,19 @@ export async function cancelarReservaWhatsApp(p: {
     )
     .orderBy(schema.reserva.data, schema.reserva.hora)
     .limit(5);
+}
+
+/** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO
+ *  telefone da conversa. data desambigua se houver várias.
+ *  ATENÇÃO: pra MUDAR horário/dia/pessoas use remarcarReservaWhatsApp — cancelar
+ *  e criar de novo já deixou cliente sem mesa no meio do caminho (15/08). */
+export async function cancelarReservaWhatsApp(p: {
+  filialId: string;
+  telefone: string;
+  data?: string | null;
+}): Promise<string> {
+  const ativas = await reservasAtivasDoTelefone(p.filialId, p.telefone);
+  if (ativas === null) return 'Telefone da conversa inválido — transfira pra equipe.';
 
   if (ativas.length === 0) {
     return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
@@ -188,6 +208,109 @@ export async function cancelarReservaWhatsApp(p: {
 
   const mesas = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
   return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada. Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
+}
+
+interface SlotAlocado {
+  areaCfg: AreaReserva;
+  mesa: string | null;
+  mesaJuntada: string | null;
+}
+
+/** Todas as regras de "esse horário/área aceita reserva?" + alocação da mesa,
+ *  compartilhadas entre criar e remarcar (o site faz o mesmo em
+ *  api/reservar/[token]/confirmar). Devolve string = bloqueio pronto pro
+ *  modelo falar; objeto = pode gravar.
+ *  `excluirReservaId`: na remarcação, a própria reserva não briga com a mesa
+ *  que ela já ocupa. */
+async function validarSlotEAlocarMesa(p: {
+  filialId: string;
+  cfg: ReservaConfig;
+  data: string;
+  hora: string;
+  pessoas: number;
+  area: string;
+  excluirReservaId?: string;
+}): Promise<string | SlotAlocado> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
+  if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
+  if (p.data < hojeBr()) return 'Essa data já passou. Peça uma data futura.';
+  if (p.data === hojeBr()) {
+    const agora = horaAgoraBr();
+    const [h1, m1] = p.hora.split(':').map(Number);
+    const [h0, m0] = agora.split(':').map(Number);
+    const minutosAte = h1 * 60 + m1 - (h0 * 60 + m0);
+    // Regra da casa (Elison 14/08): em cima da hora não se reserva mais —
+    // o cliente vem direto e a recepção acomoda na mesa disponível.
+    if (minutosAte < 60) {
+      return 'Em cima da hora não fazemos mais reserva pra hoje (mínimo 1 hora de antecedência). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.';
+    }
+  }
+
+  if (p.cfg.excecoes?.some((e) => e.data === p.data && e.fechado)) {
+    return `Sem vagas pra ${dataBr(p.data)} (data fechada). Ofereça outro dia.`;
+  }
+  const janela = await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
+  if (janela.bloqueado) {
+    return `Bloqueado: ${janela.motivo} Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).`;
+  }
+
+  const areaCfg = p.cfg.areas.find((a) => a.nome.toLowerCase() === p.area.trim().toLowerCase());
+  if (!areaCfg || !areaCfg.ativo || areaCfg.somenteEventos) {
+    const validas = p.cfg.areas.filter((a) => a.ativo && !a.somenteEventos).map((a) => a.nome).join(', ');
+    return `Área "${p.area}" indisponível. Áreas válidas: ${validas}.`;
+  }
+  if (areaCfg.taxaReserva) {
+    const valor = ehFimDeSemana(p.data) ? areaCfg.taxaReserva.sabDom : areaCfg.taxaReserva.diasUteis;
+    return `${areaCfg.nome} tem taxa de R$ ${valor} paga por Pix — NÃO dá pra fechar por aqui. Explique a taxa e mande o cliente concluir em reservas.prainhabar.com.`;
+  }
+  if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite) {
+    return `${areaCfg.nome} aceita reserva só até ${areaCfg.horaLimite}. Sugira um horário até essa hora.`;
+  }
+
+  // Alocação de mesa — menor mesa livre que cabe o grupo (regra do site).
+  // Grupo maior que qualquer mesa: JUNTA DUAS mesas (mesa + mesaJuntada, o
+  // mesmo recurso que a recepção usa no admin). 3+ mesas = equipe.
+  const mesas = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
+  if (mesas.length === 0) return { areaCfg, mesa: null, mesaJuntada: null };
+
+  const ocupadas = await mesasOcupadas({
+    filialId: p.filialId,
+    data: p.data,
+    area: areaCfg.nome,
+    mesasValidas: mesas.map((m) => String(m.numero)),
+    excluirReservaId: p.excluirReservaId,
+  });
+  const limite =
+    typeof areaCfg.percentualReserva === 'number'
+      ? Math.floor((mesas.length * areaCfg.percentualReserva) / 100)
+      : mesas.length;
+  if (ocupadas.size >= limite) {
+    return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
+  }
+  const ordenadas = mesas.slice().sort((a, b) => a.lugares - b.lugares);
+  const livres = ordenadas.filter((m) => !ocupadas.has(String(m.numero)));
+  const unica = livres.find((m) => m.lugares >= p.pessoas);
+  if (unica) return { areaCfg, mesa: String(unica.numero), mesaJuntada: null };
+
+  // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
+  let par: [(typeof livres)[number], (typeof livres)[number]] | null = null;
+  if (limite - ocupadas.size >= 2) {
+    for (let i = 0; i < livres.length; i++) {
+      for (let j = i + 1; j < livres.length; j++) {
+        const soma = livres[i].lugares + livres[j].lugares;
+        if (soma >= p.pessoas && (!par || soma < par[0].lugares + par[1].lugares)) {
+          par = [livres[i], livres[j]];
+        }
+      }
+    }
+  }
+  if (par) return { areaCfg, mesa: String(par[0].numero), mesaJuntada: String(par[1].numero) };
+
+  const duasMaiores = ordenadas.slice(-2).reduce((s, m) => s + m.lugares, 0);
+  if (p.pessoas > duasMaiores) {
+    return `Grupo de ${p.pessoas} não cabe em ${areaCfg.nome} nem juntando 2 mesas (máximo juntando duas: ${duasMaiores}). Ofereça outra área com mesas maiores ou transfira pra equipe (3 mesas ou mais é com humanos).`;
+  }
+  return `${areaCfg.nome} sem mesas suficientes livres pra ${p.pessoas} pessoas em ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
 }
 
 export interface DadosCriarReserva {
@@ -241,19 +364,6 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   }
   if (!nome) nome = 'Cliente WhatsApp';
 
-  if (p.data < hojeBr()) return 'Essa data já passou. Peça uma data futura.';
-  if (p.data === hojeBr()) {
-    const agora = horaAgoraBr();
-    const [h1, m1] = p.hora.split(':').map(Number);
-    const [h0, m0] = agora.split(':').map(Number);
-    const minutosAte = h1 * 60 + m1 - (h0 * 60 + m0);
-    // Regra da casa (Elison 14/08): em cima da hora não se reserva mais —
-    // o cliente vem direto e a recepção acomoda na mesa disponível.
-    if (minutosAte < 60) {
-      return 'Em cima da hora não fazemos mais reserva pra hoje (mínimo 1 hora de antecedência). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.';
-    }
-  }
-
   const [filial] = await db
     .select({ reservaConfig: schema.filial.reservaConfig })
     .from(schema.filial)
@@ -262,77 +372,16 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   const cfg = filial?.reservaConfig;
   if (!cfg?.areas?.length) return 'Reservas indisponíveis no momento — transfira pra equipe.';
 
-  if (cfg.excecoes?.some((e) => e.data === p.data && e.fechado)) {
-    return `Sem vagas pra ${dataBr(p.data)} (data fechada). Ofereça outro dia.`;
-  }
-  const janela = await foraDaJanelaAtendimento(cfg, p.data, p.hora);
-  if (janela.bloqueado) {
-    return `Bloqueado: ${janela.motivo} Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).`;
-  }
-
-  const areaCfg = cfg.areas.find((a) => a.nome.toLowerCase() === p.area.trim().toLowerCase());
-  if (!areaCfg || !areaCfg.ativo || areaCfg.somenteEventos) {
-    const validas = cfg.areas.filter((a) => a.ativo && !a.somenteEventos).map((a) => a.nome).join(', ');
-    return `Área "${p.area}" indisponível. Áreas válidas: ${validas}.`;
-  }
-  if (areaCfg.taxaReserva) {
-    const valor = ehFimDeSemana(p.data) ? areaCfg.taxaReserva.sabDom : areaCfg.taxaReserva.diasUteis;
-    return `${areaCfg.nome} tem taxa de R$ ${valor} paga por Pix — NÃO dá pra fechar por aqui. Explique a taxa e mande o cliente concluir em reservas.prainhabar.com.`;
-  }
-  if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite) {
-    return `${areaCfg.nome} aceita reserva só até ${areaCfg.horaLimite}. Sugira um horário até essa hora.`;
-  }
-
-  // Alocação de mesa — menor mesa livre que cabe o grupo (regra do site).
-  // Grupo maior que qualquer mesa: JUNTA DUAS mesas (mesa + mesaJuntada, o
-  // mesmo recurso que a recepção usa no admin). 3+ mesas = equipe.
-  let mesaAlocada: string | null = null;
-  let mesaJuntadaAlocada: string | null = null;
-  const mesas = (areaCfg.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
-  if (mesas.length > 0) {
-    const ocupadas = await mesasOcupadas({
-      filialId: p.filialId,
-      data: p.data,
-      area: areaCfg.nome,
-      mesasValidas: mesas.map((m) => String(m.numero)),
-    });
-    const limite =
-      typeof areaCfg.percentualReserva === 'number'
-        ? Math.floor((mesas.length * areaCfg.percentualReserva) / 100)
-        : mesas.length;
-    if (ocupadas.size >= limite) {
-      return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
-    }
-    const ordenadas = mesas.slice().sort((a, b) => a.lugares - b.lugares);
-    const livres = ordenadas.filter((m) => !ocupadas.has(String(m.numero)));
-    const unica = livres.find((m) => m.lugares >= pessoas);
-    if (unica) {
-      mesaAlocada = String(unica.numero);
-    } else {
-      // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
-      let par: [typeof livres[number], typeof livres[number]] | null = null;
-      if (limite - ocupadas.size >= 2) {
-        for (let i = 0; i < livres.length; i++) {
-          for (let j = i + 1; j < livres.length; j++) {
-            const soma = livres[i].lugares + livres[j].lugares;
-            if (soma >= pessoas && (!par || soma < par[0].lugares + par[1].lugares)) {
-              par = [livres[i], livres[j]];
-            }
-          }
-        }
-      }
-      if (par) {
-        mesaAlocada = String(par[0].numero);
-        mesaJuntadaAlocada = String(par[1].numero);
-      } else {
-        const duasMaiores = ordenadas.slice(-2).reduce((s, m) => s + m.lugares, 0);
-        if (pessoas > duasMaiores) {
-          return `Grupo de ${pessoas} não cabe em ${areaCfg.nome} nem juntando 2 mesas (máximo juntando duas: ${duasMaiores}). Ofereça outra área com mesas maiores ou transfira pra equipe (3 mesas ou mais é com humanos).`;
-        }
-        return `${areaCfg.nome} sem mesas suficientes livres pra ${pessoas} pessoas em ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
-      }
-    }
-  }
+  const slot = await validarSlotEAlocarMesa({
+    filialId: p.filialId,
+    cfg,
+    data: p.data,
+    hora: p.hora,
+    pessoas,
+    area: p.area,
+  });
+  if (typeof slot === 'string') return slot;
+  const { areaCfg, mesa: mesaAlocada, mesaJuntada: mesaJuntadaAlocada } = slot;
 
   const valorAtual = typeof cfg.valorAtual === 'number' ? cfg.valorAtual : 0;
   const cancelToken = randomBytes(24).toString('hex');
@@ -411,4 +460,124 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
       : '';
   const cpfTxt = clienteCpf ? ` (CPF final ${clienteCpf.slice(-3)})` : '';
   return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
+}
+
+/** Remarca a reserva EXISTENTE (hora, dia, pessoas e/ou área) — a mesma
+ *  reserva muda de lugar, sem passar por "cancela e cria de novo".
+ *
+ *  Por que existe (15/08/2026): a Nina cancelava e só DEPOIS ia criar a nova;
+ *  numa conversa real ela cancelou a de 13h, mandou "me avisa que faço na
+ *  hora" e nunca criou — cliente ficou sem mesa e a mesa foi pro estoque.
+ *  Aqui, se o horário novo não der, NADA muda: a reserva antiga continua de pé
+ *  e a Nina oferece outra opção. */
+export async function remarcarReservaWhatsApp(p: {
+  filialId: string;
+  filialNome: string;
+  telefone: string;
+  /** Data da reserva ATUAL, pra desambiguar quando o cliente tem várias. */
+  dataAtual?: string | null;
+  novaData?: string | null;
+  novaHora?: string | null;
+  novasPessoas?: number | null;
+  novaArea?: string | null;
+}): Promise<string> {
+  const ativas = await reservasAtivasDoTelefone(p.filialId, p.telefone);
+  if (ativas === null) return 'Telefone da conversa inválido — transfira pra equipe.';
+  if (ativas.length === 0) {
+    return 'Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
+  }
+
+  let alvo = ativas[0];
+  if (p.dataAtual) {
+    const daData = ativas.filter((r) => String(r.data) === p.dataAtual);
+    if (daData.length === 0) {
+      return `Não achei reserva ativa em ${dataBr(p.dataAtual)}. As ativas são: ${ativas.map((r) => `${dataBr(String(r.data))} às ${r.hora} (${r.area})`).join('; ')}. Pergunte qual o cliente quer remarcar.`;
+    }
+    alvo = daData[0];
+  } else if (ativas.length > 1) {
+    return `O cliente tem ${ativas.length} reservas ativas: ${ativas.map((r) => `${dataBr(String(r.data))} às ${r.hora} (${r.area}, ${r.pessoas} pessoas)`).join('; ')}. Pergunte QUAL remarcar e chame de novo com a data atual dela.`;
+  }
+
+  const data = p.novaData?.trim() || String(alvo.data);
+  const hora = (p.novaHora?.trim() || String(alvo.hora)).slice(0, 5);
+  const pessoas = p.novasPessoas && p.novasPessoas > 0 ? Math.min(Math.round(p.novasPessoas), 99) : alvo.pessoas;
+  const area = p.novaArea?.trim() || alvo.area || '';
+  if (!area) return 'Essa reserva está sem área definida no sistema — transfira pra equipe ajustar.';
+  const horaAtual = String(alvo.hora).slice(0, 5);
+  if (data === String(alvo.data) && hora === horaAtual && pessoas === alvo.pessoas && area === alvo.area) {
+    return 'Nada mudou nessa reserva (mesmo dia, hora, pessoas e área). Confirme com o cliente o que ele quer mudar.';
+  }
+
+  const [filial] = await db
+    .select({ reservaConfig: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, p.filialId))
+    .limit(1);
+  const cfg = filial?.reservaConfig;
+  if (!cfg?.areas?.length) return 'Reservas indisponíveis no momento — transfira pra equipe.';
+
+  const slot = await validarSlotEAlocarMesa({
+    filialId: p.filialId,
+    cfg,
+    data,
+    hora,
+    pessoas,
+    area,
+    excluirReservaId: alvo.id,
+  });
+  if (typeof slot === 'string') {
+    // Nada foi alterado — a reserva antiga continua valendo.
+    return `NÃO REMARQUEI (a reserva de ${dataBr(String(alvo.data))} às ${horaAtual} CONTINUA DE PÉ): ${slot} Diga isso ao cliente e ofereça alternativa — não deixe ele achar que ficou sem mesa.`;
+  }
+
+  await db
+    .update(schema.reserva)
+    .set({
+      data,
+      hora,
+      pessoas,
+      area: slot.areaCfg.nome,
+      mesa: slot.mesa,
+      mesaJuntada: slot.mesaJuntada,
+      atualizadoEm: sql`now()`,
+    })
+    .where(eq(schema.reserva.id, alvo.id));
+  await registrarAlteracoesReserva(
+    alvo.id,
+    { data: String(alvo.data), hora: horaAtual, pessoas: alvo.pessoas, area: alvo.area, mesa: alvo.mesa, mesaJuntada: alvo.mesaJuntada },
+    { data, hora, pessoas, area: slot.areaCfg.nome, mesa: slot.mesa, mesaJuntada: slot.mesaJuntada },
+    { tipo: 'cliente', nome: 'cliente via Nina (WhatsApp)' },
+  );
+
+  // Confirmação nova (mesmo cancelToken — o link de cancelar continua valendo).
+  const nome = alvo.nome ?? 'Cliente';
+  try {
+    const [a, m, d] = data.split('-');
+    await enviarConfirmacaoReserva(p.telefone, {
+      nome,
+      data: `${d}/${m}/${a}`,
+      hora,
+      local: slot.areaCfg.nome,
+      pessoas: String(pessoas),
+      linkCancelar: alvo.cancelToken ? `https://app.prainhabar.com/reservar/cancelar/${alvo.cancelToken}` : '',
+    });
+    if (data === hojeBr() && alvo.cancelToken && lembreteReservaConfigurado()) {
+      await enviarLembreteReserva(p.telefone, {
+        nome: nome.split(' ')[0] || 'tudo bem',
+        data: `${d}/${m}/${a}`,
+        hora,
+        local: `${p.filialNome} · ${slot.areaCfg.nome}`,
+        token: alvo.cancelToken,
+      });
+    }
+  } catch {
+    // best-effort — a remarcação já está gravada
+  }
+
+  const mesaTxt = slot.mesaJuntada
+    ? ` (mesas ${slot.mesa} + ${slot.mesaJuntada} juntadas)`
+    : slot.mesa
+      ? ` (mesa ${slot.mesa})`
+      : '';
+  return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. Confirme ao cliente em uma frase e lembre que a mesa fica guardada por 15 minutos após o horário.`;
 }

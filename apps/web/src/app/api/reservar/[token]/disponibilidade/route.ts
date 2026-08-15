@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
+import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 
 export const dynamic = 'force-dynamic';
@@ -38,10 +38,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   const janela = await foraDaJanelaAtendimento(filial.reservaConfig, data);
   if (janela.bloqueado) return NextResponse.json({ areas: [], fechado: true, motivo: janela.motivo });
 
+  // Até que hora ESSE dia aceita reserva (fds/feriado fecha mais cedo) — o
+  // formulário usa pra só oferecer horário que vai ser aceito de verdade.
+  const horaMax = await horaMaximaDoDia(filial.reservaConfig, data);
+
   const areas = ((filial.reservaConfig?.areas as AreaCfg[] | undefined) ?? []).filter(
     (a) => a.ativo && !a.somenteEventos && (a.mesas?.length ?? 0) > 0,
   );
-  if (areas.length === 0) return NextResponse.json({ areas: [], fechado: false });
+  if (areas.length === 0) return NextResponse.json({ areas: [], fechado: false, horaMax });
 
   // Ocupação por área: reserva ativa + ocupação real no Consumer (se hoje) —
   // mesma fonte usada pra alocar mesa de verdade no /confirmar, evita a
@@ -55,5 +59,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     }),
   );
 
-  return NextResponse.json({ areas: out, fechado: false });
+  return NextResponse.json({ areas: out, fechado: false, horaMax });
 }

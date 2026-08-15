@@ -47,11 +47,20 @@ export interface DadosReservaMesa {
   observacao: string | null;
 }
 
+export interface DadosRemarcarReserva {
+  dataAtual: string | null; // YYYY-MM-DD da reserva que vai mudar (desambigua)
+  novaData: string | null;
+  novaHora: string | null;
+  novasPessoas: number | null;
+  novaArea: string | null;
+}
+
 export interface ExecutoresFerramentas {
   registrarLead: (dados: DadosLeadEvento) => Promise<string>;
   transferir: (motivo: string, resumo: string) => Promise<string>;
   consultarDisponibilidade: (data: string) => Promise<string>;
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
+  remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
@@ -166,7 +175,7 @@ FLUXO DE EVENTOS — a ordem das perguntas importa:
 QUANDO TRANSFERIR (transferir_para_humano):
 - Você não sabe a resposta (ou é [PENDENTE]).
 - Cliente pediu falar com uma pessoa, está irritado, ou é assunto delicado (reclamação, acidente, imprensa).
-- Assunto sobre reserva JÁ FEITA (mudar, cancelar, confirmar fora dos botões) ou pagamento.
+- Assunto de reserva JÁ FEITA que você NÃO resolve sozinha: passar pra outro nome/telefone, pagamento, ou reserva que não aparece nas suas ferramentas. Mudar horário/dia/pessoas/área e cancelar você mesma faz (remarcar_reserva / cancelar_reserva) — não transfira por isso.
 Depois de transferir, avise em uma frase gentil que alguém da equipe já vai falar com a pessoa por aqui mesmo.
 
 RESERVA DE MESA — VOCÊ MESMA CRIA:
@@ -182,9 +191,10 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).
 - Datas relativas ("amanhã", "sábado que vem") você converte pra YYYY-MM-DD usando a data/hora de AGORA informada acima.
 - "MESA X FICA ONDE?": use consultar_mesa — responde a área e os lugares na hora (não transfira por isso).
-- Cliente reservou numa área e quer outra coisa (ex.: quer lugar coberto e a mesa é na Areia): confirme o que a pessoa quer e REMANEJE você mesma — cancelar_reserva + criar_reserva na área certa, avisando a mesa nova.
-- CANCELAR reserva: você mesma cancela com cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
-- REMARCAR: cancele a atual e crie a nova (confirmando os dados novos).
+- MUDAR uma reserva que já existe (horário, dia, número de pessoas, área): use remarcar_reserva — É PROIBIDO cancelar pra criar outra. A ferramenta muda a MESMA reserva; se o novo horário não der, ela avisa e a reserva antiga continua de pé (aí você oferece alternativa, sem deixar o cliente sem mesa). Informe só o que mudou.
+- Depois de remarcar, diga ao cliente o que ficou valendo (dia, hora e mesa nova) numa frase. Nunca termine a conversa com a reserva "no ar" — se a ferramenta não remarcou, isso tem que ficar claro pra pessoa.
+- CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
+- FIM DE SEMANA E FERIADO: a reserva vai só até o horário que consultar_disponibilidade_reserva mostrar pro dia (à tarde não tem reserva em sáb/dom/feriado). Cliente pedindo tarde de sábado/domingo: explique com carinho que nesse horário a casa é por ordem de chegada e convide a vir direto — nada de oferecer horário que o sistema vai recusar.
 - Outras mudanças (passar pra outro nome/telefone, dúvida de pagamento): transfira pra equipe.
 
 MENSAGEM DE VOZ (enviar_audio_voz):
@@ -338,6 +348,24 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           numero: { type: 'string', description: 'número da mesa' },
         },
         required: ['numero'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remarcar_reserva',
+      description:
+        'MUDA a reserva que já existe (horário, dia, quantidade de pessoas e/ou área) mantendo a MESMA reserva. Use SEMPRE que o cliente quiser alterar algo de uma reserva ativa — NUNCA cancele pra criar outra. Se o horário novo não der, nada muda e a reserva antiga continua de pé. Informe só o que mudou.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data_atual: { type: 'string', description: 'YYYY-MM-DD da reserva a alterar (só se o cliente tiver mais de uma ativa)' },
+          nova_data: { type: 'string', description: 'YYYY-MM-DD novo, se o dia mudou' },
+          nova_hora: { type: 'string', description: 'HH:MM novo, se o horário mudou' },
+          novas_pessoas: { type: 'number', description: 'nova quantidade de pessoas, se mudou' },
+          nova_area: { type: 'string', description: 'nova área (Areia ou Deck Superior), se mudou' },
+        },
       },
     },
   },
@@ -543,6 +571,14 @@ export async function gerarResposta(params: {
           resultado = await params.executores.enviarAudioVoz(String(args.texto ?? ''));
         } else if (tc.function.name === 'consultar_mesa') {
           resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
+        } else if (tc.function.name === 'remarcar_reserva') {
+          resultado = await params.executores.remarcarReserva({
+            dataAtual: /^\d{4}-\d{2}-\d{2}$/.test(String(args.data_atual ?? '')) ? String(args.data_atual) : null,
+            novaData: /^\d{4}-\d{2}-\d{2}$/.test(String(args.nova_data ?? '')) ? String(args.nova_data) : null,
+            novaHora: /^\d{2}:\d{2}/.test(String(args.nova_hora ?? '')) ? String(args.nova_hora).slice(0, 5) : null,
+            novasPessoas: Number(args.novas_pessoas) > 0 ? Math.round(Number(args.novas_pessoas)) : null,
+            novaArea: String(args.nova_area ?? '') || null,
+          });
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
         } else if (tc.function.name === 'transferir_para_humano') {

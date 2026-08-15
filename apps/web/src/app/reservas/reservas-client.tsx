@@ -1172,15 +1172,17 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
           Janela de atendimento (horário em que o site aceita pedido de reserva)
         </label>
         <p className="mt-0.5 text-xs text-slate-500">
-          Fora dessas horas, o site não aceita reserva pra nenhuma data. Desmarcado = sem restrição.
+          Horário DA MESA que o site aceita reservar. Em sábado, domingo e feriado vale o fim mais curto —
+          depois dele, o dia é por ordem de chegada (vale também pra reserva pedida com antecedência).
+          Desmarcado = sem restrição.
         </p>
         {atendimento && (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-500">abre</span>
             <input type="time" value={atendimento.inicio} onChange={(e) => setAtendimento({ ...atendimento, inicio: e.target.value })} className={`${inp} w-24`} />
-            <span className="text-xs text-slate-500">fecha</span>
+            <span className="text-xs text-slate-500">fecha (dia de semana)</span>
             <input type="time" value={atendimento.fim} onChange={(e) => setAtendimento({ ...atendimento, fim: e.target.value })} className={`${inp} w-24`} />
-            <span className="text-xs text-slate-500">· corte pra reserva de HOJE em fds/feriado</span>
+            <span className="text-xs text-slate-500">· fecha em sáb/dom/feriado</span>
             <input type="time" value={atendimento.fimHojeFimDeSemana} onChange={(e) => setAtendimento({ ...atendimento, fimHojeFimDeSemana: e.target.value })} className={`${inp} w-24`} />
           </div>
         )}
