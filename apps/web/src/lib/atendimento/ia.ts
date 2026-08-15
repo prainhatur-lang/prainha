@@ -99,7 +99,7 @@ function montarSystemPrompt(params: {
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
   const blocoRetomada = retomada
-    ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente usando as ferramentas (consultar_cardapio, consultar_mesa, disponibilidade etc.) e responda com a informação CONCRETA.\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Se as ferramentas e os blocos realmente não resolverem, aí use transferir_para_humano — mas só depois de TENTAR com as ferramentas.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
+    ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente: PRIMEIRO releia os blocos de "O QUE VOCÊ SABE" — a resposta costuma já estar lá (a base foi atualizada DEPOIS da sua promessa); se for preço/prato/mesa/vaga, use as ferramentas. Responda com a informação CONCRETA.\n- Se você prometeu "confirmar com a equipe" algo que AGORA está nos blocos: a confirmação já aconteceu — VOCÊ é o retorno. Entregue como boa notícia ("confirmei aqui: pode sim!").\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Só transfira se NEM os blocos NEM as ferramentas tiverem a resposta.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
     : '';
 
   const blocos = conhecimento
@@ -494,7 +494,7 @@ export async function gerarResposta(params: {
     mensagens.push({
       role: 'system',
       content:
-        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta que ficou pendente do cliente. Use as ferramentas (consultar_cardapio etc.) NESTA resposta e entregue a informação concreta (ex.: preços dos peixes do cardápio). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — isso já foi dito e não aconteceu. Sem emoji. Se as ferramentas não tiverem a resposta, chame transferir_para_humano.',
+        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia ("confirmei aqui: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.',
     });
   }
 
