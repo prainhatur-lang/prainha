@@ -494,7 +494,7 @@ export async function gerarResposta(params: {
     mensagens.push({
       role: 'system',
       content:
-        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia ("confirmei aqui: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.',
+        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia e fechando a promessa que ficou ("consultei aqui com a equipe e: pode sim!" / "confirmei com o pessoal: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.',
     });
   }
 
