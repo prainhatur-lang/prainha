@@ -157,7 +157,7 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                   <th className="px-3 py-2 text-left font-medium">Status</th>
                   <th className="px-3 py-2 text-right font-medium">Valor total</th>
                   <th className="px-3 py-2 text-center font-medium">WhatsApp</th>
-                  <th className="px-3 py-2 text-left font-medium">Cotação</th>
+                  <th className="px-3 py-2 text-left font-medium">Abrir</th>
                   <th className="px-3 py-2 text-left font-medium">Criado em</th>
                 </tr>
               </thead>
@@ -171,7 +171,11 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                           #{p.numero}
                         </Link>
                       </td>
-                      <td className="px-3 py-2 text-slate-700">{p.fornecedorNome}</td>
+                      <td className="px-3 py-2 text-slate-700">
+                        <Link href={`/compras/pedidos/${p.id}`} className="hover:text-sky-700 hover:underline">
+                          {p.fornecedorNome}
+                        </Link>
+                      </td>
                       <td className="px-3 py-2">
                         <span className={`rounded px-1.5 py-0.5 ${badge.cls}`}>{badge.label}</span>
                       </td>
@@ -188,15 +192,19 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
                         />
                       </td>
                       <td className="px-3 py-2">
-                        {p.cotacaoId ? (
+                        <Link
+                          href={`/compras/pedidos/${p.id}`}
+                          className="rounded border border-sky-300 bg-sky-50 px-2 py-0.5 font-medium text-sky-800 hover:bg-sky-100"
+                        >
+                          ver pedido
+                        </Link>
+                        {p.cotacaoId && (
                           <Link
                             href={`/cotacao/${p.cotacaoId}`}
-                            className="text-sky-600 hover:underline"
+                            className="ml-2 text-slate-400 hover:text-sky-600 hover:underline"
                           >
-                            ver
+                            cotação
                           </Link>
-                        ) : (
-                          <span className="text-slate-400">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-slate-600">

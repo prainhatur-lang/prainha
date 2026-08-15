@@ -11,6 +11,8 @@ import { eq, asc } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime } from '@/lib/format';
 import { ConferirEntrega } from './conferir-entrega';
+import { CondicaoPagamento } from './condicao-pagamento';
+import { lerCondicaoPagamento } from '@/lib/fornecedor-condicao';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +49,7 @@ export default async function PedidoCompraDetalhePage(props: {
       cotacaoId: schema.pedidoCompra.cotacaoId,
       notaCompraId: schema.pedidoCompra.notaCompraId,
       filialId: schema.pedidoCompra.filialId,
+      fornecedorId: schema.pedidoCompra.fornecedorId,
       fornecedorNome: schema.fornecedor.nome,
       fornecedorFone: schema.fornecedor.fonePrincipal,
     })
@@ -83,6 +86,7 @@ export default async function PedidoCompraDetalhePage(props: {
     .orderBy(asc(schema.produto.nome));
 
   const badge = BADGE_STATUS[ped.status] ?? BADGE_STATUS.GERADO;
+  const condicaoPagamento = await lerCondicaoPagamento(ped.fornecedorId);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -108,6 +112,7 @@ export default async function PedidoCompraDetalhePage(props: {
                   </Link>
                 </span>
               )}
+              <CondicaoPagamento fornecedorId={ped.fornecedorId} atual={condicaoPagamento} />
             </div>
           </div>
           <div className="text-right">
