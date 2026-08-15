@@ -28,6 +28,14 @@
             android:textStyle="bold"
             android:textColor="#DC2626"
             android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/estoque"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="11sp"
+            android:textColor="#0F8A3E"
+            android:visibility="gone" />
     </LinearLayout>
 
     <TextView

@@ -79,8 +79,8 @@ android {
         // 1.10.1: QR do DANFE/passe desenhado no app (zxing) e impresso como
         // IMAGEM — o printQrCode do SDK da Cielo não imprime em campo (cupom
         // saía com o aviso mas sem o QR; mesma lição já aprendida no CupomPro).
-        versionCode = 25
-        versionName = "1.10.1"
+        versionCode = 26
+        versionName = "1.10.2"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

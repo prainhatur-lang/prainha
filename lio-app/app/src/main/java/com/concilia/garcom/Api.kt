@@ -77,6 +77,8 @@ object Api {
         val precoMax: Double?,
         val grupo: Boolean,
         val semEstoque: Boolean,
+        /** quantidade em estoque; null = produto sem controle de estoque */
+        val estoque: Double?,
         val variantes: Int,
     )
 
@@ -312,6 +314,7 @@ object Api {
                 precoMax = if (o.isNull("preco_max")) null else o.optDouble("preco_max"),
                 grupo = grupo,
                 semEstoque = o.optBoolean("sem_estoque", false),
+                estoque = if (o.isNull("estoque")) null else o.optDouble("estoque"),
                 variantes = o.optInt("variantes", 1),
             )
         }

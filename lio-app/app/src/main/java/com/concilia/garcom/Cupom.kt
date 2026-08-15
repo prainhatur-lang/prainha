@@ -20,6 +20,11 @@ object Cupom {
 
     fun brl(v: Double): String = "R$ " + String.format(Locale("pt", "BR"), "%,.2f", v)
 
+    /** Quantidade de estoque: 12 (não "12,000") e 1,5 quando é fracionado (kg). */
+    fun qtd(v: Double): String =
+        if (kotlin.math.abs(v - Math.round(v)) < 0.001) Math.round(v).toString()
+        else String.format(Locale("pt", "BR"), "%,.3f", v).trimEnd('0').trimEnd(',')
+
     /** "Nome comprido....... 1.234,56" — colunas numa linha de largura fixa. */
     private fun linha(esq: String, dir: String): String {
         val e = if (esq.length > W - dir.length - 1) esq.take(W - dir.length - 1) else esq

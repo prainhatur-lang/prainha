@@ -183,7 +183,12 @@ class ProdutosActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (vs.isEmpty()) { Toast.makeText(this, "Sem variantes vendáveis", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                     val rotulos = vs.map {
-                        (it.tamanho ?: it.nome) + "  ·  " + Cupom.brl(it.preco) + (if (it.semEstoque) "  (sem estoque)" else "")
+                        (it.tamanho ?: it.nome) + "  ·  " + Cupom.brl(it.preco) +
+                            when {
+                                it.semEstoque -> "  (sem estoque)"
+                                it.estoque != null -> "  (resta " + Cupom.qtd(it.estoque) + ")"
+                                else -> ""
+                            }
                     }.toTypedArray()
                     AlertDialog.Builder(this)
                         .setTitle(p.nome)
@@ -440,6 +445,13 @@ class ProdutosActivity : AppCompatActivity() {
                 p.grupo -> "${Cupom.brl(p.preco)} · ${p.variantes} opções"
                 else -> Cupom.brl(p.preco)
             }
+            // ESTOQUE na consulta: quem está com a maquininha na mão precisa
+            // saber quanto tem, não só se acabou (pedido do dono).
+            val est = v.findViewById<TextView>(R.id.estoque)
+            if (p.estoque != null && !p.semEstoque) {
+                est.text = "resta " + Cupom.qtd(p.estoque)
+                est.visibility = View.VISIBLE
+            } else est.visibility = View.GONE
             val alpha = if (p.semEstoque) 0.4f else 1f
             v.findViewById<TextView>(R.id.nome).alpha = alpha
             precoTxt.alpha = alpha
