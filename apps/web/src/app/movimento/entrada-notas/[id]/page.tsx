@@ -9,6 +9,8 @@ import { brl, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
 import { BotoesCabecalho } from './botoes-cabecalho';
 import { VincularFornecedorBtn } from './vincular-fornecedor';
+import { ConferirNota } from './conferir-nota';
+import { lerConferenciaNota } from '@/lib/nota-conferencia';
 
 export const dynamic = 'force-dynamic';
 
@@ -194,6 +196,24 @@ export default async function NotaDetalhePage(props: {
     )
     .orderBy(asc(schema.categoriaConta.descricao))
     .limit(2000);
+
+  // Conferência de recebimento (nota diz X, chegou Y)
+  const conferencia = await lerConferenciaNota(id);
+  const faltasConferencia = itens
+    .map((i) => {
+      const rec = conferencia.porItem.get(i.id);
+      if (rec == null) return null;
+      const faltou = Number(i.quantidade) - rec;
+      if (faltou <= 0.0001) return null;
+      return {
+        descricao: i.descricao,
+        faltou,
+        unidade: i.unidade,
+        valor: faltou * Number(i.valorUnitario ?? 0),
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+  const valorFaltanteConferencia = faltasConferencia.reduce((a, f) => a + f.valor, 0);
 
   const totalItens = itens.length;
   const mapeados = itens.filter((i) => i.produtoId).length;
@@ -397,6 +417,43 @@ export default async function NotaDetalhePage(props: {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Cobrado na nota e não entregue — cobrar fornecedor até resolver */}
+        {faltasConferencia.length > 0 && (
+          <div className="mt-6 rounded-xl border-2 border-rose-400 bg-rose-50 p-4">
+            <p className="text-sm font-semibold text-rose-900">
+              ⚠ {brl(valorFaltanteConferencia)} cobrados na nota e NÃO entregues — cobrar o
+              fornecedor (reposição ou crédito):
+            </p>
+            <ul className="mt-1 list-disc pl-5 text-xs text-rose-800">
+              {faltasConferencia.map((f) => (
+                <li key={f.descricao ?? ''}>
+                  {f.descricao}: faltaram {f.faltou.toLocaleString('pt-BR')} {f.unidade} ({brl(f.valor)})
+                </li>
+              ))}
+            </ul>
+            {conferencia.obs && (
+              <p className="mt-1 text-xs text-rose-700">Obs: {conferencia.obs}</p>
+            )}
+          </div>
+        )}
+
+        {/* Conferência de recebimento — com a nota na mão */}
+        {totalItens > 0 && (
+          <div className="mt-6">
+            <ConferirNota
+              notaId={id}
+              obsAtual={conferencia.obs}
+              itens={itens.map((i) => ({
+                id: i.id,
+                descricao: i.descricao ?? 'item',
+                quantidade: String(i.quantidade),
+                unidade: i.unidade ?? 'un',
+                qtdRecebida: conferencia.porItem.get(i.id) ?? null,
+              }))}
+            />
           </div>
         )}
 
