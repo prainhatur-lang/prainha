@@ -21,6 +21,7 @@ interface SP {
 const BADGE_STATUS: Record<string, { label: string; cls: string }> = {
   GERADO: { label: 'Gerado · não enviado ainda', cls: 'bg-amber-100 text-amber-800' },
   ENVIADO: { label: 'Enviado · aguardando NF', cls: 'bg-violet-100 text-violet-800' },
+  CONFIRMADO: { label: 'Confirmado · aguardando NF', cls: 'bg-violet-100 text-violet-800' },
   ENTREGUE_PARCIAL: { label: 'Entrega parcial', cls: 'bg-sky-100 text-sky-800' },
 };
 
@@ -73,7 +74,8 @@ export default async function AguardandoNfPage(props: { searchParams: Promise<SP
       and(
         eq(schema.pedidoCompra.filialId, filial.id),
         isNull(schema.pedidoCompra.notaCompraId),
-        inArray(schema.pedidoCompra.status, ['GERADO', 'ENVIADO', 'ENTREGUE_PARCIAL']),
+        // CONFIRMADO tambem espera NF — pedido confirmado sem nota ficava invisivel
+        inArray(schema.pedidoCompra.status, ['GERADO', 'ENVIADO', 'CONFIRMADO', 'ENTREGUE_PARCIAL']),
       ),
     )
     .orderBy(desc(schema.pedidoCompra.criadoEm))
@@ -90,7 +92,7 @@ export default async function AguardandoNfPage(props: { searchParams: Promise<SP
 
   // Conta atrasados: enviados ha mais de 7 dias sem NF
   const atrasados = pedidos.filter(
-    (p) => p.status === 'ENVIADO' && p.enviadoEm && diasDesde(p.enviadoEm) > 7,
+    (p) => ['ENVIADO', 'CONFIRMADO'].includes(p.status) && p.enviadoEm && diasDesde(p.enviadoEm) > 7,
   );
 
   return (
@@ -134,7 +136,7 @@ export default async function AguardandoNfPage(props: { searchParams: Promise<SP
           <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
             <div className="text-[10px] uppercase tracking-wide text-violet-700">Aguardando NF</div>
             <div className="mt-1 text-2xl font-bold text-violet-900">
-              {porStatus.ENVIADO ?? 0}
+              {(porStatus.ENVIADO ?? 0) + (porStatus.CONFIRMADO ?? 0)}
             </div>
             <div className="mt-0.5 text-[11px] text-violet-700">enviado, sem NF chegou</div>
           </div>
@@ -180,7 +182,7 @@ export default async function AguardandoNfPage(props: { searchParams: Promise<SP
                   const dias = p.enviadoEm
                     ? diasDesde(p.enviadoEm)
                     : diasDesde(p.criadoEm);
-                  const atrasado = p.status === 'ENVIADO' && dias > 7;
+                  const atrasado = ['ENVIADO', 'CONFIRMADO'].includes(p.status) && dias > 7;
                   return (
                     <tr
                       key={p.id}
