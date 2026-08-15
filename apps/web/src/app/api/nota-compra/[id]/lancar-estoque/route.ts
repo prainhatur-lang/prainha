@@ -32,6 +32,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
+import { lerConferenciaNota } from '@/lib/nota-conferencia';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -129,6 +130,10 @@ export async function POST(
 
   const dataMov = nota.dataEntrada ?? nota.dataEmissao ?? new Date();
 
+  // Conferência de recebimento: se registrada, o estoque entra pelo que CHEGOU,
+  // não pelo que a nota cobra (item cobrado e não entregue não vira saldo).
+  const conferencia = await lerConferenciaNota(id);
+
   // Fator de rateio da NFe: distribui frete/outros/desconto proporcionalmente
   // ao valor dos produtos. Ex: vNF 1530 / vProd 1500 = 1.02 → cada item paga
   // 2% extra. Default 1 (sem rateio) se nota não tem detalhamento.
@@ -176,8 +181,18 @@ export async function POST(
       }
     }
 
-    const qtdFornecedor = Number(item.quantidade ?? 0);
-    const valorBrutoItem = Number(item.valorTotal ?? 0); // valor do produto SEM frete
+    const qtdNota = Number(item.quantidade ?? 0);
+    const qtdRecebidaConf = conferencia.porItem.get(item.id);
+    const qtdFornecedor = qtdRecebidaConf ?? qtdNota;
+    if (qtdFornecedor <= 0) {
+      // conferido como "não veio" — nada entra no estoque
+      pulados++;
+      continue;
+    }
+    // Se a conferência diz que veio menos (ou mais), o custo entra proporcional
+    // à quantidade real — a diferença cobrada fica pra crédito/reposição.
+    const proporcao = qtdRecebidaConf != null && qtdNota > 0 ? qtdRecebidaConf / qtdNota : 1;
+    const valorBrutoItem = Number(item.valorTotal ?? 0) * proporcao; // valor do produto SEM frete
     // Custo total real do item = valorBruto × fator de rateio
     const custoTotalRealItem = valorBrutoItem * fatorRateio;
     // Converte qtd pra unidade interna do produto
@@ -200,9 +215,14 @@ export async function POST(
       notaCompraItemId: item.id,
       criadoPor: user.id,
       observacao:
-        fatorRateio !== 1
-          ? `rateio frete/despesas: ×${fatorRateio.toFixed(4)}`
-          : null,
+        [
+          fatorRateio !== 1 ? `rateio frete/despesas: ×${fatorRateio.toFixed(4)}` : null,
+          proporcao !== 1
+            ? `conferência: entrou ${qtdFornecedor} de ${qtdNota} da nota`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || null,
     });
 
     // MPM: atualiza estoqueAtual + precoCusto via média ponderada
