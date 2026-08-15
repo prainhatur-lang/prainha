@@ -1846,7 +1846,7 @@ async function apiVendaBusca(termo, cliente) {
   // que a casa marcou como fora do cardápio digital. A navegação por grupo já
   // respeitava; a busca era a porta dos fundos.
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE nome_busca LIKE ${t} ${soCliente(cliente)}
     ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
@@ -1878,7 +1878,7 @@ async function apiVendaCategorias(cliente) {
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome, cliente) {
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
     ORDER BY sem_estoque, nome`;
