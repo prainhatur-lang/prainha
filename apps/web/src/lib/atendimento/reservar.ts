@@ -36,6 +36,26 @@ function dataBr(ymd: string): string {
   return ymd.split('-').reverse().join('/');
 }
 
+// Nomes que NÃO são nome de gente — o modelo já mandou "[Nome do cliente]" e
+// "Cliente" como se fossem (14/08/2026: a reserva da Beatriz foi pro painel
+// sem nome nenhum, recepção sem saber quem era). Placeholder vira vazio e o
+// nome cai pro cadastro do CPF ou pro perfil do WhatsApp.
+const NOMES_PLACEHOLDER = new Set([
+  'cliente', 'cliente whatsapp', 'o cliente', 'nome', 'nome do cliente', 'nome cliente',
+  'seu nome', 'sem nome', 'não informado', 'nao informado', 'n/a', 'na', 'nd', '-', '--',
+  'x', 'xx', 'xxx', 'fulano', 'fulano de tal', 'teste', 'test',
+]);
+
+/** Nome utilizável, ou '' se veio vazio/placeholder. */
+function nomeReal(valor: string | null | undefined): string {
+  const s = (valor ?? '').trim().replace(/\s+/g, ' ');
+  if (!s) return '';
+  if (/^[[<{(]/.test(s)) return ''; // "[Nome do cliente]", "<nome>", "(nome)"
+  if (NOMES_PLACEHOLDER.has(s.toLowerCase())) return '';
+  if (s.replace(/[^\p{L}]/gu, '').length < 2) return '';
+  return s.slice(0, 200);
+}
+
 /** Validação padrão de CPF (dígitos verificadores). */
 function cpfValido(cpf: string): boolean {
   const d = cpf.replace(/\D/g, '');
@@ -341,7 +361,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   // como fallback. Regra do Elison 14/08 — reserva sem identificação não sai.
   const cpfDigitos = (p.cpf ?? '').replace(/\D/g, '');
   let clienteCpf: string | null = null;
-  let nome = (p.nome ?? '').trim().slice(0, 200);
+  let nome = nomeReal(p.nome);
   if (cpfDigitos) {
     if (!cpfValido(cpfDigitos)) {
       return 'CPF inválido (dígito verificador não bate) — peça pro cliente conferir os 11 dígitos.';
@@ -355,12 +375,13 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
           AND regexp_replace(coalesce(cpf_ou_cnpj, ''), '\\D', '', 'g') = ${cpfDigitos}
         LIMIT 1
       `)) as unknown as Array<{ nome: string | null }>;
-      if (cli?.nome?.trim()) nome = cli.nome.trim().slice(0, 200);
+      if (cli?.nome?.trim()) nome = nomeReal(cli.nome);
     }
   }
-  if (!nome) nome = (p.nomePerfil ?? '').trim().slice(0, 200);
+  // Sem nome dito: usa o nome do perfil do WhatsApp (é de quem está falando).
+  if (!nome) nome = nomeReal(p.nomePerfil);
   if (!clienteCpf && !nome) {
-    return 'Falta identificar a reserva: peça o CPF do cliente (preferido — o nome sai do cadastro). Se ele não quiser informar, peça o nome.';
+    return 'Falta identificar a reserva: peça o CPF do cliente (preferido — o nome sai do cadastro). Se ele não quiser informar, peça o nome DE VERDADE — nunca escreva "Cliente" nem coisa parecida no lugar do nome.';
   }
   if (!nome) nome = 'Cliente WhatsApp';
 
@@ -371,6 +392,29 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     .limit(1);
   const cfg = filial?.reservaConfig;
   if (!cfg?.areas?.length) return 'Reservas indisponíveis no momento — transfira pra equipe.';
+
+  // Já tem mesa nesse dia? (14/08/2026: a Nina criou DUAS reservas com 18s de
+  // diferença na mesma conversa, e a cliente já tinha uma feita pelo site —
+  // 3 mesas presas pro mesmo grupo de 3 pessoas.) Compara pelos 8 últimos
+  // dígitos, então pega também a reserva feita por outro canal.
+  const sufTel = p.telefone.replace(/\D/g, '').slice(-8);
+  if (sufTel.length === 8) {
+    const [jaTem] = await db
+      .select({ hora: schema.reserva.hora, area: schema.reserva.area, mesa: schema.reserva.mesa, canal: schema.reserva.canal })
+      .from(schema.reserva)
+      .where(
+        and(
+          eq(schema.reserva.filialId, p.filialId),
+          eq(schema.reserva.data, p.data),
+          sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${sufTel}`,
+          sql`${schema.reserva.status} IN ('pendente', 'confirmada', 'sentada')`,
+        ),
+      )
+      .limit(1);
+    if (jaTem) {
+      return `NÃO CRIEI: esse telefone JÁ TEM reserva ativa em ${dataBr(p.data)} às ${String(jaTem.hora).slice(0, 5)} na ${jaTem.area}${jaTem.mesa ? ` (mesa ${jaTem.mesa})` : ''}${jaTem.canal && jaTem.canal !== 'whatsapp' ? ` — feita pelo ${jaTem.canal}` : ''}. Confirme ao cliente que a mesa dele já está garantida. Se ele quer MUDAR horário/pessoas/área, use remarcar_reserva; se quer de verdade uma SEGUNDA mesa pra outro grupo, transfira pra equipe.`;
+    }
+  }
 
   const slot = await validarSlotEAlocarMesa({
     filialId: p.filialId,

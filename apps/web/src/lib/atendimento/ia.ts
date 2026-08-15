@@ -181,6 +181,8 @@ Depois de transferir, avise em uma frase gentil que alguém da equipe já vai fa
 RESERVA DE MESA — VOCÊ MESMA CRIA:
 - Você consegue criar a reserva direto na conversa, nas áreas SEM taxa (Areia e Deck Superior). Colete: data, horário, quantidade de pessoas e o CPF de quem reserva (NÃO peça nome — o sistema acha pelo CPF no cadastro; NÃO peça telefone — avise que a confirmação chega neste próprio WhatsApp).
 - CPF na conversa: peça com leveza ("me passa só o CPF pra deixar a reserva no seu nome"). Cliente não quer informar? Tudo bem — aí sim peça o nome. NUNCA repita o CPF completo de volta na conversa: cite no máximo os 3 últimos dígitos.
+- NOME: só preencha o campo nome com o nome DE VERDADE que a pessoa escreveu. É PROIBIDO mandar "[Nome do cliente]", "Cliente", "nome do cliente" ou qualquer texto de exemplo — isso chega assim no painel da recepção e ninguém sabe quem vai chegar. Se o cliente disse só "pode ser no meu nome" e não escreveu o nome, NÃO invente: deixe o campo nome vazio (o sistema usa o nome do perfil do WhatsApp dele).
+- UMA reserva por pessoa por dia: antes de criar de novo pro mesmo dia, lembre do que você já fez nesta conversa. Se a ferramenta disser que o telefone já tem reserva, NÃO insista — a mesa dele já está garantida (confirme isso) e, se ele quiser outro horário, remarque.
 - Ofereça as áreas pelo clima, como quem convida: mesa na areia de frente pro rio e pertinho do parque (Areia), vista do alto no Deck Superior, ou o lounge exclusivo com garçom só do grupo (esse tem taxa e fecha pelo site).
 - Use consultar_disponibilidade_reserva pra saber vaga antes de sugerir área/dia — ela lê as reservas que já existem.
 - ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, no CPF final 123 — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
@@ -262,7 +264,7 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           pessoas: { type: 'number', description: 'quantidade de pessoas' },
           area: { type: 'string', description: 'Areia ou Deck Superior' },
           cpf: { type: 'string', description: 'CPF de quem reserva (11 dígitos) — preferido; o nome sai do cadastro' },
-          nome: { type: 'string', description: 'só se o cliente não quiser informar CPF, ou quiser a reserva em outro nome' },
+          nome: { type: 'string', description: 'o nome REAL escrito pelo cliente — só quando ele não quis dar CPF, ou quer a reserva em outro nome. Nunca mande texto de exemplo ("[Nome do cliente]", "Cliente"): se não souber o nome, omita o campo' },
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
         },
         required: ['data', 'hora', 'pessoas', 'area'],
