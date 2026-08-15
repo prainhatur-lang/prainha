@@ -4,7 +4,14 @@
 
 import OpenAI from 'openai';
 
-export async function gerarAudioNina(texto: string): Promise<Buffer | null> {
+/** Direção de fala padrão — calibrada com o áudio-exemplo do Elison (15/08). */
+export const INSTRUCAO_VOZ_NINA =
+  'Português brasileiro. Voz feminina doce, meiga e acolhedora, com sorriso na voz — a Nina, atendente carinhosa de um restaurante à beira do rio. Ritmo natural de mensagem de voz de WhatsApp, sem exagero.';
+
+export async function gerarAudioNina(
+  texto: string,
+  instrucoesOverride?: string,
+): Promise<Buffer | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   const fala = (texto ?? '').trim();
   if (!apiKey || !fala) return null;
@@ -18,10 +25,7 @@ export async function gerarAudioNina(texto: string): Promise<Buffer | null> {
       response_format: 'opus',
       // instructions só nos modelos que aceitam (gpt-4o-*)
       ...(model.includes('4o')
-        ? {
-            instructions:
-              'Português brasileiro. Voz feminina doce, meiga e acolhedora, com sorriso na voz — a Nina, atendente carinhosa de um restaurante à beira do rio. Ritmo natural de mensagem de voz de WhatsApp, sem exagero.',
-          }
+        ? { instructions: (instrucoesOverride ?? INSTRUCAO_VOZ_NINA).slice(0, 800) }
         : {}),
     });
     return Buffer.from(await resp.arrayBuffer());
