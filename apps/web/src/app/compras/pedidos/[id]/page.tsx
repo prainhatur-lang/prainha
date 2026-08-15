@@ -10,6 +10,7 @@ import { db, schema } from '@concilia/db';
 import { eq, asc } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime } from '@/lib/format';
+import { ConferirEntrega } from './conferir-entrega';
 
 export const dynamic = 'force-dynamic';
 
@@ -123,10 +124,62 @@ export default async function PedidoCompraDetalhePage(props: {
           </p>
         )}
 
+        {/* Cobrado e não entregue: a conferência registrou falta — dinheiro na
+            mesa até o fornecedor repor ou creditar. */}
+        {(() => {
+          const faltas = itens
+            .filter(
+              (i) =>
+                i.quantidadeRecebida != null &&
+                Number(i.quantidadeRecebida) < Number(i.quantidade) - 0.0001,
+            )
+            .map((i) => ({
+              nome: i.produtoNome,
+              faltou: Number(i.quantidade) - Number(i.quantidadeRecebida),
+              unidade: i.unidade,
+              valor:
+                (Number(i.quantidade) - Number(i.quantidadeRecebida)) *
+                Number(i.precoUnitario ?? 0),
+            }));
+          if (faltas.length === 0) return null;
+          const total = faltas.reduce((acc, f) => acc + f.valor, 0);
+          return (
+            <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4">
+              <p className="text-sm font-semibold text-rose-900">
+                ⚠ {brl(total)} cobrados e NÃO entregues — cobrar {ped.fornecedorNome}
+                (reposição ou crédito):
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-xs text-rose-800">
+                {faltas.map((f) => (
+                  <li key={f.nome}>
+                    {f.nome}: faltaram {f.faltou.toLocaleString('pt-BR')} {f.unidade} ({brl(f.valor)})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })()}
+
         <section className="rounded-xl border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold text-slate-900">
-            Itens ({itens.length})
-          </h2>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Itens ({itens.length})
+            </h2>
+            {ped.status !== 'CANCELADO' && (
+              <ConferirEntrega
+                pedidoId={ped.id}
+                itens={itens.map((i) => ({
+                  id: i.id,
+                  produtoNome: i.produtoNome ?? '',
+                  quantidade: String(i.quantidade),
+                  unidade: i.unidade,
+                  precoUnitario: i.precoUnitario != null ? String(i.precoUnitario) : null,
+                  quantidadeRecebida:
+                    i.quantidadeRecebida != null ? String(i.quantidadeRecebida) : null,
+                }))}
+              />
+            )}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 text-slate-600">
