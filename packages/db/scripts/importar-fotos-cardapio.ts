@@ -1,6 +1,5 @@
-// Importa fotos de uma PASTA pro cardápio do delivery, casando o nome do
-// arquivo com o nome do item. Sobe pro bucket "cardapio" do Supabase e grava
-// a URL em delivery_item.foto_url.
+// Importa fotos de uma PASTA pro cardápio do delivery. Sobe pro bucket
+// "cardapio" do Supabase e grava a URL em delivery_item.foto_url.
 //
 // Roda em DRY RUN por padrão: mostra o que casou e o que sobrou, sem gravar.
 // Só grava com --aplicar.
@@ -8,10 +7,19 @@
 //   pnpm --filter @concilia/db fotos:importar -- --pasta "/caminho/das/fotos"
 //   pnpm --filter @concilia/db fotos:importar -- --pasta "..." --aplicar
 //
-// Casamento: nome do arquivo sem extensão vs nome do item, ambos normalizados
-// (sem acento, minúsculo, sem pontuação). Aceita nome exato, item contido no
-// arquivo ou arquivo contido no item. Ambíguo (casa com 2+ itens) é reportado
-// e NÃO aplicado — nome de prato errado numa foto é pior que foto faltando.
+// DOIS MODOS, escolhidos sozinho pelo conteúdo da pasta:
+//
+// 1. POR CÓDIGO (é o do backup do Consumer — "1077.jpg", "104.jpg"): o número
+//    é o PRODUTOS.CODIGO. ⚠️ NÃO é o código da variante: os dois espaços de
+//    código se sobrepõem quase inteiros no Consumer (1077 existe como produto
+//    "Lagosta ao molho" E como variante "Tequila Tequilero"), então casar pelo
+//    lado errado troca lagosta por tequila em silêncio. Conferido abrindo as
+//    fotos: 1077 é lagosta, 104 é drink no abacaxi — ambos batem com PRODUTOS.
+//    O caminho é delivery_item.variante_id → produto_variante.codigo_produto_externo.
+//
+// 2. POR NOME (pasta com "moqueca de camarao.jpg"): compara normalizado, sem
+//    acento nem pontuação. Ambíguo (2+ itens) é reportado e NÃO aplicado —
+//    foto errada num prato é pior que prato sem foto.
 
 import { config as loadEnv } from 'dotenv';
 import { resolve, extname, basename } from 'node:path';
@@ -69,8 +77,14 @@ async function main() {
     .filter((f) => EXTS.has(extname(f).toLowerCase()));
   console.log(`${arquivos.length} imagem(ns) em ${PASTA}\n`);
 
-  const itens = await sql<Array<{ id: string; nome: string; foto_url: string | null }>>`
-    SELECT id, nome, foto_url FROM delivery_item WHERE filial_id = ${FILIAL}
+  // codigo_produto_externo vem da variante vinculada (item trazido do salão).
+  const itens = await sql<
+    Array<{ id: string; nome: string; foto_url: string | null; codigo_produto: number | null }>
+  >`
+    SELECT di.id, di.nome, di.foto_url, pv.codigo_produto_externo AS codigo_produto
+    FROM delivery_item di
+    LEFT JOIN produto_variante pv ON pv.id = di.variante_id
+    WHERE di.filial_id = ${FILIAL}
   `;
   if (itens.length === 0) {
     console.log('Nenhum item no cardápio do delivery — traga os produtos antes.');
@@ -79,24 +93,64 @@ async function main() {
   }
   console.log(`${itens.length} item(ns) no cardápio\n`);
 
-  const casados: Array<{ arquivo: string; item: { id: string; nome: string; foto_url: string | null } }> = [];
+  type Item = (typeof itens)[number];
+  const casados: Array<{ arquivo: string; item: Item }> = [];
   const ambiguos: Array<{ arquivo: string; itens: string[] }> = [];
   const semCasar: string[] = [];
 
-  for (const arq of arquivos) {
-    const base = norm(basename(arq, extname(arq)));
-    if (!base) continue;
-    const exatos = itens.filter((i) => norm(i.nome) === base);
-    const candidatos =
-      exatos.length > 0
-        ? exatos
-        : itens.filter((i) => {
-            const n = norm(i.nome);
-            return n.length >= 4 && (base.includes(n) || n.includes(base));
-          });
-    if (candidatos.length === 1) casados.push({ arquivo: arq, item: candidatos[0] });
-    else if (candidatos.length > 1) ambiguos.push({ arquivo: arq, itens: candidatos.map((c) => c.nome) });
-    else semCasar.push(arq);
+  // Modo por CÓDIGO quando a maioria dos arquivos é numérica.
+  const numericos = arquivos.filter((f) => /^\d+$/.test(basename(f, extname(f))));
+  const porCodigo = numericos.length > arquivos.length / 2;
+  console.log(
+    porCodigo
+      ? `Modo: POR CÓDIGO do produto (${numericos.length}/${arquivos.length} arquivos numéricos)\n`
+      : 'Modo: POR NOME do arquivo\n',
+  );
+
+  if (porCodigo) {
+    const arquivoDoCodigo = new Map<number, string>();
+    for (const arq of arquivos) {
+      const b = basename(arq, extname(arq));
+      if (!/^\d+$/.test(b)) {
+        semCasar.push(arq);
+        continue;
+      }
+      const cod = Number(b);
+      // .jpg ganha de .png quando o mesmo código aparece duas vezes.
+      const atual = arquivoDoCodigo.get(cod);
+      if (!atual || (extname(atual).toLowerCase() !== '.jpg' && extname(arq).toLowerCase() === '.jpg')) {
+        arquivoDoCodigo.set(cod, arq);
+      }
+    }
+    const usados = new Set<string>();
+    for (const item of itens) {
+      if (item.codigo_produto == null) continue;
+      const arq = arquivoDoCodigo.get(Number(item.codigo_produto));
+      if (arq) {
+        casados.push({ arquivo: arq, item });
+        usados.add(arq);
+      }
+    }
+    for (const arq of arquivos) {
+      if (!usados.has(arq) && /^\d+$/.test(basename(arq, extname(arq)))) semCasar.push(arq);
+    }
+  } else {
+    for (const arq of arquivos) {
+      const base = norm(basename(arq, extname(arq)));
+      if (!base) continue;
+      const exatos = itens.filter((i) => norm(i.nome) === base);
+      const candidatos =
+        exatos.length > 0
+          ? exatos
+          : itens.filter((i) => {
+              const n = norm(i.nome);
+              return n.length >= 4 && (base.includes(n) || n.includes(base));
+            });
+      if (candidatos.length === 1) casados.push({ arquivo: arq, item: candidatos[0] });
+      else if (candidatos.length > 1)
+        ambiguos.push({ arquivo: arq, itens: candidatos.map((c) => c.nome) });
+      else semCasar.push(arq);
+    }
   }
 
   console.log(`CASARAM: ${casados.length}`);
@@ -110,7 +164,7 @@ async function main() {
       console.log(`   ${a.arquivo}  ->  ${a.itens.slice(0, 3).join(' | ')}${a.itens.length > 3 ? ' ...' : ''}`);
   }
   if (semCasar.length) {
-    console.log(`\nSEM CASAR: ${semCasar.length}`);
+    console.log(`\nSEM CASAR: ${semCasar.length}  (foto de produto que nao esta no cardapio do delivery)`);
     for (const s of semCasar.slice(0, 20)) console.log(`   ${s}`);
     if (semCasar.length > 20) console.log(`   ... e mais ${semCasar.length - 20}`);
   }
