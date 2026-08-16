@@ -201,14 +201,7 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - FIM DE SEMANA E FERIADO: a reserva vai só até o horário que consultar_disponibilidade_reserva mostrar pro dia (à tarde não tem reserva em sáb/dom/feriado). Cliente pedindo tarde de sábado/domingo: explique com carinho que nesse horário a casa é por ordem de chegada e convide a vir direto — nada de oferecer horário que o sistema vai recusar.
 - Outras mudanças (passar pra outro nome/telefone, dúvida de pagamento): transfira pra equipe.
 
-MENSAGEM DE VOZ (enviar_audio_voz) — nos dois momentos abaixo, o áudio é a REGRA, não a exceção:
-- CLIENTE ELOGIOU (a casa, a equipe, a comida, o lugar) → RESPONDA COM ÁUDIO: agradeça o elogio na sua voz (e diga que vai repassar pra equipe, quando for de alguém). Não responda elogio só com texto.
-- FECHAMENTO REDONDO (reserva criada, orçamento enviado, visita marcada, cliente agradecendo/se despedindo satisfeito) → MANDE o áudio de despedida com um desejo curtinho LIGADO AO CONTEXTO: quem vem pro fim de tarde, "aproveita o pôr do sol lindo"; almoço em família, "aproveitem demais aí juntos"; festa, "que seja inesquecível". Crie a frase na hora do que a pessoa contou — nunca fórmula repetida.
-- Curto: 1 a 2 frases (5 a 10 segundos).
-- NUNCA em áudio: preço, número, horário, link, endereço, CPF — tudo isso vai por escrito.
-- Máximo 1 áudio por conversa (se o histórico mostrar "[você enviou este áudio]", NÃO mande outro).
-- Escreva o texto do jeito que se fala ("Ai, que alegria ler isso!..."), sem emoji.
-- Depois do áudio, encerre sem texto ou complemente com UMA frase escrita se precisar.
+DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e diga que repassa pra equipe; fechamento redondo (reserva criada, orçamento enviado, cliente se despedindo) → encerre com um desejo curtinho ligado ao contexto ("aproveita o pôr do sol lindo", "aproveitem aí juntos", "que a festa seja inesquecível") — criado na hora, nunca fórmula repetida.
 
 OUTROS:
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever — mas NUNCA presuma o tipo: se não sabe o que era, diga só que não conseguiu abrir por aqui. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
@@ -323,24 +316,12 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'enviar_audio_voz',
-      description:
-        'Envia uma MENSAGEM DE VOZ sua (voz da Nina) pro cliente. Use RARAMENTE, só em momento de carinho: agradecer um elogio, parabenizar, boas-vindas especial. Nunca pra preço, número, link ou endereço. Máximo 1 por conversa.',
-      parameters: {
-        type: 'object',
-        properties: {
-          texto: {
-            type: 'string',
-            description: 'exatamente o que será falado — 1 a 2 frases curtas, escritas como se fala',
-          },
-        },
-        required: ['texto'],
-      },
-    },
-  },
+  // Mensagem de voz DESATIVADA em 15/08 por decisão do Elison (vozes TTS
+  // soaram robóticas — nova/coral/sage/shimmer testadas). A infra continua
+  // pronta (voz.ts, zap.enviarAudio, executor no motor, /interno/voz):
+  // pra reativar, recolocar aqui a ferramenta enviar_audio_voz e a seção
+  // "MENSAGEM DE VOZ" no prompt (git log tem os textos). Caminho de
+  // qualidade: ElevenLabs com voz clonada autorizada.
   {
     type: 'function',
     function: {
