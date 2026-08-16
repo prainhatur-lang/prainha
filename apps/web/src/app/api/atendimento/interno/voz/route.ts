@@ -49,7 +49,8 @@ export async function POST(request: Request) {
   if (b?.acao === 'preview') {
     const texto = (b.texto ?? '').trim();
     if (!texto) return NextResponse.json({ error: 'texto obrigatório' }, { status: 400 });
-    const buf = await gerarAudioNina(texto, b.instrucoes?.trim() || undefined);
+    const voz = ((b as { voz?: string }).voz ?? '').trim() || undefined;
+    const buf = await gerarAudioNina(texto, b.instrucoes?.trim() || undefined, voz);
     if (!buf) return NextResponse.json({ error: 'TTS falhou' }, { status: 502 });
     return NextResponse.json({ base64: buf.toString('base64') });
   }

@@ -12,6 +12,7 @@ export const INSTRUCAO_VOZ_NINA =
 export async function gerarAudioNina(
   texto: string,
   instrucoesOverride?: string,
+  vozOverride?: string,
 ): Promise<Buffer | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   const fala = (texto ?? '').trim();
@@ -21,7 +22,7 @@ export async function gerarAudioNina(
     const model = process.env.ATENDIMENTO_MODELO_VOZ || 'gpt-4o-mini-tts';
     const resp = await client.audio.speech.create({
       model,
-      voice: (process.env.ATENDIMENTO_VOZ || 'nova') as 'nova',
+      voice: (vozOverride || process.env.ATENDIMENTO_VOZ || 'nova') as 'nova',
       input: fala.slice(0, 600),
       response_format: 'opus',
       // instructions só nos modelos que aceitam (gpt-4o-*)
