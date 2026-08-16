@@ -276,8 +276,20 @@ async function validarSlotEAlocarMesa(p: {
     const minutosAte = h1 * 60 + m1 - (h0 * 60 + m0);
     // Regra da casa (Elison 14/08): em cima da hora não se reserva mais —
     // o cliente vem direto e a recepção acomoda na mesa disponível.
+    //
+    // MAS a trava de 1h ignorava a casa vazia e batia de frente com o corte
+    // dinâmico (16/08, caso Robson): 13:13 a Nina ofereceu "dá pra reservar
+    // até as 17h", o cliente pediu 14h (47 min) e ela recusou por
+    // antecedência — com 74 mesas a 27%. Casa com espaço = a recepção segura
+    // uma mesa com meia hora tranquilamente, e o objetivo do corte dinâmico é
+    // justamente ENCHER a casa. Então o mínimo vira 20 min quando há espaço;
+    // casa movimentada (>=70%) mantém a hora cheia.
     if (minutosAte < 60) {
-      return 'Em cima da hora não fazemos mais reserva pra hoje (mínimo 1 hora de antecedência). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.';
+      const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
+      const minimo = oc?.corteEstendido ? 20 : 60;
+      if (minutosAte < minimo) {
+        return `Em cima da hora não dá mais pra reservar (faltam ${minutosAte} min e o mínimo agora é ${minimo}). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.`;
+      }
     }
   }
 
