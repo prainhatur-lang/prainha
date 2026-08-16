@@ -18,6 +18,7 @@ import { sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { buscarItensCardapio, type ItemCardapio } from './cardapio';
+import { eventoQueSeguraData, datasFechadasPorEntrada } from '@/lib/orcamentos-server';
 
 // Fatores da regra "média" (mudar aqui recalibra a Nina; futuro: painel).
 const PRECO_MINIMO_OPCAO = 5; // abaixo disso é placeholder de PDV, não prato
@@ -87,10 +88,15 @@ export async function listarOpcoesOrcamento(filialId: string): Promise<string> {
     const g = classifica(it.nome, it.descr ?? '');
     if (g) grupos[g].push(it);
   }
+  const fechadas = await datasFechadasPorEntrada(filialId);
+  const avisoDatas = fechadas.length
+    ? `DATAS JÁ FECHADAS (outro evento pagou a entrada — NÃO ofereça nem orce nesses dias): ${fechadas.map((d) => d.split('-').reverse().join('/')).join(', ')}.\n\n`
+    : '';
   const rs = (v: number) => `R$ ${v.toFixed(2).replace('.', ',')}`;
   const fmt = (arr: ItemCardapio[], n: number) =>
     arr.slice(0, n).map((i) => `- ${i.nome}${i.tamanho ? ` (${i.tamanho})` : ''}: ${rs(i.preco)}`).join('\n') || '- (nenhum encontrado)';
   return [
+    avisoDatas.trim() || 'Agenda livre nas próximas datas.',
     `ENTRADAS sugeridas (cliente escolhe 3 ou 4, viram "à vontade"):\n${fmt(grupos.entrada, 20)}`,
     `PRINCIPAIS sugeridos (cliente escolhe 3):\n${fmt(grupos.principal, 24)}`,
     `MASSAS (escolher 1, opção vegetariana/quem não come frutos do mar):\n${fmt(grupos.massa, 8)}`,
@@ -136,6 +142,11 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (YYYY-MM-DD).';
   if (p.data < hojeBr()) return 'A data do evento já passou — peça uma data futura.';
+  // Entrada paga fecha o espaço naquele dia: não existe segundo evento.
+  const jaFechada = await eventoQueSeguraData({ filialId: p.filialId, local: p.espaco, data: p.data });
+  if (jaFechada) {
+    return `DATA INDISPONÍVEL: o ${p.espaco} já está fechado em ${p.data.split('-').reverse().join('/')} — outro evento pagou a entrada e segurou o espaço. NÃO gere orçamento pra esse dia: conte pro cliente com jeito que essa data já foi reservada e pergunte qual outra data serve.`;
+  }
   if (!p.nomeCliente.trim()) {
     return 'Falta o nome do cliente — PERGUNTE agora, numa frase curta e natural ("pra deixar o orçamento no seu nome, como você se chama?"), e chame gerar_orcamento_evento de novo com a resposta. NÃO registre lead nem transfira por causa disso, e NÃO use o nome do perfil do WhatsApp: o nome vai impresso no documento.';
   }

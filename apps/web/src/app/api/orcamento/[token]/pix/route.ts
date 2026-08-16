@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 import { createCieloPixPayment, queryCieloPayment } from '@/lib/cielo';
-import { marcarOrcamentoEntradaPaga } from '@/lib/orcamentos-server';
+import { marcarOrcamentoEntradaPaga, eventoQueSeguraData } from '@/lib/orcamentos-server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,6 +41,24 @@ export async function POST(_request: Request, { params }: { params: Promise<{ to
       qrCodeImg: o.pagamentoQrcodeImg,
       valor: Number(o.entradaValor),
     });
+  }
+
+  // Corrida de dois clientes na mesma data: quem pagou primeiro fechou o
+  // espaço. Barrar AQUI (antes de gerar o Pix) evita ter que estornar depois.
+  const jaFechada = await eventoQueSeguraData({
+    filialId: o.filialId,
+    local: o.local ?? '',
+    data: typeof o.dataEvento === 'string' ? o.dataEvento : String(o.dataEvento),
+    ignorarId: o.id,
+  });
+  if (jaFechada) {
+    return NextResponse.json(
+      {
+        error:
+          'Essa data acabou de ser fechada por outro evento. Fale com a equipe pra escolher uma nova data — nada foi cobrado de você.',
+      },
+      { status: 409 },
+    );
   }
 
   const amount = Math.round(Number(o.entradaValor) * 100);
