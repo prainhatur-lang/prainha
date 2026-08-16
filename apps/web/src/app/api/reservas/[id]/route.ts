@@ -3,7 +3,8 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { exigirPermApi } from '@/lib/exigir-perm';
+import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
+import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
@@ -24,6 +25,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const set: Record<string, unknown> = { atualizadoEm: sql`now()` };
   if (typeof b?.status === 'string') {
     if (!STATUS.has(b.status)) return NextResponse.json({ error: 'status inválido' }, { status: 400 });
+    // Cancelar pelo painel é ato de ADMINISTRADOR (regra do Elison, 16/08):
+    // exige reserva.delete (recepção/vendas têm só read/create/update) — e o
+    // cancelamento dispara estorno INTEGRAL automático do Pix.
+    if (b.status === 'cancelada') {
+      const semPerm = await negarSemPerm(user.id, 'reserva.delete');
+      if (semPerm) {
+        return NextResponse.json(
+          { error: 'cancelar reserva é restrito ao administrador' },
+          { status: 403 },
+        );
+      }
+    }
     set.status = b.status;
   }
   if (b?.mesa !== undefined) set.mesa = typeof b.mesa === 'string' && b.mesa.trim() ? b.mesa.trim().slice(0, 20) : null;
@@ -80,6 +93,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     bebidaPedido: string | null;
     bebidaComboQtd: number | null;
     bebidaCodigoPdv: number | null;
+    pagamentoStatus: string | null;
+    pagamentoId: string | null;
+    pagamentoValor: string | null;
   } | null = null;
   {
     const [row] = await db
@@ -98,6 +114,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         bebidaPedido: schema.reserva.bebidaPedido,
         bebidaComboQtd: schema.reserva.bebidaComboQtd,
         bebidaCodigoPdv: schema.reserva.bebidaCodigoPdv,
+        pagamentoStatus: schema.reserva.pagamentoStatus,
+        pagamentoId: schema.reserva.pagamentoId,
+        pagamentoValor: schema.reserva.pagamentoValor,
       })
       .from(schema.reserva)
       .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
@@ -232,7 +251,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       if (set.status === 'no_show') {
         mensagem = `Notamos que você não compareceu à sua reserva de ${dataBr} às ${atual.hora}. Se quiser remarcar, é só chamar a gente!`;
       } else if (set.status === 'cancelada') {
-        mensagem = `Sua reserva de ${dataBr} às ${atual.hora} foi cancelada. Se foi engano ou quiser remarcar, é só chamar a gente!`;
+        // Cancelamento pela CASA: estorno integral do Pix, sempre.
+        const estorno = await estornarReservaSePago(
+          { id, data: atual.data, hora: atual.hora, pagamentoStatus: atual.pagamentoStatus, pagamentoId: atual.pagamentoId, pagamentoValor: atual.pagamentoValor },
+          true,
+        ).catch(() => null);
+        const linhaEstorno =
+          estorno && estorno.percentual === 100
+            ? ` O valor pago (R$ ${Number(atual.pagamentoValor).toFixed(2)}) volta integral no seu Pix — o banco leva alguns dias pra creditar.`
+            : '';
+        mensagem = `Sua reserva de ${dataBr} às ${atual.hora} foi cancelada.${linhaEstorno} Se foi engano ou quiser remarcar, é só chamar a gente!`;
       }
     }
     if (mensagem) {

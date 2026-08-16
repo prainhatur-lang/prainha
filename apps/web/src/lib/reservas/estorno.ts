@@ -28,19 +28,24 @@ export function percentualEstorno(dataReserva: string, horaReserva: string | nul
 /** Aplica a regra ao cancelar. Chamar DEPOIS de marcar a reserva cancelada.
  *  Best-effort: falha de estorno não desfaz o cancelamento (fica registrada
  *  pro painel/equipe agir). */
-export async function estornarReservaSePago(reserva: {
-  id: string;
-  data: string;
-  hora: string | null;
-  pagamentoStatus: string | null;
-  pagamentoId: string | null;
-  pagamentoValor: string | null;
-}): Promise<ResultadoEstorno | null> {
+export async function estornarReservaSePago(
+  reserva: {
+    id: string;
+    data: string;
+    hora: string | null;
+    pagamentoStatus: string | null;
+    pagamentoId: string | null;
+    pagamentoValor: string | null;
+  },
+  /** true = cancelamento pela CASA (admin): estorno integral sempre,
+   *  ignorando a regra de prazo. */
+  forcarIntegral = false,
+): Promise<ResultadoEstorno | null> {
   if (reserva.pagamentoStatus !== 'pago' || !reserva.pagamentoId) return null;
   const valorPago = Number(reserva.pagamentoValor ?? 0);
   if (!(valorPago > 0)) return null;
 
-  const percentual = percentualEstorno(reserva.data, reserva.hora);
+  const percentual = forcarIntegral ? 100 : percentualEstorno(reserva.data, reserva.hora);
   const valorEstornado = percentual === 100 ? valorPago : percentual === 50 ? valorPago / 2 : 0;
 
   let novoStatus = 'retido';

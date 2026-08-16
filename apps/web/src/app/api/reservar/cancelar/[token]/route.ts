@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
+import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,6 +37,15 @@ export async function POST(_req: Request, { params }: { params: Promise<{ token:
     if (!r) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
     return NextResponse.json({ ok: true });
   }
+
+  // Auditoria: o link público era o ÚNICO caminho de cancelar sem rastro
+  // (caso Denia 15/08) — agora registra o autor.
+  await registrarAlteracoesReserva(
+    upd[0].id,
+    { status: 'ativa' },
+    { status: 'cancelada' },
+    { tipo: 'cliente', nome: 'cliente via link de cancelamento' },
+  ).catch(() => {});
 
   // Lounge pago: aplica a regra de estorno (48h+ integral / 24-48h 50% /
   // <24h retido) — automático, best-effort.
