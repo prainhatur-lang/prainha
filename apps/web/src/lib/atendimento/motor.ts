@@ -130,6 +130,25 @@ const FECHOS_REPETITIVOS = [
   /\s*\bconte comigo[^.!?\n]*[.!?…]*\s*$/i,
 ];
 
+// EMOJI (regra do Elison desde 08/08: emoji repetido entrega robô e "expulsa
+// o cliente"). O prompt manda "padrão NENHUM, máx 1 por conversa" e mesmo
+// assim saíram 4 numa conversa só (16/08) — então vira tesoura igual à do
+// fecho-muleta: o texto sai limpo, a regra não depende do modelo lembrar.
+const EMOJI_RE =
+  /(\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic})*|[☀-➿])/gu;
+
+function contarEmojis(texto: string): number {
+  return (texto.match(EMOJI_RE) ?? []).length;
+}
+
+/** Deixa no máximo `permitidos` emojis no texto (os primeiros); tira o resto
+ *  junto com o espaço que sobra. */
+function podarEmojis(texto: string, permitidos: number): string {
+  let vistos = 0;
+  const out = texto.replace(EMOJI_RE, (m) => (++vistos <= permitidos ? m : ''));
+  return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?…])/g, '$1').trim();
+}
+
 function limparFechoRepetitivo(texto: string): string {
   let out = texto.trim();
   for (let i = 0; i < 3; i++) {
@@ -482,6 +501,12 @@ export async function processarEntrada(params: {
 
     if (texto) {
       texto = limparFechoRepetitivo(texto);
+      // Cota de emoji da CONVERSA (1 no total): se ela já usou antes, esta
+      // mensagem sai sem nenhum.
+      const jaUsados = historico
+        .filter((m) => m.direcao === 'saida')
+        .reduce((s, m) => s + contarEmojis(m.corpo ?? ''), 0);
+      texto = podarEmojis(texto, Math.max(0, 1 - jaUsados));
       const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
       await db.insert(schema.atendimentoMensagem).values({
         conversaId: registro.conversaId,
