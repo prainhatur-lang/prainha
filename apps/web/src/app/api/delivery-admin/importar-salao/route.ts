@@ -116,7 +116,9 @@ export async function GET(request: Request) {
     }
   >();
   for (const r of rows) {
-    if (ehDoTerraco(r.nome)) continue;
+    // Terraço sai por nome E por categoria: 8 produtos ("Terraco Prainha" e
+    // "Terraco Bebidas") não têm o prefixo "T " e escapavam do filtro de nome.
+    if (ehDoTerraco(r.nome) || /terra[çc]o/i.test(r.categoria ?? '')) continue;
     const limpo = limparNomeProduto(r.nome);
     if (!limpo) continue;
     const precoNum = Number(r.preco ?? r.precoProduto ?? 0);
