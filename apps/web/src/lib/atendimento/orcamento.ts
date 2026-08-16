@@ -36,6 +36,18 @@ const FAIXA_MAX_PESSOA = 400;
 const PACOTE_BEBIDA_SEM_ALCOOL: number | null = 35; // refri, água, água de coco, sucos
 const PACOTE_BEBIDA_COM_ALCOOL: number | null = 70; // + cerveja
 const TAXA_TERRACO = 1000;
+// TAXA DE ROLHA por faixa de valor do evento (Elison, 16/08): evento grande
+// não paga; quanto menor a conta, maior a rolha. Cobrada POR GARRAFA de vinho
+// que o cliente traz.
+const ROLHA_FAIXAS: Array<{ ateTotal: number; valor: number }> = [
+  { ateTotal: 5000, valor: 50 },
+  { ateTotal: 10000, valor: 30 },
+  { ateTotal: Infinity, valor: 0 },
+];
+
+function rolhaDoEvento(total: number): number {
+  return ROLHA_FAIXAS.find((f) => total <= f.ateTotal)!.valor;
+}
 const CAP_TERRACO = 50;
 const CAP_TERRACO_COM_VARANDA = 60;
 const VALIDADE_DIAS = 7;
@@ -238,6 +250,7 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
       : []),
   ];
 
+  const rolha = rolhaDoEvento(totalFinal);
   const aceiteToken = randomBytes(32).toString('hex');
   await db.insert(schema.orcamentoEvento).values({
     filialId: p.filialId,
@@ -264,6 +277,9 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
       'Não incluído: decoração, doces, bolo e bebidas — bebidas servidas por consumo, ou em pacote a combinar com a equipe. ' +
       `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após o pagamento. O restante é acertado com a equipe. ` +
       `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após a confirmação do pagamento; o restante é acertado com a equipe. ` +
+      (rolha > 0
+        ? `Vinho trazido pelo cliente: taxa de rolha de R$ ${rolha},00 por garrafa. `
+        : 'Vinho trazido pelo cliente: SEM taxa de rolha (cortesia da casa para eventos acima de R$ 10.000,00). ') +
       'Valores sujeitos a confirmação da equipe para ajustes finais.',
     validoAte: diasAtrasBr(-VALIDADE_DIAS),
     aceiteToken,
@@ -282,6 +298,9 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     `${composicao}. ` +
     `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo${pisoAplicado ? ` — a conta deu ${rs(calculado)} e foi elevada ao mínimo de ${rs(PISO_POR_PESSOA)}/pessoa` : ''}). ` +
     `Entrada de R$ ${TAXA_TERRACO},00 (taxa do espaço) reserva a data — enquanto não pagar, a data segue livre pra outro cliente; diga isso ao cliente com naturalidade, sem pressão. ` +
+    (rolha > 0
+      ? `Taxa de rolha: R$ ${rolha},00 por garrafa de vinho que o cliente trouxer. `
+      : `Rolha GRÁTIS nesse evento (acima de R$ 10 mil) — é um mimo, vale mencionar. `) +
     `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) reserva a data: enquanto não pagar, o dia segue livre pra outro cliente — diga isso com naturalidade, sem pressão, e o Pix sai na própria página do link. ` +
     `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
