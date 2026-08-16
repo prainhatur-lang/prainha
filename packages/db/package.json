@@ -78,6 +78,8 @@
     "migrate:cotacao-exclusao": "tsx scripts/migrate-cotacao-exclusao.ts",
     "migrate:delivery": "tsx scripts/migrate-delivery.ts",
     "migrate:delivery-precos-estoque": "tsx scripts/migrate-delivery-precos-estoque.ts",
+    "migrate:produto-etiqueta": "tsx scripts/migrate-produto-etiqueta.ts",
+    "sync:etiquetas": "tsx scripts/sync-etiquetas.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
   },
   "dependencies": {
@@ -90,6 +92,7 @@
     "@types/node": "^22.10.2",
     "dotenv": "^16.4.7",
     "drizzle-kit": "^0.30.1",
+    "node-firebird": "^1.1.9",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

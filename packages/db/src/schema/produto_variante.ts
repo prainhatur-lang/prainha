@@ -151,3 +151,23 @@ export const produtoVarianteComplemento = pgTable(
     varianteIdx: index('idx_pvc_variante').on(t.filialId, t.codigoVarianteExterno),
   }),
 );
+
+/** ETIQUETAS do Consumer — a categoria REAL do cardápio (Petiscos, Drinks,
+ *  Cervejas...). Espelho por filial: o código só faz sentido dentro da loja.
+ *  Sincronizada por `pnpm --filter @concilia/db sync:etiquetas` (lê o Firebird
+ *  da loja pela VPN), porque o agente local ainda não traz esta tabela. */
+export const produtoEtiqueta = pgTable(
+  'produto_etiqueta',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    nome: varchar('nome', { length: 100 }).notNull(),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqCodigo: unique('uq_produto_etiqueta_filial_codigo').on(t.filialId, t.codigoExterno),
+  }),
+);

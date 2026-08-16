@@ -58,6 +58,7 @@ export async function GET(request: Request) {
       codigoCozinha: schema.produto.codigoCozinha,
       tipo: schema.produto.codigoProdutoTipo,
       tamanho: schema.produtoTamanho.descricao,
+      categoria: schema.produtoEtiqueta.nome,
     })
     .from(schema.produtoVariante)
     .innerJoin(
@@ -70,6 +71,15 @@ export async function GET(request: Request) {
     .leftJoin(
       schema.produtoTamanho,
       eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId),
+    )
+    // Categoria real do cardápio (ETIQUETAS do Consumer). codigo_etiqueta é
+    // varchar no espelho, então o join precisa do cast.
+    .leftJoin(
+      schema.produtoEtiqueta,
+      and(
+        eq(schema.produtoEtiqueta.filialId, schema.produto.filialId),
+        sql`${schema.produtoEtiqueta.codigoExterno} = NULLIF(regexp_replace(${schema.produto.codigoEtiqueta}, '\\D', '', 'g'), '')::integer`,
+      ),
     )
     .where(
       and(
@@ -99,6 +109,7 @@ export async function GET(request: Request) {
       descricao: string | null;
       precoCentavos: number;
       tamanho: string | null;
+      categoria: string | null;
       estoqueControlado: boolean;
       estoqueAtual: number | null;
       codigoCozinha: number | null;
@@ -121,6 +132,7 @@ export async function GET(request: Request) {
       descricao: (r.descricao ?? '').trim() || null,
       precoCentavos,
       tamanho,
+      categoria: (r.categoria ?? '').trim() || null,
       estoqueControlado: controlado,
       estoqueAtual: controlado && r.estoqueAtual != null ? Number(r.estoqueAtual) : null,
       codigoCozinha: r.codigoCozinha ?? null,
@@ -208,7 +220,11 @@ export async function POST(request: Request) {
       : null;
   let categoriaId = typeof b?.categoriaId === 'string' ? b.categoriaId : null;
 
-  if (!filialId || itens.length === 0 || (!categoriaId && !categoriaNova)) {
+  // Quando true, cada item vai pra uma categoria com o nome da categoria dele
+  // no cardápio do salão — preserva a estrutura em vez de jogar tudo num balde.
+  const manterCategorias = b?.manterCategorias === true;
+
+  if (!filialId || itens.length === 0 || (!categoriaId && !categoriaNova && !manterCategorias)) {
     return NextResponse.json(
       { error: 'filial, categoria (existente ou nova) e itens são obrigatórios' },
       { status: 400 },
@@ -225,34 +241,41 @@ export async function POST(request: Request) {
   const origemId = typeof b?.origemFilialId === 'string' ? b.origemFilialId : filialId;
   const manterVinculo = origemId === filialId;
 
-  // Categoria nova: reusa se já existir uma com o mesmo nome (evita duplicar
-  // "Bebidas" toda vez que o usuário importa de novo).
-  if (!categoriaId && categoriaNova) {
+  // Resolve uma categoria pelo NOME: reusa a existente ou cria — evita
+  // duplicar "Bebidas" toda vez que o usuário importa de novo.
+  const cacheCategorias = new Map<string, string>();
+  async function categoriaPorNome(nome: string): Promise<string> {
+    const chave = nome.trim().toLowerCase();
+    const emCache = cacheCategorias.get(chave);
+    if (emCache) return emCache;
     const [existente] = await db
       .select({ id: schema.deliveryCategoria.id })
       .from(schema.deliveryCategoria)
       .where(
         and(
-          eq(schema.deliveryCategoria.filialId, filialId),
-          eq(schema.deliveryCategoria.nome, categoriaNova),
+          eq(schema.deliveryCategoria.filialId, filialId!),
+          sql`lower(${schema.deliveryCategoria.nome}) = ${chave}`,
         ),
       )
       .limit(1);
     if (existente) {
-      categoriaId = existente.id;
-    } else {
-      const todas = await db
-        .select({ ordem: schema.deliveryCategoria.ordem })
-        .from(schema.deliveryCategoria)
-        .where(eq(schema.deliveryCategoria.filialId, filialId));
-      const proxima = todas.reduce((m, c) => Math.max(m, c.ordem), 0) + 1;
-      const [nova] = await db
-        .insert(schema.deliveryCategoria)
-        .values({ filialId, nome: categoriaNova, ordem: proxima })
-        .returning({ id: schema.deliveryCategoria.id });
-      categoriaId = nova.id;
+      cacheCategorias.set(chave, existente.id);
+      return existente.id;
     }
+    const todas = await db
+      .select({ ordem: schema.deliveryCategoria.ordem })
+      .from(schema.deliveryCategoria)
+      .where(eq(schema.deliveryCategoria.filialId, filialId!));
+    const proxima = todas.reduce((m, c) => Math.max(m, c.ordem), 0) + 1;
+    const [nova] = await db
+      .insert(schema.deliveryCategoria)
+      .values({ filialId: filialId!, nome: nome.trim().slice(0, 80), ordem: proxima })
+      .returning({ id: schema.deliveryCategoria.id });
+    cacheCategorias.set(chave, nova.id);
+    return nova.id;
   }
+
+  if (!categoriaId && categoriaNova) categoriaId = await categoriaPorNome(categoriaNova);
 
   type LinhaItem = {
     filialId: string;
@@ -263,15 +286,39 @@ export async function POST(request: Request) {
     varianteId: string | null;
   };
 
+  // Com manterCategorias, cada item resolve a própria categoria pelo nome que
+  // veio do cardápio; sem categoria no salão, cai em "Outros".
+  const categoriaDoItem = new Map<string, string>();
+  if (manterCategorias) {
+    const nomes = new Set(
+      (itens as Array<{ categoria?: unknown }>).map((i) =>
+        typeof i?.categoria === 'string' && i.categoria.trim() ? i.categoria.trim() : 'Outros',
+      ),
+    );
+    for (const n of nomes) categoriaDoItem.set(n, await categoriaPorNome(n));
+  }
+
   const linhas: LinhaItem[] = (itens as unknown[])
     .map((i: unknown): LinhaItem | null => {
-      const o = i as { nome?: unknown; descricao?: unknown; preco?: unknown; varianteId?: unknown };
+      const o = i as {
+        nome?: unknown;
+        descricao?: unknown;
+        preco?: unknown;
+        varianteId?: unknown;
+        categoria?: unknown;
+      };
       const nome = typeof o?.nome === 'string' ? o.nome.trim().slice(0, 160) : '';
       const preco = Number(o?.preco);
       if (!nome || !Number.isFinite(preco) || preco <= 0) return null;
+      const destino = manterCategorias
+        ? categoriaDoItem.get(
+            typeof o?.categoria === 'string' && o.categoria.trim() ? o.categoria.trim() : 'Outros',
+          )
+        : categoriaId;
+      if (!destino) return null;
       return {
         filialId,
-        categoriaId: categoriaId!,
+        categoriaId: destino,
         nome,
         descricao:
           typeof o?.descricao === 'string' && o.descricao.trim()
@@ -290,5 +337,10 @@ export async function POST(request: Request) {
   }
 
   await db.insert(schema.deliveryItem).values(linhas);
-  return NextResponse.json({ ok: true, criados: linhas.length, categoriaId });
+  return NextResponse.json({
+    ok: true,
+    criados: linhas.length,
+    categoriaId,
+    categorias: manterCategorias ? cacheCategorias.size : 1,
+  });
 }

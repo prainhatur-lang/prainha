@@ -58,10 +58,14 @@ interface ItemSalao {
   nome: string;
   descricao: string | null;
   precoCentavos: number;
+  /** Categoria do cardápio do salão (ETIQUETAS do Consumer). */
+  categoria: string | null;
   estoqueControlado: boolean;
   estoqueAtual: number | null;
   jaNoCardapio: boolean;
 }
+
+const SEM_CATEGORIA = 'Outros';
 
 const brl = (v: string | number) =>
   Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -106,6 +110,7 @@ export function CardapioAdminClient({
   const [destinoId, setDestinoId] = useState<string>('');
   const [destinoNova, setDestinoNova] = useState('');
   const [origemId, setOrigemId] = useState<string>(filialId);
+  const [manterCategorias, setManterCategorias] = useState(true);
   const [filiaisOrigem, setFiliaisOrigem] = useState<
     Array<{ id: string; nome: string; produtos: number }>
   >([]);
@@ -240,9 +245,32 @@ export function CardapioAdminClient({
     });
   }, [salao, buscaSalao, esconderJaTem, soComEstoque, selecionados]);
 
+  /** Produtos agrupados pela categoria do cardápio, em ordem alfabética. */
+  const gruposSalao = useMemo(() => {
+    const mapa = new Map<string, ItemSalao[]>();
+    for (const s of salaoFiltrado) {
+      const cat = s.categoria?.trim() || SEM_CATEGORIA;
+      const lista = mapa.get(cat);
+      if (lista) lista.push(s);
+      else mapa.set(cat, [s]);
+    }
+    return [...mapa.entries()].sort(([a], [b]) => {
+      if (a === SEM_CATEGORIA) return 1;
+      if (b === SEM_CATEGORIA) return -1;
+      return a.localeCompare(b, 'pt-BR');
+    });
+  }, [salaoFiltrado]);
+
+  /** Só existe categoria de verdade se as ETIQUETAS já foram sincronizadas. */
+  const temCategorias = useMemo(
+    () => (salao ?? []).some((s) => !!s.categoria?.trim()),
+    [salao],
+  );
+
   async function importarSelecionados() {
     if (selecionados.size === 0 || !salao) return;
-    if (!destinoId && !destinoNova.trim()) {
+    const porCategoria = manterCategorias && temCategorias;
+    if (!porCategoria && !destinoId && !destinoNova.trim()) {
       setErro('Escolha a categoria de destino (ou digite o nome de uma nova).');
       return;
     }
@@ -255,6 +283,7 @@ export function CardapioAdminClient({
           nome: s.nome,
           descricao: s.descricao,
           preco: (s.precoCentavos / 100).toFixed(2),
+          categoria: s.categoria,
         }));
       const r = await fetch('/api/delivery-admin/importar-salao', {
         method: 'POST',
@@ -262,8 +291,9 @@ export function CardapioAdminClient({
         body: JSON.stringify({
           filialId,
           origemFilialId: origemId,
-          categoriaId: destinoNova.trim() ? undefined : destinoId,
-          categoriaNova: destinoNova.trim() || undefined,
+          manterCategorias: porCategoria,
+          categoriaId: porCategoria || destinoNova.trim() ? undefined : destinoId,
+          categoriaNova: porCategoria ? undefined : destinoNova.trim() || undefined,
           itens: escolhidos,
         }),
       });
@@ -276,7 +306,9 @@ export function CardapioAdminClient({
       setSalao(null);
       setSelecionados(new Set());
       ok(
-        `${escolhidos.length} produto(s) trazido(s) com o preço do salão — agora ajuste o preço do delivery e do iFood.`,
+        porCategoria
+          ? `${escolhidos.length} produto(s) trazido(s) em ${d.categorias} categoria(s) do cardápio — agora ajuste os preços.`
+          : `${escolhidos.length} produto(s) trazido(s) com o preço do salão — agora ajuste o preço do delivery e do iFood.`,
       );
     } finally {
       setSalvando(false);
@@ -674,12 +706,39 @@ export function CardapioAdminClient({
                   Nada encontrado com esses filtros.
                 </p>
               ) : (
-                <ul className="divide-y divide-slate-100">
-                  {salaoFiltrado.map((s) => {
-                    const marcado = selecionados.has(s.varianteId);
-                    const est = estoqueLabel(s.estoqueControlado, s.estoqueAtual);
-                    return (
-                      <li key={s.varianteId}>
+                gruposSalao.map(([categoria, itensDoGrupo]) => {
+                  const todosMarcados = itensDoGrupo.every((s) => selecionados.has(s.varianteId));
+                  return (
+                    <div key={categoria}>
+                      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-y border-slate-200 bg-slate-50 px-3 py-1.5">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                          {categoria}{' '}
+                          <span className="font-normal text-slate-400">
+                            ({itensDoGrupo.length})
+                          </span>
+                        </span>
+                        <button
+                          onClick={() =>
+                            setSelecionados((prev) => {
+                              const n = new Set(prev);
+                              for (const s of itensDoGrupo) {
+                                if (todosMarcados) n.delete(s.varianteId);
+                                else n.add(s.varianteId);
+                              }
+                              return n;
+                            })
+                          }
+                          className="shrink-0 text-[11px] font-medium text-sky-700 hover:underline"
+                        >
+                          {todosMarcados ? 'desmarcar' : 'marcar todos'}
+                        </button>
+                      </div>
+                      <ul className="divide-y divide-slate-100">
+                        {itensDoGrupo.map((s) => {
+                          const marcado = selecionados.has(s.varianteId);
+                          const est = estoqueLabel(s.estoqueControlado, s.estoqueAtual);
+                          return (
+                            <li key={s.varianteId}>
                         <label
                           className={`flex cursor-pointer items-center gap-3 px-3 py-2.5 ${
                             marcado ? 'bg-sky-50' : 'hover:bg-slate-50'
@@ -721,16 +780,39 @@ export function CardapioAdminClient({
                             {brl(s.precoCentavos / 100)}
                           </span>
                         </label>
-                      </li>
-                    );
-                  })}
-                </ul>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  );
+                })
               )}
             </div>
 
             <div className="mt-3 border-t border-slate-100 pt-3">
               <label className={lblCls}>Colocar em qual categoria?</label>
-              <div className="mt-1 flex flex-wrap gap-2">
+              {temCategorias ? (
+                <label className="mt-1 flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={manterCategorias}
+                    onChange={(e) => setManterCategorias(e.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Manter as categorias do cardápio (cria uma por categoria)
+                </label>
+              ) : (
+                <p className="mt-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
+                  As categorias do cardápio ainda não foram sincronizadas desta loja — por
+                  enquanto escolha um destino único.
+                </p>
+              )}
+              <div
+                className={`mt-1 flex flex-wrap gap-2 ${
+                  temCategorias && manterCategorias ? 'pointer-events-none opacity-40' : ''
+                }`}
+              >
                 <select
                   value={destinoNova.trim() ? '' : destinoId}
                   onChange={(e) => {
