@@ -167,7 +167,7 @@ export function StatusClient({ token }: { token: string }) {
     pendente && pedido.pagamento.metodo === 'pix' && !!pedido.pagamento.qrCodeString;
 
   return (
-    <main className="mx-auto w-full max-w-lg px-4 pb-16 pt-6">
+    <main className="mx-auto w-full max-w-lg px-4 pb-16 pt-6 lg:max-w-2xl lg:pt-10">
       <div className="text-center">
         <span
           className="text-2xl tracking-tight text-[#b3411c]"

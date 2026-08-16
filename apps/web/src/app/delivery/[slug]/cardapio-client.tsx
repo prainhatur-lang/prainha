@@ -407,16 +407,20 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   if (tela === 'sacola') {
     const diaAtual = agenda.dias.find((d) => d.data === diaSel);
     return (
-      <main className="mx-auto w-full max-w-lg px-4 pb-40 pt-4">
+      // No desktop vira duas colunas: formulário à esquerda, resumo fixo à
+      // direita. No celular segue coluna única com a barra colada embaixo.
+      <main className="mx-auto w-full max-w-lg px-4 pb-40 pt-4 lg:max-w-5xl lg:px-8 lg:pb-10">
         <button
           onClick={() => setTela('cardapio')}
           className="text-sm font-semibold text-[#b3411c]"
         >
           ◂ Voltar pro cardápio
         </button>
-        <h1 className="mt-2 text-2xl text-[#1d130c]" style={{ fontFamily: 'var(--dlv-display)' }}>
+        <h1 className="mt-2 text-2xl text-[#1d130c] lg:text-3xl" style={{ fontFamily: 'var(--dlv-display)' }}>
           Sua sacola
         </h1>
+        <div className="lg:grid lg:grid-cols-[1fr_22rem] lg:items-start lg:gap-6">
+        <div>
 
         {/* itens */}
         <section className="mt-4 rounded-2xl border border-[#e2c9a0] bg-white p-4">
@@ -765,9 +769,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           </p>
         </section>
 
-        {/* resumo + CTA */}
-        <div className="fixed inset-x-0 bottom-0 border-t border-[#e2c9a0] bg-[#fbf6ec]/95 p-4 backdrop-blur">
-          <div className="mx-auto w-full max-w-lg">
+        </div>
+
+        {/* resumo + CTA: barra fixa embaixo no celular, cartão fixo ao lado no desktop */}
+        <div className="fixed inset-x-0 bottom-0 border-t border-[#e2c9a0] bg-[#fbf6ec]/95 p-4 backdrop-blur lg:sticky lg:top-6 lg:mt-4 lg:rounded-2xl lg:border lg:border-[#e2c9a0] lg:bg-white lg:p-5 lg:backdrop-blur-none">
+          <div className="mx-auto w-full max-w-lg lg:max-w-none">
             <div className="flex justify-between text-sm text-[#4a382a]">
               <span>Subtotal</span>
               <span>{brl(subtotal)}</span>
@@ -809,6 +815,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             </button>
           </div>
         </div>
+        </div>
       </main>
     );
   }
@@ -818,21 +825,21 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
     <main className="pb-28">
       {/* cabeçalho golden hour */}
       <header
-        className="px-4 pb-5 pt-6 text-center"
+        className="px-4 pb-5 pt-6 text-center lg:pb-8 lg:pt-10"
         style={{
           background:
             'linear-gradient(180deg,#07191c 0%,#143a3d 55%,#5a6a4f 85%,#c98a3f 115%)',
         }}
       >
         <span
-          className="text-3xl tracking-tight text-[#fbf6ec]"
+          className="text-3xl tracking-tight text-[#fbf6ec] lg:text-5xl"
           style={{ fontFamily: 'var(--dlv-display)' }}
         >
           {loja.titulo}
           <span className="text-[#f4b454]">.</span>
         </span>
         {loja.subtitulo ? (
-          <p className="mt-1 text-sm text-[#e9d9bb]">{loja.subtitulo}</p>
+          <p className="mt-1 text-sm text-[#e9d9bb] lg:text-base">{loja.subtitulo}</p>
         ) : null}
         <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
           {loja.pausado ? (
@@ -870,22 +877,22 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       ) : null}
 
       {/* busca */}
-      <div className="mx-auto w-full max-w-lg px-4 pt-4">
+      <div className="mx-auto w-full max-w-lg px-4 pt-4 lg:max-w-5xl lg:px-8">
         <input
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
           placeholder="🔎 Buscar no cardápio…"
-          className={`${inp} mt-0`}
+          className={`${inp} mt-0 lg:mx-auto lg:max-w-xl`}
         />
       </div>
 
       {/* destaques */}
       {destaques.length > 0 && !buscaNorm ? (
-        <section className="mx-auto w-full max-w-lg px-4 pt-4">
+        <section className="mx-auto w-full max-w-lg px-4 pt-4 lg:max-w-5xl lg:px-8">
           <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-[#a86a2e]">
             ⭐ Destaques
           </h2>
-          <div className="mt-2 flex gap-3 overflow-x-auto pb-1">
+          <div className="mt-2 flex gap-3 overflow-x-auto pb-1 lg:grid lg:grid-cols-5 lg:overflow-visible">
             {destaques.map((i) => (
               <button
                 key={i.id}
@@ -894,7 +901,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   setModalQtd(1);
                   setModalObs('');
                 }}
-                className="w-40 shrink-0 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left"
+                className="w-40 shrink-0 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all lg:w-auto lg:hover:-translate-y-0.5 lg:hover:border-[#e7723a]"
               >
                 {i.fotoUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -913,7 +920,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       ) : null}
 
       {/* categorias */}
-      <div className="mx-auto w-full max-w-lg px-4">
+      <div className="mx-auto w-full max-w-lg px-4 lg:max-w-5xl lg:px-8">
         {categoriasVisiveis.length === 0 ? (
           <p className="py-16 text-center text-sm text-[#8a7a64]">
             {buscaNorm ? 'Nada encontrado com essa busca.' : 'Cardápio em montagem — volte logo!'}
@@ -922,12 +929,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           categoriasVisiveis.map((cat) => (
             <section key={cat.id} className="pt-6">
               <h2
-                className="text-xl text-[#1d130c]"
+                className="text-xl text-[#1d130c] lg:text-2xl"
                 style={{ fontFamily: 'var(--dlv-display)' }}
               >
                 {cat.nome}
               </h2>
-              <ul className="mt-2 space-y-2.5">
+              {/* uma coluna no celular; grade no desktop, senão vira uma
+                  tira estreita perdida no meio da tela */}
+              <ul className="mt-2 grid gap-2.5 lg:grid-cols-2 xl:grid-cols-3">
                 {cat.itens.map((i) => (
                   <li key={i.id}>
                     <button
@@ -937,7 +946,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                         setModalQtd(1);
                         setModalObs('');
                       }}
-                      className={`flex w-full items-stretch gap-3 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all ${
+                      className={`flex h-full w-full items-stretch gap-3 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all ${
                         i.esgotado ? 'opacity-55' : 'hover:-translate-y-0.5 hover:border-[#e7723a]'
                       }`}
                     >
@@ -988,10 +997,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         ) : null}
       </div>
 
-      {/* barra da sacola */}
+      {/* barra da sacola — fica flutuando centrada, não esticada na tela toda */}
       {qtdTotal > 0 ? (
         <div className="fixed inset-x-0 bottom-0 p-4">
-          <div className="mx-auto w-full max-w-lg">
+          <div className="mx-auto w-full max-w-lg lg:max-w-md">
             <button
               onClick={() => void abrirSacola()}
               className="w-full rounded-full bg-[#e7723a] px-5 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[#df5a35]"
@@ -1005,11 +1014,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       {/* modal adicionar item */}
       {itemModal ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/45"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 sm:items-center"
           onClick={() => setItemModal(null)}
         >
           <div
-            className="w-full max-w-lg rounded-t-3xl bg-white p-5 pb-8"
+            className="w-full max-w-lg rounded-t-3xl bg-white p-5 pb-8 sm:rounded-3xl sm:pb-5"
             onClick={(e) => e.stopPropagation()}
           >
             {itemModal.fotoUrl ? (
