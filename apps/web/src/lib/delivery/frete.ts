@@ -4,11 +4,17 @@
 // primeira compra, cupom).
 //
 // Geocodificação (nesta ordem, todas gratuitas):
-//   1. cep.awesomeapi.com.br  — CEP → lat/lng (rápida, cobre bem Aracaju)
-//   2. brasilapi.com.br/cep/v2 — às vezes traz coordenadas
-//   3. Nominatim (OSM) — rua + número + cidade (precisão de rua; 1 req/s)
+//   1. cep.awesomeapi.com.br  — CEP → lat/lng com precisão de RUA
+//   2. Nominatim (OSM) — rua + número + bairro (precisão de rua; 1 req/s)
 // Falhou tudo → o pedido NÃO trava: cobra a taxa da última faixa e o painel
 // mostra "distância não calculada".
+//
+// ⚠️ BrasilAPI foi REMOVIDA da cadeia (16/08/2026). O `location.coordinates`
+// dela é o centroide do MUNICÍPIO, não do CEP: 49008-093, 49008-250 e
+// 49037-490 devolvem todos (-10.91111, -37.07167). Em produção o awesomeapi
+// falhava e a cadeia caía nela, então TODO endereço de Aracaju dava 21,54 km
+// da Prainha Bar e era recusado como "fora da área de entrega" — inclusive o
+// vizinho da porta ao lado. Nunca reintroduzir sem checar precisão real.
 
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -56,16 +62,6 @@ async function geoAwesomeApi(cep: string): Promise<Coordenada | null> {
   return lat != null && lng != null ? { lat, lng } : null;
 }
 
-/** CEP → coordenadas via BrasilAPI v2 (nem todo CEP traz location). */
-async function geoBrasilApi(cep: string): Promise<Coordenada | null> {
-  const d = (await fetchJson(`https://brasilapi.com.br/api/cep/v2/${cep}`)) as {
-    location?: { coordinates?: { latitude?: string; longitude?: string } };
-  };
-  const lat = numOk(d?.location?.coordinates?.latitude);
-  const lng = numOk(d?.location?.coordinates?.longitude);
-  return lat != null && lng != null ? { lat, lng } : null;
-}
-
 /** Rua + número + cidade → coordenadas via Nominatim (OpenStreetMap). */
 async function geoNominatim(end: EnderecoGeo): Promise<Coordenada | null> {
   const partes = [
@@ -90,10 +86,7 @@ async function geoNominatim(end: EnderecoGeo): Promise<Coordenada | null> {
 export async function geocodificarEndereco(end: EnderecoGeo): Promise<Coordenada | null> {
   const cep = (end.cep ?? '').replace(/\D/g, '');
   const tentativas: Array<() => Promise<Coordenada | null>> = [];
-  if (cep.length === 8) {
-    tentativas.push(() => geoAwesomeApi(cep));
-    tentativas.push(() => geoBrasilApi(cep));
-  }
+  if (cep.length === 8) tentativas.push(() => geoAwesomeApi(cep));
   tentativas.push(() => geoNominatim(end));
   for (const t of tentativas) {
     try {
