@@ -449,6 +449,7 @@ export async function processarEntrada(params: {
           executores,
           modo,
           ocupacaoAgora,
+          nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
         });
       } catch (e1) {
@@ -463,6 +464,7 @@ export async function processarEntrada(params: {
           executores,
           modo,
           ocupacaoAgora,
+          nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
         });
       }

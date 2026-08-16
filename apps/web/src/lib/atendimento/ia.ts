@@ -96,9 +96,20 @@ function montarSystemPrompt(params: {
   conhecimento: BlocoConhecimento[];
   espacos: EspacoEvento[];
   primeiraResposta: boolean;
+  /** Nome do perfil do WhatsApp — serve pra CONFIRMAR, nunca pra assumir. */
+  nomePerfil?: string | null;
   retomada?: boolean;
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
+  const perfil = (params.nomePerfil ?? '').trim();
+  // Nome de verdade (2+ palavras só com letras) vira confirmação; apelido de
+  // aparelho/emoji ("Lucas Iphone", "duda", "✨") não serve pra documento.
+  const perfilUsavel = /^[\p{L}][\p{L}'’.-]*(\s+[\p{L}'’.-]+)+$/u.test(perfil) && !/iphone|android|samsung|celular|trabalho|casa/i.test(perfil);
+  const blocoNome = perfil
+    ? `\n\nNOME DO PERFIL DO WHATSAPP desta pessoa: "${perfil}".${perfilUsavel
+        ? ' Parece nome de verdade — quando precisar do nome (reserva, orçamento), CONFIRME em vez de perguntar do zero: "posso deixar no seu nome, ' + perfil + '?". Se ela corrigir, vale o que ela escrever.'
+        : ' Isso é apelido/nome de aparelho, NÃO serve pra documento nem pra reserva — nesse caso pergunte o nome de verdade.'} Nunca escreva esse nome de perfil num orçamento sem o cliente ter confirmado.`
+    : '';
   const blocoRetomada = retomada
     ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente: PRIMEIRO releia os blocos de "O QUE VOCÊ SABE" — a resposta costuma já estar lá (a base foi atualizada DEPOIS da sua promessa); se for preço/prato/mesa/vaga, use as ferramentas. Responda com a informação CONCRETA.\n- Se você prometeu "confirmar com a equipe" algo que AGORA está nos blocos: a confirmação já aconteceu — VOCÊ é o retorno. Entregue como boa notícia ("confirmei aqui: pode sim!").\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Só transfira se NEM os blocos NEM as ferramentas tiverem a resposta.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
     : '';
@@ -215,7 +226,7 @@ DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e 
 OUTROS:
 - Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever — mas NUNCA presuma o tipo: se não sabe o que era, diga só que não conseguiu abrir por aqui. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
 - Nunca peça documentos, senhas ou dados de pagamento.
-- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoRetomada}`;
+- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoNome}${blocoRetomada}`;
 }
 
 const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -476,6 +487,8 @@ export async function gerarResposta(params: {
   historico: MsgHistorico[];
   executores: ExecutoresFerramentas;
   modo?: 'cliente' | 'fornecedor';
+  /** Nome do perfil do WhatsApp do contato (pra confirmar, não pra assumir). */
+  nomePerfil?: string | null;
   /** Resumo da ocupação ao vivo (medirOcupacaoHoje) — entra como ÚLTIMA
    *  system message: posição vence a regra escrita no meio do prompt. */
   ocupacaoAgora?: string | null;
@@ -493,7 +506,7 @@ export async function gerarResposta(params: {
   const system =
     modo === 'fornecedor'
       ? montarPromptFornecedor(params.nomeAtendente, params.filialNome)
-      : montarSystemPrompt({ ...params, primeiraResposta });
+      : montarSystemPrompt({ ...params, primeiraResposta, nomePerfil: params.nomePerfil });
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: system },
     ...historicoParaMensagens(params.historico),
