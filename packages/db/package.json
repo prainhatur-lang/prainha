@@ -68,6 +68,7 @@
     "migrate:orcamento-conferencia": "tsx scripts/migrate-orcamento-conferencia.ts",
     "migrate:reserva-cpf": "tsx scripts/migrate-reserva-cpf.ts",
     "migrate:talentos": "tsx scripts/migrate-talentos.ts",
+    "migrate:trabalhe-log": "tsx scripts/migrate-trabalhe-log.ts",
     "migrate:nfce": "tsx scripts/migrate-nfce.ts",
     "migrate:nfce-reimpressao": "tsx scripts/migrate-nfce-reimpressao.ts",
     "migrate:idx-pedido-item-fk": "tsx scripts/migrate-idx-pedido-item-fk.ts",

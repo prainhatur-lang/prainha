@@ -65,7 +65,7 @@ function precoPorPessoa(item: ItemCardapio): number {
 
 /** Lista candidatos do cardápio ativo pro modelo apresentar. */
 export async function listarOpcoesOrcamento(filialId: string): Promise<string> {
-  const todos = await buscarItensCardapio(filialId, '', 400); // sem filtro = tudo ativo
+  const todos = (await buscarItensCardapio(filialId, '', 400)).filter((i) => !i.pausado); // sem pausados
   const grupos: Record<string, ItemCardapio[]> = { entrada: [], principal: [], massa: [], sobremesa: [] };
   const vistos = new Set<string>();
   for (const it of todos) {
@@ -88,7 +88,8 @@ export async function listarOpcoesOrcamento(filialId: string): Promise<string> {
 }
 
 async function resolver(filialId: string, nome: string): Promise<ItemCardapio | null> {
-  const achados = await buscarItensCardapio(filialId, nome, 6);
+  // Pausado no PDV = em falta: nunca entra em orçamento de evento.
+  const achados = (await buscarItensCardapio(filialId, nome, 6)).filter((i) => !i.pausado);
   if (achados.length === 0) return null;
   // entre variantes do mesmo prato, fica a de menor custo por pessoa
   return achados.reduce((a, b) => (precoPorPessoa(b) < precoPorPessoa(a) ? b : a));

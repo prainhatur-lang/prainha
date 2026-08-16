@@ -16,6 +16,8 @@ export interface ItemCardapio {
   preco_ifood: number | null;
   /** false = vendido na casa mas não aparece no Menudino. */
   no_cardapio_online?: boolean;
+  /** true = PAUSADO no PDV (em falta hoje) — informar, nunca oferecer. */
+  pausado?: boolean;
   descr: string;
 }
 
@@ -61,6 +63,7 @@ export async function buscarItensCardapio(
            di.preco::float AS preco_delivery,
            di.preco_ifood::float AS preco_ifood,
            pv.menu_dino AS no_cardapio_online,
+           (pv.data_pausado IS NOT NULL OR p.data_pausado IS NOT NULL) AS pausado,
            LEFT(COALESCE(p.descricao, ''), 140) AS descr
     FROM produto_variante pv
     JOIN produto p ON p.id = pv.produto_id
@@ -70,12 +73,10 @@ export async function buscarItensCardapio(
     WHERE p.filial_id = ${filialId}
       AND (pv.menu_dino OR pv.comanda_mobile OR pv.desktop OR pv.cardapio_digital)
       AND pv.data_delete IS NULL
-      AND pv.data_pausado IS NULL
       AND (p.descontinuado IS NOT TRUE)
-      AND (p.data_pausado IS NULL)
       AND pv.preco_venda > 0
       AND ${where}
-    ORDER BY pv.menu_dino DESC, p.nome, pv.preco_venda
+    ORDER BY (pv.data_pausado IS NOT NULL OR p.data_pausado IS NOT NULL) ASC, pv.menu_dino DESC, p.nome, pv.preco_venda
     LIMIT ${limite}
   `)) as unknown as ItemCardapio[];
 }
@@ -103,7 +104,8 @@ export async function consultarCardapio(filialId: string, termo: string): Promis
       if (canais.length > 0) temMultiCanal = true;
       const d = l.descr.trim() ? ` — ${l.descr.trim()}` : '';
       const fora = l.no_cardapio_online === false ? ' [servido na casa; não aparece no cardápio online]' : '';
-      return `- ${l.nome.trim()}${tam}: ${preco}${d}${fora}`;
+      const pausa = l.pausado ? ' ⛔ [PAUSADO no PDV — EM FALTA HOJE: não ofereça; avise que está temporariamente indisponível e sugira um parecido]' : '';
+      return `- ${l.nome.trim()}${tam}: ${preco}${d}${fora}${pausa}`;
     })
     .join('\n');
   const avisoCanal = temMultiCanal

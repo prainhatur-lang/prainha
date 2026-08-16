@@ -34,6 +34,8 @@ export default function TrabalhePage() {
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [recadastro, setRecadastro] = useState(false);
+  const [saudacao, setSaudacao] = useState('');
+  const [foneDica, setFoneDica] = useState('');
 
   const [cpf, setCpf] = useState('');
   const [nome, setNome] = useState('');
@@ -54,9 +56,11 @@ export default function TrabalhePage() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? 'CPF inválido');
       if (d.achou) {
-        setNome(d.nome ?? '');
-        setWhatsapp(d.whatsapp ?? '');
-        setEndereco(d.endereco ?? '');
+        // Privacidade: o lookup devolve só primeiro nome e telefone MASCARADO
+        // (nada de dado completo em endpoint público) — a pessoa digita os
+        // próprios dados por inteiro.
+        setSaudacao(d.primeiroNome ?? '');
+        setFoneDica(d.foneMascarado ?? '');
         if (Array.isArray(d.funcoes)) setFuncoes(new Set(d.funcoes));
         setExperiencia(d.experiencia ?? '');
         setRecadastro(!!d.recadastro);
@@ -122,7 +126,13 @@ export default function TrabalhePage() {
 
         {etapa === 'form' && (
           <div className="mt-6 space-y-4">
-            {recadastro && (
+            {saudacao && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Olá, {saudacao}! {recadastro ? 'Você já tem cadastro — confira e atualize o que mudou.' : 'Que bom te ver por aqui.'}
+                {foneDica ? ` Confirme seu WhatsApp (${foneDica}).` : ''}
+              </p>
+            )}
+            {!saudacao && recadastro && (
               <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
                 Você já tem cadastro — confira e atualize o que mudou.
               </p>
