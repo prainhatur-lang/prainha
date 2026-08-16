@@ -4,9 +4,10 @@
 
 import OpenAI from 'openai';
 
-/** Direção de fala padrão — calibrada com o áudio-exemplo do Elison (15/08). */
+/** Direção de fala padrão — prévia "D" escolhida pelo Elison em 15/08
+ *  (rodadas de calibração: "menos sensual, um pouco mais rápido"). */
 export const INSTRUCAO_VOZ_NINA =
-  'Português brasileiro. Voz feminina doce, meiga e acolhedora, com sorriso na voz — a Nina, atendente carinhosa de um restaurante à beira do rio. Ritmo natural de mensagem de voz de WhatsApp, sem exagero.';
+  'Português brasileiro. Voz feminina jovem, doce, alegre e bem animada — energia de quem adora o que faz, calorosa e educada. Zero sussurro ou sensualidade: é simpatia limpa e clara. Fala em ritmo ágil de conversa espontânea de WhatsApp, articulada e leve, com sorriso na voz.';
 
 export async function gerarAudioNina(
   texto: string,
