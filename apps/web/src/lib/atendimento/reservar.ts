@@ -28,6 +28,15 @@ import {
   lembreteReservaConfigurado,
 } from '@/lib/whatsapp-otp';
 
+/** Recusa de reserva de HOJE nunca sai com cara de "não temos lugar": quando
+ *  a casa está com espaço, o texto vira convite (pedido do Elison 16/08 —
+ *  cliente ouviu "não conseguimos mais aceitar reservas" com a casa a 49%). */
+function convite(oc: { casaTranquila: boolean } | null): string {
+  return oc?.casaTranquila
+    ? 'A CASA ESTÁ TRANQUILA AGORA, com mesa sobrando: diga isso ao cliente e convide-o a vir sem preocupação ("pode vir tranquila, está calmo e tem mesa pra vocês") — a recepção acomoda na chegada. É PROIBIDO dar a entender que a casa está cheia ou que ele corre risco de não ter lugar.'
+    : 'Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.';
+}
+
 function ehFimDeSemana(ymd: string): boolean {
   const [y, m, d] = ymd.split('-').map(Number);
   const dia = new Date(y, m - 1, d).getDay();
@@ -288,7 +297,7 @@ async function validarSlotEAlocarMesa(p: {
       const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
       const minimo = oc?.corteEstendido ? 20 : 60;
       if (minutosAte < minimo) {
-        return `Em cima da hora não dá mais pra reservar (faltam ${minutosAte} min e o mínimo agora é ${minimo}). Oriente o cliente: é só vir direto — na recepção ele escolhe uma mesa disponível na chegada. Reservar não é obrigatório, e o pôr do sol é por ordem de chegada.`;
+        return `Em cima da hora não dá mais pra reservar (faltam ${minutosAte} min e o mínimo agora é ${minimo}). ${convite(oc)}`;
       }
     }
   }
@@ -310,7 +319,11 @@ async function validarSlotEAlocarMesa(p: {
     }
     if (!liberadoPorOcupacao) {
       const antecipada = p.data !== hojeBr();
-      return `Bloqueado: ${janela.motivo}${antecipada ? ' Reserva antecipada nesse dia é só pela manhã — a tarde abre no PRÓPRIO dia conforme o movimento da casa (explique isso e ofereça a manhã, ou que a pessoa chame aqui no dia).' : ' Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).'}`;
+      if (antecipada) {
+        return `Bloqueado: ${janela.motivo} Reserva antecipada nesse dia é só pela manhã — a tarde abre no PRÓPRIO dia conforme o movimento da casa (explique isso e ofereça a manhã, ou que a pessoa chame aqui no dia).`;
+      }
+      const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
+      return `Bloqueado: ${janela.motivo} ${convite(oc)}`;
     }
   }
 

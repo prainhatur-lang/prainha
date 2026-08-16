@@ -26,8 +26,12 @@ export interface OcupacaoHoje {
   reservasFuturasHoje: number;
   capacidadeMesas: number;
   taxa: number; // 0..1
-  /** Corte estendido de hoje ('17:00' | '15:00') ou null = regra padrão. */
+  /** Corte estendido de hoje ('17:00' | '15:00') ou null = regra padrão.
+   *  Já vem VENCIDO como null: se o horário passou, não é mais liberação. */
   corteEstendido: string | null;
+  /** Casa com espaço agora (<70%), mesmo que a janela de reserva já tenha
+   *  fechado — é o que autoriza o convite "pode vir, tem mesa". */
+  casaTranquila: boolean;
   resumo: string;
 }
 
@@ -64,13 +68,20 @@ export async function medirOcupacaoHoje(
   const reservasFuturasHoje = res?.futuras ?? 0;
   const taxa = Math.min((comandasAbertas + reservasFuturasHoje) / capacidadeMesas, 1);
 
-  const corteEstendido =
+  const casaTranquila = taxa < TAXA_MEDIA;
+  const corteBase =
     taxa < TAXA_FRACA ? CORTE_CASA_FRACA : taxa < TAXA_MEDIA ? CORTE_CASA_MEDIA : null;
+  // Corte que já passou não libera nada: às 15:25 com corte de 15:00 a Nina
+  // chegou a oferecer "dá pra reservar até as 15h" (caso allanis, 16/08).
+  const corteEstendido = corteBase && agora < corteBase ? corteBase : null;
 
   const pct = Math.round(taxa * 100);
+  const medida = `${comandasAbertas} comandas abertas + ${reservasFuturasHoje} reservas a chegar, ~${pct}% de ${capacidadeMesas} mesas`;
   const resumo = corteEstendido
-    ? `Casa com espaço agora (${comandasAbertas} comandas abertas + ${reservasFuturasHoje} reservas a chegar, ~${pct}% de ${capacidadeMesas} mesas) — HOJE a reserva está liberada até ${corteEstendido}.`
-    : `Casa movimentada (${comandasAbertas} comandas abertas + ${reservasFuturasHoje} reservas a chegar, ~${pct}% de ${capacidadeMesas} mesas) — hoje vale a regra padrão (tarde por ordem de chegada).`;
+    ? `Casa com espaço agora (${medida}) — HOJE a reserva está liberada até ${corteEstendido}.`
+    : casaTranquila
+      ? `Casa TRANQUILA agora (${medida}), mas a janela de reserva de hoje já fechou. Não dá pra reservar — e ainda assim é boa notícia: tem mesa sobrando. Convide com segurança ("pode vir tranquila, a casa está calma e tem mesa"), nunca com cara de recusa.`
+      : `Casa movimentada (${medida}) — hoje vale a regra padrão (tarde por ordem de chegada).`;
 
-  return { comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido, resumo };
+  return { comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido, casaTranquila, resumo };
 }
