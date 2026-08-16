@@ -20,6 +20,40 @@ export interface LojaDelivery {
   config: DeliveryConfig;
 }
 
+/** Coage "true"/"false" (texto) pro booleano certo, preservando undefined —
+ *  vários campos têm default ligado via `!== false`, então undefined importa.
+ *  Existe porque o jsonb pode receber string de fora do app (script, migration,
+ *  edição manual): aí `if (config.pausado)` via "false" como pausado enquanto
+ *  `config.pausado === true` via como aberto, e a loja ficava aberta na tela
+ *  recusando todo pedido. Normalizar na carga deixa todo leitor de acordo. */
+function bool(v: unknown): boolean | undefined {
+  if (typeof v === 'boolean') return v;
+  if (v == null) return undefined;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return Boolean(v);
+}
+
+const CHAVES_BOOL = [
+  'ativo',
+  'pausado',
+  'retiradaAtiva',
+  'entregaAtiva',
+  'gratisPrimeiraCompra',
+  'pixAtivo',
+  'cartaoAtivo',
+] as const;
+
+function normalizarConfig(c: DeliveryConfig): DeliveryConfig {
+  const out = { ...c } as Record<string, unknown>;
+  for (const k of CHAVES_BOOL) {
+    const v = bool(out[k]);
+    if (v === undefined) delete out[k];
+    else out[k] = v;
+  }
+  return out as DeliveryConfig;
+}
+
 /** Filiais com delivery ativo (pra página /delivery listar as lojas). */
 export async function lojasDeliveryAtivas(): Promise<LojaDelivery[]> {
   const rows = await db
@@ -32,7 +66,7 @@ export async function lojasDeliveryAtivas(): Promise<LojaDelivery[]> {
     .where(sql`(${schema.filial.deliveryConfig}->>'ativo')::boolean IS TRUE`);
   return rows
     .filter((r) => r.config?.slug)
-    .map((r) => ({ filialId: r.filialId, nome: r.nome, config: r.config! }));
+    .map((r) => ({ filialId: r.filialId, nome: r.nome, config: normalizarConfig(r.config!) }));
 }
 
 /** Resolve a loja pelo slug público. Null se não existe ou delivery desligado. */
@@ -48,8 +82,10 @@ export async function lojaDeliveryPorSlug(slug: string): Promise<LojaDelivery | 
     .where(sql`${schema.filial.deliveryConfig}->>'slug' = ${slug}`)
     .limit(1);
   const r = rows[0];
-  if (!r?.config?.ativo) return null;
-  return { filialId: r.filialId, nome: r.nome, config: r.config };
+  if (!r?.config) return null;
+  const config = normalizarConfig(r.config);
+  if (config.ativo !== true) return null;
+  return { filialId: r.filialId, nome: r.nome, config };
 }
 
 /** Dia da semana (0=domingo..6=sábado) de um YYYY-MM-DD, sem fuso. */
