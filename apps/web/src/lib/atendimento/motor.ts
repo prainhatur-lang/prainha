@@ -118,6 +118,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Fechos-muleta que o modelo insiste em colar no fim ("se precisar estou
+// aqui!") — a regra do prompt segura ~80%; a tesoura garante os 100%.
+// A pergunta legítima de conclusão ("posso ajudar em mais algo?") passa.
+const FECHOS_REPETITIVOS = [
+  /\s*\b(se (você )?(precisar|quiser)|qualquer (coisa|dúvida)|caso (precise|queira))[^.!?\n]*[.!?…]*\s*$/i,
+  /\s*\b(estou|estarei|fico) (aqui|à disposição|por aqui|a postos|sempre por aqui)[^.!?\n]*[.!?…]*\s*$/i,
+  /\s*\bé só (chamar|avisar|me chamar|falar|mandar mensagem)[^.!?\n]*[.!?…]*\s*$/i,
+  /\s*\bconte comigo[^.!?\n]*[.!?…]*\s*$/i,
+];
+
+function limparFechoRepetitivo(texto: string): string {
+  let out = texto.trim();
+  for (let i = 0; i < 3; i++) {
+    const antes = out;
+    for (const p of FECHOS_REPETITIVOS) out = out.replace(p, '').trim();
+    if (out === antes) break;
+  }
+  // Mensagem que É só o fecho: melhor mandar como veio do que mandar nada.
+  return out.length >= 10 ? out : texto.trim();
+}
+
 /** Ao DEVOLVER a conversa pra Nina com pergunta do cliente sem resposta
  *  (última mensagem é 'entrada'), ela responde o pendente na hora — sem
  *  esperar o cliente escrever de novo. Chamada pelo PATCH do painel. */
@@ -440,6 +461,7 @@ export async function processarEntrada(params: {
     }
 
     if (texto) {
+      texto = limparFechoRepetitivo(texto);
       const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
       await db.insert(schema.atendimentoMensagem).values({
         conversaId: registro.conversaId,
