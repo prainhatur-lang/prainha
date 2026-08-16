@@ -22,6 +22,7 @@ import {
   consultarMesa,
 } from './reservar';
 import { consultarCardapio } from './cardapio';
+import { consultarMareTexto } from './mare';
 import { consultarCotacoesFornecedor } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 
@@ -358,6 +359,7 @@ export async function processarEntrada(params: {
           observacoes: dados.observacoes,
         }),
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
+      consultarMare: async (data: string) => consultarMareTexto(data),
       consultarCotacoesFornecedor: () => consultarCotacoesFornecedor(entrada.telefone),
       remarcarReserva: (dados: import('./ia').DadosRemarcarReserva) =>
         remarcarReservaWhatsApp({

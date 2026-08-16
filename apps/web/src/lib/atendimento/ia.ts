@@ -64,6 +64,7 @@ export interface ExecutoresFerramentas {
   cancelarReserva: (data: string | null) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
+  consultarMare: (data: string) => Promise<string>;
   enviarAudioVoz: (texto: string) => Promise<string>;
   consultarCardapio: (termo: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
@@ -325,6 +326,21 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'consultar_mare',
+      description:
+        'Diz se uma data tem MARÉ GRANDE (sizígia — o AquaArena pode pausar brinquedos na maré baixa, pela segurança). Use quando o cliente falar em visitar o PARQUE numa data específica (ou "amanhã"/"sábado").',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'YYYY-MM-DD da visita ao parque' },
+        },
+        required: ['data'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'consultar_mesa',
       description:
         'Diz em qual ÁREA fica uma mesa e quantos lugares tem (mapa oficial de reservas). Use quando o cliente citar um número de mesa ("a mesa 105 fica onde?").',
@@ -555,6 +571,8 @@ export async function gerarResposta(params: {
           resultado = await params.executores.consultarCotacoesFornecedor();
         } else if (tc.function.name === 'enviar_audio_voz') {
           resultado = await params.executores.enviarAudioVoz(String(args.texto ?? ''));
+        } else if (tc.function.name === 'consultar_mare') {
+          resultado = await params.executores.consultarMare(String(args.data ?? ''));
         } else if (tc.function.name === 'consultar_mesa') {
           resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
         } else if (tc.function.name === 'remarcar_reserva') {
