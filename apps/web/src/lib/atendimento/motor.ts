@@ -30,6 +30,18 @@ import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
 
+// RITMO HUMANO (pedido do Elison 16/08): resposta instantânea entrega robô.
+// A conta é o TEMPO TOTAL desde que a mensagem chegou — o que o modelo já
+// gastou pensando conta a favor, então resposta lenta não é punida duas vezes.
+// Uma pessoa lê, pensa e digita: piso de 8s + ~45ms por caractere, teto de 20s
+// (o webhook tem maxDuration 60).
+const RITMO_PISO_MS = 8_000;
+const RITMO_POR_CARACTERE_MS = 45;
+const RITMO_TETO_MS = 20_000;
+// O "escrevendo..." da Meta expira sozinho em ~25s: se ainda falta espera,
+// renova antes de dormir pra bolinha não sumir no meio.
+const DIGITANDO_VALIDADE_MS = 20_000;
+
 export interface EntradaWebhook {
   phoneNumberId: string;
   filialId: string;
@@ -149,6 +161,24 @@ function podarEmojis(texto: string, permitidos: number): string {
   return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?…])/g, '$1').trim();
 }
 
+/** Segura a resposta até completar o tempo de "gente digitando", mantendo o
+ *  "escrevendo..." vivo. Recebe quando a mensagem do cliente chegou. */
+async function ritmoHumano(
+  phoneNumberId: string,
+  waMessageId: string,
+  desde: number,
+  texto: string,
+  digitandoDesde: number,
+): Promise<void> {
+  const alvo = Math.min(RITMO_PISO_MS + texto.length * RITMO_POR_CARACTERE_MS, RITMO_TETO_MS);
+  const falta = alvo - (Date.now() - desde);
+  if (falta <= 0) return;
+  if (Date.now() - digitandoDesde > DIGITANDO_VALIDADE_MS - falta) {
+    void marcarLidaComDigitando(phoneNumberId, waMessageId);
+  }
+  await sleep(falta);
+}
+
 function limparFechoRepetitivo(texto: string): string {
   let out = texto.trim();
   for (let i = 0; i < 3; i++) {
@@ -229,7 +259,9 @@ export async function processarEntrada(params: {
   const { registro, entrada } = params;
   try {
     // "lida" + digitando enquanto pensa (cosmetico, best-effort)
+    const chegouEm = Date.now();
     void marcarLidaComDigitando(entrada.phoneNumberId, entrada.waMessageId);
+    const digitandoDesde = Date.now();
 
     // Transcricao de audio em paralelo com o debounce
     const tarefas: Promise<unknown>[] = [sleep(DEBOUNCE_MS)];
@@ -514,6 +546,13 @@ export async function processarEntrada(params: {
         .filter((m) => m.direcao === 'saida')
         .reduce((s, m) => s + contarEmojis(m.corpo ?? ''), 0);
       texto = podarEmojis(texto, Math.max(0, 1 - jaUsados));
+      await ritmoHumano(
+        entrada.phoneNumberId,
+        entrada.waMessageId,
+        chegouEm,
+        texto,
+        digitandoDesde,
+      );
       const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
       await db.insert(schema.atendimentoMensagem).values({
         conversaId: registro.conversaId,
