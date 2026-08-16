@@ -381,10 +381,12 @@ export async function processarEntrada(params: {
           filialId: entrada.filialId,
           filialNome,
           telefone: entrada.telefone,
-          // Nome vazio derrubava o orçamento inteiro ("Falta o nome do
-          // cliente") e a Nina desistia pra lead — caso Fabiana 16/08, com
-          // tudo já escolhido. O perfil do WhatsApp resolve sozinho.
-          nomeCliente: dados.nomeCliente?.trim() || conversa.nomeCliente || '',
+          // Nome vem SÓ do que o cliente escreveu (decisão do Elison 16/08):
+          // o nome do perfil do WhatsApp é apelido ("Lucas Iphone", "duda",
+          // "✨") e esse nome vai impresso no documento do orçamento. Faltou?
+          // A Nina PERGUNTA — a ferramenta devolve a instrução de perguntar,
+          // e o prompt proíbe desistir pra lead por causa disso.
+          nomeCliente: dados.nomeCliente,
           espaco: dados.espaco,
           data: dados.data,
           hora: dados.hora,

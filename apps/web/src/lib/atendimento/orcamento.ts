@@ -136,7 +136,9 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (YYYY-MM-DD).';
   if (p.data < hojeBr()) return 'A data do evento já passou — peça uma data futura.';
-  if (!p.nomeCliente.trim()) return 'Falta o nome do cliente.';
+  if (!p.nomeCliente.trim()) {
+    return 'Falta o nome do cliente — PERGUNTE agora, numa frase curta e natural ("pra deixar o orçamento no seu nome, como você se chama?"), e chame gerar_orcamento_evento de novo com a resposta. NÃO registre lead nem transfira por causa disso, e NÃO use o nome do perfil do WhatsApp: o nome vai impresso no documento.';
+  }
   if (p.entradas.length < 3 || p.entradas.length > 4) return 'O cliente escolhe 3 ou 4 entradas.';
   if (p.principais.length !== 3) return 'O cliente escolhe exatamente 3 pratos principais (a massa é à parte).';
 
