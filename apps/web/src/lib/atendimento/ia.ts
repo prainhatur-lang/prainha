@@ -470,6 +470,9 @@ export async function gerarResposta(params: {
   historico: MsgHistorico[];
   executores: ExecutoresFerramentas;
   modo?: 'cliente' | 'fornecedor';
+  /** Resumo da ocupação ao vivo (medirOcupacaoHoje) — entra como ÚLTIMA
+   *  system message: posição vence a regra escrita no meio do prompt. */
+  ocupacaoAgora?: string | null;
   retomada?: boolean;
 }): Promise<RespostaNina> {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -496,6 +499,24 @@ export async function gerarResposta(params: {
       role: 'system',
       content:
         'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia e fechando a promessa que ficou ("consultei aqui com a equipe e: pode sim!" / "confirmei com o pessoal: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.',
+    });
+  }
+
+  // ESTADO REAL DA CASA como ÚLTIMA system message (16/08): a regra do corte
+  // dinâmico já estava escrita no meio do prompt e mesmo assim a Nina negou
+  // reserva de hoje com a casa a 27% — ela respondeu "só até 11h30" sem
+  // consultar nada, porque a pergunta ("precisa reservar hoje?") não pareceu
+  // um pedido de reserva. O dado ao vivo agora chega sempre e por último.
+  if (modo === 'cliente' && params.ocupacaoAgora) {
+    mensagens.push({
+      role: 'system',
+      content: `ESTADO DA CASA NESTE MOMENTO (dado ao vivo do PDV, vale MAIS que qualquer horário de corte escrito nos blocos): ${params.ocupacaoAgora}
+
+Como usar, SEM EXCEÇÃO:
+- Antes de dizer qualquer coisa sobre reserva de HOJE — inclusive responder "precisa reservar?", "ainda dá tempo?", "tem mesa?" — olhe a linha acima. Ela é a verdade do dia.
+- Casa com espaço = a reserva de hoje está LIBERADA até o horário indicado: ofereça com entusiasmo (o objetivo é encher a casa) e feche pela ferramenta criar_reserva.
+- É PROIBIDO negar reserva de hoje, mandar "vir direto" ou citar corte de 11h30 quando a linha acima diz que está liberado. Só oriente ordem de chegada quando ela disser que a casa está movimentada.
+- Nunca leia esses números em voz alta pro cliente (quantas comandas, porcentagem) — use pra decidir o que oferecer.`,
     });
   }
 

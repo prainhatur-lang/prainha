@@ -22,6 +22,7 @@ import {
   consultarMesa,
 } from './reservar';
 import { consultarCardapio } from './cardapio';
+import { medirOcupacaoHoje } from './ocupacao';
 import { consultarMareTexto } from './mare';
 import { consultarCotacoesFornecedor } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
@@ -260,11 +261,26 @@ export async function processarEntrada(params: {
     if (!config?.ativo) return;
 
     const [fil] = await db
-      .select({ nome: schema.filial.nome })
+      .select({ nome: schema.filial.nome, reservaConfig: schema.filial.reservaConfig })
       .from(schema.filial)
       .where(eq(schema.filial.id, entrada.filialId))
       .limit(1);
     const filialNome = fil?.nome ?? 'Prainha Bar';
+
+    // OCUPAÇÃO AO VIVO NO PROMPT (16/08): o corte dinâmico existia, mas só
+    // dentro das ferramentas — e a Nina negou reserva de hoje pra um cliente
+    // com a casa a 27% porque respondeu a regra escrita sem consultar nada.
+    // Agora o estado real da casa entra em TODA resposta ao cliente, e ela
+    // não precisa lembrar de chamar ferramenta pra saber que tem mesa vazia.
+    let ocupacaoAgora: string | null = null;
+    if (modo === 'cliente') {
+      try {
+        const oc = await medirOcupacaoHoje(entrada.filialId, fil?.reservaConfig);
+        ocupacaoAgora = oc?.resumo ?? null;
+      } catch (e) {
+        console.error('[nina] ocupacao ao vivo falhou:', e instanceof Error ? e.message : e);
+      }
+    }
 
     const historicoRows = await db
       .select({
@@ -408,6 +424,7 @@ export async function processarEntrada(params: {
           historico,
           executores,
           modo,
+          ocupacaoAgora,
           retomada: params.retomada === true,
         });
       } catch (e1) {
@@ -421,6 +438,7 @@ export async function processarEntrada(params: {
           historico,
           executores,
           modo,
+          ocupacaoAgora,
           retomada: params.retomada === true,
         });
       }
