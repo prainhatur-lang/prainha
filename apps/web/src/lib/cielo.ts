@@ -235,8 +235,12 @@ export async function refundCieloPayment(paymentId: string, amountCents?: number
   }
 
   const data = JSON.parse(responseText);
+  // ATENÇÃO: a Cielo responde 200 até pra NEGATIVA (ex.: ReasonMessage
+  // "Denied" + "Merchant with insufficient balance for return" quando o
+  // saldo do repasse ainda não caiu). Status 10/11 = estorno de fato.
   return {
-    status: data.Status === 10 || data.Status === 11 ? 'reembolsado' : 'pendente',
+    status: data.Status === 10 || data.Status === 11 ? ('reembolsado' as const) : ('negado' as const),
+    reason: data.ProviderReturnMessage ?? data.ReturnMessage ?? data.ReasonMessage ?? null,
   };
 }
 

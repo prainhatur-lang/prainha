@@ -97,8 +97,11 @@ export async function POST(request: NextRequest) {
       // Reserva cancelada enquanto o Pix estava pendente: dinheiro chegou
       // sem reserva viva pra receber — estorna imediatamente.
       if (reserva.status === 'cancelada') {
-        await refundCieloPayment(paymentId);
-        await db.update(schema.reserva).set({ pagamentoStatus: 'reembolsado' }).where(eq(schema.reserva.id, reserva.id));
+        const r = await refundCieloPayment(paymentId);
+        // Negado (ex.: saldo insuficiente antes do repasse) -> marca falha e
+        // o cron retry-estornos reprocessa diariamente até sair.
+        const st = r.status === 'reembolsado' ? 'reembolsado' : 'estorno_falhou_100';
+        await db.update(schema.reserva).set({ pagamentoStatus: st }).where(eq(schema.reserva.id, reserva.id));
       } else {
         const origin = new URL(request.url).origin;
         await marcarReservaPaga(reserva.id, origin);

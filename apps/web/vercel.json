@@ -17,6 +17,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/retry-estornos",
+      "schedule": "0 14,21 * * *"
+    },
+    {
       "path": "/api/cron/cielo-edi",
       "schedule": "30 14,0 * * *"
     },

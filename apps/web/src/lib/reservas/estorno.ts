@@ -13,7 +13,11 @@ import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 export interface ResultadoEstorno {
   percentual: 100 | 50 | 0;
   valorEstornado: number; // R$
+  /** SEMPRE seguro pra mostrar ao cliente (falha vira "em processamento" —
+   *  o cron retry-estornos garante que sai; detalhe técnico fica na auditoria). */
   rotulo: string;
+  /** false = a Cielo negou/errou agora; o cron vai reprocessar. */
+  sucesso: boolean;
 }
 
 export function percentualEstorno(dataReserva: string, horaReserva: string | null): 100 | 50 | 0 {
@@ -50,20 +54,35 @@ export async function estornarReservaSePago(
 
   let novoStatus = 'retido';
   let rotulo = `taxa retida (cancelamento com menos de 24h): R$ ${valorPago.toFixed(2)} não retorna`;
+  let detalheInterno = rotulo;
+  let sucesso = true;
   try {
     if (percentual === 100) {
-      await refundCieloPayment(reserva.pagamentoId);
+      const r = await refundCieloPayment(reserva.pagamentoId);
+      if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado';
-      rotulo = `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} no Pix (48h+ de antecedência); o banco leva alguns dias`;
+      rotulo = `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} no Pix; o banco leva alguns dias`;
+      detalheInterno = rotulo;
     } else if (percentual === 50) {
-      await refundCieloPayment(reserva.pagamentoId, Math.round(valorPago * 50));
+      const r = await refundCieloPayment(reserva.pagamentoId, Math.round(valorPago * 50));
+      if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado_50';
       rotulo = `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} voltam no Pix (cancelamento entre 24h e 48h); o restante é retido`;
+      detalheInterno = rotulo;
     }
   } catch (e) {
-    console.error('[estorno] falhou:', e instanceof Error ? e.message : e);
-    novoStatus = 'estorno_falhou';
-    rotulo = `estorno de ${percentual}% FALHOU na Cielo — equipe precisa estornar manual (R$ ${valorEstornado.toFixed(2)})`;
+    const motivo = e instanceof Error ? e.message : String(e);
+    console.error('[estorno] falhou:', motivo);
+    sucesso = false;
+    // Guarda o percentual devido no status: o cron retry-estornos reprocessa
+    // diariamente (caso clássico: a Cielo nega por saldo insuficiente até o
+    // repasse do Pix cair na conta e-commerce).
+    novoStatus = `estorno_falhou_${percentual}`;
+    rotulo =
+      percentual === 100
+        ? `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} em processamento no Pix — o banco leva alguns dias`
+        : `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} em processamento no Pix — o banco leva alguns dias; o restante é retido`;
+    detalheInterno = `estorno de ${percentual}% (R$ ${valorEstornado.toFixed(2)}) FALHOU na Cielo (${motivo.slice(0, 90)}) — reprocesso automático diário até sair`;
   }
 
   await db
@@ -73,9 +92,55 @@ export async function estornarReservaSePago(
   await registrarAlteracoesReserva(
     reserva.id,
     { observacao: null },
-    { observacao: `estorno automático: ${rotulo}` },
+    { observacao: `estorno automático: ${detalheInterno}` },
     { tipo: 'sistema', nome: 'regra de estorno 48h/24h' },
   );
 
-  return { percentual, valorEstornado, rotulo };
+  return { percentual, valorEstornado, rotulo, sucesso };
+}
+
+/** Retry pro cron: reprocessa reservas com pagamento_status estorno_falhou_*.
+ *  Sucesso -> estornado/estornado_50 + auditoria; falha -> mantém o status
+ *  (tenta de novo no dia seguinte). */
+export async function reprocessarEstornosFalhos(): Promise<{ ok: number; pendentes: number }> {
+  const falhas = await db
+    .select({
+      id: schema.reserva.id,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      pagamentoId: schema.reserva.pagamentoId,
+      pagamentoValor: schema.reserva.pagamentoValor,
+    })
+    .from(schema.reserva)
+    .where(sql`${schema.reserva.pagamentoStatus} like 'estorno_falhou%'`);
+
+  let ok = 0;
+  for (const r of falhas) {
+    if (!r.pagamentoId) continue;
+    const valorPago = Number(r.pagamentoValor ?? 0);
+    if (!(valorPago > 0)) continue;
+    // 'estorno_falhou' legado (sem sufixo) = era o caminho integral
+    const percentual = r.pagamentoStatus === 'estorno_falhou_50' ? 50 : 100;
+    try {
+      const resp =
+        percentual === 100
+          ? await refundCieloPayment(r.pagamentoId)
+          : await refundCieloPayment(r.pagamentoId, Math.round(valorPago * 50));
+      if (resp.status !== 'reembolsado') throw new Error(resp.reason ?? 'negado pela Cielo');
+      const valor = percentual === 100 ? valorPago : valorPago / 2;
+      await db
+        .update(schema.reserva)
+        .set({ pagamentoStatus: percentual === 100 ? 'estornado' : 'estornado_50', atualizadoEm: sql`now()` })
+        .where(eq(schema.reserva.id, r.id));
+      await registrarAlteracoesReserva(
+        r.id,
+        { observacao: null },
+        { observacao: `estorno reprocessado com SUCESSO: R$ ${valor.toFixed(2)} (${percentual}%) devolvidos no Pix` },
+        { tipo: 'sistema', nome: 'cron retry-estornos' },
+      );
+      ok += 1;
+    } catch (e) {
+      console.error('[retry-estornos] ainda falhando', r.id, e instanceof Error ? e.message : e);
+    }
+  }
+  return { ok, pendentes: falhas.length - ok };
 }

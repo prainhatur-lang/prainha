@@ -80,7 +80,8 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   let estorno: 'ok' | 'falhou' | null = null;
   if (acao === 'cancelar' && p.pagamentoStatus === 'pago' && p.pagamentoId) {
     try {
-      await refundCieloPayment(p.pagamentoId);
+      const r = await refundCieloPayment(p.pagamentoId);
+      if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       estorno = 'ok';
     } catch (e) {
       console.error('delivery: estorno falhou:', (e as Error).message);
