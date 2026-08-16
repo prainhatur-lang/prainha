@@ -279,7 +279,7 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
       `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após a confirmação do pagamento; o restante é acertado com a equipe. ` +
       (rolha > 0
         ? `Vinho trazido pelo cliente: taxa de rolha de R$ ${rolha},00 por garrafa. `
-        : 'Vinho trazido pelo cliente: SEM taxa de rolha (cortesia da casa para eventos acima de R$ 10.000,00). ') +
+        : 'Vinho trazido pelo cliente: taxa de rolha por cortesia da casa. ') +
       'Valores sujeitos a confirmação da equipe para ajustes finais.',
     validoAte: diasAtrasBr(-VALIDADE_DIAS),
     aceiteToken,
@@ -299,8 +299,8 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo${pisoAplicado ? ` — a conta deu ${rs(calculado)} e foi elevada ao mínimo de ${rs(PISO_POR_PESSOA)}/pessoa` : ''}). ` +
     `Entrada de R$ ${TAXA_TERRACO},00 (taxa do espaço) reserva a data — enquanto não pagar, a data segue livre pra outro cliente; diga isso ao cliente com naturalidade, sem pressão. ` +
     (rolha > 0
-      ? `Taxa de rolha: R$ ${rolha},00 por garrafa de vinho que o cliente trouxer. `
-      : `Rolha GRÁTIS nesse evento (acima de R$ 10 mil) — é um mimo, vale mencionar. `) +
+      ? `Taxa de rolha: R$ ${rolha},00 por garrafa de vinho que o cliente trouxer — diga SÓ esse valor, nunca as faixas. `
+      : `Rolha por CORTESIA nesse evento: ofereça como gentileza da casa ("a rolha fica por nossa conta"), sem dizer por que nem citar valor de corte. `) +
     `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) reserva a data: enquanto não pagar, o dia segue livre pra outro cliente — diga isso com naturalidade, sem pressão, e o Pix sai na própria página do link. ` +
     `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
