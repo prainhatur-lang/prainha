@@ -80,6 +80,8 @@
     "migrate:delivery-precos-estoque": "tsx scripts/migrate-delivery-precos-estoque.ts",
     "migrate:produto-etiqueta": "tsx scripts/migrate-produto-etiqueta.ts",
     "sync:etiquetas": "tsx scripts/sync-etiquetas.ts",
+    "migrate:delivery-complemento": "tsx scripts/migrate-delivery-complemento.ts",
+    "sync:complementos": "tsx scripts/sync-complementos.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
   },

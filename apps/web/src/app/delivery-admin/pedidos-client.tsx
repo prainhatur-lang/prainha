@@ -13,6 +13,7 @@ interface ItemPedido {
   qtd: number;
   total: string;
   obs: string | null;
+  complementos: Array<{ nome: string; precoCentavos: number }> | null;
 }
 
 interface Pedido {
@@ -445,6 +446,11 @@ function CardPedido({
           <li key={idx} className="flex justify-between">
             <span className="text-slate-700">
               <span className="font-semibold">{i.qtd}×</span> {i.nome}
+              {i.complementos?.length ? (
+                <span className="block text-xs text-sky-700">
+                  ↳ {i.complementos.map((c) => c.nome).join(', ')}
+                </span>
+              ) : null}
               {i.obs ? <span className="block text-xs text-amber-700">↳ {i.obs}</span> : null}
             </span>
             <span className="text-slate-500">{brl(i.total)}</span>

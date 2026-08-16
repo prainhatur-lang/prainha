@@ -37,7 +37,14 @@ interface PedidoResp {
     qrCodeString: string | null;
     qrCodeBase64: string | null;
   };
-  itens: Array<{ nome: string; qtd: number; precoUnit: string; total: string; obs: string | null }>;
+  itens: Array<{
+    nome: string;
+    qtd: number;
+    precoUnit: string;
+    total: string;
+    obs: string | null;
+    complementos: Array<{ nome: string; precoCentavos: number }> | null;
+  }>;
   loja: {
     nome: string;
     slug: string | null;
@@ -334,6 +341,11 @@ export function StatusClient({ token }: { token: string }) {
             <li key={idx} className="flex justify-between py-2 text-sm">
               <span className="text-[#4a382a]">
                 {i.qtd}× {i.nome}
+                {i.complementos?.length ? (
+                  <span className="block text-xs text-[#8a7a64]">
+                    + {i.complementos.map((c) => c.nome).join(', ')}
+                  </span>
+                ) : null}
                 {i.obs ? <span className="block text-xs text-[#8a7a64]">{i.obs}</span> : null}
               </span>
               <span className="text-[#1d130c]">{brl(i.total)}</span>

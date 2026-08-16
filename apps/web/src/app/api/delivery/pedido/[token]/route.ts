@@ -68,6 +68,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       precoUnit: schema.deliveryPedidoItem.precoUnit,
       total: schema.deliveryPedidoItem.total,
       obs: schema.deliveryPedidoItem.obs,
+      complementos: schema.deliveryPedidoItem.complementos,
     })
     .from(schema.deliveryPedidoItem)
     .where(eq(schema.deliveryPedidoItem.pedidoId, p.id));

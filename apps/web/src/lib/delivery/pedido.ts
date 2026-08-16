@@ -45,7 +45,7 @@ export interface NovoPedidoInput {
   tipo: 'entrega' | 'retirada';
   endereco?: DeliveryEnderecoCliente;
   agendamento: { asap?: boolean; data?: string; hora?: string };
-  itens: Array<{ itemId: string; qtd: number; obs?: string }>;
+  itens: Array<{ itemId: string; qtd: number; obs?: string; complementos?: string[] }>;
   cupomCodigo?: string;
   observacao?: string;
   pagamentoMetodo: 'pix' | 'cartao';
@@ -128,6 +128,24 @@ export async function criarPedidoDelivery(params: {
     .where(and(eq(schema.deliveryItem.filialId, filialId), inArray(schema.deliveryItem.id, ids)));
   const porId = new Map(doBanco.map((i) => [i.id, i]));
 
+  // Complementos permitidos, com o preço do BANCO — o navegador manda só o id.
+  const complementosOk = await db
+    .select({
+      id: schema.deliveryComplemento.id,
+      itemId: schema.deliveryComplemento.itemId,
+      nome: schema.deliveryComplemento.nome,
+      preco: schema.deliveryComplemento.preco,
+    })
+    .from(schema.deliveryComplemento)
+    .where(
+      and(
+        eq(schema.deliveryComplemento.filialId, filialId),
+        eq(schema.deliveryComplemento.ativo, true),
+        inArray(schema.deliveryComplemento.itemId, ids),
+      ),
+    );
+  const complPorId = new Map(complementosOk.map((c) => [c.id, c]));
+
   // Saldo real no Consumer, conferido AGORA (o cardápio pode ter sido
   // carregado faz tempo e o estoque virou nesse meio-tempo).
   const saldos = await saldosDasVariantes(
@@ -142,6 +160,7 @@ export async function criarPedidoDelivery(params: {
     qtd: number;
     precoUnitCentavos: number;
     obs: string | null;
+    complementos: Array<{ nome: string; precoCentavos: number }>;
   }> = [];
   for (const i of input.itens) {
     const item = porId.get(i.itemId);
@@ -160,7 +179,17 @@ export async function criarPedidoDelivery(params: {
             : `"${item.nome}" esgotou — remova do carrinho.`,
       };
     }
-    const precoUnit = centavos(item.preco);
+    // Complemento só entra se pertencer A ESTE item (id de outro prato é
+    // ignorado) e o preço é sempre o do banco.
+    const escolhidos = Array.isArray(i.complementos) ? i.complementos.slice(0, 20) : [];
+    const compl: Array<{ nome: string; precoCentavos: number }> = [];
+    for (const cid of escolhidos) {
+      const c = typeof cid === 'string' ? complPorId.get(cid) : undefined;
+      if (!c || c.itemId !== item.id) continue;
+      compl.push({ nome: c.nome, precoCentavos: centavos(c.preco) });
+    }
+
+    const precoUnit = centavos(item.preco) + compl.reduce((s, c) => s + c.precoCentavos, 0);
     subtotalCentavos += precoUnit * qtd;
     itensPedido.push({
       itemId: item.id,
@@ -168,6 +197,7 @@ export async function criarPedidoDelivery(params: {
       qtd,
       precoUnitCentavos: precoUnit,
       obs: txt(i.obs, 200),
+      complementos: compl,
     });
   }
 
@@ -289,6 +319,7 @@ export async function criarPedidoDelivery(params: {
       precoUnit: reais(i.precoUnitCentavos),
       total: reais(i.precoUnitCentavos * i.qtd),
       obs: i.obs,
+      complementos: i.complementos.length > 0 ? i.complementos : null,
     })),
   );
 

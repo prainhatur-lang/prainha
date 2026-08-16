@@ -7,6 +7,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+interface ComplementoCardapio {
+  id: string;
+  nome: string;
+  precoCentavos: number;
+}
+
 interface ItemCardapio {
   id: string;
   nome: string;
@@ -15,6 +21,8 @@ interface ItemCardapio {
   fotoUrl: string | null;
   esgotado: boolean;
   destaque: boolean;
+  /** Sugeridos depois da escolha do prato (arroz, purê, ponto da carne). */
+  complementos: ComplementoCardapio[];
 }
 
 interface CategoriaCardapio {
@@ -63,6 +71,8 @@ interface LinhaCarrinho {
   precoCentavos: number;
   qtd: number;
   obs: string;
+  /** Complementos escolhidos; o preço deles soma no total da linha. */
+  complementos: ComplementoCardapio[];
 }
 
 interface FreteResult {
@@ -124,6 +134,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   const [itemModal, setItemModal] = useState<ItemCardapio | null>(null);
   const [modalQtd, setModalQtd] = useState(1);
   const [modalObs, setModalObs] = useState('');
+  const [modalCompl, setModalCompl] = useState<Set<string>>(new Set());
   const [busca, setBusca] = useState('');
 
   // checkout
@@ -166,7 +177,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       setCarrinho(
         salvo
           .filter((l) => validos.has(l.itemId))
-          .map((l) => ({ ...l, precoCentavos: validos.get(l.itemId)! })),
+          .map((l) => ({
+            ...l,
+            precoCentavos: validos.get(l.itemId)!,
+            complementos: Array.isArray(l.complementos) ? l.complementos : [],
+          })),
       );
     } catch {
       /* carrinho corrompido — começa vazio */
@@ -197,8 +212,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
     }
   }, [carrinho, chaveCart]);
 
+  /** Preço da linha = item + complementos escolhidos, vezes a quantidade. */
+  const totalLinha = (l: LinhaCarrinho) =>
+    (l.precoCentavos + l.complementos.reduce((s, c) => s + c.precoCentavos, 0)) * l.qtd;
+
   const subtotal = useMemo(
-    () => carrinho.reduce((s, l) => s + l.precoCentavos * l.qtd, 0),
+    () => carrinho.reduce((s, l) => s + totalLinha(l), 0),
     [carrinho],
   );
   const qtdTotal = useMemo(() => carrinho.reduce((s, l) => s + l.qtd, 0), [carrinho]);
@@ -207,9 +226,20 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   const total = subtotal - desconto + (taxa ?? 0);
   const minimoCentavos = loja.pedidoMinimo != null ? Math.round(loja.pedidoMinimo * 100) : 0;
 
-  function addItem(item: ItemCardapio, qtd: number, obs: string) {
+  function addItem(
+    item: ItemCardapio,
+    qtd: number,
+    obs: string,
+    complementos: ComplementoCardapio[] = [],
+  ) {
+    const chaveCompl = complementos.map((c) => c.id).sort().join(',');
     setCarrinho((prev) => {
-      const ig = prev.findIndex((l) => l.itemId === item.id && l.obs === obs.trim());
+      const ig = prev.findIndex(
+        (l) =>
+          l.itemId === item.id &&
+          l.obs === obs.trim() &&
+          l.complementos.map((c) => c.id).sort().join(',') === chaveCompl,
+      );
       if (ig >= 0) {
         const novo = [...prev];
         novo[ig] = { ...novo[ig], qtd: Math.min(novo[ig].qtd + qtd, 99) };
@@ -223,6 +253,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           precoCentavos: item.precoCentavos,
           qtd,
           obs: obs.trim(),
+          complementos,
         },
       ];
     });
@@ -361,7 +392,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               ? { cep, rua, numero, complemento, bairro, cidade: loja.cidade, uf: loja.uf, referencia }
               : undefined,
           agendamento: asap ? { asap: true } : { data: diaSel, hora: horaSel },
-          itens: carrinho.map((l) => ({ itemId: l.itemId, qtd: l.qtd, obs: l.obs || undefined })),
+          itens: carrinho.map((l) => ({
+            itemId: l.itemId,
+            qtd: l.qtd,
+            obs: l.obs || undefined,
+            complementos: l.complementos.map((c) => c.id),
+          })),
           cupomCodigo: cupom?.ok ? cupom.codigo : undefined,
           observacao: observacao || undefined,
           pagamentoMetodo: pagamento,
@@ -432,8 +468,13 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 <li key={`${l.itemId}-${idx}`} className="flex items-center gap-3 py-3">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-[#1d130c]">{l.nome}</p>
+                    {l.complementos.length > 0 ? (
+                      <p className="text-xs text-[#8a7a64]">
+                        + {l.complementos.map((c) => c.nome).join(', ')}
+                      </p>
+                    ) : null}
                     {l.obs ? <p className="truncate text-xs text-[#8a7a64]">{l.obs}</p> : null}
-                    <p className="text-xs text-[#b3411c]">{brl(l.precoCentavos)}</p>
+                    <p className="text-xs text-[#b3411c]">{brl(totalLinha(l) / l.qtd)}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -900,6 +941,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   setItemModal(i);
                   setModalQtd(1);
                   setModalObs('');
+                  setModalCompl(new Set());
                 }}
                 className="w-40 shrink-0 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all lg:w-auto lg:hover:-translate-y-0.5 lg:hover:border-[#e7723a]"
               >
@@ -945,6 +987,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                         setItemModal(i);
                         setModalQtd(1);
                         setModalObs('');
+                        setModalCompl(new Set());
                       }}
                       className={`flex h-full w-full items-stretch gap-3 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all ${
                         i.esgotado ? 'opacity-55' : 'hover:-translate-y-0.5 hover:border-[#e7723a]'
@@ -1036,6 +1079,50 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             <p className="mt-2 text-base font-bold text-[#b3411c]">
               {brl(itemModal.precoCentavos)}
             </p>
+            {itemModal.complementos.length > 0 ? (
+              <div className="mt-4 border-t border-[#f0e4cc] pt-3">
+                <p className={lbl}>Quer acompanhar com algo?</p>
+                <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto pr-1">
+                  {itemModal.complementos.map((c) => {
+                    const marcado = modalCompl.has(c.id);
+                    return (
+                      <li key={c.id}>
+                        <label
+                          className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-2 py-2 ${
+                            marcado ? 'bg-[#e7723a]/10' : 'hover:bg-[#fbf6ec]'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={marcado}
+                            onChange={(e) =>
+                              setModalCompl((prev) => {
+                                const n = new Set(prev);
+                                if (e.target.checked) n.add(c.id);
+                                else n.delete(c.id);
+                                return n;
+                              })
+                            }
+                            className="h-4 w-4 shrink-0 accent-[#e7723a]"
+                          />
+                          <span className="min-w-0 flex-1 truncate text-sm text-[#4a382a]">
+                            {c.nome}
+                          </span>
+                          <span
+                            className={`shrink-0 text-sm ${
+                              c.precoCentavos > 0 ? 'font-medium text-[#b3411c]' : 'text-[#8a7a64]'
+                            }`}
+                          >
+                            {c.precoCentavos > 0 ? `+ ${brl(c.precoCentavos)}` : 'grátis'}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
+
             <div className="mt-3">
               <label className={lbl}>Alguma observação?</label>
               <input
@@ -1063,12 +1150,20 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               </div>
               <button
                 onClick={() => {
-                  addItem(itemModal, modalQtd, modalObs);
+                  const escolhidos = itemModal.complementos.filter((c) => modalCompl.has(c.id));
+                  addItem(itemModal, modalQtd, modalObs, escolhidos);
                   setItemModal(null);
                 }}
                 className="flex-1 rounded-full bg-[#e7723a] px-4 py-3 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[#df5a35]"
               >
-                Adicionar · {brl(itemModal.precoCentavos * modalQtd)}
+                Adicionar ·{' '}
+                {brl(
+                  (itemModal.precoCentavos +
+                    itemModal.complementos
+                      .filter((c) => modalCompl.has(c.id))
+                      .reduce((s, c) => s + c.precoCentavos, 0)) *
+                    modalQtd,
+                )}
               </button>
             </div>
           </div>

@@ -230,8 +230,42 @@ export const deliveryPedidoItem = pgTable(
     total: numeric('total', { precision: 10, scale: 2 }).notNull(),
     /** Observação por item ("sem cebola"). */
     obs: varchar('obs', { length: 200 }),
+    /** Complementos escolhidos, com nome e preço congelados no momento da
+     *  compra: [{ nome, precoCentavos }]. Já somados no preco_unit. */
+    complementos: jsonb('complementos').$type<Array<{ nome: string; precoCentavos: number }>>(),
   },
   (t) => ({
     pedidoIdx: index('delivery_pedido_item_pedido_idx').on(t.pedidoId),
+  }),
+);
+
+/** Complemento oferecido DEPOIS que o cliente escolhe o prato (arroz, purê,
+ *  legumes, ponto da carne...). Espelha produto_variante_complemento do
+ *  Consumer, mas com preço próprio de delivery — no salão o acompanhamento
+ *  como complemento custa menos que avulso (Arroz R$7 vs R$9). */
+export const deliveryComplemento = pgTable(
+  'delivery_complemento',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** Item do cardápio que oferece este complemento. */
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => deliveryItem.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 160 }).notNull(),
+    /** Preço no delivery. 0 = escolha sem custo (ponto da carne, talher). */
+    preco: numeric('preco', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Variante do salão de onde veio (pra re-sincronizar preço). */
+    varianteId: uuid('variante_id').references(() => produtoVariante.id, {
+      onDelete: 'set null',
+    }),
+    ativo: boolean('ativo').notNull().default(true),
+    ordem: integer('ordem').notNull().default(0),
+  },
+  (t) => ({
+    itemIdx: index('delivery_complemento_item_idx').on(t.itemId, t.ordem),
+    filialIdx: index('delivery_complemento_filial_idx').on(t.filialId),
   }),
 );

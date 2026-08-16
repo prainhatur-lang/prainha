@@ -59,6 +59,23 @@ export default async function DeliveryLojaPage(props: {
     itens.filter((i) => i.checarEstoque && i.varianteId).map((i) => i.varianteId!),
   );
 
+  // Complementos: o que a casa oferece DEPOIS da escolha do prato.
+  const complementos = await db
+    .select({
+      id: schema.deliveryComplemento.id,
+      itemId: schema.deliveryComplemento.itemId,
+      nome: schema.deliveryComplemento.nome,
+      preco: schema.deliveryComplemento.preco,
+    })
+    .from(schema.deliveryComplemento)
+    .where(
+      and(
+        eq(schema.deliveryComplemento.filialId, loja.filialId),
+        eq(schema.deliveryComplemento.ativo, true),
+      ),
+    )
+    .orderBy(asc(schema.deliveryComplemento.ordem), asc(schema.deliveryComplemento.nome));
+
   const { dias, asapDisponivel } = agendaDelivery(loja.config);
   const c = loja.config;
 
@@ -97,6 +114,13 @@ export default async function DeliveryLojaPage(props: {
             fotoUrl: i.fotoUrl,
             esgotado: semDisponibilidade(i, saldos),
             destaque: i.destaque,
+            complementos: complementos
+              .filter((c) => c.itemId === i.id)
+              .map((c) => ({
+                id: c.id,
+                nome: c.nome,
+                precoCentavos: Math.round(Number(c.preco) * 100),
+              })),
           })),
       }))}
       agendaInicial={{ dias, asapDisponivel }}

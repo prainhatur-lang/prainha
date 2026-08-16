@@ -95,6 +95,7 @@ export default async function DeliveryAdminPage(props: {
             qtd: schema.deliveryPedidoItem.qtd,
             total: schema.deliveryPedidoItem.total,
             obs: schema.deliveryPedidoItem.obs,
+            complementos: schema.deliveryPedidoItem.complementos,
           })
           .from(schema.deliveryPedidoItem)
           .where(
