@@ -252,12 +252,18 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     sobremesaIncluida: !!sobremesa,
     sobremesaDescricao: sobremesa ? sobremesa.nome : null,
     taxaEspaco: TAXA_TERRACO.toFixed(2),
+    // ENTRADA = a taxa do espaço (Elison, 16/08): é o que segura a data, é
+    // valor redondo e não cresce com o tamanho do evento. Pagou = data
+    // fechada (eventoQueSeguraData barra qualquer outro no mesmo dia).
+    entradaValor: TAXA_TERRACO.toFixed(2),
     observacoes: `Orçamento montado pela Nina no WhatsApp.${p.observacoes ? ` ${p.observacoes.slice(0, 500)}` : ''}`,
     // Incluído/Não incluído: espelha o texto dos orçamentos reais da casa.
     condicoes:
       'Entradas e pratos servidos à vontade durante o evento. ' +
       'Incluído: mesas e cadeiras, material de serviço (pratos, talheres, taças, guardanapos), pessoal de serviço e de limpeza, estacionamento fechado e gerador em caso de falta de energia. ' +
       'Não incluído: decoração, doces, bolo e bebidas — bebidas servidas por consumo, ou em pacote a combinar com a equipe. ' +
+      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após o pagamento. O restante é acertado com a equipe. ` +
+      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após a confirmação do pagamento; o restante é acertado com a equipe. ` +
       'Valores sujeitos a confirmação da equipe para ajustes finais.',
     validoAte: diasAtrasBr(-VALIDADE_DIAS),
     aceiteToken,
@@ -275,6 +281,8 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     `ORÇAMENTO CRIADO: Terraço, ${p.data.split('-').reverse().join('/')}${p.hora ? ` às ${p.hora}` : ''}, ${pessoas} pessoas, ${sob}. ` +
     `${composicao}. ` +
     `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo${pisoAplicado ? ` — a conta deu ${rs(calculado)} e foi elevada ao mínimo de ${rs(PISO_POR_PESSOA)}/pessoa` : ''}). ` +
+    `Entrada de R$ ${TAXA_TERRACO},00 (taxa do espaço) reserva a data — enquanto não pagar, a data segue livre pra outro cliente; diga isso ao cliente com naturalidade, sem pressão. ` +
+    `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) reserva a data: enquanto não pagar, o dia segue livre pra outro cliente — diga isso com naturalidade, sem pressão, e o Pix sai na própria página do link. ` +
     `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
 }
