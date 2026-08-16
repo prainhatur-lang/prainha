@@ -22,8 +22,19 @@ import type { ReservaConfig } from '@concilia/db/schema';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { ehDiaEspecial } from './feriados';
 
-/** Até que hora essa data aceita reserva: em fim de semana/feriado vale o
- *  corte curto (fimHojeFimDeSemana); nos outros dias, o fim da janela geral.
+/** Alta estação (regra do Elison, 16/08): ~15 de dezembro até o Carnaval —
+ *  reserva ANTECIPADA só pela manhã (corte curto vale TODOS os dias); a
+ *  tarde do PRÓPRIO dia é liberada aos poucos conforme a ocupação real
+ *  (lib/atendimento/ocupacao, hoje só no fluxo da Nina). Ajustar as datas
+ *  a cada temporada — 2026/27: 15/12 a 10/02 (quarta de cinzas). */
+export function emAltaEstacao(ymd: string): boolean {
+  const md = ymd.slice(5); // MM-DD
+  return md >= '12-15' || md <= '02-10';
+}
+
+/** Até que hora essa data aceita reserva: em fim de semana/feriado — e em
+ *  QUALQUER dia da alta estação — vale o corte curto (fimHojeFimDeSemana);
+ *  nos outros dias, o fim da janela geral.
  *  null = sem janela configurada (sem restrição de horário). */
 export async function horaMaximaDoDia(
   cfg: ReservaConfig | null | undefined,
@@ -31,7 +42,9 @@ export async function horaMaximaDoDia(
 ): Promise<string | null> {
   const a = cfg?.atendimento;
   if (!a) return null;
-  if (await ehDiaEspecial(data)) return a.fimHojeFimDeSemana < a.fim ? a.fimHojeFimDeSemana : a.fim;
+  if ((await ehDiaEspecial(data)) || emAltaEstacao(data)) {
+    return a.fimHojeFimDeSemana < a.fim ? a.fimHojeFimDeSemana : a.fim;
+  }
   return a.fim;
 }
 

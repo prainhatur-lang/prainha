@@ -17,6 +17,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
+import { medirOcupacaoHoje } from './ocupacao';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import {
@@ -88,6 +89,11 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
   if (janela.bloqueado) return `Não dá pra reservar pra ${dataBr(data)}: ${janela.motivo}`;
 
   const linhas: string[] = [];
+  // Consulta pra HOJE inclui a ocupação ao vivo e o corte dinâmico do dia
+  if (data === hojeBr()) {
+    const oc = await medirOcupacaoHoje(filialId, cfg);
+    if (oc) linhas.push(`OCUPAÇÃO AGORA: ${oc.resumo}`);
+  }
   for (const area of cfg.areas) {
     if (!area.ativo || area.somenteEventos) continue;
     const mesas = (area.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
@@ -271,7 +277,20 @@ async function validarSlotEAlocarMesa(p: {
   }
   const janela = await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
   if (janela.bloqueado) {
-    return `Bloqueado: ${janela.motivo} Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).`;
+    // CORTE DINÂMICO (regra do Elison): pedido pra HOJE barrado pelo corte
+    // padrão, mas a casa está com espaço agora → libera até o corte
+    // estendido (15:00/17:00 conforme a ocupação real), pra encher a casa.
+    let liberadoPorOcupacao = false;
+    if (p.data === hojeBr()) {
+      const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
+      if (oc?.corteEstendido && p.hora <= oc.corteEstendido && horaAgoraBr() < oc.corteEstendido) {
+        liberadoPorOcupacao = true;
+      }
+    }
+    if (!liberadoPorOcupacao) {
+      const antecipada = p.data !== hojeBr();
+      return `Bloqueado: ${janela.motivo}${antecipada ? ' Reserva antecipada nesse dia é só pela manhã — a tarde abre no PRÓPRIO dia conforme o movimento da casa (explique isso e ofereça a manhã, ou que a pessoa chame aqui no dia).' : ' Se o pedido era pra HOJE, oriente: pode vir direto — na recepção o cliente escolhe uma mesa disponível na chegada (reservar não é obrigatório).'}`;
+    }
   }
 
   const areaCfg = p.cfg.areas.find((a) => a.nome.toLowerCase() === p.area.trim().toLowerCase());
