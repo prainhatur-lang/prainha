@@ -18,6 +18,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { enviarTextoWhatsApp } from '@/lib/whatsapp-otp';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
+import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
 import { enviarTexto } from '@/lib/atendimento/zap';
 import {
@@ -289,7 +290,16 @@ async function tratarPayload(payload: string, from: string | null) {
 
   // Pre-select pra auditoria saber o status ANTERIOR (o update sobrescreve).
   const [antes] = await db
-    .select({ id: schema.reserva.id, status: schema.reserva.status, nome: schema.reserva.clienteNome })
+    .select({
+      id: schema.reserva.id,
+      status: schema.reserva.status,
+      nome: schema.reserva.clienteNome,
+      data: schema.reserva.data,
+      hora: schema.reserva.hora,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      pagamentoId: schema.reserva.pagamentoId,
+      pagamentoValor: schema.reserva.pagamentoValor,
+    })
     .from(schema.reserva)
     .where(and(eq(schema.reserva.cancelToken, token), sql`${schema.reserva.status} <> 'cancelada'`))
     .limit(1);
@@ -323,10 +333,20 @@ async function tratarPayload(payload: string, from: string | null) {
       { status: 'cancelada' },
       { tipo: 'cliente', nome: 'cliente via WhatsApp' },
     );
+    // Lounge pago: regra de estorno 48h/24h automática
+    const estorno = await estornarReservaSePago({ ...antes, data: String(antes.data) }).catch(() => null);
     if (from) {
+      const linhaEstorno =
+        estorno == null
+          ? ''
+          : estorno.percentual === 100
+            ? `\n💰 Seu Pix de R$ ${Number(antes.pagamentoValor).toFixed(2)} volta integral (cancelamento com 48h+ de antecedência) — o banco leva alguns dias.`
+            : estorno.percentual === 50
+              ? `\n💰 Metade da taxa (R$ ${estorno.valorEstornado.toFixed(2)}) volta no seu Pix — cancelamento entre 24h e 48h devolve 50%.`
+              : `\nℹ️ Como o cancelamento foi com menos de 24 horas, a taxa do lounge é retida (regra da casa).`;
       await enviarTextoWhatsApp(
         from,
-        `Tudo bem! Sua reserva foi cancelada e a mesa liberada. Quando quiser, é só reservar de novo. 🙏`,
+        `Tudo bem! Sua reserva foi cancelada e a mesa liberada. Quando quiser, é só reservar de novo. 🙏${linhaEstorno}`,
       ).catch(() => {});
     }
   }

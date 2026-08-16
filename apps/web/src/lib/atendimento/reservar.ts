@@ -18,6 +18,7 @@ import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
+import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import {
@@ -180,6 +181,9 @@ async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
       status: schema.reserva.status,
       nome: schema.reserva.clienteNome,
       cancelToken: schema.reserva.cancelToken,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      pagamentoId: schema.reserva.pagamentoId,
+      pagamentoValor: schema.reserva.pagamentoValor,
     })
     .from(schema.reserva)
     .where(
@@ -232,8 +236,13 @@ export async function cancelarReservaWhatsApp(p: {
     { tipo: 'cliente', nome: 'cliente via Nina (WhatsApp)' },
   );
 
+  // Lounge pago: aplica a regra de estorno (48h+ integral / 24-48h 50% /
+  // <24h retido) e informa a Nina do resultado pra ela explicar.
+  const estorno = await estornarReservaSePago({ ...alvo, data: String(alvo.data) }).catch(() => null);
+  const linhaEstorno = estorno ? ` PAGAMENTO: ${estorno.rotulo}. Explique isso ao cliente com clareza.` : '';
+
   const mesas = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
-  return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada. Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
+  return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada.${linhaEstorno} Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
 }
 
 interface SlotAlocado {
