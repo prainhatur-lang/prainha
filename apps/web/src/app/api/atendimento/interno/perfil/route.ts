@@ -1,7 +1,8 @@
 // POST /api/atendimento/interno/perfil — troca a FOTO DE PERFIL do número
 // da Nina no WhatsApp (mesma auth por token de filial dos outros /interno/*).
 //
-//  { token, imageBase64 }  -> { ok }
+//  { token, imageBase64 }    -> { ok }            (troca a foto)
+//  { token, consultar: true } -> { profile_picture_url, about, ... }  (só lê)
 //
 // Fluxo Meta: descobre o app do token (GET /app) → Resumable Upload
 // (sessão + binário → handle) → whatsapp_business_profile com o handle.
@@ -20,10 +21,12 @@ export async function POST(request: Request) {
   const b = (await request.json().catch(() => null)) as {
     token?: string;
     imageBase64?: string;
+    consultar?: boolean;
   } | null;
   const token = typeof b?.token === 'string' ? b.token : '';
   const imageBase64 = typeof b?.imageBase64 === 'string' ? b.imageBase64 : '';
-  if (token.length < 20 || !imageBase64 || imageBase64.length > 3_000_000) {
+  const consultar = b?.consultar === true;
+  if (token.length < 20 || (!consultar && (!imageBase64 || imageBase64.length > 3_000_000))) {
     return NextResponse.json({ error: 'payload inválido (máx ~2MB de imagem)' }, { status: 400 });
   }
   const [fil] = await db
@@ -41,6 +44,15 @@ export async function POST(request: Request) {
     .where(eq(schema.whatsappNumero.filialId, fil.id))
     .limit(1);
   if (!numero) return NextResponse.json({ error: 'filial sem número' }, { status: 400 });
+
+  if (consultar) {
+    const q = await fetch(
+      `https://graph.facebook.com/${VER}/${numero.phoneNumberId}/whatsapp_business_profile?fields=profile_picture_url,about,description`,
+      { headers: { Authorization: `Bearer ${metaToken}` } },
+    );
+    const qJson = await q.json().catch(() => null);
+    return NextResponse.json(qJson, { status: q.ok ? 200 : 502 });
+  }
 
   const img = Buffer.from(imageBase64, 'base64');
 
