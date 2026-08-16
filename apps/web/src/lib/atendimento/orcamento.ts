@@ -20,6 +20,7 @@ import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { buscarItensCardapio, type ItemCardapio } from './cardapio';
 
 // Fatores da regra "média" (mudar aqui recalibra a Nina; futuro: painel).
+const PRECO_MINIMO_OPCAO = 5; // abaixo disso é placeholder de PDV, não prato
 const ENTRADA_PORCAO_A_CADA = 3; // 1 porção de cada entrada a cada 3 pessoas
 const PRINCIPAL_PORCOES_POR_PESSOA = 1; // equivalente individual por pessoa
 // Piso comercial (Elison, 14/08): evento no Terraço não sai por menos de
@@ -38,7 +39,7 @@ const CAP_TERRACO = 50;
 const CAP_TERRACO_COM_VARANDA = 60;
 const VALIDADE_DIAS = 7;
 
-const KW_ENTRADAS = ['bolinho', 'caldinho', 'pastel', 'isca', 'ostra', 'catado', 'carpaccio', 'dadinho', 'batata', 'entrada', 'camarao empanado', 'pao de alho'];
+const KW_ENTRADAS = ['bolinho', 'caldinho', 'pastel', 'pasteis', 'isca', 'ostra', 'catado', 'carpaccio', 'dadinho', 'batata', 'entrada', 'petisco', 'tabua', 'camarao empanado', 'pao de alho'];
 const KW_MASSAS = ['massa', 'penne', 'espaguete', 'talharim', 'fettuccine', 'nhoque', 'ravioli'];
 const KW_SOBREMESAS = ['petit', 'pudim', 'torta', 'sorvete', 'banana flambada', 'suspiro', 'folhado', 'sobremesa', 'cartola'];
 const KW_PRINCIPAIS = ['moqueca', 'peixe', 'robalo', 'salmao', 'picanha', 'parrilla', 'risoto', 'file', 'maminha', 'ancho', 'grelhado', 'camarao', 'polvo', 'lagosta', 'frango'];
@@ -47,13 +48,20 @@ function dobrar(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
-function classifica(nome: string, descr: string): 'entrada' | 'massa' | 'sobremesa' | 'principal' | null {
-  const alvo = dobrar(`${nome} ${descr}`);
+function porPalavras(alvo: string): 'entrada' | 'massa' | 'sobremesa' | 'principal' | null {
   if (KW_ENTRADAS.some((k) => alvo.includes(k))) return 'entrada';
   if (KW_MASSAS.some((k) => alvo.includes(k))) return 'massa';
   if (KW_SOBREMESAS.some((k) => alvo.includes(k))) return 'sobremesa';
   if (KW_PRINCIPAIS.some((k) => alvo.includes(k))) return 'principal';
   return null;
+}
+
+// O NOME manda; a descrição é só desempate. Misturar os dois jogava prato
+// principal pra entrada por causa do acompanhamento: "Filé com fritas" e
+// "Coxa de frango recheada" viravam entrada por dizerem "batata" na
+// descrição, e o "Mix de mini pastéis" virava principal por dizer "filé".
+function classifica(nome: string, descr: string): 'entrada' | 'massa' | 'sobremesa' | 'principal' | null {
+  return porPalavras(dobrar(nome)) ?? porPalavras(dobrar(`${nome} ${descr}`));
 }
 
 /** Custo POR PESSOA de um prato principal: porção "2 pessoas" → preço/2. */
@@ -65,7 +73,11 @@ function precoPorPessoa(item: ItemCardapio): number {
 
 /** Lista candidatos do cardápio ativo pro modelo apresentar. */
 export async function listarOpcoesOrcamento(filialId: string): Promise<string> {
-  const todos = (await buscarItensCardapio(filialId, '', 400)).filter((i) => !i.pausado); // sem pausados
+  // Sem pausados e sem preço-placeholder: o cardápio tem itens de centavos
+  // ("Entrada dia dos namorados", R$ 0,01) que sujariam a escolha e o cálculo.
+  const todos = (await buscarItensCardapio(filialId, '', 400)).filter(
+    (i) => !i.pausado && i.preco >= PRECO_MINIMO_OPCAO,
+  );
   const grupos: Record<string, ItemCardapio[]> = { entrada: [], principal: [], massa: [], sobremesa: [] };
   const vistos = new Set<string>();
   for (const it of todos) {
@@ -79,11 +91,11 @@ export async function listarOpcoesOrcamento(filialId: string): Promise<string> {
   const fmt = (arr: ItemCardapio[], n: number) =>
     arr.slice(0, n).map((i) => `- ${i.nome}${i.tamanho ? ` (${i.tamanho})` : ''}: ${rs(i.preco)}`).join('\n') || '- (nenhum encontrado)';
   return [
-    `ENTRADAS sugeridas (cliente escolhe 3 ou 4, viram "à vontade"):\n${fmt(grupos.entrada, 8)}`,
-    `PRINCIPAIS sugeridos (cliente escolhe 3):\n${fmt(grupos.principal, 10)}`,
-    `MASSAS (escolher 1, opção vegetariana/quem não come frutos do mar):\n${fmt(grupos.massa, 4)}`,
-    `SOBREMESAS (opcional — padrão é SEM):\n${fmt(grupos.sobremesa, 5)}`,
-    `Apresente poucas por vez, conversando. O cliente pode pedir prato fora da lista — a geração valida pelo cardápio.`,
+    `ENTRADAS sugeridas (cliente escolhe 3 ou 4, viram "à vontade"):\n${fmt(grupos.entrada, 20)}`,
+    `PRINCIPAIS sugeridos (cliente escolhe 3):\n${fmt(grupos.principal, 24)}`,
+    `MASSAS (escolher 1, opção vegetariana/quem não come frutos do mar):\n${fmt(grupos.massa, 8)}`,
+    `SOBREMESAS (opcional — padrão é SEM):\n${fmt(grupos.sobremesa, 8)}`,
+    `Apresente poucas por vez, conversando — mas MOSTRE VARIEDADE: nas entradas não fique só nos bolinhos e caldinhos (as iscas, os catados, a ostra empanada e a tábua são dos melhores pedidos da casa), e nos principais alterne peixe, camarão, carne e frango em vez de repetir a mesma família. Se o cliente não gostar da primeira leva, ofereça outra — a lista acima é a casa inteira. O cliente também pode pedir prato fora da lista: a geração valida pelo cardápio.`,
   ].join('\n\n');
 }
 
