@@ -30,4 +30,5 @@ export * from './cobranca-mesa';
 export * from './cliente-documento';
 export * from './nfce';
 export * from './atendimento';
+export * from './talento';
 export * from './delivery-online';

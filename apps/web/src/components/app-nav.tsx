@@ -77,6 +77,7 @@ const GRUPOS: Grupo[] = [
       { label: 'Folhas semanais', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },
       { label: 'Pessoas', href: '/folha-equipe/pessoas', perm: 'folha_equipe.read' },
       { label: 'Configuração da folha', href: '/folha-equipe/configuracao', perm: 'folha_equipe.read' },
+      { label: 'Banco de talentos', href: '/talentos', perm: 'folha_equipe.read' },
     ],
   },
   {

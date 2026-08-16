@@ -85,6 +85,9 @@ export async function proxy(request: NextRequest) {
   // /delivery é o cardápio/checkout público de pedidos online (sem login).
   // O painel interno é /delivery-admin (protegido, fora desta lista).
   const isDeliveryPublico = path === '/delivery' || path.startsWith('/delivery/');
+  // /trabalhe é o cadastro público do banco de talentos (link mandado pela
+  // Nina no WhatsApp; sem login). O painel interno é /talentos (protegido).
+  const isTrabalhePublico = path === '/trabalhe';
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -98,7 +101,8 @@ export async function proxy(request: NextRequest) {
     isCotacaoPublica ||
     isPagarMesaPublico ||
     isOrcamentoPublico ||
-    isDeliveryPublico;
+    isDeliveryPublico ||
+    isTrabalhePublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
