@@ -19,7 +19,11 @@ interface SP {
   status?: string; // 'sem' | 'com' | ''
   tipo?: string;
   page?: string;
+  mov?: string; // '1' = só quem movimentou estoque nos últimos 90 dias
 }
+
+/** Janela pra considerar que o produto "está vivo" no estoque. */
+const DIAS_MOVIMENTO = 90;
 
 const PAGE_SIZE = 100;
 
@@ -61,6 +65,17 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
   const statusFiltro = sp.status === 'com' ? 'com' : 'sem'; // default: sem categoria
   const tipoFiltro = (sp.tipo ?? '').trim();
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
+  const soMovimenta = sp.mov === '1';
+
+  // Produto "vivo": teve movimento de estoque na janela. É por onde vale a pena
+  // começar a categorizar — sem categoria de compras ele não entra na sugestão
+  // nem na cotação, por mais que venda todo dia.
+  const movimentouNaJanela = sql`EXISTS (
+    SELECT 1 FROM movimento_estoque m
+    WHERE m.produto_id = ${schema.produto.id}
+      AND m.filial_id = ${filial.id}
+      AND m.data_hora >= now() - interval '${sql.raw(String(DIAS_MOVIMENTO))} days'
+  )`;
 
   const where = and(
     eq(schema.produto.filialId, filial.id),
@@ -72,7 +87,23 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
       : isNotNull(schema.produto.categoriaCompras),
     tipoFiltro ? eq(schema.produto.tipo, tipoFiltro) : undefined,
     q ? buscaIlike(schema.produto.nome, q) : undefined,
+    soMovimenta ? movimentouNaJanela : undefined,
   );
+
+  // Quantos ainda estão fora do fluxo de compras mesmo movimentando estoque.
+  const [{ qtdMov }] = await db
+    .select({ qtdMov: sql<number>`count(*)::int` })
+    .from(schema.produto)
+    .where(
+      and(
+        eq(schema.produto.filialId, filial.id),
+        eq(schema.produto.controlaEstoque, true),
+        inArray(schema.produto.tipo, ['INSUMO', 'VENDA_SIMPLES']),
+        sql`COALESCE(${schema.produto.descontinuado}, false) = false`,
+        isNull(schema.produto.categoriaCompras),
+        movimentouNaJanela,
+      ),
+    );
 
   const [{ qtd }] = await db
     .select({ qtd: sql<number>`count(*)::int` })
@@ -91,7 +122,14 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
     })
     .from(schema.produto)
     .where(where)
-    .orderBy(asc(schema.produto.nome))
+    .orderBy(
+      // Filtrando por movimento, os mais recentes primeiro (o que gira mais).
+      soMovimenta
+        ? sql`(SELECT max(m.data_hora) FROM movimento_estoque m
+               WHERE m.produto_id = ${schema.produto.id} AND m.filial_id = ${filial.id})
+              DESC NULLS LAST`
+        : asc(schema.produto.nome),
+    )
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
 
@@ -140,6 +178,7 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
     if (q) qs.set('q', q);
     qs.set('status', statusFiltro);
     if (tipoFiltro) qs.set('tipo', tipoFiltro);
+    if (soMovimenta) qs.set('mov', '1');
     if (p > 0) qs.set('page', String(p));
     return `/cadastros/produtos/categorizar?${qs.toString()}`;
   }
@@ -210,6 +249,10 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
               className="ml-2 rounded border border-slate-300 px-2 py-1 text-xs"
             />
           </label>
+          <label className="flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1">
+            <input type="checkbox" name="mov" value="1" defaultChecked={soMovimenta} />
+            Só quem movimentou estoque ({DIAS_MOVIMENTO}d)
+          </label>
           <button
             type="submit"
             className="rounded border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-50"
@@ -218,8 +261,23 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
           </button>
         </form>
 
+        {qtdMov > 0 && !soMovimenta && (
+          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <b>{qtdMov} produto(s)</b> movimentaram estoque nos últimos {DIAS_MOVIMENTO} dias e ainda
+            estão <b>sem categoria de compras</b> — ou seja, não aparecem na sugestão de compra nem
+            na cotação, por mais que girem.{' '}
+            <Link
+              href={`/cadastros/produtos/categorizar?filialId=${filial.id}&status=sem&mov=1`}
+              className="font-medium underline"
+            >
+              Categorizar esses primeiro →
+            </Link>
+          </div>
+        )}
+
         <div className="mb-3 text-xs text-slate-500">
           {qtd} produtos · página {page + 1}/{totalPag} · mostrando {produtos.length}
+          {soMovimenta && ' · só quem movimentou estoque, mais recentes primeiro'}
         </div>
 
         <CategorizarForm
