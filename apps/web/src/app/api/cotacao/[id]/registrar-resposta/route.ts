@@ -15,7 +15,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { normalizaMarca } from '@/lib/cotacao-alocacao';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
 
@@ -123,10 +123,20 @@ export async function POST(
     return novo.id;
   }
 
-  // Substitui as respostas do fornecedor (mesma semântica do endpoint público)
+  // UPSERT POR ITEM: apaga e regrava SÓ os itens enviados. NUNCA apagar o
+  // resto — corrigir 1 item do fornecedor não pode destruir as outras
+  // respostas dele (aconteceu 17/08: 6 fornecedores perderam a cotação toda).
   await db
     .delete(schema.cotacaoRespostaItem)
-    .where(eq(schema.cotacaoRespostaItem.cotacaoFornecedorId, cf.id));
+    .where(
+      and(
+        eq(schema.cotacaoRespostaItem.cotacaoFornecedorId, cf.id),
+        inArray(
+          schema.cotacaoRespostaItem.cotacaoItemId,
+          respostas.map((r) => r.cotacaoItemId),
+        ),
+      ),
+    );
 
   for (const r of respostas) {
     if (!porItem.has(r.cotacaoItemId)) continue;
