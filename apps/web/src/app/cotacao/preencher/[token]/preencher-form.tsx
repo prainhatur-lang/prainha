@@ -337,12 +337,16 @@ export function PreencherForm(props: {
                         Marcas aceitas: {i.marcasAceitas.join(' / ')}
                       </div>
                     )}
+                    {i.observacao && (
+                      <div className="mt-0.5 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-900">
+                        ⚠ {i.observacao}
+                      </div>
+                    )}
                   </div>
-                  {/* Observação do item NÃO aparece pro fornecedor: virou campo
-                      de uso interno (estoque "tem 1 na casa" etc.) e vazava
-                      informação da casa. Instrução pro fornecedor vai em
-                      classificacao/embalagemEsperada ou na observação da
-                      cotação (cabeçalho). */}
+                  {/* A observação do item É a instrução pro fornecedor (marca
+                      exigida, caixa fechada, peso da embalagem). Dado interno
+                      (estoque/última compra) não entra aqui — fica fora do
+                      form por construção. */}
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
