@@ -87,6 +87,7 @@ export async function POST(
         marcaId: it.marcaId,
         precoUnitario: it.preco.toFixed(4),
         valorTotal: it.precoTotal.toFixed(2),
+        observacao: it.observacao,
       })),
     );
 

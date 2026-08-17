@@ -58,13 +58,17 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
       // Unidade DO ITEM do pedido, não a de estoque do produto — fornecedor
       // pode vender em cx/pct enquanto o estoque controla em kg.
       unidade: schema.pedidoCompraItem.unidade,
+      observacao: schema.pedidoCompraItem.observacao,
     })
     .from(schema.pedidoCompraItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
     .where(eq(schema.pedidoCompraItem.pedidoCompraId, pedidoId));
 
   const itensStr = itens
-    .map((i) => `${i.produtoNome} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade} = ${brl(Number(i.valorTotal))}`)
+    .map(
+      (i) =>
+        `${i.produtoNome}${i.observacao ? ` (${i.observacao})` : ''} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade} = ${brl(Number(i.valorTotal))}`,
+    )
     .join('; ');
 
   // Dados de faturamento JUNTO com o pedido — o fornecedor não precisa

@@ -75,6 +75,7 @@ export default async function PedidoCompraDetalhePage(props: {
       precoUnitario: schema.pedidoCompraItem.precoUnitario,
       valorTotal: schema.pedidoCompraItem.valorTotal,
       quantidadeRecebida: schema.pedidoCompraItem.quantidadeRecebida,
+      observacao: schema.pedidoCompraItem.observacao,
       produtoNome: schema.produto.nome,
       categoria: schema.produto.categoriaCompras,
       marcaNome: schema.marca.nome,
@@ -202,6 +203,9 @@ export default async function PedidoCompraDetalhePage(props: {
                   <tr key={i.id} className="border-t border-slate-100">
                     <td className="px-3 py-2">
                       <div className="font-medium text-slate-900">{i.produtoNome}</div>
+                      {i.observacao && (
+                        <div className="text-[10px] font-medium text-amber-800">⚠ {i.observacao}</div>
+                      )}
                       {i.categoria && (
                         <div className="text-[10px] uppercase tracking-wide text-slate-400">
                           {i.categoria}

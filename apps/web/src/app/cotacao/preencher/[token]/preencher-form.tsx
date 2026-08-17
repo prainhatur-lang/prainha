@@ -70,6 +70,14 @@ function nomeUnidade(unidade: string): string {
   return unidade;
 }
 
+/** Unidade que NÃO diz o tamanho (un/cx/pct): o fornecedor precisa DESCREVER
+ *  a embalagem que está vendendo — "1 un" de manteiga pode ser pote de 200 g
+ *  ou balde de 15 kg, e sem isso a comparação de preço não vale nada. */
+function unidadeIndefinida(unidade: string): boolean {
+  const t = unidade.toLowerCase();
+  return !['kg', 'g', 'l', 'lt', 'litro', 'ml'].includes(t);
+}
+
 function nomePacote(unidade: string): string {
   const t = unidade.toLowerCase();
   if (t === 'un' || t === 'und' || t === 'unid') return 'caixa/pacote fechado (várias unidades)';
@@ -103,6 +111,8 @@ function rotuloEmbalagem(r: RespostaItem, item: Item): string {
   }
   if (r.tipoPreco === 'ml') return `embalagem ${r.qtdPorEmbalagem} ml`;
   if (r.tipoPreco === 'pacote') return `embalagem c/ ${r.qtdPorEmbalagem} ${item.unidade}`;
+  // 'unidade' com descrição do fornecedor ("pote 500 g", "cx c/ 24")
+  if (r.embalagem.trim()) return r.embalagem.trim().slice(0, 40);
   return item.unidade;
 }
 
@@ -178,6 +188,24 @@ export function PreencherForm(props: {
         `Diga quanto vem na embalagem de: ${semQuantidade
           .map((i) => i.produtoNome)
           .join(', ')} (ml, kg ou unidades — conforme o que você escolheu).`,
+      );
+      return;
+    }
+
+    // Embalagem é OBRIGATÓRIA quando a unidade não diz o tamanho ("1 un" de
+    // quê?): o fornecedor descreve o que está vendendo — pote 500 g, cx c/ 24.
+    const semEmbalagem = props.itens.filter((i) => {
+      const r = respostas[i.id];
+      if (!r?.precoUnitario.trim()) return false;
+      if (r.tipoPreco !== 'unidade') return false;
+      if (!unidadeIndefinida(i.unidade)) return false;
+      return !r.embalagem.trim();
+    });
+    if (semEmbalagem.length > 0) {
+      setErro(
+        `Descreva a embalagem que você está vendendo em: ${semEmbalagem
+          .map((i) => i.produtoNome)
+          .join(', ')} (ex: pote 500 g, garrafa 750 ml, caixa com 24).`,
       );
       return;
     }
@@ -378,6 +406,22 @@ export function PreencherForm(props: {
                         </p>
                       )}
                     </div>
+                    {(respostas[i.id]?.tipoPreco ?? 'unidade') === 'unidade' &&
+                      unidadeIndefinida(i.unidade) && (
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-700">
+                            Qual embalagem/tamanho você está vendendo?{' '}
+                            <span className="text-rose-600">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="ex: pote 500 g, garrafa 750 ml, cx c/ 24"
+                            value={respostas[i.id]?.embalagem ?? ''}
+                            onChange={(e) => setCampo(i.id, 'embalagem', e.target.value)}
+                            className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                          />
+                        </div>
+                      )}
                     {['ml', 'pacote'].includes(respostas[i.id]?.tipoPreco ?? 'unidade') && (
                       <div>
                         <label className="block text-[11px] font-medium text-slate-700">

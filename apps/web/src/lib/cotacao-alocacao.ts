@@ -26,6 +26,8 @@ export interface ItemAlocado {
   itemId: string;
   produtoId: string;
   produtoNome: string | null;
+  /** Instrução de compra do item (corte fino, caixa grande, marca) — segue pro pedido */
+  observacao: string | null;
   qtd: string;
   unidade: string;
   /** Indice no array sorted por preco. 0 = vencedor original, 1 = 2 colocado, etc. */
@@ -83,6 +85,7 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
       quantidade: schema.cotacaoItem.quantidade,
       unidade: schema.cotacaoItem.unidade,
       marcasAceitas: schema.cotacaoItem.marcasAceitas,
+      observacao: schema.cotacaoItem.observacao,
       produtoNome: schema.produto.nome,
     })
     .from(schema.cotacaoItem)
@@ -246,6 +249,7 @@ export async function calcularAlocacaoCotacao(cotacaoId: string): Promise<Result
       itemId: item.id,
       produtoId: item.produtoId,
       produtoNome: item.produtoNome,
+      observacao: item.observacao,
       qtd: item.quantidade,
       unidade: item.unidade,
       ranque: idx,

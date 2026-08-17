@@ -34,6 +34,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
       marcasAceitas: schema.cotacaoItem.marcasAceitas,
       embalagemEsperada: schema.cotacaoItem.embalagemEsperada,
       classificacao: schema.cotacaoItem.classificacao,
+      observacao: schema.cotacaoItem.observacao,
       produtoNome: schema.produto.nome,
       categoria: schema.produto.categoriaCompras,
     })
@@ -118,6 +119,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
             marcasAceitas: (i.marcasAceitas ?? '').split('|').filter(Boolean),
             embalagemEsperada: i.embalagemEsperada,
             classificacao: i.classificacao,
+            observacao: i.observacao,
           }))}
           fornecedores={fornecedores.map((f) => ({
             cfId: f.cfId,

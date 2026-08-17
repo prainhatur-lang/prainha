@@ -36,6 +36,8 @@ interface Item {
   marcasAceitas: string[];
   embalagemEsperada: string | null;
   classificacao: string | null;
+  /** Instrução de compra ("corte fino", "caixa grande") — visível pro gestor e pro fornecedor */
+  observacao: string | null;
 }
 interface Forn {
   cfId: string;
@@ -410,6 +412,11 @@ export function RespostasClient(props: {
                 <tr key={item.id} className="border-t border-slate-100 align-top">
                   <td className="sticky left-0 z-10 bg-white px-3 py-2">
                     <div className="font-medium text-slate-900">{item.produtoNome}</div>
+                    {item.observacao && (
+                      <div className="max-w-[180px] text-[10px] font-medium text-amber-800">
+                        ⚠ {item.observacao}
+                      </div>
+                    )}
                     <div className="flex items-center gap-1 text-[10px] text-slate-500">
                       {props.podeEditar ? (
                         // Quantidade editável direto aqui: corrige "1 kg" que
