@@ -82,6 +82,8 @@
     "sync:etiquetas": "tsx scripts/sync-etiquetas.ts",
     "migrate:delivery-complemento": "tsx scripts/migrate-delivery-complemento.ts",
     "sync:complementos": "tsx scripts/sync-complementos.ts",
+    "migrate:wizard": "tsx scripts/migrate-wizard.ts",
+    "sync:wizard": "tsx scripts/sync-wizard.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
   },
