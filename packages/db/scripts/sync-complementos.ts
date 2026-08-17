@@ -40,19 +40,45 @@ async function main() {
       variante_id: string;
     }>
   >`
-    WITH cobrado AS (
-      -- Valor que a casa mais cobrou por este produto QUANDO ele saiu como
-      -- complemento de um prato (codigo_pai preenchido). DISTINCT ON pega a
-      -- linha mais frequente de cada produto.
-      SELECT DISTINCT ON (pi.produto_id)
-             pi.produto_id, pi.valor_unitario AS valor, count(*) AS vezes
+    WITH linhas AS (
+      SELECT pi.produto_id, pi.valor_unitario AS valor, count(*) AS vezes
       FROM pedido_item pi
       WHERE pi.filial_id = ${FILIAL}
         AND pi.codigo_pai IS NOT NULL
         AND pi.data_delete IS NULL
         AND pi.valor_unitario IS NOT NULL
       GROUP BY pi.produto_id, pi.valor_unitario
-      ORDER BY pi.produto_id, count(*) DESC, pi.valor_unitario ASC
+    ),
+    resumo AS (
+      SELECT produto_id,
+             sum(vezes) AS total,
+             sum(vezes) FILTER (WHERE valor > 0) AS pagas
+      FROM linhas GROUP BY produto_id
+    ),
+    -- Valor pago mais frequente (ignorando as cortesias).
+    moda_paga AS (
+      SELECT DISTINCT ON (produto_id) produto_id, valor, vezes
+      FROM linhas WHERE valor > 0
+      ORDER BY produto_id, vezes DESC, valor ASC
+    ),
+    -- Valor mais frequente considerando tudo, inclusive grátis.
+    moda_geral AS (
+      SELECT DISTINCT ON (produto_id) produto_id, valor, vezes
+      FROM linhas ORDER BY produto_id, vezes DESC, valor ASC
+    ),
+    cobrado AS (
+      -- Cortesia frequente NÃO pode virar preço de tabela: o Fetuccine saiu
+      -- de graça 442x e cobrado 306x, e a moda simples zerava um acompanhamento
+      -- que o cadastro do Consumer vende por R$15 ("De 18,00 por 15,00").
+      -- Quando pelo menos 30% das vezes foi cobrado, vale o preço pago; abaixo
+      -- disso é cortesia de verdade (Molho Rosé: cobrado em 4% das 3.283).
+      SELECT r.produto_id,
+             CASE WHEN r.pagas::numeric / NULLIF(r.total, 0) >= 0.30
+                  THEN mp.valor ELSE mg.valor END AS valor,
+             r.total AS vezes
+      FROM resumo r
+      LEFT JOIN moda_paga mp ON mp.produto_id = r.produto_id
+      LEFT JOIN moda_geral mg ON mg.produto_id = r.produto_id
     )
     SELECT DISTINCT di.id AS item_id, pf.nome,
            coalesce(cb.valor, pvf.preco_venda, pf.preco_venda, 0)::text AS preco,

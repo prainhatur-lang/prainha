@@ -128,23 +128,53 @@ export async function criarPedidoDelivery(params: {
     .where(and(eq(schema.deliveryItem.filialId, filialId), inArray(schema.deliveryItem.id, ids)));
   const porId = new Map(doBanco.map((i) => [i.id, i]));
 
-  // Complementos permitidos, com o preço do BANCO — o navegador manda só o id.
-  const complementosOk = await db
+  // Respostas possíveis (WIZARD do Consumer), com PRECOPROMO do BANCO — o
+  // navegador manda só o id da opção. Junto vem a pergunta, pra conferir o
+  // mínimo obrigatório ("qual o ponto da carne" não pode vir vazio).
+  const opcoesOk = await db
     .select({
-      id: schema.deliveryComplemento.id,
-      itemId: schema.deliveryComplemento.itemId,
-      nome: schema.deliveryComplemento.nome,
-      preco: schema.deliveryComplemento.preco,
+      id: schema.wizardOpcao.id,
+      nome: schema.wizardOpcao.nome,
+      preco: schema.wizardOpcao.precoPromo,
+      perguntaCodigo: schema.wizardOpcao.codigoPergunta,
+      itemId: schema.deliveryItem.id,
+      perguntaTexto: schema.wizardPergunta.texto,
+      min: schema.wizardPergunta.respostasMin,
+      max: schema.wizardPergunta.respostasMax,
     })
-    .from(schema.deliveryComplemento)
-    .where(
+    .from(schema.deliveryItem)
+    .innerJoin(
+      schema.wizardProduto,
       and(
-        eq(schema.deliveryComplemento.filialId, filialId),
-        eq(schema.deliveryComplemento.ativo, true),
-        inArray(schema.deliveryComplemento.itemId, ids),
+        eq(schema.wizardProduto.filialId, filialId),
+        eq(schema.wizardProduto.varianteId, schema.deliveryItem.varianteId),
       ),
-    );
-  const complPorId = new Map(complementosOk.map((c) => [c.id, c]));
+    )
+    .innerJoin(
+      schema.wizardPergunta,
+      and(
+        eq(schema.wizardPergunta.filialId, filialId),
+        eq(schema.wizardPergunta.codigoExterno, schema.wizardProduto.codigoPergunta),
+      ),
+    )
+    .innerJoin(
+      schema.wizardOpcao,
+      and(
+        eq(schema.wizardOpcao.filialId, filialId),
+        eq(schema.wizardOpcao.codigoPergunta, schema.wizardPergunta.codigoExterno),
+      ),
+    )
+    .where(and(eq(schema.deliveryItem.filialId, filialId), inArray(schema.deliveryItem.id, ids)));
+
+  /** id da opção -> opção (com a pergunta a que pertence e o item dono). */
+  const complPorId = new Map(opcoesOk.map((o) => [`${o.itemId}|${o.id}`, o]));
+  /** perguntas obrigatórias de cada item, pra cobrar o mínimo. */
+  const perguntasDoItem = new Map<string, Map<number, { texto: string | null; min: number; max: number }>>();
+  for (const o of opcoesOk) {
+    const doItem = perguntasDoItem.get(o.itemId) ?? new Map();
+    doItem.set(o.perguntaCodigo, { texto: o.perguntaTexto, min: o.min, max: o.max });
+    perguntasDoItem.set(o.itemId, doItem);
+  }
 
   // Saldo real no Consumer, conferido AGORA (o cardápio pode ter sido
   // carregado faz tempo e o estoque virou nesse meio-tempo).
@@ -179,14 +209,34 @@ export async function criarPedidoDelivery(params: {
             : `"${item.nome}" esgotou — remova do carrinho.`,
       };
     }
-    // Complemento só entra se pertencer A ESTE item (id de outro prato é
-    // ignorado) e o preço é sempre o do banco.
+    // Resposta só entra se pertencer A ESTE item (id de outro prato é
+    // ignorado) e o preço é sempre o do banco (PRECOPROMO).
     const escolhidos = Array.isArray(i.complementos) ? i.complementos.slice(0, 20) : [];
     const compl: Array<{ nome: string; precoCentavos: number }> = [];
+    const porPergunta = new Map<number, number>();
     for (const cid of escolhidos) {
-      const c = typeof cid === 'string' ? complPorId.get(cid) : undefined;
-      if (!c || c.itemId !== item.id) continue;
-      compl.push({ nome: c.nome, precoCentavos: centavos(c.preco) });
+      const c = typeof cid === 'string' ? complPorId.get(`${item.id}|${cid}`) : undefined;
+      if (!c) continue;
+      porPergunta.set(c.perguntaCodigo, (porPergunta.get(c.perguntaCodigo) ?? 0) + 1);
+      compl.push({ nome: c.nome ?? '', precoCentavos: centavos(c.preco) });
+    }
+
+    // Pergunta obrigatória sem resposta trava o pedido — é o "escolha 1 opção
+    // (Obrigatório)" do PDV; sem isso a cozinha recebe carne sem ponto.
+    for (const [codigo, q] of perguntasDoItem.get(item.id) ?? []) {
+      const escolhidasAqui = porPergunta.get(codigo) ?? 0;
+      if (q.min > 0 && escolhidasAqui < q.min) {
+        return {
+          ok: false,
+          erro: `"${item.nome}": responda "${q.texto ?? 'a pergunta'}" antes de fechar o pedido.`,
+        };
+      }
+      if (q.max > 0 && escolhidasAqui > q.max) {
+        return {
+          ok: false,
+          erro: `"${item.nome}": escolha no máximo ${q.max} em "${q.texto ?? 'a pergunta'}".`,
+        };
+      }
     }
 
     const precoUnit = centavos(item.preco) + compl.reduce((s, c) => s + c.precoCentavos, 0);

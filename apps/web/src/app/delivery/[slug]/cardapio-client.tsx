@@ -7,10 +7,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-interface ComplementoCardapio {
+interface OpcaoPergunta {
   id: string;
   nome: string;
   precoCentavos: number;
+}
+
+/** Pergunta do Consumer (WIZARD): "Qual o ponto da carne" (min 1) ou
+ *  "Deseja mais algum acompanhamento?" (min 0). max 0 = sem limite. */
+interface PerguntaCardapio {
+  codigo: number;
+  texto: string;
+  min: number;
+  max: number;
+  opcoes: OpcaoPergunta[];
 }
 
 interface ItemCardapio {
@@ -21,8 +31,8 @@ interface ItemCardapio {
   fotoUrl: string | null;
   esgotado: boolean;
   destaque: boolean;
-  /** Sugeridos depois da escolha do prato (arroz, purê, ponto da carne). */
-  complementos: ComplementoCardapio[];
+  /** Perguntas que a casa faz depois da escolha (ponto, acompanhamento). */
+  perguntas: PerguntaCardapio[];
 }
 
 interface CategoriaCardapio {
@@ -71,8 +81,8 @@ interface LinhaCarrinho {
   precoCentavos: number;
   qtd: number;
   obs: string;
-  /** Complementos escolhidos; o preço deles soma no total da linha. */
-  complementos: ComplementoCardapio[];
+  /** Respostas escolhidas; o preço delas soma no total da linha. */
+  complementos: OpcaoPergunta[];
 }
 
 interface FreteResult {
@@ -230,7 +240,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
     item: ItemCardapio,
     qtd: number,
     obs: string,
-    complementos: ComplementoCardapio[] = [],
+    complementos: OpcaoPergunta[] = [],
   ) {
     const chaveCompl = complementos.map((c) => c.id).sort().join(',');
     setCarrinho((prev) => {
@@ -1079,49 +1089,75 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             <p className="mt-2 text-base font-bold text-[#b3411c]">
               {brl(itemModal.precoCentavos)}
             </p>
-            {itemModal.complementos.length > 0 ? (
-              <div className="mt-4 border-t border-[#f0e4cc] pt-3">
-                <p className={lbl}>Quer acompanhar com algo?</p>
-                <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto pr-1">
-                  {itemModal.complementos.map((c) => {
-                    const marcado = modalCompl.has(c.id);
-                    return (
-                      <li key={c.id}>
-                        <label
-                          className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-2 py-2 ${
-                            marcado ? 'bg-[#e7723a]/10' : 'hover:bg-[#fbf6ec]'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={marcado}
-                            onChange={(e) =>
-                              setModalCompl((prev) => {
-                                const n = new Set(prev);
-                                if (e.target.checked) n.add(c.id);
-                                else n.delete(c.id);
-                                return n;
-                              })
-                            }
-                            className="h-4 w-4 shrink-0 accent-[#e7723a]"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-sm text-[#4a382a]">
-                            {c.nome}
-                          </span>
-                          <span
-                            className={`shrink-0 text-sm ${
-                              c.precoCentavos > 0 ? 'font-medium text-[#b3411c]' : 'text-[#8a7a64]'
-                            }`}
+            {itemModal.perguntas.map((q) => {
+              const escolhidasNaPergunta = q.opcoes.filter((o) => modalCompl.has(o.id)).length;
+              const escolhaUnica = q.max === 1;
+              const obrigatoria = q.min > 0;
+              const faltando = obrigatoria && escolhidasNaPergunta < q.min;
+              return (
+                <div key={q.codigo} className="mt-4 border-t border-[#f0e4cc] pt-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className={lbl}>{q.texto}</p>
+                    <span
+                      className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+                        faltando ? 'text-[#b3411c]' : 'text-[#8a7a64]'
+                      }`}
+                    >
+                      {obrigatoria
+                        ? `obrigatório · escolha ${q.min}${q.max > q.min ? ` a ${q.max}` : ''}`
+                        : 'opcional'}
+                    </span>
+                  </div>
+                  <ul className="mt-2 max-h-52 space-y-1 overflow-y-auto pr-1">
+                    {q.opcoes.map((o) => {
+                      const marcado = modalCompl.has(o.id);
+                      // Sem vaga na pergunta (e não é esta) => desabilita.
+                      const cheio =
+                        !marcado && q.max > 0 && escolhidasNaPergunta >= q.max && !escolhaUnica;
+                      return (
+                        <li key={o.id}>
+                          <label
+                            className={`flex items-center gap-2.5 rounded-xl px-2 py-2 ${
+                              cheio ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                            } ${marcado ? 'bg-[#e7723a]/10' : 'hover:bg-[#fbf6ec]'}`}
                           >
-                            {c.precoCentavos > 0 ? `+ ${brl(c.precoCentavos)}` : 'grátis'}
-                          </span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : null}
+                            <input
+                              type={escolhaUnica ? 'radio' : 'checkbox'}
+                              name={escolhaUnica ? `perg-${q.codigo}` : undefined}
+                              checked={marcado}
+                              disabled={cheio}
+                              onChange={(e) =>
+                                setModalCompl((prev) => {
+                                  const n = new Set(prev);
+                                  // Escolha única: a nova resposta troca a anterior.
+                                  if (escolhaUnica) for (const x of q.opcoes) n.delete(x.id);
+                                  if (e.target.checked) n.add(o.id);
+                                  else n.delete(o.id);
+                                  return n;
+                                })
+                              }
+                              className="h-4 w-4 shrink-0 accent-[#e7723a]"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm text-[#4a382a]">
+                              {o.nome}
+                            </span>
+                            <span
+                              className={`shrink-0 text-sm ${
+                                o.precoCentavos > 0
+                                  ? 'font-medium text-[#b3411c]'
+                                  : 'text-[#8a7a64]'
+                              }`}
+                            >
+                              {o.precoCentavos > 0 ? `+ ${brl(o.precoCentavos)}` : 'grátis'}
+                            </span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
 
             <div className="mt-3">
               <label className={lbl}>Alguma observação?</label>
@@ -1149,17 +1185,23 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 </button>
               </div>
               <button
+                disabled={itemModal.perguntas.some(
+                  (q) => q.min > 0 && q.opcoes.filter((o) => modalCompl.has(o.id)).length < q.min,
+                )}
                 onClick={() => {
-                  const escolhidos = itemModal.complementos.filter((c) => modalCompl.has(c.id));
+                  const escolhidos = itemModal.perguntas
+                    .flatMap((q) => q.opcoes)
+                    .filter((c) => modalCompl.has(c.id));
                   addItem(itemModal, modalQtd, modalObs, escolhidos);
                   setItemModal(null);
                 }}
-                className="flex-1 rounded-full bg-[#e7723a] px-4 py-3 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[#df5a35]"
+                className="flex-1 rounded-full bg-[#e7723a] px-4 py-3 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[#df5a35] disabled:opacity-40"
               >
                 Adicionar ·{' '}
                 {brl(
                   (itemModal.precoCentavos +
-                    itemModal.complementos
+                    itemModal.perguntas
+                      .flatMap((q) => q.opcoes)
                       .filter((c) => modalCompl.has(c.id))
                       .reduce((s, c) => s + c.precoCentavos, 0)) *
                     modalQtd,

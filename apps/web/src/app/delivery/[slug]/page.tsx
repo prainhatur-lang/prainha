@@ -59,22 +59,46 @@ export default async function DeliveryLojaPage(props: {
     itens.filter((i) => i.checarEstoque && i.varianteId).map((i) => i.varianteId!),
   );
 
-  // Complementos: o que a casa oferece DEPOIS da escolha do prato.
-  const complementos = await db
+  // PERGUNTAS do Consumer (WIZARD): é assim que a casa monta o pedido —
+  // "Qual o ponto da carne" (obrigatória) e "Deseja mais algum acompanhamento"
+  // (opcional), cada opção com PRECOPROMO, o preço quando vai junto do prato.
+  const perguntas = await db
     .select({
-      id: schema.deliveryComplemento.id,
-      itemId: schema.deliveryComplemento.itemId,
-      nome: schema.deliveryComplemento.nome,
-      preco: schema.deliveryComplemento.preco,
+      itemId: schema.deliveryItem.id,
+      perguntaCodigo: schema.wizardPergunta.codigoExterno,
+      texto: schema.wizardPergunta.texto,
+      min: schema.wizardPergunta.respostasMin,
+      max: schema.wizardPergunta.respostasMax,
+      ordem: schema.wizardProduto.ordem,
     })
-    .from(schema.deliveryComplemento)
-    .where(
+    .from(schema.deliveryItem)
+    .innerJoin(
+      schema.wizardProduto,
       and(
-        eq(schema.deliveryComplemento.filialId, loja.filialId),
-        eq(schema.deliveryComplemento.ativo, true),
+        eq(schema.wizardProduto.filialId, loja.filialId),
+        eq(schema.wizardProduto.varianteId, schema.deliveryItem.varianteId),
       ),
     )
-    .orderBy(asc(schema.deliveryComplemento.ordem), asc(schema.deliveryComplemento.nome));
+    .innerJoin(
+      schema.wizardPergunta,
+      and(
+        eq(schema.wizardPergunta.filialId, loja.filialId),
+        eq(schema.wizardPergunta.codigoExterno, schema.wizardProduto.codigoPergunta),
+      ),
+    )
+    .where(eq(schema.deliveryItem.filialId, loja.filialId))
+    .orderBy(asc(schema.wizardProduto.ordem), asc(schema.wizardPergunta.codigoExterno));
+
+  const opcoesWizard = await db
+    .select({
+      id: schema.wizardOpcao.id,
+      perguntaCodigo: schema.wizardOpcao.codigoPergunta,
+      nome: schema.wizardOpcao.nome,
+      preco: schema.wizardOpcao.precoPromo,
+    })
+    .from(schema.wizardOpcao)
+    .where(eq(schema.wizardOpcao.filialId, loja.filialId))
+    .orderBy(asc(schema.wizardOpcao.nome));
 
   const { dias, asapDisponivel } = agendaDelivery(loja.config);
   const c = loja.config;
@@ -114,13 +138,24 @@ export default async function DeliveryLojaPage(props: {
             fotoUrl: i.fotoUrl,
             esgotado: semDisponibilidade(i, saldos),
             destaque: i.destaque,
-            complementos: complementos
-              .filter((c) => c.itemId === i.id)
-              .map((c) => ({
-                id: c.id,
-                nome: c.nome,
-                precoCentavos: Math.round(Number(c.preco) * 100),
-              })),
+            perguntas: perguntas
+              .filter((q) => q.itemId === i.id)
+              .map((q) => ({
+                codigo: q.perguntaCodigo,
+                texto: q.texto ?? 'Escolha uma opção',
+                // max 0 no Consumer = sem limite de respostas.
+                min: q.min ?? 0,
+                max: q.max ?? 0,
+                opcoes: opcoesWizard
+                  .filter((o) => o.perguntaCodigo === q.perguntaCodigo)
+                  .map((o) => ({
+                    id: o.id,
+                    nome: o.nome ?? '',
+                    precoCentavos: Math.round(Number(o.preco) * 100),
+                  }))
+                  .filter((o) => o.nome),
+              }))
+              .filter((q) => q.opcoes.length > 0),
           })),
       }))}
       agendaInicial={{ dias, asapDisponivel }}

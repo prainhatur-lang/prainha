@@ -171,3 +171,64 @@ export const produtoEtiqueta = pgTable(
     uniqCodigo: unique('uq_produto_etiqueta_filial_codigo').on(t.filialId, t.codigoExterno),
   }),
 );
+
+// --------- WIZARD (perguntas do Consumer) ---------
+// É como a casa monta o pedido: escolhido o prato, o PDV pergunta "qual o
+// ponto da carne" (obrigatória) e "deseja mais algum acompanhamento"
+// (opcional). A opção pode ser só uma observação OU lançar um produto filho,
+// e tem PRECOPROMO — o preço quando vai junto do prato, menor que o avulso
+// ("De 18,00 por 15,00"). Sincronizado por `pnpm --filter @concilia/db
+// sync:wizard -- --host <ip>` (precisa de rede até a loja).
+
+/** WIZARDPERGUNTAS — a pergunta e quantas respostas ela aceita. */
+export const wizardPergunta = pgTable(
+  'wizard_pergunta',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    texto: varchar('texto', { length: 200 }),
+    /** Mínimo de respostas. >0 = obrigatória. */
+    respostasMin: integer('respostas_min').notNull().default(0),
+    /** Máximo. 0 = sem limite. */
+    respostasMax: integer('respostas_max').notNull().default(0),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniq: unique('uq_wizard_pergunta').on(t.filialId, t.codigoExterno) }),
+);
+
+/** WIZARDOPCOES — cada resposta possível, com o preço de acompanhamento. */
+export const wizardOpcao = pgTable(
+  'wizard_opcao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    codigoPergunta: integer('codigo_pergunta').notNull(),
+    nome: varchar('nome', { length: 200 }),
+    /** PRECOPROMO: o que se cobra quando vai junto do prato. 0 = cortesia. */
+    precoPromo: numeric('preco_promo', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Quando preenchido, a opção LANÇA este produto como item filho. */
+    codigoVarianteExterno: integer('codigo_variante_externo'),
+    varianteId: uuid('variante_id').references(() => produtoVariante.id, { onDelete: 'set null' }),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniq: unique('uq_wizard_opcao').on(t.filialId, t.codigoExterno) }),
+);
+
+/** WIZARD — liga o produto às perguntas que ele dispara. */
+export const wizardProduto = pgTable(
+  'wizard_produto',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoVarianteExterno: integer('codigo_variante_externo').notNull(),
+    codigoPergunta: integer('codigo_pergunta').notNull(),
+    ordem: integer('ordem').notNull().default(0),
+    varianteId: uuid('variante_id').references(() => produtoVariante.id, { onDelete: 'set null' }),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique('uq_wizard_produto').on(t.filialId, t.codigoVarianteExterno, t.codigoPergunta),
+  }),
+);
