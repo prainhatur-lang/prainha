@@ -88,6 +88,8 @@ export async function proxy(request: NextRequest) {
   // /trabalhe é o cadastro público do banco de talentos (link mandado pela
   // Nina no WhatsApp; sem login). O painel interno é /talentos (protegido).
   const isTrabalhePublico = path === '/trabalhe';
+  // /tabuara é a página pública de apresentação da filial Tabuará (sem login).
+  const isTabuaraPublico = path === '/tabuara' || path.startsWith('/tabuara/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -102,7 +104,8 @@ export async function proxy(request: NextRequest) {
     isPagarMesaPublico ||
     isOrcamentoPublico ||
     isDeliveryPublico ||
-    isTrabalhePublico;
+    isTrabalhePublico ||
+    isTabuaraPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
