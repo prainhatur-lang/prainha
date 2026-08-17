@@ -165,6 +165,27 @@ function podarEmojis(texto: string, permitidos: number): string {
   return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?…])/g, '$1').trim();
 }
 
+// MARKDOWN NÃO EXISTE NO WHATSAPP: o modelo insiste em **negrito** e em
+// [texto](url), e o fornecedor lê isso cru (caso José Da Paixão, 17/08 —
+// "**Cotação Nº 8:**" e "[Link para responder](https://...)"). O prompt manda
+// não usar; a tesoura garante. Vira o markup do WhatsApp: *negrito*, _itálico_
+// e link solto (que é o que o app transforma em clicável).
+function limparMarkdown(texto: string): string {
+  return texto
+    .replace(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g, '$1') // imagem -> url
+    .replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, rotulo, url) =>
+      // "[Link para responder](url)" vira só a url; rótulo que agrega vira "rótulo: url"
+      /^(link|clique|aqui|acesse|responder)/i.test(String(rotulo).trim()) ? String(url) : `${rotulo}: ${url}`,
+    )
+    .replace(/\*\*\*([^*\n]+)\*\*\*/g, '*$1*')
+    .replace(/\*\*([^*\n]+)\*\*/g, '*$1*')
+    .replace(/(^|\s)__([^_\n]+)__(?=\s|$|[.,!?])/g, '$1*$2*')
+    .replace(/(^|\n)\s{0,3}#{1,6}\s+/g, '$1') // "## Título" -> "Título"
+    .replace(/(^|\n)\s{0,3}[*+]\s+/g, '$1- ') // bullet md -> traço simples
+    .replace(/`{1,3}([^`\n]+)`{1,3}/g, '$1')
+    .trim();
+}
+
 /** Segura a resposta até completar o tempo de "gente digitando", mantendo o
  *  "escrevendo..." vivo. Recebe quando a mensagem do cliente chegou. */
 async function ritmoHumano(
@@ -550,7 +571,7 @@ export async function processarEntrada(params: {
     }
 
     if (texto) {
-      texto = limparFechoRepetitivo(texto);
+      texto = limparMarkdown(limparFechoRepetitivo(texto));
       // Cota de emoji da CONVERSA (1 no total): se ela já usou antes, esta
       // mensagem sai sem nenhum.
       const jaUsados = historico
