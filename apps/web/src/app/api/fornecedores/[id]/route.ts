@@ -29,6 +29,7 @@ export async function PATCH(
     categoriaCompras?: string | null;
     fonePrincipal?: string | null;
     email?: string | null;
+    nome?: string;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -58,6 +59,9 @@ export async function PATCH(
     updates.fonePrincipal = f;
   }
   if ('email' in body) updates.email = body.email?.trim().slice(0, 200) || null;
+  if (typeof body.nome === 'string' && body.nome.trim()) {
+    updates.nome = body.nome.trim().slice(0, 200);
+  }
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'nenhum campo pra atualizar' }, { status: 400 });
