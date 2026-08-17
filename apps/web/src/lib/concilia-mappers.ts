@@ -126,8 +126,15 @@ async function mapProdutos(filialId: string, op: Operacao, chave: string, d: Dad
         nome: row.nome,
         descricao: row.descricao,
         precoVenda: row.precoVenda,
-        precoCusto: row.precoCusto,
-        estoqueAtual: row.estoqueAtual,
+        // ATENCAO: NAO sobrescrever precoCusto e estoqueAtual no UPDATE — mesma
+        // regra do /api/ingest/pdv. Esses dois sao gerenciados na nuvem via
+        // movimento_estoque (ENTRADA_COMPRA da NFe, ENTRADA/SAIDA_PRODUCAO,
+        // SAIDA_VENDA / SAIDA_FICHA_TECNICA, ajustes) + custo medio ponderado.
+        // O CDC manda a linha CRUA de PRODUTOS, e no Consumer o estoque/custo
+        // de verdade mora em PRODUTODETALHE — PRODUTOS.ESTOQUEATUAL vem 0/null.
+        // Sobrescrever aqui zerava o saldo e o custo da nuvem toda vez que
+        // alguem mexia no produto no Consumer.
+        // Saldo inicial entra so no INSERT (produto novo), depois eh da nuvem.
         estoqueMinimo: row.estoqueMinimo,
         estoqueControlado: row.estoqueControlado,
         descontinuado: row.descontinuado,
