@@ -27,6 +27,8 @@ export async function PATCH(
     valorPedidoMinimo?: number | string | null;
     ativoCompras?: boolean;
     categoriaCompras?: string | null;
+    fonePrincipal?: string | null;
+    email?: string | null;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -48,6 +50,14 @@ export async function PATCH(
   }
   if (typeof body.ativoCompras === 'boolean') updates.ativoCompras = body.ativoCompras;
   if ('categoriaCompras' in body) updates.categoriaCompras = body.categoriaCompras ?? null;
+  if ('fonePrincipal' in body) {
+    const f = body.fonePrincipal?.trim().slice(0, 30) || null;
+    if (f && f.replace(/\D/g, '').length < 10) {
+      return NextResponse.json({ error: 'fonePrincipal invalido' }, { status: 400 });
+    }
+    updates.fonePrincipal = f;
+  }
+  if ('email' in body) updates.email = body.email?.trim().slice(0, 200) || null;
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'nenhum campo pra atualizar' }, { status: 400 });
