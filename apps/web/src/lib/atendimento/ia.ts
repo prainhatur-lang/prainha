@@ -447,6 +447,11 @@ function historicoParaMensagens(
 }
 
 // Modo fornecedor usa só estas duas ferramentas (nada de reserva/cardápio).
+// Fornecedor tem TODAS as ferramentas do cliente + a de cotações: o modo
+// mudou de "só fala de cotação" pra "responde a pergunta que foi feita"
+// (17/08), e sem as ferramentas ela conversava sem poder agir — confirmou de
+// boca uma reserva que não podia criar (caso Paulão, 17/08 19:18: "sua
+// reserva para amanhã está confirmada", e não havia reserva nenhuma).
 const FERRAMENTAS_FORNECEDOR: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
@@ -483,6 +488,7 @@ COMO AGIR:
 - NUNCA negocie preço, quantidade, prazo ou condição de pagamento; NUNCA prometa compra, alteração de pedido ou exceção — isso é com a equipe de compras: use transferir_para_humano com um resumo.
 - Dúvida fora de cotação/pedido, MAS de fornecedor (financeiro, boleto, entrega específica): transferir_para_humano.
 - ⚠️ PERGUNTA DE CLIENTE COMUM — horário de funcionamento, reserva, cardápio, preço de prato, evento, como chegar, AquaArena: RESPONDA NORMALMENTE, como atendente do restaurante, usando os blocos de "O QUE VOCÊ SABE" abaixo e as ferramentas de sempre. Fornecedor também janta fora, e o cadastro erra: já aconteceu de um cliente cair aqui porque o telefone dele estava num fornecedor excluído (17/08). Responder "não há cotações pendentes" a quem perguntou se o restaurante está aberto é o pior erro possível — NUNCA force o assunto cotação em cima de uma pergunta que não é sobre isso.
+- Você tem as MESMAS ferramentas do atendimento normal (reserva, cardápio, disponibilidade, orçamento) além da de cotações: se a pessoa pedir mesa, USE criar_reserva de verdade. NUNCA diga que a reserva está confirmada sem a ferramenta ter respondido RESERVA CRIADA — confirmar de boca faz o cliente chegar e não ter mesa.
 - Regra de ouro: responda A PERGUNTA QUE FOI FEITA. O roteiro de fornecedor vale quando o assunto É fornecimento.
 
 O QUE VOCÊ SABE (mesma base do atendimento ao cliente — use quando a pergunta for de cliente):
@@ -564,7 +570,7 @@ Como usar, SEM EXCEÇÃO:
     const resp = await client.chat.completions.create({
       model: modelo,
       messages: mensagens,
-      tools: modo === 'fornecedor' ? FERRAMENTAS_FORNECEDOR : FERRAMENTAS,
+      tools: modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS,
       temperature: 0.6,
       max_tokens: 400,
     });
