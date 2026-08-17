@@ -3,7 +3,9 @@
 // mas o pedido real é 20 kg). Só enquanto a cotação não foi aprovada — depois
 // da aprovação o pedido já foi gerado e enviado com os números antigos.
 //
-// Body: { cotacaoItemId, quantidade }
+// Body: { cotacaoItemId, quantidade?, observacao? } — pelo menos um dos dois.
+// A observação do item é a instrução que o fornecedor vê no formulário
+// ("caixa grande", "marca X") — editável enquanto a cotação está viva.
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
@@ -20,15 +22,23 @@ export async function POST(
 
   const { id: cotacaoId } = await params;
 
-  let body: { cotacaoItemId?: string; quantidade?: number };
+  let body: { cotacaoItemId?: string; quantidade?: number; observacao?: string | null };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'json invalido' }, { status: 400 });
   }
+  const temQtd = body.quantidade !== undefined;
+  const temObs = 'observacao' in body;
   const qtd = Number(body.quantidade);
-  if (!body.cotacaoItemId || !Number.isFinite(qtd) || qtd <= 0) {
-    return NextResponse.json({ error: 'cotacaoItemId e quantidade > 0 obrigatorios' }, { status: 400 });
+  if (!body.cotacaoItemId || (!temQtd && !temObs)) {
+    return NextResponse.json(
+      { error: 'cotacaoItemId e (quantidade ou observacao) obrigatorios' },
+      { status: 400 },
+    );
+  }
+  if (temQtd && (!Number.isFinite(qtd) || qtd <= 0)) {
+    return NextResponse.json({ error: 'quantidade > 0 obrigatoria' }, { status: 400 });
   }
 
   const [cot] = await db
@@ -53,10 +63,10 @@ export async function POST(
     .limit(1);
   if (!item) return NextResponse.json({ error: 'item nao pertence a esta cotacao' }, { status: 404 });
 
-  await db
-    .update(schema.cotacaoItem)
-    .set({ quantidade: String(qtd) })
-    .where(eq(schema.cotacaoItem.id, item.id));
+  const set: Partial<typeof schema.cotacaoItem.$inferInsert> = {};
+  if (temQtd) set.quantidade = String(qtd);
+  if (temObs) set.observacao = body.observacao?.trim().slice(0, 300) || null;
+  await db.update(schema.cotacaoItem).set(set).where(eq(schema.cotacaoItem.id, item.id));
 
   return NextResponse.json({ ok: true });
 }
