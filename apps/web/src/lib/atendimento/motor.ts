@@ -64,12 +64,16 @@ export interface EntradaRegistrada {
 async function ehFornecedor(telefone: string): Promise<boolean> {
   const suf = telefone.replace(/\D/g, '').slice(-8);
   if (suf.length < 8) return false;
+  // Cadastro morto não vira guard: o telefone (21) 99329-1132 estava em TRÊS
+  // fornecedores — um deles nomeado "*Excluído *Aldri Max" — e transformou um
+  // cliente de verdade em "fornecedor" (caso Paulão Santana, 17/08).
   const rows = await db
     .select({ id: schema.fornecedor.id })
     .from(schema.fornecedor)
     .where(
-      sql`right(regexp_replace(coalesce(${schema.fornecedor.fonePrincipal}, ''), '\\D', '', 'g'), 8) = ${suf}
-          OR right(regexp_replace(coalesce(${schema.fornecedor.foneSecundario}, ''), '\\D', '', 'g'), 8) = ${suf}`,
+      sql`coalesce(${schema.fornecedor.nome}, '') NOT ILIKE '%exclu%'
+          AND (right(regexp_replace(coalesce(${schema.fornecedor.fonePrincipal}, ''), '\\D', '', 'g'), 8) = ${suf}
+               OR right(regexp_replace(coalesce(${schema.fornecedor.foneSecundario}, ''), '\\D', '', 'g'), 8) = ${suf})`,
     )
     .limit(1);
   return rows.length > 0;
@@ -185,6 +189,13 @@ function limparFechoRepetitivo(texto: string): string {
     const antes = out;
     for (const p of FECHOS_REPETITIVOS) out = out.replace(p, '').trim();
     if (out === antes) break;
+  }
+  // A tesoura cortava o fecho e deixava o começo da frase pendurado:
+  // "Se tiver alguma dúvida ou precisar de mais informações," (caso Paulão,
+  // 17/08). Sobrou vírgula/conjunção no fim = a frase inteira vai junto.
+  if (/[,;:]$|\b(e|ou|que|para|pra|de|com|se)$/i.test(out)) {
+    const semOrfa = out.replace(/(^|[.!?…]\s+)[^.!?…]*$/, '$1').trim();
+    if (semOrfa.length >= 10) out = semOrfa;
   }
   // Mensagem que É só o fecho: melhor mandar como veio do que mandar nada.
   return out.length >= 10 ? out : texto.trim();

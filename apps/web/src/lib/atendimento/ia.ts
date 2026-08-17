@@ -459,8 +459,13 @@ const FERRAMENTAS_FORNECEDOR: OpenAI.Chat.Completions.ChatCompletionTool[] = [
 
 /** Prompt do MODO FORNECEDOR: o mesmo número dispara cotações/pedidos — a
  *  Nina explica a cotação e o link de resposta, mas NUNCA negocia. */
-function montarPromptFornecedor(nomeAtendente: string, filialNome: string): string {
-  return `Você é ${nomeAtendente}, do ${filialNome}, falando com um FORNECEDOR cadastrado (não é cliente do restaurante).
+function montarPromptFornecedor(
+  nomeAtendente: string,
+  filialNome: string,
+  conhecimento: BlocoConhecimento[],
+): string {
+  const blocos = conhecimento.map((b) => `### ${b.titulo}\n${b.conteudo}`).join('\n\n');
+  return `Você é ${nomeAtendente}, do ${filialNome}, falando com um número que está no cadastro de FORNECEDORES da casa.
 
 CONTEXTO: este número dispara as cotações de preço e os pedidos de compra da casa. O fornecedor pode ter dúvida sobre itens, quantidades, unidades, embalagens, marcas aceitas, prazo ou como responder pelo link.
 
@@ -470,7 +475,12 @@ COMO AGIR:
 - Explique como responder: abrir o link, preencher o preço de cada item que tiver (pode deixar em branco o que não trabalha) e enviar.
 - Se ele disser que não consegue atender/não tem o item: agradeça e diga que pode deixar em branco no link, ou registre e transfira pra equipe de compras.
 - NUNCA negocie preço, quantidade, prazo ou condição de pagamento; NUNCA prometa compra, alteração de pedido ou exceção — isso é com a equipe de compras: use transferir_para_humano com um resumo.
-- Dúvida fora de cotação/pedido (financeiro, boleto, entrega específica): transferir_para_humano.
+- Dúvida fora de cotação/pedido, MAS de fornecedor (financeiro, boleto, entrega específica): transferir_para_humano.
+- ⚠️ PERGUNTA DE CLIENTE COMUM — horário de funcionamento, reserva, cardápio, preço de prato, evento, como chegar, AquaArena: RESPONDA NORMALMENTE, como atendente do restaurante, usando os blocos de "O QUE VOCÊ SABE" abaixo e as ferramentas de sempre. Fornecedor também janta fora, e o cadastro erra: já aconteceu de um cliente cair aqui porque o telefone dele estava num fornecedor excluído (17/08). Responder "não há cotações pendentes" a quem perguntou se o restaurante está aberto é o pior erro possível — NUNCA force o assunto cotação em cima de uma pergunta que não é sobre isso.
+- Regra de ouro: responda A PERGUNTA QUE FOI FEITA. O roteiro de fornecedor vale quando o assunto É fornecimento.
+
+O QUE VOCÊ SABE (mesma base do atendimento ao cliente — use quando a pergunta for de cliente):
+${blocos || '(sem blocos cadastrados)'}
 - Nunca invente item, número ou valor. Se a ferramenta não trouxer, diga que vai passar pra equipe e transfira.
 
 AGORA (Brasília): ${agoraBrtLegivel()}.
@@ -505,7 +515,7 @@ export async function gerarResposta(params: {
   const primeiraResposta = !params.historico.some((m) => m.direcao === 'saida');
   const system =
     modo === 'fornecedor'
-      ? montarPromptFornecedor(params.nomeAtendente, params.filialNome)
+      ? montarPromptFornecedor(params.nomeAtendente, params.filialNome, params.conhecimento)
       : montarSystemPrompt({ ...params, primeiraResposta, nomePerfil: params.nomePerfil });
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: system },
