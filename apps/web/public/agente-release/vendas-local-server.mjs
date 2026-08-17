@@ -220,6 +220,8 @@ async function initSchema() {
   await addCol('produto_local', 'descricao text');
   await addCol('produto_local', 'preparo text');
   await addCol('produto_local', 'sem_estoque boolean DEFAULT false');
+  // quantidade em estoque (null = produto sem controle de estoque no Consumer)
+  await addCol('produto_local', 'estoque numeric');
   await addCol('produto_local', 'cardapio_digital boolean DEFAULT true');
   // grupos que a CASA decidiu esconder do cliente, independente do Consumer
   // (ex.: "Artistas" vem marcado como cardapio digital la, mas nao e' pra mesa)
@@ -1040,10 +1042,13 @@ async function espelhoCatalogo() {
     // Sem movimentação registrada não dá pra afirmar que zerou: trata como disponível.
     const pdv = N(x.PDV);
     const semEstoque = T(x.ECTRL) === 'S' && saldo.has(pdv) && saldo.get(pdv) <= 0;
+    // quantidade em si: só faz sentido em produto de estoque controlado —
+    // no resto fica null e a tela não mostra número nenhum.
+    const estoque = T(x.ECTRL) === 'S' && saldo.has(pdv) ? saldo.get(pdv) : null;
     // nome_busca = nome+tamanho sem acento e minusculo. O garcom digita "acai",
     // "FILE", "caipirinha" e acha do mesmo jeito. Feito aqui em JS porque o
     // Postgres da loja e' o 9.5 legado (sem garantia da extensao unaccent).
-    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque,
+    return { codigo_pdv: N(x.PDV), produto_codigo: N(x.PROD), nome, tamanho: tam, preco: N(x.PV) || 0, area_codigo: N(x.COZ), comanda_mobile: N(x.CM) === 1, nome_busca: semAcento(nome + ' ' + (tam || '')), categoria: T(x.CAT) || 'Outros', categoria_ordem: N(x.CATORD) ?? 999, sem_estoque: semEstoque, estoque,
       descricao: T(x.DESCR) || null, preparo: T(x.PREPARO) || null,
       // flag do proprio Consumer: o que NAO e' de cardapio digital some da
       // tela do cliente (servico, a maioria dos complementos), mas o garcom
@@ -1057,7 +1062,7 @@ async function espelhoCatalogo() {
   });
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
-    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
+    if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
   });
   // ---- perguntas do Consumer ----
   await espelhoPerguntas();
@@ -1754,10 +1759,13 @@ function agruparVariantes(rows) {
     // a faixa de preço vem do que dá pra vender AGORA; se nada, do cadastro
     const base = disp[0] || vs[0];
     const precos = (disp.length ? disp : vs).map((v) => Number(v.preco || 0));
+    // estoque do grupo = soma das variantes controladas (null se nenhuma tem)
+    const comEst = vs.filter((x) => x.estoque != null);
     out.push({ grupo: true, produto_codigo: base.produto_codigo, nome: base.nome,
       descricao: base.descricao ?? null, tem_foto: !!base.tem_foto,
       area_codigo: base.area_codigo, variantes: vs.length, disponiveis: disp.length,
       preco: Math.min(...precos), preco_max: Math.max(...precos),
+      estoque: comEst.length ? comEst.reduce((s, x) => s + Number(x.estoque || 0), 0) : null,
       sem_estoque: disp.length === 0 });
   }
   // fora de estoque por último, depois nome — mesma ordem de antes
@@ -1773,7 +1781,7 @@ async function apiProdutos(termo, so) {
   const filtro = so === 'sem-foto' ? sql`AND f.produto_codigo IS NULL`
     : so === 'ajustados' ? sql`AND c.codigo_pdv IS NOT NULL` : sql``;
   const rows = await sql`SELECT p.codigo_pdv, p.produto_codigo, p.nome, p.tamanho, p.preco,
-      p.categoria, p.sem_estoque, p.cardapio_digital AS padrao_cliente,
+      p.categoria, p.sem_estoque, p.estoque, p.cardapio_digital AS padrao_cliente,
       c.cliente, c.garcom, c.caixa, c.delivery,
       (f.produto_codigo IS NOT NULL) AS tem_foto
     FROM produto_local p
@@ -1825,7 +1833,7 @@ async function apiProdutoFoto(body) {
 async function apiVendaVariantes(produtoCodigo, cliente) {
   const p = Number(produtoCodigo);
   if (!(p > 0)) return { ok: false, erro: 'produto inválido' };
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE produto_codigo=${p} ${soCliente(cliente)}
     ORDER BY sem_estoque, preco, tamanho`;
@@ -1838,7 +1846,7 @@ async function apiVendaBusca(termo, cliente) {
   // que a casa marcou como fora do cardápio digital. A navegação por grupo já
   // respeitava; a busca era a porta dos fundos.
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE nome_busca LIKE ${t} ${soCliente(cliente)}
     ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
@@ -1870,7 +1878,7 @@ async function apiVendaCategorias(cliente) {
   return { categorias: rows };
 }
 async function apiVendaCategoria(nome, cliente) {
-  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, descricao,
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
     ORDER BY sem_estoque, nome`;
@@ -10254,6 +10262,18 @@ const server = http.createServer(async (req, res) => {
       return res.end(iconePng(n));
     }
     if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
+    // URL pública atual do túnel de certificação (cloudflared quick tunnel na
+    // mesma pasta escreve tunel.log; a URL troca a cada restart do processo).
+    // Só revela a própria URL pública — nada sensível.
+    if (p === '/api/tunel') {
+      let url = null;
+      try {
+        const m = readFileSync('tunel.log', 'utf8').match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/g);
+        if (m && m.length) url = m[m.length - 1];
+      } catch {}
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: !!url, url }));
+    }
     if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si

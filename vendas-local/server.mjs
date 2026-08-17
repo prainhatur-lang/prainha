@@ -10262,6 +10262,18 @@ const server = http.createServer(async (req, res) => {
       return res.end(iconePng(n));
     }
     if (p === '/api/versao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ versao: VERSAO, iniciado_em: INICIADO_EM })); }
+    // URL pública atual do túnel de certificação (cloudflared quick tunnel na
+    // mesma pasta escreve tunel.log; a URL troca a cada restart do processo).
+    // Só revela a própria URL pública — nada sensível.
+    if (p === '/api/tunel') {
+      let url = null;
+      try {
+        const m = readFileSync('tunel.log', 'utf8').match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/g);
+        if (m && m.length) url = m[m.length - 1];
+      } catch {}
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: !!url, url }));
+    }
     if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si
