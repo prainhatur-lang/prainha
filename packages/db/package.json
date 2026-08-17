@@ -38,6 +38,7 @@
     "migrate:cert-filial-nsu": "tsx scripts/migrate-cert-filial-nsu.ts",
     "migrate:permissoes": "tsx scripts/migrate-permissoes.ts",
     "migrate:rls": "tsx scripts/migrate-rls.ts",
+    "migrate:reseed-estoque-cdc": "tsx scripts/migrate-reseed-estoque-cdc.ts",
     "seed:grupos-front": "tsx scripts/seed-grupos-front.ts",
     "migrate:fornecedor-pedido-minimo": "tsx scripts/migrate-fornecedor-pedido-minimo.ts",
     "migrate:filial-pausada": "tsx scripts/migrate-filial-pausada.ts",
