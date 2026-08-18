@@ -30,12 +30,12 @@ const TELEFONE = '(79) 3512-0567';
 const serif = { fontFamily: 'var(--font-serif-tab)' };
 
 const DESTAQUES = [
-  { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto de polvo', desc: 'Polvo grelhado, risoto cremoso e crocante de páprica' },
-  { src: '/tabuara/prato-salmao.jpg', nome: 'Carpaccio de salmão', desc: 'Salmão fresco, crispy e redução cítrica' },
-  { src: '/tabuara/prato-file.jpg', nome: 'Corte nobre & gratin', desc: 'Carne ao ponto com batata gratinada dauphinois' },
-  { src: '/tabuara/prato-bruschetta.jpg', nome: 'Bruschetta de camarão', desc: 'Camarão salteado, molho da casa e pesto' },
-  { src: '/tabuara/prato-risoto.jpg', nome: 'Risoto de camarão', desc: 'Cremoso, com camarões grelhados' },
-  { src: '/tabuara/prato-coco.jpg', nome: 'Camarão no coco', desc: 'Servido no coco, crocância e frescor' },
+  { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto de polvo', rua: 'Assinatura da casa', desc: 'Polvo grelhado sobre risoto cremoso' },
+  { src: '/tabuara/prato-file.jpg', nome: 'Picanha', rua: 'Avenida Ivo do Prado', desc: 'Com batatas ao gratin dauphinois' },
+  { src: '/tabuara/prato-coco.jpg', nome: 'Beco dos Cocos', rua: 'Assinatura da casa', desc: 'Camarão servido no coco, crocância e frescor' },
+  { src: '/tabuara/prato-salmao.jpg', nome: 'Carpaccio', rua: 'Rua Aquidabã', desc: 'Fatiado fino, crocante e toque cítrico' },
+  { src: '/tabuara/prato-risoto.jpg', nome: 'Risoto all Mare', rua: 'Avenida Tancredo Neves', desc: 'Cremoso, com frutos do mar' },
+  { src: '/tabuara/prato-bruschetta.jpg', nome: 'Bruschetta', rua: 'Rua Estância', desc: 'Camarão salteado, molho da casa e pesto' },
 ];
 
 const GALERIA = [
@@ -111,20 +111,21 @@ export default function TabuaraPage() {
           </div>
           <div>
             <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">A casa</p>
-            <h2 className="mt-5 text-4xl leading-tight text-[#f3ede1] sm:text-5xl" style={serif}>Uma experiência para os sentidos</h2>
+            <h2 className="mt-5 text-4xl leading-tight text-[#f3ede1] sm:text-5xl" style={serif}>Do tabuleiro de Ará</h2>
             <p className="mt-6 leading-relaxed text-[#b8ad99]">
-              No coração de Aracaju, a Tabuará reúne cozinha autoral, coquetelaria de assinatura e
-              uma carta de vinhos cuidadosamente selecionada. Cada prato é pensado como uma
-              experiência — sabor, aroma, textura e apresentação em harmonia.
+              O nome <span className="text-[#e4dccd]">Tabuará</span> nasce de <span className="italic text-[#e4dccd]">Tabuleiro de Ará</span> — Aracaju,
+              a primeira capital planejada do Brasil, desenhada em 1855 como um tabuleiro de xadrez cujas
+              ruas correm até o rio Sergipe.
             </p>
             <p className="mt-4 leading-relaxed text-[#b8ad99]">
-              Ambiente sofisticado e acolhedor, perfeito para jantares especiais, encontros e
-              celebrações. Atendimento atento, do primeiro brinde à última sobremesa.
+              Aqui, a memória afetiva da cidade — seus ladrilhos, suas ruas e as antigas bodegas — vira
+              <span className="text-[#e4dccd]"> gastronomia sensorial</span>: cozinha autoral, coquetelaria e uma
+              carta de vinhos, num ambiente que traduz Aracaju em cores, texturas e sabores.
             </p>
             <div className="mt-8 flex flex-wrap gap-x-10 gap-y-4 border-t border-white/10 pt-8 text-sm">
+              <div><p className="text-2xl text-[#d9bd82]" style={serif}>1855</p><p className="text-[#8f8574]">A cidade tabuleiro</p></div>
               <div><p className="text-2xl text-[#d9bd82]" style={serif}>Autoral</p><p className="text-[#8f8574]">Cozinha do chef</p></div>
-              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Vinhos</p><p className="text-[#8f8574]">Carta selecionada</p></div>
-              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Autorais</p><p className="text-[#8f8574]">Coquetelaria</p></div>
+              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Sensorial</p><p className="text-[#8f8574]">Memória à mesa</p></div>
             </div>
           </div>
         </div>
@@ -135,9 +136,11 @@ export default function TabuaraPage() {
         <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
           <div className="text-center">
             <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Do chef</p>
-            <h2 className="mt-5 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>Alguns destaques</h2>
-            <p className="mx-auto mt-4 max-w-xl text-sm text-[#b8ad99]">
-              Uma amostra da nossa cozinha. Veja o cardápio completo, com pratos, vinhos e drinks, no nosso menu online.
+            <h2 className="mt-5 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>A cidade servida à mesa</h2>
+            <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-[#b8ad99]">
+              Cada prato leva o nome de uma rua ou avenida de Aracaju — do Baião de Dois à Moqueca
+              Rio Sergipe. A memória da cidade vira sabor. Veja o cardápio completo, com pratos,
+              vinhos e drinks, no nosso menu online.
             </p>
           </div>
           <div className="mt-14 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
@@ -147,7 +150,8 @@ export default function TabuaraPage() {
                   <Image src={d.src} alt={d.nome} fill sizes="(max-width:640px) 100vw, (max-width:1024px) 50vw, 33vw" className="object-cover transition-transform duration-700 group-hover:scale-105" />
                 </div>
                 <h3 className="mt-4 text-xl text-[#f3ede1]" style={serif}>{d.nome}</h3>
-                <p className="mt-1 text-sm text-[#8f8574]">{d.desc}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-[#c9a24b]">{d.rua}</p>
+                <p className="mt-1.5 text-sm text-[#8f8574]">{d.desc}</p>
               </article>
             ))}
           </div>
