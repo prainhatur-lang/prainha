@@ -1,212 +1,266 @@
-'use client';
-
 import Image from 'next/image';
-import Link from 'next/link';
-import { useState } from 'react';
-import { MapPin, Calendar, ShoppingBag, Play, Instagram } from 'lucide-react';
+import { TabuaraGallery } from '@/components/tabuara-gallery';
+
+export const dynamic = 'force-static';
+
+type IconProps = { className?: string };
+const S = (props: IconProps & { children: React.ReactNode }) => (
+  <svg className={props.className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    {props.children}
+  </svg>
+);
+const MapPin = (p: IconProps) => <S {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></S>;
+const CalendarDays = (p: IconProps) => <S {...p}><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M3 10h18M8 2v4M16 2v4" /></S>;
+const ShoppingBag = (p: IconProps) => <S {...p}><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" /><path d="M3 6h18M16 10a4 4 0 0 1-8 0" /></S>;
+const Instagram = (p: IconProps) => <S {...p}><rect x="2" y="2" width="20" height="20" rx="5" /><circle cx="12" cy="12" r="4" /><circle cx="17.5" cy="6.5" r="0.6" fill="currentColor" /></S>;
+const Phone = (p: IconProps) => <S {...p}><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2 4.2 2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L7.6 9.8a16 16 0 0 0 6 6l1.4-1.4a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2Z" /></S>;
+const Clock = (p: IconProps) => <S {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></S>;
+const ArrowRight = (p: IconProps) => <S {...p}><path d="M5 12h14M13 6l6 6-6 6" /></S>;
+
+const RESERVA_URL =
+  'https://app.prainhabar.com/reservar/6dd10ed01259fc44d1e0c67d1d29bf986ccb22e8a527d0419cc6a4c35a6e534e';
+const DELIVERY_URL = 'https://tabuara.menudino.com.br';
+const INSTAGRAM_URL = 'https://instagram.com/tabuara.se';
+const MAPS_URL =
+  'https://www.google.com/maps/search/?api=1&query=Tabuara+Gastronomia+Sensorial+Aracaju';
+const MAPS_EMBED =
+  'https://www.google.com/maps?q=Tabuara+Gastronomia+Sensorial+Aracaju&output=embed';
+const TELEFONE = '(79) 3512-0567';
+
+const serif = { fontFamily: 'var(--font-serif-tab)' };
+
+const DESTAQUES = [
+  { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto de polvo', desc: 'Polvo grelhado, risoto cremoso e crocante de páprica' },
+  { src: '/tabuara/prato-salmao.jpg', nome: 'Carpaccio de salmão', desc: 'Salmão fresco, crispy e redução cítrica' },
+  { src: '/tabuara/prato-file.jpg', nome: 'Corte nobre & gratin', desc: 'Carne ao ponto com batata gratinada dauphinois' },
+  { src: '/tabuara/prato-bruschetta.jpg', nome: 'Bruschetta de camarão', desc: 'Camarão salteado, molho da casa e pesto' },
+  { src: '/tabuara/prato-risoto.jpg', nome: 'Risoto de camarão', desc: 'Cremoso, com camarões grelhados' },
+  { src: '/tabuara/prato-coco.jpg', nome: 'Camarão no coco', desc: 'Servido no coco, crocância e frescor' },
+];
+
+const GALERIA = [
+  { id: 'g1', src: '/tabuara/ambiente.jpg', alt: 'Salão da Tabuará', title: 'O ambiente' },
+  { id: 'g2', src: '/tabuara/destaque-polvo.jpg', alt: 'Risoto de polvo', title: 'Risoto de polvo' },
+  { id: 'g3', src: '/tabuara/drink-assinatura.jpg', alt: 'Coquetel autoral', title: 'Coquetelaria' },
+  { id: 'g4', src: '/tabuara/prato-salmao.jpg', alt: 'Carpaccio de salmão', title: 'Carpaccio' },
+  { id: 'g5', src: '/tabuara/bar.jpg', alt: 'Bar da Tabuará', title: 'O bar' },
+  { id: 'g6', src: '/tabuara/prato-file.jpg', alt: 'Corte nobre', title: 'Corte nobre' },
+  { id: 'g7', src: '/tabuara/drink-manga.jpg', alt: 'Drink autoral', title: 'Drinks' },
+  { id: 'g8', src: '/tabuara/prato-bruschetta.jpg', alt: 'Bruschetta de camarão', title: 'Entradas' },
+  { id: 'g9', src: '/tabuara/drink-vermelho.jpg', alt: 'Coquetel', title: 'Autorais' },
+];
+
+const DRINKS = [
+  '/tabuara/drink-assinatura.jpg',
+  '/tabuara/drink-negroni.jpg',
+  '/tabuara/drink-manga.jpg',
+  '/tabuara/drink-vermelho.jpg',
+];
 
 export default function TabuaraPage() {
-  const [videoOpen, setVideoOpen] = useState(false);
-
   return (
-    <main className="min-h-screen bg-white">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-slate-100 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6">
-          <div className="text-2xl font-bold text-slate-900">Tabuará</div>
-          <nav className="flex items-center gap-6">
-            <Link href="/reservas" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-              Reservas
-            </Link>
-            <Link href="/delivery" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-              Delivery
-            </Link>
-            <a
-              href="https://instagram.com/tabuara.se"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-slate-600 hover:text-slate-900 transition-colors"
-              title="Instagram"
-            >
+    <main className="min-h-screen bg-[#0d0b09] text-[#f3ede1] [font-family:var(--font-sans-tab)] antialiased">
+      {/* ---------- NAV ---------- */}
+      <header className="fixed inset-x-0 top-0 z-50 border-b border-white/5 bg-[#0d0b09]/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4 sm:px-8">
+          <span className="text-xl tracking-[0.25em] text-[#f3ede1]" style={serif}>
+            TABUARÁ
+          </span>
+          <nav className="flex items-center gap-6 text-sm text-[#b8ad99]">
+            <a href="#sobre" className="hidden transition-colors hover:text-[#d9bd82] sm:inline">A casa</a>
+            <a href="#cardapio" className="hidden transition-colors hover:text-[#d9bd82] sm:inline">Cardápio</a>
+            <a href="#visite" className="hidden transition-colors hover:text-[#d9bd82] sm:inline">Visite</a>
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener" aria-label="Instagram" className="transition-colors hover:text-[#d9bd82]">
               <Instagram className="h-5 w-5" />
+            </a>
+            <a href={RESERVA_URL} target="_blank" rel="noopener" className="rounded-full border border-[#c9a24b]/50 px-4 py-1.5 text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
+              Reservar
             </a>
           </nav>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <section className="relative h-[600px] w-full overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800">
-        <div className="absolute inset-0 bg-slate-900/40" />
-        <div className="relative flex h-full flex-col items-center justify-center px-4 text-center text-white">
-          <h1 className="text-5xl font-bold tracking-tight sm:text-6xl">Tabuará</h1>
-          <p className="mt-4 text-xl text-slate-200">Gastronomia, vista e experiência em Aracaju</p>
-          <div className="mt-10 flex gap-4">
-            <Link
-              href="/reservas"
-              className="inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 font-semibold text-slate-900 transition-transform hover:scale-105"
-            >
-              <Calendar className="h-5 w-5" />
-              Reservar Mesa
-            </Link>
-            <Link
-              href="/delivery/tabuara"
-              className="inline-flex items-center gap-2 rounded-lg border-2 border-white px-6 py-3 font-semibold text-white transition-all hover:bg-white hover:text-slate-900"
-            >
-              <ShoppingBag className="h-5 w-5" />
-              Delivery
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Sobre */}
-      <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-        <div className="grid gap-12 md:grid-cols-2 md:gap-16">
-          <div>
-            <h2 className="text-4xl font-bold text-slate-900">Bem-vindo ao Tabuará</h2>
-            <p className="mt-6 text-lg text-slate-600 leading-relaxed">
-              Um espaço para desfrutar de uma experiência gastronômica única em Aracaju.
-              Nosso cardápio contemporâneo celebra os melhores ingredientes locais
-              com técnica e criatividade.
-            </p>
-            <p className="mt-4 text-lg text-slate-600 leading-relaxed">
-              Perfeito para jantares especiais, encontros entre amigos ou momentos
-              em família com vista privilegiada da cidade.
-            </p>
-            <div className="mt-8 flex items-start gap-4">
-              <MapPin className="h-6 w-6 text-slate-400 flex-shrink-0 mt-1" />
-              <div>
-                <p className="font-semibold text-slate-900">Localização</p>
-                <p className="text-slate-600">Aracaju, SE</p>
-              </div>
-            </div>
-          </div>
-          <div className="rounded-xl bg-gradient-to-br from-slate-100 to-slate-50 p-8">
-            <div className="space-y-6 text-slate-700">
-              <div>
-                <h3 className="font-semibold text-slate-900 mb-2">Atmosfera</h3>
-                <p>Ambiente sofisticado com atenção aos detalhes</p>
-              </div>
-              <div>
-                <h3 className="font-semibold text-slate-900 mb-2">Cardápio</h3>
-                <p>Pratos signature e criações do chef</p>
-              </div>
-              <div>
-                <h3 className="font-semibold text-slate-900 mb-2">Serviço</h3>
-                <p>Atendimento atencioso e personalizado</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Galeria */}
-      <section className="bg-slate-50 py-20">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <div className="mb-12">
-            <h2 className="text-4xl font-bold text-slate-900">Galeria</h2>
-            <p className="mt-3 text-lg text-slate-600">Conheça os detalhes, ambientes e pratos que fazem Tabuará especial</p>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div
-                key={i}
-                className="group relative aspect-square overflow-hidden rounded-lg bg-gradient-to-br from-slate-200 to-slate-300 shadow-md transition-all hover:shadow-xl"
-              >
-                <div className="absolute inset-0 flex items-center justify-center bg-slate-200">
-                  <div className="text-center">
-                    <div className="text-6xl mb-2">📷</div>
-                    <span className="text-sm font-medium text-slate-600">Foto {i}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-12 text-center">
-            <p className="text-slate-600">Mais fotos no nosso</p>
-            <a
-              href="https://instagram.com/tabuara.se"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 mt-3 font-semibold text-slate-900 hover:text-slate-600 transition-colors"
-            >
-              <Instagram className="h-5 w-5" />
-              @tabuara.se
+      {/* ---------- HERO ---------- */}
+      <section className="relative flex min-h-[100svh] items-center justify-center overflow-hidden">
+        <Image src="/tabuara/hero.jpg" alt="Ambiente da Tabuará" fill priority sizes="100vw" className="object-cover object-center" />
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0d0b09]/70 via-[#0d0b09]/45 to-[#0d0b09]" />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 90% at 50% 40%, transparent 40%, rgba(13,11,9,0.7) 100%)' }} />
+        <div className="relative z-10 px-6 text-center [text-shadow:0_2px_30px_rgba(0,0,0,0.6)]">
+          <p className="text-xs uppercase tracking-[0.4em] text-[#d9bd82]">Aracaju · Sergipe</p>
+          <h1 className="mt-6 text-6xl leading-none tracking-tight text-[#f6f0e6] sm:text-8xl" style={serif}>Tabuará</h1>
+          <p className="mt-5 text-lg font-light tracking-[0.2em] text-[#e4dccd] sm:text-xl">GASTRONOMIA SENSORIAL</p>
+          <p className="mx-auto mt-5 max-w-xl text-sm leading-relaxed text-[#c8bda9]">
+            Cozinha autoral, coquetelaria e carta de vinhos, num ambiente pensado para despertar os sentidos.
+          </p>
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
+            <a href={RESERVA_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-7 py-3.5 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
+              <CalendarDays className="h-4 w-4" /> Reservar mesa
+            </a>
+            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-7 py-3.5 text-sm font-medium text-[#f3ede1] backdrop-blur-sm transition-all hover:border-[#f3ede1]/70">
+              <ShoppingBag className="h-4 w-4" /> Delivery
             </a>
           </div>
         </div>
       </section>
 
-      {/* Video Section */}
-      <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-        <h2 className="text-4xl font-bold text-slate-900 mb-12">Conheça Tabuará</h2>
-        <div className="relative aspect-video overflow-hidden rounded-2xl bg-slate-900">
-          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
-            <button
-              onClick={() => setVideoOpen(true)}
-              className="flex h-20 w-20 items-center justify-center rounded-full bg-white text-slate-900 transition-transform hover:scale-110"
-            >
-              <Play className="h-8 w-8 ml-1" />
-            </button>
+      {/* ---------- SOBRE ---------- */}
+      <section id="sobre" className="scroll-mt-20 bg-[#0d0b09]">
+        <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 py-24 sm:px-8 md:grid-cols-2 md:gap-16">
+          <div className="relative aspect-[4/5] overflow-hidden rounded-sm">
+            <Image src="/tabuara/ambiente.jpg" alt="Salão da Tabuará" fill sizes="(max-width:768px) 100vw, 45vw" className="object-cover" />
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">A casa</p>
+            <h2 className="mt-5 text-4xl leading-tight text-[#f3ede1] sm:text-5xl" style={serif}>Uma experiência para os sentidos</h2>
+            <p className="mt-6 leading-relaxed text-[#b8ad99]">
+              No coração de Aracaju, a Tabuará reúne cozinha autoral, coquetelaria de assinatura e
+              uma carta de vinhos cuidadosamente selecionada. Cada prato é pensado como uma
+              experiência — sabor, aroma, textura e apresentação em harmonia.
+            </p>
+            <p className="mt-4 leading-relaxed text-[#b8ad99]">
+              Ambiente sofisticado e acolhedor, perfeito para jantares especiais, encontros e
+              celebrações. Atendimento atento, do primeiro brinde à última sobremesa.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-x-10 gap-y-4 border-t border-white/10 pt-8 text-sm">
+              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Autoral</p><p className="text-[#8f8574]">Cozinha do chef</p></div>
+              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Vinhos</p><p className="text-[#8f8574]">Carta selecionada</p></div>
+              <div><p className="text-2xl text-[#d9bd82]" style={serif}>Autorais</p><p className="text-[#8f8574]">Coquetelaria</p></div>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="bg-gradient-to-r from-slate-900 to-slate-800 py-20 text-white">
-        <div className="mx-auto max-w-6xl px-4 text-center sm:px-6">
-          <h2 className="text-4xl font-bold">Pronto para uma experiência inesquecível?</h2>
-          <p className="mt-4 text-lg text-slate-200">Reserve sua mesa ou aproveite nosso serviço de delivery</p>
-          <div className="mt-10 flex flex-col gap-4 sm:flex-row sm:justify-center">
-            <Link
-              href="/reservas"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-8 py-4 font-semibold text-slate-900 transition-transform hover:scale-105"
-            >
-              <Calendar className="h-5 w-5" />
-              Reservar Agora
-            </Link>
-            <Link
-              href="/delivery/tabuara"
-              className="inline-flex items-center justify-center gap-2 rounded-lg border-2 border-white px-8 py-4 font-semibold text-white transition-all hover:bg-white hover:text-slate-900"
-            >
-              <ShoppingBag className="h-5 w-5" />
-              Pedir Delivery
-            </Link>
+      {/* ---------- CARDÁPIO / DESTAQUES ---------- */}
+      <section id="cardapio" className="scroll-mt-20 bg-[#12100d]">
+        <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+          <div className="text-center">
+            <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Do chef</p>
+            <h2 className="mt-5 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>Alguns destaques</h2>
+            <p className="mx-auto mt-4 max-w-xl text-sm text-[#b8ad99]">
+              Uma amostra da nossa cozinha. Veja o cardápio completo, com pratos, vinhos e drinks, no nosso menu online.
+            </p>
+          </div>
+          <div className="mt-14 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+            {DESTAQUES.map((d) => (
+              <article key={d.nome} className="group">
+                <div className="relative aspect-[4/3] overflow-hidden rounded-sm">
+                  <Image src={d.src} alt={d.nome} fill sizes="(max-width:640px) 100vw, (max-width:1024px) 50vw, 33vw" className="object-cover transition-transform duration-700 group-hover:scale-105" />
+                </div>
+                <h3 className="mt-4 text-xl text-[#f3ede1]" style={serif}>{d.nome}</h3>
+                <p className="mt-1 text-sm text-[#8f8574]">{d.desc}</p>
+              </article>
+            ))}
+          </div>
+          <div className="mt-14 text-center">
+            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#c9a24b]/50 px-8 py-3.5 text-sm font-medium text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
+              Ver cardápio completo <ArrowRight className="h-4 w-4" />
+            </a>
           </div>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-12">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <div className="grid gap-8 sm:grid-cols-3 mb-8">
+      {/* ---------- COQUETELARIA ---------- */}
+      <section className="relative overflow-hidden bg-[#0d0b09]">
+        <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+          <div className="mb-12 flex flex-wrap items-end justify-between gap-4">
             <div>
-              <h3 className="font-semibold text-slate-900 mb-4">Tabuará</h3>
-              <p className="text-sm text-slate-600">Gastronomia e experiência em Aracaju</p>
+              <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Bar</p>
+              <h2 className="mt-4 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>Coquetelaria autoral</h2>
             </div>
-            <div>
-              <h3 className="font-semibold text-slate-900 mb-4">Acesso Rápido</h3>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><Link href="/reservas" className="hover:text-slate-900">Reservar Mesa</Link></li>
-                <li><Link href="/delivery" className="hover:text-slate-900">Delivery</Link></li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-semibold text-slate-900 mb-4">Siga-nos</h3>
-              <a
-                href="https://instagram.com/tabuara.se"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-slate-900"
-              >
-                <Instagram className="h-4 w-4" />
-                @tabuara.se
+            <p className="max-w-xs text-sm text-[#8f8574]">Drinks de assinatura, clássicos e criações da casa — pensados para acompanhar cada momento.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            {DRINKS.map((src, i) => (
+              <div key={i} className="relative aspect-[3/4] overflow-hidden rounded-sm">
+                <Image src={src} alt="Coquetel autoral da Tabuará" fill sizes="(max-width:768px) 50vw, 25vw" className="object-cover transition-transform duration-700 hover:scale-105" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- GALERIA ---------- */}
+      <section className="bg-[#12100d]">
+        <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+          <div className="mb-12 text-center">
+            <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Galeria</p>
+            <h2 className="mt-5 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>A Tabuará em imagens</h2>
+          </div>
+          <TabuaraGallery images={GALERIA} />
+          <div className="mt-12 text-center">
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 text-sm text-[#b8ad99] transition-colors hover:text-[#d9bd82]">
+              <Instagram className="h-4 w-4" /> @tabuara.se
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- CTA ---------- */}
+      <section className="relative overflow-hidden">
+        <Image src="/tabuara/destaque-polvo.jpg" alt="" fill sizes="100vw" className="object-cover" />
+        <div className="absolute inset-0 bg-[#0d0b09]/85" />
+        <div className="relative z-10 mx-auto max-w-3xl px-6 py-24 text-center">
+          <h2 className="text-4xl text-[#f6f0e6] sm:text-5xl" style={serif}>Reserve sua experiência</h2>
+          <p className="mx-auto mt-4 max-w-lg text-[#c8bda9]">Garanta sua mesa ou receba a Tabuará em casa pelo delivery.</p>
+          <div className="mt-9 flex flex-wrap items-center justify-center gap-4">
+            <a href={RESERVA_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-8 py-4 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
+              <CalendarDays className="h-4 w-4" /> Reservar mesa
+            </a>
+            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-8 py-4 text-sm font-medium text-[#f3ede1] transition-all hover:border-[#f3ede1]/70">
+              <ShoppingBag className="h-4 w-4" /> Pedir delivery
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- VISITE ---------- */}
+      <section id="visite" className="scroll-mt-20 bg-[#0d0b09]">
+        <div className="mx-auto grid max-w-6xl gap-12 px-5 py-24 sm:px-8 md:grid-cols-2 md:gap-16">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Visite</p>
+            <h2 className="mt-5 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>Onde nos encontrar</h2>
+            <ul className="mt-8 space-y-6 text-sm">
+              <li className="flex items-start gap-4">
+                <MapPin className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#c9a24b]" />
+                <div><p className="text-[#f3ede1]">Endereço</p><p className="mt-1 text-[#b8ad99]">Av. Ivo do Prado — Centro, Aracaju · SE</p></div>
+              </li>
+              <li className="flex items-start gap-4">
+                <Phone className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#c9a24b]" />
+                <div><p className="text-[#f3ede1]">Telefone</p><a href={`tel:+557935120567`} className="mt-1 block text-[#b8ad99] transition-colors hover:text-[#d9bd82]">{TELEFONE}</a></div>
+              </li>
+              <li className="flex items-start gap-4">
+                <Clock className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#c9a24b]" />
+                <div><p className="text-[#f3ede1]">Reservas</p><p className="mt-1 text-[#b8ad99]">Recomendadas — garanta sua mesa pelo site.</p></div>
+              </li>
+            </ul>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <a href={MAPS_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/20 px-6 py-3 text-sm text-[#f3ede1] transition-colors hover:border-[#f3ede1]/50">
+                <MapPin className="h-4 w-4" /> Abrir no Google Maps
+              </a>
+              <a href={INSTAGRAM_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/20 px-6 py-3 text-sm text-[#f3ede1] transition-colors hover:border-[#f3ede1]/50">
+                <Instagram className="h-4 w-4" /> @tabuara.se
               </a>
             </div>
           </div>
-          <div className="border-t border-slate-100 pt-8 text-center text-sm text-slate-600">
-            <p>© 2026 Tabuará. Todos os direitos reservados.</p>
+          <div className="overflow-hidden rounded-sm border border-white/10">
+            <iframe src={MAPS_EMBED} title="Tabuará — mapa" className="h-full min-h-[360px] w-full grayscale" loading="lazy" referrerPolicy="no-referrer-when-downgrade" />
           </div>
+        </div>
+      </section>
+
+      {/* ---------- FOOTER ---------- */}
+      <footer className="border-t border-white/10 bg-[#0d0b09]">
+        <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8">
+          <div className="flex flex-col items-center justify-between gap-6 sm:flex-row">
+            <span className="text-lg tracking-[0.25em] text-[#f3ede1]" style={serif}>TABUARÁ</span>
+            <p className="text-sm text-[#8f8574]">Gastronomia sensorial · Aracaju, SE</p>
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 text-sm text-[#b8ad99] transition-colors hover:text-[#d9bd82]">
+              <Instagram className="h-4 w-4" /> @tabuara.se
+            </a>
+          </div>
+          <p className="mt-8 border-t border-white/5 pt-6 text-center text-xs text-[#6f6659]">
+            © {new Date().getFullYear()} Tabuará. Todos os direitos reservados.
+          </p>
         </div>
       </footer>
     </main>

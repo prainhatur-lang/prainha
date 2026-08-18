@@ -2,7 +2,16 @@
 
 import Image from 'next/image';
 import { useState } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+
+type IconProps = { className?: string };
+const Svg = (p: IconProps & { children: React.ReactNode }) => (
+  <svg className={p.className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    {p.children}
+  </svg>
+);
+const ChevronLeft = (p: IconProps) => <Svg {...p}><path d="M15 18 9 12l6-6" /></Svg>;
+const ChevronRight = (p: IconProps) => <Svg {...p}><path d="m9 18 6-6-6-6" /></Svg>;
+const X = (p: IconProps) => <Svg {...p}><path d="M18 6 6 18M6 6l12 12" /></Svg>;
 
 interface GalleryImage {
   id: string;

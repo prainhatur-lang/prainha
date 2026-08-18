@@ -12,6 +12,10 @@ const RESERVAS_TOKEN_PRAINHA_BAR =
 // cardápio público (/delivery). Requer o CNAME no DNS + domínio na Vercel.
 const DELIVERY_HOST = 'delivery.prainhabar.com';
 
+// Domínio próprio da Tabuará. tabuara.com.br (root) serve a landing pública
+// da filial Tabuará (/tabuara). Requer o domínio apontado pra Vercel.
+const TABUARA_HOSTS = new Set(['tabuara.com.br', 'www.tabuara.com.br']);
+
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
   if (hostname === RESERVAS_HOST && request.nextUrl.pathname === '/') {
@@ -22,6 +26,11 @@ export async function proxy(request: NextRequest) {
   if (hostname === DELIVERY_HOST && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = '/delivery';
+    return NextResponse.rewrite(url);
+  }
+  if (TABUARA_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/tabuara';
     return NextResponse.rewrite(url);
   }
 
