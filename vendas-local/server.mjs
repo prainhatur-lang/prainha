@@ -330,6 +330,11 @@ async function initSchema() {
   // FECHAMENTO DE CAIXA: o que o operador DECLAROU × o que o sistema tinha,
   // forma a forma. O Consumer só guarda o dinheiro (SALDOFINALINFORMADO); a
   // conferência de cartão/Pix é nossa e é o que permite cobrar diferença.
+  // TIRAR OS 10%: é dinheiro do garçom saindo — quem tirou e de qual mesa
+  // fica registrado, senão vira boca a boca no fim do mês.
+  await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), login text, numero integer, pedido_fb integer,
+    acao text, valor numeric, motivo text)`;
   await sql`CREATE TABLE IF NOT EXISTS caixa_fechamento (id bigserial PRIMARY KEY,
     caixa_codigo integer, quando timestamptz DEFAULT now(), login text,
     informado jsonb, esperado jsonb, dif_dinheiro numeric, obs text)`;
@@ -4122,6 +4127,37 @@ async function apiCaixaFecharCaixa(body, quem) {
       ${dif}, ${String(body.obs || '').slice(0, 300) || null})`;
   imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
   return { ok: true, esperado, contado, dif, linhas };
+}
+/** TIRAR OS 10% quando o cliente não quer pagar (e devolver, se foi engano).
+ *  É a mesma permissão do desconto no Consumer (12 = "Aplicar Descontos /
+ *  Modificar Taxas"), porque é exatamente isso: mexer na taxa. Zera o campo
+ *  TOTALSERVICO em vez de virar desconto — assim relatório e comissão do
+ *  garçom mostram a verdade (serviço não cobrado), não uma venda com desconto. */
+async function apiCaixaServico(body, quem) {
+  if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
+  const n = Number(body.numero);
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTALITENS ITENS, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const svcAtual = Number(p.SVC) || 0;
+  const tirar = body.tirar !== false;
+  if (tirar) {
+    if (!(svcAtual > 0.009)) return { ok: false, erro: 'essa conta já está sem os 10%' };
+    const pago = await fbPagoDoPedido(ped);
+    const novoTot = +((Number(p.TOT) || 0) - svcAtual).toFixed(2);
+    if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago` };
+    await fbRemoverServico(ped);
+    await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
+      VALUES (${quem.login}, ${n}, ${ped}, ${'tirou'}, ${svcAtual}, ${String(body.motivo || '').slice(0, 200) || null})`;
+    espelho().catch(() => {});
+    return { ok: true, acao: 'tirou', valor: svcAtual, novo_total: novoTot };
+  }
+  if (svcAtual > 0.009) return { ok: false, erro: 'essa conta já está com os 10%' };
+  const svc = await fbAplicarServico(ped);
+  await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
+    VALUES (${quem.login}, ${n}, ${ped}, ${'devolveu'}, ${svc || 0}, ${null})`;
+  espelho().catch(() => {});
+  return { ok: true, acao: 'devolveu', valor: svc || 0 };
 }
 // Sangria/despesa/suprimento — mexe na GAVETA do operador logado. Tipos do
 // Consumer (conferidos em 16,5 mil operações reais do banco da 0003):
@@ -9887,7 +9923,16 @@ function pinta(el){
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
       '</span><b>'+(i.tipo===2&&!(i.valor_total>0)?'':brl(i.valor_total))+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
-  if(c.servico>0)h+='<div class="tot"><span>Serviço</span><b>'+brl(c.servico)+'</b></div>';
+  // O cliente pode se recusar a pagar os 10% — é direito dele. Um toque aqui
+  // TIRA a taxa (some do total), em vez do caixa ter que calcular e lançar
+  // desconto na mão. Quem pode é quem tem "Aplicar Descontos / Modificar
+  // Taxas" no Consumer, e fica registrado quem tirou.
+  if(c.servico>0)h+='<div class="tot"><span>Serviço (10%)'+
+    (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(1)">tirar</a>':'')+
+    '</span><b>'+brl(c.servico)+'</b></div>';
+  else if(c.subtotal>0)h+='<div class="tot"><span style="color:var(--red)">Serviço (10%) retirado'+
+    (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(0)">cobrar</a>':'')+
+    '</span><b>—</b></div>';
   if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
@@ -10045,6 +10090,15 @@ async function receber(){
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
   if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
+  await carregar(MESA);
+}
+async function tiraServico(tirar){
+  var t=(tirar===1||tirar===true);
+  if(t&&!confirm('Tirar os 10% de serviço desta conta? O cliente não vai pagar a taxa.'))return;
+  var r=await jpost('/api/caixa/servico',{numero:MESA,tirar:t});
+  if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não deu';return}
+  FLASH=t?('✓ 10% retirados ('+brl(r.valor)+') da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA)
+         :('✓ 10% de volta na conta');
   await carregar(MESA);
 }
 async function fecharConta(){
@@ -10794,6 +10848,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
