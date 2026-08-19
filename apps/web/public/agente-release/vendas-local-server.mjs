@@ -473,6 +473,11 @@ async function espelho() {
   for (const i of itens) {
     if (i.tipo === 2 && i.area_codigo == null && i.codigo_pai != null && areaPorItem.get(i.codigo_pai) != null) i.area_codigo = areaPorItem.get(i.codigo_pai);
   }
+  // praça juntada com outra: o item entra já na cozinha que produz
+  const redir = await mapaRedirPracas();
+  if (redir.size) for (const i of itens) {
+    if (i.area_codigo != null && redir.has(i.area_codigo)) i.area_codigo = redir.get(i.area_codigo);
+  }
 
   // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
   // veio: numero cuja conta SUMIU (ou virou outra conta) teve a conta
@@ -1063,6 +1068,10 @@ async function espelhoCatalogo() {
       // apareciam pro cliente, e outros 50 que deveriam aparecer sumiam.
       cardapio_digital: N(x.CARDIG) === 1 };
   });
+  const redirCat = await mapaRedirPracas();
+  if (redirCat.size) for (const r of rows) {
+    if (r.area_codigo != null && redirCat.has(r.area_codigo)) r.area_codigo = redirCat.get(r.area_codigo);
+  }
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
     if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
@@ -1943,13 +1952,13 @@ async function apiVendaAbertas() {
     if (Number(r.numero) < COMANDA_DE && chamando.has(Number(r.numero))) {
       r.chamou_garcom = true;
       r.nome = '🔔 CHAMOU' + (r.nome ? ' · ' + r.nome : '');
-      if (r.status === 'andamento') r.status = 'atrasada'; // destaque; não apaga o vermelho de "fechando"
+      r.status = 'fechando'; // VERMELHO — cor mais forte que o app instalado pinta (piscar só com versão nova)
     }
   }
   const extras = [];
   for (const mesa of chamando) {
     if (mesa < COMANDA_DE && !numsAbertos.has(mesa)) {
-      extras.push({ numero: mesa, valor_total: 0, itens: 0, status: 'atrasada',
+      extras.push({ numero: mesa, valor_total: 0, itens: 0, status: 'fechando',
         conta_pedida: false, nome: '🔔 CHAMOU', chamou_garcom: true });
     }
   }
@@ -4253,7 +4262,46 @@ async function atenderChamadoGarcom(mesa, por) {
     WHERE tipo='garcom' AND atendido_em IS NULL AND mesa=${n}`;
 }
 
+// ---- PRAÇAS QUE A CASA NÃO USA MAIS ----
+// Terraço e luau saíram de operação: as praças continuam no cadastro do
+// Consumer (e 399 produtos ainda apontam pra elas na 0001), mas NÃO devem
+// mais aparecer no KDS — cozinha com estação fantasma é cozinha confusa.
+// Some da lista por NOME (o código muda de loja pra loja); a lista mora em
+// cfg 'pracas_ocultas' — esvaziar traz tudo de volta, sem mexer em código.
+// ⚠️ Item lançado numa praça oculta NÃO some: cai no balde laranja "Sem praça
+// definida", que já existe justamente pra nada ficar invisível.
+const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
+// ---- PRAÇAS QUE VIRARAM OUTRA ----
+// A casa juntou estações: pastel passou a sair na COZ PETISCO e destilados no
+// DRINKS. Em vez de reapontar centenas de produtos no cadastro do Consumer
+// (que também imprime por lá e é a verdade fiscal), o espelho TRADUZ a praça
+// na entrada: o item nasce já na cozinha que vai produzir.
+// Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
+const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
+async function mapaRedirPracas() {
+  const txt = await cfgGet('pracas_redirecionadas', PRACAS_REDIR_PADRAO);
+  const pares = String(txt).split(',')
+    .map((x) => x.split('>').map((y) => semAcento(y.trim())))
+    .filter((par) => par.length === 2 && par[0] && par[1]);
+  if (!pares.length) return new Map();
+  const porNome = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [semAcento(a.nome), Number(a.codigo)]));
+  const m = new Map();
+  for (const [de, para] of pares) {
+    const cDe = porNome.get(de), cPara = porNome.get(para);
+    if (cDe != null && cPara != null && cDe !== cPara) m.set(cDe, cPara);
+  }
+  return m;
+}
+async function pracasOcultas() {
+  const txt = await cfgGet('pracas_ocultas', PRACAS_OCULTAS_PADRAO);
+  const nomes = new Set(String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean));
+  if (!nomes.size) return [];
+  const rows = await sql`SELECT codigo, nome FROM area`;
+  return rows.filter((a) => nomes.has(semAcento(a.nome))).map((a) => Number(a.codigo));
+}
+
 async function apiAreas() {
+  const ocultas = await pracasOcultas();
   const rows = await sql`
     SELECT a.codigo, a.nome,
       COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
@@ -4265,6 +4313,7 @@ async function apiAreas() {
     FROM area a
     LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+    WHERE a.codigo <> ALL(${ocultas})
     GROUP BY a.codigo, a.nome
     ORDER BY a_produzir DESC, a.nome`;
   // ⚠️ ITENS SEM PRAÇA. O produto sem cozinha atribuída no Consumer entra com
@@ -4280,7 +4329,7 @@ async function apiAreas() {
              AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
              AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
       FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-     WHERE ci.area_codigo IS NULL`)[0];
+     WHERE ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas})`)[0];
   if (Number(semArea?.total ?? 0) > 0) {
     rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
       a_produzir: Number(semArea.a_produzir), total: Number(semArea.total),
@@ -4295,7 +4344,10 @@ async function apiAreas() {
 
 // ---- API: KDS de PRODUÇÃO de uma área (itens a produzir, ordem de CHEGADA = FIFO) ----
 async function apiKds(areaCod) {
-  const cond = areaCod === 0 ? sql`ci.area_codigo IS NULL` : sql`ci.area_codigo=${areaCod}`;
+  const ocultas = areaCod === 0 ? await pracasOcultas() : [];
+  const cond = areaCod === 0
+    ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`
+    : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas
@@ -4383,7 +4435,9 @@ async function apiKds(areaCod) {
 //   areaCod N ..... só aquela praça
 async function apiEntrega(areaCod = null) {
   const filtroArea =
-    areaCod == null ? sql`TRUE` : areaCod === 0 ? sql`ci.area_codigo IS NULL` : sql`ci.area_codigo=${areaCod}`;
+    areaCod == null ? sql`TRUE`
+      : areaCod === 0 ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${await pracasOcultas()}))`
+      : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas, a.nome AS area_nome

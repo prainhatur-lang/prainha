@@ -1952,13 +1952,13 @@ async function apiVendaAbertas() {
     if (Number(r.numero) < COMANDA_DE && chamando.has(Number(r.numero))) {
       r.chamou_garcom = true;
       r.nome = '🔔 CHAMOU' + (r.nome ? ' · ' + r.nome : '');
-      if (r.status === 'andamento') r.status = 'atrasada'; // destaque; não apaga o vermelho de "fechando"
+      r.status = 'fechando'; // VERMELHO — cor mais forte que o app instalado pinta (piscar só com versão nova)
     }
   }
   const extras = [];
   for (const mesa of chamando) {
     if (mesa < COMANDA_DE && !numsAbertos.has(mesa)) {
-      extras.push({ numero: mesa, valor_total: 0, itens: 0, status: 'atrasada',
+      extras.push({ numero: mesa, valor_total: 0, itens: 0, status: 'fechando',
         conta_pedida: false, nome: '🔔 CHAMOU', chamou_garcom: true });
     }
   }
