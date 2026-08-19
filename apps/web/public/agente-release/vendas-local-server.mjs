@@ -3688,7 +3688,7 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
+    admin: p.admin, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
     pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
@@ -3707,10 +3707,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -9928,10 +9928,12 @@ function bannerCx(){
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
       '<div class="row" style="margin-top:8px">'+
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
-      '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
+      '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>'+
+      (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'');}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
-      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
+      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'+
+       (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'')
       :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
 }
 async function cxEstado(){
@@ -9981,13 +9983,14 @@ function pintaMain(){
   if(TELA==='confcx')return telaConfCx(el);
   if(TELA==='rel')return telaRel(el);
   if(TELA==='mov')return telaMov(el);
+  if(TELA==='usu')return telaUsu(el);
   if(TELA==='canc')return telaCancItem(el);
   if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -10016,7 +10019,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
@@ -10459,6 +10462,44 @@ async function acaoFechaCx(){
   FLASH='✓ Caixa fechado. Dinheiro: sistema '+brl(r.esperado)+' · contado '+brl(r.contado)+
     (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
   DECL=null;await cxEstado();voltarMesas();
+}
+/* ---- USUÁRIOS DO SISTEMA (só admin) ----
+   Login que existe só aqui, sem passar pelo cadastro do Consumer. Usa os
+   MESMOS códigos de permissão do PDV, então a regra do caixa é uma só. */
+async function telaUsu(el){
+  el.innerHTML='<div class="mut" style="padding:16px">carregando…</div>';
+  var d;try{d=await jget('/api/caixa/usuarios')}catch(e){d=null}
+  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'não deu')+'</div>'+
+    '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">👤 Usuários criados aqui</div>'+
+    '<div class="mut">Não mexem no cadastro do Consumer. Quem já é do PDV continua entrando com o login de lá.</div>';
+  h+=(d.usuarios||[]).map(function(u){
+    return '<div class="it"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span></span>'+
+      '<b class="'+(u.ativo?'quit':'saldo')+'">'+(u.ativo?'ativo':'desativado')+'</b></div>';
+  }).join('')||'<div class="mut" style="margin-top:8px">nenhum ainda</div>';
+  h+='</div><div class="card"><div class="tit" style="margin-top:0">Novo usuário (ou trocar o PIN de um)</div>'+
+    '<input id="u_login" placeholder="login (sem espaço)" autocapitalize="none">'+
+    '<input id="u_nome" placeholder="nome da pessoa" style="margin-top:8px">'+
+    '<div class="mut" style="margin-top:10px">PIN (4 a 8 números)</div>'+
+    '<input id="u_pin" class="num" inputmode="numeric" maxlength="8" readonly onclick="kpAlvo(this)">'+kpHtml('u_pin')+
+    '<div class="mut" style="margin-top:10px">O que ele pode fazer</div>'+
+    '<select id="u_perfil" style="width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px">'+
+    (d.perfis||[]).map(function(p){return '<option value="'+p.id+'">'+esc(p.nome)+'</option>'}).join('')+'</select>'+
+    '<button class="big" onclick="salvaUsu()">Salvar usuário</button>'+
+    '<div id="uerr" class="err"></div></div>';
+  el.innerHTML=h;
+}
+async function salvaUsu(){
+  var er=document.getElementById('uerr');er.textContent='';
+  var b={login:(document.getElementById('u_login')||{}).value||'',
+    nome:(document.getElementById('u_nome')||{}).value||'',
+    pin:(document.getElementById('u_pin')||{}).value||'',
+    perfil:(document.getElementById('u_perfil')||{}).value||'garcom'};
+  var r=await jpost('/api/caixa/usuarios',b);
+  if(!r.ok){er.textContent=r.erro||'não deu';return}
+  FLASH='✓ '+(r.criado?'Usuário '+r.login+' criado':'Usuário '+r.login+' atualizado');
+  telaUsu(document.getElementById('main'));
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
