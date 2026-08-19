@@ -473,6 +473,11 @@ async function espelho() {
   for (const i of itens) {
     if (i.tipo === 2 && i.area_codigo == null && i.codigo_pai != null && areaPorItem.get(i.codigo_pai) != null) i.area_codigo = areaPorItem.get(i.codigo_pai);
   }
+  // praça juntada com outra: o item entra já na cozinha que produz
+  const redir = await mapaRedirPracas();
+  if (redir.size) for (const i of itens) {
+    if (i.area_codigo != null && redir.has(i.area_codigo)) i.area_codigo = redir.get(i.area_codigo);
+  }
 
   // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
   // veio: numero cuja conta SUMIU (ou virou outra conta) teve a conta
@@ -1063,6 +1068,10 @@ async function espelhoCatalogo() {
       // apareciam pro cliente, e outros 50 que deveriam aparecer sumiam.
       cardapio_digital: N(x.CARDIG) === 1 };
   });
+  const redirCat = await mapaRedirPracas();
+  if (redirCat.size) for (const r of rows) {
+    if (r.area_codigo != null && redirCat.has(r.area_codigo)) r.area_codigo = redirCat.get(r.area_codigo);
+  }
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
     if (rows.length) await sql`INSERT INTO produto_local ${sql(rows, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco', 'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque', 'cardapio_digital', 'descricao', 'preparo')}`;
@@ -4261,7 +4270,28 @@ async function atenderChamadoGarcom(mesa, por) {
 // cfg 'pracas_ocultas' — esvaziar traz tudo de volta, sem mexer em código.
 // ⚠️ Item lançado numa praça oculta NÃO some: cai no balde laranja "Sem praça
 // definida", que já existe justamente pra nada ficar invisível.
-const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco';
+const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
+// ---- PRAÇAS QUE VIRARAM OUTRA ----
+// A casa juntou estações: pastel passou a sair na COZ PETISCO e destilados no
+// DRINKS. Em vez de reapontar centenas de produtos no cadastro do Consumer
+// (que também imprime por lá e é a verdade fiscal), o espelho TRADUZ a praça
+// na entrada: o item nasce já na cozinha que vai produzir.
+// Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
+const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
+async function mapaRedirPracas() {
+  const txt = await cfgGet('pracas_redirecionadas', PRACAS_REDIR_PADRAO);
+  const pares = String(txt).split(',')
+    .map((x) => x.split('>').map((y) => semAcento(y.trim())))
+    .filter((par) => par.length === 2 && par[0] && par[1]);
+  if (!pares.length) return new Map();
+  const porNome = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [semAcento(a.nome), Number(a.codigo)]));
+  const m = new Map();
+  for (const [de, para] of pares) {
+    const cDe = porNome.get(de), cPara = porNome.get(para);
+    if (cDe != null && cPara != null && cDe !== cPara) m.set(cDe, cPara);
+  }
+  return m;
+}
 async function pracasOcultas() {
   const txt = await cfgGet('pracas_ocultas', PRACAS_OCULTAS_PADRAO);
   const nomes = new Set(String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean));
