@@ -37,6 +37,7 @@
     "migrate:cert-compartilhar": "tsx scripts/migrate-cert-compartilhar.ts",
     "migrate:cert-filial-nsu": "tsx scripts/migrate-cert-filial-nsu.ts",
     "migrate:permissoes": "tsx scripts/migrate-permissoes.ts",
+    "migrate:usuario-operacao": "tsx scripts/migrate-usuario-operacao.ts",
     "migrate:rls": "tsx scripts/migrate-rls.ts",
     "migrate:reseed-estoque-cdc": "tsx scripts/migrate-reseed-estoque-cdc.ts",
     "seed:grupos-front": "tsx scripts/seed-grupos-front.ts",

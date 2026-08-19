@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric, integer, boolean } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /** Percentuais de taxas Cielo por forma + bandeira. Usado pela engine Banco
@@ -356,6 +356,40 @@ export const usuario = pgTable('usuario', {
   nome: varchar('nome', { length: 200 }),
   criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** CADASTRO ÚNICO de quem trabalha no salão (caixa, comanda, KDS).
+ *
+ *  Antes havia três: o do Consumer (PDV), o "criado aqui" da loja e este app.
+ *  O dono cadastrava num e o login não entrava no outro. Agora a nuvem é a
+ *  fonte e a loja espelha — a loja segue funcionando sem internet, lendo a
+ *  cópia local.
+ *
+ *  PIN vai como HASH (scrypt + salt), no MESMO formato que a loja usa, então
+ *  o espelho é cópia direta. `perms` são os códigos do PDV (10 = tela de
+ *  pagamentos, 12 = desconto/taxas, 53 = comanda mobile…) pra regra do
+ *  sistema continuar uma só. Sem pin_hash = ainda não criou o PIN: a loja
+ *  pede na primeira entrada, como já fazia. */
+export const usuarioOperacao = pgTable(
+  'usuario_operacao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    login: varchar('login', { length: 30 }).notNull(),
+    nome: varchar('nome', { length: 80 }).notNull(),
+    pinHash: text('pin_hash').notNull(),
+    salt: text('salt').notNull(),
+    perms: integer('perms').array().notNull().default([]),
+    admin: boolean('admin').notNull().default(false),
+    ativo: boolean('ativo').notNull().default(true),
+    /** 'nuvem' = criado aqui · 'consumer' = veio do PDV na migração */
+    origem: varchar('origem', { length: 12 }).notNull().default('nuvem'),
+    codigoPdv: integer('codigo_pdv'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+    criadoPor: varchar('criado_por', { length: 80 }),
+  },
+  (t) => ({ filialIdx: index('uop_filial').on(t.filialId) }),
+);
 
 /** Comandos pendentes pro agente local executar no Firebird (write-back).
  *  Tipos suportados:

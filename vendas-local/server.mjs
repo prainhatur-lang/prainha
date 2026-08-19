@@ -4232,8 +4232,11 @@ async function apiCaixaFecharCaixa(body, quem) {
 // do sistema continua uma só, e amanhã dá pra migrar o usuário pro Consumer
 // sem reescrever nada.
 const PERFIS_LOCAIS = {
-  gerente: { nome: 'Gerente (como o perfil do Tony)',
-    perms: [3, 4, 5, 7, 10, 12, 16, 22, 26, 30, 35, 38, 40, 41, 44, 46, 50, 52, 53, 54, 58] },
+  // ⚠️ A 28 (Excluir Pedido) é o que faz alguém AUTORIZAR cancelamento — é a
+  // chave do cadeado do caixa. Sem ela nenhum perfil nosso conseguia liberar,
+  // e o gerente ficava dependendo de admin (o paulao esbarrou nisso 19/08).
+  gerente: { nome: 'Gerente (autoriza cancelamento, fiado, tudo do caixa)',
+    perms: [3, 4, 5, 7, 10, 12, 16, 22, 26, 28, 30, 31, 35, 38, 40, 41, 44, 46, 48, 50, 52, 53, 54, 58] },
   caixa: { nome: 'Caixa (recebe, desconto, gaveta, fecha)', perms: [5, 10, 12, 22, 26, 30, 50, 53, 54] },
   garcom: { nome: 'Garçom (comanda mobile)', perms: [53, 54, 40, 41] },
 };
