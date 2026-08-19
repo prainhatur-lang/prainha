@@ -4397,22 +4397,37 @@ async function apiCaixaFornecedores(qRaw) {
   if (!r.ok) return { ok: false, erro: r.err };
   return { ok: true, fornecedores: r.rows.map((x) => ({ codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC) })) };
 }
-// Relatório do DIA (desde 00:00 da loja): por forma, caixas e gaveta.
-async function apiCaixaRelatorio() {
+// Relatório/MOVIMENTO do caixa de um DIA (default hoje): totais por forma,
+// os caixas (por operador) COM a quebra por forma de cada um, e a gaveta.
+// `data` = 'YYYY-MM-DD' pra ver outros dias.
+async function apiCaixaRelatorio(data) {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) ? String(data) : null;
+  const ini = d ? `TIMESTAMP '${d} 00:00:00'` : 'CURRENT_DATE';
+  const fim = `DATEADD(1 DAY TO ${ini})`;
   const formas = await qi(`SELECT p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) NOME, SUM(p.VALOR) V, COUNT(*) N
     FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
-    WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= CURRENT_DATE
+    WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= ${ini} AND p.DATAPAGAMENTO < ${fim}
     GROUP BY p.CODIGOFORMAPAGAMENTO, f.DESCRICAO ORDER BY 3 DESC`);
   if (!formas.ok) return { ok: false, erro: 'FB relatório: ' + formas.err };
+  // POR CAIXA e forma = o "por usuário": cada operador com seu dinheiro/cartão/Pix.
+  const porCx = await qi(`SELECT p.CODIGOCAIXA CX, p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) NOME, SUM(p.VALOR) V, COUNT(*) N
+    FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
+    WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= ${ini} AND p.DATAPAGAMENTO < ${fim}
+    GROUP BY p.CODIGOCAIXA, p.CODIGOFORMAPAGAMENTO, f.DESCRICAO`);
   const caixas = await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME, u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, c.SALDOINICIAL, c.SALDOFINAL, c.SALDOFINALINFORMADO
     FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO
-    WHERE c.DATAABERTURA >= CURRENT_DATE OR c.DATAFECHAMENTO IS NULL ORDER BY c.CODIGO DESC`);
+    WHERE (c.DATAABERTURA >= ${ini} AND c.DATAABERTURA < ${fim}) OR (c.DATAFECHAMENTO IS NULL AND c.DATAABERTURA < ${fim}) ORDER BY c.CODIGO DESC`);
   const movs = await qi(`SELECT o.CODIGOCAIXA CX, o.DATAOPERACAO DT, COALESCE(o.VALORENTRADA,0) E, COALESCE(o.VALORSAIDA,0) S, TRIM(COALESCE(o.OBSERVACAO,'')) OBS
-    FROM CAIXAOPERACAO o WHERE o.DATADELETE IS NULL AND o.DATAOPERACAO >= CURRENT_DATE ORDER BY o.CODIGO DESC`);
-  return { ok: true,
+    FROM CAIXAOPERACAO o WHERE o.DATADELETE IS NULL AND o.DATAOPERACAO >= ${ini} AND o.DATAOPERACAO < ${fim} ORDER BY o.CODIGO DESC`);
+  const fmap = {};
+  for (const x of (porCx.ok ? porCx.rows : [])) {
+    const cx = Number(x.CX); (fmap[cx] = fmap[cx] || []).push({ codigo: Number(x.F), nome: T(x.NOME) || ('forma ' + x.F), valor: +(Number(x.V) || 0).toFixed(2), n: Number(x.N) });
+  }
+  return { ok: true, data: d,
     formas: (formas.rows || []).map((x) => ({ codigo: Number(x.F), nome: T(x.NOME) || ('forma ' + x.F), valor: +(Number(x.V) || 0).toFixed(2), n: Number(x.N) })),
     caixas: (caixas.ok ? caixas.rows : []).map((x) => ({ codigo: Number(x.CODIGO), quem: T(x.QUEM), aberto_em: x.DATAABERTURA, fechado_em: x.DATAFECHAMENTO,
-      fundo: Number(x.SALDOINICIAL) || 0, esperado: x.SALDOFINAL == null ? null : Number(x.SALDOFINAL), contado: x.SALDOFINALINFORMADO == null ? null : Number(x.SALDOFINALINFORMADO) })),
+      fundo: Number(x.SALDOINICIAL) || 0, esperado: x.SALDOFINAL == null ? null : Number(x.SALDOFINAL), contado: x.SALDOFINALINFORMADO == null ? null : Number(x.SALDOFINALINFORMADO),
+      formas: fmap[Number(x.CODIGO)] || [], recebido: +(fmap[Number(x.CODIGO)] || []).reduce((s, y) => s + y.valor, 0).toFixed(2) })),
     movs: (movs.ok ? movs.rows : []).map((x) => ({ caixa: Number(x.CX), quando: x.DT, entrada: Number(x.E) || 0, saida: Number(x.S) || 0, obs: T(x.OBS) })) };
 }
 
@@ -9928,13 +9943,17 @@ function bannerCx(){
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
       '<div class="row" style="margin-top:8px">'+
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
+      '<button class="seg" onclick="irTela(\\'rel\\')">📊 Movimento</button>'+
       '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>'+
       (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'');}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
-      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'+
-       (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'')
-      :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
+      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
+      :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>')+
+    '<div style="margin-top:8px;text-align:right">'+
+      '<a class="sair" onclick="irTela(\\'rel\\')">📊 Movimento do caixa</a>'+
+      (PODE.admin?' · <a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a>':'')+
+    '</div>';
 }
 async function cxEstado(){
   try{var r=await jget('/api/caixa/estado');if(r&&r.ok)CXE=r}catch(e){}
@@ -10575,23 +10594,32 @@ async function acaoMov(){
     (MOVT==='sangria'?' — levou '+b.quem_leva:MOVT==='despesa'?' — pra '+FORN.nome+' (conta a pagar criada)':'')+'.';
   await cxEstado();voltarMesas();
 }
+var REL_DATA=''; // '' = hoje
 async function telaRel(el){
-  el.innerHTML='<div class="mut" style="padding:16px">montando o relatório…</div>';
-  var d;try{d=await jget('/api/caixa/relatorio')}catch(e){}
-  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'sem relatório agora')+'</div></div>';return}
+  el.innerHTML='<div class="mut" style="padding:16px">montando o movimento…</div>';
+  var d;try{d=await jget('/api/caixa/relatorio'+(REL_DATA?('?data='+REL_DATA):''))}catch(e){}
+  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'sem movimento agora')+'</div></div>';return}
   var tot=0;d.formas.forEach(function(f){tot+=f.valor});
+  var quando=REL_DATA?REL_DATA.split('-').reverse().join('/'):'Hoje';
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
-    '<div class="card"><div class="tit" style="margin-top:0">📊 Hoje, por forma de pagamento</div>';
-  h+=d.formas.map(function(f){return '<div class="it"><span>'+esc(f.nome)+' <span class="mut">('+f.n+'×)</span></span><b>'+brl(f.valor)+'</b></div>'}).join('')||'<div class="mut">nenhum pagamento hoje ainda</div>';
+    '<div class="card"><div class="tit" style="margin-top:0">🗓 Movimento do caixa — <b>'+quando+'</b></div>'+
+    '<div class="mut" style="margin-bottom:6px">Escolha o dia:</div>'+
+    '<input type="date" onchange="REL_DATA=this.value;render()" value="'+(REL_DATA||'')+'" style="padding:8px;border:1px solid #d7dde6;border-radius:9px;font-size:15px">'+
+    (REL_DATA?' <a class="sair" style="margin-left:8px" onclick="REL_DATA=\\'\\';render()">hoje</a>':'')+'</div>';
+  h+='<div class="card"><div class="tit" style="margin-top:0">📊 Por forma de pagamento</div>';
+  h+=d.formas.map(function(f){return '<div class="it"><span>'+esc(f.nome)+' <span class="mut">('+f.n+'×)</span></span><b>'+brl(f.valor)+'</b></div>'}).join('')||'<div class="mut">nenhum pagamento nesse dia</div>';
   h+='<div class="tot g"><span>Total</span><b>'+brl(tot)+'</b></div></div>';
-  h+='<div class="card"><div class="tit" style="margin-top:0">Caixas do dia</div>'+
+  h+='<div class="card"><div class="tit" style="margin-top:0">👤 Por operador</div>'+
     (d.caixas.map(function(c){
       var st=c.fechado_em
-        ?('fechado · esperado '+brl(c.esperado||0)+' · contado '+brl(c.contado==null?0:c.contado))
+        ?('<span class="mut">fechado</span> · esperado '+brl(c.esperado||0)+' · contado '+brl(c.contado==null?0:c.contado))
         :'<b style="color:var(--green2)">ABERTO</b> · fundo '+brl(c.fundo);
-      return '<div class="it"><span>'+esc(c.quem||('caixa '+c.codigo))+'</span><span style="text-align:right;font-size:12.5px">'+st+'</span></div>';
-    }).join('')||'<div class="mut">nenhum caixa hoje</div>')+'</div>';
-  if(d.movs.length)h+='<div class="card"><div class="tit" style="margin-top:0">Entradas/saídas da gaveta</div>'+
+      var fmts=(c.formas||[]).map(function(f){return esc(f.nome)+' '+brl(f.valor)+' ('+f.n+'×)'}).join(' · ')||'sem recebimentos';
+      return '<div class="it" style="display:block"><div style="display:flex;justify-content:space-between"><b>'+esc(c.quem||('caixa '+c.codigo))+'</b><b>'+brl(c.recebido||0)+'</b></div>'+
+        '<div class="mut" style="font-size:12px;margin-top:2px">'+fmts+'</div>'+
+        '<div class="mut" style="font-size:11.5px">'+st+'</div></div>';
+    }).join('')||'<div class="mut">nenhum caixa nesse dia</div>')+'</div>';
+  if(d.movs.length)h+='<div class="card"><div class="tit" style="margin-top:0">↕ Entradas/saídas da gaveta</div>'+
     d.movs.map(function(m){return '<div class="it"><span>'+esc(m.obs||'—')+'</span><b>'+(m.saida?'− '+brl(m.saida):'+ '+brl(m.entrada))+'</b></div>'}).join('')+'</div>';
   el.innerHTML=h;
 }
@@ -11115,7 +11143,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
-      if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
+      if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
