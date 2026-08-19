@@ -12,6 +12,10 @@ set "FB_PASSWORD=masterkey"
 set "PG_URL=postgres://prainha_app:Prainha_App_2026@127.0.0.1:5432/vendas_local"
 set "PORT=8080"
 REM Porta 8080 é a porta dos QR codes impressos nas mesas
+REM As DUAS portas ao mesmo tempo: 8790 continua viva pros atalhos antigos
+REM dos tablets, e o HTTPS da camera fica cravado no 8791 de sempre
+set "PORT_EXTRA=8790"
+set "PORT_HTTPS=8791"
 
 REM --- consulta de CPF (SPC Brasil) ---
 REM O cadastro e' por CPF: o nome vem da consulta (casa -> ja atendidos ->

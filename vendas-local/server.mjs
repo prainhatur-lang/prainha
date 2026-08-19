@@ -10593,6 +10593,15 @@ async function main() {
   await limparTestes().catch((e) => console.error('[reparo] ' + e.message));
   await repararCacheSpc().catch((e) => console.error('[reparo] ' + e.message));
   server.listen(PORT, () => console.log(`KDS em http://localhost:${PORT}  (/=produção, /entrega=entrega, /venda=garçom)`));
+  // PORTAS EXTRAS (set "PORT_EXTRA=8790", ou lista: "8790,9090"): a loja
+  // atende nos dois endereços AO MESMO TEMPO — caso da 0001, onde o QR
+  // impresso do Consumer usa :8080 e os atalhos antigos dos tablets, :8790.
+  // Porta ocupada não derruba o servidor: loga e segue nas outras.
+  for (const p of String(process.env.PORT_EXTRA || '').split(',').map((x) => Number(x.trim())).filter((n) => n > 0 && n !== PORT)) {
+    http.createServer(server.listeners('request')[0])
+      .listen(p, () => console.log(`[http] também em http://localhost:${p}`))
+      .on('error', (e) => console.log(`[http] porta extra ${p} não subiu: ` + e.message));
+  }
   // HTTPS ao lado: é o endereço que libera a câmera nos tablets
   const cred = certificado();
   if (cred) {
