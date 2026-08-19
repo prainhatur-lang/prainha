@@ -9704,14 +9704,12 @@ function bannerCx(){
     return '<div class="tit" style="margin-top:0">🧰 Seu caixa · <b style="color:var(--green2)">ABERTO</b></div>'+
       '<div class="mut">fundo '+brl(a.fundo)+' · dinheiro recebido '+brl(a.dinheiro)+
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
-      '<div class="row" style="margin-top:8px'+(PODE.mov?';grid-template-columns:1fr 1fr 1fr':'')+'">'+
-      '<button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+      '<div class="row" style="margin-top:8px">'+
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
       '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
-      ?'<div class="row" style="margin-top:4px"><button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
-       '<button class="seg on" onclick="irTela(\\'abrircx\\')">Abrir caixa</button></div>'
+      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
       :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
 }
 async function cxEstado(){
