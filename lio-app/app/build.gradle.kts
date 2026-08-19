@@ -84,8 +84,12 @@ android {
         // do Java ("Unable to resolve host", "failed to connect…"); agora diz
         // "Não encontrei o servidor da loja — confira o endereço e se está
         // ligado" no login, na grade de mesas e no cardápio (Api.msgErroRede).
-        versionCode = 27
-        versionName = "1.10.3"
+        // 1.10.4: mesa que o cliente CHAMOU O GARÇOM pisca vermelho na grade
+        // (campo chamou_garcom do /api/venda/abertas + AlphaAnimation). O
+        // servidor já mostra 🔔+vermelho estático nas versões antigas do app;
+        // ESTA faz piscar. NÃO subir agora — guardar pra próxima subida na Cielo.
+        versionCode = 28
+        versionName = "1.10.4"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

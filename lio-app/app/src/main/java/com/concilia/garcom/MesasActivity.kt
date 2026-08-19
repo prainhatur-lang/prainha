@@ -304,7 +304,22 @@ class MesasActivity : AppCompatActivity() {
                 "atrasada" -> 0xFFFEF3C7.toInt()
                 else -> 0xFFDCFCE7.toInt()
             }
-            v.setBackgroundColor(fundo)
+            // 🔔 CHAMOU O GARÇOM: vermelho mais forte PISCANDO, pra saltar aos
+            // olhos. clearAnimation() no ramo normal garante que a célula
+            // reaproveitada (GridView recicla views) pare de piscar.
+            if (m.chamouGarcom) {
+                v.setBackgroundColor(0xFFFCA5A5.toInt())
+                if (v.animation == null || v.animation.hasEnded()) {
+                    v.startAnimation(android.view.animation.AlphaAnimation(1f, 0.3f).apply {
+                        duration = 420
+                        repeatMode = android.view.animation.Animation.REVERSE
+                        repeatCount = android.view.animation.Animation.INFINITE
+                    })
+                }
+            } else {
+                v.clearAnimation()
+                v.setBackgroundColor(fundo)
+            }
             return v
         }
     }

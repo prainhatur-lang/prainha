@@ -74,6 +74,7 @@ object Api {
         val itens: Int,
         val mesa: Int?,              // comanda: a mesa onde está (null = solta)
         val ehComanda: Boolean,
+        val chamouGarcom: Boolean = false, // cliente apertou "chamar garçom" → pisca vermelho
     )
 
     data class ItemConta(val nome: String, val qtd: Double, val valor: Double, val tipo: Int)
@@ -234,6 +235,7 @@ object Api {
                     itens = o.optInt("itens", 0),
                     mesa = if (o.isNull("mesa")) null else o.optInt("mesa"),
                     ehComanda = ehComanda,
+                    chamouGarcom = o.optBoolean("chamou_garcom", false),
                 )
             }
         }
