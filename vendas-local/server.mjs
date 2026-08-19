@@ -2261,6 +2261,17 @@ async function apiTransferir(body) {
   const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
   if (!mv.ok) return { ok: false, erro: 'não consegui mover os itens: ' + mv.err };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* total recalcula no próximo ciclo */ }
+  // ⚠️ A CASCA DA ORIGEM. Levou TODOS os itens embora e o pedido da mesa de
+  // origem ficava aberto com zero item — a mesa seguia "ocupada" na tela pra
+  // sempre (mesa 129, 19/08). Sem item e sem pagamento não há o que guardar:
+  // some, do mesmo jeito que o Consumer faz com pedido aberto por engano.
+  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
+  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
+    const rm = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
+    if (!rm.ok) console.error('[transferir] casca da mesa ' + de + ' ficou aberta: ' + rm.err);
+    await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
+  }
 
   // as comandas que estavam nessa mesa vão junto
   await sql`UPDATE mesa_comanda SET mesa=${para} WHERE mesa=${de} AND fechada_em IS NULL`;
