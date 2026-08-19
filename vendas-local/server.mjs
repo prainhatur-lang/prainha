@@ -366,6 +366,9 @@ async function initSchema() {
   // continua restrito: só entra login que tenha a permissão de venda no Consumer.
   await sql`CREATE TABLE IF NOT EXISTS garcom_pin (login text PRIMARY KEY, pin_hash text NOT NULL,
     salt text NOT NULL, nome text, criado_em timestamptz DEFAULT now(), atualizado_em timestamptz DEFAULT now())`;
+  // Permissão GERENTE (nossa, por loja): quem vê reclamação na comanda mobile.
+  // Vale ISTO ou ser Administrador/ter Excluir-Pedido(28) no Consumer (ehGerente).
+  await addCol('garcom_pin', 'gerente boolean NOT NULL DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
   // ---- COMANDA JÁ IMPRESSA na térmica ----
   // comanda_item leva TRUNCATE a cada espelho; o "já saiu na impressora" vive
@@ -1929,8 +1932,31 @@ async function apiVendaAbertas() {
   for (const x of await sql`SELECT comanda AS numero, nome_curto FROM mesa_comanda WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
   for (const x of await sql`SELECT numero, nome_curto FROM identificacao WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
   for (const r of rows) r.nome = nomePorNum.get(Number(r.numero)) || null;
+
+  // 🔔 CHAMOU GARÇOM na grade (funciona na maquininha SEM versão nova): marca a
+  // mesa que apertou o botão com 🔔 no nome + cor amarela (o app já pinta por
+  // status). A mesa que chamou mas ainda não tem conta aberta entra como chip
+  // vazio — o garçom toca e já abre pra lançar.
+  const chamando = await mesasChamandoGarcom();
+  const numsAbertos = new Set(rows.map((r) => Number(r.numero)));
+  for (const r of rows) {
+    if (Number(r.numero) < COMANDA_DE && chamando.has(Number(r.numero))) {
+      r.chamou_garcom = true;
+      r.nome = '🔔 CHAMOU' + (r.nome ? ' · ' + r.nome : '');
+      if (r.status === 'andamento') r.status = 'atrasada'; // destaque; não apaga o vermelho de "fechando"
+    }
+  }
+  const extras = [];
+  for (const mesa of chamando) {
+    if (mesa < COMANDA_DE && !numsAbertos.has(mesa)) {
+      extras.push({ numero: mesa, valor_total: 0, itens: 0, status: 'atrasada',
+        conta_pedida: false, nome: '🔔 CHAMOU', chamou_garcom: true });
+    }
+  }
+  const mesas = rows.filter((x) => Number(x.numero) < COMANDA_DE)
+    .concat(extras).sort((a, b) => Number(a.numero) - Number(b.numero));
   return {
-    mesas: rows.filter((x) => Number(x.numero) < COMANDA_DE),
+    mesas,
     comandas: rows.filter((x) => Number(x.numero) >= COMANDA_DE).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
   };
 }
@@ -3412,10 +3438,51 @@ async function garcomDaRequisicao(req, u) {
   }
   catch { return { login: v.login, nome: null }; } // Firebird fora: não desloga quem já entrou
 }
+// GERENTE = permissão nossa (garcom_pin.gerente) OU Administrador / Excluir-
+// Pedido(28) no Consumer (mesma régua da dupla-senha do caixa). É quem vê as
+// RECLAMAÇÕES na comanda mobile (as reclamações também vão pro KDS).
+async function ehGerente(login) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return false;
+  try {
+    const local = (await sql`SELECT gerente FROM garcom_pin WHERE login=${l}`)[0];
+    if (local && local.gerente) return true;
+  } catch {}
+  try { const p = await permsDoUsuario(l); return !!(p.ok && (p.admin || p.excluir_pedido)); }
+  catch { return false; }
+}
+
 // GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
 async function apiGarcomSessao(req, u) {
   const g = await garcomDaRequisicao(req, u);
-  return g ? { ok: true, login: g.login, nome: g.nome } : { ok: false };
+  if (!g) return { ok: false };
+  return { ok: true, login: g.login, nome: g.nome, gerente: await ehGerente(g.login) };
+}
+
+// ---- GESTÃO da permissão GERENTE (só um gerente mexe) ----
+async function apiGerentesListar(req, u) {
+  const g = await garcomDaRequisicao(req, u);
+  if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente vê isto' };
+  const linhas = await sql`SELECT login, nome, gerente FROM garcom_pin ORDER BY COALESCE(nome, login)`;
+  const out = [];
+  for (const l of linhas) {
+    // quem já é gerente pelo Consumer (admin/28) vem travado — não dá pra tirar
+    // aqui o que a loja definiu lá.
+    let porConsumer = false;
+    try { const p = await permsDoUsuario(l.login); porConsumer = !!(p.ok && (p.admin || p.excluir_pedido)); } catch {}
+    out.push({ login: l.login, nome: l.nome || l.login, gerente: !!l.gerente || porConsumer, por_consumer: porConsumer });
+  }
+  return { ok: true, gerentes: out, eu: g.login };
+}
+async function apiGerenteSet(req, u, body) {
+  const g = await garcomDaRequisicao(req, u);
+  if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente pode mexer nisso' };
+  const login = String(body.login || '').trim().toLowerCase();
+  if (!login) return { ok: false, erro: 'informe o login' };
+  const val = !!body.gerente;
+  const r = await sql`UPDATE garcom_pin SET gerente=${val}, atualizado_em=now() WHERE login=${login} RETURNING login`;
+  if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
+  return { ok: true, login, gerente: val };
 }
 // POST /api/garcom/entrar {login, pin, pin2?}
 //  - login sem permissão no Consumer -> negado
@@ -3443,10 +3510,10 @@ async function apiGarcomEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${pode.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true, gerente: await ehGerente(login) };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: pode.nome };
+  return { ok: true, token: garcomGeraToken(login), nome: pode.nome, gerente: await ehGerente(login) };
 }
 
 // ---- CAIXA: acesso e ajuste de conta (Bloco 1) ----
@@ -4166,6 +4233,24 @@ async function apiChamadoAtender(body) {
 async function mesasComReclamacao() {
   const r = await sql`SELECT DISTINCT mesa FROM chamado WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL`;
   return new Set(r.map((x) => Number(x.mesa)));
+}
+/** Mesas com CHAMADO de garçom aberto (o BOTÃO da mesa, não o aviso automático
+ *  "pediu pelo celular"). A maquininha NÃO tem tela de chamado — em vez de
+ *  subir versão nova pra Cielo, o servidor marca a mesa na grade (nome 🔔 +
+ *  cor) e o app JÁ INSTALADO mostra. Some quando alguém atende (Vou lá no
+ *  celular/KDS) ou quando o garçom abre a mesa na maquininha. */
+async function mesasChamandoGarcom() {
+  const r = await sql`SELECT DISTINCT mesa FROM chamado
+    WHERE tipo='garcom' AND atendido_em IS NULL AND mesa IS NOT NULL
+      AND origem IS DISTINCT FROM 'pedido-cliente'`;
+  return new Set(r.map((x) => Number(x.mesa)));
+}
+/** Atende os chamados de garçom de uma mesa (o garçom foi até lá). */
+async function atenderChamadoGarcom(mesa, por) {
+  const n = Number(mesa);
+  if (!(n >= 1)) return;
+  await sql`UPDATE chamado SET atendido_em=now(), atendido_por=${String(por || 'maquininha').slice(0, 60)}
+    WHERE tipo='garcom' AND atendido_em IS NULL AND mesa=${n}`;
 }
 
 async function apiAreas() {
@@ -6010,7 +6095,9 @@ async function puxarChamados(){
   var el=document.getElementById('chamados');if(!el)return;
   var d;try{d=await jget('/api/chamados')}catch(e){return}
   var h='';
-  (d.reclamacoes||[]).forEach(function(r){
+  // Reclamação é sensível: some da comanda mobile de quem NÃO é gerente. Ela
+  // aparece no KDS (a cozinha adianta) e aqui só pro gerente.
+  if(EH_GERENTE)(d.reclamacoes||[]).forEach(function(r){
     h+='<div class="ch rec">⚠️ '+(r.mesa?'MESA '+r.mesa:'Sem mesa')+' reclamou'+
       (r.ha_min>0?' · há '+r.ha_min+'min':' · agora')+
       (r.texto?' — '+esc(r.texto):'')+
@@ -6038,15 +6125,15 @@ async function atender(id,mesa){
 // A comanda mobile não abre direto: só quem tem AcessarComandaMobile no
 // Consumer entra, com um PIN próprio (a senha do Consumer é cifrada e não deu
 // pra usar). O token fica no localStorage e sobrevive ao recarregar.
-var GNOME=null, chamTimer=null, LOGIN_TMP=null;
+var GNOME=null, chamTimer=null, LOGIN_TMP=null, EH_GERENTE=false;
 async function iniciarVenda(){
   var s=null; if(GTOK){ try{s=await jget('/api/garcom/sessao')}catch(e){} }
-  if(s&&s.ok){ entrarNoApp(s.nome||s.login); } else { GTOK=null; telaLogin(); }
+  if(s&&s.ok){ EH_GERENTE=!!s.gerente; entrarNoApp(s.nome||s.login); } else { GTOK=null; telaLogin(); }
 }
 function entrarNoApp(nome){
   GNOME=nome;
   var w=document.getElementById('gwho');
-  if(w)w.innerHTML=esc(nome||'')+' · <a href="#" onclick="sairGarcom();return false" style="color:var(--gold2)">sair</a>';
+  if(w)w.innerHTML=esc(nome||'')+(EH_GERENTE?' · <a href="#" onclick="telaGerentes();return false" style="color:var(--gold2)">gerentes</a>':'')+' · <a href="#" onclick="sairGarcom();return false" style="color:var(--gold2)">sair</a>';
   if(!chamTimer){ puxarChamados(); chamTimer=setInterval(puxarChamados,15000); }
   // vindo do CAIXA (?mesa=N&volta=caixa): já cai na mesa, com o caminho de volta
   var q=new URLSearchParams(location.search);
@@ -6060,6 +6147,30 @@ function sairGarcom(){
   var c=document.getElementById('chamados');if(c)c.innerHTML='';
   var w=document.getElementById('gwho');if(w)w.innerHTML='';
   telaLogin();
+}
+var GERLIST=[];
+async function telaGerentes(){
+  app('<button class="back" onclick="telaMesa()">◂ voltar</button>'+
+    '<div class="tit" style="margin-top:12px">Gerentes</div>'+
+    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado).</div>'+
+    '<div id="glist"><span class="mut">carregando…</span></div>');
+  var d=await jget('/api/gerentes');
+  var el=document.getElementById('glist');if(!el)return;
+  if(!d.ok){el.innerHTML='<div class="err">'+esc(d.erro||'sem acesso')+'</div>';return}
+  GERLIST=d.gerentes||[];
+  if(!GERLIST.length){el.innerHTML='<span class="mut">ninguém com PIN ainda — cada um entra 1x pra aparecer aqui</span>';return}
+  el.innerHTML=GERLIST.map(function(g,ix){
+    return '<div class="ch gar" style="justify-content:space-between;align-items:center">'+
+      '<span>'+(g.gerente?'✅ ':'▫️ ')+esc(g.nome)+' <small style="opacity:.6">'+esc(g.login)+(g.por_consumer?' · Consumer':'')+'</small></span>'+
+      (g.por_consumer?'':'<button class="ir" onclick="setGerenteIx('+ix+','+(g.gerente?'false':'true')+')">'+(g.gerente?'tirar':'tornar')+'</button>')+
+      '</div>';
+  }).join('');
+}
+async function setGerenteIx(ix,val){
+  var g=GERLIST[ix];if(!g)return;
+  var r=await jpost('/api/gerente',{login:g.login,gerente:val});
+  if(!r.ok){alert(r.erro||'erro');return}
+  telaGerentes();
 }
 function telaLogin(){
   var c=document.getElementById('chamados');if(c)c.innerHTML='';
@@ -6091,7 +6202,7 @@ async function fazerLogin(){
   var r=await jpost('/api/garcom/entrar',body);
   if(r.ok&&r.token){
     try{localStorage.setItem('garcom_tok',r.token)}catch(e){}
-    GTOK=r.token;LOGIN_TMP=null; entrarNoApp(r.nome||login); return;
+    GTOK=r.token;LOGIN_TMP=null;EH_GERENTE=!!r.gerente; entrarNoApp(r.nome||login); return;
   }
   if(r.ok&&r.primeira_vez){
     LOGIN_TMP=login;
@@ -10304,6 +10415,8 @@ const server = http.createServer(async (req, res) => {
     // ---- login do garçom (PIN) ----
     if (req.method === 'POST' && p === '/api/garcom/entrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomEntrar(body))); }
     if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
+    if (p === '/api/gerentes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerentesListar(req, u))); }
+    if (req.method === 'POST' && p === '/api/gerente') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerenteSet(req, u, body))); }
     // ---- CAIXA (Bloco 1): login próprio + ações que exigem sessão de caixa ----
     if (p.startsWith('/api/caixa/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -10408,7 +10521,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
-    if (p === '/api/conta') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(u.searchParams.get('n') || 0))); }
+    if (p === '/api/conta') {
+      const n = u.searchParams.get('n') || 0;
+      // Abriu a mesa = o garçom foi até lá → limpa o 🔔 dela (o app não tem
+      // botão "Vou lá"; abrir a conta É o atendimento). Fire-and-forget.
+      atenderChamadoGarcom(n, 'conta-aberta').catch(() => {});
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n)));
+    }
     if (req.method === 'POST' && p === '/api/conta/pagar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaPagar(body))); }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
