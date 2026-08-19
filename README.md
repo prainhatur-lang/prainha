@@ -1,8 +1,8 @@
-# concilia
+# Concilia
 
-Conciliação financeira ponta-a-ponta para restaurantes.
+Plataforma operacional integrada para restaurantes. Núcleo financeiro rastreia a conciliação ponta-a-ponta (PDV → Cielo → banco), agregando compras, reservas, folha, atendimento, fiscal e operações locais.
 
-Rastreia cada venda do PDV (Consumer/Firebird) → adquirente (Cielo) → conta bancária (banco).
+> **Documentação detalhada:** leia [`docs/arquitetura.md`](docs/arquitetura.md) para o mapa técnico completo.
 
 ## Stack
 
@@ -10,20 +10,38 @@ Rastreia cada venda do PDV (Consumer/Firebird) → adquirente (Cielo) → conta 
 - **Banco:** Postgres (Supabase) + Drizzle ORM
 - **Auth:** Supabase Auth (multi-tenant)
 - **Engine de conciliação:** parsers Cielo + CNAB 240 + matching com subset sum
-- **Monorepo:** pnpm + Turborepo
+- **Agente local:** Node.js + Firebird CDC + Windows service
+- **Operação:** Cielo Lio (Android), WhatsApp/IA, SEFAZ, iFood, delivery próprio
 
 ## Estrutura
 
 ```
 concilia/
 ├── apps/
-│   └── web/                    # Next.js (dashboard + APIs)
+│   └── web/                    # Next.js (dashboards + APIs)
 ├── packages/
-│   ├── shared/                 # Tipos compartilhados
-│   ├── db/                     # Drizzle schema + cliente
-│   └── conciliador/            # Parsers (Cielo, CNAB) + engine
-└── agente-local/               # Agente Windows (Fase 1)
+│   ├── db/                     # Drizzle schema + migrations
+│   ├── conciliador/            # Parsers + matching engines
+│   └── shared/                 # Tipos compartilhados
+├── agente-local/               # Serviço Windows (Consumer → nuvem)
+├── vendas-local/               # Backend operacional (KDS + garçom)
+├── lio-app/                    # App Android para Cielo Lio
+├── agente-patio/               # Integração de cancela/placa
+└── docs/                       # Arquitetura e especificações
 ```
+
+## Domínios implementados
+
+- **Conciliação financeira:** PDV × Cielo × banco + exceções + aceite
+- **Integração Consumer:** CDC + checkpoint incremental + mappers
+- **Financeiro:** contas a pagar/receber, caixa, DRE, fechamento
+- **Compras:** sugestão, cotação, pedidos, notas, estoque
+- **Reservas:** agenda, mesas, lista de espera, orçamentos
+- **Atendimento:** WhatsApp com IA (Nina), avaliações, contatos
+- **Folha:** folha semanal, colaboradores, fechamento
+- **Fiscal:** NFC-e, DF-e, certificados, SEFAZ
+- **Delivery:** cardápio público, pedidos, frete, iFood
+- **Operação:** KDS, garçom na Lio, comanda, impressora, pátio
 
 ## Setup local
 
@@ -31,39 +49,61 @@ concilia/
 # 1. Instalar deps
 pnpm install
 
-# 2. Configurar variaveis
+# 2. Variáveis de ambiente
 cp .env.example .env
 # Editar .env com URLs do Supabase
 
-# 3. Push do schema para o banco
-pnpm db:push
-
-# 4. Rodar app
+# 3. Rodar app (nunca use db:push em prod)
 pnpm dev
 ```
 
 App em http://localhost:3000
 
-## Roadmap
+### Migrations em produção
 
-- ✅ **Fase 0** Setup do monorepo, schema multi-tenant, auth basica
-- ⏳ **Fase 1** Agente local (Windows) lendo Firebird
-- ⏳ **Fase 2** Upload de arquivos Cielo + CNAB
-- ⏳ **Fase 3** Engine de conciliacao em background jobs
-- ⏳ **Fase 4** Dashboard do dono (consolidado)
-- ⏳ **Fase 5** Dashboard de gerente (RBAC) + lista de excecoes
-- ⏳ **Fase 6** Notificacoes (email/WhatsApp) + cron diario
-- ⏳ **Fase 7** Polish, mobile, exports
+**NUNCA** rode `db:push` ou `db:generate` em produção. Migrations são manuais:
 
-## Comandos
+```bash
+# 1. Editar schema em packages/db/src/schema/*.ts
+# 2. Criar script: packages/db/scripts/migrate-<nome>.ts
+# 3. Adicionar target em packages/db/package.json
+# 4. Rodar localmente para testar
+pnpm --filter @concilia/db migrate:<nome>
+```
+
+[Detalhes em CLAUDE.md](CLAUDE.md#migrations-são-manuais)
+
+## Comandos principais
 
 | Comando | O que faz |
 |---|---|
 | `pnpm dev` | Roda Next.js em dev |
-| `pnpm build` | Build de tudo |
+| `pnpm build` | Build completo |
 | `pnpm typecheck` | TypeScript check |
 | `pnpm lint` | ESLint |
-| `pnpm db:push` | Aplica schema no Postgres (dev) |
-| `pnpm db:generate` | Gera arquivo de migration |
-| `pnpm db:migrate` | Roda migrations (prod) |
+| `pnpm test` | Testes (executar antes de commit) |
+| `pnpm --filter @concilia/db migrate:<nome>` | Roda migration idempotente |
 | `pnpm db:studio` | Abre Drizzle Studio |
+
+## Convenções críticas
+
+1. **Commit direto no `main`** → Vercel publica automaticamente.
+2. **Timezone BRT** → use helpers de `@/lib/datas` (nunca `new Date().toISOString()`).
+3. **Multi-tenant obrigatório** → toda query filtra por `filialId`.
+4. **RLS em tabelas novas** → `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY` (ENABLE, não FORCE).
+5. **Permissões** → guards `exigirPermPage`/`exigirPermApi` de `@/lib/exigir-perm`.
+
+[Mais detalhes em CLAUDE.md](CLAUDE.md)
+
+## Deploy
+
+- **Web:** branch `main` publica automaticamente na Vercel → app.prainhabar.com
+- **Agente local:** release manual em `apps/web/public/agente-release/`
+- **Lio:** build Android assinado + certificação Cielo por filial
+
+## Contribuir
+
+- Leia [CLAUDE.md](CLAUDE.md) antes de começar.
+- Leia [docs/arquitetura.md](docs/arquitetura.md) para entender o sistema.
+- Typecheck antes de commit: `pnpm --filter @concilia/web typecheck`
+- Termine commit com: `Co-Authored-By: Claude <...>`
