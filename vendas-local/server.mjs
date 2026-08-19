@@ -263,6 +263,10 @@ async function initSchema() {
     mesa integer, tipo text NOT NULL, origem text, nota integer, texto text,
     criado_em timestamptz DEFAULT now(), atendido_em timestamptz, atendido_por text)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_chamado_aberto ON chamado(atendido_em, criado_em)`;
+  // PRAÇAS QUE A RECLAMAÇÃO TOCA. Reclamou da água de coco? o aviso é do BAR —
+  // não faz sentido piscar na cozinha da batata frita (dono, 19/08). Vazio =
+  // reclamação sem item (salão, conta): continua indo pra todo mundo.
+  await addCol('chamado', 'areas integer[]');
   // QUANDO A CONTA DE UMA MESA ACABOU. Serve pra matar a sessao do celular do
   // cliente ANTERIOR: sem isto, quem estava na mesa 1 continuava com a tela
   // colada nela depois do fechamento, e podia lancar na conta do proximo.
@@ -323,6 +327,12 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
+  // FECHAMENTO DE CAIXA: o que o operador DECLAROU × o que o sistema tinha,
+  // forma a forma. O Consumer só guarda o dinheiro (SALDOFINALINFORMADO); a
+  // conferência de cartão/Pix é nossa e é o que permite cobrar diferença.
+  await sql`CREATE TABLE IF NOT EXISTS caixa_fechamento (id bigserial PRIMARY KEY,
+    caixa_codigo integer, quando timestamptz DEFAULT now(), login text,
+    informado jsonb, esperado jsonb, dif_dinheiro numeric, obs text)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
   // QUEM BAIXOU: foto de quem tocou "Pronto"/"Entregue", com o que foi baixado.
   // Sem login no KDS, a foto é a única referência de quem apertou — é o que
@@ -2135,6 +2145,7 @@ async function jaPedidoDe(contaCodigo) {
       : '';
     const criado = x.criado ? new Date(x.criado).getTime() : null;
     const it = {
+      item_codigo: x.item_codigo != null ? Number(x.item_codigo) : null,
       nome: x.nome, quantidade: Number(x.quantidade) || 1,
       observacao: det || null,
       complementos: [],
@@ -3946,6 +3957,21 @@ async function fbResumoCaixa(caixaCodigo) {
   const mov = await qi(`SELECT COALESCE(SUM(COALESCE(VALORENTRADA,0)),0) E, COALESCE(SUM(COALESCE(VALORSAIDA,0)),0) S FROM CAIXAOPERACAO WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL`);
   return { dinheiro: Number(din.rows?.[0]?.V) || 0, entradas: Number(mov.rows?.[0]?.E) || 0, saidas: Number(mov.rows?.[0]?.S) || 0 };
 }
+/** O que o SISTEMA registrou neste caixa, agrupado como o operador confere:
+ *  dinheiro (gaveta), crédito e débito (vias da maquininha), Pix (extrato). */
+async function fbResumoPorForma(caixaCodigo) {
+  const r = await qi(`SELECT CODIGOFORMAPAGAMENTO F, COALESCE(SUM(VALOR),0) V, COUNT(*) N
+    FROM PAGAMENTOS WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL GROUP BY CODIGOFORMAPAGAMENTO`);
+  const por = new Map((r.rows || []).map((x) => [Number(x.F), { valor: Number(x.V) || 0, n: Number(x.N) || 0 }]));
+  const som = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.valor || 0), 0);
+  const cnt = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.n || 0), 0);
+  return {
+    dinheiro: { valor: +som(FORMA.DINHEIRO).toFixed(2), n: cnt(FORMA.DINHEIRO) },
+    credito: { valor: +som(FORMA.CREDITO).toFixed(2), n: cnt(FORMA.CREDITO) },
+    debito: { valor: +som(FORMA.DEBITO).toFixed(2), n: cnt(FORMA.DEBITO) },
+    pix: { valor: +som(FORMA.PIX_MANUAL, FORMA.PIX_ONLINE).toFixed(2), n: cnt(FORMA.PIX_MANUAL, FORMA.PIX_ONLINE) },
+  };
+}
 async function apiCaixaEstado(quem) {
   const cx = await fbCaixaDoOperador(quem.login);
   if (!cx) return { ok: true, aberto: null };
@@ -3964,15 +3990,76 @@ async function apiCaixaAbrir(body, quem) {
   const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`);
   return { ok: true, codigo: cod, fundo };
 }
+/** Conferência do fechamento: recebe o que o operador CONTOU e devolve o
+ *  comparativo. É o passo que dá controle — antes o caixa informava um número
+ *  só, com o esperado já na tela (dava pra "bater" digitando o esperado).
+ *  Aqui a declaração vem ANTES de ver o sistema, e forma a forma. */
+function _decl(body) {
+  const n = (v) => (v == null || v === '' ? null : +Number(v).toFixed(2));
+  return { dinheiro: n(body.dinheiro), credito: n(body.credito), debito: n(body.debito), pix: n(body.pix) };
+}
+function _comparar(dec, sis, fundo, entradas, saidas) {
+  const espDin = +(fundo + sis.dinheiro.valor + entradas - saidas).toFixed(2);
+  const linha = (rot, informado, esperado, obs) => ({ rotulo: rot, informado, esperado,
+    dif: informado == null ? null : +(informado - esperado).toFixed(2), obs: obs || null });
+  return [
+    linha('Dinheiro na gaveta', dec.dinheiro, espDin, 'fundo ' + impMoeda(fundo) + (saidas ? ' · saídas ' + impMoeda(saidas) : '')),
+    linha('Cartão crédito', dec.credito, sis.credito.valor, sis.credito.n + ' venda(s)'),
+    linha('Cartão débito', dec.debito, sis.debito.valor, sis.debito.n + ' venda(s)'),
+    linha('Pix', dec.pix, sis.pix.valor, sis.pix.n + ' venda(s)'),
+  ];
+}
+async function apiCaixaConferir(body, quem) {
+  const cx = await fbCaixaDoOperador(quem.login);
+  if (!cx) return { ok: false, erro: 'você não tem caixa aberto' };
+  const dec = _decl(body);
+  if (dec.dinheiro == null) return { ok: false, erro: 'conte a gaveta e informe o dinheiro' };
+  const r = await fbResumoCaixa(cx.codigo);
+  const sis = await fbResumoPorForma(cx.codigo);
+  const linhas = _comparar(dec, sis, cx.fundo, r.entradas, r.saidas);
+  const difDin = linhas[0].dif || 0;
+  const eletronico = linhas.slice(1).filter((l) => l.informado != null && Math.abs(l.dif) > 0.01);
+  return { ok: true, linhas, dif_dinheiro: difDin,
+    precisa_permissao: Math.abs(difDin) > 0.01 && !quem.divergente,
+    eletronico_divergente: eletronico.map((l) => l.rotulo),
+    total_sistema: +(linhas.reduce((t, l) => t + l.esperado, 0)).toFixed(2) };
+}
+/** Comprovante do fechamento na térmica — papel é o que sobra pra conferência
+ *  no dia seguinte, quando ninguém lembra dos números. */
+async function imprimirFechamento(cx, quem, linhas, difDin) {
+  try {
+    const ip = (await cfgGet('impressora_ip', '')).trim();
+    if (!ip) return;
+    const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn('FECHAMENTO DE CAIXA'), IMP.norm, IMP.negFim,
+      impLn(LOJA_NOME.toUpperCase()), IMP.esquerda, impTraco(),
+      impLn(impLR('Caixa ' + cx.codigo, quem.nome || quem.login)),
+      impLn(new Date().toLocaleString('pt-BR')), impTraco()];
+    for (const l of linhas) {
+      b.push(IMP.neg, impLn(l.rotulo), IMP.negFim);
+      b.push(impLn(impLR('  sistema', impMoeda(l.esperado))));
+      b.push(impLn(impLR('  contado', l.informado == null ? '-' : impMoeda(l.informado))));
+      if (l.dif != null && Math.abs(l.dif) > 0.01) b.push(IMP.neg, impLn(impLR('  DIFERENCA', impMoeda(l.dif))), IMP.negFim);
+    }
+    b.push(impTraco(), IMP.neg, IMP.alto,
+      impLn(impLR('DIF. DINHEIRO', impMoeda(difDin))), IMP.norm, IMP.negFim,
+      impLn(''), impLn('Assinatura: ____________________'), IMP.corte);
+    await imprimirRaw(ip, Buffer.concat(b), 'fechamento caixa ' + cx.codigo);
+  } catch (e) { console.error('[caixa] comprovante do fechamento:', e.message); }
+}
 async function apiCaixaFecharCaixa(body, quem) {
   const cx = await fbCaixaDoOperador(quem.login);
   if (!cx) return { ok: false, erro: 'você não tem caixa aberto' };
   const r = await fbResumoCaixa(cx.codigo);
+  const sis = await fbResumoPorForma(cx.codigo);
   const esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
-  if (body.contado == null || body.contado === '') return { ok: false, erro: 'conte a gaveta e informe o total' };
-  const contado = +Number(body.contado).toFixed(2);
+  // compatível com quem só manda o dinheiro (contado), mas o caminho normal
+  // agora é a conferência por forma vinda da tela
+  const dec = _decl(body.contado != null ? { ...body, dinheiro: body.contado } : body);
+  if (dec.dinheiro == null) return { ok: false, erro: 'conte a gaveta e informe o dinheiro' };
+  const contado = dec.dinheiro;
   if (!(contado >= 0)) return { ok: false, erro: 'valor contado inválido' };
   const dif = +(contado - esperado).toFixed(2);
+  const linhas = _comparar(dec, sis, cx.fundo, r.entradas, r.saidas);
   // bateu = fecha; divergiu = só quem tem a permissão 48 (ou operação
   // completa/admin) confirma — é a mesma regra do Consumer
   if (Math.abs(dif) > 0.01 && !quem.divergente)
@@ -3980,7 +4067,13 @@ async function apiCaixaFecharCaixa(body, quem) {
       erro: `o contado difere do esperado em R$ ${dif.toFixed(2)} — chame quem pode fechar divergente` };
   const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(contado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
   if (!up.ok) return { ok: false, erro: 'FB fechar caixa: ' + up.err };
-  return { ok: true, esperado, contado, dif };
+  // registro durável da conferência (o Consumer só guarda o dinheiro)
+  await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+    VALUES (${cx.codigo}, ${quem.login}, ${sql.json(dec)},
+      ${sql.json({ dinheiro: esperado, credito: sis.credito.valor, debito: sis.debito.valor, pix: sis.pix.valor })},
+      ${dif}, ${String(body.obs || '').slice(0, 300) || null})`;
+  imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
+  return { ok: true, esperado, contado, dif, linhas };
 }
 // Sangria/despesa/suprimento — mexe na GAVETA do operador logado. Tipos do
 // Consumer (conferidos em 16,5 mil operações reais do banco da 0003):
@@ -4217,16 +4310,30 @@ async function apiChamadoCriar(body) {
       AND assunto IS NOT DISTINCT FROM ${assunto}
       AND (origem IS NOT DISTINCT FROM ${'pedido-cliente'}) = ${auto} LIMIT 1`;
   if (ja) return { ok: true, id: Number(ja.id), repetido: true };
-  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto)
+  // praça(s) do que o cliente marcou: o aviso só acende na cozinha dona do item
+  let areas = null;
+  const cods = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean) : [];
+  if (cods.length) {
+    const as = await sql`SELECT DISTINCT area_codigo FROM comanda_item
+      WHERE item_codigo = ANY(${cods}) AND area_codigo IS NOT NULL`;
+    const lista = as.map((x) => Number(x.area_codigo)).filter(Boolean);
+    if (lista.length) areas = lista;
+  }
+  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto, areas)
     VALUES (${mesa}, ${tipo}, ${origem},
             ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null},
-            ${assunto})
+            ${assunto}, ${areas})
     RETURNING id`;
   return { ok: true, id: Number(r.id) };
 }
-async function apiChamados() {
-  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, criado_em FROM chamado
-    WHERE atendido_em IS NULL ORDER BY criado_em`;
+async function apiChamados(areaCod = null) {
+  // KDS de uma praça vê: reclamação DELA + as sem praça (salão, conta, texto
+  // livre). O resto é ruído — e ruído todo mundo aprende a ignorar.
+  const filtro = areaCod == null || !(areaCod > 0)
+    ? sql`TRUE`
+    : sql`(areas IS NULL OR array_length(areas, 1) IS NULL OR ${areaCod} = ANY(areas))`;
+  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, areas, criado_em FROM chamado
+    WHERE atendido_em IS NULL AND ${filtro} ORDER BY criado_em`;
   const agora = Date.now();
   const comIdade = rows.map((x) => ({ ...x, ha_min: Math.max(0, Math.floor((agora - new Date(x.criado_em).getTime()) / 60000)) }));
   return {
@@ -4242,8 +4349,12 @@ async function apiChamadoAtender(body) {
   return { ok: true };
 }
 /** Mesas com reclamação aberta — a cozinha usa pra passar na frente. */
-async function mesasComReclamacao() {
-  const r = await sql`SELECT DISTINCT mesa FROM chamado WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL`;
+async function mesasComReclamacao(areaCod = null) {
+  const filtro = areaCod == null || !(areaCod > 0)
+    ? sql`TRUE`
+    : sql`(areas IS NULL OR array_length(areas, 1) IS NULL OR ${areaCod} = ANY(areas))`;
+  const r = await sql`SELECT DISTINCT mesa FROM chamado
+    WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL AND ${filtro}`;
   return new Set(r.map((x) => Number(x.mesa)));
 }
 /** Mesas com CHAMADO de garçom aberto (o BOTÃO da mesa, não o aviso automático
@@ -4402,11 +4513,11 @@ async function apiKds(areaCod) {
      WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2`;
 
   // Mesa que reclamou passa na frente: sobe pro topo da fila e vem marcada.
-  const reclamou = await mesasComReclamacao();
+  const reclamou = await mesasComReclamacao(areaCod);
   for (const c of r.comandas) c.reclamou = reclamou.has(Number(c.numero));
   r.comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
 
-  const ch = await apiChamados();
+  const ch = await apiChamados(areaCod);
   const espItens = new Set(esperando.map((x) => Number(x.item_codigo)));
   const parItens = new Map(pareados.map((x) => [Number(x.item_codigo), x.grupo]));
   for (const c of r.comandas) for (const i of c.itens || []) {
@@ -6175,7 +6286,7 @@ async function enviar(){
 // cozinha vai adiantar, e quanto antes alguém for à mesa, menor o estrago.
 async function puxarChamados(){
   var el=document.getElementById('chamados');if(!el)return;
-  var d;try{d=await jget('/api/chamados')}catch(e){return}
+  var d;try{d=await jget('/api/chamados'+(typeof AREA!=='undefined'&&AREA&&AREA.cod?('?area='+AREA.cod):''))}catch(e){return}
   var h='';
   // Reclamação é sensível: some da comanda mobile de quem NÃO é gerente. Ela
   // aparece no KDS (a cozinha adianta) e aqui só pro gerente.
@@ -9120,7 +9231,7 @@ async function probItens(assunto){
   ((d&&d.grupos)||[]).forEach(function(g){
     (g.itens||[]).forEach(function(i){
       if(assunto==='demora'&&i.estado==='entregue')return;
-      ITENS.push({nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
+      ITENS.push({cod:i.item_codigo,nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
         onde:g.numero&&Number(g.numero)!==Number(n)?('comanda '+g.numero):null});
     });
   });
@@ -9166,7 +9277,9 @@ async function enviarProblema(){
   if(!marcados.length&&!livre){alert('Escreva o que houve.');return}
   var txt=(ROTULO[ASSUNTO]||'PROBLEMA')+(marcados.length?' — '+marcados.join(', '):'')+
     (livre?(marcados.length?' · ':' — ')+livre:'');
-  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',assunto:ASSUNTO,texto:txt});
+  var cods=Object.keys(ITSEL).filter(function(k){return ITSEL[k]})
+    .map(function(k){return ITENS[k]&&ITENS[k].cod}).filter(Boolean);
+  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',assunto:ASSUNTO,texto:txt,itens:cods});
   app('<div class="ok"><div class="t">✓ Recebemos</div>'+
     '<div class="mut" style="margin-top:8px">Desculpe pelo transtorno. '+
     (ASSUNTO==='demora'?'A cozinha já foi avisada e o seu pedido passa na frente.'
@@ -9538,6 +9651,7 @@ function pintaMain(){
   if(TELA==='pix')return; // desenhada pelo pixCaixa()
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
+  if(TELA==='confcx')return telaConfCx(el);
   if(TELA==='rel')return telaRel(el);
   if(TELA==='mov')return telaMov(el);
   if(TELA==='canc')return telaCancItem(el);
@@ -9933,24 +10047,73 @@ async function acaoAbrirCx(){
   FLASH='✓ Caixa aberto'+(v?' com fundo de '+brl(v):' sem fundo')+'. Bom serviço!';
   await cxEstado();voltarMesas();
 }
+/* ---- FECHAMENTO COM CONFERÊNCIA (cega, forma a forma) ----
+   Antes o caixa informava UM número (dinheiro) com o esperado já na tela —
+   bastava digitar o esperado pra "bater" sempre. Agora ele declara primeiro,
+   forma a forma, e só depois vê o que o sistema tinha. */
+var DECL=null;
 function telaFechaCx(el){
+  DECL=null;
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
-    '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa</div>'+
-    '<div class="mut">Conte TODO o dinheiro da gaveta (com o fundo) e informe. A conferência com o esperado sai na hora.</div>'+
-    '<input id="cxc" class="num" inputmode="decimal" placeholder="quanto tem na gaveta?" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('cxc')+
-    '<button class="big o" onclick="acaoFechaCx()">Conferir e fechar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa · conferência</div>'+
+    '<div class="mut">Conte cada coisa e informe. <b>Os valores do sistema só aparecem depois</b> — é isso que faz a conferência valer.</div>'+
+    '<div class="mut" style="margin-top:12px">💵 Dinheiro na gaveta (com o fundo)</div>'+
+    '<input id="f_din" class="num" inputmode="decimal" placeholder="obrigatório" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">💳 Crédito (fechamento da maquininha)</div>'+
+    '<input id="f_cre" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">💳 Débito</div>'+
+    '<input id="f_deb" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">📲 Pix</div>'+
+    '<input id="f_pix" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    kpHtml('f_din')+
+    '<button class="big o" onclick="acaoConferir()">Conferir</button>'+
     '<div id="cxerr2" class="err"></div></div>';
-  var e=document.getElementById('cxc');if(e)e.focus();
+}
+function _vc(id){var e=document.getElementById(id);return (e&&String(e.value||'').trim()!=='')?numBr(e.value):null}
+async function acaoConferir(){
+  var er=document.getElementById('cxerr2');er.textContent='';
+  var d={dinheiro:_vc('f_din'),credito:_vc('f_cre'),debito:_vc('f_deb'),pix:_vc('f_pix')};
+  if(d.dinheiro==null){er.textContent='conte a gaveta e informe o dinheiro';return}
+  var r=await jpost('/api/caixa/conferir',d);
+  if(!r.ok){er.textContent=r.erro||'não consegui conferir';return}
+  DECL={decl:d,conf:r};irTela('confcx');
+}
+function telaConfCx(el){
+  if(!DECL){irTela('fechacx');return}
+  var c=DECL.conf;
+  var h='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'fechacx\\')">◂ corrigir contagem</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Conferência do caixa</div>';
+  c.linhas.forEach(function(l){
+    var ok=(l.informado==null)||Math.abs(l.dif)<=0.01;
+    var lado=(l.informado==null)?'não conferido':(Math.abs(l.dif)<=0.01?'bateu ✓':((l.dif>0?'sobra ':'falta ')+brl(Math.abs(l.dif))));
+    h+='<div class="it" style="display:block">'+
+      '<div style="display:flex;justify-content:space-between;gap:8px"><b>'+esc(l.rotulo)+'</b>'+
+      '<b class="'+(ok?'quit':'saldo')+'">'+lado+'</b></div>'+
+      '<div class="mut" style="font-size:12.5px">sistema '+brl(l.esperado)+' · contado '+(l.informado==null?'—':brl(l.informado))+
+      (l.obs?' · '+esc(l.obs):'')+'</div></div>';
+  });
+  h+='<div class="tot g"><span>Total do sistema</span><b>'+brl(c.total_sistema)+'</b></div></div>';
+  if(c.eletronico_divergente&&c.eletronico_divergente.length)
+    h+='<div class="card" style="border-color:var(--gold2)"><b>⚠ Confira na maquininha:</b> '+esc(c.eletronico_divergente.join(', '))+
+       '<div class="mut">Não trava o fechamento — mas sai no comprovante pra apurar depois.</div></div>';
+  if(c.precisa_permissao)
+    h+='<div class="card" style="border-color:var(--red)"><b style="color:var(--red)">Diferença no dinheiro: '+brl(c.dif_dinheiro)+'</b>'+
+       '<div class="mut">Só gerente fecha caixa com diferença no dinheiro. Chame quem pode, ou volte e reconte.</div></div>';
+  h+='<div class="card"><input id="f_obs" placeholder="observação do fechamento (opcional)">'+
+     '<button class="big'+(c.precisa_permissao?' g':'')+'" onclick="acaoFechaCx()"'+(c.precisa_permissao?' disabled':'')+'>✓ Confirmar e fechar o caixa</button>'+
+     '<div class="mut" style="margin-top:6px">Sai um comprovante na impressora do caixa.</div>'+
+     '<div id="cxerr3" class="err"></div></div>';
+  el.innerHTML=h;
 }
 async function acaoFechaCx(){
-  var raw=((document.getElementById('cxc')||{}).value||'').trim();
-  if(raw===''){document.getElementById('cxerr2').textContent='conte a gaveta e digite o total';return}
-  var r=await jpost('/api/caixa/fechar-caixa',{contado:numBr(raw)});
-  var er=document.getElementById('cxerr2');
-  if(!r.ok){er.textContent=(r.erro||'não fechou')+(r.divergente?' — esperado: '+brl(r.esperado):'');return}
-  FLASH='✓ Caixa fechado. Esperado '+brl(r.esperado)+' · contado '+brl(r.contado)+
+  if(!DECL){irTela('fechacx');return}
+  var er=document.getElementById('cxerr3');
+  var b=DECL.decl; b.obs=((document.getElementById('f_obs')||{}).value||'').trim()||null;
+  var r=await jpost('/api/caixa/fechar-caixa',b);
+  if(!r.ok){if(er)er.textContent=(r.erro||'não fechou')+(r.divergente?' — esperado: '+brl(r.esperado):'');return}
+  FLASH='✓ Caixa fechado. Dinheiro: sistema '+brl(r.esperado)+' · contado '+brl(r.contado)+
     (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
-  await cxEstado();voltarMesas();
+  DECL=null;await cxEstado();voltarMesas();
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
@@ -10524,6 +10687,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
@@ -10648,7 +10812,9 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
-    if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+    if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' });
+      const aq = u.searchParams.get('area');
+      return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
