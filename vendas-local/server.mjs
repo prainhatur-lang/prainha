@@ -4253,7 +4253,25 @@ async function atenderChamadoGarcom(mesa, por) {
     WHERE tipo='garcom' AND atendido_em IS NULL AND mesa=${n}`;
 }
 
+// ---- PRAÇAS QUE A CASA NÃO USA MAIS ----
+// Terraço e luau saíram de operação: as praças continuam no cadastro do
+// Consumer (e 399 produtos ainda apontam pra elas na 0001), mas NÃO devem
+// mais aparecer no KDS — cozinha com estação fantasma é cozinha confusa.
+// Some da lista por NOME (o código muda de loja pra loja); a lista mora em
+// cfg 'pracas_ocultas' — esvaziar traz tudo de volta, sem mexer em código.
+// ⚠️ Item lançado numa praça oculta NÃO some: cai no balde laranja "Sem praça
+// definida", que já existe justamente pra nada ficar invisível.
+const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco';
+async function pracasOcultas() {
+  const txt = await cfgGet('pracas_ocultas', PRACAS_OCULTAS_PADRAO);
+  const nomes = new Set(String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean));
+  if (!nomes.size) return [];
+  const rows = await sql`SELECT codigo, nome FROM area`;
+  return rows.filter((a) => nomes.has(semAcento(a.nome))).map((a) => Number(a.codigo));
+}
+
 async function apiAreas() {
+  const ocultas = await pracasOcultas();
   const rows = await sql`
     SELECT a.codigo, a.nome,
       COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
@@ -4265,6 +4283,7 @@ async function apiAreas() {
     FROM area a
     LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+    WHERE a.codigo <> ALL(${ocultas})
     GROUP BY a.codigo, a.nome
     ORDER BY a_produzir DESC, a.nome`;
   // ⚠️ ITENS SEM PRAÇA. O produto sem cozinha atribuída no Consumer entra com
@@ -4280,7 +4299,7 @@ async function apiAreas() {
              AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
              AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
       FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-     WHERE ci.area_codigo IS NULL`)[0];
+     WHERE ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas})`)[0];
   if (Number(semArea?.total ?? 0) > 0) {
     rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
       a_produzir: Number(semArea.a_produzir), total: Number(semArea.total),
@@ -4295,7 +4314,10 @@ async function apiAreas() {
 
 // ---- API: KDS de PRODUÇÃO de uma área (itens a produzir, ordem de CHEGADA = FIFO) ----
 async function apiKds(areaCod) {
-  const cond = areaCod === 0 ? sql`ci.area_codigo IS NULL` : sql`ci.area_codigo=${areaCod}`;
+  const ocultas = areaCod === 0 ? await pracasOcultas() : [];
+  const cond = areaCod === 0
+    ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`
+    : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas
@@ -4383,7 +4405,9 @@ async function apiKds(areaCod) {
 //   areaCod N ..... só aquela praça
 async function apiEntrega(areaCod = null) {
   const filtroArea =
-    areaCod == null ? sql`TRUE` : areaCod === 0 ? sql`ci.area_codigo IS NULL` : sql`ci.area_codigo=${areaCod}`;
+    areaCod == null ? sql`TRUE`
+      : areaCod === 0 ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${await pracasOcultas()}))`
+      : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas, a.nome AS area_nome
