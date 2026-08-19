@@ -5,8 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
-import { LogoutButton } from '../dashboard/logout-button';
-import { AppNav } from '@/components/app-nav';
+import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
 
@@ -286,20 +285,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-6">
-            <Link href="/" className="text-lg font-semibold text-slate-900">
-              concilia
-            </Link>
-            <AppNav />
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-500">{user.email}</span>
-            <LogoutButton />
-          </div>
-        </div>
-      </header>
+      <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-7xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Financeiro — Contas a pagar</h1>

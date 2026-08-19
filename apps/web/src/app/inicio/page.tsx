@@ -3,8 +3,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { permissoesDoUsuario } from '@/lib/permissoes-runtime';
-import { AppNav } from '@/components/app-nav';
-import { LogoutButton } from '../dashboard/logout-button';
+import { AppHeader } from '@/components/app-header';
 
 export const dynamic = 'force-dynamic';
 
@@ -141,20 +140,7 @@ export default async function InicioPage(props: {
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-6">
-            <Link href="/" className="text-lg font-semibold text-slate-900">
-              concilia
-            </Link>
-            <AppNav />
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-500">{user.email}</span>
-            <LogoutButton />
-          </div>
-        </div>
-      </header>
+      <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-7xl px-6 py-10">
         <div className="flex items-center justify-between">

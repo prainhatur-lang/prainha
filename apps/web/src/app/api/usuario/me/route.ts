@@ -1,6 +1,6 @@
 // GET /api/usuario/me
 // Retorna info basica do usuario logado: id, email, role efetivo + perms.
-// O navbar (app-nav.tsx) usa `perms` pra filtrar os links do menu superior.
+// A sidebar (app-sidebar.tsx) usa `perms` pra filtrar os links do menu.
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
