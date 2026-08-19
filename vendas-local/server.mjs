@@ -60,6 +60,9 @@ const INTERVALO_MS = 15000;
 const ESPELHO_DIAS = Number(process.env.ESPELHO_DIAS ?? 7);
 const DESDE = ESPELHO_DIAS > 0 ? `CURRENT_DATE - ${ESPELHO_DIAS}` : 'CURRENT_DATE';
 const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
+// Prato PRONTO não pode envelhecer no passe: 3 min é o limite da casa (dono,
+// 19/08). Muda em cfg 'entrega_min' sem precisar de deploy.
+const LIMITE_ENTREGA_MIN = 3;
 // Uma comanda do Consumer é a MESA INTEIRA da noite — dois lançamentos
 // separados caem no mesmo PEDIDOS.CODIGO. Pra cozinha isso é errado: o que
 // já foi mandado não pode crescer depois. Itens com intervalo maior que isso
@@ -4451,12 +4454,30 @@ async function apiEntrega(areaCod = null) {
     ORDER BY COALESCE(ci.produzido, m.pronto_em), ci.id`;
   const r = agrupar(itens, 'pronto');
   await rotularComandas(r.comandas);
+  // Prazo do passe (3 min) e prazo de PRODUÇÃO da praça — a entrega herda o
+  // atraso: prato que já saiu tarde da cozinha nasce vermelho no passe, porque
+  // pro cliente o relógio é um só (ele não sabe onde o tempo foi perdido).
+  const entregaMin = Math.max(1, Number(await cfgGet('entrega_min', String(LIMITE_ENTREGA_MIN))) || LIMITE_ENTREGA_MIN);
+  const cfgP = areaCod != null && areaCod > 0
+    ? (await sql`SELECT minutos FROM praca_config WHERE area_codigo=${areaCod}`)[0] : null;
+  const prazoPraca = cfgP ? Number(cfgP.minutos) : LIMITE_ATRASO_MIN;
+  const extras = new Map((await sql`SELECT codigo_pdv, minutos_extra FROM produto_tempo`).map((x) => [Number(x.codigo_pdv), Number(x.minutos_extra)]));
   const agora = Date.now();
   for (const c of r.comandas) {
     c.aguarda_min = c.pronta_desde ? Math.max(0, Math.floor((agora - new Date(c.pronta_desde).getTime()) / 60000)) : null;
     // idade TOTAL do pedido (desde o lançamento): só o aguarda_min "zerava" o
     // relógio quando o prato chegava no passe — o runner precisa dos dois tempos.
     c.pedido_min = c.chegada ? Math.max(0, Math.floor((agora - new Date(c.chegada).getTime()) / 60000)) : null;
+    const extra = Math.max(0, ...(c.itens || []).map((i) => extras.get(Number(i.codigo_pdv)) || 0), 0);
+    c.prazo_entrega_min = entregaMin;
+    c.prazo_min = prazoPraca + extra;                     // prazo da produção
+    const passeEstourou = c.aguarda_min != null && c.aguarda_min >= entregaMin;
+    const pedidoEstourou = c.pedido_min != null && c.pedido_min >= c.prazo_min;
+    c.atrasado = passeEstourou || pedidoEstourou;
+    c.critico = (c.aguarda_min != null && c.aguarda_min >= entregaMin * 2)
+      || (c.pedido_min != null && c.pedido_min >= c.prazo_min * 2);
+    // por que está vermelho: parado no passe ou já veio tarde da cozinha
+    c.motivo_atraso = passeEstourou ? 'passe' : (pedidoEstourou ? 'producao' : null);
     for (const i of c.itens) {
       i.prod_min = (i.criado && i.pronto_em) ? Math.max(0, Math.round((new Date(i.pronto_em).getTime() - new Date(i.criado).getTime()) / 60000)) : null;
     }
@@ -5072,8 +5093,15 @@ function comandaHTML(c,modo,idx){
       '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span>'+btn+'</div>';
   }).join('');
   var badge=c.tipo==='delivery'?'<span class="badge">delivery</span>':'';
-  if(modo!=='entrega'&&c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
-  else if(modo!=='entrega'&&c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
+  if(modo==='entrega'){
+    // no passe o vermelho tem dois motivos: parou aqui, ou já veio tarde da
+    // cozinha — o runner precisa saber qual, senão cobra a praça errada
+    var mot=c.motivo_atraso==='producao'?'veio tarde da cozinha':'parado no passe';
+    if(c.critico) badge+='<span class="flag">⏰ '+mot+'</span>';
+    else if(c.atrasado) badge+='<span class="badge late">atrasado · '+mot+'</span>';
+  }
+  else if(c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
+  else if(c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
   if(c.reclamou) badge+='<span class="flag">⚠ reclamou · adiantar</span>';
   if(esperandoNesta(c.numero)) badge+='<span class="flagj">sai junto</span>';
   // entrega mostra OS DOIS tempos: idade do pedido (lançamento) e espera no passe
@@ -5095,7 +5123,7 @@ function comandaHTML(c,modo,idx){
     .map(function(i){return Number(i.item_codigo)}));
   if(modo==='entrega') foot='<div class="cfoot"><button class="b e" onclick="marca(\\'entregue\\',{item_codigos:'+cods+'})">✓ Entregar tudo</button></div>';
   else foot='<div class="cfoot"><button class="b p" onclick="marca(\\'pronto\\',{item_codigos:'+cods+'})">✓ Tudo pronto</button></div>';
-  return '<div class="c '+c.tipo+(modo!=='entrega'&&c.atrasado?' atrasado':'')+
+  return '<div class="c '+c.tipo+(c.atrasado?' atrasado':'')+
     (c.reclamou?' reclamou':'')+(esperandoNesta(c.numero)?' junto-alvo':'')+'">'+
     '<div class="chd"><div class="rot"><span class="pos">'+(idx+1)+'º</span>'+esc(c.rotulo)+badge+'</div>'+tchip+'</div>'+
     nome+'<div class="its">'+its+'</div>'+foot+'</div>';
