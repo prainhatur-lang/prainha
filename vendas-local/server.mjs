@@ -4713,11 +4713,26 @@ function agrupar(itens, ordem) {
     const chave = i.comanda_codigo + ':' + rod;
     if (!porC.has(chave)) porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
     const c = porC.get(chave);
+    // ⚠️ RESPOSTA DE PERGUNTA É OBSERVAÇÃO, NÃO ITEM. "Ao ponto", "com gelo",
+    // "1 copo" chegam como filho (tipo 2) e o KDS listava cada um como linha
+    // própria — sendo que o mesmo texto JÁ sai como observação do prato logo
+    // acima. Pior: "NENHUM" (o texto de 'sem observação') virava item.
+    // Some do KDS quando é vazio/NENHUM ou quando já está na observação do
+    // prato; complemento de verdade (o que a cozinha precisa fazer) continua.
+    if (Number(i.tipo) === 2) {
+      const nm = semAcento(i.nome || '').trim();
+      if (!nm || nm === 'nenhum' || nm === 'n/a') continue;
+      const pai = [...c.itens].reverse().find((x) => Number(x.tipo) !== 2);
+      if (pai && temMod(pai.detalhes) && semAcento(pai.detalhes).includes(nm)) continue;
+    }
     c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes), pareado: false, esperando_par: null });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
   }
-  const comandas = [...porC.values()].map((c) => ({ ...c, ...classificar(c.origem, c.numero) }));
+  // comanda que ficou SÓ com linha escondida (ex.: um "NENHUM" solto) não vira
+  // cartão vazio na tela
+  const comandas = [...porC.values()].filter((c) => c.itens.length)
+    .map((c) => ({ ...c, ...classificar(c.origem, c.numero) }));
   // FIFO: quem chegou (ou ficou pronto) primeiro aparece primeiro — ordem de produção, não de mesa.
   const chave = ordem === 'pronto' ? 'pronta_desde' : 'chegada';
   comandas.sort((a, b) => {
