@@ -398,6 +398,13 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cancelamento (id bigserial PRIMARY KEY,
     quando timestamptz DEFAULT now(), login text, gerente text, numero integer, pedido_fb integer,
     item_codigo bigint, nome text, valor numeric, status_item text, motivo text)`;
+  // PRAÇA do item cancelado: cerveja cancelada é aviso do BAR, não da cozinha
+  // da batata (mesma lógica da reclamação). Nulo = pedido inteiro: vai pra todas.
+  await addCol('cancelamento', 'area_codigo integer');
+  // "Ok, vi": o aviso sumia sozinho em 10 min e não tinha como fechar — quem
+  // já resolveu ficava olhando alarme velho (dono, 19/08).
+  await addCol('cancelamento', 'visto_em timestamptz');
+  await addCol('cancelamento', 'visto_por text');
   // NFC-e emitida pelo Concilia (log local — a verdade fiscal mora no central):
   // serve pro "já tem nota" na tela e pra reimpressão sem repetir a pergunta.
   await sql`CREATE TABLE IF NOT EXISTS nfce_log (
@@ -490,6 +497,23 @@ async function espelho() {
   const redir = await mapaRedirPracas();
   if (redir.size) for (const i of itens) {
     if (i.area_codigo != null && redir.has(i.area_codigo)) i.area_codigo = redir.get(i.area_codigo);
+  }
+  // praça POR ITEM (ganha do redirect: é conserto de cadastro torto) e itens
+  // que ninguém produz — o couvert entra já baixado, some do KDS e para de
+  // contar atraso na mesa, sem sumir da conta do cliente.
+  const porItem = await mapaItemPraca();
+  const fora = await itensForaKds();
+  if (porItem.length || fora.length) for (const i of itens) {
+    const nm = semAcento(i.nome || '');
+    if (porItem.length) {
+      const achou = porItem.find((x) => nm.includes(x.termo));
+      if (achou) i.area_codigo = achou.area;
+    }
+    if (fora.length && fora.some((t) => nm.includes(t))) {
+      const quando = i.criado || new Date();
+      if (!i.produzido) i.produzido = quando;
+      if (!i.entregue) i.entregue = quando;
+    }
   }
 
   // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
@@ -3820,10 +3844,12 @@ async function apiCaixaCancelarItem(body, quem) {
   const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, TOTALSERVICO=${fbNum(Math.max(0, novoServ))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
   if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
   const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + T(principal.NOME);
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)})`;
   const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
     WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
+  // praça do item que saiu: o aviso acende só na cozinha dona dele
+  const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -4392,6 +4418,29 @@ const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
 // na entrada: o item nasce já na cozinha que vai produzir.
 // Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
 const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
+// ---- ITENS QUE NINGUÉM PRODUZ ----
+// Couvert não é prato: ninguém prepara, ninguém entrega. Ficava no balde
+// "Sem praça" (o cadastro dele não tem cozinha), pedindo baixa e contando
+// atraso na mesa. Entra JÁ BAIXADO — some do KDS sem sumir da conta.
+const ITENS_FORA_KDS_PADRAO = 'couvert';
+// ---- ITEM COM PRAÇA PRÓPRIA ----
+// Conserta cadastro torto sem mexer no Consumer: "BATATA FRITA" (a duplicada
+// em maiúsculas) está sem cozinha e caía no balde órfão. Formato "nome>praça".
+const ITENS_PRACA_PADRAO = 'batata frita>coz petisco';
+async function itensForaKds() {
+  const txt = await cfgGet('itens_fora_kds', ITENS_FORA_KDS_PADRAO);
+  return String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean);
+}
+async function mapaItemPraca() {
+  const txt = await cfgGet('itens_praca', ITENS_PRACA_PADRAO);
+  const pares = String(txt).split(',')
+    .map((x) => x.split('>').map((y) => semAcento(y.trim())))
+    .filter((par) => par.length === 2 && par[0] && par[1]);
+  if (!pares.length) return [];
+  const porNome = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [semAcento(a.nome), Number(a.codigo)]));
+  return pares.map(([termo, praca]) => ({ termo, area: porNome.get(praca) ?? null }))
+    .filter((x) => x.area != null);
+}
 async function mapaRedirPracas() {
   const txt = await cfgGet('pracas_redirecionadas', PRACAS_REDIR_PADRAO);
   const pares = String(txt).split(',')
@@ -4529,12 +4578,15 @@ async function apiKds(areaCod) {
     }
   }
   // CANCELADO ANTES DE FICAR PRONTO: o item sumia do KDS sem aviso e a
-  // cozinha seguia fazendo. Sobe em banner grandão por 10 min (todas as
-  // praças veem — cancelamento é raro e alto é o objetivo).
-  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+  // cozinha seguia fazendo. Banner grandão por 10 min — mas só na PRAÇA do
+  // item (cerveja cancelada não é aviso da cozinha) e só até alguém dar "Ok,
+  // vi". Pedido inteiro (area nula) continua indo pra todas as praças.
+  const cancelados = await sql`SELECT id, numero, nome, status_item, motivo,
       round(extract(epoch from (now()-quando))/60)::int AS min_atras
     FROM cancelamento
     WHERE quando > now() - interval '10 minutes' AND status_item IN ('a_produzir','pedido')
+      AND visto_em IS NULL
+      AND (area_codigo IS NULL OR ${areaCod == null || !(areaCod > 0) ? sql`TRUE` : sql`area_codigo=${areaCod}`})
     ORDER BY quando DESC LIMIT 6`;
   return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r,
     esperando, reclamacoes: ch.reclamacoes, cancelados, online: ultimoStatus.ok };
@@ -4595,10 +4647,12 @@ async function apiEntrega(areaCod = null) {
   }
   // CANCELADO DEPOIS DE PRONTO (e antes de entregar): o prato estava no passe
   // esperando runner — o aviso evita levar comida cancelada pra mesa.
-  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+  const cancelados = await sql`SELECT id, numero, nome, status_item, motivo,
       round(extract(epoch from (now()-quando))/60)::int AS min_atras
     FROM cancelamento
     WHERE quando > now() - interval '10 minutes' AND status_item IN ('pronto','pedido')
+      AND visto_em IS NULL
+      AND (area_codigo IS NULL OR ${areaCod == null || !(areaCod > 0) ? sql`TRUE` : sql`area_codigo=${areaCod}`})
     ORDER BY quando DESC LIMIT 6`;
   return { ...r, cancelados, online: ultimoStatus.ok };
 }
@@ -5313,13 +5367,22 @@ function faixaReclamacao(d){
 // CANCELADO com item ainda na fila: banner GRANDE no topo. Sem isso o item
 // sumia do KDS no ciclo seguinte e a cozinha seguia fazendo (ou o runner
 // levava prato cancelado pra mesa).
+/* fecha o aviso de cancelado: quem já tirou o prato da fila não precisa
+   continuar olhando alarme vermelho até os 10 minutos passarem. */
+async function cancVisto(id){
+  try{await fetch('/api/cancelado/visto',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({id:id,por:(typeof AREA!=='undefined'&&AREA&&AREA.cod)?('praca '+AREA.cod):'kds'})})}catch(e){}
+  if(typeof VIEW==='function'&&VIEW)VIEW();
+}
 function faixaCancelado(d,acao){
   var cs=d.cancelados||[];if(!cs.length)return '';
   return cs.map(function(c){
     var onde=(Number(c.numero)>=${COMANDA_DE}?'COMANDA ':'MESA ')+c.numero;
     var oq=(c.status_item==='pedido')?'PEDIDO INTEIRO CANCELADO':('CANCELADO: '+esc(c.nome||'item'));
     return '<div class="alerta" style="background:#7f1d1d;border-color:#dc2626;color:#fff;font-size:26px;line-height:1.25">🚫 '+onde+' — '+oq+
-      '<span class="sub" style="color:#fecaca">'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — '+acao+'</span></div>';
+      '<span class="sub" style="color:#fecaca">'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — '+acao+'</span>'+
+      (c.id?'<button class="b" style="margin-top:8px;background:#fff;color:#7f1d1d;font-weight:800" onclick="cancVisto('+c.id+')">✓ Ok, vi</button>':'')+
+      '</div>';
   }).join('');
 }
 // A outra praça já entregou a parte dela: o que sair daqui está segurando o pedido.
@@ -10812,7 +10875,13 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
-    if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method === 'POST' && p === '/api/cancelado/visto') {
+      const b = await readBody(req);
+      await sql`UPDATE cancelamento SET visto_em=now(), visto_por=${String(b.por || 'kds').slice(0, 40)}
+        WHERE id=${Number(b.id)} AND visto_em IS NULL`;
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true }));
+    }
+  if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' });
       const aq = u.searchParams.get('area');
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
