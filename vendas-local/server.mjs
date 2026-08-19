@@ -3593,7 +3593,12 @@ async function apiGarcomEntrar(body) {
   try {
     pode = await garcomPodeEntrar(login);
     // quem tem PedidosCaixa (5) entra também — o caixa lança como na maquininha
-    if (!pode.ok) { const p = await permsDoUsuario(login); if (p.ok && p.pedidos) pode = { ok: true, nome: p.nome }; }
+    if (!pode.ok) {
+      const p = await permsDoUsuario(login);
+      // ⚠️ usuário NOSSO (usuario_local) não está no mapa do Consumer: vale a
+      // permissão que o perfil dele carrega — 53 (comanda) ou 5 (pedido no caixa).
+      if (p.ok && (p.pedidos || p.comanda)) pode = { ok: true, nome: p.nome };
+    }
   }
   catch (e) { return { ok: false, erro: e.message }; }
   if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile nem a Pedidos no Caixa. Fale com o gerente.' };
@@ -3638,6 +3643,7 @@ function perfilDeCodigos(login, nome, admin, codigos) {
     transferir: tem(PERM_TRANSFERIR),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
+    comanda: tem(53), // AcessarComandaMobile — é o que deixa entrar na venda
     excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
 }
 /** Usuário criado por nós (não existe no Consumer). */
