@@ -10431,8 +10431,11 @@ function transfCx(){
     // ⚠️ ANTES ERA TUDO OU NADA: só dava pra levar a mesa inteira. O caixa
     // precisa mover UM item (a cerveja que era da mesa ao lado, o prato
     // lançado no número errado). Marcou algum? vai só o marcado.
-    (TRITENS()?'<div class="mut" style="margin-top:10px">O que vai (nada marcado = a mesa inteira):</div>'+TRITENS():'')+
-    '<button class="big" onclick="doTransfCx(this)">Transferir</button>'+
+    (TRITENS()?'<div class="mut" style="margin-top:10px">Marque os itens, ou mande a mesa inteira:</div>'+TRITENS():'')+
+    // dois botões, sem adivinhação: o de cima leva o que está marcado, o de
+    // baixo leva tudo (era um texto miúdo dizendo "nada marcado = tudo")
+    (TRITENS()?'<button class="big" id="trbmarc" onclick="doTransfCx(this,0)" disabled>Transferir os marcados</button>':'')+
+    '<button class="big'+(TRITENS()?' o':'')+'" onclick="doTransfCx(this,1)">Transferir a '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' INTEIRA</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="document.getElementById(\\'trov\\').remove()">Voltar</button>'+
     '<div id="trerr" class="err"></div></div>';
   document.body.appendChild(ov);
@@ -10443,17 +10446,30 @@ function TRITENS(){
   if(!PODE.transf&&!PODE.cancPed)return '';
   var its=(CONTA&&CONTA.itens||[]).filter(function(i){return i.item_codigo});
   if(!its.length)return '';
-  return '<div style="max-height:190px;overflow:auto;margin-top:6px">'+its.map(function(i,ix){
-    return '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid #f0f0f4;font-size:14px">'+
-      '<input type="checkbox" class="tri" value="'+i.item_codigo+'" style="width:20px;height:20px">'+
-      '<span style="flex:1">'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></label>';
-  }).join('')+'</div>';
+  return '<div style="max-height:190px;overflow:auto;margin-top:6px">'+
+    '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13px;color:var(--mut)">'+
+      '<input type="checkbox" id="triall" onchange="triTodos(this)" style="width:20px;height:20px"><span>marcar todos</span></label>'+
+    its.map(function(i,ix){
+      return '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid #f0f0f4;font-size:14px">'+
+        '<input type="checkbox" class="tri" value="'+i.item_codigo+'" onchange="triConta()" style="width:20px;height:20px">'+
+        '<span style="flex:1">'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></label>';
+    }).join('')+'</div>';
 }
-async function doTransfCx(btn){
+function triTodos(el){
+  [].slice.call(document.querySelectorAll('.tri')).forEach(function(c){c.checked=el.checked});
+  triConta();
+}
+function triConta(){
+  var n=document.querySelectorAll('.tri:checked').length;
+  var b=document.getElementById('trbmarc');if(!b)return;
+  b.disabled=!n; b.textContent=n?('Transferir os '+n+' marcado'+(n>1?'s':'')):'Transferir os marcados';
+}
+async function doTransfCx(btn,tudo){
   var d=Number(((document.getElementById('trdest')||{}).value||'').replace(/\\D/g,''));
   var er=document.getElementById('trerr');
   if(!(d>0)){if(er)er.textContent='digite a mesa destino';return}
-  var marcados=[].slice.call(document.querySelectorAll('.tri:checked')).map(function(c){return Number(c.value)});
+  var marcados=tudo?[]:[].slice.call(document.querySelectorAll('.tri:checked')).map(function(c){return Number(c.value)});
+  if(!tudo&&!marcados.length){if(er)er.textContent='marque os itens (ou use "a mesa INTEIRA")';return}
   btn.disabled=true;
   var r=marcados.length
     ? await jpost('/api/caixa/transferir-itens',{de:MESA,para:d,itens:marcados})
