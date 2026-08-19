@@ -105,7 +105,7 @@ class MesasActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (abertas.isEmpty()) {
                         vazio.visibility = View.VISIBLE
-                        vazio.text = e.message ?: "Servidor da loja fora do ar"
+                        vazio.text = Api.msgErroRede(e, Session.servidor(this@MesasActivity))
                     }
                 }
             }

@@ -79,8 +79,13 @@ android {
         // 1.10.1: QR do DANFE/passe desenhado no app (zxing) e impresso como
         // IMAGEM — o printQrCode do SDK da Cielo não imprime em campo (cupom
         // saía com o aviso mas sem o QR; mesma lição já aprendida no CupomPro).
-        versionCode = 26
-        versionName = "1.10.2"
+        // 1.10.2: estoque na consulta de produto da maquininha (frente do caixa).
+        // 1.10.3: erro de rede CLARO. Servidor desligado mostrava o texto cru
+        // do Java ("Unable to resolve host", "failed to connect…"); agora diz
+        // "Não encontrei o servidor da loja — confira o endereço e se está
+        // ligado" no login, na grade de mesas e no cardápio (Api.msgErroRede).
+        versionCode = 27
+        versionName = "1.10.3"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

@@ -194,7 +194,9 @@ class LoginActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     setLoading(false)
-                    mostrarErro(e.message ?: "Servidor da loja fora do ar")
+                    // Servidor desligado/inalcançável = mensagem CLARA ("não
+                    // encontrei o servidor"), não o texto técnico do Java.
+                    mostrarErro(Api.msgErroRede(e, base))
                 }
             }
         }.start()

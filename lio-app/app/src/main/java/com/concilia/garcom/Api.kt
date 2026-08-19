@@ -6,9 +6,13 @@ import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 
 // Camada de rede do app da maquininha. Fala com o VENDAS-LOCAL da loja
 // (server.mjs, HTTP :8790 na LAN — cleartext liberado só pros IPs das lojas
@@ -22,6 +26,31 @@ object Api {
 
     /** 401 nas rotas do garçom = token venceu (16h) → volta pro login. */
     class SemSessao : IOException("Sessão expirada — entre de novo")
+
+    /** Traduz uma falha de rede pra mensagem clara em português. O app mostrava
+     *  o texto cru do Java ("Unable to resolve host", "failed to connect…") —
+     *  incompreensível pro garçom. O caso mais comum é o servidor DESLIGADO:
+     *  tem que dizer com todas as letras que não achou o servidor da loja.
+     *  `servidor` (a URL/IP escolhido) entra na mensagem quando informado. */
+    fun msgErroRede(e: Throwable, servidor: String? = null): String {
+        val onde = servidor?.trim()?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+        val m = (e.message ?: "").lowercase()
+        return when {
+            e is SemSessao -> "Sessão expirada — entre de novo."
+            e is UnknownHostException || m.contains("unable to resolve host") || m.contains("no address associated") ->
+                "Não encontrei o servidor da loja$onde. Confira o endereço e se o servidor está ligado."
+            e is ConnectException || m.contains("failed to connect") || m.contains("connection refused") || m.contains("econnrefused") ->
+                "O servidor da loja$onde não respondeu — pode estar desligado ou em outra rede. Ligue o servidor e tente de novo."
+            e is SocketTimeoutException || m.contains("timeout") || m.contains("timed out") ->
+                "O servidor da loja$onde demorou demais pra responder. Confira a conexão e se ele está ligado."
+            m.contains("cleartext") ->
+                "Endereço bloqueado: use https:// (http:// só vale na rede local da loja)."
+            e is SSLException ->
+                "Falha na conexão segura (HTTPS) com o servidor$onde."
+            else ->
+                "Não consegui falar com o servidor da loja$onde. Confira o endereço e a conexão."
+        }
+    }
 
     // -------- shapes --------
 

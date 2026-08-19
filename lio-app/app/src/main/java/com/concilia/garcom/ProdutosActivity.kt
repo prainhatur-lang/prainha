@@ -101,7 +101,7 @@ class ProdutosActivity : AppCompatActivity() {
                     abrirCategoria(cs.firstOrNull()?.nome)
                 }
             } catch (e: Exception) {
-                runOnUiThread { vazio.text = e.message ?: "Erro ao carregar o cardápio" }
+                runOnUiThread { vazio.text = Api.msgErroRede(e, Session.servidor(this@ProdutosActivity)) }
             }
         }.start()
     }
