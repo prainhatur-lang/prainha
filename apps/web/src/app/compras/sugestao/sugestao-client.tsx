@@ -12,10 +12,12 @@ export interface LinhaSugestao {
   atual: number;
   minimo: number | null;
   maximo: number | null;
-  consumo7d: number;
+  vendido7d: number;
+  ultEntradaQtd: number | null;
+  ultEntradaData: string | null;
+  ultEntradaFornecedor: string | null;
   sugestao: number;
-  base: 'minimo' | 'consumo';
-  precisaRepor: boolean;
+  deCompra: boolean;
 }
 
 export interface FornecedorOpt {
@@ -35,6 +37,11 @@ interface Props {
 
 function num(n: number): string {
   return n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}
+
+function dataBr(s: string): string {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1].slice(2)}` : s;
 }
 
 export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPorProduto }: Props) {
@@ -119,7 +126,7 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
         body: JSON.stringify({
           filialId,
           duracaoHoras: duracao,
-          observacao: 'Gerada a partir da sugestão de compra (estoque + consumo)',
+          observacao: 'Gerada a partir da sugestão de compra (venda 7d + estoque)',
           itens: selecionados.map((l) => ({
             produtoId: l.produtoId,
             quantidade: qtd[l.produtoId],
@@ -148,8 +155,8 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
           🎉 Nada pra repor agora. Tudo abastecido.
         </p>
         <p className="mt-1 text-xs text-slate-400">
-          A sugestão considera produtos com <b>categoria de compras</b> definida: repõe quando o
-          estoque chega no mínimo, ou (sem mínimo) quando há menos de 1 semana de consumo em estoque.
+          A sugestão parte da <b>venda real dos últimos 7 dias</b> (mais os itens controlados que
+          chegaram no mínimo) e propõe repor o que saiu, descontando o que ainda tem em casa.
         </p>
       </div>
     );
@@ -164,17 +171,18 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
               <th className="px-2 py-2 w-8"></th>
               <th className="px-3 py-2 text-left font-medium">Produto</th>
               <th className="px-3 py-2 text-left font-medium">Categoria</th>
+              <th className="px-3 py-2 text-right font-medium">Vendido 7d</th>
               <th className="px-3 py-2 text-right font-medium">Atual</th>
               <th className="px-3 py-2 text-right font-medium">Mín</th>
               <th className="px-3 py-2 text-right font-medium">Máx</th>
-              <th className="px-3 py-2 text-right font-medium">Consumo 7d</th>
+              <th className="px-3 py-2 text-right font-medium">Últ. entrada</th>
               <th className="px-3 py-2 text-right font-medium">Pedir</th>
             </tr>
           </thead>
           <tbody>
             {linhas.map((l) => {
               const semMax = l.maximo == null;
-              const risco = l.consumo7d > l.atual;
+              const risco = l.vendido7d > l.atual;
               return (
                 <tr key={l.produtoId} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="px-2 py-1.5 text-center">
@@ -188,17 +196,34 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
                     <div className="font-medium text-slate-900">{l.nome}</div>
                     <div className="text-[10px] text-slate-400">
                       por {l.unidade}
-                      {l.base === 'consumo' && <span className="ml-1 text-sky-600">base: consumo</span>}
-                      {risco && <span className="ml-1 text-rose-600">⚠ consumo &gt; estoque</span>}
+                      {!l.deCompra && <span className="ml-1 text-amber-600">sem cadastro de compra</span>}
+                      {risco && <span className="ml-1 text-rose-600">⚠ vendeu mais que o estoque</span>}
                     </div>
                   </td>
                   <td className="px-3 py-1.5 text-slate-600">{l.categoria ?? '—'}</td>
+                  <td className="px-3 py-1.5 text-right font-mono font-semibold text-slate-900">{num(l.vendido7d)}</td>
                   <td className="px-3 py-1.5 text-right font-mono text-slate-700">{num(l.atual)}</td>
                   <td className="px-3 py-1.5 text-right font-mono text-amber-700">{l.minimo != null ? num(l.minimo) : '—'}</td>
                   <td className={`px-3 py-1.5 text-right font-mono ${semMax ? 'text-slate-300' : 'text-slate-700'}`}>
                     {semMax ? '—' : num(l.maximo as number)}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-slate-700">{num(l.consumo7d)}</td>
+                  <td className="px-3 py-1.5 text-right">
+                    {l.ultEntradaData != null ? (
+                      <div>
+                        <span className="font-mono text-slate-700">
+                          {l.ultEntradaQtd != null ? num(l.ultEntradaQtd) : '—'}
+                        </span>
+                        <span className="ml-1 text-[10px] text-slate-400">{dataBr(l.ultEntradaData)}</span>
+                        {l.ultEntradaFornecedor && (
+                          <div className="truncate text-[10px] text-slate-400" title={l.ultEntradaFornecedor}>
+                            {l.ultEntradaFornecedor}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-slate-300">nunca</span>
+                    )}
+                  </td>
                   <td className="px-3 py-1.5 text-right">
                     <input
                       type="number"

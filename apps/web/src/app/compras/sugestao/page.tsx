@@ -43,10 +43,43 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     );
   }
 
-  // Produtos controlados, com mínimo definido e estoque atual <= mínimo.
+  // ————————————————————————————————————————————————————————————————
+  // A base da sugestão é a VENDA REAL (pedido_item), não o movimento de
+  // estoque. Motivo: em 7 dias a casa vende ~215 produtos e só ~24 dão baixa
+  // de estoque (o resto está com controla_estoque = false). Usar movimento
+  // deixava a tela com 5 linhas enquanto R$ 55 mil saíam pela porta.
+  // ————————————————————————————————————————————————————————————————
+  const vendas7d = await db
+    .select({
+      codigoProduto: schema.pedidoItem.codigoProdutoExterno,
+      nome: sql<string>`MAX(${schema.pedidoItem.nomeProduto})`,
+      vendido: sql<string>`COALESCE(SUM(${schema.pedidoItem.quantidade}), 0)`,
+    })
+    .from(schema.pedidoItem)
+    .innerJoin(schema.pedido, eq(schema.pedido.id, schema.pedidoItem.pedidoId))
+    .where(
+      and(
+        eq(schema.pedidoItem.filialId, filial.id),
+        isNull(schema.pedidoItem.dataDelete),
+        isNull(schema.pedido.dataDelete),
+        sql`${schema.pedido.dataFechamento} >= now() - interval '7 days'`,
+      ),
+    )
+    .groupBy(schema.pedidoItem.codigoProdutoExterno);
+
+  const vendidoPorCodigo = new Map<number, { nome: string; qtd: number }>();
+  for (const v of vendas7d) {
+    if (v.codigoProduto == null) continue;
+    vendidoPorCodigo.set(v.codigoProduto, { nome: v.nome, qtd: Number(v.vendido) });
+  }
+
+  // Candidatos = o que vendeu nos últimos 7 dias  +  o que está no/abaixo do
+  // mínimo (pega insumo de cozinha que sai por produção, não por venda direta).
+  const codigosVendidos = Array.from(vendidoPorCodigo.keys());
   const candidatos = await db
     .select({
       id: schema.produto.id,
+      codigoExterno: schema.produto.codigoExterno,
       nome: schema.produto.nome,
       unidade: schema.produto.unidadeEstoque,
       categoria: schema.produto.categoriaCompras,
@@ -58,37 +91,100 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     .where(
       and(
         eq(schema.produto.filialId, filial.id),
-        eq(schema.produto.controlaEstoque, true),
-        sql`${schema.produto.estoqueAtual} IS NOT NULL`,
         sql`COALESCE(${schema.produto.descontinuado}, false) = false`,
-        // Só produtos que a gente COMPRA (têm categoria de compras). Insumos
-        // derivados de produção (ex.: cortes do filé) não têm categoria de
-        // compras → não entram na sugestão. O consumo do filé cru já é captado
-        // pela saída de produção.
-        sql`${schema.produto.categoriaCompras} IS NOT NULL`,
+        codigosVendidos.length > 0
+          ? sql`(
+              ${inArray(schema.produto.codigoExterno, codigosVendidos)}
+              OR (
+                ${schema.produto.controlaEstoque} = true
+                AND ${schema.produto.categoriaCompras} IS NOT NULL
+                AND ${schema.produto.estoqueMinimo} IS NOT NULL
+                AND ${schema.produto.estoqueAtual} <= ${schema.produto.estoqueMinimo}
+              )
+            )`
+          : and(
+              eq(schema.produto.controlaEstoque, true),
+              sql`${schema.produto.categoriaCompras} IS NOT NULL`,
+              sql`${schema.produto.estoqueMinimo} IS NOT NULL`,
+              sql`${schema.produto.estoqueAtual} <= ${schema.produto.estoqueMinimo}`,
+            ),
       ),
     );
 
-  // Consumo dos últimos 7 dias (saídas) por produto.
   const ids = candidatos.map((c) => c.id);
-  const consumoPorProduto = new Map<string, number>();
+
+  // Última entrada de cada produto: primeiro a nota fiscal casada, senão o
+  // movimento de ENTRADA_COMPRA. Fica vazio quando o produto nunca teve
+  // entrada registrada — e isso, por si só, já é o diagnóstico.
+  interface UltEntrada {
+    quantidade: number;
+    data: string;
+    fornecedor: string | null;
+    origem: 'nota' | 'movimento';
+  }
+  const ultimaEntrada = new Map<string, UltEntrada>();
   if (ids.length > 0) {
-    const consumoRows = await db
-      .select({
-        produtoId: schema.movimentoEstoque.produtoId,
-        consumo: sql<string>`COALESCE(SUM(-${schema.movimentoEstoque.quantidade}), 0)`,
-      })
-      .from(schema.movimentoEstoque)
+    const entradasNota = await db.execute(sql`
+      SELECT DISTINCT ON (nci.produto_id)
+        nci.produto_id                                   AS produto_id,
+        nci.quantidade                                   AS quantidade,
+        COALESCE(nc.data_entrada, nc.data_emissao)::date::text AS data,
+        nc.emit_nome                                     AS fornecedor
+      FROM nota_compra_item nci
+      JOIN nota_compra nc ON nc.id = nci.nota_compra_id
+      WHERE nci.filial_id = ${filial.id}
+        AND nci.produto_id IN ${sql.raw(`(${ids.map((i) => `'${i}'`).join(',')})`)}
+      ORDER BY nci.produto_id, COALESCE(nc.data_entrada, nc.data_emissao) DESC
+    `);
+    for (const r of entradasNota as unknown as Array<Record<string, unknown>>) {
+      ultimaEntrada.set(String(r.produto_id), {
+        quantidade: Number(r.quantidade ?? 0),
+        data: String(r.data),
+        fornecedor: r.fornecedor ? String(r.fornecedor) : null,
+        origem: 'nota',
+      });
+    }
+
+    const entradasMov = await db.execute(sql`
+      SELECT DISTINCT ON (m.produto_id)
+        m.produto_id      AS produto_id,
+        m.quantidade      AS quantidade,
+        m.data_hora::date::text AS data
+      FROM movimento_estoque m
+      WHERE m.filial_id = ${filial.id}
+        AND m.tipo = 'ENTRADA_COMPRA'
+        AND m.produto_id IN ${sql.raw(`(${ids.map((i) => `'${i}'`).join(',')})`)}
+      ORDER BY m.produto_id, m.data_hora DESC
+    `);
+    for (const r of entradasMov as unknown as Array<Record<string, unknown>>) {
+      const pid = String(r.produto_id);
+      const jaTem = ultimaEntrada.get(pid);
+      const data = String(r.data);
+      // A nota manda, salvo se o movimento for mais recente que ela.
+      if (!jaTem || data > jaTem.data) {
+        ultimaEntrada.set(pid, {
+          quantidade: Number(r.quantidade ?? 0),
+          data,
+          fornecedor: jaTem?.fornecedor ?? null,
+          origem: 'movimento',
+        });
+      }
+    }
+  }
+
+  // Quem já tem vínculo com fornecedor — sinal de "isso aqui eu compro".
+  const temFornecedor = new Set<string>();
+  if (ids.length > 0) {
+    const vincProd = await db
+      .selectDistinct({ produtoId: schema.produtoFornecedor.produtoId })
+      .from(schema.produtoFornecedor)
       .where(
         and(
-          eq(schema.movimentoEstoque.filialId, filial.id),
-          inArray(schema.movimentoEstoque.produtoId, ids),
-          inArray(schema.movimentoEstoque.tipo, CONSUMO_TIPOS),
-          sql`${schema.movimentoEstoque.dataHora} >= now() - interval '7 days'`,
+          eq(schema.produtoFornecedor.filialId, filial.id),
+          inArray(schema.produtoFornecedor.produtoId, ids),
         ),
-      )
-      .groupBy(schema.movimentoEstoque.produtoId);
-    for (const r of consumoRows) consumoPorProduto.set(r.produtoId, Number(r.consumo));
+      );
+    for (const v of vincProd) temFornecedor.add(v.produtoId);
   }
 
   const linhas: LinhaSugestao[] = candidatos
@@ -96,37 +192,37 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       const atual = Number(c.atual ?? 0);
       const minimo = c.minimo != null ? Number(c.minimo) : null;
       const maximo = c.maximo != null ? Number(c.maximo) : null;
-      const consumo7d = consumoPorProduto.get(c.id) ?? 0;
+      const venda = c.codigoExterno != null ? vendidoPorCodigo.get(c.codigoExterno) : undefined;
+      const vendido7d = venda?.qtd ?? 0;
+      const ent = ultimaEntrada.get(c.id) ?? null;
 
-      // Precisa repor?
-      //  - COM mínimo: quando o estoque atual <= mínimo.
-      //  - SEM mínimo: usa o consumo da semana como base — repõe quando tem
-      //    menos de ~1 semana de cobertura (atual < consumo da semana).
-      const base: 'minimo' | 'consumo' = minimo != null ? 'minimo' : 'consumo';
-      const precisaRepor =
-        minimo != null ? atual <= minimo : consumo7d > 0 && atual < consumo7d;
-
-      // Alvo de reposição: máximo se definido; senão o maior entre o mínimo
-      // e o consumo de 1 semana (garante cobrir a demanda da próxima semana).
-      const alvo = maximo != null ? maximo : Math.max(minimo ?? 0, consumo7d);
+      // Repor o que saiu na semana, descontando o que ainda tem em casa.
+      // Quando há máximo/mínimo definidos, eles mandam (é a regra da casa).
+      const alvo = maximo != null ? maximo : Math.max(minimo ?? 0, vendido7d);
       const sugestao = Math.max(0, Math.ceil(alvo - atual));
+
+      // "Eu compro isso": tem categoria de compras, fornecedor vinculado ou
+      // já entrou por nota. Sem nenhum sinal é provável que seja prato/serviço.
+      const deCompra = c.categoria != null || temFornecedor.has(c.id) || ent?.origem === 'nota';
 
       return {
         produtoId: c.id,
-        nome: c.nome ?? '(sem nome)',
+        nome: c.nome ?? venda?.nome ?? '(sem nome)',
         unidade: c.unidade,
         categoria: c.categoria,
         atual,
         minimo,
         maximo,
-        consumo7d,
+        vendido7d,
+        ultEntradaQtd: ent?.quantidade ?? null,
+        ultEntradaData: ent?.data ?? null,
+        ultEntradaFornecedor: ent?.fornecedor ?? null,
         sugestao,
-        base,
-        precisaRepor,
+        deCompra,
       };
     })
-    .filter((l) => l.precisaRepor && l.sugestao > 0)
-    .sort((a, b) => (a.categoria ?? '').localeCompare(b.categoria ?? '', 'pt-BR') || a.nome.localeCompare(b.nome, 'pt-BR'));
+    .filter((l) => l.sugestao > 0 || l.vendido7d > 0)
+    .sort((a, b) => b.vendido7d - a.vendido7d || a.nome.localeCompare(b.nome, 'pt-BR'));
 
   // Fornecedores ativos pra compras (pra montar a cotação). Mesmo filtro da
   // /cotacao/nova: fora os deletados e o lixo "*Excluído*" que vem do Consumer.
@@ -215,7 +311,7 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
         <div className="mb-4">
           <h1 className="text-xl font-semibold text-slate-900">Sugestão de compra</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            {filial.nome} · {linhas.length} produto(s) pra repor · base: estoque mínimo ou consumo dos últimos 7 dias
+            {filial.nome} · {linhas.length} produto(s) · base: venda real dos últimos 7 dias + estoque mínimo
           </p>
         </div>
 
