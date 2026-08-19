@@ -10439,6 +10439,13 @@ const server = http.createServer(async (req, res) => {
         u.searchParams.get('modo') || 'producao',
       )));
     }
+    // Rota compatível com QR codes impressos: /Cardapio/Login/Mesa/129 → cardápio da mesa 129
+    const cardapioMatch = p.match(/^\/Cardapio\/Login\/Mesa\/(\d+)$/i);
+    if (cardapioMatch) {
+      const mesa = cardapioMatch[1];
+      res.writeHead(302, { 'location': `/mesa?n=${mesa}` });
+      return res.end();
+    }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
     if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
