@@ -7302,7 +7302,11 @@ async function apiContaTexto(numero) {
   // nome: a identificacao nova ganha da tabela antiga de vinculo
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${n} AND fechada_em IS NULL`)[0];
   const quem = ident || (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
-  const total = itens.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+  // ⚠️ Somar TODOS os itens (menos a linha de Serviço, tipo 8) — inclui
+  // COMPLEMENTO COM PREÇO (ex.: Vinagrete R$1). Antes excluía todo tipo 2 e
+  // derrubava complemento pago → o app cobrava a menos e a mesa não fechava
+  // (mesa 16 da Mayara: itens 112, mas cobrou 111×1,10). = VALORTOTALITENS do FB.
+  const total = itens.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0);
   const pago = Number(c.subtotal_pago || 0);
 
   // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
@@ -7322,7 +7326,7 @@ async function apiContaTexto(numero) {
       // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
       const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
         WHERE comanda_codigo=${cc.codigo} ORDER BY criado NULLS LAST, id`;
-      const sub = its.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+      const sub = its.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0); // inclui complemento com preço (ver total da mesa acima)
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
       // rastro da transferência: de onde essa comanda veio, quando e por quem
       const tr = (await sql`SELECT de_numero, para_numero, criado_em, por, itens_movidos

@@ -60,6 +60,9 @@ const INTERVALO_MS = 15000;
 const ESPELHO_DIAS = Number(process.env.ESPELHO_DIAS ?? 7);
 const DESDE = ESPELHO_DIAS > 0 ? `CURRENT_DATE - ${ESPELHO_DIAS}` : 'CURRENT_DATE';
 const LIMITE_ATRASO_MIN = 15; // fallback: praça sem tempo configurado em praca_config
+// Prato PRONTO não pode envelhecer no passe: 3 min é o limite da casa (dono,
+// 19/08). Muda em cfg 'entrega_min' sem precisar de deploy.
+const LIMITE_ENTREGA_MIN = 3;
 // Uma comanda do Consumer é a MESA INTEIRA da noite — dois lançamentos
 // separados caem no mesmo PEDIDOS.CODIGO. Pra cozinha isso é errado: o que
 // já foi mandado não pode crescer depois. Itens com intervalo maior que isso
@@ -260,6 +263,10 @@ async function initSchema() {
     mesa integer, tipo text NOT NULL, origem text, nota integer, texto text,
     criado_em timestamptz DEFAULT now(), atendido_em timestamptz, atendido_por text)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_chamado_aberto ON chamado(atendido_em, criado_em)`;
+  // PRAÇAS QUE A RECLAMAÇÃO TOCA. Reclamou da água de coco? o aviso é do BAR —
+  // não faz sentido piscar na cozinha da batata frita (dono, 19/08). Vazio =
+  // reclamação sem item (salão, conta): continua indo pra todo mundo.
+  await addCol('chamado', 'areas integer[]');
   // QUANDO A CONTA DE UMA MESA ACABOU. Serve pra matar a sessao do celular do
   // cliente ANTERIOR: sem isto, quem estava na mesa 1 continuava com a tela
   // colada nela depois do fechamento, e podia lancar na conta do proximo.
@@ -320,6 +327,17 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
+  // FECHAMENTO DE CAIXA: o que o operador DECLAROU × o que o sistema tinha,
+  // forma a forma. O Consumer só guarda o dinheiro (SALDOFINALINFORMADO); a
+  // conferência de cartão/Pix é nossa e é o que permite cobrar diferença.
+  // TIRAR OS 10%: é dinheiro do garçom saindo — quem tirou e de qual mesa
+  // fica registrado, senão vira boca a boca no fim do mês.
+  await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), login text, numero integer, pedido_fb integer,
+    acao text, valor numeric, motivo text)`;
+  await sql`CREATE TABLE IF NOT EXISTS caixa_fechamento (id bigserial PRIMARY KEY,
+    caixa_codigo integer, quando timestamptz DEFAULT now(), login text,
+    informado jsonb, esperado jsonb, dif_dinheiro numeric, obs text)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
   // QUEM BAIXOU: foto de quem tocou "Pronto"/"Entregue", com o que foi baixado.
   // Sem login no KDS, a foto é a única referência de quem apertou — é o que
@@ -385,6 +403,13 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cancelamento (id bigserial PRIMARY KEY,
     quando timestamptz DEFAULT now(), login text, gerente text, numero integer, pedido_fb integer,
     item_codigo bigint, nome text, valor numeric, status_item text, motivo text)`;
+  // PRAÇA do item cancelado: cerveja cancelada é aviso do BAR, não da cozinha
+  // da batata (mesma lógica da reclamação). Nulo = pedido inteiro: vai pra todas.
+  await addCol('cancelamento', 'area_codigo integer');
+  // "Ok, vi": o aviso sumia sozinho em 10 min e não tinha como fechar — quem
+  // já resolveu ficava olhando alarme velho (dono, 19/08).
+  await addCol('cancelamento', 'visto_em timestamptz');
+  await addCol('cancelamento', 'visto_por text');
   // NFC-e emitida pelo Concilia (log local — a verdade fiscal mora no central):
   // serve pro "já tem nota" na tela e pra reimpressão sem repetir a pergunta.
   await sql`CREATE TABLE IF NOT EXISTS nfce_log (
@@ -478,6 +503,23 @@ async function espelho() {
   if (redir.size) for (const i of itens) {
     if (i.area_codigo != null && redir.has(i.area_codigo)) i.area_codigo = redir.get(i.area_codigo);
   }
+  // praça POR ITEM (ganha do redirect: é conserto de cadastro torto) e itens
+  // que ninguém produz — o couvert entra já baixado, some do KDS e para de
+  // contar atraso na mesa, sem sumir da conta do cliente.
+  const porItem = await mapaItemPraca();
+  const fora = await itensForaKds();
+  if (porItem.length || fora.length) for (const i of itens) {
+    const nm = semAcento(i.nome || '');
+    if (porItem.length) {
+      const achou = porItem.find((x) => nm.includes(x.termo));
+      if (achou) i.area_codigo = achou.area;
+    }
+    if (fora.length && fora.some((t) => nm.includes(t))) {
+      const quando = i.criado || new Date();
+      if (!i.produzido) i.produzido = quando;
+      if (!i.entregue) i.entregue = quando;
+    }
+  }
 
   // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
   // veio: numero cuja conta SUMIU (ou virou outra conta) teve a conta
@@ -496,6 +538,17 @@ async function espelho() {
       await sql`INSERT INTO mesa_estado (numero, conta_codigo, fechada_em) VALUES (${n}, NULL, now())
         ON CONFLICT (numero) DO UPDATE SET conta_codigo=NULL, fechada_em=now()`;
     }
+    // RECLAMAÇÃO DE MESA FECHADA É LIXO. O cliente foi embora; o aviso vermelho
+    // seguia no KDS até alguém tocar "atender" — e no KDS não havia botão
+    // nenhum. Ficaram 3 abertas, uma de 4 DIAS (19/08).
+    if (encerrados.length) {
+      await sql`UPDATE chamado SET atendido_em=now(), atendido_por='conta fechou'
+        WHERE atendido_em IS NULL AND mesa = ANY(${encerrados})`;
+    }
+    // backstop: chamado que passou do turno some sozinho — alarme de ontem
+    // ensina a equipe a ignorar alarme.
+    await sql`UPDATE chamado SET atendido_em=now(), atendido_por='expirou'
+      WHERE atendido_em IS NULL AND criado_em < now() - interval '6 hours'`;
     await sql`TRUNCATE comanda, comanda_item`;
     if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
@@ -2132,6 +2185,7 @@ async function jaPedidoDe(contaCodigo) {
       : '';
     const criado = x.criado ? new Date(x.criado).getTime() : null;
     const it = {
+      item_codigo: x.item_codigo != null ? Number(x.item_codigo) : null,
       nome: x.nome, quantidade: Number(x.quantidade) || 1,
       observacao: det || null,
       complementos: [],
@@ -2223,6 +2277,17 @@ async function apiTransferir(body) {
   const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
   if (!mv.ok) return { ok: false, erro: 'não consegui mover os itens: ' + mv.err };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* total recalcula no próximo ciclo */ }
+  // ⚠️ A CASCA DA ORIGEM. Levou TODOS os itens embora e o pedido da mesa de
+  // origem ficava aberto com zero item — a mesa seguia "ocupada" na tela pra
+  // sempre (mesa 129, 19/08). Sem item e sem pagamento não há o que guardar:
+  // some, do mesmo jeito que o Consumer faz com pedido aberto por engano.
+  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
+  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
+    const rm = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
+    if (!rm.ok) console.error('[transferir] casca da mesa ' + de + ' ficou aberta: ' + rm.err);
+    await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
+  }
 
   // as comandas que estavam nessa mesa vão junto
   await sql`UPDATE mesa_comanda SET mesa=${para} WHERE mesa=${de} AND fechada_em IS NULL`;
@@ -3534,6 +3599,7 @@ const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16, PERM_PEDIDO_CAIXA = 
 // controle de caixa: 1 = operação completa, 30 = simplificada (abrir/fechar),
 // 48 = pode fechar com saldo divergente do esperado, 26 = entradas/saídas da gaveta
 const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48, PERM_MOVIMENTO = 26;
+const PERM_TRANSFERIR = 50; // Consumer: "Permitir transferir/copiar itens de um pedido para o outro"
 // 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
 // todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
 const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
@@ -3552,6 +3618,7 @@ async function permsDoUsuario(login) {
     caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
     abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
     movimentar: tem(PERM_ABRIR_COMPLETO) || tem(PERM_MOVIMENTO),
+    transferir: tem(PERM_TRANSFERIR),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
     excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
@@ -3566,7 +3633,7 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar,
+    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
     pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
@@ -3585,10 +3652,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -3806,10 +3873,12 @@ async function apiCaixaCancelarItem(body, quem) {
   const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, TOTALSERVICO=${fbNum(Math.max(0, novoServ))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
   if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
   const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + T(principal.NOME);
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)})`;
   const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
     WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
+  // praça do item que saiu: o aviso acende só na cozinha dona dele
+  const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -3943,6 +4012,21 @@ async function fbResumoCaixa(caixaCodigo) {
   const mov = await qi(`SELECT COALESCE(SUM(COALESCE(VALORENTRADA,0)),0) E, COALESCE(SUM(COALESCE(VALORSAIDA,0)),0) S FROM CAIXAOPERACAO WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL`);
   return { dinheiro: Number(din.rows?.[0]?.V) || 0, entradas: Number(mov.rows?.[0]?.E) || 0, saidas: Number(mov.rows?.[0]?.S) || 0 };
 }
+/** O que o SISTEMA registrou neste caixa, agrupado como o operador confere:
+ *  dinheiro (gaveta), crédito e débito (vias da maquininha), Pix (extrato). */
+async function fbResumoPorForma(caixaCodigo) {
+  const r = await qi(`SELECT CODIGOFORMAPAGAMENTO F, COALESCE(SUM(VALOR),0) V, COUNT(*) N
+    FROM PAGAMENTOS WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL GROUP BY CODIGOFORMAPAGAMENTO`);
+  const por = new Map((r.rows || []).map((x) => [Number(x.F), { valor: Number(x.V) || 0, n: Number(x.N) || 0 }]));
+  const som = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.valor || 0), 0);
+  const cnt = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.n || 0), 0);
+  return {
+    dinheiro: { valor: +som(FORMA.DINHEIRO).toFixed(2), n: cnt(FORMA.DINHEIRO) },
+    credito: { valor: +som(FORMA.CREDITO).toFixed(2), n: cnt(FORMA.CREDITO) },
+    debito: { valor: +som(FORMA.DEBITO).toFixed(2), n: cnt(FORMA.DEBITO) },
+    pix: { valor: +som(FORMA.PIX_MANUAL, FORMA.PIX_ONLINE).toFixed(2), n: cnt(FORMA.PIX_MANUAL, FORMA.PIX_ONLINE) },
+  };
+}
 async function apiCaixaEstado(quem) {
   const cx = await fbCaixaDoOperador(quem.login);
   if (!cx) return { ok: true, aberto: null };
@@ -3961,15 +4045,76 @@ async function apiCaixaAbrir(body, quem) {
   const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`);
   return { ok: true, codigo: cod, fundo };
 }
+/** Conferência do fechamento: recebe o que o operador CONTOU e devolve o
+ *  comparativo. É o passo que dá controle — antes o caixa informava um número
+ *  só, com o esperado já na tela (dava pra "bater" digitando o esperado).
+ *  Aqui a declaração vem ANTES de ver o sistema, e forma a forma. */
+function _decl(body) {
+  const n = (v) => (v == null || v === '' ? null : +Number(v).toFixed(2));
+  return { dinheiro: n(body.dinheiro), credito: n(body.credito), debito: n(body.debito), pix: n(body.pix) };
+}
+function _comparar(dec, sis, fundo, entradas, saidas) {
+  const espDin = +(fundo + sis.dinheiro.valor + entradas - saidas).toFixed(2);
+  const linha = (rot, informado, esperado, obs) => ({ rotulo: rot, informado, esperado,
+    dif: informado == null ? null : +(informado - esperado).toFixed(2), obs: obs || null });
+  return [
+    linha('Dinheiro na gaveta', dec.dinheiro, espDin, 'fundo ' + impMoeda(fundo) + (saidas ? ' · saídas ' + impMoeda(saidas) : '')),
+    linha('Cartão crédito', dec.credito, sis.credito.valor, sis.credito.n + ' venda(s)'),
+    linha('Cartão débito', dec.debito, sis.debito.valor, sis.debito.n + ' venda(s)'),
+    linha('Pix', dec.pix, sis.pix.valor, sis.pix.n + ' venda(s)'),
+  ];
+}
+async function apiCaixaConferir(body, quem) {
+  const cx = await fbCaixaDoOperador(quem.login);
+  if (!cx) return { ok: false, erro: 'você não tem caixa aberto' };
+  const dec = _decl(body);
+  if (dec.dinheiro == null) return { ok: false, erro: 'conte a gaveta e informe o dinheiro' };
+  const r = await fbResumoCaixa(cx.codigo);
+  const sis = await fbResumoPorForma(cx.codigo);
+  const linhas = _comparar(dec, sis, cx.fundo, r.entradas, r.saidas);
+  const difDin = linhas[0].dif || 0;
+  const eletronico = linhas.slice(1).filter((l) => l.informado != null && Math.abs(l.dif) > 0.01);
+  return { ok: true, linhas, dif_dinheiro: difDin,
+    precisa_permissao: Math.abs(difDin) > 0.01 && !quem.divergente,
+    eletronico_divergente: eletronico.map((l) => l.rotulo),
+    total_sistema: +(linhas.reduce((t, l) => t + l.esperado, 0)).toFixed(2) };
+}
+/** Comprovante do fechamento na térmica — papel é o que sobra pra conferência
+ *  no dia seguinte, quando ninguém lembra dos números. */
+async function imprimirFechamento(cx, quem, linhas, difDin) {
+  try {
+    const ip = (await cfgGet('impressora_ip', '')).trim();
+    if (!ip) return;
+    const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn('FECHAMENTO DE CAIXA'), IMP.norm, IMP.negFim,
+      impLn(LOJA_NOME.toUpperCase()), IMP.esquerda, impTraco(),
+      impLn(impLR('Caixa ' + cx.codigo, quem.nome || quem.login)),
+      impLn(new Date().toLocaleString('pt-BR')), impTraco()];
+    for (const l of linhas) {
+      b.push(IMP.neg, impLn(l.rotulo), IMP.negFim);
+      b.push(impLn(impLR('  sistema', impMoeda(l.esperado))));
+      b.push(impLn(impLR('  contado', l.informado == null ? '-' : impMoeda(l.informado))));
+      if (l.dif != null && Math.abs(l.dif) > 0.01) b.push(IMP.neg, impLn(impLR('  DIFERENCA', impMoeda(l.dif))), IMP.negFim);
+    }
+    b.push(impTraco(), IMP.neg, IMP.alto,
+      impLn(impLR('DIF. DINHEIRO', impMoeda(difDin))), IMP.norm, IMP.negFim,
+      impLn(''), impLn('Assinatura: ____________________'), IMP.corte);
+    await imprimirRaw(ip, Buffer.concat(b), 'fechamento caixa ' + cx.codigo);
+  } catch (e) { console.error('[caixa] comprovante do fechamento:', e.message); }
+}
 async function apiCaixaFecharCaixa(body, quem) {
   const cx = await fbCaixaDoOperador(quem.login);
   if (!cx) return { ok: false, erro: 'você não tem caixa aberto' };
   const r = await fbResumoCaixa(cx.codigo);
+  const sis = await fbResumoPorForma(cx.codigo);
   const esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
-  if (body.contado == null || body.contado === '') return { ok: false, erro: 'conte a gaveta e informe o total' };
-  const contado = +Number(body.contado).toFixed(2);
+  // compatível com quem só manda o dinheiro (contado), mas o caminho normal
+  // agora é a conferência por forma vinda da tela
+  const dec = _decl(body.contado != null ? { ...body, dinheiro: body.contado } : body);
+  if (dec.dinheiro == null) return { ok: false, erro: 'conte a gaveta e informe o dinheiro' };
+  const contado = dec.dinheiro;
   if (!(contado >= 0)) return { ok: false, erro: 'valor contado inválido' };
   const dif = +(contado - esperado).toFixed(2);
+  const linhas = _comparar(dec, sis, cx.fundo, r.entradas, r.saidas);
   // bateu = fecha; divergiu = só quem tem a permissão 48 (ou operação
   // completa/admin) confirma — é a mesma regra do Consumer
   if (Math.abs(dif) > 0.01 && !quem.divergente)
@@ -3977,7 +4122,86 @@ async function apiCaixaFecharCaixa(body, quem) {
       erro: `o contado difere do esperado em R$ ${dif.toFixed(2)} — chame quem pode fechar divergente` };
   const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(contado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
   if (!up.ok) return { ok: false, erro: 'FB fechar caixa: ' + up.err };
-  return { ok: true, esperado, contado, dif };
+  // registro durável da conferência (o Consumer só guarda o dinheiro)
+  await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+    VALUES (${cx.codigo}, ${quem.login}, ${sql.json(dec)},
+      ${sql.json({ dinheiro: esperado, credito: sis.credito.valor, debito: sis.debito.valor, pix: sis.pix.valor })},
+      ${dif}, ${String(body.obs || '').slice(0, 300) || null})`;
+  imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
+  return { ok: true, esperado, contado, dif, linhas };
+}
+/** TRANSFERIR ITENS ESCOLHIDOS pra outra mesa. O "Transferir" que já existia
+ *  leva a mesa INTEIRA; aqui o caixa marca o que vai (a cerveja que era da
+ *  mesa ao lado, o prato lançado no número errado). Move os complementos
+ *  junto — molho não fica órfão na mesa antiga — e se a origem ficar vazia,
+ *  a casca é encerrada (senão a mesa fica "ocupada" pra sempre). */
+async function apiCaixaTransferirItens(body, quem) {
+  if (!(quem && (quem.transferir || quem.admin))) return { ok: false, erro: 'sem permissão (Transferir itens de um pedido para o outro)' };
+  const de = Number(body.de), para = Number(body.para);
+  const cods = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean) : [];
+  if (!(de >= 1 && para >= 1)) return { ok: false, erro: 'número inválido' };
+  if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
+  if (!cods.length) return { ok: false, erro: 'marque o que vai' };
+  let pedDe, pedPara;
+  try {
+    pedDe = await fbAcharPedido(de);
+    if (!pedDe) return { ok: false, erro: `não há conta aberta na ${de >= COMANDA_DE ? 'comanda' : 'mesa'} ${de}` };
+    pedPara = await fbAcharPedido(para);
+    if (!pedPara) pedPara = await fbCriarPedido(para);
+  } catch (e) { return { ok: false, erro: e.message }; }
+  // o item só sai se for MESMO da conta de origem (o número pode ter mudado
+  // entre a tela e o toque) e leva os filhos dele
+  const lista = await qi(`SELECT CODIGO FROM ITENSPEDIDO
+    WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL
+      AND (CODIGO IN (${cods.join(',')}) OR CODIGOPAI IN (${cods.join(',')}))`);
+  if (!lista.ok) return { ok: false, erro: 'FB itens: ' + lista.err };
+  const mover = (lista.rows || []).map((x) => Number(x.CODIGO));
+  if (!mover.length) return { ok: false, erro: 'esses itens não estão mais nessa conta' };
+  const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGO IN (${mover.join(',')})`);
+  if (!mv.ok) return { ok: false, erro: 'não consegui mover: ' + mv.err };
+  try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* recalcula no ciclo */ }
+  // origem esvaziou? mesma regra da transferência de mesa inteira
+  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
+  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
+    await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
+    await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
+  }
+  await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
+    VALUES (${de}, ${para}, 'item', ${mover.length}, ${quem.login}, ${pedDe}, ${pedPara})`;
+  espelho().catch(() => {});
+  return { ok: true, itens: mover.length, msg: `${cods.length} item(ns) foram pra mesa ${para}.` };
+}
+/** TIRAR OS 10% quando o cliente não quer pagar (e devolver, se foi engano).
+ *  É a mesma permissão do desconto no Consumer (12 = "Aplicar Descontos /
+ *  Modificar Taxas"), porque é exatamente isso: mexer na taxa. Zera o campo
+ *  TOTALSERVICO em vez de virar desconto — assim relatório e comissão do
+ *  garçom mostram a verdade (serviço não cobrado), não uma venda com desconto. */
+async function apiCaixaServico(body, quem) {
+  if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
+  const n = Number(body.numero);
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTALITENS ITENS, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const svcAtual = Number(p.SVC) || 0;
+  const tirar = body.tirar !== false;
+  if (tirar) {
+    if (!(svcAtual > 0.009)) return { ok: false, erro: 'essa conta já está sem os 10%' };
+    const pago = await fbPagoDoPedido(ped);
+    const novoTot = +((Number(p.TOT) || 0) - svcAtual).toFixed(2);
+    if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago` };
+    await fbRemoverServico(ped);
+    await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
+      VALUES (${quem.login}, ${n}, ${ped}, ${'tirou'}, ${svcAtual}, ${String(body.motivo || '').slice(0, 200) || null})`;
+    espelho().catch(() => {});
+    return { ok: true, acao: 'tirou', valor: svcAtual, novo_total: novoTot };
+  }
+  if (svcAtual > 0.009) return { ok: false, erro: 'essa conta já está com os 10%' };
+  const svc = await fbAplicarServico(ped);
+  await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
+    VALUES (${quem.login}, ${n}, ${ped}, ${'devolveu'}, ${svc || 0}, ${null})`;
+  espelho().catch(() => {});
+  return { ok: true, acao: 'devolveu', valor: svc || 0 };
 }
 // Sangria/despesa/suprimento — mexe na GAVETA do operador logado. Tipos do
 // Consumer (conferidos em 16,5 mil operações reais do banco da 0003):
@@ -4214,16 +4438,30 @@ async function apiChamadoCriar(body) {
       AND assunto IS NOT DISTINCT FROM ${assunto}
       AND (origem IS NOT DISTINCT FROM ${'pedido-cliente'}) = ${auto} LIMIT 1`;
   if (ja) return { ok: true, id: Number(ja.id), repetido: true };
-  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto)
+  // praça(s) do que o cliente marcou: o aviso só acende na cozinha dona do item
+  let areas = null;
+  const cods = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean) : [];
+  if (cods.length) {
+    const as = await sql`SELECT DISTINCT area_codigo FROM comanda_item
+      WHERE item_codigo = ANY(${cods}) AND area_codigo IS NOT NULL`;
+    const lista = as.map((x) => Number(x.area_codigo)).filter(Boolean);
+    if (lista.length) areas = lista;
+  }
+  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto, areas)
     VALUES (${mesa}, ${tipo}, ${origem},
             ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null},
-            ${assunto})
+            ${assunto}, ${areas})
     RETURNING id`;
   return { ok: true, id: Number(r.id) };
 }
-async function apiChamados() {
-  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, criado_em FROM chamado
-    WHERE atendido_em IS NULL ORDER BY criado_em`;
+async function apiChamados(areaCod = null) {
+  // KDS de uma praça vê: reclamação DELA + as sem praça (salão, conta, texto
+  // livre). O resto é ruído — e ruído todo mundo aprende a ignorar.
+  const filtro = areaCod == null || !(areaCod > 0)
+    ? sql`TRUE`
+    : sql`(areas IS NULL OR array_length(areas, 1) IS NULL OR ${areaCod} = ANY(areas))`;
+  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, areas, criado_em FROM chamado
+    WHERE atendido_em IS NULL AND ${filtro} ORDER BY criado_em`;
   const agora = Date.now();
   const comIdade = rows.map((x) => ({ ...x, ha_min: Math.max(0, Math.floor((agora - new Date(x.criado_em).getTime()) / 60000)) }));
   return {
@@ -4239,8 +4477,12 @@ async function apiChamadoAtender(body) {
   return { ok: true };
 }
 /** Mesas com reclamação aberta — a cozinha usa pra passar na frente. */
-async function mesasComReclamacao() {
-  const r = await sql`SELECT DISTINCT mesa FROM chamado WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL`;
+async function mesasComReclamacao(areaCod = null) {
+  const filtro = areaCod == null || !(areaCod > 0)
+    ? sql`TRUE`
+    : sql`(areas IS NULL OR array_length(areas, 1) IS NULL OR ${areaCod} = ANY(areas))`;
+  const r = await sql`SELECT DISTINCT mesa FROM chamado
+    WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL AND ${filtro}`;
   return new Set(r.map((x) => Number(x.mesa)));
 }
 /** Mesas com CHAMADO de garçom aberto (o BOTÃO da mesa, não o aviso automático
@@ -4278,6 +4520,29 @@ const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
 // na entrada: o item nasce já na cozinha que vai produzir.
 // Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
 const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
+// ---- ITENS QUE NINGUÉM PRODUZ ----
+// Couvert não é prato: ninguém prepara, ninguém entrega. Ficava no balde
+// "Sem praça" (o cadastro dele não tem cozinha), pedindo baixa e contando
+// atraso na mesa. Entra JÁ BAIXADO — some do KDS sem sumir da conta.
+const ITENS_FORA_KDS_PADRAO = 'couvert';
+// ---- ITEM COM PRAÇA PRÓPRIA ----
+// Conserta cadastro torto sem mexer no Consumer: "BATATA FRITA" (a duplicada
+// em maiúsculas) está sem cozinha e caía no balde órfão. Formato "nome>praça".
+const ITENS_PRACA_PADRAO = 'batata frita>coz petisco';
+async function itensForaKds() {
+  const txt = await cfgGet('itens_fora_kds', ITENS_FORA_KDS_PADRAO);
+  return String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean);
+}
+async function mapaItemPraca() {
+  const txt = await cfgGet('itens_praca', ITENS_PRACA_PADRAO);
+  const pares = String(txt).split(',')
+    .map((x) => x.split('>').map((y) => semAcento(y.trim())))
+    .filter((par) => par.length === 2 && par[0] && par[1]);
+  if (!pares.length) return [];
+  const porNome = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [semAcento(a.nome), Number(a.codigo)]));
+  return pares.map(([termo, praca]) => ({ termo, area: porNome.get(praca) ?? null }))
+    .filter((x) => x.area != null);
+}
 async function mapaRedirPracas() {
   const txt = await cfgGet('pracas_redirecionadas', PRACAS_REDIR_PADRAO);
   const pares = String(txt).split(',')
@@ -4399,11 +4664,11 @@ async function apiKds(areaCod) {
      WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2`;
 
   // Mesa que reclamou passa na frente: sobe pro topo da fila e vem marcada.
-  const reclamou = await mesasComReclamacao();
+  const reclamou = await mesasComReclamacao(areaCod);
   for (const c of r.comandas) c.reclamou = reclamou.has(Number(c.numero));
   r.comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
 
-  const ch = await apiChamados();
+  const ch = await apiChamados(areaCod);
   const espItens = new Set(esperando.map((x) => Number(x.item_codigo)));
   const parItens = new Map(pareados.map((x) => [Number(x.item_codigo), x.grupo]));
   for (const c of r.comandas) for (const i of c.itens || []) {
@@ -4415,12 +4680,15 @@ async function apiKds(areaCod) {
     }
   }
   // CANCELADO ANTES DE FICAR PRONTO: o item sumia do KDS sem aviso e a
-  // cozinha seguia fazendo. Sobe em banner grandão por 10 min (todas as
-  // praças veem — cancelamento é raro e alto é o objetivo).
-  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+  // cozinha seguia fazendo. Banner grandão por 10 min — mas só na PRAÇA do
+  // item (cerveja cancelada não é aviso da cozinha) e só até alguém dar "Ok,
+  // vi". Pedido inteiro (area nula) continua indo pra todas as praças.
+  const cancelados = await sql`SELECT id, numero, nome, status_item, motivo,
       round(extract(epoch from (now()-quando))/60)::int AS min_atras
     FROM cancelamento
     WHERE quando > now() - interval '10 minutes' AND status_item IN ('a_produzir','pedido')
+      AND visto_em IS NULL
+      AND (area_codigo IS NULL OR ${areaCod == null || !(areaCod > 0) ? sql`TRUE` : sql`area_codigo=${areaCod}`})
     ORDER BY quando DESC LIMIT 6`;
   return { area: { codigo: areaCod, nome: areaNome }, limite_atraso_min: LIMITE_ATRASO_MIN, ...r,
     esperando, reclamacoes: ch.reclamacoes, cancelados, online: ultimoStatus.ok };
@@ -4451,22 +4719,42 @@ async function apiEntrega(areaCod = null) {
     ORDER BY COALESCE(ci.produzido, m.pronto_em), ci.id`;
   const r = agrupar(itens, 'pronto');
   await rotularComandas(r.comandas);
+  // Prazo do passe (3 min) e prazo de PRODUÇÃO da praça — a entrega herda o
+  // atraso: prato que já saiu tarde da cozinha nasce vermelho no passe, porque
+  // pro cliente o relógio é um só (ele não sabe onde o tempo foi perdido).
+  const entregaMin = Math.max(1, Number(await cfgGet('entrega_min', String(LIMITE_ENTREGA_MIN))) || LIMITE_ENTREGA_MIN);
+  const cfgP = areaCod != null && areaCod > 0
+    ? (await sql`SELECT minutos FROM praca_config WHERE area_codigo=${areaCod}`)[0] : null;
+  const prazoPraca = cfgP ? Number(cfgP.minutos) : LIMITE_ATRASO_MIN;
+  const extras = new Map((await sql`SELECT codigo_pdv, minutos_extra FROM produto_tempo`).map((x) => [Number(x.codigo_pdv), Number(x.minutos_extra)]));
   const agora = Date.now();
   for (const c of r.comandas) {
     c.aguarda_min = c.pronta_desde ? Math.max(0, Math.floor((agora - new Date(c.pronta_desde).getTime()) / 60000)) : null;
     // idade TOTAL do pedido (desde o lançamento): só o aguarda_min "zerava" o
     // relógio quando o prato chegava no passe — o runner precisa dos dois tempos.
     c.pedido_min = c.chegada ? Math.max(0, Math.floor((agora - new Date(c.chegada).getTime()) / 60000)) : null;
+    const extra = Math.max(0, ...(c.itens || []).map((i) => extras.get(Number(i.codigo_pdv)) || 0), 0);
+    c.prazo_entrega_min = entregaMin;
+    c.prazo_min = prazoPraca + extra;                     // prazo da produção
+    const passeEstourou = c.aguarda_min != null && c.aguarda_min >= entregaMin;
+    const pedidoEstourou = c.pedido_min != null && c.pedido_min >= c.prazo_min;
+    c.atrasado = passeEstourou || pedidoEstourou;
+    c.critico = (c.aguarda_min != null && c.aguarda_min >= entregaMin * 2)
+      || (c.pedido_min != null && c.pedido_min >= c.prazo_min * 2);
+    // por que está vermelho: parado no passe ou já veio tarde da cozinha
+    c.motivo_atraso = passeEstourou ? 'passe' : (pedidoEstourou ? 'producao' : null);
     for (const i of c.itens) {
       i.prod_min = (i.criado && i.pronto_em) ? Math.max(0, Math.round((new Date(i.pronto_em).getTime() - new Date(i.criado).getTime()) / 60000)) : null;
     }
   }
   // CANCELADO DEPOIS DE PRONTO (e antes de entregar): o prato estava no passe
   // esperando runner — o aviso evita levar comida cancelada pra mesa.
-  const cancelados = await sql`SELECT numero, nome, status_item, motivo,
+  const cancelados = await sql`SELECT id, numero, nome, status_item, motivo,
       round(extract(epoch from (now()-quando))/60)::int AS min_atras
     FROM cancelamento
     WHERE quando > now() - interval '10 minutes' AND status_item IN ('pronto','pedido')
+      AND visto_em IS NULL
+      AND (area_codigo IS NULL OR ${areaCod == null || !(areaCod > 0) ? sql`TRUE` : sql`area_codigo=${areaCod}`})
     ORDER BY quando DESC LIMIT 6`;
   return { ...r, cancelados, online: ultimoStatus.ok };
 }
@@ -4505,11 +4793,26 @@ function agrupar(itens, ordem) {
     const chave = i.comanda_codigo + ':' + rod;
     if (!porC.has(chave)) porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
     const c = porC.get(chave);
+    // ⚠️ RESPOSTA DE PERGUNTA É OBSERVAÇÃO, NÃO ITEM. "Ao ponto", "com gelo",
+    // "1 copo" chegam como filho (tipo 2) e o KDS listava cada um como linha
+    // própria — sendo que o mesmo texto JÁ sai como observação do prato logo
+    // acima. Pior: "NENHUM" (o texto de 'sem observação') virava item.
+    // Some do KDS quando é vazio/NENHUM ou quando já está na observação do
+    // prato; complemento de verdade (o que a cozinha precisa fazer) continua.
+    if (Number(i.tipo) === 2) {
+      const nm = semAcento(i.nome || '').trim();
+      if (!nm || nm === 'nenhum' || nm === 'n/a') continue;
+      const pai = [...c.itens].reverse().find((x) => Number(x.tipo) !== 2);
+      if (pai && temMod(pai.detalhes) && semAcento(pai.detalhes).includes(nm)) continue;
+    }
     c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes), pareado: false, esperando_par: null });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
   }
-  const comandas = [...porC.values()].map((c) => ({ ...c, ...classificar(c.origem, c.numero) }));
+  // comanda que ficou SÓ com linha escondida (ex.: um "NENHUM" solto) não vira
+  // cartão vazio na tela
+  const comandas = [...porC.values()].filter((c) => c.itens.length)
+    .map((c) => ({ ...c, ...classificar(c.origem, c.numero) }));
   // FIFO: quem chegou (ou ficou pronto) primeiro aparece primeiro — ordem de produção, não de mesa.
   const chave = ordem === 'pronto' ? 'pronta_desde' : 'chegada';
   comandas.sort((a, b) => {
@@ -5072,8 +5375,15 @@ function comandaHTML(c,modo,idx){
       '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span>'+btn+'</div>';
   }).join('');
   var badge=c.tipo==='delivery'?'<span class="badge">delivery</span>':'';
-  if(modo!=='entrega'&&c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
-  else if(modo!=='entrega'&&c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
+  if(modo==='entrega'){
+    // no passe o vermelho tem dois motivos: parou aqui, ou já veio tarde da
+    // cozinha — o runner precisa saber qual, senão cobra a praça errada
+    var mot=c.motivo_atraso==='producao'?'veio tarde da cozinha':'parado no passe';
+    if(c.critico) badge+='<span class="flag">⏰ '+mot+'</span>';
+    else if(c.atrasado) badge+='<span class="badge late">atrasado · '+mot+'</span>';
+  }
+  else if(c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
+  else if(c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
   if(c.reclamou) badge+='<span class="flag">⚠ reclamou · adiantar</span>';
   if(esperandoNesta(c.numero)) badge+='<span class="flagj">sai junto</span>';
   // entrega mostra OS DOIS tempos: idade do pedido (lançamento) e espera no passe
@@ -5095,7 +5405,7 @@ function comandaHTML(c,modo,idx){
     .map(function(i){return Number(i.item_codigo)}));
   if(modo==='entrega') foot='<div class="cfoot"><button class="b e" onclick="marca(\\'entregue\\',{item_codigos:'+cods+'})">✓ Entregar tudo</button></div>';
   else foot='<div class="cfoot"><button class="b p" onclick="marca(\\'pronto\\',{item_codigos:'+cods+'})">✓ Tudo pronto</button></div>';
-  return '<div class="c '+c.tipo+(modo!=='entrega'&&c.atrasado?' atrasado':'')+
+  return '<div class="c '+c.tipo+(c.atrasado?' atrasado':'')+
     (c.reclamou?' reclamou':'')+(esperandoNesta(c.numero)?' junto-alvo':'')+'">'+
     '<div class="chd"><div class="rot"><span class="pos">'+(idx+1)+'º</span>'+esc(c.rotulo)+badge+'</div>'+tchip+'</div>'+
     nome+'<div class="its">'+its+'</div>'+foot+'</div>';
@@ -5163,24 +5473,40 @@ function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(
 // Reclamações em SEQUÊNCIA, da mais antiga pra mais nova — "mesa 1, mesa 8, mesa 10".
 function faixaReclamacao(d){
   var rs=d.reclamacoes||[];if(!rs.length)return '';
-  var mesas=rs.map(function(r){
-    return '<span class="ms">'+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · '+r.ha_min+'min':'')+'</span>';
+  // ⚠️ ANTES ERA SÓ LEITURA: o KDS mostrava a reclamação e não tinha como
+  // liberar — só o garçom conseguia, na tela dele. Agora cada uma tem o seu
+  // "✓ resolvido" aqui também.
+  return rs.map(function(r){
+    return '<div class="alerta">⚠️ '+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · há '+r.ha_min+'min':'')+
+      '<span class="sub">'+(r.texto?esc(r.texto):'Cliente reclamou')+' — adiante o que for dessa mesa.</span>'+
+      '<button class="b" style="margin-top:8px;background:#fff;color:#7f1d1d;font-weight:800" '+
+      'onclick="recResolvido('+r.id+')">✓ resolvido</button></div>';
   }).join('');
-  var txts=rs.filter(function(r){return r.texto}).map(function(r){return (r.mesa?'Mesa '+r.mesa+': ':'')+esc(r.texto)});
-  return '<div class="alerta">⚠️ ATENÇÃO '+mesas+
-    '<span class="sub">Cliente reclamou — adiante o que for dessa mesa.'+
-    (txts.length?' — '+txts.join(' · '):'')+'</span></div>';
+}
+async function recResolvido(id){
+  try{await fetch('/api/chamado/atender',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({id:id,por:(typeof AREA!=='undefined'&&AREA&&AREA.cod)?('praca '+AREA.cod):'kds'})})}catch(e){}
+  if(typeof VIEW==='function'&&VIEW)VIEW();
 }
 // CANCELADO com item ainda na fila: banner GRANDE no topo. Sem isso o item
 // sumia do KDS no ciclo seguinte e a cozinha seguia fazendo (ou o runner
 // levava prato cancelado pra mesa).
+/* fecha o aviso de cancelado: quem já tirou o prato da fila não precisa
+   continuar olhando alarme vermelho até os 10 minutos passarem. */
+async function cancVisto(id){
+  try{await fetch('/api/cancelado/visto',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({id:id,por:(typeof AREA!=='undefined'&&AREA&&AREA.cod)?('praca '+AREA.cod):'kds'})})}catch(e){}
+  if(typeof VIEW==='function'&&VIEW)VIEW();
+}
 function faixaCancelado(d,acao){
   var cs=d.cancelados||[];if(!cs.length)return '';
   return cs.map(function(c){
     var onde=(Number(c.numero)>=${COMANDA_DE}?'COMANDA ':'MESA ')+c.numero;
     var oq=(c.status_item==='pedido')?'PEDIDO INTEIRO CANCELADO':('CANCELADO: '+esc(c.nome||'item'));
     return '<div class="alerta" style="background:#7f1d1d;border-color:#dc2626;color:#fff;font-size:26px;line-height:1.25">🚫 '+onde+' — '+oq+
-      '<span class="sub" style="color:#fecaca">'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — '+acao+'</span></div>';
+      '<span class="sub" style="color:#fecaca">'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — '+acao+'</span>'+
+      (c.id?'<button class="b" style="margin-top:8px;background:#fff;color:#7f1d1d;font-weight:800" onclick="cancVisto('+c.id+')">✓ Ok, vi</button>':'')+
+      '</div>';
   }).join('');
 }
 // A outra praça já entregou a parte dela: o que sair daqui está segurando o pedido.
@@ -6147,7 +6473,7 @@ async function enviar(){
 // cozinha vai adiantar, e quanto antes alguém for à mesa, menor o estrago.
 async function puxarChamados(){
   var el=document.getElementById('chamados');if(!el)return;
-  var d;try{d=await jget('/api/chamados')}catch(e){return}
+  var d;try{d=await jget('/api/chamados'+(typeof AREA!=='undefined'&&AREA&&AREA.cod?('?area='+AREA.cod):''))}catch(e){return}
   var h='';
   // Reclamação é sensível: some da comanda mobile de quem NÃO é gerente. Ela
   // aparece no KDS (a cozinha adianta) e aqui só pro gerente.
@@ -6976,7 +7302,11 @@ async function apiContaTexto(numero) {
   // nome: a identificacao nova ganha da tabela antiga de vinculo
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${n} AND fechada_em IS NULL`)[0];
   const quem = ident || (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
-  const total = itens.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+  // ⚠️ Somar TODOS os itens (menos a linha de Serviço, tipo 8) — inclui
+  // COMPLEMENTO COM PREÇO (ex.: Vinagrete R$1). Antes excluía todo tipo 2 e
+  // derrubava complemento pago → o app cobrava a menos e a mesa não fechava
+  // (mesa 16 da Mayara: itens 112, mas cobrou 111×1,10). = VALORTOTALITENS do FB.
+  const total = itens.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0);
   const pago = Number(c.subtotal_pago || 0);
 
   // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
@@ -6996,7 +7326,7 @@ async function apiContaTexto(numero) {
       // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
       const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
         WHERE comanda_codigo=${cc.codigo} ORDER BY criado NULLS LAST, id`;
-      const sub = its.filter((i) => i.tipo !== 2).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+      const sub = its.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0); // inclui complemento com preço (ver total da mesa acima)
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
       // rastro da transferência: de onde essa comanda veio, quando e por quem
       const tr = (await sql`SELECT de_numero, para_numero, criado_em, por, itens_movidos
@@ -9092,7 +9422,7 @@ async function probItens(assunto){
   ((d&&d.grupos)||[]).forEach(function(g){
     (g.itens||[]).forEach(function(i){
       if(assunto==='demora'&&i.estado==='entregue')return;
-      ITENS.push({nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
+      ITENS.push({cod:i.item_codigo,nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
         onde:g.numero&&Number(g.numero)!==Number(n)?('comanda '+g.numero):null});
     });
   });
@@ -9138,7 +9468,9 @@ async function enviarProblema(){
   if(!marcados.length&&!livre){alert('Escreva o que houve.');return}
   var txt=(ROTULO[ASSUNTO]||'PROBLEMA')+(marcados.length?' — '+marcados.join(', '):'')+
     (livre?(marcados.length?' · ':' — ')+livre:'');
-  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',assunto:ASSUNTO,texto:txt});
+  var cods=Object.keys(ITSEL).filter(function(k){return ITSEL[k]})
+    .map(function(k){return ITENS[k]&&ITENS[k].cod}).filter(Boolean);
+  await post('/api/chamado',{mesa:n,tipo:'reclamacao',origem:'qr-mesa',assunto:ASSUNTO,texto:txt,itens:cods});
   app('<div class="ok"><div class="t">✓ Recebemos</div>'+
     '<div class="mut" style="margin-top:8px">Desculpe pelo transtorno. '+
     (ASSUNTO==='demora'?'A cozinha já foi avisada e o seu pedido passa na frente.'
@@ -9456,14 +9788,12 @@ function bannerCx(){
     return '<div class="tit" style="margin-top:0">🧰 Seu caixa · <b style="color:var(--green2)">ABERTO</b></div>'+
       '<div class="mut">fundo '+brl(a.fundo)+' · dinheiro recebido '+brl(a.dinheiro)+
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
-      '<div class="row" style="margin-top:8px'+(PODE.mov?';grid-template-columns:1fr 1fr 1fr':'')+'">'+
-      '<button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
+      '<div class="row" style="margin-top:8px">'+
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
       '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
-      ?'<div class="row" style="margin-top:4px"><button class="seg" onclick="irTela(\\'rel\\')">📊 Dia</button>'+
-       '<button class="seg on" onclick="irTela(\\'abrircx\\')">Abrir caixa</button></div>'
+      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
       :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
 }
 async function cxEstado(){
@@ -9510,6 +9840,7 @@ function pintaMain(){
   if(TELA==='pix')return; // desenhada pelo pixCaixa()
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
+  if(TELA==='confcx')return telaConfCx(el);
   if(TELA==='rel')return telaRel(el);
   if(TELA==='mov')return telaMov(el);
   if(TELA==='canc')return telaCancItem(el);
@@ -9518,7 +9849,7 @@ function pintaMain(){
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -9547,7 +9878,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
@@ -9640,7 +9971,16 @@ function pinta(el){
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
       '</span><b>'+(i.tipo===2&&!(i.valor_total>0)?'':brl(i.valor_total))+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
-  if(c.servico>0)h+='<div class="tot"><span>Serviço</span><b>'+brl(c.servico)+'</b></div>';
+  // O cliente pode se recusar a pagar os 10% — é direito dele. Um toque aqui
+  // TIRA a taxa (some do total), em vez do caixa ter que calcular e lançar
+  // desconto na mão. Quem pode é quem tem "Aplicar Descontos / Modificar
+  // Taxas" no Consumer, e fica registrado quem tirou.
+  if(c.servico>0)h+='<div class="tot"><span>Serviço (10%)'+
+    (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(1)">tirar</a>':'')+
+    '</span><b>'+brl(c.servico)+'</b></div>';
+  else if(c.subtotal>0)h+='<div class="tot"><span style="color:var(--red)">Serviço (10%) retirado'+
+    (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(0)">cobrar</a>':'')+
+    '</span><b>—</b></div>';
   if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
@@ -9800,6 +10140,15 @@ async function receber(){
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
 }
+async function tiraServico(tirar){
+  var t=(tirar===1||tirar===true);
+  if(t&&!confirm('Tirar os 10% de serviço desta conta? O cliente não vai pagar a taxa.'))return;
+  var r=await jpost('/api/caixa/servico',{numero:MESA,tirar:t});
+  if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não deu';return}
+  FLASH=t?('✓ 10% retirados ('+brl(r.valor)+') da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA)
+         :('✓ 10% de volta na conta');
+  await carregar(MESA);
+}
 async function fecharConta(){
   var r=await jpost('/api/caixa/fechar',{numero:MESA});
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
@@ -9905,24 +10254,73 @@ async function acaoAbrirCx(){
   FLASH='✓ Caixa aberto'+(v?' com fundo de '+brl(v):' sem fundo')+'. Bom serviço!';
   await cxEstado();voltarMesas();
 }
+/* ---- FECHAMENTO COM CONFERÊNCIA (cega, forma a forma) ----
+   Antes o caixa informava UM número (dinheiro) com o esperado já na tela —
+   bastava digitar o esperado pra "bater" sempre. Agora ele declara primeiro,
+   forma a forma, e só depois vê o que o sistema tinha. */
+var DECL=null;
 function telaFechaCx(el){
+  DECL=null;
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
-    '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa</div>'+
-    '<div class="mut">Conte TODO o dinheiro da gaveta (com o fundo) e informe. A conferência com o esperado sai na hora.</div>'+
-    '<input id="cxc" class="num" inputmode="decimal" placeholder="quanto tem na gaveta?" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('cxc')+
-    '<button class="big o" onclick="acaoFechaCx()">Conferir e fechar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Fechar o meu caixa · conferência</div>'+
+    '<div class="mut">Conte cada coisa e informe. <b>Os valores do sistema só aparecem depois</b> — é isso que faz a conferência valer.</div>'+
+    '<div class="mut" style="margin-top:12px">💵 Dinheiro na gaveta (com o fundo)</div>'+
+    '<input id="f_din" class="num" inputmode="decimal" placeholder="obrigatório" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">💳 Crédito (fechamento da maquininha)</div>'+
+    '<input id="f_cre" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">💳 Débito</div>'+
+    '<input id="f_deb" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    '<div class="mut" style="margin-top:10px">📲 Pix</div>'+
+    '<input id="f_pix" class="num" inputmode="decimal" placeholder="opcional" readonly onclick="kpAlvo(this)">'+
+    kpHtml('f_din')+
+    '<button class="big o" onclick="acaoConferir()">Conferir</button>'+
     '<div id="cxerr2" class="err"></div></div>';
-  var e=document.getElementById('cxc');if(e)e.focus();
+}
+function _vc(id){var e=document.getElementById(id);return (e&&String(e.value||'').trim()!=='')?numBr(e.value):null}
+async function acaoConferir(){
+  var er=document.getElementById('cxerr2');er.textContent='';
+  var d={dinheiro:_vc('f_din'),credito:_vc('f_cre'),debito:_vc('f_deb'),pix:_vc('f_pix')};
+  if(d.dinheiro==null){er.textContent='conte a gaveta e informe o dinheiro';return}
+  var r=await jpost('/api/caixa/conferir',d);
+  if(!r.ok){er.textContent=r.erro||'não consegui conferir';return}
+  DECL={decl:d,conf:r};irTela('confcx');
+}
+function telaConfCx(el){
+  if(!DECL){irTela('fechacx');return}
+  var c=DECL.conf;
+  var h='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'fechacx\\')">◂ corrigir contagem</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Conferência do caixa</div>';
+  c.linhas.forEach(function(l){
+    var ok=(l.informado==null)||Math.abs(l.dif)<=0.01;
+    var lado=(l.informado==null)?'não conferido':(Math.abs(l.dif)<=0.01?'bateu ✓':((l.dif>0?'sobra ':'falta ')+brl(Math.abs(l.dif))));
+    h+='<div class="it" style="display:block">'+
+      '<div style="display:flex;justify-content:space-between;gap:8px"><b>'+esc(l.rotulo)+'</b>'+
+      '<b class="'+(ok?'quit':'saldo')+'">'+lado+'</b></div>'+
+      '<div class="mut" style="font-size:12.5px">sistema '+brl(l.esperado)+' · contado '+(l.informado==null?'—':brl(l.informado))+
+      (l.obs?' · '+esc(l.obs):'')+'</div></div>';
+  });
+  h+='<div class="tot g"><span>Total do sistema</span><b>'+brl(c.total_sistema)+'</b></div></div>';
+  if(c.eletronico_divergente&&c.eletronico_divergente.length)
+    h+='<div class="card" style="border-color:var(--gold2)"><b>⚠ Confira na maquininha:</b> '+esc(c.eletronico_divergente.join(', '))+
+       '<div class="mut">Não trava o fechamento — mas sai no comprovante pra apurar depois.</div></div>';
+  if(c.precisa_permissao)
+    h+='<div class="card" style="border-color:var(--red)"><b style="color:var(--red)">Diferença no dinheiro: '+brl(c.dif_dinheiro)+'</b>'+
+       '<div class="mut">Só gerente fecha caixa com diferença no dinheiro. Chame quem pode, ou volte e reconte.</div></div>';
+  h+='<div class="card"><input id="f_obs" placeholder="observação do fechamento (opcional)">'+
+     '<button class="big'+(c.precisa_permissao?' g':'')+'" onclick="acaoFechaCx()"'+(c.precisa_permissao?' disabled':'')+'>✓ Confirmar e fechar o caixa</button>'+
+     '<div class="mut" style="margin-top:6px">Sai um comprovante na impressora do caixa.</div>'+
+     '<div id="cxerr3" class="err"></div></div>';
+  el.innerHTML=h;
 }
 async function acaoFechaCx(){
-  var raw=((document.getElementById('cxc')||{}).value||'').trim();
-  if(raw===''){document.getElementById('cxerr2').textContent='conte a gaveta e digite o total';return}
-  var r=await jpost('/api/caixa/fechar-caixa',{contado:numBr(raw)});
-  var er=document.getElementById('cxerr2');
-  if(!r.ok){er.textContent=(r.erro||'não fechou')+(r.divergente?' — esperado: '+brl(r.esperado):'');return}
-  FLASH='✓ Caixa fechado. Esperado '+brl(r.esperado)+' · contado '+brl(r.contado)+
+  if(!DECL){irTela('fechacx');return}
+  var er=document.getElementById('cxerr3');
+  var b=DECL.decl; b.obs=((document.getElementById('f_obs')||{}).value||'').trim()||null;
+  var r=await jpost('/api/caixa/fechar-caixa',b);
+  if(!r.ok){if(er)er.textContent=(r.erro||'não fechou')+(r.divergente?' — esperado: '+brl(r.esperado):'');return}
+  FLASH='✓ Caixa fechado. Dinheiro: sistema '+brl(r.esperado)+' · contado '+brl(r.contado)+
     (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
-  await cxEstado();voltarMesas();
+  DECL=null;await cxEstado();voltarMesas();
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
@@ -10032,20 +10430,54 @@ function transfCx(){
   ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML='<div class="card" style="max-width:380px;width:100%;margin:0">'+
     '<div class="tit" style="margin-top:0">⇄ Transferir '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' '+MESA+'</div>'+
-    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Tudo desta mesa vai pra qual mesa?')+'</div>'+
+    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Pra qual mesa vai?')+'</div>'+
     '<input id="trdest" class="num" inputmode="numeric" placeholder="mesa destino" style="margin-top:8px">'+
-    '<button class="big" onclick="doTransfCx(this)">Transferir</button>'+
+    // ⚠️ ANTES ERA TUDO OU NADA: só dava pra levar a mesa inteira. O caixa
+    // precisa mover UM item (a cerveja que era da mesa ao lado, o prato
+    // lançado no número errado). Marcou algum? vai só o marcado.
+    (TRITENS()?'<div class="mut" style="margin-top:10px">Marque os itens, ou mande a mesa inteira:</div>'+TRITENS():'')+
+    // dois botões, sem adivinhação: o de cima leva o que está marcado, o de
+    // baixo leva tudo (era um texto miúdo dizendo "nada marcado = tudo")
+    (TRITENS()?'<button class="big" id="trbmarc" onclick="doTransfCx(this,0)" disabled>Transferir os marcados</button>':'')+
+    '<button class="big'+(TRITENS()?' o':'')+'" onclick="doTransfCx(this,1)">Transferir a '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' INTEIRA</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="document.getElementById(\\'trov\\').remove()">Voltar</button>'+
     '<div id="trerr" class="err"></div></div>';
   document.body.appendChild(ov);
   var e=document.getElementById('trdest');if(e)e.focus();
 }
-async function doTransfCx(btn){
+/* itens da conta pra marcar na transferência (só quem pode transferir item) */
+function TRITENS(){
+  if(!PODE.transf&&!PODE.cancPed)return '';
+  var its=(CONTA&&CONTA.itens||[]).filter(function(i){return i.item_codigo});
+  if(!its.length)return '';
+  return '<div style="max-height:190px;overflow:auto;margin-top:6px">'+
+    '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13px;color:var(--mut)">'+
+      '<input type="checkbox" id="triall" onchange="triTodos(this)" style="width:20px;height:20px"><span>marcar todos</span></label>'+
+    its.map(function(i,ix){
+      return '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid #f0f0f4;font-size:14px">'+
+        '<input type="checkbox" class="tri" value="'+i.item_codigo+'" onchange="triConta()" style="width:20px;height:20px">'+
+        '<span style="flex:1">'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></label>';
+    }).join('')+'</div>';
+}
+function triTodos(el){
+  [].slice.call(document.querySelectorAll('.tri')).forEach(function(c){c.checked=el.checked});
+  triConta();
+}
+function triConta(){
+  var n=document.querySelectorAll('.tri:checked').length;
+  var b=document.getElementById('trbmarc');if(!b)return;
+  b.disabled=!n; b.textContent=n?('Transferir os '+n+' marcado'+(n>1?'s':'')):'Transferir os marcados';
+}
+async function doTransfCx(btn,tudo){
   var d=Number(((document.getElementById('trdest')||{}).value||'').replace(/\\D/g,''));
   var er=document.getElementById('trerr');
   if(!(d>0)){if(er)er.textContent='digite a mesa destino';return}
+  var marcados=tudo?[]:[].slice.call(document.querySelectorAll('.tri:checked')).map(function(c){return Number(c.value)});
+  if(!tudo&&!marcados.length){if(er)er.textContent='marque os itens (ou use "a mesa INTEIRA")';return}
   btn.disabled=true;
-  var r=await jpost('/api/venda/transferir',{de:MESA,para:d,por:NOME||''});
+  var r=marcados.length
+    ? await jpost('/api/caixa/transferir-itens',{de:MESA,para:d,itens:marcados})
+    : await jpost('/api/venda/transferir',{de:MESA,para:d,por:NOME||''});
   btn.disabled=false;
   if(!r||!r.ok){if(er)er.textContent=(r&&r.erro)||'não transferiu';return}
   var o=document.getElementById('trov');if(o)o.remove();
@@ -10496,7 +10928,10 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio()));
@@ -10620,7 +11055,15 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (p === '/mesa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(MESA_HTML); }
-    if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamados())); }
+      if (req.method === 'POST' && p === '/api/cancelado/visto') {
+      const b = await readBody(req);
+      await sql`UPDATE cancelamento SET visto_em=now(), visto_por=${String(b.por || 'kds').slice(0, 40)}
+        WHERE id=${Number(b.id)} AND visto_em IS NULL`;
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true }));
+    }
+  if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' });
+      const aq = u.searchParams.get('area');
+      return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
