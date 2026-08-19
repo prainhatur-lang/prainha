@@ -330,6 +330,13 @@ async function initSchema() {
   // FECHAMENTO DE CAIXA: o que o operador DECLAROU × o que o sistema tinha,
   // forma a forma. O Consumer só guarda o dinheiro (SALDOFINALINFORMADO); a
   // conferência de cartão/Pix é nossa e é o que permite cobrar diferença.
+  // USUÁRIO PRÓPRIO DO CONCILIA. Até aqui todo login vinha do Consumer (o
+  // nosso guardava só o PIN). O dono precisou dar acesso a alguém SEM mexer
+  // no cadastro do PDV — então existe esta tabela: mesmo PIN, mesmas
+  // permissões (guardadas pelos códigos do Consumer, pra regra ser uma só).
+  await sql`CREATE TABLE IF NOT EXISTS usuario_local (login text PRIMARY KEY,
+    nome text, pin_hash text, salt text, perms integer[], admin boolean NOT NULL DEFAULT false,
+    ativo boolean NOT NULL DEFAULT true, criado_em timestamptz DEFAULT now(), criado_por text)`;
   // TIRAR OS 10%: é dinheiro do garçom saindo — quem tirou e de qual mesa
   // fica registrado, senão vira boca a boca no fim do mês.
   await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
@@ -388,6 +395,10 @@ async function initSchema() {
   // Vale ISTO ou ser Administrador/ter Excluir-Pedido(28) no Consumer (ehGerente).
   await addCol('garcom_pin', 'gerente boolean NOT NULL DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
+  // Vínculo CAIXA ↔ MAQUININHA: o caixa aberto na maquininha fica preso ao
+  // serial daquele terminal — o mesmo operador não recebe em outra maquininha
+  // sem fechar aqui. (Só trava quando o app manda o serial no pagamento.)
+  await sql`CREATE TABLE IF NOT EXISTS caixa_maquininha (caixa_codigo integer PRIMARY KEY, terminal text NOT NULL, criado_em timestamptz DEFAULT now())`;
   // ---- COMANDA JÁ IMPRESSA na térmica ----
   // comanda_item leva TRUNCATE a cada espelho; o "já saiu na impressora" vive
   // aqui, chaveado por ITENSPEDIDO.CODIGO (estável — mesmo esquema da `marca`).
@@ -2610,9 +2621,20 @@ async function apiLioPagar(body, garcom) {
       if (r.ok && r.rows.length) return { ok: true, ja_registrado: true, pagamento_fb: Number(r.rows[0].CODIGO) };
     }
   }
+  // Caixa do OPERADOR: usa o caixa aberto dele; se estiver fechado, abre o DELE
+  // sozinho (fundo = saldo anterior) pra o recebimento cair no caixa dele e o
+  // fechamento bater. Antes caía no 1º caixa aberto/'ser' e sumia do dele.
+  // Se o caixa dele estiver aberto em OUTRA maquininha (serial diferente),
+  // bloqueia. Falha na resolução = caminho antigo (caixa_codigo null → 'ser').
+  let caixaCodigo = null;
+  try {
+    const cx = await fbCaixaMaquininha(garcom.login, body.terminal);
+    if (cx.erro) return { ok: false, erro: cx.erro };
+    caixaCodigo = cx.codigo;
+  } catch (e) { console.error('[lio] caixa do operador:', e.message); }
   const r = await apiContaPagar({
     numero: n, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
-    permitir_servico: true,
+    permitir_servico: true, caixa_codigo: caixaCodigo,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     observacao: `Prainha LIO · ${garcom.login}`,
   });
@@ -3603,14 +3625,47 @@ const PERM_TRANSFERIR = 50; // Consumer: "Permitir transferir/copiar itens de um
 // 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
 // todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
 const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
+/** Monta o perfil a partir de um conjunto de códigos de permissão do Consumer.
+ *  Uma função só pros dois cadastros (o do PDV e o nosso) — regra duplicada é
+ *  regra que diverge. */
+function perfilDeCodigos(login, nome, admin, codigos) {
+  const perms = new Set((codigos || []).map(Number).filter(Boolean));
+  const tem = (cod) => admin || perms.has(cod);
+  return { ok: true, login, nome: nome || login, admin,
+    caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
+    abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
+    movimentar: tem(PERM_ABRIR_COMPLETO) || tem(PERM_MOVIMENTO),
+    transferir: tem(PERM_TRANSFERIR),
+    divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
+    pedidos: tem(PERM_PEDIDO_CAIXA),
+    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
+}
+/** Usuário criado por nós (não existe no Consumer). */
+async function permsLocal(l) {
+  const u = (await sql`SELECT * FROM usuario_local WHERE login=${l} AND ativo`)[0];
+  if (!u) return null;
+  return { ...perfilDeCodigos(l, u.nome, !!u.admin, u.perms || []), local: true };
+}
 async function permsDoUsuario(login) {
   const l = String(login || '').trim().toLowerCase();
   if (!l) return { ok: false };
-  const r = await qi(`SELECT TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.NOME,'')) NOME, TRIM(COALESCE(u.TIPO,'')) TIPO, a.PERMISSAO
-    FROM VWUSUARIOS u LEFT JOIN ACESSO a ON a.USUARIO=u.CODIGO
-    WHERE u.ATIVO='S' AND LOWER(TRIM(u.LOGIN))='${fbEsc(l)}'`);
-  if (!r.ok) throw new Error('cadastro de usuários indisponível: ' + r.err);
-  if (!r.rows.length) return { ok: false };
+  let r;
+  try {
+    r = await qi(`SELECT TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.NOME,'')) NOME, TRIM(COALESCE(u.TIPO,'')) TIPO, a.PERMISSAO
+      FROM VWUSUARIOS u LEFT JOIN ACESSO a ON a.USUARIO=u.CODIGO
+      WHERE u.ATIVO='S' AND LOWER(TRIM(u.LOGIN))='${fbEsc(l)}'`);
+  } catch (e) { r = { ok: false, err: e.message }; }
+  // Consumer fora do ar não pode derrubar o caixa inteiro: se o login é nosso,
+  // ele entra do mesmo jeito.
+  if (!r.ok) {
+    const loc = await permsLocal(l);
+    if (loc) return loc;
+    throw new Error('cadastro de usuários indisponível: ' + r.err);
+  }
+  if (!r.rows.length) {
+    const loc = await permsLocal(l);
+    return loc || { ok: false };
+  }
   const admin = String(r.rows[0].TIPO || '').trim().toUpperCase() === 'ADMINISTRADOR';
   const perms = new Set(r.rows.map((x) => Number(x.PERMISSAO)).filter(Boolean));
   const tem = (cod) => admin || perms.has(cod);
@@ -3633,7 +3688,7 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
+    admin: p.admin, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
     pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
@@ -3652,10 +3707,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -3996,6 +4051,42 @@ async function fbAbrirCaixa(usuarioCodigo, fundo, obs) {
   const g = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE CODIGOUSUARIO=${usuarioCodigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
   return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
 }
+// "Saldo anterior" pra reabrir o caixa do operador: o MESMO fundo do último
+// caixa dele (SALDOINICIAL), não o total do dia. Assim o fechamento bate (não
+// carrega as vendas de ontem como fundo). 0 se ele nunca teve caixa.
+async function fbSaldoAnterior(usuarioCodigo) {
+  const r = await qi(`SELECT FIRST 1 COALESCE(SALDOINICIAL, 0) S FROM CAIXA
+    WHERE CODIGOUSUARIO=${usuarioCodigo} AND DATAFECHAMENTO IS NOT NULL ORDER BY CODIGO DESC`);
+  return r.ok && r.rows.length ? Number(r.rows[0].S) || 0 : 0;
+}
+// Caixa do operador pra RECEBER NA MAQUININHA:
+//  - tem caixa aberto → usa ele (mas se estiver preso a OUTRA maquininha e o
+//    serial vier diferente, BLOQUEIA: uma pessoa não recebe em 2 maquininhas);
+//  - não tem → abre o DELE automaticamente com o saldo anterior de fundo.
+// `terminal` (serial da maquininha) só vem quando o app manda; sem ele, não
+// trava (mas o auto-abrir funciona igual).
+async function fbCaixaMaquininha(login, terminal) {
+  const term = String(terminal || '').trim();
+  const meu = await fbCaixaDoOperador(login);
+  if (meu) {
+    if (term) {
+      const [v] = await sql`SELECT terminal FROM caixa_maquininha WHERE caixa_codigo=${meu.codigo}`;
+      if (v && v.terminal && v.terminal !== term)
+        return { erro: 'Seu caixa está aberto em OUTRA maquininha. Feche o caixa lá antes de receber aqui.' };
+      if (!v) await sql`INSERT INTO caixa_maquininha (caixa_codigo, terminal) VALUES (${meu.codigo}, ${term})
+        ON CONFLICT (caixa_codigo) DO NOTHING`;
+    }
+    return { codigo: meu.codigo };
+  }
+  const u = await fbUsuarioCodigo(login);
+  if (!u) return { codigo: null }; // sem usuário no Consumer: cai no caminho antigo ('ser')
+  const fundo = await fbSaldoAnterior(u.codigo);
+  const cod = await fbAbrirCaixa(u.codigo, fundo,
+    `Aberto automaticamente às ${fbHoraLocal()} (maquininha ${login}${term ? ' ' + term : ''})`);
+  if (cod && term) await sql`INSERT INTO caixa_maquininha (caixa_codigo, terminal) VALUES (${cod}, ${term})
+    ON CONFLICT (caixa_codigo) DO NOTHING`;
+  return { codigo: cod };
+}
 // Caixa pro pagamento ELETRÔNICO: o aberto que houver; sem nenhum, abre o do
 // usuário "ser" (sistema) sozinho — a maquininha não pode travar por caixa.
 async function fbCaixaAbertoOuSistema() {
@@ -4129,6 +4220,53 @@ async function apiCaixaFecharCaixa(body, quem) {
       ${dif}, ${String(body.obs || '').slice(0, 300) || null})`;
   imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
   return { ok: true, esperado, contado, dif, linhas };
+}
+// ---- USUÁRIOS PRÓPRIOS (sem passar pelo Consumer) ----
+// Perfis prontos, com os MESMOS códigos de permissão do PDV — assim a regra
+// do sistema continua uma só, e amanhã dá pra migrar o usuário pro Consumer
+// sem reescrever nada.
+const PERFIS_LOCAIS = {
+  gerente: { nome: 'Gerente (como o perfil do Tony)',
+    perms: [3, 4, 5, 7, 10, 12, 16, 22, 26, 30, 35, 38, 40, 41, 44, 46, 50, 52, 53, 54, 58] },
+  caixa: { nome: 'Caixa (recebe, desconto, gaveta, fecha)', perms: [5, 10, 12, 22, 26, 30, 50, 53, 54] },
+  garcom: { nome: 'Garçom (comanda mobile)', perms: [53, 54, 40, 41] },
+};
+async function apiUsuariosLocais(quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só administrador' };
+  const rows = await sql`SELECT login, nome, perms, admin, ativo, criado_em, criado_por
+    FROM usuario_local ORDER BY login`;
+  return { ok: true, usuarios: rows, perfis: Object.entries(PERFIS_LOCAIS).map(([k, v]) => ({ id: k, nome: v.nome })) };
+}
+async function apiUsuarioLocalSalvar(body, quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só administrador cria usuário' };
+  const login = String(body.login || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!/^[a-z0-9._-]{3,20}$/.test(login)) return { ok: false, erro: 'login: 3 a 20 letras/números, sem espaço' };
+  const nome = String(body.nome || '').trim().slice(0, 60) || login;
+  const perfil = PERFIS_LOCAIS[String(body.perfil || 'garcom')] || PERFIS_LOCAIS.garcom;
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  // login que já existe no Consumer fica com o Consumer — dois cadastros com
+  // o mesmo nome é confusão garantida na hora de apurar quem fez o quê
+  let doPdv = null;
+  try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
+  if (doPdv?.ok && doPdv.rows.length) return { ok: false, erro: `"${login}" já existe no Consumer — use outro nome ou dê a permissão por lá` };
+  const ja = (await sql`SELECT login FROM usuario_local WHERE login=${login}`)[0];
+  if (!ja && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  if (pin && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  const salt = randomBytes(16).toString('hex');
+  if (ja) {
+    await sql`UPDATE usuario_local SET nome=${nome}, perms=${perfil.perms}, ativo=${body.ativo !== false}
+      WHERE login=${login}`;
+    if (pin) await sql`UPDATE usuario_local SET pin_hash=${pinHash(pin, salt)}, salt=${salt} WHERE login=${login}`;
+    // o PIN do garçom e o do caixa são o mesmo cadastro: mantém alinhado
+    if (pin) await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, atualizado: true, login };
+  }
+  await sql`INSERT INTO usuario_local (login, nome, pin_hash, salt, perms, admin, criado_por)
+    VALUES (${login}, ${nome}, ${pinHash(pin, salt)}, ${salt}, ${perfil.perms}, ${false}, ${quem.login})`;
+  await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
+    ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+  return { ok: true, criado: true, login, perfil: perfil.nome };
 }
 /** TRANSFERIR ITENS ESCOLHIDOS pra outra mesa. O "Transferir" que já existia
  *  leva a mesa INTEIRA; aqui o caixa marca o que vai (a cerveja que era da
@@ -9790,10 +9928,12 @@ function bannerCx(){
       (a.saidas?' · saídas '+brl(a.saidas):'')+' · na gaveta ~'+brl(a.esperado)+'</div>'+
       '<div class="row" style="margin-top:8px">'+
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
-      '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>';}
+      '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>'+
+      (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'');}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
-      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
+      ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'+
+       (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'')
       :'<div class="mut">sem permissão de abrir caixa — dinheiro bloqueado (cartão/Pix seguem normais)</div>');
 }
 async function cxEstado(){
@@ -9843,13 +9983,14 @@ function pintaMain(){
   if(TELA==='confcx')return telaConfCx(el);
   if(TELA==='rel')return telaRel(el);
   if(TELA==='mov')return telaMov(el);
+  if(TELA==='usu')return telaUsu(el);
   if(TELA==='canc')return telaCancItem(el);
   if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -9878,7 +10019,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
@@ -10321,6 +10462,44 @@ async function acaoFechaCx(){
   FLASH='✓ Caixa fechado. Dinheiro: sistema '+brl(r.esperado)+' · contado '+brl(r.contado)+
     (Math.abs(r.dif)>0.009?' · diferença '+brl(r.dif):' · bateu certinho 🎯');
   DECL=null;await cxEstado();voltarMesas();
+}
+/* ---- USUÁRIOS DO SISTEMA (só admin) ----
+   Login que existe só aqui, sem passar pelo cadastro do Consumer. Usa os
+   MESMOS códigos de permissão do PDV, então a regra do caixa é uma só. */
+async function telaUsu(el){
+  el.innerHTML='<div class="mut" style="padding:16px">carregando…</div>';
+  var d;try{d=await jget('/api/caixa/usuarios')}catch(e){d=null}
+  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'não deu')+'</div>'+
+    '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">👤 Usuários criados aqui</div>'+
+    '<div class="mut">Não mexem no cadastro do Consumer. Quem já é do PDV continua entrando com o login de lá.</div>';
+  h+=(d.usuarios||[]).map(function(u){
+    return '<div class="it"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span></span>'+
+      '<b class="'+(u.ativo?'quit':'saldo')+'">'+(u.ativo?'ativo':'desativado')+'</b></div>';
+  }).join('')||'<div class="mut" style="margin-top:8px">nenhum ainda</div>';
+  h+='</div><div class="card"><div class="tit" style="margin-top:0">Novo usuário (ou trocar o PIN de um)</div>'+
+    '<input id="u_login" placeholder="login (sem espaço)" autocapitalize="none">'+
+    '<input id="u_nome" placeholder="nome da pessoa" style="margin-top:8px">'+
+    '<div class="mut" style="margin-top:10px">PIN (4 a 8 números)</div>'+
+    '<input id="u_pin" class="num" inputmode="numeric" maxlength="8" readonly onclick="kpAlvo(this)">'+kpHtml('u_pin')+
+    '<div class="mut" style="margin-top:10px">O que ele pode fazer</div>'+
+    '<select id="u_perfil" style="width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px">'+
+    (d.perfis||[]).map(function(p){return '<option value="'+p.id+'">'+esc(p.nome)+'</option>'}).join('')+'</select>'+
+    '<button class="big" onclick="salvaUsu()">Salvar usuário</button>'+
+    '<div id="uerr" class="err"></div></div>';
+  el.innerHTML=h;
+}
+async function salvaUsu(){
+  var er=document.getElementById('uerr');er.textContent='';
+  var b={login:(document.getElementById('u_login')||{}).value||'',
+    nome:(document.getElementById('u_nome')||{}).value||'',
+    pin:(document.getElementById('u_pin')||{}).value||'',
+    perfil:(document.getElementById('u_perfil')||{}).value||'garcom'};
+  var r=await jpost('/api/caixa/usuarios',b);
+  if(!r.ok){er.textContent=r.erro||'não deu';return}
+  FLASH='✓ '+(r.criado?'Usuário '+r.login+' criado':'Usuário '+r.login+' atualizado');
+  telaUsu(document.getElementById('main'));
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
@@ -10930,6 +11109,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (p === '/api/caixa/usuarios' && req.method !== 'POST') return res.end(JSON.stringify(await apiUsuariosLocais(quem)));
+      if (req.method === 'POST' && p === '/api/caixa/usuarios') return res.end(JSON.stringify(await apiUsuarioLocalSalvar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
