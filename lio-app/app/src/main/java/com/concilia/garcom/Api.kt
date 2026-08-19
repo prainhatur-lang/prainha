@@ -563,6 +563,7 @@ object Api {
         .put("nsu", p.nsu)
         .put("autorizacao", p.autorizacao)
         .put("bandeira", p.bandeira)
+        .put("terminal", p.terminal) // serial da maquininha: trava "1 caixa por terminal" no servidor
 }
 
 // optString que devolve null (o padrão do org.json devolve "" ou "null").
