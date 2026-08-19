@@ -10582,7 +10582,14 @@ function conferirTelas() {
 async function main() {
   conferirTelas();
   const iF = process.argv.indexOf('--fotos');
-  if (iF > 0 && process.argv[iF + 1]) { await importarFotos(process.argv[iF + 1]); return; }
+  if (iF > 0) {
+    // com --fotos, ou importa ou SAI — caminho vazio/errado não pode virar um
+    // segundo servidor rodando por engano (aconteceu na 0001 em 19/08: a
+    // variável da pasta veio vazia e o "importador" subiu espelho e tudo)
+    const dirFotos = process.argv[iF + 1];
+    if (!dirFotos || !existsSync(dirFotos)) { console.error('[fotos] pasta inválida: ' + JSON.stringify(dirFotos || '(vazia)') + ' — nada importado, servidor NÃO sobe com --fotos'); process.exit(2); }
+    await importarFotos(dirFotos); return;
+  }
   await initSchema(); console.log('[schema] ok');
   await carregarGarcomSecret().catch((e) => console.error('[garcom] segredo: ' + e.message));
   // limpa nome de colaborador que a busca antiga gravou como se fosse cliente
