@@ -3599,6 +3599,7 @@ const PERM_CAIXA = 10, PERM_DESCONTO = 12, PERM_FIADO = 16, PERM_PEDIDO_CAIXA = 
 // controle de caixa: 1 = operação completa, 30 = simplificada (abrir/fechar),
 // 48 = pode fechar com saldo divergente do esperado, 26 = entradas/saídas da gaveta
 const PERM_ABRIR_COMPLETO = 1, PERM_ABRIR_SIMPLES = 30, PERM_DIVERGENTE = 48, PERM_MOVIMENTO = 26;
+const PERM_TRANSFERIR = 50; // Consumer: "Permitir transferir/copiar itens de um pedido para o outro"
 // 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
 // todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
 const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
@@ -3617,6 +3618,7 @@ async function permsDoUsuario(login) {
     caixa: tem(PERM_CAIXA), desconto: tem(PERM_DESCONTO), fiado: tem(PERM_FIADO),
     abrir: tem(PERM_ABRIR_COMPLETO) || tem(PERM_ABRIR_SIMPLES),
     movimentar: tem(PERM_ABRIR_COMPLETO) || tem(PERM_MOVIMENTO),
+    transferir: tem(PERM_TRANSFERIR),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
     excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
@@ -3631,7 +3633,7 @@ async function caixaDaRequisicao(req, u) {
 async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
-    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar,
+    pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
     pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
@@ -3650,10 +3652,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -4127,6 +4129,48 @@ async function apiCaixaFecharCaixa(body, quem) {
       ${dif}, ${String(body.obs || '').slice(0, 300) || null})`;
   imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
   return { ok: true, esperado, contado, dif, linhas };
+}
+/** TRANSFERIR ITENS ESCOLHIDOS pra outra mesa. O "Transferir" que já existia
+ *  leva a mesa INTEIRA; aqui o caixa marca o que vai (a cerveja que era da
+ *  mesa ao lado, o prato lançado no número errado). Move os complementos
+ *  junto — molho não fica órfão na mesa antiga — e se a origem ficar vazia,
+ *  a casca é encerrada (senão a mesa fica "ocupada" pra sempre). */
+async function apiCaixaTransferirItens(body, quem) {
+  if (!(quem && (quem.transferir || quem.admin))) return { ok: false, erro: 'sem permissão (Transferir itens de um pedido para o outro)' };
+  const de = Number(body.de), para = Number(body.para);
+  const cods = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean) : [];
+  if (!(de >= 1 && para >= 1)) return { ok: false, erro: 'número inválido' };
+  if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
+  if (!cods.length) return { ok: false, erro: 'marque o que vai' };
+  let pedDe, pedPara;
+  try {
+    pedDe = await fbAcharPedido(de);
+    if (!pedDe) return { ok: false, erro: `não há conta aberta na ${de >= COMANDA_DE ? 'comanda' : 'mesa'} ${de}` };
+    pedPara = await fbAcharPedido(para);
+    if (!pedPara) pedPara = await fbCriarPedido(para);
+  } catch (e) { return { ok: false, erro: e.message }; }
+  // o item só sai se for MESMO da conta de origem (o número pode ter mudado
+  // entre a tela e o toque) e leva os filhos dele
+  const lista = await qi(`SELECT CODIGO FROM ITENSPEDIDO
+    WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL
+      AND (CODIGO IN (${cods.join(',')}) OR CODIGOPAI IN (${cods.join(',')}))`);
+  if (!lista.ok) return { ok: false, erro: 'FB itens: ' + lista.err };
+  const mover = (lista.rows || []).map((x) => Number(x.CODIGO));
+  if (!mover.length) return { ok: false, erro: 'esses itens não estão mais nessa conta' };
+  const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGO IN (${mover.join(',')})`);
+  if (!mv.ok) return { ok: false, erro: 'não consegui mover: ' + mv.err };
+  try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* recalcula no ciclo */ }
+  // origem esvaziou? mesma regra da transferência de mesa inteira
+  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
+  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
+    await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
+    await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
+  }
+  await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
+    VALUES (${de}, ${para}, 'item', ${mover.length}, ${quem.login}, ${pedDe}, ${pedPara})`;
+  espelho().catch(() => {});
+  return { ok: true, itens: mover.length, msg: `${cods.length} item(ns) foram pra mesa ${para}.` };
 }
 /** TIRAR OS 10% quando o cliente não quer pagar (e devolver, se foi engano).
  *  É a mesma permissão do desconto no Consumer (12 = "Aplicar Descontos /
@@ -9801,7 +9845,7 @@ function pintaMain(){
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -9830,7 +9874,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
@@ -10382,20 +10426,38 @@ function transfCx(){
   ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML='<div class="card" style="max-width:380px;width:100%;margin:0">'+
     '<div class="tit" style="margin-top:0">⇄ Transferir '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' '+MESA+'</div>'+
-    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Tudo desta mesa vai pra qual mesa?')+'</div>'+
+    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Pra qual mesa vai?')+'</div>'+
     '<input id="trdest" class="num" inputmode="numeric" placeholder="mesa destino" style="margin-top:8px">'+
+    // ⚠️ ANTES ERA TUDO OU NADA: só dava pra levar a mesa inteira. O caixa
+    // precisa mover UM item (a cerveja que era da mesa ao lado, o prato
+    // lançado no número errado). Marcou algum? vai só o marcado.
+    (TRITENS()?'<div class="mut" style="margin-top:10px">O que vai (nada marcado = a mesa inteira):</div>'+TRITENS():'')+
     '<button class="big" onclick="doTransfCx(this)">Transferir</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="document.getElementById(\\'trov\\').remove()">Voltar</button>'+
     '<div id="trerr" class="err"></div></div>';
   document.body.appendChild(ov);
   var e=document.getElementById('trdest');if(e)e.focus();
 }
+/* itens da conta pra marcar na transferência (só quem pode transferir item) */
+function TRITENS(){
+  if(!PODE.transf&&!PODE.cancPed)return '';
+  var its=(CONTA&&CONTA.itens||[]).filter(function(i){return i.item_codigo});
+  if(!its.length)return '';
+  return '<div style="max-height:190px;overflow:auto;margin-top:6px">'+its.map(function(i,ix){
+    return '<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px solid #f0f0f4;font-size:14px">'+
+      '<input type="checkbox" class="tri" value="'+i.item_codigo+'" style="width:20px;height:20px">'+
+      '<span style="flex:1">'+i.quantidade+'× '+esc(i.nome)+'</span><b>'+brl(i.valor_total)+'</b></label>';
+  }).join('')+'</div>';
+}
 async function doTransfCx(btn){
   var d=Number(((document.getElementById('trdest')||{}).value||'').replace(/\\D/g,''));
   var er=document.getElementById('trerr');
   if(!(d>0)){if(er)er.textContent='digite a mesa destino';return}
+  var marcados=[].slice.call(document.querySelectorAll('.tri:checked')).map(function(c){return Number(c.value)});
   btn.disabled=true;
-  var r=await jpost('/api/venda/transferir',{de:MESA,para:d,por:NOME||''});
+  var r=marcados.length
+    ? await jpost('/api/caixa/transferir-itens',{de:MESA,para:d,itens:marcados})
+    : await jpost('/api/venda/transferir',{de:MESA,para:d,por:NOME||''});
   btn.disabled=false;
   if(!r||!r.ok){if(er)er.textContent=(r&&r.erro)||'não transferiu';return}
   var o=document.getElementById('trov');if(o)o.remove();
@@ -10848,6 +10910,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
