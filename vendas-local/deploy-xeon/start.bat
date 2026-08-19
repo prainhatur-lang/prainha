@@ -11,6 +11,7 @@ set "FB_USER=SYSDBA"
 set "FB_PASSWORD=masterkey"
 set "PG_URL=postgres://prainha_app:Prainha_App_2026@127.0.0.1:5432/vendas_local"
 set "PORT=8080"
+REM Porta 8080 é a porta dos QR codes impressos nas mesas
 
 REM --- consulta de CPF (SPC Brasil) ---
 REM O cadastro e' por CPF: o nome vem da consulta (casa -> ja atendidos ->
