@@ -533,6 +533,17 @@ async function espelho() {
       await sql`INSERT INTO mesa_estado (numero, conta_codigo, fechada_em) VALUES (${n}, NULL, now())
         ON CONFLICT (numero) DO UPDATE SET conta_codigo=NULL, fechada_em=now()`;
     }
+    // RECLAMAÇÃO DE MESA FECHADA É LIXO. O cliente foi embora; o aviso vermelho
+    // seguia no KDS até alguém tocar "atender" — e no KDS não havia botão
+    // nenhum. Ficaram 3 abertas, uma de 4 DIAS (19/08).
+    if (encerrados.length) {
+      await sql`UPDATE chamado SET atendido_em=now(), atendido_por='conta fechou'
+        WHERE atendido_em IS NULL AND mesa = ANY(${encerrados})`;
+    }
+    // backstop: chamado que passou do turno some sozinho — alarme de ontem
+    // ensina a equipe a ignorar alarme.
+    await sql`UPDATE chamado SET atendido_em=now(), atendido_por='expirou'
+      WHERE atendido_em IS NULL AND criado_em < now() - interval '6 hours'`;
     await sql`TRUNCATE comanda, comanda_item`;
     if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
     if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
@@ -5367,13 +5378,20 @@ function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(
 // Reclamações em SEQUÊNCIA, da mais antiga pra mais nova — "mesa 1, mesa 8, mesa 10".
 function faixaReclamacao(d){
   var rs=d.reclamacoes||[];if(!rs.length)return '';
-  var mesas=rs.map(function(r){
-    return '<span class="ms">'+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · '+r.ha_min+'min':'')+'</span>';
+  // ⚠️ ANTES ERA SÓ LEITURA: o KDS mostrava a reclamação e não tinha como
+  // liberar — só o garçom conseguia, na tela dele. Agora cada uma tem o seu
+  // "✓ resolvido" aqui também.
+  return rs.map(function(r){
+    return '<div class="alerta">⚠️ '+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · há '+r.ha_min+'min':'')+
+      '<span class="sub">'+(r.texto?esc(r.texto):'Cliente reclamou')+' — adiante o que for dessa mesa.</span>'+
+      '<button class="b" style="margin-top:8px;background:#fff;color:#7f1d1d;font-weight:800" '+
+      'onclick="recResolvido('+r.id+')">✓ resolvido</button></div>';
   }).join('');
-  var txts=rs.filter(function(r){return r.texto}).map(function(r){return (r.mesa?'Mesa '+r.mesa+': ':'')+esc(r.texto)});
-  return '<div class="alerta">⚠️ ATENÇÃO '+mesas+
-    '<span class="sub">Cliente reclamou — adiante o que for dessa mesa.'+
-    (txts.length?' — '+txts.join(' · '):'')+'</span></div>';
+}
+async function recResolvido(id){
+  try{await fetch('/api/chamado/atender',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({id:id,por:(typeof AREA!=='undefined'&&AREA&&AREA.cod)?('praca '+AREA.cod):'kds'})})}catch(e){}
+  if(typeof VIEW==='function'&&VIEW)VIEW();
 }
 // CANCELADO com item ainda na fila: banner GRANDE no topo. Sem isso o item
 // sumia do KDS no ciclo seguinte e a cozinha seguia fazendo (ou o runner
