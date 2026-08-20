@@ -53,17 +53,21 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     );
   }
 
-  // Saldo por cliente: soma credito - soma debito dos movimentos. Saldo
-  // sempre considera TODO o historico (saldo verdadeiro do cliente). Se
-  // tiver filtro de data, ele filtra apenas QUAIS clientes aparecem na
-  // lista (clientes com mov no periodo) — saldo continua all-time pra
-  // refletir o que esta em aberto.
+  // ⚠️ O SALDO NÃO É credito - debito. O Consumer grava o PAGAMENTO como
+  // DEBITO NEGATIVO (-95,20), então subtrair somava o pagamento em vez de
+  // abater: a tela mostrava R$ 1.108.546,78 onde o PDV mostra R$ 173.231,94
+  // (19/08). Há ainda um terceiro caso (compensação de folha = CREDITO com
+  // IMPORTADO='S', que ABATE), então nem somar resolve.
+  //
+  // A verdade é o saldo corrido que o próprio Consumer mantém no cadastro
+  // (CONTATOS.SALDOATUALCONTACORRENTE, espelhado em cliente) — é o número da
+  // tela dele. Os movimentos seguem valendo pro extrato e pros totais.
   const saldos = await db
     .select({
       clienteId: schema.movimentoContaCorrente.clienteId,
       codigoClienteExterno: schema.movimentoContaCorrente.codigoClienteExterno,
       saldo: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)
-        - COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
+        + COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
       totalCredito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)`,
       totalDebito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
       ultimoMov: sql<Date>`MAX(${schema.movimentoContaCorrente.dataHora})`,
@@ -109,6 +113,8 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
       codigoExterno: schema.cliente.codigoExterno,
       nome: schema.cliente.nome,
       cpfOuCnpj: schema.cliente.cpfOuCnpj,
+      // saldo oficial (o mesmo da tela do Consumer) — manda nele
+      saldoCadastro: schema.cliente.saldoAtualContaCorrente,
     })
     .from(schema.cliente)
     .where(
@@ -122,12 +128,14 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
 
   const linhas = saldos
     .map((s) => {
-      const saldo = +Number(s.saldo).toFixed(2);
       const c = s.clienteId
         ? clienteById.get(s.clienteId)
         : s.codigoClienteExterno != null
           ? clienteByCodigo.get(s.codigoClienteExterno)
           : null;
+      // manda o saldo do cadastro (o do PDV); a soma dos movimentos só entra
+      // quando o cliente não tem cadastro espelhado
+      const saldo = +Number(c?.saldoCadastro ?? s.saldo ?? 0).toFixed(2);
       return {
         key: s.clienteId ?? `ext-${s.codigoClienteExterno}`,
         clienteId: s.clienteId ?? c?.id ?? null,
@@ -152,17 +160,20 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     })
     .sort((a, b) => b.saldo - a.saldo);
 
-  // KPIs
-  const totalDevem = saldos.reduce((s, r) => {
-    const v = Number(r.saldo);
-    return v > 0 ? s + v : s;
-  }, 0);
-  const qtdDevem = saldos.filter((r) => Number(r.saldo) > 0.01).length;
-  const totalCredor = saldos.reduce((s, r) => {
-    const v = Number(r.saldo);
-    return v < 0 ? s + v : s;
-  }, 0);
-  const qtdCredor = saldos.filter((r) => Number(r.saldo) < -0.01).length;
+  // KPIs — em cima do MESMO saldo que a tabela mostra (o do cadastro), senão
+  // o topo diz um número e a lista outro.
+  const todas = saldos.map((s) => {
+    const c = s.clienteId
+      ? clienteById.get(s.clienteId)
+      : s.codigoClienteExterno != null
+        ? clienteByCodigo.get(s.codigoClienteExterno)
+        : null;
+    return +Number(c?.saldoCadastro ?? s.saldo ?? 0).toFixed(2);
+  });
+  const totalDevem = todas.reduce((acc, v) => (v > 0 ? acc + v : acc), 0);
+  const qtdDevem = todas.filter((v) => v > 0.01).length;
+  const totalCredor = todas.reduce((acc, v) => (v < 0 ? acc + v : acc), 0);
+  const qtdCredor = todas.filter((v) => v < -0.01).length;
 
   function href(next: Partial<SP>): string {
     const qs = new URLSearchParams();

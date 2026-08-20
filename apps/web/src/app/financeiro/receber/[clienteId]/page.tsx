@@ -58,6 +58,7 @@ export default async function ClienteFiadoPage(props: {
       codigoExterno: schema.cliente.codigoExterno,
       nome: schema.cliente.nome,
       cpfOuCnpj: schema.cliente.cpfOuCnpj,
+      saldoCadastro: schema.cliente.saldoAtualContaCorrente,
     })
     .from(schema.cliente)
     .where(eq(schema.cliente.id, clienteId))
@@ -167,10 +168,14 @@ export default async function ClienteFiadoPage(props: {
     .orderBy(desc(schema.movimentoContaCorrente.dataHora))
     .limit(PAGE_SIZE);
 
-  // Saldo total do cliente (sem aplicar filtros — sempre mostra o saldo real)
+  // Saldo total do cliente (sem aplicar filtros — sempre mostra o saldo real).
+  // ⚠️ credito - debito NÃO dá o saldo: o pagamento é gravado como DEBITO
+  // NEGATIVO, então subtrair somava o pagamento. Quem manda é o saldo corrido
+  // do cadastro (o mesmo número da tela do Consumer); a soma abaixo fica só
+  // pros totais de crédito/pagamento e como reserva.
   const [saldoRow] = await db
     .select({
-      saldo: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0) - COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
+      saldo: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0) + COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
       totalCredito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)`,
       totalDebito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
       qtdTotal: sql<number>`COUNT(*)::int`,
@@ -187,7 +192,8 @@ export default async function ClienteFiadoPage(props: {
         ),
       ),
     );
-  const saldo = Number(saldoRow?.saldo ?? 0);
+  const saldoMovs = Number(saldoRow?.saldo ?? 0);
+  const saldo = cli.saldoCadastro != null ? Number(cli.saldoCadastro) : saldoMovs;
 
   // Lançamentos que a tela criou e a loja ainda não aplicou (ou deram erro).
   // Sem mostrar isto, quem lança acha que sumiu — a fila roda a cada ~1 min.
