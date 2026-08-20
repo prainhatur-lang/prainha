@@ -9,7 +9,7 @@
 // alvo 'variante' → PRODUTODETALHE (uma linha por TAMANHO — é onde mora o
 //                   preço de venda e a pausa, coisa que confunde quem acha
 //                   que preço é do produto)
-export type AlvoCampo = 'produto' | 'variante';
+export type AlvoCampo = 'produto' | 'variante' | 'pergunta' | 'opcao';
 export type TipoCampo = 'texto' | 'numero' | 'inteiro' | 'bool';
 
 export interface CampoProduto {
@@ -40,6 +40,19 @@ export const CAMPOS_PRODUTO: Record<string, CampoProduto> = {
   },
   comanda_mobile: { alvo: 'variante', tipo: 'bool', label: 'Aparece na comanda do garçom' },
   cardapio_digital: { alvo: 'variante', tipo: 'bool', label: 'Aparece no cardápio digital' },
+  // WIZARD: a mesma pergunta serve vários pratos — alterar aqui muda pra
+  // todos que a usam. A tela avisa quantos são antes de salvar.
+  pergunta_texto: { alvo: 'pergunta', tipo: 'texto', label: 'Pergunta' },
+  pergunta_min: {
+    alvo: 'pergunta', tipo: 'inteiro', label: 'Respostas mínimas',
+    dica: 'maior que 0 torna a pergunta obrigatória',
+  },
+  pergunta_max: { alvo: 'pergunta', tipo: 'inteiro', label: 'Respostas máximas', dica: '0 = sem limite' },
+  opcao_nome: { alvo: 'opcao', tipo: 'texto', label: 'Opção' },
+  opcao_preco: {
+    alvo: 'opcao', tipo: 'numero', label: 'Preço da opção',
+    dica: 'PRECOPROMO: o que se cobra quando vai junto do prato (0 = cortesia)',
+  },
 };
 
 /** Normaliza o valor pro formato que viaja na fila (string ou null). */

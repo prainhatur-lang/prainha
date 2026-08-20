@@ -18,6 +18,8 @@ const Body = z.object({
   produtoId: z.string().uuid(),
   /** PRODUTODETALHE.CODIGO — obrigatório pros campos de tamanho (preço, pausa). */
   varianteCodigo: z.number().int().positive().optional(),
+  /** CODIGO da pergunta ou da opção do wizard, quando o campo é de lá. */
+  alvoCodigo: z.number().int().positive().optional(),
   campos: z.record(z.string(), z.unknown()),
 });
 
@@ -27,7 +29,7 @@ export async function POST(request: Request) {
 
   const parsed = Body.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
-  const { produtoId, varianteCodigo, campos } = parsed.data;
+  const { produtoId, varianteCodigo, alvoCodigo, campos } = parsed.data;
 
   const [prod] = await db
     .select({
@@ -75,6 +77,33 @@ export async function POST(request: Request) {
   if (varianteAtual && varianteAtual.codigoProdutoExterno !== prod.codigoExterno) {
     return NextResponse.json({ ok: false, erro: 'esse tamanho é de outro produto' }, { status: 400 });
   }
+  // Pergunta/opção vivem fora do produto: a mesma pergunta serve vários
+  // pratos, então o "antes" vem da própria linha do wizard.
+  const [perguntaAtual] = alvoCodigo
+    ? await db
+        .select({
+          texto: schema.wizardPergunta.texto,
+          min: schema.wizardPergunta.respostasMin,
+          max: schema.wizardPergunta.respostasMax,
+        })
+        .from(schema.wizardPergunta)
+        .where(and(
+          eq(schema.wizardPergunta.filialId, prod.filialId),
+          eq(schema.wizardPergunta.codigoExterno, alvoCodigo),
+        ))
+        .limit(1)
+    : [undefined];
+  const [opcaoAtual] = alvoCodigo
+    ? await db
+        .select({ nome: schema.wizardOpcao.nome, preco: schema.wizardOpcao.precoPromo })
+        .from(schema.wizardOpcao)
+        .where(and(
+          eq(schema.wizardOpcao.filialId, prod.filialId),
+          eq(schema.wizardOpcao.codigoExterno, alvoCodigo),
+        ))
+        .limit(1)
+    : [undefined];
+
   const [prodAtual] = await db
     .select()
     .from(schema.produto)
@@ -97,6 +126,11 @@ export async function POST(request: Request) {
       pausado: v?.dataPausado != null,
       comanda_mobile: v?.comandaMobile,
       cardapio_digital: v?.cardapioDigital,
+      pergunta_texto: perguntaAtual?.texto,
+      pergunta_min: perguntaAtual?.min,
+      pergunta_max: perguntaAtual?.max,
+      opcao_nome: opcaoAtual?.nome,
+      opcao_preco: opcaoAtual?.preco,
     };
     const x = mapa[campo];
     if (x == null) return null;
@@ -111,6 +145,15 @@ export async function POST(request: Request) {
     if (def.alvo === 'variante' && !varianteCodigo) {
       return NextResponse.json({ ok: false, erro: `${def.label} é por tamanho — escolha o tamanho` }, { status: 400 });
     }
+    if ((def.alvo === 'pergunta' || def.alvo === 'opcao') && !alvoCodigo) {
+      return NextResponse.json({ ok: false, erro: `${def.label}: faltou o código da ${def.alvo}` }, { status: 400 });
+    }
+    if (def.alvo === 'pergunta' && !perguntaAtual) {
+      return NextResponse.json({ ok: false, erro: 'pergunta não encontrada no espelho' }, { status: 404 });
+    }
+    if (def.alvo === 'opcao' && !opcaoAtual) {
+      return NextResponse.json({ ok: false, erro: 'opção não encontrada no espelho' }, { status: 404 });
+    }
     const n = normalizaValor(campo, bruto);
     if (!n.ok) return NextResponse.json({ ok: false, erro: n.erro }, { status: 400 });
     const valorAntes = antes(campo);
@@ -120,6 +163,8 @@ export async function POST(request: Request) {
       produtoId: prod.id,
       produtoCodigoExterno: prod.codigoExterno,
       varianteCodigoExterno: def.alvo === 'variante' ? varianteCodigo! : null,
+      alvo: def.alvo,
+      alvoCodigo: def.alvo === 'pergunta' || def.alvo === 'opcao' ? alvoCodigo! : null,
       produtoNome: prod.nome ?? null,
       campo,
       valor: n.valor,

@@ -46,6 +46,7 @@ export async function GET(request: Request) {
       variante: schema.produtoAlteracao.varianteCodigoExterno,
       campo: schema.produtoAlteracao.campo,
       valor: schema.produtoAlteracao.valor,
+      alvo_codigo: schema.produtoAlteracao.alvoCodigo,
     })
     .from(schema.produtoAlteracao)
     .where(and(eq(schema.produtoAlteracao.filialId, f), eq(schema.produtoAlteracao.status, 'pendente')))
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
     const def = CAMPOS_PRODUTO[linha.campo];
     const v = linha.valor;
     const bool = v === '1' ? true : v === '0' ? false : null;
-    if (def?.alvo === 'produto') {
+    if (def?.alvo === 'produto' && linha.produtoCodigoExterno != null) {
       const set: Record<string, unknown> = {};
       if (linha.campo === 'nome') set.nome = v;
       else if (linha.campo === 'descricao') set.descricao = v;
@@ -107,6 +108,30 @@ export async function POST(request: Request) {
           .where(and(
             eq(schema.produto.filialId, filialId),
             eq(schema.produto.codigoExterno, linha.produtoCodigoExterno),
+          ));
+      }
+    } else if ((def?.alvo === 'pergunta' || def?.alvo === 'opcao') && linha.alvoCodigo != null) {
+      // O espelho do wizard é substituído inteiro pelo envio da loja logo em
+      // seguida; aqui só adianta o campo alterado pra tela não piscar velho.
+      if (linha.campo === 'pergunta_texto' || linha.campo === 'pergunta_min' || linha.campo === 'pergunta_max') {
+        const set: Record<string, unknown> = {};
+        if (linha.campo === 'pergunta_texto') set.texto = v;
+        else if (linha.campo === 'pergunta_min') set.respostasMin = Number(v ?? 0);
+        else set.respostasMax = Number(v ?? 0);
+        await db
+          .update(schema.wizardPergunta)
+          .set(set)
+          .where(and(
+            eq(schema.wizardPergunta.filialId, filialId),
+            eq(schema.wizardPergunta.codigoExterno, linha.alvoCodigo),
+          ));
+      } else {
+        await db
+          .update(schema.wizardOpcao)
+          .set(linha.campo === 'opcao_nome' ? { nome: v } : { precoPromo: v ?? '0' })
+          .where(and(
+            eq(schema.wizardOpcao.filialId, filialId),
+            eq(schema.wizardOpcao.codigoExterno, linha.alvoCodigo),
           ));
       }
     } else if (def?.alvo === 'variante' && linha.varianteCodigoExterno != null) {

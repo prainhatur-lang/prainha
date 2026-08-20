@@ -2,7 +2,8 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql as sqlDrizzle } from 'drizzle-orm';
+import { alias as aliasDrizzle } from 'drizzle-orm/pg-core';
 import { AppHeader } from '@/components/app-header';
 import { AbaFicha } from './aba-ficha';
 import { AbaFornecedores } from './aba-fornecedores';
@@ -235,6 +236,99 @@ export default async function ProdutoDetalhePage(props: {
           .limit(20)
       : [];
 
+  // WIZARD: perguntas que os tamanhos deste produto disparam, com as opções.
+  // A MESMA pergunta serve vários pratos — por isso o contador de uso, pra
+  // ninguém renomear "ponto da carne" achando que mexe só na picanha.
+  const codigosVar = variantesPdv.map((v) => v.codigo);
+  const perguntasPdv =
+    codigosVar.length > 0
+      ? await db
+          .select({
+            varianteCodigo: schema.wizardProduto.codigoVarianteExterno,
+            ordem: schema.wizardProduto.ordem,
+            codigo: schema.wizardPergunta.codigoExterno,
+            texto: schema.wizardPergunta.texto,
+            min: schema.wizardPergunta.respostasMin,
+            max: schema.wizardPergunta.respostasMax,
+          })
+          .from(schema.wizardProduto)
+          .innerJoin(
+            schema.wizardPergunta,
+            and(
+              eq(schema.wizardPergunta.filialId, produto.filialId),
+              eq(schema.wizardPergunta.codigoExterno, schema.wizardProduto.codigoPergunta),
+            ),
+          )
+          .where(and(
+            eq(schema.wizardProduto.filialId, produto.filialId),
+            inArray(schema.wizardProduto.codigoVarianteExterno, codigosVar),
+          ))
+          .orderBy(asc(schema.wizardProduto.ordem))
+      : [];
+
+  const codigosPergunta = [...new Set(perguntasPdv.map((x) => x.codigo))];
+  const opcoesPdv =
+    codigosPergunta.length > 0
+      ? await db
+          .select({
+            codigo: schema.wizardOpcao.codigoExterno,
+            codigoPergunta: schema.wizardOpcao.codigoPergunta,
+            nome: schema.wizardOpcao.nome,
+            precoPromo: schema.wizardOpcao.precoPromo,
+            codigoVarianteExterno: schema.wizardOpcao.codigoVarianteExterno,
+          })
+          .from(schema.wizardOpcao)
+          .where(and(
+            eq(schema.wizardOpcao.filialId, produto.filialId),
+            inArray(schema.wizardOpcao.codigoPergunta, codigosPergunta),
+          ))
+          .orderBy(asc(schema.wizardOpcao.nome))
+      : [];
+
+  const usoPergunta =
+    codigosPergunta.length > 0
+      ? await db
+          .select({
+            codigo: schema.wizardProduto.codigoPergunta,
+            usos: sqlDrizzle<number>`count(distinct ${schema.wizardProduto.codigoVarianteExterno})::int`,
+          })
+          .from(schema.wizardProduto)
+          .where(and(
+            eq(schema.wizardProduto.filialId, produto.filialId),
+            inArray(schema.wizardProduto.codigoPergunta, codigosPergunta),
+          ))
+          .groupBy(schema.wizardProduto.codigoPergunta)
+      : [];
+
+  // Complementos aceitos por cada tamanho (PRODUTODETALHECOMPLEMENTO).
+  const compVar = aliasDrizzle(schema.produtoVariante, 'comp_var');
+  const compProd = aliasDrizzle(schema.produto, 'comp_prod');
+  const complementosPdv =
+    codigosVar.length > 0
+      ? await db
+          .select({
+            varianteCodigo: schema.produtoVarianteComplemento.codigoVarianteExterno,
+            complementoCodigo: schema.produtoVarianteComplemento.codigoComplementoExterno,
+            nome: compProd.nome,
+            preco: compVar.precoVenda,
+          })
+          .from(schema.produtoVarianteComplemento)
+          .leftJoin(
+            compVar,
+            and(
+              eq(compVar.filialId, produto.filialId),
+              eq(compVar.codigoExterno, schema.produtoVarianteComplemento.codigoComplementoExterno),
+            ),
+          )
+          .leftJoin(compProd, eq(compProd.id, compVar.produtoId))
+          .where(and(
+            eq(schema.produtoVarianteComplemento.filialId, produto.filialId),
+            inArray(schema.produtoVarianteComplemento.codigoVarianteExterno, codigosVar),
+          ))
+          .orderBy(asc(compProd.nome))
+          .limit(300)
+      : [];
+
   const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv') => {
     const qs = a === 'ficha' ? '' : `?aba=${a}`;
     return `/cadastros/produtos/${id}${qs}`;
@@ -402,6 +496,28 @@ export default async function ProdutoDetalhePage(props: {
                 codigoBarra: v.codigoBarra,
               }))}
               pendentes={pendentesPdv}
+              perguntas={perguntasPdv.map((q) => ({
+                varianteCodigo: q.varianteCodigo,
+                codigo: q.codigo,
+                texto: q.texto,
+                min: q.min,
+                max: q.max,
+                usos: usoPergunta.find((u) => u.codigo === q.codigo)?.usos ?? 1,
+                opcoes: opcoesPdv
+                  .filter((o) => o.codigoPergunta === q.codigo)
+                  .map((o) => ({
+                    codigo: o.codigo,
+                    nome: o.nome,
+                    precoPromo: o.precoPromo,
+                    lancaVariante: o.codigoVarianteExterno,
+                  })),
+              }))}
+              complementos={complementosPdv.map((c) => ({
+                varianteCodigo: c.varianteCodigo,
+                codigo: c.complementoCodigo,
+                nome: c.nome,
+                preco: c.preco,
+              }))}
             />
           ) : aba === 'saldo' ? (
             <AbaSaldo

@@ -115,8 +115,12 @@ export const produtoAlteracao = pgTable(
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),
-    produtoCodigoExterno: integer('produto_codigo_externo').notNull(),
+    produtoCodigoExterno: integer('produto_codigo_externo'),
     varianteCodigoExterno: integer('variante_codigo_externo'),
+    /** produto · variante · pergunta · opcao — o que a linha altera. */
+    alvo: varchar('alvo', { length: 12 }).notNull().default('produto'),
+    /** CODIGO do alvo quando não é produto/variante (pergunta e opção do wizard). */
+    alvoCodigo: integer('alvo_codigo'),
     produtoNome: varchar('produto_nome', { length: 200 }),
     campo: varchar('campo', { length: 40 }).notNull(),
     valor: text('valor'),

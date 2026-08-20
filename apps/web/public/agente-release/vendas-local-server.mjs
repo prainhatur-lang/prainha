@@ -4630,12 +4630,25 @@ const CAMPO_FB = {
   comanda_mobile:     { tab: 'PRODUTODETALHE', col: 'COMANDAMOBILE',     tipo: 'i01'   },
   cardapio_digital:   { tab: 'PRODUTODETALHE', col: 'CARDAPIODIGITAL',   tipo: 'i01'   },
   pausado:            { tab: 'PRODUTODETALHE', col: 'DATAPAUSADO',       tipo: 'pausa' },
+  // WIZARD (perguntas de acompanhamento). Chaveado pelo código da própria
+  // pergunta/opção — não pelo produto, porque a MESMA pergunta serve vários
+  // pratos ("ponto da carne" vale pra picanha, contra e maminha).
+  pergunta_texto:     { tab: 'WIZARDPERGUNTAS', col: 'DESCRICAO',        tipo: 'texto', alvo: 'pergunta' },
+  pergunta_min:       { tab: 'WIZARDPERGUNTAS', col: 'QTDRESPOSTASMIN',  tipo: 'int',   alvo: 'pergunta' },
+  pergunta_max:       { tab: 'WIZARDPERGUNTAS', col: 'QTDRESPOSTASMAX',  tipo: 'int',   alvo: 'pergunta' },
+  opcao_nome:         { tab: 'WIZARDOPCOES',    col: 'DESCRICAO',        tipo: 'texto', alvo: 'opcao' },
+  opcao_preco:        { tab: 'WIZARDOPCOES',    col: 'PRECOPROMO',       tipo: 'num',   alvo: 'opcao' },
 };
-async function fbAlterarProduto({ produto, variante, campo, valor }) {
+async function fbAlterarProduto({ produto, variante, campo, valor, alvo_codigo }) {
   const def = CAMPO_FB[campo];
   if (!def) return { ok: false, erro: 'campo não permitido: ' + campo };
-  const prod = Number(produto);
-  if (!Number.isFinite(prod) || prod <= 0) return { ok: false, erro: 'produto inválido' };
+  const alvoCod = alvo_codigo == null ? null : Number(alvo_codigo);
+  const wizard = def.alvo === 'pergunta' || def.alvo === 'opcao';
+  if (wizard && !(Number.isFinite(alvoCod) && alvoCod > 0)) {
+    return { ok: false, erro: 'faltou o código da ' + def.alvo };
+  }
+  const prod = wizard ? 0 : Number(produto);
+  if (!wizard && (!Number.isFinite(prod) || prod <= 0)) return { ok: false, erro: 'produto inválido' };
   const varc = variante == null ? null : Number(variante);
   if (def.tab === 'PRODUTODETALHE' && !(Number.isFinite(varc) && varc > 0)) {
     return { ok: false, erro: 'esse campo é por tamanho e veio sem o tamanho' };
@@ -4662,12 +4675,15 @@ async function fbAlterarProduto({ produto, variante, campo, valor }) {
   }
   // Existe mesmo? UPDATE que não acha linha volta "ok" no Firebird e a tela
   // mostraria "aplicado" sem nada ter mudado.
-  const alvo = def.tab === 'PRODUTOS'
-    ? await qi(`SELECT FIRST 1 CODIGO FROM PRODUTOS WHERE CODIGO=${prod}`)
-    : await qi(`SELECT FIRST 1 CODIGO FROM PRODUTODETALHE WHERE CODIGO=${varc} AND CODIGOPRODUTO=${prod} AND DATADELETE IS NULL`);
+  const alvo = wizard
+    ? await qi(`SELECT FIRST 1 CODIGO FROM ${def.tab} WHERE CODIGO=${alvoCod} AND DATADELETE IS NULL`)
+    : def.tab === 'PRODUTOS'
+      ? await qi(`SELECT FIRST 1 CODIGO FROM PRODUTOS WHERE CODIGO=${prod}`)
+      : await qi(`SELECT FIRST 1 CODIGO FROM PRODUTODETALHE WHERE CODIGO=${varc} AND CODIGOPRODUTO=${prod} AND DATADELETE IS NULL`);
   if (!alvo.ok) return { ok: false, erro: 'FB consulta: ' + alvo.err };
   if (!alvo.rows.length) {
-    return { ok: false, erro: def.tab === 'PRODUTOS' ? 'produto não existe no PDV' : 'tamanho não existe (ou foi excluído) neste produto' };
+    return { ok: false, erro: wizard ? (def.alvo === 'pergunta' ? 'pergunta não existe no PDV' : 'opção não existe no PDV')
+      : def.tab === 'PRODUTOS' ? 'produto não existe no PDV' : 'tamanho não existe (ou foi excluído) neste produto' };
   }
   // Etiqueta e cozinha são FK: código inexistente derrubaria o produto do
   // cardápio sem ninguém entender por quê.
@@ -4675,10 +4691,53 @@ async function fbAlterarProduto({ produto, variante, campo, valor }) {
     const e = await qi(`SELECT FIRST 1 CODIGO FROM ETIQUETAS WHERE CODIGO=${sqlVal} AND DATADELETE IS NULL`);
     if (!e.ok || !e.rows.length) return { ok: false, erro: 'categoria (etiqueta) não existe no PDV' };
   }
-  const onde = def.tab === 'PRODUTOS' ? `CODIGO=${prod}` : `CODIGO=${varc}`;
+  const onde = wizard ? `CODIGO=${alvoCod}` : def.tab === 'PRODUTOS' ? `CODIGO=${prod}` : `CODIGO=${varc}`;
   const up = await qi(`UPDATE ${def.tab} SET ${def.col}=${sqlVal} WHERE ${onde}`);
   if (!up.ok) return { ok: false, erro: 'FB update: ' + up.err };
   return { ok: true };
+}
+// ---- ESPELHO DO WIZARD + ETIQUETAS: a loja EMPURRA pra nuvem ----
+// Estas quatro tabelas ficaram fora do CDC (WIZARDPERGUNTAS, WIZARDOPCOES,
+// WIZARD, ETIQUETAS). Antes só subiam por script rodado do Mac com VPN até a
+// loja — o espelho vivia meses atrasado. Agora sobe daqui, de graça, junto
+// com o resto do canal HMAC.
+let espelhoWizardRodando = false;
+async function loopEspelhoWizard() {
+  if (espelhoWizardRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  espelhoWizardRodando = true;
+  try {
+    const perg = await qi(`SELECT CODIGO C, TRIM(DESCRICAO) D, QTDRESPOSTASMIN MN, QTDRESPOSTASMAX MX
+      FROM WIZARDPERGUNTAS WHERE DATADELETE IS NULL`);
+    if (!perg.ok) throw new Error('perguntas: ' + perg.err);
+    // nome da opção: DESCRICAO, senão OBSERVACAO, senão o nome do produto que ela lança
+    const opc = await qi(`SELECT o.CODIGO C, o.CODIGOWIZARDPERGUNTA P, o.PRECOPROMO PR, o.CODIGOPRODUTODETALHE PD,
+        TRIM(COALESCE(NULLIF(TRIM(o.DESCRICAO),''), NULLIF(TRIM(o.OBSERVACAO),''), pr.NOME)) N
+      FROM WIZARDOPCOES o
+      LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=o.CODIGOPRODUTODETALHE
+      LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
+      WHERE o.DATADELETE IS NULL`);
+    if (!opc.ok) throw new Error('opções: ' + opc.err);
+    const lig = await qi(`SELECT CODIGOPRODUTODETALHE V, CODIGOWIZARDPERGUNTA P, ORDEM O
+      FROM WIZARD WHERE DATADELETE IS NULL`);
+    if (!lig.ok) throw new Error('ligações: ' + lig.err);
+    const eti = await qi(`SELECT CODIGO C, TRIM(DESCRICAO) D FROM ETIQUETAS WHERE DATADELETE IS NULL`);
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const corpo = {
+      f: FILIAL_ID, e, s: nfceAssina('espelho', e),
+      perguntas: perg.rows.map((x) => ({ c: N(x.C), d: T(x.D), mn: N(x.MN) || 0, mx: N(x.MX) || 0 })),
+      opcoes: opc.rows.map((x) => ({ c: N(x.C), p: N(x.P), n: T(x.N), pr: N(x.PR) || 0, pd: N(x.PD) })),
+      ligacoes: lig.rows.map((x) => ({ v: N(x.V), p: N(x.P), o: N(x.O) || 0 })),
+      etiquetas: eti.ok ? eti.rows.map((x) => ({ c: N(x.C), d: T(x.D) })) : [],
+    };
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/wizard-espelho`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(corpo), signal: AbortSignal.timeout(20000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) console.error('[wizard] nuvem recusou:', j?.erro || r.status);
+    else console.log(`[wizard] espelhado: ${j.perguntas} perguntas · ${j.opcoes} opções · ${j.ligacoes} ligações · ${j.etiquetas} etiquetas`);
+  } catch (err) { console.error('[wizard] espelho:', err.message); }
+  finally { espelhoWizardRodando = false; }
 }
 let produtoFilaRodando = false;
 async function loopProdutoFila() {
@@ -4709,6 +4768,11 @@ async function loopProdutoFila() {
     // Catálogo da loja (garçom, KDS, cardápio do cliente) sai do espelho local:
     // sem isto o preço novo só apareceria no próximo ciclo de 5 min.
     if (mudou) await espelhoCatalogo().catch((err) => console.error('[produto] espelho:', err.message));
+    // Mexeu em pergunta/opção? O espelho da nuvem é substituído por envio
+    // inteiro — sem isso a tela mostraria o texto velho até o próximo ciclo.
+    if (j.alteracoes.some((a) => String(a.campo || '').startsWith('pergunta_') || String(a.campo || '').startsWith('opcao_'))) {
+      await loopEspelhoWizard().catch(() => {});
+    }
   } catch (err) { console.error('[produto] fila:', err.message); }
   finally { produtoFilaRodando = false; }
 }
@@ -11991,6 +12055,8 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
+  setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa
