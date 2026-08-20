@@ -155,6 +155,126 @@ export function ConferenciaCaixaClient({
   const maq = (rel?.caixas ?? []).filter((c) => c.tipo === 'maquininha');
   const sis = (rel?.caixas ?? []).filter((c) => c.tipo !== 'maquininha');
 
+  // ===== IMPRESSÃO — sintético/analítico, por caixa, por filial ou todas =====
+  const [printEscopo, setPrintEscopo] = useState<'filial' | 'todas'>('filial');
+  const [printando, setPrintando] = useState(false);
+
+  function esc(s: unknown): string {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function htmlCaixa(c: CaixaLinha, pags: Pagamento[] | null): string {
+    const formas = (c.formas ?? []).map((f) => `${esc(f.nome)} ${brl(f.valor)} (${f.n}×)`).join(' · ');
+    const status = c.fechado_em
+      ? `fechado ${hora(c.fechado_em)} · esperado ${brl(c.esperado ?? 0)} · contado ${brl(c.contado ?? 0)}`
+      : `ABERTO · fundo ${brl(c.fundo)}`;
+    let h = `<div class="cx"><div class="cxh"><b>${esc(c.quem ?? `caixa ${c.codigo}`)}</b>` +
+      `<span class="mut"> · caixa ${c.codigo} · ${c.tipo === 'maquininha' ? 'maquininha' : 'sistema'}</span>` +
+      `<b class="dir">${brl(c.recebido ?? 0)}</b></div>` +
+      `<div class="mut">${formas || 'sem recebimentos'}</div>` +
+      `<div class="mut">${status}</div>`;
+    if (pags) {
+      h += pags.length === 0
+        ? '<div class="mut">sem lançamentos</div>'
+        : '<table><tr><th>hora</th><th>forma</th><th>NSU</th><th>pedido</th><th class="dir">valor</th></tr>' +
+          pags.map((p) =>
+            `<tr><td>${hora(p.quando)}</td><td>${esc(p.forma)}</td><td>${esc(p.nsu ?? '')}</td>` +
+            `<td>${p.pedido ?? ''}</td><td class="dir">${brl(p.valor)}</td></tr>`).join('') +
+          `<tr class="tot"><td colspan="4">total do caixa</td><td class="dir">${brl(pags.reduce((s, p) => s + p.valor, 0))}</td></tr></table>`;
+    }
+    return h + '</div>';
+  }
+
+  function htmlFilial(nome: string, r: Relatorio, dets: Map<number, Pagamento[]> | null): string {
+    const tot = r.formas.reduce((s, f) => s + f.valor, 0);
+    let h = `<h1>Conferência de caixa — ${esc(nome)} — ${data.split('-').reverse().join('/')}</h1>`;
+    h += '<h2>Por forma de pagamento</h2><table><tr><th>forma</th><th>qtd</th><th class="dir">valor</th></tr>' +
+      r.formas.map((f) => `<tr><td>${esc(f.nome)}</td><td>${f.n}×</td><td class="dir">${brl(f.valor)}</td></tr>`).join('') +
+      `<tr class="tot"><td colspan="2">Total</td><td class="dir">${brl(tot)}</td></tr></table>`;
+    const grupos: Array<[string, CaixaLinha[]]> = [
+      ['Caixas da maquininha', r.caixas.filter((c) => c.tipo === 'maquininha')],
+      ['Caixas do sistema', r.caixas.filter((c) => c.tipo !== 'maquininha')],
+    ];
+    for (const [titulo, lista] of grupos) {
+      if (!lista.length) continue;
+      h += `<h2>${titulo}</h2>` + lista.map((c) => htmlCaixa(c, dets ? (dets.get(c.codigo) ?? []) : null)).join('');
+    }
+    if (r.movs.length) {
+      h += '<h2>Entradas/saídas da gaveta</h2><table>' +
+        r.movs.map((m) => `<tr><td>${esc(m.obs || '—')}</td><td class="dir">${m.saida ? '− ' + brl(m.saida) : '+ ' + brl(m.entrada)}</td></tr>`).join('') +
+        '</table>';
+    }
+    return h;
+  }
+
+  function abrirImpressao(corpo: string) {
+    const w = window.open('', '_blank');
+    if (!w) { setMsg('O navegador bloqueou a janela de impressão — libere pop-ups.'); return; }
+    w.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Conferência de caixa</title><style>
+      body{font:12px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;color:#111;margin:24px;max-width:800px}
+      h1{font-size:17px;margin:0 0 2px}h2{font-size:13px;margin:16px 0 6px;border-bottom:1px solid #999;padding-bottom:2px}
+      table{width:100%;border-collapse:collapse;margin:4px 0}
+      th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #ccc;padding:2px 4px}
+      td{padding:2px 4px;border-bottom:1px solid #eee}.dir{text-align:right}
+      .tot td{border-top:1px solid #999;font-weight:700}.mut{color:#666;font-size:11px}
+      .cx{border:1px solid #ddd;border-radius:6px;padding:8px;margin:6px 0;page-break-inside:avoid}
+      .cxh b.dir{float:right}.rodape{margin-top:18px;color:#888;font-size:10px}
+      .quebra{page-break-before:always}
+      @media print{body{margin:8mm}}
+    </style></head><body>${corpo}
+    <div class="rodape">Gerado em ${new Date().toLocaleString('pt-BR')} · Concilia</div>
+    <script>window.onload=function(){window.print()}</` + `script></body></html>`);
+    w.document.close();
+  }
+
+  async function buscarRel(filialAlvo: string): Promise<Relatorio | null> {
+    try {
+      const r = await fetch(`/api/financeiro/caixa/relatorio?filial=${filialAlvo}&data=${data}`, { cache: 'no-store' });
+      const j = (await r.json()) as Relatorio;
+      return j.ok ? j : null;
+    } catch { return null; }
+  }
+
+  async function buscarDetalhes(filialAlvo: string, caixas: CaixaLinha[]): Promise<Map<number, Pagamento[]>> {
+    const m = new Map<number, Pagamento[]>();
+    for (const c of caixas) {
+      try {
+        const r = await fetch(`/api/financeiro/caixa/detalhe?filial=${filialAlvo}&caixa=${c.codigo}`, { cache: 'no-store' });
+        const j = (await r.json()) as Detalhe;
+        m.set(c.codigo, j.ok ? j.pagamentos : []);
+      } catch { m.set(c.codigo, []); }
+    }
+    return m;
+  }
+
+  async function imprimir(modo: 'sintetico' | 'analitico', caixaSo?: number) {
+    setPrintando(true);
+    setMsg(null);
+    try {
+      if (caixaSo != null) {
+        // um caixa só, sempre analítico
+        const r = rel ?? (await buscarRel(fil));
+        const c = r?.caixas.find((x) => x.codigo === caixaSo);
+        if (!r || !c) { setMsg('Caixa não encontrado no dia.'); return; }
+        const dets = await buscarDetalhes(fil, [c]);
+        const nome = filiais.find((f) => f.id === fil)?.nome ?? '';
+        abrirImpressao(htmlFilial(nome + ` · caixa ${caixaSo}`, { ...r, formas: c.formas?.map((fb, i) => ({ codigo: i, nome: fb.nome, valor: fb.valor, n: fb.n })) ?? [], caixas: [c], movs: [] }, dets));
+        return;
+      }
+      const alvos = printEscopo === 'todas' ? filiais : filiais.filter((f) => f.id === fil);
+      const partes: string[] = [];
+      for (const f of alvos) {
+        const r = await buscarRel(f.id);
+        if (!r) { partes.push(`<h1>Conferência de caixa — ${esc(f.nome)}</h1><div class="mut">sem dados (loja fora do ar?)</div>`); continue; }
+        const dets = modo === 'analitico' ? await buscarDetalhes(f.id, r.caixas) : null;
+        partes.push((partes.length ? '<div class="quebra"></div>' : '') + htmlFilial(f.nome, r, dets));
+      }
+      abrirImpressao(partes.join(''));
+    } finally {
+      setPrintando(false);
+    }
+  }
+
   const caixaRow = (c: CaixaLinha) => (
     <div key={c.codigo} className="border-b border-slate-100 py-2 last:border-0">
       <div className="flex items-center justify-between">
@@ -177,6 +297,13 @@ export function ConferenciaCaixaClient({
       <div className="mt-1 flex gap-3 text-xs">
         <button onClick={() => void verDetalhe(c.codigo)} className="text-sky-600 underline">
           {aberto === c.codigo ? 'ocultar' : '🔎 analítico'}
+        </button>
+        <button
+          onClick={() => void imprimir('analitico', c.codigo)}
+          disabled={printando}
+          className="text-slate-500 underline disabled:opacity-50"
+        >
+          🖨 imprimir
         </button>
         {!c.fechado_em && (
           <button
@@ -262,6 +389,34 @@ export function ConferenciaCaixaClient({
         <button onClick={() => void carregar()} className="ml-auto rounded-md border border-slate-300 px-2 py-1.5 text-sm">
           ↻ atualizar
         </button>
+      </div>
+
+      {/* Impressão: sintético/analítico × esta filial/todas (por caixa é o 🖨 na linha) */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3">
+        <span className="text-sm font-semibold text-slate-700">🖨 Imprimir:</span>
+        <select
+          value={printEscopo}
+          onChange={(e) => setPrintEscopo(e.target.value as 'filial' | 'todas')}
+          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+        >
+          <option value="filial">esta filial</option>
+          <option value="todas">todas as filiais</option>
+        </select>
+        <button
+          onClick={() => void imprimir('sintetico')}
+          disabled={printando}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Sintético
+        </button>
+        <button
+          onClick={() => void imprimir('analitico')}
+          disabled={printando}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Analítico
+        </button>
+        {printando && <span className="text-xs text-slate-400">montando o relatório…</span>}
       </div>
 
       {msg && (
