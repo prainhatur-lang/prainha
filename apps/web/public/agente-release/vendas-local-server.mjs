@@ -6860,6 +6860,35 @@ async function apiNsuCasar(data) {
   return { ok: true, dia, casados, pulados };
 }
 
+/** Reprocessa com a IA as fotos de comprovante SEM NSU (as de antes do OCR, ou
+ *  quando a leitura falhou): lê o papel de novo e grava o NSU no pagamento.
+ *  Complementa o /api/nsu/casar — este casa com o registro interno; aqui o
+ *  número vem do próprio cupom da maquininha avulsa. */
+async function apiNsuLerFotos(data) {
+  const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(data || ''))
+    ? String(data)
+    : new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const fotos = await sql`SELECT id, pagamento_codigo, pedido, numero, valor, arquivo
+    FROM recebimento_foto
+    WHERE quando >= ${dia} AND quando < (${dia}::date + 1)
+      AND nsu IS NULL AND arquivo IS NOT NULL AND pagamento_codigo IS NOT NULL
+    ORDER BY quando`;
+  const lidos = [];
+  const falhas = [];
+  for (const f of fotos) {
+    const d = await lerComprovanteNaNuvem(f.arquivo);
+    const nsu = String(d?.nsu ?? '').replace(/\D/g, '');
+    if (!nsu) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: d ? 'IA não achou NSU no papel' : 'OCR indisponível/foto ilegível' }); continue; }
+    const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${Number(f.pagamento_codigo)} AND NSUTRANSACAO IS NULL`);
+    if (!up.ok) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'FB: ' + up.err }); continue; }
+    await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE id=${Number(f.id)}`;
+    lidos.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, nsu,
+      operadora: d.operadora ?? null, valorNoPapel: d.valor ?? null,
+      valorConfere: d.valor == null ? null : Math.abs(Number(d.valor) - Number(f.valor)) < 0.005 });
+  }
+  return { ok: true, dia, lidos, falhas };
+}
+
 /** Últimas baixas, com quem apertou. */
 async function apiBaixas(limite, area) {
   const n = Math.min(200, Math.max(1, Number(limite) || 60));
@@ -13077,6 +13106,11 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(await apiNsuCasar(b.data)));
+    }
+    if (req.method === 'POST' && p === '/api/nsu/ler-fotos') {
+      const b = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
     }
     if (p.startsWith('/foto/')) {
       // caminho vem do banco, mas normalizo assim mesmo: nada de subir pasta
