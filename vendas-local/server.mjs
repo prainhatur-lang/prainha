@@ -11751,7 +11751,15 @@ function manForma(f){
   });
   var box=document.getElementById('mcomp'); if(!box)return;
   if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; manEstado(); return }
-  box.innerHTML='<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
+  // NSU: cartão manual SEM o NSU não tem par na conciliação e o caixa não
+  // fecha sozinho (caso do pedido 158633, 20/08). O número está impresso no
+  // próprio comprovante (DOC/NSU) — digitar aqui resolve na origem.
+  var nsuHtml=(f==='credito'||f==='debito')
+    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número DOC/NSU impresso no papel da maquininha</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="ex: 038512" style="margin-top:6px">'
+    : '';
+  box.innerHTML=nsuHtml+
+    '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
     '<div class="row" style="margin-top:6px">'+
       '<button class="seg" onclick="manCamera()">📷 Câmera do tablet</button>'+
       '<button class="seg" onclick="manCelular()">📱 Pelo meu celular</button>'+
@@ -11838,7 +11846,12 @@ async function manConfirmar(){
   var e=document.getElementById('merr'); e.textContent='';
   if(!(v>0)){e.textContent='digite o valor que entrou';return}
   if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
+  var nsu=((document.getElementById('mnsu')||{}).value||'').replace(/\\D/g,'');
+  if((MAN.forma==='credito'||MAN.forma==='debito')&&!nsu){
+    if(!confirm('Sem o NSU esse cartão NÃO bate sozinho na conciliação e o caixa fica aberto pra conferência manual.\\n\\nO número está no comprovante (DOC/NSU). Continuar sem ele?'))return;
+  }
   var b={numero:MESA,forma:MAN.forma,valor:v};
+  if(nsu)b.nsu=nsu;
   if(MAN.foto)b.foto=MAN.foto; else if(MAN.token)b.token=MAN.token;
   var r=await jpost('/api/caixa/receber-manual',b);
   if(!r.ok){
