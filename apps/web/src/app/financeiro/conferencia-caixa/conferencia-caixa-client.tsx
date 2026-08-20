@@ -23,6 +23,8 @@ interface CaixaLinha {
   contado: number | null;
   recebido?: number;
   formas?: CaixaFormaBreak[];
+  /** 'maquininha' = nasceu sozinho no terminal (só cartão/Pix) · 'sistema' = aberto por gente (gaveta) */
+  tipo?: string;
 }
 interface Mov {
   caixa: number;
@@ -150,6 +152,68 @@ export function ConferenciaCaixaClient({
 
   const abertos = (rel?.caixas ?? []).filter((c) => !c.fechado_em);
   const totGeral = (rel?.formas ?? []).reduce((s, f) => s + f.valor, 0);
+  const maq = (rel?.caixas ?? []).filter((c) => c.tipo === 'maquininha');
+  const sis = (rel?.caixas ?? []).filter((c) => c.tipo !== 'maquininha');
+
+  const caixaRow = (c: CaixaLinha) => (
+    <div key={c.codigo} className="border-b border-slate-100 py-2 last:border-0">
+      <div className="flex items-center justify-between">
+        <b className="text-slate-800">
+          {c.quem ?? `caixa ${c.codigo}`}
+          <span className="ml-1 text-xs font-normal text-slate-400">· caixa {c.codigo}</span>
+        </b>
+        <b>{brl(c.recebido ?? 0)}</b>
+      </div>
+      <div className="mt-0.5 text-xs text-slate-500">
+        {(c.formas ?? []).map((f) => `${f.nome} ${brl(f.valor)} (${f.n}×)`).join(' · ') || 'sem recebimentos'}
+      </div>
+      <div className="text-xs text-slate-400">
+        {c.fechado_em ? (
+          <>fechado · esperado {brl(c.esperado ?? 0)} · contado {brl(c.contado ?? 0)}</>
+        ) : (
+          <span className="font-semibold text-emerald-600">ABERTO · fundo {brl(c.fundo)}</span>
+        )}
+      </div>
+      <div className="mt-1 flex gap-3 text-xs">
+        <button onClick={() => void verDetalhe(c.codigo)} className="text-sky-600 underline">
+          {aberto === c.codigo ? 'ocultar' : '🔎 analítico'}
+        </button>
+        {!c.fechado_em && (
+          <button
+            onClick={() => void fechar(c.codigo)}
+            disabled={fechando}
+            className="text-red-600 underline disabled:opacity-50"
+          >
+            🔒 fechar este
+          </button>
+        )}
+      </div>
+      {aberto === c.codigo && (
+        <div className="mt-2 rounded-md bg-slate-50 p-2">
+          {detLoading && <div className="text-xs text-slate-400">carregando…</div>}
+          {!detLoading && det && (
+            <>
+              {det.pagamentos.length === 0 ? (
+                <div className="text-xs text-slate-400">sem recebimentos</div>
+              ) : (
+                det.pagamentos.map((p, i) => (
+                  <div key={i} className="flex justify-between border-b border-slate-100 py-1 text-xs last:border-0">
+                    <span className="text-slate-600">
+                      {hora(p.quando)} · {p.forma}
+                      {p.nsu ? ` · NSU ${p.nsu}` : ''}
+                      {p.pedido ? ` · ped ${p.pedido}` : ''}
+                    </span>
+                    <b>{brl(p.valor)}</b>
+                  </div>
+                ))
+              )}
+            </>
+          )}
+          {!detLoading && !det && <div className="text-xs text-red-500">não deu pra carregar o detalhe</div>}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
@@ -251,68 +315,31 @@ export function ConferenciaCaixaClient({
             </div>
           )}
 
-          {/* POR OPERADOR (sintético) com expandir (analítico) */}
+          {/* SEPARADO: caixa da MAQUININHA × caixa do SISTEMA (pedido do dono) */}
           <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <div className="mb-2 font-semibold text-slate-700">👤 Por operador</div>
-            {rel.caixas.length === 0 ? (
-              <div className="text-sm text-slate-400">nenhum caixa nesse dia</div>
+            <div className="mb-2 font-semibold text-slate-700">
+              💳 Caixas da maquininha{' '}
+              <span className="text-xs font-normal text-slate-400">
+                só cartão/Pix — fecham sozinhos às 04:00 quando BATEM (NSU a NSU); não bateu, fica aberto aqui
+              </span>
+            </div>
+            {maq.length === 0 ? (
+              <div className="text-sm text-slate-400">nenhum caixa da maquininha nesse dia</div>
             ) : (
-              rel.caixas.map((c) => (
-                <div key={c.codigo} className="border-b border-slate-100 py-2 last:border-0">
-                  <div className="flex items-center justify-between">
-                    <b className="text-slate-800">{c.quem ?? `caixa ${c.codigo}`}</b>
-                    <b>{brl(c.recebido ?? 0)}</b>
-                  </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
-                    {(c.formas ?? []).map((f) => `${f.nome} ${brl(f.valor)} (${f.n}×)`).join(' · ') || 'sem recebimentos'}
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    {c.fechado_em ? (
-                      <>fechado · esperado {brl(c.esperado ?? 0)} · contado {brl(c.contado ?? 0)}</>
-                    ) : (
-                      <span className="font-semibold text-emerald-600">ABERTO · fundo {brl(c.fundo)}</span>
-                    )}
-                  </div>
-                  <div className="mt-1 flex gap-3 text-xs">
-                    <button onClick={() => void verDetalhe(c.codigo)} className="text-sky-600 underline">
-                      {aberto === c.codigo ? 'ocultar' : '🔎 analítico'}
-                    </button>
-                    {!c.fechado_em && (
-                      <button
-                        onClick={() => void fechar(c.codigo)}
-                        disabled={fechando}
-                        className="text-red-600 underline disabled:opacity-50"
-                      >
-                        🔒 fechar este
-                      </button>
-                    )}
-                  </div>
-                  {aberto === c.codigo && (
-                    <div className="mt-2 rounded-md bg-slate-50 p-2">
-                      {detLoading && <div className="text-xs text-slate-400">carregando…</div>}
-                      {!detLoading && det && (
-                        <>
-                          {det.pagamentos.length === 0 ? (
-                            <div className="text-xs text-slate-400">sem recebimentos</div>
-                          ) : (
-                            det.pagamentos.map((p, i) => (
-                              <div key={i} className="flex justify-between border-b border-slate-100 py-1 text-xs last:border-0">
-                                <span className="text-slate-600">
-                                  {hora(p.quando)} · {p.forma}
-                                  {p.nsu ? ` · NSU ${p.nsu}` : ''}
-                                  {p.pedido ? ` · ped ${p.pedido}` : ''}
-                                </span>
-                                <b>{brl(p.valor)}</b>
-                              </div>
-                            ))
-                          )}
-                        </>
-                      )}
-                      {!detLoading && !det && <div className="text-xs text-red-500">não deu pra carregar o detalhe</div>}
-                    </div>
-                  )}
-                </div>
-              ))
+              maq.map(caixaRow)
+            )}
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="mb-2 font-semibold text-slate-700">
+              🧰 Caixas do sistema{' '}
+              <span className="text-xs font-normal text-slate-400">
+                gaveta/dinheiro — fechamento com conferência humana
+              </span>
+            </div>
+            {sis.length === 0 ? (
+              <div className="text-sm text-slate-400">nenhum caixa do sistema nesse dia</div>
+            ) : (
+              sis.map(caixaRow)
             )}
           </div>
 

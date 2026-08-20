@@ -4352,10 +4352,27 @@ async function loopFecharCaixasMaquininha() {
     const abertos = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
       FROM CAIXA c WHERE c.DATAFECHAMENTO IS NULL`);
     if (!abertos.ok) return;
-    let n = 0;
+    let n = 0, pulados = 0;
     for (const c of abertos.rows) {
       if (!T(c.OBS).startsWith('Aberto automaticamente')) continue; // sistema: não toca
       const cod = Number(c.CODIGO);
+      // ⚠️ REGRA DO DONO: só fecha se o caixa BATER — todo pagamento com NSU
+      // e com par no registro do sistema (venda_pagamento), e ZERO dinheiro.
+      // Não bateu = fica ABERTO pra gente ver (Conferência do web mostra).
+      const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU
+        FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
+      if (!pg.ok) { pulados++; continue; }
+      let bate = true;
+      for (const p of pg.rows) {
+        if (Number(p.F) === FORMA.DINHEIRO) { bate = false; break; } // maquininha não recebe dinheiro
+        const nsu = p.NSU != null ? String(p.NSU) : '';
+        if (!nsu) { bate = false; break; } // pagamento sem NSU não confere
+        const [par] = await sql`SELECT id FROM venda_pagamento
+          WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
+            AND valor = ${Number(p.V)} LIMIT 1`;
+        if (!par) { bate = false; break; } // sem par no nosso registro
+      }
+      if (!bate) { pulados++; console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu — fica aberto pra conferência`); continue; }
       const fundo = Number(c.FUNDO) || 0;
       let esperado = fundo;
       try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
@@ -4363,11 +4380,11 @@ async function loopFecharCaixasMaquininha() {
       if (up.ok) {
         n++;
         try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
-          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 (caixa da maquininha)'})`; } catch {}
+          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha BATEU (' + pg.rows.length + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
       }
     }
     await cfgSet('caixa_autofechar_dia', hoje);
-    if (n) console.log(`[caixa] fechamento automático: ${n} caixa(s) da maquininha fechado(s)`);
+    if (n || pulados) console.log(`[caixa] fechamento automático: ${n} fechado(s), ${pulados} não bateu/ficou aberto`);
   } catch (e) { console.error('[caixa] autofechar:', e.message); }
   finally { cxAutoRodando = false; }
 }
