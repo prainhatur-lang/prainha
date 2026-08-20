@@ -6921,11 +6921,27 @@ async function apiNsuDefinir(body) {
   }
   const atual = await qi(`SELECT CODIGO, NSUTRANSACAO FROM PAGAMENTOS WHERE CODIGO=${pagamento} AND DATADELETE IS NULL`);
   if (!atual.ok || !atual.rows.length) return { ok: false, erro: 'pagamento não encontrado' };
-  if (atual.rows[0].NSUTRANSACAO != null) return { ok: false, erro: `já tem NSU (${atual.rows[0].NSUTRANSACAO}) — não sobrescrevo` };
-  const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${pagamento} AND NSUTRANSACAO IS NULL`);
+  // sobrescrever=true corrige leitura errada da IA (ex.: pegou o nº do
+  // estabelecimento em vez do DOC) — sem a flag, NSU existente é intocável.
+  if (atual.rows[0].NSUTRANSACAO != null && body.sobrescrever !== true) {
+    return { ok: false, erro: `já tem NSU (${atual.rows[0].NSUTRANSACAO}) — não sobrescrevo (mande sobrescrever:true se for correção)` };
+  }
+  const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${pagamento}`);
   if (!up.ok) return { ok: false, erro: 'FB: ' + up.err };
-  try { await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE pagamento_codigo=${pagamento} AND nsu IS NULL`; } catch { /* segue */ }
-  return { ok: true, pagamento, nsu };
+  try { await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE pagamento_codigo=${pagamento}`; } catch { /* segue */ }
+  // forma errada no lançamento (caso real: DÉBITO registrado como Pix) —
+  // corrige só entre as formas manuais, nunca mexe em dinheiro.
+  let formaCorrigida = null;
+  if (body.forma) {
+    const nova = FORMAS_MANUAIS[String(body.forma)];
+    if (!nova || nova.codigo === FORMA.DINHEIRO) return { ok: true, pagamento, nsu, aviso: 'forma inválida — NSU gravado, forma mantida' };
+    const uf = await qi(`UPDATE PAGAMENTOS SET CODIGOFORMAPAGAMENTO=${nova.codigo} WHERE CODIGO=${pagamento} AND CODIGOFORMAPAGAMENTO IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})`);
+    if (uf.ok) {
+      formaCorrigida = nova.nome;
+      try { await sql`UPDATE recebimento_foto SET forma=${nova.nome} WHERE pagamento_codigo=${pagamento}`; } catch { /* segue */ }
+    }
+  }
+  return { ok: true, pagamento, nsu, formaCorrigida };
 }
 
 /** Últimas baixas, com quem apertou. */

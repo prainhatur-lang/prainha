@@ -53,7 +53,7 @@ const VAZIO: DadosComprovante = {
 const PROMPT = `Você lê COMPROVANTES DE PAGAMENTO brasileiros (cupom de maquininha de cartão e comprovante de Pix) e extrai dados estruturados.
 
 Extraia, do que estiver visível:
-1. nsu: o número da transação. Aparece como "NSU", "DOC", "NSU/DOC" ou "Nº DOC". Só dígitos.
+1. nsu: o número da transação. Aparece como "NSU", "DOC", "NSU/DOC" ou "Nº DOC" (ex: "DOC=073458"). Só dígitos, tipicamente 6-8. CUIDADO: o número LONGO de ~16 dígitos começando com 00111/0011 é o ESTABELECIMENTO (EC), NÃO o NSU — nunca use ele; se só o EC estiver legível, deixe nsu null.
 2. autorizacao: "AUT", "AUTORIZACAO", "COD AUT". Só dígitos/letras.
 3. operadora: a adquirente que imprimiu — Cielo, Rede, Stone, GetNet, PagSeguro, SumUp, Mercado Pago, Safrapay. Costuma ser o logo no topo.
 4. bandeira: Visa, Mastercard, Elo, Hipercard, Amex. null quando for Pix.
