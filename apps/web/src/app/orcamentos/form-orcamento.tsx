@@ -176,7 +176,15 @@ export function FormOrcamento({ locais, inicial }: Props) {
       : [{ nome: '', descricao: '', regime: 'livre', qtd: '' }],
   );
   const [sobremesaIncluida, setSobremesaIncluida] = useState(inicial.sobremesaIncluida);
-  const [sobremesaDescricao, setSobremesaDescricao] = useState(inicial.sobremesaDescricao);
+  // Várias sobremesas viram um texto só no banco, separadas por " · " —
+  // o split aqui remonta a lista ao editar (texto antigo vira 1 linha).
+  const [sobremesas, setSobremesas] = useState<string[]>(() => {
+    const partes = inicial.sobremesaDescricao
+      .split(' · ')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return partes.length > 0 ? partes : [''];
+  });
   const [cobrarEspaco, setCobrarEspaco] = useState(inicial.taxaEspaco !== '');
   const [taxaEspaco, setTaxaEspaco] = useState(inicial.taxaEspaco);
   const [cobrarExclusividade, setCobrarExclusividade] = useState(
@@ -261,7 +269,9 @@ export function FormOrcamento({ locais, inicial }: Props) {
             qtd: p.regime === 'limitado' ? p.qtd.trim() || undefined : undefined,
           })),
         sobremesaIncluida,
-        sobremesaDescricao: sobremesaIncluida ? sobremesaDescricao.trim() || null : null,
+        sobremesaDescricao: sobremesaIncluida
+          ? sobremesas.map((s) => s.trim()).filter(Boolean).join(' · ') || null
+          : null,
         taxaEspaco: cobrarEspaco ? parseValor(taxaEspaco) : null,
         taxaExclusividade: cobrarExclusividade ? parseValor(taxaExclusividade) : null,
         entradaValor: parseValor(entradaValor),
@@ -467,13 +477,43 @@ export function FormOrcamento({ locais, inicial }: Props) {
               Sobremesa incluída
             </label>
             {sobremesaIncluida && (
-              <InputMenu
-                value={sobremesaDescricao}
-                onChange={setSobremesaDescricao}
-                filialId={filialId}
-                placeholder="Qual? Ex: Cartola de banana com sorvete"
-                className="mt-2"
-              />
+              <div className="mt-2 space-y-2">
+                {sobremesas.map((s, i) => (
+                  <div key={i} className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                    <InputMenu
+                      value={s}
+                      onChange={(v) =>
+                        setSobremesas((atual) => atual.map((x, j) => (j === i ? v : x)))
+                      }
+                      filialId={filialId}
+                      placeholder={
+                        i === 0
+                          ? 'Qual? Ex: Cartola de banana com sorvete'
+                          : `Sobremesa ${i + 1}`
+                      }
+                    />
+                    {sobremesas.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSobremesas((atual) => atual.filter((_, j) => j !== i))
+                        }
+                        className="rounded-md px-2 text-sm text-rose-500 hover:bg-rose-50"
+                        title="Remover sobremesa"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setSobremesas((atual) => [...atual, ''])}
+                  className="rounded-md border border-dashed border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+                >
+                  + Adicionar outra sobremesa
+                </button>
+              </div>
             )}
           </div>
         </fieldset>
