@@ -261,7 +261,7 @@ export function AtendimentoClient(props: {
                     <span className="truncate text-[10px] text-slate-400">{c.filialNome}</span>
                   )}
                   {c.status === 'humano' && (
-                    <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">aguardando</span>
+                    <span className="rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-bold text-white">aguardando humano</span>
                   )}
                   {c.naoLidas > 0 && (
                     <span className="ml-auto rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
