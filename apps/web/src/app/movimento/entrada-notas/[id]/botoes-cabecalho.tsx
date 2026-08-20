@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition, useMemo, useEffect } from 'react';
+import QRCode from 'qrcode-svg';
 import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
@@ -670,12 +671,37 @@ function LinkCelular({
     setTimeout(() => setCopiado(false), 2000);
   }
 
-  // Sem boletos ainda — mostra link
+  // QR igual ao do caixa (recebimento manual): aponta a câmera e cai direto
+  // na página da foto — sem digitar/mandar link.
+  const qrSvg = useMemo(() => {
+    if (!url) return '';
+    return new QRCode({
+      content: url,
+      padding: 2,
+      width: 168,
+      height: 168,
+      color: '#0f172a',
+      background: '#ffffff',
+      ecl: 'M',
+      join: true,
+    }).svg();
+  }, [url]);
+
+  // Sem boletos ainda — mostra QR + link reserva
   if (boletos.length === 0) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-2.5">
         <p className="text-[10px] font-medium text-slate-700">
-          📱 Abra esse link no celular pra tirar a foto:
+          📱 Aponte a câmera do celular pro QR — abre direto a página da foto do boleto:
+        </p>
+        {qrSvg && (
+          <div
+            className="mx-auto mt-2 w-[168px] rounded-lg border border-slate-200 bg-white p-1"
+            dangerouslySetInnerHTML={{ __html: qrSvg }}
+          />
+        )}
+        <p className="mt-2 text-[9px] text-slate-400">
+          Se o QR não funcionar, copie o link:
         </p>
         <div className="mt-1.5 flex items-center gap-2">
           <input
