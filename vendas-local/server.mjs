@@ -6697,6 +6697,65 @@ async function limparFotosAntigas() {
   }
 }
 
+/** Comprovantes do recebimento manual: a foto que autorizou cada cartão/Pix.
+ *  Antes só o caixa via (na hora) — o dono perguntou "onde está o comprovante?"
+ *  e não havia onde achar. Lista por dia, com NSU e quem recebeu. */
+async function apiComprovantes(data) {
+  const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) ? String(data) : null;
+  try {
+    const rows = dia
+      ? await sql`SELECT id, numero, pedido, pagamento_codigo, forma, valor, arquivo, nsu, login, quando
+          FROM recebimento_foto WHERE quando::date = ${dia} ORDER BY quando DESC LIMIT 300`
+      : await sql`SELECT id, numero, pedido, pagamento_codigo, forma, valor, arquivo, nsu, login, quando
+          FROM recebimento_foto ORDER BY quando DESC LIMIT 300`;
+    return { ok: true, comprovantes: rows.map((r) => ({
+      id: Number(r.id), mesa: r.numero, pedido: r.pedido == null ? null : Number(r.pedido),
+      pagamento: r.pagamento_codigo == null ? null : Number(r.pagamento_codigo),
+      forma: r.forma, valor: Number(r.valor) || 0, arquivo: r.arquivo, nsu: r.nsu,
+      quem: r.login, quando: r.quando,
+    })) };
+  } catch (e) { return { ok: false, erro: e.message }; }
+}
+const COMPROVANTES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comprovantes — ${LOJA_NOME}</title><style>
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:#16161a;font-family:-apple-system,system-ui,sans-serif}
+.barra{background:#fff;border-bottom:1px solid #dcdce3;padding:12px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.barra b{font-size:15px;margin-right:auto}
+input[type=date]{font:inherit;padding:8px 10px;border:1px solid #dcdce3;border-radius:9px}
+.lista{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.cd{background:#fff;border:1px solid #dcdce3;border-radius:12px;padding:12px}
+.cd img{width:100%;border-radius:8px;margin-top:8px;cursor:zoom-in}
+.l1{display:flex;justify-content:space-between;font-weight:700}
+.mut{color:#6e6e78;font-size:12.5px;margin-top:2px}
+.nsu{display:inline-block;background:#eef6ff;color:#1d4ed8;border-radius:6px;padding:1px 7px;font-size:12px;font-weight:700;margin-top:4px}
+.semnsu{background:#fef2f2;color:#b91c1c}
+.vazio{padding:40px;text-align:center;color:#6e6e78}
+</style></head><body>
+<div class="barra"><b>🧾 Comprovantes do recebimento manual</b>
+  <input id="d" type="date"><a href="/caixa" style="text-decoration:none"><button style="font:inherit;padding:8px 14px;border:0;border-radius:9px;background:#5b5b66;color:#fff">Caixa</button></a></div>
+<div id="app" class="lista"></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function brl(v){return 'R$ '+(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
+async function carregar(){
+  var d=document.getElementById('d').value;
+  var j=await (await fetch('/api/comprovantes'+(d?'?data='+d:''),{cache:'no-store'})).json();
+  var app=document.getElementById('app');
+  if(!j.ok){app.innerHTML='<div class="vazio">'+esc(j.erro||'erro')+'</div>';return}
+  if(!j.comprovantes.length){app.innerHTML='<div class="vazio">Nenhum comprovante'+(d?' nesse dia':'')+'.</div>';return}
+  app.innerHTML=j.comprovantes.map(function(c){
+    return '<div class="cd"><div class="l1"><span>'+(c.mesa?'mesa '+c.mesa:'')+(c.pedido?' · ped '+c.pedido:'')+'</span><span>'+brl(c.valor)+'</span></div>'+
+      '<div class="mut">'+esc(c.forma)+' · '+esc(c.quem||'')+' · '+esc(String(c.quando).slice(0,16).replace('T',' '))+'</div>'+
+      (c.nsu?'<span class="nsu">NSU '+esc(c.nsu)+'</span>':'<span class="nsu semnsu">SEM NSU</span>')+
+      (c.arquivo?'<a href="/foto/'+esc(c.arquivo)+'" target="_blank"><img loading="lazy" src="/foto/'+esc(c.arquivo)+'"></a>':'<div class="mut">sem foto</div>')+
+      '</div>';
+  }).join('');
+}
+document.getElementById('d').value=new Date(Date.now()-3*3600*1000).toISOString().slice(0,10);
+document.getElementById('d').addEventListener('change',carregar);
+carregar();
+</script></body></html>`;
+
 /** Últimas baixas, com quem apertou. */
 async function apiBaixas(limite, area) {
   const n = Math.min(200, Math.max(1, Number(limite) || 60));
@@ -12849,6 +12908,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
+    if (p === '/comprovantes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTES_HTML); }
+    if (p === '/api/comprovantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiComprovantes(u.searchParams.get('data')))); }
     if (p.startsWith('/foto/')) {
       // caminho vem do banco, mas normalizo assim mesmo: nada de subir pasta
       const rel = decodeURIComponent(p.slice(6));
