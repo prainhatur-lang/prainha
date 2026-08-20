@@ -2,13 +2,14 @@
 // pedido, valor, modalidade, NSU). Cada movimento mostra a forma de
 // pagamento e NSU quando vem do PDV (JOIN com pagamento via codigo).
 
+import { Fragment } from 'react';
 import { notFound, redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { LancarFiado } from './lancar-fiado';
@@ -167,6 +168,62 @@ export default async function ClienteFiadoPage(props: {
     .where(and(...where))
     .orderBy(desc(schema.movimentoContaCorrente.dataHora))
     .limit(PAGE_SIZE);
+
+  // PRODUTOS de cada pedido que aparece no extrato. "O cliente deve R$ X" só
+  // vira conversa quando dá pra mostrar O QUE ele consumiu — e é a mesma
+  // pergunta que aparece quando ele contesta a dívida. Uma consulta só pros
+  // pedidos da página (índice idx_pedido_item_pedido), não uma por linha.
+  const pedidosNaTela = Array.from(
+    new Set(movimentos.map((m) => m.codigoPedidoExterno).filter((n): n is number => n != null)),
+  );
+  const itensPorPedido = new Map<
+    number,
+    Array<{ nome: string; qtd: number; valor: number; filhos: string[] }>
+  >();
+  if (pedidosNaTela.length > 0) {
+    const itens = await db
+      .select({
+        pedido: schema.pedidoItem.codigoPedidoExterno,
+        codigo: schema.pedidoItem.codigoExterno,
+        pai: schema.pedidoItem.codigoPai,
+        nome: schema.pedidoItem.nomeProduto,
+        qtd: schema.pedidoItem.quantidade,
+        valor: schema.pedidoItem.valorTotal,
+      })
+      .from(schema.pedidoItem)
+      .where(
+        and(
+          eq(schema.pedidoItem.filialId, cli.filialId),
+          inArray(schema.pedidoItem.codigoPedidoExterno, pedidosNaTela),
+          isNull(schema.pedidoItem.dataDelete),
+        ),
+      )
+      .orderBy(asc(schema.pedidoItem.codigoExterno));
+    // filho (codigo_pai) é resposta do wizard/complemento — vira detalhe do pai,
+    // não linha própria: "1× Picanha · ao ponto", igual o KDS mostra.
+    const porCodigo = new Map<number, { nome: string; qtd: number; valor: number; filhos: string[] }>();
+    for (const it of itens) {
+      if (it.pai != null) continue;
+      const linha = {
+        nome: (it.nome ?? 'item').trim(),
+        qtd: Number(it.qtd ?? 1),
+        valor: Number(it.valor ?? 0),
+        filhos: [] as string[],
+      };
+      porCodigo.set(it.codigo, linha);
+      const lista = itensPorPedido.get(it.pedido) ?? [];
+      lista.push(linha);
+      itensPorPedido.set(it.pedido, lista);
+    }
+    for (const it of itens) {
+      if (it.pai == null) continue;
+      const pai = porCodigo.get(it.pai);
+      const nome = (it.nome ?? '').trim();
+      if (!pai || !nome || /^nenhum$/i.test(nome)) continue;
+      if (!pai.filhos.includes(nome)) pai.filhos.push(nome);
+      pai.valor += Number(it.valor ?? 0);
+    }
+  }
 
   // Saldo total do cliente (sem aplicar filtros — sempre mostra o saldo real).
   // ⚠️ credito - debito NÃO dá o saldo: o pagamento é gravado como DEBITO
@@ -372,8 +429,10 @@ export default async function ClienteFiadoPage(props: {
                 movimentos.map((m) => {
                   const cred = Number(m.credito ?? 0);
                   const deb = Number(m.debito ?? 0);
+                  const itens = m.codigoPedidoExterno ? itensPorPedido.get(m.codigoPedidoExterno) : undefined;
                   return (
-                    <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50">
+                    <Fragment key={m.id}>
+                    <tr className="border-t border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">
                         {formatDateTime(m.dataHora)}
                       </td>
@@ -452,6 +511,43 @@ export default async function ClienteFiadoPage(props: {
                         </span>
                       </td>
                     </tr>
+                    {/* O QUE ele consumiu: sem isto a dívida é um número solto
+                        e não dá pra responder cliente que contesta a conta. */}
+                    {itens && itens.length > 0 && (
+                      <tr className="bg-slate-50/60">
+                        <td colSpan={8} className="px-4 pb-3 pt-0">
+                          <details className="text-xs">
+                            <summary className="cursor-pointer select-none text-slate-500 hover:text-slate-800">
+                              {itens.length} produto{itens.length !== 1 ? 's' : ''} no pedido #
+                              {m.pedidoNumero ?? m.codigoPedidoExterno}
+                            </summary>
+                            <ul className="mt-2 max-w-2xl divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
+                              {itens.map((it, i) => (
+                                <li key={i} className="flex items-baseline justify-between gap-4 px-3 py-1.5">
+                                  <span className="text-slate-700">
+                                    <span className="font-mono text-slate-500">
+                                      {it.qtd % 1 === 0 ? it.qtd : it.qtd.toFixed(3)}×
+                                    </span>{' '}
+                                    {it.nome}
+                                    {it.filhos.length > 0 && (
+                                      <span className="text-slate-400"> · {it.filhos.join(' · ')}</span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0 font-mono text-slate-600">{brl(it.valor)}</span>
+                                </li>
+                              ))}
+                              <li className="flex items-baseline justify-between gap-4 bg-slate-50 px-3 py-1.5 font-medium">
+                                <span className="text-slate-600">Soma dos itens</span>
+                                <span className="font-mono text-slate-800">
+                                  {brl(itens.reduce((t, it) => t + it.valor, 0))}
+                                </span>
+                              </li>
+                            </ul>
+                          </details>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })
               )}
