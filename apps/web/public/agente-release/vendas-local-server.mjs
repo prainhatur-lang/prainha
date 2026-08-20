@@ -11673,9 +11673,23 @@ function telaManual(el){
     '<div class="row" style="margin-top:10px" id="mchips">'+chips+'</div>'+
     '<input id="mv" class="num" inputmode="decimal" placeholder="quanto entrou?" readonly onclick="kpAlvo(this)" style="margin-top:10px">'+kpHtml('mv')+
     '<div id="mcomp"></div>'+
-    '<button class="big" onclick="manConfirmar()">Confirmar recebimento</button>'+
+    '<button class="big" id="mok" onclick="manConfirmar()">Confirmar recebimento</button>'+
     '<div id="merr" class="err"></div></div>';
   manForma(MAN.forma);
+  var mv=document.getElementById('mv'); if(mv)mv.addEventListener('input',manEstado);
+}
+/* A trava tem que ser VISÍVEL. Antes o botão ficava verde e clicável mesmo sem
+   comprovante — só o servidor recusava, e o caixa descobria depois de clicar. */
+function manEstado(){
+  var b=document.getElementById('mok'); if(!b)return;
+  var v=numBr((document.getElementById('mv')||{}).value);
+  var temFoto=!!(MAN.foto||MAN.arquivo);
+  var precisa=MAN.forma!=='dinheiro';
+  var falta = !(v>0) ? 'digite o valor' : (precisa&&!temFoto ? 'falta o comprovante' : null);
+  b.disabled=!!falta;
+  b.style.opacity=falta?'.45':'1';
+  b.style.background=falta?'#94a3b8':'';
+  b.textContent=falta?('🔒 '+falta):'Confirmar recebimento';
 }
 function manForma(f){
   MAN.forma=f; MAN.foto=null; MAN.arquivo=null; MAN.token=null; manParar();
@@ -11684,12 +11698,13 @@ function manForma(f){
     b.classList.toggle('on', b.textContent.toLowerCase().indexOf(f==='dinheiro'?'dinheiro':f==='pix'?'pix':f==='credito'?'crédito':'débito')>=0);
   });
   var box=document.getElementById('mcomp'); if(!box)return;
-  if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; return }
+  if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; manEstado(); return }
   box.innerHTML='<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
     '<div class="row" style="margin-top:6px">'+
       '<button class="seg" onclick="manCamera()">📷 Câmera do tablet</button>'+
       '<button class="seg" onclick="manCelular()">📱 Pelo meu celular</button>'+
     '</div><div id="mcbox"></div>';
+  manEstado();
 }
 /* Câmera do tablet: só existe em contexto seguro (https). Se não der, avisa e
    oferece o celular — em vez de deixar o caixa preso numa tela morta. */
@@ -11718,6 +11733,7 @@ function manClicar(){
   if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
   document.getElementById('mcbox').innerHTML='<img src="'+MAN.foto+'" style="width:100%;border-radius:12px;margin-top:8px">'+
     '<div class="mut">✓ foto pronta</div><button class="seg" onclick="manCamera()">tirar outra</button>';
+  manEstado();
 }
 /* Celular do caixa: QR com um link de 10 minutos. A foto chega aqui sozinha. */
 async function manCelular(){
@@ -11738,6 +11754,7 @@ async function manCelular(){
         manParar(); MAN.arquivo=st.arquivo;
         document.getElementById('mcbox').innerHTML='<img src="/foto/'+esc(st.arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">'+
           '<div class="mut">✓ comprovante recebido do celular</div>';
+        manEstado();
         return;
       }
       // o celular ABRIU o link mas a foto não veio: quase sempre é o celular
@@ -11748,6 +11765,7 @@ async function manCelular(){
   },2000);
 }
 async function manConfirmar(){
+  manEstado();
   var v=numBr((document.getElementById('mv')||{}).value);
   var e=document.getElementById('merr'); e.textContent='';
   if(!(v>0)){e.textContent='digite o valor que entrou';return}
