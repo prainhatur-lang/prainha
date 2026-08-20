@@ -315,6 +315,8 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS produto_nuvem (codigo_pdv integer PRIMARY KEY, produto_codigo integer,
     nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, cardapio_digital boolean,
     categoria text, descricao text, atualizado timestamptz DEFAULT now())`;
+  // saldo vem da nuvem no modo próprio: o ESTOQUEMOVIMENTACAO era do Firebird
+  await addCol('produto_nuvem', 'saldo numeric');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -1129,6 +1131,8 @@ async function apiIfoodSalvar(b) {
 /** Traz as perguntas do Consumer pro espelho local. Sai junto do catalogo,
  *  no mesmo ciclo de 5 min — pergunta nova cadastrada la aparece aqui sozinha. */
 async function espelhoPerguntas() {
+  // no banco próprio o wizard chega pelo pacote da nuvem, não do Firebird
+  if (nativo()) return;
   const pg = await q(`SELECT CODIGO, TRIM(DESCRICAO) D, QTDRESPOSTASMIN MN, QTDRESPOSTASMAX MX
       FROM WIZARDPERGUNTAS WHERE DATADELETE IS NULL`);
   if (!pg.ok) { console.error('[perguntas] ' + pg.err); return; }
@@ -1179,7 +1183,7 @@ async function espelhoCatalogo() {
   // No modo próprio o catálogo passa a vir da NUVEM (o cadastro já é nosso).
   // Enquanto essa parte não entra, o que existe em produto_local continua
   // valendo: melhor catálogo de ontem do que tela vazia no meio do serviço.
-  if (nativo()) { console.log('[catalogo] modo próprio: mantendo o catálogo local'); return; }
+  if (nativo()) { await catalogoNativo().catch((e) => console.error('[catalogo]', e.message)); return; }
   // SALDO REAL de estoque: PRODUTOS.ESTOQUEATUAL e' CAMPO MORTO no Consumer
   // (zero nos 501 produtos controlados, positivo em nenhum). Quem tem a verdade
   // e' a ultima ESTOQUEMOVIMENTACAO de cada PRODUTODETALHE, no QTDFINAL.
@@ -5327,6 +5331,8 @@ async function loopCatalogoNuvem() {
   try {
     const e = Math.floor(Date.now() / 1000) + 120;
     const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('catalogo', e) });
+    // sem Firebird, o cardápio INTEIRO vem daqui — inclusive o saldo
+    if (nativo()) qs.set('tudo', '1');
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/catalogo-nuvem?${qs}`, { signal: AbortSignal.timeout(10000) });
     const j = await r.json().catch(() => null);
     if (!j?.ok || !Array.isArray(j.produtos)) return;
@@ -5334,23 +5340,97 @@ async function loopCatalogoNuvem() {
     await sql.begin(async (t) => {
       for (const p of j.produtos) {
         await t`INSERT INTO produto_nuvem (codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-            comanda_mobile, cardapio_digital, categoria, descricao, atualizado)
+            comanda_mobile, cardapio_digital, categoria, descricao, saldo, atualizado)
           VALUES (${Number(p.codigo_pdv)}, ${Number(p.produto_codigo)}, ${p.nome || ''}, ${p.tamanho || null},
             ${Number(p.preco) || 0}, ${p.area_codigo == null ? null : Number(p.area_codigo)},
             ${p.comanda_mobile !== false}, ${!!p.cardapio_digital}, ${p.categoria || null},
-            ${p.descricao || null}, now())
+            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, now())
           ON CONFLICT (codigo_pdv) DO UPDATE SET produto_codigo=EXCLUDED.produto_codigo, nome=EXCLUDED.nome,
             tamanho=EXCLUDED.tamanho, preco=EXCLUDED.preco, area_codigo=EXCLUDED.area_codigo,
             comanda_mobile=EXCLUDED.comanda_mobile, cardapio_digital=EXCLUDED.cardapio_digital,
-            categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, atualizado=now()`;
+            categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, saldo=EXCLUDED.saldo, atualizado=now()`;
       }
       // pausado/descontinuado na nuvem some daqui — a resposta é a lista inteira
       if (codigos.length) await t`DELETE FROM produto_nuvem WHERE NOT (codigo_pdv = ANY(${codigos}))`;
       else await t`DELETE FROM produto_nuvem`;
     });
-    console.log('[catalogo-nuvem] ' + j.produtos.length + ' produto(s) da nuvem no cardápio');
+    // Praças, observações e wizard vêm junto no modo próprio — tudo isso
+    // morria com o Firebird e é o que o KDS e a comanda usam.
+    if (nativo()) {
+      if (Array.isArray(j.areas) && j.areas.length) {
+        for (const a of j.areas) {
+          await sql`INSERT INTO area (codigo, nome) VALUES (${Number(a.codigo)}, ${a.nome})
+            ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome`;
+        }
+      }
+      if (Array.isArray(j.observacoes)) {
+        const obs = j.observacoes.filter((o) => o && o.categoria && o.texto)
+          .map((o) => ({ categoria: o.categoria, texto: o.texto }));
+        await sql.begin(async (t) => {
+          await t`TRUNCATE observacao_sugerida`;
+          if (obs.length) await t`INSERT INTO observacao_sugerida ${t(obs, 'categoria', 'texto')}`;
+        });
+      }
+      const w = j.wizard;
+      if (w && Array.isArray(w.perguntas)) {
+        await sql.begin(async (t) => {
+          await t`TRUNCATE wizard_pergunta`; await t`TRUNCATE wizard_opcao`; await t`TRUNCATE wizard_produto`;
+          for (const x of w.perguntas) {
+            await t`INSERT INTO wizard_pergunta (codigo, texto, min, max)
+              VALUES (${Number(x.codigo)}, ${x.texto || ''}, ${Number(x.min) || 0}, ${Number(x.max) || 0})`;
+          }
+          for (const x of w.opcoes || []) {
+            await t`INSERT INTO wizard_opcao (codigo, pergunta, nome, preco, produto_pdv)
+              VALUES (${Number(x.codigo)}, ${Number(x.pergunta)}, ${x.nome || ''},
+                ${Number(x.preco) || 0}, ${x.produto_pdv == null ? null : Number(x.produto_pdv)})`;
+          }
+          for (const x of w.ligacoes || []) {
+            await t`INSERT INTO wizard_produto (codigo_pdv, pergunta, ordem)
+              VALUES (${Number(x.codigo_pdv)}, ${Number(x.pergunta)}, ${Number(x.ordem) || 0})
+              ON CONFLICT DO NOTHING`;
+          }
+        });
+      }
+    }
+    console.log('[catalogo-nuvem] ' + j.produtos.length + ' produto(s)'
+      + (nativo() ? ` · ${(j.areas || []).length} praças · ${(j.observacoes || []).length} observações`
+        + ` · ${((j.wizard || {}).perguntas || []).length} perguntas` : ' da nuvem no cardápio'));
+    if (nativo()) await catalogoNativo();
   } catch (err) { console.error('[catalogo-nuvem]', err.message); }
   finally { catalogoNuvemRodando = false; }
+}
+/** No banco próprio o cardápio da loja é REMONTADO do que a nuvem mandou.
+ *  Mesmo formato de produto_local que o Firebird produzia, então nenhuma tela
+ *  muda: garçom, KDS, caixa e cliente continuam lendo a mesma tabela. */
+async function catalogoNativo() {
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
+      comanda_mobile, cardapio_digital, categoria, descricao, saldo FROM produto_nuvem`;
+  if (!rows.length) { console.error('[catalogo] nuvem não mandou nada — mantendo o cardápio atual'); return; }
+  const redir = await mapaRedirPracas();
+  const porItem = await mapaItemPraca();
+  const fora = await itensForaKds();
+  const linhas = rows.map((x) => {
+    const nome = String(x.nome || '?');
+    const tam = x.tamanho || null;
+    let area = x.area_codigo == null ? null : Number(x.area_codigo);
+    if (area != null && redir.has(area)) area = redir.get(area);
+    const nm = semAcento(nome + ' ' + (tam || ''));
+    for (const r of porItem) if (nm.includes(r.termo)) { area = r.area; break; }
+    if (fora.length && fora.some((t) => nm.includes(t))) area = null;
+    const saldo = x.saldo == null ? null : Number(x.saldo);
+    return { codigo_pdv: Number(x.codigo_pdv), produto_codigo: Number(x.produto_codigo), nome, tamanho: tam,
+      preco: Number(x.preco) || 0, area_codigo: area, comanda_mobile: x.comanda_mobile !== false,
+      nome_busca: nm, categoria: x.categoria || 'Outros', categoria_ordem: 999,
+      sem_estoque: saldo != null && saldo <= 0, estoque: saldo,
+      cardapio_digital: !!x.cardapio_digital, descricao: x.descricao || null, preparo: null };
+  });
+  await sql.begin(async (t) => {
+    await t`TRUNCATE produto_local`;
+    await t`INSERT INTO produto_local ${t(linhas, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco',
+      'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque',
+      'cardapio_digital', 'descricao', 'preparo')}`;
+  });
+  console.log('[catalogo] modo próprio: ' + linhas.length + ' itens no cardápio da loja');
 }
 let produtoFilaRodando = false;
 async function loopProdutoFila() {
