@@ -5592,10 +5592,32 @@ async function apiComprovanteEnviar(body) {
   await sql`UPDATE comprovante_token SET arquivo=${arq}, enviado_em=now() WHERE token=${t}`;
   return { ok: true };
 }
-async function apiComprovanteStatus(t) {
-  const [row] = await sql`SELECT arquivo, enviado_em, aberto_em FROM comprovante_token WHERE token=${String(t || '').slice(0, 40)}`;
+/** Chegou comprovante? Pergunta pelo TOKEN e, se não veio nele, POR MESA.
+ *
+ *  Por que por mesa: cada toque em "Pelo meu celular" cria um token novo, e o
+ *  celular fica com a página do QR que ele escaneou — que pode ser o anterior.
+ *  A foto então chega num token e o caixa fica esperando em outro, para sempre
+ *  ("aguardando a foto" com o celular mostrando ✓ Enviado — aconteceu em
+ *  20/08). O caixa não tem como saber disso, e nem deveria: o que importa é
+ *  que chegou um comprovante PRA ESTA MESA, agora. */
+async function apiComprovanteStatus(t, numero = null) {
+  const tok = String(t || '').slice(0, 40);
+  const [row] = tok
+    ? await sql`SELECT arquivo, enviado_em, aberto_em FROM comprovante_token WHERE token=${tok}`
+    : [null];
+  if (row && row.arquivo) {
+    return { ok: true, chegou: true, arquivo: row.arquivo, abriu: true, token: tok };
+  }
+  const n = Number(numero) || 0;
+  if (n) {
+    const [outro] = await sql`SELECT token, arquivo FROM comprovante_token
+      WHERE numero=${n} AND arquivo IS NOT NULL AND usado_em IS NULL
+        AND criado_em > now() - interval '30 minutes'
+      ORDER BY enviado_em DESC LIMIT 1`;
+    if (outro) return { ok: true, chegou: true, arquivo: outro.arquivo, abriu: true, token: outro.token };
+  }
   if (!row) return { ok: false, erro: 'token desconhecido' };
-  return { ok: true, chegou: !!row.arquivo, arquivo: row.arquivo || null, abriu: !!row.aberto_em };
+  return { ok: true, chegou: false, arquivo: null, abriu: !!row.aberto_em, token: tok };
 }
 /** A página do celular carregou: marca aberto_em pro caixa saber que o QR foi lido. */
 async function comprovanteAbriu(t) {
@@ -5621,10 +5643,11 @@ async function apiCaixaReceberManual(body, quem) {
   // comprovante: da câmera do tablet (dataUrl) ou do token que o celular usou
   let arquivo = null;
   if (body.token) {
-    const st = await apiComprovanteStatus(body.token);
+    const st = await apiComprovanteStatus(body.token, numero);
     if (st.ok && st.arquivo) {
       arquivo = st.arquivo;
-      await sql`UPDATE comprovante_token SET usado_em=now() WHERE token=${String(body.token)}`;
+      // queima o token que REALMENTE trouxe a foto (pode não ser o da tela)
+      await sql`UPDATE comprovante_token SET usado_em=now() WHERE token=${String(st.token || body.token)}`;
     }
   } else if (body.foto) {
     arquivo = guardaFoto(body.foto);
@@ -11786,7 +11809,10 @@ async function manCelular(externo){
   manParar();
   MAN.poll=setInterval(async function(){
     try{
-      var st=await (await fetch('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token),{cache:'no-store'})).json();
+      var st=await (await fetch('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token)+'&n='+MESA,{cache:'no-store'})).json();
+      // sessão caiu? antes ficava girando calado — o caixa achava que travou
+      if(st&&st.sem_sessao){manParar();var cs=document.getElementById('mchegou');
+        if(cs)cs.innerHTML='<b style="color:var(--red)">sua sessão caiu — entre no caixa de novo</b>';return}
       if(st.ok&&st.chegou){
         manParar(); MAN.arquivo=st.arquivo;
         document.getElementById('mcbox').innerHTML='<img src="/foto/'+esc(st.arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">'+
@@ -12850,7 +12876,8 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify(await apiComprovanteAbrir(await readBody(req), quem)));
       }
       if (p === '/api/caixa/comprovante') {
-        return res.end(JSON.stringify(await apiComprovanteStatus(u.searchParams.get('t'))));
+        return res.end(JSON.stringify(await apiComprovanteStatus(
+          u.searchParams.get('t'), u.searchParams.get('n'))));
       }
       if (req.method === 'POST' && p === '/api/caixa/receber') {
         const b = await readBody(req);
