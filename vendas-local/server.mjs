@@ -11860,6 +11860,9 @@ function manForma(f){
   var nsuHtml=(f==='credito'||f==='debito')
     ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número DOC/NSU impresso no papel da maquininha</div>'+
       '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="ex: 038512" style="margin-top:6px">'
+    : f==='pix'
+    ? '<div class="mut" style="margin-top:12px"><b>NSU do Pix</b> — se passou na MAQUININHA, digite o número do comprovante; Pix direto na conta não tem, deixe vazio</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="ex: 1376421" style="margin-top:6px">'
     : '';
   box.innerHTML=nsuHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
