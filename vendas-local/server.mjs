@@ -445,6 +445,16 @@ async function initSchema() {
     item_codigos bigint[], itens_nome text, n_itens integer DEFAULT 0,
     arquivo text, sem_foto_motivo text)`;
   await sql`CREATE INDEX IF NOT EXISTS baixa_foto_quando ON baixa_foto (criado_em DESC)`;
+  // RECEBIMENTO MANUAL: quando a maquininha não baixa a comanda sozinha, o
+  // caixa registra na mão — e o comprovante vira FOTO. Sem a foto, "recebi no
+  // Pix" é palavra; com ela, a conferência do dia tem o que olhar.
+  await sql`CREATE TABLE IF NOT EXISTS comprovante_token (token text PRIMARY KEY,
+    numero integer, valor numeric, forma text, arquivo text, login text,
+    criado_em timestamptz DEFAULT now(), enviado_em timestamptz, usado_em timestamptz)`;
+  await sql`CREATE TABLE IF NOT EXISTS recebimento_foto (id bigserial PRIMARY KEY,
+    numero integer, pedido bigint, pagamento_codigo bigint, forma text, valor numeric,
+    arquivo text, nsu text, login text, quando timestamptz DEFAULT now())`;
+  await sql`CREATE INDEX IF NOT EXISTS rec_foto_quando ON recebimento_foto (quando DESC)`;
   // FOTO DO PRODUTO. Vem do Consumer como arquivo <PRODUTOS.CODIGO>.jpg — a
   // foto é do PRODUTO, não da variante: "T Gin" tem uma só, e as 17 frutas
   // usam a mesma. Guardar no banco (e não em disco) mantém tudo num lugar só,
@@ -5469,6 +5479,102 @@ async function loopProdutoFila() {
   } catch (err) { console.error('[produto] fila:', err.message); }
   finally { produtoFilaRodando = false; }
 }
+// ─────────── RECEBIMENTO MANUAL COM COMPROVANTE ───────────
+// A maquininha às vezes recebe e NÃO baixa a comanda (queda de rede, timeout,
+// operador que fechou a tela). O dinheiro entrou, a conta continua aberta — e
+// hoje o caixa não tem como registrar isso sem inventar.
+//
+// Aqui ele registra na mão: mesa, forma, valor. Em forma eletrônica a FOTO do
+// comprovante é obrigatória — é o que separa "recebi no Pix" de conferência de
+// verdade. Se o tablet não tem câmera (ou está em HTTP, onde o navegador não
+// libera), a tela mostra um QR: o caixa fotografa pelo próprio celular e a
+// imagem chega aqui em segundos, sem depender de internet — é tudo na LAN.
+//
+// PARCIAL É A REGRA, NÃO A EXCEÇÃO: conta de 100 pode entrar 10 no Pix, 50 no
+// cartão e 40 em dinheiro. Cada entrada é um recebimento com seu comprovante,
+// e a conta só fecha quando o total é alcançado.
+const FORMAS_MANUAIS = {
+  dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false },
+  credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true },
+  debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true },
+  pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true },
+};
+function tokenComprovante() {
+  return randomBytes(9).toString('base64url');
+}
+/** Abre um token pra foto vir do celular (QR na tela do caixa). */
+async function apiComprovanteAbrir(body, quem) {
+  const numero = Number(body.numero) || 0;
+  if (!numero) return { ok: false, erro: 'mesa inválida' };
+  const token = tokenComprovante();
+  await sql`INSERT INTO comprovante_token (token, numero, valor, forma, login)
+    VALUES (${token}, ${numero}, ${Number(body.valor) || null}, ${String(body.forma || '')}, ${quem?.login || null})`;
+  // O QR aponta pro IP da loja em HTTP: o celular do caixa não precisa de
+  // internet nem de aceitar certificado — e a página usa <input capture>, que
+  // funciona sem contexto seguro (a câmera via getUserMedia, não).
+  const url = ipDaLoja() + '/comprovante?t=' + token;
+  return { ok: true, token, url, qr: qrSvg(url, 190) };
+}
+/** O celular manda a foto. Sem sessão de propósito: quem tem o token, tem o
+ *  direito — o token vive 10 minutos e serve uma vez só. */
+async function apiComprovanteEnviar(body) {
+  const t = String(body.t || '').slice(0, 40);
+  const [row] = await sql`SELECT token, arquivo FROM comprovante_token
+    WHERE token=${t} AND criado_em > now() - interval '10 minutes' AND usado_em IS NULL`;
+  if (!row) return { ok: false, erro: 'este link expirou — peça outro no caixa' };
+  const arq = guardaFoto(body.foto);
+  if (!arq) return { ok: false, erro: 'não consegui ler a foto' };
+  await sql`UPDATE comprovante_token SET arquivo=${arq}, enviado_em=now() WHERE token=${t}`;
+  return { ok: true };
+}
+async function apiComprovanteStatus(t) {
+  const [row] = await sql`SELECT arquivo, enviado_em FROM comprovante_token WHERE token=${String(t || '').slice(0, 40)}`;
+  if (!row) return { ok: false, erro: 'token desconhecido' };
+  return { ok: true, chegou: !!row.arquivo, arquivo: row.arquivo || null };
+}
+/** Registra o recebimento e devolve quanto ainda falta na conta. */
+async function apiCaixaReceberManual(body, quem) {
+  const numero = Number(body.numero) || 0;
+  const f = FORMAS_MANUAIS[String(body.forma || '')];
+  const valor = +Number(body.valor || 0).toFixed(2);
+  if (!numero) return { ok: false, erro: 'mesa inválida' };
+  if (!f) return { ok: false, erro: 'forma inválida' };
+  if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+  // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
+  let caixaCodigo = null;
+  if (f.codigo === FORMA.DINHEIRO) {
+    const cx = await fbCaixaDoOperador(quem.login);
+    if (!cx) return { ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' };
+    caixaCodigo = cx.codigo;
+  }
+  // comprovante: da câmera do tablet (dataUrl) ou do token que o celular usou
+  let arquivo = null;
+  if (body.token) {
+    const st = await apiComprovanteStatus(body.token);
+    if (st.ok && st.arquivo) {
+      arquivo = st.arquivo;
+      await sql`UPDATE comprovante_token SET usado_em=now() WHERE token=${String(body.token)}`;
+    }
+  } else if (body.foto) {
+    arquivo = guardaFoto(body.foto);
+  }
+  if (f.foto && !arquivo) return { ok: false, precisa_foto: true, erro: 'essa forma exige a foto do comprovante' };
+
+  const r = await apiContaPagar({
+    numero, forma: String(body.forma), valor, modo: 'manual', caixa_codigo: caixaCodigo,
+    permitir_servico: true, nsu: body.nsu || null,
+    observacao: 'Recebimento manual · ' + (quem.nome || quem.login),
+  });
+  if (!r.ok) return r;
+  try {
+    await sql`INSERT INTO recebimento_foto (numero, pedido, pagamento_codigo, forma, valor, arquivo, nsu, login)
+      VALUES (${numero}, ${null}, ${r.pagamento_fb ?? null}, ${f.nome}, ${valor},
+        ${arquivo}, ${body.nsu ? String(body.nsu).slice(0, 30) : null}, ${quem.login})`;
+  } catch (e) { console.error('[manual] índice do comprovante:', e.message); }
+  // quitou = fecha a conta, igual ao recebimento em dinheiro
+  if (r.quitada) { try { const fe = await apiCaixaFechar(numero); r.fechada = !!fe.ok; } catch { r.fechada = false; } }
+  return { ...r, forma: f.nome, comprovante: arquivo };
+}
 /** Fecha a conta lançando o que falta no fiado do cliente. */
 /** Carimba no pedido de quem é o fiado (e o cliente, se ainda não tinha). */
 async function pedFiado(ped, clienteCod) {
@@ -8159,6 +8265,66 @@ async function apiQrcodes(de, ate) {
   for (let n = ini; n <= fim; n++) mesas.push({ numero: n, url: `${base}/mesa?n=${n}`, svg: qrSvg(`${base}/mesa?n=${n}`) });
   return { base, de: ini, ate: fim, mesas };
 }
+const COMPROVANTE_HTML = `<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Comprovante · Prainha</title><style>
+*{box-sizing:border-box}body{margin:0;font:16px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+background:#0f172a;color:#e2e8f0;padding:16px;min-height:100vh}
+h1{font-size:19px;margin:6px 0 2px}.mut{color:#94a3b8;font-size:13px}
+.card{background:#1e293b;border-radius:14px;padding:16px;margin-top:14px}
+button{width:100%;border:0;border-radius:12px;padding:16px;font-size:17px;font-weight:600;margin-top:12px}
+.go{background:#16a34a;color:#fff}.re{background:#334155;color:#e2e8f0}
+img{width:100%;border-radius:12px;margin-top:12px}
+.ok{color:#4ade80;font-weight:600}.err{color:#f87171;margin-top:10px}
+input[type=file]{display:none}
+</style></head><body>
+<h1>Foto do comprovante</h1>
+<div class="mut" id="ctx">carregando…</div>
+<div class="card">
+  <label for="f"><span class="go" style="display:block;text-align:center;border-radius:12px;padding:16px;font-weight:600">📷 Tirar foto</span></label>
+  <input id="f" type="file" accept="image/*" capture="environment">
+  <img id="pv" style="display:none">
+  <button class="go" id="ok" style="display:none" onclick="mandar()">Enviar pro caixa</button>
+  <button class="re" id="re" style="display:none" onclick="document.getElementById('f').click()">Tirar outra</button>
+  <div class="err" id="e"></div>
+</div>
+<script>
+var T=new URLSearchParams(location.search).get('t')||'';
+var FOTO=null;
+document.getElementById('ctx').textContent = T ? 'Aponte pro comprovante e toque em tirar foto.' : 'Link inválido.';
+document.getElementById('f').addEventListener('change', function(ev){
+  var f=ev.target.files&&ev.target.files[0]; if(!f)return;
+  var r=new FileReader();
+  r.onload=function(){
+    // reduz antes de subir: foto de celular tem 4 MB e a rede da loja é a que é
+    var img=new Image();
+    img.onload=function(){
+      var max=1280, k=Math.min(1, max/Math.max(img.width,img.height));
+      var c=document.createElement('canvas'); c.width=img.width*k; c.height=img.height*k;
+      c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      FOTO=c.toDataURL('image/jpeg',0.8);
+      var pv=document.getElementById('pv'); pv.src=FOTO; pv.style.display='block';
+      document.getElementById('ok').style.display='block';
+      document.getElementById('re').style.display='block';
+    };
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+});
+async function mandar(){
+  if(!FOTO)return;
+  document.getElementById('e').textContent='';
+  document.getElementById('ok').textContent='enviando…';
+  try{
+    var r=await fetch('/api/comprovante/enviar',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({t:T,foto:FOTO})});
+    var j=await r.json();
+    if(!j.ok){document.getElementById('e').textContent=j.erro||'não deu';document.getElementById('ok').textContent='Enviar pro caixa';return}
+    document.body.innerHTML='<h1 class="ok">✓ Enviado</h1><div class="mut">Pode voltar pro caixa e confirmar o recebimento.</div>';
+  }catch(e){document.getElementById('e').textContent='sem conexão com a loja';document.getElementById('ok').textContent='Enviar pro caixa'}
+}
+</script></body></html>`;
+
 const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QR das mesas — ${LOJA_NOME}</title><style>
 :root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
@@ -11219,6 +11385,7 @@ function pintaMain(){
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
   if(TELA==='rec')return telaReceber(el);
+  if(TELA==='manual')return telaManual(el);
   if(TELA==='fiado')return telaFiado(el);
   if(TELA==='pix')return; // desenhada pelo pixCaixa()
   if(TELA==='abrircx')return telaAbrirCx(el);
@@ -11394,6 +11561,9 @@ function pinta(el){
          (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
       h+='<div class="row"><button class="big" style="margin-top:6px" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
          '<button class="big" style="margin-top:6px;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+      // A maquininha às vezes recebe e NÃO baixa a comanda. Aqui o caixa
+      // registra o que entrou, com a foto do comprovante — e pode ser parcial.
+      h+='<button class="big" style="margin-top:6px;background:#0369a1" onclick="irTela(\\'manual\\')">🧾 Recebimento manual (com comprovante)</button>';
       // FIADO: fecha a conta lançando na conta corrente do cliente (perm 16)
       if(PODE.fiado)h+='<button class="big" style="margin-top:6px;background:#7c3aed" onclick="irTela(\\'fiado\\')">🧾 Fiado (conta do cliente)</button>';
     }
@@ -11407,6 +11577,113 @@ function pinta(el){
   if(CANCEL_ON)h+='<div style="margin-top:10px;text-align:right;font-size:13px"><b style="color:var(--red)">🔓 cancelamentos liberados nesta mesa</b> · <a class="sair" onclick="CANCEL_ON=false;pintaMain()">travar</a></div>';
   h+='<div class="mut" style="margin-top:8px">Cartão na maquininha · Pix na tela do cliente/garçom.</div></div>';
   el.innerHTML=h;
+}
+/* ---- RECEBIMENTO MANUAL (a maquininha recebeu e não baixou a comanda) ----
+   Fluxo do balcão: escolhe a forma, digita o valor (pode ser parcial), anexa
+   a foto do comprovante e confirma. Repete até a conta fechar.
+   A foto vem da câmera do tablet quando o navegador libera; quando não libera
+   (HTTP, tablet sem câmera), um QR manda o caixa fotografar pelo celular. */
+var MAN = { forma: 'pix', token: null, foto: null, arquivo: null, poll: null };
+function manParar(){ if(MAN.poll){clearInterval(MAN.poll);MAN.poll=null} }
+function telaManual(el){
+  manParar(); MAN.token=null; MAN.foto=null; MAN.arquivo=null;
+  var c=CONTA||{};
+  var formas=[['dinheiro','💵 Dinheiro'],['pix','📲 Pix'],['credito','💳 Crédito'],['debito','💳 Débito']];
+  var chips=formas.map(function(f){
+    return '<button class="seg'+(MAN.forma===f[0]?' on':'')+'" onclick="manForma(\\''+f[0]+'\\')">'+f[1]+'</button>';
+  }).join('');
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="manParar();irTela(\\'conta\\')">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">Recebimento manual · mesa '+MESA+'</div>'+
+    '<div class="mut">Falta <b>'+brl(c.falta||0)+'</b>. Pode receber em partes — cada entrada com seu comprovante.</div>'+
+    '<div class="row" style="margin-top:10px" id="mchips">'+chips+'</div>'+
+    '<input id="mv" class="num" inputmode="decimal" placeholder="quanto entrou?" readonly onclick="kpAlvo(this)" style="margin-top:10px">'+kpHtml('mv')+
+    '<div id="mcomp"></div>'+
+    '<button class="big" onclick="manConfirmar()">Confirmar recebimento</button>'+
+    '<div id="merr" class="err"></div></div>';
+  manForma(MAN.forma);
+}
+function manForma(f){
+  MAN.forma=f; MAN.foto=null; MAN.arquivo=null; MAN.token=null; manParar();
+  var chips=document.getElementById('mchips');
+  if(chips)Array.prototype.forEach.call(chips.children,function(b){
+    b.classList.toggle('on', b.textContent.toLowerCase().indexOf(f==='dinheiro'?'dinheiro':f==='pix'?'pix':f==='credito'?'crédito':'débito')>=0);
+  });
+  var box=document.getElementById('mcomp'); if(!box)return;
+  if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; return }
+  box.innerHTML='<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
+    '<div class="row" style="margin-top:6px">'+
+      '<button class="seg" onclick="manCamera()">📷 Câmera do tablet</button>'+
+      '<button class="seg" onclick="manCelular()">📱 Pelo meu celular</button>'+
+    '</div><div id="mcbox"></div>';
+}
+/* Câmera do tablet: só existe em contexto seguro (https). Se não der, avisa e
+   oferece o celular — em vez de deixar o caixa preso numa tela morta. */
+async function manCamera(){
+  var box=document.getElementById('mcbox'); if(!box)return;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    box.innerHTML='<div class="mut" style="margin-top:8px">Este tablet não libera a câmera aqui (precisa do modo seguro). Use <b>Pelo meu celular</b>.</div>';
+    return;
+  }
+  box.innerHTML='<video id="mvid" autoplay playsinline muted style="width:100%;border-radius:12px;margin-top:8px;background:#000"></video>'+
+    '<button class="big" onclick="manClicar()">📸 Tirar a foto</button>';
+  try{
+    var st=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    var v=document.getElementById('mvid'); if(v){v.srcObject=st;MAN.stream=st}
+  }catch(e){
+    box.innerHTML='<div class="mut" style="margin-top:8px">A câmera não abriu ('+esc(e.name||'erro')+'). Use <b>Pelo meu celular</b>.</div>';
+  }
+}
+function manClicar(){
+  var v=document.getElementById('mvid'); if(!v)return;
+  var c=document.createElement('canvas');
+  var k=Math.min(1,1280/Math.max(v.videoWidth||1280,v.videoHeight||720));
+  c.width=(v.videoWidth||1280)*k; c.height=(v.videoHeight||720)*k;
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  MAN.foto=c.toDataURL('image/jpeg',0.8);
+  if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
+  document.getElementById('mcbox').innerHTML='<img src="'+MAN.foto+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+    '<div class="mut">✓ foto pronta</div><button class="seg" onclick="manCamera()">tirar outra</button>';
+}
+/* Celular do caixa: QR com um link de 10 minutos. A foto chega aqui sozinha. */
+async function manCelular(){
+  var box=document.getElementById('mcbox'); if(!box)return;
+  box.innerHTML='<div class="mut" style="margin-top:8px">gerando o link…</div>';
+  var r=await jpost('/api/caixa/comprovante',{numero:MESA,forma:MAN.forma,valor:numBr((document.getElementById('mv')||{}).value)});
+  if(!r.ok){box.innerHTML='<div class="err" style="display:block">'+esc(r.erro||'não deu')+'</div>';return}
+  MAN.token=r.token;
+  box.innerHTML='<div style="text-align:center;margin-top:10px;background:#fff;padding:10px;border-radius:12px">'+r.qr+'</div>'+
+    '<div class="mut" style="text-align:center">Aponte a câmera do celular · o link vale 10 minutos</div>'+
+    '<div class="mut" style="text-align:center;word-break:break-all;font-size:12px">'+esc(r.url)+'</div>'+
+    '<div id="mchegou" class="mut" style="text-align:center;margin-top:6px">aguardando a foto…</div>';
+  manParar();
+  MAN.poll=setInterval(async function(){
+    try{
+      var st=await (await fetch('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token),{cache:'no-store'})).json();
+      if(st.ok&&st.chegou){
+        manParar(); MAN.arquivo=st.arquivo;
+        document.getElementById('mcbox').innerHTML='<img src="/foto/'+esc(st.arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+          '<div class="mut">✓ comprovante recebido do celular</div>';
+      }
+    }catch(e){}
+  },2000);
+}
+async function manConfirmar(){
+  var v=numBr((document.getElementById('mv')||{}).value);
+  var e=document.getElementById('merr'); e.textContent='';
+  if(!(v>0)){e.textContent='digite o valor que entrou';return}
+  if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
+  var b={numero:MESA,forma:MAN.forma,valor:v};
+  if(MAN.foto)b.foto=MAN.foto; else if(MAN.token)b.token=MAN.token;
+  var r=await jpost('/api/caixa/receber-manual',b);
+  if(!r.ok){
+    if(r.sem_caixa)e.innerHTML=esc(r.erro)+' <button class="seg" style="margin-left:8px" onclick="irTela(\\'abrircx\\')">Abrir meu caixa</button>';
+    else e.textContent=r.erro||'não deu';
+    return;
+  }
+  manParar();
+  if(r.fechada){FLASH='✓ '+esc(r.forma)+' '+brl(v)+' — conta fechada, '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
+  FLASH='✓ '+esc(r.forma)+' '+brl(v)+' registrado. Falta '+brl(r.saldo||0)+'.';
+  await carregar(MESA); irTela('manual');
 }
 function telaLibCanc(el){
   var souG=!!PODE.cancPed; // gerente local = admin ou Excluir Pedido (o server revalida)
@@ -12430,6 +12707,15 @@ const server = http.createServer(async (req, res) => {
       if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
       if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0)));
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
+        return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
+      }
+      if (req.method === 'POST' && p === '/api/caixa/comprovante') {
+        return res.end(JSON.stringify(await apiComprovanteAbrir(await readBody(req), quem)));
+      }
+      if (p === '/api/caixa/comprovante') {
+        return res.end(JSON.stringify(await apiComprovanteStatus(u.searchParams.get('t'))));
+      }
       if (req.method === 'POST' && p === '/api/caixa/receber') {
         const b = await readBody(req);
         // dinheiro entra na gaveta de QUEM está logado — sem o caixa dele
@@ -12597,6 +12883,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
+    // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
+    // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
+    // uma vez só. Fica na LAN da loja, não na internet.
+    if (p === '/comprovante') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTE_HTML); }
+    if (req.method === 'POST' && p === '/api/comprovante/enviar') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiComprovanteEnviar(await readBody(req))));
+    }
     if (p === '/api/qrcodes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiQrcodes(u.searchParams.get('de'), u.searchParams.get('ate')))); }
     if (p === '/api/cpf/status') {
       const st = cpfStatus();
