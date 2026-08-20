@@ -4,6 +4,11 @@
 //  1) Se o produto tem ficha_tecnica, gera SAIDA_FICHA_TECNICA pra cada linha
 //     com baixaEstoque=true e insumo.controlaEstoque=true.
 //     Qtd consumida = pedido_item.quantidade × ficha.quantidade.
+//     A ficha é POR TAMANHO: se existe receita pro tamanho vendido, vale ela e
+//     SÓ ela; senão cai na receita do produto (variante_id nulo). Misturar as
+//     duas baixaria a dose E a garrafa na mesma venda.
+//     A quantidade pode estar em outra unidade (un/kg/l) — converte pra
+//     unidade de estoque do insumo antes de baixar.
 //  2) Senão, se o produto em si tem controlaEstoque=true, gera SAIDA_VENDA
 //     direto no próprio produto (revenda direta tipo lata de Coca).
 //  3) Cancelamento: se pedido_item tem dataDelete preenchida E já tem
@@ -18,6 +23,33 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 const TIPOS_SAIDA = ['SAIDA_VENDA', 'SAIDA_FICHA_TECNICA'] as const;
+
+const MASSA: Record<string, number> = { g: 1, kg: 1000 };
+const VOLUME: Record<string, number> = { ml: 1, l: 1000 };
+
+/** Converte a quantidade da receita pra unidade de estoque do insumo.
+ *  Cadastrar "0,4 kg de batata" num insumo controlado em grama tem que virar
+ *  400 — senão baixa 0,4 g e o saldo nunca anda. Sem caminho conhecido
+ *  (ex: un → kg sem peso unitário), mantém o número: é melhor baixar 1:1 do
+ *  que inventar um fator. */
+export function converterQuantidade(
+  qtd: number,
+  de: string | null,
+  para: string | null,
+  pesoUnitarioKg: number | null,
+): number {
+  if (!de || !para) return qtd;
+  const d = de.toLowerCase().trim();
+  const p = para.toLowerCase().trim();
+  if (d === p) return qtd;
+  if (MASSA[d] && MASSA[p]) return (qtd * MASSA[d]) / MASSA[p];
+  if (VOLUME[d] && VOLUME[p]) return (qtd * VOLUME[d]) / VOLUME[p];
+  if (pesoUnitarioKg && pesoUnitarioKg > 0) {
+    if (d === 'un' && MASSA[p]) return (qtd * pesoUnitarioKg * 1000) / MASSA[p];
+    if (MASSA[d] && p === 'un') return (qtd * MASSA[d]) / (pesoUnitarioKg * 1000);
+  }
+  return qtd;
+}
 
 /** Processa baixa de estoque pra um conjunto de pedido_items recém-ingeridos.
  *  Chamada após upsert + resolução de FKs.
@@ -38,6 +70,7 @@ export async function processarBaixaEstoque(
     .select({
       id: schema.pedidoItem.id,
       produtoId: schema.pedidoItem.produtoId,
+      codigoVariante: schema.pedidoItem.codigoVarianteExterno,
       quantidade: schema.pedidoItem.quantidade,
       precoCusto: schema.pedidoItem.precoCusto,
       dataDelete: schema.pedidoItem.dataDelete,
@@ -114,19 +147,32 @@ export async function processarBaixaEstoque(
       .select({
         insumoId: schema.fichaTecnica.insumoId,
         quantidade: schema.fichaTecnica.quantidade,
+        unidade: schema.fichaTecnica.unidade,
+        codigoVariante: schema.fichaTecnica.codigoVarianteExterno,
         baixaEstoque: schema.fichaTecnica.baixaEstoque,
         insumoControla: insumo.controlaEstoque,
         insumoPrecoCusto: insumo.precoCusto,
+        insumoUnidade: insumo.unidadeEstoque,
+        insumoPesoKg: insumo.pesoUnitarioPadraoKg,
       })
       .from(schema.fichaTecnica)
       .innerJoin(insumo, eq(insumo.id, schema.fichaTecnica.insumoId))
       .where(eq(schema.fichaTecnica.produtoId, item.produtoId));
 
-    const fichaEfetiva = ficha.filter((f) => f.baixaEstoque && f.insumoControla);
+    // Receita do TAMANHO vendido ganha da receita do produto — nunca as duas.
+    const doTamanho = item.codigoVariante != null
+      ? ficha.filter((f) => f.codigoVariante === item.codigoVariante)
+      : [];
+    const daBase = ficha.filter((f) => f.codigoVariante == null);
+    const fichaEfetiva = (doTamanho.length > 0 ? doTamanho : daBase)
+      .filter((f) => f.baixaEstoque && f.insumoControla);
 
     if (fichaEfetiva.length > 0) {
       for (const f of fichaEfetiva) {
-        const qtdConsumida = qtdItem * Number(f.quantidade);
+        const qtdConsumida = qtdItem * converterQuantidade(
+          Number(f.quantidade), f.unidade, f.insumoUnidade,
+          f.insumoPesoKg != null ? Number(f.insumoPesoKg) : null,
+        );
         const precoUnit = f.insumoPrecoCusto ? Number(f.insumoPrecoCusto) : 0;
         const valor = qtdConsumida * precoUnit;
         await db.insert(schema.movimentoEstoque).values({

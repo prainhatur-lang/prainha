@@ -44,6 +44,8 @@
     "migrate:produto-fila": "tsx scripts/migrate-produto-fila.ts",
     "migrate:produto-fila-alvo": "tsx scripts/migrate-produto-fila-alvo.ts",
     "migrate:catalogo-proprio": "tsx scripts/migrate-catalogo-proprio.ts",
+    "migrate:ficha-por-tamanho": "tsx scripts/migrate-ficha-por-tamanho.ts",
+    "importar:ficha": "tsx scripts/importar-ficha-consumer.ts",
     "migrate:rls": "tsx scripts/migrate-rls.ts",
     "migrate:reseed-estoque-cdc": "tsx scripts/migrate-reseed-estoque-cdc.ts",
     "seed:grupos-front": "tsx scripts/seed-grupos-front.ts",

@@ -356,6 +356,10 @@ async function mapItensPedido(filialId: string, op: Operacao, chave: string, d: 
     codigoExterno,
     codigoPedidoExterno,
     codigoProdutoExterno: codProd,
+    // TAMANHO vendido. O agente resolve o produto-pai e mandava só ele — sem
+    // isto não dá pra saber se saiu dose ou garrafa, e a ficha por tamanho
+    // baixaria a receita errada.
+    codigoVarianteExterno: num(d.CODIGOPRODUTODETALHE),
     nomeProduto: str(d.NOMEPRODUTO),
     quantidade: numStr(d.QUANTIDADE),
     valorUnitario: numStr(d.VALORUNITARIO),
@@ -381,6 +385,7 @@ async function mapItensPedido(filialId: string, op: Operacao, chave: string, d: 
     set: {
       codigoPedidoExterno: row.codigoPedidoExterno,
       codigoProdutoExterno: row.codigoProdutoExterno,
+      codigoVarianteExterno: row.codigoVarianteExterno,
       nomeProduto: row.nomeProduto,
       quantidade: row.quantidade,
       valorUnitario: row.valorUnitario,

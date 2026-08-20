@@ -15,6 +15,11 @@ interface LinhaFicha {
   quantidade: string;
   baixaEstoque: boolean;
   observacao: string | null;
+  /** Receita POR TAMANHO: null = vale pro produto inteiro. */
+  tamanho?: string | null;
+  codigoVariante?: number | null;
+  unidade?: string | null;
+  origem?: string | null;
 }
 
 interface UsadoEm {
@@ -399,6 +404,14 @@ function LinhaFichaRow({
         >
           {linha.insumoNome}
         </Link>
+        {linha.codigoVariante != null && (
+          <span
+            className="ml-1.5 rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-medium text-indigo-800"
+            title="esta receita vale só para este tamanho"
+          >
+            {linha.tamanho || `tam ${linha.codigoVariante}`}
+          </span>
+        )}
         {linha.insumoTipo !== 'INSUMO' && (
           <span className="ml-1.5 rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500">
             {linha.insumoTipo === 'VENDA_SIMPLES' ? 'simples' : linha.insumoTipo}
@@ -437,7 +450,13 @@ function LinhaFichaRow({
           </button>
         )}
       </td>
-      <td className="px-4 py-2 font-mono text-xs text-slate-500">{linha.insumoUnidade}</td>
+      <td className="px-4 py-2 font-mono text-xs text-slate-500">
+        {linha.unidade && linha.unidade !== linha.insumoUnidade ? (
+          <span title={`convertido pra ${linha.insumoUnidade} na baixa`}>{linha.unidade} →{linha.insumoUnidade}</span>
+        ) : (
+          linha.insumoUnidade
+        )}
+      </td>
       <td className="px-4 py-2">
         <label className="flex items-center gap-1 text-xs">
           <input

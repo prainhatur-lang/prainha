@@ -83,9 +83,17 @@ export default async function ProdutoDetalhePage(props: {
       insumoTipo: schema.produto.tipo,
       insumoUnidade: schema.produto.unidadeEstoque,
       insumoControla: schema.produto.controlaEstoque,
+      // ficha por TAMANHO: sem o rótulo, duas linhas do mesmo insumo com
+      // quantidades diferentes pareceriam erro de cadastro
+      unidade: schema.fichaTecnica.unidade,
+      codigoVariante: schema.fichaTecnica.codigoVarianteExterno,
+      origem: schema.fichaTecnica.origem,
+      tamanho: schema.produtoTamanho.descricao,
     })
     .from(schema.fichaTecnica)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.fichaTecnica.insumoId))
+    .leftJoin(schema.produtoVariante, eq(schema.produtoVariante.id, schema.fichaTecnica.varianteId))
+    .leftJoin(schema.produtoTamanho, eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId))
     .where(eq(schema.fichaTecnica.produtoId, id))
     .orderBy(asc(schema.produto.nome));
 

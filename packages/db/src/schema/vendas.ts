@@ -190,6 +190,10 @@ export const pedidoItem = pgTable(
     codigoExterno: integer('codigo_externo').notNull(),
     codigoPedidoExterno: integer('codigo_pedido_externo').notNull(),
     codigoProdutoExterno: integer('codigo_produto_externo'),
+    /** CODIGOPRODUTODETALHE: o TAMANHO vendido. O agente resolvia o produto-pai
+     *  e jogava isto fora — sem ele não dá pra saber se saiu dose ou garrafa,
+     *  e a baixa de estoque por ficha erra a quantidade. */
+    codigoVarianteExterno: integer('codigo_variante_externo'),
     pedidoId: uuid('pedido_id').references(() => pedido.id, { onDelete: 'cascade' }),
     produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),
     nomeProduto: varchar('nome_produto', { length: 200 }),

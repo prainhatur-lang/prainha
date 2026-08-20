@@ -31,6 +31,7 @@ import { produto } from './vendas';
 import { fornecedor } from './financeiro';
 import { notaCompraItem } from './notas';
 import { pedidoItem } from './vendas';
+import { produtoVariante } from './produto_variante';
 
 /** Ficha técnica (BOM): produto composto → insumos com quantidade.
  *  A unidade da quantidade é a `unidadeEstoque` do insumo (ml, g, un).
@@ -55,10 +56,23 @@ export const fichaTecnica = pgTable(
     insumoId: uuid('insumo_id')
       .notNull()
       .references(() => produto.id, { onDelete: 'restrict' }),
-    /** Quantidade consumida por 1 unidade do produto, na unidade do insumo.
+    /** TAMANHO a que esta linha se aplica (PRODUTODETALHE). Null = vale pro
+     *  produto inteiro (o comportamento antigo). Existe porque a receita muda
+     *  com o tamanho: Absolut na dose consome 0,06 da garrafa; na garrafa,
+     *  1,00. Sem isto, a dose baixava a garrafa inteira. */
+    varianteId: uuid('variante_id').references(() => produtoVariante.id, { onDelete: 'cascade' }),
+    codigoVarianteExterno: integer('codigo_variante_externo'),
+    /** Quantidade consumida por 1 unidade do produto/tamanho.
      *  Ex: 1 caipiroska = 50ml vodka → 50.
      *  Ex: 1 caixa de 12 cervejas = 12un lata → 12. */
     quantidade: numeric('quantidade', { precision: 14, scale: 4 }).notNull(),
+    /** Unidade da quantidade: un · kg · g · l · ml. Null = a unidade de
+     *  estoque do próprio insumo (é o caso das receitas vindas do Consumer).
+     *  Guardar a unidade deixa cadastrar "0,4 kg de batata" mesmo que o insumo
+     *  seja controlado em grama — a conversão é feita na baixa. */
+    unidade: varchar('unidade', { length: 6 }),
+    /** nuvem = cadastrada aqui · consumer = importada da ficha do PDV */
+    origem: varchar('origem', { length: 12 }).notNull().default('nuvem'),
     /** Se esta linha específica gera movimento de estoque. Default true.
      *  Útil pra desligar baixa só em receitas específicas (ex: decoração simbólica). */
     baixaEstoque: boolean('baixa_estoque').notNull().default(true),
@@ -68,8 +82,10 @@ export const fichaTecnica = pgTable(
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    uniqProdInsumo: unique('uq_ficha_prod_insumo').on(t.produtoId, t.insumoId),
+    // unique virou parcial (uq_ficha_prod_insumo_sem_var / uq_ficha_var_insumo):
+    // com ficha por tamanho, o mesmo par produto+insumo se repete por tamanho.
     produtoIdx: index('idx_ficha_produto').on(t.filialId, t.produtoId),
+    varianteIdx: index('idx_ficha_variante').on(t.filialId, t.varianteId),
     insumoIdx: index('idx_ficha_insumo').on(t.filialId, t.insumoId),
   }),
 );
