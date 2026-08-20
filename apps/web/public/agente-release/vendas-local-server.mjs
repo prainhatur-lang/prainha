@@ -5681,6 +5681,18 @@ async function apiComprovanteFoto(body, quem) {
   return { ok: true, token, arquivo: arq, dados: dados || null };
 }
 /** Registra o recebimento e devolve quanto ainda falta na conta. */
+/** NSU repetido no MESMO DIA = comprovante usado duas vezes (erro ou golpe).
+ *  Devolve o pagamento que já usa o número, ou null se está livre. */
+async function nsuJaUsadoHoje(nsu) {
+  const n = String(nsu ?? '').replace(/\D/g, '');
+  if (!n) return null;
+  const r = await qi(`SELECT FIRST 1 CODIGO, CODIGOPEDIDO PED, CAST(VALOR AS NUMERIC(12,2)) V
+    FROM PAGAMENTOS WHERE NSUTRANSACAO=${n} AND DATADELETE IS NULL
+      AND CAST(DATAPAGAMENTO AS DATE) = CURRENT_DATE`);
+  return r.ok && r.rows.length
+    ? { pagamento: Number(r.rows[0].CODIGO), pedido: Number(r.rows[0].PED) || null, valor: Number(r.rows[0].V) || 0 }
+    : null;
+}
 async function apiCaixaReceberManual(body, quem) {
   const numero = Number(body.numero) || 0;
   const f = FORMAS_MANUAIS[String(body.forma || '')];
@@ -5688,6 +5700,10 @@ async function apiCaixaReceberManual(body, quem) {
   if (!numero) return { ok: false, erro: 'mesa inválida' };
   if (!f) return { ok: false, erro: 'forma inválida' };
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+  if (body.nsu) {
+    const dup = await nsuJaUsadoHoje(body.nsu);
+    if (dup) return { ok: false, erro: `Esse NSU já foi usado HOJE no pedido ${dup.pedido ?? '?'} (R$ ${dup.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
+  }
   // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
   let caixaCodigo = null;
   if (f.codigo === FORMA.DINHEIRO) {
@@ -6850,6 +6866,8 @@ async function apiNsuCasar(data) {
     const o = cand[0];
     const nsuNum = String(o.nsu).replace(/\D/g, '');
     if (!nsuNum) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'NSU do par não é numérico' }); continue; }
+    const dup = await nsuJaUsadoHoje(nsuNum);
+    if (dup && dup.pagamento !== Number(p.CODIGO)) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: `NSU ${nsuNum} já usado no pagamento ${dup.pagamento}` }); continue; }
     const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsuNum} WHERE CODIGO=${Number(p.CODIGO)} AND NSUTRANSACAO IS NULL`);
     if (!up.ok) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'FB: ' + up.err }); continue; }
     await sql`UPDATE venda_pagamento SET pagamento_fb=${Number(p.CODIGO)} WHERE id=${Number(o.id)}`;
@@ -6879,6 +6897,8 @@ async function apiNsuLerFotos(data) {
     const d = await lerComprovanteNaNuvem(f.arquivo);
     const nsu = String(d?.nsu ?? '').replace(/\D/g, '');
     if (!nsu) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: d ? 'IA não achou NSU no papel' : 'OCR indisponível/foto ilegível' }); continue; }
+    const dup = await nsuJaUsadoHoje(nsu);
+    if (dup && dup.pagamento !== Number(f.pagamento_codigo)) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: `NSU ${nsu} já usado no pagamento ${dup.pagamento} — mesmo cupom fotografado 2×?` }); continue; }
     const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${Number(f.pagamento_codigo)} AND NSUTRANSACAO IS NULL`);
     if (!up.ok) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'FB: ' + up.err }); continue; }
     await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE id=${Number(f.id)}`;
