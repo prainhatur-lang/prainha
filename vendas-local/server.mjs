@@ -11809,7 +11809,11 @@ async function manCelular(externo){
   manParar();
   MAN.poll=setInterval(async function(){
     try{
-      var st=await (await fetch('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token)+'&n='+MESA,{cache:'no-store'})).json();
+      // jget, NÃO fetch cru: a sessão do caixa vai no header x-garcom (hdrs()).
+      // Com fetch puro toda consulta voltava "sem sessão" — e era ISSO que
+      // deixava a tela em "aguardando a foto" pra sempre, com a foto já
+      // gravada no servidor.
+      var st=await jget('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token)+'&n='+MESA);
       // sessão caiu? antes ficava girando calado — o caixa achava que travou
       if(st&&st.sem_sessao){manParar();var cs=document.getElementById('mchegou');
         if(cs)cs.innerHTML='<b style="color:var(--red)">sua sessão caiu — entre no caixa de novo</b>';return}
