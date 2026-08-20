@@ -6756,6 +6756,50 @@ document.getElementById('d').addEventListener('change',carregar);
 carregar();
 </script></body></html>`;
 
+/** Casa NSU faltante: pagamento manual de cartão/Pix sem NSU × transação da
+ *  maquininha registrada no sistema (venda_pagamento ok, órfã). Só grava
+ *  quando o par é ÚNICO (mesma forma, mesmo valor, mesmo dia) — ambíguo ou
+ *  sem par fica no relatório pra resolver na mão (foto em /comprovantes). */
+async function apiNsuCasar(data) {
+  const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(data || ''))
+    ? String(data)
+    : new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const pend = await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F,
+      CAST(p.VALOR AS NUMERIC(12,2)) V, CAST(p.DATAPAGAMENTO AS VARCHAR(30)) QUANDO
+    FROM PAGAMENTOS p
+    WHERE p.DATADELETE IS NULL AND p.NSUTRANSACAO IS NULL
+      AND p.CODIGOFORMAPAGAMENTO IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})
+      AND CAST(p.DATAPAGAMENTO AS DATE) = DATE '${dia}'`);
+  if (!pend.ok) return { ok: false, erro: 'FB: ' + pend.err };
+  const orfaos = await sql`SELECT id, forma_codigo, valor, nsu FROM venda_pagamento
+    WHERE status='ok' AND nsu IS NOT NULL AND pagamento_fb IS NULL
+      AND criado_em >= ${dia} AND criado_em < (${dia}::date + 1)`;
+  const usados = new Set();
+  const casados = [];
+  const pulados = [];
+  for (const p of pend.rows) {
+    const valor = Number(p.V) || 0;
+    const cand = orfaos.filter((o) => !usados.has(Number(o.id))
+      && Number(o.forma_codigo) === Number(p.F)
+      && Math.abs(Number(o.valor) - valor) < 0.005);
+    if (cand.length !== 1) {
+      pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor,
+        motivo: cand.length === 0 ? 'sem transação órfã igual no sistema (maquininha avulsa?)' : `ambíguo: ${cand.length} transações do mesmo valor` });
+      continue;
+    }
+    const o = cand[0];
+    const nsuNum = String(o.nsu).replace(/\D/g, '');
+    if (!nsuNum) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'NSU do par não é numérico' }); continue; }
+    const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsuNum} WHERE CODIGO=${Number(p.CODIGO)} AND NSUTRANSACAO IS NULL`);
+    if (!up.ok) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'FB: ' + up.err }); continue; }
+    await sql`UPDATE venda_pagamento SET pagamento_fb=${Number(p.CODIGO)} WHERE id=${Number(o.id)}`;
+    try { await sql`UPDATE recebimento_foto SET nsu=${nsuNum} WHERE pagamento_codigo=${Number(p.CODIGO)} AND nsu IS NULL`; } catch { /* segue */ }
+    usados.add(Number(o.id));
+    casados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, nsu: nsuNum });
+  }
+  return { ok: true, dia, casados, pulados };
+}
+
 /** Últimas baixas, com quem apertou. */
 async function apiBaixas(limite, area) {
   const n = Math.min(200, Math.max(1, Number(limite) || 60));
@@ -12910,6 +12954,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
     if (p === '/comprovantes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTES_HTML); }
     if (p === '/api/comprovantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiComprovantes(u.searchParams.get('data')))); }
+    if (req.method === 'POST' && p === '/api/nsu/casar') {
+      const b = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiNsuCasar(b.data)));
+    }
     if (p.startsWith('/foto/')) {
       // caminho vem do banco, mas normalizo assim mesmo: nada de subir pasta
       const rel = decodeURIComponent(p.slice(6));
