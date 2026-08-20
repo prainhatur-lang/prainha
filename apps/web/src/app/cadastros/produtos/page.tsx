@@ -193,6 +193,12 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
             >
               ⚠ Vendeu sem baixar
             </Link>
+            <Link
+              href={`/cadastros/produtos/novo?filial=${filialSelecionada.id}`}
+              className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+            >
+              + Novo produto
+            </Link>
             <NovoInsumoButton filialId={filialSelecionada.id} />
           </div>
         </div>

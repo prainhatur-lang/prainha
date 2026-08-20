@@ -301,6 +301,12 @@ async function initSchema() {
   // grupos que a CASA decidiu esconder do cliente, independente do Consumer
   // (ex.: "Artistas" vem marcado como cardapio digital la, mas nao e' pra mesa)
   await sql`CREATE TABLE IF NOT EXISTS grupo_oculto (categoria text PRIMARY KEY, criado_em timestamptz DEFAULT now())`;
+  // Produto criado NA NUVEM (não existe no Firebird). Fica em tabela própria
+  // porque produto_local leva TRUNCATE a cada espelho — e porque a loja tem que
+  // vender igual com a internet caída: o que chegou uma vez fica aqui.
+  await sql`CREATE TABLE IF NOT EXISTS produto_nuvem (codigo_pdv integer PRIMARY KEY, produto_codigo integer,
+    nome text, tamanho text, preco numeric, area_codigo integer, comanda_mobile boolean, cardapio_digital boolean,
+    categoria text, descricao text, atualizado timestamptz DEFAULT now())`;
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -1217,6 +1223,26 @@ async function espelhoCatalogo() {
   const redirCat = await mapaRedirPracas();
   if (redirCat.size) for (const r of rows) {
     if (r.area_codigo != null && redirCat.has(r.area_codigo)) r.area_codigo = redirCat.get(r.area_codigo);
+  }
+  // Produto que nasceu na NUVEM entra na mesma montagem. Sem isto ele sumiria
+  // do cardápio a cada 5 minutos, no TRUNCATE. Faixa 900000+ não colide com o
+  // Firebird (que está na casa dos 2 mil).
+  const daNuvem = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
+      comanda_mobile, cardapio_digital, categoria, descricao FROM produto_nuvem`;
+  const jaTem = new Set(rows.map((r) => r.codigo_pdv));
+  for (const x of daNuvem) {
+    if (jaTem.has(Number(x.codigo_pdv))) continue;
+    const nome = T(x.nome) || '?';
+    const tam = T(x.tamanho);
+    rows.push({
+      codigo_pdv: Number(x.codigo_pdv), produto_codigo: Number(x.produto_codigo), nome, tamanho: tam,
+      preco: Number(x.preco) || 0, area_codigo: x.area_codigo == null ? null : Number(x.area_codigo),
+      comanda_mobile: x.comanda_mobile !== false,
+      nome_busca: semAcento(nome + ' ' + (tam || '')),
+      categoria: T(x.categoria) || 'Outros', categoria_ordem: 999,
+      sem_estoque: false, estoque: null, cardapio_digital: !!x.cardapio_digital,
+      descricao: T(x.descricao) || null, preparo: null,
+    });
   }
   await sql.begin(async (sql) => {
     await sql`TRUNCATE produto_local`;
@@ -4991,6 +5017,40 @@ async function loopEspelhoWizard() {
       + `${j.etiquetas} etiquetas · ${j.cozinhas} praças · ${j.observacoes} observações · ${j.usuarios} usuários`);
   } catch (err) { console.error('[wizard] espelho:', err.message); }
   finally { espelhoWizardRodando = false; }
+}
+/** Puxa da nuvem os produtos que nasceram lá e guarda localmente.
+ *  Falha de rede não pode limpar o cardápio: em erro, mantém o que já tem. */
+let catalogoNuvemRodando = false;
+async function loopCatalogoNuvem() {
+  if (catalogoNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  catalogoNuvemRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('catalogo', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/catalogo-nuvem?${qs}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !Array.isArray(j.produtos)) return;
+    const codigos = j.produtos.map((p) => Number(p.codigo_pdv)).filter(Number.isFinite);
+    await sql.begin(async (t) => {
+      for (const p of j.produtos) {
+        await t`INSERT INTO produto_nuvem (codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
+            comanda_mobile, cardapio_digital, categoria, descricao, atualizado)
+          VALUES (${Number(p.codigo_pdv)}, ${Number(p.produto_codigo)}, ${p.nome || ''}, ${p.tamanho || null},
+            ${Number(p.preco) || 0}, ${p.area_codigo == null ? null : Number(p.area_codigo)},
+            ${p.comanda_mobile !== false}, ${!!p.cardapio_digital}, ${p.categoria || null},
+            ${p.descricao || null}, now())
+          ON CONFLICT (codigo_pdv) DO UPDATE SET produto_codigo=EXCLUDED.produto_codigo, nome=EXCLUDED.nome,
+            tamanho=EXCLUDED.tamanho, preco=EXCLUDED.preco, area_codigo=EXCLUDED.area_codigo,
+            comanda_mobile=EXCLUDED.comanda_mobile, cardapio_digital=EXCLUDED.cardapio_digital,
+            categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, atualizado=now()`;
+      }
+      // pausado/descontinuado na nuvem some daqui — a resposta é a lista inteira
+      if (codigos.length) await t`DELETE FROM produto_nuvem WHERE NOT (codigo_pdv = ANY(${codigos}))`;
+      else await t`DELETE FROM produto_nuvem`;
+    });
+    console.log('[catalogo-nuvem] ' + j.produtos.length + ' produto(s) da nuvem no cardápio');
+  } catch (err) { console.error('[catalogo-nuvem]', err.message); }
+  finally { catalogoNuvemRodando = false; }
 }
 let produtoFilaRodando = false;
 async function loopProdutoFila() {
@@ -12315,6 +12375,8 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
+  loopCatalogoNuvem().catch(() => {});
+  setInterval(() => loopCatalogoNuvem().catch(() => {}), 5 * 60 * 1000);
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
