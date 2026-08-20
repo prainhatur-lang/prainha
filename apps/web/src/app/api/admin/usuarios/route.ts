@@ -37,7 +37,25 @@ async function getOrCreateAuthUser(email: string, senha: string): Promise<string
   if (list.ok) {
     const data = (await list.json()) as { users?: { id: string; email: string }[] };
     const existente = data.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
-    if (existente) return existente.id;
+    if (existente) {
+      // Email já existia no Auth: a senha digitada no formulário passa a valer.
+      // Antes a senha era descartada em silêncio e o admin "criava" o usuário
+      // sem conseguir logar com ela (aconteceu com financeiro@ em 20/08/2026).
+      const upd = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${existente.id}`, {
+        method: 'PUT',
+        headers: {
+          apikey: SERVICE_KEY,
+          Authorization: `Bearer ${SERVICE_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: senha, email_confirm: true }),
+      });
+      if (!upd.ok) {
+        const t = await upd.text();
+        throw new Error(`Falha redefinir senha do Auth user existente: ${upd.status} ${t}`);
+      }
+      return existente.id;
+    }
   }
   const r = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
     method: 'POST',
