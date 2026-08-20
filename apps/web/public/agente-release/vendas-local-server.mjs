@@ -11857,12 +11857,11 @@ function manForma(f){
   // NSU: cartão manual SEM o NSU não tem par na conciliação e o caixa não
   // fecha sozinho (caso do pedido 158633, 20/08). O número está impresso no
   // próprio comprovante (DOC/NSU) — digitar aqui resolve na origem.
-  var nsuHtml=(f==='credito'||f==='debito')
-    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número DOC/NSU impresso no papel da maquininha</div>'+
-      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="ex: 038512" style="margin-top:6px">'
-    : f==='pix'
-    ? '<div class="mut" style="margin-top:12px"><b>NSU do Pix</b> — se passou na MAQUININHA, digite o número do comprovante; Pix direto na conta não tem, deixe vazio</div>'+
-      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="ex: 1376421" style="margin-top:6px">'
+  // Pix na casa SEMPRE passa pela maquininha (regra do dono: não se aceita Pix
+  // direto na conta) — então Pix sem NSU é erro igual cartão sem NSU.
+  var nsuHtml=(f==='credito'||f==='debito'||f==='pix')
+    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="'+(f==='pix'?'ex: 1376421':'ex: 038512')+'" style="margin-top:6px">'
     : '';
   box.innerHTML=nsuHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
@@ -11953,7 +11952,7 @@ async function manConfirmar(){
   if(!(v>0)){e.textContent='digite o valor que entrou';return}
   if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
   var nsu=((document.getElementById('mnsu')||{}).value||'').replace(/\\D/g,'');
-  if((MAN.forma==='credito'||MAN.forma==='debito')&&!nsu){
+  if((MAN.forma==='credito'||MAN.forma==='debito'||MAN.forma==='pix')&&!nsu){
     if(!confirm('Sem o NSU esse cartão NÃO bate sozinho na conciliação e o caixa fica aberto pra conferência manual.\\n\\nO número está no comprovante (DOC/NSU). Continuar sem ele?'))return;
   }
   var b={numero:MESA,forma:MAN.forma,valor:v};
