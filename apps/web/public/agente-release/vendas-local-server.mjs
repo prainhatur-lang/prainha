@@ -2839,7 +2839,7 @@ async function apiLioPagar(body, garcom) {
 // lio-sdk), por forma e com NSUs — a tela do app compara com as vendas do
 // próprio terminal e o caixa fecha sem conferência manual. Dia em horário
 // de Sergipe (UTC-3 fixo): meia-noite local = 03:00Z.
-async function apiLioResumoDia(u) {
+async function apiLioResumoDia(u, garcom) {
   const dataParam = String((u && u.searchParams.get('data')) || '').trim();
   let inicio;
   if (/^\d{4}-\d{2}-\d{2}$/.test(dataParam)) inicio = new Date(dataParam + 'T03:00:00Z');
@@ -2849,21 +2849,33 @@ async function apiLioResumoDia(u) {
     inicio.setUTCHours(3, 0, 0, 0);
   }
   const fim = new Date(inicio.getTime() + 24 * 3600 * 1000);
-  const rows = await sql`SELECT criado_em, numero, forma, valor, nsu FROM venda_pagamento
+  const rows = await sql`SELECT criado_em, numero, forma, valor, nsu, observacao FROM venda_pagamento
     WHERE origem='lio-sdk' AND status='ok' AND criado_em >= ${inicio} AND criado_em < ${fim}
     ORDER BY criado_em`;
-  const formas = {};
-  let total = 0;
-  for (const r of rows) {
-    const f = r.forma || '?';
-    formas[f] = formas[f] || { qtd: 0, total: 0 };
-    formas[f].qtd += 1;
-    formas[f].total = +(formas[f].total + Number(r.valor)).toFixed(2);
-    total = +(total + Number(r.valor)).toFixed(2);
-  }
-  return { ok: true, inicio: inicio.toISOString(), qtd: rows.length, total, formas,
-    pagamentos: rows.map((r) => ({ criado_em: r.criado_em, numero: r.numero, forma: r.forma,
-      valor: Number(r.valor), nsu: r.nsu || null })) };
+  const somar = (lista) => {
+    const formas = {};
+    let total = 0;
+    for (const r of lista) {
+      const f = r.forma || '?';
+      formas[f] = formas[f] || { qtd: 0, total: 0 };
+      formas[f].qtd += 1;
+      formas[f].total = +(formas[f].total + Number(r.valor)).toFixed(2);
+      total = +(total + Number(r.valor)).toFixed(2);
+    }
+    return { formas, total };
+  };
+  const mapear = (lista) => lista.map((r) => ({ criado_em: r.criado_em, numero: r.numero, forma: r.forma,
+    valor: Number(r.valor), nsu: r.nsu || null }));
+  const tudo = somar(rows);
+  // "SEU dia": só o do garçom LOGADO (a observacao carimba 'Prainha LIO · login').
+  // O topo continua sendo o dia inteiro — o app antigo usa pra bater com o
+  // terminal; o app novo mostra o `meu` primeiro (troca de turno no aparelho).
+  const login = String(garcom?.login || '').trim().toLowerCase();
+  const meuRows = login ? rows.filter((r) => String(r.observacao || '').toLowerCase().endsWith('· ' + login)) : [];
+  const meuTot = somar(meuRows);
+  return { ok: true, inicio: inicio.toISOString(), qtd: rows.length, total: tudo.total, formas: tudo.formas,
+    pagamentos: mapear(rows),
+    meu: login ? { login, qtd: meuRows.length, total: meuTot.total, formas: meuTot.formas, pagamentos: mapear(meuRows) } : null };
 }
 
 // Config da loja pros clientes nativos (app da maquininha): limites de
@@ -4508,6 +4520,45 @@ async function apiCaixaDetalhe(codigo) {
       fundo: Number(cx.FUNDO) || 0, esperado: cx.SALDOFINAL == null ? null : Number(cx.SALDOFINAL), contado: cx.SALDOFINALINFORMADO == null ? null : Number(cx.SALDOFINALINFORMADO) },
     pagamentos: (pg.ok ? pg.rows : []).map((x) => ({ pedido: Number(x.PED) || null, forma: T(x.FORMA) || ('forma ' + x.F), valor: Number(x.V) || 0, nsu: T(x.NSU) || null, quando: T(x.QUANDO) })) };
 }
+// A régua do BATER (regra do dono: só fecha se bater): todo pagamento do caixa
+// com NSU, com par exato no venda_pagamento (mesmo NSU e valor), e ZERO
+// dinheiro. Usada pelo autofechamento (04:00) e pelo fechar-caixa da maquininha.
+async function caixaMaquininhaConfere(cod) {
+  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU
+    FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
+  if (!pg.ok) return { bate: false, motivo: 'FB: ' + pg.err, n: 0 };
+  for (const p of pg.rows) {
+    if (Number(p.F) === FORMA.DINHEIRO) return { bate: false, motivo: 'tem DINHEIRO lançado (maquininha não recebe dinheiro)', n: pg.rows.length };
+    const nsu = p.NSU != null ? String(p.NSU) : '';
+    if (!nsu) return { bate: false, motivo: `pagamento de R$ ${p.V} sem NSU`, n: pg.rows.length };
+    const [par] = await sql`SELECT id FROM venda_pagamento
+      WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
+        AND valor = ${Number(p.V)} LIMIT 1`;
+    if (!par) return { bate: false, motivo: `NSU ${nsu} (R$ ${p.V}) sem par no registro do sistema`, n: pg.rows.length };
+  }
+  return { bate: true, n: pg.rows.length };
+}
+// Fechar o caixa da MAQUININHA do próprio garçom (troca de turno no aparelho).
+// Só o caixa nascido na maquininha, e só se BATER — não bateu, fica aberto
+// pro gerente ver na Conferência (com o motivo na cara).
+async function apiLioFecharCaixa(garcom) {
+  const cx = await fbCaixaDoOperador(garcom.login);
+  if (!cx) return { ok: false, erro: 'Você não tem caixa aberto — nada a fechar.' };
+  const o = (await qi(`SELECT CAST(OBSERVACAO AS VARCHAR(120)) OBS FROM CAIXA WHERE CODIGO=${cx.codigo}`)).rows?.[0];
+  if (!T(o?.OBS).startsWith('Aberto automaticamente'))
+    return { ok: false, erro: 'Seu caixa aberto é do SISTEMA (gaveta) — o fechamento dele é no caixa, com conferência.' };
+  const c = await caixaMaquininhaConfere(cx.codigo);
+  if (!c.bate) return { ok: false, nao_bateu: true,
+    erro: `NÃO BATEU: ${c.motivo}. O caixa fica ABERTO pro gerente conferir — nada se perde.` };
+  let esperado = cx.fundo;
+  try { const r = await fbResumoCaixa(cx.codigo); esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
+  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
+  if (!up.ok) return { ok: false, erro: 'FB fechar: ' + up.err };
+  try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+    VALUES (${cx.codigo}, ${garcom.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0,
+      ${'Fechado na maquininha por ' + (garcom.nome || garcom.login) + ' — BATEU (' + c.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
+  return { ok: true, codigo: cx.codigo, pagamentos: c.n, esperado };
+}
 // ---- FECHAMENTO AUTOMÁTICO (04:00) — SÓ caixas da MAQUININHA ----
 // Separação do dono: caixa da MAQUININHA (nasce sozinho ao receber no terminal,
 // só cartão/Pix, sem gaveta) fecha SOZINHO de madrugada — não há o que contar.
@@ -4531,23 +4582,10 @@ async function loopFecharCaixasMaquininha() {
     for (const c of abertos.rows) {
       if (!T(c.OBS).startsWith('Aberto automaticamente')) continue; // sistema: não toca
       const cod = Number(c.CODIGO);
-      // ⚠️ REGRA DO DONO: só fecha se o caixa BATER — todo pagamento com NSU
-      // e com par no registro do sistema (venda_pagamento), e ZERO dinheiro.
-      // Não bateu = fica ABERTO pra gente ver (Conferência do web mostra).
-      const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU
-        FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
-      if (!pg.ok) { pulados++; continue; }
-      let bate = true;
-      for (const p of pg.rows) {
-        if (Number(p.F) === FORMA.DINHEIRO) { bate = false; break; } // maquininha não recebe dinheiro
-        const nsu = p.NSU != null ? String(p.NSU) : '';
-        if (!nsu) { bate = false; break; } // pagamento sem NSU não confere
-        const [par] = await sql`SELECT id FROM venda_pagamento
-          WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
-            AND valor = ${Number(p.V)} LIMIT 1`;
-        if (!par) { bate = false; break; } // sem par no nosso registro
-      }
-      if (!bate) { pulados++; console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu — fica aberto pra conferência`); continue; }
+      // ⚠️ REGRA DO DONO: só fecha se o caixa BATER (régua única em
+      // caixaMaquininhaConfere). Não bateu = fica ABERTO pra conferência.
+      const conf = await caixaMaquininhaConfere(cod);
+      if (!conf.bate) { pulados++; console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu (${conf.motivo}) — fica aberto`); continue; }
       const fundo = Number(c.FUNDO) || 0;
       let esperado = fundo;
       try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
@@ -4555,7 +4593,7 @@ async function loopFecharCaixasMaquininha() {
       if (up.ok) {
         n++;
         try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
-          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha BATEU (' + pg.rows.length + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
+          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha BATEU (' + conf.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
       }
     }
     await cfgSet('caixa_autofechar_dia', hoje);
@@ -11998,7 +12036,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/lio/resumo-dia') {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioResumoDia(u)));
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioResumoDia(u, g)));
+    }
+    // Fechar o MEU caixa da maquininha (troca de turno): só o do LOGADO, só se
+    // BATER (mesma régua do autofechamento). Caixa do sistema é recusado.
+    if (req.method === 'POST' && p === '/api/lio/fechar-caixa') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioFecharCaixa(g)));
     }
     // Fechar conta QUITADA pela maquininha (mesmo ato final do caixa — o
     // apiCaixaFechar barra sozinho se ainda faltar dinheiro).

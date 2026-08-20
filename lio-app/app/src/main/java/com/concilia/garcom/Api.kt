@@ -486,6 +486,11 @@ object Api {
     fun lioResumoDia(base: String, token: String): JSONObject =
         getJson("$base/api/lio/resumo-dia", token)
 
+    /** Fecha o caixa da MAQUININHA do próprio garçom (troca de turno) — o
+     *  servidor só fecha se BATER (NSU a NSU); não bateu, devolve o motivo. */
+    fun lioFecharCaixa(base: String, token: String): JSONObject =
+        postJson("$base/api/lio/fechar-caixa", token, JSONObject())
+
     // -------- NFC-e (nota fiscal oferecida ao fechar a conta) --------
 
     data class NfceInfo(

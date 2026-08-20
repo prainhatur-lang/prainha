@@ -96,8 +96,13 @@ android {
         // responder (rápido/offline), caindo pro Funnel (URL https configurada)
         // só quando está FORA. Uma config só, vai direto por dentro (Session.
         // resolverBase, checagem rápida em MainActivity).
-        versionCode = 30
-        versionName = "1.10.6"
+        // 1.10.7: TROCA DE TURNO no aparelho — o 🧾 Dia mostra "SEU DIA" (só o
+        // garçom logado, campo `meu` do resumo-dia) antes do total do aparelho,
+        // e ganha o botão "🔒 Fechar meu caixa": fecha o caixa da MAQUININHA do
+        // logado, só se BATER (servidor confere NSU a NSU; não bateu = fica
+        // aberto com o motivo). Sai um, entra o outro, caixa novo nasce sozinho.
+        versionCode = 31
+        versionName = "1.10.7"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

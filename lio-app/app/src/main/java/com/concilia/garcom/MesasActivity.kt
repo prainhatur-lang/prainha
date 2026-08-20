@@ -213,7 +213,21 @@ class MesasActivity : AppCompatActivity() {
     private fun mostrarFechamento(resumo: org.json.JSONObject, term: List<Lio.VendaTerminal>?) {
         val qtd = resumo.optInt("qtd")
         val total = resumo.optDouble("total", 0.0)
-        val sb = StringBuilder("SISTEMA hoje: $qtd pagamento(s) · ${Cupom.brl(total)}")
+        val sb = StringBuilder()
+        // SEU DIA primeiro (só o garçom logado) — é o que interessa na troca de
+        // turno. O total do aparelho/dia continua embaixo, pra conferência.
+        resumo.optJSONObject("meu")?.let { meu ->
+            sb.append("SEU DIA — ${Session.nome(this) ?: meu.optString("login")}: " +
+                "${meu.optInt("qtd")} pagamento(s) · ${Cupom.brl(meu.optDouble("total", 0.0))}")
+            meu.optJSONObject("formas")?.let { f ->
+                f.keys().forEach { k ->
+                    val o = f.optJSONObject(k) ?: return@forEach
+                    sb.append("\n  $k: ${o.optInt("qtd")} · ${Cupom.brl(o.optDouble("total", 0.0))}")
+                }
+            }
+            sb.append("\n\n")
+        }
+        sb.append("SISTEMA hoje (todos): $qtd pagamento(s) · ${Cupom.brl(total)}")
         resumo.optJSONObject("formas")?.let { f ->
             f.keys().forEach { k ->
                 val o = f.optJSONObject(k) ?: return@forEach
@@ -271,6 +285,33 @@ class MesasActivity : AppCompatActivity() {
                     onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
             }
             .setNegativeButton("Fechar", null)
+            .setNeutralButton("🔒 Fechar meu caixa") { _, _ -> fecharMeuCaixa() }
+            .show()
+    }
+
+    /** Troca de turno: fecha o caixa da MAQUININHA do logado. O servidor só
+     *  fecha se BATER (NSU a NSU) — não bateu, mostra o motivo e fica aberto. */
+    private fun fecharMeuCaixa() {
+        AlertDialog.Builder(this)
+            .setTitle("Fechar meu caixa")
+            .setMessage("Fechar o SEU caixa da maquininha agora?\n\nSó fecha se bater tudo (NSU a NSU). Depois é só sair e o próximo entrar.")
+            .setPositiveButton("Fechar meu caixa") { _, _ ->
+                val tk = Session.token(this) ?: return@setPositiveButton logout()
+                Thread {
+                    val r = try { Api.lioFecharCaixa(Session.servidor(this), tk) }
+                        catch (e: Exception) { org.json.JSONObject().put("ok", false).put("erro", Api.msgErroRede(e, Session.servidor(this))) }
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle(if (r.optBoolean("ok")) "✅ Caixa fechado" else "⚠ Não fechou")
+                            .setMessage(if (r.optBoolean("ok"))
+                                "BATEU — ${r.optInt("pagamentos")} pagamento(s) conferido(s) por NSU.\nPode sair; o próximo garçom entra e o caixa dele abre sozinho no primeiro recebimento."
+                            else r.optStringOrNull("erro") ?: "Não foi possível fechar agora.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }.start()
+            }
+            .setNegativeButton("Voltar", null)
             .show()
     }
 
