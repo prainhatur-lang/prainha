@@ -4721,6 +4721,31 @@ async function loopEspelhoWizard() {
       FROM WIZARD WHERE DATADELETE IS NULL`);
     if (!lig.ok) throw new Error('ligações: ' + lig.err);
     const eti = await qi(`SELECT CODIGO C, TRIM(DESCRICAO) D FROM ETIQUETAS WHERE DATADELETE IS NULL`);
+    // Praças do KDS, observações prontas e usuários: nunca entraram no CDC e
+    // são exatamente o que a operação precisa no dia em que o Firebird sair.
+    const coz = await qi(`SELECT CODIGO C, TRIM(DESCRICAO) D FROM COZINHAS`);
+    const obs = await qi(`SELECT o.CODIGO C, TRIM(o.DESCRICAO) T, eo.CODIGOETIQUETA E, TRIM(e.DESCRICAO) CAT
+      FROM OBSERVACOES o
+      LEFT JOIN ETIQUETASOBSERVACOES eo ON eo.CODIGOOBSERVACAO = o.CODIGO
+      LEFT JOIN ETIQUETAS e ON e.CODIGO = eo.CODIGOETIQUETA`);
+    // ACESSO tem uma linha por permissão — junta em array por usuário.
+    const usu = await qi(`SELECT u.CODIGO C, TRIM(u.LOGIN) L, TRIM(COALESCE(u.NOME,'')) N,
+        TRIM(COALESCE(u.TIPO,'')) T, a.PERMISSAO P
+      FROM VWUSUARIOS u LEFT JOIN ACESSO a ON a.USUARIO = u.CODIGO
+      WHERE u.ATIVO='S'`);
+    const porUsuario = new Map();
+    if (usu.ok) for (const x of usu.rows) {
+      const cod = N(x.C); const login = T(x.L);
+      if (!cod || !login) continue;
+      let u2 = porUsuario.get(cod);
+      if (!u2) {
+        const tipo = T(x.T) || '';
+        u2 = { c: cod, l: login, n: T(x.N) || login, t: tipo, adm: tipo.toUpperCase() === 'ADMINISTRADOR', perms: [] };
+        porUsuario.set(cod, u2);
+      }
+      const perm = N(x.P);
+      if (perm != null && !u2.perms.includes(perm)) u2.perms.push(perm);
+    }
     const e = Math.floor(Date.now() / 1000) + 120;
     const corpo = {
       f: FILIAL_ID, e, s: nfceAssina('espelho', e),
@@ -4728,6 +4753,9 @@ async function loopEspelhoWizard() {
       opcoes: opc.rows.map((x) => ({ c: N(x.C), p: N(x.P), n: T(x.N), pr: N(x.PR) || 0, pd: N(x.PD) })),
       ligacoes: lig.rows.map((x) => ({ v: N(x.V), p: N(x.P), o: N(x.O) || 0 })),
       etiquetas: eti.ok ? eti.rows.map((x) => ({ c: N(x.C), d: T(x.D) })) : [],
+      cozinhas: coz.ok ? coz.rows.map((x) => ({ c: N(x.C), d: T(x.D) })) : [],
+      observacoes: obs.ok ? obs.rows.map((x) => ({ c: N(x.C), t: T(x.T), e: N(x.E), cat: T(x.CAT) })) : [],
+      usuarios: [...porUsuario.values()],
     };
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/wizard-espelho`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -4735,7 +4763,8 @@ async function loopEspelhoWizard() {
     });
     const j = await r.json().catch(() => null);
     if (!j?.ok) console.error('[wizard] nuvem recusou:', j?.erro || r.status);
-    else console.log(`[wizard] espelhado: ${j.perguntas} perguntas · ${j.opcoes} opções · ${j.ligacoes} ligações · ${j.etiquetas} etiquetas`);
+    else console.log(`[espelho] ${j.perguntas} perguntas · ${j.opcoes} opções · ${j.ligacoes} ligações · `
+      + `${j.etiquetas} etiquetas · ${j.cozinhas} praças · ${j.observacoes} observações · ${j.usuarios} usuários`);
   } catch (err) { console.error('[wizard] espelho:', err.message); }
   finally { espelhoWizardRodando = false; }
 }

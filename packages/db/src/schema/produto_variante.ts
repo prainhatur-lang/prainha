@@ -172,6 +172,39 @@ export const produtoEtiqueta = pgTable(
   }),
 );
 
+/** COZINHAS do Consumer = as PRAÇAS do KDS (Bar, Coz Petisco, Drinks...).
+ *  Roteamento do item = PRODUTOS.CODIGOCOZINHA. Nunca esteve no CDC: sobe
+ *  pelo push da loja, junto com o wizard. */
+export const areaProducao = pgTable(
+  'area_producao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    nome: varchar('nome', { length: 80 }).notNull(),
+    ativa: boolean('ativa').notNull().default(true),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniq: unique('uq_area_producao').on(t.filialId, t.codigoExterno) }),
+);
+
+/** OBSERVACOES + ETIQUETASOBSERVACOES: as observações prontas do PDV
+ *  ("bem passada", "com gelo e limão"). Ligadas à CATEGORIA (etiqueta), não
+ *  ao produto — é assim que a casa evita digitar o ponto da carne. */
+export const observacaoPdv = pgTable(
+  'observacao_pdv',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoExterno: integer('codigo_externo').notNull(),
+    texto: varchar('texto', { length: 120 }).notNull(),
+    codigoEtiqueta: integer('codigo_etiqueta'),
+    categoria: varchar('categoria', { length: 100 }),
+    sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniq: unique('uq_observacao_pdv').on(t.filialId, t.codigoExterno, t.codigoEtiqueta) }),
+);
+
 // --------- WIZARD (perguntas do Consumer) ---------
 // É como a casa monta o pedido: escolhido o prato, o PDV pergunta "qual o
 // ponto da carne" (obrigatória) e "deseja mais algum acompanhamento"

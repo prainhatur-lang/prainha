@@ -380,14 +380,18 @@ export const usuarioOperacao = pgTable(
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     login: varchar('login', { length: 30 }).notNull(),
     nome: varchar('nome', { length: 80 }).notNull(),
-    pinHash: text('pin_hash').notNull(),
-    salt: text('salt').notNull(),
+    /** Nulo em usuário importado do Consumer: a cifra do PIN dele não foi
+     *  revertida, então precisa cadastrar PIN próprio antes do corte. */
+    pinHash: text('pin_hash'),
+    salt: text('salt'),
     perms: integer('perms').array().notNull().default([]),
     admin: boolean('admin').notNull().default(false),
     ativo: boolean('ativo').notNull().default(true),
     /** 'nuvem' = criado aqui · 'consumer' = veio do PDV na migração */
     origem: varchar('origem', { length: 12 }).notNull().default('nuvem'),
     codigoPdv: integer('codigo_pdv'),
+    /** TIPO do Consumer (Administrador, Garçom, Caixa...) — só informativo. */
+    tipo: varchar('tipo', { length: 30 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
     criadoPor: varchar('criado_por', { length: 80 }),

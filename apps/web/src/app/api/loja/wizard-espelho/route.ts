@@ -1,4 +1,9 @@
-// ESPELHO DO WIZARD + ETIQUETAS: a LOJA empurra, a nuvem guarda.
+// ESPELHO DO CATÁLOGO: a LOJA empurra, a nuvem guarda.
+//
+// Cobre o que o CDC nunca trouxe: wizard (perguntas/opções/ligações),
+// etiquetas (categorias), COZINHAS (as praças do KDS), observações prontas e
+// os usuários do PDV. Com o Firebird da 0001 saindo do ar, é por aqui que
+// esse cadastro vira nosso de verdade.
 //
 // Estas quatro tabelas (WIZARDPERGUNTAS, WIZARDOPCOES, WIZARD, ETIQUETAS)
 // ficaram de fora do CDC. Até aqui só entravam por script manual rodado do
@@ -22,6 +27,9 @@ interface Corpo {
   opcoes?: Array<{ c: number; p: number; n: string | null; pr: number; pd: number | null }>;
   ligacoes?: Array<{ v: number; p: number; o: number }>;
   etiquetas?: Array<{ c: number; d: string | null }>;
+  cozinhas?: Array<{ c: number; d: string | null }>;
+  observacoes?: Array<{ c: number; t: string | null; e: number | null; cat: string | null }>;
+  usuarios?: Array<{ c: number; l: string | null; n: string | null; t: string | null; adm: boolean; perms: number[] }>;
 }
 
 function autoriza(f: string, e: number, s: string) {
@@ -48,9 +56,13 @@ export async function POST(request: Request) {
   const opcoes = (body.opcoes || []).filter((o) => Number.isFinite(o?.c) && o.c > 0 && o.p > 0);
   const ligacoes = (body.ligacoes || []).filter((l) => l?.v > 0 && l?.p > 0);
   const etiquetas = (body.etiquetas || []).filter((e) => Number.isFinite(e?.c) && e.c > 0 && e.d);
+  const cozinhas = (body.cozinhas || []).filter((c) => Number.isFinite(c?.c) && c.c > 0 && c.d);
+  const observacoes = (body.observacoes || []).filter((o) => Number.isFinite(o?.c) && o.c > 0 && o.t);
+  const usuarios = (body.usuarios || []).filter((u) => Number.isFinite(u?.c) && u.c > 0 && u.l);
   // Envio vazio quase sempre é falha de leitura na loja, não catálogo vazio —
   // apagar o espelho por causa disso deixaria a tela sem nada.
-  if (perguntas.length === 0 && opcoes.length === 0 && etiquetas.length === 0) {
+  if (perguntas.length === 0 && opcoes.length === 0 && etiquetas.length === 0
+      && cozinhas.length === 0 && observacoes.length === 0 && usuarios.length === 0) {
     return NextResponse.json({ ok: false, erro: 'payload vazio — nada foi substituído' }, { status: 400 });
   }
 
@@ -91,6 +103,47 @@ export async function POST(request: Request) {
         ).onConflictDoNothing();
       }
     }
+    if (cozinhas.length > 0) {
+      for (const c of cozinhas) {
+        await tx
+          .insert(schema.areaProducao)
+          .values({ filialId, codigoExterno: c.c, nome: String(c.d).slice(0, 80) })
+          .onConflictDoUpdate({
+            target: [schema.areaProducao.filialId, schema.areaProducao.codigoExterno],
+            set: { nome: String(c.d).slice(0, 80), sincronizadoEm: new Date() },
+          });
+      }
+    }
+    if (observacoes.length > 0) {
+      // Substitui: a ligação observação↔categoria muda por remoção, e o
+      // Consumer não avisa o que saiu.
+      await tx.delete(schema.observacaoPdv).where(eq(schema.observacaoPdv.filialId, filialId));
+      await tx.insert(schema.observacaoPdv).values(
+        observacoes.map((o) => ({
+          filialId,
+          codigoExterno: o.c,
+          texto: String(o.t).slice(0, 120),
+          codigoEtiqueta: o.e ?? null,
+          categoria: o.cat ? String(o.cat).slice(0, 100) : null,
+        })),
+      ).onConflictDoNothing();
+    }
+    if (usuarios.length > 0) {
+      for (const u of usuarios) {
+        // PIN NÃO vem do Consumer (cifra não revertida) — o registro entra sem
+        // senha e a pessoa cadastra a dela. Reimportar não pode apagar o PIN
+        // já cadastrado aqui: por isso o UPDATE não toca pin_hash/salt.
+        // SQL cru porque a chave é um índice por expressão, lower(login).
+        const perms = Array.isArray(u.perms) ? u.perms.filter((n) => Number.isFinite(n)) : [];
+        await tx.execute(sql`
+          INSERT INTO usuario_operacao (filial_id, login, nome, perms, admin, origem, codigo_pdv, tipo)
+          VALUES (${filialId}, ${String(u.l).slice(0, 30)}, ${String(u.n || u.l).slice(0, 80)},
+                  ${perms}, ${!!u.adm}, 'consumer', ${u.c}, ${u.t ? String(u.t).slice(0, 30) : null})
+          ON CONFLICT (filial_id, lower(login)) DO UPDATE
+          SET nome = EXCLUDED.nome, perms = EXCLUDED.perms, admin = EXCLUDED.admin,
+              codigo_pdv = EXCLUDED.codigo_pdv, tipo = EXCLUDED.tipo, atualizado_em = now()`);
+      }
+    }
     if (etiquetas.length > 0) {
       for (const e of etiquetas) {
         await tx
@@ -120,5 +173,8 @@ export async function POST(request: Request) {
     opcoes: opcoes.length,
     ligacoes: ligacoes.length,
     etiquetas: etiquetas.length,
+    cozinhas: cozinhas.length,
+    observacoes: observacoes.length,
+    usuarios: usuarios.length,
   });
 }
