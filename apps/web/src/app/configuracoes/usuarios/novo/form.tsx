@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 interface Filial {
@@ -13,13 +14,25 @@ interface Grupo {
   descricao: string | null;
   sistema: boolean;
 }
+interface UsuarioExistente {
+  id: string;
+  email: string;
+}
 
 interface Vinculo {
   filialId: string;
   grupoIds: string[];
 }
 
-export function NovoUsuarioForm({ filiais, grupos }: { filiais: Filial[]; grupos: Grupo[] }) {
+export function NovoUsuarioForm({
+  filiais,
+  grupos,
+  existentes,
+}: {
+  filiais: Filial[];
+  grupos: Grupo[];
+  existentes: UsuarioExistente[];
+}) {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
@@ -28,6 +41,11 @@ export function NovoUsuarioForm({ filiais, grupos }: { filiais: Filial[]; grupos
   );
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  const jaExiste = useMemo(
+    () => existentes.find((u) => u.email.toLowerCase() === email.trim().toLowerCase()) ?? null,
+    [existentes, email],
+  );
 
   function toggleGrupo(filialId: string, grupoId: string) {
     setVinculos((vs) =>
@@ -102,8 +120,23 @@ export function NovoUsuarioForm({ filiais, grupos }: { filiais: Filial[]; grupos
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+              className={`mt-1 w-full rounded-md border px-3 py-1.5 text-sm ${
+                jaExiste ? 'border-amber-400 bg-amber-50' : 'border-slate-300'
+              }`}
             />
+            {jaExiste && (
+              <p className="mt-1 rounded bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-800">
+                ⚠ Esse email <b>já está cadastrado</b>. Se continuar, a senha dele será
+                redefinida pra que você digitar aqui e os grupos selecionados abaixo serão
+                <b> adicionados</b> aos que ele já tem.{' '}
+                <Link
+                  href={`/configuracoes/usuarios/${jaExiste.id}`}
+                  className="font-medium underline underline-offset-2"
+                >
+                  Prefere editar o usuário existente?
+                </Link>
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
@@ -233,7 +266,7 @@ export function NovoUsuarioForm({ filiais, grupos }: { filiais: Filial[]; grupos
           disabled={salvando}
           className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
         >
-          {salvando ? 'Criando...' : 'Criar usuário'}
+          {salvando ? 'Salvando...' : jaExiste ? 'Atualizar usuário existente' : 'Criar usuário'}
         </button>
       </div>
     </form>

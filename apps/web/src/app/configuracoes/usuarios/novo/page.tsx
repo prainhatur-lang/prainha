@@ -28,6 +28,12 @@ export default async function NovoUsuarioPage() {
     .from(schema.grupoUsuario)
     .orderBy(asc(schema.grupoUsuario.nome));
 
+  // Emails já cadastrados: o form avisa na hora se o email digitado já existe
+  // (senão o admin "cria" por cima sem saber — caso financeiro@ em 20/08/2026).
+  const existentes = await db
+    .select({ id: schema.usuario.id, email: schema.usuario.email })
+    .from(schema.usuario);
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -40,6 +46,7 @@ export default async function NovoUsuarioPage() {
         <NovoUsuarioForm
           filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           grupos={grupos}
+          existentes={existentes}
         />
       </div>
     </main>
