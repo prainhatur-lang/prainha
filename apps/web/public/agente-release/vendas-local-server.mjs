@@ -4520,6 +4520,93 @@ async function apiCaixaFiadoBusca(termo) {
     habilitado: (Number(x.LIM) || 0) > 0,
     disponivel: +(((Number(x.LIM) || 0) - (Number(x.SALDO) || 0))).toFixed(2) })) };
 }
+/** Grava UM lançamento na conta corrente, do jeito que o Consumer grava.
+ *  tipo 'credito'  = cliente passou a dever (CREDITO + IMPORTADO='N')
+ *  tipo 'pagamento'= cliente pagou (DEBITO NEGATIVO, IMPORTADO nulo) — foi
+ *  assim que achei nos lançamentos reais do "Registrar Pagamento" do PDV.
+ *  Mantém CONTATOS.SALDOATUALCONTACORRENTE alinhado com o último saldo. */
+async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null, usuarioCod = null, forma = null }) {
+  const cli = await fbClienteFiado(cliente);
+  if (!cli) return { ok: false, erro: 'cliente não encontrado' };
+  const v = +Number(valor).toFixed(2);
+  if (!(v > 0)) return { ok: false, erro: 'valor inválido' };
+  const credito = tipo !== 'pagamento';
+  // FORMA DE PAGAMENTO: o movimento não tem essa coluna — quem guarda é
+  // PAGAMENTOS, amarrado nos dois sentidos (CONTACORRENTE.CODIGOPAGAMENTO e
+  // PAGAMENTOS.CODIGOCONTACORRENTE). É o padrão do próprio Consumer: dos 3.955
+  // pagamentos sem pedido do banco real, 3.953 são exatamente isto. Só vale
+  // quando entra dinheiro (crédito é dívida, não tem forma).
+  let formaCod = null;
+  if (!credito && forma) {
+    const f = await qi(`SELECT FIRST 1 CODIGO FROM FORMASPAGAMENTO WHERE CODIGO=${Number(forma) || 0}`);
+    if (f.ok && f.rows.length) formaCod = Number(f.rows[0].CODIGO);
+    else console.error('[fiado] forma ' + forma + ' não existe no PDV — lança só o movimento');
+  }
+  const novoSaldo = +(credito ? cli.saldo + v : cli.saldo - v).toFixed(2);
+  const campos = ['CODIGO', 'CODIGOCLIENTE', 'DATAHORA', 'SALDOINICIAL', 'SALDOFINAL', 'OBSERVACAO'];
+  const vals = ['GEN_ID(GEN_CONTACORRENTE_ID,1)', String(cli.codigo), 'CURRENT_TIMESTAMP',
+    fbNum(cli.saldo), fbNum(novoSaldo), `'${fbEsc(String(obs || '').slice(0, 200))}'`];
+  if (credito) { campos.push('CREDITO', 'IMPORTADO'); vals.push(fbNum(v), "'N'"); }
+  else { campos.push('DEBITO'); vals.push(fbNum(-v)); }
+  if (pedido) { campos.push('CODIGOPEDIDO'); vals.push(String(pedido)); }
+  if (usuarioCod) { campos.push('CODIGOUSUARIO'); vals.push(String(usuarioCod)); }
+  const ins = await qi(`INSERT INTO CONTACORRENTE (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
+  if (!ins.ok) return { ok: false, erro: 'FB conta corrente: ' + ins.err };
+  const up = await qi(`UPDATE CONTATOS SET SALDOATUALCONTACORRENTE=${fbNum(novoSaldo)} WHERE CODIGO=${cli.codigo}`);
+  if (!up.ok) console.error('[fiado] saldo do cadastro não atualizou: ' + up.err);
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTACORRENTE WHERE CODIGOCLIENTE=${cli.codigo} ORDER BY CODIGO DESC`);
+  const codigoCC = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  let pagamentoCod = null;
+  if (formaCod && codigoCC) {
+    // SEM CODIGOCAIXA de propósito: recebimento lançado pelo Financeiro não é
+    // dinheiro na gaveta de ninguém. Se caísse num caixa, a conferência
+    // daquele caixa fecharia com sobra que o operador não tem pra mostrar.
+    const ip = await qi(`INSERT INTO PAGAMENTOS (CODIGOFORMAPAGAMENTO, VALOR, DATAPAGAMENTO, CODIGOCONTACORRENTE, CODIGOCATEGORIACONTAS, PERCENTUALTAXA, OBSERVACAO)
+      VALUES (${formaCod}, ${fbNum(v)}, CURRENT_TIMESTAMP, ${codigoCC}, 1, 0, '${fbEsc(String(obs || 'Pagamento de fiado').slice(0, 120))}')`);
+    if (!ip.ok) console.error('[fiado] forma não registrada (movimento já entrou): ' + ip.err);
+    else {
+      const gp = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOCONTACORRENTE=${codigoCC} ORDER BY CODIGO DESC`);
+      pagamentoCod = gp.ok && gp.rows.length ? Number(gp.rows[0].CODIGO) : null;
+      if (pagamentoCod) await qi(`UPDATE CONTACORRENTE SET CODIGOPAGAMENTO=${pagamentoCod} WHERE CODIGO=${codigoCC}`);
+    }
+  }
+  return { ok: true, codigo: codigoCC, pagamento: pagamentoCod, saldo: novoSaldo, cliente: cli.nome };
+}
+// ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
+// A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
+// este laço busca, aplica e devolve o resultado — mesma assinatura HMAC da
+// NFC-e, que a loja já tem no start.bat.
+let fiadoFilaRodando = false;
+async function loopFiadoFila() {
+  if (fiadoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  fiadoFilaRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('fiado', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/fiado-fila?${q}`, { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !j.lancamentos?.length) return;
+    for (const l of j.lancamentos) {
+      let res;
+      try {
+        res = await fbLancarContaCorrente({ cliente: Number(l.cliente), tipo: l.tipo,
+          valor: Number(l.valor), forma: l.forma || null,
+          obs: l.observacao || (l.tipo === 'pagamento' ? 'Pagamento de fiado.' : 'Lançamento manual') });
+      } catch (err) { res = { ok: false, erro: err.message }; }
+      const e2 = Math.floor(Date.now() / 1000) + 120;
+      await fetch(`${PAGAR_MESA_URL}/api/loja/fiado-fila`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e: e2, s: nfceAssina('fiado', e2), id: l.id,
+          ok: !!res.ok, erro: res.erro || null, codigo: res.codigo || null, saldo: res.saldo ?? null,
+          pagamento: res.pagamento || null }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {});
+      console.log('[fiado] ' + l.tipo + ' R$ ' + l.valor + ' cliente ' + l.cliente
+        + (l.forma_nome ? ' (' + l.forma_nome + ')' : '') + ' → ' + (res.ok ? 'aplicado' : 'ERRO: ' + res.erro));
+    }
+  } catch (err) { console.error('[fiado] fila:', err.message); }
+  finally { fiadoFilaRodando = false; }
+}
 /** Fecha a conta lançando o que falta no fiado do cliente. */
 async function apiCaixaFiado(body, quem) {
   if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
@@ -10610,7 +10697,14 @@ async function receber(){
   if(!(v>0)){document.getElementById('rerr').textContent='digite o valor';return}
   var reg=Math.min(v,CONTA.falta);
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
-  if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
+  if(!r.ok){
+    var eo=document.getElementById('rerr');
+    /* dinheiro exige o caixa DO operador aberto — em vez de só reclamar, leva lá */
+    if(r.sem_caixa)eo.innerHTML=esc(r.erro||'Abra o SEU caixa antes de receber dinheiro.')+
+      ' <button class="seg" style="margin-left:8px" onclick="irTela(\\'abrircx\\')">Abrir meu caixa</button>';
+    else eo.textContent=r.erro||'não deu';
+    return
+  }
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
 }
@@ -11788,6 +11882,8 @@ async function main() {
   espelhoCatalogo().catch(() => {});
   setInterval(() => espelhoCatalogo().catch(() => {}), 5 * 60 * 1000);
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
+  setTimeout(() => loopFiadoFila().catch(() => {}), 40 * 1000);
+  setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa

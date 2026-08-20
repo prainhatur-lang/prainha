@@ -234,13 +234,13 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
           </Link>
           <Link
             href={href({ filtro: 'credor' })}
-            className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 hover:shadow-sm"
+            className="rounded-xl border border-blue-200 bg-blue-50 p-4 hover:shadow-sm"
           >
-            <p className="text-[11px] font-medium uppercase tracking-wide text-emerald-700">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-blue-800">
               Clientes credores
             </p>
-            <p className="mt-1 text-2xl font-bold text-emerald-900">{int(qtdCredor)}</p>
-            <p className="text-xs text-emerald-700">{brl(Math.abs(totalCredor))}</p>
+            <p className="mt-1 text-2xl font-bold text-blue-900">{int(qtdCredor)}</p>
+            <p className="text-xs text-blue-800">{brl(Math.abs(totalCredor))}</p>
           </Link>
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-slate-600">
@@ -363,7 +363,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                     ? k === 'devem'
                       ? 'border-rose-700 bg-rose-700 text-white'
                       : k === 'credor'
-                        ? 'border-emerald-700 bg-emerald-700 text-white'
+                        ? 'border-blue-800 bg-blue-800 text-white'
                         : 'border-slate-900 bg-slate-900 text-white'
                     : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                 }`}
@@ -432,7 +432,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                           l.saldo > 0.01
                             ? 'text-rose-700'
                             : l.saldo < -0.01
-                              ? 'text-sky-700'
+                              ? 'text-blue-800'
                               : 'text-slate-500'
                         }`}
                       >

@@ -203,6 +203,9 @@ export default async function ClienteFiadoPage(props: {
       tipo: schema.fiadoLancamento.tipo,
       valor: schema.fiadoLancamento.valor,
       erro: schema.fiadoLancamento.erro,
+      formaNome: schema.fiadoLancamento.formaNome,
+      condicao: schema.fiadoLancamento.condicao,
+      vencimento: schema.fiadoLancamento.vencimento,
     })
     .from(schema.fiadoLancamento)
     .where(
@@ -258,6 +261,11 @@ export default async function ClienteFiadoPage(props: {
               {pendentes.map((p) => (
                 <li key={p.id}>
                   {p.tipo === 'pagamento' ? 'Pagamento' : 'Crédito'} de {brl(Number(p.valor))}
+                  {p.formaNome && <span className="text-amber-800"> · {p.formaNome}</span>}
+                  {p.condicao === 'prazo' && p.vencimento && (
+                    <span className="text-amber-800"> · vence {p.vencimento.split('-').reverse().join('/')}</span>
+                  )}
+                  {p.condicao === 'avista' && <span className="text-amber-800"> · à vista</span>}
                   {p.erro ? <span className="ml-2 font-semibold text-rose-700">erro: {p.erro}</span> : ' · na fila'}
                 </li>
               ))}
@@ -272,7 +280,7 @@ export default async function ClienteFiadoPage(props: {
               saldo > 0.01
                 ? 'border-rose-200 bg-rose-50'
                 : saldo < -0.01
-                  ? 'border-emerald-200 bg-emerald-50'
+                  ? 'border-blue-200 bg-blue-50'
                   : 'border-slate-200 bg-white'
             }`}
           >
@@ -284,7 +292,7 @@ export default async function ClienteFiadoPage(props: {
                 saldo > 0.01
                   ? 'text-rose-700'
                   : saldo < -0.01
-                    ? 'text-sky-700'
+                    ? 'text-blue-800'
                     : 'text-slate-700'
               }`}
             >
@@ -347,8 +355,8 @@ export default async function ClienteFiadoPage(props: {
                 <th className="px-4 py-2">Pedido / Mesa</th>
                 <th className="px-4 py-2">Modalidade</th>
                 <th className="px-4 py-2">NSU / Auth</th>
-                <th className="px-4 py-2 text-right">Crédito (dívida)</th>
-                <th className="px-4 py-2 text-right">Débito (pago)</th>
+                <th className="px-4 py-2 text-right text-rose-700">Crédito (dívida)</th>
+                <th className="px-4 py-2 text-right text-blue-800">Débito (pago)</th>
                 <th className="px-4 py-2 text-right">Saldo</th>
                 <th className="px-4 py-2">Observação</th>
               </tr>
@@ -409,13 +417,13 @@ export default async function ClienteFiadoPage(props: {
                         )}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-xs">
-                        {cred > 0 ? <span className="text-sky-700">{brl(cred)}</span> : '—'}
+                        {cred > 0 ? <span className="text-rose-700">{brl(cred)}</span> : '—'}
                       </td>
                       {/* ⚠️ o pagamento vem com DÉBITO NEGATIVO no Consumer: sem o
                           módulo a coluna ficava vazia justo nas linhas de pagamento */}
                       <td className="px-4 py-2 text-right font-mono text-xs">
                         {Math.abs(deb) > 0.001 ? (
-                          <span className="text-rose-700">{brl(Math.abs(deb))}</span>
+                          <span className="text-blue-800">{brl(Math.abs(deb))}</span>
                         ) : (
                           '—'
                         )}
@@ -426,7 +434,7 @@ export default async function ClienteFiadoPage(props: {
                             className={
                               Number(m.saldoFinal) > 0.01
                                 ? 'font-semibold text-rose-700'
-                                : 'text-sky-700'
+                                : 'text-blue-800'
                             }
                           >
                             {brl(Number(m.saldoFinal))}

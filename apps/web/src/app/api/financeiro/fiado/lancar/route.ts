@@ -19,6 +19,10 @@ const Body = z.object({
   tipo: z.enum(['credito', 'pagamento']),
   valor: z.number().positive().max(1_000_000),
   observacao: z.string().max(200).optional(),
+  /** FORMASPAGAMENTO do Consumer (1 dinheiro, 18 pix manual, 4 débito...). */
+  formaCodigo: z.number().int().positive().optional(),
+  condicao: z.enum(['avista', 'prazo']).optional(),
+  vencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export async function POST(request: Request) {
@@ -27,7 +31,13 @@ export async function POST(request: Request) {
 
   const parsed = Body.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
-  const { clienteId, tipo, valor, observacao } = parsed.data;
+  const { clienteId, tipo, valor, observacao, formaCodigo, condicao, vencimento } = parsed.data;
+  if (tipo === 'pagamento' && !formaCodigo) {
+    return NextResponse.json({ ok: false, erro: 'escolha a forma de pagamento' }, { status: 400 });
+  }
+  if (condicao === 'prazo' && !vencimento) {
+    return NextResponse.json({ ok: false, erro: 'a prazo precisa da data de vencimento' }, { status: 400 });
+  }
 
   const [cli] = await db
     .select({
@@ -48,8 +58,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, erro: 'sem acesso a essa filial' }, { status: 403 });
   }
 
-  const obs = (observacao || '').trim()
+  // A forma tem que existir no catálogo do PDV — é o código que a loja grava
+  // em PAGAMENTOS.CODIGOFORMAPAGAMENTO; inventar número aqui quebraria lá.
+  let formaNome: string | null = null;
+  if (formaCodigo) {
+    const [f] = await db
+      .select({ descricao: schema.formaPagamentoConsumer.descricao, ativo: schema.formaPagamentoConsumer.ativo })
+      .from(schema.formaPagamentoConsumer)
+      .where(eq(schema.formaPagamentoConsumer.codigo, formaCodigo))
+      .limit(1);
+    if (!f || f.ativo === false) {
+      return NextResponse.json({ ok: false, erro: 'forma de pagamento inválida' }, { status: 400 });
+    }
+    formaNome = f.descricao ?? null;
+  }
+
+  const partes: string[] = [];
+  const base = (observacao || '').trim()
     || (tipo === 'pagamento' ? 'Pagamento de fiado.' : 'Lançamento manual de fiado.');
+  partes.push(base);
+  if (formaNome) partes.push(formaNome);
+  if (condicao === 'prazo' && vencimento) {
+    const [a, m, d] = [vencimento.slice(0, 4), vencimento.slice(5, 7), vencimento.slice(8, 10)];
+    partes.push(`a prazo até ${d}/${m}/${a}`);
+  } else if (condicao === 'avista') {
+    partes.push('à vista');
+  }
+  const obs = partes.join(' · ').slice(0, 200);
   const [novo] = await db
     .insert(schema.fiadoLancamento)
     .values({
@@ -59,6 +94,10 @@ export async function POST(request: Request) {
       tipo,
       valor: valor.toFixed(2),
       observacao: obs,
+      formaCodigo: formaCodigo ?? null,
+      formaNome,
+      condicao: condicao ?? null,
+      vencimento: vencimento ?? null,
       criadoPor: auth.user.email ?? null,
     })
     .returning({ id: schema.fiadoLancamento.id });

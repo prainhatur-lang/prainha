@@ -4525,12 +4525,23 @@ async function apiCaixaFiadoBusca(termo) {
  *  tipo 'pagamento'= cliente pagou (DEBITO NEGATIVO, IMPORTADO nulo) — foi
  *  assim que achei nos lançamentos reais do "Registrar Pagamento" do PDV.
  *  Mantém CONTATOS.SALDOATUALCONTACORRENTE alinhado com o último saldo. */
-async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null, usuarioCod = null }) {
+async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null, usuarioCod = null, forma = null }) {
   const cli = await fbClienteFiado(cliente);
   if (!cli) return { ok: false, erro: 'cliente não encontrado' };
   const v = +Number(valor).toFixed(2);
   if (!(v > 0)) return { ok: false, erro: 'valor inválido' };
   const credito = tipo !== 'pagamento';
+  // FORMA DE PAGAMENTO: o movimento não tem essa coluna — quem guarda é
+  // PAGAMENTOS, amarrado nos dois sentidos (CONTACORRENTE.CODIGOPAGAMENTO e
+  // PAGAMENTOS.CODIGOCONTACORRENTE). É o padrão do próprio Consumer: dos 3.955
+  // pagamentos sem pedido do banco real, 3.953 são exatamente isto. Só vale
+  // quando entra dinheiro (crédito é dívida, não tem forma).
+  let formaCod = null;
+  if (!credito && forma) {
+    const f = await qi(`SELECT FIRST 1 CODIGO FROM FORMASPAGAMENTO WHERE CODIGO=${Number(forma) || 0}`);
+    if (f.ok && f.rows.length) formaCod = Number(f.rows[0].CODIGO);
+    else console.error('[fiado] forma ' + forma + ' não existe no PDV — lança só o movimento');
+  }
   const novoSaldo = +(credito ? cli.saldo + v : cli.saldo - v).toFixed(2);
   const campos = ['CODIGO', 'CODIGOCLIENTE', 'DATAHORA', 'SALDOINICIAL', 'SALDOFINAL', 'OBSERVACAO'];
   const vals = ['GEN_ID(GEN_CONTACORRENTE_ID,1)', String(cli.codigo), 'CURRENT_TIMESTAMP',
@@ -4544,8 +4555,22 @@ async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null,
   const up = await qi(`UPDATE CONTATOS SET SALDOATUALCONTACORRENTE=${fbNum(novoSaldo)} WHERE CODIGO=${cli.codigo}`);
   if (!up.ok) console.error('[fiado] saldo do cadastro não atualizou: ' + up.err);
   const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTACORRENTE WHERE CODIGOCLIENTE=${cli.codigo} ORDER BY CODIGO DESC`);
-  return { ok: true, codigo: g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null,
-    saldo: novoSaldo, cliente: cli.nome };
+  const codigoCC = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  let pagamentoCod = null;
+  if (formaCod && codigoCC) {
+    // SEM CODIGOCAIXA de propósito: recebimento lançado pelo Financeiro não é
+    // dinheiro na gaveta de ninguém. Se caísse num caixa, a conferência
+    // daquele caixa fecharia com sobra que o operador não tem pra mostrar.
+    const ip = await qi(`INSERT INTO PAGAMENTOS (CODIGOFORMAPAGAMENTO, VALOR, DATAPAGAMENTO, CODIGOCONTACORRENTE, CODIGOCATEGORIACONTAS, PERCENTUALTAXA, OBSERVACAO)
+      VALUES (${formaCod}, ${fbNum(v)}, CURRENT_TIMESTAMP, ${codigoCC}, 1, 0, '${fbEsc(String(obs || 'Pagamento de fiado').slice(0, 120))}')`);
+    if (!ip.ok) console.error('[fiado] forma não registrada (movimento já entrou): ' + ip.err);
+    else {
+      const gp = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOCONTACORRENTE=${codigoCC} ORDER BY CODIGO DESC`);
+      pagamentoCod = gp.ok && gp.rows.length ? Number(gp.rows[0].CODIGO) : null;
+      if (pagamentoCod) await qi(`UPDATE CONTACORRENTE SET CODIGOPAGAMENTO=${pagamentoCod} WHERE CODIGO=${codigoCC}`);
+    }
+  }
+  return { ok: true, codigo: codigoCC, pagamento: pagamentoCod, saldo: novoSaldo, cliente: cli.nome };
 }
 // ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
 // A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
@@ -4565,16 +4590,19 @@ async function loopFiadoFila() {
       let res;
       try {
         res = await fbLancarContaCorrente({ cliente: Number(l.cliente), tipo: l.tipo,
-          valor: Number(l.valor), obs: l.observacao || (l.tipo === 'pagamento' ? 'Pagamento de fiado.' : 'Lançamento manual') });
+          valor: Number(l.valor), forma: l.forma || null,
+          obs: l.observacao || (l.tipo === 'pagamento' ? 'Pagamento de fiado.' : 'Lançamento manual') });
       } catch (err) { res = { ok: false, erro: err.message }; }
       const e2 = Math.floor(Date.now() / 1000) + 120;
       await fetch(`${PAGAR_MESA_URL}/api/loja/fiado-fila`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ f: FILIAL_ID, e: e2, s: nfceAssina('fiado', e2), id: l.id,
-          ok: !!res.ok, erro: res.erro || null, codigo: res.codigo || null, saldo: res.saldo ?? null }),
+          ok: !!res.ok, erro: res.erro || null, codigo: res.codigo || null, saldo: res.saldo ?? null,
+          pagamento: res.pagamento || null }),
         signal: AbortSignal.timeout(8000),
       }).catch(() => {});
-      console.log('[fiado] ' + l.tipo + ' R$ ' + l.valor + ' cliente ' + l.cliente + ' → ' + (res.ok ? 'aplicado' : 'ERRO: ' + res.erro));
+      console.log('[fiado] ' + l.tipo + ' R$ ' + l.valor + ' cliente ' + l.cliente
+        + (l.forma_nome ? ' (' + l.forma_nome + ')' : '') + ' → ' + (res.ok ? 'aplicado' : 'ERRO: ' + res.erro));
     }
   } catch (err) { console.error('[fiado] fila:', err.message); }
   finally { fiadoFilaRodando = false; }
@@ -10669,7 +10697,14 @@ async function receber(){
   if(!(v>0)){document.getElementById('rerr').textContent='digite o valor';return}
   var reg=Math.min(v,CONTA.falta);
   var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
-  if(!r.ok){document.getElementById('rerr').textContent=r.erro||'não deu';return}
+  if(!r.ok){
+    var eo=document.getElementById('rerr');
+    /* dinheiro exige o caixa DO operador aberto — em vez de só reclamar, leva lá */
+    if(r.sem_caixa)eo.innerHTML=esc(r.erro||'Abra o SEU caixa antes de receber dinheiro.')+
+      ' <button class="seg" style="margin-left:8px" onclick="irTela(\\'abrircx\\')">Abrir meu caixa</button>';
+    else eo.textContent=r.erro||'não deu';
+    return
+  }
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
 }

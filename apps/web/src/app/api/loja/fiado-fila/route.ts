@@ -42,6 +42,10 @@ export async function GET(request: Request) {
       tipo: schema.fiadoLancamento.tipo,
       valor: schema.fiadoLancamento.valor,
       observacao: schema.fiadoLancamento.observacao,
+      forma: schema.fiadoLancamento.formaCodigo,
+      forma_nome: schema.fiadoLancamento.formaNome,
+      condicao: schema.fiadoLancamento.condicao,
+      vencimento: schema.fiadoLancamento.vencimento,
     })
     .from(schema.fiadoLancamento)
     .where(and(eq(schema.fiadoLancamento.filialId, f), eq(schema.fiadoLancamento.status, 'pendente')))
@@ -53,7 +57,7 @@ export async function GET(request: Request) {
 /** POST — a loja devolve o resultado de um lançamento (aplicado ou erro). */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as
-    | { f?: string; e?: number; s?: string; id?: string; ok?: boolean; erro?: string; codigo?: number; saldo?: number }
+    | { f?: string; e?: number; s?: string; id?: string; ok?: boolean; erro?: string; codigo?: number; saldo?: number; pagamento?: number }
     | null;
   if (!body || !autoriza(String(body.f || ''), Number(body.e || 0), String(body.s || ''))) {
     return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
@@ -70,6 +74,7 @@ export async function POST(request: Request) {
       erro: body.ok ? null : String(body.erro || 'falhou na loja').slice(0, 400),
       codigoExterno: body.ok && body.codigo ? Number(body.codigo) : null,
       saldoDepois: body.ok && body.saldo != null ? String(body.saldo) : null,
+      pagamentoCodigo: body.ok && body.pagamento ? Number(body.pagamento) : null,
       aplicadoEm: new Date(),
     })
     .where(and(eq(schema.fiadoLancamento.id, String(body.id)), eq(schema.fiadoLancamento.filialId, String(body.f))));

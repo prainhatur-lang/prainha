@@ -173,6 +173,15 @@ export const fiadoLancamento = pgTable(
     tipo: varchar('tipo', { length: 12 }).notNull(),
     valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
     observacao: text('observacao'),
+    /** Forma de pagamento (FORMASPAGAMENTO do Consumer: 1 dinheiro, 18 pix manual...). */
+    formaCodigo: integer('forma_codigo'),
+    formaNome: varchar('forma_nome', { length: 60 }),
+    /** avista · prazo */
+    condicao: varchar('condicao', { length: 10 }),
+    /** Só quando 'prazo': data combinada. O Firebird não tem esse campo — vai na observação. */
+    vencimento: date('vencimento'),
+    /** PAGAMENTOS.CODIGO criado na loja (é o que amarra a forma ao movimento). */
+    pagamentoCodigo: integer('pagamento_codigo'),
     /** pendente · aplicado · erro */
     status: varchar('status', { length: 10 }).notNull().default('pendente'),
     erro: text('erro'),
