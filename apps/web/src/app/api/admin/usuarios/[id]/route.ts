@@ -124,10 +124,10 @@ export async function PATCH(
       continue;
     }
 
-    // Garante usuario_filial
+    // Garante usuario_filial (role=MEMBRO: acesso vem só dos grupos; ver POST)
     await db
       .insert(schema.usuarioFilial)
-      .values({ usuarioId: id, filialId: v.filialId, role: 'GERENTE' })
+      .values({ usuarioId: id, filialId: v.filialId, role: 'MEMBRO' })
       .onConflictDoNothing({
         target: [schema.usuarioFilial.usuarioId, schema.usuarioFilial.filialId],
       });

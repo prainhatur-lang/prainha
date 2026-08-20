@@ -105,6 +105,15 @@ export const PERMISSOES: PermissaoDef[] = [
     acao: 'read',
     descricao: 'Ver relatórios',
   },
+  // Permissão própria (fora de relatorio.*) de propósito: o dono pediu pra
+  // tirar o dashboard analítico do Financeiro sem tirar DRE/fechamento —
+  // então o dashboard não pode depender de relatorio.read.
+  {
+    codigo: 'dashboard.read',
+    modulo: 'dashboard',
+    acao: 'read',
+    descricao: 'Ver dashboard analítico (KPIs de vendas)',
+  },
   {
     codigo: 'relatorio.exportar',
     modulo: 'relatorio',

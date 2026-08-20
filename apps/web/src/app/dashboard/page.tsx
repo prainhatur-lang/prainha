@@ -63,7 +63,7 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
-   await exigirPerm(user.id, 'relatorio.read');
+   await exigirPerm(user.id, 'dashboard.read');
 
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);

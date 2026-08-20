@@ -68,7 +68,7 @@ const BLOCOS: Bloco[] = [
     titulo: 'Relatórios e análise',
     cor: 'violet',
     tiles: [
-      { icon: '📊', label: 'Dashboard analítico', desc: 'KPIs de vendas, taxas, % rastreado', href: '/dashboard', perm: 'relatorio.read' },
+      { icon: '📊', label: 'Dashboard analítico', desc: 'KPIs de vendas, taxas, % rastreado', href: '/dashboard', perm: 'dashboard.read' },
       { icon: '📋', label: 'Relatório consolidado', desc: 'PDV → Cielo → banco', href: '/relatorio', perm: 'relatorio.read' },
       { icon: '📈', label: 'DRE', desc: 'Demonstrativo de resultado', href: '/relatorios/dre', perm: 'relatorio.read' },
       { icon: '🌊', label: 'Fluxo de caixa', desc: 'Entradas/saídas previstos vs realizados', href: '/relatorios/fluxo-caixa', perm: 'relatorio.read', soon: true },

@@ -436,8 +436,10 @@ export const usuarioFilial = pgTable(
       .references(() => filial.id, { onDelete: 'cascade' }),
     /** DONO: ve tudo + admin. GERENTE: ve modulos operacionais. COMPRAS: so
      *  modulo de Compras. FINANCEIRO: so Movimentacao (contas) + Conciliacao
-     *  + Relatorios + Entrada de notas. */
-    role: varchar('role', { length: 20, enum: ['DONO', 'GERENTE', 'COMPRAS', 'FINANCEIRO'] }).notNull(),
+     *  + Relatorios + Entrada de notas. MEMBRO: nenhum acesso legado — as
+     *  permissoes vem exclusivamente dos grupos (modelo novo); a migration
+     *  de permissoes NAO converte MEMBRO em grupo nenhum. */
+    role: varchar('role', { length: 20, enum: ['DONO', 'GERENTE', 'COMPRAS', 'FINANCEIRO', 'MEMBRO'] }).notNull(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

@@ -138,11 +138,14 @@ export async function POST(req: Request) {
     .values({ id: userId, email })
     .onConflictDoNothing({ target: schema.usuario.id });
 
-  // Vinculos usuario_filial (mantem compat com sistema antigo, role=GERENTE default)
+  // Vinculos usuario_filial. role=MEMBRO: acesso vem SÓ dos grupos escolhidos.
+  // Era GERENTE "por compat", mas a migration de permissões converte role em
+  // grupo — e todo usuário criado aqui virava Gerente em todas as filiais
+  // (financeiro@ ganhou dashboard e tudo mais em 20/08/2026).
   for (const v of vinculos) {
     await db
       .insert(schema.usuarioFilial)
-      .values({ usuarioId: userId, filialId: v.filialId, role: 'GERENTE' })
+      .values({ usuarioId: userId, filialId: v.filialId, role: 'MEMBRO' })
       .onConflictDoNothing({
         target: [schema.usuarioFilial.usuarioId, schema.usuarioFilial.filialId],
       });
