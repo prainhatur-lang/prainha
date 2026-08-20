@@ -11,9 +11,15 @@ object Session {
     private const val K_TOKEN = "token"
     private const val K_LOGIN = "login"
     private const val K_NOME = "nome"
-    private const val K_SERVIDOR = "servidor"
+    private const val K_SERVIDOR = "servidor"   // o que o usuário configurou (ex.: URL do Funnel)
+    private const val K_LAN = "lan"             // IP:porta local aprendido do /api/config
     private const val K_LOJA = "loja"
     private const val K_PODE_DESCONTO = "pode_desconto"
+
+    // Servidor ATIVO desta execução (resolvido 1x no arranque por resolverBase):
+    // o LOCAL da loja se ele responder agora, senão o configurado (Funnel). Fica
+    // em memória — some ao matar o app, é recalculado no próximo arranque.
+    @Volatile private var baseAtiva: String? = null
 
     // RESERVA pra quando a descoberta automática não achar nada (VPN, rede
     // errada) — o caminho normal é a varredura da sub-rede (Descoberta.kt),
@@ -48,6 +54,7 @@ object Session {
             .putInt("numero_max", c.numeroMax)
             .putString("taxa_servico", c.taxaServico.toString())
             .apply()
+        saveLan(ctx, c.lan) // aprende o IP local da loja (pra preferir local dentro)
     }
 
     fun taxaServico(ctx: Context): Double =
@@ -63,7 +70,36 @@ object Session {
     fun login(ctx: Context): String? = prefs(ctx).getString(K_LOGIN, null)
     fun nome(ctx: Context): String? = prefs(ctx).getString(K_NOME, null)
     fun podeDesconto(ctx: Context): Boolean = prefs(ctx).getBoolean(K_PODE_DESCONTO, false)
-    fun servidor(ctx: Context): String = prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
+    /** Servidor de todas as chamadas: o ATIVO resolvido no arranque (local se
+     *  der, senão o configurado). Antes de resolver, cai no configurado — igual
+     *  ao comportamento antigo. */
+    fun servidor(ctx: Context): String =
+        baseAtiva ?: prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
+
+    /** O que o usuário configurou (Funnel/custom), ignorando o ativo. */
+    fun servidorConfigurado(ctx: Context): String = prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
+
+    fun lan(ctx: Context): String? = prefs(ctx).getString(K_LAN, null)?.takeIf { it.isNotBlank() }
+    fun saveLan(ctx: Context, lan: String?) {
+        if (lan.isNullOrBlank()) return // servidor antigo não manda lan: não apaga o que já sabíamos
+        prefs(ctx).edit().putString(K_LAN, lan.trim()).apply()
+    }
+
+    /** Escolhe o servidor ATIVO: se souber o LOCAL da loja e ele responder AGORA,
+     *  usa ele (rápido, http direto, funciona offline); senão o configurado
+     *  (Funnel). CHAMAR EM THREAD DE TRABALHO (faz rede). Pior caso = configurado
+     *  (nunca fica pior que antes). */
+    fun resolverBase(ctx: Context): String {
+        val configurado = servidorConfigurado(ctx)
+        val lan = lan(ctx)
+        if (!lan.isNullOrBlank()) {
+            val local = "http://$lan"
+            if (local == configurado) { baseAtiva = configurado; return configurado }
+            if (Api.vivo(local)) { baseAtiva = local; return local }
+        }
+        baseAtiva = configurado
+        return configurado
+    }
     fun loja(ctx: Context): String = prefs(ctx).getString(K_LOJA, null) ?: SERVIDORES.first().first
     fun isLoggedIn(ctx: Context): Boolean = !token(ctx).isNullOrBlank()
 

@@ -62,6 +62,9 @@ object Api {
         val comandaMax: Int,
         val numeroMax: Int,
         val taxaServico: Double,
+        /** IP:porta da LAN da loja (ex.: "10.0.0.252:8790") — o app prefere ele
+         *  dentro da loja e cai pro servidor configurado (Funnel) quando fora. */
+        val lan: String? = null,
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -141,11 +144,12 @@ object Api {
         token: String? = null,
         body: JSONObject? = null,
         readTimeoutMs: Int = TIMEOUT,
+        connectTimeoutMs: Int = TIMEOUT,
     ): Pair<Int, String> {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = method
-            conn.connectTimeout = TIMEOUT
+            conn.connectTimeout = connectTimeoutMs
             conn.readTimeout = readTimeoutMs
             if (token != null) conn.setRequestProperty("x-garcom", token)
             if (body != null) {
@@ -186,6 +190,13 @@ object Api {
     @Throws(IOException::class)
     fun versao(base: String): String = getJson("$base/api/versao").optString("versao")
 
+    /** Servidor respondendo AGORA? Checagem RÁPIDA (timeouts curtos) pra decidir
+     *  no arranque se usa o LOCAL da loja ou o Funnel. Nunca lança. */
+    fun vivo(base: String): Boolean = try {
+        val (code, _) = http("GET", "$base/api/versao", readTimeoutMs = 1500, connectTimeoutMs = 1500)
+        code in 200..299
+    } catch (_: Exception) { false }
+
     /**
      * Config da loja (GET /api/config — rota criada junto com este app).
      * Servidor antigo sem a rota → null (o caller usa defaults da loja).
@@ -202,6 +213,7 @@ object Api {
                 comandaMax = j.optInt("comanda_max", 400),
                 numeroMax = j.optInt("numero_max", 400),
                 taxaServico = j.optDouble("taxa_servico", 10.0),
+                lan = j.optStringOrNull("lan"),
             )
         } catch (_: Exception) { null }
     }

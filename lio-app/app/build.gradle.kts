@@ -91,8 +91,13 @@ android {
         // 1.10.5: manda o SERIAL do terminal (p.terminal) no /api/lio/pagar —
         // o servidor prende o caixa àquela maquininha (1 operador não recebe em
         // 2 maquininhas). O auto-abrir do caixa do operador é 100% servidor.
-        versionCode = 29
-        versionName = "1.10.5"
+        // 1.10.6: SERVIDOR LOCAL × FUNNEL automático. O /api/config informa o IP
+        // local da loja; o app aprende e, no arranque, prefere o LOCAL se ele
+        // responder (rápido/offline), caindo pro Funnel (URL https configurada)
+        // só quando está FORA. Uma config só, vai direto por dentro (Session.
+        // resolverBase, checagem rápida em MainActivity).
+        versionCode = 30
+        versionName = "1.10.6"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
