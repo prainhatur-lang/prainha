@@ -35,6 +35,9 @@ const FB = {
   lowercase_keys: false, pageSize: 4096 };
 const sql = process.env.PG_URL ? postgres(process.env.PG_URL) : postgres({ host: '/tmp', port: 5432, database: 'vendas_local' });
 const PORT = Number(process.env.PORT || 8790);
+// Porta que o APP da maquininha usa (sempre 8790 por convenção; na 0001 a PORT
+// principal é 8080 e o 8790 vem no PORT_EXTRA). É a que vai no `lan` do config.
+const APP_PORT = (PORT === 8790 || String(process.env.PORT_EXTRA || '').split(',').map((x) => Number(x.trim())).includes(8790)) ? 8790 : PORT;
 // A versão precisa existir ANTES dos blocos HTML: a tela do cliente carimba
 // ela na página pra saber quando o servidor mudou. Declarada depois, dava
 // "Cannot access 'VERSAO' before initialization" e o processo morria na partida.
@@ -1231,7 +1234,17 @@ async function fbPedirConta(ped, on = true) {
  *  em que o caixa abre a conta. Se já tem serviço (>0), não mexe. Tirar o
  *  serviço de um cliente = desconto no caixa, com permissão — não existe
  *  conta "sem os 10%". */
+/** O caixa TIROU os 10% desta conta? Enquanto a última decisão for "tirou",
+ *  ninguém recoloca — nem a abertura da conta, nem o próximo item lançado.
+ *  Sem isto o serviço voltava sozinho e o cliente que se recusou a pagar via
+ *  a taxa reaparecer no total (19/08). */
+async function servicoIsento(ped) {
+  const r = await sql`SELECT acao FROM servico_ajuste WHERE pedido_fb=${Number(ped)}
+    ORDER BY id DESC LIMIT 1`;
+  return r[0]?.acao === 'tirou';
+}
 async function fbAplicarServico(ped) {
+  if (await servicoIsento(ped)) return 0;
   if (!(TAXA_SERVICO > 0)) return 0;
   const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
   if (!p) return 0;
@@ -1343,7 +1356,9 @@ async function fbAtualizarTotal(ped) {
   const s = await q(`SELECT COALESCE(SUM(VALORTOTAL),0) V FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
   if (!s.ok) throw new Error('FB total (soma): ' + s.err);
   const itens = Number(s.rows?.[0]?.V) || 0;
-  const svc = TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
+  // conta isenta (o caixa tirou os 10%) continua isenta mesmo com item novo
+  const isento = await servicoIsento(ped).catch(() => false);
+  const svc = !isento && TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
   const r = await q(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(itens)}, TOTALSERVICO=${fbNum(svc)}, PERCENTUALTAXASERVICO=${fbNum(TAXA_SERVICO)},
     VALORTOTAL=${fbNum(itens)} + ${fbNum(svc)} - COALESCE(TOTALDESCONTO,0) + COALESCE(TOTALACRESCIMO,0) + COALESCE(VALORENTREGA,0)
     WHERE CODIGO=${ped}`);
@@ -2680,11 +2695,31 @@ async function apiLioResumoDia(u) {
 // Config da loja pros clientes nativos (app da maquininha): limites de
 // numeração, nome da casa e taxa de serviço — até aqui esses valores só
 // existiam interpolados nos HTML na partida do servidor.
+// IP da LAN da máquina (RFC1918), pro app aprender o endereço LOCAL e preferir
+// ele quando estiver na loja (rápido/offline), caindo pro Funnel só quando fora.
+// Pula o 100.x do Tailscale (não é RFC1918). Prefere 10.x > 192.168 > 172.
+function lanIp() {
+  const cands = [];
+  try {
+    for (const addrs of Object.values(os.networkInterfaces())) {
+      for (const a of addrs || []) {
+        if (a.family !== 'IPv4' || a.internal) continue;
+        const p = a.address.split('.').map(Number);
+        if (p[0] === 10) cands.push([0, a.address]);
+        else if (p[0] === 192 && p[1] === 168) cands.push([1, a.address]);
+        else if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) cands.push([2, a.address]);
+      }
+    }
+  } catch {}
+  cands.sort((a, b) => a[0] - b[0]);
+  return cands.length ? cands[0][1] : null;
+}
 function apiConfig() {
+  const ip = lanIp();
   return { ok: true, loja: LOJA_NOME, versao: VERSAO, mesa_max: MESA_MAX,
     comanda_ativa: COMANDA_ATIVA, comanda_min: COMANDA_ATIVA ? COMANDA_MIN : 0,
     comanda_max: COMANDA_ATIVA ? COMANDA_MAX : 0, numero_max: NUMERO_MAX,
-    taxa_servico: TAXA_SERVICO };
+    taxa_servico: TAXA_SERVICO, lan: ip ? ip + ':' + APP_PORT : null };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
