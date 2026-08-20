@@ -284,7 +284,7 @@ export default async function ClienteFiadoPage(props: {
                 saldo > 0.01
                   ? 'text-rose-700'
                   : saldo < -0.01
-                    ? 'text-emerald-700'
+                    ? 'text-sky-700'
                     : 'text-slate-700'
               }`}
             >
@@ -347,8 +347,8 @@ export default async function ClienteFiadoPage(props: {
                 <th className="px-4 py-2">Pedido / Mesa</th>
                 <th className="px-4 py-2">Modalidade</th>
                 <th className="px-4 py-2">NSU / Auth</th>
-                <th className="px-4 py-2 text-right">Crédito</th>
-                <th className="px-4 py-2 text-right">Pago</th>
+                <th className="px-4 py-2 text-right">Crédito (dívida)</th>
+                <th className="px-4 py-2 text-right">Débito (pago)</th>
                 <th className="px-4 py-2 text-right">Saldo</th>
                 <th className="px-4 py-2">Observação</th>
               </tr>
@@ -409,13 +409,31 @@ export default async function ClienteFiadoPage(props: {
                         )}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-xs">
-                        {cred > 0 ? <span className="text-rose-700">{brl(cred)}</span> : '—'}
+                        {cred > 0 ? <span className="text-sky-700">{brl(cred)}</span> : '—'}
+                      </td>
+                      {/* ⚠️ o pagamento vem com DÉBITO NEGATIVO no Consumer: sem o
+                          módulo a coluna ficava vazia justo nas linhas de pagamento */}
+                      <td className="px-4 py-2 text-right font-mono text-xs">
+                        {Math.abs(deb) > 0.001 ? (
+                          <span className="text-rose-700">{brl(Math.abs(deb))}</span>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-xs">
-                        {deb > 0 ? <span className="text-emerald-700">{brl(deb)}</span> : '—'}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
-                        {m.saldoFinal != null ? brl(Number(m.saldoFinal)) : '—'}
+                        {m.saldoFinal != null ? (
+                          <span
+                            className={
+                              Number(m.saldoFinal) > 0.01
+                                ? 'font-semibold text-rose-700'
+                                : 'text-sky-700'
+                            }
+                          >
+                            {brl(Number(m.saldoFinal))}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-600">
                         <span

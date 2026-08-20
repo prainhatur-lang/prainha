@@ -432,7 +432,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                           l.saldo > 0.01
                             ? 'text-rose-700'
                             : l.saldo < -0.01
-                              ? 'text-emerald-700'
+                              ? 'text-sky-700'
                               : 'text-slate-500'
                         }`}
                       >
