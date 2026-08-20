@@ -288,7 +288,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
       <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-7xl px-6 py-10">
-        <h1 className="text-2xl font-bold text-slate-900">Financeiro — Contas a pagar</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-slate-900">Financeiro — Contas a pagar</h1>
+          <Link
+            href={`/financeiro/nova${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
+            className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+          >
+            + Nova conta
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-slate-600">
           Filtre por período de vencimento, pagamento ou lançamento. Cores na
           tabela: <span className="text-emerald-700 font-medium">verde</span> = pago,{' '}
@@ -656,7 +664,21 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                                 {c.descricao ?? '—'}
                               </a>
                             ) : (
-                              c.descricao ?? '—'
+                              <Link
+                                href={`/financeiro/conta/${c.id}`}
+                                className="hover:text-sky-700 hover:underline"
+                                title="Ver a conta e o histórico de pagamentos"
+                              >
+                                {c.descricao ?? '—'}
+                              </Link>
+                            )}
+                            {!pago && Number(c.valorPago ?? 0) > 0 && (
+                              <span
+                                className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold text-amber-800"
+                                title={`Pago parcialmente: ${brl(Number(c.valorPago))}`}
+                              >
+                                PARCIAL
+                              </span>
                             )}
                           </td>
                           <td className="px-4 py-2 text-xs text-slate-600">

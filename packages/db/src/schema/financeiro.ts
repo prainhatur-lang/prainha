@@ -262,3 +262,30 @@ export const contaPagar = pgTable(
     origemIdx: index('idx_conta_pagar_origem').on(t.filialId, t.origem),
   }),
 );
+
+/** Baixa (pagamento) de uma conta a pagar — permite pagamento PARCIAL com
+ *  histórico de lançamentos. Cada linha é um pagamento; o agregado vira
+ *  conta_pagar.valor_pago (soma) e data_pagamento (data da baixa que quitou,
+ *  NULL enquanto houver saldo). Só pra contas nascidas na nuvem
+ *  (origem MANUAL/NFE/FOLHA): as de origem CONSUMER são pagas no PDV e o
+ *  sync sobrescreveria o agregado. criado_por é o id do usuário (sem FK pra
+ *  não criar ciclo de import com tenant.ts). */
+export const contaPagarBaixa = pgTable(
+  'conta_pagar_baixa',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    contaPagarId: uuid('conta_pagar_id')
+      .notNull()
+      .references(() => contaPagar.id, { onDelete: 'cascade' }),
+    data: date('data').notNull(),
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    observacao: text('observacao'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    contaIdx: index('idx_cp_baixa_conta').on(t.contaPagarId),
+    filialDataIdx: index('idx_cp_baixa_filial_data').on(t.filialId, t.data),
+  }),
+);
