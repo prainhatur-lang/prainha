@@ -455,6 +455,13 @@ async function initSchema() {
     numero integer, pedido bigint, pagamento_codigo bigint, forma text, valor numeric,
     arquivo text, nsu text, login text, quando timestamptz DEFAULT now())`;
   await sql`CREATE INDEX IF NOT EXISTS rec_foto_quando ON recebimento_foto (quando DESC)`;
+  // QUEM LANÇOU O ITEM. O Consumer guarda no CODIGOCOLABORADOR (69% dos itens);
+  // o que sai do NOSSO garçom não tinha dono nenhum. Tabela separada porque
+  // comanda_item leva TRUNCATE a cada espelho — mesma razão da `marca`.
+  await sql`CREATE TABLE IF NOT EXISTS item_autor (item_codigo bigint PRIMARY KEY,
+    login text, nome text, quando timestamptz DEFAULT now())`;
+  await addCol('comanda_item', 'colaborador integer');
+  await addCol('comanda_item', 'colaborador_nome text');
   // FOTO DO PRODUTO. Vem do Consumer como arquivo <PRODUTOS.CODIGO>.jpg — a
   // foto é do PRODUTO, não da variante: "T Gin" tem uma só, e as 17 frutas
   // usam a mesma. Guardar no banco (e não em disco) mantém tudo num lugar só,
@@ -589,10 +596,11 @@ async function espelho() {
   // nunca fechou — havia pedido aberto de 2023). Os itens dessas mesas antigas
   // entram MARCADOS como entregues (ver ANTIGO abaixo) pra não cair na cozinha.
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
-  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA, CASE WHEN p.DATAABERTURA >= ${DESDE} THEN 0 ELSE 1 END ANTIGO
+  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA, i.CODIGOCOLABORADOR COLAB, TRIM(COALESCE(col.NOME,'')) COLABNOME, CASE WHEN p.DATAABERTURA >= ${DESDE} THEN 0 ELSE 1 END ANTIGO
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
     LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
     LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
+    LEFT JOIN CONTATOS col ON col.CODIGO=i.CODIGOCOLABORADOR
     WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL AND (p.DATAABERTURA >= ${DESDE} OR p.NUMERO > 0) AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
   if (!it.ok) throw new Error('FB itens: ' + it.err);
 
@@ -606,7 +614,7 @@ async function espelho() {
   const itens = it.rows.map((x) => {
     const antigo = Number(x.ANTIGO) === 1;
     const feito = x.CRIADO || x.PROD || x.ENTR || null;
-    return { item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || (antigo ? feito : null), entregue: x.ENTR || (antigo ? feito : null) };
+    return { item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || (antigo ? feito : null), entregue: x.ENTR || (antigo ? feito : null), colaborador: N(x.COLAB), colaborador_nome: T(x.COLABNOME) || null };
   });
   // COMPLEMENTO (tipo 2) sai na cozinha do PRATO-PAI: se não tem área própria, herda a do pai (CODIGOPAI).
   const areaPorItem = new Map(itens.map((i) => [i.item_codigo, i.area_codigo]));
@@ -666,7 +674,7 @@ async function espelho() {
       WHERE atendido_em IS NULL AND criado_em < now() - interval '6 hours'`;
     await sql`TRUNCATE comanda, comanda_item`;
     if (comandas.length) await sql`INSERT INTO comanda ${sql(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
-    if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
+    if (itens.length) await sql`INSERT INTO comanda_item ${sql(itens, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue', 'colaborador', 'colaborador_nome')}`;
     await sql`UPDATE sync_estado SET ultimo_ok=now(), ultimo_erro=null, comandas=${comandas.length}, itens=${itens.length} WHERE id=1`;
   });
   // O TRUNCATE acima leva junto o pedido do iFood (que não vem do Firebird):
@@ -1065,12 +1073,13 @@ async function projetarIfood() {
     criado: porId.get(i.pedido_id).criado_em || porId.get(i.pedido_id).recebido_em,
     nome: i.nome, quantidade: Number(i.quantidade || 1), valor_total: Number(i.valor_total || 0),
     tipo: 1, detalhes: i.detalhes, area_codigo: i.area_codigo, produzido: null, entregue: null,
+    colaborador: null, colaborador_nome: 'iFood',
   }));
   const gravar = async (t) => {
     await t`DELETE FROM comanda_item WHERE comanda_codigo < 0`;
     await t`DELETE FROM comanda WHERE codigo < 0`;
     await t`INSERT INTO comanda ${t(comandas, 'codigo', 'numero', 'origem', 'nome', 'valor_total', 'subtotal_pago', 'qtd_pessoas', 'data_abertura', 'conta_pedida')}`;
-    if (linhas.length) await t`INSERT INTO comanda_item ${t(linhas, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue')}`;
+    if (linhas.length) await t`INSERT INTO comanda_item ${t(linhas, 'item_codigo', 'codigo_pai', 'comanda_codigo', 'codigo_pdv', 'criado', 'nome', 'quantidade', 'valor_total', 'tipo', 'detalhes', 'area_codigo', 'produzido', 'entregue', 'colaborador', 'colaborador_nome')}`;
   };
   await sql.begin(gravar);
   return comandas.length;
@@ -1553,8 +1562,19 @@ async function fbCriarPedido(numero) {
   if (!ped) throw new Error('FB criar pedido: inserido mas não encontrado');
   return ped;
 }
+/** Guarda quem lançou o item. Vale pros dois bancos e sobrevive ao espelho.
+ *  O Consumer só sabe do garçom quando o pedido nasce nele; o que sai da nossa
+ *  tela ficava órfão — e na hora de conferir a conta ninguém sabia de quem era. */
+async function registrarAutor(itemCod, it) {
+  if (!itemCod || !it || !it.login) return;
+  try {
+    await sql`INSERT INTO item_autor (item_codigo, login, nome)
+      VALUES (${Number(itemCod)}, ${it.login}, ${it.nome_usuario || it.login})
+      ON CONFLICT (item_codigo) DO NOTHING`;
+  } catch (e) { console.error('[autor] item ' + itemCod + ': ' + e.message); }
+}
 async function fbInserirItem(ped, it) {
-  if (nativo()) return pgInserirItem(ped, it);
+  if (nativo()) { const c = await pgInserirItem(ped, it); await registrarAutor(c, it); return c; }
   const vt = fbNum(it.preco * it.qtd);
   // O TAMANHO VAI NO NOME. "Germana" custa R$ 20 na dose e R$ 280 na garrafa —
   // gravar só o nome fazia os dois virarem a mesma linha no KDS e na comanda
@@ -1573,7 +1593,9 @@ async function fbInserirItem(ped, it) {
   // RETURNING crasha intermitente no FB4 — pega o recem-inserido. E' seguro
   // porque a fila serializa: ninguem inseriu no meio.
   const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
-  return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  const cod = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  await registrarAutor(cod, it);
+  return cod;
 }
 /** Carimba quem é a pessoa da comanda no PEDIDOS do Consumer.
  *  NOME sai na comanda impressa e no KDS; o CPF fica pronto pra NFC-e. */
@@ -4212,10 +4234,13 @@ async function apiCaixaConta(n) {
   // complementos (tipo 2) VÊM JUNTO: o caixa precisa ver "com gelo"/"1 copo"
   // pendurados no prato — sem eles a conta parecia só "os itens secos"
   const itens = c ? await sql`SELECT ci.item_codigo, ci.codigo_pai, ci.tipo, ci.nome, ci.quantidade, ci.valor_total, ci.detalhes,
+      -- quem lançou: o garçom do Consumer, ou quem estava logado na nossa tela
+      COALESCE(NULLIF(ci.colaborador_nome,''), a.nome, a.login) AS quem,
       CASE WHEN ci.entregue IS NOT NULL OR k.entregue_em IS NOT NULL THEN 'entregue'
            WHEN ci.produzido IS NOT NULL OR k.pronto_em IS NOT NULL THEN 'pronto'
            ELSE 'a_produzir' END AS status
     FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
+    LEFT JOIN item_autor a ON a.item_codigo = ci.item_codigo
     WHERE ci.comanda_codigo=${c.codigo} ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
   // COMANDAS DA MESA vêm JUNTO (atômico): o refresher de 10s substitui a CONTA
@@ -8189,15 +8214,32 @@ async function apiMesaPedir(body) {
 // ---- QR CODES das mesas (pra imprimir e colar) ----
 // O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
 // /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
-function ipDaLoja() {
-  if (process.env.URL_PUBLICA) return process.env.URL_PUBLICA.replace(/\/+$/, '');
-  const nets = os.networkInterfaces();
-  for (const lista of Object.values(nets)) {
+// ⚠️ O IP TEM QUE SER O DA REDE DA LOJA. Desde que o Tailscale foi instalado
+// (19/08), a primeira interface da máquina passou a ser a dele — 100.71.x.x,
+// da faixa CGNAT 100.64/10. QR gerado com esse endereço não abre no celular
+// do cliente nem no do caixa: ninguém alcança o Tailscale de fora dele.
+// Ordem: 192.168 → 10.x → 172.16-31 → qualquer outra que não seja CGNAT.
+function ipLan() {
+  const cand = [];
+  for (const lista of Object.values(os.networkInterfaces())) {
     for (const n of lista || []) {
-      if (n.family === 'IPv4' && !n.internal) return `http://${n.address}:${PORT}`;
+      if (n.family !== 'IPv4' || n.internal) continue;
+      const ip = n.address;
+      const [a, b] = ip.split('.').map(Number);
+      if (a === 169 && b === 254) continue;                    // link-local
+      if (a === 100 && b >= 64 && b <= 127) continue;          // CGNAT (Tailscale)
+      const peso = a === 192 && b === 168 ? 0 : a === 10 ? 1
+        : a === 172 && b >= 16 && b <= 31 ? 2 : 3;
+      cand.push({ ip, peso });
     }
   }
-  return `http://localhost:${PORT}`;
+  cand.sort((x, y) => x.peso - y.peso);
+  return cand.length ? cand[0].ip : null;
+}
+function ipDaLoja() {
+  if (process.env.URL_PUBLICA) return process.env.URL_PUBLICA.replace(/\/+$/, '');
+  const ip = ipLan();
+  return ip ? `http://${ip}:${PORT}` : `http://localhost:${PORT}`;
 }
 function qrSvg(texto, px = 150) {
   return new QRCode({ content: texto, padding: 0, width: px, height: px, ecl: 'M', join: true }).svg();
@@ -11530,6 +11572,9 @@ function pinta(el){
       (i.tipo===2?'<span style="display:inline-block;width:22px"></span>+ ':i.quantidade+'× ')+esc(i.nome)+
       (i.tipo!==2&&i.detalhes&&i.detalhes!=='NENHUM'?'<small class="mut" style="display:block;padding-left:22px">✎ '+esc(String(i.detalhes).split('|').map(function(s){return s.trim()}).filter(function(s){return s&&s!=='NENHUM'&&s.indexOf('>>')!==0}).join(' · '))+'</small>':'')+
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
+      // QUEM LANÇOU: conferir a conta com o cliente na frente é discutir item a
+      // item. Sem o nome, "eu não pedi isso" não tem com quem esclarecer.
+      (i.tipo!==2&&i.quem?'<small class="mut" style="display:block;padding-left:22px">👤 '+esc(String(i.quem).split(' ')[0])+'</small>':'')+
       '</span><b>'+(i.tipo===2&&!(i.valor_total>0)?'':brl(i.valor_total))+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
   // O cliente pode se recusar a pagar os 10% — é direito dele. Um toque aqui
