@@ -185,7 +185,16 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               {int(Number(stats?.qtd ?? 0))} {tipoFiltro ? 'registro(s) no filtro' : 'produto(s) cadastrado(s)'} · {filialSelecionada.nome}
             </p>
           </div>
-          <NovoInsumoButton filialId={filialSelecionada.id} />
+          <div className="flex items-center gap-2">
+            <Link
+              href="/cadastros/produtos/sem-baixa"
+              className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+              title="Produtos que vendem sem consumir estoque nem receita"
+            >
+              ⚠ Vendeu sem baixar
+            </Link>
+            <NovoInsumoButton filialId={filialSelecionada.id} />
+          </div>
         </div>
 
         {filiais.length > 1 && (

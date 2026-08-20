@@ -11,6 +11,7 @@ import { AbaSaldo } from './aba-saldo';
 import { AbaMarcas } from './aba-marcas';
 import { AbaPdv } from './aba-pdv';
 import { TrocarTipoButton } from './trocar-tipo';
+import { ControleEstoque } from './controle-estoque';
 
 export const dynamic = 'force-dynamic';
 
@@ -418,6 +419,11 @@ export default async function ProdutoDetalhePage(props: {
                 {badge.label}
               </span>
               <TrocarTipoButton produtoId={id} tipoAtual={produto.tipo} />
+              <ControleEstoque
+                produtoId={id}
+                ativo={produto.controlaEstoque}
+                temFicha={fichaRows.length > 0}
+              />
               <span className="text-slate-500">
                 Unidade: <span className="font-mono">{produto.unidadeEstoque}</span>
               </span>
