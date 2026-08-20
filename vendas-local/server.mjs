@@ -17,6 +17,7 @@ import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptS
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
@@ -5539,17 +5540,45 @@ function tokenComprovante() {
   return randomBytes(9).toString('base64url');
 }
 /** Abre um token pra foto vir do celular (QR na tela do caixa). */
+// ENDEREÇO PÚBLICO DA LOJA (Tailscale Funnel). O link da LAN é o melhor —
+// rápido e funciona sem internet — mas só serve pra celular NO Wi-Fi da casa.
+// Celular no 4G nunca alcança 10.0.0.252, e é isso que trava o caixa em
+// "aguardando a foto". O Funnel já está ligado na 0001 e tem TLS válido, então
+// vale como plano B. Descobre sozinho pelo próprio Tailscale: sem config,
+// sem hostname chumbado. Uma vez só por boot.
+let urlExternaCache;
+async function urlExterna() {
+  if (urlExternaCache !== undefined) return urlExternaCache;
+  const daConfig = (await cfgGet('url_externa', '')) || process.env.URL_EXTERNA || '';
+  if (daConfig) { urlExternaCache = daConfig.replace(/\/+$/, ''); return urlExternaCache; }
+  urlExternaCache = await new Promise((ok) => {
+    const exe = process.platform === 'win32'
+      ? 'C:\\Program Files\\Tailscale\\tailscale.exe' : 'tailscale';
+    execFile(exe, ['status', '--json'], { timeout: 4000 }, (err, out) => {
+      if (err) return ok(null);
+      try {
+        const dns = String(JSON.parse(out)?.Self?.DNSName || '').replace(/\.+$/, '');
+        ok(dns ? 'https://' + dns : null);
+      } catch { ok(null); }
+    });
+  });
+  if (urlExternaCache) console.log('[comprovante] endereço externo: ' + urlExternaCache);
+  return urlExternaCache;
+}
 async function apiComprovanteAbrir(body, quem) {
   const numero = Number(body.numero) || 0;
   if (!numero) return { ok: false, erro: 'mesa inválida' };
   const token = tokenComprovante();
   await sql`INSERT INTO comprovante_token (token, numero, valor, forma, login)
     VALUES (${token}, ${numero}, ${Number(body.valor) || null}, ${String(body.forma || '')}, ${quem?.login || null})`;
-  // O QR aponta pro IP da loja em HTTP: o celular do caixa não precisa de
-  // internet nem de aceitar certificado — e a página usa <input capture>, que
-  // funciona sem contexto seguro (a câmera via getUserMedia, não).
-  const url = ipDaLoja() + '/comprovante?t=' + token;
-  return { ok: true, token, url, qr: qrSvg(url, 190) };
+  // Padrão: IP da loja em HTTP — o celular não precisa de internet nem de
+  // aceitar certificado, e a página usa <input capture>, que funciona sem
+  // contexto seguro (a câmera via getUserMedia, não).
+  const externo = body.externo === true;
+  const base = externo ? await urlExterna() : ipDaLoja();
+  if (externo && !base) return { ok: false, erro: 'esta loja não tem endereço externo configurado' };
+  const url = base + '/comprovante?t=' + token;
+  return { ok: true, token, url, qr: qrSvg(url, 190), externo, tem_externo: !!(await urlExterna()) };
 }
 /** O celular manda a foto. Sem sessão de propósito: quem tem o token, tem o
  *  direito — o token vive 10 minutos e serve uma vez só. */
@@ -11736,16 +11765,24 @@ function manClicar(){
   manEstado();
 }
 /* Celular do caixa: QR com um link de 10 minutos. A foto chega aqui sozinha. */
-async function manCelular(){
+async function manCelular(externo){
   var box=document.getElementById('mcbox'); if(!box)return;
   box.innerHTML='<div class="mut" style="margin-top:8px">gerando o link…</div>';
-  var r=await jpost('/api/caixa/comprovante',{numero:MESA,forma:MAN.forma,valor:numBr((document.getElementById('mv')||{}).value)});
+  var r=await jpost('/api/caixa/comprovante',{numero:MESA,forma:MAN.forma,valor:numBr((document.getElementById('mv')||{}).value),externo:externo===true});
   if(!r.ok){box.innerHTML='<div class="err" style="display:block">'+esc(r.erro||'não deu')+'</div>';return}
-  MAN.token=r.token;
+  MAN.token=r.token; MAN.t0=Date.now();
   box.innerHTML='<div style="text-align:center;margin-top:10px;background:#fff;padding:10px;border-radius:12px">'+r.qr+'</div>'+
-    '<div class="mut" style="text-align:center">Aponte a câmera do celular · o link vale 10 minutos</div>'+
+    '<div class="mut" style="text-align:center">Aponte a câmera do celular · o link vale 10 minutos'+
+      (r.externo?' · <b>link da internet</b>':'')+'</div>'+
     '<div class="mut" style="text-align:center;word-break:break-all;font-size:12px">'+esc(r.url)+'</div>'+
-    '<div id="mchegou" class="mut" style="text-align:center;margin-top:6px">aguardando a foto…</div>';
+    '<div id="mchegou" class="mut" style="text-align:center;margin-top:6px">aguardando a foto…</div>'+
+    // O celular no 4G NUNCA alcança o IP da loja — e é o caso mais comum, porque
+    // o Android/iPhone abandona sozinho um Wi-Fi sem internet. Um toque troca
+    // pro endereço público (Tailscale), que funciona no 4G.
+    (r.tem_externo&&!r.externo
+      ? '<button class="seg" style="margin-top:8px;width:100%" onclick="manCelular(true)">📶 o celular está no 4G? gerar link da internet</button>'
+      : (!r.tem_externo?'<div class="mut" style="text-align:center;margin-top:6px">o celular precisa estar no <b>Wi-Fi da casa</b></div>':''))+
+    (r.externo?'<button class="seg" style="margin-top:8px;width:100%" onclick="manCelular(false)">◂ voltar pro link do Wi-Fi</button>':'');
   manParar();
   MAN.poll=setInterval(async function(){
     try{
@@ -11761,6 +11798,7 @@ async function manCelular(){
       // saindo do Wi-Fi na hora do envio — o caixa fica sabendo o que houve.
       var ch=document.getElementById('mchegou');
       if(ch&&st.ok&&st.abriu)ch.innerHTML='📱 o celular abriu o link — se a foto não chegar, confira se ele está <b>no Wi-Fi da casa</b> (sem 4G) e mande de novo';
+      else if(ch&&Date.now()-(MAN.t0||0)>20000)ch.innerHTML='⏳ o celular ainda não abriu o link. Se ele estiver no <b>4G</b>, use o botão do <b>link da internet</b> aqui embaixo.';
     }catch(e){}
   },2000);
 }
