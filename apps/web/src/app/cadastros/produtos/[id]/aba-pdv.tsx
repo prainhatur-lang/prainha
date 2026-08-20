@@ -49,6 +49,14 @@ export interface PerguntaPdv {
   opcoes: OpcaoPdv[];
 }
 
+export interface InsumoPdv {
+  varianteCodigo: number;
+  codigo: number;
+  nome: string | null;
+  quantidade: string | null;
+  unidade: string | null;
+}
+
 export interface ComplementoPdv {
   varianteCodigo: number;
   codigo: number;
@@ -72,6 +80,7 @@ interface Props {
   pendentes: PendentePdv[];
   perguntas: PerguntaPdv[];
   complementos: ComplementoPdv[];
+  insumos: InsumoPdv[];
 }
 
 const ROTULO: Record<string, string> = {
@@ -286,6 +295,37 @@ export function AbaPdv(p: Props) {
               <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} salvando={salvando} onSalvar={mandar} />
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-5 py-3">
+          <h2 className="text-sm font-semibold text-slate-900">Insumos — ficha do PDV</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            É <b>esta</b> ficha que baixa estoque no Consumer ao vender — não a da aba
+            &quot;Ficha técnica&quot;, que é a do Concilia. Só leitura por enquanto: mexer na
+            composição por aqui, sem a conferência do PDV, é pedir divergência de estoque.
+          </p>
+        </div>
+        {p.insumos.length === 0 ? (
+          <p className="px-5 py-8 text-center text-sm text-slate-500">
+            Nenhum tamanho deste produto tem ficha no PDV.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-100 text-sm">
+            {p.insumos.map((x, i) => (
+              <li key={`${x.varianteCodigo}-${x.codigo}-${i}`} className="flex items-center justify-between px-5 py-2">
+                <span className="text-slate-700">
+                  {x.nome || `#${x.codigo}`}
+                  <span className="ml-2 font-mono text-[10px] text-slate-400">tam {x.varianteCodigo}</span>
+                </span>
+                <span className="font-mono text-xs text-slate-600">
+                  {x.quantidade != null ? Number(x.quantidade).toLocaleString('pt-BR', { maximumFractionDigits: 4 }) : '—'}
+                  {x.unidade ? ` ${x.unidade}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 

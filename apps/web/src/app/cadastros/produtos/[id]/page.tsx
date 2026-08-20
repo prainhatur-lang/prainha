@@ -329,6 +329,38 @@ export default async function ProdutoDetalhePage(props: {
           .limit(300)
       : [];
 
+  // FICHA DO PDV (PRODUTOFICHA): é ESTA que baixa estoque no Consumer, não a
+  // ficha do Concilia da outra aba. Só leitura — mexer na composição pelo
+  // Concilia sem a tela de conferência do PDV é pedir divergência de estoque.
+  const insVar = aliasDrizzle(schema.produtoVariante, 'ing_var');
+  const insProd = aliasDrizzle(schema.produto, 'ing_prod');
+  const insumosPdv =
+    codigosVar.length > 0
+      ? await db
+          .select({
+            varianteCodigo: schema.produtoVarianteFicha.codigoVarianteExterno,
+            ingredienteCodigo: schema.produtoVarianteFicha.codigoIngredienteExterno,
+            quantidade: schema.produtoVarianteFicha.quantidade,
+            nome: insProd.nome,
+            unidade: insProd.unidadeEstoque,
+          })
+          .from(schema.produtoVarianteFicha)
+          .leftJoin(
+            insVar,
+            and(
+              eq(insVar.filialId, produto.filialId),
+              eq(insVar.codigoExterno, schema.produtoVarianteFicha.codigoIngredienteExterno),
+            ),
+          )
+          .leftJoin(insProd, eq(insProd.id, insVar.produtoId))
+          .where(and(
+            eq(schema.produtoVarianteFicha.filialId, produto.filialId),
+            inArray(schema.produtoVarianteFicha.codigoVarianteExterno, codigosVar),
+          ))
+          .orderBy(asc(insProd.nome))
+          .limit(200)
+      : [];
+
   const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv') => {
     const qs = a === 'ficha' ? '' : `?aba=${a}`;
     return `/cadastros/produtos/${id}${qs}`;
@@ -511,6 +543,13 @@ export default async function ProdutoDetalhePage(props: {
                     precoPromo: o.precoPromo,
                     lancaVariante: o.codigoVarianteExterno,
                   })),
+              }))}
+              insumos={insumosPdv.map((i) => ({
+                varianteCodigo: i.varianteCodigo,
+                codigo: i.ingredienteCodigo,
+                nome: i.nome,
+                quantidade: i.quantidade,
+                unidade: i.unidade,
               }))}
               complementos={complementosPdv.map((c) => ({
                 varianteCodigo: c.varianteCodigo,
