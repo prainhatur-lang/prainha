@@ -999,11 +999,23 @@ class ContaActivity : AppCompatActivity() {
                 }
             }
         }
-        val digIn = campo("Ou digite o valor", android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        // DINHEIRO EM CENTAVOS, padrão de maquininha: digita SÓ números e o
+        // campo se formata sozinho (550 → R$ 5,50). O teclado numérico da LIO
+        // não tem vírgula, e o parse antigo tratava ponto como milhar — "5.50"
+        // virava 550 e cobrava a conta inteira (bug real em campo, 20/08).
+        val digIn = campo("Ou digite o valor (só números — 550 = R$ 5,50)", android.text.InputType.TYPE_CLASS_NUMBER)
         digIn.addTextChangedListener(object : android.text.TextWatcher {
+            private var editando = false
             override fun afterTextChanged(s: android.text.Editable?) {
-                val t = (s?.toString() ?: "").trim().replace(".", "").replace(",", ".")
-                valorDig = t.toDoubleOrNull()?.takeIf { it > 0 }
+                if (editando) return
+                editando = true
+                val dig = (s?.toString() ?: "").filter { it.isDigit() }.trimStart('0').take(9)
+                val cents = dig.toLongOrNull() ?: 0L
+                valorDig = if (cents > 0) cents / 100.0 else null
+                val txt = if (cents > 0) Cupom.brl(cents / 100.0) else ""
+                digIn.setText(txt)
+                digIn.setSelection(txt.length)
+                editando = false
                 pinta()
             }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}

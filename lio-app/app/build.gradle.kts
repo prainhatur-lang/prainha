@@ -101,8 +101,11 @@ android {
         // e ganha o botão "🔒 Fechar meu caixa": fecha o caixa da MAQUININHA do
         // logado, só se BATER (servidor confere NSU a NSU; não bateu = fica
         // aberto com o motivo). Sai um, entra o outro, caixa novo nasce sozinho.
-        versionCode = 31
-        versionName = "1.10.7"
+        // 1.10.8: valor digitado no Receber em CENTAVOS (550 = R$ 5,50), campo
+        // se formata sozinho. O teclado da LIO não tem vírgula e "5.50" parseava
+        // como 550 (ponto tratado como milhar) — cobrava a conta INTEIRA.
+        versionCode = 32
+        versionName = "1.10.8"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
