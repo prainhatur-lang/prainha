@@ -453,7 +453,8 @@ async function initSchema() {
     criado_em timestamptz DEFAULT now(), enviado_em timestamptz, usado_em timestamptz)`;
   // aberto_em: o caixa vê "o celular ABRIU o link" — separa 'não escaneou' de
   // 'escaneou mas o envio falhou' (celular caiu pro 4G na hora do POST).
-  await sql`ALTER TABLE comprovante_token ADD COLUMN IF NOT EXISTS aberto_em timestamptz`;
+  // addCol, NUNCA "IF NOT EXISTS": o PG da 0001 é 9.5 (derrubou o boot em 20/08).
+  await addCol('comprovante_token', 'aberto_em timestamptz');
   await sql`CREATE TABLE IF NOT EXISTS recebimento_foto (id bigserial PRIMARY KEY,
     numero integer, pedido bigint, pagamento_codigo bigint, forma text, valor numeric,
     arquivo text, nsu text, login text, quando timestamptz DEFAULT now())`;
