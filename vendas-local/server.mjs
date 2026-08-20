@@ -4520,6 +4520,65 @@ async function apiCaixaFiadoBusca(termo) {
     habilitado: (Number(x.LIM) || 0) > 0,
     disponivel: +(((Number(x.LIM) || 0) - (Number(x.SALDO) || 0))).toFixed(2) })) };
 }
+/** Grava UM lançamento na conta corrente, do jeito que o Consumer grava.
+ *  tipo 'credito'  = cliente passou a dever (CREDITO + IMPORTADO='N')
+ *  tipo 'pagamento'= cliente pagou (DEBITO NEGATIVO, IMPORTADO nulo) — foi
+ *  assim que achei nos lançamentos reais do "Registrar Pagamento" do PDV.
+ *  Mantém CONTATOS.SALDOATUALCONTACORRENTE alinhado com o último saldo. */
+async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null, usuarioCod = null }) {
+  const cli = await fbClienteFiado(cliente);
+  if (!cli) return { ok: false, erro: 'cliente não encontrado' };
+  const v = +Number(valor).toFixed(2);
+  if (!(v > 0)) return { ok: false, erro: 'valor inválido' };
+  const credito = tipo !== 'pagamento';
+  const novoSaldo = +(credito ? cli.saldo + v : cli.saldo - v).toFixed(2);
+  const campos = ['CODIGO', 'CODIGOCLIENTE', 'DATAHORA', 'SALDOINICIAL', 'SALDOFINAL', 'OBSERVACAO'];
+  const vals = ['GEN_ID(GEN_CONTACORRENTE_ID,1)', String(cli.codigo), 'CURRENT_TIMESTAMP',
+    fbNum(cli.saldo), fbNum(novoSaldo), `'${fbEsc(String(obs || '').slice(0, 200))}'`];
+  if (credito) { campos.push('CREDITO', 'IMPORTADO'); vals.push(fbNum(v), "'N'"); }
+  else { campos.push('DEBITO'); vals.push(fbNum(-v)); }
+  if (pedido) { campos.push('CODIGOPEDIDO'); vals.push(String(pedido)); }
+  if (usuarioCod) { campos.push('CODIGOUSUARIO'); vals.push(String(usuarioCod)); }
+  const ins = await qi(`INSERT INTO CONTACORRENTE (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
+  if (!ins.ok) return { ok: false, erro: 'FB conta corrente: ' + ins.err };
+  const up = await qi(`UPDATE CONTATOS SET SALDOATUALCONTACORRENTE=${fbNum(novoSaldo)} WHERE CODIGO=${cli.codigo}`);
+  if (!up.ok) console.error('[fiado] saldo do cadastro não atualizou: ' + up.err);
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTACORRENTE WHERE CODIGOCLIENTE=${cli.codigo} ORDER BY CODIGO DESC`);
+  return { ok: true, codigo: g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null,
+    saldo: novoSaldo, cliente: cli.nome };
+}
+// ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
+// A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
+// este laço busca, aplica e devolve o resultado — mesma assinatura HMAC da
+// NFC-e, que a loja já tem no start.bat.
+let fiadoFilaRodando = false;
+async function loopFiadoFila() {
+  if (fiadoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  fiadoFilaRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('fiado', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/fiado-fila?${q}`, { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !j.lancamentos?.length) return;
+    for (const l of j.lancamentos) {
+      let res;
+      try {
+        res = await fbLancarContaCorrente({ cliente: Number(l.cliente), tipo: l.tipo,
+          valor: Number(l.valor), obs: l.observacao || (l.tipo === 'pagamento' ? 'Pagamento de fiado.' : 'Lançamento manual') });
+      } catch (err) { res = { ok: false, erro: err.message }; }
+      const e2 = Math.floor(Date.now() / 1000) + 120;
+      await fetch(`${PAGAR_MESA_URL}/api/loja/fiado-fila`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e: e2, s: nfceAssina('fiado', e2), id: l.id,
+          ok: !!res.ok, erro: res.erro || null, codigo: res.codigo || null, saldo: res.saldo ?? null }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {});
+      console.log('[fiado] ' + l.tipo + ' R$ ' + l.valor + ' cliente ' + l.cliente + ' → ' + (res.ok ? 'aplicado' : 'ERRO: ' + res.erro));
+    }
+  } catch (err) { console.error('[fiado] fila:', err.message); }
+  finally { fiadoFilaRodando = false; }
+}
 /** Fecha a conta lançando o que falta no fiado do cliente. */
 async function apiCaixaFiado(body, quem) {
   if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
@@ -11788,6 +11847,8 @@ async function main() {
   espelhoCatalogo().catch(() => {});
   setInterval(() => espelhoCatalogo().catch(() => {}), 5 * 60 * 1000);
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
+  setTimeout(() => loopFiadoFila().catch(() => {}), 40 * 1000);
+  setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa

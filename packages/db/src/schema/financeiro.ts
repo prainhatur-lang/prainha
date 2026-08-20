@@ -158,6 +158,33 @@ export const movimentoContaCorrente = pgTable(
   }),
 );
 
+/** FILA de lançamento de fiado (nuvem → loja).
+ *  A tela do Financeiro não escreve no Firebird: quem tem o banco é a loja.
+ *  O lançamento entra aqui como 'pendente', o vendas-local busca, aplica na
+ *  CONTACORRENTE e reporta. tipo: 'credito' (cliente passou a dever) ou
+ *  'pagamento' (cliente pagou). */
+export const fiadoLancamento = pgTable(
+  'fiado_lancamento',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    clienteCodigoExterno: integer('cliente_codigo_externo').notNull(),
+    clienteNome: varchar('cliente_nome', { length: 120 }),
+    tipo: varchar('tipo', { length: 12 }).notNull(),
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    observacao: text('observacao'),
+    /** pendente · aplicado · erro */
+    status: varchar('status', { length: 10 }).notNull().default('pendente'),
+    erro: text('erro'),
+    codigoExterno: integer('codigo_externo'),
+    saldoDepois: numeric('saldo_depois', { precision: 14, scale: 2 }),
+    criadoPor: varchar('criado_por', { length: 120 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+  },
+  (t) => ({ pendIdx: index('fl_cliente').on(t.filialId, t.clienteCodigoExterno) }),
+);
+
 /** Conta a pagar.
  *  Origens possiveis (campo `origem`):
  *  - 'CONSUMER': vem do agente sincronizando CONTASPAGAR do Firebird local.

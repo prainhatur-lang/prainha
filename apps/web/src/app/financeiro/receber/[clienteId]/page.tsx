@@ -8,9 +8,10 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
+import { LancarFiado } from './lancar-fiado';
 import { ClienteFiltros } from './filtros';
 
 export const dynamic = 'force-dynamic';
@@ -187,6 +188,26 @@ export default async function ClienteFiadoPage(props: {
       ),
     );
   const saldo = Number(saldoRow?.saldo ?? 0);
+
+  // Lançamentos que a tela criou e a loja ainda não aplicou (ou deram erro).
+  // Sem mostrar isto, quem lança acha que sumiu — a fila roda a cada ~1 min.
+  const pendentes = cli.codigoExterno == null ? [] : await db
+    .select({
+      id: schema.fiadoLancamento.id,
+      tipo: schema.fiadoLancamento.tipo,
+      valor: schema.fiadoLancamento.valor,
+      erro: schema.fiadoLancamento.erro,
+    })
+    .from(schema.fiadoLancamento)
+    .where(
+      and(
+        eq(schema.fiadoLancamento.filialId, cli.filialId),
+        eq(schema.fiadoLancamento.clienteCodigoExterno, cli.codigoExterno),
+        inArray(schema.fiadoLancamento.status, ['pendente', 'erro']),
+      ),
+    )
+    .orderBy(desc(schema.fiadoLancamento.criadoEm))
+    .limit(5);
   const totalCredito = Number(saldoRow?.totalCredito ?? 0);
   const totalDebito = Number(saldoRow?.totalDebito ?? 0);
   const qtdTotal = Number(saldoRow?.qtdTotal ?? 0);
@@ -220,6 +241,23 @@ export default async function ClienteFiadoPage(props: {
             <span className="ml-2 text-slate-500">· cód {cli.codigoExterno}</span>
           )}
         </p>
+
+        <LancarFiado clienteId={cli.id} saldo={saldo} />
+
+        {/* Lançamentos ainda não aplicados na loja (a fila roda a cada ~1 min) */}
+        {pendentes.length > 0 && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-amber-900">Aguardando a loja aplicar</p>
+            <ul className="mt-2 space-y-1 text-sm text-amber-900">
+              {pendentes.map((p) => (
+                <li key={p.id}>
+                  {p.tipo === 'pagamento' ? 'Pagamento' : 'Crédito'} de {brl(Number(p.valor))}
+                  {p.erro ? <span className="ml-2 font-semibold text-rose-700">erro: {p.erro}</span> : ' · na fila'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* KPIs */}
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
