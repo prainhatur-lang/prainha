@@ -182,10 +182,79 @@ const semAcento = (s) => (s == null ? '' : String(s)).normalize('NFD').replace(/
 
 // ---- schema ----
 // addCol tolerante: o Postgres da loja pode ser ANTIGO (9.5 não tem ADD COLUMN IF NOT EXISTS).
+// ═══════════════ BANCO PRÓPRIO (0001 sem Consumer) ═══════════════
+// O dono desliga o Firebird da 0001. Como NADA mais é lançado pela tela do
+// Consumer (só o vendas-local escreve lá), o corte é trocar onde a escrita
+// cai — de PEDIDOS/ITENSPEDIDO/PAGAMENTOS/CAIXA/CONTACORRENTE pro Postgres
+// daqui, que já guarda a operação inteira em `comanda`/`comanda_item` (hoje
+// como espelho; no modo próprio, como original).
+//
+//   BANCO=firebird (padrão)  escreve no Consumer, igual sempre
+//   BANCO=proprio            escreve aqui; o Firebird nem é aberto
+//
+// A chave existe pra ida E volta: o Firebird fica ligado sem uso por algumas
+// semanas, então voltar é editar o start.bat e reiniciar.
+//
+// CÓDIGOS ≥ 5.000.000 SÃO NOSSOS. O Consumer parou em pedido 158.620, item
+// 1.492.360, pagamento 187.701 — começar em 5 milhões garante que nenhum
+// código novo colida com o histórico, e olhar o número já diz de onde veio.
+// Isso importa porque meia dúzia de tabelas locais (marca, cancelamento,
+// nfce_log, venda_pagamento) apontam pra esses códigos.
+const BANCO = String(process.env.BANCO || 'firebird').toLowerCase();
+const nativo = () => BANCO === 'proprio';
+const SEQ_INICIO = 5000000;
+
 async function addCol(tabela, ddl) {
   try { await sql.unsafe(`ALTER TABLE ${tabela} ADD COLUMN ${ddl}`); }
   catch (e) { if (e.code !== '42701') throw e; } // 42701 = coluna já existe
 }
+/** Tabelas/colunas que só o modo próprio usa. Criadas sempre (custo zero) pra
+ *  o corte ser só trocar a env — e pra dar pra popular e conferir ANTES. */
+async function initSchemaNativo() {
+  for (const nome of ['pedido', 'item', 'pagamento', 'caixa', 'cc', 'cliente']) {
+    // Postgres 9.5 na 0001: CREATE SEQUENCE IF NOT EXISTS existe desde a 9.5.
+    await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS seq_${nome} START ${SEQ_INICIO} MINVALUE ${SEQ_INICIO}`);
+  }
+  // comanda vira ORIGINAL: precisa dos campos que só existiam no PEDIDOS
+  await addCol('comanda', 'fechada_em timestamptz');
+  await addCol('comanda', 'total_itens numeric');
+  await addCol('comanda', 'total_servico numeric');
+  await addCol('comanda', 'percentual_servico numeric');
+  await addCol('comanda', 'total_desconto numeric');
+  await addCol('comanda', 'total_acrescimo numeric');
+  await addCol('comanda', 'valor_entrega numeric');
+  await addCol('comanda', 'cpf text');
+  await addCol('comanda', 'contato_codigo integer');
+  await addCol('comanda', 'criado_por text');
+  await addCol('comanda_item', 'codigo_pdv bigint');
+  await addCol('comanda_item', 'produto_codigo bigint');
+  await addCol('comanda_item', 'valor_unitario numeric');
+  await addCol('comanda_item', 'cancelado_em timestamptz');
+  await addCol('comanda_item', 'cancelado_por text');
+  await addCol('comanda_item', 'criado_por text');
+  await sql`CREATE TABLE IF NOT EXISTS pagamento_local (codigo bigint PRIMARY KEY, pedido bigint, forma_codigo integer,
+    valor numeric, caixa_codigo bigint, nsu text, autorizacao text, bandeira text, observacao text,
+    conta_corrente bigint, quando timestamptz DEFAULT now(), cancelado_em timestamptz)`;
+  await sql`CREATE TABLE IF NOT EXISTS caixa_local (codigo bigint PRIMARY KEY, login text, usuario_codigo integer,
+    aberto_em timestamptz DEFAULT now(), fundo numeric DEFAULT 0, fechado_em timestamptz, obs text)`;
+  await sql`CREATE TABLE IF NOT EXISTS caixa_operacao_local (id bigserial PRIMARY KEY, caixa_codigo bigint,
+    tipo text, valor numeric, forma_codigo integer, obs text, login text, quando timestamptz DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS conta_corrente_local (codigo bigint PRIMARY KEY, cliente_codigo integer,
+    pedido bigint, credito numeric, debito numeric, saldo_inicial numeric, saldo_final numeric,
+    observacao text, pagamento_codigo bigint, login text, quando timestamptz DEFAULT now())`;
+  // espelho do cadastro de cliente (vem da nuvem): nome, limite e saldo do fiado
+  await sql`CREATE TABLE IF NOT EXISTS cliente_local (codigo integer PRIMARY KEY, nome text, cpf text,
+    telefone text, limite_credito numeric DEFAULT 0, saldo_atual numeric DEFAULT 0, ativo boolean DEFAULT true,
+    atualizado_em timestamptz DEFAULT now())`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_pagamento_local_pedido ON pagamento_local (pedido)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_cc_local_cliente ON conta_corrente_local (cliente_codigo)`;
+}
+/** Próximo código nosso (≥ 5.000.000). */
+async function proxCodigo(seq) {
+  const r = await sql.unsafe(`SELECT nextval('seq_${seq}')::bigint AS n`);
+  return Number(r[0].n);
+}
+
 async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS area (codigo integer PRIMARY KEY, nome text)`;
   await sql`CREATE TABLE IF NOT EXISTS comanda (codigo integer PRIMARY KEY, numero integer, origem integer, nome text, valor_total numeric, subtotal_pago numeric, qtd_pessoas integer, data_abertura timestamptz)`;
@@ -464,11 +533,17 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
+  await initSchemaNativo();
 }
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
 let ultimoStatus = { ok: false, comandas: 0, itens: 0 };
 async function espelho() {
+  // ⚠️ NO MODO PRÓPRIO ISTO NÃO PODE RODAR. Aqui `comanda`/`comanda_item` são
+  // o ORIGINAL, e esta função trunca as duas pra recarregar do Firebird — ou
+  // seja, apagaria a operação em andamento. O espelho só existe enquanto o
+  // Consumer for o dono do dado.
+  if (nativo()) { ultimoStatus = { ok: true, comandas: 0, itens: 0, nativo: true }; return; }
   const az = await q(`SELECT CODIGO, TRIM(DESCRICAO) D FROM COZINHAS ORDER BY CODIGO`);
   // ⚠️ O PAGO VEM DA SOMA DE PAGAMENTOS, NÃO DE SUBTOTALPAGO.
   // Conferido na base do Prainha Bar: o campo fica `null` mesmo em pedido
@@ -1087,6 +1162,10 @@ async function apiPerguntas(codigoPdv) {
   return { ok: true, perguntas: out };
 }
 async function espelhoCatalogo() {
+  // No modo próprio o catálogo passa a vir da NUVEM (o cadastro já é nosso).
+  // Enquanto essa parte não entra, o que existe em produto_local continua
+  // valendo: melhor catálogo de ontem do que tela vazia no meio do serviço.
+  if (nativo()) { console.log('[catalogo] modo próprio: mantendo o catálogo local'); return; }
   // SALDO REAL de estoque: PRODUTOS.ESTOQUEATUAL e' CAMPO MORTO no Consumer
   // (zero nos 501 produtos controlados, positivo em nenhum). Quem tem a verdade
   // e' a ultima ESTOQUEMOVIMENTACAO de cada PRODUTODETALHE, no QTDFINAL.
@@ -1169,12 +1248,97 @@ async function espelhoCatalogo() {
 //            -> UPDATE VALORTOTAL -> job PEDIDOIMPRESSAO TIPO 1 (cozinha imprime ~3s)
 const fbEsc = (s) => String(s == null ? '' : s).replace(/'/g, "''").slice(0, 190);
 const fbNum = (v) => String(+Number(v || 0).toFixed(4));
+// ─────────── operação no banco PRÓPRIO (BANCO=proprio) ───────────
+// Mesmas primitivas do Firebird, escrevendo em `comanda`/`comanda_item` — as
+// tabelas que o KDS, o garçom e o caixa JÁ leem. Por isso as telas não mudam
+// uma linha: elas nunca falaram com o Firebird, falavam com o espelho.
+async function pgAcharPedido(numero) {
+  const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
+    AND fechada_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+  return r.length ? Number(r[0].codigo) : null;
+}
+async function pgCriarPedido(numero) {
+  const cod = await proxCodigo('pedido');
+  await sql`INSERT INTO comanda (codigo, numero, origem, valor_total, subtotal_pago, qtd_pessoas,
+      data_abertura, total_itens, total_servico, percentual_servico, total_desconto, total_acrescimo, valor_entrega)
+    VALUES (${cod}, ${Number(numero)}, ${VENDA_ORIGEM_FB}, 0, 0, 1, now(), 0, 0, ${TAXA_SERVICO}, 0, 0, 0)`;
+  return cod;
+}
+/** A praça do item, com as MESMAS regras que o espelho aplicava depois:
+ *  redirect de praça juntada, praça por nome de item e itens fora do KDS. */
+async function pgAreaDoItem(nome, areaBase) {
+  let area = areaBase ?? null;
+  const redir = await mapaRedirPracas();
+  if (area != null && redir.has(area)) area = redir.get(area);
+  const porItem = await mapaItemPraca();
+  if (porItem.length) {
+    const nm = semAcento(nome || '');
+    const achou = porItem.find((x) => nm.includes(x.termo));
+    if (achou) area = achou.area;
+  }
+  return area;
+}
+async function pgInserirItem(ped, it) {
+  const cod = await proxCodigo('item');
+  const nomeItem = [it.nome, it.tamanho].filter(Boolean).join(' ');
+  const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
+  const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
+  const vt = +(Number(it.preco) * Number(it.qtd)).toFixed(2);
+  const [pl] = await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${Number(it.codigo_pdv)} LIMIT 1`;
+  const area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
+  // item que ninguém produz (couvert) entra já baixado: some do KDS e para de
+  // contar atraso, sem sumir da conta — mesma regra que o espelho aplicava.
+  const fora = await itensForaKds();
+  const nm = semAcento(nomeItem);
+  const baixado = fora.length > 0 && fora.some((t) => nm.includes(t));
+  const agora = new Date();
+  await sql`INSERT INTO comanda_item (item_codigo, codigo_pai, comanda_codigo, codigo_pdv, produto_codigo,
+      nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por)
+    VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${Number(it.codigo_pdv)}, ${it.produto_codigo ?? null},
+      ${nomeItem}, ${Number(it.qtd)}, ${Number(it.preco)}, ${vt}, ${it.tipo ?? 1}, ${detalhes}, ${area},
+      ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null})`;
+  return cod;
+}
+async function pgAtualizarTotal(ped) {
+  const [s1] = await sql`SELECT COALESCE(SUM(valor_total),0) v FROM comanda_item
+    WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL`;
+  const itens = Number(s1.v) || 0;
+  const isento = await servicoIsento(ped).catch(() => false);
+  const svc = !isento && TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
+  await sql`UPDATE comanda SET total_itens=${itens}, total_servico=${svc}, percentual_servico=${TAXA_SERVICO},
+      valor_total = ${itens} + ${svc} - COALESCE(total_desconto,0) + COALESCE(total_acrescimo,0) + COALESCE(valor_entrega,0)
+    WHERE codigo=${Number(ped)}`;
+}
+async function pgFecharPedido(ped) {
+  await sql`UPDATE comanda SET fechada_em=now(), conta_pedida=false
+    WHERE codigo=${Number(ped)} AND fechada_em IS NULL`;
+}
+async function pgPedirConta(ped, on) {
+  await sql`UPDATE comanda SET conta_pedida=${!!on} WHERE codigo=${Number(ped)}`;
+}
+async function pgIdentificarPedido(ped, { nome, cpf, contatoFb }) {
+  if (nome) await sql`UPDATE comanda SET nome=${nome} WHERE codigo=${Number(ped)}`;
+  if (cpf) await sql`UPDATE comanda SET cpf=${cpf} WHERE codigo=${Number(ped)}`;
+  if (contatoFb) await sql`UPDATE comanda SET contato_codigo=${Number(contatoFb)} WHERE codigo=${Number(ped)}`;
+}
+async function pgTotalPedido(ped) {
+  const [r] = await sql`SELECT COALESCE(valor_total,0) v FROM comanda WHERE codigo=${Number(ped)}`;
+  return r ? Number(r.v) || 0 : 0;
+}
+async function pgPagoDoPedido(ped) {
+  const [r] = await sql`SELECT COALESCE(SUM(valor),0) v FROM pagamento_local
+    WHERE pedido=${Number(ped)} AND cancelado_em IS NULL`;
+  return Number(r.v) || 0;
+}
+
 async function fbAcharPedido(numero) {
+  if (nativo()) return pgAcharPedido(numero);
   const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
   if (!r.ok) throw new Error('FB achar pedido: ' + r.err);
   return r.rows.length ? Number(r.rows[0].CODIGO) : null;
 }
 async function fbCriarPedido(numero) {
+  if (nativo()) return pgCriarPedido(numero);
   // INSERT sem CODIGO (BI trigger gera). RETURNING crasha intermitente no FB4 -> insert simples + SELECT.
   const ins = await q(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO)
     VALUES (${Number(numero)}, CURRENT_TIMESTAMP, ${VENDA_ORIGEM_FB}, 0, 1, 0, '', 'N', 'N', 0, 0)`);
@@ -1184,6 +1348,7 @@ async function fbCriarPedido(numero) {
   return ped;
 }
 async function fbInserirItem(ped, it) {
+  if (nativo()) return pgInserirItem(ped, it);
   const vt = fbNum(it.preco * it.qtd);
   // O TAMANHO VAI NO NOME. "Germana" custa R$ 20 na dose e R$ 280 na garrafa —
   // gravar só o nome fazia os dois virarem a mesma linha no KDS e na comanda
@@ -1207,6 +1372,7 @@ async function fbInserirItem(ped, it) {
 /** Carimba quem é a pessoa da comanda no PEDIDOS do Consumer.
  *  NOME sai na comanda impressa e no KDS; o CPF fica pronto pra NFC-e. */
 async function fbIdentificarPedido(ped, { nome, cpf, contatoFb }) {
+  if (nativo()) return pgIdentificarPedido(ped, { nome, cpf, contatoFb });
   const sets = [];
   if (nome) sets.push(`NOME='${fbEsc(nome)}'`);
   if (cpf) sets.push(`NUMERODOCUMENTODESTINATARIO='${fbEsc(cpf)}'`, `TIPODOCUMENTODESTINATARIO=1`);
@@ -1218,12 +1384,14 @@ async function fbIdentificarPedido(ped, { nome, cpf, contatoFb }) {
 /** TIPOIMPRESSAO 2 = "Fechamento Conta": manda o cupom de conferência pra
  *  impressora do caixa, o mesmo caminho que o Consumer usa (8.754 jobs). */
 async function fbImprimirConta(ped) {
+  if (nativo()) return; // idem: a conta do caixa sai pela impressora da loja
   const r = await qi(`INSERT INTO PEDIDOIMPRESSAO (INSERIDOEM, CODIGOPEDIDO, CODIGOTIPOIMPRESSAO, CODIGOORIGEMIMPRESSAO, CODIGOSITUACAOIMPRESSAO, AUTORIZADOEM)
     VALUES (CURRENT_TIMESTAMP, ${Number(ped)}, 2, 0, 2, CURRENT_TIMESTAMP)`);
   if (!r.ok) throw new Error('FB imprimir conta: ' + r.err);
 }
 /** Marca que a mesa pediu a conta — é isso que deixa ela vermelha na tela. */
 async function fbPedirConta(ped, on = true) {
+  if (nativo()) return pgPedirConta(ped, on);
   const r = await qi(`UPDATE PEDIDOS SET CONTASOLICITADA='${on ? 'S' : 'N'}' WHERE CODIGO=${Number(ped)}`);
   if (!r.ok) throw new Error('FB pedir conta: ' + r.err);
 }
@@ -1348,6 +1516,7 @@ async function fbGravarRespostas(ped, itemPai, it) {
   }
 }
 async function fbAtualizarTotal(ped) {
+  if (nativo()) return pgAtualizarTotal(ped);
   // Recalcula o pedido inteiro a cada lançamento, mantendo os campos que o
   // Consumer mantém (VALORTOTALITENS alimenta o teto da maquininha, o
   // Subtotal do caixa e o % de desconto). REGRA DA CASA (dono, 10/08): o
@@ -1365,6 +1534,10 @@ async function fbAtualizarTotal(ped) {
   if (!r.ok) throw new Error('FB total: ' + r.err);
 }
 async function fbJobCozinha(ped) {
+  // PEDIDOIMPRESSAO é a fila de impressão DO CONSUMER. No modo próprio a loja
+  // já imprime sozinha (ESC/POS por praça) — enfileirar lá seria pedir cupom
+  // a um serviço que não existe mais.
+  if (nativo()) return;
   const r = await q(`INSERT INTO PEDIDOIMPRESSAO (INSERIDOEM, CODIGOPEDIDO, CODIGOTIPOIMPRESSAO, CODIGOORIGEMIMPRESSAO, CODIGOSITUACAOIMPRESSAO, AUTORIZADOEM)
     VALUES (CURRENT_TIMESTAMP, ${ped}, 1, 0, 2, CURRENT_TIMESTAMP)`);
   if (!r.ok) throw new Error('FB job impressão: ' + r.err);
@@ -1749,6 +1922,7 @@ async function fbInserirPagamento(ped, pg) {
 }
 /** Quanto já foi pago desse pedido no Consumer (fonte da verdade do saldo). */
 async function fbPagoDoPedido(ped) {
+  if (nativo()) return pgPagoDoPedido(ped);
   const r = await qi(`SELECT COALESCE(SUM(VALOR),0) PAGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
   if (!r.ok) throw new Error('FB pago: ' + r.err);
   return Number(r.rows[0].PAGO) || 0;
@@ -4052,6 +4226,7 @@ async function apiCaixaCancelamentos() {
 // (CONTASOLICITADA volta pra 'N'; SUBTOTALPAGO/VALORTROCO ficam como estão).
 // A quitação é responsabilidade do CHAMADOR — aqui só se fecha.
 async function fbFecharPedido(ped) {
+  if (nativo()) return pgFecharPedido(ped);
   const r = await qi(`UPDATE PEDIDOS SET DATAFECHAMENTO=CURRENT_TIMESTAMP, CONTASOLICITADA='N' WHERE CODIGO=${ped} AND DATAFECHAMENTO IS NULL`);
   if (!r.ok) throw new Error('FB fechar: ' + r.err);
 }
