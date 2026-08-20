@@ -6909,6 +6909,25 @@ async function apiNsuLerFotos(data) {
   return { ok: true, dia, lidos, falhas };
 }
 
+/** Grava NSU na mão (papel que a IA não leu): o gestor olha a foto em
+ *  /comprovantes e informa o número. Mesma trava de duplicado do dia. */
+async function apiNsuDefinir(body) {
+  const pagamento = Number(body.pagamento) || 0;
+  const nsu = String(body.nsu ?? '').replace(/\D/g, '');
+  if (!pagamento || !nsu) return { ok: false, erro: 'pagamento e nsu obrigatórios' };
+  const dup = await nsuJaUsadoHoje(nsu);
+  if (dup && dup.pagamento !== pagamento) {
+    return { ok: false, erro: `NSU ${nsu} já usado hoje no pagamento ${dup.pagamento} (pedido ${dup.pedido ?? '?'})` };
+  }
+  const atual = await qi(`SELECT CODIGO, NSUTRANSACAO FROM PAGAMENTOS WHERE CODIGO=${pagamento} AND DATADELETE IS NULL`);
+  if (!atual.ok || !atual.rows.length) return { ok: false, erro: 'pagamento não encontrado' };
+  if (atual.rows[0].NSUTRANSACAO != null) return { ok: false, erro: `já tem NSU (${atual.rows[0].NSUTRANSACAO}) — não sobrescrevo` };
+  const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${pagamento} AND NSUTRANSACAO IS NULL`);
+  if (!up.ok) return { ok: false, erro: 'FB: ' + up.err };
+  try { await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE pagamento_codigo=${pagamento} AND nsu IS NULL`; } catch { /* segue */ }
+  return { ok: true, pagamento, nsu };
+}
+
 /** Últimas baixas, com quem apertou. */
 async function apiBaixas(limite, area) {
   const n = Math.min(200, Math.max(1, Number(limite) || 60));
@@ -13131,6 +13150,11 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
+    }
+    if (req.method === 'POST' && p === '/api/nsu/definir') {
+      const b = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiNsuDefinir(b)));
     }
     if (p.startsWith('/foto/')) {
       // caminho vem do banco, mas normalizo assim mesmo: nada de subir pasta
