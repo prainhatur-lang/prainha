@@ -19,6 +19,13 @@ interface Categoria {
   tipo: string | null;
 }
 
+interface OcrBoleto {
+  dataVencimento: string | null;
+  valor: number | null;
+  confianca: 'alta' | 'media' | 'baixa' | 'erro';
+  observacao: string | null;
+}
+
 interface BoletoPendente {
   id: string;
   storagePath: string;
@@ -218,6 +225,11 @@ function ModalLancar({
   ]);
   const [boletoStoragePath, setBoletoStoragePath] = useState<string | null>(null);
   const [boletoUploadando, setBoletoUploadando] = useState(false);
+  // Leitura do boleto anexado aqui na tela (a rota devolve o OCR).
+  const [boletoOcr, setBoletoOcr] = useState<OcrBoleto | null>(null);
+  // Trocado a cada anexo pra o <input file> aceitar o MESMO arquivo de novo
+  // (sem isso, refotografar e escolher o mesmo nome nao dispara o onChange).
+  const [boletoInputKey, setBoletoInputKey] = useState(0);
   const [tokenCelular, setTokenCelular] = useState<string | null>(null);
   // Lista de boletos pendentes (varios fotos = varias parcelas) com OCR
   const [boletosCelular, setBoletosCelular] = useState<BoletoPendente[]>([]);
@@ -339,11 +351,34 @@ function ModalLancar({
         return;
       }
       setBoletoStoragePath(d.storagePath);
+      const ocr: OcrBoleto | null = d.ocr ?? null;
+      setBoletoOcr(ocr);
+      // Anexou o boleto justamente pra nao digitar: o que a IA leu manda na
+      // primeira parcela. Refotografar substitui pela leitura nova, e o campo
+      // continua editavel na mao.
+      if (ocr && ocr.confianca !== 'erro') {
+        setParcelas((arr) => {
+          const nova = [...arr];
+          const p0 = nova[0] ?? { dataVencimento: '', valor: '' };
+          nova[0] = {
+            dataVencimento: ocr.dataVencimento ?? p0.dataVencimento,
+            valor: ocr.valor != null ? String(ocr.valor).replace('.', ',') : p0.valor,
+          };
+          return nova;
+        });
+      }
     } catch (e) {
       setErro((e as Error).message);
     } finally {
       setBoletoUploadando(false);
+      setBoletoInputKey((k) => k + 1);
     }
+  }
+
+  function limparBoleto() {
+    setBoletoStoragePath(null);
+    setBoletoOcr(null);
+    setBoletoInputKey((k) => k + 1);
   }
 
   async function gerarTokenCelular() {
@@ -520,6 +555,9 @@ function ModalLancar({
                 boletoStoragePath={boletoStoragePath}
                 boletoUploadando={boletoUploadando}
                 uploadBoleto={uploadBoleto}
+                boletoOcr={boletoOcr}
+                boletoInputKey={boletoInputKey}
+                limparBoleto={limparBoleto}
               />
             )}
           </div>
@@ -760,6 +798,9 @@ function FormParcelasManual({
   boletoStoragePath,
   boletoUploadando,
   uploadBoleto,
+  boletoOcr,
+  boletoInputKey,
+  limparBoleto,
 }: {
   parcelas: ParcelaForm[];
   setParcela: (i: number, campo: keyof ParcelaForm, valor: string) => void;
@@ -769,6 +810,9 @@ function FormParcelasManual({
   boletoStoragePath: string | null;
   boletoUploadando: boolean;
   uploadBoleto: (f: File) => void;
+  boletoOcr: OcrBoleto | null;
+  boletoInputKey: number;
+  limparBoleto: () => void;
 }) {
   return (
     <div className="space-y-2">
@@ -818,11 +862,52 @@ function FormParcelasManual({
             📎 Anexar boleto (PDF/imagem)
           </label>
           {boletoStoragePath ? (
-            <p className="mt-1 text-[10px] text-emerald-700">
-              ✓ Boleto anexado (será vinculado às parcelas)
-            </p>
+            <div className="mt-1 space-y-1">
+              <p className="text-[10px] text-emerald-700">
+                ✓ Boleto anexado (será vinculado às parcelas)
+              </p>
+              {boletoOcr && boletoOcr.confianca !== 'erro' &&
+              (boletoOcr.dataVencimento || boletoOcr.valor != null) ? (
+                <p className="text-[10px] text-slate-600">
+                  Li do boleto:{' '}
+                  {boletoOcr.dataVencimento ? (
+                    <span className="font-mono">
+                      venc {boletoOcr.dataVencimento.split('-').reverse().join('/')}
+                    </span>
+                  ) : (
+                    <span className="text-amber-700">venc não encontrado</span>
+                  )}
+                  {boletoOcr.valor != null && (
+                    <span className="font-mono">
+                      {' '}· R$ {boletoOcr.valor.toFixed(2).replace('.', ',')}
+                    </span>
+                  )}
+                  {boletoOcr.confianca !== 'alta' && (
+                    <span className="text-amber-700">
+                      {' '}⚠ confiança {boletoOcr.confianca}
+                      {boletoOcr.observacao ? ` — ${boletoOcr.observacao}` : ''}
+                    </span>
+                  )}
+                  {' '}— confira acima.
+                </p>
+              ) : (
+                <p className="text-[10px] text-amber-700">
+                  Não consegui ler o vencimento
+                  {boletoOcr?.observacao ? ` (${boletoOcr.observacao})` : ''}
+                  . Tire outra foto ou preencha na mão.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={limparBoleto}
+                className="text-[10px] font-medium text-sky-700 hover:underline"
+              >
+                📷 Tirar outra foto
+              </button>
+            </div>
           ) : (
             <input
+              key={boletoInputKey}
               type="file"
               accept="application/pdf,image/*"
               disabled={boletoUploadando}
@@ -834,7 +919,7 @@ function FormParcelasManual({
             />
           )}
           {boletoUploadando && (
-            <p className="mt-1 text-[10px] text-sky-700">⏳ Enviando…</p>
+            <p className="mt-1 text-[10px] text-sky-700">⏳ Enviando e lendo o boleto…</p>
           )}
         </div>
       )}

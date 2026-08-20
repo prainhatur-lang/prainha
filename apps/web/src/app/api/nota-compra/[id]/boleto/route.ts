@@ -1,7 +1,13 @@
 // POST /api/nota-compra/[id]/boleto — upload de boleto digitalizado pelo PC
 // (autenticado). Aceita PDF ou imagem.
 // Body: multipart/form-data com 'arquivo'.
-// Retorna: { storagePath, url }
+// Retorna: { storagePath, url, ocr }
+//
+// OCR: quando o arquivo eh imagem, le vencimento + valor igual o caminho do
+// celular (/api/nota-boleto/[token]/upload) ja fazia. Antes essa rota so
+// jogava o arquivo no Storage, entao quem anexava o boleto pela propria tela
+// da entrada de nota nao ganhava a data de vencimento — tinha que digitar.
+// Best-effort: falha de OCR nao derruba o upload.
 //
 // Bucket: producao-fotos (publico, ja existente)
 // Prefixo: nfe-boletos/{filialId}/{notaId}/{timestamp-random}.{ext}
@@ -10,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { createClient, createAdminClient } from '@/lib/supabase/server';
+import { extrairDadosBoleto } from '@/lib/ocr-boleto';
 import { randomBytes } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
@@ -112,9 +119,15 @@ export async function POST(
   }
 
   const { data: pub } = supa.storage.from(BUCKET).getPublicUrl(storagePath);
+
+  // OCR so roda em imagem — o modelo de visao nao le PDF por URL.
+  const ehImagem = arquivo.type.toLowerCase().startsWith('image/');
+  const ocr = ehImagem ? await extrairDadosBoleto(pub.publicUrl) : null;
+
   return NextResponse.json({
     storagePath,
     url: pub.publicUrl,
     tamanhoBytes: arquivo.size,
+    ocr,
   });
 }
