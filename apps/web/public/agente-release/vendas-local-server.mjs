@@ -2913,8 +2913,12 @@ async function apiConta(numero) {
 
 // Cartão/Pix DIGITADOS estão DESLIGADOS por decisão (10/08/2026): com a
 // maquininha integrada, NSU na mão é furo no batimento automático (e fraude
-// fácil). Só entra pagamento com prova: maquininha (lio-sdk), ponte lio e
-// Pix online. Dinheiro segue permitido (conferência é a gaveta do caixa).
+// fácil). Só entra pagamento COM PROVA: maquininha (lio-sdk), ponte lio,
+// Pix online — e, desde 20/08, o RECEBIMENTO MANUAL COM FOTO do comprovante.
+// A foto é a prova que faltava: fica guardada com mesa, valor, forma e quem
+// recebeu (recebimento_foto). Sem foto o caminho continua fechado, que é o
+// que a regra sempre quis dizer.
+// Dinheiro segue permitido (conferência é a gaveta do caixa).
 // EMERGÊNCIA (maquininha quebrada): PAGAMENTO_MANUAL=on no start.bat religa.
 const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
 
@@ -2928,7 +2932,10 @@ async function apiContaPagar(body) {
   const origem = String(body.origem || modo); // o que fica no log (ex.: 'lio-sdk')
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
   const integrado = origem === 'lio-sdk' || modo === 'lio' || body.pix_online === true;
-  if (PAGAMENTO_MANUAL !== 'on' && forma !== 'dinheiro' && !integrado) {
+  // comprovante:true só vem de apiCaixaReceberManual, e SÓ quando a imagem foi
+  // gravada de verdade — não é flag que a tela possa mandar sozinha.
+  const comProva = integrado || body.comprovante === true;
+  if (PAGAMENTO_MANUAL !== 'on' && forma !== 'dinheiro' && !comProva) {
     return { ok: false, erro: 'Lançamento manual de cartão/Pix está desligado — receba pela ' +
       'maquininha (ou Pix da tela). Emergência: PAGAMENTO_MANUAL=on no start.bat e reiniciar.' };
   }
@@ -5563,6 +5570,9 @@ async function apiCaixaReceberManual(body, quem) {
   const r = await apiContaPagar({
     numero, forma: String(body.forma), valor, modo: 'manual', caixa_codigo: caixaCodigo,
     permitir_servico: true, nsu: body.nsu || null,
+    // a foto é o que autoriza cartão/Pix na mão — sem ela, a trava barra
+    comprovante: !!arquivo,
+    origem: arquivo ? 'manual-foto' : 'manual',
     observacao: 'Recebimento manual · ' + (quem.nome || quem.login),
   });
   if (!r.ok) return r;
