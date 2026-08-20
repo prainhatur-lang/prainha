@@ -451,6 +451,9 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS comprovante_token (token text PRIMARY KEY,
     numero integer, valor numeric, forma text, arquivo text, login text,
     criado_em timestamptz DEFAULT now(), enviado_em timestamptz, usado_em timestamptz)`;
+  // aberto_em: o caixa vê "o celular ABRIU o link" — separa 'não escaneou' de
+  // 'escaneou mas o envio falhou' (celular caiu pro 4G na hora do POST).
+  await sql`ALTER TABLE comprovante_token ADD COLUMN IF NOT EXISTS aberto_em timestamptz`;
   await sql`CREATE TABLE IF NOT EXISTS recebimento_foto (id bigserial PRIMARY KEY,
     numero integer, pedido bigint, pagamento_codigo bigint, forma text, valor numeric,
     arquivo text, nsu text, login text, quando timestamptz DEFAULT now())`;
@@ -5560,9 +5563,15 @@ async function apiComprovanteEnviar(body) {
   return { ok: true };
 }
 async function apiComprovanteStatus(t) {
-  const [row] = await sql`SELECT arquivo, enviado_em FROM comprovante_token WHERE token=${String(t || '').slice(0, 40)}`;
+  const [row] = await sql`SELECT arquivo, enviado_em, aberto_em FROM comprovante_token WHERE token=${String(t || '').slice(0, 40)}`;
   if (!row) return { ok: false, erro: 'token desconhecido' };
-  return { ok: true, chegou: !!row.arquivo, arquivo: row.arquivo || null };
+  return { ok: true, chegou: !!row.arquivo, arquivo: row.arquivo || null, abriu: !!row.aberto_em };
+}
+/** A página do celular carregou: marca aberto_em pro caixa saber que o QR foi lido. */
+async function comprovanteAbriu(t) {
+  const tok = String(t || '').slice(0, 40);
+  if (!tok) return;
+  try { await sql`UPDATE comprovante_token SET aberto_em=COALESCE(aberto_em, now()) WHERE token=${tok}`; } catch { /* segue */ }
 }
 /** Registra o recebimento e devolve quanto ainda falta na conta. */
 async function apiCaixaReceberManual(body, quem) {
@@ -8365,15 +8374,25 @@ document.getElementById('f').addEventListener('change', function(ev){
 });
 async function mandar(){
   if(!FOTO)return;
-  document.getElementById('e').textContent='';
-  document.getElementById('ok').textContent='enviando…';
-  try{
-    var r=await fetch('/api/comprovante/enviar',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({t:T,foto:FOTO})});
-    var j=await r.json();
-    if(!j.ok){document.getElementById('e').textContent=j.erro||'não deu';document.getElementById('ok').textContent='Enviar pro caixa';return}
-    document.body.innerHTML='<h1 class="ok">✓ Enviado</h1><div class="mut">Pode voltar pro caixa e confirmar o recebimento.</div>';
-  }catch(e){document.getElementById('e').textContent='sem conexão com a loja';document.getElementById('ok').textContent='Enviar pro caixa'}
+  var e=document.getElementById('e'), ok=document.getElementById('ok');
+  e.textContent='';
+  // Tenta 4x com pausa: o celular costuma DERRUBAR o Wi-Fi sem internet e pular
+  // pro 4G bem na hora do envio — na retentativa ele já voltou pro Wi-Fi.
+  for(var i=1;i<=4;i++){
+    ok.textContent='enviando… ('+i+'/4)';
+    try{
+      var r=await fetch('/api/comprovante/enviar',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({t:T,foto:FOTO})});
+      var j=await r.json();
+      if(!j.ok){e.textContent=j.erro||'não deu';ok.textContent='Enviar pro caixa';return}
+      document.body.innerHTML='<h1 class="ok">✓ Enviado</h1><div class="mut">Pode voltar pro caixa e confirmar o recebimento.</div>';
+      return;
+    }catch(err){ await new Promise(function(rs){setTimeout(rs,1500)}); }
+  }
+  ok.textContent='Enviar de novo';
+  e.innerHTML='<div style="background:#7f1d1d;color:#fecaca;border-radius:10px;padding:12px;font-size:15px;margin-top:10px">'+
+    '⚠ <b>A foto NÃO chegou na loja.</b><br>O celular precisa estar no <b>Wi-Fi da casa</b> — '+
+    'desligue os dados móveis (4G/5G), confira o Wi-Fi e toque em <b>Enviar de novo</b>.</div>';
 }
 </script></body></html>`;
 
@@ -11718,7 +11737,12 @@ async function manCelular(){
         manParar(); MAN.arquivo=st.arquivo;
         document.getElementById('mcbox').innerHTML='<img src="/foto/'+esc(st.arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">'+
           '<div class="mut">✓ comprovante recebido do celular</div>';
+        return;
       }
+      // o celular ABRIU o link mas a foto não veio: quase sempre é o celular
+      // saindo do Wi-Fi na hora do envio — o caixa fica sabendo o que houve.
+      var ch=document.getElementById('mchegou');
+      if(ch&&st.ok&&st.abriu)ch.innerHTML='📱 o celular abriu o link — se a foto não chegar, confira se ele está <b>no Wi-Fi da casa</b> (sem 4G) e mande de novo';
     }catch(e){}
   },2000);
 }
@@ -12941,7 +12965,11 @@ const server = http.createServer(async (req, res) => {
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
     // uma vez só. Fica na LAN da loja, não na internet.
-    if (p === '/comprovante') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTE_HTML); }
+    if (p === '/comprovante') {
+      comprovanteAbriu(u.searchParams.get('t')); // não bloqueia a página
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end(COMPROVANTE_HTML);
+    }
     if (req.method === 'POST' && p === '/api/comprovante/enviar') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(await apiComprovanteEnviar(await readBody(req))));
