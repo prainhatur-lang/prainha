@@ -104,6 +104,33 @@ export const produto = pgTable(
   }),
 );
 
+/** FILA DE ALTERAÇÃO DE PRODUTO (nuvem → loja).
+ *  O Consumer é o dono do cadastro: a tela do Concilia enfileira a mudança e
+ *  o vendas-local aplica no Firebird (uma linha por campo, pra um erro não
+ *  derrubar os outros). Preço de VENDA e pausa moram no PRODUTODETALHE (por
+ *  tamanho) — por isso `varianteCodigoExterno`. */
+export const produtoAlteracao = pgTable(
+  'produto_alteracao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),
+    produtoCodigoExterno: integer('produto_codigo_externo').notNull(),
+    varianteCodigoExterno: integer('variante_codigo_externo'),
+    produtoNome: varchar('produto_nome', { length: 200 }),
+    campo: varchar('campo', { length: 40 }).notNull(),
+    valor: text('valor'),
+    valorAntes: text('valor_antes'),
+    /** pendente · aplicado · erro */
+    status: varchar('status', { length: 10 }).notNull().default('pendente'),
+    erro: text('erro'),
+    criadoPor: varchar('criado_por', { length: 120 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+  },
+  (t) => ({ produtoIdx: index('pa_produto').on(t.filialId, t.produtoCodigoExterno) }),
+);
+
 /** Pedido/Venda (cabecalho). Espelha PEDIDOS. */
 export const pedido = pgTable(
   'pedido',

@@ -41,6 +41,7 @@
     "migrate:usuario-operacao": "tsx scripts/migrate-usuario-operacao.ts",
     "migrate:fiado-fila": "tsx scripts/migrate-fiado-fila.ts",
     "migrate:fiado-forma": "tsx scripts/migrate-fiado-forma.ts",
+    "migrate:produto-fila": "tsx scripts/migrate-produto-fila.ts",
     "migrate:rls": "tsx scripts/migrate-rls.ts",
     "migrate:reseed-estoque-cdc": "tsx scripts/migrate-reseed-estoque-cdc.ts",
     "seed:grupos-front": "tsx scripts/seed-grupos-front.ts",

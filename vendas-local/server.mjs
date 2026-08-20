@@ -4607,6 +4607,111 @@ async function loopFiadoFila() {
   } catch (err) { console.error('[fiado] fila:', err.message); }
   finally { fiadoFilaRodando = false; }
 }
+// ---- FILA DE PRODUTO: o Concilia altera o cadastro, a LOJA aplica ----
+// O Consumer é o dono do produto e o Firebird é daqui. A tela da nuvem
+// enfileira campo a campo e este laço aplica. Whitelist explícita: campo que
+// não está aqui não vira UPDATE, nem que a fila mande.
+//
+// ⚠️ Preço de VENDA e pausa moram no PRODUTODETALHE (por tamanho), não em
+// PRODUTOS — quem mistura acaba mudando o preço de um tamanho só e achando
+// que mudou tudo (ou o contrário).
+const CAMPO_FB = {
+  nome:               { tab: 'PRODUTOS',       col: 'NOME',              tipo: 'texto' },
+  descricao:          { tab: 'PRODUTOS',       col: 'DESCRICAO',         tipo: 'texto' },
+  modo_preparo:       { tab: 'PRODUTOS',       col: 'MODOPREPARO',       tipo: 'texto' },
+  preco_custo:        { tab: 'PRODUTOS',       col: 'PRECOCUSTO',        tipo: 'num'   },
+  estoque_minimo:     { tab: 'PRODUTOS',       col: 'ESTOQUEMINIMO',     tipo: 'num'   },
+  estoque_controlado: { tab: 'PRODUTOS',       col: 'ESTOQUECONTROLADO', tipo: 'sn'    },
+  descontinuado:      { tab: 'PRODUTOS',       col: 'DESCONTINUADO',     tipo: 'sn'    },
+  categoria:          { tab: 'PRODUTOS',       col: 'CODIGOETIQUETA',    tipo: 'int'   },
+  cozinha:            { tab: 'PRODUTOS',       col: 'CODIGOCOZINHA',     tipo: 'int'   },
+  preco_venda:        { tab: 'PRODUTODETALHE', col: 'PRECOVENDA',        tipo: 'num'   },
+  // 'S'/'N' em PRODUTOS × 1/0 em PRODUTODETALHE: aqui é sempre o detalhe (1/0)
+  comanda_mobile:     { tab: 'PRODUTODETALHE', col: 'COMANDAMOBILE',     tipo: 'i01'   },
+  cardapio_digital:   { tab: 'PRODUTODETALHE', col: 'CARDAPIODIGITAL',   tipo: 'i01'   },
+  pausado:            { tab: 'PRODUTODETALHE', col: 'DATAPAUSADO',       tipo: 'pausa' },
+};
+async function fbAlterarProduto({ produto, variante, campo, valor }) {
+  const def = CAMPO_FB[campo];
+  if (!def) return { ok: false, erro: 'campo não permitido: ' + campo };
+  const prod = Number(produto);
+  if (!Number.isFinite(prod) || prod <= 0) return { ok: false, erro: 'produto inválido' };
+  const varc = variante == null ? null : Number(variante);
+  if (def.tab === 'PRODUTODETALHE' && !(Number.isFinite(varc) && varc > 0)) {
+    return { ok: false, erro: 'esse campo é por tamanho e veio sem o tamanho' };
+  }
+  let sqlVal;
+  if (valor == null || valor === '') {
+    sqlVal = def.tipo === 'pausa' ? 'NULL' : 'NULL';
+  } else if (def.tipo === 'num') {
+    const n = Number(valor);
+    if (!Number.isFinite(n) || n < 0) return { ok: false, erro: 'número inválido' };
+    sqlVal = fbNum(n);
+  } else if (def.tipo === 'int') {
+    const n = Number(valor);
+    if (!Number.isInteger(n) || n < 0) return { ok: false, erro: 'código inválido' };
+    sqlVal = String(n);
+  } else if (def.tipo === 'i01') {
+    sqlVal = String(valor) === '1' ? '1' : '0';
+  } else if (def.tipo === 'sn') {
+    sqlVal = String(valor) === '1' ? "'S'" : "'N'";
+  } else if (def.tipo === 'pausa') {
+    sqlVal = String(valor) === '1' ? 'CURRENT_TIMESTAMP' : 'NULL';
+  } else {
+    sqlVal = `'${fbEsc(String(valor).slice(0, 200))}'`;
+  }
+  // Existe mesmo? UPDATE que não acha linha volta "ok" no Firebird e a tela
+  // mostraria "aplicado" sem nada ter mudado.
+  const alvo = def.tab === 'PRODUTOS'
+    ? await qi(`SELECT FIRST 1 CODIGO FROM PRODUTOS WHERE CODIGO=${prod}`)
+    : await qi(`SELECT FIRST 1 CODIGO FROM PRODUTODETALHE WHERE CODIGO=${varc} AND CODIGOPRODUTO=${prod} AND DATADELETE IS NULL`);
+  if (!alvo.ok) return { ok: false, erro: 'FB consulta: ' + alvo.err };
+  if (!alvo.rows.length) {
+    return { ok: false, erro: def.tab === 'PRODUTOS' ? 'produto não existe no PDV' : 'tamanho não existe (ou foi excluído) neste produto' };
+  }
+  // Etiqueta e cozinha são FK: código inexistente derrubaria o produto do
+  // cardápio sem ninguém entender por quê.
+  if (campo === 'categoria' && sqlVal !== 'NULL') {
+    const e = await qi(`SELECT FIRST 1 CODIGO FROM ETIQUETAS WHERE CODIGO=${sqlVal} AND DATADELETE IS NULL`);
+    if (!e.ok || !e.rows.length) return { ok: false, erro: 'categoria (etiqueta) não existe no PDV' };
+  }
+  const onde = def.tab === 'PRODUTOS' ? `CODIGO=${prod}` : `CODIGO=${varc}`;
+  const up = await qi(`UPDATE ${def.tab} SET ${def.col}=${sqlVal} WHERE ${onde}`);
+  if (!up.ok) return { ok: false, erro: 'FB update: ' + up.err };
+  return { ok: true };
+}
+let produtoFilaRodando = false;
+async function loopProdutoFila() {
+  if (produtoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  produtoFilaRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q2 = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('produto', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/produto-fila?${q2}`, { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !j.alteracoes?.length) return;
+    let mudou = 0;
+    for (const a of j.alteracoes) {
+      let res;
+      try { res = await fbAlterarProduto(a); }
+      catch (err) { res = { ok: false, erro: err.message }; }
+      if (res.ok) mudou++;
+      const e2 = Math.floor(Date.now() / 1000) + 120;
+      await fetch(`${PAGAR_MESA_URL}/api/loja/produto-fila`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e: e2, s: nfceAssina('produto', e2), id: a.id,
+          ok: !!res.ok, erro: res.erro || null }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {});
+      console.log('[produto] ' + a.campo + '=' + a.valor + ' no produto ' + a.produto
+        + (a.variante ? '/tam ' + a.variante : '') + ' → ' + (res.ok ? 'aplicado' : 'ERRO: ' + res.erro));
+    }
+    // Catálogo da loja (garçom, KDS, cardápio do cliente) sai do espelho local:
+    // sem isto o preço novo só apareceria no próximo ciclo de 5 min.
+    if (mudou) await espelhoCatalogo().catch((err) => console.error('[produto] espelho:', err.message));
+  } catch (err) { console.error('[produto] fila:', err.message); }
+  finally { produtoFilaRodando = false; }
+}
 /** Fecha a conta lançando o que falta no fiado do cliente. */
 async function apiCaixaFiado(body, quem) {
   if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
@@ -11884,6 +11989,8 @@ async function main() {
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
   setTimeout(() => loopFiadoFila().catch(() => {}), 40 * 1000);
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
+  setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa

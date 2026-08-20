@@ -2,18 +2,19 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { AbaFicha } from './aba-ficha';
 import { AbaFornecedores } from './aba-fornecedores';
 import { AbaSaldo } from './aba-saldo';
 import { AbaMarcas } from './aba-marcas';
+import { AbaPdv } from './aba-pdv';
 import { TrocarTipoButton } from './trocar-tipo';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
-  aba?: 'ficha' | 'fornecedores' | 'saldo' | 'marcas';
+  aba?: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv';
 }
 
 const BADGE_TIPO: Record<string, { label: string; cls: string }> = {
@@ -37,14 +38,16 @@ export default async function ProdutoDetalhePage(props: {
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
 
   const sp = await props.searchParams;
-  const aba: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' =
+  const aba: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv' =
     sp.aba === 'fornecedores'
       ? 'fornecedores'
       : sp.aba === 'saldo'
         ? 'saldo'
         : sp.aba === 'marcas'
           ? 'marcas'
-          : 'ficha';
+          : sp.aba === 'pdv'
+            ? 'pdv'
+            : 'ficha';
 
   const [produto] = await db
     .select()
@@ -171,7 +174,68 @@ export default async function ProdutoDetalhePage(props: {
           .limit(200)
       : [];
 
-  const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas') => {
+  // CADASTRO DO PDV: tamanhos (PRODUTODETALHE), categorias (ETIQUETAS) e o que
+  // está na fila esperando a loja aplicar. Só carrega na aba, que é consulta
+  // extra em página que já faz várias.
+  const variantesPdv =
+    aba === 'pdv' && produto.codigoExterno != null
+      ? await db
+          .select({
+            codigo: schema.produtoVariante.codigoExterno,
+            tamanho: schema.produtoTamanho.descricao,
+            precoVenda: schema.produtoVariante.precoVenda,
+            dataPausado: schema.produtoVariante.dataPausado,
+            comandaMobile: schema.produtoVariante.comandaMobile,
+            cardapioDigital: schema.produtoVariante.cardapioDigital,
+            codigoBarra: schema.produtoVariante.codigoBarra,
+          })
+          .from(schema.produtoVariante)
+          .leftJoin(
+            schema.produtoTamanho,
+            eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId),
+          )
+          .where(
+            and(
+              eq(schema.produtoVariante.filialId, produto.filialId),
+              eq(schema.produtoVariante.codigoProdutoExterno, produto.codigoExterno),
+              isNull(schema.produtoVariante.dataDelete),
+            ),
+          )
+          .orderBy(asc(schema.produtoVariante.codigoExterno))
+      : [];
+
+  const etiquetasPdv =
+    aba === 'pdv'
+      ? await db
+          .select({ codigo: schema.produtoEtiqueta.codigoExterno, nome: schema.produtoEtiqueta.nome })
+          .from(schema.produtoEtiqueta)
+          .where(eq(schema.produtoEtiqueta.filialId, produto.filialId))
+          .orderBy(asc(schema.produtoEtiqueta.nome))
+      : [];
+
+  const pendentesPdv =
+    aba === 'pdv'
+      ? await db
+          .select({
+            id: schema.produtoAlteracao.id,
+            campo: schema.produtoAlteracao.campo,
+            valor: schema.produtoAlteracao.valor,
+            valorAntes: schema.produtoAlteracao.valorAntes,
+            erro: schema.produtoAlteracao.erro,
+            varianteCodigoExterno: schema.produtoAlteracao.varianteCodigoExterno,
+          })
+          .from(schema.produtoAlteracao)
+          .where(
+            and(
+              eq(schema.produtoAlteracao.produtoId, id),
+              inArray(schema.produtoAlteracao.status, ['pendente', 'erro']),
+            ),
+          )
+          .orderBy(desc(schema.produtoAlteracao.criadoEm))
+          .limit(20)
+      : [];
+
+  const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv') => {
     const qs = a === 'ficha' ? '' : `?aba=${a}`;
     return `/cadastros/produtos/${id}${qs}`;
   };
@@ -287,6 +351,18 @@ export default async function ProdutoDetalhePage(props: {
                 Saldo & Custo
               </Link>
             )}
+            {produto.codigoExterno != null && (
+              <Link
+                href={hrefAba('pdv')}
+                className={`rounded-t-lg border-b-2 px-4 py-2 text-sm ${
+                  aba === 'pdv'
+                    ? 'border-slate-900 font-medium text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Cadastro no PDV
+              </Link>
+            )}
             <Link
               href={hrefAba('marcas')}
               className={`rounded-t-lg border-b-2 px-4 py-2 text-sm ${
@@ -304,7 +380,30 @@ export default async function ProdutoDetalhePage(props: {
         </div>
 
         <div className="mt-6">
-          {aba === 'saldo' ? (
+          {aba === 'pdv' ? (
+            <AbaPdv
+              produtoId={id}
+              codigoExterno={produto.codigoExterno}
+              nome={produto.nome}
+              descricao={produto.descricao}
+              precoCusto={produto.precoCusto}
+              estoqueMinimo={produto.estoqueMinimo}
+              estoqueControlado={produto.estoqueControlado}
+              descontinuado={produto.descontinuado}
+              codigoEtiqueta={produto.codigoEtiqueta}
+              etiquetas={etiquetasPdv}
+              variantes={variantesPdv.map((v) => ({
+                codigo: v.codigo,
+                tamanho: v.tamanho ?? null,
+                precoVenda: v.precoVenda,
+                pausado: v.dataPausado != null,
+                comandaMobile: v.comandaMobile,
+                cardapioDigital: v.cardapioDigital,
+                codigoBarra: v.codigoBarra,
+              }))}
+              pendentes={pendentesPdv}
+            />
+          ) : aba === 'saldo' ? (
             <AbaSaldo
               produtoId={id}
               produtoNome={produto.nome ?? `#${produto.codigoExterno}`}
