@@ -4262,6 +4262,33 @@ async function apiCaixaFecharCaixa(body, quem) {
   imprimirFechamento(cx, quem, linhas, dif).catch(() => {});
   return { ok: true, esperado, contado, dif, linhas };
 }
+// ---- FECHAR TODOS OS CAIXAS ABERTOS (só Administrador) ----
+// Organização: fecha em lote TODO caixa aberto, cada um pelo esperado (fundo +
+// dinheiro + entradas − saídas). Pega inclusive caixa curinga velho deixado
+// aberto (ex.: o da Marta, aberto desde 2025, que engolia pagamento de quem
+// recebia sem caixa próprio). Cartão/Pix já estão conciliados por NSU; isto só
+// carimba o fechamento pra dar um ponto de partida limpo.
+async function apiCaixaFecharTodos(quem) {
+  if (!quem || !quem.admin) return { ok: false, erro: 'só Administrador pode fechar todos os caixas' };
+  const abertos = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, TRIM(COALESCE(u.NOME,u.LOGIN)) QUEM,
+      CAST(c.DATAABERTURA AS VARCHAR(30)) ABRIU
+    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE c.DATAFECHAMENTO IS NULL ORDER BY c.CODIGO`);
+  if (!abertos.ok) return { ok: false, erro: 'FB: ' + abertos.err };
+  const fechados = [];
+  for (const c of abertos.rows) {
+    const cod = Number(c.CODIGO);
+    const fundo = Number(c.FUNDO) || 0;
+    let esperado = fundo;
+    try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
+    const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
+    if (up.ok) {
+      fechados.push({ codigo: cod, quem: T(c.QUEM), esperado, abriu: T(c.ABRIU) });
+      try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+        VALUES (${cod}, ${quem.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento em lote por ' + (quem.nome || quem.login)})`; } catch {}
+    }
+  }
+  return { ok: true, fechados, total: fechados.length };
+}
 // ---- USUÁRIOS PRÓPRIOS (sem passar pelo Consumer) ----
 // Perfis prontos, com os MESMOS códigos de permissão do PDV — assim a regra
 // do sistema continua uma só, e amanhã dá pra migrar o usuário pro Consumer
@@ -10665,7 +10692,17 @@ async function telaRel(el){
     }).join('')||'<div class="mut">nenhum caixa nesse dia</div>')+'</div>';
   if(d.movs.length)h+='<div class="card"><div class="tit" style="margin-top:0">↕ Entradas/saídas da gaveta</div>'+
     d.movs.map(function(m){return '<div class="it"><span>'+esc(m.obs||'—')+'</span><b>'+(m.saida?'− '+brl(m.saida):'+ '+brl(m.entrada))+'</b></div>'}).join('')+'</div>';
+  var nab=(d.caixas||[]).filter(function(c){return !c.fechado_em}).length;
+  if(PODE.admin&&nab>0)h+='<div class="card"><button class="big" style="background:#dc2626;color:#fff" onclick="fechaTodosCx(this)">🔒 Fechar os '+nab+' caixas abertos</button>'+
+    '<div class="mut" style="margin-top:6px">Fecha em lote, cada um pelo esperado. Organização — cartão/Pix já concilia por NSU.</div></div>';
   el.innerHTML=h;
+}
+async function fechaTodosCx(btn){
+  if(!confirm('Fechar TODOS os caixas abertos agora? Cada um fecha pelo esperado (organização).'))return;
+  if(btn){btn.disabled=true;btn.textContent='fechando…'}
+  var r=await jpost('/api/caixa/fechar-todos',{});
+  if(!r.ok){alert(r.erro||'erro');if(btn){btn.disabled=false;btn.textContent='🔒 Fechar os caixas abertos'}return}
+  alert('✓ '+r.total+' caixa(s) fechado(s).');await cxEstado();render();
 }
 async function imprimirCx(btn){
   if(btn){btn.disabled=true;btn.textContent='🧾 Imprimindo…'}
@@ -11181,6 +11218,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(quem)));
       if (p === '/api/caixa/usuarios' && req.method !== 'POST') return res.end(JSON.stringify(await apiUsuariosLocais(quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios') return res.end(JSON.stringify(await apiUsuarioLocalSalvar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
