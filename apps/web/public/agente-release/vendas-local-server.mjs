@@ -267,6 +267,10 @@ async function initSchema() {
   // (não some no TRUNCATE do espelho; chave = ITENSPEDIDO.CODIGO)
   // tempo de produção = pronto_em - criado_em ; tempo de entrega = entregue_em - pronto_em
   await addCol('comanda', 'conta_pedida boolean DEFAULT false'); // PEDIDOS.CONTASOLICITADA = mesa em fechamento
+  await addCol('comanda', 'percentual_desconto numeric');
+  // cancelar ≠ fechar: pedido cancelado some da mesa mas NÃO virou venda.
+  await addCol('comanda', 'cancelada_em timestamptz');
+  await addCol('comanda', 'cancelada_por text');
   await sql`CREATE TABLE IF NOT EXISTS marca (item_codigo bigint PRIMARY KEY, pronto_em timestamptz, entregue_em timestamptz)`;
   await addCol('marca', 'criado_em timestamptz');
   await addCol('marca', 'comanda_codigo integer');
@@ -1280,7 +1284,7 @@ const fbNum = (v) => String(+Number(v || 0).toFixed(4));
 // uma linha: elas nunca falaram com o Firebird, falavam com o espelho.
 async function pgAcharPedido(numero) {
   const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
-    AND fechada_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+    AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`;
   return r.length ? Number(r[0].codigo) : null;
 }
 async function pgCriarPedido(numero) {
@@ -1310,7 +1314,9 @@ async function pgInserirItem(ped, it) {
   const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
   const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
   const vt = +(Number(it.preco) * Number(it.qtd)).toFixed(2);
-  const [pl] = await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${Number(it.codigo_pdv)} LIMIT 1`;
+  const pdvCod = it.codigo_pdv == null ? null : Number(it.codigo_pdv);
+  const [pl] = pdvCod == null ? [null]
+    : await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
   const area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
   // item que ninguém produz (couvert) entra já baixado: some do KDS e para de
   // contar atraso, sem sumir da conta — mesma regra que o espelho aplicava.
@@ -1320,7 +1326,7 @@ async function pgInserirItem(ped, it) {
   const agora = new Date();
   await sql`INSERT INTO comanda_item (item_codigo, codigo_pai, comanda_codigo, codigo_pdv, produto_codigo,
       nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por)
-    VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${Number(it.codigo_pdv)}, ${it.produto_codigo ?? null},
+    VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${pdvCod}, ${it.produto_codigo ?? null},
       ${nomeItem}, ${Number(it.qtd)}, ${Number(it.preco)}, ${vt}, ${it.tipo ?? 1}, ${detalhes}, ${area},
       ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null})`;
   return cod;
@@ -1355,6 +1361,162 @@ async function pgPagoDoPedido(ped) {
   const [r] = await sql`SELECT COALESCE(SUM(valor),0) v FROM pagamento_local
     WHERE pedido=${Number(ped)} AND cancelado_em IS NULL`;
   return Number(r.v) || 0;
+}
+
+// ─────────── primitivas de DOIS MODOS (conta e itens) ───────────
+// As regras (dupla senha, cancelamento parcial, teto de desconto) são as
+// mesmas nos dois bancos — o que muda é ONDE grava. Por isso o desvio fica
+// aqui embaixo, e não espalhado em cada função de negócio.
+//
+// PEDIDOS            ↔ comanda            ITENSPEDIDO ↔ comanda_item
+//   VALORTOTALITENS  ↔ total_itens          CODIGO      ↔ item_codigo
+//   TOTALSERVICO     ↔ total_servico        CODIGOPAI   ↔ codigo_pai
+//   VALORTOTAL       ↔ valor_total          DATADELETE  ↔ cancelado_em
+//   TOTALDESCONTO    ↔ total_desconto       NOMEPRODUTO ↔ nome
+//   TOTALACRESCIMO   ↔ total_acrescimo
+async function pedTotais(ped) {
+  if (nativo()) {
+    const [r] = await sql`SELECT COALESCE(total_itens,0) i, COALESCE(total_servico,0) s,
+        COALESCE(valor_total,0) t, COALESCE(total_desconto,0) d, COALESCE(total_acrescimo,0) a
+      FROM comanda WHERE codigo=${Number(ped)}`;
+    if (!r) return null;
+    return { itens: Number(r.i) || 0, servico: Number(r.s) || 0, total: Number(r.t) || 0,
+      desconto: Number(r.d) || 0, acrescimo: Number(r.a) || 0 };
+  }
+  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T,
+      TOTALDESCONTO D, TOTALACRESCIMO A FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  if (!p) return null;
+  return { itens: Number(p.I) || 0, servico: Number(p.S) || 0, total: Number(p.T) || 0,
+    desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0 };
+}
+/** Grava só o que veio: {itens, servico, total, desconto, acrescimo, pctDesconto}. */
+async function pedGravarTotais(ped, c) {
+  if (nativo()) {
+    const campos = [];
+    if (c.itens != null) campos.push(sql`total_itens=${+c.itens}`);
+    if (c.servico != null) campos.push(sql`total_servico=${+c.servico}`);
+    if (c.total != null) campos.push(sql`valor_total=${+c.total}`);
+    if (c.desconto != null) campos.push(sql`total_desconto=${+c.desconto}`);
+    if (c.acrescimo != null) campos.push(sql`total_acrescimo=${+c.acrescimo}`);
+    if (c.pctDesconto != null) campos.push(sql`percentual_desconto=${+c.pctDesconto}`);
+    if (!campos.length) return true;
+    let frag = campos[0];
+    for (let i = 1; i < campos.length; i++) frag = sql`${frag}, ${campos[i]}`;
+    await sql`UPDATE comanda SET ${frag} WHERE codigo=${Number(ped)}`;
+    return true;
+  }
+  const sets = [];
+  if (c.itens != null) sets.push(`VALORTOTALITENS=${fbNum(c.itens)}`);
+  if (c.servico != null) sets.push(`TOTALSERVICO=${fbNum(c.servico)}`);
+  if (c.total != null) sets.push(`VALORTOTAL=${fbNum(c.total)}`);
+  if (c.desconto != null) sets.push(`TOTALDESCONTO=${fbNum(c.desconto)}`);
+  if (c.acrescimo != null) sets.push(`TOTALACRESCIMO=${fbNum(c.acrescimo)}`);
+  if (c.pctDesconto != null) sets.push(`PERCENTUALDESCONTO=${fbNum(c.pctDesconto)}`);
+  if (!sets.length) return true;
+  const r = await qi(`UPDATE PEDIDOS SET ${sets.join(', ')} WHERE CODIGO=${Number(ped)}`);
+  return !!r.ok;
+}
+/** Some com o pedido (cancelado ou vazio depois de transferir). */
+async function pedApagar(ped, { soAberto = false } = {}) {
+  if (nativo()) {
+    if (soAberto) await sql`UPDATE comanda SET cancelada_em=now() WHERE codigo=${Number(ped)} AND fechada_em IS NULL AND cancelada_em IS NULL`;
+    else await sql`UPDATE comanda SET cancelada_em=now() WHERE codigo=${Number(ped)} AND cancelada_em IS NULL`;
+    return true;
+  }
+  const onde = soAberto ? ` AND DATAFECHAMENTO IS NULL` : '';
+  const r = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${Number(ped)}${onde}`);
+  return !!r.ok;
+}
+/** Itens vivos do pedido. `alvo` traz o item e os filhos dele. */
+async function itensDoPedido(ped, { alvo = null, codigos = null } = {}) {
+  if (nativo()) {
+    let r;
+    if (alvo != null) {
+      r = await sql`SELECT item_codigo codigo, valor_total valor, nome, quantidade, codigo_pai
+        FROM comanda_item WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL
+          AND (item_codigo=${Number(alvo)} OR codigo_pai=${Number(alvo)})`;
+    } else if (codigos != null) {
+      const cs = codigos.map(Number).filter(Number.isFinite);
+      if (!cs.length) return [];
+      r = await sql`SELECT item_codigo codigo, valor_total valor, nome, quantidade, codigo_pai
+        FROM comanda_item WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL
+          AND (item_codigo = ANY(${cs}) OR codigo_pai = ANY(${cs}))`;
+    } else {
+      r = await sql`SELECT item_codigo codigo, valor_total valor, nome, quantidade, codigo_pai
+        FROM comanda_item WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL`;
+    }
+    return r.map((x) => ({ codigo: Number(x.codigo), valor: Number(x.valor) || 0,
+      nome: x.nome || '', quantidade: Number(x.quantidade) || 1, pai: x.codigo_pai == null ? null : Number(x.codigo_pai) }));
+  }
+  let onde = '';
+  if (alvo != null) onde = ` AND (CODIGO=${Number(alvo)} OR CODIGOPAI=${Number(alvo)})`;
+  else if (codigos != null) {
+    const cs = codigos.map(Number).filter(Number.isFinite);
+    if (!cs.length) return [];
+    onde = ` AND (CODIGO IN (${cs.join(',')}) OR CODIGOPAI IN (${cs.join(',')}))`;
+  }
+  const r = await qi(`SELECT CODIGO, VALORTOTAL, TRIM(NOMEPRODUTO) NOME, QUANTIDADE, CODIGOPAI
+    FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${Number(ped)} AND DATADELETE IS NULL${onde}`);
+  if (!r.ok) return [];
+  return (r.rows || []).map((x) => ({ codigo: Number(x.CODIGO), valor: Number(x.VALORTOTAL) || 0,
+    nome: T(x.NOME) || '', quantidade: Number(x.QUANTIDADE) || 1, pai: x.CODIGOPAI == null ? null : Number(x.CODIGOPAI) }));
+}
+async function itensContar(ped) {
+  if (nativo()) {
+    const [r] = await sql`SELECT count(*)::int n FROM comanda_item
+      WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL`;
+    return Number(r.n) || 0;
+  }
+  const r = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${Number(ped)} AND DATADELETE IS NULL`);
+  return r.ok && r.rows.length ? Number(r.rows[0].N) || 0 : 0;
+}
+/** Cancelamento PARCIAL: a linha continua, com menos unidades. */
+async function itemMudarQtd(ped, item, qtd, valor) {
+  if (nativo()) {
+    await sql`UPDATE comanda_item SET quantidade=${+qtd}, valor_total=${+valor}
+      WHERE item_codigo=${Number(item)} AND comanda_codigo=${Number(ped)} AND cancelado_em IS NULL`;
+    return true;
+  }
+  const r = await qi(`UPDATE ITENSPEDIDO SET QUANTIDADE=${fbNum(qtd)}, VALORITEM=${fbNum(valor)},
+    VALORTOTAL=${fbNum(valor)} WHERE CODIGO=${Number(item)} AND DATADELETE IS NULL`);
+  return !!r.ok;
+}
+/** Cancela o item e os filhos dele (respostas do wizard vão junto). */
+async function itensCancelar(ped, item, quem) {
+  if (nativo()) {
+    await sql`UPDATE comanda_item SET cancelado_em=now(), cancelado_por=${quem || null}
+      WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL
+        AND (item_codigo=${Number(item)} OR codigo_pai=${Number(item)})`;
+    return true;
+  }
+  const r = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP
+    WHERE CODIGOPEDIDO=${Number(ped)} AND DATADELETE IS NULL
+      AND (CODIGO=${Number(item)} OR CODIGOPAI=${Number(item)})`);
+  return !!r.ok;
+}
+/** Move itens de uma conta pra outra. `codigos` nulo = leva tudo. */
+async function itensMover(pedDe, pedPara, codigos = null) {
+  if (nativo()) {
+    if (codigos == null) {
+      const r = await sql`UPDATE comanda_item SET comanda_codigo=${Number(pedPara)}
+        WHERE comanda_codigo=${Number(pedDe)} AND cancelado_em IS NULL RETURNING item_codigo`;
+      return r.length;
+    }
+    const cs = codigos.map(Number).filter(Number.isFinite);
+    if (!cs.length) return 0;
+    const r = await sql`UPDATE comanda_item SET comanda_codigo=${Number(pedPara)}
+      WHERE item_codigo = ANY(${cs}) RETURNING item_codigo`;
+    return r.length;
+  }
+  if (codigos == null) {
+    const r = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${Number(pedPara)}
+      WHERE CODIGOPEDIDO=${Number(pedDe)} AND DATADELETE IS NULL`);
+    return r.ok ? -1 : 0;
+  }
+  const cs = codigos.map(Number).filter(Number.isFinite);
+  if (!cs.length) return 0;
+  const r = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${Number(pedPara)} WHERE CODIGO IN (${cs.join(',')})`);
+  return r.ok ? cs.length : 0;
 }
 
 async function fbAcharPedido(numero) {
@@ -1440,21 +1602,18 @@ async function servicoIsento(ped) {
 async function fbAplicarServico(ped) {
   if (await servicoIsento(ped)) return 0;
   if (!(TAXA_SERVICO > 0)) return 0;
-  const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+  const p = await pedTotais(ped);
   if (!p) return 0;
-  if ((Number(p.SVC) || 0) > 0.009) return Number(p.SVC);
-  const svc = +((Number(p.ITENS) || 0) * TAXA_SERVICO / 100).toFixed(2);
+  if (p.servico > 0.009) return p.servico;
+  const svc = +(p.itens * TAXA_SERVICO / 100).toFixed(2);
   if (!(svc > 0)) return 0;
-  const novoTot = +((Number(p.TOT) || 0) + svc).toFixed(2);
-  const r = await qi(`UPDATE PEDIDOS SET TOTALSERVICO=${fbNum(svc)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${Number(ped)}`);
-  return r.ok ? svc : 0;
+  const ok = await pedGravarTotais(ped, { servico: svc, total: +(p.total + svc).toFixed(2) });
+  return ok ? svc : 0;
 }
 async function fbRemoverServico(ped) {
-  const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
-  const svc = Number(p?.SVC) || 0;
-  if (!(svc > 0.009)) return;
-  const novoTot = +((Number(p.TOT) || 0) - svc).toFixed(2);
-  await qi(`UPDATE PEDIDOS SET TOTALSERVICO=0, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${Number(ped)}`);
+  const p = await pedTotais(ped);
+  if (!p || !(p.servico > 0.009)) return;
+  await pedGravarTotais(ped, { servico: 0, total: +(p.total - p.servico).toFixed(2) });
 }
 /** As três ações do rodapé da mesa. NÃO fecha o pedido no Consumer:
  *  quem encerra e emite a nota continua sendo ele. */
@@ -1500,7 +1659,7 @@ async function apiComandaBaixa(body) {
   let ped = null;
   try { ped = await fbAcharPedido(n); } catch (e) { return { ok: false, erro: e.message }; }
   if (ped) {
-    const tot = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+    const tot = (await pedTotais(ped))?.total || 0;
     const pago = await fbPagoDoPedido(ped);
     const saldo = +(tot - pago).toFixed(2);
     if (saldo > 0.009) return { ok: false, erro: `comanda com saldo (R$ ${saldo.toFixed(2)}) — receba antes de dar baixa` };
@@ -1524,6 +1683,17 @@ async function fbGravarRespostas(ped, itemPai, it) {
   for (const r of it.respostas) {                 // na ordem em que foram escolhidas
     const op = porCodigo.get(Number(r));
     if (!op) continue;
+    if (nativo()) {
+      // No banco próprio a resposta É o item filho — não existe tabela de
+      // vínculo separada. Mesma forma do Firebird (tipo 2, codigo_pai), então
+      // o KDS e a conta renderizam igual, sem mudar uma linha de tela.
+      await pgInserirItem(ped, {
+        codigo_pdv: op.produto_pdv ? Number(op.produto_pdv) : null,
+        nome: op.nome, qtd: it.qtd, preco: Number(op.preco || 0),
+        tipo: 2, codigo_pai: itemPai, login: it.login,
+      }).catch((e) => console.error('[resposta] ' + op.nome + ': ' + e.message));
+      continue;
+    }
     const v = fbNum(Number(op.preco || 0) * it.qtd);
     const ins = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
         NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL,
@@ -2496,22 +2666,21 @@ async function apiTransferir(body) {
     if (!pedPara) pedPara = await fbCriarPedido(para);
   } catch (e) { return { ok: false, erro: e.message }; }
 
-  const cont = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
-  const n = cont.ok ? Number(cont.rows[0].N) : 0;
+  const n = await itensContar(pedDe);
   if (!n) return { ok: false, erro: `a mesa ${de} não tem itens pra mover` };
 
-  const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
-  if (!mv.ok) return { ok: false, erro: 'não consegui mover os itens: ' + mv.err };
+  const movidos = await itensMover(pedDe, pedPara, null);
+  if (movidos === 0 && n > 0) return { ok: false, erro: 'não consegui mover os itens' };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* total recalcula no próximo ciclo */ }
   // ⚠️ A CASCA DA ORIGEM. Levou TODOS os itens embora e o pedido da mesa de
   // origem ficava aberto com zero item — a mesa seguia "ocupada" na tela pra
   // sempre (mesa 129, 19/08). Sem item e sem pagamento não há o que guardar:
   // some, do mesmo jeito que o Consumer faz com pedido aberto por engano.
-  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const sobrou = await itensContar(pedDe);
   const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
-  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
-    const rm = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
-    if (!rm.ok) console.error('[transferir] casca da mesa ' + de + ' ficou aberta: ' + rm.err);
+  if (sobrou === 0 && pagoDe <= 0.009) {
+    const rm = await pedApagar(pedDe, { soAberto: true });
+    if (!rm) console.error('[transferir] casca da mesa ' + de + ' ficou aberta');
     await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
   }
 
@@ -2743,16 +2912,16 @@ async function apiContaPagar(body) {
   if (!fp) return { ok: false, erro: 'forma inválida' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
-  const cab = (await qi(`SELECT VALORTOTAL, VALORTOTALITENS FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const cab = (await pedTotais(ped)) || {};
   const pagoAtual = await fbPagoDoPedido(ped);
-  const saldo = +((Number(cab.VALORTOTAL) || 0) - pagoAtual).toFixed(2);
+  const saldo = +((cab.total || 0) - pagoAtual).toFixed(2);
   // Maquininha (permitir_servico): cobra consumo + serviço ESCOLHIDO na hora
   // (10/15%, os mesmos chips do Pix da tela do celular) — o teto acompanha,
   // mesmo quando o serviço não está gravado no pedido.
   // pedido criado por nós pode ter VALORTOTALITENS nulo (histórico): o total
   // serve de base — senão o teto desabava pro saldo e a maquininha com 10%
   // era recusada ("valor maior que o saldo")
-  const baseItens = Number(cab.VALORTOTALITENS) || Number(cab.VALORTOTAL) || 0;
+  const baseItens = cab.itens || cab.total || 0;
   const teto = body.permitir_servico
     ? Math.max(saldo, +((baseItens * 1.15) - pagoAtual).toFixed(2))
     : saldo;
@@ -2762,8 +2931,10 @@ async function apiContaPagar(body) {
   // descasando relatório e nota)
   if (body.permitir_servico && modo !== 'lio' && valor > saldo + 0.009) {
     const extra = +(valor - saldo).toFixed(2);
-    const rs = await qi(`UPDATE PEDIDOS SET TOTALSERVICO=COALESCE(TOTALSERVICO,0)+${fbNum(extra)}, VALORTOTAL=COALESCE(VALORTOTAL,0)+${fbNum(extra)} WHERE CODIGO=${ped}`);
-    if (!rs.ok) return { ok: false, erro: 'FB serviço da maquininha: ' + rs.err };
+    const at = await pedTotais(ped);
+    const rs = { ok: await pedGravarTotais(ped, { servico: +((at?.servico || 0) + extra).toFixed(2),
+      total: +((at?.total || 0) + extra).toFixed(2) }) };
+    if (!rs.ok) return { ok: false, erro: 'não deu pra somar o serviço da maquininha' };
   }
 
   const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
@@ -2787,7 +2958,7 @@ async function apiContaPagar(body) {
     await sql`UPDATE venda_pagamento SET status='ok', nsu=${dados.nsu}, autorizacao=${dados.autorizacao},
       bandeira=${dados.bandeira}, pagamento_fb=${pagFb} WHERE id=${log.id}`;
     const pagoAgora = await fbPagoDoPedido(ped);
-    const totalPed = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+    const totalPed = (await pedTotais(ped))?.total || 0;
     return { ok: true, pagamento_id: log.id, pagamento_fb: pagFb, pago: +pagoAgora.toFixed(2),
       saldo: +(totalPed - pagoAgora).toFixed(2), quitada: pagoAgora >= totalPed - 0.01 };
   } catch (e) {
@@ -4013,7 +4184,7 @@ async function apiCaixaConta(n) {
         try {
           const pedC = await fbAcharPedido(cn);
           if (pedC) {
-            totC = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${pedC}`)).rows?.[0]?.VALORTOTAL) || 0;
+            totC = (await pedTotais(pedC))?.total || 0;
             pagoC = await fbPagoDoPedido(pedC);
           }
         } catch { /* FB instável: mostra a comanda sem valores */ }
@@ -4044,29 +4215,29 @@ async function apiCaixaAjuste(body, quem) {
   if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
-  const p = (await qi(`SELECT VALORTOTALITENS ITENS, TOTALDESCONTO DESC, TOTALACRESCIMO ACR, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
+  const p = await pedTotais(ped);
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
-  const itens = Number(p.ITENS) || 0, total = Number(p.TOT) || 0;
+  const itens = p.itens, total = p.total;
   if (tipo === 'desconto') {
     let delta = modo === 'pct' ? +(itens * (Number(body.valor) || 0) / 100).toFixed(2) : +Number(body.valor || 0).toFixed(2);
     if (modo === 'pct' && !((Number(body.valor) || 0) > 0 && (Number(body.valor) || 0) <= 100)) return { ok: false, erro: 'percentual inválido (1 a 100)' };
     if (!(delta > 0)) return { ok: false, erro: 'valor inválido' };
     if (delta > total + 0.01) return { ok: false, erro: `desconto maior que o total (R$ ${total.toFixed(2)})` };
-    const novoDesc = +((Number(p.DESC) || 0) + delta).toFixed(2);
+    const novoDesc = +(p.desconto + delta).toFixed(2);
     const novoTot = +(total - delta).toFixed(2);
     const pct = itens > 0 ? +(novoDesc / itens * 100).toFixed(2) : 0;
-    const r = await qi(`UPDATE PEDIDOS SET TOTALDESCONTO=${fbNum(novoDesc)}, PERCENTUALDESCONTO=${fbNum(pct)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${ped}`);
-    if (!r.ok) return { ok: false, erro: 'FB desconto: ' + r.err };
+    const ok = await pedGravarTotais(ped, { desconto: novoDesc, pctDesconto: pct, total: novoTot });
+    if (!ok) return { ok: false, erro: 'não deu pra gravar o desconto' };
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
   if (tipo === 'acrescimo') {
     const delta = +Number(body.valor || 0).toFixed(2);
     if (!(delta > 0)) return { ok: false, erro: 'valor inválido' };
-    const novoAcr = +((Number(p.ACR) || 0) + delta).toFixed(2);
+    const novoAcr = +(p.acrescimo + delta).toFixed(2);
     const novoTot = +(total + delta).toFixed(2);
-    const r = await qi(`UPDATE PEDIDOS SET TOTALACRESCIMO=${fbNum(novoAcr)}, VALORTOTAL=${fbNum(novoTot)} WHERE CODIGO=${ped}`);
-    if (!r.ok) return { ok: false, erro: 'FB acréscimo: ' + r.err };
+    const ok = await pedGravarTotais(ped, { acrescimo: novoAcr, total: novoTot });
+    if (!ok) return { ok: false, erro: 'não deu pra gravar o acréscimo' };
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
@@ -4138,7 +4309,7 @@ async function apiCaixaCancelarItem(body, quem) {
   if (!(numero > 0 && item > 0)) return { ok: false, erro: 'dados inválidos' };
   const ped = await fbAcharPedido(numero);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
-  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0];
+  const p = await pedTotais(ped);
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
   const status = await statusDoItem(item);
   let gerente = null;
@@ -4147,25 +4318,23 @@ async function apiCaixaCancelarItem(body, quem) {
     if (!v.gerente) return { ok: false, precisa_gerente: !!v.precisa, status, erro: v.erro };
     gerente = v.gerente;
   }
-  const rit = await qi(`SELECT CODIGO, VALORTOTAL, TRIM(NOMEPRODUTO) NOME, QUANTIDADE FROM ITENSPEDIDO
-    WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
-  const alvos = rit.rows || [];
-  const principal = alvos.find((x) => Number(x.CODIGO) === item);
+  const alvos = await itensDoPedido(ped, { alvo: item });
+  const principal = alvos.find((x) => x.codigo === item);
   if (!principal) return { ok: false, erro: 'esse item não está mais na conta' };
   // CANCELAMENTO PARCIAL: "lancei 5, cancela 2" — a linha continua com 3.
   // body.qtd = quantas unidades cancelar; ausente/maior que a linha = tudo.
-  const qtdLinha = Number(principal.QUANTIDADE) || 1;
+  const qtdLinha = principal.quantidade || 1;
   const qtdCanc = Math.min(qtdLinha, Math.max(1, Math.round(Number(body.qtd) || qtdLinha)));
   const parcial = qtdCanc < qtdLinha && Number.isInteger(qtdLinha);
-  const valorLinha = Number(principal.VALORTOTAL) || 0;
+  const valorLinha = principal.valor || 0;
   const valor = parcial
     ? +(valorLinha * (qtdCanc / qtdLinha)).toFixed(2)
-    : alvos.reduce((s, x) => s + (Number(x.VALORTOTAL) || 0), 0);
+    : alvos.reduce((s, x) => s + (x.valor || 0), 0);
   const pago = await fbPagoDoPedido(ped);
   // serviço aplicado NÃO trava mais o cancelamento (a conta pedida tem os 10%
   // e a mesa continua ABERTA — travar aqui era só atrito): o item leva junto a
   // fatia PROPORCIONAL do serviço, por delta — a fórmula nunca é refeita.
-  const itensAtual = Number(p.I) || 0, servAtual = Number(p.S) || 0;
+  const itensAtual = p.itens, servAtual = p.servico;
   let servDelta = 0;
   if (servAtual > 0.009 && itensAtual > 0.009) {
     servDelta = +(valor * (servAtual / itensAtual)).toFixed(2);
@@ -4174,7 +4343,7 @@ async function apiCaixaCancelarItem(body, quem) {
   }
   const novoItens = +(itensAtual - valor).toFixed(2);
   const novoServ = +(servAtual - servDelta).toFixed(2);
-  const novoTot = +((Number(p.T) || 0) - valor - servDelta).toFixed(2);
+  const novoTot = +(p.total - valor - servDelta).toFixed(2);
   if (novoTot < -0.009) return { ok: false, erro: 'cancelar esse item deixaria o total negativo (tem desconto — ajuste antes)' };
   if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorno é no Consumer)` };
   if (parcial) {
@@ -4182,18 +4351,18 @@ async function apiCaixaCancelarItem(body, quem) {
     // convenção do write-back). Filhos (respostas) ficam — valem pra linha.
     const resta = qtdLinha - qtdCanc;
     const novoVt = +(valorLinha - valor).toFixed(2);
-    const rp = await qi(`UPDATE ITENSPEDIDO SET QUANTIDADE=${fbNum(resta)}, VALORITEM=${fbNum(novoVt)}, VALORTOTAL=${fbNum(novoVt)}
-      WHERE CODIGO=${item} AND DATADELETE IS NULL`);
-    if (!rp.ok) return { ok: false, erro: 'FB reduzir quantidade: ' + rp.err };
+    const rp = await itemMudarQtd(ped, item, resta, novoVt);
+    if (!rp) return { ok: false, erro: 'não deu pra reduzir a quantidade' };
   } else {
-    const rd = await qi(`UPDATE ITENSPEDIDO SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND (CODIGO=${item} OR CODIGOPAI=${item})`);
-    if (!rd.ok) return { ok: false, erro: 'FB excluir: ' + rd.err };
+    const rd = await itensCancelar(ped, item, quem.login);
+    if (!rd) return { ok: false, erro: 'não deu pra excluir o item' };
   }
-  const ru = await qi(`UPDATE PEDIDOS SET VALORTOTALITENS=${fbNum(Math.max(0, novoItens))}, TOTALSERVICO=${fbNum(Math.max(0, novoServ))}, VALORTOTAL=${fbNum(Math.max(0, novoTot))} WHERE CODIGO=${ped}`);
-  if (!ru.ok) return { ok: false, erro: 'o item saiu, mas o total não atualizou: ' + ru.err };
-  const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + T(principal.NOME);
+  const ru = await pedGravarTotais(ped, { itens: Math.max(0, novoItens),
+    servico: Math.max(0, novoServ), total: Math.max(0, novoTot) });
+  if (!ru) return { ok: false, erro: 'o item saiu, mas o total não atualizou' };
+  const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + principal.nome;
   const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
-    WHERE item_codigo = ANY(${alvos.map((x) => Number(x.CODIGO))})`;
+    WHERE item_codigo = ANY(${alvos.map((x) => x.codigo)})`;
   // praça do item que saiu: o aviso acende só na cozinha dona dele
   const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo)
@@ -4240,13 +4409,13 @@ async function apiCaixaCancelarPedido(body, quem) {
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const pago = await fbPagoDoPedido(ped);
   if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorno é no Consumer, aqui não` };
-  const tot = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+  const tot = (await pedTotais(ped))?.total || 0;
   // o aviso pras praças sai ANTES do pedido sumir do espelho
   const vivos = await sql`SELECT ci.item_codigo, ci.area_codigo, ci.nome, ci.quantidade FROM comanda_item ci
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     WHERE c.numero=${numero} AND ci.tipo IS DISTINCT FROM 2 AND ci.produzido IS NULL AND ci.entregue IS NULL`;
-  const rd = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${ped}`);
-  if (!rd.ok) return { ok: false, erro: 'FB excluir pedido: ' + rd.err };
+  const rd = await pedApagar(ped);
+  if (!rd) return { ok: false, erro: 'não deu pra excluir o pedido' };
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
     VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)})`;
   cupomCancelado(vivos, numero).catch(() => {});
@@ -4275,7 +4444,7 @@ async function apiCaixaFechar(nRaw) {
   const n = Number(nRaw);
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
-  const total = Number((await qi(`SELECT VALORTOTAL FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.VALORTOTAL) || 0;
+  const total = (await pedTotais(ped))?.total || 0;
   const pago = await fbPagoDoPedido(ped);
   const falta = +(total - pago).toFixed(2);
   if (falta > 0.01) return { ok: false, erro: `ainda falta R$ ${falta.toFixed(2)} — receba antes de fechar` };
@@ -4709,20 +4878,17 @@ async function apiCaixaTransferirItens(body, quem) {
   } catch (e) { return { ok: false, erro: e.message }; }
   // o item só sai se for MESMO da conta de origem (o número pode ter mudado
   // entre a tela e o toque) e leva os filhos dele
-  const lista = await qi(`SELECT CODIGO FROM ITENSPEDIDO
-    WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL
-      AND (CODIGO IN (${cods.join(',')}) OR CODIGOPAI IN (${cods.join(',')}))`);
-  if (!lista.ok) return { ok: false, erro: 'FB itens: ' + lista.err };
-  const mover = (lista.rows || []).map((x) => Number(x.CODIGO));
+  const lista = await itensDoPedido(pedDe, { codigos: cods });
+  const mover = lista.map((x) => x.codigo);
   if (!mover.length) return { ok: false, erro: 'esses itens não estão mais nessa conta' };
-  const mv = await qi(`UPDATE ITENSPEDIDO SET CODIGOPEDIDO=${pedPara} WHERE CODIGO IN (${mover.join(',')})`);
-  if (!mv.ok) return { ok: false, erro: 'não consegui mover: ' + mv.err };
+  const movidos = await itensMover(pedDe, pedPara, mover);
+  if (!movidos) return { ok: false, erro: 'não consegui mover os itens' };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* recalcula no ciclo */ }
   // origem esvaziou? mesma regra da transferência de mesa inteira
-  const sobrou = await qi(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${pedDe} AND DATADELETE IS NULL`);
+  const sobrou = await itensContar(pedDe);
   const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
-  if (sobrou.ok && Number(sobrou.rows[0].N) === 0 && pagoDe <= 0.009) {
-    await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pedDe} AND DATAFECHAMENTO IS NULL`);
+  if (sobrou === 0 && pagoDe <= 0.009) {
+    await pedApagar(pedDe, { soAberto: true });
     await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
   }
   await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
