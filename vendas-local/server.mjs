@@ -4333,6 +4333,44 @@ async function apiCaixaDetalhe(codigo) {
       fundo: Number(cx.FUNDO) || 0, esperado: cx.SALDOFINAL == null ? null : Number(cx.SALDOFINAL), contado: cx.SALDOFINALINFORMADO == null ? null : Number(cx.SALDOFINALINFORMADO) },
     pagamentos: (pg.ok ? pg.rows : []).map((x) => ({ pedido: Number(x.PED) || null, forma: T(x.FORMA) || ('forma ' + x.F), valor: Number(x.V) || 0, nsu: T(x.NSU) || null, quando: T(x.QUANDO) })) };
 }
+// ---- FECHAMENTO AUTOMÁTICO (04:00) — SÓ caixas da MAQUININHA ----
+// Separação do dono: caixa da MAQUININHA (nasce sozinho ao receber no terminal,
+// só cartão/Pix, sem gaveta) fecha SOZINHO de madrugada — não há o que contar.
+// Caixa do SISTEMA (aberto por gente no /caixa, tem dinheiro) fecha com
+// conferência humana — o loop NÃO toca nele. Desligar: app_config
+// caixa_autofechar='0'. Marca o dia em caixa_autofechar_dia (não repete).
+let cxAutoRodando = false;
+async function loopFecharCaixasMaquininha() {
+  if (cxAutoRodando) return; cxAutoRodando = true;
+  try {
+    const agora = new Date(Date.now() - 3 * 3600 * 1000); // BRT
+    const h = agora.getUTCHours();
+    if (h < 4 || h >= 7) return; // janela 04:00–07:00
+    if ((await cfgGet('caixa_autofechar', '1')) !== '1') return;
+    const hoje = agora.toISOString().slice(0, 10);
+    if ((await cfgGet('caixa_autofechar_dia', '')) === hoje) return; // já rodou
+    const abertos = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
+      FROM CAIXA c WHERE c.DATAFECHAMENTO IS NULL`);
+    if (!abertos.ok) return;
+    let n = 0;
+    for (const c of abertos.rows) {
+      if (!T(c.OBS).startsWith('Aberto automaticamente')) continue; // sistema: não toca
+      const cod = Number(c.CODIGO);
+      const fundo = Number(c.FUNDO) || 0;
+      let esperado = fundo;
+      try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
+      const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
+      if (up.ok) {
+        n++;
+        try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 (caixa da maquininha)'})`; } catch {}
+      }
+    }
+    await cfgSet('caixa_autofechar_dia', hoje);
+    if (n) console.log(`[caixa] fechamento automático: ${n} caixa(s) da maquininha fechado(s)`);
+  } catch (e) { console.error('[caixa] autofechar:', e.message); }
+  finally { cxAutoRodando = false; }
+}
 // ---- USUÁRIOS PRÓPRIOS (sem passar pelo Consumer) ----
 // Perfis prontos, com os MESMOS códigos de permissão do PDV — assim a regra
 // do sistema continua uma só, e amanhã dá pra migrar o usuário pro Consumer
@@ -4424,6 +4462,88 @@ async function apiCaixaTransferirItens(body, quem) {
     VALUES (${de}, ${para}, 'item', ${mover.length}, ${quem.login}, ${pedDe}, ${pedPara})`;
   espelho().catch(() => {});
   return { ok: true, itens: mover.length, msg: `${cods.length} item(ns) foram pra mesa ${para}.` };
+}
+// ---- FIADO (conta corrente do cliente) ----
+// Conferido no banco real da 0001 antes de escrever (10.917 lançamentos):
+//  · fiado entra como CREDITO (não DEBITO — a memória do projeto estava
+//    errada), com IMPORTADO='N'; pagar depois é CREDITO com IMPORTADO='S'.
+//  · SALDOINICIAL/SALDOFINAL são o extrato corrido: FINAL = INICIAL + valor.
+//  · OBSERVACAO no formato do Consumer: "Fiado - pedido nº N no valor de R$ X".
+//  · o pedido NÃO ganha linha em PAGAMENTOS — fiado não é forma de pagamento:
+//    o pedido fecha devendo e a dívida vive na conta corrente.
+//  · CONTATOS.SALDOATUALCONTACORRENTE acompanha o último SALDOFINAL.
+// Habilitado pra fiado = LIMITECREDITOCONTACORRENTE > 0 (regra do dono).
+// BLOQUEARVENDAAPOSLIMITE='S' impede estourar o limite.
+async function fbClienteFiado(cod) {
+  const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
+      COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM, COALESCE(SALDOATUALCONTACORRENTE,0) SALDO,
+      TRIM(COALESCE(BLOQUEARVENDAAPOSLIMITE,'N')) BLOQ
+    FROM CONTATOS WHERE CODIGO=${Number(cod)} AND DATADELETE IS NULL`);
+  const x = r.ok ? r.rows?.[0] : null;
+  if (!x) return null;
+  const limite = Number(x.LIM) || 0, saldo = Number(x.SALDO) || 0;
+  return { codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC),
+    limite, saldo, bloqueia: T(x.BLOQ).toUpperCase() === 'S',
+    habilitado: limite > 0, disponivel: +(limite - saldo).toFixed(2) };
+}
+async function apiCaixaFiadoBusca(termo) {
+  const t = String(termo || '').trim().toUpperCase();
+  if (t.length < 3) return { ok: true, clientes: [] };
+  const so = t.replace(/\D/g, '');
+  const cond = so.length >= 3
+    ? `(UPPER(NOME) LIKE '%${fbEsc(t)}%' OR REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') LIKE '%${fbEsc(so)}%')`
+    : `UPPER(NOME) LIKE '%${fbEsc(t)}%'`;
+  const r = await qi(`SELECT FIRST 12 CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
+      COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM, COALESCE(SALDOATUALCONTACORRENTE,0) SALDO
+    FROM CONTATOS WHERE DATADELETE IS NULL AND ${cond} ORDER BY NOME`);
+  if (!r.ok) return { ok: false, erro: r.err };
+  return { ok: true, clientes: (r.rows || []).map((x) => ({
+    codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC),
+    limite: Number(x.LIM) || 0, saldo: Number(x.SALDO) || 0,
+    habilitado: (Number(x.LIM) || 0) > 0,
+    disponivel: +(((Number(x.LIM) || 0) - (Number(x.SALDO) || 0))).toFixed(2) })) };
+}
+/** Fecha a conta lançando o que falta no fiado do cliente. */
+async function apiCaixaFiado(body, quem) {
+  if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
+  const n = Number(body.numero);
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'comanda não está aberta' };
+  const cli = await fbClienteFiado(Number(body.cliente));
+  if (!cli) return { ok: false, erro: 'cliente não encontrado' };
+  // ⚠️ REALIDADE DA CASA (19/08): há R$ 173 mil de fiado em aberto e NENHUM
+  // cliente com limite cadastrado (só o Júlio, R$ 100). Exigir limite é a
+  // regra do dono, mas ligá-la de uma vez pararia o fiado inteiro — então
+  // vive em cfg 'fiado_exige_limite' (padrão SIM). Pra soltar enquanto os
+  // limites não são cadastrados: gravar 'nao' nessa config.
+  const exigeLimite = String(await cfgGet('fiado_exige_limite', 'sim')).toLowerCase() !== 'nao';
+  if (exigeLimite && !cli.habilitado) return { ok: false, sem_limite: true, erro:
+    `${cli.nome} não está habilitado pra fiado — cadastre o limite de crédito no Consumer (Financeiro > Conta Corrente)` };
+  const tot = Number((await qi(`SELECT VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.T) || 0;
+  const pago = await fbPagoDoPedido(ped);
+  const falta = +(tot - pago).toFixed(2);
+  if (!(falta > 0.009)) return { ok: false, erro: 'essa conta já está quitada' };
+  if (cli.habilitado && cli.bloqueia && falta > cli.disponivel + 0.009) {
+    return { ok: false, estourou: true, erro:
+      `passa do limite de ${cli.nome}: disponível R$ ${cli.disponivel.toFixed(2)} e a conta é R$ ${falta.toFixed(2)}` };
+  }
+  const novoSaldo = +(cli.saldo + falta).toFixed(2);
+  const obs = `Fiado - pedido nº ${ped} no valor de R$ ${falta.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+  const u = await fbUsuarioCodigo(quem.login);
+  const ins = await qi(`INSERT INTO CONTACORRENTE (CODIGO, CODIGOCLIENTE, CODIGOPEDIDO, DATAHORA, SALDOINICIAL, CREDITO, SALDOFINAL, CODIGOUSUARIO, OBSERVACAO, IMPORTADO)
+    VALUES (GEN_ID(GEN_CONTACORRENTE_ID,1), ${cli.codigo}, ${ped}, CURRENT_TIMESTAMP, ${fbNum(cli.saldo)}, ${fbNum(falta)}, ${fbNum(novoSaldo)}, ${u ? u.codigo : 'NULL'}, '${fbEsc(obs)}', 'N')`);
+  if (!ins.ok) return { ok: false, erro: 'FB conta corrente: ' + ins.err };
+  // o Consumer mantém o saldo no cadastro do cliente — sem isto a tela dele
+  // mostraria o valor velho e o limite pararia de valer
+  const up = await qi(`UPDATE CONTATOS SET SALDOATUALCONTACORRENTE=${fbNum(novoSaldo)} WHERE CODIGO=${cli.codigo}`);
+  if (!up.ok) console.error('[fiado] saldo do cadastro não atualizou: ' + up.err);
+  await qi(`UPDATE PEDIDOS SET CODIGOCONTATOFIADO=${cli.codigo}, CODIGOCONTATOCLIENTE=COALESCE(CODIGOCONTATOCLIENTE, ${cli.codigo}) WHERE CODIGO=${ped}`);
+  await fbFecharPedido(ped);
+  await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
+  await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
+  espelho().catch(() => {});
+  return { ok: true, cliente: cli.nome, valor: falta, saldo_novo: novoSaldo,
+    disponivel: +(cli.limite - novoSaldo).toFixed(2) };
 }
 /** TIRAR OS 10% quando o cliente não quer pagar (e devolver, se foi engano).
  *  É a mesma permissão do desconto no Consumer (12 = "Aplicar Descontos /
@@ -4529,7 +4649,8 @@ async function apiCaixaRelatorio(data) {
     FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
     WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= ${ini} AND p.DATAPAGAMENTO < ${fim}
     GROUP BY p.CODIGOCAIXA, p.CODIGOFORMAPAGAMENTO, f.DESCRICAO`);
-  const caixas = await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME, u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, c.SALDOINICIAL, c.SALDOFINAL, c.SALDOFINALINFORMADO
+  const caixas = await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME, u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, c.SALDOINICIAL, c.SALDOFINAL, c.SALDOFINALINFORMADO,
+      CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
     FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO
     WHERE (c.DATAABERTURA >= ${ini} AND c.DATAABERTURA < ${fim}) OR (c.DATAFECHAMENTO IS NULL AND c.DATAABERTURA < ${fim}) ORDER BY c.CODIGO DESC`);
   const movs = await qi(`SELECT o.CODIGOCAIXA CX, o.DATAOPERACAO DT, COALESCE(o.VALORENTRADA,0) E, COALESCE(o.VALORSAIDA,0) S, TRIM(COALESCE(o.OBSERVACAO,'')) OBS
@@ -4542,6 +4663,9 @@ async function apiCaixaRelatorio(data) {
     formas: (formas.rows || []).map((x) => ({ codigo: Number(x.F), nome: T(x.NOME) || ('forma ' + x.F), valor: +(Number(x.V) || 0).toFixed(2), n: Number(x.N) })),
     caixas: (caixas.ok ? caixas.rows : []).map((x) => ({ codigo: Number(x.CODIGO), quem: T(x.QUEM), aberto_em: x.DATAABERTURA, fechado_em: x.DATAFECHAMENTO,
       fundo: Number(x.SALDOINICIAL) || 0, esperado: x.SALDOFINAL == null ? null : Number(x.SALDOFINAL), contado: x.SALDOFINALINFORMADO == null ? null : Number(x.SALDOFINALINFORMADO),
+      // maquininha = nasceu sozinho ao receber no terminal (só cartão/Pix, sem
+      // gaveta) — a OBSERVACAO carimba o nascimento. sistema = aberto por gente.
+      tipo: T(x.OBS).startsWith('Aberto automaticamente') ? 'maquininha' : 'sistema',
       formas: fmap[Number(x.CODIGO)] || [], recebido: +(fmap[Number(x.CODIGO)] || []).reduce((s, y) => s + y.valor, 0).toFixed(2) })),
     movs: (movs.ok ? movs.rows : []).map((x) => ({ caixa: Number(x.CX), quando: x.DT, entrada: Number(x.E) || 0, saida: Number(x.S) || 0, obs: T(x.OBS) })) };
 }
@@ -10111,6 +10235,7 @@ function pintaMain(){
   if(TELA==='desc')return telaDesc(el);
   if(TELA==='acr')return telaAcr(el);
   if(TELA==='rec')return telaReceber(el);
+  if(TELA==='fiado')return telaFiado(el);
   if(TELA==='pix')return; // desenhada pelo pixCaixa()
   if(TELA==='abrircx')return telaAbrirCx(el);
   if(TELA==='fechacx')return telaFechaCx(el);
@@ -10285,6 +10410,8 @@ function pinta(el){
          (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
       h+='<div class="row"><button class="big" style="margin-top:6px" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
          '<button class="big" style="margin-top:6px;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+      // FIADO: fecha a conta lançando na conta corrente do cliente (perm 16)
+      if(PODE.fiado)h+='<button class="big" style="margin-top:6px;background:#7c3aed" onclick="irTela(\\'fiado\\')">🧾 Fiado (conta do cliente)</button>';
     }
   }
   // quitou (ou mesa sem consumo)? o ato que resta é FECHAR — libera a mesa
@@ -10389,6 +10516,61 @@ async function aplicaAcr(){
   var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'acrescimo',modo:'valor',valor:v});
   if(!r.ok){document.getElementById('aerr2').textContent=r.erro||'não deu';return}
   await carregar(MESA);
+}
+/* ---- FIADO ----
+   Fecha a conta lançando o que falta na conta corrente do cliente. O cliente
+   pode ser o que já está na conta (identificado pelo garçom) ou buscado aqui.
+   Só entra quem tem LIMITE cadastrado no Consumer — é o "habilitado pra
+   fiado" que o dono pediu. */
+var FIADOCLI=null;
+function telaFiado(el){
+  var falta=CONTA.falta;
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">🧾 Fiado — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+'</div>'+
+    '<div class="mut">Vai pra conta corrente do cliente: <b>'+brl(falta)+'</b></div>'+
+    '<input id="fq" placeholder="nome ou CPF do cliente" style="margin-top:10px" oninput="buscaFiado()">'+
+    '<div id="flista"></div><div id="fsel" style="margin-top:8px"></div>'+
+    '<div id="ferr" class="err"></div></div>';
+  FIADOCLI=null;
+  var e=document.getElementById('fq');
+  if(e){ e.focus(); if(CONTA.nome){ e.value=CONTA.nome; buscaFiado(); } }
+}
+var _fT2=null;
+function buscaFiado(){
+  clearTimeout(_fT2);
+  _fT2=setTimeout(async function(){
+    var q=((document.getElementById('fq')||{}).value||'').trim();
+    var l=document.getElementById('flista');if(!l)return;
+    if(q.length<3){l.innerHTML='';return}
+    var r;try{r=await jget('/api/caixa/fiado-busca?q='+encodeURIComponent(q))}catch(e){return}
+    if(!r.ok){l.innerHTML='<div class="err">'+esc(r.erro||'busca falhou')+'</div>';return}
+    l.innerHTML=r.clientes.length
+      ? '<div class="lst" style="grid-template-columns:1fr;margin-top:6px">'+r.clientes.map(function(c){
+          var st=c.habilitado?('limite '+brl(c.limite)+' · deve '+brl(c.saldo)+' · disponível '+brl(c.disponivel))
+                             :'⚠ sem limite cadastrado';
+          return '<button class="mchip" style="text-align:left" onclick="escolheFiado('+c.codigo+',\\''+esc(c.nome).replace(/\\'/g,'')+'\\','+(c.habilitado?1:0)+')">'+
+            '<b>'+esc(c.nome)+'</b><small>'+(c.doc?esc(c.doc)+' · ':'')+st+'</small></button>';
+        }).join('')+'</div>'
+      : '<div class="mut" style="margin-top:6px">nenhum cliente com esse nome/CPF</div>';
+  },300);
+}
+function escolheFiado(cod,nome,hab){
+  FIADOCLI={codigo:cod,nome:nome,habilitado:!!hab};
+  var l=document.getElementById('flista');if(l)l.innerHTML='';
+  var s=document.getElementById('fsel');
+  if(s)s.innerHTML='<div class="card" style="margin:0;border-color:#7c3aed"><b>'+esc(nome)+'</b>'+
+    (hab?'':'<div class="mut" style="color:var(--red)">sem limite cadastrado — pode ser recusado</div>')+
+    '<button class="big" style="background:#7c3aed" onclick="lancaFiado(this)">Lançar '+brl(CONTA.falta)+' no fiado</button></div>';
+}
+async function lancaFiado(btn){
+  if(!FIADOCLI)return;
+  var er=document.getElementById('ferr');er.textContent='';
+  btn.disabled=true;
+  var r=await jpost('/api/caixa/fiado',{numero:MESA,cliente:FIADOCLI.codigo});
+  btn.disabled=false;
+  if(!r.ok){er.textContent=r.erro||'não lançou';return}
+  FLASH='✓ '+brl(r.valor)+' no fiado de '+r.cliente+' — conta fechada. Ele deve '+brl(r.saldo_novo)+'.';
+  FIADOCLI=null;voltarMesas();listar();
 }
 function telaReceber(el){
   var falta=CONTA.falta;
@@ -11279,6 +11461,8 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/usuarios' && req.method !== 'POST') return res.end(JSON.stringify(await apiUsuariosLocais(quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios') return res.end(JSON.stringify(await apiUsuarioLocalSalvar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
+      if (p === '/api/caixa/fiado-busca') return res.end(JSON.stringify(await apiCaixaFiadoBusca(u.searchParams.get('q') || '')));
+      if (req.method === 'POST' && p === '/api/caixa/fiado') return res.end(JSON.stringify(await apiCaixaFiado(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
@@ -11591,6 +11775,8 @@ async function main() {
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa
   setInterval(() => loopNfceImpressao().catch(() => {}), 20 * 1000);
+  // 04:00–07:00 BRT: fecha sozinho os caixas da MAQUININHA (nunca os do sistema)
+  setInterval(() => loopFecharCaixasMaquininha().catch(() => {}), 10 * 60 * 1000);
   // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
   // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
   limparFotosAntigas();
