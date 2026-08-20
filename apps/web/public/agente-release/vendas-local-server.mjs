@@ -4557,7 +4557,18 @@ async function apiLioFecharCaixa(garcom) {
   try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
     VALUES (${cx.codigo}, ${garcom.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0,
       ${'Fechado na maquininha por ' + (garcom.nome || garcom.login) + ' — BATEU (' + c.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
-  return { ok: true, codigo: cx.codigo, pagamentos: c.n, esperado };
+  // Detalhamento pro COMPROVANTE impresso na própria maquininha (app ≥1.10.9):
+  // por forma + período. O fechamento do turno merece papel.
+  let formas = [];
+  try {
+    const fr = await qi(`SELECT TRIM(COALESCE(f.DESCRICAO,'')) NOME, COUNT(*) N, CAST(SUM(p.VALOR) AS NUMERIC(12,2)) V
+      FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
+      WHERE p.CODIGOCAIXA=${cx.codigo} AND p.DATADELETE IS NULL GROUP BY f.DESCRICAO ORDER BY 3 DESC`);
+    if (fr.ok) formas = fr.rows.map((x) => ({ nome: T(x.NOME) || 'Outros', n: Number(x.N), total: Number(x.V) || 0 }));
+  } catch {}
+  return { ok: true, codigo: cx.codigo, pagamentos: c.n, esperado,
+    operador: garcom.nome || garcom.login, abriu: cx.desde || null, formas,
+    total: +formas.reduce((s, f) => s + f.total, 0).toFixed(2) };
 }
 // ---- FECHAMENTO AUTOMÁTICO (04:00) — SÓ caixas da MAQUININHA ----
 // Separação do dono: caixa da MAQUININHA (nasce sozinho ao receber no terminal,

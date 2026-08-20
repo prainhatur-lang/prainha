@@ -104,8 +104,11 @@ android {
         // 1.10.8: valor digitado no Receber em CENTAVOS (550 = R$ 5,50), campo
         // se formata sozinho. O teclado da LIO não tem vírgula e "5.50" parseava
         // como 550 (ponto tratado como milhar) — cobrava a conta INTEIRA.
-        versionCode = 32
-        versionName = "1.10.8"
+        // 1.10.9: comprovante IMPRESSO do fechamento de caixa na maquininha —
+        // operador, período, por forma, TOTAL e o carimbo "BATEU (N NSUs)".
+        // O servidor devolve o detalhamento no /api/lio/fechar-caixa.
+        versionCode = 33
+        versionName = "1.10.9"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

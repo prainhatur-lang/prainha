@@ -301,10 +301,11 @@ class MesasActivity : AppCompatActivity() {
                     val r = try { Api.lioFecharCaixa(Session.servidor(this), tk) }
                         catch (e: Exception) { org.json.JSONObject().put("ok", false).put("erro", Api.msgErroRede(e, Session.servidor(this))) }
                     runOnUiThread {
+                        if (r.optBoolean("ok")) imprimirFechamentoCaixa(r)
                         AlertDialog.Builder(this)
                             .setTitle(if (r.optBoolean("ok")) "✅ Caixa fechado" else "⚠ Não fechou")
                             .setMessage(if (r.optBoolean("ok"))
-                                "BATEU — ${r.optInt("pagamentos")} pagamento(s) conferido(s) por NSU.\nPode sair; o próximo garçom entra e o caixa dele abre sozinho no primeiro recebimento."
+                                "BATEU — ${r.optInt("pagamentos")} pagamento(s) conferido(s) por NSU.\nO comprovante está saindo na impressora.\nPode sair; o próximo garçom entra e o caixa dele abre sozinho no primeiro recebimento."
                             else r.optStringOrNull("erro") ?: "Não foi possível fechar agora.")
                             .setPositiveButton("OK", null)
                             .show()
@@ -313,6 +314,31 @@ class MesasActivity : AppCompatActivity() {
             }
             .setNegativeButton("Voltar", null)
             .show()
+    }
+
+    /** Comprovante do fechamento do caixa da maquininha — o papel do turno:
+     *  operador, período, por forma, total e o carimbo do BATEU. */
+    private fun imprimirFechamentoCaixa(r: org.json.JSONObject) {
+        val sb = StringBuilder()
+        sb.appendLine("Operador: ${r.optStringOrNull("operador") ?: Session.nome(this) ?: ""}")
+        sb.appendLine("Caixa nº ${r.optInt("codigo")}")
+        r.optStringOrNull("abriu")?.let { sb.appendLine("Abertura: ${it.take(16).replace('T', ' ')}") }
+        sb.appendLine("Fechamento: ${Cupom.agoraBr()}")
+        sb.appendLine("")
+        val formas = r.optJSONArray("formas")
+        if (formas != null && formas.length() > 0) {
+            for (i in 0 until formas.length()) {
+                val f = formas.optJSONObject(i) ?: continue
+                sb.appendLine("${f.optString("nome")} (${f.optInt("n")}x): ${Cupom.brl(f.optDouble("total", 0.0))}")
+            }
+        } else sb.appendLine("Sem recebimentos no turno.")
+        Lio.imprimirBlocos(this, listOf(
+            Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DE CAIXA", negrito = true, tamanho = 22),
+            Lio.Bloco(sb.toString(), tamanho = 18),
+            Lio.Bloco("TOTAL ${Cupom.brl(r.optDouble("total", 0.0))}", negrito = true, tamanho = 24),
+            Lio.Bloco("✓ BATEU — ${r.optInt("pagamentos")} pagamento(s)\nconferido(s) por NSU", tamanho = 16),
+            Lio.Bloco("\n\n\n\n", tamanho = 12),
+        ), onOk = {}, onErro = { m -> runOnUiThread { Toast.makeText(this, "Fechou, mas não imprimiu: $m", Toast.LENGTH_LONG).show() } })
     }
 
     private fun logout() {
