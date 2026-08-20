@@ -237,6 +237,8 @@ async function initSchemaNativo() {
     conta_corrente bigint, quando timestamptz DEFAULT now(), cancelado_em timestamptz)`;
   await sql`CREATE TABLE IF NOT EXISTS caixa_local (codigo bigint PRIMARY KEY, login text, usuario_codigo integer,
     aberto_em timestamptz DEFAULT now(), fundo numeric DEFAULT 0, fechado_em timestamptz, obs text)`;
+  await addCol('caixa_local', 'saldo_final numeric');
+  await addCol('caixa_local', 'saldo_informado numeric');
   await sql`CREATE TABLE IF NOT EXISTS caixa_operacao_local (id bigserial PRIMARY KEY, caixa_codigo bigint,
     tipo text, valor numeric, forma_codigo integer, obs text, login text, quando timestamptz DEFAULT now())`;
   await sql`CREATE TABLE IF NOT EXISTS conta_corrente_local (codigo bigint PRIMARY KEY, cliente_codigo integer,
@@ -246,6 +248,8 @@ async function initSchemaNativo() {
   await sql`CREATE TABLE IF NOT EXISTS cliente_local (codigo integer PRIMARY KEY, nome text, cpf text,
     telefone text, limite_credito numeric DEFAULT 0, saldo_atual numeric DEFAULT 0, ativo boolean DEFAULT true,
     atualizado_em timestamptz DEFAULT now())`;
+  await addCol('cliente_local', 'bloqueia_apos_limite boolean DEFAULT false');
+  await addCol('comanda', 'fiado_codigo integer');
   await sql`CREATE INDEX IF NOT EXISTS idx_pagamento_local_pedido ON pagamento_local (pedido)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_cc_local_cliente ON conta_corrente_local (cliente_codigo)`;
 }
@@ -2088,6 +2092,11 @@ async function apiImpressoraTeste(body) {
 // NÃO fecha o pedido — quem fecha/emite a nota segue sendo o Consumer.
 const FORMA = { DINHEIRO: 1, CREDITO: 3, DEBITO: 4, PIX_MANUAL: 18, PIX_ONLINE: 21 };
 async function fbCaixaAberto() {
+  if (nativo()) {
+    const [c] = await sql`SELECT codigo FROM caixa_local WHERE fechado_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+    if (!c) throw new Error('nenhum caixa aberto');
+    return Number(c.codigo);
+  }
   const r = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
   if (!r.ok) throw new Error('FB caixa: ' + r.err);
   if (!r.rows.length) throw new Error('nenhum caixa aberto no Consumer');
@@ -2105,6 +2114,15 @@ async function fbInserirPagamento(ped, pg) {
     caixa = await fbCaixaAbertoOuSistema();
   }
   const nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
+  if (nativo()) {
+    const cod = await proxCodigo('pagamento');
+    await sql`INSERT INTO pagamento_local (codigo, pedido, forma_codigo, valor, caixa_codigo,
+        nsu, autorizacao, bandeira, observacao, quando)
+      VALUES (${cod}, ${Number(ped)}, ${Number(pg.forma_codigo)}, ${Number(pg.valor)}, ${Number(caixa)},
+        ${nsu == null ? null : String(nsu)}, ${pg.autorizacao || null}, ${pg.bandeira || null},
+        ${pg.observacao || 'Prainha Vendas'}, now())`;
+    return cod;
+  }
   const campos = ['CODIGOPEDIDO', 'CODIGOFORMAPAGAMENTO', 'VALOR', 'DATAPAGAMENTO', 'CODIGOCAIXA', 'CODIGOCATEGORIACONTAS', 'PERCENTUALTAXA', 'INTEGRADOAUTOMACAO', 'OBSERVACAO'];
   const vals = [String(ped), String(pg.forma_codigo), fbNum(pg.valor), 'CURRENT_TIMESTAMP', String(caixa), '1', '0', "'1'", `'${fbEsc(pg.observacao || 'Prainha Vendas')}'`];
   if (nsu != null) { campos.push('NSUTRANSACAO'); vals.push(String(nsu)); }
@@ -3738,6 +3756,15 @@ async function contatoPorTelefone(tel) {
 async function fbCriarContato({ nome, cpf, telefone, nascimento, endereco, cidade, uf, cep }) {
   const n = String(nome || '').trim().slice(0, 100);
   if (!n) throw new Error('nome é obrigatório pra cadastrar');
+  if (nativo()) {
+    // Cliente novo nasce aqui e sobe pro Concilia pelo espelho — o cadastro
+    // completo (endereço, nascimento) é do Financeiro; a loja guarda o que a
+    // conta precisa: nome, documento e telefone.
+    const cod = await proxCodigo('cliente');
+    await sql`INSERT INTO cliente_local (codigo, nome, cpf, telefone, limite_credito, saldo_atual, ativo, atualizado_em)
+      VALUES (${cod}, ${n}, ${cpf ? soDig(cpf) : null}, ${telefone ? soDig(telefone) : null}, 0, 0, true, now())`;
+    return cod;
+  }
   const campos = ['NOME', 'TIPO', 'DATAINSERT', 'LIMITECREDITOCONTACORRENTE', 'SALDOATUALCONTACORRENTE',
     'COMISSAOCOLABORADOR', 'ICMSDESONDIMINUIVALORNF', 'BLOQUEARVENDAAPOSLIMITE', 'ARQUIVARFIADO'];
   const vals = [`'${fbEsc(n)}'`, `'CF'`, 'CURRENT_TIMESTAMP', '0', '0', '0', '0', `'N'`, `'N'`];
@@ -4473,13 +4500,28 @@ async function fbUsuarioCodigo(login) {
   return { codigo: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME) };
 }
 async function fbCaixaDoOperador(login) {
+  if (nativo()) {
+    // sem Consumer o caixa é do LOGIN — não existe CODIGOUSUARIO de lá
+    const [c] = await sql`SELECT codigo, aberto_em, COALESCE(fundo,0) fundo FROM caixa_local
+      WHERE lower(login)=${String(login || '').toLowerCase()} AND fechado_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+    if (!c) return null;
+    return { codigo: Number(c.codigo), desde: c.aberto_em, fundo: Number(c.fundo) || 0,
+      usuario: { codigo: null, nome: login, login } };
+  }
   const u = await fbUsuarioCodigo(login);
   if (!u) return null;
   const r = await qi(`SELECT FIRST 1 CODIGO, DATAABERTURA, SALDOINICIAL FROM CAIXA WHERE CODIGOUSUARIO=${u.codigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
   if (!r.ok || !r.rows.length) return null;
   return { codigo: Number(r.rows[0].CODIGO), desde: r.rows[0].DATAABERTURA, fundo: Number(r.rows[0].SALDOINICIAL) || 0, usuario: u };
 }
-async function fbAbrirCaixa(usuarioCodigo, fundo, obs) {
+async function fbAbrirCaixa(usuarioCodigo, fundo, obs, login = null) {
+  if (nativo()) {
+    const cod = await proxCodigo('caixa');
+    await sql`INSERT INTO caixa_local (codigo, login, usuario_codigo, aberto_em, fundo, obs)
+      VALUES (${cod}, ${login || (usuarioCodigo == null ? 'ser' : String(usuarioCodigo))},
+        ${usuarioCodigo == null ? null : Number(usuarioCodigo)}, now(), ${Number(fundo) || 0}, ${obs || null})`;
+    return cod;
+  }
   const r = await qi(`INSERT INTO CAIXA (CODIGOUSUARIO, DATAABERTURA, SALDOINICIAL, OBSERVACAO) VALUES (${usuarioCodigo}, CURRENT_TIMESTAMP, ${fbNum(fundo)}, '${fbEsc(obs)}')`);
   if (!r.ok) throw new Error('FB abrir caixa: ' + r.err);
   const g = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE CODIGOUSUARIO=${usuarioCodigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
@@ -4488,7 +4530,13 @@ async function fbAbrirCaixa(usuarioCodigo, fundo, obs) {
 // "Saldo anterior" pra reabrir o caixa do operador: o MESMO fundo do último
 // caixa dele (SALDOINICIAL), não o total do dia. Assim o fechamento bate (não
 // carrega as vendas de ontem como fundo). 0 se ele nunca teve caixa.
-async function fbSaldoAnterior(usuarioCodigo) {
+async function fbSaldoAnterior(usuarioCodigo, login = null) {
+  if (nativo()) {
+    const [c] = await sql`SELECT COALESCE(fundo,0) f FROM caixa_local
+      WHERE fechado_em IS NOT NULL AND (${login} IS NULL OR lower(login)=lower(${login}))
+      ORDER BY codigo DESC LIMIT 1`;
+    return c ? Number(c.f) || 0 : 0;
+  }
   const r = await qi(`SELECT FIRST 1 COALESCE(SALDOINICIAL, 0) S FROM CAIXA
     WHERE CODIGOUSUARIO=${usuarioCodigo} AND DATAFECHAMENTO IS NOT NULL ORDER BY CODIGO DESC`);
   return r.ok && r.rows.length ? Number(r.rows[0].S) || 0 : 0;
@@ -4525,14 +4573,66 @@ async function fbCaixaMaquininha(login, terminal) {
 // usuário "ser" (sistema) sozinho — a maquininha não pode travar por caixa.
 async function fbCaixaAbertoOuSistema() {
   try { return await fbCaixaAberto(); } catch { /* nenhum aberto: abre o do sistema */ }
+  if (nativo()) {
+    const cod = await fbAbrirCaixa(null, 0,
+      `Aberto automaticamente às ${fbHoraLocal()} (maquininha/Pix, sem caixa aberto)`, 'ser');
+    if (cod == null) throw new Error('não consegui abrir o caixa automático');
+    return cod;
+  }
   const s = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='ser' AND ATIVO='S'`);
   if (!s.ok || !s.rows.length) throw new Error('nenhum caixa aberto e não achei o usuário do sistema (ser)');
   const cod = await fbAbrirCaixa(Number(s.rows[0].CODIGO), 0, `Aberto automaticamente às ${fbHoraLocal()} (maquininha/Pix, sem caixa aberto)`);
   if (cod == null) throw new Error('não consegui abrir o caixa automático');
   return cod;
 }
+/** Fecha o caixa nos dois bancos. Idempotente: só fecha o que está aberto. */
+async function caixaFecharNoBanco(cod, esperado, informado) {
+  if (nativo()) {
+    const r = await sql`UPDATE caixa_local SET fechado_em=now(), saldo_final=${+esperado},
+        saldo_informado=${+informado} WHERE codigo=${Number(cod)} AND fechado_em IS NULL RETURNING codigo`;
+    return { ok: r.length > 0 };
+  }
+  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)},
+    SALDOFINALINFORMADO=${fbNum(informado)} WHERE CODIGO=${Number(cod)} AND DATAFECHAMENTO IS NULL`);
+  return { ok: !!up.ok, err: up.err };
+}
+/** Caixas abertos agora — com quem abriu e desde quando. */
+async function caixasAbertos() {
+  if (nativo()) {
+    const r = await sql`SELECT codigo, COALESCE(fundo,0) fundo, COALESCE(login,'?') quem,
+        aberto_em::text abriu, obs FROM caixa_local WHERE fechado_em IS NULL ORDER BY codigo`;
+    return r.map((x) => ({ codigo: Number(x.codigo), fundo: Number(x.fundo) || 0,
+      quem: x.quem, abriu: x.abriu, obs: x.obs || '' }));
+  }
+  const r = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, TRIM(COALESCE(u.NOME,u.LOGIN)) QUEM,
+      CAST(c.DATAABERTURA AS VARCHAR(30)) ABRIU, CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
+    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE c.DATAFECHAMENTO IS NULL ORDER BY c.CODIGO`);
+  if (!r.ok) return null;
+  return (r.rows || []).map((x) => ({ codigo: Number(x.CODIGO), fundo: Number(x.FUNDO) || 0,
+    quem: T(x.QUEM) || '?', abriu: T(x.ABRIU), obs: T(x.OBS) || '' }));
+}
+/** Fundo + observação de um caixa específico. */
+async function caixaInfo(cod) {
+  if (nativo()) {
+    const [c] = await sql`SELECT COALESCE(fundo,0) fundo, obs FROM caixa_local WHERE codigo=${Number(cod)}`;
+    return c ? { fundo: Number(c.fundo) || 0, obs: c.obs || '' } : null;
+  }
+  const r = await qi(`SELECT COALESCE(SALDOINICIAL,0) FUNDO, CAST(OBSERVACAO AS VARCHAR(120)) OBS
+    FROM CAIXA WHERE CODIGO=${Number(cod)}`);
+  if (!r.ok || !r.rows.length) return null;
+  return { fundo: Number(r.rows[0].FUNDO) || 0, obs: T(r.rows[0].OBS) || '' };
+}
 /** O que passou pela GAVETA deste caixa (pra conferência do fechamento). */
 async function fbResumoCaixa(caixaCodigo) {
+  if (nativo()) {
+    const [d] = await sql`SELECT COALESCE(SUM(valor),0) v FROM pagamento_local
+      WHERE caixa_codigo=${Number(caixaCodigo)} AND forma_codigo=${FORMA.DINHEIRO} AND cancelado_em IS NULL`;
+    const [m] = await sql`SELECT
+        COALESCE(SUM(valor) FILTER (WHERE tipo='suprimento'),0) e,
+        COALESCE(SUM(valor) FILTER (WHERE tipo <> 'suprimento'),0) s
+      FROM caixa_operacao_local WHERE caixa_codigo=${Number(caixaCodigo)}`;
+    return { dinheiro: Number(d.v) || 0, entradas: Number(m.e) || 0, saidas: Number(m.s) || 0 };
+  }
   const din = await qi(`SELECT COALESCE(SUM(VALOR),0) V FROM PAGAMENTOS WHERE CODIGOCAIXA=${caixaCodigo} AND CODIGOFORMAPAGAMENTO=${FORMA.DINHEIRO} AND DATADELETE IS NULL`);
   const mov = await qi(`SELECT COALESCE(SUM(COALESCE(VALORENTRADA,0)),0) E, COALESCE(SUM(COALESCE(VALORSAIDA,0)),0) S FROM CAIXAOPERACAO WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL`);
   return { dinheiro: Number(din.rows?.[0]?.V) || 0, entradas: Number(mov.rows?.[0]?.E) || 0, saidas: Number(mov.rows?.[0]?.S) || 0 };
@@ -4540,9 +4640,17 @@ async function fbResumoCaixa(caixaCodigo) {
 /** O que o SISTEMA registrou neste caixa, agrupado como o operador confere:
  *  dinheiro (gaveta), crédito e débito (vias da maquininha), Pix (extrato). */
 async function fbResumoPorForma(caixaCodigo) {
+  let por;
+  if (nativo()) {
+    const rows = await sql`SELECT forma_codigo f, COALESCE(SUM(valor),0) v, COUNT(*) n
+      FROM pagamento_local WHERE caixa_codigo=${Number(caixaCodigo)} AND cancelado_em IS NULL
+      GROUP BY forma_codigo`;
+    por = new Map(rows.map((x) => [Number(x.f), { valor: Number(x.v) || 0, n: Number(x.n) || 0 }]));
+  } else {
   const r = await qi(`SELECT CODIGOFORMAPAGAMENTO F, COALESCE(SUM(VALOR),0) V, COUNT(*) N
     FROM PAGAMENTOS WHERE CODIGOCAIXA=${caixaCodigo} AND DATADELETE IS NULL GROUP BY CODIGOFORMAPAGAMENTO`);
-  const por = new Map((r.rows || []).map((x) => [Number(x.F), { valor: Number(x.V) || 0, n: Number(x.N) || 0 }]));
+  por = new Map((r.rows || []).map((x) => [Number(x.F), { valor: Number(x.V) || 0, n: Number(x.N) || 0 }]));
+  }
   const som = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.valor || 0), 0);
   const cnt = (...cods) => cods.reduce((t, c) => t + (por.get(c)?.n || 0), 0);
   return {
@@ -4645,8 +4753,8 @@ async function apiCaixaFecharCaixa(body, quem) {
   if (Math.abs(dif) > 0.01 && !quem.divergente)
     return { ok: false, divergente: true, esperado, contado, dif,
       erro: `o contado difere do esperado em R$ ${dif.toFixed(2)} — chame quem pode fechar divergente` };
-  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(contado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
-  if (!up.ok) return { ok: false, erro: 'FB fechar caixa: ' + up.err };
+  const up = await caixaFecharNoBanco(cx.codigo, esperado, contado);
+  if (!up.ok) return { ok: false, erro: 'não deu pra fechar o caixa' + (up.err ? ': ' + up.err : '') };
   // registro durável da conferência (o Consumer só guarda o dinheiro)
   await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
     VALUES (${cx.codigo}, ${quem.login}, ${sql.json(dec)},
@@ -4663,17 +4771,15 @@ async function apiCaixaFecharCaixa(body, quem) {
 // carimba o fechamento pra dar um ponto de partida limpo.
 async function apiCaixaFecharTodos(quem) {
   if (!quem || !quem.admin) return { ok: false, erro: 'só Administrador pode fechar todos os caixas' };
-  const abertos = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, TRIM(COALESCE(u.NOME,u.LOGIN)) QUEM,
-      CAST(c.DATAABERTURA AS VARCHAR(30)) ABRIU
-    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE c.DATAFECHAMENTO IS NULL ORDER BY c.CODIGO`);
-  if (!abertos.ok) return { ok: false, erro: 'FB: ' + abertos.err };
+  const abertos = await caixasAbertos();
+  if (!abertos) return { ok: false, erro: 'não consegui listar os caixas abertos' };
   const fechados = [];
-  for (const c of abertos.rows) {
-    const cod = Number(c.CODIGO);
-    const fundo = Number(c.FUNDO) || 0;
+  for (const c of abertos) {
+    const cod = c.codigo;
+    const fundo = c.fundo;
     let esperado = fundo;
     try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
-    const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
+    const up = await caixaFecharNoBanco(cod, esperado, esperado);
     if (up.ok) {
       fechados.push({ codigo: cod, quem: T(c.QUEM), esperado, abriu: T(c.ABRIU) });
       try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
@@ -4688,13 +4794,13 @@ async function apiCaixaFecharUm(body, quem) {
   if (!quem || !quem.admin) return { ok: false, erro: 'só Administrador fecha o caixa de outro operador' };
   const cod = Number(body.codigo);
   if (!cod) return { ok: false, erro: 'caixa inválido' };
-  const c = (await qi(`SELECT COALESCE(SALDOINICIAL,0) FUNDO FROM CAIXA WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`)).rows?.[0];
+  const c = await caixaInfo(cod);
   if (!c) return { ok: false, erro: 'esse caixa não está aberto' };
-  const fundo = Number(c.FUNDO) || 0;
+  const fundo = c.fundo;
   let esperado = fundo;
   try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
-  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
-  if (!up.ok) return { ok: false, erro: 'FB: ' + up.err };
+  const up = await caixaFecharNoBanco(cod, esperado, esperado);
+  if (!up.ok) return { ok: false, erro: 'não deu pra fechar' + (up.err ? ': ' + up.err : '') };
   try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
     VALUES (${cod}, ${quem.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechado por ' + (quem.nome || quem.login)})`; } catch {}
   return { ok: true, codigo: cod, esperado };
@@ -4739,7 +4845,7 @@ async function caixaMaquininhaConfere(cod) {
 async function apiLioFecharCaixa(garcom) {
   const cx = await fbCaixaDoOperador(garcom.login);
   if (!cx) return { ok: false, erro: 'Você não tem caixa aberto — nada a fechar.' };
-  const o = (await qi(`SELECT CAST(OBSERVACAO AS VARCHAR(120)) OBS FROM CAIXA WHERE CODIGO=${cx.codigo}`)).rows?.[0];
+  const o = await caixaInfo(cx.codigo);
   if (!T(o?.OBS).startsWith('Aberto automaticamente'))
     return { ok: false, erro: 'Seu caixa aberto é do SISTEMA (gaveta) — o fechamento dele é no caixa, com conferência.' };
   const c = await caixaMaquininhaConfere(cx.codigo);
@@ -4747,8 +4853,8 @@ async function apiLioFecharCaixa(garcom) {
     erro: `NÃO BATEU: ${c.motivo}. O caixa fica ABERTO pro gerente conferir — nada se perde.` };
   let esperado = cx.fundo;
   try { const r = await fbResumoCaixa(cx.codigo); esperado = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
-  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cx.codigo} AND DATAFECHAMENTO IS NULL`);
-  if (!up.ok) return { ok: false, erro: 'FB fechar: ' + up.err };
+  const up = await caixaFecharNoBanco(cx.codigo, esperado, esperado);
+  if (!up.ok) return { ok: false, erro: 'não deu pra fechar' + (up.err ? ': ' + up.err : '') };
   try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
     VALUES (${cx.codigo}, ${garcom.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0,
       ${'Fechado na maquininha por ' + (garcom.nome || garcom.login) + ' — BATEU (' + c.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
@@ -4781,21 +4887,20 @@ async function loopFecharCaixasMaquininha() {
     if ((await cfgGet('caixa_autofechar', '1')) !== '1') return;
     const hoje = agora.toISOString().slice(0, 10);
     if ((await cfgGet('caixa_autofechar_dia', '')) === hoje) return; // já rodou
-    const abertos = await qi(`SELECT c.CODIGO, COALESCE(c.SALDOINICIAL,0) FUNDO, CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
-      FROM CAIXA c WHERE c.DATAFECHAMENTO IS NULL`);
-    if (!abertos.ok) return;
+    const abertos = await caixasAbertos();
+    if (!abertos) return;
     let n = 0, pulados = 0;
-    for (const c of abertos.rows) {
-      if (!T(c.OBS).startsWith('Aberto automaticamente')) continue; // sistema: não toca
-      const cod = Number(c.CODIGO);
+    for (const c of abertos) {
+      if (!String(c.obs || '').startsWith('Aberto automaticamente')) continue; // sistema: não toca
+      const cod = c.codigo;
       // ⚠️ REGRA DO DONO: só fecha se o caixa BATER (régua única em
       // caixaMaquininhaConfere). Não bateu = fica ABERTO pra conferência.
       const conf = await caixaMaquininhaConfere(cod);
       if (!conf.bate) { pulados++; console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu (${conf.motivo}) — fica aberto`); continue; }
-      const fundo = Number(c.FUNDO) || 0;
+      const fundo = c.fundo;
       let esperado = fundo;
       try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
-      const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
+      const up = await caixaFecharNoBanco(cod, esperado, esperado);
       if (up.ok) {
         n++;
         try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
@@ -4908,6 +5013,15 @@ async function apiCaixaTransferirItens(body, quem) {
 // Habilitado pra fiado = LIMITECREDITOCONTACORRENTE > 0 (regra do dono).
 // BLOQUEARVENDAAPOSLIMITE='S' impede estourar o limite.
 async function fbClienteFiado(cod) {
+  if (nativo()) {
+    const [x] = await sql`SELECT codigo, COALESCE(nome,'') nome, COALESCE(cpf,'') doc,
+        COALESCE(limite_credito,0) lim, COALESCE(saldo_atual,0) saldo, COALESCE(bloqueia_apos_limite,false) bloq
+      FROM cliente_local WHERE codigo=${Number(cod)} AND ativo`;
+    if (!x) return null;
+    const limite = Number(x.lim) || 0, saldo = Number(x.saldo) || 0;
+    return { codigo: Number(x.codigo), nome: x.nome, doc: x.doc, limite, saldo,
+      bloqueia: !!x.bloq, habilitado: limite > 0, disponivel: +(limite - saldo).toFixed(2) };
+  }
   const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
       COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM, COALESCE(SALDOATUALCONTACORRENTE,0) SALDO,
       TRIM(COALESCE(BLOQUEARVENDAAPOSLIMITE,'N')) BLOQ
@@ -4953,12 +5067,32 @@ async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null,
   // pagamentos sem pedido do banco real, 3.953 são exatamente isto. Só vale
   // quando entra dinheiro (crédito é dívida, não tem forma).
   let formaCod = null;
-  if (!credito && forma) {
+  if (!credito && forma && !nativo()) {
     const f = await qi(`SELECT FIRST 1 CODIGO FROM FORMASPAGAMENTO WHERE CODIGO=${Number(forma) || 0}`);
     if (f.ok && f.rows.length) formaCod = Number(f.rows[0].CODIGO);
     else console.error('[fiado] forma ' + forma + ' não existe no PDV — lança só o movimento');
   }
   const novoSaldo = +(credito ? cli.saldo + v : cli.saldo - v).toFixed(2);
+  if (nativo()) {
+    const cod = await proxCodigo('contacorrente');
+    let pagCod = null;
+    if (!credito && forma) {
+      // mesma amarração do Consumer: o pagamento carrega a FORMA e aponta pro
+      // movimento; sem caixa, porque recebimento de fiado não é gaveta.
+      pagCod = await proxCodigo('pagamento');
+      await sql`INSERT INTO pagamento_local (codigo, pedido, forma_codigo, valor, caixa_codigo,
+          observacao, conta_corrente, quando)
+        VALUES (${pagCod}, ${pedido ? Number(pedido) : null}, ${Number(forma)}, ${v}, null,
+          ${String(obs || 'Pagamento de fiado').slice(0, 120)}, ${cod}, now())`;
+    }
+    await sql`INSERT INTO conta_corrente_local (codigo, cliente_codigo, pedido, credito, debito,
+        saldo_inicial, saldo_final, observacao, pagamento_codigo, login, quando)
+      VALUES (${cod}, ${Number(cli.codigo)}, ${pedido ? Number(pedido) : null},
+        ${credito ? v : null}, ${credito ? null : -v}, ${cli.saldo}, ${novoSaldo},
+        ${String(obs || '').slice(0, 200)}, ${pagCod}, ${usuarioCod ? String(usuarioCod) : null}, now())`;
+    await sql`UPDATE cliente_local SET saldo_atual=${novoSaldo}, atualizado_em=now() WHERE codigo=${Number(cli.codigo)}`;
+    return { ok: true, codigo: cod, pagamento: pagCod, saldo: novoSaldo, cliente: cli.nome };
+  }
   const campos = ['CODIGO', 'CODIGOCLIENTE', 'DATAHORA', 'SALDOINICIAL', 'SALDOFINAL', 'OBSERVACAO'];
   const vals = ['GEN_ID(GEN_CONTACORRENTE_ID,1)', String(cli.codigo), 'CURRENT_TIMESTAMP',
     fbNum(cli.saldo), fbNum(novoSaldo), `'${fbEsc(String(obs || '').slice(0, 200))}'`];
@@ -5256,6 +5390,16 @@ async function loopProdutoFila() {
   finally { produtoFilaRodando = false; }
 }
 /** Fecha a conta lançando o que falta no fiado do cliente. */
+/** Carimba no pedido de quem é o fiado (e o cliente, se ainda não tinha). */
+async function pedFiado(ped, clienteCod) {
+  if (nativo()) {
+    await sql`UPDATE comanda SET contato_codigo=COALESCE(contato_codigo, ${Number(clienteCod)}),
+        fiado_codigo=${Number(clienteCod)} WHERE codigo=${Number(ped)}`;
+    return;
+  }
+  await qi(`UPDATE PEDIDOS SET CODIGOCONTATOFIADO=${Number(clienteCod)},
+    CODIGOCONTATOCLIENTE=COALESCE(CODIGOCONTATOCLIENTE, ${Number(clienteCod)}) WHERE CODIGO=${Number(ped)}`);
+}
 async function apiCaixaFiado(body, quem) {
   if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
   const n = Number(body.numero);
@@ -5271,7 +5415,7 @@ async function apiCaixaFiado(body, quem) {
   const exigeLimite = String(await cfgGet('fiado_exige_limite', 'sim')).toLowerCase() !== 'nao';
   if (exigeLimite && !cli.habilitado) return { ok: false, sem_limite: true, erro:
     `${cli.nome} não está habilitado pra fiado — cadastre o limite de crédito no Consumer (Financeiro > Conta Corrente)` };
-  const tot = Number((await qi(`SELECT VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0]?.T) || 0;
+  const tot = (await pedTotais(ped))?.total || 0;
   const pago = await fbPagoDoPedido(ped);
   const falta = +(tot - pago).toFixed(2);
   if (!(falta > 0.009)) return { ok: false, erro: 'essa conta já está quitada' };
@@ -5281,15 +5425,15 @@ async function apiCaixaFiado(body, quem) {
   }
   const novoSaldo = +(cli.saldo + falta).toFixed(2);
   const obs = `Fiado - pedido nº ${ped} no valor de R$ ${falta.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
-  const u = await fbUsuarioCodigo(quem.login);
-  const ins = await qi(`INSERT INTO CONTACORRENTE (CODIGO, CODIGOCLIENTE, CODIGOPEDIDO, DATAHORA, SALDOINICIAL, CREDITO, SALDOFINAL, CODIGOUSUARIO, OBSERVACAO, IMPORTADO)
-    VALUES (GEN_ID(GEN_CONTACORRENTE_ID,1), ${cli.codigo}, ${ped}, CURRENT_TIMESTAMP, ${fbNum(cli.saldo)}, ${fbNum(falta)}, ${fbNum(novoSaldo)}, ${u ? u.codigo : 'NULL'}, '${fbEsc(obs)}', 'N')`);
-  if (!ins.ok) return { ok: false, erro: 'FB conta corrente: ' + ins.err };
-  // o Consumer mantém o saldo no cadastro do cliente — sem isto a tela dele
-  // mostraria o valor velho e o limite pararia de valer
-  const up = await qi(`UPDATE CONTATOS SET SALDOATUALCONTACORRENTE=${fbNum(novoSaldo)} WHERE CODIGO=${cli.codigo}`);
-  if (!up.ok) console.error('[fiado] saldo do cadastro não atualizou: ' + up.err);
-  await qi(`UPDATE PEDIDOS SET CODIGOCONTATOFIADO=${cli.codigo}, CODIGOCONTATOCLIENTE=COALESCE(CODIGOCONTATOCLIENTE, ${cli.codigo}) WHERE CODIGO=${ped}`);
+  // O lançamento é o MESMO dos dois lados (crédito = dívida do cliente):
+  // fbLancarContaCorrente já sabe escrever no banco certo e mantém o saldo do
+  // cadastro alinhado — antes isto era SQL repetido aqui, e o modo próprio
+  // ficaria de fora.
+  const u = nativo() ? { codigo: quem.login } : await fbUsuarioCodigo(quem.login);
+  const lanc = await fbLancarContaCorrente({ cliente: cli.codigo, tipo: 'credito', valor: falta,
+    obs, pedido: ped, usuarioCod: u ? u.codigo : null });
+  if (!lanc.ok) return { ok: false, erro: lanc.erro || 'não deu pra lançar no fiado' };
+  await pedFiado(ped, cli.codigo);
   await fbFecharPedido(ped);
   await sql`UPDATE mesa_comanda SET fechada_em=now() WHERE comanda=${n} AND fechada_em IS NULL`;
   await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${n} AND fechada_em IS NULL`;
@@ -5357,7 +5501,7 @@ async function apiCaixaMovimento(body, quem) {
   // hora, descrição "Saída do caixa N . motivo" — até vale-transporte é assim,
   // com o funcionário cadastrado como fornecedor)
   let contasPagar = null;
-  if (body.tipo === 'despesa') {
+  if (body.tipo === 'despesa' && !nativo()) {
     const forn = Number(body.fornecedor_codigo) || 0;
     if (!forn) return { ok: false, erro: 'busque e escolha quem está recebendo (fornecedor/pessoa)' };
     const desc = `Saída do caixa ${cx.codigo} . ${motivo}`;
@@ -5368,6 +5512,14 @@ async function apiCaixaMovimento(body, quem) {
     contasPagar = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
   }
   const obs = (body.tipo === 'sangria' ? 'levou: ' + leva + ' · ' : '') + motivo + ' · ' + (quem.nome || quem.login);
+  if (nativo()) {
+    // A despesa vira lançamento do caixa e sobe pro Financeiro pela nuvem —
+    // aqui não existe CONTASPAGAR (esse módulo é do Concilia, não da loja).
+    await sql`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando)
+      VALUES (${Number(cx.codigo)}, ${String(body.tipo)}, ${Number(valor)}, ${FORMA.DINHEIRO},
+        ${obs}, ${quem.login || null}, now())`;
+    return { ok: true, tipo: body.tipo, valor, contas_pagar: null };
+  }
   const campos = ['CODIGOCAIXA', 'CODIGOFORMAPAGAMENTO', 'DATAOPERACAO', m.campo, 'OBSERVACAO', 'TIPO'];
   const vals = [String(cx.codigo), String(FORMA.DINHEIRO), 'CURRENT_TIMESTAMP', fbNum(valor), `'${fbEsc(obs)}'`, `'${m.tipo}'`];
   if (contasPagar != null) { campos.push('CODIGOCONTASPAGAR'); vals.push(String(contasPagar)); }
