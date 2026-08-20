@@ -2828,6 +2828,17 @@ function assinaGrupo(h, expira) {
   return createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, h, String(expira)].join('|')).digest('hex');
 }
 function grupoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
+// Assinatura do CENTRAL (app.prainhabar.com) pra falar com a loja pelo Funnel —
+// mesmo segredo/HMAC do canal da NFC-e, escopo 'caixa'. É o que deixa a
+// Conferência de Caixa do web ler relatório/analítico e FECHAR caixa, sem PIN.
+function centralAssinou(u) {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16) return false;
+  const e = Number(u.searchParams.get('e') || 0);
+  const s = String(u.searchParams.get('s') || '');
+  if (!(e > Math.floor(Date.now() / 1000))) return false;
+  const esperada = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'caixa', String(e)].join('|')).digest('hex');
+  try { const a = Buffer.from(s), b = Buffer.from(esperada); return a.length === b.length && timingSafeEqual(a, b); } catch { return false; }
+}
 async function clienteDoGrupo(cpf) {
   if (!grupoDisponivel()) return null;
   const h = hashCpfGrupo(cpf);
@@ -4288,6 +4299,39 @@ async function apiCaixaFecharTodos(quem) {
     }
   }
   return { ok: true, fechados, total: fechados.length };
+}
+// Fecha UM caixa específico (Administrador — caixa de outro operador). Mesmo
+// cálculo do fechar-todos, só que num só.
+async function apiCaixaFecharUm(body, quem) {
+  if (!quem || !quem.admin) return { ok: false, erro: 'só Administrador fecha o caixa de outro operador' };
+  const cod = Number(body.codigo);
+  if (!cod) return { ok: false, erro: 'caixa inválido' };
+  const c = (await qi(`SELECT COALESCE(SALDOINICIAL,0) FUNDO FROM CAIXA WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`)).rows?.[0];
+  if (!c) return { ok: false, erro: 'esse caixa não está aberto' };
+  const fundo = Number(c.FUNDO) || 0;
+  let esperado = fundo;
+  try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
+  const up = await qi(`UPDATE CAIXA SET DATAFECHAMENTO=CURRENT_TIMESTAMP, SALDOFINAL=${fbNum(esperado)}, SALDOFINALINFORMADO=${fbNum(esperado)} WHERE CODIGO=${cod} AND DATAFECHAMENTO IS NULL`);
+  if (!up.ok) return { ok: false, erro: 'FB: ' + up.err };
+  try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+    VALUES (${cod}, ${quem.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechado por ' + (quem.nome || quem.login)})`; } catch {}
+  return { ok: true, codigo: cod, esperado };
+}
+// ANALÍTICO de um caixa: cada pagamento (hora, forma, NSU, pedido, valor).
+async function apiCaixaDetalhe(codigo) {
+  const cod = Number(codigo);
+  if (!cod) return { ok: false, erro: 'caixa inválido' };
+  const cx = (await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME,u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, COALESCE(c.SALDOINICIAL,0) FUNDO, c.SALDOFINAL, c.SALDOFINALINFORMADO
+    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE c.CODIGO=${cod}`)).rows?.[0];
+  if (!cx) return { ok: false, erro: 'caixa não encontrado' };
+  const pg = await qi(`SELECT p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) FORMA, CAST(p.VALOR AS NUMERIC(12,2)) V,
+      CAST(p.NSUTRANSACAO AS VARCHAR(30)) NSU, CAST(p.DATAPAGAMENTO AS VARCHAR(30)) QUANDO
+    FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
+    WHERE p.CODIGOCAIXA=${cod} AND p.DATADELETE IS NULL ORDER BY p.DATAPAGAMENTO`);
+  return { ok: true,
+    caixa: { codigo: cod, quem: T(cx.QUEM), aberto_em: cx.DATAABERTURA, fechado_em: cx.DATAFECHAMENTO,
+      fundo: Number(cx.FUNDO) || 0, esperado: cx.SALDOFINAL == null ? null : Number(cx.SALDOFINAL), contado: cx.SALDOFINALINFORMADO == null ? null : Number(cx.SALDOFINALINFORMADO) },
+    pagamentos: (pg.ok ? pg.rows : []).map((x) => ({ pedido: Number(x.PED) || null, forma: T(x.FORMA) || ('forma ' + x.F), valor: Number(x.V) || 0, nsu: T(x.NSU) || null, quando: T(x.QUANDO) })) };
 }
 // ---- USUÁRIOS PRÓPRIOS (sem passar pelo Consumer) ----
 // Perfis prontos, com os MESMOS códigos de permissão do PDV — assim a regra
@@ -11160,6 +11204,19 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok: !!url, url }));
     }
     if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
+    // ---- CONFERÊNCIA DE CAIXA pelo CENTRAL (Concilia web) — assinado, sem PIN.
+    // Sintético (relatorio), analítico (detalhe) e FECHAR (um/todos). O central
+    // é confiável (assinatura), então age como Administrador.
+    if (p.startsWith('/api/central/caixa/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!centralAssinou(u)) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      const central = { login: 'central', nome: 'Concilia (central)', admin: true };
+      if (p === '/api/central/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
+      if (p === '/api/central/caixa/detalhe') return res.end(JSON.stringify(await apiCaixaDetalhe(u.searchParams.get('caixa'))));
+      if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
+      if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }

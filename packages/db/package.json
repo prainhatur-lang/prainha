@@ -17,6 +17,7 @@
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "criar:usuario": "tsx scripts/criar-usuario.ts",
     "db:list-insumos": "tsx scripts/list-insumos.ts",
+    "migrate:caixa-url": "tsx scripts/migrate-caixa-url.ts",
     "migrate:avaliacoes": "tsx scripts/migrate-avaliacoes.ts",
     "migrate:reservas": "tsx scripts/migrate-reservas.ts",
     "migrate:reserva-config": "tsx scripts/migrate-reserva-config.ts",

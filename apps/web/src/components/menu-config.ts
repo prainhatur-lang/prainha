@@ -277,6 +277,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Análises financeiras',
         links: [
           { label: 'DRE', href: '/relatorios/dre', perm: 'relatorio.read' },
+          { label: 'Conferência de caixa', href: '/financeiro/conferencia-caixa', perm: 'relatorio.read' },
           {
             label: 'Fluxo de caixa',
             href: '/relatorios/fluxo-caixa',
