@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNotNull, isNull, not, ilike } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -21,8 +22,7 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+  const filial = await escolherFilial(filiais, sp.filialId);
 
   if (!filial) {
     return (

@@ -3,6 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -41,9 +42,7 @@ export default async function FechamentoPage(props: { searchParams: Promise<SP> 
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);
   const filialSelecionada =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
-    filiais[0] ??
-    null;
+    await escolherFilial(filiais, sp.filialId);
   const processo: Processo = (sp.processo as Processo) ?? 'OPERADORA';
   const mes = sp.mes && /^\d{4}-\d{2}$/.test(sp.mes) ? sp.mes : mesAtualIso();
   const { ini, fim } = primeiroUltimoDoMes(mes);

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { FilialSwitcher } from './filial-switcher';
 import {
   MENU_AREAS,
   isRouteActive,
@@ -281,7 +282,7 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-bold tracking-tight text-slate-950">Concilia</span>
-                <span className="block truncate text-[11px] font-medium text-slate-500">Prainha Bar</span>
+                <span className="block truncate text-[11px] font-medium text-slate-500">gestão</span>
               </span>
             </Link>
           )}
@@ -295,6 +296,8 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
             <CloseIcon />
           </button>
         </div>
+
+        <FilialSwitcher />
 
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
           <div className="space-y-1">

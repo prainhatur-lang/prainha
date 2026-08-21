@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -52,8 +53,7 @@ export default async function ClienteDetalhe(props: {
   const { id } = await props.params;
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+  const filial = await escolherFilial(filiais, sp.filialId);
 
   if (!filial) {
     return (

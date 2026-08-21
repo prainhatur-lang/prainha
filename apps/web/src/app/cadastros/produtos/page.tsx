@@ -3,6 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, eq, sql } from 'drizzle-orm';
 import { buscaIlike } from '@/lib/texto';
@@ -54,9 +55,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
   const filialSelecionada =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
-    filiais[0] ??
-    null;
+    await escolherFilial(filiais, sp.filialId);
   const q = (sp.q ?? '').trim();
   const tipoFiltro = (sp.tipo ?? '').trim();
   // Default: mostra só ativos. Precisa clicar 'Todos' explicitamente pra ver

@@ -3,6 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -35,10 +36,9 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+  const filialResolvida = await escolherFilial(filiais, sp.filialId);
 
-  if (!filial) {
+  if (!filialResolvida) {
     return (
       <main className="min-h-screen bg-slate-50">
         <AppHeader userEmail={user.email} />
@@ -48,6 +48,7 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       </main>
     );
   }
+  const filial = filialResolvida;
 
   const pedidos = await db
     .select({

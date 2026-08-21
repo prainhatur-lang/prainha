@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -40,10 +41,7 @@ export default async function OperadoraPage(props: { searchParams: Promise<SP> }
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filialSelecionada =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
-    filiais[0] ??
-    null;
+  const filialSelecionada = (await escolherFilial(filiais, sp.filialId)) ?? filiais[0];
 
   // Historico (todas filiais do usuario, processo OPERADORA)
   const filialIds = filiais.map((f) => f.id);

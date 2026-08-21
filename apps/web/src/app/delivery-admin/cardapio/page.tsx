@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { CardapioAdminClient } from './cardapio-admin-client';
 
@@ -28,8 +29,7 @@ export default async function CardapioDeliveryPage(props: {
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+  const filial = await escolherFilial(filiais, sp.filialId);
 
   if (!filial) {
     return (

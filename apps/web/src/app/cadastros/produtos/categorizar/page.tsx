@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNull, isNotNull, sql, inArray } from 'drizzle-orm';
 import { buscaIlike } from '@/lib/texto';
@@ -48,9 +49,8 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
-  if (!filial) {
+  const filialResolvida = await escolherFilial(filiais, sp.filialId);
+  if (!filialResolvida) {
     return (
       <main className="min-h-screen bg-slate-50">
         <AppHeader userEmail={user.email} />
@@ -60,6 +60,7 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
       </main>
     );
   }
+  const filial = filialResolvida;
 
   const q = (sp.q ?? '').trim();
   const statusFiltro = sp.status === 'com' ? 'com' : 'sem'; // default: sem categoria

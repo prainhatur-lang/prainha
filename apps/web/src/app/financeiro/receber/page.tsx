@@ -3,6 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { normalizaBusca } from '@/lib/texto';
@@ -32,9 +33,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
   const filialSelecionada =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ??
-    filiais[0] ??
-    null;
+    await escolherFilial(filiais, sp.filialId);
   const filtro = sp.filtro ?? 'devem';
   const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : null;
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : null;

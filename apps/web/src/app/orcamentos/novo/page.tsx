@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { diasAtrasBr } from '@/lib/datas';
 import { montarLocaisEvento } from '@/lib/orcamentos-server';
@@ -40,9 +41,10 @@ export default async function NovoOrcamentoPage() {
   }
 
   const locais = await montarLocaisEvento(filiais);
+  const filialAtiva = (await escolherFilial(filiais)) ?? filiais[0];
 
   const inicial: OrcamentoInicial = {
-    filialId: filiais[0].id,
+    filialId: filialAtiva.id,
     local: '',
     clienteNome: '',
     clienteTelefone: '',

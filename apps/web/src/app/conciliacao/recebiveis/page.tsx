@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -29,7 +30,7 @@ export default async function RecebiveisPage(props: { searchParams: Promise<SP> 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
   const filialSelecionada =
-    (sp.filialId && filiais.find((f) => f.id === sp.filialId)) ?? filiais[0] ?? null;
+    await escolherFilial(filiais, sp.filialId);
 
   const filialIds = filiais.map((f) => f.id);
   const execucoes = filialIds.length

@@ -1,5 +1,6 @@
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { ConferenciaCaixaClient } from './conferencia-caixa-client';
 
@@ -14,7 +15,7 @@ export default async function ConferenciaCaixaPage(props: { searchParams: Promis
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
   const sel =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+    await escolherFilial(filiais, sp.filialId);
 
   return (
     <>

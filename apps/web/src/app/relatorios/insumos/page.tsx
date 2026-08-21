@@ -10,6 +10,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -37,8 +38,7 @@ export default async function RelatorioInsumosPage(props: { searchParams: Promis
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial =
-    (sp.filialId ? filiais.find((f) => f.id === sp.filialId) : undefined) ?? filiais[0] ?? null;
+  const filial = await escolherFilial(filiais, sp.filialId);
   const de = sp.de && YMD.test(sp.de) ? sp.de : diasAtrasBr(7);
   const ate = sp.ate && YMD.test(sp.ate) ? sp.ate : hojeBr();
 

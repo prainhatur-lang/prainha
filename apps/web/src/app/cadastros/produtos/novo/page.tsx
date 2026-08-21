@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { asc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -22,7 +23,7 @@ export default async function NovoProdutoPage(props: {
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);
   if (filiais.length === 0) redirect('/cadastros/produtos');
-  const filial = filiais.find((f) => f.id === sp.filial) ?? filiais[0];
+  const filial = (await escolherFilial(filiais, sp.filial)) ?? filiais[0];
 
   const [etiquetas, pracas] = await Promise.all([
     db

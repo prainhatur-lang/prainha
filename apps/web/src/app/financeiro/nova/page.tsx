@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, ilike, isNull, not, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -23,7 +24,7 @@ export default async function NovaContaPage(props: {
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const filial = filiais.find((f) => f.id === sp.filialId) ?? filiais[0];
+  const filial = (await escolherFilial(filiais, sp.filialId)) ?? filiais[0];
   if (!filial) redirect('/financeiro');
 
   // Plano de contas: só DESPESA, montado como pai → filhas (subcategorias).
