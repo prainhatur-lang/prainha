@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, jsonb, index, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -306,3 +306,27 @@ export const contaPagarBaixa = pgTable(
     filialDataIdx: index('idx_cp_baixa_filial_data').on(t.filialId, t.data),
   }),
 );
+
+/** Cache das consultas do SPC (paga por CPF — nunca consultar o mesmo duas
+ *  vezes). Chave = sha256 do CPF só com dígitos, o MESMO hash que o
+ *  vendas-local usa na spc_cache da loja. `nome` NULL = já consultamos e o SPC
+ *  não tem cadastro útil; guardar esse negativo é o que evita pagar de novo. */
+export const spcConsulta = pgTable('spc_consulta', {
+  cpfHash: text('cpf_hash').primaryKey(),
+  nome: text('nome'),
+  nascimento: date('nascimento'),
+  mae: text('mae'),
+  email: text('email'),
+  telefone: varchar('telefone', { length: 15 }),
+  endereco: text('endereco'),
+  numero: varchar('numero', { length: 20 }),
+  bairro: text('bairro'),
+  cidade: text('cidade'),
+  uf: varchar('uf', { length: 2 }),
+  cep: varchar('cep', { length: 8 }),
+  /** JSON cru da resposta — permite reprocessar campo novo sem pagar de novo. */
+  bruto: jsonb('bruto'),
+  consultadoEm: timestamp('consultado_em', { withTimezone: true }).notNull().defaultNow(),
+  consultadoPor: uuid('consultado_por'),
+  filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'set null' }),
+});

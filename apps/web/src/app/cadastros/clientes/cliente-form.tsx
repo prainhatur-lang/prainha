@@ -73,9 +73,66 @@ export function ClienteForm({
   const [erro, setErro] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+  const [spc, setSpc] = useState<'ocioso' | 'buscando' | 'achou' | 'nada' | 'erro'>('ocioso');
+  const [spcMsg, setSpcMsg] = useState<string | null>(null);
+  // CPFs já consultados nesta tela — o SPC cobra por documento novo, então
+  // nem o mesmo CPF digitado duas vezes dispara chamada repetida.
+  const [jaConsultados] = useState<Set<string>>(() => new Set());
 
   function set<K extends keyof ValoresCliente>(k: K, valor: ValoresCliente[K]) {
     setV((prev) => ({ ...prev, [k]: valor }));
+  }
+
+  /** Puxa o cadastro do CPF no SPC e preenche o que estiver EM BRANCO.
+   *  Nunca sobrescreve o que a pessoa digitou: o que veio da boca do cliente
+   *  vale mais que a base. */
+  async function buscarNoSpc(cpfBruto: string) {
+    const cpf = cpfBruto.replace(/\D/g, '');
+    if (cpf.length !== 11 || jaConsultados.has(cpf)) return;
+    jaConsultados.add(cpf);
+    setSpc('buscando'); setSpcMsg(null);
+    try {
+      const r = await fetch('/api/spc/consulta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cpf, filialId }),
+      });
+      const d = (await r.json().catch(() => ({}))) as {
+        achou?: boolean; error?: string; fonte?: string;
+        nome?: string | null; nascimento?: string | null; telefone?: string | null;
+        email?: string | null;
+        endereco?: string | null; numero?: string | null; bairro?: string | null;
+        cidade?: string | null; uf?: string | null; cep?: string | null;
+      };
+      if (!r.ok) {
+        setSpc('erro');
+        setSpcMsg(r.status === 503 ? 'SPC não configurado — preencha na mão.' : (d.error ?? 'SPC indisponível'));
+        return;
+      }
+      if (!d.achou) {
+        setSpc('nada');
+        setSpcMsg('O SPC não tem cadastro pra esse CPF. Preencha na mão.');
+        return;
+      }
+      setV((prev) => ({
+        ...prev,
+        nome: prev.nome || (d.nome ?? ''),
+        dataNascimento: prev.dataNascimento || (d.nascimento ?? ''),
+        celular: prev.celular || (d.telefone ?? ''),
+        email: prev.email || (d.email ?? ''),
+        endereco: prev.endereco || (d.endereco ?? ''),
+        numero: prev.numero || (d.numero ?? ''),
+        bairro: prev.bairro || (d.bairro ?? ''),
+        cidade: prev.cidade || (d.cidade ?? ''),
+        uf: prev.uf || (d.uf ?? ''),
+        cep: prev.cep || (d.cep ?? ''),
+      }));
+      setSpc('achou');
+      setSpcMsg(d.fonte === 'cache' ? 'Preenchido pelo SPC (consulta já feita antes).' : 'Preenchido pelo SPC.');
+    } catch {
+      setSpc('erro');
+      setSpcMsg('Não deu pra consultar agora. Preencha na mão.');
+    }
   }
 
   /** Espera a loja aplicar o cadastro (o agente roda a fila a cada ~15s). */
@@ -169,7 +226,23 @@ export function ClienteForm({
           </Campo>
           <Campo label="CPF / CNPJ">
             <input className={CAMPO} value={v.cpfOuCnpj} inputMode="numeric"
-              onChange={(e) => set('cpfOuCnpj', e.target.value)} placeholder="só números" />
+              onChange={(e) => {
+                const t = e.target.value;
+                set('cpfOuCnpj', t);
+                // 11 dígitos = CPF completo: busca sozinho, sem esperar sair do campo.
+                if (t.replace(/\D/g, '').length === 11) void buscarNoSpc(t);
+              }}
+              onBlur={(e) => void buscarNoSpc(e.target.value)}
+              placeholder="só números" />
+            {spc !== 'ocioso' && (
+              <p className={`mt-1 text-[11px] ${
+                spc === 'achou' ? 'text-emerald-700'
+                : spc === 'buscando' ? 'text-slate-500'
+                : spc === 'nada' ? 'text-slate-500' : 'text-amber-700'
+              }`}>
+                {spc === 'buscando' ? 'Consultando o SPC…' : spcMsg}
+              </p>
+            )}
           </Campo>
           <Campo label="Nascimento">
             <input type="date" className={CAMPO} value={v.dataNascimento}

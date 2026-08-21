@@ -96,6 +96,7 @@
     "sync:complementos": "tsx scripts/sync-complementos.ts",
     "migrate:wizard": "tsx scripts/migrate-wizard.ts",
     "migrate:cliente-cadastro": "tsx scripts/migrate-cliente-cadastro.ts",
+    "migrate:spc-consulta": "tsx scripts/migrate-spc-consulta.ts",
     "sync:wizard": "tsx scripts/sync-wizard.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
