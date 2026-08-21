@@ -109,10 +109,23 @@ export interface ClienteIngest {
   telefone: string | null;
   /** Saldo atual da conta corrente (fiado). > 0 = cliente deve. */
   saldoAtualContaCorrente: number | null;
-  /** Limite de credito de fiado. */
+  /** Limite de credito de fiado. > 0 = cliente habilitado pra fiado. */
   limiteCreditoContaCorrente: number | null;
+  /** S = trava a venda quando o fiado estoura o limite. */
+  bloquearVendaAposLimite?: boolean | null;
   /** S = arquivar (Consumer oculta de contacorrente). */
   arquivarFiado: boolean | null;
+  // Cadastro completo (CONTATOS). Opcionais: instalacao do Consumer que nao
+  // tem a coluna simplesmente nao manda, e a nuvem preserva o que ja tem.
+  celular?: string | null;
+  dataNascimento?: string | null;
+  endereco?: string | null;
+  numero?: string | null;
+  complemento?: string | null;
+  bairro?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  cep?: string | null;
   dataDelete: string | null;
   versaoReg: number | null;
 }

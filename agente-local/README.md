@@ -140,6 +140,17 @@ Get-Content "C:\concilia-agente\logs\agente-$(Get-Date -Format 'yyyy-MM-dd').log
 
 ## Histórico de versões
 
+- **v1.4.0** (2026-08-21):
+  - Cadastro de cliente completo vindo do Concilia. `atualizar_cliente` deixou de aceitar só
+    nome/CPF: agora mapeia e-mail, telefone, celular, nascimento, endereço, número, complemento,
+    bairro, cidade, UF, CEP, observação, limite de fiado e `BLOQUEARVENDAAPOSLIMITE`.
+  - Comando novo `criar_cliente`: INSERT em `CONTATOS` (TIPO='CF', numéricos zerados como o
+    caixa já fazia) e devolve o `CODIGO` da trigger no resultado — a nuvem espera esse código
+    em vez de inventar um.
+  - `executarUpdate` descarta coluna que não existe na instalação (o cadastro do Consumer varia
+    entre versões) em vez de derrubar o UPDATE inteiro.
+  - Sync de clientes traz de volta os campos novos + `BLOQUEARVENDAAPOSLIMITE`.
+
 - **v0.5.4** (2026-05-06):
   - Refetch janela 14 dias — captura updates pós-criação do PEDIDO. Corrige snapshot velho que causava ~60% de subreporting do 10%.
   - Strip de BOM no config.json — evita crash com `Set-Content -Encoding utf8` do PS5.

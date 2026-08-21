@@ -178,6 +178,14 @@ export default async function ClienteDetalhe(props: {
               </div>
             </div>
             <div className="flex gap-2">
+              {cadastro && (
+                <Link
+                  href={`/cadastros/clientes/editar/${cadastro.id}`}
+                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Editar cadastro
+                </Link>
+              )}
               {foneDig && (
                 <a
                   href={`https://wa.me/${foneDig.length <= 11 ? '55' + foneDig : foneDig}`}

@@ -113,9 +113,26 @@ export const cliente = pgTable(
      *  folha (saldo do garcom-cliente abate da comissao). */
     saldoAtualContaCorrente: numeric('saldo_atual_conta_corrente', { precision: 14, scale: 2 }),
     limiteCreditoContaCorrente: numeric('limite_credito_conta_corrente', { precision: 14, scale: 2 }),
+    /** CONTATOS.BLOQUEARVENDAAPOSLIMITE — true trava a venda quando o fiado
+     *  estoura o limite; false deixa passar (só avisa). */
+    bloquearVendaAposLimite: boolean('bloquear_venda_apos_limite'),
     /** Se true, o Consumer arquivou esse cliente (oculta da contacorrente
      *  e bloqueia novos fiados). */
     arquivarFiado: boolean('arquivar_fiado'),
+
+    // --- Cadastro completo (espelha o resto de CONTATOS) ---
+    celular: varchar('celular', { length: 30 }),
+    dataNascimento: date('data_nascimento'),
+    endereco: varchar('endereco', { length: 120 }),
+    numero: varchar('numero', { length: 20 }),
+    complemento: varchar('complemento', { length: 100 }),
+    bairro: varchar('bairro', { length: 100 }),
+    cidade: varchar('cidade', { length: 100 }),
+    uf: varchar('uf', { length: 2 }),
+    cep: varchar('cep', { length: 10 }),
+    observacao: text('observacao'),
+    /** Nasceu no Concilia (e foi empurrado pra loja), não veio do Consumer. */
+    criadoNaNuvem: boolean('criado_na_nuvem').notNull().default(false),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

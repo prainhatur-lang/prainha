@@ -256,6 +256,16 @@ interface PagamentoRow {
 const TIMEOUT_MS = 60_000;
 
 const toIso = (d: Date | null): string | null => (d ? d.toISOString() : null);
+/** Data pura (nascimento) como 'YYYY-MM-DD'. Monta pelas partes LOCAIS: o
+ *  Firebird guarda data sem fuso e o toISOString jogaria pro dia anterior. */
+const toYmd = (v: Date | string | null | undefined): string | null => {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  if (isNaN(d.getTime())) return null;
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
 const toStr = (v: unknown): string | null => (v == null ? null : String(v).trim() || null);
 const toNum = (v: unknown): number | null => {
   if (v == null) return null;
@@ -601,7 +611,18 @@ async function buscarClientesPorTabela(
       'CELULAR',
       'SALDOATUALCONTACORRENTE',
       'LIMITECREDITOCONTACORRENTE',
+      'BLOQUEARVENDAAPOSLIMITE',
       'ARQUIVARFIADO',
+      // Cadastro completo — selectFlexivel descarta o que a instalação não tem.
+      'DATANASCIMENTO',
+      'ENDERECO',
+      'NUMERO',
+      'COMPLEMENTO',
+      'BAIRRO',
+      'CIDADE',
+      'UF',
+      'CEP',
+      'OBSERVACAO',
       'DATADELETE',
       'VERSAOREG',
     ],
@@ -616,9 +637,21 @@ async function buscarClientesPorTabela(
       FONERECADOS?: string | null;
       SALDOATUALCONTACORRENTE?: number | string | null;
       LIMITECREDITOCONTACORRENTE?: number | string | null;
+      BLOQUEARVENDAAPOSLIMITE?: string | null;
       ARQUIVARFIADO?: string | null;
+      DATANASCIMENTO?: Date | string | null;
+      ENDERECO?: string | null;
+      NUMERO?: string | null;
+      COMPLEMENTO?: string | null;
+      BAIRRO?: string | null;
+      CIDADE?: string | null;
+      UF?: string | null;
+      CEP?: string | null;
+      OBSERVACAO?: string | null;
     }
   >;
+  const sn = (v: string | null | undefined): boolean | null =>
+    v === 'S' ? true : v === 'N' ? false : null;
   return rows.map((r) => ({
     codigoExterno: r.CODIGO,
     cpfOuCnpj: toStr(r.CNPJOUCPF ?? r.CPFCNPJ ?? r.CNPJCPF),
@@ -629,8 +662,18 @@ async function buscarClientesPorTabela(
     ),
     saldoAtualContaCorrente: toNum(r.SALDOATUALCONTACORRENTE),
     limiteCreditoContaCorrente: toNum(r.LIMITECREDITOCONTACORRENTE),
-    arquivarFiado:
-      r.ARQUIVARFIADO === 'S' ? true : r.ARQUIVARFIADO === 'N' ? false : null,
+    bloquearVendaAposLimite: sn(r.BLOQUEARVENDAAPOSLIMITE),
+    arquivarFiado: sn(r.ARQUIVARFIADO),
+    // Cadastro completo: a nuvem só sobrescreve quando vem preenchido.
+    celular: toStr(r.FONECELULAR),
+    dataNascimento: toYmd(r.DATANASCIMENTO),
+    endereco: toStr(r.ENDERECO),
+    numero: toStr(r.NUMERO),
+    complemento: toStr(r.COMPLEMENTO),
+    bairro: toStr(r.BAIRRO),
+    cidade: toStr(r.CIDADE),
+    uf: toStr(r.UF),
+    cep: toStr(r.CEP),
     dataDelete: toIso(r.DATADELETE),
     versaoReg: toNum(r.VERSAOREG),
   }));
@@ -1392,15 +1435,60 @@ export async function executarUpdate(
   tabela: string,
   campos: Record<string, string | number | null>,
   whereCodigo: number,
-): Promise<{ afetados: number }> {
+): Promise<{ afetados: number; ignoradas: string[] }> {
+  // Coluna que não existe nessa instalação derrubaria o UPDATE inteiro — e o
+  // cadastro do Consumer varia de versão pra versão (nem toda tem BAIRRO,
+  // NUMERO, OBSERVACAO). Descarta as ausentes e aplica o resto.
+  const existentes = await colunasExistentes(cfg, tabela, Object.keys(campos));
+  const ignoradas = Object.keys(campos).filter((c) => !existentes.has(c.toUpperCase()));
+  const campos2: Record<string, string | number | null> = {};
+  for (const [k, v] of Object.entries(campos)) {
+    if (existentes.has(k.toUpperCase())) campos2[k] = v;
+  }
+  campos = campos2;
+
   const cols = Object.keys(campos);
-  if (cols.length === 0) return { afetados: 0 };
+  if (cols.length === 0) return { afetados: 0, ignoradas };
   const setSql = cols.map((c) => `${c} = ?`).join(', ');
   const params = [...cols.map((c) => campos[c]), whereCodigo];
   const sql = `UPDATE ${tabela} SET ${setSql} WHERE CODIGO = ?`;
   // UPDATE precisa de transaction com commit explicito (mesmo bug do INSERT).
   await executarWrite(cfg, sql, params);
-  return { afetados: 1 };
+  return { afetados: 1, ignoradas };
+}
+
+/** Cria um contato (cliente) em CONTATOS e devolve o CODIGO que a trigger
+ *  gerou. Mesmos campos obrigatórios que o vendas-local já usa no caixa:
+ *  TIPO='CF' e os numéricos zerados, senão o Consumer trata como nulo. */
+export async function criarContato(
+  cfg: Config,
+  campos: Record<string, string | number | null>,
+): Promise<{ codigo: number | null; ignoradas: string[] }> {
+  const fixos: Record<string, string | number | null> = {
+    TIPO: 'CF',
+    SALDOATUALCONTACORRENTE: 0,
+    COMISSAOCOLABORADOR: 0,
+    ICMSDESONDIMINUIVALORNF: 0,
+  };
+  const opcionais: Record<string, string | number | null> = {};
+  for (const [k, v] of Object.entries(campos)) {
+    if (v !== null && v !== undefined && v !== '') opcionais[k] = v;
+  }
+  if (!opcionais.NOME) throw new Error('NOME obrigatorio');
+
+  const todos = { ...fixos, ...opcionais };
+  const existentes = await colunasExistentes(cfg, 'CONTATOS', Object.keys(todos));
+  const ignoradas = Object.keys(todos).filter((c) => !existentes.has(c.toUpperCase()));
+  const usar = Object.keys(todos).filter((c) => existentes.has(c.toUpperCase()));
+
+  const cols = [...usar, 'DATAINSERT'];
+  const placeholders = [...usar.map(() => '?'), 'CURRENT_TIMESTAMP'];
+  const params = usar.map((c) => todos[c]);
+
+  const sql = `INSERT INTO CONTATOS (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING CODIGO`;
+  const r = await executarWrite<{ CODIGO?: number }>(cfg, sql, params);
+  const codigo = r && typeof r.CODIGO === 'number' ? r.CODIGO : null;
+  return { codigo, ignoradas };
 }
 
 // --- Pagamentos (existente) ---

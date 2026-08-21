@@ -227,7 +227,15 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-7xl px-6 py-10">
-        <h1 className="text-2xl font-bold text-slate-900">Clientes</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-2xl font-bold text-slate-900">Clientes</h1>
+          <Link
+            href={`/cadastros/clientes/novo?filialId=${filialSelecionada.id}`}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            + Novo cliente
+          </Link>
+        </div>
         <p className="mt-1 text-sm text-slate-600">
           {int(total)} cliente(s) na {filialSelecionada.nome} · {int(comReserva)} já reservaram
           {comFiado > 0 ? ` · ${int(comFiado)} com fiado em aberto` : ''}.

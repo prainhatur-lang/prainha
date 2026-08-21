@@ -49,6 +49,7 @@ import {
   buscarClientesJanela,
   buscarFornecedoresJanela,
   executarUpdate,
+  criarContato,
   baixarFiado,
   criarContaPagar,
   lancarBebidaNaComanda,
@@ -71,7 +72,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.3.0';
+const AGENTE_VERSAO = '1.4.0';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -473,9 +474,28 @@ async function cicloComandos(
   if (comandos.length === 0) return;
   log.info('processando comandos', { qtd: comandos.length });
 
+  // Cadastro completo do cliente (Concilia → CONTATOS). O par de cada chave
+  // está em apps/web/src/lib/cliente-cadastro.ts — mexeu num lado, mexe no
+  // outro, senão o campo salva na nuvem e não chega na loja.
+  // Coluna que não existir nessa instalação é descartada pelo executarUpdate.
   const COL_MAP: Record<string, string> = {
     nome: 'NOME',
     cnpjOuCpf: 'CNPJOUCPF',
+    email: 'EMAIL',
+    telefone: 'FONEPRINCIPAL',
+    celular: 'FONECELULAR',
+    dataNascimento: 'DATANASCIMENTO',
+    endereco: 'ENDERECO',
+    numero: 'NUMERO',
+    complemento: 'COMPLEMENTO',
+    bairro: 'BAIRRO',
+    cidade: 'CIDADE',
+    uf: 'UF',
+    cep: 'CEP',
+    observacao: 'OBSERVACAO',
+    limiteCredito: 'LIMITECREDITOCONTACORRENTE',
+    bloquearVendaAposLimite: 'BLOQUEARVENDAAPOSLIMITE',
+    arquivarFiado: 'ARQUIVARFIADO',
   };
 
   for (const cmd of comandos) {
@@ -504,8 +524,35 @@ async function cicloComandos(
           tabela,
           codigo: payload.codigoExterno,
           campos: camposFB,
+          ignoradas: r.ignoradas,
         });
         log.info('comando ok', { id: cmd.id, tipo: cmd.tipo });
+        continue;
+      }
+
+      // Cadastro novo: INSERT em CONTATOS. O CODIGO é da trigger do Consumer —
+      // por isso a nuvem espera ele voltar aqui em vez de inventar um.
+      if (cmd.tipo === 'criar_cliente') {
+        const payload = cmd.payload as unknown as {
+          campos?: Record<string, string | number | null>;
+        };
+        const camposFB: Record<string, string | number | null> = {};
+        for (const [k, v] of Object.entries(payload.campos ?? {})) {
+          const col = COL_MAP[k];
+          if (col) camposFB[col] = v;
+        }
+        if (!camposFB.NOME) {
+          await reportarComando(cfg, cmd.id, 'erro', { msg: 'nome obrigatorio' });
+          continue;
+        }
+        const r = await criarContato(cfg, camposFB);
+        await reportarComando(cfg, cmd.id, 'sucesso', {
+          codigo: r.codigo,
+          tabela: 'CONTATOS',
+          campos: camposFB,
+          ignoradas: r.ignoradas,
+        });
+        log.info('cliente criado', { id: cmd.id, codigo: r.codigo });
         continue;
       }
 

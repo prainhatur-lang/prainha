@@ -11,6 +11,7 @@
 
 import { db, schema } from '@concilia/db';
 import { eq, and, sql as drizzleSql } from 'drizzle-orm';
+import { dateToBrYmd } from '@/lib/datas';
 
 type Dados = Record<string, unknown>;
 
@@ -67,6 +68,14 @@ function date(v: unknown): Date | null {
     return isNaN(d.getTime()) ? null : d;
   }
   return null;
+}
+
+/** Data pura pro cadastro (coluna `date` espera 'YYYY-MM-DD'). Converte em
+ *  BRT: o Firebird manda meia-noite local e o toISOString jogaria pro dia
+ *  anterior — o clássico aniversário um dia atrasado. */
+function ymd(v: unknown): string | null {
+  const d = date(v);
+  return d ? dateToBrYmd(d) : null;
 }
 
 /** Converte numero pra string (drizzle numeric espera string) */
@@ -523,7 +532,19 @@ async function mapContatos(filialId: string, op: Operacao, chave: string, d: Dad
     telefone: fone?.slice(0, 30) ?? null,
     saldoAtualContaCorrente: numStr(d.SALDOATUALCONTACORRENTE),
     limiteCreditoContaCorrente: numStr(d.LIMITECREDITOCONTACORRENTE),
+    bloquearVendaAposLimite: bool(d.BLOQUEARVENDAAPOSLIMITE),
     arquivarFiado: bool(d.ARQUIVARFIADO),
+    // Cadastro completo — só chega quando o agente é >= v1.2.0; nas versões
+    // antigas vem undefined e o COALESCE abaixo preserva o que a nuvem tem.
+    celular: str(d.FONECELULAR)?.slice(0, 30) ?? null,
+    dataNascimento: ymd(d.DATANASCIMENTO),
+    endereco: str(d.ENDERECO)?.slice(0, 120) ?? null,
+    numero: str(d.NUMERO)?.slice(0, 20) ?? null,
+    complemento: str(d.COMPLEMENTO)?.slice(0, 100) ?? null,
+    bairro: str(d.BAIRRO)?.slice(0, 100) ?? null,
+    cidade: str(d.CIDADE)?.slice(0, 100) ?? null,
+    uf: str(d.UF)?.slice(0, 2) ?? null,
+    cep: str(d.CEP)?.slice(0, 10) ?? null,
     dataDelete: date(d.DATADELETE),
     versaoReg: num(d.VERSAOREG),
     sincronizadoEm: new Date(),
@@ -538,7 +559,19 @@ async function mapContatos(filialId: string, op: Operacao, chave: string, d: Dad
       telefone: row.telefone,
       saldoAtualContaCorrente: row.saldoAtualContaCorrente,
       limiteCreditoContaCorrente: row.limiteCreditoContaCorrente,
+      bloquearVendaAposLimite: row.bloquearVendaAposLimite,
       arquivarFiado: row.arquivarFiado,
+      // Campos do cadastro: o Consumer mandando vazio NÃO apaga o que foi
+      // preenchido no Concilia (mesmo cuidado que o fornecedor já tinha).
+      celular: drizzleSql`COALESCE(NULLIF(excluded.celular, ''), ${schema.cliente.celular})`,
+      dataNascimento: drizzleSql`COALESCE(excluded.data_nascimento, ${schema.cliente.dataNascimento})`,
+      endereco: drizzleSql`COALESCE(NULLIF(excluded.endereco, ''), ${schema.cliente.endereco})`,
+      numero: drizzleSql`COALESCE(NULLIF(excluded.numero, ''), ${schema.cliente.numero})`,
+      complemento: drizzleSql`COALESCE(NULLIF(excluded.complemento, ''), ${schema.cliente.complemento})`,
+      bairro: drizzleSql`COALESCE(NULLIF(excluded.bairro, ''), ${schema.cliente.bairro})`,
+      cidade: drizzleSql`COALESCE(NULLIF(excluded.cidade, ''), ${schema.cliente.cidade})`,
+      uf: drizzleSql`COALESCE(NULLIF(excluded.uf, ''), ${schema.cliente.uf})`,
+      cep: drizzleSql`COALESCE(NULLIF(excluded.cep, ''), ${schema.cliente.cep})`,
       dataDelete: row.dataDelete,
       versaoReg: row.versaoReg,
       sincronizadoEm: row.sincronizadoEm,
