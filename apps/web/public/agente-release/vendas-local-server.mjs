@@ -4642,8 +4642,14 @@ async function fbCaixaAbertoOuSistema() {
     if (cod == null) throw new Error('não consegui abrir o caixa automático');
     return cod;
   }
-  const s = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='ser' AND ATIVO='S'`);
-  if (!s.ok || !s.rows.length) throw new Error('nenhum caixa aberto e não achei o usuário do sistema (ser)');
+  // 'ser' é o usuário de sistema da Prainha — a Tabuará NÃO tem (conferido no
+  // Consumer dela em 21/08). Sem esta reserva, cartão e Pix quebravam em toda
+  // loja sem esse login, justamente quando não havia caixa aberto.
+  let s = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='ser' AND ATIVO='S'`);
+  if (!s.ok || !s.rows.length) {
+    s = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE ATIVO='S' ORDER BY CODIGO`);
+  }
+  if (!s.ok || !s.rows.length) throw new Error('nenhum caixa aberto e nenhum usuário ativo pra abrir um');
   const cod = await fbAbrirCaixa(Number(s.rows[0].CODIGO), 0, `Aberto automaticamente às ${fbHoraLocal()} (maquininha/Pix, sem caixa aberto)`);
   if (cod == null) throw new Error('não consegui abrir o caixa automático');
   return cod;
