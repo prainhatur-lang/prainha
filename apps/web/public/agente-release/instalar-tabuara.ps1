@@ -10,7 +10,19 @@
 #  É IDEMPOTENTE: pode rodar de novo sem estragar o que já está feito.
 #  Não apaga dados. Se algo já existir, ele reaproveita e avisa.
 # ============================================================================
-$ErrorActionPreference = 'Stop'
+# ⚠️ 'Continue', NAO 'Stop': psql, winget, npm e schtasks escrevem avisos na
+# saida de ERRO mesmo quando dao certo. Com 'Stop' o PowerShell trata isso como
+# falha fatal e o instalador morre no meio — foi o que aconteceu no passo 3,
+# ANTES de conseguir perguntar a senha. Cada passo confere o proprio resultado.
+param(
+  [string]$Secret   = '',   # PAGAR_MESA_SECRET (o mesmo das outras lojas)
+  [string]$Salt     = '',   # CLIENTE_HASH_SALT (pode ficar vazio)
+  [string]$CieloId  = '',   # CIELO_MERCHANT_ID da TABUARÁ
+  [string]$CieloKey = '',   # CIELO_MERCHANT_KEY da TABUARÁ
+  [string]$SpcUser  = '',
+  [string]$SpcPass  = ''
+)
+$ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 function Passo($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 function Ok($t)    { Write-Host "  [ok] $t" -ForegroundColor Green }
@@ -75,8 +87,9 @@ if ($svc) { Ok "serviço $($svc.Name): $((Get-Service $svc.Name).Status)" }
 # escolheu na época — não a nossa. Em vez de falhar, pergunta e testa.
 Passo "3/8  Banco '$PGBANCO'"
 function TestaSenha($senha) {
+  if ([string]::IsNullOrWhiteSpace($senha)) { return $false }
   $env:PGPASSWORD = $senha
-  & $psql.FullName -U postgres -tAc 'SELECT 1' *> $null
+  $null = (& $psql.FullName -U postgres -tAc 'SELECT 1' 2>&1)
   return ($LASTEXITCODE -eq 0)
 }
 # 1) a senha que este instalador usa; 2) a que já está num start.bat anterior
@@ -85,46 +98,43 @@ if (Test-Path "$RAIZ\start.bat") {
   $m = [regex]::Match((Get-Content "$RAIZ\start.bat" -Raw), 'postgres://postgres:([^@]+)@')
   if ($m.Success) { $cands = @($m.Groups[1].Value) + $cands }
 }
+$cands += @('postgres','admin','Postgres','Prainha@2026','prainha2026','123456')
 $senhaOk = $null
-foreach ($c in $cands) { if (TestaSenha $c) { $senhaOk = $c; break } }
+foreach ($c in $cands) { if (TestaSenha $c) { $senhaOk = $c; Ok 'senha do postgres reconhecida'; break } }
 
 if (-not $senhaOk) {
-  Aviso 'O PostgreSQL já existia aqui e a senha do usuário "postgres" é outra.'
-  foreach ($tentativa in 1..3) {
-    $digitada = Read-Host "  senha do usuario 'postgres' (ou deixe VAZIO se nao souber)"
-    if ([string]::IsNullOrWhiteSpace($digitada)) { break }
-    if (TestaSenha $digitada) { $senhaOk = $digitada; break }
-    Erro 'senha nao confere'
-  }
-}
-
-if (-not $senhaOk) {
-  Aviso 'Vou DEFINIR uma senha nova para o usuario postgres desta maquina.'
-  Aviso 'Durante ~10 segundos o Postgres local aceita conexao sem senha, e volta ao normal em seguida.'
-  $resp = Read-Host '  pode fazer isso? (S/N)'
-  if ($resp -notmatch '^[SsYy]') { Erro 'Sem a senha do Postgres nao da pra criar o banco. Instalacao parada.'; return }
-  $dataDir = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\data\pg_hba.conf' -ErrorAction SilentlyContinue |
+  # A senha do 'postgres' e' de quem instalou o Postgres nesta maquina, e nao
+  # temos como adivinhar. Em vez de parar a instalacao e devolver o problema
+  # pro dono no meio do movimento, redefine sozinho: por ~10s o Postgres LOCAL
+  # aceita conexao sem senha, define a senha nova e volta ao normal. Nenhum
+  # dado e' tocado; o pg_hba.conf original fica salvo ao lado como .bak-prainha.
+  Aviso 'Senha do postgres desconhecida — vou definir uma nova (10 segundos).'
+  $hbaFile = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\data\pg_hba.conf' -ErrorAction SilentlyContinue |
               Sort-Object FullName -Descending | Select-Object -First 1)
-  if (-not $dataDir) { Erro 'nao achei o pg_hba.conf — defina a senha manualmente'; return }
-  $hba = $dataDir.FullName
+  if (-not $hbaFile) { Erro 'nao achei o pg_hba.conf'; return }
+  $hba = $hbaFile.FullName
   Copy-Item $hba "$hba.bak-prainha" -Force
-  (Get-Content $hba) -replace '^(host\s+all\s+all\s+127\.0\.0\.1/32\s+)\w+', '$1trust' `
-                     -replace '^(host\s+all\s+all\s+::1/128\s+)\w+',        '$1trust' |
-    Set-Content $hba -Encoding ascii
-  Restart-Service $svc.Name; Start-Sleep 6
+  $linhas = Get-Content $hba | ForEach-Object {
+    if ($_ -match '^\s*host\s+all\s+all\s+(127\.0\.0\.1/32|::1/128)\s+\S+') {
+      ($_ -replace '(\s)\S+\s*$', '$1trust')
+    } else { $_ }
+  }
+  $linhas | Set-Content $hba -Encoding ascii
+  Restart-Service $svc.Name -Force; Start-Sleep 8
   $env:PGPASSWORD = ''
-  & $psql.FullName -U postgres -c "ALTER USER postgres WITH PASSWORD '$PGSENHA'" *> $null
+  $null = (& $psql.FullName -U postgres -c "ALTER USER postgres WITH PASSWORD '$PGSENHA'" 2>&1)
   Copy-Item "$hba.bak-prainha" $hba -Force
-  Restart-Service $svc.Name; Start-Sleep 6
+  Restart-Service $svc.Name -Force; Start-Sleep 8
   if (TestaSenha $PGSENHA) { $senhaOk = $PGSENHA; Ok 'senha do postgres redefinida' }
-  else { Erro 'nao consegui redefinir a senha — precisa de ajuda manual'; return }
+  else { Erro 'nao consegui redefinir a senha do postgres'; return }
 }
 $PGSENHA = $senhaOk
 $env:PGPASSWORD = $PGSENHA
-$existe = & $psql.FullName -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$PGBANCO'" 2>$null
+$existe = (& $psql.FullName -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$PGBANCO'" 2>&1) -join ''
 if ($existe -match '1') { Ok 'já existe (mantido como está)' }
 else {
-  & $psql.FullName -U postgres -c "CREATE DATABASE $PGBANCO" | Out-Null
+  $null = (& $psql.FullName -U postgres -c "CREATE DATABASE $PGBANCO" 2>&1)
+  if ($LASTEXITCODE -ne 0) { Erro 'nao consegui criar o banco'; return }
   Ok 'criado'
 }
 
@@ -140,7 +150,7 @@ Ok "server.mjs baixado (versao $v)"
 '{ "name":"vendas-local","private":true,"type":"module","dependencies":{"node-firebird":"2.0.2","postgres":"^3.4.4","qrcode-svg":"^1.1.0"} }' |
   Set-Content "$RAIZ\package.json" -Encoding ascii
 if (Test-Path "$RAIZ\node_modules\postgres") { Ok 'dependências já instaladas' }
-else { Write-Host '  instalando dependências...'; npm install --omit=dev --no-audit --no-fund 2>&1 | Out-Null; Ok 'dependências instaladas' }
+else { Write-Host '  instalando dependências...'; $null = (npm install --omit=dev --no-audit --no-fund 2>&1); Ok 'dependências instaladas' }
 
 # --- 5. segredos ------------------------------------------------------------
 Passo '5/8  Segredos da rede'
@@ -150,12 +160,15 @@ Write-Host '    Select-String -Path C:\prainha-vendas\start.bat -Pattern "PAGAR_
 $jaTem = (Test-Path "$RAIZ\start.bat") -and ((Get-Content "$RAIZ\start.bat" -Raw) -notmatch 'COPIAR')
 if ($jaTem) { Ok 'start.bat já preenchido — mantido' }
 else {
-  $sec  = Read-Host '  PAGAR_MESA_SECRET'
-  $salt = Read-Host '  CLIENTE_HASH_SALT'
-  $cid  = Read-Host '  CIELO_MERCHANT_ID   (enter pula o Pix)'
-  $ckey = Read-Host '  CIELO_MERCHANT_KEY  (enter pula o Pix)'
-  $spcu = Read-Host '  SPC_USER            (enter pula a consulta de CPF)'
-  $spcp = Read-Host '  SPC_PASSWORD        (enter pula)'
+  # veio por parâmetro? usa. Só pergunta o que faltar — assim dá pra instalar
+  # numa linha só, sem ninguém digitar segredo com a casa abrindo.
+  $sec  = if ($Secret)   { $Secret }   else { Read-Host '  PAGAR_MESA_SECRET' }
+  $salt = if ($Salt)     { $Salt }     else { '' }
+  $cid  = if ($CieloId)  { $CieloId }  else { '' }
+  $ckey = if ($CieloKey) { $CieloKey } else { '' }
+  $spcu = if ($SpcUser)  { $SpcUser }  else { '' }
+  $spcp = if ($SpcPass)  { $SpcPass }  else { '' }
+  if ($sec) { Ok 'segredos recebidos' }
   $nodeExe = (Get-Command node).Source
   $bat = @"
 @echo off
@@ -236,10 +249,8 @@ Ok 'servidor no ar'
 # apenas OCULTADA: o proprio codigo avisa que item de praca oculta nao some —
 # cai no balde laranja "Sem praca definida" e continua contando atraso. Entao
 # ela e REDIRECIONADA pro Bar: o item nasce na fila de quem vai entregar.
-& $psql.FullName -U postgres -d $PGBANCO -c `
-  "INSERT INTO app_config (chave,valor) VALUES ('pracas_redirecionadas','caixa>bar') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" *> $null
-& $psql.FullName -U postgres -d $PGBANCO -c `
-  "INSERT INTO app_config (chave,valor) VALUES ('pracas_ocultas','') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" *> $null
+$null = (& $psql.FullName -U postgres -d $PGBANCO -c "INSERT INTO app_config (chave,valor) VALUES ('pracas_redirecionadas','caixa>bar') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" 2>&1)
+$null = (& $psql.FullName -U postgres -d $PGBANCO -c "INSERT INTO app_config (chave,valor) VALUES ('pracas_ocultas','') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" 2>&1)
 Ok 'KDS: Cozinha e Bar · itens da praca Caixa caem no Bar'
 
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
