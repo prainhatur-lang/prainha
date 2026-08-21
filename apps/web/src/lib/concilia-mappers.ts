@@ -169,11 +169,21 @@ async function mapCategoriaContas(filialId: string, op: Operacao, chave: string,
     return { status: 'ok' };
   }
 
+  // ⚠️ O Consumer grava TIPO como 'P' (pagar) e 'R' (receber) — NÃO 'DESPESA'.
+  // O campo daqui sempre foi documentado como RECEITA|DESPESA e as telas
+  // filtram por isso; passar o 'P' cru deixava o filtro sem NENHUMA linha, e
+  // o lançamento de conta a pagar aparecia SEM grupos e subgrupos (achado em
+  // 21/08 — 152 categorias 'P', 101 com pai, e a tela mostrando vazio).
+  const tipoConsumer = (str(d.TIPO) ?? '').trim().toUpperCase();
+  const tipo = tipoConsumer === 'P' ? 'DESPESA'
+    : tipoConsumer === 'R' ? 'RECEITA'
+    : (str(d.TIPO) ?? null);
+
   const row = {
     filialId,
     codigoExterno,
     descricao: str(d.DESCRICAO) ?? '',
-    tipo: str(d.TIPO),
+    tipo,
     codigoPaiExterno: num(d.CODIGOPAI),
     codigoGrupoDreExterno: num(d.CODIGOGRUPODRE),
     versaoReg: num(d.VERSAOREG),

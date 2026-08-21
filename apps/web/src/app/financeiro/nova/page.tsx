@@ -7,7 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, ilike, isNull, not } from 'drizzle-orm';
+import { and, asc, eq, ilike, isNull, not, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { NovaContaForm } from './form';
 
@@ -38,7 +38,10 @@ export default async function NovaContaPage(props: {
     .where(
       and(
         eq(schema.categoriaConta.filialId, filial.id),
-        eq(schema.categoriaConta.tipo, 'DESPESA'),
+        // aceita os dois: 'DESPESA' (o correto) e 'P' (o cru do Consumer, que
+        // ficou gravado enquanto o mapeamento não convertia) — assim a tela
+        // funciona antes e depois do CDC passar de novo
+        inArray(schema.categoriaConta.tipo, ['DESPESA', 'P']),
         isNull(schema.categoriaConta.excluidaEm),
       ),
     )
