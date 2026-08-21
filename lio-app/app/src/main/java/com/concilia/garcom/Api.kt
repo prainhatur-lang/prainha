@@ -151,6 +151,10 @@ object Api {
             conn.requestMethod = method
             conn.connectTimeout = connectTimeoutMs
             conn.readTimeout = readTimeoutMs
+            // Diz ao servidor que é o app NOVO: ele devolve desconto/acréscimo
+            // à parte (o app antigo, sem este header, recebe o desconto dobrado
+            // no `total` pra cobrar certo mesmo assim).
+            conn.setRequestProperty("x-concilia-app", BuildConfig.VERSION_NAME)
             if (token != null) conn.setRequestProperty("x-garcom", token)
             if (body != null) {
                 conn.doOutput = true

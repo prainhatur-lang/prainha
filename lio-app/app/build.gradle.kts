@@ -107,8 +107,11 @@ android {
         // 1.10.9: comprovante IMPRESSO do fechamento de caixa na maquininha —
         // operador, período, por forma, TOTAL e o carimbo "BATEU (N NSUs)".
         // O servidor devolve o detalhamento no /api/lio/fechar-caixa.
-        versionCode = 33
-        versionName = "1.10.9"
+        // 1.10.10: DESCONTO/ACRÉSCIMO do pedido obedecidos no Receber e no cupom
+        // (conta com desconto era cobrada CHEIA). Manda x-concilia-app; o app
+        // antigo sem o header recebe o desconto dobrado no `total` pelo servidor.
+        versionCode = 34
+        versionName = "1.10.10"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

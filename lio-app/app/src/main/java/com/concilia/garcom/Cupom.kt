@@ -131,6 +131,9 @@ object Cupom {
         val totais = StringBuilder()
         totais.appendLine(linha("Consumo", num(j.optDouble("total", 0.0))))
         totais.appendLine(linha("Serviço (${j.optInt("taxa_servico", 10)}%)", num(j.optDouble("servico", 0.0))))
+        // desconto/acréscimo do pedido — o cupom saía sem eles e o TOTAL ficava cheio
+        j.optDouble("desconto", 0.0).takeIf { it > 0 }?.let { totais.appendLine(linha("Desconto", "-" + num(it))) }
+        j.optDouble("acrescimo", 0.0).takeIf { it > 0 }?.let { totais.appendLine(linha("Acréscimo", "+" + num(it))) }
         totais.appendLine(linha("TOTAL", num(j.optDouble("com_servico", 0.0))))
 
         // Comandas penduradas: bloco próprio com itens e subtotais.
@@ -146,6 +149,8 @@ object Cupom {
                 }
                 totais.appendLine(linha("  Consumo", num(c.optDouble("subtotal", 0.0))))
                 totais.appendLine(linha("  Serviço", num(c.optDouble("servico", 0.0))))
+                c.optDouble("desconto", 0.0).takeIf { it > 0 }?.let { totais.appendLine(linha("  Desconto", "-" + num(it))) }
+                c.optDouble("acrescimo", 0.0).takeIf { it > 0 }?.let { totais.appendLine(linha("  Acréscimo", "+" + num(it))) }
                 totais.appendLine(linha("  Total", num(c.optDouble("com_servico", 0.0))))
                 val cPago = c.optDouble("pago", 0.0)
                 if (cPago > 0) totais.appendLine(linha("  Pago", num(cPago)))

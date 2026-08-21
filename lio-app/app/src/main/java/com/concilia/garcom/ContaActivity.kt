@@ -884,6 +884,10 @@ class ContaActivity : AppCompatActivity() {
         val itens = texto?.optDouble("total", -1.0)?.takeIf { it >= 0 }
             ?: (cAlvo?.let { if (aplicado) it.total - it.servico else it.total } ?: 0.0)
         val pago = cAlvo?.pago ?: texto?.optDouble("pago", 0.0) ?: 0.0
+        // DESCONTO/ACRÉSCIMO do pedido (do Consumer): a conta com desconto era
+        // cobrada CHEIA — o cálculo só olhava itens + serviço − pago.
+        val desconto = texto?.optDouble("desconto", 0.0) ?: 0.0
+        val acrescimo = texto?.optDouble("acrescimo", 0.0) ?: 0.0
         var dlg: AlertDialog? = null
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
@@ -927,7 +931,8 @@ class ContaActivity : AppCompatActivity() {
 
         fun calc(): Triple<Double, Double, Double> {
             val svc = Math.round(itens * gorj) / 100.0
-            val resta = Math.max(0.0, Math.round((itens + svc - pago) * 100) / 100.0)
+            // canônico do Consumer: itens + serviço − desconto + acréscimo − pago
+            val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
             val cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
             return Triple(svc, resta, cobrar)
         }
@@ -938,6 +943,8 @@ class ContaActivity : AppCompatActivity() {
                 valorDig != null -> "valor digitado — o resto continua na conta"
                 partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
                 else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
+                    (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
+                    (if (acrescimo > 0) " + acréscimo ${Cupom.brl(acrescimo)}" else "") +
                     (if (pago > 0) " − já pago ${Cupom.brl(pago)}" else "")
             }
             gorjBtns.forEach { (p, b) ->
