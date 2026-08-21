@@ -6262,10 +6262,24 @@ async function apiAreas() {
     SELECT COUNT(*) AS n FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
   const est = (await sql`SELECT * FROM sync_estado WHERE id=1`)[0] || null;
-  return { areas: rows, entrega_n: Number(ent?.n ?? 0), online: ultimoStatus.ok, sync: est };
+  return { areas: rows, entrega_n: Number(ent?.n ?? 0), online: ultimoStatus.ok, sync: est,
+    tem_entrega: await kdsTem('entrega') };
 }
 
 // ---- API: KDS de PRODUÇÃO de uma área (itens a produzir, ordem de CHEGADA = FIFO) ----
+// ---- KDS: PRODUÇÃO e/ou ENTREGA, por loja ----
+// Nem toda casa separa as duas coisas. Na Tabuará quem produz entrega, então a
+// tela de Entregas só cria um passo a mais sem ninguém pra executar — e um
+// item "pronto" ficaria eternamente esperando alguém dizer que saiu.
+// cfg 'kds_modo': 'ambos' (padrão, como as outras lojas), 'producao' ou 'entrega'.
+async function kdsModo() {
+  const v = String(await cfgGet('kds_modo', 'ambos')).toLowerCase().trim();
+  return v === 'producao' || v === 'entrega' ? v : 'ambos';
+}
+async function kdsTem(qual) {
+  const m = await kdsModo();
+  return m === 'ambos' || m === qual;
+}
 async function apiKds(areaCod) {
   const ocultas = areaCod === 0 ? await pracasOcultas() : [];
   const cond = areaCod === 0
@@ -6360,6 +6374,8 @@ async function apiKds(areaCod) {
 //   areaCod 0 ..... itens sem praça definida
 //   areaCod N ..... só aquela praça
 async function apiEntrega(areaCod = null) {
+  // loja sem etapa de entrega: devolve vazio em vez de uma fila que ninguém olha
+  if (!(await kdsTem('entrega'))) return { comandas: [], desligado: true };
   const filtroArea =
     areaCod == null ? sql`TRUE`
       : areaCod === 0 ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${await pracasOcultas()}))`
@@ -6969,6 +6985,8 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .back:hover,.linkbtn:hover{background:#e9e9ef}
 .linkbtn.go{background:#eafaf0;border-color:#bfe9cf;color:var(--green2);font-weight:600}
 .linkbtn .n{background:var(--green);color:#fff;border-radius:20px;padding:1px 8px;font-size:12px;font-weight:700}
+.seg{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:10px;padding:9px 12px;font-size:14px;font-weight:600}
+.seg.on{border-color:var(--green2);background:#eafaf0;color:var(--green2)}
 .pill{font-size:12.5px;color:var(--mut);background:#f4f4f7;border:1px solid var(--line);border-radius:20px;padding:3px 11px}.pill b{color:var(--ink)}
 .grow{flex:1}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.on{background:var(--green)}.off{background:var(--red)}
@@ -7246,7 +7264,7 @@ async function selecao(){
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
     '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
     '<a class="linkbtn" href="/tablet" title="instalar em tela cheia / atualizar">⚙</a>'+
-    '<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>'+
+    (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>')+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
   if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
@@ -7272,7 +7290,7 @@ async function kds(){
     (nCrit?'<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626"><b>'+nCrit+'</b> estourou o prazo</span>':'')+
     '<span class="grow"></span>'+avisoCam()+somBtn()+
     '<a class="linkbtn" href="/tempos" title="tempo de preparo">⏱</a>'+
-    '<a class="linkbtn go" href="/entrega">Entregas ▸</a>'+
+    (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas ▸</a>')+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
   var topo=faixaCancelado(d,'NÃO produzir — tirar da fila')+faixaReclamacao(d)+faixaJunto(d);
@@ -13019,6 +13037,17 @@ ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
     <div class="mut">Depois do passo 1: volte na tela que este tablet vai usar, toque nos <b>⋮</b> (canto superior direito) e escolha <b>Instalar app</b>. Abra sempre pelo ícone novo — sem barra de endereço.</div>
     <div class="mut" style="margin-top:8px">Se aparecer só "Adicionar à tela inicial", espere 5 segundos na página e tente de novo.</div>
   </div>
+  <div class="card"><div class="tit">KDS desta loja</div>
+    <div class="mut">Casa que produz e entrega usa as duas telas. Casa onde quem
+      produz já entrega precisa só da <b>Produção</b> — a fila de Entregas viraria
+      um passo sem ninguém pra executar.</div>
+    <div class="row" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="seg" id="km_ambos" onclick="setKds('ambos')">Produção + Entrega</button>
+      <button class="seg" id="km_producao" onclick="setKds('producao')">Só Produção</button>
+      <button class="seg" id="km_entrega" onclick="setKds('entrega')">Só Entrega</button>
+    </div>
+    <div class="mut" id="kmsg" style="margin-top:8px"></div>
+  </div>
   <div class="card"><div class="tit">Endereços desta loja</div>
     <div class="mut">Toque pra abrir, ou copie pra digitar em outro aparelho.</div>
     <div class="end"><span id="e1"></span><button onclick="ir('e1')">abrir</button><button onclick="copiar('e1',this)">copiar</button></div>
@@ -13031,6 +13060,28 @@ ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
   </div>
 </div>
 <script>
+/* KDS: producao e/ou entrega — vale pra loja inteira, nao so pra este tablet */
+async function pintaKds(m){
+  ['ambos','producao','entrega'].forEach(function(k){
+    var b=document.getElementById('km_'+k); if(b)b.classList.toggle('on', k===m);
+  });
+  var t={ambos:'As duas telas ligadas.',producao:'Só Produção — a aba Entregas some do KDS.',
+         entrega:'Só Entrega.'}[m]||'';
+  var e=document.getElementById('kmsg'); if(e)e.textContent=t;
+}
+async function carregaKds(){
+  try{var r=await (await fetch('/api/kds/modo',{cache:'no-store'})).json(); if(r.ok)pintaKds(r.modo)}catch(e){}
+}
+async function setKds(m){
+  var e=document.getElementById('kmsg'); if(e)e.textContent='salvando…';
+  try{
+    var r=await (await fetch('/api/kds/modo',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({modo:m})})).json();
+    if(r.ok){pintaKds(r.modo); if(e)e.textContent+=' ✓ salvo — atualize o KDS'}
+    else if(e)e.textContent=r.erro||'não deu';
+  }catch(x){if(e)e.textContent='sem conexão com a loja'}
+}
+carregaKds();
 var PROMPT=null;
 var base=location.protocol+'//'+location.host;
 window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();PROMPT=e;pinta()});
@@ -13140,6 +13191,18 @@ const server = http.createServer(async (req, res) => {
       } catch {}
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: !!url, url }));
+    }
+    if (req.method === 'POST' && p === '/api/kds/modo') {
+      const b = await readBody(req);
+      const m = String(b.modo || '').toLowerCase();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!['ambos', 'producao', 'entrega'].includes(m)) return res.end(JSON.stringify({ ok: false, erro: 'modo inválido' }));
+      await cfgSet('kds_modo', m);
+      return res.end(JSON.stringify({ ok: true, modo: m }));
+    }
+    if (p === '/api/kds/modo') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, modo: await kdsModo() }));
     }
     if (p === '/api/config') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(apiConfig())); }
     // ---- CONFERÊNCIA DE CAIXA pelo CENTRAL (Concilia web) — assinado, sem PIN.
