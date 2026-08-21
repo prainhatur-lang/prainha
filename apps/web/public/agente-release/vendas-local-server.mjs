@@ -9232,7 +9232,17 @@ async function apiPixConferir(txid) {
 // resolve hoje: abre no navegador, imprime em qualquer impressora, ou só mostra.
 /** Taxa de serviço da casa (CONFIG.TAXASERVICO do Consumer, hoje 10%). */
 const TAXA_SERVICO = Number(process.env.TAXA_SERVICO ?? 10);
-async function apiContaTexto(numero) {
+// Desconto/acréscimo do PEDIDO (TOTALDESCONTO/TOTALACRESCIMO do Consumer), ao
+// vivo — o espelho `comanda` só tem o VALORTOTAL. Falhou o Firebird = 0 (a
+// conta abre, só sem o ajuste).
+async function fbAjustesPedido(codigo) {
+  try {
+    const r = await qi(`SELECT COALESCE(TOTALDESCONTO,0) D, COALESCE(TOTALACRESCIMO,0) A FROM PEDIDOS WHERE CODIGO=${Number(codigo)}`);
+    const x = r.ok && r.rows[0];
+    return { desconto: +(Number(x?.D) || 0).toFixed(2), acrescimo: +(Number(x?.A) || 0).toFixed(2) };
+  } catch { return { desconto: 0, acrescimo: 0 }; }
+}
+async function apiContaTexto(numero, modoApp = false) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
     FROM comanda WHERE numero=${n} LIMIT 1`)[0];
@@ -9248,6 +9258,16 @@ async function apiContaTexto(numero) {
   // (mesa 16 da Mayara: itens 112, mas cobrou 111×1,10). = VALORTOTALITENS do FB.
   const total = itens.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0);
   const pago = Number(c.subtotal_pago || 0);
+  // DESCONTO/ACRÉSCIMO do pedido: o app e o cupom IGNORAVAM (conta com desconto
+  // era cobrada cheia). Canônico = total + serviço − desconto + acréscimo.
+  // modoApp = app ANTIGO da maquininha (calcula itens×1,10−pago só a partir do
+  // `total`): dobra o desconto pra DENTRO do `total` de um jeito que
+  // total×F − pago = saldo canônico (exato na taxa padrão). O app novo manda
+  // x-concilia-app e recebe os campos honestos (desconto/acrescimo à parte).
+  const aj = await fbAjustesPedido(c.codigo);
+  const F = 1 + TAXA_SERVICO / 100;
+  const fold = (bruto, a) => modoApp ? +(bruto - (a.desconto - a.acrescimo) / F).toFixed(2) : bruto;
+  const totalBase = fold(total, aj);
 
   // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
   // Sem isso, na hora de dividir a conta a mesa faz a conta de cabeça e erra.
@@ -9276,18 +9296,21 @@ async function apiContaTexto(numero) {
       // via a conta da mesa continuar cheia — o dinheiro tinha entrado e a
       // mesa não sabia. Cada comanda é um PEDIDOS próprio no Consumer, com
       // seu SUBTOTALPAGO; é ele que diz o que já foi quitado ali.
-      const comSvc = +(sub * (1 + TAXA_SERVICO / 100)).toFixed(2);
+      const ajC = cc.codigo == null ? { desconto: 0, acrescimo: 0 } : await fbAjustesPedido(cc.codigo);
+      const subBase = fold(sub, ajC);
+      const svcC = +(subBase * TAXA_SERVICO / 100).toFixed(2);
+      const comSvc = modoApp ? +(subBase + svcC).toFixed(2) : +(sub + svcC - ajC.desconto + ajC.acrescimo).toFixed(2);
       const pagoC = Number(cc.subtotal_pago || 0);
       const restaC = Math.max(0, +(comSvc - pagoC).toFixed(2));
       comandas.push({ numero: Number(v.comanda), nome: idc?.nome_curto || v.nome_curto || cc.nome || null,
         itens: its, transferencia: tr,
-        subtotal: sub, servico: +(sub * TAXA_SERVICO / 100).toFixed(2),
+        subtotal: subBase, servico: svcC, desconto: modoApp ? 0 : ajC.desconto, acrescimo: modoApp ? 0 : ajC.acrescimo,
         com_servico: comSvc,
         pago: pagoC, resta: restaC, quitada: pagoC > 0 && restaC <= 0.009 });
     }
   }
-  const servico = +(total * TAXA_SERVICO / 100).toFixed(2);
-  const comServico = +(total + servico).toFixed(2);
+  const servico = +(totalBase * TAXA_SERVICO / 100).toFixed(2);
+  const comServico = modoApp ? +(totalBase + servico).toFixed(2) : +(total + servico - aj.desconto + aj.acrescimo).toFixed(2);
   // ⚠️ O total da MESA é só do que foi lançado NELA. Cada comanda é uma conta
   // separada no Consumer (PEDIDOS próprio), então o consumo dela NÃO entra
   // aqui. O cupom mostrava "TOTAL 327,80" com uma comanda de 17,60 pendurada
@@ -9318,7 +9341,8 @@ async function apiContaTexto(numero) {
   const pagoGeral = +(pago + pagoComandas).toFixed(2);
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
     pessoas: c.qtd_pessoas, itens, comandas, pagamentos,
-    total, taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
+    total: totalBase, desconto: modoApp ? 0 : aj.desconto, acrescimo: modoApp ? 0 : aj.acrescimo,
+    taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
     total_comandas: +totalComandas.toFixed(2), geral,
     pago_comandas: +pagoComandas.toFixed(2), pago_geral: pagoGeral,
     falta_geral: Math.max(0, +(geral - pagoGeral).toFixed(2)),
@@ -13525,7 +13549,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
-    if (p === '/api/conta/texto') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0))); }
+    if (p === '/api/conta/texto') {
+      // app antigo da maquininha (HttpURLConnection = UA Dalvik, sem o header
+      // x-concilia-app) recebe o desconto dobrado no `total` (ver apiContaTexto)
+      const modoApp = /Dalvik/i.test(String(req.headers['user-agent'] || '')) && !req.headers['x-concilia-app'];
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0, modoApp)));
+    }
     if (p.startsWith('/api/ifood')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (p === '/api/ifood') return res.end(JSON.stringify(await apiIfood()));
