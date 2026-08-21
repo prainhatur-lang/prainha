@@ -13347,9 +13347,22 @@ const server = http.createServer(async (req, res) => {
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
     if (req.method === 'POST' && p === '/api/lio/pagar') {
       const g = await garcomDaRequisicao(req, u);
-      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      if (!g) {
+        // ⚠️ ISTO PRECISA APARECER NO LOG. Cobrança da maquininha que falha é
+        // dinheiro que entrou e conta que não fechou — e até 21/08 sumia sem
+        // deixar rastro, o que custou horas de investigação às cegas.
+        console.error('[lio] RECUSADO sem sessão · token inválido ou expirado');
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true }));
+      }
       const body = await readBody(req);
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioPagar(body, g)));
+      const rl = await apiLioPagar(body, g);
+      console.log('[lio] ' + g.login + ' · mesa ' + body.numero + ' · ' + body.forma
+        + ' R$ ' + body.valor + (body.nsu ? ' · NSU ' + body.nsu : ' · SEM NSU')
+        + (body.terminal ? ' · term ' + body.terminal : '')
+        + ' → ' + (rl.ok ? (rl.ja_registrado ? 'JÁ REGISTRADO (ignorado)' : 'ok' + (rl.quitada ? ' · quitada' : ' · falta ' + rl.saldo)) : 'ERRO: ' + rl.erro));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(rl));
     }
     // MANUTENÇÃO: reconstrói os totais de um pedido desgarrado (a mesa 1 de
     // 11/08 tinha VALORTOTAL=13,10 com itens somando 21 — corrompida por
