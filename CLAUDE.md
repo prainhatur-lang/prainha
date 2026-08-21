@@ -26,6 +26,12 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
 ## Multi-tenant & permissões
 - Hierarquia: `organizacao → filial → dados`. Toda query filtra por `filialId`.
 - Permissões: guards `exigirPermPage`/`exigirPermApi`/`negarSemPerm` de `@/lib/exigir-perm` (códigos tipo `reserva.update`, `cotacao.create`). Acesso à filial via `usuario_filial`.
+- **Filial ativa:** página NUNCA resolve filial na mão (`filiais[0]`). Use
+  `escolherFilial(filiais, sp.filialId)` de `@/lib/filial-ativa` — respeita o
+  seletor do menu (cookie `filial_ativa`), com a URL tendo precedência.
+  GOTCHA do TS: `const filial = await escolherFilial(...)` perde o narrowing
+  dentro de closures; se usar `filial.x` em callback/JSX aninhado, faça o alias
+  DEPOIS da guarda (`if (!x) return; const filial = x;`).
 - **Filial IDs:** Prainha Bar = `7c5c66ce-cceb-4e89-9c6d-d0785255c4f9` · Tabuará = `fde37b95-7c7e-4b41-a618-2aba1fbc0de7`.
 
 ## Acessar o banco em scripts pontuais
