@@ -71,7 +71,55 @@ if ($svc -and $svc.Status -ne 'Running') { Start-Service $svc.Name; Start-Sleep 
 if ($svc) { Ok "serviço $($svc.Name): $((Get-Service $svc.Name).Status)" }
 
 # --- 3. banco do caixa ------------------------------------------------------
+# Se o Postgres JÁ existia na máquina, a senha do 'postgres' é a que o dono
+# escolheu na época — não a nossa. Em vez de falhar, pergunta e testa.
 Passo "3/8  Banco '$PGBANCO'"
+function TestaSenha($senha) {
+  $env:PGPASSWORD = $senha
+  & $psql.FullName -U postgres -tAc 'SELECT 1' *> $null
+  return ($LASTEXITCODE -eq 0)
+}
+# 1) a senha que este instalador usa; 2) a que já está num start.bat anterior
+$cands = @($PGSENHA)
+if (Test-Path "$RAIZ\start.bat") {
+  $m = [regex]::Match((Get-Content "$RAIZ\start.bat" -Raw), 'postgres://postgres:([^@]+)@')
+  if ($m.Success) { $cands = @($m.Groups[1].Value) + $cands }
+}
+$senhaOk = $null
+foreach ($c in $cands) { if (TestaSenha $c) { $senhaOk = $c; break } }
+
+if (-not $senhaOk) {
+  Aviso 'O PostgreSQL já existia aqui e a senha do usuário "postgres" é outra.'
+  foreach ($tentativa in 1..3) {
+    $digitada = Read-Host "  senha do usuario 'postgres' (ou deixe VAZIO se nao souber)"
+    if ([string]::IsNullOrWhiteSpace($digitada)) { break }
+    if (TestaSenha $digitada) { $senhaOk = $digitada; break }
+    Erro 'senha nao confere'
+  }
+}
+
+if (-not $senhaOk) {
+  Aviso 'Vou DEFINIR uma senha nova para o usuario postgres desta maquina.'
+  Aviso 'Durante ~10 segundos o Postgres local aceita conexao sem senha, e volta ao normal em seguida.'
+  $resp = Read-Host '  pode fazer isso? (S/N)'
+  if ($resp -notmatch '^[SsYy]') { Erro 'Sem a senha do Postgres nao da pra criar o banco. Instalacao parada.'; return }
+  $dataDir = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\data\pg_hba.conf' -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1)
+  if (-not $dataDir) { Erro 'nao achei o pg_hba.conf — defina a senha manualmente'; return }
+  $hba = $dataDir.FullName
+  Copy-Item $hba "$hba.bak-prainha" -Force
+  (Get-Content $hba) -replace '^(host\s+all\s+all\s+127\.0\.0\.1/32\s+)\w+', '$1trust' `
+                     -replace '^(host\s+all\s+all\s+::1/128\s+)\w+',        '$1trust' |
+    Set-Content $hba -Encoding ascii
+  Restart-Service $svc.Name; Start-Sleep 6
+  $env:PGPASSWORD = ''
+  & $psql.FullName -U postgres -c "ALTER USER postgres WITH PASSWORD '$PGSENHA'" *> $null
+  Copy-Item "$hba.bak-prainha" $hba -Force
+  Restart-Service $svc.Name; Start-Sleep 6
+  if (TestaSenha $PGSENHA) { $senhaOk = $PGSENHA; Ok 'senha do postgres redefinida' }
+  else { Erro 'nao consegui redefinir a senha — precisa de ajuda manual'; return }
+}
+$PGSENHA = $senhaOk
 $env:PGPASSWORD = $PGSENHA
 $existe = & $psql.FullName -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$PGBANCO'" 2>$null
 if ($existe -match '1') { Ok 'já existe (mantido como está)' }
@@ -108,8 +156,13 @@ else {
   $ckey = Read-Host '  CIELO_MERCHANT_KEY  (enter pula o Pix)'
   $spcu = Read-Host '  SPC_USER            (enter pula a consulta de CPF)'
   $spcp = Read-Host '  SPC_PASSWORD        (enter pula)'
+  $nodeExe = (Get-Command node).Source
   $bat = @"
 @echo off
+rem A tarefa roda como SYSTEM, cujo diretorio e o System32. Sem este cd, o
+rem certificado do HTTPS (cert\) e as fotos de baixa (fotos\) nasceriam dentro
+rem do System32 — o servidor sobe e a camera do KDS quebra sem explicacao.
+cd /d $RAIZ
 set "FILIAL_ID=$FILIAL"
 set "LOJA_NOME=Tabuara"
 set "PAGAR_MESA_URL=https://app.prainhabar.com"
@@ -133,7 +186,9 @@ set "CIELO_MERCHANT_KEY=$ckey"
 set "SPC_USER=$spcu"
 set "SPC_PASSWORD=$spcp"
 :loop
-node $RAIZ\server.mjs
+rem caminho explicito do node: o PATH da conta SYSTEM so atualiza no proximo boot
+rem log: se cair de madrugada, e o unico rastro que sobra
+"$nodeExe" "$RAIZ\server.mjs" >> "$RAIZ\log.txt" 2>&1
 timeout /t 5 /nobreak > nul
 goto loop
 "@
@@ -177,10 +232,15 @@ if (-not $subiu) {
 }
 Ok 'servidor no ar'
 
-# praça "Caixa" não é fila de produção: fica fora do KDS (decisão do dono)
+# KDS so na Cozinha e no Bar (decisao do dono). A praca "Caixa" NAO pode ser
+# apenas OCULTADA: o proprio codigo avisa que item de praca oculta nao some —
+# cai no balde laranja "Sem praca definida" e continua contando atraso. Entao
+# ela e REDIRECIONADA pro Bar: o item nasce na fila de quem vai entregar.
 & $psql.FullName -U postgres -d $PGBANCO -c `
-  "INSERT INTO app_config (chave,valor) VALUES ('pracas_ocultas','caixa') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" *> $null
-Ok 'KDS configurado: Cozinha e Bar (praça Caixa oculta)'
+  "INSERT INTO app_config (chave,valor) VALUES ('pracas_redirecionadas','caixa>bar') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" *> $null
+& $psql.FullName -U postgres -d $PGBANCO -c `
+  "INSERT INTO app_config (chave,valor) VALUES ('pracas_ocultas','') ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor;" *> $null
+Ok 'KDS: Cozinha e Bar · itens da praca Caixa caem no Bar'
 
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
        Select-Object -First 1).IPAddress
@@ -189,7 +249,7 @@ Write-Host " TABUARA PRONTA" -ForegroundColor Green
 Write-Host "=====================================================" -ForegroundColor Green
 Write-Host "  garcom : http://$ip`:8790/venda"
 Write-Host "  caixa  : http://$ip`:8790/caixa"
-Write-Host "  KDS    : http://$ip`:8790/kds     (camera: https://$ip`:8791/kds)"
+Write-Host "  KDS    : http://$ip`:8790/         (camera: https://$ip`:8791/)"
 Write-Host "  cliente: http://$ip`:8790/mesa?n=1"
 Write-Host ""
 Write-Host "  Falta so o PIN das pessoas: no /caixa, entre e cadastre em 'usuarios do sistema'."
