@@ -4909,7 +4909,10 @@ async function apiLioFecharCaixa(garcom) {
   const cx = await fbCaixaDoOperador(garcom.login);
   if (!cx) return { ok: false, erro: 'Você não tem caixa aberto — nada a fechar.' };
   const o = await caixaInfo(cx.codigo);
-  if (!T(o?.OBS).startsWith('Aberto automaticamente'))
+  // ⚠️ caixaInfo devolve {fundo, obs} minúsculo (é primitiva dos dois bancos).
+  // Lendo .OBS aqui dava undefined → SEMPRE caía no "é do SISTEMA" e o caixa
+  // da maquininha nunca fechava pelo app. Regressão do refactor de 20/08.
+  if (!String(o?.obs || '').startsWith('Aberto automaticamente'))
     return { ok: false, erro: 'Seu caixa aberto é do SISTEMA (gaveta) — o fechamento dele é no caixa, com conferência.' };
   const c = await caixaMaquininhaConfere(cx.codigo);
   if (!c.bate) return { ok: false, nao_bateu: true,
