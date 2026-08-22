@@ -73,7 +73,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [precisaCpf, setPrecisaCpf] = useState(false);
   const [cpf, setCpf] = useState('');
   // Identificação pelo CPF (quando a filial abre a reserva por ele).
-  const [identificado, setIdentificado] = useState<{ primeiroNome: string | null; telefoneMascarado: string | null } | null>(null);
+  const [identificado, setIdentificado] = useState<{ primeiroNome: string | null; telefone: string | null } | null>(null);
   const [identificando, setIdentificando] = useState(false);
 
   // Mapa de mesas do espaço escolhido — cliente pode clicar pra escolher a
@@ -387,8 +387,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         setErro(d.error ?? 'Não consegui validar esse CPF');
         return;
       }
-      setIdentificado({ primeiroNome: d.primeiroNome ?? null, telefoneMascarado: d.telefoneMascarado ?? null });
+      setIdentificado({ primeiroNome: d.primeiroNome ?? null, telefone: d.telefone ?? null });
       if (d.primeiroNome) setNome(d.primeiroNome);
+      // Já preenche o WhatsApp que a casa tem — a pessoa confere e segue, ou
+      // corrige se mudou de número.
+      if (d.telefone) setWhatsapp(d.telefone);
       setFase('dados');
     } catch (e) {
       setErro((e as Error).message);
@@ -745,11 +748,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div>
           <label className={lbl}>WhatsApp</label>
           <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" autoFocus />
-          {/* Mascarado de propósito: a pessoa reconhece o próprio número sem
-              a gente entregar telefone de terceiro pra quem digitou o CPF. */}
-          {identificado?.telefoneMascarado && (
+          {identificado?.telefone && (
             <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">
-              Temos <b className="text-[var(--rsv-text)]">{identificado.telefoneMascarado}</b> no seu cadastro — confirme digitando, ou informe outro.
+              É o número do seu cadastro — se mudou, é só corrigir.
             </p>
           )}
           {voltou && (

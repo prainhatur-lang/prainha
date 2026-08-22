@@ -201,12 +201,13 @@ export function primeiroNome(nome: string | null): string | null {
   return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase();
 }
 
-/** Telefone mascarado — o cliente reconhece o próprio número, ninguém colhe
- *  o número de terceiro. Ex: 79996007289 → "(79) *****-7289". */
-export function telefoneMascarado(tel: string | null): string | null {
+/** Telefone formatado pro campo de WhatsApp. Ex: 79996007289 → "(79) 99600-7289".
+ *  Vai INTEIRO pro cliente: decisão do dono, pra pessoa não redigitar o que a
+ *  casa já tem. Quem segura o abuso é o teto de consulta por hora na rota. */
+export function telefoneFormatado(tel: string | null): string | null {
   const d = (tel ?? '').replace(/\D/g, '');
-  if (d.length < 10) return null;
-  const local = d.slice(-11);
-  const ddd = local.length === 11 ? local.slice(0, 2) : d.slice(0, 2);
-  return `(${ddd}) ${'*'.repeat(local.length - 6)}-${local.slice(-4)}`;
+  const local = d.length > 11 ? d.slice(-11) : d;
+  if (local.length === 11) return `(${local.slice(0, 2)}) ${local.slice(2, 7)}-${local.slice(7)}`;
+  if (local.length === 10) return `(${local.slice(0, 2)}) ${local.slice(2, 6)}-${local.slice(6)}`;
+  return null;
 }

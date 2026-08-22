@@ -6,10 +6,10 @@
 //
 // ⚠️ ROTA PÚBLICA COM SPC ATRÁS. Duas defesas obrigatórias:
 //
-//  1. NÃO devolve cadastro. Só primeiro nome e telefone MASCARADO — o que a
-//     pessoa precisa pra se reconhecer. Devolver endereço/nascimento/nome da
-//     mãe transformaria a página de reserva em consulta de CPF de graça pra
-//     qualquer um (e o dado é de terceiro, não de quem está digitando).
+//  1. NÃO devolve cadastro. Só primeiro nome e telefone — o que a reserva usa.
+//     Endereço, nascimento e nome da mãe ficam no servidor: entregar isso
+//     transformaria a página de reserva em consulta de CPF de graça.
+//     (O telefone sai inteiro por decisão do dono, pra pessoa não redigitar.)
 //  2. Teto de consulta PAGA por filial por hora. Cache não conta (é de graça);
 //     o teto existe só pra ninguém varrer CPF na nossa conta do SPC. Batendo
 //     no teto, a reserva continua — só deixa de consultar e pede o nome.
@@ -18,7 +18,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import { cpfValido, hashCpf, spcConfigurado } from '@/lib/spc';
-import { identificarPorCpf, primeiroNome, telefoneMascarado } from '@/lib/identificar-cpf';
+import { identificarPorCpf, primeiroNome, telefoneFormatado } from '@/lib/identificar-cpf';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -74,16 +74,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     const r = await identificarPorCpf(cpf, filial.id, { permitirSpc });
     const nome = primeiroNome(r.dados.nome);
     const fone = r.dados.celular ?? r.dados.telefone;
+    const tel = telefoneFormatado(fone);
     return NextResponse.json({
       conhecido: !!nome,
       primeiroNome: nome,
-      // Mascarado de propósito: serve pro cliente confirmar que é o número
-      // dele, sem entregar telefone de terceiro pra quem digitou o CPF.
-      telefoneMascarado: telefoneMascarado(fone),
-      temTelefone: !!telefoneMascarado(fone),
+      // Telefone INTEIRO, por decisão do dono: a pessoa não redigita o que a
+      // casa já tem. Endereço, nascimento e nome da mãe continuam fora — vão
+      // pro nosso banco, nunca pro navegador.
+      telefone: tel,
     });
   } catch {
     // Identificação é conveniência: falhou, a reserva segue pedindo o nome.
-    return NextResponse.json({ conhecido: false, primeiroNome: null, telefoneMascarado: null, temTelefone: false });
+    return NextResponse.json({ conhecido: false, primeiroNome: null, telefone: null });
   }
 }
