@@ -125,7 +125,7 @@ class ContaActivity : AppCompatActivity() {
                 val info = if (mesaConsulta != null) try { Api.mesaInfo(base, mesaConsulta) } catch (_: Exception) { null } else null
                 // O GERAL (mesa + comandas penduradas) vem do mesmo lugar do
                 // cupom — a tela tem que bater com a conta impressa.
-                val texto = if (!ehComanda && c != null) try { Api.contaTexto(base, numero) } catch (_: Exception) { null } else null
+                val texto = if (!ehComanda && c != null) try { Api.contaTexto(base, numero, Session.token(this)) } catch (_: Exception) { null } else null
                 runOnUiThread {
                     conta = c
                     infoAtual = if (ehComanda) null else info
@@ -828,7 +828,7 @@ class ContaActivity : AppCompatActivity() {
         conferenciaBtn.isEnabled = false
         Thread {
             try {
-                val j = Api.contaTexto(Session.servidor(this), numero)
+                val j = Api.contaTexto(Session.servidor(this), numero, Session.token(this))
                 val blocos = Cupom.montarBlocos(j, ehComanda, Session.loja(this), rotulo, pessoas)
                 runOnUiThread {
                     Lio.imprimirBlocos(
@@ -866,7 +866,7 @@ class ContaActivity : AppCompatActivity() {
     private fun abrirReceber(alvo: Int) {
         Thread {
             val base = Session.servidor(this)
-            val texto = try { Api.contaTexto(base, alvo) } catch (_: Exception) { null }
+            val texto = try { Api.contaTexto(base, alvo, Session.token(this)) } catch (_: Exception) { null }
             val cAlvo = if (alvo == numero) conta else try { Api.conta(base, alvo) } catch (_: Exception) { null }
             runOnUiThread {
                 if (texto == null && cAlvo == null) {
@@ -1464,7 +1464,7 @@ class ContaActivity : AppCompatActivity() {
         val espera = AlertDialog.Builder(this).setMessage("🚗 Conferindo a conta…").setCancelable(false).create()
         espera.show()
         Thread {
-            val texto = try { Api.contaTexto(Session.servidor(this), alvo) } catch (_: Exception) { null }
+            val texto = try { Api.contaTexto(Session.servidor(this), alvo, Session.token(this)) } catch (_: Exception) { null }
             runOnUiThread {
                 espera.dismiss()
                 val falta = texto?.optDouble("falta_geral", texto.optDouble("resta", 0.0)) ?: 0.0
@@ -1601,7 +1601,7 @@ class ContaActivity : AppCompatActivity() {
             }
             val blocos = try {
                 Cupom.montarBlocos(
-                    Api.contaTexto(Session.servidor(this), alvo), ehComandaAlvo,
+                    Api.contaTexto(Session.servidor(this), alvo, Session.token(this)), ehComandaAlvo,
                     Session.loja(this), "RECIBO", null, extras,
                 )
             } catch (_: Exception) {

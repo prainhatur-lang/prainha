@@ -110,8 +110,8 @@ android {
         // 1.10.10: DESCONTO/ACRÉSCIMO do pedido obedecidos no Receber e no cupom
         // (conta com desconto era cobrada CHEIA). Manda x-concilia-app; o app
         // antigo sem o header recebe o desconto dobrado no `total` pelo servidor.
-        versionCode = 34
-        versionName = "1.10.10"
+        versionCode = 35
+        versionName = "1.10.11"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

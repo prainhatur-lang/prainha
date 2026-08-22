@@ -13975,7 +13975,13 @@ const server = http.createServer(async (req, res) => {
       // app antigo da maquininha (HttpURLConnection = UA Dalvik, sem o header
       // x-concilia-app) recebe o desconto dobrado no `total` (ver apiContaTexto)
       const modoApp = /Dalvik/i.test(String(req.headers['user-agent'] || '')) && !req.headers['x-concilia-app'];
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0, modoApp)));
+      // FIADO só pra quem está LOGADO (maquininha do garçom, tela do caixa).
+      // Esta rota é aberta na rede da loja de propósito — é o celular do
+      // cliente que a usa. Sem a trava, qualquer um no Wi-Fi digitava um
+      // número de mesa e via a dívida de quem estava sentado nela.
+      const quemPede = await garcomDaRequisicao(req, u).catch(() => null);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0, modoApp, !!quemPede)));
     }
     if (p.startsWith('/api/ifood')) {
       res.writeHead(200, { 'content-type': 'application/json' });

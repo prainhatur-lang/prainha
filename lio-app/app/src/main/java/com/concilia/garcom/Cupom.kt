@@ -184,6 +184,40 @@ object Cupom {
             blocos.add(Lio.Bloco("Por pessoa ($nPessoas): ${brl(faltaGeral / nPessoas)}", tamanho = 20))
         }
 
+        // FIADO: o saldo do cliente no papel que ele assina. Só vem do servidor
+        // pra quem está logado (ver Api.contaTexto), e só existe pra quem TEM
+        // conta corrente. Em 32 colunas não cabe "Saldo de hoje ... devendo" na
+        // mesma linha, então o rótulo já diz o sinal: "Já devia" / "Tinha a favor".
+        val fi = j.optJSONObject("fiado")
+        if (fi != null) {
+            blocos.add(Lio.Bloco(GROSSA, negrito = true, tamanho = 20))
+            blocos.add(Lio.Bloco("CONTA CORRENTE (FIADO)", negrito = true, tamanho = 20))
+            fi.optStringOrNull("nome")?.let { blocos.add(Lio.Bloco(it, tamanho = 20)) }
+            val saldo = fi.optDouble("saldo", 0.0)
+            val conta = fi.optDouble("conta", 0.0)
+            val depois = fi.optDouble("depois", saldo)
+            val cc = StringBuilder()
+            cc.appendLine(linha(if (saldo >= 0) "Já devia" else "Tinha a favor", num(Math.abs(saldo))))
+            if (conta > 0.009) cc.appendLine(linha("Esta conta", num(conta)))
+            val limite = fi.optDouble("limite", 0.0)
+            if (limite > 0) {
+                cc.appendLine(linha("Limite", num(limite)))
+                cc.appendLine(linha("Disponível", num(fi.optDouble("disponivel", 0.0))))
+            }
+            blocos.add(Lio.Bloco(cc.toString().trimEnd('\n'), tamanho = 20))
+            if (conta > 0.009) {
+                blocos.add(Lio.Bloco(
+                    (if (depois >= 0) "FICA DEVENDO " else "FICA A FAVOR ") + brl(Math.abs(depois)),
+                    negrito = true, tamanho = 22,
+                ))
+            }
+            if (fi.optBoolean("estoura")) {
+                blocos.add(Lio.Bloco("*** PASSA DO LIMITE ***", negrito = true, tamanho = 20))
+            }
+            // é o papel da assinatura: tem que ter onde assinar
+            blocos.add(Lio.Bloco("\nAssinatura do cliente:\n\n" + "_".repeat(W), tamanho = 20))
+        }
+
         if (extras.isNotEmpty()) {
             blocos.add(Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20))
         }

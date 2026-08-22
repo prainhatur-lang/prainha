@@ -307,10 +307,13 @@ object Api {
         )
     }
 
-    /** Cupom 80mm (GET /api/conta/texto) — devolve o JSON cru pro Cupom montar. */
+    /** Cupom 80mm (GET /api/conta/texto) — devolve o JSON cru pro Cupom montar.
+     *  Vai COM o token: o saldo do fiado só sai pra quem está logado (a rota é
+     *  aberta na rede da loja, é o celular do cliente que a usa). Sem o token
+     *  o cupom continua saindo, só sem o bloco de conta corrente. */
     @Throws(IOException::class)
-    fun contaTexto(base: String, numero: Int): JSONObject {
-        val j = getJson("$base/api/conta/texto?n=$numero")
+    fun contaTexto(base: String, numero: Int, token: String? = null): JSONObject {
+        val j = getJson("$base/api/conta/texto?n=$numero", token)
         if (!j.optBoolean("ok")) throw IOException(j.optString("erro", "Erro ao montar a conta"))
         return j
     }
