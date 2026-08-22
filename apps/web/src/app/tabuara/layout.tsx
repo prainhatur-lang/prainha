@@ -16,11 +16,11 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://tabuara.com.br'),
   title: 'Tabuará — Gastronomia Sensorial · Aracaju',
   description:
-    'No coração de Aracaju, a Tabuará é uma experiência de gastronomia sensorial: cozinha autoral, coquetelaria e carta de vinhos, num ambiente sofisticado. Reserve sua mesa ou peça delivery.',
+    'Na Coroa do Meio, em Aracaju, a Tabuará é uma experiência de gastronomia sensorial: cozinha autoral, coquetelaria e carta de vinhos, num ambiente sofisticado. Reserve sua mesa ou peça delivery.',
   openGraph: {
     title: 'Tabuará — Gastronomia Sensorial · Aracaju',
     description:
-      'Cozinha autoral, coquetelaria e carta de vinhos, num ambiente sofisticado no centro de Aracaju.',
+      'Cozinha autoral, coquetelaria e carta de vinhos, num ambiente sofisticado na Coroa do Meio, em Aracaju.',
     type: 'website',
     locale: 'pt_BR',
     siteName: 'Tabuará',
@@ -29,7 +29,7 @@ export const metadata: Metadata = {
   twitter: {
     card: 'summary_large_image',
     title: 'Tabuará — Gastronomia Sensorial · Aracaju',
-    description: 'Cozinha autoral, coquetelaria e carta de vinhos no centro de Aracaju.',
+    description: 'Cozinha autoral, coquetelaria e carta de vinhos na Coroa do Meio, em Aracaju.',
     images: ['/tabuara/destaque-polvo.jpg'],
   },
 };

@@ -104,10 +104,10 @@ interface Props {
 }
 
 const inp =
-  'mt-1.5 w-full rounded-xl border border-[#e2c9a0] bg-white px-3.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors placeholder:text-[#b7a888] focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20';
-const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64]';
+  'mt-1.5 w-full rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5 text-sm text-[var(--rsv-ink)] outline-none transition-colors placeholder:text-[var(--rsv-placeholder)] focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20';
+const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--rsv-muted)]';
 const btn =
-  'mt-5 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#df5a35] disabled:translate-y-0 disabled:opacity-50';
+  'mt-5 w-full rounded-full bg-[var(--rsv-accent)] px-4 py-3.5 text-sm font-semibold text-[var(--rsv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[var(--rsv-accent-hover)] disabled:translate-y-0 disabled:opacity-50';
 
 export function CreditCardForm({
   token,
@@ -423,7 +423,7 @@ export function CreditCardForm({
   return (
     <div className="space-y-3.5 text-left">
       {error && (
-        <div className="rounded-xl border border-[#e6a08a] bg-[#fdecec] px-3.5 py-2.5 text-xs text-[#b3411c]">
+        <div className="rounded-xl border border-[var(--rsv-danger)] bg-[var(--rsv-danger-bg)] px-3.5 py-2.5 text-xs text-[var(--rsv-danger)]">
           {error}
         </div>
       )}
@@ -464,14 +464,14 @@ export function CreditCardForm({
         <button
           type="button"
           onClick={() => setCardType('CreditCard')}
-          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'CreditCard' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'CreditCard' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
         >
           Crédito
         </button>
         <button
           type="button"
           onClick={() => setCardType('DebitCard')}
-          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'DebitCard' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+          className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'DebitCard' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
         >
           Débito
         </button>
@@ -488,7 +488,7 @@ export function CreditCardForm({
             autoComplete="cc-number"
             className={inp}
           />
-          {brand && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[#8a7a64]">{brand}</span>}
+          {brand && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-[var(--rsv-muted)]">{brand}</span>}
         </div>
       </div>
 
@@ -521,7 +521,7 @@ export function CreditCardForm({
                 if (e.target.value !== '55') setFone((f) => f.slice(0, 14));
               }}
               aria-label="País do celular"
-              className="mt-1.5 flex-none rounded-xl border border-[#e2c9a0] bg-white px-1.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20"
+              className="mt-1.5 flex-none rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-1.5 py-2.5 text-sm text-[var(--rsv-ink)] outline-none transition-colors focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20"
             >
               {PAISES_FONE.map((p) => (
                 <option key={p.ddi} value={p.ddi} title={p.nome}>
@@ -584,7 +584,7 @@ export function CreditCardForm({
         {isProcessing ? (authenticating3DS ? 'Autenticando com o banco…' : 'Processando…') : `Pagar com ${cardType === 'CreditCard' ? 'crédito' : 'débito'}`}
       </button>
 
-      <p className="text-center text-[10px] text-[#8a7a64]">Pagamento seguro processado pela Cielo (3DS)</p>
+      <p className="text-center text-[10px] text-[var(--rsv-muted)]">Pagamento seguro processado pela Cielo (3DS)</p>
     </div>
   );
 }

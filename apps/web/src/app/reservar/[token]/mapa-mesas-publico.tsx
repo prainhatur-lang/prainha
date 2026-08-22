@@ -49,14 +49,14 @@ function MesaBotao({
       style={larguraPx ? { width: larguraPx } : undefined}
       className={`flex h-14 ${larguraPx ? '' : 'w-14'} flex-col items-center justify-center rounded-lg border text-center transition ${
         sel
-          ? 'border-[#b3411c] bg-[#b3411c] text-white shadow-md'
+          ? 'border-[var(--rsv-mesa-sel)] bg-[var(--rsv-mesa-sel)] text-[var(--rsv-mesa-sel-ink)] shadow-md'
           : contexto
-            ? 'cursor-not-allowed border-dashed border-[#e7dcc9] bg-transparent text-[#c2b8a3] opacity-50'
+            ? 'cursor-not-allowed border-dashed border-[var(--rsv-mesa-line)] bg-transparent text-[var(--rsv-mesa-dim-ink)] opacity-50'
             : !mesa.livre
-              ? 'cursor-not-allowed border-[#e8d5d0] bg-[#f7ecea] text-[#c79a94] opacity-60'
+              ? 'cursor-not-allowed border-[var(--rsv-mesa-ocupada-line)] bg-[var(--rsv-mesa-ocupada)] text-[var(--rsv-mesa-ocupada-ink)] opacity-60'
               : !cabe
-                ? 'cursor-not-allowed border-[#e7dcc9] bg-[#f2ede2] text-[#b3a686] opacity-50'
-                : 'border-[#e7dcc9] bg-white text-[#5a4a38] active:bg-[#fff4e6] hover:border-[#f4b454]'
+                ? 'cursor-not-allowed border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-off)] text-[var(--rsv-mesa-off-ink)] opacity-50'
+                : 'border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-livre)] text-[var(--rsv-mesa-livre-ink)] active:bg-[var(--rsv-welcome-bg)] hover:border-[var(--rsv-gold)]'
       }`}
     >
       <span className="text-sm font-bold leading-none">{mesa.numero}</span>
@@ -67,13 +67,13 @@ function MesaBotao({
 
 function Legenda({ comContexto }: { comContexto?: boolean }) {
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[10px] text-[#8a7a64]">
-      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-white ring-1 ring-[#e7dcc9]" /> livre</span>
-      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[#f7ecea] ring-1 ring-[#e8d5d0]" /> ocupada</span>
-      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[#f2ede2] ring-1 ring-[#e7dcc9]" /> não cabe</span>
-      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[#b3411c]" /> escolhida</span>
+    <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[10px] text-[var(--rsv-muted)]">
+      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[var(--rsv-mesa-livre)] ring-1 ring-[var(--rsv-mesa-line)]" /> livre</span>
+      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[var(--rsv-mesa-ocupada)] ring-1 ring-[var(--rsv-mesa-ocupada-line)]" /> ocupada</span>
+      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[var(--rsv-mesa-off)] ring-1 ring-[var(--rsv-mesa-line)]" /> não cabe</span>
+      <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-[var(--rsv-mesa-sel)]" /> escolhida</span>
       {comContexto && (
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded border border-dashed border-[#e7dcc9]" /> outro espaço</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded border border-dashed border-[var(--rsv-mesa-line)]" /> outro espaço</span>
       )}
     </div>
   );
@@ -93,8 +93,8 @@ export function MapaMesasPublico({
   if (mesas.length === 0) return null;
 
   return (
-    <div className="mt-1.5 rounded-xl border border-[#e7dcc9] bg-[#fdfaf4] p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-[#8a7a64]">
+    <div className="mt-1.5 rounded-xl border border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
         Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
@@ -152,16 +152,16 @@ export function MapaAreiaPublico({
   const blocos = blocosDeAreia(mesas);
 
   return (
-    <div className="mt-1.5 rounded-xl border border-[#e7dcc9] bg-[#fdfaf4] p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-[#8a7a64]">
+    <div className="mt-1.5 rounded-xl border border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
         Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
       </p>
-      <p className="mt-0.5 text-[10px] text-[#b3a686]">mesas 4, 8, 12, 16, 20 encostam no rio — os próximos 3 blocos de 20 ficam do lado, um depois do outro</p>
-      <div className="mt-2 rounded-lg bg-gradient-to-b from-[#eef6fb] to-transparent p-2">
-        <div className="mb-1.5 text-center text-[10px] font-medium text-[#7fb0cf]">🌊 rio (frente)</div>
+      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">mesas 4, 8, 12, 16, 20 encostam no rio — os próximos 3 blocos de 20 ficam do lado, um depois do outro</p>
+      <div className="mt-2 rounded-lg bg-gradient-to-b from-[var(--rsv-agua)] to-transparent p-2">
+        <div className="mb-1.5 text-center text-[10px] font-medium text-[var(--rsv-agua-ink)]">🌊 rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">
           {blocos.map((raias, bi) => (
-            <div key={bi} className={`flex gap-1.5 ${bi > 0 ? 'border-l border-[#dde9f0] pl-3' : ''}`}>
+            <div key={bi} className={`flex gap-1.5 ${bi > 0 ? 'border-l border-[var(--rsv-agua-line)] pl-3' : ''}`}>
               {raias.map((raia, ri) => (
                 <div key={ri} className="flex flex-col gap-1.5">
                   {raia.map((m) => (
@@ -215,13 +215,13 @@ export function MapaDeckLoungesPublico({
   };
 
   return (
-    <div className="mt-1.5 rounded-xl border border-[#e7dcc9] bg-[#fdfaf4] p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-[#8a7a64]">
+    <div className="mt-1.5 rounded-xl border border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
         Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
       </p>
-      <p className="mt-0.5 text-[10px] text-[#b3a686]">atrás das mesas da Areia · virado pro rio na linha da frente</p>
-      <div className="mt-2 rounded-lg bg-gradient-to-b from-[#eef6fb] to-transparent p-2">
-        <div className="mb-1.5 text-center text-[10px] font-medium text-[#7fb0cf]">🌊 Areia / rio (frente)</div>
+      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">atrás das mesas da Areia · virado pro rio na linha da frente</p>
+      <div className="mt-2 rounded-lg bg-gradient-to-b from-[var(--rsv-agua)] to-transparent p-2">
+        <div className="mb-1.5 text-center text-[10px] font-medium text-[var(--rsv-agua-ink)]">🌊 Areia / rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">
           <div className="flex flex-col items-start gap-1.5">
             <div className="flex gap-1.5">{botao('101', 118)}</div>
@@ -229,7 +229,7 @@ export function MapaDeckLoungesPublico({
             <div className="flex gap-1.5">{botao('104')}{botao('105')}</div>
             <div className="flex gap-1.5">{botao('106')}{botao('107')}</div>
           </div>
-          <div className="flex flex-col items-start gap-1.5 border-l border-[#dde9f0] pl-3">
+          <div className="flex flex-col items-start gap-1.5 border-l border-[var(--rsv-agua-line)] pl-3">
             <div className="flex gap-1.5">{botao('128', 77)}{botao('129', 77)}{botao('130', 77)}</div>
             <div className="flex gap-1.5">
               <div className="flex gap-1.5">{botao('108')}{botao('109')}</div>

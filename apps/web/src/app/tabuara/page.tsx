@@ -22,9 +22,9 @@ const RESERVA_URL =
 const DELIVERY_URL = 'https://tabuara.menudino.com.br';
 const INSTAGRAM_URL = 'https://instagram.com/tabuara.se';
 const MAPS_URL =
-  'https://www.google.com/maps/search/?api=1&query=Tabuara+Gastronomia+Sensorial+Aracaju';
+  'https://www.google.com/maps/search/?api=1&query=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju';
 const MAPS_EMBED =
-  'https://www.google.com/maps?q=Tabuara+Gastronomia+Sensorial+Aracaju&output=embed';
+  'https://www.google.com/maps?q=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju&output=embed';
 const TELEFONE = '(79) 3512-0567';
 
 const serif = { fontFamily: 'var(--font-serif-tab)' };
@@ -226,7 +226,7 @@ export default function TabuaraPage() {
             <ul className="mt-8 space-y-6 text-sm">
               <li className="flex items-start gap-4">
                 <MapPin className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#c9a24b]" />
-                <div><p className="text-[#f3ede1]">Endereço</p><p className="mt-1 text-[#b8ad99]">Av. Ivo do Prado — Centro, Aracaju · SE</p></div>
+                <div><p className="text-[#f3ede1]">Endereço</p><p className="mt-1 text-[#b8ad99]">Praça de Eventos — Coroa do Meio, Aracaju · SE<br />CEP 49035-820</p></div>
               </li>
               <li className="flex items-start gap-4">
                 <Phone className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#c9a24b]" />

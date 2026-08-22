@@ -20,6 +20,10 @@ interface Props {
   semOtp: boolean;
   bebidas: string[];
   atendimento: { inicio: string; fim: string } | null;
+  /** Linha de convite embaixo do título — cada casa tem a sua. */
+  convite: string;
+  /** Emoji da casa (Prainha = pôr do sol, Tabuará = taça). */
+  emoji: string;
 }
 
 type Fase = 'dados' | 'otp' | 'pagamento' | 'ok';
@@ -38,7 +42,7 @@ function formatCPF(value: string): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -402,38 +406,38 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   }
 
   const card =
-    'rounded-3xl border border-[#e9d9bb] bg-[#fbf6ec] p-7 shadow-[0_28px_70px_-30px_rgba(7,25,28,0.75)]';
+    'rounded-3xl border border-[var(--rsv-card-border)] bg-[var(--rsv-card-bg)] p-7 shadow-[var(--rsv-card-shadow)]';
   const inp =
-    'mt-1.5 w-full rounded-xl border border-[#e2c9a0] bg-white px-3.5 py-2.5 text-sm text-[#1d130c] outline-none transition-colors placeholder:text-[#b7a888] focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20';
-  const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64]';
+    'mt-1.5 w-full rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5 text-sm text-[var(--rsv-ink)] outline-none transition-colors placeholder:text-[var(--rsv-placeholder)] focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20';
+  const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--rsv-muted)]';
   const btn =
-    'mt-5 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#df5a35] disabled:translate-y-0 disabled:opacity-50';
+    'mt-5 w-full rounded-full bg-[var(--rsv-accent)] px-4 py-3.5 text-sm font-semibold text-[var(--rsv-accent-ink)] shadow-[var(--rsv-accent-shadow)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[var(--rsv-accent-hover)] disabled:translate-y-0 disabled:opacity-50';
 
   if (fase === 'ok') {
     return (
       <div className={`${card} text-center`}>
-        <div className="text-6xl">{zapEnviado ? '📲' : '🌅'}</div>
-        <h1 className="mt-4 text-3xl leading-tight text-[#b3411c]" style={serif}>
+        <div className="text-6xl">{zapEnviado ? '📲' : emoji}</div>
+        <h1 className="mt-4 text-3xl leading-tight text-[var(--rsv-strong)]" style={serif}>
           {zapEnviado ? 'Reserva enviada pro seu WhatsApp!' : 'Reserva feita!'}
         </h1>
-        <p className="mt-3 text-base text-[#4a382a]">
+        <p className="mt-3 text-base text-[var(--rsv-text)]">
           {zapEnviado ? (
             <>
               {nome}, enviamos a <b>confirmação da sua reserva</b> para o seu WhatsApp:
               <br />
-              <span className="font-mono text-[#1d130c]">{whatsapp}</span>
+              <span className="font-mono text-[var(--rsv-ink)]">{whatsapp}</span>
               <br />
-              <b className="text-[#b3411c]">Abra o WhatsApp e confira! 📲</b>
+              <b className="text-[var(--rsv-strong)]">Abra o WhatsApp e confira! 📲</b>
             </>
           ) : (
             <>{nome}, sua mesa no <b>{nomeFilial}</b> está reservada. Em breve a confirmação chega no seu WhatsApp.</>
           )}
         </p>
-        <div className="mt-5 rounded-2xl border border-[#e9d9bb] bg-[#f6ecd9] p-4 text-base text-[#1d130c]">
+        <div className="mt-5 rounded-2xl border border-[var(--rsv-card-border)] bg-[var(--rsv-surface)] p-4 text-base text-[var(--rsv-ink)]">
           <p className="text-lg font-bold" style={serif}>{espaco}</p>
-          <p className="mt-0.5 text-[#4a382a]">{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
+          <p className="mt-0.5 text-[var(--rsv-text)]">{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
         </div>
-        <p className="mt-4 rounded-xl border border-[#f4b454]/40 bg-[#f4b454]/12 px-3 py-2 text-xs font-medium text-[#b3411c]">
+        <p className="mt-4 rounded-xl border border-[var(--rsv-gold)]/40 bg-[var(--rsv-gold)]/12 px-3 py-2 text-xs font-medium text-[var(--rsv-strong)]">
           ⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a
           reserva é cancelada automaticamente.
         </p>
@@ -444,22 +448,22 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   if (fase === 'otp') {
     return (
       <div className={card}>
-        <button onClick={() => setFase('dados')} className="text-xs text-[#8a7a64] transition-colors hover:text-[#4a382a]">← voltar</button>
-        <h1 className="mt-2 text-2xl text-[#1d130c]" style={serif}>Confirme seu WhatsApp</h1>
-        <p className="mt-1 text-sm text-[#8a7a64]">Enviamos um código de 6 dígitos para o WhatsApp <b className="text-[#4a382a]">{whatsapp}</b>.</p>
-        {dicaTeste && <p className="mt-3 rounded-lg bg-[#f4b454]/15 p-2 text-xs text-[#b3411c]">{dicaTeste}</p>}
+        <button onClick={() => setFase('dados')} className="text-xs text-[var(--rsv-muted)] transition-colors hover:text-[var(--rsv-text)]">← voltar</button>
+        <h1 className="mt-2 text-2xl text-[var(--rsv-ink)]" style={serif}>Confirme seu WhatsApp</h1>
+        <p className="mt-1 text-sm text-[var(--rsv-muted)]">Enviamos um código de 6 dígitos para o WhatsApp <b className="text-[var(--rsv-text)]">{whatsapp}</b>.</p>
+        {dicaTeste && <p className="mt-3 rounded-lg bg-[var(--rsv-gold)]/15 p-2 text-xs text-[var(--rsv-strong)]">{dicaTeste}</p>}
         <input
           value={codigo}
           onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
           placeholder="000000"
-          className="mt-4 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-3 text-center text-2xl tracking-[0.5em] text-[#1d130c] outline-none focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20"
+          className="mt-4 w-full rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3 py-3 text-center text-2xl tracking-[0.5em] text-[var(--rsv-ink)] outline-none focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20"
         />
-        {erro && <p className="mt-2 text-center text-xs text-[#b3411c]">{erro}</p>}
+        {erro && <p className="mt-2 text-center text-xs text-[var(--rsv-danger)]">{erro}</p>}
         <button onClick={confirmar} disabled={enviando || codigo.length < 6} className={btn}>
           {enviando ? 'Confirmando…' : 'Confirmar reserva'}
         </button>
-        <button onClick={pedirCodigo} disabled={enviando} className="mt-3 w-full text-xs text-[#8a7a64] transition-colors hover:text-[#4a382a]">
+        <button onClick={pedirCodigo} disabled={enviando} className="mt-3 w-full text-xs text-[var(--rsv-muted)] transition-colors hover:text-[var(--rsv-text)]">
           Reenviar código
         </button>
       </div>
@@ -471,8 +475,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       return (
         <div className={`${card} text-center`}>
           <div className="text-5xl">😕</div>
-          <h1 className="mt-3 text-2xl text-[#1d130c]" style={serif}>Algo deu errado</h1>
-          <p className="mt-2 text-sm text-[#4a382a]">
+          <h1 className="mt-3 text-2xl text-[var(--rsv-ink)]" style={serif}>Algo deu errado</h1>
+          <p className="mt-2 text-sm text-[var(--rsv-text)]">
             Seu Pix foi estornado. Se você já pagou, fale com a gente pelo WhatsApp pra resolver.
           </p>
         </div>
@@ -480,21 +484,21 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     }
     return (
       <div className={`${card} text-center`}>
-        <h1 className="text-2xl text-[#1d130c]" style={serif}>Pague a taxa da reserva</h1>
-        <p className="mt-1 text-sm text-[#8a7a64]">
+        <h1 className="text-2xl text-[var(--rsv-ink)]" style={serif}>Pague a taxa da reserva</h1>
+        <p className="mt-1 text-sm text-[var(--rsv-muted)]">
           {espaco} · {brl(valorPago)}
         </p>
 
         <div className="mt-4 flex gap-2">
           <button
             onClick={() => setMetodoPagamento('pix')}
-            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'pix' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'pix' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
           >
             Pix
           </button>
           <button
             onClick={() => setMetodoPagamento('cartao')}
-            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'cartao' ? 'border-[#e7723a] bg-[#f6ecd9] text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'}`}
+            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${metodoPagamento === 'cartao' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
           >
             Cartão
           </button>
@@ -506,20 +510,20 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
               <img
                 src={`data:image/png;base64,${qrCodeBase64}`}
                 alt="QR Code Pix"
-                className="mx-auto mt-4 h-56 w-56 rounded-xl border border-[#e9d9bb]"
+                className="mx-auto mt-4 h-56 w-56 rounded-xl border border-[var(--rsv-card-border)]"
               />
             )}
             <button
               onClick={copiarPix}
-              className="mt-3 w-full rounded-xl border border-[#e2c9a0] bg-white px-3 py-2.5 text-xs font-medium text-[#4a382a] hover:bg-[#f6ecd9]"
+              className="mt-3 w-full rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3 py-2.5 text-xs font-medium text-[var(--rsv-text)] hover:bg-[var(--rsv-surface)]"
             >
               {copiado ? '✓ Copiado!' : '📋 Copiar código Pix (copia e cola)'}
             </button>
-            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[#8a7a64]">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-[#e7723a]" />
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-[var(--rsv-muted)]">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--rsv-accent)]" />
               Aguardando o pagamento…
             </div>
-            <p className="mt-3 text-xs text-[#8a7a64]">
+            <p className="mt-3 text-xs text-[var(--rsv-muted)]">
               Sua mesa já está reservada, mas só fica garantida depois do pagamento. Assim que cair, a
               confirmação chega automaticamente aqui e no seu WhatsApp.
             </p>
@@ -547,27 +551,27 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // fase dados
   return (
     <div className={card}>
-      <h1 className="text-2xl leading-tight text-[#1d130c]" style={serif}>Reserve sua mesa</h1>
-      <p className="mt-1 text-sm text-[#8a7a64]">{nomeFilial} · venha curtir o pôr do sol 🌅</p>
+      <h1 className="text-2xl leading-tight text-[var(--rsv-ink)]" style={serif}>Reserve sua mesa</h1>
+      <p className="mt-1 text-sm text-[var(--rsv-muted)]">{nomeFilial} · {convite}</p>
 
       {/* Taxa obrigatória do espaço selecionado (ex: Lounge) OU ancoragem de preço padrão */}
       {taxaEspaco ? (
-        <div className="mt-4 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-center text-sm">
-          <span className="font-semibold text-[#b3411c]">{espaco}: taxa de reserva de {brl(taxaValor!)}</span>
-          <p className="mt-0.5 text-xs text-[#a86a2e]">
+        <div className="mt-4 rounded-xl border border-[var(--rsv-gold)]/30 bg-[var(--rsv-gold)]/12 p-2.5 text-center text-sm">
+          <span className="font-semibold text-[var(--rsv-strong)]">{espaco}: taxa de reserva de {brl(taxaValor!)}</span>
+          <p className="mt-0.5 text-xs text-[var(--rsv-note)]">
             {ehFimDeSemana(data) ? 'Valor de sábado/domingo.' : 'Valor de dia de semana.'} Pagamento no local, cartão ou Pix.
           </p>
         </div>
       ) : (
-        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[#f4b454]/30 bg-[#f4b454]/12 p-2.5 text-sm">
+        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-[var(--rsv-gold)]/30 bg-[var(--rsv-gold)]/12 p-2.5 text-sm">
           {valorCheio && gratis ? (
             <>
-              <span className="text-[#b7a888] line-through">{brl(valorCheio)}</span>
-              <span className="font-bold tracking-wide text-[#b3411c]">GRÁTIS</span>
-              <span className="text-xs text-[#a86a2e]">por enquanto 😉</span>
+              <span className="text-[var(--rsv-placeholder)] line-through">{brl(valorCheio)}</span>
+              <span className="font-bold tracking-wide text-[var(--rsv-strong)]">GRÁTIS</span>
+              <span className="text-xs text-[var(--rsv-note)]">por enquanto 😉</span>
             </>
           ) : (
-            <span className="font-semibold text-[#b3411c]">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
+            <span className="font-semibold text-[var(--rsv-strong)]">{gratis ? 'Reserva grátis' : `Reserva: ${brl(valorAtual)}`}</span>
           )}
         </div>
       )}
@@ -595,14 +599,14 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
               })}
             </select>
           ) : (
-            <p className="mt-1 text-sm text-[#b3411c]">Nenhum espaço disponível para reserva.</p>
+            <p className="mt-1 text-sm text-[var(--rsv-danger)]">Nenhum espaço disponível para reserva.</p>
           )}
           {diaFechado ? (
-            <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
+            <p className="mt-1.5 rounded-lg bg-[var(--rsv-danger-bg)] px-2.5 py-1.5 text-xs text-[var(--rsv-danger)]">
               😕 {motivoFechado ?? `Estamos sem vaga pra ${data.split('-').reverse().join('/')}. Escolha outra data.`}
             </p>
           ) : espacoSelLotado ? (
-            <p className="mt-1.5 rounded-lg bg-[#fdecec] px-2.5 py-1.5 text-xs text-[#b3411c]">
+            <p className="mt-1.5 rounded-lg bg-[var(--rsv-danger-bg)] px-2.5 py-1.5 text-xs text-[var(--rsv-danger)]">
               😕 {espaco} está <b>lotado</b> nesse dia. Escolha outro espaço ou outra data.
             </p>
           ) : null}
@@ -614,7 +618,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           </div>
           <div className="w-28">
             <label className={lbl}>Hora</label>
-            <select value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-[#b3411c] text-[#b3411c]' : ''}`}>
+            <select value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-[var(--rsv-danger)] text-[var(--rsv-danger)]' : ''}`}>
               {horariosDisponiveis.map((h) => (
                 <option key={h} value={h}>{h}</option>
               ))}
@@ -640,15 +644,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
         )}
         {diaFechado ? null : semHorarios ? (
-          <p className="text-xs text-[#b3411c]">Não sobrou horário disponível hoje — escolha outra data. 🌅</p>
+          <p className="text-xs text-[var(--rsv-danger)]">Não sobrou horário disponível hoje — escolha outra data. {emoji}</p>
         ) : (
-          horaInvalida && <p className="text-xs text-[#b3411c]">{msgHoraInvalida()} 🌅</p>
+          horaInvalida && <p className="text-xs text-[var(--rsv-danger)]">{msgHoraInvalida()} {emoji}</p>
         )}
         <div>
           <label className={lbl}>WhatsApp</label>
           <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" autoFocus />
           {voltou && (
-            <p className="mt-1.5 rounded-lg bg-[#fff4e6] px-2.5 py-1.5 text-xs text-[#b3411c]">
+            <p className="mt-1.5 rounded-lg bg-[var(--rsv-welcome-bg)] px-2.5 py-1.5 text-xs text-[var(--rsv-strong)]">
               👋 Que bom te ver de novo, <b>{voltou}</b>! Já preenchemos seu nome.
             </p>
           )}
@@ -667,7 +671,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
               className={inp}
               placeholder="000.000.000-00"
             />
-            <p className="mt-1 text-[11px] text-[#8a7a64]">Notamos que seu cadastro está sem CPF — pode completar? 🙂</p>
+            <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">Notamos que seu cadastro está sem CPF — pode completar? 🙂</p>
           </div>
         )}
         <div>
@@ -698,9 +702,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
               )}
             </div>
             {comboSelecionado ? (
-              <p className="mt-1 text-[11px] text-[#8a7a64]">Vem em combo de {comboSelecionado} unidades 🍻 — já deixa pronto pra quando você sentar 🌅</p>
+              <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">Vem em combo de {comboSelecionado} unidades 🍻 — já deixa pronto pra quando você sentar {emoji}</p>
             ) : (
-              <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa pronta pra quando você sentar 🌅</p>
+              <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">A gente já deixa pronta pra quando você sentar {emoji}</p>
             )}
           </div>
         ) : bebidas.length > 0 ? (
@@ -712,7 +716,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
                 <option key={b} value={b}>{b}</option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-[#8a7a64]">A gente já deixa pronta pra quando você sentar 🌅</p>
+            <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">A gente já deixa pronta pra quando você sentar {emoji}</p>
           </div>
         ) : null}
         <div>
@@ -726,11 +730,11 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         </div>
       </div>
 
-      {erro && <p className="mt-3 text-center text-xs text-[#b3411c]">{erro}</p>}
+      {erro && <p className="mt-3 text-center text-xs text-[var(--rsv-danger)]">{erro}</p>}
       <button onClick={semOtp ? reservarDireto : pedirCodigo} disabled={enviando || horaInvalida || semHorarios || areas.length === 0 || espacoSelLotado || diaFechado} className={btn}>
         {enviando ? (semOtp ? 'Reservando…' : 'Enviando código…') : semOtp ? 'Reservar mesa' : 'Continuar'}
       </button>
-      <p className="mt-3 text-center text-[11px] text-[#8a7a64]">
+      <p className="mt-3 text-center text-[11px] text-[var(--rsv-muted)]">
         {semOtp ? 'Enviaremos a confirmação no seu WhatsApp.' : 'Validamos sua reserva por um código no WhatsApp.'}
       </p>
     </div>
