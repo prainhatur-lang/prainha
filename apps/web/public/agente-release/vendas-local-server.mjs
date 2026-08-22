@@ -5435,6 +5435,38 @@ async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null,
   }
   return { ok: true, codigo: codigoCC, pagamento: pagamentoCod, saldo: novoSaldo, cliente: cli.nome };
 }
+// ---- CANCELAMENTOS → NUVEM: o dono quer o histórico (com motivo) no dashboard ----
+// A tabela `cancelamento` só existe aqui; o Consumer marca DATADELETE e nada mais.
+// Manda em lotes de 200 por minuto, guardando até que id já foi; a nuvem faz
+// upsert por (filial, id) — reenviar não duplica. Mesma assinatura HMAC da
+// fila de fiado ([FILIAL_ID,'cancel',e]).
+let cancelNuvemRodando = false;
+async function loopCancelNuvem() {
+  if (cancelNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  cancelNuvemRodando = true;
+  try {
+    const desde = Number(await cfgGet('cancel_nuvem_ate', '0')) || 0;
+    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo
+      FROM cancelamento WHERE id > ${desde} ORDER BY id LIMIT 200`;
+    if (!rows.length) return;
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/cancelamentos`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('cancel', e),
+        cancelamentos: rows.map((x) => ({
+          id: Number(x.id), quando: x.quando, login: x.login, gerente: x.gerente, numero: x.numero,
+          pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
+          nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
+          motivo: x.motivo, area_codigo: x.area_codigo })) }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) { console.error('[cancel] nuvem recusou:', j?.erro || r.status); return; }
+    await cfgSet('cancel_nuvem_ate', String(rows[rows.length - 1].id));
+    console.log(`[cancel] ${rows.length} cancelamento(s) na nuvem (até id ${rows[rows.length - 1].id})`);
+  } catch (err) { console.error('[cancel] nuvem:', err.message); }
+  finally { cancelNuvemRodando = false; }
+}
 // ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
 // A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
 // este laço busca, aplica e devolve o resultado — mesma assinatura HMAC da
@@ -14118,6 +14150,8 @@ async function main() {
   // fila de NFC-e pendente de envio (SEFAZ/central fora na hora): reenvia sozinha
   setTimeout(() => loopFiadoFila().catch(() => {}), 40 * 1000);
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
+  setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
   loopCatalogoNuvem().catch(() => {});
