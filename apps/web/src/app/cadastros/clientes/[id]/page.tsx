@@ -95,26 +95,15 @@ export default async function ClienteDetalhe(props: {
     .where(and(eq(schema.cliente.filialId, fid), matchCliente))
     .limit(1);
 
-  // ⚠️ CASAR SÓ PELO TELEFONE ESCONDE DÍVIDA. O cadastro do Consumer muitas
-  // vezes não tem telefone (o Marco Pinheiro devia R$ 15.364,59 e a tela dizia
-  // "Sem saldo", porque o telefone dele lá está vazio). Sem achar, tenta pelo
-  // NOME exato — e, quando é assim, a tela avisa que foi por nome, porque
-  // nome bate errado mais fácil que telefone.
-  let casadoPorNome = false;
-  if (!cadastro) {
-    const nomeBusca = (contato?.nome || '').trim();
-    if (nomeBusca.length >= 6) {
-      const [porNome] = await db
-        .select()
-        .from(schema.cliente)
-        .where(and(
-          eq(schema.cliente.filialId, fid),
-          sql`lower(unaccent(coalesce(${schema.cliente.nome}, ''))) = lower(unaccent(${nomeBusca}))`,
-        ))
-        .limit(1);
-      if (porNome) { cadastro = porNome; casadoPorNome = true; }
-    }
-  }
+  // ⚠️ CASAR SÓ PELO TELEFONE ESCONDE DÍVIDA — e não há atalho bom.
+  // Medido em 22/08: dos 137 clientes com fiado em aberto, 104 estão SEM
+  // telefone no cadastro do PDV. Tentei casar por NOME e recuperava só 3 —
+  // com 2.186 nomes repetidos no cadastro, o risco de juntar a conta da
+  // pessoa errada é maior que o ganho. (O caso que abriu esta investigação,
+  // "Marco Pinheiro" × "Marco pinheiro vigilancia", nem por nome casaria.)
+  // Então a tela NÃO adivinha: quando não acha, ela DIZ que não achou.
+  // O conserto de verdade é cadastro único — ver [[cadastro-unico-cliente]].
+  const casadoPorNome = false;
 
   const reservas = await db
     .select({
