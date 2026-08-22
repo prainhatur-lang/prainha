@@ -26,9 +26,15 @@ interface Props {
   emoji: string;
   /** Planta específica do mapa de mesas da casa (null = grid simples). */
   layoutMesas: 'tabuara' | null;
+  /** A reserva abre pedindo o CPF e identifica a pessoa (config da filial). */
+  pedirCpf: boolean;
+  /** Mostra "Placa do carro" (casa com estacionamento). */
+  pedirPlaca: boolean;
+  /** Mostra "Já adianta sua bebida?". */
+  pedirBebida: boolean;
 }
 
-type Fase = 'dados' | 'otp' | 'pagamento' | 'ok';
+type Fase = 'cpf' | 'dados' | 'otp' | 'pagamento' | 'ok';
 
 function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -44,8 +50,8 @@ function formatCPF(value: string): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji, layoutMesas }: Props) {
-  const [fase, setFase] = useState<Fase>('dados');
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji, layoutMesas, pedirCpf, pedirPlaca, pedirBebida }: Props) {
+  const [fase, setFase] = useState<Fase>(pedirCpf ? 'cpf' : 'dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
   const [hora, setHora] = useState('17:00');
@@ -66,6 +72,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [voltou, setVoltou] = useState<string | null>(null);
   const [precisaCpf, setPrecisaCpf] = useState(false);
   const [cpf, setCpf] = useState('');
+  // Identificação pelo CPF (quando a filial abre a reserva por ele).
+  const [identificado, setIdentificado] = useState<{ primeiroNome: string | null; telefoneMascarado: string | null } | null>(null);
+  const [identificando, setIdentificando] = useState(false);
 
   // Mapa de mesas do espaço escolhido — cliente pode clicar pra escolher a
   // mesa (opcional). Recarrega sempre que espaço/data mudam; escolha antiga
@@ -358,6 +367,36 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     await confirmar();
   }
 
+  /** Passo 1 quando a casa abre a reserva pelo CPF: descobre quem é a pessoa
+   *  (cadastro nosso -> cache -> SPC) e segue pro formulário já sabendo o nome.
+   *  Não achando, o formulário pede o nome como sempre — identificar é
+   *  conveniência, nunca porta trancada. */
+  async function identificar() {
+    const doc = cpf.replace(/\D/g, '');
+    if (doc.length !== 11) return setErro('Digite os 11 dígitos do CPF');
+    setIdentificando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/reservar/${token}/identificar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cpf: doc }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? 'Não consegui validar esse CPF');
+        return;
+      }
+      setIdentificado({ primeiroNome: d.primeiroNome ?? null, telefoneMascarado: d.telefoneMascarado ?? null });
+      if (d.primeiroNome) setNome(d.primeiroNome);
+      setFase('dados');
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setIdentificando(false);
+    }
+  }
+
   async function pedirCodigo() {
     if (whatsapp.replace(/\D/g, '').length < 10) return setErro('WhatsApp inválido');
     if (!nome.trim()) return setErro('Informe seu nome');
@@ -393,7 +432,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       const r = await fetch(`/api/reservar/${token}/confirmar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, mesa: mesaEscolhida || undefined, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa, cpf: precisaCpf ? cpf : undefined }),
+        body: JSON.stringify({ telefone: whatsapp, codigo, nome, espaco, data, hora, pessoas, mesa: mesaEscolhida || undefined, observacao, preferencias, bebida, bebidaComboQtd: comboSelecionado, bebidaCodigoPdv: codigoPdvSelecionado, placa, cpf: pedirCpf || precisaCpf ? cpf : undefined }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -454,6 +493,37 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           ⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a
           reserva é cancelada automaticamente.
         </p>
+      </div>
+    );
+  }
+
+  if (fase === 'cpf') {
+    return (
+      <div className={card}>
+        <h1 className="text-2xl leading-tight text-[var(--rsv-ink)]" style={serif}>Reserve sua mesa</h1>
+        <p className="mt-1 text-sm text-[var(--rsv-muted)]">{nomeFilial} · {convite}</p>
+
+        <div className="mt-6">
+          <label className={lbl}>Seu CPF</label>
+          <input
+            value={cpf}
+            onChange={(e) => setCpf(formatCPF(e.target.value))}
+            inputMode="numeric"
+            autoFocus
+            placeholder="000.000.000-00"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !identificando) identificar(); }}
+            className={`${inp} text-center text-lg tracking-wider`}
+          />
+          <p className="mt-2 text-[11px] leading-relaxed text-[var(--rsv-muted)]">
+            É só o CPF pra começar — a gente já reconhece você e não precisa perguntar o resto.
+          </p>
+        </div>
+
+        {erro && <p className="mt-3 text-center text-xs text-[var(--rsv-danger)]">{erro}</p>}
+
+        <button onClick={identificar} disabled={identificando || cpf.replace(/\D/g, '').length !== 11} className={btn}>
+          {identificando ? 'Verificando…' : 'Continuar'}
+        </button>
       </div>
     );
   }
@@ -564,7 +634,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // fase dados
   return (
     <div className={card}>
-      <h1 className="text-2xl leading-tight text-[var(--rsv-ink)]" style={serif}>Reserve sua mesa</h1>
+      <h1 className="text-2xl leading-tight text-[var(--rsv-ink)]" style={serif}>
+        {identificado?.primeiroNome ? `Olá, ${identificado.primeiroNome}!` : 'Reserve sua mesa'}
+      </h1>
       <p className="mt-1 text-sm text-[var(--rsv-muted)]">{nomeFilial} · {convite}</p>
 
       {/* Taxa obrigatória do espaço selecionado (ex: Lounge) OU ancoragem de preço padrão */}
@@ -673,17 +745,29 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         <div>
           <label className={lbl}>WhatsApp</label>
           <input value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="tel" className={inp} placeholder="(00) 00000-0000" autoFocus />
+          {/* Mascarado de propósito: a pessoa reconhece o próprio número sem
+              a gente entregar telefone de terceiro pra quem digitou o CPF. */}
+          {identificado?.telefoneMascarado && (
+            <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">
+              Temos <b className="text-[var(--rsv-text)]">{identificado.telefoneMascarado}</b> no seu cadastro — confirme digitando, ou informe outro.
+            </p>
+          )}
           {voltou && (
             <p className="mt-1.5 rounded-lg bg-[var(--rsv-welcome-bg)] px-2.5 py-1.5 text-xs text-[var(--rsv-strong)]">
               👋 Que bom te ver de novo, <b>{voltou}</b>! Já preenchemos seu nome.
             </p>
           )}
         </div>
-        <div>
-          <label className={lbl}>Seu nome</label>
-          <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} placeholder="Nome completo" />
-        </div>
-        {precisaCpf && (
+        {/* Identificou pelo CPF: já sabemos o nome, não se pergunta de novo.
+            Não identificou (CPF sem cadastro nosso nem no SPC), o campo volta —
+            reserva sem nome nenhum não dá pra chamar na porta. */}
+        {identificado?.primeiroNome ? null : (
+          <div>
+            <label className={lbl}>Seu nome</label>
+            <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} placeholder="Nome completo" />
+          </div>
+        )}
+        {precisaCpf && !pedirCpf && (
           <div>
             <label className={lbl}>CPF</label>
             <input
@@ -700,7 +784,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <label className={lbl}>Observação (opcional)</label>
           <input value={observacao} onChange={(e) => setObs(e.target.value)} className={inp} placeholder="Aniversário, cadeira de bebê…" />
         </div>
-        {usaCatalogoReal ? (
+        {!pedirBebida ? null : usaCatalogoReal ? (
           <div>
             <label className={lbl}>Já adianta sua bebida? 🍹 (opcional)</label>
             <div className="mt-1.5 flex gap-2">
@@ -741,15 +825,17 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <p className="mt-1 text-[11px] text-[var(--rsv-muted)]">A gente já deixa pronta pra quando você sentar {emoji}</p>
           </div>
         ) : null}
-        <div>
-          <label className={lbl}>Placa do carro (opcional)</label>
-          <input
-            value={placa}
-            onChange={(e) => setPlaca(e.target.value.toUpperCase().slice(0, 8))}
-            className={inp}
-            placeholder="ABC1D23"
-          />
-        </div>
+        {pedirPlaca && (
+          <div>
+            <label className={lbl}>Placa do carro (opcional)</label>
+            <input
+              value={placa}
+              onChange={(e) => setPlaca(e.target.value.toUpperCase().slice(0, 8))}
+              className={inp}
+              placeholder="ABC1D23"
+            />
+          </div>
+        )}
       </div>
 
       {erro && <p className="mt-3 text-center text-xs text-[var(--rsv-danger)]">{erro}</p>}

@@ -149,6 +149,23 @@ export interface ReservaConfig {
     fim: string; // HH:MM, dia de semana — janela geral fecha
     fimHojeFimDeSemana: string; // HH:MM, fim da janela em sáb/dom/feriado
   };
+  /** A reserva ABRE pedindo o CPF, em vez de nome + telefone: a casa
+   *  identifica quem é pelo cadastro (e, não achando, pelo SPC) e já chama a
+   *  pessoa pelo nome. Ausente/false = formulário clássico (nome + WhatsApp).
+   *  Ligar isso numa casa com muita reserva de gente nova gasta consulta paga
+   *  de SPC — ver o teto por hora em /api/reservar/[token]/identificar. */
+  pedirCpf?: boolean;
+  /** Mostra "Placa do carro" no formulário (casa com estacionamento/cancela).
+   *  Ausente = mostra, que é como o Prainha já estava no ar. */
+  pedirPlaca?: boolean;
+  /** Mostra "Já adianta sua bebida?" no formulário. Ausente = mostra (desde
+   *  que haja catálogo ou a lista `bebidas`), como o Prainha já estava. */
+  pedirBebida?: boolean;
+  /** A casa aceita EMENDAR duas mesas pra um grupo grande. Ausente = aceita,
+   *  como o Prainha já estava. False numa casa pequena (Tabuará): o grupo que
+   *  não cabe numa mesa só vai pra equipe, em vez de o sistema juntar mesas
+   *  que fisicamente não encostam. */
+  juntarMesas?: boolean;
 }
 
 /** Endereço fiscal do emitente (vai no XML da NFC-e). */

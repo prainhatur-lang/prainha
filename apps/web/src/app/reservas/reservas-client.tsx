@@ -29,6 +29,10 @@ export interface FilialOpt {
   pausada?: boolean;
   bebidas?: string[];
   atendimento?: { inicio: string; fim: string; fimHojeFimDeSemana: string };
+  pedirCpf?: boolean;
+  pedirPlaca?: boolean;
+  pedirBebida?: boolean;
+  juntarMesas?: boolean;
 }
 
 export interface ReservaItem {
@@ -1045,6 +1049,12 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
   const [areas, setAreas] = useState<Area[]>(filial.areas.length ? filial.areas.map((a) => ({ ...a })) : []);
   const [bebidasTxt, setBebidasTxt] = useState((filial.bebidas ?? []).join('\n'));
   const [atendimento, setAtendimento] = useState(filial.atendimento ?? null);
+  // Liga/desliga do formulário público desta casa. Default = como estava no
+  // ar antes de existir a chave (por isso `!== false` nos três últimos).
+  const [pedirCpf, setPedirCpf] = useState(!!filial.pedirCpf);
+  const [pedirPlaca, setPedirPlaca] = useState(filial.pedirPlaca !== false);
+  const [pedirBebida, setPedirBebida] = useState(filial.pedirBebida !== false);
+  const [juntarMesas, setJuntarMesas] = useState(filial.juntarMesas !== false);
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -1070,6 +1080,10 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
           areas: areas.filter((a) => a.nome.trim()),
           bebidas: bebidasTxt.split('\n').map((s) => s.trim()).filter(Boolean),
           atendimento,
+          pedirCpf,
+          pedirPlaca,
+          pedirBebida,
+          juntarMesas,
         }),
       });
       if (!r.ok) {
@@ -1200,6 +1214,43 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
             <input type="time" value={atendimento.fimHojeFimDeSemana} onChange={(e) => setAtendimento({ ...atendimento, fimHojeFimDeSemana: e.target.value })} className={`${inp} w-24`} />
           </div>
         )}
+      </div>
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <p className="text-xs font-semibold text-slate-700">O que a reserva do site pergunta</p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Cada casa pede o que faz sentido nela. Desmarcado = o campo nem aparece pro cliente.
+        </p>
+        <div className="mt-2 space-y-2">
+          <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input type="checkbox" className="mt-0.5" checked={pedirCpf} onChange={(e) => setPedirCpf(e.target.checked)} />
+            <span>
+              <b>Começar pelo CPF</b> — a reserva abre pedindo só o CPF e a casa reconhece quem é
+              (cadastro nosso; não achando, consulta o SPC). O cliente não digita nome.
+              <span className="block text-slate-500">
+                CPF que a gente nunca viu gasta consulta paga de SPC. Desmarcado = formulário
+                clássico, com nome e WhatsApp.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input type="checkbox" className="mt-0.5" checked={pedirPlaca} onChange={(e) => setPedirPlaca(e.target.checked)} />
+            <span>Pedir <b>placa do carro</b> <span className="text-slate-500">(casa com estacionamento/cancela)</span></span>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input type="checkbox" className="mt-0.5" checked={pedirBebida} onChange={(e) => setPedirBebida(e.target.checked)} />
+            <span>Pedir <b>bebida antecipada</b> <span className="text-slate-500">(deixa pronta pra quando o cliente sentar)</span></span>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input type="checkbox" className="mt-0.5" checked={juntarMesas} onChange={(e) => setJuntarMesas(e.target.checked)} />
+            <span>
+              <b>Juntar mesas</b> pra grupo grande
+              <span className="block text-slate-500">
+                Desmarcado: grupo que não cabe numa mesa só vai pra equipe, em vez de o sistema
+                emendar mesas que fisicamente não encostam.
+              </span>
+            </span>
+          </label>
+        </div>
       </div>
       <div className="mt-2 flex items-center gap-3">
         <button onClick={addArea} className="text-xs text-sky-600 hover:underline">+ espaço</button>

@@ -83,6 +83,14 @@ export async function PUT(request: Request) {
         ? undefined
         : atual.atendimento;
 
+  // Chaves liga/desliga do formulário público. Só entram quando vieram no
+  // body — assim salvar só as áreas não apaga o que já estava configurado.
+  const flag = (v: unknown) => (typeof v === 'boolean' ? v : undefined);
+  const pedirCpf = flag(b.pedirCpf);
+  const pedirPlaca = flag(b.pedirPlaca);
+  const pedirBebida = flag(b.pedirBebida);
+  const juntarMesas = flag(b.juntarMesas);
+
   await db
     .update(schema.filial)
     .set({
@@ -91,9 +99,13 @@ export async function PUT(request: Request) {
         areas,
         ...(bebidas !== undefined ? { bebidas } : {}),
         ...(atendimento ? { atendimento } : { atendimento: undefined }),
+        ...(pedirCpf !== undefined ? { pedirCpf } : {}),
+        ...(pedirPlaca !== undefined ? { pedirPlaca } : {}),
+        ...(pedirBebida !== undefined ? { pedirBebida } : {}),
+        ...(juntarMesas !== undefined ? { juntarMesas } : {}),
       },
     })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filiais.map((f) => f.id))));
 
-  return NextResponse.json({ ok: true, areas, bebidas, atendimento });
+  return NextResponse.json({ ok: true, areas, bebidas, atendimento, pedirCpf, pedirPlaca, pedirBebida, juntarMesas });
 }

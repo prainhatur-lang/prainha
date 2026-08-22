@@ -367,8 +367,10 @@ async function validarSlotEAlocarMesa(p: {
   if (unica) return { areaCfg, mesa: String(unica.numero), mesaJuntada: null };
 
   // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
+  // Casa que não emenda mesa (cfg.juntarMesas === false) pula isso: grupo que
+  // não cabe numa mesa só é assunto da equipe, não do sistema.
   let par: [(typeof livres)[number], (typeof livres)[number]] | null = null;
-  if (limite - ocupadas.size >= 2) {
+  if (p.cfg.juntarMesas !== false && limite - ocupadas.size >= 2) {
     for (let i = 0; i < livres.length; i++) {
       for (let j = i + 1; j < livres.length; j++) {
         const soma = livres[i].lugares + livres[j].lugares;
@@ -379,6 +381,11 @@ async function validarSlotEAlocarMesa(p: {
     }
   }
   if (par) return { areaCfg, mesa: String(par[0].numero), mesaJuntada: String(par[1].numero) };
+
+  if (p.cfg.juntarMesas === false) {
+    const maior = ordenadas.length ? ordenadas[ordenadas.length - 1].lugares : 0;
+    return `Grupo de ${p.pessoas} não cabe em ${areaCfg.nome} (maior mesa: ${maior} lugares) e esta casa não junta mesas. Ofereça outra área ou transfira pra equipe.`;
+  }
 
   const duasMaiores = ordenadas.slice(-2).reduce((s, m) => s + m.lugares, 0);
   if (p.pessoas > duasMaiores) {

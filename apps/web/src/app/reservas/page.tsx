@@ -53,6 +53,19 @@ export default async function ReservasPage(props: {
   );
   const bebidasPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.bebidas ?? []]));
   const atendimentoPorFilial = new Map(configs.map((c) => [c.id, c.reservaConfig?.atendimento]));
+  // Liga/desliga do formulário público. Ausente = como estava antes de a
+  // chave existir (CPF desligado; placa, bebida e juntar mesas ligados).
+  const flagsPorFilial = new Map(
+    configs.map((c) => [
+      c.id,
+      {
+        pedirCpf: !!c.reservaConfig?.pedirCpf,
+        pedirPlaca: c.reservaConfig?.pedirPlaca !== false,
+        pedirBebida: c.reservaConfig?.pedirBebida !== false,
+        juntarMesas: c.reservaConfig?.juntarMesas !== false,
+      },
+    ]),
+  );
   const filiais: FilialOpt[] = acessiveis.map((f) => ({
     id: f.id,
     nome: f.nome,
@@ -60,6 +73,7 @@ export default async function ReservasPage(props: {
     pausada: pausadaPorFilial.get(f.id) ?? false,
     bebidas: bebidasPorFilial.get(f.id) ?? [],
     atendimento: atendimentoPorFilial.get(f.id),
+    ...(flagsPorFilial.get(f.id) ?? {}),
   }));
 
   const escopo = filialFiltro ? [filialFiltro] : filialIds;
