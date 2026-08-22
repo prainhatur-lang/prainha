@@ -134,8 +134,8 @@ function labelDia(d: DiaAgenda, idx: number): string {
 }
 
 const inp =
-  'mt-1 w-full rounded-xl border border-[#e2c9a0] bg-white px-3.5 py-2.5 text-base text-[#1d130c] outline-none transition-colors placeholder:text-[#b7a888] focus:border-[#e7723a] focus:ring-2 focus:ring-[#e7723a]/20 sm:text-sm';
-const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8a7a64]';
+  'mt-1 w-full rounded-xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] px-3.5 py-2.5 text-base text-[var(--dlv-ink)] outline-none transition-colors placeholder:text-[var(--dlv-placeholder)] focus:border-[var(--dlv-accent)] focus:ring-2 focus:ring-[var(--dlv-accent)]/20 sm:text-sm';
+const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--dlv-muted)]';
 
 export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props) {
   const router = useRouter();
@@ -458,48 +458,48 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       <main className="mx-auto w-full max-w-lg px-4 pb-40 pt-4 lg:max-w-5xl lg:px-8 lg:pb-10">
         <button
           onClick={() => setTela('cardapio')}
-          className="text-sm font-semibold text-[#b3411c]"
+          className="text-sm font-semibold text-[var(--dlv-strong)]"
         >
           ◂ Voltar pro cardápio
         </button>
-        <h1 className="mt-2 text-2xl text-[#1d130c] lg:text-3xl" style={{ fontFamily: 'var(--dlv-display)' }}>
+        <h1 className="mt-2 text-2xl text-[var(--dlv-ink)] lg:text-3xl" style={{ fontFamily: 'var(--dlv-display)' }}>
           Sua sacola
         </h1>
         <div className="lg:grid lg:grid-cols-[1fr_22rem] lg:items-start lg:gap-6">
         <div>
 
         {/* itens */}
-        <section className="mt-4 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-4 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           {carrinho.length === 0 ? (
-            <p className="py-6 text-center text-sm text-[#8a7a64]">Sacola vazia.</p>
+            <p className="py-6 text-center text-sm text-[var(--dlv-muted)]">Sacola vazia.</p>
           ) : (
-            <ul className="divide-y divide-[#f0e4cc]">
+            <ul className="divide-y divide-[var(--dlv-surface)]">
               {carrinho.map((l, idx) => (
                 <li key={`${l.itemId}-${idx}`} className="flex items-center gap-3 py-3">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-[#1d130c]">{l.nome}</p>
+                    <p className="truncate text-sm font-semibold text-[var(--dlv-ink)]">{l.nome}</p>
                     {l.complementos.length > 0 ? (
-                      <p className="text-xs text-[#8a7a64]">
+                      <p className="text-xs text-[var(--dlv-muted)]">
                         + {l.complementos.map((c) => c.nome).join(', ')}
                       </p>
                     ) : null}
-                    {l.obs ? <p className="truncate text-xs text-[#8a7a64]">{l.obs}</p> : null}
-                    <p className="text-xs text-[#b3411c]">{brl(totalLinha(l) / l.qtd)}</p>
+                    {l.obs ? <p className="truncate text-xs text-[var(--dlv-muted)]">{l.obs}</p> : null}
+                    <p className="text-xs text-[var(--dlv-strong)]">{brl(totalLinha(l) / l.qtd)}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => mudarQtd(idx, -1)}
-                      className="h-8 w-8 rounded-full border border-[#e2c9a0] text-[#b3411c]"
+                      className="h-8 w-8 rounded-full border border-[var(--dlv-card-line)] text-[var(--dlv-strong)]"
                       aria-label="menos"
                     >
                       −
                     </button>
-                    <span className="w-5 text-center text-sm font-semibold text-[#1d130c]">
+                    <span className="w-5 text-center text-sm font-semibold text-[var(--dlv-ink)]">
                       {l.qtd}
                     </span>
                     <button
                       onClick={() => mudarQtd(idx, 1)}
-                      className="h-8 w-8 rounded-full border border-[#e2c9a0] text-[#b3411c]"
+                      className="h-8 w-8 rounded-full border border-[var(--dlv-card-line)] text-[var(--dlv-strong)]"
                       aria-label="mais"
                     >
                       +
@@ -512,7 +512,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         </section>
 
         {/* cupom */}
-        <section className="mt-3 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>Cupom promocional</p>
           <div className="mt-1 flex gap-2">
             <input
@@ -527,7 +527,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             <button
               onClick={() => void aplicarCupom()}
               disabled={cupomCarregando || !cupomCodigo.trim()}
-              className="rounded-xl bg-[#143a3d] px-4 text-sm font-semibold text-[#fbf6ec] disabled:opacity-50"
+              className="rounded-xl bg-[var(--dlv-escuro)] px-4 text-sm font-semibold text-[var(--dlv-accent-ink)] disabled:opacity-50"
             >
               {cupomCarregando ? '...' : 'Aplicar'}
             </button>
@@ -537,12 +537,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               ✓ {cupom.codigo} — {cupom.label}
             </p>
           ) : cupom?.erro ? (
-            <p className="mt-2 text-xs text-[#b3411c]">{cupom.erro}</p>
+            <p className="mt-2 text-xs text-[var(--dlv-strong)]">{cupom.erro}</p>
           ) : null}
         </section>
 
         {/* entrega ou retirada */}
-        <section className="mt-3 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>Como você quer receber?</p>
           <div className="mt-2 grid grid-cols-2 gap-2">
             {loja.entregaAtiva ? (
@@ -550,8 +550,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 onClick={() => setTipo('entrega')}
                 className={`rounded-xl border px-3 py-3 text-sm font-semibold ${
                   tipo === 'entrega'
-                    ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]'
-                    : 'border-[#e2c9a0] text-[#8a7a64]'
+                    ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]'
+                    : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
                 🛵 Entrega
@@ -562,8 +562,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 onClick={() => setTipo('retirada')}
                 className={`rounded-xl border px-3 py-3 text-sm font-semibold ${
                   tipo === 'retirada'
-                    ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]'
-                    : 'border-[#e2c9a0] text-[#8a7a64]'
+                    ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]'
+                    : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
                 🏖️ Retirar no balcão
@@ -625,14 +625,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               </div>
 
               {freteCarregando ? (
-                <p className="text-xs text-[#8a7a64]">Calculando a taxa de entrega…</p>
+                <p className="text-xs text-[var(--dlv-muted)]">Calculando a taxa de entrega…</p>
               ) : frete ? (
                 frete.ok ? (
                   <div
                     className={`rounded-xl px-3 py-2 text-sm font-semibold ${
                       frete.gratis
                         ? 'bg-emerald-50 text-emerald-700'
-                        : 'bg-[#fbf6ec] text-[#4a382a]'
+                        : 'bg-[var(--dlv-accent-ink)] text-[var(--dlv-text)]'
                     }`}
                   >
                     {frete.gratis ? (
@@ -648,7 +648,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                       <>Taxa de entrega: {brl(frete.taxaCentavos)}</>
                     )}
                     {frete.distanciaKm != null ? (
-                      <span className="ml-1 text-xs font-normal text-[#8a7a64]">
+                      <span className="ml-1 text-xs font-normal text-[var(--dlv-muted)]">
                         · {frete.distanciaKm.toFixed(1).replace('.', ',')} km
                       </span>
                     ) : null}
@@ -664,13 +664,13 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         </section>
 
         {/* agendamento */}
-        <section className="mt-3 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>{tipo === 'entrega' ? 'Quando entregar?' : 'Quando retirar?'}</p>
           {agenda.asapDisponivel ? (
             <button
               onClick={() => setAsap(true)}
               className={`mt-2 w-full rounded-xl border px-3 py-3 text-left text-sm font-semibold ${
-                asap ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'
+                asap ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]' : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
               }`}
             >
               ⚡ O quanto antes
@@ -688,7 +688,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           <button
             onClick={() => setAsap(false)}
             className={`mt-2 w-full rounded-xl border px-3 py-3 text-left text-sm font-semibold ${
-              !asap ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]' : 'border-[#e2c9a0] text-[#8a7a64]'
+              !asap ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]' : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
             }`}
           >
             📅 Agendar dia e hora
@@ -707,10 +707,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     }}
                     className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold ${
                       diaSel === d.data
-                        ? 'bg-[#143a3d] text-[#fbf6ec]'
+                        ? 'bg-[var(--dlv-escuro)] text-[var(--dlv-accent-ink)]'
                         : d.slots.length === 0
-                          ? 'bg-[#f0e4cc] text-[#b7a888] line-through'
-                          : 'bg-white text-[#4a382a] ring-1 ring-[#e2c9a0]'
+                          ? 'bg-[var(--dlv-surface)] text-[var(--dlv-placeholder)] line-through'
+                          : 'bg-[var(--dlv-card)] text-[var(--dlv-text)] ring-1 ring-[var(--dlv-card-line)]'
                     }`}
                   >
                     {labelDia(d, idx)}
@@ -726,8 +726,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                         onClick={() => setHoraSel(h)}
                         className={`rounded-lg px-2 py-2 text-sm font-semibold ${
                           horaSel === h
-                            ? 'bg-[#e7723a] text-[#fbf6ec]'
-                            : 'bg-[#fbf6ec] text-[#4a382a] ring-1 ring-[#e2c9a0]'
+                            ? 'bg-[var(--dlv-accent)] text-[var(--dlv-accent-ink)]'
+                            : 'bg-[var(--dlv-accent-ink)] text-[var(--dlv-text)] ring-1 ring-[var(--dlv-card-line)]'
                         }`}
                       >
                         {h}
@@ -735,17 +735,17 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-2 text-xs text-[#8a7a64]">Sem horários nesse dia.</p>
+                  <p className="mt-2 text-xs text-[var(--dlv-muted)]">Sem horários nesse dia.</p>
                 )
               ) : (
-                <p className="mt-2 text-xs text-[#8a7a64]">Escolha um dia acima.</p>
+                <p className="mt-2 text-xs text-[var(--dlv-muted)]">Escolha um dia acima.</p>
               )}
             </div>
           ) : null}
         </section>
 
         {/* dados do cliente */}
-        <section className="mt-3 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>Seus dados</p>
           <div className="mt-2 space-y-3">
             <div>
@@ -787,7 +787,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         </section>
 
         {/* pagamento */}
-        <section className="mt-3 rounded-2xl border border-[#e2c9a0] bg-white p-4">
+        <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>Pagamento — 100% online e seguro</p>
           <div className="mt-2 grid grid-cols-2 gap-2">
             {loja.pixAtivo ? (
@@ -795,8 +795,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 onClick={() => setPagamento('pix')}
                 className={`rounded-xl border px-3 py-3 text-sm font-semibold ${
                   pagamento === 'pix'
-                    ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]'
-                    : 'border-[#e2c9a0] text-[#8a7a64]'
+                    ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]'
+                    : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
                 ⚡ Pix
@@ -807,15 +807,15 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 onClick={() => setPagamento('cartao')}
                 className={`rounded-xl border px-3 py-3 text-sm font-semibold ${
                   pagamento === 'cartao'
-                    ? 'border-[#e7723a] bg-[#e7723a]/10 text-[#b3411c]'
-                    : 'border-[#e2c9a0] text-[#8a7a64]'
+                    ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]'
+                    : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
                 💳 Cartão
               </button>
             ) : null}
           </div>
-          <p className="mt-2 text-xs text-[#8a7a64]">
+          <p className="mt-2 text-xs text-[var(--dlv-muted)]">
             O pedido só vai pra cozinha depois do pagamento aprovado.
           </p>
         </section>
@@ -823,9 +823,9 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         </div>
 
         {/* resumo + CTA: barra fixa embaixo no celular, cartão fixo ao lado no desktop */}
-        <div className="fixed inset-x-0 bottom-0 border-t border-[#e2c9a0] bg-[#fbf6ec]/95 p-4 backdrop-blur lg:sticky lg:top-6 lg:mt-4 lg:rounded-2xl lg:border lg:border-[#e2c9a0] lg:bg-white lg:p-5 lg:backdrop-blur-none">
+        <div className="fixed inset-x-0 bottom-0 border-t border-[var(--dlv-card-line)] bg-[var(--dlv-accent-ink)]/95 p-4 backdrop-blur lg:sticky lg:top-6 lg:mt-4 lg:rounded-2xl lg:border lg:border-[var(--dlv-card-line)] lg:bg-[var(--dlv-card)] lg:p-5 lg:backdrop-blur-none">
           <div className="mx-auto w-full max-w-lg lg:max-w-none">
-            <div className="flex justify-between text-sm text-[#4a382a]">
+            <div className="flex justify-between text-sm text-[var(--dlv-text)]">
               <span>Subtotal</span>
               <span>{brl(subtotal)}</span>
             </div>
@@ -836,14 +836,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               </div>
             ) : null}
             {tipo === 'entrega' ? (
-              <div className="flex justify-between text-sm text-[#4a382a]">
+              <div className="flex justify-between text-sm text-[var(--dlv-text)]">
                 <span>Entrega</span>
                 <span>
                   {taxa == null ? '—' : taxa === 0 ? 'Grátis 🎉' : brl(taxa)}
                 </span>
               </div>
             ) : null}
-            <div className="mt-1 flex justify-between text-base font-bold text-[#1d130c]">
+            <div className="mt-1 flex justify-between text-base font-bold text-[var(--dlv-ink)]">
               <span>Total</span>
               <span>{brl(total)}</span>
             </div>
@@ -856,7 +856,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             <button
               onClick={() => void fazerPedido()}
               disabled={enviando || carrinho.length === 0 || loja.pausado}
-              className="mt-2 w-full rounded-full bg-[#e7723a] px-4 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[#df5a35] disabled:opacity-50"
+              className="mt-2 w-full rounded-full bg-[var(--dlv-accent)] px-4 py-3.5 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[var(--dlv-accent-hover)] disabled:opacity-50"
             >
               {enviando
                 ? 'Enviando…'
@@ -879,18 +879,18 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         className="px-4 pb-5 pt-6 text-center lg:pb-8 lg:pt-10"
         style={{
           background:
-            'linear-gradient(180deg,#07191c 0%,#143a3d 55%,#5a6a4f 85%,#c98a3f 115%)',
+            'var(--dlv-capa)',
         }}
       >
         <span
-          className="text-3xl tracking-tight text-[#fbf6ec] lg:text-5xl"
+          className="text-3xl tracking-tight text-[var(--dlv-accent-ink)] lg:text-5xl"
           style={{ fontFamily: 'var(--dlv-display)' }}
         >
           {loja.titulo}
-          <span className="text-[#f4b454]">.</span>
+          <span className="text-[var(--dlv-gold)]">.</span>
         </span>
         {loja.subtitulo ? (
-          <p className="mt-1 text-sm text-[#e9d9bb] lg:text-base">{loja.subtitulo}</p>
+          <p className="mt-1 text-sm text-[var(--dlv-linha-suave)] lg:text-base">{loja.subtitulo}</p>
         ) : null}
         <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
           {loja.pausado ? (
@@ -912,7 +912,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             {chipsGratis.map((c) => (
               <span
                 key={c}
-                className="rounded-full bg-[#f4b454]/20 px-2.5 py-1 text-[11px] font-semibold text-[#f4b454]"
+                className="rounded-full bg-[var(--dlv-gold)]/20 px-2.5 py-1 text-[11px] font-semibold text-[var(--dlv-gold)]"
               >
                 {c}
               </span>
@@ -940,7 +940,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       {/* destaques */}
       {destaques.length > 0 && !buscaNorm ? (
         <section className="mx-auto w-full max-w-lg px-4 pt-4 lg:max-w-5xl lg:px-8">
-          <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-[#a86a2e]">
+          <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-[var(--dlv-nota)]">
             ⭐ Destaques
           </h2>
           <div className="mt-2 flex gap-3 overflow-x-auto pb-1 lg:grid lg:grid-cols-5 lg:overflow-visible">
@@ -953,7 +953,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   setModalObs('');
                   setModalCompl(new Set());
                 }}
-                className="w-40 shrink-0 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all lg:w-auto lg:hover:-translate-y-0.5 lg:hover:border-[#e7723a]"
+                className="w-40 shrink-0 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-3 text-left transition-all lg:w-auto lg:hover:-translate-y-0.5 lg:hover:border-[var(--dlv-accent)]"
               >
                 {i.fotoUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -963,8 +963,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     className="h-24 w-full rounded-xl object-cover"
                   />
                 ) : null}
-                <p className="mt-2 line-clamp-2 text-sm font-semibold text-[#1d130c]">{i.nome}</p>
-                <p className="mt-1 text-sm font-bold text-[#b3411c]">{brl(i.precoCentavos)}</p>
+                <p className="mt-2 line-clamp-2 text-sm font-semibold text-[var(--dlv-ink)]">{i.nome}</p>
+                <p className="mt-1 text-sm font-bold text-[var(--dlv-strong)]">{brl(i.precoCentavos)}</p>
               </button>
             ))}
           </div>
@@ -974,14 +974,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       {/* categorias */}
       <div className="mx-auto w-full max-w-lg px-4 lg:max-w-5xl lg:px-8">
         {categoriasVisiveis.length === 0 ? (
-          <p className="py-16 text-center text-sm text-[#8a7a64]">
+          <p className="py-16 text-center text-sm text-[var(--dlv-muted)]">
             {buscaNorm ? 'Nada encontrado com essa busca.' : 'Cardápio em montagem — volte logo!'}
           </p>
         ) : (
           categoriasVisiveis.map((cat) => (
             <section key={cat.id} className="pt-6">
               <h2
-                className="text-xl text-[#1d130c] lg:text-2xl"
+                className="text-xl text-[var(--dlv-ink)] lg:text-2xl"
                 style={{ fontFamily: 'var(--dlv-display)' }}
               >
                 {cat.nome}
@@ -999,18 +999,18 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                         setModalObs('');
                         setModalCompl(new Set());
                       }}
-                      className={`flex h-full w-full items-stretch gap-3 rounded-2xl border border-[#e2c9a0] bg-white p-3 text-left transition-all ${
-                        i.esgotado ? 'opacity-55' : 'hover:-translate-y-0.5 hover:border-[#e7723a]'
+                      className={`flex h-full w-full items-stretch gap-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-3 text-left transition-all ${
+                        i.esgotado ? 'opacity-55' : 'hover:-translate-y-0.5 hover:border-[var(--dlv-accent)]'
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-[#1d130c]">{i.nome}</p>
+                        <p className="text-sm font-semibold text-[var(--dlv-ink)]">{i.nome}</p>
                         {i.descricao ? (
-                          <p className="mt-0.5 line-clamp-2 text-xs text-[#8a7a64]">
+                          <p className="mt-0.5 line-clamp-2 text-xs text-[var(--dlv-muted)]">
                             {i.descricao}
                           </p>
                         ) : null}
-                        <p className="mt-1.5 text-sm font-bold text-[#b3411c]">
+                        <p className="mt-1.5 text-sm font-bold text-[var(--dlv-strong)]">
                           {brl(i.precoCentavos)}
                           {i.esgotado ? (
                             <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
@@ -1036,13 +1036,13 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         )}
 
         {loja.whatsapp ? (
-          <p className="pb-4 pt-8 text-center text-xs text-[#8a7a64]">
+          <p className="pb-4 pt-8 text-center text-xs text-[var(--dlv-muted)]">
             Dúvidas?{' '}
             <a
               href={`https://wa.me/${loja.whatsapp}`}
               target="_blank"
               rel="noreferrer"
-              className="font-semibold text-[#b3411c] underline"
+              className="font-semibold text-[var(--dlv-strong)] underline"
             >
               Chama no WhatsApp
             </a>
@@ -1056,7 +1056,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           <div className="mx-auto w-full max-w-lg lg:max-w-md">
             <button
               onClick={() => void abrirSacola()}
-              className="w-full rounded-full bg-[#e7723a] px-5 py-3.5 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[#df5a35]"
+              className="w-full rounded-full bg-[var(--dlv-accent)] px-5 py-3.5 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[var(--dlv-accent-hover)]"
             >
               Ver sacola ({qtdTotal}) · {brl(subtotal)}
             </button>
@@ -1071,7 +1071,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           onClick={() => setItemModal(null)}
         >
           <div
-            className="w-full max-w-lg rounded-t-3xl bg-white p-5 pb-8 sm:rounded-3xl sm:pb-5"
+            className="w-full max-w-lg rounded-t-3xl bg-[var(--dlv-card)] p-5 pb-8 sm:rounded-3xl sm:pb-5"
             onClick={(e) => e.stopPropagation()}
           >
             {itemModal.fotoUrl ? (
@@ -1082,11 +1082,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 className="h-44 w-full rounded-2xl object-cover"
               />
             ) : null}
-            <h3 className="mt-3 text-lg font-bold text-[#1d130c]">{itemModal.nome}</h3>
+            <h3 className="mt-3 text-lg font-bold text-[var(--dlv-ink)]">{itemModal.nome}</h3>
             {itemModal.descricao ? (
-              <p className="mt-1 text-sm text-[#8a7a64]">{itemModal.descricao}</p>
+              <p className="mt-1 text-sm text-[var(--dlv-muted)]">{itemModal.descricao}</p>
             ) : null}
-            <p className="mt-2 text-base font-bold text-[#b3411c]">
+            <p className="mt-2 text-base font-bold text-[var(--dlv-strong)]">
               {brl(itemModal.precoCentavos)}
             </p>
             {itemModal.perguntas.map((q) => {
@@ -1095,12 +1095,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               const obrigatoria = q.min > 0;
               const faltando = obrigatoria && escolhidasNaPergunta < q.min;
               return (
-                <div key={q.codigo} className="mt-4 border-t border-[#f0e4cc] pt-3">
+                <div key={q.codigo} className="mt-4 border-t border-[var(--dlv-surface)] pt-3">
                   <div className="flex items-baseline justify-between gap-2">
                     <p className={lbl}>{q.texto}</p>
                     <span
                       className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
-                        faltando ? 'text-[#b3411c]' : 'text-[#8a7a64]'
+                        faltando ? 'text-[var(--dlv-strong)]' : 'text-[var(--dlv-muted)]'
                       }`}
                     >
                       {obrigatoria
@@ -1119,7 +1119,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                           <label
                             className={`flex items-center gap-2.5 rounded-xl px-2 py-2 ${
                               cheio ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
-                            } ${marcado ? 'bg-[#e7723a]/10' : 'hover:bg-[#fbf6ec]'}`}
+                            } ${marcado ? 'bg-[var(--dlv-accent)]/10' : 'hover:bg-[var(--dlv-accent-ink)]'}`}
                           >
                             <input
                               type={escolhaUnica ? 'radio' : 'checkbox'}
@@ -1136,16 +1136,16 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                                   return n;
                                 })
                               }
-                              className="h-4 w-4 shrink-0 accent-[#e7723a]"
+                              className="h-4 w-4 shrink-0 accent-[var(--dlv-accent)]"
                             />
-                            <span className="min-w-0 flex-1 truncate text-sm text-[#4a382a]">
+                            <span className="min-w-0 flex-1 truncate text-sm text-[var(--dlv-text)]">
                               {o.nome}
                             </span>
                             <span
                               className={`shrink-0 text-sm ${
                                 o.precoCentavos > 0
-                                  ? 'font-medium text-[#b3411c]'
-                                  : 'text-[#8a7a64]'
+                                  ? 'font-medium text-[var(--dlv-strong)]'
+                                  : 'text-[var(--dlv-muted)]'
                               }`}
                             >
                               {o.precoCentavos > 0 ? `+ ${brl(o.precoCentavos)}` : 'grátis'}
@@ -1172,14 +1172,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setModalQtd((q) => Math.max(1, q - 1))}
-                  className="h-10 w-10 rounded-full border border-[#e2c9a0] text-lg text-[#b3411c]"
+                  className="h-10 w-10 rounded-full border border-[var(--dlv-card-line)] text-lg text-[var(--dlv-strong)]"
                 >
                   −
                 </button>
-                <span className="w-6 text-center font-semibold text-[#1d130c]">{modalQtd}</span>
+                <span className="w-6 text-center font-semibold text-[var(--dlv-ink)]">{modalQtd}</span>
                 <button
                   onClick={() => setModalQtd((q) => Math.min(99, q + 1))}
-                  className="h-10 w-10 rounded-full border border-[#e2c9a0] text-lg text-[#b3411c]"
+                  className="h-10 w-10 rounded-full border border-[var(--dlv-card-line)] text-lg text-[var(--dlv-strong)]"
                 >
                   +
                 </button>
@@ -1195,7 +1195,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   addItem(itemModal, modalQtd, modalObs, escolhidos);
                   setItemModal(null);
                 }}
-                className="flex-1 rounded-full bg-[#e7723a] px-4 py-3 text-sm font-semibold text-[#fbf6ec] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[#df5a35] disabled:opacity-40"
+                className="flex-1 rounded-full bg-[var(--dlv-accent)] px-4 py-3 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[var(--dlv-accent-hover)] disabled:opacity-40"
               >
                 Adicionar ·{' '}
                 {brl(

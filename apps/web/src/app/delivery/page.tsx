@@ -15,16 +15,16 @@ export default async function DeliveryHome() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col items-center justify-center px-5 py-10">
       <span
-        className="text-4xl tracking-tight text-[#b3411c]"
+        className="text-4xl tracking-tight text-[var(--dlv-strong)]"
         style={{ fontFamily: 'var(--dlv-display)' }}
       >
-        Prainha<span className="text-[#e7873a]">.</span>
+        Prainha<span className="text-[var(--dlv-brand-dot)]">.</span>
       </span>
-      <p className="mt-2 text-center text-sm text-[#8a7a64]">Delivery e retirada</p>
+      <p className="mt-2 text-center text-sm text-[var(--dlv-muted)]">Delivery e retirada</p>
 
       {lojas.length === 0 ? (
-        <div className="mt-8 w-full rounded-2xl border border-[#e2c9a0] bg-white p-6 text-center">
-          <p className="text-sm text-[#4a382a]">
+        <div className="mt-8 w-full rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-6 text-center">
+          <p className="text-sm text-[var(--dlv-text)]">
             Nosso delivery ainda não está aberto por aqui. Volte em breve! 🌅
           </p>
         </div>
@@ -34,15 +34,15 @@ export default async function DeliveryHome() {
             <Link
               key={l.filialId}
               href={`/delivery/${l.config.slug}`}
-              className="block rounded-2xl border border-[#e2c9a0] bg-white p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-[#e7723a]"
+              className="block rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-[var(--dlv-accent)]"
             >
-              <p className="text-lg font-semibold text-[#1d130c]">
+              <p className="text-lg font-semibold text-[var(--dlv-ink)]">
                 {l.config.titulo ?? l.nome}
               </p>
               {l.config.subtitulo ? (
-                <p className="mt-0.5 text-sm text-[#8a7a64]">{l.config.subtitulo}</p>
+                <p className="mt-0.5 text-sm text-[var(--dlv-muted)]">{l.config.subtitulo}</p>
               ) : null}
-              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#e7723a]">
+              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--dlv-accent)]">
                 Ver cardápio →
               </p>
             </Link>

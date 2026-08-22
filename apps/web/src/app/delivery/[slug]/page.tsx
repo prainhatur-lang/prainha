@@ -8,6 +8,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { lojaDeliveryPorSlug, abertaAgora, agendaDelivery } from '@/lib/delivery/config';
 import { saldosDasVariantes, semDisponibilidade } from '@/lib/delivery/estoque';
 import { CardapioClient } from './cardapio-client';
+import { temaDeliveryDaFilial, estiloTemaDelivery } from '@/lib/tema-delivery';
 
 export const dynamic = 'force-dynamic';
 
@@ -103,7 +104,12 @@ export default async function DeliveryLojaPage(props: {
   const { dias, asapDisponivel } = agendaDelivery(loja.config);
   const c = loja.config;
 
+  // O delivery da Tabuará não pode abrir na cara do Prainha — é a mesma marca
+  // que o cliente acabou de ver no site. Aqui a paleta e o par de fontes.
+  const tema = temaDeliveryDaFilial(loja.nome);
+
   return (
+    <div style={estiloTemaDelivery(tema) as React.CSSProperties} className="min-h-screen">
     <CardapioClient
       slug={slug}
       loja={{
@@ -160,5 +166,6 @@ export default async function DeliveryLojaPage(props: {
       }))}
       agendaInicial={{ dias, asapDisponivel }}
     />
+    </div>
   );
 }
