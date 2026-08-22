@@ -543,6 +543,8 @@ async function initSchema() {
   // PRAÇA do item cancelado: cerveja cancelada é aviso do BAR, não da cozinha
   // da batata (mesma lógica da reclamação). Nulo = pedido inteiro: vai pra todas.
   await addCol('cancelamento', 'area_codigo integer');
+  // DEVOLUÇÃO exige foto do produto devolvido (regra do dono, 22/08): caminho do arquivo em fotos/
+  await addCol('cancelamento', 'foto text');
   // "Ok, vi": o aviso sumia sozinho em 10 min e não tinha como fechar — quem
   // já resolveu ficava olhando alarme velho (dono, 19/08).
   await addCol('cancelamento', 'visto_em timestamptz');
@@ -4635,6 +4637,10 @@ async function cupomCancelado(itens, numero) {
     }
   } catch (e) { console.error('[impressora] cancelado:', e.message); }
 }
+/** "Devolução" = o produto voltou fisicamente (garrafa, lata) — é o único
+ *  motivo que exige FOTO do produto devolvido (regra do dono, 22/08/2026).
+ *  Reclamação do cliente ou "tira da conta" seguem sem foto. */
+function ehDevolucao(motivo) { return /^devolu/i.test(String(motivo || '').trim()); }
 async function apiCaixaCancelarItem(body, quem) {
   if (!(quem && quem.excluir_item)) return { ok: false, erro: 'sem permissão (Excluir Item do Pedido)' };
   const numero = Number(body.numero), item = Number(body.item_codigo);
@@ -4649,6 +4655,21 @@ async function apiCaixaCancelarItem(body, quem) {
     const v = await validarDuplaSenha(body, quem, status);
     if (!v.gerente) return { ok: false, precisa_gerente: !!v.precisa, status, erro: v.erro };
     gerente = v.gerente;
+  }
+  // DEVOLUÇÃO: só com a foto do produto devolvido — do celular (token do QR,
+  // mesmo caminho do comprovante) ou da câmera do tablet (dataUrl).
+  let foto = null;
+  if (ehDevolucao(body.motivo)) {
+    if (body.token) {
+      const st = await apiComprovanteStatus(body.token, numero, 'devolucao');
+      if (st.ok && st.arquivo) {
+        foto = st.arquivo;
+        await sql`UPDATE comprovante_token SET usado_em=now() WHERE token=${String(st.token || body.token)}`;
+      }
+    } else if (body.foto) {
+      foto = guardaFoto(body.foto);
+    }
+    if (!foto) return { ok: false, precisa_foto: true, erro: 'devolução exige a foto do produto devolvido (garrafa, lata…)' };
   }
   const alvos = await itensDoPedido(ped, { alvo: item });
   const principal = alvos.find((x) => x.codigo === item);
@@ -4697,8 +4718,8 @@ async function apiCaixaCancelarItem(body, quem) {
     WHERE item_codigo = ANY(${alvos.map((x) => x.codigo)})`;
   // praça do item que saiu: o aviso acende só na cozinha dona dele
   const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)})`;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -5446,24 +5467,40 @@ async function loopCancelNuvem() {
   cancelNuvemRodando = true;
   try {
     const desde = Number(await cfgGet('cancel_nuvem_ate', '0')) || 0;
-    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo
+    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto
       FROM cancelamento WHERE id > ${desde} ORDER BY id LIMIT 200`;
     if (!rows.length) return;
+    // A foto da devolução vai junto (base64). A Vercel aceita ~4,5 MB por
+    // requisição: o lote para antes de 3 MB de foto e o resto vai no minuto seguinte.
+    const lote = [];
+    let bytes = 0;
+    for (const x of rows) {
+      let foto_b64 = null;
+      if (x.foto) {
+        try {
+          const caminho = path.join(DIR_FOTOS, x.foto);
+          if (existsSync(caminho)) foto_b64 = readFileSync(caminho).toString('base64');
+        } catch { /* foto já apagada (30 dias) ou ilegível: manda sem */ }
+      }
+      if (foto_b64 && lote.length && bytes + foto_b64.length > 3_000_000) break;
+      lote.push({
+        id: Number(x.id), quando: x.quando, login: x.login, gerente: x.gerente, numero: x.numero,
+        pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
+        nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
+        motivo: x.motivo, area_codigo: x.area_codigo,
+        foto_b64, foto_mime: foto_b64 ? 'image/jpeg' : null });
+      if (foto_b64) bytes += foto_b64.length;
+    }
     const e = Math.floor(Date.now() / 1000) + 120;
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/cancelamentos`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('cancel', e),
-        cancelamentos: rows.map((x) => ({
-          id: Number(x.id), quando: x.quando, login: x.login, gerente: x.gerente, numero: x.numero,
-          pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
-          nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
-          motivo: x.motivo, area_codigo: x.area_codigo })) }),
-      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('cancel', e), cancelamentos: lote }),
+      signal: AbortSignal.timeout(25000),
     });
     const j = await r.json().catch(() => null);
     if (!j?.ok) { console.error('[cancel] nuvem recusou:', j?.erro || r.status); return; }
-    await cfgSet('cancel_nuvem_ate', String(rows[rows.length - 1].id));
-    console.log(`[cancel] ${rows.length} cancelamento(s) na nuvem (até id ${rows[rows.length - 1].id})`);
+    await cfgSet('cancel_nuvem_ate', String(lote[lote.length - 1].id));
+    console.log(`[cancel] ${lote.length} cancelamento(s) na nuvem (até id ${lote[lote.length - 1].id}${bytes ? ', ' + Math.round(bytes / 1024) + ' KB de foto' : ''})`);
   } catch (err) { console.error('[cancel] nuvem:', err.message); }
   finally { cancelNuvemRodando = false; }
 }
@@ -5871,7 +5908,7 @@ async function apiComprovanteAbrir(body, quem) {
   const externo = body.externo === true;
   const base = externo ? await urlExterna() : ipDaLoja();
   if (externo && !base) return { ok: false, erro: 'esta loja não tem endereço externo configurado' };
-  const url = base + '/comprovante?t=' + token;
+  const url = base + '/comprovante?t=' + token + (String(body.forma || '') === 'devolucao' ? '&d=1' : '');
   return { ok: true, token, url, qr: qrSvg(url, 190), externo, tem_externo: !!(await urlExterna()) };
 }
 /** O celular manda a foto. Sem sessão de propósito: quem tem o token, tem o
@@ -5902,16 +5939,19 @@ async function lerComprovanteNaNuvem(arquivo) {
 }
 async function apiComprovanteEnviar(body) {
   const t = String(body.t || '').slice(0, 40);
-  const [row] = await sql`SELECT token, arquivo FROM comprovante_token
+  const [row] = await sql`SELECT token, arquivo, forma FROM comprovante_token
     WHERE token=${t} AND criado_em > now() - interval '10 minutes' AND usado_em IS NULL`;
   if (!row) return { ok: false, erro: 'este link expirou — peça outro no caixa' };
   const arq = guardaFoto(body.foto);
   if (!arq) return { ok: false, erro: 'não consegui ler a foto' };
   await sql`UPDATE comprovante_token SET arquivo=${arq}, enviado_em=now() WHERE token=${t}`;
-  // lê em segundo plano: o celular não espera a IA pra dizer "enviado"
-  lerComprovanteNaNuvem(arq).then(async (d) => {
-    if (d) await sql`UPDATE comprovante_token SET dados=${JSON.stringify(d)} WHERE token=${t}`;
-  }).catch(() => {});
+  // lê em segundo plano: o celular não espera a IA pra dizer "enviado".
+  // Foto de DEVOLUÇÃO (garrafa devolvida) não é comprovante — não tem o que ler.
+  if (row.forma !== 'devolucao') {
+    lerComprovanteNaNuvem(arq).then(async (d) => {
+      if (d) await sql`UPDATE comprovante_token SET dados=${JSON.stringify(d)} WHERE token=${t}`;
+    }).catch(() => {});
+  }
   return { ok: true };
 }
 /** Chegou comprovante? Pergunta pelo TOKEN e, se não veio nele, POR MESA.
@@ -5922,7 +5962,7 @@ async function apiComprovanteEnviar(body) {
  *  ("aguardando a foto" com o celular mostrando ✓ Enviado — aconteceu em
  *  20/08). O caixa não tem como saber disso, e nem deveria: o que importa é
  *  que chegou um comprovante PRA ESTA MESA, agora. */
-async function apiComprovanteStatus(t, numero = null) {
+async function apiComprovanteStatus(t, numero = null, forma = null) {
   const tok = String(t || '').slice(0, 40);
   const [row] = tok
     ? await sql`SELECT arquivo, enviado_em, aberto_em, dados FROM comprovante_token WHERE token=${tok}`
@@ -5935,6 +5975,7 @@ async function apiComprovanteStatus(t, numero = null) {
     const [outro] = await sql`SELECT token, arquivo, dados FROM comprovante_token
       WHERE numero=${n} AND arquivo IS NOT NULL AND usado_em IS NULL
         AND criado_em > now() - interval '30 minutes'
+        AND (${forma}::text IS NULL OR forma=${forma}::text)
       ORDER BY enviado_em DESC LIMIT 1`;
     if (outro) return { ok: true, chegou: true, arquivo: outro.arquivo, abriu: true, token: outro.token, dados: outro.dados || null };
   }
@@ -5958,7 +5999,7 @@ async function apiComprovanteFoto(body, quem) {
   await sql`INSERT INTO comprovante_token (token, numero, valor, forma, arquivo, login, enviado_em, aberto_em)
     VALUES (${token}, ${numero}, ${Number(body.valor) || null}, ${String(body.forma || '')},
       ${arq}, ${quem?.login || null}, now(), now())`;
-  const dados = await lerComprovanteNaNuvem(arq);
+  const dados = String(body.forma || '') === 'devolucao' ? null : await lerComprovanteNaNuvem(arq);
   if (dados) await sql`UPDATE comprovante_token SET dados=${JSON.stringify(dados)} WHERE token=${token}`;
   return { ok: true, token, arquivo: arq, dados: dados || null };
 }
@@ -8939,7 +8980,7 @@ img{width:100%;border-radius:12px;margin-top:12px}
 .ok{color:#4ade80;font-weight:600}.err{color:#f87171;margin-top:10px}
 input[type=file]{display:none}
 </style></head><body>
-<h1>Foto do comprovante</h1>
+<h1 id="h1">Foto do comprovante</h1>
 <div class="mut" id="ctx">carregando…</div>
 <div class="card">
   <label for="f"><span class="go" style="display:block;text-align:center;border-radius:12px;padding:16px;font-weight:600">📷 Tirar foto</span></label>
@@ -8951,8 +8992,10 @@ input[type=file]{display:none}
 </div>
 <script>
 var T=new URLSearchParams(location.search).get('t')||'';
+var D=new URLSearchParams(location.search).get('d')==='1'; // devolução: foto do produto, não do comprovante
 var FOTO=null;
-document.getElementById('ctx').textContent = T ? 'Aponte pro comprovante e toque em tirar foto.' : 'Link inválido.';
+if(D){document.title='Devolução · Prainha';document.getElementById('h1').textContent='Foto do produto devolvido'}
+document.getElementById('ctx').textContent = T ? (D?'Mostre a garrafa/lata devolvida e toque em tirar foto.':'Aponte pro comprovante e toque em tirar foto.') : 'Link inválido.';
 document.getElementById('f').addEventListener('change', function(ev){
   var f=ev.target.files&&ev.target.files[0]; if(!f)return;
   var r=new FileReader();
@@ -8985,7 +9028,7 @@ async function mandar(){
         body:JSON.stringify({t:T,foto:FOTO})});
       var j=await r.json();
       if(!j.ok){e.textContent=j.erro||'não deu';ok.textContent='Enviar pro caixa';return}
-      document.body.innerHTML='<h1 class="ok">✓ Enviado</h1><div class="mut">Pode voltar pro caixa e confirmar o recebimento.</div>';
+      document.body.innerHTML='<h1 class="ok">✓ Enviado</h1><div class="mut">'+(D?'Pode voltar pro caixa e confirmar o cancelamento.':'Pode voltar pro caixa e confirmar o recebimento.')+'</div>';
       return;
     }catch(err){ await new Promise(function(rs){setTimeout(rs,1500)}); }
   }
@@ -13285,12 +13328,13 @@ function lancarNum(n){location.href='/venda?mesa='+n+'&volta=caixa'}
    O texto livre virava "teste"/"" e o relatório não dizia ONDE a perda nasce
    (salão, cozinha, cliente, estoque). Motivo agora é obrigatório e vem de
    uma lista fixa — "Outro…" abre o texto livre pra exceção de verdade. */
-var MOTIVOS_CANC=['Lançamento errado do garçom','Cozinha errou o pedido','Cliente recusou o prato','Cliente desistiu / mudou o pedido','Produto em falta','Demora no preparo'];
+var MOTIVOS_CANC=['Lançamento errado do garçom','Cozinha errou o pedido','Cliente recusou o prato','Cliente desistiu / mudou o pedido','Produto em falta','Demora no preparo','Devolução — produto voltou pro bar/estoque'];
+var MOTIVO_DEV=6; // devolução exige FOTO do produto devolvido (só pra item, não pro pedido inteiro)
 var MOTSEL=null,MOTPED=null;
-function chipsMotivoHtml(sel,fn){
+function chipsMotivoHtml(sel,fn,semDev){
   return '<div class="mut" style="margin-top:10px">Motivo do cancelamento (obrigatório):</div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+
-    MOTIVOS_CANC.map(function(m,ix){return '<button type="button" class="seg'+(sel===ix?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'('+ix+')">'+m+'</button>'}).join('')+
+    MOTIVOS_CANC.map(function(m,ix){if(semDev&&ix===MOTIVO_DEV)return '';return '<button type="button" class="seg'+(sel===ix?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'('+ix+')">'+(ix===MOTIVO_DEV?'📷 ':'')+m+'</button>'}).join('')+
     '<button type="button" class="seg'+(sel==='O'?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'(\\'O\\')">Outro…</button></div>'+
     (sel==='O'?'<input id="cmot" placeholder="qual o motivo?" style="margin-top:8px">':'');
 }
@@ -13300,8 +13344,67 @@ function motivoDe(sel){
   return MOTIVOS_CANC[sel];
 }
 function selMotivoItem(v){MOTSEL=v;pintaMain()}
+/* ---- FOTO DA DEVOLUÇÃO: mesmo caminho do comprovante (QR → celular → foto),
+   ou a câmera do tablet. Sem foto o servidor recusa cancelar como devolução. */
+var CFOTO={token:null,arquivo:null,foto:null,poll:null,stream:null,t0:0};
+function devParar(){if(CFOTO.poll){clearInterval(CFOTO.poll);CFOTO.poll=null}if(CFOTO.stream){CFOTO.stream.getTracks().forEach(function(t){t.stop()});CFOTO.stream=null}}
+function devReset(){devParar();CFOTO={token:null,arquivo:null,foto:null,poll:null,stream:null,t0:0}}
+function devFotoHtml(){
+  if(CFOTO.arquivo||CFOTO.foto)return '<div class="card" style="margin-top:10px;border:1.5px solid #16a34a">'+
+    '<div class="mut"><b style="color:#16a34a">✓ foto do produto devolvido recebida</b></div>'+
+    '<img src="'+(CFOTO.foto||('/foto/'+CFOTO.arquivo))+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+    '<button type="button" class="seg" style="margin-top:8px" onclick="devReset();pintaMain()">tirar outra</button></div>';
+  return '<div class="card" style="margin-top:10px;border:1.5px solid #f59e0b">'+
+    '<div class="mut"><b>📷 Foto do produto devolvido (obrigatória)</b> — mostre a garrafa/lata que voltou.</div>'+
+    '<div class="row" style="margin-top:8px;gap:8px">'+
+      '<button type="button" class="seg" style="flex:1" onclick="devCelular(false)">📱 Pelo meu celular</button>'+
+      '<button type="button" class="seg" style="flex:1" onclick="devCamera()">📸 Câmera do tablet</button></div>'+
+    '<div id="dvbox"></div></div>';
+}
+async function devCelular(externo){
+  var box=document.getElementById('dvbox');if(!box)return;
+  devParar();
+  box.innerHTML='<div class="mut" style="margin-top:8px">gerando o link…</div>';
+  var r=await jpost('/api/caixa/comprovante',{numero:MESA,forma:'devolucao',valor:CANCIT?CANCIT.valor:null,externo:externo===true});
+  if(!r.ok){box.innerHTML='<div class="err" style="display:block">'+esc(r.erro||'não deu')+'</div>';return}
+  CFOTO.token=r.token;CFOTO.t0=Date.now();
+  box.innerHTML='<div style="text-align:center;margin-top:10px;background:#fff;padding:10px;border-radius:12px">'+r.qr+'</div>'+
+    '<div class="mut" style="text-align:center">Aponte a câmera do celular · o link vale 10 minutos'+(r.externo?' · <b>link da internet</b>':'')+'</div>'+
+    '<div id="dvchegou" class="mut" style="text-align:center;margin-top:6px">aguardando a foto…</div>'+
+    (r.tem_externo&&!r.externo?'<button type="button" class="seg" style="margin-top:8px;width:100%" onclick="devCelular(true)">📶 o celular está no 4G? gerar link da internet</button>':'')+
+    (r.externo?'<button type="button" class="seg" style="margin-top:8px;width:100%" onclick="devCelular(false)">◂ voltar pro link do Wi-Fi</button>':'');
+  CFOTO.poll=setInterval(async function(){
+    try{
+      var st=await jget('/api/caixa/comprovante?t='+encodeURIComponent(CFOTO.token)+'&n='+MESA+'&forma=devolucao');
+      if(st&&st.sem_sessao){devParar();var cs=document.getElementById('dvchegou');if(cs)cs.innerHTML='<b style="color:var(--red)">sua sessão caiu — entre no caixa de novo</b>';return}
+      if(st.ok&&st.chegou){devParar();CFOTO.arquivo=st.arquivo;CFOTO.token=st.token||CFOTO.token;pintaMain();return}
+      var ch=document.getElementById('dvchegou');
+      if(ch&&st.ok&&st.abriu)ch.innerHTML='📱 o celular abriu o link — se a foto não chegar, confira se ele está <b>no Wi-Fi da casa</b> (sem 4G) e mande de novo';
+      else if(ch&&Date.now()-(CFOTO.t0||0)>20000)ch.innerHTML='⏳ o celular ainda não abriu o link. Se ele estiver no <b>4G</b>, use o botão do <b>link da internet</b>.';
+    }catch(e){}
+  },2000);
+}
+async function devCamera(){
+  var box=document.getElementById('dvbox');if(!box)return;
+  devParar();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){box.innerHTML='<div class="mut" style="margin-top:8px">Este tablet não libera a câmera aqui (precisa do modo seguro). Use <b>Pelo meu celular</b>.</div>';return}
+  box.innerHTML='<video id="dvvid" autoplay playsinline muted style="width:100%;border-radius:12px;margin-top:8px;background:#000"></video>'+
+    '<button type="button" class="big" onclick="devClicar()">📸 Tirar a foto</button>';
+  try{var st=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});var v=document.getElementById('dvvid');if(v){v.srcObject=st;CFOTO.stream=st}}
+  catch(e){box.innerHTML='<div class="mut" style="margin-top:8px">A câmera não abriu ('+esc(e.name||'erro')+'). Use <b>Pelo meu celular</b>.</div>'}
+}
+function devClicar(){
+  var v=document.getElementById('dvvid');if(!v)return;
+  var c=document.createElement('canvas');
+  var k=Math.min(1,1280/Math.max(v.videoWidth||1280,v.videoHeight||720));
+  c.width=(v.videoWidth||1280)*k;c.height=(v.videoHeight||720)*k;
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  CFOTO.foto=c.toDataURL('image/jpeg',0.8);
+  devParar();pintaMain();
+}
 function cancItem(ix){
   var i=(CONTA&&CONTA.itens||[])[ix];if(!i)return;
+  devReset();
   var q=Math.round(Number(i.quantidade)||1);
   CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:q,valor:i.valor_total,status:i.status||'a_produzir',
     resta:(q>1?q-1:null)}; // lançou 5, quer cancelar 2: ajusta o que FICA (3)
@@ -13325,7 +13428,7 @@ function telaCancItem(el){
       '</div>':'')+
     (precisa?'<div class="err" style="margin-top:8px">Este item já está <b>'+(i.status==='entregue'?'ENTREGUE':'PRONTO')+'</b>. '+
       'Precisa de DUAS senhas: o seu PIN e a autorização do gerente.</div>':'')+
-    chipsMotivoHtml(MOTSEL,'selMotivoItem');
+    chipsMotivoHtml(MOTSEL,'selMotivoItem')+(MOTSEL===MOTIVO_DEV?devFotoHtml():'');
   if(precisa){
     h+='<input id="cpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="SEU PIN ('+esc(NOME||'')+')" style="margin-top:8px">';
     if(!PODE.cancPed)h+='<div class="row" style="margin-top:8px">'+
@@ -13341,6 +13444,10 @@ async function doCancItem(btn){
   var mot=motivoDe(MOTSEL);
   if(!mot){var e0=document.getElementById('cierr');if(e0)e0.textContent='escolha o motivo do cancelamento';return}
   var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:mot};
+  if(MOTSEL===MOTIVO_DEV){
+    if(CFOTO.arquivo)b.token=CFOTO.token; else if(CFOTO.foto)b.foto=CFOTO.foto;
+    else{var e1=document.getElementById('cierr');if(e1)e1.textContent='devolução precisa da foto do produto devolvido';return}
+  }
   if(CANCIT.resta!=null)b.qtd=CANCIT.qtd-CANCIT.resta;
   var cp=document.getElementById('cpin');if(cp)b.caixa_pin=cp.value||'';
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
@@ -13353,7 +13460,7 @@ async function doCancItem(btn){
     if(r.precisa_gerente&&CANCIT.status==='a_produzir'){CANCIT.status=r.status||'pronto';pintaMain()}
     var e=document.getElementById('cierr');if(e)e.textContent=r.erro||'não cancelou';return;
   }
-  CANCIT=null;await carregar(MESA);
+  CANCIT=null;devReset();await carregar(MESA);
 }
 function cancPedido(){MOTPED=null;pintaMotivoPedido()}
 function selMotivoPed(v){MOTPED=v;pintaMotivoPedido()}
@@ -13368,7 +13475,7 @@ function pintaMotivoPedido(){
   ov.innerHTML='<div class="card" style="max-width:430px;width:100%;margin:0;max-height:88vh;overflow:auto">'+
     '<div class="tit" style="margin-top:0">🗑 Cancelar o pedido INTEIRO — mesa/comanda '+MESA+'</div>'+
     '<div class="mut">A conta inteira some (no Consumer também) e cai no relatório de cancelamentos.</div>'+
-    chipsMotivoHtml(MOTPED,'selMotivoPed')+
+    chipsMotivoHtml(MOTPED,'selMotivoPed',true)+
     '<button class="big" style="background:var(--red)" onclick="doCancPedido(this)">Confirmar cancelamento</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="fechaMotivoPed()">Voltar</button>'+
     '<div id="cperr" class="err"></div></div>';
@@ -13751,7 +13858,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/caixa/comprovante') {
         return res.end(JSON.stringify(await apiComprovanteStatus(
-          u.searchParams.get('t'), u.searchParams.get('n'))));
+          u.searchParams.get('t'), u.searchParams.get('n'), u.searchParams.get('forma'))));
       }
       if (req.method === 'POST' && p === '/api/caixa/receber') {
         const b = await readBody(req);
