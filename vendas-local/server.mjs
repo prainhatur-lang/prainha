@@ -588,12 +588,47 @@ async function initSchema() {
 
 // ---- espelho (Firebird -> Postgres, snapshot) ----
 let ultimoStatus = { ok: false, comandas: 0, itens: 0 };
+/* ---- FAXINA: pedido vazio que sobrou de uma corrida ----
+   A trava do pedidoDaMesa impede novas duplicatas, mas as antigas já estão no
+   Firebird — cinco cartões "Mesa 12 · R$ 0,00" na tela do caixa desde 22/08.
+   Aqui some com elas, com três cintos de segurança: só apaga pedido SEM item,
+   SEM pagamento, e só quando a MESMA mesa tem outro pedido aberto COM item
+   (mesa aberta e ainda sem nada lançado é normal — essa fica). O corte de 2
+   minutos protege o pedido recém-nascido que está recebendo item agora. */
+let ultimaFaxina = 0;
+async function faxinaPedidosVazios() {
+  if (nativo()) return;
+  if (Date.now() - ultimaFaxina < 60000) return; // no máximo 1x por minuto
+  ultimaFaxina = Date.now();
+  const r = await q(`SELECT p.CODIGO, p.NUMERO FROM PEDIDOS p
+    WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL AND p.NUMERO > 0
+      AND p.DATAABERTURA < DATEADD(-2 MINUTE TO CURRENT_TIMESTAMP)
+      AND NOT EXISTS (SELECT 1 FROM ITENSPEDIDO i
+                       WHERE i.CODIGOPEDIDO = p.CODIGO AND i.DATADELETE IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM PAGAMENTOS g
+                       WHERE g.CODIGOPEDIDO = p.CODIGO AND g.DATADELETE IS NULL)
+      AND EXISTS (SELECT 1 FROM PEDIDOS o
+                   WHERE o.NUMERO = p.NUMERO AND o.CODIGO <> p.CODIGO
+                     AND o.DATAFECHAMENTO IS NULL AND o.DATADELETE IS NULL
+                     AND EXISTS (SELECT 1 FROM ITENSPEDIDO i2
+                                  WHERE i2.CODIGOPEDIDO = o.CODIGO AND i2.DATADELETE IS NULL))`);
+  if (!r.ok) { console.error('[faxina] ' + r.err); return; }
+  if (!r.rows.length) return;
+  for (const x of r.rows) {
+    const u = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${N(x.CODIGO)} AND DATADELETE IS NULL`);
+    if (!u.ok) console.error('[faxina] pedido ' + x.CODIGO + ': ' + u.err);
+  }
+  console.log('[faxina] ' + r.rows.length + ' pedido(s) vazio(s) duplicado(s) removido(s): mesas ' +
+    [...new Set(r.rows.map((x) => N(x.NUMERO)))].join(', '));
+}
+
 async function espelho() {
   // ⚠️ NO MODO PRÓPRIO ISTO NÃO PODE RODAR. Aqui `comanda`/`comanda_item` são
   // o ORIGINAL, e esta função trunca as duas pra recarregar do Firebird — ou
   // seja, apagaria a operação em andamento. O espelho só existe enquanto o
   // Consumer for o dono do dado.
   if (nativo()) { ultimoStatus = { ok: true, comandas: 0, itens: 0, nativo: true }; return; }
+  await faxinaPedidosVazios().catch((e) => console.error('[faxina] ' + e.message));
   const az = await q(`SELECT CODIGO, TRIM(DESCRICAO) D FROM COZINHAS ORDER BY CODIGO`);
   // ⚠️ O PAGO VEM DA SOMA DE PAGAMENTOS, NÃO DE SUBTOTALPAGO.
   // Conferido na base do Prainha Bar: o campo fica `null` mesmo em pedido
@@ -1327,8 +1362,12 @@ const fbNum = (v) => String(+Number(v || 0).toFixed(4));
 // tabelas que o KDS, o garçom e o caixa JÁ leem. Por isso as telas não mudam
 // uma linha: elas nunca falaram com o Firebird, falavam com o espelho.
 async function pgAcharPedido(numero) {
-  const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
-    AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+  // igual ao Firebird: com duplicata, ganha o pedido que tem itens
+  const r = await sql`SELECT c.codigo FROM comanda c WHERE c.numero=${Number(numero)}
+      AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+    ORDER BY (SELECT count(*) FROM comanda_item i
+                WHERE i.comanda_codigo = c.codigo AND i.cancelado_em IS NULL) DESC,
+             c.codigo DESC LIMIT 1`;
   return r.length ? Number(r[0].codigo) : null;
 }
 async function pgCriarPedido(numero) {
@@ -1563,11 +1602,46 @@ async function itensMover(pedDe, pedPara, codigos = null) {
   return r.ok ? cs.length : 0;
 }
 
+// ⚠️ QUANDO A MESA TEM MAIS DE UM PEDIDO ABERTO, GANHA O QUE TEM ITENS.
+// Pegar sempre o mais novo é o que transforma um pedido vazio de sobra em
+// sequestro de conta: o caixa abre a mesa 12, cai no vazio e vê R$ 0,00
+// enquanto os R$ 1.805 do cliente estão no pedido do lado. Duplicata não
+// deveria existir (ver pedidoDaMesa) — mas se existir, o dinheiro vem junto.
 async function fbAcharPedido(numero) {
   if (nativo()) return pgAcharPedido(numero);
-  const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
+  const r = await q(`SELECT FIRST 1 p.CODIGO,
+      (SELECT COUNT(*) FROM ITENSPEDIDO i WHERE i.CODIGOPEDIDO = p.CODIGO AND i.DATADELETE IS NULL) N
+    FROM PEDIDOS p WHERE p.NUMERO=${Number(numero)} AND p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL
+    ORDER BY 2 DESC, 1 DESC`);
   if (!r.ok) throw new Error('FB achar pedido: ' + r.err);
   return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+}
+/* ---- ACHAR-OU-CRIAR É UMA COISA SÓ, POR MESA ----
+   Em 22/08/2026 na 0001 a mesa 12 ganhou SEIS pedidos em 758ms: cinco vazios
+   e um com os R$ 1.805 do cliente. Cinco cartões fantasma na tela do caixa.
+   A causa é `achar` e `criar` serem dois passos: duas chamadas no mesmo
+   instante acham "não tem conta" as duas e criam as duas. A fila abaixo
+   serializa por número — a segunda chamada só corre depois que a primeira
+   terminou, e aí ela ACHA em vez de criar. */
+const filaMesa = new Map();
+function naFilaDaMesa(numero, fn) {
+  const n = Number(numero);
+  const anterior = filaMesa.get(n) || Promise.resolve();
+  const meu = anterior.then(fn, fn); // corre mesmo se a chamada anterior falhou
+  const calado = meu.then(() => {}, () => {}); // a fila nunca rejeita
+  filaMesa.set(n, calado);
+  calado.then(() => { if (filaMesa.get(n) === calado) filaMesa.delete(n); });
+  return meu;
+}
+/** O pedido aberto da mesa, criando se não houver. Único caminho pra criar.
+ *  Devolve {ped, criado} — `criado` é pra quem só faz algo na conta que NASCE
+ *  agora (amarrar a identificação, por exemplo). */
+async function pedidoDaMesa(numero) {
+  return naFilaDaMesa(numero, async () => {
+    const ja = await fbAcharPedido(numero);
+    if (ja) return { ped: ja, criado: false };
+    return { ped: await fbCriarPedido(numero), criado: true };
+  });
 }
 async function fbCriarPedido(numero) {
   if (nativo()) return pgCriarPedido(numero);
@@ -2585,7 +2659,7 @@ async function apiMesaSessao(numero, comandaCliente, desde) {
   const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} LIMIT 1`)[0];
   // atual = null quer dizer MESA VAZIA (ainda sem conta aberta), e isso NÃO é
   // erro: o primeiro pedido do cliente é que abre a conta — apiVendaEnviar faz
-  // `if (!ped) ped = await fbCriarPedido(numero)`.
+  // `pedidoDaMesa(numero)`.
   //
   // ⚠️ Tratar mesa vazia como "fechada" fechava um LAÇO: a tela mandava
   // escanear o QR de novo, mas escanear não abre conta nenhuma, então voltava
@@ -2733,8 +2807,7 @@ async function apiTransferir(body) {
   try {
     pedDe = await fbAcharPedido(de);
     if (!pedDe) return { ok: false, erro: `não há conta aberta na mesa ${de}` };
-    pedPara = await fbAcharPedido(para);
-    if (!pedPara) pedPara = await fbCriarPedido(para);
+    pedPara = (await pedidoDaMesa(para)).ped;
   } catch (e) { return { ok: false, erro: e.message }; }
 
   const n = await itensContar(pedDe);
@@ -2877,9 +2950,8 @@ async function apiVendaEnviar(body) {
   const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status, junto)
     VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando', ${junto && areas.length > 1}) RETURNING id`;
   try {
-    let ped = await fbAcharPedido(numero);
-    if (!ped) {
-      ped = await fbCriarPedido(numero);
+    const { ped, criado } = await pedidoDaMesa(numero);
+    if (criado) {
       // A pessoa pode ter se identificado numa mesa AINDA SEM CONTA — nesse
       // momento não havia PEDIDOS pra carimbar, e o Consumer nunca ficava
       // sabendo quem estava ali. Agora que a conta acabou de nascer, amarra.
@@ -5050,8 +5122,7 @@ async function apiCaixaTransferirItens(body, quem) {
   try {
     pedDe = await fbAcharPedido(de);
     if (!pedDe) return { ok: false, erro: `não há conta aberta na ${de >= COMANDA_DE ? 'comanda' : 'mesa'} ${de}` };
-    pedPara = await fbAcharPedido(para);
-    if (!pedPara) pedPara = await fbCriarPedido(para);
+    pedPara = (await pedidoDaMesa(para)).ped;
   } catch (e) { return { ok: false, erro: e.message }; }
   // o item só sai se for MESMO da conta de origem (o número pode ter mudado
   // entre a tela e o toque) e leva os filhos dele
