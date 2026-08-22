@@ -2165,7 +2165,7 @@ async function imprimirComandasNovas() {
 // ---- CONTA na térmica: números REAIS do PEDIDOS (desconto/acréscimo/serviço,
 // os mesmos da tela do caixa) + itens/comandas/pagamentos do apiContaTexto.
 async function cupomConta(numero, ped) {
-  const ct = await apiContaTexto(numero).catch(() => ({ ok: false }));
+  const ct = await apiContaTexto(numero, false, true).catch(() => ({ ok: false }));
   const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0] || {};
   let pago = 0; try { pago = await fbPagoDoPedido(ped); } catch { /* sem FB agora: segue sem o pago */ }
   const subtotal = Number(p.I) || 0, servico = Number(p.S) || 0, desconto = Number(p.D) || 0, acrescimo = Number(p.A) || 0, total = Number(p.T) || 0;
@@ -2194,6 +2194,22 @@ async function cupomConta(numero, ped) {
     b.push(impTraco(), impLn('Comandas nesta mesa (contas separadas):'));
     for (const cc of ct.comandas) b.push(impLn(impLR('  ' + cc.numero + (cc.nome ? ' ' + String(cc.nome).slice(0, 18) : ''), cc.quitada ? 'paga' : impMoeda(cc.resta))));
     b.push(IMP.neg, impLn(impLR('Mesa + comandas', impMoeda(ct.geral))), IMP.negFim);
+  }
+  // FIADO: o saldo dele no papel que ele assina. Devedor e credor com nome —
+  // "R$ -80,00" ninguém entende conferindo a conta na mesa.
+  const fi = ct.ok ? ct.fiado : await fiadoDaConta(numero, ped, falta);
+  if (fi) {
+    b.push(impTraco(), IMP.neg, impLn('CONTA CORRENTE (FIADO)'), IMP.negFim);
+    if (fi.nome) b.push(impLn(fi.nome));
+    b.push(impLn(impLR('Saldo de hoje', fi.saldo >= 0 ? impMoeda(fi.saldo) + ' devendo' : impMoeda(-fi.saldo) + ' a favor')));
+    if (fi.conta > 0.009) {
+      b.push(impLn(impLR('Esta conta', impMoeda(fi.conta))));
+      b.push(IMP.neg, impLn(impLR('Assinando, fica', fi.depois >= 0 ? impMoeda(fi.depois) + ' devendo' : impMoeda(-fi.depois) + ' a favor')), IMP.negFim);
+    }
+    if (fi.limite > 0) b.push(impLn(impLR('Limite ' + impMoeda(fi.limite), 'disp. ' + impMoeda(fi.disponivel))));
+    if (fi.estoura) b.push(IMP.neg, impLn('*** PASSA DO LIMITE ***'), IMP.negFim);
+    // é o papel da assinatura: tem que ter onde assinar
+    b.push(impLn(''), impLn('Assinatura do cliente:'), impLn(''), impLn('__________________________________'));
   }
   b.push(impTraco(), IMP.centro, impLn('Obrigado pela preferência!'), IMP.corte);
   return Buffer.concat(b);
@@ -4393,6 +4409,52 @@ async function apiCaixaEntrar(body) {
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
+/* ---- FIADO NO CUPOM DA CONTA ----
+   Pedido do dono (22/08): quando o cliente pede a conta e tem fiado, o
+   cuponzinho tem que mostrar o saldo dele — é o papel que ele ASSINA, então
+   ele precisa ver o que já devia, o que está assinando agora, e como fica.
+   Só aparece pra quem TEM conta corrente: cliente comum não vê nada disso. */
+async function clienteDaConta(numero, ped) {
+  // 1º o carimbo no próprio pedido (CODIGOCONTATOCLIENTE) — é o mais forte
+  let cod = null;
+  if (!nativo() && ped) {
+    try {
+      const r = await qi(`SELECT COALESCE(CODIGOCONTATOCLIENTE,0) C FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
+      const v = Number(r.ok && r.rows?.[0]?.C) || 0;
+      if (v > 0) cod = v;
+    } catch { /* FB instável: tenta o caminho local abaixo */ }
+  }
+  // 2º a identificação da mesa aqui do lado
+  if (!cod) {
+    const i = (await sql`SELECT contato_fb FROM identificacao
+      WHERE numero=${Number(numero)} AND fechada_em IS NULL AND contato_fb IS NOT NULL
+      ORDER BY criado_em DESC LIMIT 1`)[0];
+    if (i?.contato_fb) cod = Number(i.contato_fb);
+  }
+  if (!cod) {
+    const m = (await sql`SELECT contato_fb FROM mesa_comanda
+      WHERE comanda=${Number(numero)} AND fechada_em IS NULL AND contato_fb IS NOT NULL LIMIT 1`)[0];
+    if (m?.contato_fb) cod = Number(m.contato_fb);
+  }
+  return cod;
+}
+/** O bloco de fiado do cupom. null = não mostra nada (o normal). */
+async function fiadoDaConta(numero, ped, aPagar) {
+  try {
+    const cod = await clienteDaConta(numero, ped);
+    if (!cod) return null;
+    const cli = await fbClienteFiado(cod);
+    if (!cli) return null;
+    // sem conta corrente e sem saldo = cliente comum, não polui o cupom
+    if (!cli.habilitado && Math.abs(cli.saldo) < 0.009) return null;
+    const conta = Math.max(0, Number(aPagar) || 0);
+    const depois = +(cli.saldo + conta).toFixed(2);
+    return { nome: cli.nome, saldo: cli.saldo, limite: cli.limite,
+      disponivel: cli.disponivel, conta, depois,
+      estoura: cli.limite > 0 && depois > cli.limite + 0.009, bloqueia: cli.bloqueia };
+  } catch (e) { console.error('[fiado-cupom] ' + e.message); return null; }
+}
+
 async function apiCaixaConta(n) {
   const num = Number(n);
   const agora = Date.now();
@@ -9437,7 +9499,7 @@ async function fbAjustesPedido(codigo) {
     return { desconto: +(Number(x?.D) || 0).toFixed(2), acrescimo: +(Number(x?.A) || 0).toFixed(2) };
   } catch { return { desconto: 0, acrescimo: 0 }; }
 }
-async function apiContaTexto(numero, modoApp = false) {
+async function apiContaTexto(numero, modoApp = false, comFiado = false) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
     FROM comanda WHERE numero=${n} LIMIT 1`)[0];
@@ -9534,7 +9596,12 @@ async function apiContaTexto(numero, modoApp = false) {
   // (ou na própria mesa) sai daqui. Comanda quitada não pode continuar
   // pesando no que a mesa deve.
   const pagoGeral = +(pago + pagoComandas).toFixed(2);
-  return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura,
+  // ⚠️ FIADO NÃO SAI AQUI. /api/conta/texto é ABERTO na rede da loja — quem
+  // digitar um número de mesa vê a conta. Pôr o saldo devedor nisso é expor a
+  // dívida de uma pessoa pra qualquer um no Wi-Fi. O saldo vai só no cupom
+  // térmico, que sai da mão do caixa (comFiado abaixo).
+  const fiado = comFiado ? await fiadoDaConta(n, c.codigo, Math.max(0, comServico - pago)) : null;
+  return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura, fiado,
     pessoas: c.qtd_pessoas, itens, comandas, pagamentos,
     total: totalBase, desconto: modoApp ? 0 : aj.desconto, acrescimo: modoApp ? 0 : aj.acrescimo,
     taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
