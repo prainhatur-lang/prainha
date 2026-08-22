@@ -32,6 +32,7 @@ const serif = { fontFamily: 'var(--font-serif-tab)' };
 // Nomes e ruas conferidos contra o cardápio que está no PDV da casa (0002).
 // A foto manda: o arquivo `prato-risoto.jpg` é o Camarão Tigre e saiu daqui.
 const DESTAQUES = [
+  { src: '/tabuara/prato-wellington.jpg', nome: 'Filé Wellington', rua: 'Avenida José Carlos Silva', desc: 'Filé em massa folhada, risoto de parmesão e molho de funghi' },
   { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto all Mare', rua: 'Avenida Tancredo Neves', desc: 'Polvo, camarão e lula sobre risoto cremoso' },
   { src: '/tabuara/prato-file.jpg', nome: 'Picanha com batatas gratinadas', rua: 'Avenida Ivo do Prado', desc: 'No ponto, com gratin dauphinois e chimichurri' },
   { src: '/tabuara/prato-coco.jpg', nome: 'Mini Fondue', rua: 'Rua Laranjeiras', desc: 'Fondue de queijo servido no pão, com iscas empanadas' },
@@ -45,7 +46,7 @@ const GALERIA = [
   { id: 'g3', src: '/tabuara/drink-assinatura.jpg', alt: 'Coquetel autoral', title: 'Coquetelaria' },
   { id: 'g4', src: '/tabuara/prato-salmao.jpg', alt: 'Salmão filetado', title: 'Salmão filetado' },
   { id: 'g5', src: '/tabuara/bar.jpg', alt: 'Bar da Tabuará', title: 'O bar' },
-  { id: 'g6', src: '/tabuara/prato-file.jpg', alt: 'Picanha com batatas gratinadas', title: 'Corte nobre' },
+  { id: 'g6', src: '/tabuara/prato-wellington.jpg', alt: 'Filé Wellington', title: 'Filé Wellington' },
   { id: 'g7', src: '/tabuara/drink-manga.jpg', alt: 'Drink autoral', title: 'Drinks' },
   { id: 'g8', src: '/tabuara/prato-bruschetta.jpg', alt: 'Bruschetta de camarão', title: 'Entradas' },
   { id: 'g9', src: '/tabuara/drink-vermelho.jpg', alt: 'Coquetel', title: 'Autorais' },
