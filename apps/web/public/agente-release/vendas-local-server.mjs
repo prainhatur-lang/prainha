@@ -11341,10 +11341,54 @@ function mandarZap(token){
   window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
 }
 function pararPix(){clearInterval(pixTmr);pixTmr=null;inicio()}
-/* txid do último Pix pago nesta tela — é o que abre o comprovante */
-var PIXTXID=null;
+/* ---- COMPROVANTE NO CELULAR DO CLIENTE ----
+   Ele APARECE na tela assim que o Pix é reconhecido — não fica atrás de
+   botão. Quem acabou de pagar quer ver a prova na hora, não procurar por
+   ela. O E2E vai por extenso: é o número que o banco reconhece.
+   Guardar/enviar usa o compartilhar do próprio celular (WhatsApp, foto,
+   e-mail) e cai no wa.me se o aparelho não tiver. */
+var PIXTXID=null, PIXDOC=null;
 function verComprovante(){ if(PIXTXID) window.open('/pix/comprovante?txid='+encodeURIComponent(PIXTXID),'_blank') }
-function btnComprovante(){ return PIXTXID?'<button class="b g" onclick="verComprovante()">📄 Ver comprovante</button>':'' }
+async function carregaComprovante(){
+  PIXDOC=null; if(!PIXTXID)return;
+  try{ var d=await (await fetch('/api/pix/comprovante?txid='+encodeURIComponent(PIXTXID),{cache:'no-store'})).json();
+       if(d&&d.ok)PIXDOC=d }catch(e){}
+}
+function blocoComprovante(){
+  var d=PIXDOC; if(!d)return '';
+  var q=new Date(d.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  var L=function(a,b){return '<div style="display:flex;justify-content:space-between;gap:8px"><span>'+a+'</span><span>'+b+'</span></div>'};
+  return '<div style="background:#fff;color:#141418;border-radius:14px;padding:15px 14px;margin:16px 0;'+
+      'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;box-shadow:0 2px 12px rgba(0,0,0,.18)">'+
+    '<div style="text-align:center"><div style="font-size:15px;font-weight:800;letter-spacing:.5px">'+esc(d.casa.toUpperCase())+'</div>'+
+      '<div style="font-size:11.5px;font-weight:700">COMPROVANTE DE PAGAMENTO</div>'+
+      '<div style="font-size:10px;color:#6e6e78">não é documento fiscal</div></div>'+
+    '<hr style="border:0;border-top:1px dashed #9a9aa5;margin:9px 0">'+
+    '<div style="font-size:14px;font-weight:800">'+esc(d.rotulo)+(d.nome?' · '+esc(d.nome):'')+'</div>'+
+    '<div style="font-size:11px;color:#6e6e78">'+q+'</div>'+
+    '<hr style="border:0;border-top:1px dashed #9a9aa5;margin:9px 0">'+
+    L('Forma','<b>Pix</b>')+
+    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;margin:5px 0">'+
+      '<span>PAGO</span><span>'+brlc(d.valor)+'</span></div>'+
+    '<hr style="border:0;border-top:1px dashed #9a9aa5;margin:9px 0">'+
+    L('Consumo da mesa',brlc(d.consumo))+L('Total pago',brlc(d.pago_geral))+
+    (d.quitada?'<div style="text-align:center;font-weight:800;color:#0d7a43;border:2px solid #0d7a43;border-radius:8px;padding:6px;margin:10px 0">✓ CONTA QUITADA</div>'
+              :'<div style="text-align:center;font-weight:800;color:#b3261e;border:2px solid #b3261e;border-radius:8px;padding:6px;margin:10px 0">Ainda falta '+brlc(d.falta)+'</div>')+
+    (d.e2e?'<div style="font-size:10.5px;color:#6e6e78">Pix E2E:</div><div style="font-size:10.5px;color:#6e6e78;word-break:break-all">'+esc(d.e2e)+'</div>':'')+
+    '<div style="font-size:10.5px;color:#6e6e78;word-break:break-all">ID: '+esc(d.txid)+'</div>'+
+  '</div>'+
+  '<button class="b g" onclick="guardarComprovante()">💾 Guardar / enviar</button>';
+}
+function brlc(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
+async function guardarComprovante(){
+  var d=PIXDOC; if(!d){verComprovante();return}
+  var url=location.origin+'/pix/comprovante?txid='+encodeURIComponent(d.txid);
+  var txt=d.casa+' — comprovante de pagamento\\n'+d.rotulo+' · '+brlc(d.valor)+' via Pix\\n'+
+    (d.e2e?'Pix E2E: '+d.e2e+'\\n':'')+url;
+  try{ if(navigator.share){ await navigator.share({title:'Comprovante '+d.rotulo,text:txt}); return } }catch(e){ return }
+  window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
+}
+function btnComprovante(){ return PIXTXID&&!PIXDOC?'<button class="b g" onclick="verComprovante()">📄 Ver comprovante</button>':'' }
 function vigiarPix(txid){
   clearInterval(pixTmr);
   var tentativas=0,ocupado=false;
@@ -11368,6 +11412,7 @@ function vigiarPix(txid){
 // o passe se nao faltar nada. O servidor barra de novo em /api/saida/gerar.
 async function aposPagar(origem){
   var n=mesaAtual();if(n===null){inicio();return}
+  await carregaComprovante(); // o papel do cliente sai junto com a confirmação
   var c;try{c=await (await fetch('/api/conta/texto?n='+n,{cache:'no-store'})).json()}catch(e){c=null}
   if(c&&c.ok){CONTAMESA=c;if(!PGALVO)CONTA=c}
   var consumo=c&&c.ok?(Number(c.total||0)+(c.comandas||[]).reduce(function(s,x){return s+Number(x.subtotal||0)},0)):0;
@@ -11381,6 +11426,7 @@ async function aposPagar(origem){
       '</div>'+
       '<div class="mut" style="margin:14px 0 4px">O <b>passe de saída</b> sai quando a conta zerar. '+
       'Quem ainda não pagou pode pagar pelo QR da mesa, ou chamar o garçom.</div>'+
+      blocoComprovante()+
       '<button class="b" onclick="telaPix()">Pagar o que falta</button>'+
       btnComprovante()+
       '<button class="b g" onclick="inicio()">Voltar ao início</button>');
@@ -11406,6 +11452,7 @@ function telaPessoas(origem){
     '<div class="cont"><span>Carros</span>'+
       '<button onclick="passo(\\'ca\\',-1)">−</button><b id="ca">0</b><button onclick="passo(\\'ca\\',1)">+</button></div>'+
     '<div id="placas"></div>'+
+    blocoComprovante()+
     '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>'+
     btnComprovante()+
     '<button class="b g" onclick="inicio()">Agora não</button>');
