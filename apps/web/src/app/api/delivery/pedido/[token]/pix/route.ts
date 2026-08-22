@@ -42,6 +42,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ token:
       amount: Math.round(Number(p.total) * 100),
       customerName: p.clienteNome,
       customerCpf: p.clienteCpf ?? undefined,
+      filialId: p.filialId,
     });
     await db
       .update(schema.deliveryPedido)

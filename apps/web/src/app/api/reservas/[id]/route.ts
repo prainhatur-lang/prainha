@@ -253,7 +253,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       } else if (set.status === 'cancelada') {
         // Cancelamento pela CASA: estorno integral do Pix, sempre.
         const estorno = await estornarReservaSePago(
-          { id, data: atual.data, hora: atual.hora, pagamentoStatus: atual.pagamentoStatus, pagamentoId: atual.pagamentoId, pagamentoValor: atual.pagamentoValor },
+          { id, data: atual.data, hora: atual.hora, pagamentoStatus: atual.pagamentoStatus, pagamentoId: atual.pagamentoId, pagamentoValor: atual.pagamentoValor, filialId: atual.filialId },
           true,
         ).catch(() => null);
         const linhaEstorno =

@@ -194,6 +194,7 @@ async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
       pagamentoStatus: schema.reserva.pagamentoStatus,
       pagamentoId: schema.reserva.pagamentoId,
       pagamentoValor: schema.reserva.pagamentoValor,
+      filialId: schema.reserva.filialId,
     })
     .from(schema.reserva)
     .where(

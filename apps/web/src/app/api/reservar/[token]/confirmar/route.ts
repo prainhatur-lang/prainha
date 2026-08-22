@@ -288,6 +288,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
         orderId: nova.id,
         amount: Math.round(valorTaxa * 100),
         customerName: nome,
+        filialId: filial.id,
       });
       await db
         .update(schema.reserva)

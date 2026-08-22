@@ -37,7 +37,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
 
   if (status === 'aguardando' && reserva.pagamentoId) {
     try {
-      const cielo = await queryCieloPayment(reserva.pagamentoId);
+      const cielo = await queryCieloPayment(reserva.pagamentoId, filial.id);
       if (cielo.status !== 'pendente') {
         status = cielo.status;
         if (status === 'pago') {

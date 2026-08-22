@@ -17,7 +17,11 @@ import { marcarDeliveryPedidoPago } from '@/lib/delivery/pedido';
  *  Se não for orçamento, cai pro pedido de delivery. */
 async function processarOrcamento(paymentId: string, origin: string): Promise<void> {
   const [orc] = await db
-    .select({ id: schema.orcamentoEvento.id, pagamentoStatus: schema.orcamentoEvento.pagamentoStatus })
+    .select({
+      id: schema.orcamentoEvento.id,
+      pagamentoStatus: schema.orcamentoEvento.pagamentoStatus,
+      filialId: schema.orcamentoEvento.filialId,
+    })
     .from(schema.orcamentoEvento)
     .where(eq(schema.orcamentoEvento.pagamentoId, paymentId))
     .limit(1);
@@ -25,7 +29,7 @@ async function processarOrcamento(paymentId: string, origin: string): Promise<vo
     await processarDelivery(paymentId, origin);
     return;
   }
-  const cielo = await queryCieloPayment(paymentId);
+  const cielo = await queryCieloPayment(paymentId, orc.filialId);
   if (cielo.status === 'pago' && orc.pagamentoStatus !== 'pago') {
     await marcarOrcamentoEntradaPaga(orc.id);
   } else if (cielo.status !== 'pendente' && cielo.status !== orc.pagamentoStatus) {
@@ -43,12 +47,13 @@ async function processarDelivery(paymentId: string, origin: string): Promise<voi
       id: schema.deliveryPedido.id,
       status: schema.deliveryPedido.status,
       pagamentoStatus: schema.deliveryPedido.pagamentoStatus,
+      filialId: schema.deliveryPedido.filialId,
     })
     .from(schema.deliveryPedido)
     .where(eq(schema.deliveryPedido.pagamentoId, paymentId))
     .limit(1);
   if (!ped) return;
-  const cielo = await queryCieloPayment(paymentId);
+  const cielo = await queryCieloPayment(paymentId, ped.filialId);
   if (cielo.status === 'pago' && ped.status === 'pendente_pagamento') {
     await marcarDeliveryPedidoPago(ped.id, origin);
   } else if (cielo.status !== 'pendente' && cielo.status !== ped.pagamentoStatus) {
@@ -91,13 +96,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    const cielo = await queryCieloPayment(paymentId);
+    const cielo = await queryCieloPayment(paymentId, reserva.filialId);
 
     if (cielo.status === 'pago' && reserva.pagamentoStatus !== 'pago') {
       // Reserva cancelada enquanto o Pix estava pendente: dinheiro chegou
       // sem reserva viva pra receber — estorna imediatamente.
       if (reserva.status === 'cancelada') {
-        const r = await refundCieloPayment(paymentId);
+        const r = await refundCieloPayment(paymentId, undefined, reserva.filialId);
         // Negado (ex.: saldo insuficiente antes do repasse) -> marca falha e
         // o cron retry-estornos reprocessa diariamente até sair.
         const st = r.status === 'reembolsado' ? 'reembolsado' : 'estorno_falhou_100';

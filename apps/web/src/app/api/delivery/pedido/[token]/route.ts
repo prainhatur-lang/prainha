@@ -39,7 +39,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     p.pagamentoStatus === 'aguardando'
   ) {
     try {
-      const cielo = await queryCieloPayment(p.pagamentoId);
+      const cielo = await queryCieloPayment(p.pagamentoId, p.filialId);
       if (cielo.status === 'pago') {
         const origin = new URL(request.url).origin;
         await marcarDeliveryPedidoPago(p.id, origin);

@@ -17,15 +17,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ token: 
   }
 
   const [pedido] = await db
-    .select({ id: schema.deliveryPedido.id })
+    .select({ id: schema.deliveryPedido.id, filialId: schema.deliveryPedido.filialId })
     .from(schema.deliveryPedido)
     .where(eq(schema.deliveryPedido.token, token))
     .limit(1);
   if (!pedido) return NextResponse.json({ error: 'pedido não encontrado' }, { status: 404 });
 
   try {
-    const accessToken = await getCieloMpiAccessToken();
-    const config = getCieloMpiPublicConfig();
+    const accessToken = await getCieloMpiAccessToken(pedido.filialId);
+    const config = await getCieloMpiPublicConfig(pedido.filialId);
     return NextResponse.json({
       accessToken,
       establishmentCode: config.establishmentCode,

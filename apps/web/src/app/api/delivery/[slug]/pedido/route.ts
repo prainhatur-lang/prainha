@@ -52,6 +52,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
         amount: r.pedido.totalCentavos,
         customerName: String(b.clienteNome ?? '').slice(0, 100),
         customerCpf: typeof b.clienteCpf === 'string' ? b.clienteCpf : undefined,
+        filialId: r.pedido.filialId,
       });
       await db
         .update(schema.deliveryPedido)

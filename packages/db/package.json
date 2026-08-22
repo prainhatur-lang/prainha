@@ -105,7 +105,8 @@
     "migrate:cancelamento-foto": "tsx scripts/migrate-cancelamento-foto.ts",
     "sync:wizard": "tsx scripts/sync-wizard.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
-    "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
+    "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts",
+    "migrate:filial-credencial": "tsx scripts/migrate-filial-credencial.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

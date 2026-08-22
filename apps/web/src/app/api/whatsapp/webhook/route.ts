@@ -299,6 +299,7 @@ async function tratarPayload(payload: string, from: string | null) {
       pagamentoStatus: schema.reserva.pagamentoStatus,
       pagamentoId: schema.reserva.pagamentoId,
       pagamentoValor: schema.reserva.pagamentoValor,
+      filialId: schema.reserva.filialId,
     })
     .from(schema.reserva)
     .where(and(eq(schema.reserva.cancelToken, token), sql`${schema.reserva.status} <> 'cancelada'`))

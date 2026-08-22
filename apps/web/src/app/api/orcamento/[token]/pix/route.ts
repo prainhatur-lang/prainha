@@ -71,6 +71,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ to
       orderId: `ORC-${o.numero}-${Math.floor(Math.random() * 100000)}`,
       amount,
       customerName: o.aceiteNome ?? o.clienteNome,
+      filialId: o.filialId,
     });
     await db
       .update(schema.orcamentoEvento)
@@ -106,7 +107,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
 
   if (status === 'aguardando' && o.pagamentoId) {
     try {
-      const cielo = await queryCieloPayment(o.pagamentoId);
+      const cielo = await queryCieloPayment(o.pagamentoId, o.filialId);
       if (cielo.status === 'pago') {
         await marcarOrcamentoEntradaPaga(o.id);
         status = 'pago';

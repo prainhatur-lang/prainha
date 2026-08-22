@@ -25,6 +25,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ token:
       pagamentoStatus: schema.reserva.pagamentoStatus,
       pagamentoId: schema.reserva.pagamentoId,
       pagamentoValor: schema.reserva.pagamentoValor,
+      filialId: schema.reserva.filialId,
     });
 
   if (upd.length === 0) {

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, date, jsonb, numeric, integer, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, primaryKey, index, unique, date, jsonb, numeric, integer, boolean } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /** Percentuais de taxas Cielo por forma + bandeira. Usado pela engine Banco
@@ -462,5 +462,43 @@ export const usuarioFilial = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.usuarioId, t.filialId] }),
     filialIdx: index('uf_filial_idx').on(t.filialId),
+  }),
+);
+
+/**
+ * Credencial de pagamento POR FILIAL (Cielo e-commerce + 3DS).
+ *
+ * Cada casa tem o próprio estabelecimento na Cielo — o dinheiro do delivery da
+ * Tabuará não pode cair na conta do Prainha. Antes disso existir, as chaves
+ * eram env global (CIELO_MERCHANT_ID etc) e serviam a filial toda.
+ *
+ * `valor` guarda o segredo CIFRADO (AES-256-GCM, ver @/lib/segredo) — a chave
+ * da cifra mora em CREDENCIAL_SECRET, fora do banco. Filial sem linha aqui cai
+ * nas env globais, então o Prainha continua funcionando sem migração de dado.
+ */
+export const filialCredencial = pgTable(
+  'filial_credencial',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** Provedor: 'cielo' (e-commerce + MPI 3DS). */
+    provedor: varchar('provedor', { length: 20 }).notNull(),
+    /** Nome da chave, sem o prefixo do provedor. Ex: 'merchantId',
+     *  'merchantKey', 'mpiClientId', 'mpiClientSecret', 'establishmentCode',
+     *  'merchantName', 'mcc'. */
+    chave: varchar('chave', { length: 40 }).notNull(),
+    /** Segredo cifrado (v1.<iv>.<tag>.<cifra>). */
+    valor: text('valor').notNull(),
+    /** Só pra tela reconhecer o que está gravado (ex: "1001…7289"). Nunca o
+     *  segredo inteiro. */
+    pista: varchar('pista', { length: 40 }),
+    atualizadoPor: uuid('atualizado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique('uq_filial_credencial').on(t.filialId, t.provedor, t.chave),
   }),
 );

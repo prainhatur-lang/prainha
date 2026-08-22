@@ -13,6 +13,8 @@
  * ativação da conta na Cielo, não bug de integração.
  */
 
+import { credenciaisCielo } from '@/lib/cielo-credenciais';
+
 const isSandbox = process.env.CIELO_SANDBOX === 'true';
 
 const PIX_PROVIDER = process.env.CIELO_PIX_PROVIDER || 'Cielo';
@@ -25,11 +27,25 @@ const QUERY_URL = isSandbox
   ? 'https://apiquerysandbox.cieloecommerce.cielo.com.br'
   : 'https://apiquery.cieloecommerce.cielo.com.br';
 
-function headers() {
+/**
+ * Cabeçalho com a credencial de QUEM está cobrando. `filialId` ausente = env
+ * global (comportamento antigo, ainda usado por rota que não passa a filial).
+ * Ver @/lib/cielo-credenciais: cada casa tem o próprio estabelecimento e o
+ * dinheiro não pode cair na conta da outra.
+ */
+async function headers(filialId?: string | null) {
+  const c = await credenciaisCielo(filialId);
+  if (!c.merchantId || !c.merchantKey) {
+    throw new Error(
+      c.fonte === 'filial'
+        ? 'Esta filial está sem credencial Cielo cadastrada (Configurações → Pagamento)'
+        : 'CIELO_MERCHANT_ID / CIELO_MERCHANT_KEY não configurados',
+    );
+  }
   return {
     'Content-Type': 'application/json',
-    MerchantId: process.env.CIELO_MERCHANT_ID || '',
-    MerchantKey: process.env.CIELO_MERCHANT_KEY || '',
+    MerchantId: c.merchantId,
+    MerchantKey: c.merchantKey,
   };
 }
 
@@ -42,10 +58,12 @@ export async function createCieloPixPayment(params: {
   amount: number; // em centavos
   customerName: string;
   customerCpf?: string;
+  /** Filial que está cobrando — define em qual conta Cielo o dinheiro cai. */
+  filialId?: string | null;
 }) {
   const res = await fetch(`${API_URL}/1/sales/`, {
     method: 'POST',
-    headers: headers(),
+    headers: await headers(params.filialId),
     body: JSON.stringify({
       MerchantOrderId: params.orderId,
       Customer: {
@@ -105,6 +123,8 @@ export async function createCieloCardPayment(params: {
   installments: number;
   paymentType?: 'CreditCard' | 'DebitCard';
   threeDS?: ThreeDSData;
+  /** Filial que está cobrando — define em qual conta Cielo o dinheiro cai. */
+  filialId?: string | null;
   billingAddress?: {
     street: string;
     number: string;
@@ -166,7 +186,7 @@ export async function createCieloCardPayment(params: {
 
   const res = await fetch(`${API_URL}/1/sales/`, {
     method: 'POST',
-    headers: headers(),
+    headers: await headers(params.filialId),
     body: JSON.stringify(body),
   });
 
@@ -192,10 +212,10 @@ export async function createCieloCardPayment(params: {
 // Consultar transação
 // ============================================
 
-export async function queryCieloPayment(paymentId: string) {
+export async function queryCieloPayment(paymentId: string, filialId?: string | null) {
   const res = await fetch(`${QUERY_URL}/1/sales/${paymentId}`, {
     method: 'GET',
-    headers: headers(),
+    headers: await headers(filialId),
   });
 
   if (!res.ok) {
@@ -217,14 +237,14 @@ export async function queryCieloPayment(paymentId: string) {
 // Cancelar/Reembolsar pagamento
 // ============================================
 
-export async function refundCieloPayment(paymentId: string, amountCents?: number) {
+export async function refundCieloPayment(paymentId: string, amountCents?: number, filialId?: string | null) {
   const url = amountCents
     ? `${API_URL}/1/sales/${paymentId}/void?amount=${amountCents}`
     : `${API_URL}/1/sales/${paymentId}/void`;
 
   const res = await fetch(url, {
     method: 'PUT',
-    headers: headers(),
+    headers: await headers(filialId),
   });
 
   const responseText = await res.text();
@@ -300,15 +320,16 @@ export function friendlyCieloError(returnCode: string): string {
 
 const MPI_BASE_URL = isSandbox ? 'https://mpisandbox.braspag.com.br' : 'https://mpi.braspag.com.br';
 
-export async function getCieloMpiAccessToken(): Promise<string> {
-  const clientId = process.env.CIELO_3DS_CLIENT_ID || '';
-  const clientSecret = process.env.CIELO_3DS_CLIENT_SECRET || '';
-  const establishmentCode = process.env.CIELO_3DS_ESTABLISHMENT_CODE || process.env.CIELO_MERCHANT_ID || '';
-  const merchantName = process.env.CIELO_3DS_MERCHANT_NAME || 'Prainha';
-  const mcc = process.env.CIELO_3DS_MCC || '5812';
+export async function getCieloMpiAccessToken(filialId?: string | null): Promise<string> {
+  const c = await credenciaisCielo(filialId);
+  const { mpiClientId: clientId, mpiClientSecret: clientSecret, establishmentCode, merchantName, mcc } = c;
 
   if (!clientId || !clientSecret) {
-    throw new Error('CIELO_3DS_CLIENT_ID / CIELO_3DS_CLIENT_SECRET nao configurados');
+    throw new Error(
+      c.fonte === 'filial'
+        ? 'Esta filial está sem as chaves 3DS cadastradas (Configurações → Pagamento)'
+        : 'CIELO_3DS_CLIENT_ID / CIELO_3DS_CLIENT_SECRET nao configurados',
+    );
   }
 
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -328,11 +349,12 @@ export async function getCieloMpiAccessToken(): Promise<string> {
 }
 
 /** Config pública do MPI pro frontend usar em window.bpmpi_config. */
-export function getCieloMpiPublicConfig() {
+export async function getCieloMpiPublicConfig(filialId?: string | null) {
+  const c = await credenciaisCielo(filialId);
   return {
-    establishmentCode: process.env.CIELO_3DS_ESTABLISHMENT_CODE || process.env.CIELO_MERCHANT_ID || '',
-    merchantName: process.env.CIELO_3DS_MERCHANT_NAME || 'Prainha',
-    mcc: process.env.CIELO_3DS_MCC || '5812',
+    establishmentCode: c.establishmentCode,
+    merchantName: c.merchantName,
+    mcc: c.mcc,
     environment: isSandbox ? 'SDB' : 'PRD',
     scriptUrl: isSandbox
       ? 'https://mpisandbox.braspag.com.br/Scripts/BP.Mpi.3ds20.min.js'

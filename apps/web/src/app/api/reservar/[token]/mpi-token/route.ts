@@ -23,8 +23,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   if (!filial) return NextResponse.json({ error: 'filial não encontrada' }, { status: 404 });
 
   try {
-    const accessToken = await getCieloMpiAccessToken();
-    const config = getCieloMpiPublicConfig();
+    const accessToken = await getCieloMpiAccessToken(filial.id);
+    const config = await getCieloMpiPublicConfig(filial.id);
     return NextResponse.json({
       accessToken,
       establishmentCode: config.establishmentCode,

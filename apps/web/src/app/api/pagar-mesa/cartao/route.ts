@@ -110,6 +110,7 @@ export async function POST(request: Request) {
       paymentType,
       threeDS,
       billingAddress,
+      filialId: p.filialId,
     });
 
     const pago = resultado.status === 'pago';

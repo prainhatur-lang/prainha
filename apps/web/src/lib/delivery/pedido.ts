@@ -59,6 +59,8 @@ export interface PedidoCriado {
     numero: number;
     token: string;
     totalCentavos: number;
+    /** Quem cobra — cada casa tem o próprio estabelecimento na Cielo. */
+    filialId: string;
   };
 }
 
@@ -375,7 +377,7 @@ export async function criarPedidoDelivery(params: {
 
   return {
     ok: true,
-    pedido: { id: novo.id, numero: novo.numero, token: novo.token, totalCentavos },
+    pedido: { id: novo.id, numero: novo.numero, token: novo.token, totalCentavos, filialId },
   };
 }
 

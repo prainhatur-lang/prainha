@@ -102,6 +102,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       paymentType,
       threeDS,
       billingAddress,
+      filialId: filial.id,
     });
 
     await db
