@@ -39,6 +39,10 @@ const Linha = z.object({
   status_item: z.string().max(20).nullable().optional(),
   motivo: z.string().max(500).nullable().optional(),
   area_codigo: z.coerce.number().int().nullable().optional(),
+  /** Foto do produto devolvido (só motivo "Devolução…"), JPEG base64 — a loja
+   *  limita o lote a ~3 MB de foto por envio. */
+  foto_b64: z.string().max(4_000_000).nullable().optional(),
+  foto_mime: z.string().max(40).nullable().optional(),
 });
 const Body = z.object({
   f: z.string(),
@@ -75,6 +79,8 @@ export async function POST(request: Request) {
       statusItem: c.status_item ?? null,
       motivo: c.motivo ?? null,
       areaCodigo: c.area_codigo ?? null,
+      foto: c.foto_b64 ? Buffer.from(c.foto_b64, 'base64') : null,
+      fotoMime: c.foto_b64 ? (c.foto_mime ?? 'image/jpeg') : null,
     }));
 
   if (valores.length > 0) {
@@ -96,6 +102,9 @@ export async function POST(request: Request) {
           statusItem: sql`excluded.status_item`,
           motivo: sql`excluded.motivo`,
           areaCodigo: sql`excluded.area_codigo`,
+          // reenvio sem a foto (já apagada na loja depois de 30 dias) não apaga a daqui
+          foto: sql`COALESCE(excluded.foto, cancelamento_item.foto)`,
+          fotoMime: sql`COALESCE(excluded.foto_mime, cancelamento_item.foto_mime)`,
         },
       });
   }

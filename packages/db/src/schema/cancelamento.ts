@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  customType,
   index,
   integer,
   numeric,
@@ -12,6 +13,13 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import { filial } from './tenant';
+
+/** bytea — o drizzle não traz esse tipo pro Postgres. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 /** Cancelamento de item (ou do pedido inteiro) feito no caixa do vendas-local,
  *  COM motivo e quem autorizou — o Consumer só marca ITENSPEDIDO.DATADELETE.
@@ -41,6 +49,9 @@ export const cancelamentoItem = pgTable(
     statusItem: varchar('status_item', { length: 20 }),
     motivo: text('motivo'),
     areaCodigo: integer('area_codigo'),
+    /** Foto do produto devolvido (motivo "Devolução…") — JPEG ~1280px, vem da loja. */
+    foto: bytea('foto'),
+    fotoMime: varchar('foto_mime', { length: 40 }),
     recebidoEm: timestamp('recebido_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

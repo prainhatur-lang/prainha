@@ -10,7 +10,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, desc, eq, gte, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
@@ -96,6 +96,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
       statusItem: c.statusItem,
       motivo: c.motivo,
       areaCodigo: c.areaCodigo,
+      temFoto: sql<boolean>`(${c.foto} IS NOT NULL)`,
     })
     .from(c)
     .where(
@@ -131,6 +132,9 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const produzidos = linhas.filter((l) => jaProduzido(l.statusItem));
   const valorProduzidos = produzidos.reduce((s, l) => s + valorDe(l), 0);
   const pedidosInteiros = linhas.filter((l) => l.tipo === 'pedido').length;
+  // Devolução = produto voltou pro bar/estoque; a regra da casa é: só com foto.
+  const devolucoes = linhas.filter((l) => /^devolu/i.test(l.motivo ?? ''));
+  const devolucoesSemFoto = devolucoes.filter((l) => !l.temFoto).length;
   const porMotivo = agrupar(linhas, (l) => l.motivo || '(sem motivo)', valorDe);
   const porQuem = agrupar(linhas, (l) => l.login || '?', valorDe);
   const porGerente = agrupar(
@@ -189,13 +193,19 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
         )}
 
         {/* KPIs do período filtrado */}
-        <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
           <Kpi label="Cancelamentos" valor={int(linhas.length)} sub={brl(total)} tom="slate" />
           <Kpi
             label="Já produzidos"
             valor={int(produzidos.length)}
             sub={`${brl(valorProduzidos)} · ${linhas.length ? Math.round((produzidos.length / linhas.length) * 100) : 0}% do total`}
             tom="amber"
+          />
+          <Kpi
+            label="Devoluções (com foto)"
+            valor={`${int(devolucoes.length - devolucoesSemFoto)}/${int(devolucoes.length)}`}
+            sub={devolucoesSemFoto > 0 ? `${int(devolucoesSemFoto)} sem foto` : 'produto voltou pro bar/estoque'}
+            tom={devolucoesSemFoto > 0 ? 'rose' : 'slate'}
           />
           <Kpi label="Pedidos inteiros" valor={int(pedidosInteiros)} sub="cancelados por completo" tom="rose" />
           <Kpi
@@ -315,7 +325,20 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                       <td className="px-4 py-2 text-xs text-slate-600">
                         {l.gerente && l.gerente !== l.login ? l.gerente : l.gerente ? 'ele mesmo' : '—'}
                       </td>
-                      <td className="px-4 py-2 text-xs text-slate-700">{l.motivo ?? <span className="text-slate-400">sem motivo</span>}</td>
+                      <td className="px-4 py-2 text-xs text-slate-700">
+                        {l.motivo ?? <span className="text-slate-400">sem motivo</span>}
+                        {l.temFoto && (
+                          <a
+                            href={`/movimento/cancelamentos/foto/${l.id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 hover:bg-sky-200"
+                            title="Ver a foto do produto devolvido"
+                          >
+                            📷 foto
+                          </a>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
