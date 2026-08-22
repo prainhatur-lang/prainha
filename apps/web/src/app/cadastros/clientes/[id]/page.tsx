@@ -89,11 +89,20 @@ export default async function ClienteDetalhe(props: {
     .where(and(eq(schema.clienteContato.filialId, fid), matchContato))
     .limit(1);
 
-  let [cadastro] = await db
-    .select()
-    .from(schema.cliente)
-    .where(and(eq(schema.cliente.filialId, fid), matchCliente))
-    .limit(1);
+  // 1º a LIGAÇÃO (cadastro único): o contato guarda o cliente a que pertence,
+  // casado uma vez só, por chave forte e par 1:1 (backfill-cliente-unico).
+  // Adivinhar pelo telefone a cada abertura de tela é o que escondia dívida.
+  let [cadastro] = contato?.clienteId
+    ? await db.select().from(schema.cliente).where(eq(schema.cliente.id, contato.clienteId)).limit(1)
+    : [undefined];
+  // 2º só quem ainda não foi ligado cai no casamento por telefone/e-mail
+  if (!cadastro) {
+    [cadastro] = await db
+      .select()
+      .from(schema.cliente)
+      .where(and(eq(schema.cliente.filialId, fid), matchCliente))
+      .limit(1);
+  }
 
   // ⚠️ CASAR SÓ PELO TELEFONE ESCONDE DÍVIDA — e não há atalho bom.
   // Medido em 22/08: dos 137 clientes com fiado em aberto, 104 estão SEM

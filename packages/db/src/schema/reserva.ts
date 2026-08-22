@@ -7,6 +7,7 @@
 import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, index, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
+import { cliente } from './financeiro';
 
 export const reserva = pgTable(
   'reserva',
@@ -156,6 +157,12 @@ export const clienteContato = pgTable(
     reservasHistorico: integer('reservas_historico').default(0),
     filasEsperaHistorico: integer('filas_espera_historico').default(0),
     detalhes: text('detalhes'),
+    /** CADASTRO ÚNICO: o cliente a que este contato pertence. Casado uma vez,
+     *  por chave forte e par 1:1 — não se adivinha a cada tela. */
+    clienteId: uuid('cliente_id').references(() => cliente.id, { onDelete: 'set null' }),
+    /** telefone | email | cpf — como a ligação foi feita (auditoria). */
+    ligadoPor: varchar('ligado_por', { length: 12 }),
+    ligadoEm: timestamp('ligado_em', { withTimezone: true }),
     /** Origem do import: 'tagme' | ... */
     origem: varchar('origem', { length: 20 }).notNull().default('tagme'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
