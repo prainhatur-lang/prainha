@@ -8,6 +8,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
         filialId,
         clienteNome,
         clienteTelefone: txt(r?.clienteTelefone, 30),
+        ...(await ligacaoDaReserva(filialId, { telefone: txt(r?.clienteTelefone, 30) })),
         pessoas: Number.isInteger(r?.pessoas) && r.pessoas > 0 ? Math.min(r.pessoas, 999) : 1,
         data,
         hora,

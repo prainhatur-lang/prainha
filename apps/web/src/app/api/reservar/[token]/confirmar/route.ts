@@ -11,6 +11,7 @@ import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import { createCieloPixPayment } from '@/lib/cielo';
 import { randomBytes } from 'node:crypto';
+import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -225,6 +226,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       filialId: filial.id,
       clienteNome: nome,
       clienteTelefone: telefone,
+      ...(await ligacaoDaReserva(filial.id, { telefone })),
       pessoas,
       data,
       hora,

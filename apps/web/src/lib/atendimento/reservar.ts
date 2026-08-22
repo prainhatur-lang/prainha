@@ -21,6 +21,7 @@ import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
+import { ligacaoDaReserva } from '@/lib/cliente-unico';
 import {
   enviarConfirmacaoReserva,
   enviarAvisoTolerancia,
@@ -488,6 +489,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     clienteNome: nome,
     clienteTelefone: p.telefone,
     clienteCpf,
+    ...(await ligacaoDaReserva(p.filialId, { telefone: p.telefone, cpf: clienteCpf })),
     pessoas,
     data: p.data,
     hora: p.hora,

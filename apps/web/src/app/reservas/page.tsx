@@ -73,6 +73,7 @@ export default async function ReservasPage(props: {
             filialId: schema.reserva.filialId,
             clienteNome: schema.reserva.clienteNome,
             clienteTelefone: schema.reserva.clienteTelefone,
+            clienteId: schema.reserva.clienteId,
             pessoas: schema.reserva.pessoas,
             data: schema.reserva.data,
             hora: schema.reserva.hora,
@@ -162,6 +163,22 @@ export default async function ReservasPage(props: {
     }
   }
 
+  // CADASTRO ÚNICO: a reserva aponta pro cliente do PDV, então dá pra avisar
+  // a casa que quem vem hoje está devendo — antes de sentar. Só saldo > 0.
+  const fiado: Record<string, { saldo: number; clienteId: string }> = {};
+  const idsCli = [...new Set(itens.map((i) => i.clienteId).filter(Boolean))] as string[];
+  if (idsCli.length > 0) {
+    const devs = await db
+      .select({ id: schema.cliente.id, saldo: schema.cliente.saldoAtualContaCorrente })
+      .from(schema.cliente)
+      .where(and(inArray(schema.cliente.id, idsCli), sql`COALESCE(${schema.cliente.saldoAtualContaCorrente}, 0) > 0`));
+    const porCli = new Map(devs.map((d) => [d.id, Number(d.saldo ?? 0)]));
+    for (const i of itens) {
+      const v = i.clienteId ? porCli.get(i.clienteId) : undefined;
+      if (v) fiado[i.id] = { saldo: v, clienteId: i.clienteId! };
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -180,6 +197,7 @@ export default async function ReservasPage(props: {
           ocupadasConsumer={ocupadasConsumer}
           reservasPorMesa={reservasPorMesa}
           historico={historico}
+          fiado={fiado}
         />
       </section>
     </main>

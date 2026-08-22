@@ -32,6 +32,8 @@ export interface FilialOpt {
 }
 
 export interface ReservaItem {
+  /** CADASTRO ÚNICO: cliente do PDV dono desta reserva (pode não ter). */
+  clienteId?: string | null;
   id: string;
   filialId: string;
   filialNome?: string;
@@ -107,6 +109,7 @@ export function ReservasClient({
   ocupadasConsumer,
   reservasPorMesa,
   historico,
+  fiado,
 }: {
   data: string;
   filiais: FilialOpt[];
@@ -121,6 +124,8 @@ export function ReservasClient({
   ocupadasConsumer: string[];
   reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>;
   historico: Record<string, { visitas: number; ultima: string | null }>;
+  /** Reservas de quem está devendo hoje (cadastro único) — id da reserva → saldo. */
+  fiado: Record<string, { saldo: number; clienteId: string }>;
 }) {
   const router = useRouter();
   const [novaAberta, setNovaAberta] = useState(false);
@@ -508,14 +513,14 @@ export function ReservasClient({
             Nenhuma reserva bate com esse filtro.
           </p>
         ) : (
-          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
+          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} fiado={fiado[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
+function Linha({ r, hist, fiado, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; fiado?: { saldo: number; clienteId: string }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const [confirmandoBebida, setConfirmandoBebida] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
@@ -567,6 +572,15 @@ function Linha({ r, hist, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupa
             ) : (
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">✨ novo cliente</span>
             ))}
+            {fiado && (
+              <a
+                href={`/financeiro/receber/${fiado.clienteId}`}
+                className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700 hover:bg-rose-200"
+                title="Este cliente tem fiado em aberto — ver a conta"
+              >
+                ⚠ deve {fiado.saldo.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+              </a>
+            )}
             <PessoasInline reservaId={r.id} inicial={r.pessoas} podeAtualizar={podeAtualizar && r.status !== 'cancelada'} onMudou={onMudou} />
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${st.cls}`}>{st.txt}</span>
             <span className="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{CANAL_INFO[r.canal] ?? r.canal}</span>

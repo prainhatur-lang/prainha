@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql, or } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 
@@ -129,7 +129,13 @@ export default async function ClienteDetalhe(props: {
       preferencias: schema.reserva.preferencias,
     })
     .from(schema.reserva)
-    .where(and(eq(schema.reserva.filialId, fid), matchReserva))
+    // CADASTRO ÚNICO: a reserva já aponta pro cliente (@/lib/cliente-unico).
+    // O casamento por telefone continua só pras reservas antigas, de antes
+    // da ligação existir.
+    .where(and(
+      eq(schema.reserva.filialId, fid),
+      cadastro ? or(eq(schema.reserva.clienteId, cadastro.id), matchReserva)! : matchReserva,
+    ))
     .orderBy(desc(schema.reserva.data))
     .limit(200);
 

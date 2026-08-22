@@ -20,6 +20,12 @@ export const reserva = pgTable(
     clienteNome: varchar('cliente_nome', { length: 200 }).notNull(),
     /** Telefone/WhatsApp do cliente (so digitos quando possivel). */
     clienteTelefone: varchar('cliente_telefone', { length: 30 }),
+    /** CADASTRO ÚNICO: o cliente (cadastro do PDV) que fez esta reserva.
+     *  Resolvido por @/lib/cliente-unico na hora de criar — telefone ou CPF,
+     *  e só quando aponta pra um só. É o que deixa a casa ver que quem
+     *  reservou a mesa está devendo. */
+    clienteId: uuid('cliente_id').references(() => cliente.id, { onDelete: 'set null' }),
+    clienteLigadoPor: varchar('cliente_ligado_por', { length: 12 }),
     /** CPF de quem reservou (11 dígitos) — a Nina pede CPF em vez de nome e
      *  resolve o nome pelo cadastro do cliente. Null em reservas antigas/site. */
     clienteCpf: varchar('cliente_cpf', { length: 14 }),

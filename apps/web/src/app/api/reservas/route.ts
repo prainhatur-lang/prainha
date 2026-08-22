@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { mesaEstaLivre, mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -91,6 +92,7 @@ export async function POST(request: Request) {
       filialId,
       clienteNome: clienteNome.slice(0, 200),
       clienteTelefone: txt(b?.clienteTelefone, 30),
+      ...(await ligacaoDaReserva(filialId, { telefone: txt(b?.clienteTelefone, 30) })),
       pessoas,
       data,
       hora,
