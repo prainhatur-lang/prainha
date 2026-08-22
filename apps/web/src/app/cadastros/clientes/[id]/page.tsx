@@ -89,11 +89,32 @@ export default async function ClienteDetalhe(props: {
     .where(and(eq(schema.clienteContato.filialId, fid), matchContato))
     .limit(1);
 
-  const [cadastro] = await db
+  let [cadastro] = await db
     .select()
     .from(schema.cliente)
     .where(and(eq(schema.cliente.filialId, fid), matchCliente))
     .limit(1);
+
+  // ⚠️ CASAR SÓ PELO TELEFONE ESCONDE DÍVIDA. O cadastro do Consumer muitas
+  // vezes não tem telefone (o Marco Pinheiro devia R$ 15.364,59 e a tela dizia
+  // "Sem saldo", porque o telefone dele lá está vazio). Sem achar, tenta pelo
+  // NOME exato — e, quando é assim, a tela avisa que foi por nome, porque
+  // nome bate errado mais fácil que telefone.
+  let casadoPorNome = false;
+  if (!cadastro) {
+    const nomeBusca = (contato?.nome || '').trim();
+    if (nomeBusca.length >= 6) {
+      const [porNome] = await db
+        .select()
+        .from(schema.cliente)
+        .where(and(
+          eq(schema.cliente.filialId, fid),
+          sql`lower(unaccent(coalesce(${schema.cliente.nome}, ''))) = lower(unaccent(${nomeBusca}))`,
+        ))
+        .limit(1);
+      if (porNome) { cadastro = porNome; casadoPorNome = true; }
+    }
+  }
 
   const reservas = await db
     .select({
@@ -217,13 +238,28 @@ export default async function ClienteDetalhe(props: {
             <Info
               label="Fiado (conta corrente)"
               value={
-                saldo != null && saldo !== 0 ? (
-                  <span className={saldo > 0 ? 'font-medium text-rose-600' : ''}>{brl(saldo)}</span>
+                !cadastro ? (
+                  // NUNCA dizer "sem saldo" sem ter achado a conta: é a mesma
+                  // frase de quem não deve nada, e já escondeu R$ 15 mil.
+                  <span className="text-slate-500">não identificado no PDV</span>
+                ) : saldo != null && saldo !== 0 ? (
+                  <Link
+                    href={`/financeiro/receber/${cadastro.id}`}
+                    className={saldo > 0 ? 'font-medium text-rose-600 hover:underline' : 'hover:underline'}
+                  >
+                    {brl(saldo)} ▸
+                  </Link>
                 ) : (
                   'Sem saldo'
                 )
               }
             />
+            {casadoPorNome && (
+              <div className="col-span-full -mt-2 text-[11px] text-amber-700">
+                ⚠ conta do PDV encontrada pelo <b>nome</b> (o cadastro de lá está sem telefone) —
+                confira se é a mesma pessoa antes de usar o saldo
+              </div>
+            )}
             <Info
               label="Reservas (concilia)"
               value={reservas.length > 0 ? String(reservas.length) : '—'}
