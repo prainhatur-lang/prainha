@@ -199,12 +199,23 @@ export default async function ClienteDetalhe(props: {
               </div>
             </div>
             <div className="flex gap-2">
-              {cadastro && (
+              {cadastro ? (
                 <Link
                   href={`/cadastros/clientes/editar/${cadastro.id}`}
                   className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
                 >
                   Editar cadastro
+                </Link>
+              ) : (
+                // Sem cadastro no PDV não havia saída nenhuma nesta tela: nem
+                // editar, nem criar. Quem quisesse dar limite de fiado a este
+                // cliente não tinha por onde começar.
+                <Link
+                  href={`/cadastros/clientes/novo?filialId=${fid}`}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  title="este contato ainda não tem cadastro no PDV (é onde mora o limite de fiado)"
+                >
+                  + Criar cadastro no PDV
                 </Link>
               )}
               {foneDig && (
