@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
+import { brl, formatValorBr, parseValorBr } from '@/lib/format';
 
 interface Opcao {
   id: string;
@@ -10,6 +11,102 @@ interface Opcao {
 }
 interface CategoriaPai extends Opcao {
   filhas: Opcao[];
+}
+
+const inputCls = 'mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm';
+const labelCls = 'block text-[11px] font-medium uppercase tracking-wide text-slate-500';
+
+/** Busca sem acento e sem caixa — "jose" acha "JOSÉ". */
+function normalizar(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/** Fornecedor com busca por texto: são mais de 2 mil cadastrados e o <select>
+ *  nativo não deixava achar ninguém. Digita um pedaço do nome e escolhe na
+ *  lista. Texto digitado sem escolher NÃO vira fornecedor — o submit avisa. */
+function FornecedorPicker({
+  fornecedores,
+  fornecedorId,
+  texto,
+  onTexto,
+  onPick,
+}: {
+  fornecedores: Opcao[];
+  fornecedorId: string;
+  texto: string;
+  onTexto: (t: string) => void;
+  onPick: (f: Opcao | null) => void;
+}) {
+  const [aberto, setAberto] = useState(false);
+  const termo = normalizar(texto.trim());
+  const sugestoes = useMemo(() => {
+    if (termo.length < 2) return [];
+    const achados = fornecedores.filter((f) => normalizar(f.nome).includes(termo));
+    // quem começa com o termo vem primeiro
+    achados.sort(
+      (a, b) =>
+        Number(normalizar(b.nome).startsWith(termo)) -
+        Number(normalizar(a.nome).startsWith(termo)),
+    );
+    return achados.slice(0, 30);
+  }, [fornecedores, termo]);
+  const escolhido = !!fornecedorId;
+
+  return (
+    <div className="relative">
+      <input
+        value={texto}
+        onChange={(e) => {
+          onTexto(e.target.value);
+          onPick(null);
+          setAberto(true);
+        }}
+        onFocus={() => setAberto(true)}
+        onBlur={() => setTimeout(() => setAberto(false), 150)}
+        placeholder="digite um pedaço do nome — ex: petrox, guga"
+        className={`${inputCls} pr-8 ${escolhido ? 'border-emerald-400 bg-emerald-50/40' : ''}`}
+      />
+      {texto && (
+        <button
+          type="button"
+          onClick={() => {
+            onTexto('');
+            onPick(null);
+          }}
+          title="Limpar fornecedor"
+          className="absolute right-2 top-1/2 mt-0.5 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-700"
+        >
+          ✕
+        </button>
+      )}
+      {aberto && !escolhido && termo.length >= 2 && (
+        <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+          {sugestoes.length === 0 ? (
+            <li className="px-3 py-1.5 text-xs text-slate-500">
+              Nenhum fornecedor com “{texto.trim()}”. Apague o campo pra lançar sem fornecedor.
+            </li>
+          ) : (
+            sugestoes.map((f) => (
+              <li key={f.id}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onTexto(f.nome);
+                    onPick(f);
+                    setAberto(false);
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-sm text-slate-800 hover:bg-slate-50"
+                >
+                  {f.nome}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export function NovaContaForm({
@@ -29,6 +126,7 @@ export function NovaContaForm({
   const [paiId, setPaiId] = useState('');
   const [subId, setSubId] = useState('');
   const [fornecedorId, setFornecedorId] = useState('');
+  const [fornecedorTexto, setFornecedorTexto] = useState('');
   const [descricao, setDescricao] = useState('');
   const [valor, setValor] = useState('');
   const [dataLancamento, setDataLancamento] = useState(hoje);
@@ -42,13 +140,20 @@ export function NovaContaForm({
   const pai = useMemo(() => categorias.find((c) => c.id === paiId), [categorias, paiId]);
   // categoria efetiva = subcategoria quando escolhida; senão a própria categoria
   const categoriaId = subId || paiId || null;
+  // o que o campo de valor vai mandar — mostrado ao vivo embaixo do campo
+  const valorNum = parseValorBr(valor);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErro(null);
-    const v = Number(valor.replace(',', '.'));
+    const v = parseValorBr(valor);
     if (!descricao.trim() || descricao.trim().length < 2) return setErro('Informe o histórico.');
-    if (!Number.isFinite(v) || v <= 0) return setErro('Valor inválido.');
+    if (v == null || v <= 0) return setErro('Valor inválido — digite como 3.490,00 ou 3490.');
+    if (!fornecedorId && fornecedorTexto.trim()) {
+      return setErro(
+        'Escolha o fornecedor na lista — ou apague o campo pra lançar sem fornecedor.',
+      );
+    }
     setSalvando(true);
     try {
       const r = await fetch('/api/financeiro/contas', {
@@ -77,9 +182,6 @@ export function NovaContaForm({
       setSalvando(false);
     }
   }
-
-  const inputCls = 'mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm';
-  const labelCls = 'block text-[11px] font-medium uppercase tracking-wide text-slate-500';
 
   return (
     <form onSubmit={submit} className="mt-5 space-y-5">
@@ -158,29 +260,40 @@ export function NovaContaForm({
 
           <div>
             <label className={labelCls}>Fornecedor</label>
-            <select
-              value={fornecedorId}
-              onChange={(e) => setFornecedorId(e.target.value)}
-              className={inputCls}
-            >
-              <option value="">— sem fornecedor —</option>
-              {fornecedores.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.nome}
-                </option>
-              ))}
-            </select>
+            <FornecedorPicker
+              fornecedores={fornecedores}
+              fornecedorId={fornecedorId}
+              texto={fornecedorTexto}
+              onTexto={setFornecedorTexto}
+              onPick={(f) => setFornecedorId(f?.id ?? '')}
+            />
           </div>
           <div>
             <label className={labelCls}>Valor (R$) *</label>
             <input
               value={valor}
               onChange={(e) => setValor(e.target.value)}
+              onBlur={() => {
+                // reescreve do jeito BR ("3.490,00") — o que você vê é o que entra
+                if (valorNum != null && valorNum > 0) setValor(formatValorBr(valorNum));
+              }}
               inputMode="decimal"
               placeholder="0,00"
               required
               className={`${inputCls} font-mono`}
             />
+            {valor.trim() &&
+              (valorNum != null && valorNum > 0 ? (
+                <p className="mt-1 text-xs text-emerald-700">
+                  Vai entrar como <b className="font-mono">{brl(valorNum)}</b>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-rose-700">
+                  Não entendi esse valor — digite como{' '}
+                  <span className="font-mono">3.490,00</span> ou{' '}
+                  <span className="font-mono">3490</span>.
+                </p>
+              ))}
           </div>
         </div>
       </div>

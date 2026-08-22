@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
+import { parseValorBr } from '@/lib/format';
 
 export function BaixaForm({
   contaId,
@@ -52,8 +53,8 @@ export function BaixaForm({
   async function registrar(e: React.FormEvent) {
     e.preventDefault();
     setErro(null);
-    const v = Number(valor.replace(/\./g, '').replace(',', '.'));
-    if (!Number.isFinite(v) || v <= 0) return setErro('Valor inválido.');
+    const v = parseValorBr(valor);
+    if (v == null || v <= 0) return setErro('Valor inválido — digite como 1.250,00 ou 1250.');
     setOcupado(true);
     try {
       const r = await fetch(`/api/financeiro/contas/${contaId}/baixas`, {

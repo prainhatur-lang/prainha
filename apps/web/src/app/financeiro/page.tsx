@@ -263,6 +263,25 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         .limit(500)
     : [];
 
+  // Resumo do que o filtro puxou — pra não ter que rolar a lista pra saber
+  // se achou alguma coisa e quanto dá. Só as linhas listadas (máx. 500).
+  const resumo = contas.reduce(
+    (acc, c) => {
+      const valor = Number(c.valor);
+      const pago = Number(c.valorPago ?? 0);
+      acc.total += valor;
+      if (c.dataPagamento) {
+        acc.pagas += 1;
+        acc.pago += pago;
+      } else {
+        acc.abertas += 1;
+        acc.aberto += Math.max(0, valor - pago);
+      }
+      return acc;
+    },
+    { total: 0, pagas: 0, pago: 0, abertas: 0, aberto: 0 },
+  );
+
   function href(next: Partial<SP>): string {
     const qs = new URLSearchParams();
     if (filialSelecionada) qs.set('filialId', filialSelecionada.id);
@@ -564,6 +583,20 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
 
             {/* Tabela */}
             <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              {contas.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+                  <span>
+                    <b className="text-slate-900">{int(contas.length)}</b>{' '}
+                    {contas.length === 1 ? 'conta' : 'contas'} nesse filtro
+                    {contas.length >= 500 ? ' (só as 500 primeiras)' : ''} ·{' '}
+                    <span className="font-mono">{brl(resumo.total)}</span>
+                  </span>
+                  <span>
+                    em aberto <span className="font-mono text-slate-900">{brl(resumo.aberto)}</span> ({int(resumo.abertas)}) · pagas{' '}
+                    <span className="font-mono text-emerald-700">{brl(resumo.pago)}</span> ({int(resumo.pagas)})
+                  </span>
+                </div>
+              )}
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>

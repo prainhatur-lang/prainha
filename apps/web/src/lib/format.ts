@@ -77,3 +77,33 @@ export function statusFromPing(ping: Date | string | null): StatusSync {
   if (min <= 120) return 'warn';
   return 'offline';
 }
+
+/**
+ * Lê dinheiro digitado do jeito brasileiro e devolve número (ou null se não
+ * entendeu). Aceita "3.490", "3.490,00", "3490", "3490,5", "1.139,24", "R$ 12,50".
+ *  - tem vírgula → ponto é milhar, vírgula é decimal;
+ *  - sem vírgula e pontos em grupos de 3 ("3.490", "1.234.567") → milhar;
+ *  - sem vírgula e um ponto fora desse padrão ("12.5") → decimal.
+ * Motivo: Number("3.490") dá 3,49 — uma conta de R$ 3.490 entrou como R$ 3,49.
+ */
+export function parseValorBr(bruto: string | number | null | undefined): number | null {
+  if (bruto === null || bruto === undefined) return null;
+  if (typeof bruto === 'number') return Number.isFinite(bruto) ? bruto : null;
+  const t = bruto.replace(/R\$/gi, '').replace(/\s/g, '');
+  if (!t) return null;
+  let normalizado: string;
+  if (t.includes(',')) {
+    normalizado = t.replace(/\./g, '').replace(',', '.');
+  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) {
+    normalizado = t.replace(/\./g, '');
+  } else {
+    normalizado = t;
+  }
+  const n = Number(normalizado);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Número → "3.490,00" (sem o R$) — pra reescrever o campo depois de digitado. */
+export function formatValorBr(n: number): string {
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}

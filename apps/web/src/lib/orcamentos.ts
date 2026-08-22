@@ -1,6 +1,8 @@
 // Tipos e helpers do módulo de orçamentos de eventos.
 // Puro (sem imports de servidor) — usável em client e server components.
 
+import { parseValorBr } from './format';
+
 /** Um prato do cardápio do orçamento (espelho do jsonb no schema). */
 export interface PratoOrcamento {
   nome: string;
@@ -46,14 +48,12 @@ export function diaSemanaBr(ymd: string): string {
   return DIAS_SEMANA[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 }
 
-/** Parseia valor em R$ digitado pelo usuário ("1.234,56", "1234.56", "120"). */
+/** Parseia valor em R$ digitado pelo usuário ("1.234,56", "1.500", "1234.56", "120").
+ *  A leitura BR mora em parseValorBr — "1.500" é mil e quinhentos, não um e
+ *  cinquenta (entrada de Pix com esse bug cobraria R$ 1,50). Aqui só barra negativo. */
 export function parseValor(s: string): number | null {
-  const t = s.trim();
-  if (!t) return null;
-  // Com vírgula = formato BR: pontos são milhar. Sem vírgula: ponto é decimal.
-  const normalizado = t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t;
-  const n = Number(normalizado);
-  return Number.isFinite(n) && n >= 0 ? n : null;
+  const n = parseValorBr(s);
+  return n != null && n >= 0 ? n : null;
 }
 
 export interface TotaisOrcamento {
