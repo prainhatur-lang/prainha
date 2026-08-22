@@ -4395,6 +4395,7 @@ async function apiCaixaEntrar(body) {
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
 async function apiCaixaConta(n) {
   const num = Number(n);
+  const agora = Date.now();
   const ped = await fbAcharPedido(num);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
   // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
@@ -4407,14 +4408,22 @@ async function apiCaixaConta(n) {
   // entregue muda de liturgia na tela (dupla senha)
   // complementos (tipo 2) VÊM JUNTO: o caixa precisa ver "com gelo"/"1 copo"
   // pendurados no prato — sem eles a conta parecia só "os itens secos"
+  // TEMPO DE ESPERA POR ITEM (pedido do dono, 22/08): o caixa conferindo a
+  // conta com o cliente na frente precisa saber há quanto tempo cada coisa foi
+  // pedida. Entregue = quanto o cliente ESPEROU de verdade; não entregue = o
+  // relógio ainda correndo. O limite é o da praça do item (praca_config).
   const itens = c ? await sql`SELECT ci.item_codigo, ci.codigo_pai, ci.tipo, ci.nome, ci.quantidade, ci.valor_total, ci.detalhes,
       -- quem lançou: o garçom do Consumer, ou quem estava logado na nossa tela
       COALESCE(NULLIF(ci.colaborador_nome,''), a.nome, a.login) AS quem,
+      ci.criado,
+      COALESCE(ci.entregue, k.entregue_em) AS entregue_em,
+      COALESCE(pc.minutos, ${LIMITE_ATRASO_MIN})::int AS limite,
       CASE WHEN ci.entregue IS NOT NULL OR k.entregue_em IS NOT NULL THEN 'entregue'
            WHEN ci.produzido IS NOT NULL OR k.pronto_em IS NOT NULL THEN 'pronto'
            ELSE 'a_produzir' END AS status
     FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
     LEFT JOIN item_autor a ON a.item_codigo = ci.item_codigo
+    LEFT JOIN praca_config pc ON pc.area_codigo = ci.area_codigo
     WHERE ci.comanda_codigo=${c.codigo} ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
   // COMANDAS DA MESA vêm JUNTO (atômico): o refresher de 10s substitui a CONTA
@@ -4444,7 +4453,21 @@ async function apiCaixaConta(n) {
   }
   return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
     comandas_mesa: comandasMesa, geral,
-    itens: itens.map((i) => ({ item_codigo: Number(i.item_codigo) || null, tipo: Number(i.tipo) || 1, codigo_pai: i.codigo_pai != null ? Number(i.codigo_pai) : null, nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0, detalhes: i.detalhes, status: i.status })),
+    itens: itens.map((i) => {
+      // minutos entre lançar e entregar; sem entrega ainda, conta até agora
+      const t0 = i.criado ? new Date(i.criado).getTime() : null;
+      const t1 = i.entregue_em ? new Date(i.entregue_em).getTime() : agora;
+      const min = t0 ? Math.max(0, Math.round((t1 - t0) / 60000)) : null;
+      const esperando = !i.entregue_em;
+      return { item_codigo: Number(i.item_codigo) || null, tipo: Number(i.tipo) || 1,
+        codigo_pai: i.codigo_pai != null ? Number(i.codigo_pai) : null, nome: i.nome,
+        quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0,
+        detalhes: i.detalhes, status: i.status,
+        // 👤 quem lançou: a consulta já buscava e o retorno JOGAVA FORA — o
+        // nome nunca chegou na tela desde que a coluna foi criada.
+        quem: i.quem || null,
+        espera_min: min, esperando, atrasado: esperando && min != null && min > (Number(i.limite) || 0) };
+    }),
     subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
     total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
 }
@@ -12211,6 +12234,18 @@ async function identSalva(btn,novo){
   var o=document.getElementById('idov');if(o)o.remove();
   await carregar(MESA);
 }
+/* ⏱ o relógio do item na conta do caixa. Entregue: cinza, é histórico —
+   "esse veio em 12min". Esperando: cor, é problema em curso — e vermelho
+   quando já passou do tempo da praça. Complemento (tipo 2) não tem relógio
+   próprio: ele sai junto com o prato-pai. */
+function relogioItem(i){
+  if(i.tipo===2||i.espera_min==null)return '';
+  var t=i.espera_min<60?(i.espera_min+'min')
+        :(Math.floor(i.espera_min/60)+'h'+String(i.espera_min%60).padStart(2,'0'));
+  if(!i.esperando)return ' <small class="mut">⏱ '+t+'</small>';
+  var cor=i.atrasado?'#b3261e':'#8a6d00';
+  return ' <small style="color:'+cor+';font-weight:700">⏳ '+t+(i.atrasado?' ⚠':'')+'</small>';
+}
 function pinta(el){
   var c=CONTA;
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
@@ -12228,6 +12263,9 @@ function pinta(el){
       (i.tipo===2?'<span style="display:inline-block;width:22px"></span>+ ':i.quantidade+'× ')+esc(i.nome)+
       (i.tipo!==2&&i.detalhes&&i.detalhes!=='NENHUM'?'<small class="mut" style="display:block;padding-left:22px">✎ '+esc(String(i.detalhes).split('|').map(function(s){return s.trim()}).filter(function(s){return s&&s!=='NENHUM'&&s.indexOf('>>')!==0}).join(' · '))+'</small>':'')+
       (i.status==='entregue'?' <small class="mut">✓entregue</small>':i.status==='pronto'?' <small class="mut">✓pronto</small>':'')+
+      // ⏱ TEMPO DE ESPERA: entregue = quanto o cliente esperou de verdade;
+      // ainda não = relógio correndo, vermelho quando passa do tempo da praça.
+      relogioItem(i)+
       // QUEM LANÇOU: conferir a conta com o cliente na frente é discutir item a
       // item. Sem o nome, "eu não pedi isso" não tem com quem esclarecer.
       (i.tipo!==2&&i.quem?'<small class="mut" style="display:block;padding-left:22px">👤 '+esc(String(i.quem).split(' ')[0])+'</small>':'')+
