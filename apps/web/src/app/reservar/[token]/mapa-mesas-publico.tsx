@@ -19,6 +19,7 @@ function MesaBotao({
   onSelecionar,
   contexto,
   larguraPx,
+  redonda,
 }: {
   mesa: MesaPublica;
   pessoas: number;
@@ -28,6 +29,8 @@ function MesaBotao({
    *  (o cliente precisa trocar o "Espaço" pra reservar ela, taxa diferente). */
   contexto?: boolean;
   larguraPx?: number;
+  /** Mesa redonda na planta (ex: as duas grandes do salão da Tabuará). */
+  redonda?: boolean;
 }) {
   const cabe = mesa.lugares >= pessoas;
   const clicavel = !contexto && mesa.livre && cabe;
@@ -47,7 +50,7 @@ function MesaBotao({
               : `Mesa ${mesa.numero} · ${mesa.lugares} lugares`
       }
       style={larguraPx ? { width: larguraPx } : undefined}
-      className={`flex h-14 ${larguraPx ? '' : 'w-14'} flex-col items-center justify-center rounded-lg border text-center transition ${
+      className={`flex ${redonda ? 'h-[4.5rem] w-[4.5rem] rounded-full' : `h-14 ${larguraPx ? '' : 'w-14'} rounded-lg`} flex-col items-center justify-center border text-center transition ${
         sel
           ? 'border-[var(--rsv-mesa-sel)] bg-[var(--rsv-mesa-sel)] text-[var(--rsv-mesa-sel-ink)] shadow-md'
           : contexto
@@ -237,6 +240,124 @@ export function MapaDeckLoungesPublico({
             </div>
           </div>
         </div>
+      </div>
+      <Legenda comContexto />
+    </div>
+  );
+}
+
+/**
+ * Planta da Tabuará (do desenho da casa). Duas áreas encostadas, separadas
+ * por uma linha: em cima o Salão, embaixo a Varanda.
+ *
+ *   SALÃO      ( 13 )   9  5  1
+ *              ( 14 )  10  6  2
+ *                      11  7  3
+ *                      12  8  4
+ *   ─────────────────────────────
+ *   VARANDA    29  27  25  23  21
+ *              30  28  26  24  22
+ *
+ * 13 e 14 são as redondas. A área que o cliente escolheu no seletor é a
+ * clicável; a outra aparece apagada, só pra ele se situar na planta.
+ * Mesa que não estiver nesta planta ainda assim aparece (linha "outras"),
+ * pra cadastro novo não sumir da tela.
+ */
+const TAB_SALAO_REDONDAS = ['13', '14'];
+const TAB_SALAO_COLUNAS = [
+  ['9', '10', '11', '12'],
+  ['5', '6', '7', '8'],
+  ['1', '2', '3', '4'],
+];
+const TAB_VARANDA_LINHAS = [
+  ['29', '27', '25', '23', '21'],
+  ['30', '28', '26', '24', '22'],
+];
+
+export function MapaTabuaraPublico({
+  areaAtual,
+  salao,
+  varanda,
+  pessoas,
+  selecionada,
+  onSelecionar,
+}: {
+  areaAtual: string;
+  salao: MesaPublica[];
+  varanda: MesaPublica[];
+  pessoas: number;
+  selecionada: string;
+  onSelecionar: (numero: string) => void;
+}) {
+  const todas = [...salao, ...varanda];
+  if (todas.length === 0) return null;
+
+  const naPlanta = new Set([
+    ...TAB_SALAO_REDONDAS,
+    ...TAB_SALAO_COLUNAS.flat(),
+    ...TAB_VARANDA_LINHAS.flat(),
+  ]);
+  const foraDaPlanta = todas.filter((m) => !naPlanta.has(m.numero));
+
+  const botao = (numero: string, redonda?: boolean) => {
+    const mesa = todas.find((x) => x.numero === numero);
+    if (!mesa) return null;
+    const doSalao = salao.some((x) => x.numero === numero);
+    const contexto = doSalao ? areaAtual !== 'Salão' : areaAtual !== 'Varanda';
+    return (
+      <MesaBotao
+        key={numero}
+        mesa={mesa}
+        pessoas={pessoas}
+        selecionada={selecionada}
+        onSelecionar={onSelecionar}
+        contexto={contexto}
+        redonda={redonda}
+      />
+    );
+  };
+
+  return (
+    <div className="mt-1.5 rounded-xl border border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
+        Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
+      </p>
+      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">
+        salão em cima, varanda embaixo · 13 e 14 são as mesas redondas
+      </p>
+
+      <div className="mt-2 overflow-x-auto pb-1">
+        {/* SALÃO */}
+        <div className="flex gap-4">
+          <div className="flex flex-col justify-center gap-2">
+            {TAB_SALAO_REDONDAS.map((n) => botao(n, true))}
+          </div>
+          <div className="flex gap-1.5">
+            {TAB_SALAO_COLUNAS.map((coluna, i) => (
+              <div key={i} className="flex flex-col gap-1.5">
+                {coluna.map((n) => botao(n))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* VARANDA */}
+        <div className="mt-3 border-t border-[var(--rsv-mesa-line)] pt-3">
+          <div className="flex flex-col gap-1.5">
+            {TAB_VARANDA_LINHAS.map((linha, i) => (
+              <div key={i} className="flex gap-1.5">
+                {linha.map((n) => botao(n))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {foraDaPlanta.length > 0 && (
+          <div className="mt-3 border-t border-dashed border-[var(--rsv-mesa-line)] pt-3">
+            <p className="mb-1.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">outras mesas</p>
+            <div className="flex flex-wrap gap-1.5">{foraDaPlanta.map((m) => botao(m.numero))}</div>
+          </div>
+        )}
       </div>
       <Legenda comContexto />
     </div>

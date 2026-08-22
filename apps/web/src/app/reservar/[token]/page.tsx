@@ -99,6 +99,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
               atendimento={cfg?.atendimento ? { inicio: cfg.atendimento.inicio, fim: cfg.atendimento.fim } : null}
               convite={tema.convite}
               emoji={tema.emoji}
+              layoutMesas={tema.layoutMesas ?? null}
             />
           </div>
         </div>

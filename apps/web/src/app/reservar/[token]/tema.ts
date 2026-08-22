@@ -18,6 +18,8 @@ export interface TemaReserva {
   convite: string;
   /** Emoji da tela de sucesso e dos avisos de horário. */
   emoji: string;
+  /** Planta específica pro mapa de mesas. Ausente = grid simples. */
+  layoutMesas?: 'tabuara';
   vars: Record<string, string>;
 }
 
@@ -88,6 +90,7 @@ const TABUARA: TemaReserva = {
   bullets: ['🍷 Carta de vinhos e coquetelaria', '🍽️ Cozinha autoral do chef', '📍 Praça de Eventos, Coroa do Meio'],
   convite: 'gastronomia sensorial',
   emoji: '🍷',
+  layoutMesas: 'tabuara',
   vars: {
     '--rsv-bg':
       'linear-gradient(180deg,#080706 0%,#14110c 38%,#1e1810 66%,#0d0b09 100%)',

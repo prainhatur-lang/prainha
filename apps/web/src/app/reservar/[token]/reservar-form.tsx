@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
-import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, type MesaPublica } from './mapa-mesas-publico';
+import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, MapaTabuaraPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
   nome: string;
@@ -24,6 +24,8 @@ interface Props {
   convite: string;
   /** Emoji da casa (Prainha = pôr do sol, Tabuará = taça). */
   emoji: string;
+  /** Planta específica do mapa de mesas da casa (null = grid simples). */
+  layoutMesas: 'tabuara' | null;
 }
 
 type Fase = 'dados' | 'otp' | 'pagamento' | 'ok';
@@ -42,7 +44,7 @@ function formatCPF(value: string): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji, layoutMesas }: Props) {
   const [fase, setFase] = useState<Fase>('dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -74,7 +76,18 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // outro também só pra desenhar o contexto espacial (não fica clicável).
   const [mesasVizinhas, setMesasVizinhas] = useState<MesaPublica[]>([]);
   const [mesaEscolhida, setMesaEscolhida] = useState('');
-  const areaVizinha = espaco === 'Deck Superior' ? 'Lounges' : espaco === 'Lounges' ? 'Deck Superior' : null;
+  const areaVizinha =
+    layoutMesas === 'tabuara'
+      ? espaco === 'Salão'
+        ? 'Varanda'
+        : espaco === 'Varanda'
+          ? 'Salão'
+          : null
+      : espaco === 'Deck Superior'
+        ? 'Lounges'
+        : espaco === 'Lounges'
+          ? 'Deck Superior'
+          : null;
   useEffect(() => {
     setMesaEscolhida('');
     if (!espaco || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
@@ -629,7 +642,16 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} className={inp} />
           </div>
         </div>
-        {espaco === 'Deck Superior' || espaco === 'Lounges' ? (
+        {layoutMesas === 'tabuara' ? (
+          <MapaTabuaraPublico
+            areaAtual={espaco}
+            salao={espaco === 'Salão' ? mesas : mesasVizinhas}
+            varanda={espaco === 'Varanda' ? mesas : mesasVizinhas}
+            pessoas={pessoas}
+            selecionada={mesaEscolhida}
+            onSelecionar={setMesaEscolhida}
+          />
+        ) : espaco === 'Deck Superior' || espaco === 'Lounges' ? (
           <MapaDeckLoungesPublico
             areaAtual={espaco}
             deck={espaco === 'Deck Superior' ? mesas : mesasVizinhas}
