@@ -370,6 +370,7 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
+  await addCol('pix_cobranca', 'conferido_em timestamptz'); // última consulta do vigia
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
@@ -592,9 +593,12 @@ let ultimoStatus = { ok: false, comandas: 0, itens: 0 };
    A trava do pedidoDaMesa impede novas duplicatas, mas as antigas já estão no
    Firebird — cinco cartões "Mesa 12 · R$ 0,00" na tela do caixa desde 22/08.
    Aqui some com elas, com três cintos de segurança: só apaga pedido SEM item,
-   SEM pagamento, e só quando a MESMA mesa tem outro pedido aberto COM item
-   (mesa aberta e ainda sem nada lançado é normal — essa fica). O corte de 2
-   minutos protege o pedido recém-nascido que está recebendo item agora. */
+   SEM pagamento, e só quando a MESMA mesa tem OUTRO pedido aberto que valha
+   mais: um com item, ou — se todos forem vazios — o de código menor. Ou seja,
+   sobra exatamente UMA conta por mesa, e sobra a que tem o dinheiro. Mesa
+   aberta e ainda sem nada lançado é normal e não é tocada (não tem duplicata).
+   O corte de 2 minutos protege o pedido recém-nascido que está recebendo item
+   agora. */
 let ultimaFaxina = 0;
 async function faxinaPedidosVazios() {
   if (nativo()) return;
@@ -610,8 +614,9 @@ async function faxinaPedidosVazios() {
       AND EXISTS (SELECT 1 FROM PEDIDOS o
                    WHERE o.NUMERO = p.NUMERO AND o.CODIGO <> p.CODIGO
                      AND o.DATAFECHAMENTO IS NULL AND o.DATADELETE IS NULL
-                     AND EXISTS (SELECT 1 FROM ITENSPEDIDO i2
-                                  WHERE i2.CODIGOPEDIDO = o.CODIGO AND i2.DATADELETE IS NULL))`);
+                     AND (EXISTS (SELECT 1 FROM ITENSPEDIDO i2
+                                   WHERE i2.CODIGOPEDIDO = o.CODIGO AND i2.DATADELETE IS NULL)
+                          OR o.CODIGO < p.CODIGO))`);
   if (!r.ok) { console.error('[faxina] ' + r.err); return; }
   if (!r.rows.length) return;
   for (const x of r.rows) {
@@ -780,6 +785,35 @@ async function espelho() {
 // watchdog: o espelho NUNCA pode travar o loop em silêncio (bug do node-firebird em queda de VPN).
 // Se um ciclo passar de 90s, ele é abandonado, logado e o loop reprograma — nunca morre calado.
 function comTimeout(p, ms, msg) { return Promise.race([p, sleep(ms).then(() => { throw new Error(msg); })]); }
+/* ---- VIGIA DO PIX: o servidor confere sozinho ----
+   Até aqui QUEM confirmava um Pix era o navegador: o celular do cliente ou a
+   tela do caixa, batendo em /api/pix/conferir de 5 em 5 segundos. Se o cliente
+   pagava e fechava a página — ou o celular dormia, ou o Wi-Fi caiu — ninguém
+   perguntava mais nada: o dinheiro ficava no banco, o pagamento nunca entrava
+   na conta e A MESA NÃO FECHAVA. Foi o que aconteceu em 21/08/2026.
+   O servidor não fecha a página. Agora é ele quem pergunta.
+
+   Cadência: cobrança nova (até 10min) de 20 em 20s, porque é quando o cliente
+   está olhando; depois disso de 2 em 2 minutos, até 2h. Passou disso, o cliente
+   não pagou mesmo — e o Pix expira. */
+async function loopPixPendente() {
+  try {
+    const pend = await sql`SELECT txid FROM pix_cobranca
+       WHERE pago_em IS NULL AND criado_em > now() - interval '2 hours'
+         AND (conferido_em IS NULL
+              OR (criado_em > now() - interval '10 minutes' AND conferido_em < now() - interval '20 seconds')
+              OR conferido_em < now() - interval '2 minutes')
+       ORDER BY criado_em LIMIT 20`;
+    for (const c of pend) {
+      // marca ANTES: consulta que estoura não pode virar consulta em looping
+      await sql`UPDATE pix_cobranca SET conferido_em=now() WHERE txid=${c.txid}`;
+      const r = await apiPixConferir(c.txid).catch((e) => ({ ok: false, erro: e.message }));
+      if (r && r.ok && r.pago && !r.ja_registrado) console.log('[pix-vigia] ' + c.txid + ' caiu — registrado sem o celular do cliente');
+    }
+  } catch (e) { console.error('[pix-vigia] ' + e.message); }
+  finally { setTimeout(loopPixPendente, 20000); }
+}
+
 async function loopEspelho() {
   try { const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo'); console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`); }
   catch (e) { ultimoStatus = { ...ultimoStatus, ok: false }; await sql`UPDATE sync_estado SET ultimo_erro=${String(e.message).slice(0, 200)} WHERE id=1`.catch(() => {}); console.error('[espelho] ERRO:', e.message); }
@@ -2160,6 +2194,54 @@ async function cupomConta(numero, ped) {
   }
   b.push(impTraco(), IMP.centro, impLn('Obrigado pela preferência!'), IMP.corte);
   return Buffer.concat(b);
+}
+
+/* ---- COMPROVANTE DO PIX ----
+   Pedido do dono (22/08): quando a mesa fecha por Pix, tem que sair um
+   comprovante do pagamento. Serve pros dois lados — o cliente leva a prova de
+   que pagou, e a casa tem o papel com o E2E (o número que o banco reconhece)
+   pra achar o dinheiro no extrato se alguém contestar depois.
+   Os dados vêm daqui e alimentam tanto o cupom da térmica quanto a página. */
+async function dadosComprovantePix(txid) {
+  const c = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
+  if (!c) return null;
+  const numero = Number(c.mesa) || 0;
+  const ct = await apiContaTexto(numero).catch(() => ({ ok: false }));
+  const consumo = ct.ok ? Number(ct.total || 0) + (ct.comandas || []).reduce((a, x) => a + Number(x.subtotal || 0), 0) : 0;
+  const pagoGeral = ct.ok ? Number(ct.pago_geral || 0) : 0;
+  const falta = ct.ok ? Math.max(0, +(consumo - pagoGeral).toFixed(2)) : 0;
+  return { txid: String(txid), mesa: numero, rotulo: impRotulo(numero, null),
+    nome: (ct.ok && ct.nome) || null, valor: Number(c.valor) || 0, e2e: c.e2e || null,
+    quando: c.pago_em || c.criado_em, provedor: c.provedor || 'cielo',
+    consumo, pago_geral: pagoGeral, falta, quitada: falta <= 0.009, casa: LOJA_NOME };
+}
+function cupomPix(d) {
+  const q = new Date(d.quando).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(d.casa.toUpperCase()), IMP.norm,
+    impLn('COMPROVANTE DE PAGAMENTO'), IMP.negFim, impLn('não é documento fiscal'),
+    IMP.esquerda, impTraco(),
+    IMP.neg, IMP.alto, impLn(d.rotulo + (d.nome ? ' · ' + d.nome : '')), IMP.norm, IMP.negFim,
+    impLn(q), impTraco(),
+    impLn(impLR('Forma', 'Pix')),
+    IMP.neg, IMP.alto, impLn(impLR('PAGO', impMoeda(d.valor))), IMP.norm, IMP.negFim, impTraco(),
+    impLn(impLR('Consumo da mesa', impMoeda(d.consumo))),
+    impLn(impLR('Total pago', impMoeda(d.pago_geral)))];
+  if (d.quitada) b.push(IMP.centro, IMP.neg, IMP.alto, impLn('CONTA QUITADA'), IMP.norm, IMP.negFim, IMP.esquerda);
+  else b.push(IMP.neg, impLn(impLR('AINDA FALTA', impMoeda(d.falta))), IMP.negFim);
+  b.push(impTraco());
+  // o E2E é o que o banco reconhece — sem ele, contestação vira palavra contra palavra
+  if (d.e2e) b.push(impLn('Pix E2E:'), impLn(d.e2e));
+  b.push(impLn('ID: ' + d.txid), impTraco(), IMP.centro, impLn('Obrigado pela preferência!'), IMP.corte);
+  return Buffer.concat(b);
+}
+/** Manda o comprovante pra térmica do caixa, se houver uma configurada. */
+async function imprimirComprovantePix(txid) {
+  const ip = (await cfgGet('impressora_ip', '')).trim();
+  if (!ip) return false;
+  const d = await dadosComprovantePix(txid);
+  if (!d) return false;
+  try { await imprimirRaw(ip, cupomPix(d), 'comprovante pix ' + txid); return true; }
+  catch (e) { console.error('[impressora] comprovante pix:', e.message); return false; }
 }
 
 // ---- config e teste da impressora (tela /tempos) ----
@@ -9291,7 +9373,13 @@ async function apiPixConferir(txid) {
       }
       // quitou pelo Pix = mesmo ato final do dinheiro e da maquininha: fecha o
       // pedido e libera a mesa (o apiCaixaFechar barra sozinho se faltar).
-      try { await apiCaixaFechar(Number(cob.mesa)); } catch { /* parcial: segue aberta */ }
+      let fechou = false;
+      try { fechou = (await apiCaixaFechar(Number(cob.mesa)))?.fechada === true; } catch { /* parcial: segue aberta */ }
+      // COMPROVANTE (pedido do dono, 22/08): sai na térmica do caixa assim que
+      // o Pix é reconhecido. Sai também no pagamento parcial — quem pagou a
+      // parte dele tem direito ao papel, mesmo com a mesa seguindo aberta.
+      imprimirComprovantePix(String(txid)).catch(() => {});
+      console.log('[pix] ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' na mesa ' + cob.mesa + (fechou ? ' — mesa FECHADA' : ' — mesa segue aberta (falta pagar)'));
     }
   } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
   return { ok: true, pago: true, e2e };
@@ -9419,6 +9507,66 @@ async function apiContaTexto(numero, modoApp = false) {
     falta_geral: Math.max(0, +(geral - pagoGeral).toFixed(2)),
     pago, resta: Math.max(0, comServico - pago) };
 }
+/* ---- /comprovante?txid=… — o papel do Pix na tela ----
+   Mesma folha do cupom térmico, em HTML: o cliente abre no celular dele assim
+   que paga, e a casa abre pra reimprimir. O E2E aparece por extenso de
+   propósito — é o número que o banco reconhece numa contestação. */
+const PIXCOMPROV_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comprovante — ${LOJA_NOME}</title><style>
+:root{--ink:#141418;--mut:#6e6e78;--line:#dcdce3;--ok:#0d7a43}
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
+.barra{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;align-items:center}
+.barra b{flex:1;font-size:15px}
+button{background:#e0651a;color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+button.g{background:#5b5b66}
+.cupom{width:80mm;max-width:100%;margin:16px auto;background:#fff;padding:16px 13px;
+  font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+.cab{text-align:center;margin-bottom:10px}
+.cab .n{font-size:16px;font-weight:800;letter-spacing:.5px}
+.cab .t{font-size:12px;font-weight:700;margin-top:2px}
+.cab .s{color:var(--mut);font-size:10.5px}
+hr{border:0;border-top:1px dashed #9a9aa5;margin:9px 0}
+.lin{display:flex;justify-content:space-between;gap:8px}
+.mesa{font-size:15px;font-weight:800}
+.pago{display:flex;justify-content:space-between;font-size:19px;font-weight:800;margin:6px 0}
+.selo{text-align:center;font-size:15px;font-weight:800;color:var(--ok);border:2px solid var(--ok);border-radius:8px;padding:6px;margin:10px 0}
+.falta{text-align:center;font-size:14px;font-weight:800;color:#b3261e;border:2px solid #b3261e;border-radius:8px;padding:6px;margin:10px 0}
+.e2e{word-break:break-all;font-size:11px;color:var(--mut)}
+.pe{text-align:center;color:var(--mut);font-size:10.5px;margin-top:12px;line-height:1.5}
+.erro{max-width:420px;margin:40px auto;background:#fff;padding:22px;border-radius:12px;text-align:center}
+@media print{body{background:#fff}.barra{display:none}.cupom{box-shadow:none;margin:0;width:auto}}
+</style></head><body>
+<div class="barra"><b>Comprovante</b>
+<button class="g" onclick="print()">Imprimir</button></div>
+<div id="app"><div class="erro">carregando…</div></div>
+<script>
+var brl=function(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})};
+var esc=function(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+(async function(){
+  var txid=new URLSearchParams(location.search).get('txid')||'';
+  var d;try{d=await (await fetch('/api/pix/comprovante?txid='+encodeURIComponent(txid),{cache:'no-store'})).json()}catch(e){d=null}
+  var app=document.getElementById('app');
+  if(!d||!d.ok){app.innerHTML='<div class="erro">Comprovante não encontrado.</div>';return}
+  var q=new Date(d.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  app.innerHTML='<div class="cupom">'+
+    '<div class="cab"><div class="n">'+esc(d.casa.toUpperCase())+'</div>'+
+      '<div class="t">COMPROVANTE DE PAGAMENTO</div>'+
+      '<div class="s">não é documento fiscal</div></div><hr>'+
+    '<div class="mesa">'+esc(d.rotulo)+(d.nome?' · '+esc(d.nome):'')+'</div>'+
+    '<div class="s" style="color:#6e6e78">'+q+'</div><hr>'+
+    '<div class="lin"><span>Forma</span><b>Pix</b></div>'+
+    '<div class="pago"><span>PAGO</span><span>'+brl(d.valor)+'</span></div><hr>'+
+    '<div class="lin"><span>Consumo da mesa</span><span>'+brl(d.consumo)+'</span></div>'+
+    '<div class="lin"><span>Total pago</span><span>'+brl(d.pago_geral)+'</span></div>'+
+    (d.quitada?'<div class="selo">✓ CONTA QUITADA</div>'
+              :'<div class="falta">Ainda falta '+brl(d.falta)+'</div>')+
+    '<hr>'+(d.e2e?'<div>Pix E2E:</div><div class="e2e">'+esc(d.e2e)+'</div>':'')+
+    '<div class="e2e">ID: '+esc(d.txid)+'</div>'+
+    '<div class="pe">Obrigado pela preferência!</div></div>';
+  document.title='Comprovante '+d.rotulo+' — '+brl(d.valor);
+})();
+</script></body></html>`;
+
 const CONTAVER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Conta — ${LOJA_NOME}</title><style>
 :root{--ink:#141418;--mut:#6e6e78;--line:#dcdce3}
@@ -11180,6 +11328,10 @@ function mandarZap(token){
   window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank');
 }
 function pararPix(){clearInterval(pixTmr);pixTmr=null;inicio()}
+/* txid do último Pix pago nesta tela — é o que abre o comprovante */
+var PIXTXID=null;
+function verComprovante(){ if(PIXTXID) window.open('/pix/comprovante?txid='+encodeURIComponent(PIXTXID),'_blank') }
+function btnComprovante(){ return PIXTXID?'<button class="b g" onclick="verComprovante()">📄 Ver comprovante</button>':'' }
 function vigiarPix(txid){
   clearInterval(pixTmr);
   var tentativas=0,ocupado=false;
@@ -11191,6 +11343,7 @@ function vigiarPix(txid){
     catch(e){return}finally{ocupado=false}
     if(s.ok&&s.pago){
       clearInterval(pixTmr);pixTmr=null;
+      PIXTXID=txid; // o comprovante do que ACABOU de ser pago
       aposPagar('pix');
     }
   },5000);
@@ -11216,6 +11369,7 @@ async function aposPagar(origem){
       '<div class="mut" style="margin:14px 0 4px">O <b>passe de saída</b> sai quando a conta zerar. '+
       'Quem ainda não pagou pode pagar pelo QR da mesa, ou chamar o garçom.</div>'+
       '<button class="b" onclick="telaPix()">Pagar o que falta</button>'+
+      btnComprovante()+
       '<button class="b g" onclick="inicio()">Voltar ao início</button>');
     return;
   }
@@ -11240,6 +11394,7 @@ function telaPessoas(origem){
       '<button onclick="passo(\\'ca\\',-1)">−</button><b id="ca">0</b><button onclick="passo(\\'ca\\',1)">+</button></div>'+
     '<div id="placas"></div>'+
     '<button class="b" onclick="gerarSaida(\\''+origem+'\\')">Gerar meu QR de saída</button>'+
+    btnComprovante()+
     '<button class="b g" onclick="inicio()">Agora não</button>');
   pintaPlacas();
 }
@@ -12365,10 +12520,22 @@ async function pixCaixa(){
     ocup=false;
     if(s.ok&&s.pago){
       pixPara();
+      // comprovante do Pix: sai sozinho na térmica (se houver) e fica o link
+      // na tela pra mostrar ao cliente ou reimprimir. Pedido do dono, 22/08.
+      var tx=r.txid;
       FLASH='✓ Pix de '+brl(cobrado)+' recebido — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';
+      var st=document.getElementById('pixst');
+      if(st)st.innerHTML='<span style="color:var(--green2)">✓ pago</span> · '+
+        '<a href="/pix/comprovante?txid='+encodeURIComponent(tx)+'" target="_blank" style="text-decoration:underline">ver comprovante</a> · '+
+        '<a onclick="reimprimirPix(\\''+tx+'\\')" style="text-decoration:underline;cursor:pointer">imprimir</a>';
       nfceOferecer(MESA,function(){voltarMesas();listar()});
     }
   },4000);
+}
+/* reimprime o comprovante do Pix na térmica do caixa */
+async function reimprimirPix(tx){
+  var r=await jget('/api/pix/reimprimir?txid='+encodeURIComponent(tx));
+  alert(r.ok?'Comprovante enviado pra impressora.':(r.erro||'não deu pra imprimir'));
 }
 function telaAcr(el){
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
@@ -13620,6 +13787,17 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
     if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
+    if (p === '/pix/comprovante') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PIXCOMPROV_HTML); }
+    if (p === '/api/pix/comprovante') {
+      const d = await dadosComprovantePix(u.searchParams.get('txid') || '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(d ? { ok: true, ...d } : { ok: false, erro: 'comprovante não encontrado' }));
+    }
+    if (p === '/api/pix/reimprimir') {
+      const ok = await imprimirComprovantePix(u.searchParams.get('txid') || '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok, erro: ok ? null : 'sem impressora configurada (ou falhou)' }));
+    }
     if (p === '/api/conta/texto') {
       // app antigo da maquininha (HttpURLConnection = UA Dalvik, sem o header
       // x-concilia-app) recebe o desconto dobrado no `total` (ver apiContaTexto)
@@ -13697,7 +13875,7 @@ async function importarFotos(dir) {
 // Agora o servidor avisa na partida, antes de alguém abrir a página.
 function conferirTelas() {
   const telas = { '/': HTML, '/venda': VENDA_HTML, '/tablet': TABLET_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
-    '/conta/ver': CONTAVER_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
+    '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
       '/passe': PASSE_HTML };
   let ruins = 0;
@@ -13752,6 +13930,7 @@ async function main() {
       .on('error', (e) => console.log('[https] não subiu: ' + e.message));
   }
   loopEspelho();
+  loopPixPendente();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
   // Desligado (o padrão), o loop apenas acorda e volta a dormir.
   loopIfood();
