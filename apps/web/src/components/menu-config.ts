@@ -61,6 +61,7 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Pedidos e vendas', href: '/movimento/pedidos', perm: 'conciliacao.read' },
           { label: 'Pagamentos do PDV', href: '/financeiro/pagamentos', perm: 'conciliacao.read' },
+          { label: 'Cancelamentos do caixa', href: '/movimento/cancelamentos', perm: 'conciliacao.read' },
         ],
       },
       {

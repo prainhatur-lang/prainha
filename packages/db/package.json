@@ -101,6 +101,7 @@
     "migrate:cliente-cadastro": "tsx scripts/migrate-cliente-cadastro.ts",
     "migrate:spc-consulta": "tsx scripts/migrate-spc-consulta.ts",
     "migrate:mesas-tabuara": "tsx scripts/migrate-mesas-tabuara.ts",
+    "migrate:cancelamento-item": "tsx scripts/migrate-cancelamento-item.ts",
     "sync:wizard": "tsx scripts/sync-wizard.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts"
