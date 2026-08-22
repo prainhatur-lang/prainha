@@ -371,6 +371,9 @@ async function initSchema() {
     copia_cola text, criado_em timestamptz DEFAULT now(), pago_em timestamptz, e2e text)`;
   await addCol('pix_cobranca', "provedor text DEFAULT 'cielo'");
   await addCol('pix_cobranca', 'conferido_em timestamptz'); // última consulta do vigia
+  // Pix que caiu quando a mesa JÁ tinha fechado: o dinheiro entrou e não achou
+  // conta pra pousar. Fica marcado aqui pra alguém conciliar — ver /api/pix/orfaos.
+  await addCol('pix_cobranca', 'sem_conta boolean');
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
@@ -9356,6 +9359,16 @@ async function apiPixConferir(txid) {
   try {
     const ped = await fbAcharPedido(Number(cob.mesa));
     const marca = 'Pix do cliente ' + txid;
+    if (!ped) {
+      // ⚠️ DINHEIRO SEM DONO. O Pix caiu depois que a mesa fechou (o cliente
+      // pagou, a página dele morreu, e alguém no caixa encerrou a conta por
+      // outro caminho). Até aqui isso passava CALADO: marcava a cobrança como
+      // paga e não gravava em lugar nenhum. Agora fica marcado e gritado —
+      // esse valor precisa de conciliação humana, não de palpite do sistema.
+      await sql`UPDATE pix_cobranca SET sem_conta=true WHERE txid=${String(txid)}`;
+      console.error('[pix] ⚠️ ÓRFÃO: R$ ' + Number(cob.valor).toFixed(2) + ' caiu na mesa ' + cob.mesa +
+        ' mas a conta já estava fechada — txid ' + txid + (e2e ? ' · E2E ' + e2e : '') + ' · CONCILIAR NA MÃO');
+    }
     if (ped) {
       // Segunda trava, do lado do Consumer: se por qualquer caminho já existe
       // um pagamento com este txid, não grava outro.
@@ -13792,6 +13805,14 @@ const server = http.createServer(async (req, res) => {
       const d = await dadosComprovantePix(u.searchParams.get('txid') || '');
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(d ? { ok: true, ...d } : { ok: false, erro: 'comprovante não encontrado' }));
+    }
+    if (p === '/api/pix/orfaos') {
+      // Pix pago que não achou conta aberta (dinheiro entrou, ninguém baixou).
+      const r = await sql`SELECT txid, mesa, valor, e2e, pago_em, criado_em FROM pix_cobranca
+         WHERE sem_conta AND criado_em > now() - interval '30 days' ORDER BY pago_em DESC`;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, n: r.length,
+        total: +r.reduce((a, x) => a + Number(x.valor || 0), 0).toFixed(2), orfaos: r }));
     }
     if (p === '/api/pix/reimprimir') {
       const ok = await imprimirComprovantePix(u.searchParams.get('txid') || '');
