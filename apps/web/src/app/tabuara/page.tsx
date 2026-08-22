@@ -29,22 +29,23 @@ const TELEFONE = '(79) 3512-0567';
 
 const serif = { fontFamily: 'var(--font-serif-tab)' };
 
+// Nomes e ruas conferidos contra o cardápio que está no PDV da casa (0002).
+// A foto manda: o arquivo `prato-risoto.jpg` é o Camarão Tigre e saiu daqui.
 const DESTAQUES = [
-  { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto de polvo', rua: 'Assinatura da casa', desc: 'Polvo grelhado sobre risoto cremoso' },
-  { src: '/tabuara/prato-file.jpg', nome: 'Picanha', rua: 'Avenida Ivo do Prado', desc: 'Com batatas ao gratin dauphinois' },
-  { src: '/tabuara/prato-coco.jpg', nome: 'Beco dos Cocos', rua: 'Assinatura da casa', desc: 'Camarão servido no coco, crocância e frescor' },
-  { src: '/tabuara/prato-salmao.jpg', nome: 'Carpaccio', rua: 'Rua Aquidabã', desc: 'Fatiado fino, crocante e toque cítrico' },
-  { src: '/tabuara/prato-risoto.jpg', nome: 'Risoto all Mare', rua: 'Avenida Tancredo Neves', desc: 'Cremoso, com frutos do mar' },
-  { src: '/tabuara/prato-bruschetta.jpg', nome: 'Bruschetta', rua: 'Rua Estância', desc: 'Camarão salteado, molho da casa e pesto' },
+  { src: '/tabuara/destaque-polvo.jpg', nome: 'Risoto all Mare', rua: 'Avenida Tancredo Neves', desc: 'Polvo, camarão e lula sobre risoto cremoso' },
+  { src: '/tabuara/prato-file.jpg', nome: 'Picanha com batatas gratinadas', rua: 'Avenida Ivo do Prado', desc: 'No ponto, com gratin dauphinois e chimichurri' },
+  { src: '/tabuara/prato-coco.jpg', nome: 'Mini Fondue', rua: 'Rua Laranjeiras', desc: 'Fondue de queijo servido no pão, com iscas empanadas' },
+  { src: '/tabuara/prato-salmao.jpg', nome: 'Salmão filetado', rua: 'Rua Rosário do Catete', desc: 'Fatiado fino, crocante e toque cítrico' },
+  { src: '/tabuara/prato-bruschetta.jpg', nome: 'Bruschetta', rua: 'Rua Estância', desc: 'Camarão salteado, tomate confitado e pesto' },
 ];
 
 const GALERIA = [
   { id: 'g1', src: '/tabuara/ambiente.jpg', alt: 'Salão da Tabuará', title: 'O ambiente' },
-  { id: 'g2', src: '/tabuara/destaque-polvo.jpg', alt: 'Risoto de polvo', title: 'Risoto de polvo' },
+  { id: 'g2', src: '/tabuara/destaque-polvo.jpg', alt: 'Risoto all Mare', title: 'Risoto all Mare' },
   { id: 'g3', src: '/tabuara/drink-assinatura.jpg', alt: 'Coquetel autoral', title: 'Coquetelaria' },
-  { id: 'g4', src: '/tabuara/prato-salmao.jpg', alt: 'Carpaccio de salmão', title: 'Carpaccio' },
+  { id: 'g4', src: '/tabuara/prato-salmao.jpg', alt: 'Salmão filetado', title: 'Salmão filetado' },
   { id: 'g5', src: '/tabuara/bar.jpg', alt: 'Bar da Tabuará', title: 'O bar' },
-  { id: 'g6', src: '/tabuara/prato-file.jpg', alt: 'Corte nobre', title: 'Corte nobre' },
+  { id: 'g6', src: '/tabuara/prato-file.jpg', alt: 'Picanha com batatas gratinadas', title: 'Corte nobre' },
   { id: 'g7', src: '/tabuara/drink-manga.jpg', alt: 'Drink autoral', title: 'Drinks' },
   { id: 'g8', src: '/tabuara/prato-bruschetta.jpg', alt: 'Bruschetta de camarão', title: 'Entradas' },
   { id: 'g9', src: '/tabuara/drink-vermelho.jpg', alt: 'Coquetel', title: 'Autorais' },
@@ -55,6 +56,22 @@ const DRINKS = [
   '/tabuara/drink-negroni.jpg',
   '/tabuara/drink-manga.jpg',
   '/tabuara/drink-vermelho.jpg',
+];
+
+// A carta autoral da casa, como está no PDV — cada drink leva o nome de uma
+// figura de Aracaju. A foto acima é ambientação: não dá pra afirmar qual copo
+// é qual, então quem nomeia é a lista.
+const AUTORAIS = [
+  { nome: 'Seu Melinho', desc: 'Gin infusionado em framboesa, limão siciliano, xarope de açúcar e espuma de framboesa' },
+  { nome: 'Seu Ataulfo', desc: 'Vodka de framboesa, limão taiti, xarope de gengibre e ginger ale' },
+  { nome: 'Seu Nelson', desc: 'Vodka infusionada em baunilha, limão siciliano e redução de maracujá' },
+  { nome: 'Seu Amintas', desc: 'Gin, xarope de gengibre, limão siciliano e cordial de capim-santo' },
+  { nome: 'Seu Fonseca', desc: 'Bourbon fat washed em manteiga de garrafa, licor de avelã e bitter de cacau' },
+  { nome: 'Seu Josias', desc: 'Gin, Royal Charlotte, sumo de morango, limão siciliano e xarope de canela' },
+  { nome: 'Seu Juca Leo', desc: 'Gin infusionado com goiaba, limão siciliano, xarope de coco e Angostura' },
+  { nome: 'Dona Olga', desc: 'Rum infusionado em abacaxi, bananinha, canela e limão siciliano' },
+  { nome: 'Zé Balinha', desc: 'Gin infusionado em framboesa, vermute bianco, xarope de framboesa, limão siciliano e leite' },
+  { nome: 'Fitzgerald', desc: 'Gin, limão siciliano, xarope de açúcar e Angostura bitter' },
 ];
 
 export default function TabuaraPage() {
@@ -171,12 +188,21 @@ export default function TabuaraPage() {
               <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Bar</p>
               <h2 className="mt-4 text-4xl text-[#f3ede1] sm:text-5xl" style={serif}>Coquetelaria autoral</h2>
             </div>
-            <p className="max-w-xs text-sm text-[#8f8574]">Drinks de assinatura, clássicos e criações da casa — pensados para acompanhar cada momento.</p>
+            <p className="max-w-xs text-sm text-[#8f8574]">Cada drink leva o nome de uma figura de Aracaju — gente que a cidade conhece pelo primeiro nome.</p>
           </div>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             {DRINKS.map((src, i) => (
               <div key={i} className="relative aspect-[3/4] overflow-hidden rounded-sm">
                 <Image src={src} alt="Coquetel autoral da Tabuará" fill sizes="(max-width:768px) 50vw, 25vw" className="object-cover transition-transform duration-700 hover:scale-105" />
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-14 grid gap-x-12 gap-y-7 border-t border-white/10 pt-12 sm:grid-cols-2">
+            {AUTORAIS.map((d) => (
+              <div key={d.nome}>
+                <h3 className="text-lg text-[#f3ede1]" style={serif}>{d.nome}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-[#8f8574]">{d.desc}</p>
               </div>
             ))}
           </div>
