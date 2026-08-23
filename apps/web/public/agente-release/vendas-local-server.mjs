@@ -2889,7 +2889,7 @@ async function apiImpressoraTeste(body) {
 // que a integração "Smart POS Cielo" grava hoje (INTEGRADOAUTOMACAO='1'). Isso
 // mantém o Consumer capaz de emitir a NFC-e enquanto a Fase 3 não chega.
 // NÃO fecha o pedido — quem fecha/emite a nota segue sendo o Consumer.
-const FORMA = { DINHEIRO: 1, CREDITO: 3, DEBITO: 4, PIX_MANUAL: 18, PIX_ONLINE: 21 };
+const FORMA = { DINHEIRO: 1, CREDITO: 3, DEBITO: 4, PIX_MANUAL: 18, PIX_ONLINE: 21, IFOOD_ONLINE: 14 };
 async function fbCaixaAberto() {
   if (nativo()) {
     const [c] = await sql`SELECT codigo FROM caixa_local WHERE fechado_em IS NULL ORDER BY codigo DESC LIMIT 1`;
@@ -6543,8 +6543,15 @@ async function loopProdutoFila() {
 // PARCIAL É A REGRA, NÃO A EXCEÇÃO: conta de 100 pode entrar 10 no Pix, 50 no
 // cartão e 40 em dinheiro. Cada entrada é um recebimento com seu comprovante,
 // e a conta só fecha quando o total é alcançado.
+/* iFood: o dinheiro do pedido de canal JÁ FOI PAGO no aplicativo e vem no
+   repasse — ele nunca passa pela gaveta. Sem esta forma, a conta ficava aberta
+   pra sempre (a da Tabuará passou de 24h) ou alguém baixava como Dinheiro, e aí
+   o fechamento do dia acusava um valor que não existe fisicamente.
+   Código 14 = "iFood Online" no cadastro do Consumer. Não exige foto nem caixa
+   aberto, porque não movimenta caixa. */
 const FORMAS_MANUAIS = {
   dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false },
+  ifood: { codigo: FORMA.IFOOD_ONLINE, nome: 'iFood Online', foto: false },
   credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true },
   debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true },
   pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true },
@@ -13243,6 +13250,20 @@ function tituloConta(c){
 }
 /* AÇÕES DO IFOOD NO CAIXA. Falam com a mesma API da tela /ifood — nada de
    caminho paralelo: o que vale é sempre o evento que o iFood devolve. */
+/* Baixa do pedido de canal: registra na forma "iFood Online" do Consumer
+   (código 14) e fecha a conta. Não toca na gaveta — por isso não pede caixa
+   aberto nem foto. O valor é sempre o que FALTA, nunca o total: conta que já
+   recebeu parte na entrega não pode ser cobrada duas vezes. */
+async function baixarCanal(){
+  var c=CONTA; if(!c)return;
+  var falta=Number(c.falta||0);
+  if(!(falta>0)){alert('Esta conta já está quitada.');return}
+  if(!confirm('Baixar R$ '+falta.toFixed(2).replace('.',',')+' como PAGO NO IFOOD?\\n\\nO cliente já pagou no aplicativo e o dinheiro vem no repasse — NÃO entra no caixa.'))return;
+  var r=await jpost('/api/caixa/receber-manual',{numero:MESA,ped:PEDALVO,forma:'ifood',valor:falta});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  if(r.fechada){voltarMesas();return}
+  carregar(MESA,PEDALVO);
+}
 async function ifoodCx(id,acao){
   var txt = acao==='despachar' ? 'Confirmar que o pedido SAIU para entrega?' : 'Marcar como pronto para retirada?';
   if(!confirm(txt))return;
@@ -13467,6 +13488,10 @@ function pinta(el){
       // A maquininha às vezes recebe e NÃO baixa a comanda. Aqui o caixa
       // registra o que entrou, com a foto do comprovante — e pode ser parcial.
       h+='<button class="big" style="margin-top:6px;background:#0369a1" onclick="irTela(\\'manual\\')">🧾 Recebimento manual (com comprovante)</button>';
+      // PEDIDO DE CANAL: o cliente já pagou no app e o dinheiro vem no repasse.
+      // Só aparece em entrega, que é onde isso existe — numa mesa seria porta
+      // aberta pra sumir dinheiro do caixa como "pago no iFood".
+      if(ehEntrega())h+='<button class="big" style="margin-top:6px;background:#b91c1c" onclick="baixarCanal()">🛵 Pago no iFood (não entra no caixa)</button>';
       // FIADO: fecha a conta lançando na conta corrente do cliente (perm 16)
       if(PODE.fiado)h+='<button class="big" style="margin-top:6px;background:#7c3aed" onclick="irTela(\\'fiado\\')">🧾 Fiado (conta do cliente)</button>';
     }
