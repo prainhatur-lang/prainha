@@ -1672,6 +1672,32 @@ function naFilaDaMesa(numero, fn) {
   calado.then(() => { if (filaMesa.get(n) === calado) filaMesa.delete(n); });
   return meu;
 }
+/** Confere se o pedido existe, está ABERTO e é mesmo daquele número. */
+async function pedAbertoDoNumero(ped, numero) {
+  const p = Number(ped), n = Number(numero);
+  if (!(p > 0)) return false;
+  if (nativo()) {
+    const r = await sql`SELECT 1 FROM comanda WHERE codigo=${p} AND numero=${n}
+      AND fechada_em IS NULL AND cancelada_em IS NULL`;
+    return r.length > 0;
+  }
+  const r = await qi(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE CODIGO=${p} AND NUMERO=${n}
+    AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL`);
+  return !!(r.ok && r.rows.length);
+}
+/** ALVO de uma ação do caixa: o pedido em que a ação vai mexer.
+ *
+ *  Sem `ped`, é o de sempre — acha pelo número da mesa. Com `ped`, usa aquele
+ *  pedido, e SÓ depois de conferir que está aberto e que é daquele número.
+ *  É isso que deixa operar ENTREGA: no Consumer ela nasce com NUMERO=0, e com
+ *  duas entregas abertas o número sozinho aponta pra qualquer uma das duas —
+ *  receber na conta errada é pior que não receber. A validação é no servidor
+ *  de propósito: a tela pede um alvo, ela não escolhe um. */
+async function pedidoAlvo(numero, ped) {
+  const p = Number(ped) || 0;
+  if (!p) return fbAcharPedido(numero);
+  return (await pedAbertoDoNumero(p, numero)) ? p : null;
+}
 /** O pedido aberto da mesa, criando se não houver. Único caminho pra criar.
  *  Devolve {ped, criado} — `criado` é pra quem só faz algo na conta que NASCE
  *  agora (amarrar a identificação, por exemplo). */
@@ -1792,7 +1818,7 @@ async function apiVendaConta(body) {
   const acao = String(body.acao || '');
   if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   let ped;
-  try { ped = await fbAcharPedido(numero); } catch (e) { return { ok: false, erro: e.message }; }
+  try { ped = await pedidoAlvo(numero, body.ped); } catch (e) { return { ok: false, erro: e.message }; }
   if (!ped) return { ok: false, erro: 'não há pedido aberto no ' + (numero >= COMANDA_DE ? 'comanda ' : 'mesa ') + numero };
   try {
     if (acao === 'imprimir') { await fbPedirConta(ped, true); await fbAplicarServico(ped);
@@ -3218,7 +3244,7 @@ async function apiContaPagar(body) {
   };
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
-  const ped = await fbAcharPedido(n);
+  const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const cab = (await pedTotais(ped)) || {};
   const pagoAtual = await fbPagoDoPedido(ped);
@@ -3327,7 +3353,7 @@ async function apiLioPagar(body, garcom) {
     caixaCodigo = cx.codigo;
   } catch (e) { console.error('[lio] caixa do operador:', e.message); }
   const r = await apiContaPagar({
-    numero: n, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
+    numero: n, ped: body.ped, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true, caixa_codigo: caixaCodigo,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     observacao: `Prainha LIO · ${garcom.login}`,
@@ -3335,7 +3361,7 @@ async function apiLioPagar(body, garcom) {
   // Quitou pela maquininha = mesmo ato final do caixa (commit 625761e): fecha
   // o pedido do jeito que o Consumer fecha e libera a mesa/comanda na hora.
   if (r.ok && r.quitada) {
-    try { const f = await apiCaixaFechar(n); r.fechada = !!f.ok; } catch { r.fechada = false; }
+    try { const f = await apiCaixaFechar(n, body.ped); r.fechada = !!f.ok; } catch { r.fechada = false; }
   }
   return r;
 }
@@ -3773,7 +3799,9 @@ async function apiNfceEmitir(body, quem) {
   const numero = Number(body.numero);
   const destino = String(body.destino || 'caixa'); // caixa = imprime na térmica; lio = devolve blocos 32
   if (!(await nfceAtiva())) return { ok: false, erro: 'NFC-e desligada na config fiscal do painel' };
-  const ped = await fbAcharPedidoNfce(numero);
+  // com `ped` explícito (entrega: número 0 serve pra várias), é ELE que leva a
+  // nota — senão a busca por número pegaria a entrega errada
+  const ped = Number(body.ped) > 0 ? Number(body.ped) : await fbAcharPedidoNfce(numero);
   if (!ped) return { ok: false, erro: 'não achei pedido recente no número ' + numero };
   let doc = soDig(body.documento || '');
   if (doc && !(doc.length === 11 || doc.length === 14)) return { ok: false, erro: 'CPF/CNPJ incompleto' };
@@ -4512,10 +4540,10 @@ async function fiadoDaConta(numero, ped, aPagar) {
   } catch (e) { console.error('[fiado-cupom] ' + e.message); return null; }
 }
 
-async function apiCaixaConta(n) {
+async function apiCaixaConta(n, pedRaw) {
   const num = Number(n);
   const agora = Date.now();
-  const ped = await fbAcharPedido(num);
+  const ped = await pedidoAlvo(num, pedRaw);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
   // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
   await fbAplicarServico(ped).catch(() => {});
@@ -4602,7 +4630,7 @@ async function apiCaixaAjuste(body, quem) {
   // Descontos / Modificar Taxas" (acréscimo é mexer em taxa). Sem a trava,
   // qualquer login de caixa alterava o total da conta.
   if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
-  const ped = await fbAcharPedido(n);
+  const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const p = await pedTotais(ped);
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
@@ -4700,7 +4728,7 @@ async function apiCaixaCancelarItem(body, quem) {
   if (!(quem && quem.excluir_item)) return { ok: false, erro: 'sem permissão (Excluir Item do Pedido)' };
   const numero = Number(body.numero), item = Number(body.item_codigo);
   if (!(numero > 0 && item > 0)) return { ok: false, erro: 'dados inválidos' };
-  const ped = await fbAcharPedido(numero);
+  const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const p = await pedTotais(ped);
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
@@ -4813,7 +4841,7 @@ async function apiCaixaCancelarPedido(body, quem) {
   if (!(quem && quem.excluir_pedido)) return { ok: false, erro: 'sem permissão (Excluir Pedido)' };
   const numero = Number(body.numero);
   if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
-  const ped = await fbAcharPedido(numero);
+  const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const pago = await fbPagoDoPedido(ped);
   if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorno é no Consumer, aqui não` };
@@ -4848,9 +4876,9 @@ async function fbFecharPedido(ped) {
 // Fechar a conta é o ato final do caixa: o pedido sai das listas (garçom,
 // caixa, Consumer) e a mesa fica livre pro próximo cliente. Só com a conta
 // QUITADA — receber dinheiro é outra rota; esta não movimenta valor nenhum.
-async function apiCaixaFechar(nRaw) {
+async function apiCaixaFechar(nRaw, pedRaw) {
   const n = Number(nRaw);
-  const ped = await fbAcharPedido(n);
+  const ped = await pedidoAlvo(n, pedRaw);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const total = (await pedTotais(ped))?.total || 0;
   const pago = await fbPagoDoPedido(ped);
@@ -6104,7 +6132,7 @@ async function apiCaixaReceberManual(body, quem) {
   if (f.foto && !arquivo) return { ok: false, precisa_foto: true, erro: 'essa forma exige a foto do comprovante' };
 
   const r = await apiContaPagar({
-    numero, forma: String(body.forma), valor, modo: 'manual', caixa_codigo: caixaCodigo,
+    numero, ped: body.ped, forma: String(body.forma), valor, modo: 'manual', caixa_codigo: caixaCodigo,
     permitir_servico: true, nsu: body.nsu || null,
     // a foto é o que autoriza cartão/Pix na mão — sem ela, a trava barra
     comprovante: !!arquivo,
@@ -6123,7 +6151,7 @@ async function apiCaixaReceberManual(body, quem) {
         ${d ? JSON.stringify(d) : null})`;
   } catch (e) { console.error('[manual] índice do comprovante:', e.message); }
   // quitou = fecha a conta, igual ao recebimento em dinheiro
-  if (r.quitada) { try { const fe = await apiCaixaFechar(numero); r.fechada = !!fe.ok; } catch { r.fechada = false; } }
+  if (r.quitada) { try { const fe = await apiCaixaFechar(numero, body.ped); r.fechada = !!fe.ok; } catch { r.fechada = false; } }
   return { ...r, forma: f.nome, comprovante: arquivo };
 }
 /** Fecha a conta lançando o que falta no fiado do cliente. */
@@ -6140,7 +6168,7 @@ async function pedFiado(ped, clienteCod) {
 async function apiCaixaFiado(body, quem) {
   if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
   const n = Number(body.numero);
-  const ped = await fbAcharPedido(n);
+  const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const cli = await fbClienteFiado(Number(body.cliente));
   if (!cli) return { ok: false, erro: 'cliente não encontrado' };
@@ -6186,7 +6214,7 @@ async function apiCaixaFiado(body, quem) {
 async function apiCaixaServico(body, quem) {
   if (!(quem && quem.desconto)) return { ok: false, erro: 'sem permissão (Aplicar Descontos / Modificar Taxas)' };
   const n = Number(body.numero);
-  const ped = await fbAcharPedido(n);
+  const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTALITENS ITENS, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
   const svcAtual = Number(p.SVC) || 0;
@@ -12340,27 +12368,20 @@ function haQuanto(ab){
   var h=Math.floor(min/60);
   return h<24?(' · '+h+'h'):(' · '+Math.floor(h/24)+'d');
 }
-/* O caixa não OPERA entrega: ela nasce e fecha no canal dela (DeliveryHub,
-   iFood), e a nossa tela de conta trabalha por número de mesa — com NUMERO=0
-   duas entregas abertas viram o mesmo alvo, e receber na errada é pior que
-   não receber. Então o toque EXPLICA o que é, em vez de fingir que abre. */
-function entregaInfo(ped){
-  alert('Pedido de ENTREGA (não é mesa).\\n\\n'+
-    'Entrega não tem número de mesa: no Consumer ela nasce como 0. '+
-    'Ela aparece aqui só pra você saber que existe conta aberta'+
-    (ped?' (pedido '+ped+')':'')+'.\\n\\n'+
-    'Quem fecha é o canal da entrega, no Consumer.');
-}
 /* Entrega não tem mesa: no Consumer ela nasce com NUMERO=0. A grade mostrava
    um "0" seco e todo mundo perguntava que mesa era essa. Agora diz o canal. */
-var ORIGEM_LBL={4:'iFood',5:'MenuDino',6:'MenuDino',7:'Delivery',8:'Totem'};
+/* origem 7 = DeliveryHub, o integrador. Na Tabuará quem está plugado nele é
+   o iFood (confirmado pelo dono, 23/08/2026) — então é iFood que o caixa
+   precisa ler. Entrando outro canal no mesmo hub, este rótulo mente: aí o
+   certo é ler o canal real do pedido, não a origem. */
+var ORIGEM_LBL={4:'iFood',5:'MenuDino',6:'MenuDino',7:'iFood',8:'Totem'};
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
   // olho de longe, nome e valor pequenos embaixo
   var com=Number(num)>=${COMANDA_DE};
   var ent=ORIGEM_LBL[Number(m.origem)];
   if(ent||Number(num)===0){
-    return '<button class="mchip st-'+(m.status||'andamento')+'" onclick="entregaInfo('+(m.codigo||0)+')">'+
+    return '<button class="mchip st-'+(m.status||'andamento')+(Number(m.codigo)===Number(PEDALVO)?' sel':'')+'" onclick="carregar('+num+','+(m.codigo||0)+')">'+
       '<span class="mn" style="font-size:15px;line-height:1.5">🛵</span>'+
       '<b>'+esc(ent||'Balcão')+(m.codigo?' #'+m.codigo:'')+'</b>'+
       '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small></button>';
@@ -12431,16 +12452,26 @@ async function entrar(){
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
-function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;irTela('home');
+/* ALVO da conta aberta: null = mesa comum (o servidor acha pelo número);
+   número = pedido específico, o caso da ENTREGA (número 0, várias abertas).
+   alvo() carimba o corpo de toda ação que mexe em dinheiro — esquecer numa
+   delas faria a ação cair em outra entrega. */
+var PEDALVO=null;
+function alvo(b){ if(PEDALVO)b.ped=PEDALVO; return b }
+function ehEntrega(){ return PEDALVO!=null && Number(MESA)===0 }
+function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;PEDALVO=null;irTela('home');
   setTimeout(function(){window.scrollTo(0,HOME_Y)},0)} // volta NO MESMO lugar da lista
-async function carregar(n){
+async function carregar(n,ped){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
-  if(!(num>0)){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
+  // ENTREGA vem com número 0 e só é endereçável pelo código do pedido; mesa
+  // continua exigindo número. O servidor confere o par (pedidoAlvo).
+  PEDALVO=ped?Number(ped):null;
+  if(!(num>0)&&!PEDALVO){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
   if(TELA==='home')HOME_Y=window.scrollY||0; // pra voltar no mesmo ponto da lista
   if(MESA==null||Number(num)!==Number(MESA)){CANCEL_ON=false;PAGON=false} // trocou de mesa: trava de novo
   if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
   MESA=num;irTela('conta');
-  var c=await jget('/api/caixa/conta?n='+num);
+  var c=await jget('/api/caixa/conta?n='+num+(PEDALVO?'&ped='+PEDALVO:''));
   if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
     (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (12h)</button>'+
@@ -12526,11 +12557,11 @@ function pinta(el){
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
-      '<span>'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+(c.nome?' · '+esc(c.nome):'')+'</span>'+
+      '<span>'+(ehEntrega()?'🛵 Entrega #'+PEDALVO:((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero))+(c.nome?' · '+esc(c.nome):'')+'</span>'+
       '<span style="flex:1"></span>'+
       // comandas da mesa como chips ao lado do número — um toque troca a conta
       (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
-      '<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>'+
+      (ehEntrega()?'':'<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>')+
     '</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
@@ -12576,9 +12607,14 @@ function pinta(el){
   // ORDEM DO USO REAL (regra do dono, 11/08): lançar/transferir/pedir conta na
   // frente; dinheiro/desconto moram dentro de 💰 Pagamento — pagar é o ato
   // mais raro do caixa, não o primeiro botão.
-  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
-  h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
-     '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
+  // ENTREGA: o pedido é do canal (iFood/hub) — aqui o caixa só RECEBE e fecha.
+  // Lançar item, transferir de mesa e "pedir conta" não existem nesse mundo, e
+  // botão que não faz sentido é botão que alguém aperta por engano.
+  if(!ehEntrega()){
+    if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
+    h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
+       '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
+  }
   if(c.falta>0){
     h+='<button class="big" style="background:#0b5c8a" onclick="PAGON=!PAGON;pintaMain()">💰 Pagamento '+(PAGON?'▴':'▾')+'</button>';
     if(PAGON){
@@ -12807,7 +12843,7 @@ async function manConfirmar(){
   if((MAN.forma==='credito'||MAN.forma==='debito'||MAN.forma==='pix')&&!nsu){
     if(!confirm('Sem o NSU esse cartão NÃO bate sozinho na conciliação e o caixa fica aberto pra conferência manual.\\n\\nO número está no comprovante (DOC/NSU). Continuar sem ele?'))return;
   }
-  var b={numero:MESA,forma:MAN.forma,valor:v};
+  var b=alvo({numero:MESA,forma:MAN.forma,valor:v});
   if(nsu)b.nsu=nsu;
   if(MAN.foto)b.foto=MAN.foto; else if(MAN.token)b.token=MAN.token;
   if(MAN.dados)b.dados=MAN.dados;
@@ -12861,7 +12897,7 @@ function prevDesc(){
 async function aplicaDesc(){
   var v=numBr((document.getElementById('dv')||{}).value);
   if(!(v>0)){document.getElementById('derr').textContent='digite o valor';return}
-  var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'desconto',modo:DMODO,valor:v});
+  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'desconto',modo:DMODO,valor:v}));
   if(!r.ok){document.getElementById('derr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
@@ -12876,7 +12912,7 @@ async function pixCaixa(){
   TELA='pix';
   var el=document.getElementById('main');
   el.innerHTML='<div class="mut" style="padding:16px">gerando o código Pix…</div>';
-  var r=await jpost('/api/pix/cobrar',{mesa:MESA,valor:CONTA.falta});
+  var r=await jpost('/api/pix/cobrar',alvo({mesa:MESA,valor:CONTA.falta}));
   if(!r.ok){el.innerHTML='<div class="card"><div class="err">'+esc(r.erro||'não consegui gerar o Pix')+'</div>'+
     '<button class="big g" onclick="irTela(\\'conta\\')">Voltar</button></div>';return}
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="pixPara();irTela(\\'conta\\')">◂ voltar</button>'+
@@ -12923,7 +12959,7 @@ function telaAcr(el){
 async function aplicaAcr(){
   var v=numBr((document.getElementById('av')||{}).value);
   if(!(v>0)){document.getElementById('aerr2').textContent='digite o valor';return}
-  var r=await jpost('/api/caixa/ajuste',{numero:MESA,tipo:'acrescimo',modo:'valor',valor:v});
+  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'acrescimo',modo:'valor',valor:v}));
   if(!r.ok){document.getElementById('aerr2').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
@@ -12976,7 +13012,7 @@ async function lancaFiado(btn){
   if(!FIADOCLI)return;
   var er=document.getElementById('ferr');er.textContent='';
   btn.disabled=true;
-  var r=await jpost('/api/caixa/fiado',{numero:MESA,cliente:FIADOCLI.codigo});
+  var r=await jpost('/api/caixa/fiado',alvo({numero:MESA,cliente:FIADOCLI.codigo}));
   btn.disabled=false;
   if(!r.ok){er.textContent=r.erro||'não lançou';return}
   FLASH='✓ '+brl(r.valor)+' no fiado de '+r.cliente+' — conta fechada. Ele deve '+brl(r.saldo_novo)+'.';
@@ -13002,7 +13038,7 @@ async function receber(){
   var v=numBr((document.getElementById('rv')||{}).value);
   if(!(v>0)){document.getElementById('rerr').textContent='digite o valor';return}
   var reg=Math.min(v,CONTA.falta);
-  var r=await jpost('/api/caixa/receber',{numero:MESA,valor:reg});
+  var r=await jpost('/api/caixa/receber',alvo({numero:MESA,valor:reg}));
   if(!r.ok){
     var eo=document.getElementById('rerr');
     /* dinheiro exige o caixa DO operador aberto — em vez de só reclamar, leva lá */
@@ -13017,14 +13053,14 @@ async function receber(){
 async function tiraServico(tirar){
   var t=(tirar===1||tirar===true);
   if(t&&!confirm('Tirar os 10% de serviço desta conta? O cliente não vai pagar a taxa.'))return;
-  var r=await jpost('/api/caixa/servico',{numero:MESA,tirar:t});
+  var r=await jpost('/api/caixa/servico',alvo({numero:MESA,tirar:t}));
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não deu';return}
   FLASH=t?('✓ 10% retirados ('+brl(r.valor)+') da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA)
          :('✓ 10% de volta na conta');
   await carregar(MESA);
 }
 async function fecharConta(){
-  var r=await jpost('/api/caixa/fechar',{numero:MESA});
+  var r=await jpost('/api/caixa/fechar',alvo({numero:MESA}));
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
   FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
   nfceOferecer(MESA,function(){voltarMesas();listar()});
@@ -13090,7 +13126,7 @@ async function nfceEmitir(mesa,doc){
   var ov=document.getElementById('nfceov');
   if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">🧾 Emitindo NFC-e…</div><div class="mut">falando com a SEFAZ — segura uns segundos</div>';
   try{
-    var r=await jpost('/api/nfce/emitir',{numero:mesa,documento:doc,destino:'caixa'});
+    var r=await jpost('/api/nfce/emitir',alvo({numero:mesa,documento:doc,destino:'caixa'}));
     if(!r.ok&&r.pendente){
       // SEFAZ/central fora do ar: a nota ficou na FILA e sai sozinha — não é erro
       if(ov)ov.firstChild.innerHTML='<div class="tit" style="margin-top:0">🕐 Nota na fila</div>'+
@@ -13381,7 +13417,7 @@ async function fechaTodosCx(btn){
 }
 async function imprimirCx(btn){
   if(btn){btn.disabled=true;btn.textContent='🧾 Imprimindo…'}
-  var r=await jpost('/api/caixa/imprimir',{numero:MESA});
+  var r=await jpost('/api/caixa/imprimir',alvo({numero:MESA}));
   if(btn){btn.disabled=false;btn.textContent='🧾 Imprimir conta'}
   if(!r.ok){alert(r.erro||'não imprimiu');return}
   await carregar(MESA); // a conta volta já com o serviço aplicado
@@ -13451,7 +13487,7 @@ async function pedirContaCx(btn){
   // pedir = imprimir: os dois aplicam o serviço e travam lançamentos; este
   // também manda a conferência pra térmica (botão único, sem duplicata)
   btn.disabled=true;
-  var r=await jpost('/api/caixa/imprimir',{numero:MESA});
+  var r=await jpost('/api/caixa/imprimir',alvo({numero:MESA}));
   btn.disabled=false;
   var e=document.getElementById('cerr');
   if(!r||!r.ok){if(e){e.style.color='';e.textContent=(r&&r.erro)||'não deu'}return}
@@ -13620,7 +13656,7 @@ async function doCancItem(btn){
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
   var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
   btn.disabled=true;
-  var r=await jpost('/api/caixa/cancelar-item',b);
+  var r=await jpost('/api/caixa/cancelar-item',alvo(b));
   btn.disabled=false;
   if(!r.ok){
     // o servidor manda o status REAL (a tela podia estar velha): re-pinta já exigindo as senhas
@@ -13652,7 +13688,7 @@ async function doCancPedido(btn){
   var er=document.getElementById('cperr');
   if(!mot){if(er)er.textContent='escolha o motivo do cancelamento';return}
   btn.disabled=true;
-  var r=await jpost('/api/caixa/cancelar-pedido',{numero:MESA,motivo:mot});
+  var r=await jpost('/api/caixa/cancelar-pedido',alvo({numero:MESA,motivo:mot}));
   btn.disabled=false;
   if(!r.ok){if(er)er.textContent=r.erro||'não cancelou';return}
   fechaMotivoPed();
@@ -14012,7 +14048,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/sessao') return res.end(JSON.stringify(await apiCaixaSessao(req, u)));
       const quem = await caixaDaRequisicao(req, u); // as demais exigem caixa logado
       if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
-      if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0)));
+      if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0, u.searchParams.get('ped'))));
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
         return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
@@ -14033,13 +14069,13 @@ const server = http.createServer(async (req, res) => {
         // aberto, não recebe (regra do dono: abertura só pra quem pega dinheiro)
         const cx = await fbCaixaDoOperador(quem.login);
         if (!cx) return res.end(JSON.stringify({ ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' }));
-        const r = await apiContaPagar({ numero: b.numero, valor: b.valor, forma: 'dinheiro', modo: 'manual',
+        const r = await apiContaPagar({ numero: b.numero, ped: b.ped, valor: b.valor, forma: 'dinheiro', modo: 'manual',
           caixa_codigo: cx.codigo, observacao: 'Caixa · ' + (quem.nome || quem.login) });
         // caixa que recebe é caixa que libera: quitou -> fecha o pedido na hora
-        if (r.ok && r.quitada) { const f = await apiCaixaFechar(b.numero); r.fechada = !!f.ok; }
+        if (r.ok && r.quitada) { const f = await apiCaixaFechar(b.numero, b.ped); r.fechada = !!f.ok; }
         return res.end(JSON.stringify(r));
       }
-      if (req.method === 'POST' && p === '/api/caixa/fechar') return res.end(JSON.stringify(await apiCaixaFechar((await readBody(req)).numero)));
+      if (req.method === 'POST' && p === '/api/caixa/fechar') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaFechar(b.numero, b.ped))); }
       if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));

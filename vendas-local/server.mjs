@@ -4728,7 +4728,7 @@ async function apiCaixaCancelarItem(body, quem) {
   if (!(quem && quem.excluir_item)) return { ok: false, erro: 'sem permissão (Excluir Item do Pedido)' };
   const numero = Number(body.numero), item = Number(body.item_codigo);
   if (!(numero > 0 && item > 0)) return { ok: false, erro: 'dados inválidos' };
-  const ped = await fbAcharPedido(numero);
+  const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const p = await pedTotais(ped);
   if (!p) return { ok: false, erro: 'pedido não encontrado' };
@@ -4841,7 +4841,7 @@ async function apiCaixaCancelarPedido(body, quem) {
   if (!(quem && quem.excluir_pedido)) return { ok: false, erro: 'sem permissão (Excluir Pedido)' };
   const numero = Number(body.numero);
   if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
-  const ped = await fbAcharPedido(numero);
+  const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const pago = await fbPagoDoPedido(ped);
   if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorno é no Consumer, aqui não` };
@@ -12557,11 +12557,11 @@ function pinta(el){
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
-      '<span>'+(c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero+(c.nome?' · '+esc(c.nome):'')+'</span>'+
+      '<span>'+(ehEntrega()?'🛵 Entrega #'+PEDALVO:((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero))+(c.nome?' · '+esc(c.nome):'')+'</span>'+
       '<span style="flex:1"></span>'+
       // comandas da mesa como chips ao lado do número — um toque troca a conta
       (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
-      '<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>'+
+      (ehEntrega()?'':'<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>')+
     '</div>';
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
@@ -12607,9 +12607,14 @@ function pinta(el){
   // ORDEM DO USO REAL (regra do dono, 11/08): lançar/transferir/pedir conta na
   // frente; dinheiro/desconto moram dentro de 💰 Pagamento — pagar é o ato
   // mais raro do caixa, não o primeiro botão.
-  if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
-  h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
-     '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
+  // ENTREGA: o pedido é do canal (iFood/hub) — aqui o caixa só RECEBE e fecha.
+  // Lançar item, transferir de mesa e "pedir conta" não existem nesse mundo, e
+  // botão que não faz sentido é botão que alguém aperta por engano.
+  if(!ehEntrega()){
+    if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
+    h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
+       '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
+  }
   if(c.falta>0){
     h+='<button class="big" style="background:#0b5c8a" onclick="PAGON=!PAGON;pintaMain()">💰 Pagamento '+(PAGON?'▴':'▾')+'</button>';
     if(PAGON){
@@ -13651,7 +13656,7 @@ async function doCancItem(btn){
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
   var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
   btn.disabled=true;
-  var r=await jpost('/api/caixa/cancelar-item',b);
+  var r=await jpost('/api/caixa/cancelar-item',alvo(b));
   btn.disabled=false;
   if(!r.ok){
     // o servidor manda o status REAL (a tela podia estar velha): re-pinta já exigindo as senhas
