@@ -92,6 +92,7 @@ const BLOCOS: Bloco[] = [
       { icon: '⚙', label: 'Taxas / Prazos', desc: 'Por EC (TEF/Online), contrato Cielo', href: '/configuracoes', perm: 'configuracao.read' },
       { icon: '💳', label: 'Formas de pagamento', desc: 'Canal de liquidação por forma', href: '/configuracoes/formas-pagamento', perm: 'configuracao.read' },
       { icon: '🏦', label: 'Pagamento', desc: 'Credencial Cielo de cada casa', href: '/configuracoes/pagamento', perm: 'configuracao.read' },
+      { icon: '🛵', label: 'iFood', desc: 'Credencial do iFood de cada casa', href: '/configuracoes/ifood', perm: 'configuracao.read' },
       { icon: '📜', label: 'Certificados A1', desc: 'Certificado digital SEFAZ', href: '/configuracoes/certificados', perm: 'configuracao.certificado' },
       { icon: '🔄', label: 'Sincronização', desc: 'Status dos agentes de cada filial', href: '/sync', perm: 'configuracao.read' },
       { icon: '🔐', label: 'Usuários', desc: 'Acesso por filial', href: '/configuracoes/usuarios', perm: 'usuario.read' },

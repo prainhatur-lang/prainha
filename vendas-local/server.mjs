@@ -1204,8 +1204,44 @@ async function projetarIfood() {
   return comandas.length;
 }
 
+/** A configuração do iFood vem do Concilia (Configurações → iFood), não da
+ *  tela local: cada casa é um merchant diferente e quem administra isso é o
+ *  escritório, não quem está no caixa.
+ *
+ *  Só aplica quando o que veio da nuvem MUDOU desde a última vez. Sem isso,
+ *  um ajuste feito aqui na loja (pra destravar alguma coisa no meio do
+ *  expediente) seria desfeito no ciclo seguinte, sem ninguém entender por quê.
+ *  Nuvem fora do ar ou filial sem cadastro lá: mantém o que está gravado. */
+async function puxarConfigIfood() {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s });
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ifood-config?${q}`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error('config do iFood: HTTP ' + r.status);
+  const c = await r.json();
+  if (!c || !c.configurada) return; // nada cadastrado lá: não mexe no que tem aqui
+
+  const assinatura = createHash('sha256').update(JSON.stringify(c)).digest('hex').slice(0, 16);
+  if ((await cfgGet('ifood_nuvem_hash', '')) === assinatura) return;
+
+  const pares = [
+    ['ifood_client_id', c.client_id || ''],
+    ['ifood_client_secret', c.client_secret || ''],
+    ['ifood_merchant_id', c.merchant_id || ''],
+    ['ifood_auth', c.modo === 'distribuido' ? 'distribuido' : 'centralizado'],
+    ['ifood_codigo_pdv', c.codigo_pdv === 'produto' ? 'produto' : 'variante'],
+    ['ifood_auto_confirmar', c.auto_confirmar ? '1' : '0'],
+    ['ifood_ativo', c.ativo ? '1' : '0'],
+  ];
+  for (const [k, v] of pares) { if (v !== '') await cfgSet(k, v); }
+  await cfgSet('ifood_nuvem_hash', assinatura);
+  console.log('[ifood] config atualizada pelo Concilia (ativo=' + (c.ativo ? 'sim' : 'nao') + ')');
+}
+
 async function loopIfood() {
   try {
+    await puxarConfigIfood().catch((e) => console.error('[ifood] config da nuvem:', e.message));
     const c = await ifoodConf();
     if (c.ativo && c.pronto) {
       await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
