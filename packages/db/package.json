@@ -106,7 +106,8 @@
     "sync:wizard": "tsx scripts/sync-wizard.ts",
     "fotos:importar": "tsx scripts/importar-fotos-cardapio.ts",
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts",
-    "migrate:filial-credencial": "tsx scripts/migrate-filial-credencial.ts"
+    "migrate:filial-credencial": "tsx scripts/migrate-filial-credencial.ts",
+    "seed:delivery-tabuara": "tsx scripts/seed-delivery-tabuara.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
