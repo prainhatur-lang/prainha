@@ -1260,6 +1260,9 @@ async function ifoodComando(orderId, acao, extra = null) {
     if (acao === 'confirmar') {
       await sql`UPDATE ifood_pedido SET confirmado_em=COALESCE(confirmado_em, now()) WHERE id=${orderId}`;
       await avisarNuvemSite(orderId, 'aceito');
+      // Aceitou = a cozinha precisa do papel AGORA. Falha de impressora não
+      // desfaz o aceite: o pedido já está confirmado pro cliente.
+      await imprimirNotaIfood(orderId).catch((e) => console.error('[site] impressora:', e.message));
       return { ok: true };
     }
     if (acao === 'pronto') {
@@ -1599,8 +1602,13 @@ async function imprimirNotaIfood(pedidoId) {
   if (!ip) return { ok: false, erro: 'esta loja não tem impressora configurada (Ajustes → impressora)' };
   const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
 
-  const b = [IMP.init, IMP.centro, IMP.grande, impLn('iFood #' + (p.display_id || '')), IMP.norm];
+  // O papel vai pra cozinha e pro entregador: tem que dizer de onde veio o
+  // pedido, senão "iFood #S12" confunde quem está montando a sacola.
+  const doSite = p.origem === 'site';
+  const b = [IMP.init, IMP.centro, IMP.grande,
+    impLn((doSite ? 'SITE ' : 'iFood #') + (p.display_id || '')), IMP.norm];
   b.push(impLn(p.tipo === 'TAKEOUT' ? 'RETIRADA NA LOJA' : (p.modo_entrega === 'MERCHANT' ? 'ENTREGA NOSSA' : 'ENTREGADOR iFOOD')));
+  if (doSite && p.pago_online) b.push(IMP.neg, impLn('JA PAGO NO SITE'), IMP.negFim);
   b.push(IMP.esquerda, impTraco());
   b.push(impLn(p.cliente_nome || ''));
   if (p.cliente_fone) b.push(impLn('Fone: ' + p.cliente_fone));
@@ -14499,6 +14507,43 @@ async function checaAvisosPagamento(){
 }
 setInterval(checaAvisosPagamento,5000);
 
+/* ---------- PEDIDO NOVO ESPERANDO ACEITE ----------
+   Pedido do site/iFood chega PAGO e fica parado até alguém aceitar. O botão
+   de aceitar mora em /ifood, outra tela — então sem um aviso AQUI o pedido
+   dorme e o cliente fica esperando comida que ninguém começou.
+   Aviso é sonoro E visual: computador de caixa muitas vezes está sem som. */
+var _pnVistos=0, _pnBarra=null;
+function pnBarra(n,doSite){
+  if(!_pnBarra){
+    _pnBarra=document.createElement('div');
+    _pnBarra.onclick=function(){window.open('/ifood','_blank')};
+    _pnBarra.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9999;cursor:pointer;'+
+      'padding:14px 18px;text-align:center;font:700 18px system-ui;color:#fff;background:#c2410c;'+
+      'box-shadow:0 -6px 24px rgba(0,0,0,.35)';
+    document.body.appendChild(_pnBarra);
+    var on=true;
+    setInterval(function(){ if(!_pnBarra||_pnBarra.style.display==='none')return;
+      on=!on; _pnBarra.style.background=on?'#c2410c':'#ea580c'; },600);
+  }
+  _pnBarra.style.display='';
+  _pnBarra.textContent='🛵 '+n+(n>1?' pedidos novos esperando aceite':' pedido novo esperando aceite')+
+    (doSite?' · '+doSite+' do site':'')+'  —  toque pra abrir';
+}
+async function checaPedidosNovos(){
+  if(!TOK)return;
+  var d;try{d=await jget('/api/ifood/pendentes')}catch(e){return}
+  if(!d||!d.ok)return;
+  var n=d.pendentes||0;
+  if(n===0){ if(_pnBarra)_pnBarra.style.display='none'; _pnVistos=0; return; }
+  pnBarra(n,d.do_site||0);
+  // Só apita quando APARECE pedido novo — não a cada 5s, senão vira ruído
+  // e alguém desliga o som da máquina.
+  if(n>_pnVistos){ try{pgApitar5()}catch(e){} }
+  _pnVistos=n;
+}
+setInterval(checaPedidosNovos,5000);
+checaPedidosNovos();
+
 inicio();
 </script></body></html>`;
 
@@ -15120,6 +15165,18 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/ifood')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (p === '/api/ifood') return res.end(JSON.stringify(await apiIfood()));
+      // Contador leve pro CAIXA piscar/apitar sem carregar a lista inteira a
+      // cada 5s. Pedido pago parado esperando aceite é o pior caso: o cliente
+      // já pagou e a cozinha nem sabe que existe.
+      if (p === '/api/ifood/pendentes') {
+        const [c] = await sql`SELECT count(*)::int n FROM ifood_pedido
+          WHERE confirmado_em IS NULL AND cancelado_em IS NULL AND concluido_em IS NULL
+            AND recebido_em > now() - interval '1 day'`;
+        const [c2] = await sql`SELECT count(*)::int n FROM ifood_pedido
+          WHERE origem='site' AND confirmado_em IS NULL AND cancelado_em IS NULL
+            AND recebido_em > now() - interval '1 day'`;
+        return res.end(JSON.stringify({ ok: true, pendentes: c?.n || 0, do_site: c2?.n || 0 }));
+      }
       if (req.method === 'POST' && p === '/api/ifood/salvar') return res.end(JSON.stringify(await apiIfoodSalvar(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ifood/testar') return res.end(JSON.stringify(await ifoodTestar()));
       if (req.method === 'POST' && p === '/api/ifood/parear') return res.end(JSON.stringify(await ifoodParear()));
