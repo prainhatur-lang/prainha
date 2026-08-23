@@ -1347,7 +1347,10 @@ async function projetarIfood() {
   const comandas = peds.map((p) => ({
     codigo: -Number(p.seq), numero: 0, origem: IFOOD_ORIGEM,
     // o nome carrega o que a cozinha e a entrega precisam ler de relance
-    nome: ('iFood #' + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : '')).trim(),
+    // A cozinha e a entrega leem este nome de relance — pedido do site
+    // rotulado "iFood" manda o pedido pro fluxo errado.
+    nome: ((p.origem === 'site' ? 'SITE ' : 'iFood #') + (p.display_id || '') +
+      (p.cliente_nome ? ' · ' + p.cliente_nome : '')).trim(),
     valor_total: Number(p.total || 0), subtotal_pago: p.pago_online ? Number(p.total || 0) : 0,
     qtd_pessoas: 1, data_abertura: p.criado_em || p.recebido_em, conta_pedida: false,
   }));
@@ -1358,7 +1361,7 @@ async function projetarIfood() {
     criado: porId.get(i.pedido_id).criado_em || porId.get(i.pedido_id).recebido_em,
     nome: i.nome, quantidade: Number(i.quantidade || 1), valor_total: Number(i.valor_total || 0),
     tipo: 1, detalhes: i.detalhes, area_codigo: i.area_codigo, produzido: null, entregue: null,
-    colaborador: null, colaborador_nome: 'iFood',
+    colaborador: null, colaborador_nome: porId.get(i.pedido_id).origem === 'site' ? 'Site' : 'iFood',
   }));
   const gravar = async (t) => {
     await t`DELETE FROM comanda_item WHERE comanda_codigo < 0`;
@@ -1480,6 +1483,11 @@ async function loopIfood() {
     // O delivery do site não depende do iFood estar ligado — é fila própria
     // que só divide a tela do caixa.
     await puxarDeliverySite().catch((e) => console.error('[site] fila:', e.message));
+    // A projeção é quem põe o pedido na comanda, e é a comanda que o KDS lê.
+    // Ela morava SÓ dentro do polling do iFood: com o iFood desligado (que é
+    // o caso da Prainha), o pedido do site chegava, o caixa aceitava e a
+    // cozinha nunca via. Roda sempre.
+    await projetarIfood().catch((e) => console.error('[site] projeção:', e.message));
     await imprimirComandasNovas().catch(() => {});
     const c = await ifoodConf();
     if (c.ativo && c.pronto) {
