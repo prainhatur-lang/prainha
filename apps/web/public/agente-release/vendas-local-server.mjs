@@ -2658,7 +2658,7 @@ async function apiVendaAbertas() {
   // Status da mesa, pra cor na tela do garçom:
   //   vermelho = conta pedida (fechando)   amarelo = tem coisa atrasada
   //   verde    = em andamento, tudo em dia
-  const rows = await sql`SELECT c.numero, c.valor_total, c.data_abertura, c.conta_pedida,
+  const rows = await sql`SELECT c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
         AND COALESCE(ci.produzido, m.pronto_em) IS NULL
@@ -2671,7 +2671,7 @@ async function apiVendaAbertas() {
     LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
     LEFT JOIN marca m ON m.item_codigo=ci.item_codigo
     LEFT JOIN praca_config pc ON pc.area_codigo=ci.area_codigo
-    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida ORDER BY c.numero`;
+    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem ORDER BY c.numero`;
   for (const r of rows) {
     r.status = r.conta_pedida ? 'fechando' : ((r.atrasados > 0 || r.parados > 0) ? 'atrasada' : 'andamento');
   }
@@ -12331,10 +12331,40 @@ function chips(){
   (MESAS.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
   return h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
 }
+/* "há 14h" — entrega aberta desde ontem quase sempre é conta que ninguém
+   fechou, não pedido em andamento. O tempo na cara evita a caça no fim do mês. */
+function haQuanto(ab){
+  if(!ab)return '';
+  var min=Math.round((Date.now()-new Date(ab).getTime())/60000);
+  if(min<60)return ' · '+min+'min';
+  var h=Math.floor(min/60);
+  return h<24?(' · '+h+'h'):(' · '+Math.floor(h/24)+'d');
+}
+/* O caixa não OPERA entrega: ela nasce e fecha no canal dela (DeliveryHub,
+   iFood), e a nossa tela de conta trabalha por número de mesa — com NUMERO=0
+   duas entregas abertas viram o mesmo alvo, e receber na errada é pior que
+   não receber. Então o toque EXPLICA o que é, em vez de fingir que abre. */
+function entregaInfo(ped){
+  alert('Pedido de ENTREGA (não é mesa).\\n\\n'+
+    'Entrega não tem número de mesa: no Consumer ela nasce como 0. '+
+    'Ela aparece aqui só pra você saber que existe conta aberta'+
+    (ped?' (pedido '+ped+')':'')+'.\\n\\n'+
+    'Quem fecha é o canal da entrega, no Consumer.');
+}
+/* Entrega não tem mesa: no Consumer ela nasce com NUMERO=0. A grade mostrava
+   um "0" seco e todo mundo perguntava que mesa era essa. Agora diz o canal. */
+var ORIGEM_LBL={4:'iFood',5:'MenuDino',6:'MenuDino',7:'Delivery',8:'Totem'};
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
   // olho de longe, nome e valor pequenos embaixo
   var com=Number(num)>=${COMANDA_DE};
+  var ent=ORIGEM_LBL[Number(m.origem)];
+  if(ent||Number(num)===0){
+    return '<button class="mchip st-'+(m.status||'andamento')+'" onclick="entregaInfo('+(m.codigo||0)+')">'+
+      '<span class="mn" style="font-size:15px;line-height:1.5">🛵</span>'+
+      '<b>'+esc(ent||'Balcão')+(m.codigo?' #'+m.codigo:'')+'</b>'+
+      '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small></button>';
+  }
   return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+
     '<span class="mn">'+(com?'C':'')+num+'</span>'+
     (m.nome?'<b>'+esc(m.nome)+'</b>':'')+
