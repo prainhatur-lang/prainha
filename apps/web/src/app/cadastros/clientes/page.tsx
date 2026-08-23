@@ -60,6 +60,9 @@ interface Unificado {
   canais: string[];
   preferencias: string | null;
   fontes: Set<Fonte>;
+  /** id do cadastro do PDV (tabela cliente) — porta de entrada da edição
+   *  quando o cliente não tem telefone nem e-mail pra rota unificada. */
+  clienteId: string | null;
 }
 
 export default async function ClientesPage(props: { searchParams: Promise<SP> }) {
@@ -94,6 +97,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   // 1) Cadastro do PDV (Consumer) — fiado / conta corrente
   const consumer = await db
     .select({
+      id: schema.cliente.id,
       nome: schema.cliente.nome,
       cpf: schema.cliente.cpfOuCnpj,
       telefone: schema.cliente.telefone,
@@ -143,13 +147,14 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   const novo = (): Unificado => ({
     nome: '', fone: '', email: null, cpf: null, saldo: null, reservas: 0,
     ultima: null, reservasTagme: 0, aniversario: null, canais: [], preferencias: null,
-    fontes: new Set(),
+    fontes: new Set(), clienteId: null,
   });
 
   for (const c of consumer) {
     const k = chave(c.telefone, c.email, c.cpf);
     const u = map.get(k) ?? novo();
     u.fontes.add('consumer');
+    if (!u.clienteId) u.clienteId = c.id;
     if (!u.nome) u.nome = c.nome?.trim() || '';
     if (!u.fone) u.fone = c.telefone ?? '';
     if (!u.email) u.email = c.email ?? null;
@@ -308,11 +313,17 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
               )}
               {pageItems.map((c, i) => {
                 const dig = soDigitos(c.fone);
+                // Sem telefone nem e-mail não existe rota unificada — mas se o
+                // cadastro veio do PDV, dá pra ir direto na edição pelo id
+                // (era exatamente o caso "não consigo alterar o cliente":
+                // cadastro só com nome/CPF ficava sem link nenhum).
                 const href = dig
                   ? `/cadastros/clientes/${dig}?filialId=${fid}`
                   : c.email
                     ? `/cadastros/clientes/e:${encodeURIComponent(c.email)}?filialId=${fid}`
-                    : null;
+                    : c.clienteId
+                      ? `/cadastros/clientes/editar/${c.clienteId}`
+                      : null;
                 return (
                 <tr key={`${c.fone}-${i}`} className="align-top hover:bg-slate-50/60">
                   <td className="px-4 py-2">
