@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq, sql as drizzleSql } from 'drizzle-orm';
 import { processarBaixaEstoque } from './baixa-estoque';
+import { sincronizarContaReceberCanal } from './conta-receber-canal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -396,6 +397,12 @@ async function handle(req: Request) {
     if (pedidosFalhados > 0) {
       console.warn(`[ingest/pdv] ${pedidosFalhados} de ${rows.length} pedidos foram pulados por erro`);
     }
+    // Pedido do dono (23/08): canal que já cobrou do cliente (iFood etc.) não
+    // é dívida — é dinheiro a receber DO CANAL. Nunca derruba o ingest: o
+    // pedido em si já está salvo, isto é só o lançamento por cima dele.
+    await sincronizarContaReceberCanal(filial.id, rows).catch((e) =>
+      console.error('[ingest/pdv] conta-receber-canal: ' + (e instanceof Error ? e.message : String(e))),
+    );
   }
 
   if (pedidoItens?.length) {

@@ -47,6 +47,7 @@
     "migrate:catalogo-proprio": "tsx scripts/migrate-catalogo-proprio.ts",
     "backfill:cliente-unico": "tsx scripts/backfill-cliente-unico.ts",
     "migrate:reserva-cliente": "tsx scripts/migrate-reserva-cliente.ts",
+    "migrate:conta-receber-canal": "tsx scripts/migrate-conta-receber-canal.ts",
     "migrate:cliente-unico": "tsx scripts/migrate-cliente-unico.ts",
     "migrate:categoria-tipo": "tsx scripts/migrate-categoria-tipo.ts",
     "migrate:ficha-por-tamanho": "tsx scripts/migrate-ficha-por-tamanho.ts",

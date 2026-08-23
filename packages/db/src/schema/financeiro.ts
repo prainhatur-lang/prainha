@@ -330,3 +330,47 @@ export const spcConsulta = pgTable('spc_consulta', {
   consultadoPor: uuid('consultado_por'),
   filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'set null' }),
 });
+
+/** CONTA A RECEBER DE CANAL: dinheiro que um canal de venda (iFood, MenuDino…)
+ *  já cobrou do cliente e ainda vai repassar pra casa, líquido da comissão
+ *  dele. Nasce sozinha quando um pedido de canal "paga no próprio canal"
+ *  chega pelo ingest (ver ingest/pdv) — ANTES disso o caixa via esse pedido
+ *  como "aberto, R$ 0,00 pago" e parecia dívida do cliente, quando o dinheiro
+ *  já tinha entrado no canal. Pedido do dono, 23/08/2026.
+ *
+ *  Hoje só sabemos o valor BRUTO (o que o Consumer manda). O líquido e a
+ *  confirmação automática de que caiu dependem da API financeira do canal
+ *  (no iFood: Sales/Settlement) — enquanto isso não estiver ligado, a baixa
+ *  é manual: o financeiro bate o repasse que caiu no banco contra os
+ *  lançamentos abertos do período (mesmo modelo de conta_pagar_baixa). */
+export const contaReceberCanal = pgTable(
+  'conta_receber_canal',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** 'ifood' | 'menudino' | … — de onde vem, pra separar o repasse na baixa. */
+    canal: varchar('canal', { length: 20 }).notNull(),
+    /** PEDIDOS.CODIGO do Consumer — a chave que liga de volta ao pedido. */
+    pedidoCodigoExterno: integer('pedido_codigo_externo').notNull(),
+    pedidoNumero: integer('pedido_numero'),
+    nomeCliente: text('nome_cliente'),
+    dataPedido: timestamp('data_pedido', { withTimezone: true }).notNull(),
+    valorBruto: numeric('valor_bruto', { precision: 14, scale: 2 }).notNull(),
+    /** Preenchido só quando a leitura automática do canal estiver ligada
+     *  (ver memória ifood-integracao-propria) — hoje fica NULL. */
+    valorLiquidoEsperado: numeric('valor_liquido_esperado', { precision: 14, scale: 2 }),
+    valorRecebido: numeric('valor_recebido', { precision: 14, scale: 2 }),
+    dataRecebimento: date('data_recebimento'),
+    /** aberto | recebido | cancelado (pedido caiu / foi pago na entrega por engano) */
+    status: varchar('status', { length: 12 }).notNull().default('aberto'),
+    observacao: text('observacao'),
+    recebidoPor: uuid('recebido_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqPedido: unique('uq_crc_filial_pedido').on(t.filialId, t.pedidoCodigoExterno),
+    statusIdx: index('idx_crc_filial_status').on(t.filialId, t.status),
+    canalIdx: index('idx_crc_canal').on(t.filialId, t.canal),
+  }),
+);
