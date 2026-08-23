@@ -12962,6 +12962,14 @@ function haQuanto(ab){
    precisa ler. Entrando outro canal no mesmo hub, este rótulo mente: aí o
    certo é ler o canal real do pedido, não a origem. */
 var ORIGEM_LBL={4:'iFood',5:'MenuDino',6:'MenuDino',7:'iFood',8:'Totem'};
+/* Pedido do iFood direto tem código NEGATIVO (é nosso, não do Consumer).
+   Mostrar "#-1" no chip não diz nada a ninguém: o número que importa é o que o
+   cliente e o suporte do iFood enxergam, e ele vem no nome ("iFood #1613 · …"). */
+function idCanal(m){
+  var cod=Number(m.codigo)||0;
+  if(cod<0){ var g=String(m.nome||'').match(/#(\d+)/); return g?(' #'+g[1]):''; }
+  return cod?(' #'+cod):'';
+}
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
   // olho de longe, nome e valor pequenos embaixo
@@ -12970,7 +12978,7 @@ function mchip(num,lbl,m){
   if(ent||Number(num)===0){
     return '<button class="mchip st-'+(m.status||'andamento')+(Number(m.codigo)===Number(PEDALVO)?' sel':'')+'" onclick="carregar('+num+','+(m.codigo||0)+')">'+
       '<span class="mn" style="font-size:15px;line-height:1.5">🛵</span>'+
-      '<b>'+esc(ent||'Balcão')+(m.codigo?' #'+m.codigo:'')+'</b>'+
+      '<b>'+esc(ent||'Balcão')+idCanal(m)+'</b>'+
       '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small></button>';
   }
   return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+
@@ -13144,7 +13152,7 @@ function pinta(el){
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
-      '<span>'+(ehEntrega()?'🛵 Entrega #'+PEDALVO:((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero))+(c.nome?' · '+esc(c.nome):'')+'</span>'+
+      '<span>'+(ehEntrega()?('🛵 '+(c.canal==='ifood'?('iFood #'+((c.ifood||{}).display_id||'')):('Entrega #'+PEDALVO))):((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero))+(c.nome?' · '+esc(c.nome):'')+'</span>'+
       '<span style="flex:1"></span>'+
       // comandas da mesa como chips ao lado do número — um toque troca a conta
       (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
@@ -14693,8 +14701,11 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p !== '/api/caixa/imprimir') {
         const espia = await readBody(req).catch(() => ({}));
         if (Number(espia?.ped) < 0) {
+          const [pi] = await sql`SELECT pago_online FROM ifood_pedido WHERE seq=${-Number(espia.ped)}`;
           return res.end(JSON.stringify({ ok: false,
-            erro: 'Pedido do iFood: já pago no app, não passa pelo caixa. O repasse aparece em Financeiro → Receber de canal.' }));
+            erro: pi?.pago_online === false
+              ? 'Pedido do iFood a receber NA ENTREGA: quem leva recebe na porta, não passa pelo caixa.'
+              : 'Pedido do iFood: já pago no app. O repasse aparece em Financeiro → Receber de canal.' }));
         }
       }
       if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0, u.searchParams.get('ped'))));
