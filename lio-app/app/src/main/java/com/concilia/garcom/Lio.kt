@@ -43,6 +43,7 @@ object Lio {
         val valorCentavos: Long,
         val parcelas: Int,
         val pagamentoId: String,
+        val descricao: String = "",   // descrição do produto Cielo (auditoria: "... DEBITO A VISTA")
     )
 
     /** true quando as credenciais do Dev Console foram configuradas no build. */
@@ -193,9 +194,23 @@ object Lio {
         val code = PaymentCode.values().firstOrNull {
             it.codePrimary == primary && it.codeSecondary == secondary
         } ?: PaymentCode.values().firstOrNull { it.codePrimary == primary }
+        // A DESCRIÇÃO do produto (o que a Cielo imprime: "... DEBITO A VISTA" /
+        // "... CREDITO A VISTA") é a fonte da verdade. Pré-pago Maestro roda como
+        // DÉBITO mas o código de produto não casa com um DEBITO_* do enum → antes
+        // caía no else->credito (errado no caixa e quebra a conciliação, que a
+        // Cielo liquida como débito). Prioridade: crédito explícito venceria só se
+        // a Cielo dissesse crédito; senão débito por descrição/enum/bandeira.
+        val desc = (try { p.description } catch (_: Exception) { null } ?: "").uppercase()
+        val brand = (p.brand ?: "").uppercase()
+        val ehDebito =
+            code?.name?.startsWith("DEBITO") == true ||
+            Regex("D[EÉ]BITO").containsMatchIn(desc) ||
+            brand.contains("MAESTRO") || brand.contains("ELECTRON") ||
+            Regex("D[EÉ]BITO").containsMatchIn(brand)
         val forma = when {
             code == PaymentCode.PIX -> "pix"
-            code?.name?.startsWith("DEBITO") == true -> "debito"
+            Regex("CR[EÉ]DITO").containsMatchIn(desc) -> "credito"
+            ehDebito -> "debito"
             else -> "credito"
         }
         return PagamentoLio(
@@ -208,6 +223,7 @@ object Lio {
             valorCentavos = p.amount,
             parcelas = p.installments.toInt().coerceAtLeast(1),
             pagamentoId = p.id ?: "",
+            descricao = try { p.description ?: "" } catch (_: Exception) { "" },
         )
     }
 

@@ -3714,8 +3714,26 @@ async function apiLioPagar(body, garcom) {
     if (cx.erro) return { ok: false, erro: cx.erro };
     caixaCodigo = cx.codigo;
   } catch (e) { console.error('[lio] caixa do operador:', e.message); }
+  // ⚠️ PRÉ-PAGO / bandeira só-débito. Maestro e Visa Electron são bandeiras
+  // EXCLUSIVAMENTE de débito (não existe função crédito nelas). O app antigo
+  // (≤1.10.10) decide a forma pelo código de produto do SDK e, quando não bate
+  // com um DEBITO_*, cai no else->'credito'. Um pré-pago Maestro roda 'DEBITO A
+  // VISTA' (cupom da Cielo) mas chegava aqui como crédito → além de errado no
+  // caixa, QUEBRA a conciliação PDV×Cielo (a Cielo liquida como débito). Se veio
+  // crédito com bandeira só-débito, corrige. (Pré-pago com bandeira 'Mastercard'/
+  // 'Visa' pura o servidor não distingue — esse caso depende do app ≥1.10.11,
+  // que lê a descrição 'DÉBITO' do próprio pagamento.)
+  let forma = String(body.forma || '').toLowerCase();
+  const band = String(body.bandeira || '').toLowerCase();
+  const descProd = String(body.descricao || '').toLowerCase(); // app >=1.10.11: "... DEBITO A VISTA"
+  const bandSoDebito = /maestro|electron|d[eé]bito/.test(band);
+  const descDebito = /d[eé]bito/.test(descProd) && !/cr[eé]dito/.test(descProd);
+  if (forma === 'credito' && (bandSoDebito || descDebito)) {
+    console.log(`[lio] forma corrigida credito->debito (bandeira "${body.bandeira}", desc "${body.descricao || ''}", nsu ${nsu || '-'}, R$ ${valor})`);
+    forma = 'debito';
+  }
   const r = await apiContaPagar({
-    numero: n, ped: body.ped, forma: body.forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
+    numero: n, ped: body.ped, forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true, caixa_codigo: caixaCodigo,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     observacao: `Prainha LIO · ${garcom.login}`,
@@ -9784,14 +9802,44 @@ function placaValida(x) { return /^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(normPlac
  *  prender alguem na catraca por causa de gorjeta e' pior pra casa do que
  *  liberar. Quem paga pelo app sempre paga 10% ou 15%, entao na pratica so
  *  cai aqui quem quitou o consumo no caixa. */
+/** Acha o pedido FECHADO recentemente pra este número — não pra lançar nada
+ *  nele, só pra ações de depois-de-fechar (nota, passe de saída). Mesmo
+ *  padrão de fbAcharPedidoNfce, só que dual-mode e com janela mais curta
+ *  (30min — passe de saída é logo após pagar, nota já usa 12h). */
+async function pedidoFechadoRecente(numero, minutos = 30) {
+  if (nativo()) {
+    const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
+       AND fechada_em IS NOT NULL AND fechada_em > now() - (${minutos} || ' minutes')::interval
+       ORDER BY fechada_em DESC LIMIT 1`;
+    return r.length ? Number(r[0].codigo) : null;
+  }
+  const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATADELETE IS NULL
+    AND DATAFECHAMENTO > DATEADD(-${Number(minutos)} MINUTE TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+  if (!r.ok) return null;
+  return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+}
 async function contaZerada(mesa) {
   const c = await apiContaTexto(mesa);
-  if (!c.ok) return { zerada: false, erro: c.erro, falta: null };
-  const consumo = +(Number(c.total || 0)
-    + (c.comandas || []).reduce((s, x) => s + Number(x.subtotal || 0), 0)).toFixed(2);
-  const pago = Number(c.pago_geral || 0);
-  const falta = Math.max(0, +(consumo - pago).toFixed(2));
-  return { zerada: falta <= 0.009, falta, consumo, pago, falta_com_servico: Number(c.falta_geral || 0) };
+  if (c.ok) {
+    const consumo = +(Number(c.total || 0)
+      + (c.comandas || []).reduce((s, x) => s + Number(x.subtotal || 0), 0)).toFixed(2);
+    const pago = Number(c.pago_geral || 0);
+    const falta = Math.max(0, +(consumo - pago).toFixed(2));
+    return { zerada: falta <= 0.009, falta, consumo, pago, falta_com_servico: Number(c.falta_geral || 0) };
+  }
+  // ⚠️ A CONTA PODE TER ACABADO DE FECHAR. Pix que quita o total fecha a mesa
+  // sozinho (apiCaixaFechar), e isso dispara um refresh do espelho que tira o
+  // pedido de `comanda` quase na hora — antes do cliente ter tempo de marcar
+  // quantas pessoas e tocar em "Gerar meu QR de saída". Sem isto, ele pagava
+  // e o portão dizia "não há conta aberta", sem dar o passe de ninguém.
+  // Só libera achando de VERDADE um pedido fechado com o pagamento cobrindo
+  // o total — nunca "às cegas" só porque não achou nada.
+  const ped = await pedidoFechadoRecente(mesa).catch(() => null);
+  if (!ped) return { zerada: false, erro: c.erro, falta: null };
+  const tot = (await pedTotais(ped).catch(() => null))?.total || 0;
+  const pago = await fbPagoDoPedido(ped).catch(() => 0);
+  const falta = Math.max(0, +(tot - pago).toFixed(2));
+  return { zerada: falta <= 0.009, falta, consumo: tot, pago, falta_com_servico: falta };
 }
 
 async function apiSaidaGerar(body) {

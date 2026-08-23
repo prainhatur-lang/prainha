@@ -1201,6 +1201,7 @@ class ContaActivity : AppCompatActivity() {
                     .put("nsu", p.nsu)
                     .put("autorizacao", p.autorizacao)
                     .put("bandeira", p.bandeira)
+                    .put("descricao", p.descricao)
                 val id = Pendentes.adicionar(this, body)
                 var okEste = false
                 for (t in 1..3) {
