@@ -3779,6 +3779,9 @@ async function apiContaPagar(body) {
     // Pix cobrado NA maquininha liquida pela Cielo (canal adquirente) → Pix
     // Online; Pix avulso conferido no app do banco continua Pix Manual.
     pix: body.pix_online ? { cod: FORMA.PIX_ONLINE, nome: 'Pix Online' } : { cod: FORMA.PIX_MANUAL, nome: 'Pix Manual' },
+    // Pedido de canal: o cliente pagou no aplicativo e o dinheiro vem no
+    // repasse. Registra a origem certa e NÃO movimenta caixa.
+    ifood: { cod: FORMA.IFOOD_ONLINE, nome: 'iFood Online' },
   };
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
@@ -6709,7 +6712,13 @@ async function apiCaixaReceberManual(body, quem) {
   const numero = Number(body.numero) || 0;
   const f = FORMAS_MANUAIS[String(body.forma || '')];
   const valor = +Number(body.valor || 0).toFixed(2);
-  if (!numero) return { ok: false, erro: 'mesa inválida' };
+  // ⚠️ ENTREGA TEM numero = 0. O guarda antigo recusava zero e devolvia "mesa
+  // inválida" — foi por isso que a conta do iFood da Tabuará não fechava por
+  // caminho nenhum. O que identifica a conta numa entrega é o PEDIDO, não a
+  // mesa: com `ped` válido, zero é legítimo.
+  if (!numero && !(await pedidoAlvo(0, body.ped))) {
+    return { ok: false, erro: 'não achei essa entrega — recarregue a tela' };
+  }
   if (!f) return { ok: false, erro: 'forma inválida' };
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
   if (body.nsu) {
