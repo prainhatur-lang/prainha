@@ -350,8 +350,12 @@ export const contaReceberCanal = pgTable(
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     /** 'ifood' | 'menudino' | … — de onde vem, pra separar o repasse na baixa. */
     canal: varchar('canal', { length: 20 }).notNull(),
-    /** PEDIDOS.CODIGO do Consumer — a chave que liga de volta ao pedido. */
-    pedidoCodigoExterno: integer('pedido_codigo_externo').notNull(),
+    /** PEDIDOS.CODIGO do Consumer — a chave que liga de volta ao pedido.
+     *  NULO quando o pedido veio da integração PRÓPRIA do canal (iFood direto),
+     *  que não passa pelo Consumer: nesse caso quem identifica é pedidoRef. */
+    pedidoCodigoExterno: integer('pedido_codigo_externo'),
+    /** Id do pedido no canal (uuid do iFood). Só na integração própria. */
+    pedidoRef: text('pedido_ref'),
     pedidoNumero: integer('pedido_numero'),
     nomeCliente: text('nome_cliente'),
     dataPedido: timestamp('data_pedido', { withTimezone: true }).notNull(),
