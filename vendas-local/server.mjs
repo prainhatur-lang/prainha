@@ -1367,14 +1367,26 @@ async function ifoodLojaStatus() {
     ifoodApi(base + '/interruptions').catch(() => []),
   ]);
   const linha = Array.isArray(st) ? (st.find((x) => x.operation === 'DELIVERY' || x.operation === 'delivery') || st[0]) : st;
+  // Uma pausa ATIVA agora é o sinal confiável de "não está recebendo": o
+  // /status da loja de teste não reflete a interrupção (conferido em 23/08 —
+  // pausa criada e listada, status seguiu "Loja aberta"). Confiar só no status
+  // faria a tela dizer que está aberta com a loja pausada de verdade.
+  const agora = Date.now();
+  const dentro = (i) => {
+    const ini = Date.parse(i.start), fim = Date.parse(i.end);
+    return Number.isFinite(ini) && Number.isFinite(fim) && ini <= agora && agora <= fim;
+  };
+  const pausas = (Array.isArray(itr) ? itr : []);
+  const pausada = pausas.some(dentro);
   return {
     ok: true,
-    aberta: !!linha?.available,
-    titulo: linha?.message?.title || (linha?.available ? 'Loja aberta' : 'Loja fechada'),
+    aberta: !!linha?.available && !pausada,
+    pausada,
+    titulo: pausada ? 'Pausada pela loja' : (linha?.message?.title || (linha?.available ? 'Loja aberta' : 'Loja fechada')),
     // o motivo de estar fechada vem nas validações (fora do horário, sem
     // conexão, pausada): é o que responde "por que não entra pedido?"
     motivos: (linha?.validations || []).filter((v) => v.state !== 'OK').map((v) => v.message?.title || v.code),
-    pausas: (Array.isArray(itr) ? itr : []).map((i) => ({
+    pausas: pausas.map((i) => ({
       id: i.id, descricao: i.description || '', inicio: i.start, fim: i.end,
     })),
   };
@@ -1388,7 +1400,11 @@ async function ifoodPausar(minutos, motivo) {
   // a pausa por "start no passado".
   const inicio = new Date(agora.getTime() - 60 * 1000);
   const fim = new Date(agora.getTime() + min * 60 * 1000);
-  const iso = (d) => d.toISOString().slice(0, 19);
+  // ⚠️ FUSO: o iFood lê start/end no fuso DA LOJA, e toISOString() devolve UTC.
+  // Mandar UTC fazia a pausa das 12:00 BRT nascer marcada pras 12:00 no fuso da
+  // loja — 3 horas no futuro. A loja continuava recebendo pedido e ninguém
+  // entendia por quê (conferido em 23/08: pausa criada, aceita, e sem efeito).
+  const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
   await ifoodApi('/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId) + '/interruptions', {
     metodo: 'POST',
     corpo: { description: String(motivo || 'Pausa pela loja').slice(0, 100), start: iso(inicio), end: iso(fim) },
