@@ -199,6 +199,15 @@ export const deliveryPedido = pgTable(
     /** Imagem do QR em base64 (a Cielo manda pronta). */
     pagamentoQrcodeImg: text('pagamento_qrcode_img'),
     pagoEm: timestamp('pago_em', { withTimezone: true }),
+    /** Quando a LOJA puxou este pedido (vendas-local). Enquanto for null, o
+     *  pedido continua sendo oferecido no polling — se o caixa estava fechado
+     *  ou a loja sem rede, ele não se perde. Marcado = já está na fila do
+     *  caixa, que aceita ou recusa por lá. */
+    enviadoLojaEm: timestamp('enviado_loja_em', { withTimezone: true }),
+    /** Quando o caixa RECUSOU (com motivo). Pedido já pago e recusado precisa
+     *  de estorno — fica visível no painel pra isso não passar batido. */
+    recusadoEm: timestamp('recusado_em', { withTimezone: true }),
+    recusaMotivo: text('recusa_motivo'),
     /** Observação do cliente ("sem cebola", "troco pra 100" não existe: é pré-pago). */
     observacao: text('observacao'),
     /** Motivo do cancelamento (loja ou expiração automática). */

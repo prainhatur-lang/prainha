@@ -109,7 +109,8 @@
     "importar:clientes-mda": "tsx scripts/importar-clientes-mda.ts",
     "migrate:filial-credencial": "tsx scripts/migrate-filial-credencial.ts",
     "seed:delivery-tabuara": "tsx scripts/seed-delivery-tabuara.ts",
-    "migrate:crc-pedido-ref": "tsx scripts/migrate-crc-pedido-ref.ts"
+    "migrate:crc-pedido-ref": "tsx scripts/migrate-crc-pedido-ref.ts",
+    "migrate:delivery-loja": "tsx scripts/migrate-delivery-loja.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
