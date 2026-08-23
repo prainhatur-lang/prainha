@@ -13327,12 +13327,23 @@ async function identSalva(btn,novo){
   var o=document.getElementById('idov');if(o)o.remove();
   await carregar(MESA);
 }
+/* Primeiro "nome" pra caber num chip/linha — mas nome cadastrado torto no
+   Consumer (ex.: "A MARTA", "A Matheus...") vira só "A" sozinho, inútil pra
+   identificar quem é. Com menos de 4 letras, gruda a palavra seguinte junto
+   ("A Marta"). Pedido do dono, 23/08, depois de caçar quem lançou um item e
+   achar só "👤 A" na conta. */
+function primeiroNome(s){
+  var partes=String(s||'').trim().split(/\s+/);
+  var n=partes[0]||'';
+  if(n.length<4&&partes[1])n+=' '+partes[1];
+  return n;
+}
 /* 👤 quem lançou o item. O pedido que nasce no celular da mesa vem com o
    autor 'cliente' — antes ficava em branco e virava discussão no caixa. */
 function autorItem(i){
   if(i.tipo===2||!i.quem)return '';
   var cli=String(i.quem).toUpperCase().indexOf('CLIENTE')===0;
-  var t=cli?'📱 pedido pela mesa':'👤 '+esc(String(i.quem).split(' ')[0]);
+  var t=cli?'📱 pedido pela mesa':'👤 '+esc(primeiroNome(i.quem));
   return '<small class="mut" style="display:block;padding-left:22px">'+t+'</small>';
 }
 /* ⏱ o relógio do item na conta do caixa. Entregue: cinza, é histórico —
@@ -13355,8 +13366,8 @@ function pinta(el){
       '<span>'+tituloConta(c)+'</span>'+
       '<span style="flex:1"></span>'+
       // comandas da mesa como chips ao lado do número — um toque troca a conta
-      (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
-      (ehEntrega()?'':'<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>')+
+      (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(primeiroNome(cc.nome)):'')+'</button>'}).join('')+
+      (ehEntrega()?'':'<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(primeiroNome(c.nome)):'identificar')+'</button>')+
     '</div>';
   // ENTREGA É DO CAIXA. Quem despacha o motoboy e fala com o cliente está aqui,
   // não na tela /ifood — mandar a pessoa trocar de tela no meio do movimento é
