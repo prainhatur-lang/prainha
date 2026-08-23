@@ -47,7 +47,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
   const [configurada, setConfigurada] = useState(filial.configurada);
   const [ativo, setAtivo] = useState(v.ativo === '1');
   const [modo, setModo] = useState(v.modo === 'distribuido' ? 'distribuido' : 'centralizado');
-  const [codigoPdv, setCodigoPdv] = useState(v.codigoPdv === 'produto' ? 'produto' : 'variante');
+  const [codigoPdv, setCodigoPdv] = useState(v.codigoPdv === 'variante' ? 'variante' : 'produto');
   const [autoConfirmar, setAutoConfirmar] = useState(v.autoConfirmar !== '0');
   const [clientId, setClientId] = useState(v.clientId ?? '');
   const [merchantId, setMerchantId] = useState(v.merchantId ?? '');
@@ -158,12 +158,13 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
         <label className="block text-sm">
           <span className="text-slate-700">Código de PDV do cardápio</span>
           <select className={inp} value={codigoPdv} disabled={!podeEditar} onChange={(e) => setCodigoPdv(e.target.value)}>
-            <option value="variante">variante (PRODUTODETALHE)</option>
             <option value="produto">produto (PRODUTOS)</option>
+            <option value="variante">variante (PRODUTODETALHE)</option>
           </select>
           <span className="mt-1 block text-xs text-slate-500">
-            Os dois códigos se sobrepõem no Consumer. Errar aqui manda o prato errado pra cozinha —
-            o item sempre sai conferido pelo nome.
+            O cardápio da Prainha usa o código do <b>produto</b>. Os dois códigos se sobrepõem no
+            Consumer, então errar aqui manda o prato errado pra cozinha — o item sempre sai
+            conferido pelo nome.
           </span>
         </label>
         <label className="mt-6 flex items-center gap-2 text-sm text-slate-700">

@@ -1028,9 +1028,12 @@ async function ifoodAplicarEvento(orderId, code, c) {
  *    · PRODUTODETALHE.CODIGO — a variante (o nosso produto_local.codigo_pdv)
  *    · PRODUTOS.CODIGO       — o produto (o nosso produto_local.produto_codigo)
  *  Chutar "tenta um, senão o outro" mandaria o PRATO ERRADO pra cozinha sem
- *  ninguém perceber. Então a fonte é a config ifood_codigo_pdv, e o NOME vindo
- *  do iFood serve de conferência: se não bate com o produto que o código achou,
- *  o item sai avisado — melhor a cozinha ler um alerta do que fritar outra coisa. */
+ *  ninguém perceber. O dono confirmou em 23/08/2026 que o cardápio do iFood
+ *  carrega o código do PRODUTO — por isso é esse o padrão. A config
+ *  ifood_codigo_pdv continua existindo (uma casa pode ter cadastrado
+ *  diferente), e o NOME vindo do iFood confere o que o código achou: se não
+ *  bate, o item sai avisado — melhor a cozinha ler um alerta do que fritar
+ *  outra coisa. */
 function parecido(a, b) {
   const t = (s) => new Set(semAcento(String(s || '')).split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   const A = t(a), B = t(b);
@@ -1040,7 +1043,7 @@ function parecido(a, b) {
 }
 async function ifoodResolverProduto(cod, nomeIfood) {
   if (!cod) return { codigo_pdv: null, area_codigo: null, aviso: '[SEM CÓDIGO DE PDV]' };
-  const modo = await cfgGet('ifood_codigo_pdv', 'variante');
+  const modo = await cfgGet('ifood_codigo_pdv', 'produto');
   const porVariante = modo !== 'produto';
   const acha = async (v) => (await sql`SELECT codigo_pdv, produto_codigo, nome, area_codigo FROM produto_local
     WHERE ${v ? sql`codigo_pdv` : sql`produto_codigo`}=${cod} ORDER BY codigo_pdv LIMIT 1`)[0];
@@ -1266,7 +1269,7 @@ async function apiIfood() {
     tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
     client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
     status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
-    codigo_pdv: await cfgGet('ifood_codigo_pdv', 'variante'),
+    codigo_pdv: await cfgGet('ifood_codigo_pdv', 'produto'),
     pedidos: peds.map((p) => ({
       id: p.id, display_id: p.display_id, status: p.status, tipo: p.tipo, modo_entrega: p.modo_entrega,
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,

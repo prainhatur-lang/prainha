@@ -21,7 +21,7 @@ export const CAMPOS_IFOOD = [
   { chave: 'clientSecret', rotulo: 'client_secret', ajuda: 'Fica cifrado; depois de salvar some da tela', segredo: true },
   { chave: 'merchantId', rotulo: 'Loja (merchant_id)', ajuda: 'UUID da loja no iFood' },
   { chave: 'modo', rotulo: 'Tipo do app', ajuda: 'centralizado (client_credentials) ou distribuido (autorização da loja)' },
-  { chave: 'codigoPdv', rotulo: 'Código de PDV do cardápio', ajuda: 'variante (PRODUTODETALHE) ou produto (PRODUTOS)' },
+  { chave: 'codigoPdv', rotulo: 'Código de PDV do cardápio', ajuda: 'produto (PRODUTOS) é o que a Prainha usa; variante (PRODUTODETALHE) fica pra quem cadastrou diferente' },
   { chave: 'autoConfirmar', rotulo: 'Aceitar pedido automaticamente', ajuda: '1 = aceita sozinho' },
   { chave: 'ativo', rotulo: 'Integração ligada', ajuda: '1 = a loja recebe pedidos do iFood por aqui' },
 ] as const;
@@ -46,7 +46,7 @@ export interface ConfigIfood {
 
 const VAZIA: ConfigIfood = {
   clientId: '', clientSecret: '', merchantId: '',
-  modo: 'centralizado', codigoPdv: 'variante',
+  modo: 'centralizado', codigoPdv: 'produto',
   autoConfirmar: true, ativo: false, configurada: false,
 };
 
@@ -74,7 +74,7 @@ export async function configIfood(filialId: string): Promise<ConfigIfood> {
     clientSecret: m.clientSecret ?? '',
     merchantId: m.merchantId ?? '',
     modo: m.modo === 'distribuido' ? 'distribuido' : 'centralizado',
-    codigoPdv: m.codigoPdv === 'produto' ? 'produto' : 'variante',
+    codigoPdv: m.codigoPdv === 'variante' ? 'variante' : 'produto',
     autoConfirmar: m.autoConfirmar !== '0',
     ativo: m.ativo === '1',
     configurada: true,
