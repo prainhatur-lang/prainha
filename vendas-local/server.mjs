@@ -347,6 +347,10 @@ async function initSchema() {
   // "servir tudo junto": escolha DO PEDIDO, não regra automática. Bebida
   // normalmente vem antes; só casa as praças quando alguém pediu pra casar.
   await addCol('venda_envio', 'junto boolean DEFAULT false');
+  // assinatura do carrinho: pega reenvio idêntico em segundos (toque duplo
+  // do cliente) — ver dedupe em apiVendaEnviar.
+  await addCol('venda_envio', 'assinatura text');
+  await sql`CREATE INDEX IF NOT EXISTS ix_venda_envio_dedupe ON venda_envio (numero, assinatura, criado_em)`;
   // CHAMADOS da mesa: "chamar garçom" e reclamação (avaliação ruim).
   // Reclamação muda a ordem da cozinha — a mesa insatisfeita passa na frente.
   await sql`CREATE TABLE IF NOT EXISTS chamado (id bigserial PRIMARY KEY,
@@ -1102,6 +1106,10 @@ async function ifoodPoll() {
 async function ifoodAplicarEvento(orderId, code, c) {
   if (!orderId) return;
   if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId);
+  // o lançamento financeiro segue o evento, não o comando: só o evento diz que
+  // o iFood REALMENTE aceitou (o confirm responde 202 e pode não valer)
+  if (code === 'CONFIRMED') await lancarReceberCanal(orderId, 'abrir').catch((e) => console.error('[ifood] receber-canal:', e.message));
+  if (code === 'CANCELLED') await lancarReceberCanal(orderId, 'cancelar').catch((e) => console.error('[ifood] receber-canal:', e.message));
   const carimbo = { CONFIRMED: 'confirmado_em', DISPATCHED: 'despachado_em', CONCLUDED: 'concluido_em', CANCELLED: 'cancelado_em' }[code];
   if (carimbo) {
     await sql`UPDATE ifood_pedido SET status=${code}, ${sql(carimbo)}=COALESCE(${sql(carimbo)}, now()) WHERE id=${orderId}`;
@@ -1351,6 +1359,33 @@ async function loopIfood() {
     ifoodStatus = { ...ifoodStatus, ultimo_erro: String(e.message).slice(0, 200) };
     console.error('[ifood] ERRO:', e.message);
   } finally { setTimeout(loopIfood, IFOOD_POLL_MS); }
+}
+
+/** O dinheiro do pedido pago no app fica COM O IFOOD até o repasse. Sem este
+ *  lançamento, o repasse cairia no banco sem contrapartida no sistema — e no
+ *  caixa o pedido pareceria dívida do cliente, que é o erro que a conta a
+ *  receber de canal veio corrigir.
+ *
+ *  Nasce no ACEITE (não na chegada): pedido recusado nunca vira dinheiro.
+ *  Pedido pago na entrega não entra aqui — esse dinheiro passa pelo caixa. */
+async function lancarReceberCanal(pedidoId, acao = 'abrir') {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${pedidoId}`;
+  if (!p) return;
+  if (acao === 'abrir' && !p.pago_online) return; // recebe na entrega: é do caixa
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'receber-canal', String(e)].join('|')).digest('hex');
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/receber-canal`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(8000),
+    body: JSON.stringify({
+      f: FILIAL_ID, e, s, acao, canal: 'ifood', pedido_ref: p.id,
+      display_id: p.display_id, nome_cliente: p.cliente_nome,
+      data_pedido: p.criado_em || p.recebido_em, valor_bruto: Number(p.total || 0),
+      observacao: acao === 'cancelar' ? 'cancelado no iFood' : undefined,
+    }),
+  });
+  if (!r.ok) throw new Error('receber-canal HTTP ' + r.status);
 }
 
 // ---- LOJA ABERTA / PAUSADA no iFood (módulo Merchant) ----
@@ -1726,8 +1761,12 @@ async function pgAtualizarTotal(ped) {
   const itens = Number(s1.v) || 0;
   const isento = await servicoIsento(ped).catch(() => false);
   const svc = !isento && TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
+  // ⚠️ os dois primeiros parâmetros da soma precisam de cast explícito: sem
+  // tipo conhecido dos dois lados, o Postgres não resolve qual operador '+'
+  // usar ("operator is not unique: unknown + unknown"). COALESCE(...) já
+  // tem tipo pela coluna, então só os literais soltos precisam do ::numeric.
   await sql`UPDATE comanda SET total_itens=${itens}, total_servico=${svc}, percentual_servico=${TAXA_SERVICO},
-      valor_total = ${itens} + ${svc} - COALESCE(total_desconto,0) + COALESCE(total_acrescimo,0) + COALESCE(valor_entrega,0)
+      valor_total = ${itens}::numeric + ${svc}::numeric - COALESCE(total_desconto,0) + COALESCE(total_acrescimo,0) + COALESCE(valor_entrega,0)
     WHERE codigo=${Number(ped)}`;
 }
 async function pgFecharPedido(ped) {
@@ -1965,6 +2004,28 @@ async function pedidoAlvo(numero, ped) {
   if (!p) return fbAcharPedido(numero);
   return (await pedAbertoDoNumero(p, numero)) ? p : null;
 }
+/** Marca (memória, TTL 15s) que este carrinho está sendo processado nesta
+ *  mesa; devolve {duplicado:true, pedido_fb, total} se já tinha marca viva
+ *  pra essa MESMA assinatura. Chamar sempre dentro de naFilaDaMesa — fora
+ *  dela, o check-then-mark tem a mesma corrida que o SELECT tinha. */
+const enviosRecentesPorMesa = new Map(); // numero -> {assinatura, pedido_fb, total, expira}
+function dedupeCarrinho(numero, assinatura) {
+  const n = Number(numero);
+  const atual = enviosRecentesPorMesa.get(n);
+  if (atual && atual.assinatura === assinatura && atual.expira > Date.now()) {
+    return { duplicado: true, pedido_fb: atual.pedido_fb, total: atual.total };
+  }
+  enviosRecentesPorMesa.set(n, { assinatura, pedido_fb: null, total: 0, expira: Date.now() + 15000 });
+  return { duplicado: false };
+}
+/** Preenche pedido_fb/total reais depois que o envio de verdade terminou —
+ *  se uma 3ª tentativa chegar em seguida, já responde com o dado completo
+ *  em vez de null/0. Silenciosa: a marca já existir ou não não muda nada. */
+function dedupeConcluir(numero, assinatura, pedidoFb, total) {
+  const atual = enviosRecentesPorMesa.get(Number(numero));
+  if (atual && atual.assinatura === assinatura) { atual.pedido_fb = pedidoFb; atual.total = total; }
+}
+
 /** O pedido aberto da mesa, criando se não houver. Único caminho pra criar.
  *  Devolve {ped, criado} — `criado` é pra quem só faz algo na conta que NASCE
  *  agora (amarrar a identificação, por exemplo). */
@@ -3328,6 +3389,14 @@ async function apiVendaEnviar(body) {
   }
   const pedidos = Array.isArray(body.itens) ? body.itens : [];
   if (!pedidos.length) return { ok: false, erro: 'sem itens' };
+  // assinatura do carrinho — mesma fórmula usada pra gravar e pra comparar.
+  // Calculada cedo (é síncrona e barata); a CHECAGEM de dedupe fica lá
+  // embaixo, só depois de tudo que pode legitimamente rejeitar o pedido sem
+  // tê-lo processado (comanda sem cadastro, produto fora do catálogo) — não
+  // faz sentido bloquear um reenvio de algo que nunca foi de fato lançado.
+  const assinaturaEnvio = JSON.stringify(pedidos
+    .map((p) => [Number(p.codigo_pdv) || 0, Number(p.qtd) || 0, String(p.obs || '').trim()])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]));
   // ⚠️ COMANDA EXIGE CADASTRO — sempre, não só pra transferir.
   // A comanda é conta em aberto no bar: a pessoa leva o cartão, consome a noite
   // toda e paga no fim. Sem saber quem é, o que sobra pra casa é prejuízo
@@ -3398,8 +3467,29 @@ async function apiVendaEnviar(body) {
     }
   }
   const total = itens.reduce((s, i) => s + i.preco * i.qtd, 0);
-  const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status, junto)
-    VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando', ${junto && areas.length > 1}) RETURNING id`;
+  // ⚠️ DEDUPE DO CLIENTE: toque duplo no botão (ou rede lenta escondendo que
+  // já enviou) manda o MESMO carrinho duas vezes em segundos — sem trava, o
+  // prato entra 2x na conta. Vale SÓ pro celular do cliente (body._cliente):
+  // o garçom pode genuinamente lançar "2 chopps" duas vezes seguidas pra
+  // clientes diferentes da mesma mesa, e bloquear isso perderia venda real.
+  //
+  // Um SELECT solto contra venda_envio TEM CORRIDA: duas chamadas de 300ms
+  // de diferença chegam aqui quase juntas, as duas fazem o SELECT ANTES de
+  // qualquer uma ter gravado, as duas veem "nada ainda" e as duas passam —
+  // medido na prática, duplicou igual. O marcador precisa nascer ATÔMICO, e
+  // isso só existe checando-e-marcando dentro da MESMA fila por mesa que já
+  // serializa a criação de pedido (pedidoDaMesa) — dentro dela, JS é
+  // single-thread: não existe "os dois chegam juntos".
+  const dedupe = body._cliente
+    ? await naFilaDaMesa(numero, () => dedupeCarrinho(numero, assinaturaEnvio))
+    : { duplicado: false };
+  if (dedupe.duplicado) {
+    console.log('[dedupe] carrinho repetido em <15s na mesa ' + numero + ' — ignorado (toque duplo)');
+    return { ok: true, pedido_fb: dedupe.pedido_fb, n_itens: pedidos.length,
+      total: dedupe.total, avisos_impressora: [] };
+  }
+  const [log] = await sql`INSERT INTO venda_envio (numero, mesa, comanda, itens, total, status, junto, assinatura)
+    VALUES (${numero}, ${mesa}, ${ehComanda ? numero : null}, ${JSON.stringify(itens)}, ${total}, 'enviando', ${junto && areas.length > 1}, ${assinaturaEnvio}) RETURNING id`;
   try {
     const { ped, criado } = await pedidoDaMesa(numero);
     if (criado) {
@@ -3435,12 +3525,17 @@ async function apiVendaEnviar(body) {
     await fbAtualizarTotal(ped);
     await fbJobCozinha(ped);
     await sql`UPDATE venda_envio SET status='ok', pedido_fb=${ped} WHERE id=${log.id}`;
+    if (body._cliente) dedupeConcluir(numero, assinaturaEnvio, ped, total);
     espelho().catch(() => {}); // KDS atualiza já, sem esperar os 15s
     // impressora da praça desligada/sem papel? avisa QUEM LANÇOU, na hora
     const avisosImp = await avisosImpressora(itens.map((i) => i.area_codigo)).catch(() => []);
     return { ok: true, pedido_fb: ped, numero, mesa, total, n_itens: itens.length, avisos_impressora: avisosImp };
   } catch (e) {
     await sql`UPDATE venda_envio SET status='erro', erro=${String(e.message).slice(0, 300)} WHERE id=${log.id}`;
+    // ⚠️ NÃO deixa a marca do dedupe viva numa falha: senão o cliente tenta
+    // de novo (com razão — o pedido dele NÃO foi) e a segunda tentativa,
+    // legítima, seria barrada como "duplicada" e devolveria sucesso falso.
+    if (body._cliente) enviosRecentesPorMesa.delete(Number(numero));
     return { ok: false, erro: 'Falha ao gravar no Consumer: ' + e.message + ' (lançamento guardado localmente, id ' + log.id + ')' };
   }
 }
@@ -11008,18 +11103,34 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .jmark{display:block;color:var(--gold2);font-size:11.5px;margin-top:2px;font-weight:700}
 .jdica{background:#fff7e3;border:1px solid #f0d68f;border-radius:10px;padding:9px 11px;font-size:12.5px;
   color:#8a4b06;margin-top:8px;line-height:1.4}
-/* revisao antes de enviar: linha grande, dedo grosso, valor visivel */
-.rev{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);
-  border-radius:12px;padding:12px 13px;margin-bottom:8px}
-.rev .rq{font-weight:800;color:var(--gold2);font-size:16px;min-width:34px}
-.rev .rn{flex:1;font-size:15px;line-height:1.25}
-.rev .rv{font-weight:700;white-space:nowrap;font-size:15px}
-.rev .rx{background:#f4f4f7;border:1px solid var(--line);color:var(--mut);border-radius:9px;
-  width:34px;height:34px;font:inherit;font-size:15px;cursor:pointer;flex:none}
+/* REVISÃO EM TELA CHEIA: o último olhar antes de mandar pra cozinha — pedido
+   do dono (23/08) pra ficar claro demais o que está sendo pedido, e reduzir
+   pedido duplicado por insegurança/ansiedade do cliente na hora de confirmar.
+   body.revcheia esconde o resto (cabeçalho/carrinho fixo) e vira um
+   flex-column de 3 blocos: topo fixo, lista rolável, rodapé fixo com o botão
+   — como um confirm nativo, não como mais uma tela do fluxo. */
+body.revcheia{padding-bottom:0}
+body.revcheia #app{position:fixed;inset:0;z-index:50;background:var(--bg,#f7f7f9);
+  display:flex;flex-direction:column;padding:0}
+.revtop{flex:none;padding:22px 18px 14px;background:#fff;border-bottom:1px solid var(--line)}
+.revtop h1{font-size:24px;margin:0}
+.revlista{flex:1;overflow-y:auto;padding:14px 16px 10px;-webkit-overflow-scrolling:touch}
+.revrodape{flex:none;padding:14px 16px calc(16px + env(safe-area-inset-bottom));
+  background:#fff;border-top:1px solid var(--line);box-shadow:0 -6px 18px rgba(0,0,0,.06)}
+.rev{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);
+  border-radius:14px;padding:16px 15px;margin-bottom:10px}
+.rev .rq{font-weight:800;color:#fff;background:var(--gold2);font-size:16px;min-width:38px;
+  height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
+.rev .rn{flex:1;font-size:18px;font-weight:600;line-height:1.3}
+.rev .rn b{font-weight:800}
+.rev .rv{font-weight:800;white-space:nowrap;font-size:17px}
+.rev .rx{background:#f4f4f7;border:1px solid var(--line);color:var(--mut);border-radius:10px;
+  width:38px;height:38px;font:inherit;font-size:16px;cursor:pointer;flex:none}
 .rev .rx:active{background:#ffe9e9;color:var(--red)}
-.revt{display:flex;justify-content:space-between;align-items:center;margin:14px 0 4px;
-  padding-top:12px;border-top:1px dashed var(--line);font-size:17px}
-.revt b{font-size:21px;color:var(--gold2)}
+.revt{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:17px}
+.revt b{font-size:25px;color:var(--gold2)}
+.revrodape .b{font-size:17px;padding:16px}
+#btnConfirmarPedido:disabled{opacity:.65}
 body{padding-bottom:120px}
 /* observacao do item: as sugestoes que a casa ja cadastrou pro grupo */
 .obsl{display:flex;flex-wrap:wrap;gap:8px}
@@ -11625,10 +11736,14 @@ function revisarPedido(){
   var varias=Object.keys(pracas).length>1;
   var marcados=CART.filter(function(i){return i.junto}).length;
   var el=document.getElementById('cart');if(el){el.style.display='none';folgaCarrinho(el)}
-  app('<h1>Confira seu pedido</h1>'+
-    '<div class="mut" style="margin:6px 0 14px">Mesa '+mesaAtual()+' · depois de enviar, a produção já começa a preparar</div>'+
-    CART.map(function(i,ix){
-      return '<div class="rev"><span class="rq">'+i.qtd+'x</span>'+
+  // TELA CHEIA, de propósito: é o último olhar antes de mandar pra cozinha —
+  // pedido do dono (23/08) pra ficar claro DEMAIS o que está sendo pedido,
+  // sem nada mais competindo por atenção na tela.
+  document.body.classList.add('revcheia');
+  app('<div class="revtop"><h1>Confira seu pedido</h1>'+
+    '<div class="mut" style="margin-top:4px">Mesa '+mesaAtual()+' — depois de enviar, a produção já começa a preparar</div></div>'+
+    '<div class="revlista">'+CART.map(function(i,ix){
+      return '<div class="rev"><span class="rq">'+i.qtd+'×</span>'+
         '<span class="rn">'+esc(i.nome)+(i.tamanho?' <b>'+esc(i.tamanho)+'</b>':'')+
         (i.obs?'<small class="obsv">✎ '+esc(i.obs)+'</small>':'')+
         (i.junto?'<small class="jmark">⇄ sai junto com os outros marcados</small>':'')+'</span>'+
@@ -11636,28 +11751,39 @@ function revisarPedido(){
         '<button class="rx" onclick="tiraRev('+ix+')" title="tirar">✕</button></div>';
     }).join('')+
     (varias&&marcados>1?'<div class="jdica"><b>'+marcados+' itens</b> vão sair ao mesmo tempo.</div>':'')+
-    '<div class="revt"><span>total</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
-    '<button class="b" onclick="enviarPedido()">Confirmar e enviar</button>'+
-    '<button class="b g" onclick="voltaDaRev()">Voltar e ajustar</button>');
+    '</div>'+
+    '<div class="revrodape"><div class="revt"><span>total</span><b>R$ '+t.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+    '<button class="b" id="btnConfirmarPedido" onclick="enviarPedido()">Confirmar e enviar</button>'+
+    '<button class="b g" onclick="voltaDaRev()">Voltar e ajustar</button></div>');
 }
-function voltaDaRev(){ renderCarrinho(); telaPedir(); }
+function voltaDaRev(){ document.body.classList.remove('revcheia'); renderCarrinho(); telaPedir(); }
 function tiraRev(ix){
   CART.splice(ix,1);
-  if(!CART.length){ renderCarrinho(); telaPedir(); return }
+  if(!CART.length){ document.body.classList.remove('revcheia'); renderCarrinho(); telaPedir(); return }
   revisarPedido();
 }
 function togJuntoCli(ix){CART[ix].junto=!CART[ix].junto;renderCarrinho()}
 function mais(i){CART[i].qtd++;renderCarrinho()}
 function menos(i){CART[i].qtd--;if(CART[i].qtd<1)CART.splice(i,1);renderCarrinho()}
+var ENVIANDO_PEDIDO=false; // trava contra duplo toque — o servidor também protege, isto é só o feedback rápido
 async function enviarPedido(){
+  if(ENVIANDO_PEDIDO)return; // já está a caminho — ignora o segundo toque
   var n=mesaAtual();if(n===null)return;
   if(!(await sessaoOk()))return;
-  var r=await post('/api/mesa/pedir',{mesa:n,sessao:SES&&SES.comanda,desde:SES&&SES.desde,
-    itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',
-      junto:!!i.junto,respostas:i.respostas||null}})});
+  ENVIANDO_PEDIDO=true;
+  var btn=document.getElementById('btnConfirmarPedido');
+  if(btn){btn.disabled=true;btn.textContent='Enviando pedido…'}
+  var r;
+  try{
+    r=await post('/api/mesa/pedir',{mesa:n,sessao:SES&&SES.comanda,desde:SES&&SES.desde,
+      itens:CART.map(function(i){return {codigo_pdv:i.codigo_pdv,qtd:i.qtd,obs:i.obs||'',
+        junto:!!i.junto,respostas:i.respostas||null}})});
+  } finally { ENVIANDO_PEDIDO=false; }
   if(!r.ok){
+    if(btn){btn.disabled=false;btn.textContent='Confirmar e enviar'}
     if(r.reescanear){ limpaSes(); telaReescanear(r.erro); return }
     alert(r.erro||'não consegui enviar');return}
+  document.body.classList.remove('revcheia');
   CART=[];renderCarrinho();
   app('<div class="enviadao"><div class="tick">✓</div>'+
     '<div class="t1">PEDIDO ENVIADO</div><div class="t2">PARA A PRODUÇÃO</div>'+
