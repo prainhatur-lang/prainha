@@ -3168,7 +3168,7 @@ async function apiVendaAbertas() {
   // Status da mesa, pra cor na tela do garçom:
   //   vermelho = conta pedida (fechando)   amarelo = tem coisa atrasada
   //   verde    = em andamento, tudo em dia
-  const rows = await sql`SELECT c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem,
+  const rows = await sql`SELECT c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem, c.nome,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
         AND COALESCE(ci.produzido, m.pronto_em) IS NULL
@@ -3193,7 +3193,14 @@ async function apiVendaAbertas() {
   const nomePorNum = new Map();
   for (const x of await sql`SELECT comanda AS numero, nome_curto FROM mesa_comanda WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
   for (const x of await sql`SELECT numero, nome_curto FROM identificacao WHERE fechada_em IS NULL AND nome_curto IS NOT NULL`) nomePorNum.set(Number(x.numero), x.nome_curto);
-  for (const r of rows) r.nome = nomePorNum.get(Number(r.numero)) || null;
+  // ⚠️ Delivery não tem mesa, então não tem identificação — e esta linha
+  // apagava o nome que a projeção já tinha montado ("iFood #4821 · Maria"),
+  // deixando o chip do caixa dizendo só "iFood" em pedido do site e do iFood.
+  // Mesa/comanda seguem como antes: quem manda é a identificação.
+  for (const r of rows) {
+    const doCanal = Number(r.codigo) < 0;
+    r.nome = nomePorNum.get(Number(r.numero)) || (doCanal ? r.nome : null) || null;
+  }
 
   // 🔔 CHAMOU GARÇOM na grade (funciona na maquininha SEM versão nova): marca a
   // mesa que apertou o botão com 🔔 no nome + cor amarela (o app já pinta por
@@ -5090,10 +5097,15 @@ async function contaIfoodCaixa(ped) {
   const t0 = new Date(p.criado_em || p.recebido_em).getTime();
   const total = Number(p.total || 0);
   const pago = p.pago_online ? total : 0;
+  // Pedido do site mora na MESMA tabela do iFood, com origem='site'. Chamar
+  // tudo de iFood faria a tela dizer "iFood #S12" e "Cancelar no iFood" pra um
+  // pedido que nunca passou pelo iFood — e o caixa é quem fala com o cliente.
+  const doSite = p.origem === 'site';
   return {
-    ok: true, numero: 0, ped, canal: 'ifood',
-    nome: 'iFood #' + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : ''),
+    ok: true, numero: 0, ped, canal: doSite ? 'site' : 'ifood',
+    nome: (doSite ? 'Site ' : 'iFood #') + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : ''),
     ifood: {
+      site: doSite,
       id: p.id, display_id: p.display_id, status: p.status,
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
       pago_online: !!p.pago_online, modo_entrega: p.modo_entrega,
@@ -13111,10 +13123,17 @@ var ORIGEM_LBL={4:'iFood',5:'MenuDino',6:'MenuDino',7:'iFood',8:'Totem'};
 /* Pedido do iFood direto tem código NEGATIVO (é nosso, não do Consumer).
    Mostrar "#-1" no chip não diz nada a ninguém: o número que importa é o que o
    cliente e o suporte do iFood enxergam, e ele vem no nome ("iFood #1613 · …"). */
-function idCanal(m){
+/* Delivery no chip do caixa: o número interno (negativo) não diz nada a
+   ninguém, e "iFood" num pedido do SITE é mentira. O nome da comanda já vem
+   pronto do servidor ("iFood #4821 · Maria" / "SITE S12 · João") — é dele que
+   sai o rótulo, então uma origem nova aparece certa sem mexer aqui. */
+function rotuloDelivery(m){
   var cod=Number(m.codigo)||0;
-  if(cod<0){ var g=String(m.nome||'').match(/#(\d+)/); return g?(' #'+g[1]):''; }
-  return cod?(' #'+cod):'';
+  if(cod<0){
+    var t=String(m.nome||'').split(' · ')[0].trim();
+    if(t) return t;
+  }
+  return (ORIGEM_LBL[Number(m.origem)]||'Balcão')+(cod>0?' #'+cod:'');
 }
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
@@ -13124,7 +13143,7 @@ function mchip(num,lbl,m){
   if(ent||Number(num)===0){
     return '<button class="mchip st-'+(m.status||'andamento')+(Number(m.codigo)===Number(PEDALVO)?' sel':'')+'" onclick="carregar('+num+','+(m.codigo||0)+')">'+
       '<span class="mn" style="font-size:15px;line-height:1.5">🛵</span>'+
-      '<b>'+esc(ent||'Balcão')+idCanal(m)+'</b>'+
+      '<b>'+esc(rotuloDelivery(m))+'</b>'+
       '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small></button>';
   }
   return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+
@@ -13200,6 +13219,41 @@ var HOME_Y=0;
 var PEDALVO=null;
 function alvo(b){ if(PEDALVO)b.ped=PEDALVO; return b }
 function ehEntrega(){ return PEDALVO!=null && Number(MESA)===0 }
+/* O título já vinha pronto do servidor ("iFood #4821 · Maria Barreto"), e a
+   tela colava o nome DE NOVO no fim — saía "iFood #4821 · iFood #4821 · Maria".
+   Pedido do canal usa o nome como título; mesa e comanda continuam como eram. */
+function tituloConta(c){
+  if(c.canal==='ifood'||c.canal==='site') return '🛵 '+esc(c.nome||'');
+  var base = ehEntrega() ? ('🛵 Entrega #'+PEDALVO)
+    : ((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero);
+  return base + (c.nome?' · '+esc(c.nome):'');
+}
+/* AÇÕES DO IFOOD NO CAIXA. Falam com a mesma API da tela /ifood — nada de
+   caminho paralelo: o que vale é sempre o evento que o iFood devolve. */
+async function ifoodCx(id,acao){
+  var txt = acao==='despachar' ? 'Confirmar que o pedido SAIU para entrega?' : 'Marcar como pronto para retirada?';
+  if(!confirm(txt))return;
+  var r=await jpost('/api/ifood/comando',{id:id,acao:acao});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
+}
+async function ifoodCxImprimir(id){
+  var r=await jpost('/api/ifood/imprimir',{id:id});
+  if(!r.ok)alert(r.erro||'não deu');
+}
+async function ifoodCxCancelar(id){
+  var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
+  if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'.'));return}
+  var txt='CANCELAR este pedido no iFood.\\n\\nEscolha o motivo (digite o número):\\n\\n';
+  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\\n'});
+  var esc2=prompt(txt,'1'); if(!esc2)return;
+  var m=d.motivos[Number(esc2)-1];
+  if(!m){alert('Número inválido');return}
+  if(!confirm('Cancelar por: '+m.descricao+'?'))return;
+  var r=await jpost('/api/ifood/comando',{id:id,acao:'cancelar',motivo:m});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  voltarMesas();
+}
 function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;PEDALVO=null;irTela('home');
   setTimeout(function(){window.scrollTo(0,HOME_Y)},0)} // volta NO MESMO lugar da lista
 async function carregar(n,ped){
@@ -13298,12 +13352,34 @@ function pinta(el){
   if(!c||Number(c.numero)!==Number(MESA)){el.innerHTML='<div class="mut" style="padding:16px">abrindo…</div>';return}
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ mesas</button>'+
     '<div class="card"><div class="tit" style="margin-top:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
-      '<span>'+(ehEntrega()?('🛵 '+(c.canal==='ifood'?('iFood #'+((c.ifood||{}).display_id||'')):('Entrega #'+PEDALVO))):((c.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+c.numero))+(c.nome?' · '+esc(c.nome):'')+'</span>'+
+      '<span>'+tituloConta(c)+'</span>'+
       '<span style="flex:1"></span>'+
       // comandas da mesa como chips ao lado do número — um toque troca a conta
       (c.comandas_mesa||[]).map(function(cc){return '<button class="seg" onclick="carregar('+cc.numero+')">C'+cc.numero+(cc.nome?' '+esc(String(cc.nome).split(' ')[0]):'')+'</button>'}).join('')+
       (ehEntrega()?'':'<button class="seg" onclick="identCx()">👤 '+(c.nome?esc(String(c.nome).split(' ')[0]):'identificar')+'</button>')+
     '</div>';
+  // ENTREGA É DO CAIXA. Quem despacha o motoboy e fala com o cliente está aqui,
+  // não na tela /ifood — mandar a pessoa trocar de tela no meio do movimento é
+  // como se perde pedido. Endereço e telefone à vista pelo mesmo motivo.
+  if((c.canal==='ifood'||c.canal==='site')&&c.ifood){
+    var f=c.ifood, ondeVeio=(c.canal==='site'?'no site':'no iFood');
+    h+='<div class="it" style="display:block"><div style="font-size:15px">'+
+      (f.cliente?'<b>'+esc(f.cliente)+'</b>':'')+(f.fone?' · <a href="tel:'+esc(f.fone)+'">'+esc(f.fone)+'</a>':'')+'</div>'+
+      (f.endereco?'<div class="mut" style="margin-top:2px">'+esc(f.endereco)+'</div>':'')+
+      '<div class="mut" style="margin-top:2px">'+
+        (f.modo_entrega==='MERCHANT'?'entrega nossa':(f.modo_entrega==='IFOOD'?'entregador do iFood':'retirada'))+
+        ' · '+(f.pago_online?(c.canal==='site'?'pago no site':'pago no app'):'RECEBER NA ENTREGA')+'</div>';
+    h+='<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">';
+    if(!f.despachado){
+      h+='<button class="seg" style="background:#0b5c8a;color:#fff;border:0" onclick="ifoodCx(\\''+f.id+'\\',\\''+(f.modo_entrega==='MERCHANT'?'despachar':'pronto')+'\\')">'+
+         (f.modo_entrega==='MERCHANT'?'🛵 Saiu para entrega':'✓ Pronto para retirada')+'</button>';
+    }else{
+      h+='<span class="mut" style="align-self:center">🛵 já saiu para entrega</span>';
+    }
+    h+='<button class="seg" onclick="ifoodCxImprimir(\\''+f.id+'\\')">🧾 Imprimir nota</button>'+
+       '<button class="seg" style="color:#b91c1c" onclick="ifoodCxCancelar(\\''+f.id+'\\')">✕ Cancelar '+ondeVeio+'</button>'+
+       '</div></div>';
+  }
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
       (CANCEL_ON&&PODE.cancItem&&i.item_codigo&&i.tipo!==2?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
