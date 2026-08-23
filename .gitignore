@@ -98,3 +98,8 @@ vendas-local/tmp-*.mjs
 agente-local/cardapio-tabuara.mjs
 agente-local/cardapio-dev.mjs
 agente-local/dump-cardapio-json.mjs
+
+# Artefato de runtime do auto-update (vendas-local/auto-update.ps1): o
+# servidor baixa a versão nova aqui antes de trocar. Só existe nas lojas
+# (Windows) — se aparecer aqui é lixo de teste local, nunca é pra commitar.
+vendas-local/server.novo.mjs
