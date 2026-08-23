@@ -32,7 +32,12 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
   GOTCHA do TS: `const filial = await escolherFilial(...)` perde o narrowing
   dentro de closures; se usar `filial.x` em callback/JSX aninhado, faça o alias
   DEPOIS da guarda (`if (!x) return; const filial = x;`).
-- **Filial IDs:** Prainha Bar = `7c5c66ce-cceb-4e89-9c6d-d0785255c4f9` · Tabuará = `fde37b95-7c7e-4b41-a618-2aba1fbc0de7`.
+- **Filial IDs (numeração 01/02/03 — NÃO inverter, já corrigido várias vezes):**
+  **01 Prainha Bar** = `7c5c66ce-cceb-4e89-9c6d-d0785255c4f9` · **02 Tabuará** =
+  `fde37b95-7c7e-4b41-a618-2aba1fbc0de7` · **03 Prainha Mar** (e Grill) =
+  `e899dae2-38bf-4f3f-9149-7effd059fab8`. Cuidado: no vendas-local (PDV local
+  das lojas), o número do servidor **0003 é a Prainha Mar** (filial 03), não a
+  Tabuará — a Tabuará não roda vendas-local, só tem Consumer/Firebird próprio.
 
 ## Acessar o banco em scripts pontuais
 Roda de `packages/db` (tem o driver `postgres`), lendo `../../.env`:

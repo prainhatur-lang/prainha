@@ -327,6 +327,28 @@ export async function processarEntrada(params: {
       .limit(1);
     if (!ultima || ultima.id !== registro.mensagemId) return;
 
+    // Anti-duplicação: se há resposta da Nina recente (< 5s), cancel (outra
+    // processarEntrada já respondeu — pode ser retomada simultânea).
+    const [respostaSaida] = await db
+      .select({ criadoEm: schema.atendimentoMensagem.criadoEm })
+      .from(schema.atendimentoMensagem)
+      .where(
+        and(
+          eq(schema.atendimentoMensagem.conversaId, registro.conversaId),
+          eq(schema.atendimentoMensagem.direcao, 'saida'),
+          sql`${schema.atendimentoMensagem.criadoEm} > now() - interval '5 seconds'`,
+        ),
+      )
+      .orderBy(desc(schema.atendimentoMensagem.criadoEm))
+      .limit(1);
+    if (respostaSaida) {
+      console.log(
+        '[nina] cancel processamento duplicado (resposta já existe)',
+        registro.conversaId,
+      );
+      return;
+    }
+
     // Estado atual (pode ter mudado durante o debounce — equipe assumiu etc.)
     const [conversa] = await db
       .select()
