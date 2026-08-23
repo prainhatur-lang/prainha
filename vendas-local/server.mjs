@@ -3768,7 +3768,16 @@ async function apiContaPagar(body) {
   // comprovante:true só vem de apiCaixaReceberManual, e SÓ quando a imagem foi
   // gravada de verdade — não é flag que a tela possa mandar sozinha.
   const comProva = integrado || body.comprovante === true;
-  if (PAGAMENTO_MANUAL !== 'on' && forma !== 'dinheiro' && !comProva) {
+  // PEDIDO DE CANAL não é lançamento manual de cartão/Pix: o dinheiro foi
+  // cobrado pelo aplicativo e vem no repasse — não passa pela gaveta nem pela
+  // maquininha, então a trava anti-fraude não se aplica. O comprovante é o
+  // próprio repasse do canal.
+  // ⚠️ E só vale em ENTREGA (numero 0). Numa mesa, "pago no iFood" seria o jeito
+  // mais fácil de zerar uma conta e embolsar o dinheiro do cliente.
+  if (forma === 'ifood' && Number(n) !== 0) {
+    return { ok: false, erro: 'Pagamento de canal só existe em entrega — nesta conta, não.' };
+  }
+  if (PAGAMENTO_MANUAL !== 'on' && forma !== 'dinheiro' && forma !== 'ifood' && !comProva) {
     return { ok: false, erro: 'Lançamento manual de cartão/Pix está desligado — receba pela ' +
       'maquininha (ou Pix da tela). Emergência: PAGAMENTO_MANUAL=on no start.bat e reiniciar.' };
   }
