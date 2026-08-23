@@ -146,6 +146,11 @@ if (Test-Path "$RAIZ\server.mjs") { Copy-Item "$RAIZ\server.mjs" "$RAIZ\server-a
 Invoke-WebRequest -UseBasicParsing 'https://app.prainhabar.com/agente-release/vendas-local-server.mjs' -OutFile "$RAIZ\server.mjs"
 $v = (Get-FileHash "$RAIZ\server.mjs" -Algorithm SHA256).Hash.Substring(0,8).ToLower()
 Ok "server.mjs baixado (versao $v)"
+# auto-update.ps1: quem faz a troca segura (com rollback) quando o server.mjs
+# se auto-atualizar depois. Sem isto na pasta, o servidor detecta versão nova
+# mas não tem como aplicar sozinho.
+Invoke-WebRequest -UseBasicParsing 'https://app.prainhabar.com/agente-release/auto-update.ps1' -OutFile "$RAIZ\auto-update.ps1"
+Ok 'auto-update.ps1 baixado (auto-atualização pronta pra funcionar)'
 
 '{ "name":"vendas-local","private":true,"type":"module","dependencies":{"node-firebird":"2.0.2","postgres":"^3.4.4","qrcode-svg":"^1.1.0"} }' |
   Set-Content "$RAIZ\package.json" -Encoding ascii

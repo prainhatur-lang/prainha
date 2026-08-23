@@ -66,3 +66,35 @@ insumos-atual.csv
 
 # AppleDouble do macOS em volume externo
 ._*
+
+# Pastas de fotos/vídeos soltas na raiz (mídia de cardápio/redes — não
+# pertence ao histórico do git; 4,6GB entre Fotos/Videos Tabuará). Se
+# precisar de backup, usar Drive/Storage, não o repo.
+/Fotos Prainha Bar/
+/Fotos Tabuara/
+/Videos tabuara/
+
+# Arquivos vazios (0 bytes) que apareceram soltos na raiz — lixo, nunca
+# souberam a origem (nomes de bebida/produto: touch acidental ou artefato
+# de alguma ferramenta de organização de mídia).
+/Coquetel
+/H2OH
+/Moscow
+/SUCOS
+/Seleta
+/Vodka
+/cachaça
+/pastel
+/tsx
+
+# Scripts avulsos de teste/depuração — nome "tmp" já diz que é descartável
+vendas-local/tmp-*.mjs
+
+# Scripts pontuais de acesso direto ao Firebird das lojas: têm host/caminho
+# do .fdb junto com o padrão de conexão. Ficam fora de propósito (ver memória
+# consumer-firebird-acesso-remoto) — não por segredo real (usam
+# SYSDBA/masterkey, padrão de fábrica do Firebird), mas por serem scripts
+# pontuais de acesso operacional, não parte do produto.
+agente-local/cardapio-tabuara.mjs
+agente-local/cardapio-dev.mjs
+agente-local/dump-cardapio-json.mjs

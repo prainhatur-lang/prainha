@@ -17,8 +17,9 @@ import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptS
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
 import Firebird from 'node-firebird';
@@ -819,6 +820,101 @@ async function loopPixPendente() {
   finally { setTimeout(loopPixPendente, 20000); }
 }
 
+/* ---- AUTO-ATUALIZAÇÃO: o servidor da loja se mantém em dia sozinho ----
+   Até aqui, publicar correção exigia o dono colar um comando PowerShell na
+   loja via Chrome Remote Desktop — toda vez. Pedido do dono, 23/08/2026.
+
+   Regras de segurança (isto roda SOZINHO, sem ninguém olhando, então erra
+   pra cautela em tudo):
+     1. NUNCA sobrescreve o próprio arquivo em execução — no Windows um
+        arquivo aberto por um processo não pode ser trocado por ele mesmo.
+        Baixa pra server.novo.mjs e quem faz a troca de verdade é o
+        auto-update.ps1, rodando como processo SEPARADO (spawn detached) —
+        ele sobrevive ao passo em que mata este processo Node.
+     2. CONFERE O HASH do que baixou antes de aplicar qualquer coisa — nunca
+        aplica um download truncado/corrompido (já aconteceu na nuvem servir
+        versão velha; aqui o hash pega isso na hora).
+     3. Espera a loja ficar tranquila (sem item lançado nos últimos 3min)
+        antes de aplicar — a troca leva ~15s no ar. Não força além de 4h de
+        espera: correção crítica não pode ficar pra sempre atrás do
+        movimento.
+     4. auto-update.ps1 CONFERE se a versão nova subiu saudável e faz
+        ROLLBACK AUTOMÁTICO se não — sem isso, um bug de boot (já aconteceu:
+        PG 9.5 não aceita ADD COLUMN IF NOT EXISTS) derrubaria o caixa
+        sozinho, sem ninguém rodando comando nenhum pra perceber.
+   Kill switch: AUTO_UPDATE=off no start.bat desliga tudo isto. */
+const AUTO_UPDATE = String(process.env.AUTO_UPDATE || '').toLowerCase() !== 'off';
+const AUTO_UPDATE_POLL_MS = 20 * 60 * 1000; // 20min — não é urgente feito o Pix
+const AUTO_UPDATE_FORCA_APOS_MS = 4 * 3600 * 1000; // 4h esperando: aplica mesmo ocupado
+let autoUpdatePendenteDesde = null;
+
+/** Loja "tranquila agora" = ninguém lançou item nos últimos 3min. Proxy
+ *  simples e vale nos dois modos de banco (comanda_item existe sempre). */
+async function autoUpdateLojaOcupada() {
+  try {
+    const r = await sql`SELECT 1 FROM comanda_item WHERE criado > now() - interval '3 minutes' LIMIT 1`;
+    return r.length > 0;
+  } catch { return false; } // não sabe dizer -> não bloqueia
+}
+
+/** Mantém o PRÓPRIO script de troca atualizado. Seguro fazer direto (sem
+ *  passar pelo .ps1): nada tem esse arquivo aberto, ele só dorme na pasta. */
+async function autoUpdateSincronizarScript(dir) {
+  try {
+    const r = await fetch(PAGAR_MESA_URL + '/agente-release/auto-update.ps1', { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return;
+    const texto = await r.text();
+    if (!texto || texto.length < 200 || !texto.includes('HashEsperado')) return; // salvaguarda: resposta vazia/errada
+    const destino = path.join(dir, 'auto-update.ps1');
+    const atual = existsSync(destino) ? readFileSync(destino, 'utf8') : '';
+    if (texto !== atual) { writeFileSync(destino, texto); console.log('[auto-update] auto-update.ps1 atualizado'); }
+  } catch { /* offline agora — tenta no próximo ciclo */ }
+}
+
+async function autoUpdateAplicar(dir, versaoEsperada) {
+  const resp = await fetch(PAGAR_MESA_URL + '/agente-release/vendas-local-server.mjs', { signal: AbortSignal.timeout(30000) });
+  if (!resp.ok) throw new Error('download HTTP ' + resp.status);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
+  if (hash !== versaoEsperada) {
+    console.error('[auto-update] hash baixado (' + hash + ') não bate com o esperado (' + versaoEsperada + ') — não aplica, tenta de novo no próximo ciclo');
+    return;
+  }
+  writeFileSync(path.join(dir, 'server.novo.mjs'), buf);
+  console.log('[auto-update] aplicando ' + hash + ' — a loja fica ~15s fora do ar');
+  const script = path.join(dir, 'auto-update.ps1');
+  if (!existsSync(script)) { console.error('[auto-update] auto-update.ps1 não está na pasta — não dá pra aplicar sozinho ainda'); return; }
+  const ps = spawn('powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-HashEsperado', hash],
+    { detached: true, stdio: 'ignore', windowsHide: true, cwd: dir });
+  ps.unref();
+  autoUpdatePendenteDesde = null;
+}
+
+async function loopAutoUpdate() {
+  if (!AUTO_UPDATE) { console.log('[auto-update] desligado (AUTO_UPDATE=off)'); return; }
+  try {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    await autoUpdateSincronizarScript(dir);
+    const r = await fetch(PAGAR_MESA_URL + '/api/agente-release/vendas-local-versao', { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const nova = j && j.versao;
+    if (!nova || nova === VERSAO) { autoUpdatePendenteDesde = null; }
+    else {
+      if (!autoUpdatePendenteDesde) { autoUpdatePendenteDesde = Date.now(); console.log('[auto-update] versão ' + nova + ' disponível'); }
+      const esperando = Date.now() - autoUpdatePendenteDesde;
+      const ocupada = await autoUpdateLojaOcupada();
+      if (!ocupada || esperando > AUTO_UPDATE_FORCA_APOS_MS) {
+        if (ocupada) console.log('[auto-update] loja ocupada há ' + Math.round(esperando / 3600000) + 'h esperando — aplica mesmo assim');
+        await autoUpdateAplicar(dir, nova);
+      } else {
+        console.log('[auto-update] ' + nova + ' disponível, aguardando a loja ficar tranquila');
+      }
+    }
+  } catch (e) { console.error('[auto-update] ' + e.message); }
+  finally { setTimeout(loopAutoUpdate, AUTO_UPDATE_POLL_MS); }
+}
+
 async function loopEspelho() {
   try { const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo'); console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`); }
   catch (e) { ultimoStatus = { ...ultimoStatus, ok: false }; await sql`UPDATE sync_estado SET ultimo_erro=${String(e.message).slice(0, 200)} WHERE id=1`.catch(() => {}); console.error('[espelho] ERRO:', e.message); }
@@ -1028,9 +1124,12 @@ async function ifoodAplicarEvento(orderId, code, c) {
  *    · PRODUTODETALHE.CODIGO — a variante (o nosso produto_local.codigo_pdv)
  *    · PRODUTOS.CODIGO       — o produto (o nosso produto_local.produto_codigo)
  *  Chutar "tenta um, senão o outro" mandaria o PRATO ERRADO pra cozinha sem
- *  ninguém perceber. Então a fonte é a config ifood_codigo_pdv, e o NOME vindo
- *  do iFood serve de conferência: se não bate com o produto que o código achou,
- *  o item sai avisado — melhor a cozinha ler um alerta do que fritar outra coisa. */
+ *  ninguém perceber. O dono confirmou em 23/08/2026 que o cardápio do iFood
+ *  carrega o código do PRODUTO — por isso é esse o padrão. A config
+ *  ifood_codigo_pdv continua existindo (uma casa pode ter cadastrado
+ *  diferente), e o NOME vindo do iFood confere o que o código achou: se não
+ *  bate, o item sai avisado — melhor a cozinha ler um alerta do que fritar
+ *  outra coisa. */
 function parecido(a, b) {
   const t = (s) => new Set(semAcento(String(s || '')).split(/[^a-z0-9]+/).filter((w) => w.length > 2));
   const A = t(a), B = t(b);
@@ -1040,7 +1139,7 @@ function parecido(a, b) {
 }
 async function ifoodResolverProduto(cod, nomeIfood) {
   if (!cod) return { codigo_pdv: null, area_codigo: null, aviso: '[SEM CÓDIGO DE PDV]' };
-  const modo = await cfgGet('ifood_codigo_pdv', 'variante');
+  const modo = await cfgGet('ifood_codigo_pdv', 'produto');
   const porVariante = modo !== 'produto';
   const acha = async (v) => (await sql`SELECT codigo_pdv, produto_codigo, nome, area_codigo FROM produto_local
     WHERE ${v ? sql`codigo_pdv` : sql`produto_codigo`}=${cod} ORDER BY codigo_pdv LIMIT 1`)[0];
@@ -1204,8 +1303,44 @@ async function projetarIfood() {
   return comandas.length;
 }
 
+/** A configuração do iFood vem do Concilia (Configurações → iFood), não da
+ *  tela local: cada casa é um merchant diferente e quem administra isso é o
+ *  escritório, não quem está no caixa.
+ *
+ *  Só aplica quando o que veio da nuvem MUDOU desde a última vez. Sem isso,
+ *  um ajuste feito aqui na loja (pra destravar alguma coisa no meio do
+ *  expediente) seria desfeito no ciclo seguinte, sem ninguém entender por quê.
+ *  Nuvem fora do ar ou filial sem cadastro lá: mantém o que está gravado. */
+async function puxarConfigIfood() {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s });
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ifood-config?${q}`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error('config do iFood: HTTP ' + r.status);
+  const c = await r.json();
+  if (!c || !c.configurada) return; // nada cadastrado lá: não mexe no que tem aqui
+
+  const assinatura = createHash('sha256').update(JSON.stringify(c)).digest('hex').slice(0, 16);
+  if ((await cfgGet('ifood_nuvem_hash', '')) === assinatura) return;
+
+  const pares = [
+    ['ifood_client_id', c.client_id || ''],
+    ['ifood_client_secret', c.client_secret || ''],
+    ['ifood_merchant_id', c.merchant_id || ''],
+    ['ifood_auth', c.modo === 'distribuido' ? 'distribuido' : 'centralizado'],
+    ['ifood_codigo_pdv', c.codigo_pdv === 'produto' ? 'produto' : 'variante'],
+    ['ifood_auto_confirmar', c.auto_confirmar ? '1' : '0'],
+    ['ifood_ativo', c.ativo ? '1' : '0'],
+  ];
+  for (const [k, v] of pares) { if (v !== '') await cfgSet(k, v); }
+  await cfgSet('ifood_nuvem_hash', assinatura);
+  console.log('[ifood] config atualizada pelo Concilia (ativo=' + (c.ativo ? 'sim' : 'nao') + ')');
+}
+
 async function loopIfood() {
   try {
+    await puxarConfigIfood().catch((e) => console.error('[ifood] config da nuvem:', e.message));
     const c = await ifoodConf();
     if (c.ativo && c.pronto) {
       await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
@@ -1216,6 +1351,94 @@ async function loopIfood() {
     ifoodStatus = { ...ifoodStatus, ultimo_erro: String(e.message).slice(0, 200) };
     console.error('[ifood] ERRO:', e.message);
   } finally { setTimeout(loopIfood, IFOOD_POLL_MS); }
+}
+
+// ---- LOJA ABERTA / PAUSADA no iFood (módulo Merchant) ----
+// Pausar é a válvula de escape do dia a dia: cozinha afogada, faltou insumo,
+// entregador sumiu. Sem isso o pedido continua entrando e a loja leva nota
+// ruim por atraso. NÃO mexe no horário de funcionamento — a pausa é temporária
+// e o iFood reabre sozinho na hora marcada.
+async function ifoodLojaStatus() {
+  const c = await ifoodConf();
+  if (!c.merchantId) return { ok: false, erro: 'sem merchant_id configurado' };
+  const base = '/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId);
+  const [st, itr] = await Promise.all([
+    ifoodApi(base + '/status').catch(() => null),
+    ifoodApi(base + '/interruptions').catch(() => []),
+  ]);
+  const linha = Array.isArray(st) ? (st.find((x) => x.operation === 'DELIVERY' || x.operation === 'delivery') || st[0]) : st;
+  return {
+    ok: true,
+    aberta: !!linha?.available,
+    titulo: linha?.message?.title || (linha?.available ? 'Loja aberta' : 'Loja fechada'),
+    // o motivo de estar fechada vem nas validações (fora do horário, sem
+    // conexão, pausada): é o que responde "por que não entra pedido?"
+    motivos: (linha?.validations || []).filter((v) => v.state !== 'OK').map((v) => v.message?.title || v.code),
+    pausas: (Array.isArray(itr) ? itr : []).map((i) => ({
+      id: i.id, descricao: i.description || '', inicio: i.start, fim: i.end,
+    })),
+  };
+}
+async function ifoodPausar(minutos, motivo) {
+  const c = await ifoodConf();
+  if (!c.merchantId) return { ok: false, erro: 'sem merchant_id configurado' };
+  const min = Math.min(24 * 60, Math.max(5, Number(minutos) || 30));
+  const agora = new Date();
+  // 1 min de folga no início: relógio da loja adiantado fazia o iFood recusar
+  // a pausa por "start no passado".
+  const inicio = new Date(agora.getTime() - 60 * 1000);
+  const fim = new Date(agora.getTime() + min * 60 * 1000);
+  const iso = (d) => d.toISOString().slice(0, 19);
+  await ifoodApi('/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId) + '/interruptions', {
+    metodo: 'POST',
+    corpo: { description: String(motivo || 'Pausa pela loja').slice(0, 100), start: iso(inicio), end: iso(fim) },
+  });
+  return { ok: true, minutos: min };
+}
+async function ifoodRetomar(id) {
+  const c = await ifoodConf();
+  if (!c.merchantId) return { ok: false, erro: 'sem merchant_id configurado' };
+  const base = '/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId) + '/interruptions';
+  // sem id = tira TODAS as pausas (é o que "voltar a receber" quer dizer pra
+  // quem está no caixa; duas pausas sobrepostas manteriam a loja fechada)
+  const alvos = id ? [id] : (await ifoodApi(base).catch(() => [])).map((i) => i.id);
+  for (const a of alvos) {
+    await ifoodApi(base + '/' + encodeURIComponent(a), { metodo: 'DELETE' }).catch((e) =>
+      console.error('[ifood] retomar', a, e.message));
+  }
+  return { ok: true, removidas: alvos.length };
+}
+
+/** A NOTA do pedido, na térmica do caixa: é o papel que vai com a sacola.
+ *  Traz endereço, telefone e a forma de pagamento — quem entrega precisa saber
+ *  se cobra alguma coisa na porta ou se já está pago. */
+async function imprimirNotaIfood(pedidoId) {
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${pedidoId} OR seq=${Number(pedidoId) || -1}`;
+  if (!p) return { ok: false, erro: 'pedido não encontrado' };
+  const ip = (await cfgGet('impressora_ip', '')).trim();
+  if (!ip) return { ok: false, erro: 'esta loja não tem impressora configurada (Ajustes → impressora)' };
+  const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
+
+  const b = [IMP.init, IMP.centro, IMP.grande, impLn('iFood #' + (p.display_id || '')), IMP.norm];
+  b.push(impLn(p.tipo === 'TAKEOUT' ? 'RETIRADA NA LOJA' : (p.modo_entrega === 'MERCHANT' ? 'ENTREGA NOSSA' : 'ENTREGADOR iFOOD')));
+  b.push(IMP.esquerda, impTraco());
+  b.push(impLn(p.cliente_nome || ''));
+  if (p.cliente_fone) b.push(impLn('Fone: ' + p.cliente_fone));
+  if (p.endereco) for (const l of String(p.endereco).split(' · ')) b.push(impLn(l));
+  if (p.agendado_para) b.push(IMP.neg, impLn('AGENDADO ' + impHm(p.agendado_para)), IMP.negFim);
+  b.push(impTraco());
+  for (const i of itens) {
+    b.push(...impLinhasItem(impQtd(i.quantidade) + ' ' + i.nome, impMoeda(i.valor_total)));
+    for (const d of impDetalhes(i.detalhes)) b.push(impLn('   ' + d));
+  }
+  b.push(impTraco());
+  if (Number(p.taxa_entrega)) b.push(impLR('Taxa de entrega', impMoeda(p.taxa_entrega)));
+  b.push(IMP.neg, impLR('TOTAL', impMoeda(p.total)), IMP.negFim);
+  // A linha que evita cobrar duas vezes — ou esquecer de cobrar.
+  b.push(IMP.centro, IMP.alto, impLn(p.pago_online ? 'PAGO NO APP' : 'RECEBER NA ENTREGA'), IMP.norm, IMP.esquerda);
+  b.push(impLn(impHm(p.recebido_em)), IMP.corte);
+  await imprimirRaw(ip, Buffer.concat(b), 'nota iFood #' + (p.display_id || ''));
+  return { ok: true };
 }
 
 /** Tela /ifood: estado + pedidos abertos, no mesmo formato da lista do Consumer. */
@@ -1230,7 +1453,7 @@ async function apiIfood() {
     tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
     client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
     status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
-    codigo_pdv: await cfgGet('ifood_codigo_pdv', 'variante'),
+    codigo_pdv: await cfgGet('ifood_codigo_pdv', 'produto'),
     pedidos: peds.map((p) => ({
       id: p.id, display_id: p.display_id, status: p.status, tipo: p.tipo, modo_entrega: p.modo_entrega,
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
@@ -10351,7 +10574,7 @@ input:focus{outline:none;border-color:var(--red)}
 <header><a class="back" href="/">◂ KDS</a><h1>i<b>Food</b></h1><span id="est" class="tag">—</span></header>
 <div class="wrap" id="app">carregando…</div>
 <script>
-var D=null;
+var D=null,LOJA_PINTADA=false;
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function din(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function hora(s){if(!s)return '';var d=new Date(s);return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
@@ -10385,6 +10608,8 @@ function pinta(){
     '<div class="l"><div class="nm">Última consulta<small>'+(d.status.ultimo_erro?('<span style="color:#dc2626">'+esc(d.status.ultimo_erro)+'</span>'):('a cada '+d.poll_seg+'s'))+'</small></div>'+
       '<span class="mut">'+(d.status.ultimo_ok?hora(d.status.ultimo_ok):'—')+'</span></div>'+
     '</div>';
+  // ---- loja aberta/pausada ----
+  h+='<h2>A loja no iFood</h2><div class="card" id="loja"><div class="pd mut">consultando…</div></div>';
   // ---- credencial ----
   h+='<h2>1 · Credencial do app (Portal do Desenvolvedor)</h2><div class="card">'+
     '<div class="l"><div class="nm">Tipo do app<small>centralizado = a loja é do mesmo dono do app (não precisa parear). distribuído = a loja autoriza no Portal do Parceiro, como o Consumer está hoje.</small></div>'+
@@ -10432,6 +10657,7 @@ function pinta(){
             :'<button class="b" onclick="cmd(\\''+p.id+'\\',\\'pronto\\')">pronto para retirada</button>';
         }
         h+='<button class="b o" onclick="cmd(\\''+p.id+'\\',\\'cancelar\\')">cancelar</button>';
+        h+='<button class="b o" onclick="imprimir(\\''+p.id+'\\')">imprimir nota</button>';
       }
       h+='</div>';
     }
@@ -10439,6 +10665,7 @@ function pinta(){
   });
   h+='</div>';
   document.getElementById('app').innerHTML=h;
+  if(!LOJA_PINTADA){LOJA_PINTADA=true;pintaLoja()}
 }
 async function salvar(b){await jpost('/api/ifood/salvar',b);await carregar()}
 async function liga(v){
@@ -10491,6 +10718,42 @@ async function cmd(id,acao){
   if(!r.ok)alert(r.erro||'não deu');
   await carregar();
 }
+async function imprimir(id){
+  var r=await jpost('/api/ifood/imprimir',{id:id});
+  if(!r.ok)alert(r.erro||'nao deu'); 
+}
+async function pintaLoja(){
+  var el=document.getElementById('loja'); if(!el)return;
+  var d=await jget('/api/ifood/loja');
+  if(!d.ok){el.innerHTML='<div class="pd mut">'+esc(d.erro||'sem status')+'</div>';return}
+  var h='<div class="l"><div class="nm">'+(d.aberta?'<b style="color:var(--green)">Loja aberta</b>':'<b style="color:var(--red)">'+esc(d.titulo)+'</b>')+
+    '<small>'+(d.motivos.length?esc(d.motivos.join(' · ')):'recebendo pedidos normalmente')+'</small></div></div>';
+  if(d.pausas.length){
+    d.pausas.forEach(function(x){
+      h+='<div class="l"><div class="nm">Pausada'+(x.descricao?': '+esc(x.descricao):'')+'<small>até '+esc(String(x.fim||'').slice(11,16))+'</small></div>'+
+        '<button class="b g" onclick="retomar(\''+x.id+'\')">voltar a receber</button></div>';
+    });
+  }else{
+    h+='<div class="l"><div class="nm">Pausar o recebimento<small>o iFood reabre sozinho na hora marcada; o horário de funcionamento não muda</small></div>'+
+      '<button class="b o" onclick="pausar(15)">15 min</button>'+
+      '<button class="b o" onclick="pausar(30)">30 min</button>'+
+      '<button class="b o" onclick="pausar(60)">1 h</button></div>';
+  }
+  el.innerHTML=h;
+}
+async function pausar(min){
+  var motivo=prompt('Pausar '+min+' min. Motivo (aparece no iFood):','Cozinha cheia');
+  if(motivo===null)return;
+  var r=await jpost('/api/ifood/pausar',{minutos:min,motivo:motivo});
+  if(!r.ok)alert(r.erro||'nao deu');
+  await pintaLoja();
+}
+async function retomar(id){
+  if(!confirm('Voltar a receber pedidos agora?'))return;
+  var r=await jpost('/api/ifood/retomar',{id:id});
+  if(!r.ok)alert(r.erro||'nao deu');
+  await pintaLoja();
+}
 async function escolherMotivo(id){
   var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
   if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'. Pode ser que ele não aceite mais cancelamento.'));return null}
@@ -10503,6 +10766,9 @@ async function escolherMotivo(id){
   return m;
 }
 carregar();setInterval(carregar,15000);
+// o estado da loja tem ritmo próprio: a lista atualiza de 15 em 15s, mas
+// consultar o Merchant a cada 15s seria bater na API à toa.
+pintaLoja();setInterval(pintaLoja,60000);
 </script></body></html>`;
 
 const TEMPOS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -14376,6 +14642,25 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/ifood/testar') return res.end(JSON.stringify(await ifoodTestar()));
       if (req.method === 'POST' && p === '/api/ifood/parear') return res.end(JSON.stringify(await ifoodParear()));
       if (req.method === 'POST' && p === '/api/ifood/concluir') return res.end(JSON.stringify(await ifoodConcluirPareamento((await readBody(req)).codigo)));
+      if (p === '/api/ifood/loja') {
+        try { return res.end(JSON.stringify(await ifoodLojaStatus())); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
+      if (req.method === 'POST' && p === '/api/ifood/pausar') {
+        const b = await readBody(req);
+        try { return res.end(JSON.stringify(await ifoodPausar(b.minutos, b.motivo))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
+      if (req.method === 'POST' && p === '/api/ifood/retomar') {
+        const b = await readBody(req).catch(() => ({}));
+        try { return res.end(JSON.stringify(await ifoodRetomar(b.id))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
+      if (req.method === 'POST' && p === '/api/ifood/imprimir') {
+        const b = await readBody(req);
+        try { return res.end(JSON.stringify(await imprimirNotaIfood(b.id))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
       if (p === '/api/ifood/motivos') {
         try { return res.end(JSON.stringify(await ifoodMotivosCancel(u.searchParams.get('id') || ''))); }
         catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
@@ -14500,6 +14785,7 @@ async function main() {
   }
   loopEspelho();
   loopPixPendente();
+  loopAutoUpdate();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
   // Desligado (o padrão), o loop apenas acorda e volta a dormir.
   loopIfood();
