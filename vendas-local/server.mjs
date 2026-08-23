@@ -6659,6 +6659,19 @@ async function apiCaixaServico(body, quem) {
 // Consumer (conferidos em 16,5 mil operações reais do banco da 0003):
 //   S = sangria (retirada pro cofre, as grandes) · D = despesa paga da gaveta
 //   (vale-transporte etc.) · A = entrada/suprimento. Motivo é obrigatório.
+/** Pix confirmados recentemente — pedido do dono (23/08): o caixa precisa
+ *  SABER na hora que uma mesa pagou pelo celular (sem ele estar olhando
+ *  aquela mesa) pra avisar o garçom a liberar. `desde` é o timestamp (ms) do
+ *  último aviso que a tela já mostrou — o cliente manda de volta o que
+ *  recebeu, e a próxima consulta só traz o que é mais novo que isso. */
+async function apiCaixaAvisosPagamento(desdeMs) {
+  const desde = new Date(Number(desdeMs) > 0 ? Number(desdeMs) : Date.now() - 60000);
+  const r = await sql`SELECT txid, mesa, valor, pago_em FROM pix_cobranca
+     WHERE pago_em IS NOT NULL AND pago_em > ${desde} ORDER BY pago_em`;
+  return { ok: true, agora: Date.now(),
+    pagamentos: r.map((x) => ({ txid: x.txid, mesa: Number(x.mesa), valor: Number(x.valor),
+      pago_em_ms: new Date(x.pago_em).getTime() })) };
+}
 async function apiCaixaMovimento(body, quem) {
   if (!(quem && quem.movimentar)) return { ok: false, erro: 'sem permissão (Caixa > Realizar entradas e saídas)' };
   const cx = await fbCaixaDoOperador(quem.login);
@@ -12767,6 +12780,21 @@ input{width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-r
 .seg{padding:11px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font:inherit;cursor:pointer}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.08);color:var(--gold2);font-weight:700}
 .err{color:var(--red);font-size:13px;margin-top:6px}
+/* AVISO DE PAGAMENTO: mesa pagou pelo Pix do celular dela, sem o caixa estar
+   olhando — pedido do dono (23/08) pra avisar o garçom. VERMELHO e GRANDE de
+   propósito (não é "boa notícia discreta", é "aja agora"): só fecha no X —
+   clicar em qualquer lugar do card fechava sem querer e perdia o aviso. */
+#avisosPg{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:400;
+  display:flex;flex-direction:column;gap:10px;width:min(96vw,520px)}
+.avisopg{position:relative;background:var(--red);color:#fff;border-radius:16px;padding:20px 52px 20px 20px;
+  box-shadow:0 10px 34px rgba(220,38,38,.55);animation:avisoIn .25s ease-out,avisoPulso 1s ease-in-out infinite}
+.avisopg b{font-size:24px;display:block;line-height:1.2}
+.avisopg small{opacity:.95;font-size:14px;display:block;margin-top:4px}
+.avisopg .fechaPg{position:absolute;top:10px;right:10px;width:34px;height:34px;border-radius:9px;
+  background:rgba(255,255,255,.22);border:0;color:#fff;font-size:19px;font-weight:800;cursor:pointer;line-height:1}
+.avisopg .fechaPg:active{background:rgba(255,255,255,.4)}
+@keyframes avisoIn{from{transform:translateY(-16px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes avisoPulso{50%{box-shadow:0 10px 34px rgba(220,38,38,.85)}}
 .x{background:none;border:1px solid #eda3a3;color:var(--red);border-radius:7px;padding:1px 7px;font-size:12px;cursor:pointer;margin-right:3px}
 a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .lst{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
@@ -14269,6 +14297,48 @@ setInterval(function(){
   fetch('/api/versao',{cache:'no-store'}).then(function(r){return r.json()}).then(function(v){
     if(v&&v.versao&&v.versao!==VERSAO_MINHA)location.reload()}).catch(function(){});
 },60000);
+/* ---- AVISO DE PAGAMENTO (Pix confirmado sem o caixa estar olhando) ---- */
+var _pgCtx=null,_pgVistoAte=Date.now(),_pgVistos=new Set();
+function _pgTone(t,f,off,dur){var o=_pgCtx.createOscillator(),g=_pgCtx.createGain();o.type='sine';o.frequency.value=f;
+  g.gain.setValueAtTime(0.0001,t+off);g.gain.exponentialRampToValueAtTime(0.55,t+off+0.015);g.gain.exponentialRampToValueAtTime(0.0001,t+off+dur);
+  o.connect(g);g.connect(_pgCtx.destination);o.start(t+off);o.stop(t+off+dur+0.05)}
+function pgApitar(){try{_pgCtx=_pgCtx||new (window.AudioContext||window.webkitAudioContext)();
+  if(_pgCtx.state==='suspended')_pgCtx.resume();var t=_pgCtx.currentTime;
+  // "cha-ching": três notas subindo — diferente do din-don do KDS, propósito é outro (dinheiro, não pedido)
+  _pgTone(t,660,0,0.14);_pgTone(t,880,0.13,0.14);_pgTone(t,1320,0.26,0.35);}catch(e){}}
+// Apita 5 vezes seguidas — som único não chamava atenção o bastante numa
+// casa barulhenta. Pra quando o X for apertado ANTES das 5.
+function pgApitar5(){
+  var n=0,tm=setInterval(function(){pgApitar();if(++n>=5)clearInterval(tm)},700);
+  pgApitar();
+  return tm;
+}
+document.addEventListener('pointerdown',function(){try{_pgCtx=_pgCtx||new (window.AudioContext||window.webkitAudioContext)();if(_pgCtx.state==='suspended')_pgCtx.resume();}catch(e){}},{once:true});
+function pgMostrar(p){
+  var box=document.getElementById('avisosPg');
+  if(!box){box=document.createElement('div');box.id='avisosPg';document.body.appendChild(box)}
+  var el=document.createElement('div');el.className='avisopg';
+  el.innerHTML='<button class="fechaPg" title="fechar">✕</button>'+
+    '<b>💰 Mesa '+p.mesa+' pagou '+brl(p.valor)+'</b><small>Pix pelo celular — avise o garçom para liberar/atender</small>';
+  var tm=pgApitar5();
+  // SÓ o botão X fecha — clicar no resto do card não faz nada, de propósito
+  // (era fácil demais dispensar sem querer e perder o aviso).
+  el.querySelector('.fechaPg').onclick=function(){clearInterval(tm);el.remove()};
+  box.appendChild(el);
+}
+async function checaAvisosPagamento(){
+  if(!TOK)return;
+  var d;try{d=await jget('/api/caixa/avisos-pagamento?desde='+_pgVistoAte)}catch(e){return}
+  if(!d||!d.ok)return;
+  (d.pagamentos||[]).forEach(function(p){
+    if(_pgVistos.has(p.txid))return;
+    _pgVistos.add(p.txid);
+    pgMostrar(p);
+  });
+  _pgVistoAte=d.agora||Date.now();
+}
+setInterval(checaAvisosPagamento,5000);
+
 inicio();
 </script></body></html>`;
 
@@ -14648,6 +14718,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
+      if (p === '/api/caixa/avisos-pagamento') return res.end(JSON.stringify(await apiCaixaAvisosPagamento(u.searchParams.get('desde'))));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
       // o serviço e manda pra térmica — ou pra fila do Consumer se não tiver)
       if (req.method === 'POST' && p === '/api/caixa/imprimir') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'imprimir' }))); }
