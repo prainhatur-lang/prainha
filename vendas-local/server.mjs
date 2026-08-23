@@ -1113,16 +1113,44 @@ const IFOOD_ACOES = {
   confirmar: 'confirm', despachar: 'dispatch', pronto: 'readyToPickup',
   cancelar: 'requestCancellation', aceitar_cancel: 'acceptCancellation', negar_cancel: 'denyCancellation',
 };
+/** Cancelar EXIGE motivo, e o motivo tem que sair da lista que o iFood dá pra
+ *  AQUELE pedido (é critério de homologação: quem cancela escolhe da lista, o
+ *  PDV não inventa código). Sem isso o primeiro cancelamento voltaria erro. */
+async function ifoodMotivosCancel(orderId) {
+  const r = await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/cancellationReasons');
+  const lista = Array.isArray(r) ? r : (r.reasons || []);
+  return { ok: true, motivos: lista.map((m) => ({
+    codigo: String(m.cancelCodeId ?? m.code ?? m.cancellationCode ?? ''),
+    descricao: m.description || m.reason || '',
+  })).filter((m) => m.codigo) };
+}
+
 async function ifoodComando(orderId, acao, extra = null) {
   const caminho = IFOOD_ACOES[acao];
   if (!caminho) return { ok: false, erro: 'ação desconhecida' };
+  if (acao === 'cancelar') {
+    const cod = String(extra?.codigo || '').trim();
+    if (!cod) return { ok: false, erro: 'escolha o motivo do cancelamento' };
+    // A documentação do iFood aparece nas DUAS formas: {reason, cancellationCode}
+    // e {reason: "<código>"}. Manda a primeira e, se ela for recusada, repete na
+    // segunda — cancelamento é raro e não pode falhar por causa de nome de campo.
+    const url = '/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho;
+    try {
+      await ifoodApi(url, { metodo: 'POST', corpo: { reason: extra.descricao || 'cancelamento pela loja', cancellationCode: cod } });
+    } catch (e) {
+      if (!/ 4\d\d/.test(String(e.message))) throw e;
+      console.error('[ifood] cancelamento na 1ª forma falhou, tentando {reason:codigo}:', e.message);
+      await ifoodApi(url, { metodo: 'POST', corpo: { reason: cod } });
+    }
+    await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_motivo=${(extra.descricao || cod).slice(0, 120)} WHERE id=${orderId}`;
+    return { ok: true };
+  }
   await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho, { metodo: 'POST', corpo: extra });
   // O iFood responde 202: o status só vale quando o evento correspondente
   // voltar no polling. O carimbo local aqui é otimista, pra tela não ficar
   // parada 30s — o evento depois confirma (ou corrige).
   const campo = { confirmar: 'confirmado_em', despachar: 'despachado_em' }[acao];
   if (campo) await sql`UPDATE ifood_pedido SET ${sql(campo)}=COALESCE(${sql(campo)}, now()) WHERE id=${orderId}`;
-  if (acao === 'cancelar') await sql`UPDATE ifood_pedido SET cancelado_em=now() WHERE id=${orderId}`;
   if (acao === 'aceitar_cancel') await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_pedido_em=NULL WHERE id=${orderId}`;
   if (acao === 'negar_cancel') await sql`UPDATE ifood_pedido SET cancel_pedido_em=NULL WHERE id=${orderId}`;
   return { ok: true };
@@ -10453,11 +10481,26 @@ async function concluir(){
   await carregar();
 }
 async function cmd(id,acao){
-  var txt={confirmar:'Confirmar este pedido?',cancelar:'CANCELAR este pedido no iFood?',despachar:'Marcar que saiu para entrega?',pronto:'Marcar pronto para retirada?',aceitar_cancel:'Aceitar o cancelamento pedido pelo cliente?',negar_cancel:'Negar o cancelamento?'}[acao];
-  if(!confirm(txt))return;
-  var r=await jpost('/api/ifood/comando',{id:id,acao:acao});
+  var motivo=null;
+  if(acao==='cancelar'){ motivo=await escolherMotivo(id); if(!motivo)return; }
+  else{
+    var txt={confirmar:'Confirmar este pedido?',despachar:'Marcar que saiu para entrega?',pronto:'Marcar pronto para retirada?',aceitar_cancel:'Aceitar o cancelamento pedido pelo cliente?',negar_cancel:'Negar o cancelamento?'}[acao];
+    if(!confirm(txt))return;
+  }
+  var r=await jpost('/api/ifood/comando',{id:id,acao:acao,motivo:motivo});
   if(!r.ok)alert(r.erro||'não deu');
   await carregar();
+}
+async function escolherMotivo(id){
+  var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
+  if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'. Pode ser que ele não aceite mais cancelamento.'));return null}
+  var txt='CANCELAR este pedido no iFood.\n\nEscolha o motivo (digite o número):\n\n';
+  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\n'});
+  var esc=prompt(txt,'1'); if(!esc)return null;
+  var m=d.motivos[Number(esc)-1];
+  if(!m){alert('Número inválido');return null}
+  if(!confirm('Cancelar por: '+m.descricao+'?'))return null;
+  return m;
 }
 carregar();setInterval(carregar,15000);
 </script></body></html>`;
@@ -14333,11 +14376,15 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/ifood/testar') return res.end(JSON.stringify(await ifoodTestar()));
       if (req.method === 'POST' && p === '/api/ifood/parear') return res.end(JSON.stringify(await ifoodParear()));
       if (req.method === 'POST' && p === '/api/ifood/concluir') return res.end(JSON.stringify(await ifoodConcluirPareamento((await readBody(req)).codigo)));
+      if (p === '/api/ifood/motivos') {
+        try { return res.end(JSON.stringify(await ifoodMotivosCancel(u.searchParams.get('id') || ''))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
       if (req.method === 'POST' && p === '/api/ifood/comando') {
         const b = await readBody(req);
         // erro do iFood vira mensagem na tela, não 500: quem está no caixa
         // precisa LER o motivo (pedido já cancelado, janela de aceite vencida)
-        try { return res.end(JSON.stringify(await ifoodComando(b.id, b.acao))); }
+        try { return res.end(JSON.stringify(await ifoodComando(b.id, b.acao, b.motivo || null))); }
         catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
