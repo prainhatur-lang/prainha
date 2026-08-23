@@ -342,6 +342,11 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/configuracoes',
             perm: 'configuracao.read',
           },
+          {
+            label: 'Pagamento (Cielo por casa)',
+            href: '/configuracoes/pagamento',
+            perm: 'configuracao.read',
+          },
         ],
       },
       {
