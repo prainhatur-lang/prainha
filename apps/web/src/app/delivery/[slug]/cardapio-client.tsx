@@ -151,6 +151,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [cpf, setCpf] = useState('');
+  // Cadastro unificado: o CPF diz quem é a pessoa (mesmo cadastro do salão e
+  // da reserva) e o checkout já vem preenchido.
+  const [identificando, setIdentificando] = useState(false);
+  const [reconhecido, setReconhecido] = useState<string | null>(null);
   const [tipo, setTipo] = useState<'entrega' | 'retirada'>(
     loja.entregaAtiva ? 'entrega' : 'retirada',
   );
@@ -366,6 +370,33 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       }
     } catch {
       /* usa a agenda do SSR */
+    }
+  }
+
+  /** Dispara quando o CPF fica completo: acha a pessoa e preenche nome e
+   *  WhatsApp. Nunca trava o pedido — não achando, o cliente digita como
+   *  sempre. Campo que a pessoa já preencheu na mão não é sobrescrito. */
+  async function identificarPeloCpf(doc: string) {
+    if (doc.length !== 11) {
+      setReconhecido(null);
+      return;
+    }
+    setIdentificando(true);
+    try {
+      const r = await fetch(`/api/delivery/${slug}/identificar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cpf: doc }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return;
+      if (d.nome && !nome.trim()) setNome(d.nome);
+      if (d.telefone && !telefone.trim()) setTelefone(d.telefone);
+      setReconhecido(d.primeiroNome ?? null);
+    } catch {
+      /* identificar é conveniência — silêncio, e o pedido segue */
+    } finally {
+      setIdentificando(false);
     }
   }
 
@@ -748,31 +779,43 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           <p className={lbl}>Seus dados</p>
           <div className="mt-2 space-y-3">
+            {/* CPF na frente: é ele que diz quem é a pessoa. Achando o
+                cadastro, nome e WhatsApp já vêm preenchidos. */}
+            <div>
+              <label className={lbl}>CPF</label>
+              <input
+                value={cpf}
+                onChange={(e) => {
+                  const doc = e.target.value.replace(/\D/g, '').slice(0, 11);
+                  setCpf(doc);
+                  if (doc.length === 11) void identificarPeloCpf(doc);
+                  else setReconhecido(null);
+                }}
+                inputMode="numeric"
+                placeholder="Só os números"
+                className={inp}
+              />
+              <p className="mt-1 text-[11px] text-[var(--dlv-muted)]">
+                {identificando
+                  ? 'Procurando seu cadastro…'
+                  : reconhecido
+                    ? `Achamos seu cadastro, ${reconhecido}! Confira os dados abaixo.`
+                    : 'Com o CPF a gente já reconhece você e preenche o resto.'}
+              </p>
+            </div>
             <div>
               <label className={lbl}>Nome</label>
               <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={lbl}>WhatsApp</label>
-                <input
-                  value={telefone}
-                  onChange={(e) => setTelefone(fmtTelefone(e.target.value))}
-                  inputMode="tel"
-                  placeholder="(79) 99999-9999"
-                  className={inp}
-                />
-              </div>
-              <div>
-                <label className={lbl}>CPF (opcional)</label>
-                <input
-                  value={cpf}
-                  onChange={(e) => setCpf(e.target.value.replace(/\D/g, '').slice(0, 11))}
-                  inputMode="numeric"
-                  placeholder="Pra nota"
-                  className={inp}
-                />
-              </div>
+            <div>
+              <label className={lbl}>WhatsApp</label>
+              <input
+                value={telefone}
+                onChange={(e) => setTelefone(fmtTelefone(e.target.value))}
+                inputMode="tel"
+                placeholder="(79) 99999-9999"
+                className={inp}
+              />
             </div>
             <div>
               <label className={lbl}>Observação do pedido</label>
