@@ -588,6 +588,10 @@ async function initSchema() {
     seq integer, codigo_pdv integer, nome text, quantidade numeric,
     valor_total numeric, detalhes text, area_codigo integer)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_ifood_item_pedido ON ifood_item (pedido_id)`;
+  // O pedido do SITE (delivery do Concilia) entra nesta mesma fila: o caixa
+  // aceita ou recusa do mesmo jeito, e o KDS, a impressora e a rota de
+  // entrega continuam funcionando sem saber a origem. 'ifood' | 'site'.
+  await addCol('ifood_pedido', "origem text NOT NULL DEFAULT 'ifood'");
   // evento só sai do polling depois de PERSISTIDO aqui. Se o processo cair no
   // meio, o iFood devolve o mesmo evento no próximo ciclo — e o PK evita
   // processar duas vezes.
@@ -1232,7 +1236,59 @@ async function ifoodMotivosCancel(orderId) {
   })).filter((m) => m.codigo) };
 }
 
+/** Avisa o Concilia o que o caixa fez com um pedido do SITE. Best-effort: o
+ *  caixa não pode ficar travado porque a nuvem oscilou — o estado que vale
+ *  pra cozinha é o daqui. */
+async function avisarNuvemSite(pedidoId, acao, motivo = null) {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const sig = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: sig });
+  await fetch(`${PAGAR_MESA_URL}/api/loja/delivery-fila?${q}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pedidoId, acao, motivo }),
+    signal: AbortSignal.timeout(8000),
+  }).catch((err) => console.error('[site] avisar nuvem:', err.message));
+}
+
 async function ifoodComando(orderId, acao, extra = null) {
+  // Pedido do site não existe na API do iFood: o caixa usa os mesmos botões,
+  // mas quem é avisado é o Concilia.
+  const [orig] = await sql`SELECT origem FROM ifood_pedido WHERE id=${orderId}`;
+  if (orig?.origem === 'site') {
+    if (acao === 'confirmar') {
+      await sql`UPDATE ifood_pedido SET confirmado_em=COALESCE(confirmado_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'aceito');
+      return { ok: true };
+    }
+    if (acao === 'pronto') {
+      // Retirada: fica pronto no balcão esperando o cliente.
+      await sql`UPDATE ifood_pedido SET despachado_em=COALESCE(despachado_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'pronto');
+      return { ok: true };
+    }
+    if (acao === 'despachar') {
+      await sql`UPDATE ifood_pedido SET despachado_em=COALESCE(despachado_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'saiu_entrega');
+      return { ok: true };
+    }
+    if (acao === 'concluir') {
+      await sql`UPDATE ifood_pedido SET concluido_em=COALESCE(concluido_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'concluido');
+      return { ok: true };
+    }
+    if (acao === 'cancelar') {
+      const motivo = String(extra?.descricao || extra?.codigo || 'recusado pela loja').slice(0, 120);
+      await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_motivo=${motivo} WHERE id=${orderId}`;
+      // Pedido do site já vem PAGO: recusar exige estorno, e quem trata isso
+      // é o painel do Concilia — por isso o motivo sobe junto.
+      await avisarNuvemSite(orderId, 'recusado', motivo);
+      return { ok: true };
+    }
+    return { ok: false, erro: 'ação não vale pra pedido do site' };
+  }
+
   const caminho = IFOOD_ACOES[acao];
   if (!caminho) return { ok: false, erro: 'ação desconhecida' };
   if (acao === 'cancelar') {
@@ -1346,9 +1402,82 @@ async function puxarConfigIfood() {
   console.log('[ifood] config atualizada pelo Concilia (ativo=' + (c.ativo ? 'sim' : 'nao') + ')');
 }
 
+/** Puxa do Concilia os pedidos PAGOS do delivery do site e coloca na MESMA
+ *  fila do iFood — o caixa aceita ou recusa pela mesma tela, e o KDS, a
+ *  impressora e a rota de entrega continuam iguais.
+ *
+ *  A nuvem só para de oferecer o pedido depois que a loja confirma que
+ *  recebeu: caixa fechado ou loja sem rede não faz pedido pago sumir. */
+async function puxarDeliverySite() {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const assina = () => createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: assina() });
+
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/delivery-fila?${q}`, { signal: AbortSignal.timeout(10000) });
+  if (!r.ok) throw new Error('fila do site: HTTP ' + r.status);
+  const d = await r.json();
+  if (!d?.ok || !Array.isArray(d.pedidos) || d.pedidos.length === 0) return;
+
+  for (const p of d.pedidos) {
+    const retirada = String(p.tipo || '').toLowerCase() === 'retirada';
+    const linha = {
+      id: p.id,
+      display_id: 'S' + p.numero,          // "S12" = veio do Site, não confunde com o iFood
+      merchant_id: null,
+      status: 'PLACED',                    // chega pendente: quem decide é o caixa
+      tipo: retirada ? 'TAKEOUT' : 'DELIVERY',
+      // Entrega do site é sempre nossa (não existe entregador de plataforma).
+      modo_entrega: retirada ? 'CLIENTE' : 'MERCHANT',
+      cliente_nome: p.clienteNome || null,
+      cliente_fone: p.clienteTelefone || null,
+      endereco: p.endereco ? [p.endereco.rua, p.endereco.numero, p.endereco.complemento, p.endereco.bairro, p.endereco.referencia].filter(Boolean).join(' · ') : null,
+      total: Number(p.total || 0) || 0,
+      taxa_entrega: Number(p.taxaEntrega || 0) || 0,
+      pago_online: true,                   // o site só manda pedido já pago
+      agendado_para: p.agendadoData && p.agendadoHora ? `${p.agendadoData}T${p.agendadoHora}:00` : null,
+      criado_em: p.pagoEm || null,
+      origem: 'site',
+      payload: JSON.stringify(p),
+    };
+    await sql`INSERT INTO ifood_pedido ${sql(linha)} ON CONFLICT (id) DO NOTHING`;
+
+    const itens = [];
+    for (const [i, it] of (p.itens || []).entries()) {
+      const alvo = await ifoodResolverProduto(Number(it.codigoPdv) || null, it.nome);
+      const extras = (it.complementos || []).map((c) => c.nome).join(', ');
+      const det = [extras, it.obs, alvo.aviso].filter(Boolean).join(' · ');
+      itens.push({
+        pedido_id: p.id, seq: i, codigo_pdv: alvo.codigo_pdv, nome: it.nome || 'item',
+        quantidade: Number(it.qtd || 1), valor_total: Number(it.total ?? 0) || 0,
+        detalhes: det.trim() || null, area_codigo: alvo.area_codigo,
+      });
+    }
+    const jaTem = await sql`SELECT 1 FROM ifood_item WHERE pedido_id=${p.id} LIMIT 1`;
+    if (!jaTem.length && itens.length) await sql`INSERT INTO ifood_item ${sql(itens)}`;
+
+    // Só agora avisa a nuvem: se o processo cair antes daqui, o pedido volta
+    // no próximo ciclo em vez de sumir.
+    const e2 = Math.floor(Date.now() / 1000) + 120;
+    const s2 = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e2)].join('|')).digest('hex');
+    const q2 = new URLSearchParams({ f: FILIAL_ID, e: String(e2), s: s2 });
+    await fetch(`${PAGAR_MESA_URL}/api/loja/delivery-fila?${q2}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pedidoId: p.id, acao: 'recebido' }),
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => {});
+    console.log('[site] pedido ' + linha.display_id + ' na fila do caixa');
+  }
+}
+
 async function loopIfood() {
   try {
     await puxarConfigIfood().catch((e) => console.error('[ifood] config da nuvem:', e.message));
+    // O delivery do site não depende do iFood estar ligado — é fila própria
+    // que só divide a tela do caixa.
+    await puxarDeliverySite().catch((e) => console.error('[site] fila:', e.message));
+    await imprimirComandasNovas().catch(() => {});
     const c = await ifoodConf();
     if (c.ativo && c.pronto) {
       await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
@@ -1507,6 +1636,7 @@ async function apiIfood() {
     codigo_pdv: await cfgGet('ifood_codigo_pdv', 'produto'),
     pedidos: peds.map((p) => ({
       id: p.id, display_id: p.display_id, status: p.status, tipo: p.tipo, modo_entrega: p.modo_entrega,
+      origem: p.origem || 'ifood',
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
       total: Number(p.total || 0), taxa: Number(p.taxa_entrega || 0), pago_online: p.pago_online,
       itens: p.itens, recebido_em: p.recebido_em, agendado_para: p.agendado_para,
@@ -10963,7 +11093,7 @@ async function pintaLoja(){
   if(d.pausas.length){
     d.pausas.forEach(function(x){
       h+='<div class="l"><div class="nm">Pausada'+(x.descricao?': '+esc(x.descricao):'')+'<small>até '+esc(String(x.fim||'').slice(11,16))+'</small></div>'+
-        '<button class="b g" onclick="retomar(\''+x.id+'\')">voltar a receber</button></div>';
+        '<button class="b g" onclick="retomar(\\''+x.id+'\\')">voltar a receber</button></div>';
     });
   }else{
     h+='<div class="l"><div class="nm">Pausar o recebimento<small>o iFood reabre sozinho na hora marcada; o horário de funcionamento não muda</small></div>'+
@@ -10989,8 +11119,8 @@ async function retomar(id){
 async function escolherMotivo(id){
   var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
   if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'. Pode ser que ele não aceite mais cancelamento.'));return null}
-  var txt='CANCELAR este pedido no iFood.\n\nEscolha o motivo (digite o número):\n\n';
-  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\n'});
+  var txt='CANCELAR este pedido no iFood.\\n\\nEscolha o motivo (digite o número):\\n\\n';
+  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\\n'});
   var esc=prompt(txt,'1'); if(!esc)return null;
   var m=d.motivos[Number(esc)-1];
   if(!m){alert('Número inválido');return null}

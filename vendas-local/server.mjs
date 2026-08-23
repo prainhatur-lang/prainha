@@ -1262,9 +1262,20 @@ async function ifoodComando(orderId, acao, extra = null) {
       await avisarNuvemSite(orderId, 'aceito');
       return { ok: true };
     }
+    if (acao === 'pronto') {
+      // Retirada: fica pronto no balcão esperando o cliente.
+      await sql`UPDATE ifood_pedido SET despachado_em=COALESCE(despachado_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'pronto');
+      return { ok: true };
+    }
     if (acao === 'despachar') {
       await sql`UPDATE ifood_pedido SET despachado_em=COALESCE(despachado_em, now()) WHERE id=${orderId}`;
       await avisarNuvemSite(orderId, 'saiu_entrega');
+      return { ok: true };
+    }
+    if (acao === 'concluir') {
+      await sql`UPDATE ifood_pedido SET concluido_em=COALESCE(concluido_em, now()) WHERE id=${orderId}`;
+      await avisarNuvemSite(orderId, 'concluido');
       return { ok: true };
     }
     if (acao === 'cancelar') {
@@ -11082,7 +11093,7 @@ async function pintaLoja(){
   if(d.pausas.length){
     d.pausas.forEach(function(x){
       h+='<div class="l"><div class="nm">Pausada'+(x.descricao?': '+esc(x.descricao):'')+'<small>até '+esc(String(x.fim||'').slice(11,16))+'</small></div>'+
-        '<button class="b g" onclick="retomar(\''+x.id+'\')">voltar a receber</button></div>';
+        '<button class="b g" onclick="retomar(\\''+x.id+'\\')">voltar a receber</button></div>';
     });
   }else{
     h+='<div class="l"><div class="nm">Pausar o recebimento<small>o iFood reabre sozinho na hora marcada; o horário de funcionamento não muda</small></div>'+
@@ -11108,8 +11119,8 @@ async function retomar(id){
 async function escolherMotivo(id){
   var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
   if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'. Pode ser que ele não aceite mais cancelamento.'));return null}
-  var txt='CANCELAR este pedido no iFood.\n\nEscolha o motivo (digite o número):\n\n';
-  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\n'});
+  var txt='CANCELAR este pedido no iFood.\\n\\nEscolha o motivo (digite o número):\\n\\n';
+  d.motivos.forEach(function(m,i){txt+=(i+1)+') '+m.descricao+'\\n'});
   var esc=prompt(txt,'1'); if(!esc)return null;
   var m=d.motivos[Number(esc)-1];
   if(!m){alert('Número inválido');return null}
