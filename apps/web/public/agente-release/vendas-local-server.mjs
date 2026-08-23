@@ -1106,6 +1106,10 @@ async function ifoodPoll() {
 async function ifoodAplicarEvento(orderId, code, c) {
   if (!orderId) return;
   if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId);
+  // o lançamento financeiro segue o evento, não o comando: só o evento diz que
+  // o iFood REALMENTE aceitou (o confirm responde 202 e pode não valer)
+  if (code === 'CONFIRMED') await lancarReceberCanal(orderId, 'abrir').catch((e) => console.error('[ifood] receber-canal:', e.message));
+  if (code === 'CANCELLED') await lancarReceberCanal(orderId, 'cancelar').catch((e) => console.error('[ifood] receber-canal:', e.message));
   const carimbo = { CONFIRMED: 'confirmado_em', DISPATCHED: 'despachado_em', CONCLUDED: 'concluido_em', CANCELLED: 'cancelado_em' }[code];
   if (carimbo) {
     await sql`UPDATE ifood_pedido SET status=${code}, ${sql(carimbo)}=COALESCE(${sql(carimbo)}, now()) WHERE id=${orderId}`;
@@ -1355,6 +1359,33 @@ async function loopIfood() {
     ifoodStatus = { ...ifoodStatus, ultimo_erro: String(e.message).slice(0, 200) };
     console.error('[ifood] ERRO:', e.message);
   } finally { setTimeout(loopIfood, IFOOD_POLL_MS); }
+}
+
+/** O dinheiro do pedido pago no app fica COM O IFOOD até o repasse. Sem este
+ *  lançamento, o repasse cairia no banco sem contrapartida no sistema — e no
+ *  caixa o pedido pareceria dívida do cliente, que é o erro que a conta a
+ *  receber de canal veio corrigir.
+ *
+ *  Nasce no ACEITE (não na chegada): pedido recusado nunca vira dinheiro.
+ *  Pedido pago na entrega não entra aqui — esse dinheiro passa pelo caixa. */
+async function lancarReceberCanal(pedidoId, acao = 'abrir') {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${pedidoId}`;
+  if (!p) return;
+  if (acao === 'abrir' && !p.pago_online) return; // recebe na entrega: é do caixa
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'receber-canal', String(e)].join('|')).digest('hex');
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/receber-canal`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(8000),
+    body: JSON.stringify({
+      f: FILIAL_ID, e, s, acao, canal: 'ifood', pedido_ref: p.id,
+      display_id: p.display_id, nome_cliente: p.cliente_nome,
+      data_pedido: p.criado_em || p.recebido_em, valor_bruto: Number(p.total || 0),
+      observacao: acao === 'cancelar' ? 'cancelado no iFood' : undefined,
+    }),
+  });
+  if (!r.ok) throw new Error('receber-canal HTTP ' + r.status);
 }
 
 // ---- LOJA ABERTA / PAUSADA no iFood (módulo Merchant) ----
@@ -1973,7 +2004,7 @@ async function pedidoAlvo(numero, ped) {
   if (!p) return fbAcharPedido(numero);
   return (await pedAbertoDoNumero(p, numero)) ? p : null;
 }
-/** Marca (memória, TTL 15s) que este carrinho está sendo processado nesta
+/** Marca (memória, TTL 5s) que este carrinho está sendo processado nesta
  *  mesa; devolve {duplicado:true, pedido_fb, total} se já tinha marca viva
  *  pra essa MESMA assinatura. Chamar sempre dentro de naFilaDaMesa — fora
  *  dela, o check-then-mark tem a mesma corrida que o SELECT tinha. */
@@ -1984,7 +2015,7 @@ function dedupeCarrinho(numero, assinatura) {
   if (atual && atual.assinatura === assinatura && atual.expira > Date.now()) {
     return { duplicado: true, pedido_fb: atual.pedido_fb, total: atual.total };
   }
-  enviosRecentesPorMesa.set(n, { assinatura, pedido_fb: null, total: 0, expira: Date.now() + 15000 });
+  enviosRecentesPorMesa.set(n, { assinatura, pedido_fb: null, total: 0, expira: Date.now() + 5000 });
   return { duplicado: false };
 }
 /** Preenche pedido_fb/total reais depois que o envio de verdade terminou —
@@ -3453,7 +3484,7 @@ async function apiVendaEnviar(body) {
     ? await naFilaDaMesa(numero, () => dedupeCarrinho(numero, assinaturaEnvio))
     : { duplicado: false };
   if (dedupe.duplicado) {
-    console.log('[dedupe] carrinho repetido em <15s na mesa ' + numero + ' — ignorado (toque duplo)');
+    console.log('[dedupe] carrinho repetido em <5s na mesa ' + numero + ' — ignorado (toque duplo)');
     return { ok: true, pedido_fb: dedupe.pedido_fb, n_itens: pedidos.length,
       total: dedupe.total, avisos_impressora: [] };
   }
@@ -4871,7 +4902,45 @@ async function fiadoDaConta(numero, ped, aPagar) {
   } catch (e) { console.error('[fiado-cupom] ' + e.message); return null; }
 }
 
+/** A conta de um pedido do iFood no caixa.
+ *
+ *  Ele NÃO existe no Firebird — nasce da nossa integração e vive só aqui, com
+ *  código negativo. Por isso não passa pelo pedidoAlvo(): o caixa abre, vê os
+ *  itens e o total, e não tem o que receber (o cliente já pagou no app). É
+ *  informação, não caixa. */
+async function contaIfoodCaixa(ped) {
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE seq=${-Number(ped)}`;
+  if (!p) return { ok: false, erro: 'pedido do iFood não encontrado' };
+  const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
+  const agora = Date.now();
+  const t0 = new Date(p.criado_em || p.recebido_em).getTime();
+  const total = Number(p.total || 0);
+  const pago = p.pago_online ? total : 0;
+  return {
+    ok: true, numero: 0, ped, canal: 'ifood',
+    nome: 'iFood #' + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : ''),
+    ifood: {
+      id: p.id, display_id: p.display_id, status: p.status,
+      cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
+      pago_online: !!p.pago_online, modo_entrega: p.modo_entrega,
+      confirmado: !!p.confirmado_em, despachado: !!p.despachado_em,
+    },
+    comandas_mesa: [], geral: null,
+    itens: itens.map((i) => ({
+      item_codigo: -Number(i.item_codigo), tipo: 1, codigo_pai: null,
+      nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0,
+      detalhes: i.detalhes, status: null, quem: 'iFood',
+      espera_min: Math.max(0, Math.round((agora - t0) / 60000)), esperando: !p.despachado_em, atrasado: false,
+    })),
+    subtotal: +(total - Number(p.taxa_entrega || 0)).toFixed(2), servico: 0,
+    desconto: 0, acrescimo: Number(p.taxa_entrega || 0),
+    total, pago, falta: Math.max(0, +(total - pago).toFixed(2)),
+  };
+}
+
 async function apiCaixaConta(n, pedRaw) {
+  // código negativo = pedido do iFood (o Firebird só tem positivo)
+  if (Number(pedRaw) < 0) return contaIfoodCaixa(pedRaw);
   const num = Number(n);
   const agora = Date.now();
   const ped = await pedidoAlvo(num, pedRaw);
@@ -14317,7 +14386,15 @@ document.getElementById('e4').textContent=base+'/venda';
 pinta();setInterval(pinta,3000);
 </script></body></html>`;
 
-function readBody(req) { return new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); }); }
+// LER DUAS VEZES O MESMO CORPO: o stream só vem uma vez, e uma guarda que
+// precisa espiar o body (a do iFood no caixa) deixaria o handler seguinte sem
+// nada — todo POST do caixa cairia com corpo vazio. Guardando a promessa no
+// próprio req, a segunda chamada recebe o mesmo objeto.
+function readBody(req) {
+  if (req._corpo) return req._corpo;
+  req._corpo = new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); });
+  return req._corpo;
+}
 
 // VERSAO do arquivo que esta rodando — pra saber, a distancia, se o celular
 // da loja pegou a atualizacao ou esta com pagina velha.
@@ -14468,6 +14545,18 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/sessao') return res.end(JSON.stringify(await apiCaixaSessao(req, u)));
       const quem = await caixaDaRequisicao(req, u); // as demais exigem caixa logado
       if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
+      // PEDIDO DO IFOOD (código negativo) não se recebe no caixa: o cliente já
+      // pagou no app e o dinheiro vem no repasse. Sem esta guarda a ação caía
+      // no pedidoAlvo() e voltava "não há conta aberta no número 0" — verdade
+      // técnica que não explica nada pra quem está no caixa. A conta em si
+      // (GET) passa: ver o pedido é justamente o que se quer ali.
+      if (req.method === 'POST' && p !== '/api/caixa/imprimir') {
+        const espia = await readBody(req).catch(() => ({}));
+        if (Number(espia?.ped) < 0) {
+          return res.end(JSON.stringify({ ok: false,
+            erro: 'Pedido do iFood: já pago no app, não passa pelo caixa. O repasse aparece em Financeiro → Receber de canal.' }));
+        }
+      }
       if (p === '/api/caixa/conta') return res.end(JSON.stringify(await apiCaixaConta(u.searchParams.get('n') || 0, u.searchParams.get('ped'))));
       if (req.method === 'POST' && p === '/api/caixa/ajuste') return res.end(JSON.stringify(await apiCaixaAjuste(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
