@@ -2627,14 +2627,24 @@ async function dadosComprovantePix(txid) {
   const c = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
   if (!c) return null;
   const numero = Number(c.mesa) || 0;
-  const ct = await apiContaTexto(numero).catch(() => ({ ok: false }));
-  const consumo = ct.ok ? Number(ct.total || 0) + (ct.comandas || []).reduce((a, x) => a + Number(x.subtotal || 0), 0) : 0;
-  const pagoGeral = ct.ok ? Number(ct.pago_geral || 0) : 0;
-  const falta = ct.ok ? Math.max(0, +(consumo - pagoGeral).toFixed(2)) : 0;
+  // ⚠️ NUNCA usar apiContaTexto aqui. Ele lê `comanda.subtotal_pago`, que é o
+  // ESPELHO — só sincroniza no próximo ciclo (~15s). O Pix acabou de gravar o
+  // pagamento no Firebird HÁ SEGUNDOS, no MESMO fluxo — o comprovante saía
+  // dizendo "AINDA FALTA R$15" pra quem tinha acabado de pagar R$16,50,
+  // porque lia o "pago" de ANTES desse pagamento existir. `apiCaixaFechar`
+  // (chamado logo antes disto) já usa dado fresco do Firebird — o comprovante
+  // tem que usar a MESMA fonte, senão as duas partes do mesmo fluxo se
+  // contradizem. Pedido caído do dono, 23/08: comprovante real da mesa 129.
+  const ped = (await fbAcharPedido(numero).catch(() => null)) || (await pedidoFechadoRecente(numero).catch(() => null));
+  const tot = ped ? (await pedTotais(ped).catch(() => null))?.total || 0 : 0;
+  const pagoGeral = ped ? await fbPagoDoPedido(ped).catch(() => 0) : 0;
+  const falta = Math.max(0, +(tot - pagoGeral).toFixed(2));
+  const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${numero}
+     ORDER BY criado_em DESC LIMIT 1`)[0]; // sem filtrar fechada_em: mesmo motivo do pagamento — não pode "vencer"
   return { txid: String(txid), mesa: numero, rotulo: impRotulo(numero, null),
-    nome: (ct.ok && ct.nome) || null, valor: Number(c.valor) || 0, e2e: c.e2e || null,
+    nome: ident?.nome_curto || null, valor: Number(c.valor) || 0, e2e: c.e2e || null,
     quando: c.pago_em || c.criado_em, provedor: c.provedor || 'cielo',
-    consumo, pago_geral: pagoGeral, falta, quitada: falta <= 0.009, casa: LOJA_NOME };
+    consumo: tot, pago_geral: pagoGeral, falta, quitada: falta <= 0.009, casa: LOJA_NOME };
 }
 function cupomPix(d) {
   const q = new Date(d.quando).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -10356,14 +10366,25 @@ hr{border:0;border-top:1px dashed #9a9aa5;margin:9px 0}
 <div class="barra"><b>Conta</b>
   <button onclick="window.print()">🖨 Imprimir</button>
   <button class="g" onclick="history.back()">Voltar</button></div>
-<div id="app"></div>
+<!-- SEM "carregando…" a div ficava vazia enquanto o fetch estava em trânsito
+     — no Wi-Fi rápido daqui isso passa em milissegundos, mas no celular do
+     cliente (rede fraca na mesa) parecia "não aparece nada". Pedido do dono,
+     23/08. -->
+<div id="app"><div class="erro">carregando sua conta…</div></div>
 <script>
 var N=new URLSearchParams(location.search).get('n');
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
-(async function(){
-  var d=await (await fetch('/api/conta/texto?n='+N,{cache:'no-store'})).json();
+async function carregarConta(){
   var app=document.getElementById('app');
+  var d;
+  try{ d=await (await fetch('/api/conta/texto?n='+N,{cache:'no-store'})).json(); }
+  catch(e){
+    // sem isto, uma falha de rede (comum no Wi-Fi da mesa) deixava a tela em
+    // branco PRA SEMPRE — a Promise rejeitava e ninguém tratava o erro.
+    app.innerHTML='<div class="erro">Sem conexão agora.<br><button style="margin-top:10px;background:#e0651a;color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;cursor:pointer" onclick="carregarConta()">Tentar de novo</button></div>';
+    return;
+  }
   if(!d.ok){app.innerHTML='<div class="erro">'+esc(d.erro||'erro')+'</div>';return}
   var h='<div class="cupom"><div class="cab"><div class="n">PRAINHA BAR</div>'+
     '<div class="s">CONFERÊNCIA DE CONSUMO<br>não é documento fiscal</div></div><hr>'+
@@ -10428,7 +10449,8 @@ function brl(v){return Number(v||0).toLocaleString('pt-BR',{minimumFractionDigit
   }
   h+='<div class="pe">Serviço de '+d.taxa_servico+'% incluso no total.<br>Obrigado pela preferência!</div></div>';
   app.innerHTML=h;
-})();
+}
+carregarConta();
 </script></body></html>`;
 
 // ---- /catraca — tela de operação da saída ----
