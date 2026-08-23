@@ -133,18 +133,19 @@ export default async function ReservasPage(props: {
     }
   }
 
+  // DESABILITADO: Consumer não está em uso
   // Mesas fisicamente ocupadas AGORA no Consumer (comanda aberta), só faz
   // sentido pra hoje — sincronizado via CDC do agente-local (~15min de
   // atraso). Sinaliza no mapa mesas ocupadas por walk-in, sem reserva.
   const ocupadasConsumer: string[] = [];
-  if (data === hojeBr() && filialIds.length > 0) {
-    const porFilial = await Promise.all(
-      filialIds.map(async (fid) => ({ fid, mesas: await mesasOcupadasNoConsumer(fid) })),
-    );
-    for (const { fid, mesas } of porFilial) {
-      for (const m of mesas) ocupadasConsumer.push(`${fid}:${m}`);
-    }
-  }
+  // if (data === hojeBr() && filialIds.length > 0) {
+  //   const porFilial = await Promise.all(
+  //     filialIds.map(async (fid) => ({ fid, mesas: await mesasOcupadasNoConsumer(fid) })),
+  //   );
+  //   for (const { fid, mesas } of porFilial) {
+  //     for (const m of mesas) ocupadasConsumer.push(`${fid}:${m}`);
+  //   }
+  // }
 
   // Histórico do cliente (recorrência): por telefone, conta visitas ANTERIORES
   // (reservas não canceladas/no-show com data < o dia visto) e a última.
