@@ -249,6 +249,20 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
     if (mudaStatus && set.status !== atual.status) {
       if (set.status === 'no_show') {
+        // Fechar o pedido/comanda no Consumer pra liberar a mesa
+        if (atual.mesa) {
+          await db
+            .update(schema.pedido)
+            .set({ dataFechamento: sql`now()`, atualizadoEm: sql`now()` })
+            .where(
+              and(
+                eq(schema.pedido.filialId, atual.filialId),
+                eq(schema.pedido.numero, atual.mesa),
+                isNull(schema.pedido.dataFechamento),
+              ),
+            )
+            .catch(() => null); // Falha silenciosa se não achar pedido
+        }
         mensagem = `Notamos que você não compareceu à sua reserva de ${dataBr} às ${atual.hora}. Se quiser remarcar, é só chamar a gente!`;
       } else if (set.status === 'cancelada') {
         // Cancelamento pela CASA: estorno integral do Pix, sempre.
