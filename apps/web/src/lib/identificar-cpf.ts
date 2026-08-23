@@ -83,6 +83,9 @@ export async function identificarPorCpf(
   opts: { forcarSpc?: boolean; permitirSpc?: boolean; usuarioId?: string } = {},
 ): Promise<ResultadoIdentificacao> {
   const permitirSpc = opts.permitirSpc !== false;
+  /** O CPF bateu em mais de um cadastro nosso, com nomes diferentes. Nenhum
+   *  deles pode ser tratado como "a pessoa" — quem desempata é o SPC. */
+  let ambiguo = false;
 
   const [filial] = await db
     .select({ id: schema.filial.id, organizacaoId: schema.filial.organizacaoId })
@@ -93,7 +96,15 @@ export async function identificarPorCpf(
 
   if (!opts.forcarSpc) {
     // 1. Já é cliente NESTA filial — o cadastro existe, não pode duplicar.
-    const [aqui] = await db
+    //
+    // limit(2) de propósito: o mesmo CPF aparece em VÁRIOS cadastros do PDV
+    // (digitação no balcão põe o CPF de um cliente na ficha de outro — um CPF
+    // real chegou a ter 6 fichas na Prainha Bar, com nomes de gente
+    // diferente). Pegar "o primeiro" devolve um nome ao acaso, e dizer "olá,
+    // Fulano" pra quem não é Fulano é pior do que não reconhecer ninguém.
+    // Empate aqui não decide nada: cai pro SPC, que é quem sabe de quem é o
+    // CPF de verdade.
+    const aqui = await db
       .select()
       .from(schema.cliente)
       .where(and(
@@ -101,20 +112,23 @@ export async function identificarPorCpf(
         eq(schema.cliente.cpfOuCnpj, cpf),
         isNull(schema.cliente.dataDelete),
       ))
-      .limit(1);
-    if (aqui) {
+      .limit(2);
+    if (aqui.length === 1) {
+      const c = aqui[0]!;
       return {
         fonte: 'filial',
-        clienteId: aqui.id,
-        codigoExterno: aqui.codigoExterno,
-        dados: doCliente(aqui),
+        clienteId: c.id,
+        codigoExterno: c.codigoExterno,
+        dados: doCliente(c),
         spcDisponivel: spcConfigurado(),
       };
     }
+    ambiguo = aqui.length > 1;
 
     // 2. Cadastro de filial irmã — mesma organização, mesmo cliente.
-    if (filial.organizacaoId) {
-      const [irma] = await db
+    //    Mesma regra do passo 1: empate não decide.
+    if (!ambiguo && filial.organizacaoId) {
+      const irma = await db
         .select({ cliente: schema.cliente, filialNome: schema.filial.nome })
         .from(schema.cliente)
         .innerJoin(schema.filial, eq(schema.filial.id, schema.cliente.filialId))
@@ -124,15 +138,22 @@ export async function identificarPorCpf(
           eq(schema.cliente.cpfOuCnpj, cpf),
           isNull(schema.cliente.dataDelete),
         ))
-        .limit(1);
-      if (irma) {
+        .limit(2);
+      // Nomes iguais em filiais diferentes é a MESMA pessoa (cadastro
+      // espelhado), não empate — só trava quando os nomes divergem.
+      const nomesDistintos = new Set(
+        irma.map((x) => (x.cliente.nome ?? '').trim().toLowerCase()).filter(Boolean),
+      );
+      if (irma.length >= 1 && nomesDistintos.size <= 1) {
+        const i = irma[0]!;
         return {
           fonte: 'filial-irma',
-          filialNome: irma.filialNome,
-          dados: doCliente(irma.cliente),
+          filialNome: i.filialNome,
+          dados: doCliente(i.cliente),
           spcDisponivel: spcConfigurado(),
         };
       }
+      ambiguo = irma.length > 1;
     }
   }
 

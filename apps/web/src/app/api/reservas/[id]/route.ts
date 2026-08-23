@@ -2,7 +2,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -250,14 +250,17 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (mudaStatus && set.status !== atual.status) {
       if (set.status === 'no_show') {
         // Fechar o pedido/comanda no Consumer pra liberar a mesa
-        if (atual.mesa) {
+        // `pedido.numero` é integer e `reserva.mesa` é texto (mesa pode ser
+        // "12A" em algumas áreas) — só fecha quando dá pra converter.
+        const numeroMesa = Number((atual.mesa ?? '').replace(/\D/g, ''));
+        if (atual.mesa && Number.isFinite(numeroMesa) && numeroMesa > 0) {
           await db
             .update(schema.pedido)
-            .set({ dataFechamento: sql`now()`, atualizadoEm: sql`now()` })
+            .set({ dataFechamento: sql`now()` })
             .where(
               and(
                 eq(schema.pedido.filialId, atual.filialId),
-                eq(schema.pedido.numero, atual.mesa),
+                eq(schema.pedido.numero, numeroMesa),
                 isNull(schema.pedido.dataFechamento),
               ),
             )
