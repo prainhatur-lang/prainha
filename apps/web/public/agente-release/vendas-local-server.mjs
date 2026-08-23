@@ -2217,6 +2217,52 @@ async function cupomConta(numero, ped) {
   return Buffer.concat(b);
 }
 
+/* ---- COMPROVANTE DE MOVIMENTO DA GAVETA ----
+   Pedido do dono (22/08): TODA saída de dinheiro do caixa tem que gerar papel.
+   Sangria e despesa saem em DUAS VIAS — uma fica no caixa com a assinatura de
+   quem levou, a outra vai com o dinheiro. O que o papel responde: o que é,
+   pra que é, quanto, quem levou (o responsável pelo valor até o cofre), quem
+   liberou (o operador logado) e de qual caixa saiu. Suprimento sai em uma via
+   só: entrada de dinheiro não tem ninguém levando nada.
+   Sem isso, sangria era uma linha no banco que ninguém assinava. */
+function cupomGaveta(d, via) {
+  const TIT = { sangria: 'SANGRIA - SAÍDA DE DINHEIRO', despesa: 'DESPESA PAGA DA GAVETA',
+    suprimento: 'SUPRIMENTO - ENTRADA DE DINHEIRO' }[d.tipo] || 'MOVIMENTO DE CAIXA';
+  const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm,
+    impLn(TIT), IMP.negFim, impLn('não é documento fiscal'),
+    via ? impLn('-- ' + via + ' --') : impLn(''), IMP.esquerda, impTraco(),
+    IMP.neg, IMP.alto, impLn(impLR(d.tipo === 'suprimento' ? 'ENTROU' : 'SAIU', impMoeda(d.valor))), IMP.norm, IMP.negFim,
+    impTraco(),
+    impLn('Motivo:'), impLn(d.motivo || '(sem motivo)')];
+  if (d.para) b.push(impLn(''), impLn(d.tipo === 'despesa' ? 'Pago a:' : 'Entregue a:'), impLn(d.para));
+  b.push(impTraco(),
+    impLn(impLR('Caixa nº', String(d.caixa))),
+    impLn(impLR('Operador', d.operador || '?')),
+    impLn(impLR('Data', new Date(d.quando).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }))),
+    impLn(impLR('Gaveta depois', impMoeda(d.gaveta_depois))));
+  // quem leva o dinheiro assina; suprimento não tem portador
+  if (d.tipo !== 'suprimento') {
+    b.push(impTraco(), impLn(''), impLn('Recebi o valor acima:'), impLn(''), impLn(''),
+      impLn('__________________________________'),
+      impLn(d.para || 'nome e assinatura'));
+  }
+  b.push(impTraco(), IMP.centro, impLn('Controle interno · guarde esta via'), IMP.corte);
+  return Buffer.concat(b);
+}
+/** Imprime o comprovante da gaveta na térmica do caixa (2 vias na saída). */
+async function imprimirGaveta(d) {
+  const ip = (await cfgGet('impressora_ip', '')).trim();
+  if (!ip) return false;
+  try {
+    if (d.tipo === 'suprimento') await imprimirRaw(ip, cupomGaveta(d, null), 'gaveta ' + d.tipo);
+    else {
+      await imprimirRaw(ip, cupomGaveta(d, '1ª VIA: FICA NO CAIXA'), 'gaveta ' + d.tipo + ' v1');
+      await imprimirRaw(ip, cupomGaveta(d, '2ª VIA: VAI COM O DINHEIRO'), 'gaveta ' + d.tipo + ' v2');
+    }
+    return true;
+  } catch (e) { console.error('[impressora] gaveta:', e.message); return false; }
+}
+
 /* ---- COMPROVANTE DO PIX ----
    Pedido do dono (22/08): quando a mesa fecha por Pix, tem que sair um
    comprovante do pagamento. Serve pros dois lados — o cliente leva a prova de
@@ -3008,6 +3054,15 @@ async function apiVendaEnviar(body) {
     const qtd = Math.max(1, Math.min(99, Number(p.qtd) || 1));
     itens.push({ ...cat, preco: Number(cat.preco), qtd, obs: String(p.obs || '').trim() });
   }
+  // QUEM LANÇOU vai em cada item. `_garcom` já vinha do middleware da rota e
+  // NUNCA era usado — resultado: nenhum item lançado pelas nossas telas tinha
+  // autor, e na hora de conferir a conta ninguém sabia de quem era. O pedido
+  // que nasce no celular do cliente (/api/mesa/pedir) não tem login nenhum,
+  // então ganha um autor próprio: é informação, não é lacuna.
+  const autor = body._cliente
+    ? { login: 'cliente', nome_usuario: 'CLIENTE (celular)' }
+    : (body._garcom ? { login: String(body._garcom), nome_usuario: body._garcom_nome || String(body._garcom) } : null);
+  if (autor) for (const it of itens) { it.login = autor.login; it.nome_usuario = autor.nome_usuario; }
   // Quem imprime separado por cozinha é o Consumer (usa PRODUTOS.CODIGOCOZINHA).
   // O que falta é a cozinha SABER que o pedido tem acompanhamento em outra praça:
   // sem isso o petisco sai sozinho e o prato chega frio (ou vice-versa). Só que
@@ -6200,14 +6255,33 @@ async function apiCaixaMovimento(body, quem) {
     await sql`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando)
       VALUES (${Number(cx.codigo)}, ${String(body.tipo)}, ${Number(valor)}, ${FORMA.DINHEIRO},
         ${obs}, ${quem.login || null}, now())`;
-    return { ok: true, tipo: body.tipo, valor, contas_pagar: null };
+    const cp = await comprovanteGaveta(cx, quem, body, valor, motivo, leva);
+    return { ok: true, tipo: body.tipo, valor, contas_pagar: null, ...cp };
   }
   const campos = ['CODIGOCAIXA', 'CODIGOFORMAPAGAMENTO', 'DATAOPERACAO', m.campo, 'OBSERVACAO', 'TIPO'];
   const vals = [String(cx.codigo), String(FORMA.DINHEIRO), 'CURRENT_TIMESTAMP', fbNum(valor), `'${fbEsc(obs)}'`, `'${m.tipo}'`];
   if (contasPagar != null) { campos.push('CODIGOCONTASPAGAR'); vals.push(String(contasPagar)); }
   const ins = await qi(`INSERT INTO CAIXAOPERACAO (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
   if (!ins.ok) return { ok: false, erro: 'FB movimento: ' + ins.err };
-  return { ok: true, tipo: body.tipo, valor, contas_pagar: contasPagar };
+  const cp = await comprovanteGaveta(cx, quem, body, valor, motivo, leva);
+  return { ok: true, tipo: body.tipo, valor, contas_pagar: contasPagar, ...cp };
+}
+/** Monta e imprime o comprovante do movimento; devolve o que a tela mostra.
+ *  Nunca derruba o movimento: o dinheiro JÁ saiu quando isto roda — falha de
+ *  impressora não pode desfazer nem esconder o lançamento. */
+async function comprovanteGaveta(cx, quem, body, valor, motivo, leva) {
+  try {
+    const r = await fbResumoCaixa(cx.codigo).catch(() => null);
+    const gaveta = r ? +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2) : null;
+    const d = { tipo: String(body.tipo), valor, motivo,
+      para: body.tipo === 'sangria' ? leva : (String(body.fornecedor_nome || '').trim() || null),
+      caixa: cx.codigo, operador: quem.nome || quem.login,
+      quando: new Date().toISOString(), gaveta_depois: gaveta ?? 0 };
+    const impresso = await imprimirGaveta(d);
+    if (!impresso) console.log('[gaveta] ' + d.tipo + ' R$ ' + valor.toFixed(2) + ' · ' + motivo +
+      ' · caixa ' + cx.codigo + ' · ' + d.operador + (d.para ? ' · para ' + d.para : '') + ' — SEM IMPRESSORA');
+    return { comprovante: d, impresso };
+  } catch (e) { console.error('[gaveta] comprovante: ' + e.message); return { comprovante: null, impresso: false }; }
 }
 /** Busca de fornecedor pra despesa da gaveta (funcionário também é fornecedor). */
 async function apiCaixaFornecedores(qRaw) {
@@ -8852,7 +8926,8 @@ async function apiMesaPedir(body) {
       return { ok: false, erro: `"${n?.nome || barrado}" não está disponível para pedido pelo celular. Chame o garçom.` };
     }
   }
-  const r = await apiVendaEnviar({ numero, itens, junto: false }); // obs vai dentro de cada item
+  // _cliente: foi a MESA que pediu, não um garçom (vira o autor do item)
+  const r = await apiVendaEnviar({ numero, itens, junto: false, _cliente: true }); // obs vai dentro de cada item
   if (r.ok) {
     // o garçom fica sabendo que a mesa pediu sozinha
     await apiChamadoCriar({ mesa: numero, tipo: 'garcom', origem: 'pedido-cliente',
@@ -8987,7 +9062,7 @@ input[type=file]{display:none}
   <input id="f" type="file" accept="image/*" capture="environment">
   <img id="pv" style="display:none">
   <button class="go" id="ok" style="display:none" onclick="mandar()">Enviar pro caixa</button>
-  <button class="re" id="re" style="display:none" onclick="document.getElementById('f').click()">Tirar outra</button>
+  <button class="re" id="re" style="display:none" onclick="refazer()">Tirar outra</button>
   <div class="err" id="e"></div>
 </div>
 <script>
@@ -8996,8 +9071,25 @@ var D=new URLSearchParams(location.search).get('d')==='1'; // devolução: foto 
 var FOTO=null;
 if(D){document.title='Devolução · Prainha';document.getElementById('h1').textContent='Foto do produto devolvido'}
 document.getElementById('ctx').textContent = T ? (D?'Mostre a garrafa/lata devolvida e toque em tirar foto.':'Aponte pro comprovante e toque em tirar foto.') : 'Link inválido.';
+/* ⚠️ TIRAR OUTRA TEM QUE LIMPAR O INPUT ANTES.
+   A câmera do Android devolve sempre o mesmo nome de arquivo ("image.jpg").
+   Um <input type=file> NAO dispara o evento change quando o arquivo escolhido e
+   igual ao que ja estava la - entao a foto nova era ignorada e a tela seguia
+   mostrando a velha, como se o sistema tivesse repetido. Zerar o .value faz
+   toda captura contar como nova. Some também com a prévia antiga, pra ninguém
+   ficar olhando pra foto que já foi descartada. */
+function refazer(){
+  FOTO=null;
+  var pv=document.getElementById('pv'); pv.removeAttribute('src'); pv.style.display='none';
+  document.getElementById('ok').style.display='none';
+  document.getElementById('re').style.display='none';
+  document.getElementById('e').textContent='';
+  var f=document.getElementById('f'); f.value=''; f.click();
+}
 document.getElementById('f').addEventListener('change', function(ev){
-  var f=ev.target.files&&ev.target.files[0]; if(!f)return;
+  var f=ev.target.files&&ev.target.files[0];
+  // sem arquivo = o usuário cancelou a câmera: zera pra próxima tentativa valer
+  if(!f){ev.target.value='';return}
   var r=new FileReader();
   r.onload=function(){
     // reduz antes de subir: foto de celular tem 4 MB e a rede da loja é a que é
@@ -9009,11 +9101,14 @@ document.getElementById('f').addEventListener('change', function(ev){
       FOTO=c.toDataURL('image/jpeg',0.8);
       var pv=document.getElementById('pv'); pv.src=FOTO; pv.style.display='block';
       document.getElementById('ok').style.display='block';
+      document.getElementById('ok').textContent='Enviar pro caixa';
       document.getElementById('re').style.display='block';
     };
     img.src=r.result;
   };
   r.readAsDataURL(f);
+  // libera o input pra próxima foto (o Android reusa o nome do arquivo)
+  ev.target.value='';
 });
 async function mandar(){
   if(!FOTO)return;
@@ -12376,6 +12471,14 @@ async function identSalva(btn,novo){
   var o=document.getElementById('idov');if(o)o.remove();
   await carregar(MESA);
 }
+/* 👤 quem lançou o item. O pedido que nasce no celular da mesa vem com o
+   autor 'cliente' — antes ficava em branco e virava discussão no caixa. */
+function autorItem(i){
+  if(i.tipo===2||!i.quem)return '';
+  var cli=String(i.quem).toUpperCase().indexOf('CLIENTE')===0;
+  var t=cli?'📱 pedido pela mesa':'👤 '+esc(String(i.quem).split(' ')[0]);
+  return '<small class="mut" style="display:block;padding-left:22px">'+t+'</small>';
+}
 /* ⏱ o relógio do item na conta do caixa. Entregue: cinza, é histórico —
    "esse veio em 12min". Esperando: cor, é problema em curso — e vermelho
    quando já passou do tempo da praça. Complemento (tipo 2) não tem relógio
@@ -12410,7 +12513,9 @@ function pinta(el){
       relogioItem(i)+
       // QUEM LANÇOU: conferir a conta com o cliente na frente é discutir item a
       // item. Sem o nome, "eu não pedi isso" não tem com quem esclarecer.
-      (i.tipo!==2&&i.quem?'<small class="mut" style="display:block;padding-left:22px">👤 '+esc(String(i.quem).split(' ')[0])+'</small>':'')+
+      // 📱 = a própria mesa pediu pelo celular; 👤 = garçom (o nosso ou o do
+      // Consumer). Os dois casos são resposta — em branco é que não era.
+      autorItem(i)+
       '</span><b>'+(i.tipo===2&&!(i.valor_total>0)?'':brl(i.valor_total))+'</b></div>'}).join('')||'<div class="mut">sem itens no espelho</div>';
   h+='<div class="tot"><span>Subtotal</span><b>'+brl(c.subtotal)+'</b></div>';
   // O cliente pode se recusar a pagar os 10% — é direito dele. Um toque aqui
@@ -13166,12 +13271,44 @@ async function acaoMov(){
   if(MOVT==='despesa'){
     if(!FORN){er.textContent='busque e escolha quem está recebendo';return}
     b.fornecedor_codigo=FORN.codigo;
+    b.fornecedor_nome=FORN.nome; // vai pro comprovante ("Pago a:")
   }
   var r=await jpost('/api/caixa/movimento',b);
   if(!r.ok){er.textContent=r.erro||'não deu';return}
+  // COMPROVANTE: saiu dinheiro, tem que ter papel. Se a térmica imprimiu, a
+  // tela só confirma; se não tem impressora, ela MOSTRA o comprovante pra
+  // imprimir daqui — o movimento nunca fica sem registro visível.
+  if(r.comprovante&&!r.impresso){ telaCompGaveta(r.comprovante); return }
   FLASH='✓ '+(MOVT==='suprimento'?'Suprimento de ':MOVT==='sangria'?'Sangria de ':'Despesa de ')+brl(v)+
-    (MOVT==='sangria'?' — levou '+b.quem_leva:MOVT==='despesa'?' — pra '+FORN.nome+' (conta a pagar criada)':'')+'.';
+    (MOVT==='sangria'?' — levou '+b.quem_leva:MOVT==='despesa'?' — pra '+FORN.nome+' (conta a pagar criada)':'')+
+    (r.impresso?' · comprovante impresso (2 vias)':'')+'.';
   await cxEstado();voltarMesas();
+}
+/* Comprovante da gaveta na TELA — quando não há térmica configurada. Mesmo
+   conteúdo do papel, com botão de imprimir no navegador. */
+function telaCompGaveta(d){
+  var TIT={sangria:'SANGRIA — SAÍDA DE DINHEIRO',despesa:'DESPESA PAGA DA GAVETA',
+           suprimento:'SUPRIMENTO — ENTRADA DE DINHEIRO'}[d.tipo]||'MOVIMENTO DE CAIXA';
+  var q=new Date(d.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  var L=function(a,b){return '<div style="display:flex;justify-content:space-between;gap:10px"><span>'+a+'</span><b>'+b+'</b></div>'};
+  var app=document.getElementById('main')||document.getElementById('app');
+  app.innerHTML='<div class="card" id="cpg">'+
+    '<div class="tit" style="margin-top:0;text-align:center">'+esc(TIT)+'</div>'+
+    '<div class="mut" style="text-align:center">não é documento fiscal</div>'+
+    '<div style="font-size:30px;font-weight:800;text-align:center;margin:10px 0">'+
+      (d.tipo==='suprimento'?'+':'−')+' '+brl(d.valor)+'</div>'+
+    '<div style="border-top:1px dashed #bbb;padding-top:10px">'+
+    '<div class="mut">Motivo</div><div style="font-weight:600;margin-bottom:8px">'+esc(d.motivo||'—')+'</div>'+
+    (d.para?'<div class="mut">'+(d.tipo==='despesa'?'Pago a':'Entregue a')+'</div><div style="font-weight:600;margin-bottom:8px">'+esc(d.para)+'</div>':'')+
+    L('Caixa nº',esc(String(d.caixa)))+L('Operador',esc(d.operador||'?'))+L('Data',q)+
+    L('Gaveta depois',brl(d.gaveta_depois))+
+    (d.tipo!=='suprimento'?'<div style="margin-top:18px">Recebi o valor acima:</div>'+
+      '<div style="border-bottom:1px solid #333;height:34px"></div>'+
+      '<div class="mut">'+esc(d.para||'nome e assinatura')+'</div>':'')+
+    '</div></div>'+
+    '<div class="row" style="margin-top:10px">'+
+    '<button class="seg" onclick="print()">🖨 Imprimir</button>'+
+    '<button class="big" onclick="cxEstado().then(voltarMesas)">Pronto</button></div>';
 }
 var REL_DATA=''; // '' = hoje
 async function telaRel(el){
@@ -13973,6 +14110,7 @@ const server = http.createServer(async (req, res) => {
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       const body = await readBody(req);
       body._garcom = g.login;                 // quem fez a ação (auditoria)
+      body._garcom_nome = g.nome || g.login;  // e o nome, que é o que sai na conta
       const fn = p === '/api/venda/vincular' ? apiVendaVincular
         : p === '/api/venda/transferir' ? apiTransferir
         : p === '/api/venda/conta' ? apiVendaConta
