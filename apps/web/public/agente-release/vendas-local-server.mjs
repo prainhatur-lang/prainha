@@ -595,6 +595,12 @@ async function initSchema() {
   // evento só sai do polling depois de PERSISTIDO aqui. Se o processo cair no
   // meio, o iFood devolve o mesmo evento no próximo ciclo — e o PK evita
   // processar duas vezes.
+  // DELIVERY_DROP_CODE_REQUESTED: o iFood pede o código que o CLIENTE mostra ao
+  // entregador. Sem isso o pedido nunca conclui — foi o que travou os testes de
+  // 23/08. Guardar o pedido do código separado do status: um evento de logística
+  // não pode apagar "em produção".
+  await addCol('ifood_pedido', 'codigo_entrega_em timestamptz');
+  await addCol('ifood_pedido', 'ultimo_evento text');
   await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
@@ -1069,7 +1075,8 @@ async function ifoodConcluirPareamento(authorizationCode) {
 
 // ---- recebimento: polling a cada 30s ----
 const IFOOD_ST = { PLC: 'PLACED', CFM: 'CONFIRMED', DSP: 'DISPATCHED', CON: 'CONCLUDED', CAN: 'CANCELLED',
-  RTP: 'READY_TO_PICKUP', SPS: 'SEPARATION_STARTED', CAR: 'CANCELLATION_REQUESTED' };
+  RTP: 'READY_TO_PICKUP', SPS: 'SEPARATION_STARTED', CAR: 'CANCELLATION_REQUESTED',
+  DDCR: 'DELIVERY_DROP_CODE_REQUESTED' };
 
 async function ifoodPoll() {
   const c = await ifoodConf();
@@ -1120,8 +1127,14 @@ async function ifoodAplicarEvento(orderId, code, c) {
   } else if (code === 'CANCELLATION_REQUESTED') {
     // cliente pediu pra cancelar: NÃO decide sozinho — a loja aceita ou nega
     await sql`UPDATE ifood_pedido SET cancel_pedido_em=now() WHERE id=${orderId}`;
+  } else if (code === 'DELIVERY_DROP_CODE_REQUESTED') {
+    // a entrega precisa do código do cliente pra fechar
+    await sql`UPDATE ifood_pedido SET codigo_entrega_em=COALESCE(codigo_entrega_em, now()), ultimo_evento=${code} WHERE id=${orderId}`;
   } else if (code) {
-    await sql`UPDATE ifood_pedido SET status=${code} WHERE id=${orderId}`;
+    // ⚠️ NÃO sobrescreve o status: evento de logística (DDCR e afins) chegava
+    // aqui e apagava "Em produção", deixando a tela mostrando um código
+    // técnico que não diz nada a quem opera.
+    await sql`UPDATE ifood_pedido SET ultimo_evento=${code} WHERE id=${orderId}`;
   }
   // aceitar o pedido é o que tira ele da fila do cliente. Manual atrasa e o
   // iFood cobra tempo de aceite — por isso o padrão é confirmar sozinho.
@@ -5115,7 +5128,7 @@ async function contaIfoodCaixa(ped) {
     itens: itens.map((i) => ({
       item_codigo: -Number(i.item_codigo), tipo: 1, codigo_pai: null,
       nome: i.nome, quantidade: Number(i.quantidade) || 0, valor_total: Number(i.valor_total) || 0,
-      detalhes: i.detalhes, status: null, quem: 'iFood',
+      detalhes: i.detalhes, status: null, quem: doSite ? 'Site' : 'iFood',
       espera_min: Math.max(0, Math.round((agora - t0) / 60000)), esperando: !p.despachado_em, atrasado: false,
     })),
     subtotal: +(total - Number(p.taxa_entrega || 0)).toFixed(2), servico: 0,
