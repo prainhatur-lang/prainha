@@ -140,6 +140,12 @@ Get-Content "C:\concilia-agente\logs\agente-$(Get-Date -Format 'yyyy-MM-dd').log
 
 ## Histórico de versões
 
+- **v1.4.2** (2026-08-23):
+  - Comando `reenviar_pagamentos` {deCodigo, ateCodigo}: reenvia a faixa pelo
+    SELECT do CDC (com o JOIN da forma) pro /api/concilia/sync. Backfill dos
+    28.831 pagamentos que sincronizaram sem forma_pagamento antes de 18/07
+    (metade do faturamento fora do dashboard/conciliação).
+
 - **v1.4.1** (2026-08-23):
   - Conserta o `colunasExistentes`: resultado vazio da introspecção (RDB$)
     era CACHEADO, e daí todo `atualizar_cliente` ignorava TODOS os campos

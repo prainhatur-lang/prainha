@@ -14,7 +14,7 @@ interface FilaItem {
   operacao: 'I' | 'U' | 'D';
 }
 
-interface RegistroSync {
+export interface RegistroSync {
   tabela: string;
   operacao: 'I' | 'U' | 'D';
   chavePk: string;
@@ -198,7 +198,7 @@ async function marcarErro(
   await execWrite(db, sql);
 }
 
-async function enviarSync(
+export async function enviarSync(
   cfg: Config,
   registros: RegistroSync[],
 ): Promise<{ recebidos: number; erros: string[] }> {

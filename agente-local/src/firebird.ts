@@ -21,7 +21,7 @@ import type { Config } from './config';
  *  USA AUTOCOMMIT IMPLICITO — bom pra SELECT. NAO USAR pra INSERT/UPDATE/DELETE
  *  pois node-firebird pode nao commitar antes do detach. Pra writes, use
  *  executarWrite() abaixo. */
-function executarQuery<T = Record<string, unknown>>(
+export function executarQuery<T = Record<string, unknown>>(
   cfg: Config,
   sql: string,
   params: unknown[],

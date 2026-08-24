@@ -49,11 +49,13 @@ import {
   buscarClientesJanela,
   buscarFornecedoresJanela,
   executarUpdate,
+  executarQuery,
   criarContato,
   baixarFiado,
   criarContaPagar,
   lancarBebidaNaComanda,
 } from './firebird';
+import { enviarSync, type RegistroSync } from './drenador';
 import {
   enviarBatch,
   enviarFinanceiro,
@@ -72,7 +74,7 @@ bootTrace('BOOT 2 - imports OK');
 // Versao do agente — bater junto com package.json. Aparece no boot log
 // (`agente iniciado` + `[boot] concilia-agente vX.Y.Z`) pra facilitar a
 // verificacao em campo (basta abrir logs\agente.log e olhar a 1a linha).
-const AGENTE_VERSAO = '1.4.1';
+const AGENTE_VERSAO = '1.4.2';
 
 // node-firebird tem um bug com Firebird 4 onde o detach gera callback async
 // com 'pluginName' undefined. Isso e POS-CICLO — a query ja completou, o
@@ -628,6 +630,53 @@ async function cicloComandos(
 
       // Tipo 7: AUTO-UPDATE do agente — baixa nova versao e reinicia
       // payload = { versao: string }
+      // REENVIAR PAGAMENTOS — backfill dos pagamentos que sincronizaram SEM a
+      // forma (antes do JOIN de FORMASPAGAMENTO entrar no CDC, 18/07/2026).
+      // Relê a faixa de códigos com o MESMO SELECT do CDC e reposta pro
+      // /api/concilia/sync — o upsert do mapper preenche forma_pagamento.
+      // payload: { deCodigo: number, ateCodigo: number } (faixa <= 5000)
+      if (cmd.tipo === 'reenviar_pagamentos') {
+        const p = cmd.payload as unknown as { deCodigo: number; ateCodigo: number };
+        const de = Number(p.deCodigo);
+        const ate = Number(p.ateCodigo);
+        if (!Number.isFinite(de) || !Number.isFinite(ate) || ate < de || ate - de > 5000) {
+          await reportarComando(cfg, cmd.id, 'erro', { msg: 'faixa invalida (max 5000)' });
+          continue;
+        }
+        try {
+          const rows = await executarQuery<Record<string, unknown>>(
+            cfg,
+            `SELECT p.*, TRIM(fp.DESCRICAO) AS FORMA
+             FROM PAGAMENTOS p
+             LEFT JOIN FORMASPAGAMENTO fp ON fp.CODIGO = p.CODIGOFORMAPAGAMENTO
+             WHERE p.CODIGO BETWEEN ? AND ?`,
+            [de, ate],
+          );
+          let enviados = 0;
+          const erros: string[] = [];
+          for (let i = 0; i < rows.length; i += 500) {
+            const registros: RegistroSync[] = rows.slice(i, i + 500).map((r) => ({
+              tabela: 'PAGAMENTOS',
+              operacao: 'U',
+              chavePk: String(r.CODIGO),
+              dados: r,
+            }));
+            const res = await enviarSync(cfg, registros);
+            enviados += res.recebidos;
+            erros.push(...res.erros.slice(0, 3));
+          }
+          await reportarComando(cfg, cmd.id, 'sucesso', {
+            faixa: [de, ate],
+            lidos: rows.length,
+            enviados,
+            erros: erros.slice(0, 5),
+          });
+        } catch (e) {
+          await reportarComando(cfg, cmd.id, 'erro', { msg: (e as Error).message });
+        }
+        continue;
+      }
+
       if (cmd.tipo === 'auto_update') {
         const versao = (cmd.payload as unknown as { versao: string }).versao;
         if (!versao || !/^\d+\.\d+\.\d+$/.test(versao)) {
