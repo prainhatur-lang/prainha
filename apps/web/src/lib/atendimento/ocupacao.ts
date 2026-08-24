@@ -20,6 +20,11 @@ const CORTE_CASA_FRACA = '17:00'; // taxa < 40%
 const CORTE_CASA_MEDIA = '15:00'; // taxa 40-69%
 const TAXA_FRACA = 0.4;
 const TAXA_MEDIA = 0.7;
+// Horário de funcionamento (mesmo do prompt da Nina). Fora dele, NUNCA
+// convidar a vir "agora" — às 21:57 a Nina chamou cliente pra casa FECHADA
+// porque as comandas ainda abertas no PDV davam "casa tranquila" (23/08).
+const ABRE = '09:00';
+const FECHA = '19:00';
 
 export interface OcupacaoHoje {
   comandasAbertas: number;
@@ -45,6 +50,20 @@ export async function medirOcupacaoHoje(
 
   const hoje = hojeBr();
   const agora = horaAgoraBr();
+
+  // Casa FECHADA agora (fora do 9h–19h): comanda aberta esquecida no PDV não
+  // significa casa aberta. Nada de "pode vir agora" — o convite é pra amanhã.
+  if (agora >= FECHA || agora < ABRE) {
+    return {
+      comandasAbertas: 0,
+      reservasFuturasHoje: 0,
+      capacidadeMesas,
+      taxa: 0,
+      corteEstendido: null,
+      casaTranquila: false,
+      resumo: `A casa está FECHADA neste momento (funcionamento: ${ABRE} às ${FECHA}). É PROIBIDO convidar a vir agora ou dizer que "a casa está tranquila" — ela não está recebendo ninguém. Convide pra AMANHÃ (ou o próximo dia aberto) dentro do horário, e ofereça reserva pra essa próxima visita.`,
+    };
+  }
 
   const [pdv] = (await db.execute(sql`
     SELECT count(*)::int AS abertas
