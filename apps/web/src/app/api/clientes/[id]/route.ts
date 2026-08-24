@@ -3,13 +3,19 @@
 // Escreve nos DOIS lugares: na nuvem (efeito imediato nas telas) e na fila do
 // agente, que aplica em CONTATOS na loja. Sem a segunda parte, o próximo sync
 // do Consumer sobrescreveria a edição — o Firebird é a fonte da verdade.
+//
+// CADASTRO ÚNICO NAS CASAS (pedido do dono, 23/08/2026): a edição ESPELHA pras
+// outras filiais do usuário. Match por chave forte — CPF/CNPJ, senão
+// celular/telefone — nunca por nome. Onde o cliente existe, atualiza os mesmos
+// campos; onde não existe, enfileira criar_cliente com o cadastro completo
+// (o CODIGO nasce na loja, e o CDC traz a linha de volta pra nuvem).
 
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql, inArray } from 'drizzle-orm';
 import { ErroCadastro, normalizarCliente, type CamposCliente } from '@/lib/cliente-cadastro';
 
 export const dynamic = 'force-dynamic';
@@ -84,5 +90,124 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     comandoId = cmd.id;
   }
 
-  return NextResponse.json({ ok: true, comandoId });
+  const espelhamento = await espelharNasOutrasCasas(user.id, id, cliente.filialId, campos.loja);
+
+  return NextResponse.json({ ok: true, comandoId, espelhamento });
+}
+
+/**
+ * Replica a edição pras outras filiais do usuário (cadastro único nas casas).
+ * Retorna um resumo por filial pra tela mostrar o que aconteceu; nunca lança —
+ * espelhar é best effort, a edição principal já foi salva.
+ */
+async function espelharNasOutrasCasas(
+  userId: string,
+  clienteId: string,
+  filialOrigem: string,
+  camposLoja: Record<string, string | number | null>,
+): Promise<Array<{ filial: string; acao: 'atualizado' | 'criado' | 'ignorado'; motivo?: string }>> {
+  try {
+    // Linha fresca (já com a edição aplicada) — base do match e da criação.
+    const [c] = await db
+      .select()
+      .from(schema.cliente)
+      .where(eq(schema.cliente.id, clienteId))
+      .limit(1);
+    if (!c) return [];
+
+    const doc = c.cpfOuCnpj ? c.cpfOuCnpj.replace(/\D/g, '') : '';
+    const fone = (c.celular ?? c.telefone ?? '').replace(/\D/g, '');
+    // Sem chave forte não tem espelho: match por nome cria cliente errado.
+    if (!doc && !fone) return [];
+
+    const outras = await db
+      .select({ filialId: schema.usuarioFilial.filialId, nome: schema.filial.nome })
+      .from(schema.usuarioFilial)
+      .innerJoin(schema.filial, eq(schema.filial.id, schema.usuarioFilial.filialId))
+      .where(
+        and(
+          eq(schema.usuarioFilial.usuarioId, userId),
+          ne(schema.usuarioFilial.filialId, filialOrigem),
+        ),
+      );
+    if (outras.length === 0) return [];
+
+    // Payload COMPLETO da linha, pro criar_cliente das casas onde não existe.
+    const completo = normalizarCliente(
+      {
+        nome: c.nome ?? undefined,
+        cpfOuCnpj: c.cpfOuCnpj,
+        email: c.email,
+        telefone: c.telefone,
+        celular: c.celular,
+        dataNascimento: c.dataNascimento,
+        endereco: c.endereco,
+        numero: c.numero,
+        complemento: c.complemento,
+        bairro: c.bairro,
+        cidade: c.cidade,
+        uf: c.uf,
+        cep: c.cep,
+        observacao: c.observacao,
+        limiteCreditoContaCorrente: c.limiteCreditoContaCorrente,
+        bloquearVendaAposLimite: c.bloquearVendaAposLimite ?? false,
+      },
+      { exigirNome: true },
+    );
+
+    const resumo: Array<{ filial: string; acao: 'atualizado' | 'criado' | 'ignorado'; motivo?: string }> = [];
+    const idsOutras = outras.map((o) => o.filialId);
+
+    // Irmãos por chave forte em TODAS as outras filiais de uma vez.
+    const irmaos = await db
+      .select({
+        id: schema.cliente.id,
+        filialId: schema.cliente.filialId,
+        codigoExterno: schema.cliente.codigoExterno,
+      })
+      .from(schema.cliente)
+      .where(
+        and(
+          inArray(schema.cliente.filialId, idsOutras),
+          isNull(schema.cliente.dataDelete),
+          doc
+            ? sql`regexp_replace(coalesce(${schema.cliente.cpfOuCnpj}, ''), '[^0-9]', '', 'g') = ${doc}`
+            : sql`regexp_replace(coalesce(${schema.cliente.celular}, ${schema.cliente.telefone}, ''), '[^0-9]', '', 'g') = ${fone}`,
+        ),
+      );
+    const irmaoPorFilial = new Map(irmaos.map((i) => [i.filialId, i]));
+
+    for (const outra of outras) {
+      const irmao = irmaoPorFilial.get(outra.filialId);
+      if (irmao) {
+        // Existe lá: manda os MESMOS campos editados pra fila da loja. A nuvem
+        // do irmão NÃO é atualizada direto — o CDC traz quando a loja aplicar;
+        // escrever aqui ficaria à frente da loja e o sync sobrescreveria.
+        if (irmao.codigoExterno > 0 && Object.keys(camposLoja).length > 0) {
+          await db.insert(schema.agenteComando).values({
+            filialId: outra.filialId,
+            tipo: 'atualizar_cliente',
+            payload: { codigoExterno: irmao.codigoExterno, campos: camposLoja },
+            criadoPor: userId,
+          });
+          resumo.push({ filial: outra.nome, acao: 'atualizado' });
+        } else {
+          resumo.push({ filial: outra.nome, acao: 'ignorado', motivo: 'sem código do PDV' });
+        }
+      } else {
+        // Não existe: cria o cadastro completo na loja (CODIGO nasce lá).
+        await db.insert(schema.agenteComando).values({
+          filialId: outra.filialId,
+          tipo: 'criar_cliente',
+          payload: { campos: completo.loja },
+          criadoPor: userId,
+        });
+        resumo.push({ filial: outra.nome, acao: 'criado' });
+      }
+    }
+    return resumo;
+  } catch {
+    // Espelho é best effort — a edição principal já está salva.
+    return [];
+  }
 }

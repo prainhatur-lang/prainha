@@ -100,7 +100,9 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       id: schema.cliente.id,
       nome: schema.cliente.nome,
       cpf: schema.cliente.cpfOuCnpj,
-      telefone: schema.cliente.telefone,
+      // celular primeiro: é onde o form "Celular/WhatsApp" grava — sem ele o
+      // cliente editado continuava aparecendo sem telefone na lista
+      telefone: sql<string | null>`coalesce(${schema.cliente.celular}, ${schema.cliente.telefone})`,
       email: schema.cliente.email,
       saldo: schema.cliente.saldoAtualContaCorrente,
     })

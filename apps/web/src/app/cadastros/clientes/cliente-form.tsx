@@ -226,11 +226,19 @@ export function ClienteForm({
       );
       const d = (await r.json().catch(() => ({}))) as {
         error?: string; comandoId?: string; lojaOnline?: boolean;
+        espelhamento?: Array<{ filial: string; acao: string }>;
       };
       if (!r.ok) return setErro(d.error ?? `Erro ${r.status}`);
 
       if (editando) {
-        setOk(d.comandoId ? 'Salvo. Alteração enviada pra loja.' : 'Salvo.');
+        const espelho = (d.espelhamento ?? [])
+          .filter((e) => e.acao !== 'ignorado')
+          .map((e) => `${e.filial}: ${e.acao === 'criado' ? 'cadastro criado' : 'atualizado'}`)
+          .join(' · ');
+        setOk(
+          (d.comandoId ? 'Salvo. Alteração enviada pra loja.' : 'Salvo.') +
+            (espelho ? ` Espelhado nas outras casas — ${espelho}.` : ''),
+        );
         router.refresh();
         return;
       }

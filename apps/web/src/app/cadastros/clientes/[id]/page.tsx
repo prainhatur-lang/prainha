@@ -78,7 +78,7 @@ export default async function ClienteDetalhe(props: {
     : sql`right(regexp_replace(coalesce(${schema.clienteContato.telefone}, ''), '[^0-9]', '', 'g'), 8) = ${foneKey}`;
   const matchCliente = isEmail
     ? sql`lower(${schema.cliente.email}) = ${emailKey}`
-    : sql`right(regexp_replace(coalesce(${schema.cliente.telefone}, ''), '[^0-9]', '', 'g'), 8) = ${foneKey}`;
+    : sql`right(regexp_replace(coalesce(${schema.cliente.celular}, ${schema.cliente.telefone}, ''), '[^0-9]', '', 'g'), 8) = ${foneKey}`;
   const matchReserva = isEmail
     ? sql`false`
     : sql`right(regexp_replace(coalesce(${schema.reserva.clienteTelefone}, ''), '[^0-9]', '', 'g'), 8) = ${foneKey}`;
