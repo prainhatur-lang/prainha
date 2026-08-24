@@ -140,6 +140,14 @@ Get-Content "C:\concilia-agente\logs\agente-$(Get-Date -Format 'yyyy-MM-dd').log
 
 ## Histórico de versões
 
+- **v1.4.1** (2026-08-23):
+  - Conserta o `colunasExistentes`: resultado vazio da introspecção (RDB$)
+    era CACHEADO, e daí todo `atualizar_cliente` ignorava TODOS os campos
+    até reiniciar o serviço ("sucesso" com afetados 0 — o limite de fiado
+    nunca chegava no Firebird). Vazio não é mais cacheado, o WHERE usa
+    TRIM(RDB$RELATION_NAME), e sem introspecção o UPDATE tenta todos os
+    campos (erro visível em vez de descarte silencioso).
+
 - **v1.4.0** (2026-08-21):
   - Cadastro de cliente completo vindo do Concilia. `atualizar_cliente` deixou de aceitar só
     nome/CPF: agora mapeia e-mail, telefone, celular, nascimento, endereço, número, complemento,

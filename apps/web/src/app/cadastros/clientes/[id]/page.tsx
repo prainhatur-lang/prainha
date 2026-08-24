@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, sql, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, or } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 
@@ -70,7 +70,10 @@ export default async function ClienteDetalhe(props: {
   const foneKey = isEmail ? null : last8(soDigitos(decoded));
 
   const fid = filial.id;
-  const voltarHref = `/cadastros/clientes?filialId=${fid}`;
+  // CADASTRO ÚNICO: a busca varre TODAS as casas do usuário — o cliente é um
+  // só no grupo; a filial ativa fica só pra links de criação.
+  const filiaisIds = filiais.map((f) => f.id);
+  const voltarHref = '/cadastros/clientes';
 
   // Casamento por ultimos 8 digitos do telefone (ou e-mail).
   const matchContato = isEmail
@@ -86,7 +89,7 @@ export default async function ClienteDetalhe(props: {
   const [contato] = await db
     .select()
     .from(schema.clienteContato)
-    .where(and(eq(schema.clienteContato.filialId, fid), matchContato))
+    .where(and(inArray(schema.clienteContato.filialId, filiaisIds), matchContato))
     .limit(1);
 
   // 1º a LIGAÇÃO (cadastro único): o contato guarda o cliente a que pertence,
@@ -100,7 +103,8 @@ export default async function ClienteDetalhe(props: {
     [cadastro] = await db
       .select()
       .from(schema.cliente)
-      .where(and(eq(schema.cliente.filialId, fid), matchCliente))
+      .where(and(inArray(schema.cliente.filialId, filiaisIds), matchCliente))
+      .orderBy(sql`(${schema.cliente.cpfOuCnpj} IS NOT NULL) DESC`)
       .limit(1);
   }
 
@@ -133,7 +137,7 @@ export default async function ClienteDetalhe(props: {
     // O casamento por telefone continua só pras reservas antigas, de antes
     // da ligação existir.
     .where(and(
-      eq(schema.reserva.filialId, fid),
+      inArray(schema.reserva.filialId, filiaisIds),
       cadastro ? or(eq(schema.reserva.clienteId, cadastro.id), matchReserva)! : matchReserva,
     ))
     .orderBy(desc(schema.reserva.data))

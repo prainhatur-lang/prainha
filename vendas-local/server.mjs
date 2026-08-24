@@ -6803,7 +6803,7 @@ async function apiCaixaFiado(body, quem) {
   // limites não são cadastrados: gravar 'nao' nessa config.
   const exigeLimite = String(await cfgGet('fiado_exige_limite', 'sim')).toLowerCase() !== 'nao';
   if (exigeLimite && !cli.habilitado) return { ok: false, sem_limite: true, erro:
-    `${cli.nome} não está habilitado pra fiado — cadastre o limite de crédito no Consumer (Financeiro > Conta Corrente)` };
+    `${cli.nome} não está habilitado pra fiado — cadastre o limite de crédito no Concilia (Clientes > Cadastro de clientes > Editar)` };
   const tot = (await pedTotais(ped))?.total || 0;
   const pago = await fbPagoDoPedido(ped);
   const falta = +(tot - pago).toFixed(2);

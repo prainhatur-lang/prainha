@@ -291,16 +291,22 @@ async function colunasExistentes(
     try {
       const rows = await executarQuery<{ NOME: string }>(
         cfg,
+        // TRIM no WHERE: RDB$RELATION_NAME é CHAR com padding de espaço e o
+        // bind do driver nem sempre casa com o valor padded.
         `SELECT TRIM(RDB$FIELD_NAME) AS NOME
          FROM RDB$RELATION_FIELDS
-         WHERE RDB$RELATION_NAME = ?`,
+         WHERE TRIM(RDB$RELATION_NAME) = ?`,
         [tabUpper],
       );
       cache = new Set(rows.map((r) => String(r.NOME).trim().toUpperCase()));
     } catch {
       cache = new Set();
     }
-    cacheColunas.set(tabUpper, cache);
+    // ⚠️ NÃO cacheia resultado vazio: tabela real sempre tem coluna. Vazio =
+    // a consulta falhou/não casou — cachear fazia o agente ignorar TODOS os
+    // campos de todos os updates até reiniciar o serviço (v1.4.0: o limite
+    // de fiado salvo na nuvem chegava na loja como "ignoradas" e afetados 0).
+    if (cache.size > 0) cacheColunas.set(tabUpper, cache);
   }
   const set = new Set<string>();
   for (const c of pedidas) {
@@ -1440,12 +1446,18 @@ export async function executarUpdate(
   // cadastro do Consumer varia de versão pra versão (nem toda tem BAIRRO,
   // NUMERO, OBSERVACAO). Descarta as ausentes e aplica o resto.
   const existentes = await colunasExistentes(cfg, tabela, Object.keys(campos));
-  const ignoradas = Object.keys(campos).filter((c) => !existentes.has(c.toUpperCase()));
-  const campos2: Record<string, string | number | null> = {};
-  for (const [k, v] of Object.entries(campos)) {
-    if (existentes.has(k.toUpperCase())) campos2[k] = v;
+  let ignoradas: string[] = [];
+  if (existentes.size > 0) {
+    ignoradas = Object.keys(campos).filter((c) => !existentes.has(c.toUpperCase()));
+    const campos2: Record<string, string | number | null> = {};
+    for (const [k, v] of Object.entries(campos)) {
+      if (existentes.has(k.toUpperCase())) campos2[k] = v;
+    }
+    campos = campos2;
   }
-  campos = campos2;
+  // existentes vazio = introspecção falhou (tabela sem coluna não existe).
+  // Tenta com TODOS os campos: se algum não existir o UPDATE dá erro VISÍVEL
+  // no comando — antes virava "sucesso" com tudo em ignoradas e afetados 0.
 
   const cols = Object.keys(campos);
   if (cols.length === 0) return { afetados: 0, ignoradas };

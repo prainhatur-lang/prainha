@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { normalizaBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
@@ -93,6 +93,10 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   }
 
   const fid = filialSelecionada.id;
+  // CADASTRO ÚNICO: a lista é UMA só, do grupo inteiro — a unificação por
+  // telefone/e-mail/CPF junta o mesmo cliente de casas diferentes numa linha.
+  // A filial ativa fica só pro link de "+ Novo cliente".
+  const filiaisIds = filiais.map((f) => f.id);
 
   // 1) Cadastro do PDV (Consumer) — fiado / conta corrente
   const consumer = await db
@@ -107,7 +111,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       saldo: schema.cliente.saldoAtualContaCorrente,
     })
     .from(schema.cliente)
-    .where(and(eq(schema.cliente.filialId, fid), isNull(schema.cliente.dataDelete)));
+    .where(and(inArray(schema.cliente.filialId, filiaisIds), isNull(schema.cliente.dataDelete)));
 
   // 2) Reservas do concilia, agregadas por telefone
   const reservas = await db
@@ -120,7 +124,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       preferencias: sql<string | null>`max(${schema.reserva.preferencias})`,
     })
     .from(schema.reserva)
-    .where(and(eq(schema.reserva.filialId, fid), sql`${schema.reserva.clienteTelefone} IS NOT NULL`))
+    .where(and(inArray(schema.reserva.filialId, filiaisIds), sql`${schema.reserva.clienteTelefone} IS NOT NULL`))
     .groupBy(schema.reserva.clienteTelefone);
 
   // 3) Contatos importados (ex: Tagme)
@@ -134,7 +138,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
       reservasH: schema.clienteContato.reservasHistorico,
     })
     .from(schema.clienteContato)
-    .where(eq(schema.clienteContato.filialId, fid));
+    .where(inArray(schema.clienteContato.filialId, filiaisIds));
 
   // --- Unificação por telefone (fallback: e-mail / cpf) ---
   const map = new Map<string, Unificado>();
@@ -219,7 +223,6 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
 
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
-    qs.set('filialId', fid);
     if (q) qs.set('q', q);
     if (p > 0) qs.set('page', String(p));
     return `/cadastros/clientes?${qs.toString()}`;
@@ -244,31 +247,11 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
           </Link>
         </div>
         <p className="mt-1 text-sm text-slate-600">
-          {int(total)} cliente(s) na {filialSelecionada.nome} · {int(comReserva)} já reservaram
+          {int(total)} cliente(s) no grupo (todas as casas) · {int(comReserva)} já reservaram
           {comFiado > 0 ? ` · ${int(comFiado)} com fiado em aberto` : ''}.
         </p>
 
-        {filiais.length > 1 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-slate-500">Filial:</span>
-            {filiais.map((f) => (
-              <Link
-                key={f.id}
-                href={`/cadastros/clientes?filialId=${f.id}`}
-                className={`rounded-md border px-3 py-1 text-xs ${
-                  f.id === fid
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {f.nome}
-              </Link>
-            ))}
-          </div>
-        )}
-
         <form method="GET" className="mt-4 flex items-center gap-2">
-          <input type="hidden" name="filialId" value={fid} />
           <input
             type="text"
             name="q"
@@ -284,7 +267,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
           </button>
           {q && (
             <Link
-              href={`/cadastros/clientes?filialId=${fid}`}
+              href="/cadastros/clientes"
               className="text-xs text-slate-500 hover:text-slate-700"
             >
               Limpar
@@ -321,9 +304,9 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 // (era exatamente o caso "não consigo alterar o cliente":
                 // cadastro só com nome/CPF ficava sem link nenhum).
                 const href = dig
-                  ? `/cadastros/clientes/${dig}?filialId=${fid}`
+                  ? `/cadastros/clientes/${dig}`
                   : c.email
-                    ? `/cadastros/clientes/e:${encodeURIComponent(c.email)}?filialId=${fid}`
+                    ? `/cadastros/clientes/e:${encodeURIComponent(c.email)}`
                     : c.clienteId
                       ? `/cadastros/clientes/editar/${c.clienteId}`
                       : null;
