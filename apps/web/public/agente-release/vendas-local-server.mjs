@@ -5708,11 +5708,44 @@ async function apiCaixaEstado(quem) {
   return { ok: true, aberto: { codigo: cx.codigo, desde: cx.desde, fundo: cx.fundo,
     dinheiro: +r.dinheiro.toFixed(2), entradas: r.entradas, saidas: r.saidas, esperado } };
 }
+/** Caixas de OPERADOR abertos agora (ignora o automático da maquininha, que
+ *  nasce com fundo zero e não guarda dinheiro nenhum). */
+async function caixasDeOperadorAbertos() {
+  if (nativo()) {
+    return (await sql`SELECT codigo, codigo_usuario, saldo_inicial AS fundo FROM caixa_local
+      WHERE fechado_em IS NULL AND COALESCE(saldo_inicial,0) > 0`)
+      .map((c) => ({ codigo: Number(c.codigo), fundo: Number(c.fundo) || 0 }));
+  }
+  const r = await qi(`SELECT CODIGO, SALDOINICIAL FROM CAIXA
+    WHERE DATAFECHAMENTO IS NULL AND SALDOINICIAL > 0`);
+  if (!r.ok) return [];
+  return r.rows.map((x) => ({ codigo: N(x.CODIGO), fundo: N(x.SALDOINICIAL) || 0 }));
+}
+
 async function apiCaixaAbrir(body, quem) {
   if (!quem.abrir) return { ok: false, erro: 'sem permissão de abrir caixa (Operação de caixa no Consumer)' };
   if (await fbCaixaDoOperador(quem.login)) return { ok: false, erro: 'você já tem um caixa aberto — feche antes de abrir outro' };
   const fundo = +Number(body.fundo || 0).toFixed(2);
   if (!(fundo >= 0)) return { ok: false, erro: 'fundo inválido' };
+  // ⚠️ DINHEIRO CONTADO DUAS VEZES.
+  // O Consumer sugere o saldo que sobrou na gaveta como fundo de abertura. Se
+  // duas pessoas abrem caixa no mesmo dia, as duas recebem a MESMA sugestão — e
+  // aí cada uma "tem" aquele dinheiro. Aconteceu em 24/08/2026 na Prainha Bar:
+  // dois caixas abertos com R$ 1.647,00 cada, e R$ 1.000 de sangria em cada um.
+  // Saíram R$ 2.000 de uma gaveta que tinha R$ 1.647.
+  // A trava da sangria não pega isso: ela olha um caixa de cada vez, e nos dois
+  // a conta fecha. Tem que ser aqui, na abertura.
+  if (fundo > 0) {
+    const outros = await caixasDeOperadorAbertos();
+    const iguais = outros.filter((c) => Math.abs(c.fundo - fundo) < 0.01);
+    if (iguais.length && !body.confirmo_dinheiro_separado) {
+      return { ok: false, dinheiro_repetido: true,
+        erro: `Já existe caixa aberto com esse mesmo fundo (R$ ${fundo.toFixed(2)}). ` +
+          'Se for O MESMO dinheiro, o valor vai ser contado duas vezes e a gaveta ' +
+          'não vai bater. Conte o que você tem em mãos e abra com esse valor — ou ' +
+          'confirme que é dinheiro separado.' };
+    }
+  }
   const u = await fbUsuarioCodigo(quem.login);
   if (!u) return { ok: false, erro: 'não achei seu usuário no Consumer' };
   const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`);
@@ -14058,6 +14091,15 @@ function telaAbrirCx(el){
 async function acaoAbrirCx(){
   var v=numBr((document.getElementById('cxf')||{}).value);
   var r=await jpost('/api/caixa/abrir',{fundo:v||0});
+  // Mesmo fundo de um caixa já aberto: pode ser o MESMO dinheiro contado duas
+  // vezes. Não barra de vez — quem está lá pode ter dois envelopes separados —
+  // mas obriga a olhar o aviso antes de seguir.
+  if(!r.ok&&r.dinheiro_repetido){
+    if(!confirm(r.erro+'\\n\\nÉ dinheiro SEPARADO, contado por você agora?')){
+      document.getElementById('cxerr').textContent='abertura cancelada — conte a gaveta e abra com o valor real';return;
+    }
+    r=await jpost('/api/caixa/abrir',{fundo:v||0,confirmo_dinheiro_separado:true});
+  }
   if(!r.ok){document.getElementById('cxerr').textContent=r.erro||'não abriu';return}
   FLASH='✓ Caixa aberto'+(v?' com fundo de '+brl(v):' sem fundo')+'. Bom serviço!';
   await cxEstado();voltarMesas();

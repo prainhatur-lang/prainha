@@ -14091,6 +14091,15 @@ function telaAbrirCx(el){
 async function acaoAbrirCx(){
   var v=numBr((document.getElementById('cxf')||{}).value);
   var r=await jpost('/api/caixa/abrir',{fundo:v||0});
+  // Mesmo fundo de um caixa já aberto: pode ser o MESMO dinheiro contado duas
+  // vezes. Não barra de vez — quem está lá pode ter dois envelopes separados —
+  // mas obriga a olhar o aviso antes de seguir.
+  if(!r.ok&&r.dinheiro_repetido){
+    if(!confirm(r.erro+'\\n\\nÉ dinheiro SEPARADO, contado por você agora?')){
+      document.getElementById('cxerr').textContent='abertura cancelada — conte a gaveta e abra com o valor real';return;
+    }
+    r=await jpost('/api/caixa/abrir',{fundo:v||0,confirmo_dinheiro_separado:true});
+  }
   if(!r.ok){document.getElementById('cxerr').textContent=r.erro||'não abriu';return}
   FLASH='✓ Caixa aberto'+(v?' com fundo de '+brl(v):' sem fundo')+'. Bom serviço!';
   await cxEstado();voltarMesas();
