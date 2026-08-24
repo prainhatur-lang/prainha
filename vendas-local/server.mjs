@@ -861,6 +861,8 @@ const AUTO_UPDATE = String(process.env.AUTO_UPDATE || '').toLowerCase() !== 'off
 const AUTO_UPDATE_POLL_MS = 20 * 60 * 1000; // 20min — não é urgente feito o Pix
 const AUTO_UPDATE_FORCA_APOS_MS = 4 * 3600 * 1000; // 4h esperando: aplica mesmo ocupado
 let autoUpdatePendenteDesde = null;
+/** O que o último ciclo viu — aparece em /api/config pra diagnóstico remoto. */
+let autoUpdateEstado = { checado_em: null, disponivel: null, erro: null, motivo: 'ainda não checou' };
 
 /** Loja "tranquila agora" = ninguém lançou item nos últimos 3min. Proxy
  *  simples e vale nos dois modos de banco (comanda_item existe sempre). */
@@ -891,13 +893,14 @@ async function autoUpdateAplicar(dir, versaoEsperada) {
   const buf = Buffer.from(await resp.arrayBuffer());
   const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
   if (hash !== versaoEsperada) {
+    autoUpdateEstado.motivo = 'hash do download (' + hash + ') != esperado (' + versaoEsperada + ') — CDN servindo versão velha';
     console.error('[auto-update] hash baixado (' + hash + ') não bate com o esperado (' + versaoEsperada + ') — não aplica, tenta de novo no próximo ciclo');
     return;
   }
   writeFileSync(path.join(dir, 'server.novo.mjs'), buf);
   console.log('[auto-update] aplicando ' + hash + ' — a loja fica ~15s fora do ar');
   const script = path.join(dir, 'auto-update.ps1');
-  if (!existsSync(script)) { console.error('[auto-update] auto-update.ps1 não está na pasta — não dá pra aplicar sozinho ainda'); return; }
+  if (!existsSync(script)) { autoUpdateEstado.motivo = 'auto-update.ps1 não está na pasta da loja'; console.error('[auto-update] auto-update.ps1 não está na pasta — não dá pra aplicar sozinho ainda'); return; }
   const ps = spawn('powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-HashEsperado', hash],
     { detached: true, stdio: 'ignore', windowsHide: true, cwd: dir });
@@ -913,7 +916,8 @@ async function loopAutoUpdate() {
     const r = await fetch(PAGAR_MESA_URL + '/api/agente-release/vendas-local-versao', { signal: AbortSignal.timeout(10000) });
     const j = await r.json();
     const nova = j && j.versao;
-    if (!nova || nova === VERSAO) { autoUpdatePendenteDesde = null; }
+    autoUpdateEstado = { checado_em: new Date().toISOString(), disponivel: nova || null, erro: null, motivo: '' };
+    if (!nova || nova === VERSAO) { autoUpdatePendenteDesde = null; autoUpdateEstado.motivo = 'já está na última'; }
     else {
       if (!autoUpdatePendenteDesde) { autoUpdatePendenteDesde = Date.now(); console.log('[auto-update] versão ' + nova + ' disponível'); }
       const esperando = Date.now() - autoUpdatePendenteDesde;
@@ -922,10 +926,14 @@ async function loopAutoUpdate() {
         if (ocupada) console.log('[auto-update] loja ocupada há ' + Math.round(esperando / 3600000) + 'h esperando — aplica mesmo assim');
         await autoUpdateAplicar(dir, nova);
       } else {
+        autoUpdateEstado.motivo = 'esperando a loja ficar tranquila';
         console.log('[auto-update] ' + nova + ' disponível, aguardando a loja ficar tranquila');
       }
     }
-  } catch (e) { console.error('[auto-update] ' + e.message); }
+  } catch (e) {
+    autoUpdateEstado = { checado_em: new Date().toISOString(), disponivel: null, erro: String(e.message).slice(0, 200), motivo: 'falhou' };
+    console.error('[auto-update] ' + e.message);
+  }
   finally { setTimeout(loopAutoUpdate, AUTO_UPDATE_POLL_MS); }
 }
 
@@ -4004,7 +4012,13 @@ function apiConfig() {
   return { ok: true, loja: LOJA_NOME, versao: VERSAO, mesa_max: MESA_MAX,
     comanda_ativa: COMANDA_ATIVA, comanda_min: COMANDA_ATIVA ? COMANDA_MIN : 0,
     comanda_max: COMANDA_ATIVA ? COMANDA_MAX : 0, numero_max: NUMERO_MAX,
-    taxa_servico: TAXA_SERVICO, lan: ip ? ip + ':' + APP_PORT : null };
+    taxa_servico: TAXA_SERVICO, lan: ip ? ip + ':' + APP_PORT : null,
+    // POR QUE ESSA LOJA NÃO ATUALIZA? Sem isto a resposta era adivinhação: o
+    // mesmo código se atualizava numa loja e na outra não, e não havia como
+    // saber daqui se estava desligado no start.bat, se o download falhava ou
+    // se estava só esperando a loja esvaziar.
+    auto_update: AUTO_UPDATE ? 'on' : 'off',
+    auto_update_estado: autoUpdateEstado };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
