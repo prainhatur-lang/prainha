@@ -185,7 +185,9 @@ async function tratarMensagemComum(
       corpo = msg.document?.caption ?? msg.document?.filename ?? null;
       break;
     case 'sticker':
-      tipo = 'outro';
+      // Figurinha é como reação: fica no transcript, Nina NÃO responde (a
+      // Gleice mandou figurinha depois do tchau e ouviu a despedida repetida).
+      tipo = 'figurinha';
       mediaId = msg.sticker?.id ?? null;
       break;
     case 'reaction':
@@ -214,8 +216,8 @@ async function tratarMensagemComum(
   const registro = await registrarEntrada(entrada);
   if (!registro) return; // reentrega (dedupe)
 
-  // Reação não pede resposta — fica só no transcript.
-  if (tipo === 'reacao') return;
+  // Reação e figurinha não pedem resposta — ficam só no transcript.
+  if (tipo === 'reacao' || tipo === 'figurinha') return;
 
   if (!registro.deveResponder) {
     // Conversa de fornecedor (ou assumida pela equipe): a Nina não responde,

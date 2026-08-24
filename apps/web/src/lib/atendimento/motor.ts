@@ -205,12 +205,29 @@ async function ritmoHumano(
   await sleep(falta);
 }
 
+// Muletas inconfundíveis em QUALQUER posição da mensagem (não só no fim):
+// "Se precisar de mais alguma coisa, estou aqui. Aproveitem o aniversário!"
+// abria a mensagem com a muleta e a tesoura de fim não pegava (caso Gleice,
+// 24/08). O padrão "se precisar/quiser..." sozinho NÃO entra aqui — "se
+// quiser garantir uma mesa, posso reservar" é conteúdo legítimo.
+const MULETAS_EM_QUALQUER_LUGAR = [
+  /\b(estou|estarei|fico) (aqui|à disposição|por aqui|a postos|sempre por aqui)\b/i,
+  /\bé só (chamar|avisar|me chamar|falar|mandar mensagem)\b/i,
+  /\bconte comigo\b/i,
+];
+
 function limparFechoRepetitivo(texto: string): string {
   let out = texto.trim();
   for (let i = 0; i < 3; i++) {
     const antes = out;
     for (const p of FECHOS_REPETITIVOS) out = out.replace(p, '').trim();
     if (out === antes) break;
+  }
+  // Frase-muleta no MEIO/começo: derruba a frase inteira, preserva o resto.
+  const frases = out.split(/(?<=[.!?…])\s+/);
+  if (frases.length > 1) {
+    const limpas = frases.filter((f) => !MULETAS_EM_QUALQUER_LUGAR.some((p) => p.test(f)));
+    if (limpas.length > 0 && limpas.length < frases.length) out = limpas.join(' ').trim();
   }
   // A tesoura cortava o fecho e deixava o começo da frase pendurado:
   // "Se tiver alguma dúvida ou precisar de mais informações," (caso Paulão,
@@ -221,6 +238,17 @@ function limparFechoRepetitivo(texto: string): string {
   }
   // Mensagem que É só o fecho: melhor mandar como veio do que mandar nada.
   return out.length >= 10 ? out : texto.trim();
+}
+
+/** Compara textos ignorando caixa, espaços, emojis e pontuação — pra pegar
+ *  a Nina repetindo a MESMA mensagem que já mandou nesta conversa. */
+function normalizarPraComparar(texto: string): string {
+  return texto
+    .toLowerCase()
+    .replace(EMOJI_RE, '')
+    .replace(/[.,!?…;:*_-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Ao DEVOLVER a conversa pra Nina com pergunta do cliente sem resposta
@@ -602,6 +630,20 @@ export async function processarEntrada(params: {
         .filter((m) => m.direcao === 'saida')
         .reduce((s, m) => s + contarEmojis(m.corpo ?? ''), 0);
       texto = podarEmojis(texto, Math.max(0, 1 - jaUsados));
+      // ANTI-PAPAGAIO (caso Gleice 24/08): mensagem IGUAL a uma saída recente
+      // não sai de novo — silêncio é melhor que eco de robô (a cliente mandou
+      // figurinha e ouviu o mesmo "aproveitem o aniversário" pela 2ª vez).
+      const eco = normalizarPraComparar(texto);
+      const repetida = historico
+        .filter((m) => m.direcao === 'saida')
+        .slice(-5)
+        .some((m) => normalizarPraComparar(m.corpo ?? '') === eco);
+      if (repetida && !transferiu) {
+        console.log('[nina] resposta idêntica a saída recente — não reenvio', registro.conversaId);
+        texto = null;
+      }
+    }
+    if (texto) {
       await ritmoHumano(
         entrada.phoneNumberId,
         entrada.waMessageId,
