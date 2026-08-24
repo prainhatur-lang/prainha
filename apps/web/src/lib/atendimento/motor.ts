@@ -19,6 +19,7 @@ import {
   criarReservaWhatsApp,
   remarcarReservaWhatsApp,
   cancelarReservaWhatsApp,
+  consultarEstornoWhatsApp,
   consultarMesa,
 } from './reservar';
 import { consultarCardapio } from './cardapio';
@@ -500,6 +501,7 @@ export async function processarEntrada(params: {
         }),
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
+      consultarEstorno: () => consultarEstornoWhatsApp(entrada.filialId, entrada.telefone),
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)

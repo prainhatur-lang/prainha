@@ -230,6 +230,12 @@ export async function queryCieloPayment(paymentId: string, filialId?: string | n
     paymentId: payment.PaymentId as string,
     status: mapCieloStatus(payment.Status),
     statusDetail: (payment.ReturnMessage || '') as string,
+    /** 'CreditCard' | 'DebitCard' | 'Pix' — define COMO o estorno volta
+     *  (cartão = fatura; Pix = conta de origem). */
+    tipo: (payment.Type || '') as string,
+    valorCentavos: (payment.Amount ?? 0) as number,
+    estornadoCentavos: (payment.VoidedAmount ?? 0) as number,
+    dataEstorno: (payment.VoidedDate || null) as string | null,
   };
 }
 

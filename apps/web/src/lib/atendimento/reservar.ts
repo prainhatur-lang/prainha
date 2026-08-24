@@ -19,6 +19,7 @@ import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
+import { queryCieloPayment } from '@/lib/cielo';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
@@ -254,6 +255,91 @@ export async function cancelarReservaWhatsApp(p: {
 
   const mesas = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
   return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada.${linhaEstorno} Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
+}
+
+/** Estorno de reserva paga (Lounge): acha a reserva COM pagamento deste
+ *  telefone (inclui canceladas, últimos 90 dias), consulta a Cielo pra saber
+ *  o MEIO do pagamento (cartão volta na fatura; Pix volta na conta de origem)
+ *  e devolve a explicação pronta pra Nina. Caso Dr. Vitor (24/08): ele pagou
+ *  no CARTÃO, mandou chave Pix e a equipe procurou um Pix que nunca existiu. */
+export async function consultarEstornoWhatsApp(filialId: string, telefone: string): Promise<string> {
+  const suf = telefone.replace(/\D/g, '').slice(-8);
+  if (suf.length < 8) return 'Telefone da conversa inválido — transfira pra equipe.';
+
+  const pagas = await db
+    .select({
+      id: schema.reserva.id,
+      data: schema.reserva.data,
+      hora: schema.reserva.hora,
+      area: schema.reserva.area,
+      status: schema.reserva.status,
+      nome: schema.reserva.clienteNome,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      pagamentoId: schema.reserva.pagamentoId,
+      pagamentoValor: schema.reserva.pagamentoValor,
+    })
+    .from(schema.reserva)
+    .where(
+      and(
+        eq(schema.reserva.filialId, filialId),
+        sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
+        sql`${schema.reserva.pagamentoId} IS NOT NULL`,
+        sql`${schema.reserva.data} >= current_date - interval '90 days'`,
+      ),
+    )
+    .orderBy(sql`${schema.reserva.data} DESC`)
+    .limit(3);
+
+  if (pagas.length === 0) {
+    return 'Não encontrei reserva com pagamento neste telefone (estorno só existe pra reserva de Lounge, que é paga). Se o cliente garantir que pagou, transfira pra equipe com os dados que ele passar.';
+  }
+
+  const linhas: string[] = [];
+  for (const r of pagas) {
+    const valor = Number(r.pagamentoValor ?? 0).toFixed(2);
+    const cab = `Reserva de ${dataBr(String(r.data))} às ${r.hora ?? '?'} (${r.area}, ${r.nome ?? 'cliente'}) — R$ ${valor} pagos, situação da reserva: ${r.status}.`;
+
+    // Meio de pagamento direto da Cielo (best-effort): define COMO volta.
+    let meio = '';
+    let confirmadoCielo = '';
+    if (r.pagamentoId) {
+      try {
+        const pg = await queryCieloPayment(r.pagamentoId, filialId);
+        meio = pg.tipo === 'Pix' ? 'Pix' : pg.tipo ? 'cartão' : '';
+        if (pg.estornadoCentavos > 0) {
+          confirmadoCielo = ` A operadora CONFIRMA estorno de R$ ${(pg.estornadoCentavos / 100).toFixed(2)}${pg.dataEstorno ? ` em ${pg.dataEstorno.slice(0, 10).split('-').reverse().join('/')}` : ''}.`;
+        }
+      } catch {
+        // sem Cielo agora — explica pelo status nosso mesmo
+      }
+    }
+    const comoVolta =
+      meio === 'cartão'
+        ? 'O pagamento foi no CARTÃO: o valor volta como estorno NA FATURA do cartão (na atual ou na próxima, o banco leva até ~30 dias). NÃO volta como Pix — se o cliente mandou chave Pix, explique com carinho que ela não é necessária.'
+        : meio === 'Pix'
+          ? 'O pagamento foi no PIX: o valor volta automaticamente pra MESMA conta de onde saiu o Pix (não precisa informar chave). O banco leva alguns dias pra creditar.'
+          : 'O valor volta pelo MESMO meio em que foi pago (cartão = estorno na fatura; Pix = volta pra conta de origem). Não é preciso informar chave Pix.';
+
+    const st = r.pagamentoStatus ?? '';
+    const situacao =
+      st === 'estornado' || st === 'reembolsado'
+        ? `ESTORNO INTEGRAL de R$ ${valor} JÁ PROCESSADO e aprovado.${confirmadoCielo} ${comoVolta}`
+        : st === 'estornado_50'
+          ? `ESTORNO DE 50% (R$ ${(Number(valor) / 2).toFixed(2)}) JÁ PROCESSADO — o restante foi retido pela regra de cancelamento entre 24h e 48h.${confirmadoCielo} ${comoVolta}`
+          : st === 'retido'
+            ? `Taxa RETIDA: o cancelamento foi com menos de 24h de antecedência, então os R$ ${valor} não retornam (regra combinada na reserva). Explique com carinho.`
+            : st.startsWith('estorno_falhou')
+              ? `Estorno EM PROCESSAMENTO: o sistema reprocessa automaticamente todo dia até a operadora aprovar. ${comoVolta} Se o cliente insistir que demorou demais, transfira pra equipe.`
+              : st === 'pago'
+                ? r.status === 'cancelada' || r.status === 'no_show'
+                  ? 'Consta pagamento sem estorno registrado — transfira pra equipe verificar.'
+                  : `A reserva está ATIVA e paga — não há estorno em andamento. Se o cliente quer cancelar, use cancelar_reserva (a regra: 48h+ antes devolve tudo; 24-48h devolve metade; menos de 24h retém).`
+                : `Situação do pagamento: ${st || 'desconhecida'} — transfira pra equipe.`;
+
+    linhas.push(`${cab} ${situacao}`);
+  }
+
+  return linhas.join('\n');
 }
 
 interface SlotAlocado {

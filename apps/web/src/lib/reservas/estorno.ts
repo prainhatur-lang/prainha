@@ -7,7 +7,7 @@
 
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { refundCieloPayment } from '@/lib/cielo';
+import { refundCieloPayment, queryCieloPayment } from '@/lib/cielo';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 
 export interface ResultadoEstorno {
@@ -54,6 +54,18 @@ export async function estornarReservaSePago(
   const percentual = forcarIntegral ? 100 : percentualEstorno(reserva.data, reserva.hora);
   const valorEstornado = percentual === 100 ? valorPago : percentual === 50 ? valorPago / 2 : 0;
 
+  // COMO o dinheiro volta depende do MEIO do pagamento — o rótulo dizia "no
+  // Pix" fixo e o Dr. Vitor (24/08) ficou procurando um Pix que era estorno
+  // de CARTÃO (volta na fatura). Best-effort: sem Cielo agora, fica neutro.
+  let meioVolta = 'pelo mesmo meio do pagamento (cartão: na fatura; Pix: na conta de origem)';
+  try {
+    const pg = await queryCieloPayment(reserva.pagamentoId, reserva.filialId);
+    if (pg.tipo === 'Pix') meioVolta = 'no Pix, direto na conta de origem';
+    else if (pg.tipo) meioVolta = 'no CARTÃO, como estorno na fatura (até ~30 dias, conforme o banco) — NÃO chega como Pix';
+  } catch {
+    // consulta falhou — segue com o rótulo neutro
+  }
+
   let novoStatus = 'retido';
   let rotulo = `taxa retida (cancelamento com menos de 24h): R$ ${valorPago.toFixed(2)} não retorna`;
   let detalheInterno = rotulo;
@@ -63,13 +75,13 @@ export async function estornarReservaSePago(
       const r = await refundCieloPayment(reserva.pagamentoId, undefined, reserva.filialId);
       if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado';
-      rotulo = `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} no Pix; o banco leva alguns dias`;
+      rotulo = `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} ${meioVolta}`;
       detalheInterno = rotulo;
     } else if (percentual === 50) {
       const r = await refundCieloPayment(reserva.pagamentoId, Math.round(valorPago * 50), reserva.filialId);
       if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado_50';
-      rotulo = `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} voltam no Pix (cancelamento entre 24h e 48h); o restante é retido`;
+      rotulo = `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} voltam ${meioVolta} (cancelamento entre 24h e 48h); o restante é retido`;
       detalheInterno = rotulo;
     }
   } catch (e) {
@@ -82,8 +94,8 @@ export async function estornarReservaSePago(
     novoStatus = `estorno_falhou_${percentual}`;
     rotulo =
       percentual === 100
-        ? `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} em processamento no Pix — o banco leva alguns dias`
-        : `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} em processamento no Pix — o banco leva alguns dias; o restante é retido`;
+        ? `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} em processamento — vai voltar ${meioVolta}`
+        : `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} em processamento (volta ${meioVolta}); o restante é retido`;
     detalheInterno = `estorno de ${percentual}% (R$ ${valorEstornado.toFixed(2)}) FALHOU na Cielo (${motivo.slice(0, 90)}) — reprocesso automático diário até sair`;
   }
 
@@ -137,7 +149,7 @@ export async function reprocessarEstornosFalhos(): Promise<{ ok: number; pendent
       await registrarAlteracoesReserva(
         r.id,
         { observacao: null },
-        { observacao: `estorno reprocessado com SUCESSO: R$ ${valor.toFixed(2)} (${percentual}%) devolvidos no Pix` },
+        { observacao: `estorno reprocessado com SUCESSO: R$ ${valor.toFixed(2)} (${percentual}%) devolvidos pelo meio original do pagamento` },
         { tipo: 'sistema', nome: 'cron retry-estornos' },
       );
       ok += 1;

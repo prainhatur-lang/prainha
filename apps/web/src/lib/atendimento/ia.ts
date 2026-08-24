@@ -62,6 +62,7 @@ export interface ExecutoresFerramentas {
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
+  consultarEstorno: () => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
   consultarMare: (data: string) => Promise<string>;
@@ -231,7 +232,8 @@ RESERVA DE MESA — VOCÊ MESMA CRIA:
 - LOUNGE PAGO — regra de estorno (VOCÊ SABE essa regra; responda na hora quando perguntarem sobre reembolso/devolução, sem "confirmar com a equipe"): cancelamento com 48h+ de antecedência = Pix volta integral; entre 24h e 48h = volta 50%; menos de 24h = taxa retida. O banco leva alguns dias pra creditar. O estorno sai automático no cancelamento (a ferramenta te diz o resultado exato pra você explicar). Avise a regra ANTES de cancelar um lounge pago e confirme que o cliente entendeu.
 - CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
 - RESERVA PRA HOJE — CORTE DINÂMICO: o corte de hoje acompanha o movimento REAL da casa. SEMPRE consulte consultar_disponibilidade_reserva com a data de hoje antes de negar: a linha "OCUPAÇÃO AGORA" diz se a reserva está liberada até mais tarde (casa com espaço libera até 15h ou 17h) ou se vale a regra padrão (tarde por ordem de chegada). Casa com espaço = VENDA a reserva da tarde com entusiasmo (é pra encher a casa!); casa movimentada = explique com carinho que à tarde é por ordem de chegada e convide a vir direto.
-- Outras mudanças (passar pra outro nome/telefone) e PROBLEMA de pagamento (Pix não caiu, cobrança duplicada, valor errado): transfira pra equipe. Pergunta sobre a REGRA de reembolso não é problema — responda você mesma com a regra acima.
+- ESTORNO/REEMBOLSO de reserva paga ("cadê meu dinheiro?", "não caiu o estorno", "quero o reembolso"): chame consultar_estorno_reserva ANTES de responder — ela acha a reserva, diz se o estorno já saiu e COMO volta. PONTO CRÍTICO: se o pagamento foi no CARTÃO, o valor volta NA FATURA do cartão (até ~30 dias, conforme o banco) e NUNCA como Pix — nesse caso NÃO peça e nem use chave Pix; se o cliente mandar uma, agradeça e explique que não precisa. Pagamento no Pix volta sozinho pra conta de origem, também sem precisar de chave. Só transfira se a ferramenta mandar, ou se o prazo já estourou e o cliente reclama.
+- Outras mudanças (passar pra outro nome/telefone) e PROBLEMA de pagamento (cobrança duplicada, valor errado): transfira pra equipe. Pergunta sobre a REGRA de reembolso não é problema — responda você mesma com a regra acima.
 
 DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e diga que repassa pra equipe; fechamento redondo (reserva criada, orçamento enviado, cliente se despedindo) → encerre com um desejo curtinho ligado ao contexto ("aproveita o pôr do sol lindo", "aproveitem aí juntos", "que a festa seja inesquecível") — criado na hora, nunca fórmula repetida.
 
@@ -414,6 +416,15 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           data: { type: 'string', description: 'YYYY-MM-DD da reserva a cancelar (omitir se o cliente só tem uma)' },
         },
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_estorno_reserva',
+      description:
+        'Consulta o ESTORNO/reembolso de reserva paga (Lounge) do telefone DESTA conversa: acha a reserva, diz se o estorno já saiu, o valor e COMO o dinheiro volta (cartão = estorno na fatura; Pix = volta pra conta de origem). Chame SEMPRE que o cliente perguntar de estorno, reembolso, devolução do pagamento ou "meu dinheiro não caiu" — antes de responder qualquer coisa e SEM pedir chave Pix.',
+      parameters: { type: 'object', properties: {} },
     },
   },
   {
@@ -658,6 +669,8 @@ Como usar, SEM EXCEÇÃO:
           });
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
+        } else if (tc.function.name === 'consultar_estorno_reserva') {
+          resultado = await params.executores.consultarEstorno();
         } else if (tc.function.name === 'transferir_para_humano') {
           resultado = await params.executores.transferir(
             String(args.motivo ?? 'não informado'),
