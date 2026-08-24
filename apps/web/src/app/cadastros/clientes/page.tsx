@@ -303,12 +303,13 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 <th className="px-4 py-2">Última</th>
                 <th className="px-4 py-2 text-right">Fiado</th>
                 <th className="px-4 py-2">Tipo de cliente</th>
+                <th className="px-4 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {pageItems.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-400">
                     Nenhum cliente encontrado.
                   </td>
                 </tr>
@@ -366,6 +367,23 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                       {c.fontes.has('consumer') && chip('Cadastro (PDV)', 'bg-amber-100 text-amber-700')}
                       {c.fontes.has('tagme') && chip('Importado pelo Tagme', 'bg-emerald-100 text-emerald-700')}
                     </div>
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {c.clienteId ? (
+                      <Link
+                        href={`/cadastros/clientes/editar/${c.clienteId}`}
+                        className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        ✎ Editar
+                      </Link>
+                    ) : (
+                      <span
+                        className="text-[10px] text-slate-300"
+                        title="Sem cadastro no PDV — só reserva/importado. Crie pelo + Novo cliente."
+                      >
+                        —
+                      </span>
+                    )}
                   </td>
                 </tr>
                 );
