@@ -26,8 +26,15 @@ Set-Location -Path $PSScriptRoot
 $Log = Join-Path $PSScriptRoot 'auto-update.log'
 function Registrar($msg) {
   $linha = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' - ' + $msg
-  Add-Content -Path $Log -Value $linha
+  try { Add-Content -Path $Log -Value $linha }
+  catch { Write-Output ("REGISTRAR FALHOU: " + $_.Exception.Message + " | msg era: " + $msg) }
 }
+
+# Banner no stdout: o server.mjs redireciona a saida deste processo pra
+# auto-update-spawn.log. Se nem ESTA linha aparecer la, o powershell morreu
+# antes de executar o script - e o problema e do processo, nao do script.
+$eAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-Output ("ps1 vivo: pid=" + $PID + " usuario=" + $env:USERNAME + " admin=" + $eAdmin + " pasta=" + $PSScriptRoot + " hash=" + $HashEsperado)
 
 # PRIMEIRA linha de qualquer execucao: se este registro nao aparecer, o
 # script nem chegou a compilar (foi exatamente o bug de 25/08/2026).
@@ -41,7 +48,9 @@ if (-not (Test-Path 'server.novo.mjs')) {
 Registrar "iniciando troca pra versao $HashEsperado"
 
 # ---- passo 1: mata o processo atual (libera o arquivo) --------------------
-schtasks /end /tn PrainhaVendas *> $null
+$saidaEnd = (schtasks /end /tn PrainhaVendas 2>&1 | Out-String).Trim()
+Registrar ("schtasks end rc=" + $LASTEXITCODE + " -> " + $saidaEnd)
+Write-Output ("schtasks end rc=" + $LASTEXITCODE + " -> " + $saidaEnd)
 Start-Sleep -Seconds 2
 
 # ---- passo 2: backup + aplica a nova versao --------------------------------
@@ -53,7 +62,8 @@ Copy-Item 'server.novo.mjs' 'server.mjs' -Force
 Remove-Item 'server.novo.mjs' -Force -ErrorAction SilentlyContinue
 
 # ---- passo 3: sobe de novo e confere se nasceu saudavel --------------------
-schtasks /run /tn PrainhaVendas *> $null
+$saidaRun = (schtasks /run /tn PrainhaVendas 2>&1 | Out-String).Trim()
+Registrar ("schtasks run rc=" + $LASTEXITCODE + " -> " + $saidaRun)
 Start-Sleep -Seconds 15
 
 $versaoSubiu = $null
