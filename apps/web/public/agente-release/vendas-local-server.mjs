@@ -604,6 +604,7 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
+  await addCol('ifood_evento', 'tentativas int DEFAULT 0');
   await initSchemaNativo();
 }
 
@@ -1099,35 +1100,71 @@ async function ifoodPoll() {
   const paraAck = [];
   for (const ev of eventos || []) {
     const code = IFOOD_ST[ev.code] || ev.code || ev.fullCode || '';
-    // PERSISTE PRIMEIRO, dá o ack DEPOIS: se o processo morrer aqui, o iFood
-    // devolve o evento no próximo ciclo e o PK evita processar duas vezes.
+    // PERSISTE PRIMEIRO, dá o ack DEPOIS: se o processo morrer entre as duas
+    // linhas, o iFood devolve o evento no próximo ciclo e o PK evita repetir.
+    //
+    // ⚠️ O ACK VAI PARA TODO EVENTO RECEBIDO, inclusive os que falharem ao
+    // processar. A auditoria do iFood (Firefly Audit) exige 100% dos eventos
+    // confirmados e reprova a homologação quando falta algum — foi o que custou
+    // o ponto em 25/08/2026. Não perder o pedido é responsabilidade da NOSSA
+    // fila: o evento que falha fica com `erro` preenchido e o ifoodReprocessar()
+    // tenta de novo a cada ciclo, buscando o pedido pela API quando precisa.
     const novo = await sql`INSERT INTO ifood_evento (id, code, order_id) VALUES (${ev.id}, ${code}, ${ev.orderId})
       ON CONFLICT (id) DO NOTHING RETURNING id`;
-    if (!novo.length) { paraAck.push({ id: ev.id }); continue; } // já tratado antes
+    paraAck.push({ id: ev.id }); // TODO evento recebido é confirmado — ver nota acima
+    if (!novo.length) continue; // já tratado antes
     try {
       await ifoodAplicarEvento(ev.orderId, code, c);
-      await sql`UPDATE ifood_evento SET ack_em=now() WHERE id=${ev.id}`;
-      paraAck.push({ id: ev.id });
+      await sql`UPDATE ifood_evento SET ack_em=now(), erro=NULL WHERE id=${ev.id}`;
     } catch (e) {
-      // ⚠️ NÃO DÁ ACK EM EVENTO QUE FALHOU.
-      // Antes o ack ia junto de qualquer jeito: um erro ao gravar o pedido
-      // (banco fora, coluna nova faltando, produto sem cadastro) fazia o iFood
-      // considerar entregue e NUNCA reenviar. O pedido sumia em silêncio — a
-      // loja seguia consultando "sem erro" e sem pedido nenhum na tela.
-      // Sem o ack, o próximo ciclo traz o evento de novo e a gente tenta outra
-      // vez; o PK do evento evita processar duas vezes quando dá certo.
-      await sql`DELETE FROM ifood_evento WHERE id=${ev.id}`.catch(() => {});
-      ifoodStatus = { ...ifoodStatus, ultimo_erro: 'evento ' + code + ': ' + String(e.message).slice(0, 160) };
-      console.error('[ifood] evento', code, ev.orderId, '—', e.message, '— SEM ack, volta no próximo ciclo');
+      // Falhou: o ack JÁ VAI (o iFood exige 100% confirmado), mas o evento fica
+      // marcado aqui pra ser reprocessado pela nossa própria fila. Quem garante
+      // que o pedido não some é o ifoodReprocessar(), não a reentrega do iFood.
+      await sql`UPDATE ifood_evento SET erro=${String(e.message).slice(0, 250)}, tentativas=COALESCE(tentativas,0)+1
+        WHERE id=${ev.id}`.catch(() => {});
+      console.error('[ifood] evento', code, ev.orderId, '—', e.message, '— vai pra fila de reprocesso');
     }
   }
   if (paraAck.length) {
     await ifoodApi('/order/v1.0/events/acknowledgment', { metodo: 'POST', corpo: paraAck }).catch((e) =>
       console.error('[ifood] ack falhou:', e.message));
   }
+  // Antes de projetar, tenta de novo o que ficou pendente de ciclos anteriores.
+  await ifoodReprocessar(c).catch((e) => console.error('[ifood] reprocesso:', e.message));
   await projetarIfood();
   const [ab] = await sql`SELECT count(*)::int n FROM ifood_pedido WHERE concluido_em IS NULL AND cancelado_em IS NULL`;
-  ifoodStatus = { ativo: true, pareado: true, ultimo_ok: new Date().toISOString(), ultimo_erro: null, abertos: ab?.n || 0 };
+  const [pend] = await sql`SELECT count(*)::int n FROM ifood_evento WHERE erro IS NOT NULL AND ack_em IS NULL`;
+  ifoodStatus = { ativo: true, pareado: true, ultimo_ok: new Date().toISOString(),
+    ultimo_erro: pend?.n ? pend.n + ' evento(s) aguardando reprocesso' : null, abertos: ab?.n || 0 };
+}
+
+/** Fila de reprocesso NOSSA — o que garante que pedido não some.
+ *
+ *  O ack já foi dado (o iFood exige isso), então não existe reentrega pra
+ *  contar com ela. Todo evento que falhou fica gravado com `erro` e volta aqui
+ *  a cada ciclo. Como o detalhe do pedido continua disponível na API pelo id,
+ *  uma falha passageira (banco ocupado, rede, 5xx do iFood) se resolve sozinha
+ *  no ciclo seguinte. Depois de IFOOD_MAX_TENT tentativas para de insistir e
+ *  deixa o erro visível em /ifood, pra não ficar batendo em erro permanente. */
+const IFOOD_MAX_TENT = 20;
+async function ifoodReprocessar(c) {
+  const pend = await sql`SELECT id, code, order_id FROM ifood_evento
+    WHERE erro IS NOT NULL AND ack_em IS NULL AND COALESCE(tentativas,0) < ${IFOOD_MAX_TENT}
+    ORDER BY recebido_em LIMIT 20`;
+  if (!pend.length) return 0;
+  let ok = 0;
+  for (const ev of pend) {
+    try {
+      await ifoodAplicarEvento(ev.order_id, ev.code, c);
+      await sql`UPDATE ifood_evento SET ack_em=now(), erro=NULL WHERE id=${ev.id}`;
+      ok++;
+      console.log('[ifood] reprocesso OK:', ev.code, ev.order_id);
+    } catch (e) {
+      await sql`UPDATE ifood_evento SET erro=${String(e.message).slice(0, 250)}, tentativas=COALESCE(tentativas,0)+1
+        WHERE id=${ev.id}`.catch(() => {});
+    }
+  }
+  return ok;
 }
 
 async function ifoodAplicarEvento(orderId, code, c) {
