@@ -879,15 +879,19 @@ async function autoUpdateLojaOcupada() {
 /** Mantém o PRÓPRIO script de troca atualizado. Seguro fazer direto (sem
  *  passar pelo .ps1): nada tem esse arquivo aberto, ele só dorme na pasta. */
 async function autoUpdateSincronizarScript(dir) {
-  try {
-    const r = await fetch(PAGAR_MESA_URL + '/agente-release/auto-update.ps1', { signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return;
-    const texto = await r.text();
-    if (!texto || texto.length < 200 || !texto.includes('HashEsperado')) return; // salvaguarda: resposta vazia/errada
-    const destino = path.join(dir, 'auto-update.ps1');
-    const atual = existsSync(destino) ? readFileSync(destino, 'utf8') : '';
-    if (texto !== atual) { writeFileSync(destino, texto); console.log('[auto-update] auto-update.ps1 atualizado'); }
-  } catch { /* offline agora — tenta no próximo ciclo */ }
+  // Mantém os DOIS scripts do atualizador em dia: o de troca (auto-update.ps1)
+  // e o da tarefa elevada que dispara ele (updater-task.ps1).
+  for (const [nome, marca] of [['auto-update.ps1', 'HashEsperado'], ['updater-task.ps1', 'aplicar-versao.txt']]) {
+    try {
+      const r = await fetch(PAGAR_MESA_URL + '/agente-release/' + nome, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) continue;
+      const texto = await r.text();
+      if (!texto || texto.length < 200 || !texto.includes(marca)) continue; // salvaguarda: resposta vazia/errada
+      const destino = path.join(dir, nome);
+      const atual = existsSync(destino) ? readFileSync(destino, 'utf8') : '';
+      if (texto !== atual) { writeFileSync(destino, texto); console.log('[auto-update] ' + nome + ' atualizado'); }
+    } catch { /* offline agora — tenta no próximo ciclo */ }
+  }
 }
 
 async function autoUpdateAplicar(dir, versaoEsperada) {
@@ -905,38 +909,20 @@ async function autoUpdateAplicar(dir, versaoEsperada) {
   const script = path.join(dir, 'auto-update.ps1');
   if (!existsSync(script)) { autoUpdateEstado.motivo = 'auto-update.ps1 não está na pasta da loja'; console.error('[auto-update] auto-update.ps1 não está na pasta — não dá pra aplicar sozinho ainda'); return; }
 
-  // ⚠️ 25/08/2026: o disparo falhava EM SILÊNCIO nas duas lojas. O Node baixava
-  // a versão nova, conferia o hash, gravava server.novo.mjs — e o PowerShell
-  // nunca nascia: o auto-update.log não tinha uma linha sequer. Como a saída ia
-  // pro lixo e ninguém escutava o 'error' do spawn, não havia o que investigar.
-  // Agora: caminho absoluto do powershell (o PATH da tarefa agendada pode não
-  // ter o dele), -NonInteractive (parâmetro obrigatório não resolvido faz o
-  // PowerShell ESPERAR num prompt pra sempre, sem stdin), e toda a saída vai
-  // pra auto-update-spawn.log.
-  const raizWin = process.env.SystemRoot || 'C:\\Windows';
-  let psExe = 'powershell.exe';
-  for (const c of [path.join(raizWin, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-                   path.join(raizWin, 'Sysnative', 'WindowsPowerShell', 'v1.0', 'powershell.exe')]) {
-    try { if (existsSync(c)) { psExe = c; break; } } catch { /* segue com o nome puro */ }
-  }
-  let saida = 'ignore';
-  try { const fd = openSync(path.join(dir, 'auto-update-spawn.log'), 'a'); saida = ['ignore', fd, fd]; } catch { /* sem log é melhor que não aplicar */ }
-  try {
-    const ps = spawn(psExe,
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-HashEsperado', hash],
-      { detached: true, stdio: saida, windowsHide: true, cwd: dir });
-    ps.on('error', (e) => {
-      autoUpdateEstado.motivo = 'não consegui disparar o powershell: ' + String(e.message).slice(0, 140);
-      console.error('[auto-update] spawn do powershell falhou:', e.message);
-    });
-    ps.unref();
-    autoUpdateEstado.motivo = 'auto-update.ps1 disparado (' + psExe + ') — a troca leva ~30s';
-    console.log('[auto-update] disparei ' + psExe + ' pra aplicar ' + hash);
-  } catch (e) {
-    autoUpdateEstado.motivo = 'spawn falhou: ' + String(e.message).slice(0, 140);
-    console.error('[auto-update] spawn falhou:', e.message);
-    return;
-  }
+  // ⚠️ 25/08/2026, capítulo final: o Node NÃO dispara mais powershell nenhum.
+  // Histórico do porquê: (1) o .ps1 tinha travessão que virava aspas na
+  // leitura ANSI e nem compilava — consertado, ASCII puro; (2) mesmo com o
+  // script bom e caminho absoluto, o powershell nascia do processo da tarefa
+  // agendada e morria sem executar UMA linha (spawn.log vazio, log sem
+  // registro) — enquanto o MESMO script, rodado de terminal admin, trocou a
+  // versão 3 de 3 vezes. O contexto da tarefa é o problema, e brigar com ele
+  // é enxugar gelo. Solução: uma tarefa agendada PRÓPRIA e elevada
+  // (PrainhaVendasUpdater, a cada 5min) fica de olho no arquivo-sinal
+  // aplicar-versao.txt; aqui a gente só grava o sinal quando a loja está
+  // tranquila. Quem aplica é ela — no mesmo contexto que sempre funcionou.
+  writeFileSync(path.join(dir, 'aplicar-versao.txt'), hash);
+  autoUpdateEstado.motivo = 'sinalizado — a tarefa PrainhaVendasUpdater aplica em até 5min';
+  console.log('[auto-update] sinal gravado: a tarefa elevada aplica ' + hash + ' em até 5min');
   autoUpdatePendenteDesde = null;
 }
 
