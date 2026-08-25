@@ -26,6 +26,8 @@ import Firebird from 'node-firebird';
 import postgres from 'postgres';
 import QRCode from 'qrcode-svg';
 
+// Se esta versão chegou na loja sem ninguém colar comando, o auto-update
+// está oficialmente FUNCIONANDO — primeira atualização autônoma (25/08/2026).
 // Config por variável de ambiente. Defaults = desenvolvimento no Mac (VPN).
 // Na LOJA (Xeon), o start.bat define FB_HOST=127.0.0.1 e PG_URL do Postgres local.
 const FB = {
