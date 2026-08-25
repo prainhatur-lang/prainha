@@ -567,6 +567,9 @@ export async function processarEntrada(params: {
           ocupacaoAgora,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
+          // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
+          // filial dele; o número histórico do Prainha Bar atende as duas.
+          duasCasas: /prainha bar/i.test(filialNome),
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
@@ -582,6 +585,9 @@ export async function processarEntrada(params: {
           ocupacaoAgora,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
+          // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
+          // filial dele; o número histórico do Prainha Bar atende as duas.
+          duasCasas: /prainha bar/i.test(filialNome),
         });
       }
       texto = resposta.texto;
