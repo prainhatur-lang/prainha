@@ -29,6 +29,30 @@ function dobrar(s: string): string {
     .replace(/[̀-ͯ]/g, '');
 }
 
+// POPULARIDADE REAL (25/08): o prompt promete "os primeiros estão ordenados
+// por popularidade" mas a query ordenava por NOME — "quais drinks?" devolvia
+// Blonde Citrus primeiro por começar com B. A agregação de vendas (60 dias)
+// custa ~2s, então fica em cache por instância (6h) e o ranking é feito em JS.
+const VENDAS_TTL_MS = 6 * 3600 * 1000;
+const vendasCache = new Map<string, { em: number; qtd: Map<string, number> }>();
+
+async function vendasPorProduto(filialId: string): Promise<Map<string, number>> {
+  const hit = vendasCache.get(filialId);
+  if (hit && Date.now() - hit.em < VENDAS_TTL_MS) return hit.qtd;
+  const rows = (await db.execute(sql`
+    SELECT pi.produto_id AS id, sum(pi.quantidade)::float AS qtd
+    FROM pedido_item pi
+    JOIN pedido pe ON pe.id = pi.pedido_id
+    WHERE pi.filial_id = ${filialId}
+      AND pi.produto_id IS NOT NULL
+      AND pe.data_abertura > now() - interval '60 days'
+    GROUP BY pi.produto_id
+  `)) as unknown as Array<{ id: string; qtd: number }>;
+  const qtd = new Map(rows.map((r) => [r.id, r.qtd]));
+  vendasCache.set(filialId, { em: Date.now(), qtd });
+  return qtd;
+}
+
 /** Busca crua no cardápio ativo. termo vazio = lista tudo (até o limite).
  *  Usada pela consulta da conversa e pelo orçamento de evento. */
 export async function buscarItensCardapio(
@@ -56,8 +80,12 @@ export async function buscarItensCardapio(
   // vende ~990 (comanda do garçom / balcão / cardápio digital) — ex.: Peixe
   // Inteiro frito, bebidas por dose, sobremesas. A Nina enxerga TUDO que é
   // vendável; o campo no_cardapio_online diferencia na resposta.
-  return (await db.execute(sql`
-    SELECT p.nome,
+  // Busca MAIS que o limite pra dar espaço ao re-ranking por vendas (numa
+  // lista grande — orçamento lista tudo — o over-fetch não faz sentido).
+  const buscar = limite <= 20 ? limite * 6 : limite;
+  const linhas = (await db.execute(sql`
+    SELECT p.id AS produto_id,
+           p.nome,
            COALESCE(t.descricao, t.sigla, '') AS tamanho,
            pv.preco_venda::float AS preco,
            di.preco::float AS preco_delivery,
@@ -77,8 +105,22 @@ export async function buscarItensCardapio(
       AND pv.preco_venda > 0
       AND ${where}
     ORDER BY (pv.data_pausado IS NOT NULL OR p.data_pausado IS NOT NULL) ASC, pv.menu_dino DESC, p.nome, pv.preco_venda
-    LIMIT ${limite}
-  `)) as unknown as ItemCardapio[];
+    LIMIT ${buscar}
+  `)) as unknown as Array<ItemCardapio & { produto_id: string }>;
+
+  // Re-ranking por VENDAS reais (60 dias): ativo antes de pausado, mais
+  // vendido primeiro, empate mantém a ordem estável da query. Falha na
+  // agregação não derruba a consulta — segue a ordem original.
+  try {
+    const vendas = await vendasPorProduto(filialId);
+    linhas.sort((a, b) => {
+      if (!!a.pausado !== !!b.pausado) return a.pausado ? 1 : -1;
+      return (vendas.get(b.produto_id) ?? 0) - (vendas.get(a.produto_id) ?? 0);
+    });
+  } catch (e) {
+    console.error('[cardapio] ranking por vendas falhou:', e instanceof Error ? e.message : e);
+  }
+  return linhas.slice(0, limite);
 }
 
 export async function consultarCardapio(filialId: string, termo: string): Promise<string> {
