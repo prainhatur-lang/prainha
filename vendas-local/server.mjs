@@ -11127,6 +11127,10 @@ function quando(s){if(!s)return '';var d=new Date(s);return d.toLocaleDateString
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b||{})})).json()}
 async function carregar(){D=await jget('/api/ifood');pinta()}
+// Redesenhar a tela recria o input, então devolve o foco e o cursor pro fim —
+// sem isso, cada tecla digitada tiraria o cursor do campo.
+function filtrar(v){window._filtro=v;pinta();var e=document.getElementById('fpd');if(e){e.focus();e.setSelectionRange(e.value.length,e.value.length)}}
+function limparFiltro(){filtrar('')}
 function situacao(p){
   if(p.cancelado)return['Cancelado','off'];
   if(p.cancel_pedido)return['Cliente pediu cancelamento','off'];
@@ -11179,9 +11183,19 @@ function pinta(){
       '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par"></div></div>';
   }
   // ---- pedidos ----
-  h+='<h2>Pedidos <span class="mut">('+d.pedidos.length+')</span></h2><div class="card" id="peds">';
+  // Busca por número: com dois dias de pedidos na tela é fácil agir no pedido
+  // errado — e na homologação do iFood cada etapa nomeia UM pedido específico.
+  var _f=(window._filtro||'').trim();
+  var lista=d.pedidos;
+  if(_f)lista=lista.filter(function(p){return String(p.display_id||'').indexOf(_f)>=0||String(p.id||'').indexOf(_f)>=0});
+  h+='<h2>Pedidos <span class="mut">('+lista.length+(_f?' de '+d.pedidos.length:'')+')</span></h2>'+
+     '<div class="card"><div class="l"><div class="nm">Achar pedido<small>digite o número (ex: 6451) pra ver só ele</small></div>'+
+     '<input id="fpd" value="'+esc(_f)+'" placeholder="número do pedido" style="width:200px" oninput="filtrar(this.value)">'+
+     (_f?'<button class="b o" onclick="limparFiltro()">limpar</button>':'')+
+     '</div></div>'+
+     '<div class="card" id="peds">';
   if(!d.pedidos.length)h+='<div class="pd mut">Nenhum pedido ainda. Quando a integração estiver ligada e autorizada, o pedido aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha.</div>';
-  d.pedidos.forEach(function(p){
+  lista.forEach(function(p){
     var s=situacao(p);
     h+='<div class="pd"><div class="top"><span class="n">#'+esc(p.display_id||'')+'</span>'+
       '<span class="tag '+s[1]+'">'+s[0]+'</span>'+
@@ -15545,23 +15559,38 @@ async function importarFotos(dir) {
 // duas vezes hoje, e nas duas só descobri pelo usuário.
 // Agora o servidor avisa na partida, antes de alguém abrir a página.
 function conferirTelas() {
+  // TODA tela entra aqui. A do iFood ficou de fora e por isso uma quebra nela
+  // passou batida na partida em 25/08/2026 — o servidor dizia "ok" e a página
+  // abria em branco.
   const telas = { '/': HTML, '/venda': VENDA_HTML, '/tablet': TABLET_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
-      '/passe': PASSE_HTML };
+    '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML,
+    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
-    const i = html.lastIndexOf('<script>'), j = html.lastIndexOf('</script>');
-    if (i < 0 || j < i) continue;
-    try {
-      new Function(html.slice(i + 8, j));            // só compila, não executa
-    } catch (e) {
-      ruins++;
-      console.error(`[telas] ⚠️  ${rota} NÃO COMPILA — a página vai abrir em branco: ${e.message}`);
+    // TODOS os blocos <script>, não só o último: a quebra costuma estar num
+    // bloco do meio, e conferir um só dá falso "ok".
+    let de = 0, blocos = 0;
+    for (;;) {
+      const i = html.indexOf('<script>', de);
+      if (i < 0) break;
+      const j = html.indexOf('</script>', i);
+      if (j < 0) break;
+      de = j + 9;
+      const corpo = html.slice(i + 8, j);
+      if (!corpo.trim()) continue;
+      blocos++;
+      try {
+        new Function(corpo);                          // só compila, não executa
+      } catch (e) {
+        ruins++;
+        console.error(`[telas] ⚠️  ${rota} bloco ${blocos} NÃO COMPILA — a página vai abrir em branco: ${e.message}`);
+      }
     }
   }
-  console.log(ruins ? `[telas] ${ruins} tela(s) quebrada(s)` : '[telas] ok — todas compilam');
+  console.log(ruins ? `[telas] ${ruins} bloco(s) quebrado(s)` : '[telas] ok — todas compilam');
 }
 async function main() {
   conferirTelas();
