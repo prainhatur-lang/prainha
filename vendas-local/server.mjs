@@ -1103,14 +1103,22 @@ async function ifoodPoll() {
     // devolve o evento no próximo ciclo e o PK evita processar duas vezes.
     const novo = await sql`INSERT INTO ifood_evento (id, code, order_id) VALUES (${ev.id}, ${code}, ${ev.orderId})
       ON CONFLICT (id) DO NOTHING RETURNING id`;
-    paraAck.push({ id: ev.id });
-    if (!novo.length) continue; // já tratado antes
+    if (!novo.length) { paraAck.push({ id: ev.id }); continue; } // já tratado antes
     try {
       await ifoodAplicarEvento(ev.orderId, code, c);
       await sql`UPDATE ifood_evento SET ack_em=now() WHERE id=${ev.id}`;
+      paraAck.push({ id: ev.id });
     } catch (e) {
-      await sql`UPDATE ifood_evento SET erro=${String(e.message).slice(0, 250)} WHERE id=${ev.id}`;
-      console.error('[ifood] evento', code, ev.orderId, '—', e.message);
+      // ⚠️ NÃO DÁ ACK EM EVENTO QUE FALHOU.
+      // Antes o ack ia junto de qualquer jeito: um erro ao gravar o pedido
+      // (banco fora, coluna nova faltando, produto sem cadastro) fazia o iFood
+      // considerar entregue e NUNCA reenviar. O pedido sumia em silêncio — a
+      // loja seguia consultando "sem erro" e sem pedido nenhum na tela.
+      // Sem o ack, o próximo ciclo traz o evento de novo e a gente tenta outra
+      // vez; o PK do evento evita processar duas vezes quando dá certo.
+      await sql`DELETE FROM ifood_evento WHERE id=${ev.id}`.catch(() => {});
+      ifoodStatus = { ...ifoodStatus, ultimo_erro: 'evento ' + code + ': ' + String(e.message).slice(0, 160) };
+      console.error('[ifood] evento', code, ev.orderId, '—', e.message, '— SEM ack, volta no próximo ciclo');
     }
   }
   if (paraAck.length) {
