@@ -1,9 +1,12 @@
 // Motor de IA da Nina: monta o contexto (persona + conhecimento + espacos +
-// regras fixas + historico), chama o modelo com as 2 ferramentas e devolve o
-// texto final. Provedor: OpenAI (mesma key do OCR de boleto). Trocar de
-// provedor = mexer so neste arquivo.
+// regras fixas + historico), chama o modelo com as ferramentas e devolve o
+// texto final. Provedor por env ATENDIMENTO_MODELO: valor começando com
+// 'claude' usa a Anthropic (ANTHROPIC_API_KEY); o resto usa a OpenAI
+// (OPENAI_API_KEY, mesma key do OCR de boleto). O fluxo interno fala o
+// formato da OpenAI; completarClaude() traduz na fronteira.
 
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 
 export interface MsgHistorico {
@@ -541,6 +544,109 @@ Sua resposta final é a mensagem enviada no WhatsApp do fornecedor.`;
 }
 
 /** Gera a resposta da Nina. Executa ferramentas via callbacks (max 5 rodadas). */
+/** Uma rodada no modelo Claude falando o DIALETO da OpenAI: recebe o array
+ *  de mensagens que o loop mantém (system/user/assistant/tool), converte pro
+ *  formato da Anthropic, chama, e devolve a resposta já no formato OpenAI
+ *  (content + tool_calls) — o loop não sabe qual motor respondeu.
+ *  Diferenças tratadas: system vira parâmetro próprio (concatenado, na
+ *  ordem); resultados de ferramenta viram tool_result num turno user;
+ *  turnos consecutivos do mesmo papel são fundidos (a Anthropic exige
+ *  alternância user/assistant). */
+async function completarClaude(p: {
+  apiKey: string;
+  modelo: string;
+  mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+  ferramentas: OpenAI.Chat.Completions.ChatCompletionTool[];
+}): Promise<OpenAI.Chat.Completions.ChatCompletionMessage> {
+  const system = p.mensagens
+    .filter((m) => m.role === 'system')
+    .map((m) => (typeof m.content === 'string' ? m.content : ''))
+    .filter(Boolean)
+    .join('\n\n');
+
+  const msgs: Anthropic.MessageParam[] = [];
+  const empurrar = (role: 'user' | 'assistant', blocos: Anthropic.ContentBlockParam[]) => {
+    if (blocos.length === 0) return;
+    const ultimo = msgs[msgs.length - 1];
+    if (ultimo && ultimo.role === role && Array.isArray(ultimo.content)) {
+      (ultimo.content as Anthropic.ContentBlockParam[]).push(...blocos);
+    } else {
+      msgs.push({ role, content: blocos });
+    }
+  };
+  for (const m of p.mensagens) {
+    if (m.role === 'system') continue;
+    if (m.role === 'user') {
+      const texto = typeof m.content === 'string' ? m.content.trim() : '';
+      if (texto) empurrar('user', [{ type: 'text', text: texto }]);
+    } else if (m.role === 'assistant') {
+      const blocos: Anthropic.ContentBlockParam[] = [];
+      const texto = typeof m.content === 'string' ? m.content.trim() : '';
+      if (texto) blocos.push({ type: 'text', text: texto });
+      for (const tc of m.tool_calls ?? []) {
+        if (tc.type !== 'function') continue;
+        let input: unknown = {};
+        try {
+          input = JSON.parse(tc.function.arguments || '{}');
+        } catch {
+          input = {};
+        }
+        blocos.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
+      }
+      empurrar('assistant', blocos);
+    } else if (m.role === 'tool') {
+      empurrar('user', [
+        {
+          type: 'tool_result',
+          tool_use_id: m.tool_call_id,
+          content: typeof m.content === 'string' ? m.content : '',
+        },
+      ]);
+    }
+  }
+  if (msgs.length === 0 || msgs[0].role !== 'user') {
+    msgs.unshift({ role: 'user', content: [{ type: 'text', text: '[início da conversa]' }] });
+  }
+
+  const tools: Anthropic.Tool[] = p.ferramentas
+    .filter((f) => f.type === 'function')
+    .map((f) => ({
+      name: f.function.name,
+      description: f.function.description ?? '',
+      input_schema: (f.function.parameters ?? { type: 'object', properties: {} }) as Anthropic.Tool.InputSchema,
+    }));
+
+  const anthropic = new Anthropic({ apiKey: p.apiKey });
+  const resp = await anthropic.messages.create({
+    model: p.modelo,
+    system,
+    messages: msgs,
+    tools,
+    max_tokens: 600,
+    temperature: 0.6,
+  });
+
+  const texto = resp.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+  const toolCalls = resp.content
+    .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    .map((b) => ({
+      id: b.id,
+      type: 'function' as const,
+      function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+    }));
+
+  return {
+    role: 'assistant',
+    content: texto || null,
+    refusal: null,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  } as OpenAI.Chat.Completions.ChatCompletionMessage;
+}
+
 export async function gerarResposta(params: {
   nomeAtendente: string;
   filialNome: string;
@@ -559,12 +665,16 @@ export async function gerarResposta(params: {
   /** false = número dedicado de UMA casa (Nina se apresenta só como ela). */
   duasCasas?: boolean;
 }): Promise<RespostaNina> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY nao configurada');
-  const client = new OpenAI({ apiKey });
+  // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
+  // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
+  // gpt-4o motivaram a troca, 25/08); qualquer outro valor segue na OpenAI.
   // gpt-4o (nao o mini): o mini chutou preco e prometeu "vou confirmar" sem
   // transferir nos testes de 08/08. Custo segue baixo (~centavos/conversa).
   const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o';
+  const usarClaude = modelo.startsWith('claude');
+  const apiKey = usarClaude ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error(usarClaude ? 'ANTHROPIC_API_KEY nao configurada' : 'OPENAI_API_KEY nao configurada');
+  const client = usarClaude ? null : new OpenAI({ apiKey });
 
   const modo = params.modo ?? 'cliente';
   const primeiraResposta = !params.historico.some((m) => m.direcao === 'saida');
@@ -607,17 +717,22 @@ Como usar, SEM EXCEÇÃO:
   let transferiu = false;
   let leadRegistrado = false;
 
+  const ferramentas = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
+
   // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
   // fechar com texto (cada tool call consome uma rodada).
   for (let rodada = 0; rodada < 5; rodada++) {
-    const resp = await client.chat.completions.create({
-      model: modelo,
-      messages: mensagens,
-      tools: modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS,
-      temperature: 0.6,
-      max_tokens: 400,
-    });
-    const msg = resp.choices[0]?.message;
+    const msg = usarClaude
+      ? await completarClaude({ apiKey, modelo, mensagens, ferramentas })
+      : (
+          await client!.chat.completions.create({
+            model: modelo,
+            messages: mensagens,
+            tools: ferramentas,
+            temperature: 0.6,
+            max_tokens: 400,
+          })
+        ).choices[0]?.message;
     if (!msg) break;
 
     const toolCalls = msg.tool_calls ?? [];
