@@ -11108,6 +11108,10 @@ var D=null,LOJA_PINTADA=false;
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function din(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function hora(s){if(!s)return '';var d=new Date(s);return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+// Agendamento mostra DATA E HORA: a homologação do iFood exige as duas coisas
+// ("é necessário exibir a data e hora do agendamento"). Só a hora não basta —
+// pedido de amanhã às 20:00 e de hoje às 20:00 ficariam iguais na tela.
+function quando(s){if(!s)return '';var d=new Date(s);return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
 async function jget(u){return (await fetch(u,{cache:'no-store'})).json()}
 async function jpost(u,b){return (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b||{})})).json()}
 async function carregar(){D=await jget('/api/ifood');pinta()}
@@ -11172,7 +11176,7 @@ function pinta(){
       '<span class="mut">'+hora(p.recebido_em)+' · '+p.itens+' item(ns) · '+din(p.total)+(p.pago_online?' · pago no app':' · A RECEBER')+'</span></div>'+
       '<div class="end">'+esc(p.cliente||'sem nome')+(p.fone?' · '+esc(p.fone):'')+
       (p.endereco?'<br>'+esc(p.endereco):'')+
-      (p.agendado_para?'<br>agendado para '+hora(p.agendado_para):'')+
+      (p.agendado_para?'<br><b>agendado para '+quando(p.agendado_para)+'</b>':'')+
       (p.modo_entrega==='MERCHANT'?'<br><b>entrega nossa</b>':(p.modo_entrega==='IFOOD'?'<br>entregador do iFood':''))+'</div>';
     if(!p.concluido&&!p.cancelado){
       h+='<div class="acoes">';
