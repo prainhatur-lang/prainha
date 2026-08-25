@@ -5599,8 +5599,20 @@ async function fbCaixaDoOperador(login) {
   }
   const u = await fbUsuarioCodigo(login);
   if (!u) return null;
-  const r = await qi(`SELECT FIRST 1 CODIGO, DATAABERTURA, SALDOINICIAL FROM CAIXA WHERE CODIGOUSUARIO=${u.codigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
-  if (!r.ok || !r.rows.length) return null;
+  // ⚠️ NUNCA confundir "não tem caixa aberto" com "não consegui checar". Um blip
+  // do Firebird (pluginName/ETIMEDOUT, comuns no 0001) fazia esta leitura falhar
+  // e devolver null → o chamador (fbCaixaMaquininha) ABRIA UM CAIXA NOVO por cima
+  // de um já aberto. Foi assim que o Alexandre acumulou 4 caixas (20/21/23/23).
+  // Agora retenta; se REALMENTE não der pra checar, LANÇA — o chamador cai no
+  // caminho seguro (sem abrir duplicado), nunca cria um 2º caixa "no escuro".
+  let r = null;
+  for (let t = 0; t < 4; t++) {
+    r = await qi(`SELECT FIRST 1 CODIGO, DATAABERTURA, SALDOINICIAL FROM CAIXA WHERE CODIGOUSUARIO=${u.codigo} AND DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
+    if (r.ok) break;
+    await new Promise((ok) => setTimeout(ok, 400 * (t + 1)));
+  }
+  if (!r || !r.ok) throw new Error('Firebird instável ao checar caixa aberto do operador — não abro um novo por cima');
+  if (!r.rows.length) return null;
   return { codigo: Number(r.rows[0].CODIGO), desde: r.rows[0].DATAABERTURA, fundo: Number(r.rows[0].SALDOINICIAL) || 0, usuario: u };
 }
 async function fbAbrirCaixa(usuarioCodigo, fundo, obs, login = null) {
