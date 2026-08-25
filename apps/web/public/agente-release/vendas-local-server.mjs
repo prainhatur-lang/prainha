@@ -15,7 +15,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
-  readdirSync, rmSync } from 'node:fs';
+  readdirSync, rmSync, openSync } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
@@ -902,10 +902,39 @@ async function autoUpdateAplicar(dir, versaoEsperada) {
   console.log('[auto-update] aplicando ' + hash + ' — a loja fica ~15s fora do ar');
   const script = path.join(dir, 'auto-update.ps1');
   if (!existsSync(script)) { autoUpdateEstado.motivo = 'auto-update.ps1 não está na pasta da loja'; console.error('[auto-update] auto-update.ps1 não está na pasta — não dá pra aplicar sozinho ainda'); return; }
-  const ps = spawn('powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-HashEsperado', hash],
-    { detached: true, stdio: 'ignore', windowsHide: true, cwd: dir });
-  ps.unref();
+
+  // ⚠️ 25/08/2026: o disparo falhava EM SILÊNCIO nas duas lojas. O Node baixava
+  // a versão nova, conferia o hash, gravava server.novo.mjs — e o PowerShell
+  // nunca nascia: o auto-update.log não tinha uma linha sequer. Como a saída ia
+  // pro lixo e ninguém escutava o 'error' do spawn, não havia o que investigar.
+  // Agora: caminho absoluto do powershell (o PATH da tarefa agendada pode não
+  // ter o dele), -NonInteractive (parâmetro obrigatório não resolvido faz o
+  // PowerShell ESPERAR num prompt pra sempre, sem stdin), e toda a saída vai
+  // pra auto-update-spawn.log.
+  const raizWin = process.env.SystemRoot || 'C:\\Windows';
+  let psExe = 'powershell.exe';
+  for (const c of [path.join(raizWin, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+                   path.join(raizWin, 'Sysnative', 'WindowsPowerShell', 'v1.0', 'powershell.exe')]) {
+    try { if (existsSync(c)) { psExe = c; break; } } catch { /* segue com o nome puro */ }
+  }
+  let saida = 'ignore';
+  try { const fd = openSync(path.join(dir, 'auto-update-spawn.log'), 'a'); saida = ['ignore', fd, fd]; } catch { /* sem log é melhor que não aplicar */ }
+  try {
+    const ps = spawn(psExe,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-HashEsperado', hash],
+      { detached: true, stdio: saida, windowsHide: true, cwd: dir });
+    ps.on('error', (e) => {
+      autoUpdateEstado.motivo = 'não consegui disparar o powershell: ' + String(e.message).slice(0, 140);
+      console.error('[auto-update] spawn do powershell falhou:', e.message);
+    });
+    ps.unref();
+    autoUpdateEstado.motivo = 'auto-update.ps1 disparado (' + psExe + ') — a troca leva ~30s';
+    console.log('[auto-update] disparei ' + psExe + ' pra aplicar ' + hash);
+  } catch (e) {
+    autoUpdateEstado.motivo = 'spawn falhou: ' + String(e.message).slice(0, 140);
+    console.error('[auto-update] spawn falhou:', e.message);
+    return;
+  }
   autoUpdatePendenteDesde = null;
 }
 
