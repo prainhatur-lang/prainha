@@ -1126,8 +1126,18 @@ async function ifoodPoll() {
     }
   }
   if (paraAck.length) {
-    await ifoodApi('/order/v1.0/events/acknowledgment', { metodo: 'POST', corpo: paraAck }).catch((e) =>
-      console.error('[ifood] ack falhou:', e.message));
+    // O ack é o que a auditoria do iFood conta. Uma falha de rede aqui deixaria
+    // o ciclo inteiro sem confirmação até a reentrega — por isso insiste antes
+    // de desistir. Se mesmo assim falhar, o evento volta no próximo ciclo e o
+    // ramo do PK (já tratado antes) confirma de novo.
+    for (let t = 1; t <= 3; t++) {
+      try { await ifoodApi('/order/v1.0/events/acknowledgment', { metodo: 'POST', corpo: paraAck }); break; }
+      catch (e) {
+        console.error('[ifood] ack tentativa ' + t + '/3 falhou:', e.message);
+        if (t === 3) { ifoodStatus = { ...ifoodStatus, ultimo_erro: 'ack falhou: ' + String(e.message).slice(0, 120) }; break; }
+        await new Promise((r) => setTimeout(r, t * 700));
+      }
+    }
   }
   // Antes de projetar, tenta de novo o que ficou pendente de ciclos anteriores.
   await ifoodReprocessar(c).catch((e) => console.error('[ifood] reprocesso:', e.message));
