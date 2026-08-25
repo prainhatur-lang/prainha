@@ -56,6 +56,14 @@ interface Detalhe {
 function brl(v: number): string {
   return 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// A lista de "abertos" traz caixa de QUALQUER dia (não fechou = não tem
+// limite de idade) — sem a data, um caixa de 3 dias atrás parece de hoje.
+function fmtAbertura(iso: string | null): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
 function hojeBr(): string {
   return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
 }
@@ -167,7 +175,7 @@ export function ConferenciaCaixaClient({
     const formas = (c.formas ?? []).map((f) => `${esc(f.nome)} ${brl(f.valor)} (${f.n}×)`).join(' · ');
     const status = c.fechado_em
       ? `fechado ${hora(c.fechado_em)} · esperado ${brl(c.esperado ?? 0)} · contado ${brl(c.contado ?? 0)}`
-      : `ABERTO · fundo ${brl(c.fundo)}`;
+      : `ABERTO desde ${fmtAbertura(c.aberto_em)} · fundo ${brl(c.fundo)}`;
     let h = `<div class="cx"><div class="cxh"><b>${esc(c.quem ?? `caixa ${c.codigo}`)}</b>` +
       `<span class="mut"> · caixa ${c.codigo} · ${c.tipo === 'maquininha' ? 'maquininha' : 'sistema'}</span>` +
       `<b class="dir">${brl(c.recebido ?? 0)}</b></div>` +
@@ -291,7 +299,9 @@ export function ConferenciaCaixaClient({
         {c.fechado_em ? (
           <>fechado · esperado {brl(c.esperado ?? 0)} · contado {brl(c.contado ?? 0)}</>
         ) : (
-          <span className="font-semibold text-emerald-600">ABERTO · fundo {brl(c.fundo)}</span>
+          <span className="font-semibold text-emerald-600">
+            ABERTO desde {fmtAbertura(c.aberto_em)} · fundo {brl(c.fundo)}
+          </span>
         )}
       </div>
       <div className="mt-1 flex gap-3 text-xs">
