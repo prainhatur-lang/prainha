@@ -617,13 +617,14 @@ async function completarClaude(p: {
     }));
 
   const anthropic = new Anthropic({ apiKey: p.apiKey });
+  // Sem temperature: o claude-sonnet-5 recusa o parâmetro com 400
+  // ("`temperature` is deprecated for this model") — flagrado no 1º teste.
   const resp = await anthropic.messages.create({
     model: p.modelo,
     system,
     messages: msgs,
     tools,
     max_tokens: 600,
-    temperature: 0.6,
   });
 
   const texto = resp.content
