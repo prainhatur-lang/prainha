@@ -698,7 +698,12 @@ export async function remarcarReservaWhatsApp(p: {
   if (!area) return 'Essa reserva está sem área definida no sistema — transfira pra equipe ajustar.';
   const horaAtual = String(alvo.hora).slice(0, 5);
   if (data === String(alvo.data) && hora === horaAtual && pessoas === alvo.pessoas && area === alvo.area) {
-    return 'Nada mudou nessa reserva (mesmo dia, hora, pessoas e área). Confirme com o cliente o que ele quer mudar.';
+    // "Mudar pra X" quando a reserva JÁ está em X: é pedido ATENDIDO, não
+    // erro. A resposta antiga ("confirme o que ele quer mudar") criava loop
+    // infinito — a Nina re-perguntava, o cliente dizia SIM, e de novo
+    // (caso Shaulla 25/08: 3 voltas do mesmo "certo?").
+    const mesaTxt = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
+    return `A RESERVA JÁ ESTÁ EXATAMENTE ASSIM: ${dataBr(String(alvo.data))} às ${horaAtual}, ${alvo.pessoas} pessoa(s) na ${alvo.area} (${mesaTxt}). O pedido do cliente já está atendido — responda como BOA NOTÍCIA ("sua reserva já está marcada pras ${horaAtual}, tá garantida!") e NÃO pergunte de novo o que ele quer mudar.`;
   }
 
   const [filial] = await db
