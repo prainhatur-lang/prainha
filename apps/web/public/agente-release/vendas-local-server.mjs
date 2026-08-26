@@ -609,10 +609,11 @@ async function initSchema() {
   await addCol('ifood_evento', 'tentativas int DEFAULT 0');
   // ---- PONTO PRÓPRIO ----
   // Roster espelhado da nuvem (loopPontoRoster) — existir localmente é o que
-  // faz o ponto bater sem internet, igual cliente_local pro fiado. PIN é
-  // PRÓPRIO (ponto_pin), não o garcom_pin: quem bate ponto pode não vender
-  // nada (ajudante de cozinha), e o tablet da porta é compartilhado — não
-  // pode ficar logado.
+  // faz o ponto bater sem internet, igual cliente_local pro fiado. Bate por
+  // RECONHECIMENTO FACIAL (botão no KDS abre a câmera) — face_descriptor é
+  // a "impressão" numérica (128 floats do face-api.js), nunca a foto em si,
+  // comparada 100% no navegador. ponto_pin fica como mecanismo legado (tela
+  // /ponto antiga) — não é mais o caminho principal.
   await sql`CREATE TABLE IF NOT EXISTS ponto_funcionario (funcionario_id uuid PRIMARY KEY,
     nome text NOT NULL, cpf text, setor text, cargo text, login_local text,
     ativo boolean NOT NULL DEFAULT true, atualizado_em timestamptz DEFAULT now())`;
@@ -626,6 +627,10 @@ async function initSchema() {
     dia_operacional date NOT NULL, tipo text NOT NULL,
     dispositivo text, login_local text, criado_em timestamptz DEFAULT now())`;
   await sql`CREATE INDEX IF NOT EXISTS idx_ponto_batida_pessoa_dia ON ponto_batida (funcionario_id, dia_operacional)`;
+  // face_descriptor cadastrado localmente sobe pro roster da nuvem sozinho
+  // (loopFaceSync); sync_pendente marca quem ainda não subiu.
+  await addCol('ponto_funcionario', 'face_descriptor jsonb');
+  await addCol('ponto_funcionario', 'face_sync_pendente boolean NOT NULL DEFAULT false');
   await initSchemaNativo();
 }
 
@@ -6314,9 +6319,10 @@ function diaOperacionalDe(d) {
   return `${y}-${m}-${dd}`;
 }
 // GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
+// + face_descriptor de quem já tem, pro reconhecimento comparar no navegador.
 async function apiPontoPessoas() {
   const hoje = diaOperacionalDe(new Date());
-  const pessoas = await sql`SELECT funcionario_id, nome, setor, cargo FROM ponto_funcionario WHERE ativo ORDER BY nome`;
+  const pessoas = await sql`SELECT funcionario_id, nome, setor, cargo, face_descriptor FROM ponto_funcionario WHERE ativo ORDER BY nome`;
   const batidas = await sql`SELECT funcionario_id, tipo, quando FROM ponto_batida
     WHERE dia_operacional = ${hoje} ORDER BY funcionario_id, quando`;
   const ultimaPorPessoa = new Map();
@@ -6325,9 +6331,96 @@ async function apiPontoPessoas() {
     const ultima = ultimaPorPessoa.get(p.funcionario_id);
     const dentro = !!(ultima && ultima.tipo === 'entrada');
     return { funcionario_id: p.funcionario_id, nome: p.nome, setor: p.setor, cargo: p.cargo,
-      dentro, desde: dentro ? ultima.quando : null };
+      dentro, desde: dentro ? ultima.quando : null,
+      tem_rosto: !!p.face_descriptor, face_descriptor: p.face_descriptor || null };
   });
   return { ok: true, pessoas: out };
+}
+// POST /api/ponto/cadastrar-rosto {funcionario_id, descriptor} — só na
+// PRIMEIRA vez que a câmera não reconhece ninguém pra aquela pessoa. Marca
+// pendente pro loopFaceSync subir pra nuvem (o cadastro em si já vale local).
+async function apiPontoCadastrarRosto(body) {
+  const funcionarioId = String(body.funcionario_id || '');
+  const descriptor = body.descriptor;
+  if (!/^[0-9a-f-]{36}$/i.test(funcionarioId)) return { ok: false, erro: 'funcionário inválido' };
+  if (!Array.isArray(descriptor) || descriptor.length !== 128 || descriptor.some((n) => typeof n !== 'number')) {
+    return { ok: false, erro: 'descritor facial inválido' };
+  }
+  const pessoa = (await sql`SELECT nome FROM ponto_funcionario WHERE funcionario_id=${funcionarioId} AND ativo`)[0];
+  if (!pessoa) return { ok: false, erro: 'funcionário não encontrado ou inativo' };
+  // sql.json(), NUNCA JSON.stringify() — o driver postgres dupla-codifica
+  // colunas jsonb quando a string já vem pronta (vide GOTCHA no CLAUDE.md).
+  await sql`UPDATE ponto_funcionario SET face_descriptor=${sql.json(descriptor)}, face_sync_pendente=true,
+    atualizado_em=now() WHERE funcionario_id=${funcionarioId}`;
+  return { ok: true, nome: pessoa.nome };
+}
+// POST /api/ponto/bater-facial {funcionario_id} — sem PIN: o reconhecimento
+// JÁ aconteceu no navegador. Tipo (entrada/saída) é decidido AQUI, no
+// servidor, a partir da última batida real — nunca confia no que o cliente
+// sugerir. Trava de 5 min entre batidas de qualquer tipo da mesma pessoa,
+// pra um reconhecimento repetido (vários frames seguidos) não duplicar.
+const PONTO_COOLDOWN_MS = 5 * 60 * 1000;
+async function apiPontoBaterFacial(body) {
+  const funcionarioId = String(body.funcionario_id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(funcionarioId)) return { ok: false, erro: 'funcionário inválido' };
+
+  const pessoa = (await sql`SELECT * FROM ponto_funcionario WHERE funcionario_id=${funcionarioId} AND ativo`)[0];
+  if (!pessoa) return { ok: false, erro: 'funcionário não encontrado ou inativo' };
+
+  const agora = new Date();
+  const ultimaGeral = (await sql`SELECT tipo, quando FROM ponto_batida WHERE funcionario_id=${funcionarioId}
+    ORDER BY quando DESC LIMIT 1`)[0];
+  if (ultimaGeral) {
+    const passou = agora.getTime() - new Date(ultimaGeral.quando).getTime();
+    if (passou < PONTO_COOLDOWN_MS) {
+      const restamMin = Math.ceil((PONTO_COOLDOWN_MS - passou) / 60000);
+      return { ok: false, cooldown: true, erro: `${pessoa.nome}, aguarde ${restamMin} min pra bater de novo.` };
+    }
+  }
+
+  const tipo = ultimaGeral && ultimaGeral.tipo === 'entrada' ? 'saida' : 'entrada';
+  const dia = diaOperacionalDe(agora);
+  await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
+    VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local})`;
+
+  const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+  let totalMin = 0, entradaAberta = null;
+  for (const b of batidasHoje) {
+    if (b.tipo === 'entrada') entradaAberta = b.quando;
+    else if (b.tipo === 'saida' && entradaAberta) {
+      totalMin += Math.round((new Date(b.quando) - new Date(entradaAberta)) / 60000);
+      entradaAberta = null;
+    }
+  }
+  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin };
+}
+// Sobe os descritores cadastrados localmente (raro — uma vez por pessoa na
+// vida) pra nuvem. Fila leve por flag, não por cursor: poucos registros.
+let faceSyncRodando = false;
+async function loopFaceSync() {
+  if (faceSyncRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  faceSyncRodando = true;
+  try {
+    const pendentes = await sql`SELECT funcionario_id, face_descriptor FROM ponto_funcionario
+      WHERE face_sync_pendente AND face_descriptor IS NOT NULL LIMIT 20`;
+    for (const p of pendentes) {
+      const e = Math.floor(Date.now() / 1000) + 120;
+      const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto/rosto`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('ponto', e),
+          funcionario_id: p.funcionario_id, descriptor: p.face_descriptor }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const j = await r.json().catch(() => null);
+      if (j?.ok) {
+        await sql`UPDATE ponto_funcionario SET face_sync_pendente=false WHERE funcionario_id=${p.funcionario_id}`;
+      } else {
+        console.error('[ponto] rosto nuvem recusou:', j?.erro || r.status);
+      }
+    }
+  } catch (err) { console.error('[ponto] face sync:', err.message); }
+  finally { faceSyncRodando = false; }
 }
 // POST /api/ponto/bater {funcionario_id, pin, pin2?, tipo}
 //  - primeira vez (sem PIN cadastrado): exige pin==pin2 e cria
@@ -6437,10 +6530,14 @@ async function loopPontoRoster() {
     const j = await r.json().catch(() => null);
     if (!j?.ok || !Array.isArray(j.pessoas)) return;
     for (const p of j.pessoas) {
-      await sql`INSERT INTO ponto_funcionario (funcionario_id, nome, cpf, setor, cargo, login_local, ativo, atualizado_em)
-        VALUES (${p.funcionario_id}, ${p.nome}, ${p.cpf || null}, ${p.setor || null}, ${p.cargo || null}, ${p.login_local || null}, true, now())
+      // COALESCE no face_descriptor: nunca deixa um pull da nuvem apagar um
+      // cadastro feito local há pouco e ainda não sincronizado (loopFaceSync).
+      await sql`INSERT INTO ponto_funcionario (funcionario_id, nome, cpf, setor, cargo, login_local, ativo, face_descriptor, atualizado_em)
+        VALUES (${p.funcionario_id}, ${p.nome}, ${p.cpf || null}, ${p.setor || null}, ${p.cargo || null}, ${p.login_local || null}, true,
+          ${p.face_descriptor ? sql.json(p.face_descriptor) : null}, now())
         ON CONFLICT (funcionario_id) DO UPDATE SET nome=EXCLUDED.nome, cpf=EXCLUDED.cpf, setor=EXCLUDED.setor,
-          cargo=EXCLUDED.cargo, login_local=EXCLUDED.login_local, ativo=true, atualizado_em=now()`;
+          cargo=EXCLUDED.cargo, login_local=EXCLUDED.login_local, ativo=true,
+          face_descriptor=COALESCE(EXCLUDED.face_descriptor, ponto_funcionario.face_descriptor), atualizado_em=now()`;
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
@@ -8467,8 +8564,27 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .c.atrasado .tchip{color:var(--red);font-weight:800}
 @keyframes pisca{50%{opacity:.35}}
 .ptime{font-size:11px;color:var(--mut);margin-left:6px;white-space:nowrap}
+/* ---- PONTO por reconhecimento facial ---- */
+#pfModal{position:fixed;inset:0;background:rgba(10,10,14,.94);z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff;padding:24px}
+#pfModal.on{display:flex}
+#pfModal video{width:min(88vw,460px);border-radius:20px;transform:scaleX(-1);background:#000}
+.pfstatus{margin-top:18px;font-size:21px;font-weight:700;text-align:center;max-width:460px}
+.pfsub{margin-top:6px;font-size:14px;color:#c8c8d0;text-align:center}
+.pfclose{position:absolute;top:18px;right:18px;background:rgba(255,255,255,.14);border:none;color:#fff;width:44px;height:44px;border-radius:50%;font-size:20px;cursor:pointer}
+.pflist{margin-top:14px;max-height:38vh;overflow:auto;width:min(88vw,460px);display:grid;gap:8px}
+.pflist button{background:#fff;color:#1b1b20;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
+.pfconfirm{font-size:27px;font-weight:800;text-align:center}
+.pfconfirm.saida{color:#f59e0b}.pfconfirm.entrada{color:#22c55e}
+.pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:none;font-size:15px;margin-top:14px}
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header id="hd"></header><div id="app"></div>
+<div id="pfModal">
+  <button class="pfclose" onclick="fecharPontoFacial()">✕</button>
+  <video id="pfVideo" autoplay playsinline muted></video>
+  <div class="pfstatus" id="pfStatus">Carregando…</div>
+  <div class="pfsub" id="pfSub"></div>
+  <div id="pfExtra"></div>
+</div>
 <script>
 var ENTREGA = location.pathname.replace(/\\/+$/,'')==='/entrega';
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
@@ -8662,12 +8778,137 @@ function comandaHTML(c,modo,idx){
     '<div class="chd"><div class="rot"><span class="pos">'+(idx+1)+'º</span>'+esc(c.rotulo)+badge+'</div>'+tchip+'</div>'+
     nome+'<div class="its">'+its+'</div>'+foot+'</div>';
 }
+// ---- PONTO por reconhecimento facial ----
+// Tudo roda no navegador (face-api.js vendorizado, nunca CDN, nunca manda
+// foto pra rede — só o descritor de 128 floats). Sem PIN: se não reconhecer,
+// só tenta de novo (o loop de detecção continua). Na primeira vez que
+// ninguém bate com o roster, mostra a lista de quem ainda não tem rosto
+// cadastrado — a pessoa toca o próprio nome uma única vez na vida.
+var PF_MODELOS_OK=false, PF_ROSTOS=[], PF_SEM_ROSTO=[], PF_STREAM=null, PF_LOOP=null;
+var PF_OCUPADO=false, PF_PROCESSANDO=false, PF_CADASTRANDO=null;
+function pfCarregaScript(src){
+  return new Promise(function(resolve,reject){
+    if (window.faceapi) { resolve(); return; }
+    var s=document.createElement('script'); s.src=src; s.onload=resolve; s.onerror=reject;
+    document.head.appendChild(s);
+  });
+}
+async function abrirPontoFacial(){
+  document.getElementById('pfModal').classList.add('on');
+  document.getElementById('pfStatus').textContent='Carregando reconhecimento facial…';
+  document.getElementById('pfSub').textContent='';
+  document.getElementById('pfExtra').innerHTML='';
+  PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false;
+  try {
+    if (!PF_MODELOS_OK) {
+      await pfCarregaScript('/facelib/face-api.js');
+      await faceapi.nets.tinyFaceDetector.loadFromUri('/facelib/models');
+      await faceapi.nets.faceLandmark68Net.loadFromUri('/facelib/models');
+      await faceapi.nets.faceRecognitionNet.loadFromUri('/facelib/models');
+      PF_MODELOS_OK=true;
+    }
+    var d=await (await fetch('/api/ponto/pessoas',{cache:'no-store'})).json();
+    var pessoas=d.pessoas||[];
+    PF_ROSTOS=pessoas.filter(function(p){return p.face_descriptor}).map(function(p){
+      return {funcionario_id:p.funcionario_id, nome:p.nome, descriptor:new Float32Array(p.face_descriptor)};
+    });
+    PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
+    document.getElementById('pfStatus').textContent='Aproxime o rosto da câmera';
+    document.getElementById('pfSub').textContent='';
+    PF_STREAM=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
+    var video=document.getElementById('pfVideo');
+    video.srcObject=PF_STREAM;
+    clearInterval(PF_LOOP);
+    PF_LOOP=setInterval(pfTick,700);
+  } catch(e) {
+    document.getElementById('pfStatus').textContent='Não consegui abrir a câmera';
+    document.getElementById('pfSub').textContent=String((e&&e.message)||e);
+  }
+}
+async function pfTick(){
+  if (PF_OCUPADO||PF_PROCESSANDO||PF_CADASTRANDO) return;
+  var video=document.getElementById('pfVideo');
+  if (!video||!video.videoWidth) return;
+  PF_PROCESSANDO=true;
+  try {
+    var det=await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks().withFaceDescriptor();
+    if (!det) return; // ninguém na frente — segue tentando, sem erro
+    if (!PF_ROSTOS.length) { pfMostraListaCadastro(det.descriptor); return; }
+    var melhor=null;
+    for (var i=0;i<PF_ROSTOS.length;i++){
+      var dist=faceapi.euclideanDistance(det.descriptor, PF_ROSTOS[i].descriptor);
+      if (!melhor||dist<melhor.dist) melhor={dist:dist, pessoa:PF_ROSTOS[i]};
+    }
+    if (melhor && melhor.dist<0.5) { PF_OCUPADO=true; await pfBater(melhor.pessoa); PF_OCUPADO=false; }
+    else pfMostraListaCadastro(det.descriptor);
+  } finally { PF_PROCESSANDO=false; }
+}
+async function pfBater(pessoa){
+  clearInterval(PF_LOOP);
+  document.getElementById('pfStatus').textContent='Reconhecendo '+pessoa.nome+'…';
+  var r;
+  try {
+    r=await (await fetch('/api/ponto/bater-facial',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({funcionario_id:pessoa.funcionario_id})})).json();
+  } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+  if (r.ok) {
+    document.getElementById('pfStatus').innerHTML='<div class="pfconfirm '+r.tipo+'">'+
+      (r.tipo==='entrada'?'Entrada Registrada':'Saída Registrada')+'</div>';
+    document.getElementById('pfSub').textContent=pessoa.nome;
+  } else {
+    document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
+    if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,700); return; }
+  }
+  setTimeout(fecharPontoFacial, 3000);
+}
+function pfMostraListaCadastro(descriptor){
+  if (PF_CADASTRANDO) return; // já mostrando a lista — não repinta a cada tick
+  PF_CADASTRANDO=descriptor;
+  document.getElementById('pfStatus').textContent='Não te reconheci ainda';
+  document.getElementById('pfSub').textContent='primeira vez? toque seu nome';
+  document.getElementById('pfExtra').innerHTML=
+    '<input class="pfbusca" id="pfBusca" placeholder="Buscar nome…">'+
+    '<div class="pflist" id="pfLista"></div>';
+  document.getElementById('pfBusca').addEventListener('input', pfFiltra);
+  pfFiltra();
+}
+function pfFiltra(){
+  var termo=(document.getElementById('pfBusca')||{value:''}).value.trim().toLowerCase();
+  var lista=(PF_SEM_ROSTO||[]).filter(function(p){return !termo||p.nome.toLowerCase().indexOf(termo)>=0});
+  var el=document.getElementById('pfLista');
+  el.innerHTML=lista.map(function(p){return '<button data-fid="'+esc(p.funcionario_id)+'">'+esc(p.nome)+'</button>';})
+    .join('') || '<div style="color:#aaa;padding:10px">nenhum nome encontrado</div>';
+  el.querySelectorAll('button').forEach(function(btn){
+    btn.onclick=function(){ pfCadastrar(btn.getAttribute('data-fid')); };
+  });
+}
+async function pfCadastrar(funcionarioId){
+  var descriptor=PF_CADASTRANDO;
+  var pessoa=null;
+  for (var i=0;i<(PF_SEM_ROSTO||[]).length;i++) if (PF_SEM_ROSTO[i].funcionario_id===funcionarioId) pessoa=PF_SEM_ROSTO[i];
+  document.getElementById('pfExtra').innerHTML='';
+  document.getElementById('pfStatus').textContent='Cadastrando seu rosto…';
+  document.getElementById('pfSub').textContent='';
+  try {
+    await fetch('/api/ponto/cadastrar-rosto',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({funcionario_id:funcionarioId, descriptor:Array.from(descriptor)})});
+  } catch(e) {}
+  PF_CADASTRANDO=null;
+  await pfBater(pessoa||{funcionario_id:funcionarioId, nome:'você'});
+}
+function fecharPontoFacial(){
+  clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
+  if (PF_STREAM) { PF_STREAM.getTracks().forEach(function(t){t.stop();}); PF_STREAM=null; }
+  document.getElementById('pfModal').classList.remove('on');
+}
 async function selecao(){
   var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
   // menu da casa: a tela inicial é a porta de tudo — caixa entra aqui (quem
   // toca cai no PIN, então cozinha não entra por engano)
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
     '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
+    '<button class="linkbtn" onclick="abrirPontoFacial()">🕐 Ponto</button>'+
     '<a class="linkbtn" href="/tablet" title="instalar em tela cheia / atualizar">⚙</a>'+
     (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>')+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
@@ -15524,12 +15765,30 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
     if (p === '/api/gerentes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerentesListar(req, u))); }
     if (req.method === 'POST' && p === '/api/gerente') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerenteSet(req, u, body))); }
-    // ---- PONTO: bater entrada/saída (PIN dedicado, sem sessão) ----
+    // ---- PONTO: reconhecimento facial (botão no KDS) — PIN é legado (tela /ponto) ----
     if (p === '/ponto') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PONTO_HTML); }
+    // Biblioteca + modelos do face-api.js — vendorizados (offline, nunca CDN).
+    if (p === '/facelib/face-api.js') {
+      const arq = path.join(process.cwd(), 'facelib', 'face-api.js');
+      if (!existsSync(arq)) { res.writeHead(404); return res.end('não encontrado'); }
+      res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=604800' });
+      return createReadStream(arq).pipe(res);
+    }
+    if (p.startsWith('/facelib/models/')) {
+      const nome = p.slice('/facelib/models/'.length);
+      if (!/^[a-z0-9_.-]+$/i.test(nome)) { res.writeHead(400); return res.end('nome inválido'); }
+      const arq = path.join(process.cwd(), 'facelib', 'models', nome);
+      if (!existsSync(arq)) { res.writeHead(404); return res.end('não encontrado'); }
+      const ct = nome.endsWith('.json') ? 'application/json; charset=utf-8' : 'application/octet-stream';
+      res.writeHead(200, { 'content-type': ct, 'cache-control': 'public, max-age=604800' });
+      return createReadStream(arq).pipe(res);
+    }
     if (p.startsWith('/api/ponto/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (p === '/api/ponto/pessoas') return res.end(JSON.stringify(await apiPontoPessoas()));
       if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ponto/cadastrar-rosto') return res.end(JSON.stringify(await apiPontoCadastrarRosto(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ponto/bater-facial') return res.end(JSON.stringify(await apiPontoBaterFacial(await readBody(req))));
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
@@ -16026,6 +16285,8 @@ async function main() {
   setInterval(() => loopPontoNuvem().catch(() => {}), 60 * 1000);
   loopPontoRoster().catch(() => {});
   setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
+  setTimeout(() => loopFaceSync().catch(() => {}), 35 * 1000);
+  setInterval(() => loopFaceSync().catch(() => {}), 60 * 1000);
   setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
