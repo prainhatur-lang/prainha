@@ -39,6 +39,7 @@
     "migrate:cert-filial-nsu": "tsx scripts/migrate-cert-filial-nsu.ts",
     "migrate:permissoes": "tsx scripts/migrate-permissoes.ts",
     "migrate:conta-pagar-baixa": "tsx scripts/migrate-conta-pagar-baixa.ts",
+    "migrate:baixa-juros": "tsx scripts/migrate-baixa-juros.ts",
     "migrate:usuario-operacao": "tsx scripts/migrate-usuario-operacao.ts",
     "migrate:fiado-fila": "tsx scripts/migrate-fiado-fila.ts",
     "migrate:fiado-forma": "tsx scripts/migrate-fiado-forma.ts",

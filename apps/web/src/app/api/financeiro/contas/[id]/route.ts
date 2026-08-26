@@ -101,14 +101,19 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 
   // Valor não pode ficar menor que o já pago (senão o histórico vira mentira)
   const baixas = await db
-    .select({ data: schema.contaPagarBaixa.data, valor: schema.contaPagarBaixa.valor })
+    .select({
+      data: schema.contaPagarBaixa.data,
+      valor: schema.contaPagarBaixa.valor,
+      juros: schema.contaPagarBaixa.juros,
+    })
     .from(schema.contaPagarBaixa)
     .where(eq(schema.contaPagarBaixa.contaPagarId, id))
     .orderBy(asc(schema.contaPagarBaixa.data));
   const pago = baixas.reduce((s, x) => s + Number(x.valor), 0);
+  const jurosPagos = baixas.reduce((s, x) => s + Number(x.juros ?? 0), 0);
   if (b.valor < pago - 0.005) {
     return NextResponse.json(
-      { error: `valor menor que o já pago (R$ ${pago.toFixed(2)}) — estorne baixas antes` },
+      { error: `valor menor que o principal já pago (R$ ${pago.toFixed(2)}) — estorne baixas antes` },
       { status: 400 },
     );
   }
@@ -127,7 +132,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       ...(b.dataLancamento
         ? { dataCadastro: new Date(`${b.dataLancamento}T12:00:00-03:00`) }
         : {}),
-      valorPago: pago > 0 ? pago.toFixed(2) : null,
+      valorPago: pago + jurosPagos > 0 ? (pago + jurosPagos).toFixed(2) : null,
+      jurosMulta: jurosPagos > 0 ? jurosPagos.toFixed(2) : null,
       dataPagamento: quitada ? baixas[baixas.length - 1]!.data : null,
     })
     .where(eq(schema.contaPagar.id, id));

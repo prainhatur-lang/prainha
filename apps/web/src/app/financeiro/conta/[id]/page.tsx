@@ -86,6 +86,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       id: schema.contaPagarBaixa.id,
       data: schema.contaPagarBaixa.data,
       valor: schema.contaPagarBaixa.valor,
+      juros: schema.contaPagarBaixa.juros,
       observacao: schema.contaPagarBaixa.observacao,
       criadoPor: schema.contaPagarBaixa.criadoPor,
       criadoEm: schema.contaPagarBaixa.criadoEm,
@@ -106,6 +107,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
 
   const valor = Number(conta.valor);
   const pago = baixas.reduce((s, b) => s + Number(b.valor), 0);
+  const jurosPagos = baixas.reduce((s, b) => s + Number(b.juros ?? 0), 0);
   const saldo = Math.max(0, valor - pago);
   const hoje = hojeBr();
   const quitada = !!conta.dataPagamento || pago >= valor - 0.005;
@@ -166,7 +168,11 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           {[
             { label: 'Valor', valor: brl(valor), destaque: true },
-            { label: 'Pago', valor: brl(pago) },
+            {
+              label: 'Pago',
+              valor: brl(pago),
+              nota: jurosPagos > 0 ? `+ ${brl(jurosPagos)} juros` : undefined,
+            },
             { label: 'Saldo', valor: brl(saldo), alerta: saldo > 0 && pago > 0 },
             { label: 'Vencimento', valor: formatDate(conta.dataVencimento) },
           ].map((c) => (
@@ -181,6 +187,9 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
               >
                 {c.valor}
               </p>
+              {'nota' in c && c.nota && (
+                <p className="text-[10px] text-amber-700">{c.nota}</p>
+              )}
             </div>
           ))}
         </div>
@@ -210,6 +219,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                 <tr>
                   <th className="py-1.5 pr-3">Data</th>
                   <th className="py-1.5 pr-3 text-right">Valor</th>
+                  <th className="py-1.5 pr-3 text-right">Juros</th>
                   <th className="py-1.5 pr-3">Observação</th>
                   <th className="py-1.5 pr-3">Por</th>
                   <th className="py-1.5"></th>
@@ -220,6 +230,9 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                   <tr key={b.id} className="border-t border-slate-100">
                     <td className="py-1.5 pr-3">{formatDate(b.data)}</td>
                     <td className="py-1.5 pr-3 text-right font-mono">{brl(Number(b.valor))}</td>
+                    <td className="py-1.5 pr-3 text-right font-mono text-amber-700">
+                      {b.juros != null && Number(b.juros) > 0 ? brl(Number(b.juros)) : '—'}
+                    </td>
                     <td className="py-1.5 pr-3 text-slate-500">{b.observacao ?? '—'}</td>
                     <td className="py-1.5 pr-3 text-slate-500">
                       {b.criadoPor ? autores.get(b.criadoPor) ?? '?' : '—'}
@@ -238,7 +251,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
               Conta do Consumer: a baixa é feita no PDV da loja e sincroniza sozinha.
             </p>
           ) : saldo > 0.005 ? (
-            <BaixaForm contaId={conta.id} saldo={saldo} />
+            <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} />
           ) : (
             <p className="mt-3 rounded bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
               Conta quitada. 🎉

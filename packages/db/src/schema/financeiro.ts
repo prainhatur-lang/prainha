@@ -296,7 +296,10 @@ export const contaPagarBaixa = pgTable(
       .notNull()
       .references(() => contaPagar.id, { onDelete: 'cascade' }),
     data: date('data').notNull(),
+    /** principal amortizado — é o que abate o saldo da conta */
     valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    /** juros/multa pagos JUNTO nessa baixa (atraso) — não abate saldo */
+    juros: numeric('juros', { precision: 14, scale: 2 }),
     observacao: text('observacao'),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),

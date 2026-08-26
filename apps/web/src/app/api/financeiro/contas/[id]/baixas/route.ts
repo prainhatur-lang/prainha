@@ -18,7 +18,11 @@ export const dynamic = 'force-dynamic';
 
 const Body = z.object({
   data: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  /** principal amortizado — abate o saldo; a conta quita quando o principal
+   *  cobre o valor original */
   valor: z.number().positive(),
+  /** juros/multa pagos junto (atraso) — vão por fora do saldo */
+  juros: z.number().min(0).optional(),
   observacao: z.string().trim().max(500).nullable().optional(),
 });
 
@@ -57,23 +61,31 @@ async function carregarConta(id: string, userId: string) {
   return { conta };
 }
 
-/** Recalcula valor_pago/data_pagamento a partir das baixas. */
+/** Recalcula valor_pago/juros_multa/data_pagamento a partir das baixas.
+ *  Quitação é pelo PRINCIPAL; valor_pago carrega principal + juros (o que
+ *  de fato saiu do bolso), juros_multa acumula só os juros. */
 async function recalcularAgregado(contaId: string, valorConta: number) {
   const baixas = await db
-    .select({ data: schema.contaPagarBaixa.data, valor: schema.contaPagarBaixa.valor })
+    .select({
+      data: schema.contaPagarBaixa.data,
+      valor: schema.contaPagarBaixa.valor,
+      juros: schema.contaPagarBaixa.juros,
+    })
     .from(schema.contaPagarBaixa)
     .where(eq(schema.contaPagarBaixa.contaPagarId, contaId))
     .orderBy(asc(schema.contaPagarBaixa.data));
-  const total = baixas.reduce((s, x) => s + Number(x.valor), 0);
-  const quitada = total >= valorConta - 0.005;
+  const principal = baixas.reduce((s, x) => s + Number(x.valor), 0);
+  const juros = baixas.reduce((s, x) => s + Number(x.juros ?? 0), 0);
+  const quitada = principal >= valorConta - 0.005;
   await db
     .update(schema.contaPagar)
     .set({
-      valorPago: total > 0 ? total.toFixed(2) : null,
+      valorPago: principal + juros > 0 ? (principal + juros).toFixed(2) : null,
+      jurosMulta: juros > 0 ? juros.toFixed(2) : null,
       dataPagamento: quitada && baixas.length > 0 ? baixas[baixas.length - 1]!.data : null,
     })
     .where(eq(schema.contaPagar.id, contaId));
-  return { total, quitada };
+  return { total: principal, juros, quitada };
 }
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -113,6 +125,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     contaPagarId: id,
     data: parsed.data.data,
     valor: parsed.data.valor.toFixed(2),
+    juros: parsed.data.juros && parsed.data.juros > 0 ? parsed.data.juros.toFixed(2) : null,
     observacao: parsed.data.observacao ?? null,
     criadoPor: user.id,
   });
