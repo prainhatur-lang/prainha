@@ -11,6 +11,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, formatDate } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { BaixaForm } from './baixa-form';
+import { AcoesConta } from './acoes-conta';
 
 export const dynamic = 'force-dynamic';
 
@@ -141,9 +142,14 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
               )}
             </p>
           </div>
-          <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${status.cls}`}>
-            {status.label}
-          </span>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${status.cls}`}>
+              {status.label}
+            </span>
+            {conta.origem === 'MANUAL' && (
+              <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} />
+            )}
+          </div>
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">

@@ -5,11 +5,11 @@ import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
 import { brl, formatValorBr, parseValorBr } from '@/lib/format';
 
-interface Opcao {
+export interface Opcao {
   id: string;
   nome: string;
 }
-interface CategoriaPai extends Opcao {
+export interface CategoriaPai extends Opcao {
   filhas: Opcao[];
 }
 
@@ -24,7 +24,7 @@ function normalizar(s: string): string {
 /** Fornecedor com busca por texto: são mais de 2 mil cadastrados e o <select>
  *  nativo não deixava achar ninguém. Digita um pedaço do nome e escolhe na
  *  lista. Texto digitado sem escolher NÃO vira fornecedor — o submit avisa. */
-function FornecedorPicker({
+export function FornecedorPicker({
   fornecedores,
   fornecedorId,
   texto,
