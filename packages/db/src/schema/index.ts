@@ -33,3 +33,4 @@ export * from './atendimento';
 export * from './talento';
 export * from './delivery-online';
 export * from './cancelamento';
+export * from './rh';

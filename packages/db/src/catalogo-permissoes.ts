@@ -98,6 +98,14 @@ export const PERMISSOES: PermissaoDef[] = [
     { acao: 'fechar', descricao: 'Fechar folha semanal' },
   ]),
 
+  // === RH ===
+  ...crud('funcionario', 'funcionários', [
+    { acao: 'desligar', descricao: 'Registrar desligamento de funcionário' },
+  ]),
+  ...crud('ponto', 'ponto (batidas e horas)', [
+    { acao: 'corrigir', descricao: 'Corrigir batida de ponto com justificativa' },
+  ]),
+
   // === Relatorios ===
   {
     codigo: 'relatorio.read',
@@ -310,6 +318,14 @@ export const GRUPOS_SISTEMA: Array<{
     nome: 'Recepção',
     descricao: 'Agenda de reservas + fila (lista de espera) — uso operacional',
     permissoes: (todas) => todas.filter((c) => RESERVAS_FILA_OPERACIONAL.includes(c)),
+  },
+  {
+    nome: 'RH',
+    descricao: 'Cadastro de funcionários e ponto (sem folha nem financeiro)',
+    permissoes: (todas) =>
+      todas.filter(
+        (c) => c.startsWith('funcionario.') || c.startsWith('ponto.') || c === 'folha_equipe.read',
+      ),
   },
   {
     nome: 'Vendas',

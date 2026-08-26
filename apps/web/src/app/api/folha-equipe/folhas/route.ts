@@ -4,6 +4,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { dezPctPorDia } from '@/lib/folha/dezpct';
+import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
 
 const Body = z.object({
   filialId: z.string().uuid(),
@@ -74,6 +75,11 @@ export async function POST(req: NextRequest) {
       configSnapshot: config ?? null,
     })
     .returning({ id: schema.folhaSemana.id });
+
+  // Cobre batidas de ponto que chegaram antes de a semana existir.
+  await projetarPontoEmFolhaHoras(body.filialId, body.dataInicio, body.dataFim).catch((err) =>
+    console.error('[folha-equipe] projeção de ponto na folha nova falhou:', err),
+  );
 
   return NextResponse.json({ id: criada.id, jaExistia: false });
 }

@@ -4,6 +4,8 @@
 import { db, schema } from '@concilia/db';
 import { desc } from 'drizzle-orm';
 import { exigirPermPage } from '@/lib/exigir-perm';
+import { filiaisDoUsuario } from '@/lib/filiais';
+import { ContratarButton } from './contratar-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +23,8 @@ function fmtFone(d: string): string {
 }
 
 export default async function TalentosPage() {
-  await exigirPermPage('folha_equipe.read');
+  const user = await exigirPermPage('folha_equipe.read');
+  const filiais = await filiaisDoUsuario(user.id);
 
   const talentos = await db
     .select()
@@ -72,6 +75,16 @@ export default async function TalentosPage() {
                   >
                     WhatsApp {fmtFone(t.whatsapp)}
                   </a>
+                  {t.status !== 'contratado' && t.status !== 'descartado' && (
+                    <ContratarButton
+                      talentoId={t.id}
+                      nome={t.nome}
+                      cpf={t.cpf}
+                      whatsapp={t.whatsapp}
+                      cargoSugerido={t.funcoes?.[0] ?? null}
+                      filiais={filiais}
+                    />
+                  )}
                 </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">

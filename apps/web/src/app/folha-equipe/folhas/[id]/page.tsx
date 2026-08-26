@@ -9,6 +9,7 @@ import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
+import { RecalcularPontoButton } from './recalcular-ponto-button';
 import { CalculoFechar } from './calculo-fechar';
 
 export const dynamic = 'force-dynamic';
@@ -296,8 +297,9 @@ export default async function FolhaDetalhePage(props: {
 
         {/* Upload do espelho de ponto */}
         {folha.status === 'aberta' && (
-          <div className="mb-6">
+          <div className="mb-6 space-y-3">
             <UploadEspelho folhaId={folha.id} />
+            <RecalcularPontoButton folhaId={folha.id} />
           </div>
         )}
 

@@ -83,10 +83,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     totalMin: number;
   }> = [];
 
-  // Limpa folha_horas existente da folha (re-upload sobrescreve)
+  // Limpa folha_horas existente da folha (re-upload sobrescreve) — só o que
+  // o próprio upload escreveu. Não pode apagar linhas 'ponto_proprio'/'manual'
+  // de quem não está nesse XLSX.
   await db
     .delete(schema.folhaHoras)
-    .where(eq(schema.folhaHoras.folhaSemanaId, folha.id));
+    .where(
+      and(
+        eq(schema.folhaHoras.folhaSemanaId, folha.id),
+        eq(schema.folhaHoras.origem, 'espelho'),
+      ),
+    );
 
   for (const h of horasPorPessoa) {
     const match = fuzzyMatchPessoa(h.nomeEspelho, pessoasNorm);
