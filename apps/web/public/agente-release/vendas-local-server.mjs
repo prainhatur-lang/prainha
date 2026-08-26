@@ -607,6 +607,25 @@ async function initSchema() {
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
   await addCol('ifood_evento', 'tentativas int DEFAULT 0');
+  // ---- PONTO PRÓPRIO ----
+  // Roster espelhado da nuvem (loopPontoRoster) — existir localmente é o que
+  // faz o ponto bater sem internet, igual cliente_local pro fiado. PIN é
+  // PRÓPRIO (ponto_pin), não o garcom_pin: quem bate ponto pode não vender
+  // nada (ajudante de cozinha), e o tablet da porta é compartilhado — não
+  // pode ficar logado.
+  await sql`CREATE TABLE IF NOT EXISTS ponto_funcionario (funcionario_id uuid PRIMARY KEY,
+    nome text NOT NULL, cpf text, setor text, cargo text, login_local text,
+    ativo boolean NOT NULL DEFAULT true, atualizado_em timestamptz DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS ponto_pin (funcionario_id uuid PRIMARY KEY,
+    pin_hash text NOT NULL, salt text NOT NULL, criado_em timestamptz DEFAULT now(),
+    atualizado_em timestamptz DEFAULT now())`;
+  // A fila É a própria tabela (cursor por id, igual `cancelamento`) — fora do
+  // espelho de propósito, porque comanda_item leva TRUNCATE a cada ciclo.
+  await sql`CREATE TABLE IF NOT EXISTS ponto_batida (id bigserial PRIMARY KEY,
+    funcionario_id uuid NOT NULL, quando timestamptz NOT NULL DEFAULT now(),
+    dia_operacional date NOT NULL, tipo text NOT NULL,
+    dispositivo text, login_local text, criado_em timestamptz DEFAULT now())`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_ponto_batida_pessoa_dia ON ponto_batida (funcionario_id, dia_operacional)`;
   await initSchemaNativo();
 }
 
@@ -6281,6 +6300,154 @@ async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null,
   }
   return { ok: true, codigo: codigoCC, pagamento: pagamentoCod, saldo: novoSaldo, cliente: cli.nome };
 }
+// ---- PONTO PRÓPRIO: bater na loja (PIN dedicado) + sincronizar ----
+// Cadastro único de funcionário mora na nuvem; aqui só o roster espelhado
+// (ponto_funcionario) e as batidas em si. Bar fecha de madrugada: uma
+// batida de sábado 02h30 é do dia de SEXTA — por isso o dia_operacional
+// desloca a virada em vez de usar a data corrida.
+const PONTO_VIRADA_HORA = 5;
+function diaOperacionalDe(d) {
+  const deslocado = new Date(d.getTime() - PONTO_VIRADA_HORA * 3600 * 1000);
+  const y = deslocado.getFullYear();
+  const m = String(deslocado.getMonth() + 1).padStart(2, '0');
+  const dd = String(deslocado.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+// GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
+async function apiPontoPessoas() {
+  const hoje = diaOperacionalDe(new Date());
+  const pessoas = await sql`SELECT funcionario_id, nome, setor, cargo FROM ponto_funcionario WHERE ativo ORDER BY nome`;
+  const batidas = await sql`SELECT funcionario_id, tipo, quando FROM ponto_batida
+    WHERE dia_operacional = ${hoje} ORDER BY funcionario_id, quando`;
+  const ultimaPorPessoa = new Map();
+  for (const b of batidas) ultimaPorPessoa.set(b.funcionario_id, b); // a última sobrescreve (ordenado por quando)
+  const out = pessoas.map((p) => {
+    const ultima = ultimaPorPessoa.get(p.funcionario_id);
+    const dentro = !!(ultima && ultima.tipo === 'entrada');
+    return { funcionario_id: p.funcionario_id, nome: p.nome, setor: p.setor, cargo: p.cargo,
+      dentro, desde: dentro ? ultima.quando : null };
+  });
+  return { ok: true, pessoas: out };
+}
+// POST /api/ponto/bater {funcionario_id, pin, pin2?, tipo}
+//  - primeira vez (sem PIN cadastrado): exige pin==pin2 e cria
+//  - já tem PIN: confere (aceita também o garcom_pin de quem também vende)
+//  - sem sessão: cada batida é 1 POST — tablet compartilhado não fica logado
+async function apiPontoBater(body) {
+  const funcionarioId = String(body.funcionario_id || '');
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  const tipo = String(body.tipo || '');
+  if (!/^[0-9a-f-]{36}$/i.test(funcionarioId)) return { ok: false, erro: 'funcionário inválido' };
+  if (!['entrada', 'saida'].includes(tipo)) return { ok: false, erro: 'tipo inválido' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+
+  const pessoa = (await sql`SELECT * FROM ponto_funcionario WHERE funcionario_id=${funcionarioId} AND ativo`)[0];
+  if (!pessoa) return { ok: false, erro: 'funcionário não encontrado ou inativo — peça pro gerente atualizar' };
+
+  const atual = (await sql`SELECT pin_hash, salt FROM ponto_pin WHERE funcionario_id=${funcionarioId}`)[0];
+  let criado = false;
+  if (!atual) {
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    if (!pin2) return { ok: true, primeira_vez: true, nome: pessoa.nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO ponto_pin (funcionario_id, pin_hash, salt) VALUES (${funcionarioId}, ${pinHash(pin, salt)}, ${salt})
+      ON CONFLICT (funcionario_id) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, atualizado_em=now()`;
+    criado = true;
+  } else {
+    let confere = pinConfere(pin, atual.salt, atual.pin_hash);
+    if (!confere && pessoa.login_local) {
+      const gp = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${pessoa.login_local}`)[0];
+      if (gp && pinConfere(pin, gp.salt, gp.pin_hash)) confere = true;
+    }
+    if (!confere) return { ok: false, erro: 'PIN incorreto' };
+  }
+
+  const agora = new Date();
+  const dia = diaOperacionalDe(agora);
+  const ultima = (await sql`SELECT tipo FROM ponto_batida WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia}
+    ORDER BY quando DESC LIMIT 1`)[0];
+  if (ultima && ultima.tipo === tipo) {
+    return { ok: false, erro: tipo === 'entrada'
+      ? `${pessoa.nome} já está com entrada batida.`
+      : `${pessoa.nome} já bateu saída — pra sair nesse turno, bate entrada de novo primeiro.` };
+  }
+
+  const dispositivo = String(body.dispositivo || '').slice(0, 120) || null;
+  await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
+    VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, ${dispositivo}, ${pessoa.login_local})`;
+
+  const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+  let totalMin = 0, entradaAberta = null;
+  for (const b of batidasHoje) {
+    if (b.tipo === 'entrada') entradaAberta = b.quando;
+    else if (b.tipo === 'saida' && entradaAberta) {
+      totalMin += Math.round((new Date(b.quando) - new Date(entradaAberta)) / 60000);
+      entradaAberta = null;
+    }
+  }
+  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin, criado };
+}
+// GET /api/ponto/meu-dia?f=<funcionario_id> — a própria pessoa confere as batidas de hoje
+async function apiPontoMeuDia(funcionarioId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(funcionarioId || ''))) return { ok: false, erro: 'funcionário inválido' };
+  const dia = diaOperacionalDe(new Date());
+  const batidas = await sql`SELECT tipo, quando FROM ponto_batida
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+  return { ok: true, dia, batidas };
+}
+// Push: a própria tabela ponto_batida É a fila (cursor por id, igual
+// cancelamento). Cursor só avança em resposta ok — loja offline empilha e
+// sobe depois.
+let pontoNuvemRodando = false;
+async function loopPontoNuvem() {
+  if (pontoNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  pontoNuvemRodando = true;
+  try {
+    const desde = Number(await cfgGet('ponto_nuvem_ate', '0')) || 0;
+    const rows = await sql`SELECT id, funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local
+      FROM ponto_batida WHERE id > ${desde} ORDER BY id LIMIT 200`;
+    if (!rows.length) return;
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('ponto', e), batidas: rows.map((x) => ({
+        id: Number(x.id), funcionario_id: x.funcionario_id, quando: x.quando,
+        dia_operacional: x.dia_operacional, tipo: x.tipo, dispositivo: x.dispositivo, login_local: x.login_local })) }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) { console.error('[ponto] nuvem recusou:', j?.erro || r.status); return; }
+    await cfgSet('ponto_nuvem_ate', String(rows[rows.length - 1].id));
+    console.log(`[ponto] ${rows.length} batida(s) na nuvem (até id ${rows[rows.length - 1].id})`);
+  } catch (err) { console.error('[ponto] nuvem:', err.message); }
+  finally { pontoNuvemRodando = false; }
+}
+// Pull: roster ativo da filial. Só desativa quem a nuvem não mandou mais —
+// nunca deleta, pro PIN sobreviver a uma reativação.
+let pontoRosterRodando = false;
+async function loopPontoRoster() {
+  if (pontoRosterRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  pontoRosterRodando = true;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('ponto', e) });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto?${qs}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !Array.isArray(j.pessoas)) return;
+    for (const p of j.pessoas) {
+      await sql`INSERT INTO ponto_funcionario (funcionario_id, nome, cpf, setor, cargo, login_local, ativo, atualizado_em)
+        VALUES (${p.funcionario_id}, ${p.nome}, ${p.cpf || null}, ${p.setor || null}, ${p.cargo || null}, ${p.login_local || null}, true, now())
+        ON CONFLICT (funcionario_id) DO UPDATE SET nome=EXCLUDED.nome, cpf=EXCLUDED.cpf, setor=EXCLUDED.setor,
+          cargo=EXCLUDED.cargo, login_local=EXCLUDED.login_local, ativo=true, atualizado_em=now()`;
+    }
+    const ids = j.pessoas.map((p) => p.funcionario_id);
+    if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
+  } catch (err) { console.error('[ponto] roster:', err.message); }
+  finally { pontoRosterRodando = false; }
+}
+
 // ---- CANCELAMENTOS → NUVEM: o dono quer o histórico (com motivo) no dashboard ----
 // A tabela `cancelamento` só existe aqui; o Consumer marca DATADELETE e nada mais.
 // Manda em lotes de 200 por minuto, guardando até que id já foi; a nuvem faz
@@ -11149,6 +11316,144 @@ async function carrega(){
 carrega();setInterval(carrega,15000);
 </script></body></html>`;
 
+// ---- PONTO: 3 telas em 1 HTML — grade de nomes, teclado de PIN, confirmação.
+// Sem sessão (cada batida é 1 POST): o tablet fica na porta, compartilhado.
+const PONTO_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${LOJA_NOME} — Ponto</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--green2:#0f8a3e;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:14px 20px}
+h1{font-size:20px;margin:0}
+.wrap{max-width:900px;margin:0 auto;padding:20px}
+.busca{width:100%;padding:14px;font-size:18px;border:1px solid var(--line);border-radius:12px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;cursor:pointer;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card:active{transform:scale(.97)}
+.nome{font-size:17px;font-weight:600}
+.estado{font-size:13px;margin-top:6px}
+.estado.fora{color:var(--mut)}
+.estado.dentro{color:var(--green2);font-weight:600}
+.vazio{grid-column:1/-1;text-align:center;color:var(--mut);padding:40px}
+.overlay{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;z-index:10}
+.overlay h2{font-size:22px;margin:0 0 4px}
+.sub{color:var(--mut);font-size:14px}
+.pinbox{display:flex;gap:8px;margin:22px 0}
+.pinbox span{width:38px;height:48px;border:2px solid var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;background:#fff}
+.teclado{display:grid;grid-template-columns:repeat(3,78px);gap:12px}
+.teclado button{height:66px;font-size:24px;border-radius:14px;border:1px solid var(--line);background:#fff}
+.teclado button:active{background:#eee}
+.teclado .ok{background:var(--green2);color:#fff;border:none;font-size:16px;font-weight:600}
+.teclado .cancelar{background:#fff;color:var(--red);font-size:22px}
+.erro{color:var(--red);margin-top:14px;text-align:center;max-width:280px}
+.confirm{font-size:20px;text-align:center;line-height:1.6}
+.confirm b{font-size:28px;display:block;margin-top:6px}
+</style></head><body>
+<header><h1>🕐 Ponto</h1></header>
+<div class="wrap">
+  <input class="busca" id="busca" placeholder="Buscar nome…">
+  <div id="app" class="grid">carregando…</div>
+</div>
+<div id="ov" class="overlay" style="display:none"></div>
+<script>
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
+var pessoas=[];
+var alvo=null;
+var pinDigitado='';
+var pin1Confirmar=null;
+var tipoEscolhido=null;
+
+function horaCurta(iso){
+  var d=new Date(iso);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+async function carrega(){
+  var d; try { d = await (await fetch('/api/ponto/pessoas',{cache:'no-store'})).json(); } catch(e) { return; }
+  if (!d.ok) return;
+  pessoas = d.pessoas;
+  render();
+}
+function render(){
+  var termo = document.getElementById('busca').value.trim().toLowerCase();
+  var lista = pessoas.filter(function(p){ return !termo || p.nome.toLowerCase().indexOf(termo) >= 0; });
+  var app = document.getElementById('app');
+  if (!lista.length) { app.innerHTML = '<div class="vazio">nenhum nome encontrado</div>'; return; }
+  app.innerHTML = lista.map(function(p){
+    var estado = p.dentro
+      ? '<div class="estado dentro">&#9679; Trabalhando desde '+horaCurta(p.desde)+'</div>'
+      : '<div class="estado fora">&#9679; Fora</div>';
+    return '<div class="card" data-fid="'+esc(p.funcionario_id)+'"><div class="nome">'+esc(p.nome)+'</div>'+estado+'</div>';
+  }).join('');
+}
+document.getElementById('busca').addEventListener('input', render);
+document.getElementById('app').addEventListener('click', function(e){
+  var card = e.target.closest('.card');
+  if (card) abrirPin(card.getAttribute('data-fid'));
+});
+
+function abrirPin(funcionarioId){
+  alvo = null;
+  for (var i=0;i<pessoas.length;i++) if (pessoas[i].funcionario_id === funcionarioId) alvo = pessoas[i];
+  if (!alvo) return;
+  pinDigitado=''; pin1Confirmar=null;
+  tipoEscolhido = alvo.dentro ? 'saida' : 'entrada';
+  desenhaPin(null);
+}
+function desenhaPin(erro){
+  var ov = document.getElementById('ov');
+  ov.style.display='flex';
+  var pontos='';
+  for (var i=0;i<8;i++) pontos += '<span>'+(i<pinDigitado.length?'&bull;':'')+'</span>';
+  var sub = pin1Confirmar
+    ? 'confirme o PIN de novo'
+    : 'digite seu PIN pra '+(tipoEscolhido==='entrada'?'ENTRADA':'SA' + String.fromCharCode(205) + 'DA');
+  var botoes = [1,2,3,4,5,6,7,8,9].map(function(n){ return '<button onclick="digitaPin('+n+')">'+n+'</button>'; }).join('');
+  ov.innerHTML =
+    '<h2>'+esc(alvo.nome)+'</h2>'+
+    '<div class="sub">'+sub+'</div>'+
+    '<div class="pinbox">'+pontos+'</div>'+
+    '<div class="teclado">'+botoes+
+      '<button class="cancelar" onclick="fecharPin()">&times;</button>'+
+      '<button onclick="digitaPin(0)">0</button>'+
+      '<button class="ok" onclick="confirmaPin()">OK</button>'+
+    '</div>'+
+    (erro ? '<div class="erro">'+esc(erro)+'</div>' : '');
+}
+function digitaPin(n){ if (pinDigitado.length>=8) return; pinDigitado += String(n); desenhaPin(null); }
+function fecharPin(){ document.getElementById('ov').style.display='none'; alvo=null; pinDigitado=''; pin1Confirmar=null; }
+
+async function bater(pin, pin2){
+  var body = { funcionario_id: alvo.funcionario_id, pin: pin, tipo: tipoEscolhido };
+  if (pin2) body.pin2 = pin2;
+  try {
+    var res = await fetch('/api/ponto/bater', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+    return await res.json();
+  } catch(e) { return { ok:false, erro:'sem conexão com o servidor da loja' }; }
+}
+async function confirmaPin(){
+  if (pinDigitado.length < 4) { desenhaPin('mínimo 4 números'); return; }
+  if (pin1Confirmar === null) {
+    var r = await bater(pinDigitado, null);
+    if (r.primeira_vez) { pin1Confirmar = pinDigitado; pinDigitado=''; desenhaPin(null); return; }
+    if (!r.ok) { pinDigitado=''; desenhaPin(r.erro || 'erro ao bater ponto'); return; }
+    mostraConfirmacao(r);
+  } else {
+    var r2 = await bater(pin1Confirmar, pinDigitado);
+    if (!r2.ok) { pin1Confirmar=null; pinDigitado=''; desenhaPin(r2.erro || 'os PINs não bateram — tente de novo'); return; }
+    mostraConfirmacao(r2);
+  }
+}
+function mostraConfirmacao(r){
+  var ov = document.getElementById('ov');
+  var saudacao = r.tipo==='entrada' ? 'Bom trabalho, ' : 'At' + String.fromCharCode(233) + ' mais, ';
+  var linha2 = r.tipo==='entrada'
+    ? 'Entrada '+horaCurta(r.quando)
+    : 'Sa' + String.fromCharCode(237) + 'da '+horaCurta(r.quando)+(r.total_min_hoje ? ' — '+Math.floor(r.total_min_hoje/60)+'h'+String(r.total_min_hoje%60).padStart(2,'0')+' hoje' : '');
+  ov.innerHTML = '<div class="confirm">'+saudacao+esc(r.nome)+'.<b>'+linha2+'</b></div>';
+  setTimeout(function(){ fecharPin(); carrega(); }, 3500);
+}
+carrega();setInterval(carrega,20000);
+</script></body></html>`;
+
 const IFOOD_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME} — iFood</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--red:#ea1d2c;--green:#15a34a}
@@ -15218,6 +15523,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
     if (p === '/api/gerentes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerentesListar(req, u))); }
     if (req.method === 'POST' && p === '/api/gerente') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerenteSet(req, u, body))); }
+    // ---- PONTO: bater entrada/saída (PIN dedicado, sem sessão) ----
+    if (p === '/ponto') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PONTO_HTML); }
+    if (p.startsWith('/api/ponto/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/api/ponto/pessoas') return res.end(JSON.stringify(await apiPontoPessoas()));
+      if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
+      if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     // ---- CAIXA (Bloco 1): login próprio + ações que exigem sessão de caixa ----
     if (p.startsWith('/api/caixa/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -15630,7 +15944,7 @@ function conferirTelas() {
   const telas = { '/': HTML, '/venda': VENDA_HTML, '/tablet': TABLET_HTML, '/mesa': MESA_HTML, '/conta': CONTA_HTML, '/caixa': CAIXA_HTML,
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
-    '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML,
+    '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML, '/ponto': PONTO_HTML,
     '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
@@ -15707,6 +16021,10 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopPontoNuvem().catch(() => {}), 45 * 1000);
+  setInterval(() => loopPontoNuvem().catch(() => {}), 60 * 1000);
+  loopPontoRoster().catch(() => {});
+  setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
