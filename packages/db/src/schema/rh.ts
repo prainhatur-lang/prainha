@@ -10,12 +10,16 @@
 // criação de login local), e uma FK neles ficaria vazia na maioria das
 // linhas ou colidiria com esses fluxos.
 //
-// Ponto: bate na loja (vendas-local), com PIN PRÓPRIO — não o login
-// operacional acima, porque quem bate ponto pode não vender nada (ajudante
-// de cozinha) e o tablet da porta é compartilhado. `ponto_batida` é
-// append-only; correção manual sempre passa por `ponto_batida_ajuste`
-// (justificativa obrigatória). `ponto_dia` é cache derivado, sempre
-// reconstruível a partir de `ponto_batida` — nunca fonte de verdade.
+// Ponto: bate na loja (vendas-local) por RECONHECIMENTO FACIAL — botão no
+// KDS abre a câmera, compara com os descritores cadastrados (100% no
+// navegador, nunca manda foto pra rede) e registra sozinho. Sem PIN: quem
+// bate ponto pode não vender nada (ajudante de cozinha), e o tablet da
+// porta é compartilhado — a pessoa só toca o próprio nome na primeira vez
+// (quando ainda não há descritor dela pra comparar), nunca mais depois.
+// `ponto_batida` é append-only; correção manual sempre passa por
+// `ponto_batida_ajuste` (justificativa obrigatória). `ponto_dia` é cache
+// derivado, sempre reconstruível a partir de `ponto_batida` — nunca fonte
+// de verdade.
 //
 // O total calculado alimenta `folha_horas.origem = 'ponto_proprio'`,
 // convivendo com `espelho` (upload manual, ainda ativo durante a transição)
@@ -61,6 +65,10 @@ export const funcionario = pgTable(
     endereco: text('endereco'),
     /** Path no Supabase Storage (bucket rh-fotos). NULL = sem foto. */
     fotoPath: text('foto_path'),
+    /** Descritor facial (128 floats, face-api.js) pro ponto por reconhecimento
+     *  — nunca a foto em si, só a "impressão" numérica. Cadastrado sozinho na
+     *  loja na primeira vez que a pessoa aparece na câmera do ponto. */
+    faceDescriptor: jsonb('face_descriptor'),
 
     /** Valor de FUNCOES_TALENTO (schema/talento.ts). */
     cargo: varchar('cargo', { length: 60 }),

@@ -115,7 +115,8 @@
     "migrate:delivery-loja": "tsx scripts/migrate-delivery-loja.ts",
     "migrate:rh-funcionario": "tsx scripts/migrate-rh-funcionario.ts",
     "backfill:funcionario": "tsx scripts/backfill-funcionario.ts",
-    "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts"
+    "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts",
+    "migrate:funcionario-face": "tsx scripts/migrate-funcionario-face.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

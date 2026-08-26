@@ -44,6 +44,7 @@ export async function GET(request: Request) {
       setor: schema.funcionario.setor,
       cargo: schema.funcionario.cargo,
       loginLocal: schema.funcionario.loginLocal,
+      faceDescriptor: schema.funcionario.faceDescriptor,
     })
     .from(schema.funcionario)
     .where(and(eq(schema.funcionario.filialId, f), eq(schema.funcionario.ativo, true)));
@@ -52,6 +53,7 @@ export async function GET(request: Request) {
     ok: true,
     pessoas: pessoas.map((p) => ({
       funcionario_id: p.funcionarioId,
+      face_descriptor: p.faceDescriptor,
       nome: p.nome,
       cpf: p.cpf,
       setor: p.setor,
