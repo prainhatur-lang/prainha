@@ -11318,7 +11318,7 @@ carrega();setInterval(carrega,15000);
 
 // ---- PONTO: 3 telas em 1 HTML — grade de nomes, teclado de PIN, confirmação.
 // Sem sessão (cada batida é 1 POST): o tablet fica na porta, compartilhado.
-const PONTO_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const PONTO_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/app.webmanifest?t=ponto"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Ponto</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--green2:#0f8a3e;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
@@ -15411,6 +15411,7 @@ const server = http.createServer(async (req, res) => {
       const TELAS = { caixa: { nome: LOJA_NOME + ' Caixa', start: '/caixa' },
         venda: { nome: LOJA_NOME + ' Garçom', start: '/venda' },
         entrega: { nome: LOJA_NOME + ' Entrega', start: '/entrega' },
+        ponto: { nome: LOJA_NOME + ' Ponto', start: '/ponto' },
         kds: { nome: LOJA_NOME + ' Produção', start: '/' } };
       const cfg = TELAS[t] || TELAS.kds;
       res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
