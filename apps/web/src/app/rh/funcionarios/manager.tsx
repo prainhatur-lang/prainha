@@ -27,7 +27,7 @@ interface Props {
   cargos: string[];
 }
 
-const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA'];
+const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
 
 function fmtCpf(cpf: string | null): string {
   if (!cpf) return '—';
