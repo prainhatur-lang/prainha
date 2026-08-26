@@ -146,8 +146,19 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${status.cls}`}>
               {status.label}
             </span>
-            {conta.origem === 'MANUAL' && (
+            {conta.origem === 'MANUAL' ? (
               <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} />
+            ) : (
+              <span
+                className="max-w-48 text-right text-[10px] leading-4 text-slate-400"
+                title="Só conta lançada manualmente na nuvem tem Alterar/Excluir aqui"
+              >
+                {conta.origem === 'CONSUMER'
+                  ? 'conta do PDV — altera/exclui no Consumer da loja'
+                  : conta.origem === 'FOLHA'
+                    ? 'gerada pela folha — reabra a folha pra mexer'
+                    : 'nascida de NFe — gerencie pela nota de origem'}
+              </span>
             )}
           </div>
         </div>

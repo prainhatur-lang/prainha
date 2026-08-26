@@ -698,10 +698,10 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                             ) : (
                               <Link
                                 href={`/financeiro/conta/${c.id}`}
-                                className="hover:text-sky-700 hover:underline"
-                                title="Ver a conta e o histórico de pagamentos"
+                                className="text-sky-700 underline-offset-2 hover:underline"
+                                title="Abrir a conta — histórico de pagamentos, alterar, excluir"
                               >
-                                {c.descricao ?? '—'}
+                                {c.descricao ?? '(abrir conta)'}
                               </Link>
                             )}
                             {!pago && Number(c.valorPago ?? 0) > 0 && (
