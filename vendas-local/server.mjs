@@ -6329,6 +6329,54 @@ async function loopCancelNuvem() {
   } catch (err) { console.error('[cancel] nuvem:', err.message); }
   finally { cancelNuvemRodando = false; }
 }
+// ---- MARCAS DO KDS → NUVEM: tempos de pronto/entregue no espelho do pedido ----
+// A tabela `marca` (pronto_em/entregue_em por item) só existe aqui. Sobe em
+// lotes de 300 por minuto, cursor pelo GREATEST dos dois timestamps. A nuvem
+// dá UPDATE em pedido_item por (filial, codigo) — reenviar não duplica.
+// Se algum item do lote ainda não chegou na nuvem (CDC atrasado), NÃO avança
+// o cursor por até 10 tentativas — depois avança pra não travar a fila.
+let marcasNuvemRodando = false;
+async function loopMarcasNuvem() {
+  if (marcasNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  marcasNuvemRodando = true;
+  try {
+    const desde = await cfgGet('marcas_nuvem_ate', '1970-01-01T00:00:00Z');
+    const rows = await sql`
+      SELECT item_codigo, pronto_em, entregue_em,
+             GREATEST(coalesce(pronto_em, 'epoch'), coalesce(entregue_em, 'epoch')) AS cursor
+      FROM marca
+      WHERE GREATEST(coalesce(pronto_em, 'epoch'), coalesce(entregue_em, 'epoch')) > ${desde}
+      ORDER BY 4 LIMIT 300`;
+    if (!rows.length) return;
+    const marcas = rows.map((x) => ({
+      item_codigo: Number(x.item_codigo),
+      pronto_em: x.pronto_em,
+      entregue_em: x.entregue_em,
+    }));
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/marcas`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('marcas', e), marcas }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) { console.error('[marcas] nuvem recusou:', j?.erro || r.status); return; }
+    const cursorNovo = rows[rows.length - 1].cursor.toISOString();
+    if (j.aplicadas < j.total) {
+      const tent = Number(await cfgGet('marcas_nuvem_tentativas', '0')) + 1;
+      if (tent < 10) {
+        await cfgSet('marcas_nuvem_tentativas', String(tent));
+        console.log(`[marcas] ${j.aplicadas}/${j.total} aplicadas — CDC atrasado, tentativa ${tent}/10 sem avançar`);
+        return;
+      }
+      console.log(`[marcas] avançando cursor com ${j.total - j.aplicadas} pendente(s) após 10 tentativas`);
+    }
+    await cfgSet('marcas_nuvem_tentativas', '0');
+    await cfgSet('marcas_nuvem_ate', cursorNovo);
+    console.log(`[marcas] ${j.aplicadas}/${j.total} marca(s) na nuvem (até ${cursorNovo})`);
+  } catch (err) { console.error('[marcas] nuvem:', err.message); }
+  finally { marcasNuvemRodando = false; }
+}
 // ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
 // A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
 // este laço busca, aplica e devolve o resultado — mesma assinatura HMAC da
@@ -15659,6 +15707,8 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
+  setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
   loopCatalogoNuvem().catch(() => {});

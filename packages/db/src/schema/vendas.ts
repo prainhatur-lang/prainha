@@ -211,6 +211,10 @@ export const pedidoItem = pgTable(
     codigoPagamento: integer('codigo_pagamento'),
     codigoColaborador: integer('codigo_colaborador'),
     dataHoraCadastro: timestamp('data_hora_cadastro', { withTimezone: true }),
+    /** Toques do KDS da loja (vendas-local envia via /api/loja/marcas):
+     *  quando a cozinha marcou PRONTO e quando o salão marcou ENTREGUE. */
+    prontoEm: timestamp('pronto_em', { withTimezone: true }),
+    entregueEm: timestamp('entregue_em', { withTimezone: true }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     detalhes: text('detalhes'),
     versaoReg: integer('versao_reg'),

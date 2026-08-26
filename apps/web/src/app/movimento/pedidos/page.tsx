@@ -275,7 +275,18 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                     <td className="px-4 py-2 font-mono text-xs text-slate-700">
                       {formatDateTime(p.dataFechamento)}
                     </td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-600">{p.numero ?? '—'}</td>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      <Link
+                        href={`/movimento/pedidos/${p.id}`}
+                        className="font-semibold text-sky-700 underline-offset-2 hover:underline"
+                        title="Abrir o espelho do pedido — itens, tempos, cancelamentos e pagamentos"
+                      >
+                        #{p.codigoExterno}
+                      </Link>
+                      {p.numero != null && (
+                        <span className="ml-1.5 text-[10px] text-slate-400">mesa {p.numero}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-2 text-xs text-slate-700">
                       {p.nomeCliente ?? <span className="text-slate-400">—</span>}
                       {p.tag && <span className="ml-1 text-[10px] text-slate-400">[{p.tag}]</span>}
