@@ -32,6 +32,16 @@ interface Props {
 }
 
 const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
+// Só sugere o texto (motivoDesligamento continua varchar livre) — não muda
+// schema nem quebra o que já está cadastrado. Alimenta a quebra por motivo
+// do relatório de turnover.
+const MOTIVOS_DESLIGAMENTO = [
+  'Pedido de demissão',
+  'Dispensa sem justa causa',
+  'Dispensa com justa causa',
+  'Fim de contrato',
+  'Acordo entre as partes',
+];
 
 function fmtCpf(cpf: string | null): string {
   if (!cpf) return '—';
@@ -471,6 +481,19 @@ function FuncionarioForm({
       {desligando && (
         <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3">
           <label className="text-xs text-rose-700">
+            Motivo (sugestão — ajuda o relatório de turnover a agrupar)
+            <select
+              value=""
+              onChange={(e) => e.target.value && setMotivoDesligamento(e.target.value)}
+              className="mt-1 w-full rounded-md border border-rose-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">Escolher um motivo comum…</option>
+              {MOTIVOS_DESLIGAMENTO.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label className="mt-2 block text-xs text-rose-700">
             Motivo do desligamento
             <input
               value={motivoDesligamento}
