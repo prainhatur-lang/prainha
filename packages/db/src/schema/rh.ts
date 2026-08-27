@@ -111,6 +111,25 @@ export const funcionario = pgTable(
   }),
 );
 
+/** Filial ADICIONAL de quem circula entre lojas (ex: segunda na Prainha Bar,
+ *  terça na Prainha Mar) — `funcionario.filialId` continua sendo a lotação
+ *  principal (dona do cadastro pra fins de folha/relatório); esta tabela só
+ *  soma onde a pessoa TAMBÉM aparece no roster de ponto. Uma pessoa, um
+ *  rosto — nunca duplica o cadastro por loja. */
+export const funcionarioFilialExtra = pgTable(
+  'funcionario_filial_extra',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique('uq_funcionario_filial_extra').on(t.funcionarioId, t.filialId),
+    filialIdx: index('idx_funcionario_filial_extra_filial').on(t.filialId),
+  }),
+);
+
 /** Uma batida. APPEND-ONLY — toda mudança gera linha em
  *  ponto_batida_ajuste; exclusão é soft (excluida_em/excluida_por). */
 export const pontoBatida = pgTable(

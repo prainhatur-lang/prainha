@@ -8,7 +8,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { FUNCOES_TALENTO } from '@concilia/db/schema';
 import { FuncionariosManager } from './manager';
@@ -43,6 +43,20 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
     .from(schema.funcionario)
     .where(eq(schema.funcionario.filialId, filialSelecionada.id))
     .orderBy(asc(schema.funcionario.nome));
+
+  const extras =
+    funcionarios.length > 0
+      ? await db
+          .select({ funcionarioId: schema.funcionarioFilialExtra.funcionarioId, filialId: schema.funcionarioFilialExtra.filialId })
+          .from(schema.funcionarioFilialExtra)
+          .where(inArray(schema.funcionarioFilialExtra.funcionarioId, funcionarios.map((f) => f.id)))
+      : [];
+  const extrasPorFuncionario = new Map<string, string[]>();
+  for (const e of extras) {
+    const lista = extrasPorFuncionario.get(e.funcionarioId) ?? [];
+    lista.push(e.filialId);
+    extrasPorFuncionario.set(e.funcionarioId, lista);
+  }
 
   const ativos = funcionarios.filter((f) => f.ativo).length;
   const precisaRevisao = funcionarios.filter((f) => f.precisaRevisao).length;
@@ -123,8 +137,10 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
             temFornecedor: !!f.fornecedorId,
             temColaborador: !!f.colaboradorId,
             temUsuarioOperacao: !!f.usuarioOperacaoId,
+            filiaisExtras: extrasPorFuncionario.get(f.id) ?? [],
           }))}
           cargos={[...FUNCOES_TALENTO]}
+          outrasFiliais={filiais.filter((f) => f.id !== filialSelecionada.id).map((f) => ({ id: f.id, nome: f.nome }))}
         />
       </section>
     </main>

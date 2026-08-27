@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +22,9 @@ const Body = z.object({
   dataDesligamento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   motivoDesligamento: z.string().max(200).nullable().optional(),
   ativo: z.boolean().optional(),
+  /** Filiais ADICIONAIS (além da lotação principal) onde a pessoa também
+   *  bate ponto — quem circula entre lojas. Substitui a lista inteira. */
+  filiaisExtras: z.array(z.string().uuid()).max(10).optional(),
 });
 
 async function carregar(id: string, userId: string) {
@@ -70,12 +73,37 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (d.motivoDesligamento !== undefined) set.motivoDesligamento = d.motivoDesligamento;
   if (d.ativo !== undefined) set.ativo = d.ativo;
 
-  if (Object.keys(set).length === 1) {
+  if (Object.keys(set).length === 1 && d.filiaisExtras === undefined) {
     return NextResponse.json({ error: 'nada pra atualizar' }, { status: 400 });
   }
 
+  // Não deixa marcar a própria filial principal como "extra" — é redundante
+  // e quebraria a leitura de quem "circula" vs quem só trabalha ali.
+  const filiaisExtras = d.filiaisExtras?.filter((fid) => fid !== check.fn.filialId);
+  if (filiaisExtras && filiaisExtras.length > 0) {
+    const validas = await db
+      .select({ id: schema.filial.id })
+      .from(schema.filial)
+      .where(inArray(schema.filial.id, filiaisExtras));
+    if (validas.length !== filiaisExtras.length) {
+      return NextResponse.json({ error: 'filial inválida na lista de extras' }, { status: 400 });
+    }
+  }
+
   try {
-    await db.update(schema.funcionario).set(set).where(eq(schema.funcionario.id, id));
+    await db.transaction(async (tx) => {
+      if (Object.keys(set).length > 1) {
+        await tx.update(schema.funcionario).set(set).where(eq(schema.funcionario.id, id));
+      }
+      if (filiaisExtras !== undefined) {
+        await tx.delete(schema.funcionarioFilialExtra).where(eq(schema.funcionarioFilialExtra.funcionarioId, id));
+        if (filiaisExtras.length > 0) {
+          await tx
+            .insert(schema.funcionarioFilialExtra)
+            .values(filiaisExtras.map((filialId) => ({ funcionarioId: id, filialId })));
+        }
+      }
+    });
     return NextResponse.json({ id, ok: true });
   } catch (e) {
     const msg = (e as Error).message ?? '';

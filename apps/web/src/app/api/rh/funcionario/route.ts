@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +41,23 @@ export async function GET(req: Request) {
     .where(eq(schema.funcionario.filialId, filialId))
     .orderBy(asc(schema.funcionario.nome));
 
-  return NextResponse.json({ funcionarios: rows });
+  const extras =
+    rows.length > 0
+      ? await db
+          .select({ funcionarioId: schema.funcionarioFilialExtra.funcionarioId, filialId: schema.funcionarioFilialExtra.filialId })
+          .from(schema.funcionarioFilialExtra)
+          .where(inArray(schema.funcionarioFilialExtra.funcionarioId, rows.map((r) => r.id)))
+      : [];
+  const extrasPorFuncionario = new Map<string, string[]>();
+  for (const e of extras) {
+    const lista = extrasPorFuncionario.get(e.funcionarioId) ?? [];
+    lista.push(e.filialId);
+    extrasPorFuncionario.set(e.funcionarioId, lista);
+  }
+
+  return NextResponse.json({
+    funcionarios: rows.map((r) => ({ ...r, filiaisExtras: extrasPorFuncionario.get(r.id) ?? [] })),
+  });
 }
 
 const PostBody = z.object({

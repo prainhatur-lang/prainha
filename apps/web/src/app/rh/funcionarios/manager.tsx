@@ -19,12 +19,16 @@ interface Funcionario {
   temFornecedor: boolean;
   temColaborador: boolean;
   temUsuarioOperacao: boolean;
+  /** Filiais ADICIONAIS onde também bate ponto (quem circula entre lojas). */
+  filiaisExtras: string[];
 }
 
 interface Props {
   filialId: string;
   funcionarios: Funcionario[];
   cargos: string[];
+  /** Demais filiais do usuário, pra marcar "também trabalha em". */
+  outrasFiliais: { id: string; nome: string }[];
 }
 
 const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
@@ -40,7 +44,7 @@ function fmtData(iso: string | null): string {
   return `${d}/${m}/${y}`;
 }
 
-export function FuncionariosManager({ filialId, funcionarios, cargos }: Props) {
+export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFiliais }: Props) {
   const router = useRouter();
   const [criando, setCriando] = useState(false);
   const [editando, setEditando] = useState<string | null>(null);
@@ -79,6 +83,7 @@ export function FuncionariosManager({ filialId, funcionarios, cargos }: Props) {
           <FuncionarioForm
             filialId={filialId}
             cargos={cargos}
+            outrasFiliais={outrasFiliais}
             onCancel={() => setCriando(false)}
             onSaved={(texto) => {
               setCriando(false);
@@ -113,6 +118,7 @@ export function FuncionariosManager({ filialId, funcionarios, cargos }: Props) {
                     key={f.id}
                     f={f}
                     cargos={cargos}
+                    outrasFiliais={outrasFiliais}
                     editando={editando === f.id}
                     onEditar={() => setEditando(editando === f.id ? null : f.id)}
                     onSaved={(texto) => {
@@ -166,6 +172,14 @@ function VinculoBadges({ f }: { f: Funcionario }) {
           Login PDV
         </span>
       )}
+      {f.filiaisExtras.length > 0 && (
+        <span
+          className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-violet-200"
+          title="Também bate ponto em outra(s) loja(s)"
+        >
+          🔁 +{f.filiaisExtras.length} loja{f.filiaisExtras.length > 1 ? 's' : ''}
+        </span>
+      )}
       {f.precisaRevisao && (
         <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200">
           ⚠ Revisar
@@ -178,6 +192,7 @@ function VinculoBadges({ f }: { f: Funcionario }) {
 function FuncionarioRow({
   f,
   cargos,
+  outrasFiliais,
   editando,
   onEditar,
   onSaved,
@@ -185,6 +200,7 @@ function FuncionarioRow({
 }: {
   f: Funcionario;
   cargos: string[];
+  outrasFiliais: { id: string; nome: string }[];
   editando: boolean;
   onEditar: () => void;
   onSaved: (texto: string) => void;
@@ -218,6 +234,7 @@ function FuncionarioRow({
               filialId=""
               funcionario={f}
               cargos={cargos}
+              outrasFiliais={outrasFiliais}
               onCancel={onEditar}
               onSaved={onSaved}
               onError={onError}
@@ -233,6 +250,7 @@ function FuncionarioForm({
   filialId,
   funcionario,
   cargos,
+  outrasFiliais,
   onCancel,
   onSaved,
   onError,
@@ -240,6 +258,7 @@ function FuncionarioForm({
   filialId: string;
   funcionario?: Funcionario;
   cargos: string[];
+  outrasFiliais: { id: string; nome: string }[];
   onCancel: () => void;
   onSaved: (texto: string) => void;
   onError: (texto: string) => void;
@@ -252,9 +271,14 @@ function FuncionarioForm({
   const [cargo, setCargo] = useState(funcionario?.cargo ?? '');
   const [setor, setSetor] = useState(funcionario?.setor ?? '');
   const [dataAdmissao, setDataAdmissao] = useState(funcionario?.dataAdmissao ?? '');
+  const [filiaisExtras, setFiliaisExtras] = useState<string[]>(funcionario?.filiaisExtras ?? []);
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
   const [salvando, setSalvando] = useState(false);
+
+  function toggleFilialExtra(id: string) {
+    setFiliaisExtras((atual) => (atual.includes(id) ? atual.filter((x) => x !== id) : [...atual, id]));
+  }
 
   async function salvar() {
     const cpfDigits = cpf.replace(/\D/g, '');
@@ -272,7 +296,7 @@ function FuncionarioForm({
         cargo: cargo || null,
         setor: setor || null,
         dataAdmissao: dataAdmissao || null,
-        ...(editar ? { precisaRevisao: false } : {}),
+        ...(editar ? { precisaRevisao: false, filiaisExtras } : {}),
       };
       const res = await fetch(editar ? `/api/rh/funcionario/${funcionario.id}` : '/api/rh/funcionario', {
         method: editar ? 'PATCH' : 'POST',
@@ -393,6 +417,27 @@ function FuncionarioForm({
           />
         </label>
       </div>
+
+      {editar && outrasFiliais.length > 0 && (
+        <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+          <p className="text-xs font-medium text-slate-600">
+            🔁 Também bate ponto em outra loja (quem circula entre lojas)
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3">
+            {outrasFiliais.map((f) => (
+              <label key={f.id} className="flex items-center gap-1.5 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={filiaisExtras.includes(f.id)}
+                  onChange={() => toggleFilialExtra(f.id)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                {f.nome}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-3 flex items-center justify-between gap-2">
         <div className="flex gap-2">

@@ -34,8 +34,11 @@ export async function GET(request: Request) {
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
 
   const { db, schema } = await import('@concilia/db');
-  const { and, eq } = await import('drizzle-orm');
+  const { and, eq, or, exists } = await import('drizzle-orm');
 
+  // Roster = lotação principal NESTA filial OU vínculo extra (quem circula
+  // entre lojas — ex: segunda na Prainha Bar, terça na Prainha Mar). Um só
+  // cadastro/rosto por pessoa; exists() evita duplicar linha por join.
   const pessoas = await db
     .select({
       funcionarioId: schema.funcionario.id,
@@ -47,7 +50,25 @@ export async function GET(request: Request) {
       faceDescriptor: schema.funcionario.faceDescriptor,
     })
     .from(schema.funcionario)
-    .where(and(eq(schema.funcionario.filialId, f), eq(schema.funcionario.ativo, true)));
+    .where(
+      and(
+        eq(schema.funcionario.ativo, true),
+        or(
+          eq(schema.funcionario.filialId, f),
+          exists(
+            db
+              .select({ n: schema.funcionarioFilialExtra.id })
+              .from(schema.funcionarioFilialExtra)
+              .where(
+                and(
+                  eq(schema.funcionarioFilialExtra.funcionarioId, schema.funcionario.id),
+                  eq(schema.funcionarioFilialExtra.filialId, f),
+                ),
+              ),
+          ),
+        ),
+      ),
+    );
 
   return NextResponse.json({
     ok: true,
