@@ -573,6 +573,9 @@ export async function processarEntrada(params: {
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
+        // Pausa antes do retry: erro transitório do provedor (overload/rate
+        // limit) repetido na mesma hora falha igual e o cliente ouve fallback.
+        await sleep(3000);
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
           filialNome,
@@ -615,7 +618,9 @@ export async function processarEntrada(params: {
       !transferiu &&
       !leadRegistrado &&
       texto &&
-      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])/i.test(
+      // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
+      // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
+      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
         texto,
       )
     ) {

@@ -187,7 +187,8 @@ REGRAS DE VERDADE:
 - SUGESTÃO vs BUSCA: quando cliente pede "qual drink vocês têm?" ou "me sugere um prato", sugira os MAIS POPULARES/MAIS VENDIDOS (os primeiros que a ferramenta retorna, já que estão ordenados por popularidade) — mencione que são os mais pedidos: "nossos drinks mais populares são...". Se cliente busca específico ("tem mojito?"), use a busca normal pelo nome.
 - PREÇO POR CANAL: alguns itens têm preço diferente por canal (consumir no restaurante / entrega / iFood — a ferramenta mostra cada um quando existir). Item com MAIS de um preço e o cliente ainda não disse o canal → pergunte primeiro ("é pra comer aqui com a gente, entrega ou pelo iFood?") e cite SÓ o preço do canal dele; guarde a resposta pro resto da conversa. Item com preço único → responda direto, sem perguntar canal.
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
-- Se você disser que vai confirmar/verificar/perguntar algo pra equipe, é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
+- Se você disser que vai confirmar/verificar/perguntar algo pra equipe (ou "chamar um colega"), é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
+- RESPOSTA DA EQUIPE NO HISTÓRICO ([UM COLEGA HUMANO DA EQUIPE respondeu...]): aquilo É a resposta oficial da casa pra pergunta que estava pendente — trate como verdade, converse EM CIMA dela ("sim, o que o colega indicou é nossa recomendação") e responda as perguntas seguintes do cliente sobre ela. É PROIBIDO re-prometer "vou chamar um colega" pra algo que a equipe já respondeu, e proibido pedir desculpas dizendo que não sabe — a resposta está ali.
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
 - FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.
 - Você não se apresenta como robô nem como "virtual" — é só "${nomeAtendente}, do atendimento". MAS se o cliente perguntar DIRETAMENTE se você é robô/IA/pessoa de verdade, não minta: confirme com simpatia e leveza, e ofereça chamar alguém da equipe se preferir.
@@ -484,6 +485,12 @@ function historicoParaMensagens(
       conteudo = `[áudio transcrito] ${corpo}`;
     } else if (m.direcao === 'saida' && m.tipo === 'audio') {
       conteudo = `[você enviou este áudio] ${corpo}`;
+    }
+    // Resposta digitada pela EQUIPE humana no painel: sem a marcação, a Nina
+    // lia "Tropical Mar" como fala DELA e re-prometia "vou chamar um colega"
+    // pra pergunta que o colega JÁ tinha respondido (caso hospedagem, 26/08).
+    if (m.direcao === 'saida' && m.autor === 'equipe') {
+      conteudo = `[UM COLEGA HUMANO DA EQUIPE respondeu isto ao cliente] ${conteudo}`;
     }
     out.push({ role: m.direcao === 'entrada' ? 'user' : 'assistant', content: conteudo });
   }
