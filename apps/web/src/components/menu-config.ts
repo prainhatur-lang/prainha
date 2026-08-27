@@ -332,6 +332,13 @@ export const MENU_AREAS: MenuArea[] = [
           },
         ],
       },
+      {
+        label: 'Escuta',
+        links: [
+          { label: 'Clima organizacional', href: '/rh/clima', perm: 'clima.read' },
+          { label: 'Ouvidoria', href: '/rh/ouvidoria', perm: 'ouvidoria.read' },
+        ],
+      },
     ],
   },
   {

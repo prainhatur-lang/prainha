@@ -99,6 +99,12 @@ export async function proxy(request: NextRequest) {
   const isTrabalhePublico = path === '/trabalhe';
   // /tabuara é a página pública de apresentação da filial Tabuará (sem login).
   const isTabuaraPublico = path === '/tabuara' || path.startsWith('/tabuara/');
+  // /canal/[token] (ouvidoria) e /clima/[token] (eNPS) são páginas públicas
+  // anônimas — sem login (o token identifica a filial). NUNCA compartilham
+  // token com /avaliar/ (aquele está em QR de mesa, visível a qualquer
+  // cliente; estes são só pra funcionário).
+  const isCanalPublico = path.startsWith('/canal/');
+  const isClimaPublico = path.startsWith('/clima/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -114,7 +120,9 @@ export async function proxy(request: NextRequest) {
     isOrcamentoPublico ||
     isDeliveryPublico ||
     isTrabalhePublico ||
-    isTabuaraPublico;
+    isTabuaraPublico ||
+    isCanalPublico ||
+    isClimaPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
