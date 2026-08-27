@@ -117,6 +117,11 @@ export const folhaConfig = pgTable(
     /** Dia da semana em que a folha eh paga. 1=segunda, 7=domingo.
      *  Default 1 (segunda — folha da semana anterior). */
     diaPagamento: integer('dia_pagamento').notNull().default(1),
+    /** % estimada de encargos (INSS patronal+RAT+terceiros) sobre o salario
+     *  CLT — varia por regime tributario da empresa terceirizada, nao da pra
+     *  calcular com precisao sem acesso ao sistema dela. AJUSTAVEL; a tela
+     *  deixa claro que e estimativa a confirmar com a contabilidade. */
+    pctEncargosClt: numeric('pct_encargos_clt', { precision: 5, scale: 2 }).notNull().default('20.00'),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
 );

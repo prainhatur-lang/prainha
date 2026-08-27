@@ -118,6 +118,7 @@
     "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts",
     "migrate:funcionario-face": "tsx scripts/migrate-funcionario-face.ts",
     "migrate:funcionario-filial-extra": "tsx scripts/migrate-funcionario-filial-extra.ts",
+    "migrate:custo-clt": "tsx scripts/migrate-custo-clt.ts",
     "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts"
   },
   "dependencies": {

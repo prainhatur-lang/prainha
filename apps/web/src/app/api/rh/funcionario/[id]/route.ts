@@ -18,6 +18,8 @@ const Body = z.object({
   cargo: z.string().max(60).nullable().optional(),
   setor: z.string().max(20).nullable().optional(),
   dataAdmissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  regimeSalarial: z.enum(['clt_mensal', 'intermitente_hora']).nullable().optional(),
+  salarioBase: z.string().regex(/^\d+(\.\d{1,2})?$/).nullable().optional(),
   precisaRevisao: z.boolean().optional(),
   dataDesligamento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   motivoDesligamento: z.string().max(200).nullable().optional(),
@@ -68,6 +70,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (d.cargo !== undefined) set.cargo = d.cargo;
   if (d.setor !== undefined) set.setor = d.setor;
   if (d.dataAdmissao !== undefined) set.dataAdmissao = d.dataAdmissao;
+  if (d.regimeSalarial !== undefined) set.regimeSalarial = d.regimeSalarial;
+  if (d.salarioBase !== undefined) set.salarioBase = d.salarioBase;
   if (d.precisaRevisao !== undefined) set.precisaRevisao = d.precisaRevisao;
   if (d.dataDesligamento !== undefined) set.dataDesligamento = d.dataDesligamento;
   if (d.motivoDesligamento !== undefined) set.motivoDesligamento = d.motivoDesligamento;

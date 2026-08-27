@@ -69,6 +69,8 @@ const PostBody = z.object({
   cargo: z.string().max(60).optional().nullable(),
   setor: z.string().max(20).optional().nullable(),
   dataAdmissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  regimeSalarial: z.enum(['clt_mensal', 'intermitente_hora']).optional().nullable(),
+  salarioBase: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().nullable(),
   /** Quando veio do banco de talentos: marca o talento como contratado. */
   talentoId: z.string().uuid().optional(),
 });
@@ -105,6 +107,8 @@ export async function POST(req: Request) {
           cargo: campos.cargo ?? null,
           setor: campos.setor ?? null,
           dataAdmissao: campos.dataAdmissao ?? null,
+          regimeSalarial: campos.regimeSalarial ?? null,
+          salarioBase: campos.salarioBase ?? null,
           talentoId: talentoId ?? null,
         })
         .returning();

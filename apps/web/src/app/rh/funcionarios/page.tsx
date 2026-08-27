@@ -132,6 +132,8 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
             dataAdmissao: f.dataAdmissao,
             dataDesligamento: f.dataDesligamento,
             ativo: f.ativo,
+            regimeSalarial: f.regimeSalarial,
+            salarioBase: f.salarioBase,
             precisaRevisao: f.precisaRevisao,
             observacao: f.observacao,
             temFornecedor: !!f.fornecedorId,

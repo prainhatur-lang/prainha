@@ -39,6 +39,7 @@ import {
   unique,
   index,
   jsonb,
+  numeric,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -78,6 +79,14 @@ export const funcionario = pgTable(
     dataDesligamento: date('data_desligamento'),
     motivoDesligamento: varchar('motivo_desligamento', { length: 200 }),
     ativo: boolean('ativo').notNull().default(true),
+
+    /** null = não é CLT (ex: comissionado puro via fornecedor_folha). Só um
+     *  INDICADOR de custo no fechamento — o pagamento real passa por fora,
+     *  via a empresa terceirizada de folha (não gera conta_pagar). */
+    regimeSalarial: varchar('regime_salarial', { length: 20 }), // 'clt_mensal' | 'intermitente_hora'
+    /** Sentido depende de regimeSalarial: R$/mês (clt_mensal) ou R$/hora
+     *  (intermitente_hora — multiplicado pelas horas reais de folha_horas). */
+    salarioBase: numeric('salario_base', { precision: 10, scale: 2 }),
 
     /** Login do Consumer/usuario_operacao, quando a pessoa também vende —
      *  usado como fallback de PIN no bater ponto (ver PONTO_HTML). */
