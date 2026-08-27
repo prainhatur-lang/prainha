@@ -114,6 +114,7 @@ export const folhaConfig = pgTable(
     categoriaDiariaId: uuid('categoria_diaria_id').references(() => categoriaConta.id, { onDelete: 'set null' }),
     categoriaGratificacaoId: uuid('categoria_gratificacao_id').references(() => categoriaConta.id, { onDelete: 'set null' }),
     categoriaTransporteId: uuid('categoria_transporte_id').references(() => categoriaConta.id, { onDelete: 'set null' }),
+    categoriaPremiacaoId: uuid('categoria_premiacao_id').references(() => categoriaConta.id, { onDelete: 'set null' }),
     /** Dia da semana em que a folha eh paga. 1=segunda, 7=domingo.
      *  Default 1 (segunda — folha da semana anterior). */
     diaPagamento: integer('dia_pagamento').notNull().default(1),

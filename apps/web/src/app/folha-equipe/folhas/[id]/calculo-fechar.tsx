@@ -25,7 +25,7 @@ interface Lancamento {
   fornecedorId: string;
   pessoaNome: string;
   papel: string;
-  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte';
+  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao';
   valorBruto: number;
   desconto: number;
   valorLiquido: number;
@@ -661,8 +661,8 @@ export function CalculoFechar({
                     .sort((a, b) => {
                       // Por nome (alfabetica), mantendo lancamentos da mesma
                       // pessoa juntos. Tipo desempata: comissao, diaria,
-                      // gratificacao, transporte (ordem do select abaixo).
-                      const ordemTipo = { comissao: 0, diaria: 1, gratificacao: 2, transporte: 3 } as const;
+                      // gratificacao, premiacao, transporte (ordem do select abaixo).
+                      const ordemTipo = { comissao: 0, diaria: 1, gratificacao: 2, premiacao: 3, transporte: 4 } as const;
                       const nome = a.pessoaNome.localeCompare(b.pessoaNome, 'pt-BR');
                       if (nome !== 0) return nome;
                       return ordemTipo[a.tipo] - ordemTipo[b.tipo];
@@ -676,11 +676,12 @@ export function CalculoFechar({
                         {l.tipo === 'comissao' && '💰 Comissão'}
                         {l.tipo === 'diaria' && '⏰ Diária'}
                         {l.tipo === 'gratificacao' && '🎁 Gratificação'}
+                        {l.tipo === 'premiacao' && '🏆 Premiação'}
                         {l.tipo === 'transporte' && '🚗 Transporte'}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono">{brl(l.valorBruto)}</td>
                       <td className="px-2 py-1.5 text-right font-mono text-emerald-700">
-                        {l.tipo === 'gratificacao' && l.valorBruto > 0 ? brl(l.valorBruto) : '—'}
+                        {(l.tipo === 'gratificacao' || l.tipo === 'premiacao') && l.valorBruto > 0 ? brl(l.valorBruto) : '—'}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono text-rose-700">
                         {l.desconto > 0 ? brl(l.desconto) : '—'}
@@ -700,8 +701,8 @@ export function CalculoFechar({
               type ResumoPessoa = {
                 fornecedorId: string;
                 nome: string;
-                bruto: number; // comissao + diaria + transporte (sem gratificacao)
-                acrescimos: number; // gratificacao
+                bruto: number; // comissao + diaria + transporte (sem gratificacao/premiacao)
+                acrescimos: number; // gratificacao + premiacao
                 descontos: number;
                 liquido: number;
               };
@@ -715,7 +716,7 @@ export function CalculoFechar({
                   descontos: 0,
                   liquido: 0,
                 };
-                if (l.tipo === 'gratificacao') {
+                if (l.tipo === 'gratificacao' || l.tipo === 'premiacao') {
                   cur.acrescimos += l.valorBruto;
                 } else {
                   cur.bruto += l.valorBruto;

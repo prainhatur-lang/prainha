@@ -33,8 +33,8 @@ export interface Lancamento {
   fornecedorId: string;
   pessoaNome: string;
   papel: PessoaInput['papel'];
-  /** 'comissao' | 'diaria' | 'gratificacao' | 'transporte' */
-  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte';
+  /** 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao' */
+  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao';
   /** Valor BRUTO (antes de descontos). */
   valorBruto: number;
   /** Desconto/fiado a abater (so na linha de comissao). */
@@ -87,10 +87,13 @@ export function calcularFolha(args: {
   dezPctPorDia: Record<string, number>;
   pessoas: PessoaInput[];
   horas: HorasInput[];
-  /** { fornecedorId: { tipo: 'desconto'|'acrescimo', valor } } */
+  /** { fornecedorId: { tipo: 'desconto'|'acrescimo'|'premiacao', valor } }.
+   *  'premiacao' vem do rateio congelado de meta_equipe_rateio (via
+   *  vincular-folha) — gera lançamento tipo='premiacao' separado da
+   *  gratificação manual, pra rastrear separado no relatório. */
   ajustes?: Record<
     string,
-    Array<{ tipo: 'desconto' | 'acrescimo'; valor: number; descricao?: string }>
+    Array<{ tipo: 'desconto' | 'acrescimo' | 'premiacao'; valor: number; descricao?: string }>
   >;
 }): ResultadoCalculo {
   const { config, dezPctPorDia, pessoas, horas, ajustes = {} } = args;
@@ -255,6 +258,29 @@ export function calcularFolha(args: {
           .join('; '),
       });
     }
+
+    // Premiação de meta (rateio congelado de meta_equipe_rateio, via
+    // vincular-folha). Descrição PRECISA começar com "Premiação" — o
+    // snapshot de folha fechada reconstrói o tipo por prefixo da descrição.
+    const premiacoes = ajustesPessoa
+      .filter((a) => a.tipo === 'premiacao')
+      .reduce((s, a) => s + a.valor, 0);
+    if (premiacoes > 0) {
+      lancamentos.push({
+        fornecedorId: p.fornecedorId,
+        pessoaNome: p.nome,
+        papel: p.papel,
+        tipo: 'premiacao',
+        valorBruto: round2(premiacoes),
+        desconto: 0,
+        valorLiquido: round2(premiacoes),
+        descricao: `Premiação semana — ${p.nome}`,
+        detalhe: ajustesPessoa
+          .filter((a) => a.tipo === 'premiacao')
+          .map((a) => a.descricao ?? `R$ ${a.valor.toFixed(2)}`)
+          .join('; '),
+      });
+    }
   }
 
   // Gerentes
@@ -265,6 +291,9 @@ export function calcularFolha(args: {
       .reduce((s, a) => s + a.valor, 0);
     const acrescimo = ajustesPessoa
       .filter((a) => a.tipo === 'acrescimo')
+      .reduce((s, a) => s + a.valor, 0);
+    const premiacao = ajustesPessoa
+      .filter((a) => a.tipo === 'premiacao')
       .reduce((s, a) => s + a.valor, 0);
     totalDescontos += desconto;
 
@@ -321,12 +350,25 @@ export function calcularFolha(args: {
         detalhe: '',
       });
     }
+    if (premiacao > 0) {
+      lancamentos.push({
+        fornecedorId: g.fornecedorId,
+        pessoaNome: g.nome,
+        papel: 'gerente',
+        tipo: 'premiacao',
+        valorBruto: round2(premiacao),
+        desconto: 0,
+        valorLiquido: round2(premiacao),
+        descricao: `Premiação semana — ${g.nome}`,
+        detalhe: '',
+      });
+    }
   }
 
   const totalBruto = lancamentos.reduce((s, l) => s + l.valorBruto, 0);
   const totalLiquido = lancamentos.reduce((s, l) => s + l.valorLiquido, 0);
   const totalAcrescimos = lancamentos
-    .filter((l) => l.tipo === 'gratificacao')
+    .filter((l) => l.tipo === 'gratificacao' || l.tipo === 'premiacao')
     .reduce((s, l) => s + l.valorBruto, 0);
 
   return {
