@@ -1,5 +1,5 @@
-// Metas e premiação de equipe: cria meta_equipe + meta_equipe_rateio, e
-// categoria_premiacao_id em folha_config.
+// Metas e premiação de equipe: cria meta_equipe + meta_equipe_rateio,
+// categoria_premiacao_id em folha_config, e meta_equipe_id em folha_ajuste.
 //
 // Idempotente. Uso: pnpm --filter @concilia/db migrate:metas
 
@@ -62,6 +62,11 @@ async function main() {
   await sql.unsafe(`CREATE INDEX IF NOT EXISTS idx_meta_equipe_rateio_meta ON meta_equipe_rateio (meta_equipe_id)`);
   await sql.unsafe(`ALTER TABLE meta_equipe_rateio ENABLE ROW LEVEL SECURITY`);
   console.log('[ok] meta_equipe_rateio pronta');
+
+  await sql.unsafe(
+    `ALTER TABLE folha_ajuste ADD COLUMN IF NOT EXISTS meta_equipe_id uuid REFERENCES meta_equipe(id) ON DELETE SET NULL`,
+  );
+  console.log('[ok] folha_ajuste.meta_equipe_id pronta');
 
   await sql.end();
 }

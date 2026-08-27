@@ -97,6 +97,9 @@ export const PERMISSOES: PermissaoDef[] = [
   ...crud('folha_equipe', 'folha da equipe', [
     { acao: 'fechar', descricao: 'Fechar folha semanal' },
   ]),
+  ...crud('meta', 'metas e premiação de equipe', [
+    { acao: 'avaliar', descricao: 'Avaliar meta, gerar rateio e vincular à folha' },
+  ]),
 
   // === RH ===
   ...crud('funcionario', 'funcionários', [
@@ -324,7 +327,13 @@ export const GRUPOS_SISTEMA: Array<{
     descricao: 'Cadastro de funcionários e ponto (sem folha nem financeiro)',
     permissoes: (todas) =>
       todas.filter(
-        (c) => c.startsWith('funcionario.') || c.startsWith('ponto.') || c === 'folha_equipe.read',
+        (c) =>
+          c.startsWith('funcionario.') ||
+          c.startsWith('ponto.') ||
+          c === 'folha_equipe.read' ||
+          c === 'meta.read' ||
+          c === 'meta.create' ||
+          c === 'meta.update',
       ),
   },
   {
