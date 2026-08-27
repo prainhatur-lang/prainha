@@ -12,6 +12,7 @@ import { brl, int } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { dashboardFechamento, evolucaoMensal } from '@/lib/fechamento-dashboard';
 import { calcularCustoClt } from '@/lib/rh/custo-clt';
+import { metasDaCompetencia } from '@/lib/metas/resumo';
 
 export const dynamic = 'force-dynamic';
 
@@ -109,10 +110,12 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
     if (cm === 0) { cm = 12; ca -= 1; }
   }
 
-  const [d, evo, custoClt] = await Promise.all([
+  const competencia = `${ano}-${String(mes).padStart(2, '0')}`;
+  const [d, evo, custoClt, metas] = await Promise.all([
     dashboardFechamento(filial.id, ano, mes),
     evolucaoMensal(filial.id, ano, mes, 6),
     calcularCustoClt(filial.id, ano, mes),
+    metasDaCompetencia(filial.id, competencia),
   ]);
 
   const totalForma = d.formas.reduce((s, f) => s + f.total, 0);
@@ -364,6 +367,36 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
             <Bars cor="bg-violet-500" itens={d.despesas.porCategoria.map((c) => ({ label: c.categoria, valor: c.total }))} />
           </Secao>
         </div>
+
+        {/* Metas e premiação (read-only — gerenciar em /rh/metas) */}
+        <Secao titulo="Metas e premiação do mês" className="mb-5">
+          {metas.length === 0 ? (
+            <p className="text-xs text-slate-400">
+              Nenhuma meta cadastrada para {MESES[mes]}/{ano}.{' '}
+              <Link href={`/rh/metas?filialId=${filial.id}`} className="text-sky-700 underline">
+                Criar meta
+              </Link>
+              .
+            </p>
+          ) : (
+            <ul className="space-y-1.5 text-sm">
+              {metas.map((m) => {
+                const cor =
+                  m.status === 'vinculada' ? 'text-emerald-700' : m.status === 'avaliada' ? (m.bateuMeta ? 'text-emerald-700' : 'text-slate-500') : 'text-sky-700';
+                const label =
+                  m.status === 'aberta' ? 'Em andamento' : m.status === 'avaliada' ? (m.bateuMeta ? 'Bateu' : 'Não bateu') : m.status === 'vinculada' ? 'Vinculada à folha' : 'Cancelada';
+                return (
+                  <li key={m.id} className="flex items-center justify-between">
+                    <Link href={`/rh/metas/${m.id}`} className="text-slate-700 hover:underline">
+                      {m.nome}
+                    </Link>
+                    <span className={`font-medium ${cor}`}>{label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Secao>
 
         {/* Custo de pessoal CLT */}
         <Secao titulo="Custo de pessoal (CLT)" className="mb-5">

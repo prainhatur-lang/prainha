@@ -116,6 +116,14 @@ export default async function FolhaDetalhePage(props: {
     .from(schema.folhaAjuste)
     .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
 
+  // Metas vinculadas a esta folha (premiação já entrou como folha_ajuste
+  // tipo='premiacao' — não editável na tela de ajustes manuais, só via
+  // /rh/metas/[id] → reabrir).
+  const metasVinculadas = await db
+    .select()
+    .from(schema.metaEquipe)
+    .where(eq(schema.metaEquipe.folhaSemanaVinculadaId, folha.id));
+
   // Status de pagamento das conta_pagar geradas pela folha — usado pra
   // mostrar a opcao "Baixar lote" quando ha contas em aberto.
   // Tambem conta diarias retroativas pra mostrar status do botao
@@ -409,6 +417,23 @@ export default async function FolhaDetalhePage(props: {
           )}
         </section>
 
+        {/* Meta de premiação vinculada — banner informativo */}
+        {metasVinculadas.length > 0 && (
+          <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <h2 className="text-sm font-semibold text-emerald-900">🏆 Premiação de meta vinculada</h2>
+            <ul className="mt-2 space-y-1 text-sm text-emerald-800">
+              {metasVinculadas.map((m) => (
+                <li key={m.id}>
+                  <Link href={`/rh/metas/${m.id}`} className="underline">
+                    {m.nome}
+                  </Link>{' '}
+                  — {brl(Number(m.premiacaoTotal))} já entrou como ajuste nesta folha.
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Cálculo + ajustes + fechar */}
         <CalculoFechar
           folhaId={folha.id}
@@ -421,14 +446,16 @@ export default async function FolhaDetalhePage(props: {
             bonusFixoSemanal: p.bonusFixoSemanal ? Number(p.bonusFixoSemanal) : null,
             clienteId: p.clienteId,
           }))}
-          ajustesIniciais={ajustes.map((a) => ({
-            id: a.id,
-            fornecedorId: a.fornecedorId,
-            tipo: a.tipo as 'desconto' | 'acrescimo',
-            valor: a.valor,
-            descricao: a.descricao,
-            origem: a.origem,
-          }))}
+          ajustesIniciais={ajustes
+            .filter((a) => a.tipo !== 'premiacao')
+            .map((a) => ({
+              id: a.id,
+              fornecedorId: a.fornecedorId,
+              tipo: a.tipo as 'desconto' | 'acrescimo',
+              valor: a.valor,
+              descricao: a.descricao,
+              origem: a.origem,
+            }))}
           pagamentoStatus={{
             total: Number(pgtoStatus?.total ?? 0),
             abertas: Number(pgtoStatus?.abertas ?? 0),

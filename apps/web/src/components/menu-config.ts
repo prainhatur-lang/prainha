@@ -324,6 +324,7 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/folha-equipe/folhas',
             perm: 'folha_equipe.read',
           },
+          { label: 'Metas e premiação', href: '/rh/metas', perm: 'meta.read' },
           {
             label: 'Configuração da folha',
             href: '/folha-equipe/configuracao',
