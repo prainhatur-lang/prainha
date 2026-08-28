@@ -6,7 +6,7 @@
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 
-const LINK_CARDAPIO = 'https://prainha.menudino.com.br';
+const LINK_CARDAPIO = 'https://www.prainhabar.com/cardapio';
 
 export interface ItemCardapio {
   nome: string;
