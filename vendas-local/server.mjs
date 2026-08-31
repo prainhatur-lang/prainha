@@ -4287,12 +4287,17 @@ async function nfceAtiva() {
   return nfceStatusCache.ativo;
 }
 /** A nota vem DEPOIS do fechamento — o fbAcharPedido (só abertos) não serve.
- *  Pega o aberto ou o fechado mais recente do número (janela de 12h). */
+ *  Pega o aberto ou o fechado mais recente do número (janela de 48h).
+ *  48h e não 12h porque o cliente do fiado costuma pedir a nota no dia
+ *  seguinte — e é a mesma janela que o painel usa pra listar "pedidos sem
+ *  nota". A nota sai com dhEmi de AGORA (venda de ontem, nota de hoje):
+ *  emitir muito depois da venda é irregularidade fiscal, então isto é rede
+ *  de segurança pro esquecimento do dia, não rotina. */
 async function fbAcharPedidoNfce(numero) {
   const aberto = await fbAcharPedido(numero).catch(() => null);
   if (aberto) return aberto;
   const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATADELETE IS NULL
-    AND DATAFECHAMENTO > DATEADD(-12 HOUR TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+    AND DATAFECHAMENTO > DATEADD(-48 HOUR TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
   if (!r.ok) throw new Error('FB pedido p/ nota: ' + r.err);
   return r.rows.length ? Number(r.rows[0].CODIGO) : null;
 }
@@ -14077,7 +14082,7 @@ async function carregar(n,ped){
   var c=await jget('/api/caixa/conta?n='+num+(PEDALVO?'&ped='+PEDALVO:''));
   if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
     (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
-    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (12h)</button>'+
+    '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (48h)</button>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
   CONTA=c; // já vem com comandas_mesa/geral do servidor (atômico — sem piscar)
   if(TELA==='conta'&&Number(MESA)===Number(c.numero))pintaMain();
