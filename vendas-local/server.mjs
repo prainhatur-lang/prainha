@@ -4379,6 +4379,19 @@ async function nfceDadosDoPedido(ped, numero) {
       return out;
     })
     .filter((x) => x.valor > 0);
+
+  // FIADO: o pedido fecha SEM linha em PAGAMENTOS — a dívida vive na conta
+  // corrente (ver fbLancarContaCorrente). Pra SEFAZ isso é tPag=05 "Crédito
+  // Loja": venda a prazo na conta do cliente. Cobre o fiado puro e o misto
+  // (parte na maquininha, resto assinado). Sem isto, venda no fiado nunca
+  // conseguia nota — a emissão morria no erro de "sem pagamentos".
+  const somaPg = r2c(pagamentos.reduce((s, x) => s + x.valor, 0));
+  if (somaPg < alvo - 0.009) {
+    const cc = await qi(`SELECT FIRST 1 COALESCE(CREDITO,0) V FROM CONTACORRENTE
+      WHERE CODIGOPEDIDO=${Number(ped)} AND COALESCE(CREDITO,0) > 0 ORDER BY CODIGO DESC`);
+    const vFiado = cc.ok && cc.rows.length ? r2c(Number(cc.rows[0].V) || 0) : 0;
+    if (vFiado > 0) pagamentos.push({ tPag: '05', valor: Math.min(vFiado, r2c(alvo - somaPg)) });
+  }
   if (!pagamentos.length) throw new Error('pedido sem pagamentos — receba antes de emitir a nota');
 
   return { itens, pagamentos, total: alvo };
