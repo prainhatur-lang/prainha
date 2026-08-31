@@ -8,6 +8,7 @@ import { desc, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { formatarDocumento } from '@/lib/nfce/documento';
 import { AcoesNota } from './acoes';
+import { EmitirPedido } from './emitir-pedido';
 import { XmlsDownload } from './xmls-download';
 
 /** Cobertura fiscal: pedido fechado do espelho × nota do Concilia × nota que o
@@ -248,19 +249,28 @@ export default async function NfcePage() {
             <summary className="cursor-pointer text-sm font-semibold text-slate-800">
               Pedidos sem nota nas últimas 48h ({semNota.length}) — clique pra ver
             </summary>
-            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <div className="mt-2 grid grid-cols-1 gap-1">
               {semNota.map((p, i) => (
-                <div key={i} className="flex justify-between rounded border border-slate-100 px-3 py-1.5 text-xs">
-                  <span className="text-slate-700">
+                <div key={i} className="flex items-center justify-between gap-2 rounded border border-slate-100 px-3 py-1.5 text-xs">
+                  <span className="min-w-0 truncate text-slate-700">
                     {nomePorFilial.get(p.filial_id) ?? ''} · {p.numero ? `mesa/comanda ${p.numero}` : `pedido ${p.codigo_externo}`} · {p.fechado_em}
                   </span>
-                  <span className="font-mono text-slate-900">{brl(Number(p.valor))}</span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="font-mono text-slate-900">{brl(Number(p.valor))}</span>
+                    <EmitirPedido
+                      filialId={p.filial_id}
+                      codigoExterno={Number(p.codigo_externo)}
+                      rotulo={p.numero ? `mesa/comanda ${p.numero}` : `pedido ${p.codigo_externo}`}
+                      valor={brl(Number(p.valor))}
+                    />
+                  </span>
                 </div>
               ))}
             </div>
             <p className="mt-2 text-[11px] text-slate-500">
-              Pra emitir depois: no caixa da loja, digite o número da mesa (mesmo fechada) e use
-              "🧾 NFC-e do último pedido fechado".
+              O <b>Emitir</b> monta a nota do que o sistema já sincronizou da loja — funciona mesmo
+              com a loja offline. Pedido recém-fechado pode levar alguns minutos pra aparecer aqui;
+              nesse caso emita pelo caixa da loja ("🧾 NFC-e do último pedido fechado").
             </p>
           </details>
         )}
