@@ -183,11 +183,12 @@ REGRAS DE VERDADE:
 - AGENDA POR DIA DA SEMANA (música ao vivo, violino, programação): antes de afirmar que "hoje/amanhã tem", olhe o DIA DA SEMANA da data em questão (a data/hora de agora está no fim deste prompt) e confira contra a agenda escrita nos blocos — nunca chute. Se o dia não tem, diga com carinho qual é o próximo dia que tem. Instrumento ou atração que os blocos NÃO citam (sax, banda X): não afirme nem negue — diga o que a agenda tem e que a programação exata do dia a equipe confirma.
 - PREÇOS: você só pode citar valores que estejam ESCRITOS nos blocos acima OU que uma ferramenta retornou NESTA conversa (consultar_cardapio, consultar_disponibilidade_reserva). Fora isso, número nenhum — nem estimativa, nem "a partir de", nem "costuma ser".
 - ITEM PAUSADO (⛔ na consulta): está EM FALTA hoje no PDV — não ofereça, não inclua em orçamento; avise que está temporariamente indisponível e sugira um parecido que esteja ativo.
-- PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: prainha.menudino.com.br. Não despeje o cardápio inteiro — responda só o que foi perguntado.
+- PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: www.prainhabar.com/cardapio. Não despeje o cardápio inteiro — responda só o que foi perguntado.
 - SUGESTÃO vs BUSCA: quando cliente pede "qual drink vocês têm?" ou "me sugere um prato", sugira os MAIS POPULARES/MAIS VENDIDOS (os primeiros que a ferramenta retorna, já que estão ordenados por popularidade) — mencione que são os mais pedidos: "nossos drinks mais populares são...". Se cliente busca específico ("tem mojito?"), use a busca normal pelo nome.
 - PREÇO POR CANAL: alguns itens têm preço diferente por canal (consumir no restaurante / entrega / iFood — a ferramenta mostra cada um quando existir). Item com MAIS de um preço e o cliente ainda não disse o canal → pergunte primeiro ("é pra comer aqui com a gente, entrega ou pelo iFood?") e cite SÓ o preço do canal dele; guarde a resposta pro resto da conversa. Item com preço único → responda direto, sem perguntar canal.
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
-- Se você disser que vai confirmar/verificar/perguntar algo pra equipe, é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
+- Se você disser que vai confirmar/verificar/perguntar algo pra equipe (ou "chamar um colega"), é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
+- RESPOSTA DA EQUIPE NO HISTÓRICO ([UM COLEGA HUMANO DA EQUIPE respondeu...]): aquilo É a resposta oficial da casa pra pergunta que estava pendente — trate como verdade, converse EM CIMA dela ("sim, o que o colega indicou é nossa recomendação") e responda as perguntas seguintes do cliente sobre ela. É PROIBIDO re-prometer "vou chamar um colega" pra algo que a equipe já respondeu, e proibido pedir desculpas dizendo que não sabe — a resposta está ali.
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
 - FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.
 - Você não se apresenta como robô nem como "virtual" — é só "${nomeAtendente}, do atendimento". MAS se o cliente perguntar DIRETAMENTE se você é robô/IA/pessoa de verdade, não minta: confirme com simpatia e leveza, e ofereça chamar alguém da equipe se preferir.
@@ -485,6 +486,12 @@ function historicoParaMensagens(
     } else if (m.direcao === 'saida' && m.tipo === 'audio') {
       conteudo = `[você enviou este áudio] ${corpo}`;
     }
+    // Resposta digitada pela EQUIPE humana no painel: sem a marcação, a Nina
+    // lia "Tropical Mar" como fala DELA e re-prometia "vou chamar um colega"
+    // pra pergunta que o colega JÁ tinha respondido (caso hospedagem, 26/08).
+    if (m.direcao === 'saida' && m.autor === 'equipe') {
+      conteudo = `[UM COLEGA HUMANO DA EQUIPE respondeu isto ao cliente] ${conteudo}`;
+    }
     out.push({ role: m.direcao === 'entrada' ? 'user' : 'assistant', content: conteudo });
   }
   return out;
@@ -618,13 +625,16 @@ async function completarClaude(p: {
 
   const anthropic = new Anthropic({ apiKey: p.apiKey });
   // Sem temperature: o claude-sonnet-5 recusa o parâmetro com 400
-  // ("`temperature` is deprecated for this model") — flagrado no 1º teste.
+  // ("`temperature` is deprecated for this modelo") — flagrado no 1º teste.
+  // max_tokens ALTO (28/08): o sonnet-5 raciocina antes de responder e o
+  // orçamento de 600 era consumido pelo pensamento — a resposta visível saía
+  // VAZIA e o cliente ouvia "só um minutinho" (Carla/Marcos/Maria, 28/08).
   const resp = await anthropic.messages.create({
     model: p.modelo,
     system,
     messages: msgs,
     tools,
-    max_tokens: 600,
+    max_tokens: 3000,
   });
 
   const texto = resp.content
@@ -632,6 +642,15 @@ async function completarClaude(p: {
     .map((b) => b.text)
     .join('\n')
     .trim();
+  if (!texto && !resp.content.some((b) => b.type === 'tool_use')) {
+    // Sem texto e sem ferramenta = resposta inútil; loga o motivo real pra
+    // diagnóstico (stop_reason diz se foi max_tokens, recusa etc).
+    console.error(
+      '[nina] claude devolveu vazio: stop=%s blocos=%s',
+      resp.stop_reason,
+      resp.content.map((b) => b.type).join(',') || 'nenhum',
+    );
+  }
   const toolCalls = resp.content
     .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     .map((b) => ({
@@ -826,6 +845,29 @@ Como usar, SEM EXCEÇÃO:
     }
   }
 
-  // Estourou as rodadas com tool calls — devolve sem texto; motor manda fallback.
-  return { texto: null, transferiu, leadRegistrado };
+  // Estourou as rodadas com tool calls: uma ÚLTIMA chamada SEM ferramentas
+  // força o modelo a fechar em texto com o que já apurou — "só um minutinho"
+  // sem continuação nunca mais (Marcos/Maria, 28/08).
+  console.error('[nina] rodadas de ferramenta esgotadas — forçando fechamento em texto');
+  try {
+    mensagens.push({
+      role: 'system',
+      content:
+        'CHEGA de ferramentas nesta resposta: responda AGORA ao cliente, em texto, com o que você já apurou. Se algo ficou pendente, diga o que falta em uma frase.',
+    });
+    const fim = usarClaude
+      ? await completarClaude({ apiKey, modelo, mensagens, ferramentas: [] })
+      : (
+          await client!.chat.completions.create({
+            model: modelo,
+            messages: mensagens,
+            temperature: 0.6,
+            max_tokens: 400,
+          })
+        ).choices[0]?.message;
+    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado };
+  } catch (e) {
+    console.error('[nina] fechamento forçado falhou:', e instanceof Error ? e.message : e);
+    return { texto: null, transferiu, leadRegistrado };
+  }
 }

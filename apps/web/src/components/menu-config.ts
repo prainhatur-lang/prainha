@@ -310,6 +310,7 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Funcionários', href: '/rh/funcionarios', perm: 'funcionario.read' },
           { label: 'Ponto', href: '/rh/ponto', perm: 'ponto.read' },
+          { label: 'Turnover', href: '/rh/turnover', perm: 'funcionario.read' },
           { label: 'Remuneração (folha)', href: '/folha-equipe/pessoas', perm: 'folha_equipe.read' },
           { label: 'Cozinheiros', href: '/cadastros/colaboradores', perm: 'folha_equipe.read' },
           { label: 'Banco de talentos', href: '/talentos', perm: 'folha_equipe.read' },
@@ -323,11 +324,19 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/folha-equipe/folhas',
             perm: 'folha_equipe.read',
           },
+          { label: 'Metas e premiação', href: '/rh/metas', perm: 'meta.read' },
           {
             label: 'Configuração da folha',
             href: '/folha-equipe/configuracao',
             perm: 'folha_equipe.read',
           },
+        ],
+      },
+      {
+        label: 'Escuta',
+        links: [
+          { label: 'Clima organizacional', href: '/rh/clima', perm: 'clima.read' },
+          { label: 'Ouvidoria', href: '/rh/ouvidoria', perm: 'ouvidoria.read' },
         ],
       },
     ],

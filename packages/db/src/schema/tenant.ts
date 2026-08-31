@@ -357,6 +357,21 @@ export const filial = pgTable(
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),
+    /** Token publico do canal de ouvidoria (/canal/[token]) — SEPARADO do
+     *  avaliacaoToken de propósito: aquele está em QR de mesa, visível a
+     *  qualquer cliente; o canal interno não pode compartilhar token com
+     *  isso. Null = ouvidoria ainda não habilitada. */
+    ouvidoriaToken: text('ouvidoria_token').unique(),
+    /** Token publico da pesquisa de clima (/clima/[token]). Separado do
+     *  ouvidoriaToken — filosofias de anonimato diferentes (clima é
+     *  satisfação, ouvidoria é denúncia). Null = clima ainda não habilitado. */
+    climaToken: text('clima_token').unique(),
+    /** Janela (em dias, a partir do dia 1 do mês) em que /clima/[token]
+     *  aceita resposta. Default 7 — primeira semana do mês. */
+    climaDiasJanela: integer('clima_dias_janela').notNull().default(7),
+    /** Data até quando o clima fica aberto FORA da janela normal — pra
+     *  rodadas extraordinárias. Null = só a janela padrão do mês. */
+    climaAbertoAte: date('clima_aberto_ate'),
     /** Config do setor de reservas: espacos/areas + hora limite por espaco. */
     reservaConfig: jsonb('reserva_config').$type<ReservaConfig>(),
     /** Config de emissão de NFC-e (IE, CRT, série, CSC, endereço fiscal). */

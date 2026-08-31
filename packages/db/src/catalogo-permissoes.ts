@@ -97,6 +97,9 @@ export const PERMISSOES: PermissaoDef[] = [
   ...crud('folha_equipe', 'folha da equipe', [
     { acao: 'fechar', descricao: 'Fechar folha semanal' },
   ]),
+  ...crud('meta', 'metas e premiação de equipe', [
+    { acao: 'avaliar', descricao: 'Avaliar meta, gerar rateio e vincular à folha' },
+  ]),
 
   // === RH ===
   ...crud('funcionario', 'funcionários', [
@@ -105,6 +108,12 @@ export const PERMISSOES: PermissaoDef[] = [
   ...crud('ponto', 'ponto (batidas e horas)', [
     { acao: 'corrigir', descricao: 'Corrigir batida de ponto com justificativa' },
   ]),
+  // Sem create/update/delete — respostas são anônimas via link público, o
+  // painel interno só lê (e triagem, no caso da ouvidoria).
+  { codigo: 'clima.read', modulo: 'clima', acao: 'read', descricao: 'Ver dashboard de clima (eNPS agregado)' },
+  { codigo: 'clima.comentarios', modulo: 'clima', acao: 'comentarios', descricao: 'Ver comentários individuais do clima' },
+  { codigo: 'ouvidoria.read', modulo: 'ouvidoria', acao: 'read', descricao: 'Ver mensagens da ouvidoria' },
+  { codigo: 'ouvidoria.triar', modulo: 'ouvidoria', acao: 'triar', descricao: 'Marcar mensagem como lida/em apuração/resolvida/descartada' },
 
   // === Relatorios ===
   {
@@ -252,13 +261,19 @@ export const GRUPOS_SISTEMA: Array<{
   },
   {
     nome: 'Gerente',
-    descricao: 'Tudo exceto Configurações e gestão de usuários/grupos',
+    descricao: 'Tudo exceto Configurações, gestão de usuários/grupos e ouvidoria',
     permissoes: (todas) =>
       todas.filter(
         (c) =>
           !c.startsWith('configuracao.') &&
           !c.startsWith('usuario.') &&
-          !c.startsWith('grupo_usuario.'),
+          !c.startsWith('grupo_usuario.') &&
+          // Ouvidoria é anônima justamente pra permitir denunciar o gerente
+          // de turno — ele não pode ver o canal. clima.read (agregado) é
+          // seguro; clima.comentarios (texto livre individual) segue a
+          // mesma régua da ouvidoria.
+          !c.startsWith('ouvidoria.') &&
+          c !== 'clima.comentarios',
       ),
   },
   {
@@ -324,7 +339,13 @@ export const GRUPOS_SISTEMA: Array<{
     descricao: 'Cadastro de funcionários e ponto (sem folha nem financeiro)',
     permissoes: (todas) =>
       todas.filter(
-        (c) => c.startsWith('funcionario.') || c.startsWith('ponto.') || c === 'folha_equipe.read',
+        (c) =>
+          c.startsWith('funcionario.') ||
+          c.startsWith('ponto.') ||
+          c === 'folha_equipe.read' ||
+          c === 'meta.read' ||
+          c === 'meta.create' ||
+          c === 'meta.update',
       ),
   },
   {

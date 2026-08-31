@@ -195,7 +195,12 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
       role === 'GERENTE' &&
       permission !== 'configuracao.certificado' &&
       !permission.startsWith('usuario.') &&
-      !permission.startsWith('grupo_usuario.')
+      !permission.startsWith('grupo_usuario.') &&
+      // Ouvidoria é anônima justamente pra permitir denunciar o gerente de
+      // turno — o link/menu não pode nem aparecer pra ele. Ver
+      // catalogo-permissoes.ts (grupo Gerente tem a mesma exclusão).
+      !permission.startsWith('ouvidoria.') &&
+      permission !== 'clima.comentarios'
     ) {
       return true;
     }

@@ -11,6 +11,8 @@ import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { dashboardFechamento, evolucaoMensal } from '@/lib/fechamento-dashboard';
+import { calcularCustoClt } from '@/lib/rh/custo-clt';
+import { metasDaCompetencia } from '@/lib/metas/resumo';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,9 +110,12 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
     if (cm === 0) { cm = 12; ca -= 1; }
   }
 
-  const [d, evo] = await Promise.all([
+  const competencia = `${ano}-${String(mes).padStart(2, '0')}`;
+  const [d, evo, custoClt, metas] = await Promise.all([
     dashboardFechamento(filial.id, ano, mes),
     evolucaoMensal(filial.id, ano, mes, 6),
+    calcularCustoClt(filial.id, ano, mes),
+    metasDaCompetencia(filial.id, competencia),
   ]);
 
   const totalForma = d.formas.reduce((s, f) => s + f.total, 0);
@@ -156,8 +161,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
       'Custo de entrega / margem do frete — falta custo do entregador por pedido.',
     ] },
     { grupo: 'Pessoal (folha)', itens: [
-      'Encargos trabalhistas (INSS, FGTS, 13º, férias, rescisões) e pró-labore — sem estrutura.',
-      'Turnover, custo por setor (cozinha/salão/bar) — faltam admissão/desligamento e setor.',
+      'Custo por setor (cozinha/salão/bar) — turnover e custo CLT já têm tela própria (/rh/turnover, card abaixo), falta abrir por setor.',
       'Faturamento/gorjeta por garçom — só há código do colaborador, sem o nome espelhado.',
     ] },
     { grupo: 'Fiscal', itens: [
@@ -363,6 +367,105 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
             <Bars cor="bg-violet-500" itens={d.despesas.porCategoria.map((c) => ({ label: c.categoria, valor: c.total }))} />
           </Secao>
         </div>
+
+        {/* Metas e premiação (read-only — gerenciar em /rh/metas) */}
+        <Secao titulo="Metas e premiação do mês" className="mb-5">
+          {metas.length === 0 ? (
+            <p className="text-xs text-slate-400">
+              Nenhuma meta cadastrada para {MESES[mes]}/{ano}.{' '}
+              <Link href={`/rh/metas?filialId=${filial.id}`} className="text-sky-700 underline">
+                Criar meta
+              </Link>
+              .
+            </p>
+          ) : (
+            <ul className="space-y-1.5 text-sm">
+              {metas.map((m) => {
+                const cor =
+                  m.status === 'vinculada' ? 'text-emerald-700' : m.status === 'avaliada' ? (m.bateuMeta ? 'text-emerald-700' : 'text-slate-500') : 'text-sky-700';
+                const label =
+                  m.status === 'aberta' ? 'Em andamento' : m.status === 'avaliada' ? (m.bateuMeta ? 'Bateu' : 'Não bateu') : m.status === 'vinculada' ? 'Vinculada à folha' : 'Cancelada';
+                return (
+                  <li key={m.id} className="flex items-center justify-between">
+                    <Link href={`/rh/metas/${m.id}`} className="text-slate-700 hover:underline">
+                      {m.nome}
+                    </Link>
+                    <span className={`font-medium ${cor}`}>{label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Secao>
+
+        {/* Custo de pessoal CLT */}
+        <Secao titulo="Custo de pessoal (CLT)" className="mb-5">
+          {custoClt.linhas.length === 0 ? (
+            <p className="text-xs text-slate-400">
+              Nenhum funcionário com regime salarial e salário cadastrados. Cadastre em{' '}
+              <Link href="/rh/funcionarios" className="text-sky-700 underline">
+                Funcionários
+              </Link>
+              .
+            </p>
+          ) : (
+            <>
+              <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <KPI label="Salários (base)" valor={brl(custoClt.totalBaseCalculo)} />
+                <KPI label="Encargos estimados" valor={brl(custoClt.totalEncargos)} sub={`${custoClt.pctEncargosClt.toFixed(1).replace('.', ',')}% + FGTS 8%`} />
+                <KPI label="13º + férias provisionados" valor={brl(custoClt.total13Ferias)} />
+                <KPI label="Custo total CLT" valor={brl(custoClt.totalGeral)} cor="text-rose-600" />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-slate-500">
+                    <tr className="border-b border-slate-100">
+                      <th className="px-2 py-1.5 text-left font-medium">Nome</th>
+                      <th className="px-2 py-1.5 text-left font-medium">Regime</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Base</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Encargos</th>
+                      <th className="px-2 py-1.5 text-right font-medium">13º+férias</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {custoClt.linhas.map((l) => (
+                      <tr key={l.funcionarioId} className="border-b border-slate-50">
+                        <td className="px-2 py-1.5 font-medium text-slate-800">
+                          {l.nome}
+                          {l.cargo && <span className="ml-1 font-normal text-slate-400">· {l.cargo}</span>}
+                        </td>
+                        <td className="px-2 py-1.5 text-slate-600">
+                          {l.regimeSalarial === 'clt_mensal' ? 'CLT mensal' : 'Intermitente/hora'}
+                          {l.regimeSalarial === 'intermitente_hora' && (
+                            <span className="ml-1 text-slate-400">
+                              ({l.horasMes != null ? `${l.horasMes.toFixed(1).replace('.', ',')}h` : '—'})
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-slate-700">{brl(l.baseCalculo)}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-600">{brl(l.encargos)}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-600">{brl(l.decimoTerceiro + l.feriasUmTerco)}</td>
+                        <td className="px-2 py-1.5 text-right font-medium text-slate-900">{brl(l.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {custoClt.linhas.some((l) => l.semHorasRegistradas) && (
+                <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  ⚠️ Quem está marcado como intermitente/hora sem horas no mês não tem vínculo com fornecedor
+                  (folha) ou não tem horas lançadas em folha_horas — confira o cadastro da pessoa.
+                </p>
+              )}
+              <p className="mt-3 text-[11px] text-slate-400">
+                Estimativa — confirme o % de encargos com sua contabilidade (config: {custoClt.pctEncargosClt.toFixed(1).replace('.', ',')}%).
+                Este é um indicador de custo, não gera conta a pagar — o pagamento real passa pela empresa terceirizada de folha.
+                Diferente da comissão via app, que já aparece como despesa &quot;Folha&quot; em Despesas por categoria.
+              </p>
+            </>
+          )}
+        </Secao>
 
         {/* Evolução mensal */}
         <Secao titulo="Evolução mensal (últimos 6 meses)" className="mb-5">

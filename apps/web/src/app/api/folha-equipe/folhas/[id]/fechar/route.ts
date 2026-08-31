@@ -16,9 +16,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
-import { calcularFolha, type ConfigFolha, type Lancamento } from '@/lib/folha/calcular';
+import { calcularFolha, type Lancamento } from '@/lib/folha/calcular';
 import { criarComandosBaixarFiado } from '@/lib/folha/baixar-fiados';
 import { criarComandosContaPagarConsumer } from '@/lib/folha/criar-conta-consumer';
+import { montarInputsFolha } from '@/lib/folha/montar-inputs';
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
@@ -51,138 +52,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return new NextResponse('Folha já fechada', { status: 400 });
   }
 
-  // Carrega tudo
-  const [config] = await db
-    .select()
-    .from(schema.folhaConfig)
-    .where(eq(schema.folhaConfig.filialId, folha.filialId))
-    .limit(1);
-  if (!config) {
+  const inputs = await montarInputsFolha(id, folha.filialId);
+  if (!inputs) {
     return new NextResponse(
       'Filial sem configuração de folha. Configure /folha-equipe/configuracao primeiro.',
       { status: 400 },
     );
   }
-
-  const pessoasRows = await db
-    .select({
-      fornecedorId: schema.fornecedorFolha.fornecedorId,
-      papel: schema.fornecedorFolha.papel,
-      gerenteModelo: schema.fornecedorFolha.gerenteModelo,
-      gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
-      diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
-      diaristaModelo: schema.fornecedorFolha.diaristaModelo,
-      diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
-      bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
-      bonusPorDia: schema.fornecedorFolha.bonusPorDia,
-      nome: schema.fornecedor.nome,
-    })
-    .from(schema.fornecedorFolha)
-    .innerJoin(
-      schema.fornecedor,
-      eq(schema.fornecedor.id, schema.fornecedorFolha.fornecedorId),
-    )
-    .where(
-      and(
-        eq(schema.fornecedor.filialId, folha.filialId),
-        eq(schema.fornecedorFolha.ativo, true),
-      ),
-    );
-
-  const horasRows = await db
-    .select()
-    .from(schema.folhaHoras)
-    .where(eq(schema.folhaHoras.folhaSemanaId, id));
-
-  const ajustesRows = await db
-    .select()
-    .from(schema.folhaAjuste)
-    .where(eq(schema.folhaAjuste.folhaSemanaId, id));
-
-  // Indexa horas por fornecedor
-  const horasMap = new Map<string, Record<string, number>>();
-  for (const h of horasRows) {
-    const cur = horasMap.get(h.fornecedorId) ?? {};
-    cur[h.dia] = h.totalMin;
-    horasMap.set(h.fornecedorId, cur);
-  }
-
-  // Indexa ajustes
-  const ajustesMap = new Map<
-    string,
-    Array<{ tipo: 'desconto' | 'acrescimo'; valor: number; descricao?: string }>
-  >();
-  for (const a of ajustesRows) {
-    const cur = ajustesMap.get(a.fornecedorId) ?? [];
-    cur.push({
-      tipo: a.tipo as 'desconto' | 'acrescimo',
-      valor: Number(a.valor),
-      descricao: a.descricao ?? undefined,
-    });
-    ajustesMap.set(a.fornecedorId, cur);
-  }
-  // Injeta bonus fixo semanal e por dia como acrescimos automaticos
-  // (vem do cadastro — sem precisar lancar manual a cada folha).
-  // Bonus fixo semanal so se a pessoa trabalhou na semana (>=1 dia com
-  // horas) — quem nao bateu ponto semana toda nao recebe.
-  for (const p of pessoasRows) {
-    const diasComHoras = Object.values(horasMap.get(p.fornecedorId) ?? {}).filter((m) => m > 0).length;
-    if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0 && diasComHoras > 0) {
-      const cur = ajustesMap.get(p.fornecedorId) ?? [];
-      cur.push({
-        tipo: 'acrescimo',
-        valor: Number(p.bonusFixoSemanal),
-        descricao: '💰 Bônus fixo semanal (cadastro)',
-      });
-      ajustesMap.set(p.fornecedorId, cur);
-    }
-    if (p.bonusPorDia != null && Number(p.bonusPorDia) > 0) {
-      const porDia = horasMap.get(p.fornecedorId) ?? {};
-      const diasTrab = Object.values(porDia).filter((m) => m > 0).length;
-      if (diasTrab > 0) {
-        const valorDia = Number(p.bonusPorDia);
-        const cur = ajustesMap.get(p.fornecedorId) ?? [];
-        cur.push({
-          tipo: 'acrescimo',
-          valor: valorDia * diasTrab,
-          descricao: `🗓 Bônus por dia (${diasTrab} × R$ ${valorDia.toFixed(2)})`,
-        });
-        ajustesMap.set(p.fornecedorId, cur);
-      }
-    }
-  }
-
-  const cfg: ConfigFolha = {
-    ppEmpresa: Number(config.ppEmpresa),
-    ppGerente: Number(config.ppGerente),
-    ppFuncionarios: Number(config.ppFuncionarios),
-    taxaDiaristaHora: Number(config.taxaDiaristaHora),
-    auxTransporteAtivo: config.auxTransporteAtivo,
-    auxTransporteValorHora: config.auxTransporteValorHora
-      ? Number(config.auxTransporteValorHora)
-      : null,
-    auxTransporteDias: (config.auxTransporteDias as Record<string, boolean> | null) ?? null,
-  };
+  const { config } = inputs;
 
   const dezPctPorDia = (folha.dezPctPorDia as Record<string, number>) ?? {};
 
   const resultado = calcularFolha({
-    config: cfg,
+    config: inputs.cfg,
     dezPctPorDia,
-    pessoas: pessoasRows.map((p) => ({
-      fornecedorId: p.fornecedorId,
-      nome: p.nome ?? '(sem nome)',
-      papel: p.papel as 'funcionario' | 'diarista' | 'gerente',
-      gerenteModelo: p.gerenteModelo,
-      gerenteValorFixoDia: p.gerenteValorFixoDia ? Number(p.gerenteValorFixoDia) : null,
-      diaristaTaxaHoraOverride: p.diaristaTaxaHoraOverride
-        ? Number(p.diaristaTaxaHoraOverride)
-        : null,
-      diaristaModelo: p.diaristaModelo ?? 'por_hora',
-      diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
-    })),
-    horas: Array.from(horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
-    ajustes: Object.fromEntries(ajustesMap),
+    pessoas: inputs.pessoas,
+    horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
+    ajustes: Object.fromEntries(inputs.ajustesMap),
   });
 
   // Mapeia tipo de lancamento → categoriaId da config
@@ -191,6 +77,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     diaria: config.categoriaDiariaId,
     gratificacao: config.categoriaGratificacaoId,
     transporte: config.categoriaTransporteId,
+    premiacao: config.categoriaPremiacaoId,
   };
 
   // Data de vencimento: data_pagamento se setada, senao data_fim + 1

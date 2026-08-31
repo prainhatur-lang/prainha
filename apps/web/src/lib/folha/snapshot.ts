@@ -13,6 +13,7 @@ import type { ResultadoCalculo, Lancamento } from './calcular';
 function tipoDaDescricao(desc: string): Lancamento['tipo'] {
   const d = (desc ?? '').toLowerCase();
   if (d.startsWith('diária') || d.startsWith('diaria')) return 'diaria';
+  if (d.startsWith('premiação') || d.startsWith('premiacao')) return 'premiacao';
   if (d.startsWith('gratificação') || d.startsWith('gratificacao')) return 'gratificacao';
   if (d.includes('transporte')) return 'transporte';
   return 'comissao'; // Comissão semana, Pró-labore semana
@@ -80,7 +81,7 @@ export async function snapshotFolha(folhaId: string): Promise<ResultadoCalculo> 
     totalBruto += valorBruto;
     totalLiquido += valorLiquido;
     totalDescontos += desconto;
-    if (tipo === 'gratificacao') totalAcrescimos += valorBruto;
+    if (tipo === 'gratificacao' || tipo === 'premiacao') totalAcrescimos += valorBruto;
   }
 
   // Empresa fica: ppEmpresa/10 do 10% total (só informativo).

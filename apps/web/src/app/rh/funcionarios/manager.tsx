@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { hojeBr } from '@/lib/datas';
 
 interface Funcionario {
   id: string;
@@ -14,6 +15,8 @@ interface Funcionario {
   dataAdmissao: string | null;
   dataDesligamento: string | null;
   ativo: boolean;
+  regimeSalarial: string | null;
+  salarioBase: string | null;
   precisaRevisao: boolean;
   observacao: string | null;
   temFornecedor: boolean;
@@ -32,6 +35,16 @@ interface Props {
 }
 
 const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
+// Só sugere o texto (motivoDesligamento continua varchar livre) — não muda
+// schema nem quebra o que já está cadastrado. Alimenta a quebra por motivo
+// do relatório de turnover.
+const MOTIVOS_DESLIGAMENTO = [
+  'Pedido de demissão',
+  'Dispensa sem justa causa',
+  'Dispensa com justa causa',
+  'Fim de contrato',
+  'Acordo entre as partes',
+];
 
 function fmtCpf(cpf: string | null): string {
   if (!cpf) return '—';
@@ -271,6 +284,8 @@ function FuncionarioForm({
   const [cargo, setCargo] = useState(funcionario?.cargo ?? '');
   const [setor, setSetor] = useState(funcionario?.setor ?? '');
   const [dataAdmissao, setDataAdmissao] = useState(funcionario?.dataAdmissao ?? '');
+  const [regimeSalarial, setRegimeSalarial] = useState(funcionario?.regimeSalarial ?? '');
+  const [salarioBase, setSalarioBase] = useState(funcionario?.salarioBase ?? '');
   const [filiaisExtras, setFiliaisExtras] = useState<string[]>(funcionario?.filiaisExtras ?? []);
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
@@ -296,6 +311,8 @@ function FuncionarioForm({
         cargo: cargo || null,
         setor: setor || null,
         dataAdmissao: dataAdmissao || null,
+        regimeSalarial: regimeSalarial || null,
+        salarioBase: regimeSalarial ? salarioBase || null : null,
         ...(editar ? { precisaRevisao: false, filiaisExtras } : {}),
       };
       const res = await fetch(editar ? `/api/rh/funcionario/${funcionario.id}` : '/api/rh/funcionario', {
@@ -326,7 +343,7 @@ function FuncionarioForm({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ativo: false,
-          dataDesligamento: new Date().toISOString().slice(0, 10),
+          dataDesligamento: hojeBr(),
           motivoDesligamento: motivoDesligamento.trim(),
         }),
       });
@@ -408,6 +425,31 @@ function FuncionarioForm({
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
         </label>
+        <label className="text-xs text-slate-500">
+          Regime salarial
+          <select
+            value={regimeSalarial}
+            onChange={(e) => setRegimeSalarial(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">— (não é CLT)</option>
+            <option value="clt_mensal">CLT mensal</option>
+            <option value="intermitente_hora">Intermitente (R$/hora)</option>
+          </select>
+        </label>
+        <label className="text-xs text-slate-500">
+          Salário base {regimeSalarial === 'intermitente_hora' ? '(R$/hora)' : '(R$/mês)'}
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={salarioBase}
+            onChange={(e) => setSalarioBase(e.target.value)}
+            disabled={!regimeSalarial}
+            placeholder={regimeSalarial ? '0,00' : '—'}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+          />
+        </label>
         <label className="col-span-2 text-xs text-slate-500 sm:col-span-3">
           Endereço
           <input
@@ -471,6 +513,19 @@ function FuncionarioForm({
       {desligando && (
         <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3">
           <label className="text-xs text-rose-700">
+            Motivo (sugestão — ajuda o relatório de turnover a agrupar)
+            <select
+              value=""
+              onChange={(e) => e.target.value && setMotivoDesligamento(e.target.value)}
+              className="mt-1 w-full rounded-md border border-rose-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">Escolher um motivo comum…</option>
+              {MOTIVOS_DESLIGAMENTO.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label className="mt-2 block text-xs text-rose-700">
             Motivo do desligamento
             <input
               value={motivoDesligamento}

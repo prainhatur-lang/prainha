@@ -573,6 +573,9 @@ export async function processarEntrada(params: {
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
+        // Pausa antes do retry: erro transitório do provedor (overload/rate
+        // limit) repetido na mesma hora falha igual e o cliente ouve fallback.
+        await sleep(3000);
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
           filialNome,
@@ -595,6 +598,17 @@ export async function processarEntrada(params: {
       leadRegistrado = resposta.leadRegistrado;
       // Sem texto E sem áudio enviado = fallback; áudio sozinho é resposta válida.
       if (!texto && !audioEnviado) {
+        // "Só um minutinho" pela SEGUNDA vez = Nina travada de verdade: o
+        // anti-papagaio suprimia a repetição e o cliente ficava no VÁCUO
+        // (Marcos Paulo esperou 40min falando sozinho, 28/08). Agora trava
+        // repetida transfere pra equipe com aviso.
+        const ultimaSaida = [...historico].reverse().find((m) => m.direcao === 'saida');
+        if (!transferiu && ultimaSaida?.corpo?.includes('Só um minutinho')) {
+          await executores
+            .transferir('Nina sem resposta (2ª falha seguida)', 'A Nina não conseguiu gerar resposta duas vezes seguidas — assumir e responder o cliente.')
+            .catch(() => {});
+          transferiu = true;
+        }
         texto = transferiu
           ? 'Prontinho! Já chamei alguém da equipe pra falar contigo por aqui mesmo, tá? 😊'
           : 'Oi! Só um minutinho que já te respondo 😊';
@@ -615,7 +629,9 @@ export async function processarEntrada(params: {
       !transferiu &&
       !leadRegistrado &&
       texto &&
-      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])/i.test(
+      // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
+      // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
+      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
         texto,
       )
     ) {
