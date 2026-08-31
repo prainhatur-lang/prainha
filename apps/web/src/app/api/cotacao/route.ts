@@ -46,6 +46,7 @@ export async function POST(req: Request) {
     .select({
       id: schema.produto.id,
       unidade: schema.produto.unidadeEstoque,
+      descricaoCompra: schema.produto.descricaoCompra,
     })
     .from(schema.produto)
     .where(
@@ -55,6 +56,8 @@ export async function POST(req: Request) {
       ),
     );
   const unidadePorProduto = new Map(produtos.map((p) => [p.id, p.unidade]));
+  // Descrição que a casa gravou no produto ("gravar pro próximo pedido").
+  const descricaoPorProduto = new Map(produtos.map((p) => [p.id, p.descricaoCompra]));
 
   // Snapshot das marcas aceitas: pra cada produto, busca marcas aceitas atuais e join em '|'
   const marcasRows = await db
@@ -108,6 +111,7 @@ export async function POST(req: Request) {
       produtoId: i.produtoId,
       quantidade: String(i.quantidade),
       unidade: unidadePorProduto.get(i.produtoId) ?? 'un',
+      descricao: descricaoPorProduto.get(i.produtoId) ?? null,
       marcasAceitas: (marcasPorProduto.get(i.produtoId) ?? []).join('|') || null,
       observacao: i.observacao,
     })),

@@ -89,6 +89,10 @@ export const produto = pgTable(
      *  cotacao e pra rotear cotacao pro fornecedor que cobre cada categoria.
      *  Null pra produtos que nao entram no fluxo de cotacao. */
     categoriaCompras: varchar('categoria_compras', { length: 50 }),
+    /** Como o item aparece pro fornecedor na cotação/pedido. O `nome` vem do
+     *  Consumer e é sobrescrito a cada sync (e costuma carregar marca no
+     *  meio); esta descrição é da casa e sobrevive. Null = usa o nome. */
+    descricaoCompra: varchar('descricao_compra', { length: 200 }),
     /** Criado só na nuvem (não veio do Consumer) — útil pra insumos. */
     criadoNaNuvem: boolean('criado_na_nuvem').notNull().default(false),
 

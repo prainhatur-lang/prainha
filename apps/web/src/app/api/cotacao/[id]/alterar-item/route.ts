@@ -22,7 +22,16 @@ export async function POST(
 
   const { id: cotacaoId } = await params;
 
-  let body: { cotacaoItemId?: string; quantidade?: number; observacao?: string | null };
+  let body: {
+    cotacaoItemId?: string;
+    quantidade?: number;
+    unidade?: string;
+    /** O que o fornecedor vê no lugar do nome do produto. */
+    descricao?: string | null;
+    /** true = grava a descrição no produto, valendo pros próximos pedidos. */
+    gravarNoProduto?: boolean;
+    observacao?: string | null;
+  };
   try {
     body = await req.json();
   } catch {
@@ -30,10 +39,16 @@ export async function POST(
   }
   const temQtd = body.quantidade !== undefined;
   const temObs = 'observacao' in body;
+  // A casa pede em cx/fardo/balde/dúzia. Travar na unidade de estoque faria o
+  // fornecedor cotar outra coisa — então a unidade do item também é editável.
+  const temUn = typeof body.unidade === 'string' && body.unidade.trim() !== '';
+  const unidade = temUn ? body.unidade!.trim().slice(0, 10) : null;
+  const temDesc = 'descricao' in body;
+  const descricao = temDesc ? (body.descricao?.trim().slice(0, 200) || null) : null;
   const qtd = Number(body.quantidade);
-  if (!body.cotacaoItemId || (!temQtd && !temObs)) {
+  if (!body.cotacaoItemId || (!temQtd && !temObs && !temUn && !temDesc)) {
     return NextResponse.json(
-      { error: 'cotacaoItemId e (quantidade ou observacao) obrigatorios' },
+      { error: 'cotacaoItemId e (quantidade, unidade ou observacao) obrigatorios' },
       { status: 400 },
     );
   }
@@ -55,7 +70,7 @@ export async function POST(
   }
 
   const [item] = await db
-    .select({ id: schema.cotacaoItem.id })
+    .select({ id: schema.cotacaoItem.id, produtoId: schema.cotacaoItem.produtoId })
     .from(schema.cotacaoItem)
     .where(
       and(eq(schema.cotacaoItem.id, body.cotacaoItemId), eq(schema.cotacaoItem.cotacaoId, cotacaoId)),
@@ -65,8 +80,21 @@ export async function POST(
 
   const set: Partial<typeof schema.cotacaoItem.$inferInsert> = {};
   if (temQtd) set.quantidade = String(qtd);
+  if (temUn) set.unidade = unidade!;
+  if (temDesc) set.descricao = descricao;
   if (temObs) set.observacao = body.observacao?.trim().slice(0, 300) || null;
   await db.update(schema.cotacaoItem).set(set).where(eq(schema.cotacaoItem.id, item.id));
 
-  return NextResponse.json({ ok: true });
+  // "Gravar pro próximo pedido": a descrição vira o padrão do produto. Fica em
+  // descricao_compra, não em `nome` — o nome é do Consumer e volta no sync.
+  let gravadoNoProduto = false;
+  if (body.gravarNoProduto && temDesc && item.produtoId) {
+    await db
+      .update(schema.produto)
+      .set({ descricaoCompra: descricao })
+      .where(eq(schema.produto.id, item.produtoId));
+    gravadoNoProduto = true;
+  }
+
+  return NextResponse.json({ ok: true, gravadoNoProduto });
 }

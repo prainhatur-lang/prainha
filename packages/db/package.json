@@ -103,6 +103,7 @@
     "migrate:wizard": "tsx scripts/migrate-wizard.ts",
     "migrate:cliente-cadastro": "tsx scripts/migrate-cliente-cadastro.ts",
     "migrate:spc-consulta": "tsx scripts/migrate-spc-consulta.ts",
+    "migrate:descricao-compra": "tsx scripts/migrate-descricao-compra.ts",
     "migrate:mesas-tabuara": "tsx scripts/migrate-mesas-tabuara.ts",
     "migrate:cancelamento-item": "tsx scripts/migrate-cancelamento-item.ts",
     "migrate:cancelamento-foto": "tsx scripts/migrate-cancelamento-foto.ts",

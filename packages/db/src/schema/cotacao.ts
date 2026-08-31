@@ -86,6 +86,9 @@ export const cotacaoItem = pgTable(
     quantidade: numeric('quantidade', { precision: 14, scale: 4 }).notNull(),
     /** Unidade da quantidade (un, kg, g, ml, l). Espelha produto.unidadeEstoque. */
     unidade: varchar('unidade', { length: 10 }).notNull(),
+    /** O que o fornecedor vê. Snapshot: se a descrição do produto mudar
+     *  depois, a cotação já enviada continua dizendo o que dizia. */
+    descricao: varchar('descricao', { length: 200 }),
     /** Snapshot das marcas aceitas no momento da criacao (CSV separado por |).
      *  Vazio = qualquer marca aceita. */
     marcasAceitas: text('marcas_aceitas'),

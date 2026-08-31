@@ -72,6 +72,10 @@ export default async function PreencherCotacaoPage(props: {
       classificacao: schema.cotacaoItem.classificacao,
       observacao: schema.cotacaoItem.observacao,
       produtoNome: schema.produto.nome,
+      // O fornecedor lê a descrição da casa (com a embalagem, sem a marca que
+      // o nome do PDV carrega); só cai no nome quando não há descrição.
+      descricao: schema.cotacaoItem.descricao,
+      descricaoCompra: schema.produto.descricaoCompra,
       categoria: schema.produto.categoriaCompras,
     })
     .from(schema.cotacaoItem)
@@ -177,7 +181,7 @@ export default async function PreencherCotacaoPage(props: {
             }
             itens={itens.map((i) => ({
               ...i,
-              produtoNome: i.produtoNome ?? '',
+              produtoNome: i.descricao ?? i.descricaoCompra ?? i.produtoNome ?? '',
               categoria: i.categoria ?? 'Outros',
               marcasAceitas: i.marcasAceitas
                 ? i.marcasAceitas.split('|').filter(Boolean)

@@ -10,6 +10,7 @@ import { brl, formatDateTime } from '@/lib/format';
 import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
+import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
@@ -55,16 +56,39 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       id: schema.cotacaoItem.id,
       quantidade: schema.cotacaoItem.quantidade,
       unidade: schema.cotacaoItem.unidade,
+      descricao: schema.cotacaoItem.descricao,
       marcasAceitas: schema.cotacaoItem.marcasAceitas,
       observacao: schema.cotacaoItem.observacao,
       respostaVencedoraId: schema.cotacaoItem.respostaVencedoraId,
+      produtoId: schema.produto.id,
       produtoNome: schema.produto.nome,
+      descricaoCompra: schema.produto.descricaoCompra,
       categoria: schema.produto.categoriaCompras,
     })
     .from(schema.cotacaoItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.cotacaoItem.produtoId))
     .where(eq(schema.cotacaoItem.cotacaoId, id))
     .orderBy(asc(schema.produto.categoriaCompras), asc(schema.produto.nome));
+
+  // Embalagem cadastrada do produto — é o que responde "1 fardo é quanto?".
+  const embalagens = await db
+    .select({
+      produtoId: schema.produtoEmbalagem.produtoId,
+      nome: schema.produtoEmbalagem.nome,
+      qtd: schema.produtoEmbalagem.qtdNaUnidadeEstoque,
+      padrao: schema.produtoEmbalagem.padrao,
+      unidadeEstoque: schema.produto.unidadeEstoque,
+    })
+    .from(schema.produtoEmbalagem)
+    .innerJoin(schema.produto, eq(schema.produto.id, schema.produtoEmbalagem.produtoId))
+    .where(inArray(schema.produtoEmbalagem.produtoId, itens.map((i) => i.produtoId)));
+  const embalagemPorProduto = new Map<string, string>();
+  for (const e of embalagens) {
+    const texto = `${e.nome} = ${Number(e.qtd).toLocaleString('pt-BR')} ${e.unidadeEstoque}`;
+    if (e.padrao || !embalagemPorProduto.has(e.produtoId)) {
+      embalagemPorProduto.set(e.produtoId, texto);
+    }
+  }
 
   const fornecedores = await db
     .select({
@@ -75,6 +99,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       linkAbertoEm: schema.cotacaoFornecedor.linkAbertoEm,
       respondidoEm: schema.cotacaoFornecedor.respondidoEm,
       observacaoCf: schema.cotacaoFornecedor.observacao,
+      fornecedorId: schema.fornecedor.id,
       fornecedorNome: schema.fornecedor.nome,
       fonePrincipal: schema.fornecedor.fonePrincipal,
     })
@@ -142,6 +167,8 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
 
   const fornecedorById = new Map(fornecedores.map((f) => [f.id, f]));
   const respondidasCount = fornecedores.filter((f) => f.status === 'RESPONDIDA').length;
+  // Depois de aprovada o pedido já saiu com os números antigos — não mexe mais.
+  const podeEditarItens = c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO';
   const badge = BADGE_STATUS[c.status] ?? BADGE_STATUS.RASCUNHO;
 
   // Pré-visualização da alocação (só calcula, não escreve nada).
@@ -359,6 +386,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                     <EnviarWhatsappButton
                       cotacaoId={id}
                       cotacaoFornecedorId={f.id}
+                      fornecedorId={f.fornecedorId}
                       telefone={f.fonePrincipal}
                       fornecedorNome={f.fornecedorNome ?? ''}
                       filialNome={filialNome}
@@ -396,13 +424,31 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                 return (
                   <tr key={i.id} className="border-t border-slate-100 align-top">
                     <td className="px-3 py-2">
-                      <div className="font-medium text-slate-900">{i.produtoNome}</div>
-                      <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                      <ItemEditor
+                        cotacaoId={id}
+                        itemId={i.id}
+                        produtoNome={i.produtoNome ?? ''}
+                        descricao={i.descricao ?? i.descricaoCompra}
+                        quantidade={i.quantidade}
+                        unidade={i.unidade}
+                        observacao={i.observacao}
+                        embalagem={embalagemPorProduto.get(i.produtoId) ?? null}
+                        podeEditar={podeEditarItens}
+                      />
+                      <div className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                         {i.categoria}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      {i.quantidade} {i.unidade}
+                    <td className="px-3 py-2 text-right align-top">
+                      <div className="font-mono">
+                        {Number(i.quantidade).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}{' '}
+                        {i.unidade}
+                      </div>
+                      {embalagemPorProduto.get(i.produtoId) && (
+                        <div className="text-[10px] text-slate-400">
+                          {embalagemPorProduto.get(i.produtoId)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-slate-700">
                       {i.marcasAceitas
