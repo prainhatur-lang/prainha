@@ -74,6 +74,8 @@ const PostBody = z.object({
   salarioBase: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().nullable(),
   /** Quando veio do banco de talentos: marca o talento como contratado. */
   talentoId: z.string().uuid().optional(),
+  /** Marcar a pessoa também como cliente (consumo/fiado) — opcional. */
+  tambemCliente: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -89,7 +91,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'body invalido', details: parsed.error.flatten() }, { status: 400 });
   }
-  const { filialId, talentoId, ...campos } = parsed.data;
+  const { filialId, talentoId, tambemCliente, ...campos } = parsed.data;
 
   if (!(await checarAcesso(user.id, filialId))) {
     return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
@@ -120,16 +122,16 @@ export async function POST(req: Request) {
       return criado;
     });
 
-    // CADASTRO ÚNICO: a pessoa já nasce com os papéis de fornecedor (recebe)
-    // e cliente (consome/fiado) — "quando cadastrar o funcionário, ele já tem
-    // que cadastrar como cliente também". Falha aqui não derruba o cadastro:
-    // o funcionário existe, e os papéis são garantidos de novo ao definir o
+    // CADASTRO ÚNICO: garante o fornecedor (sem ele não há como pagar) e,
+    // SE quem cadastrou pediu, também o papel de cliente. Falha aqui não
+    // derruba o cadastro — os papéis são garantidos de novo ao definir o
     // pagamento.
     let papeis = null;
     try {
       papeis = await garantirPapeisDaPessoa(funcionarioCriado.id, {
         criadoPor: user.id,
         enfileirarNaLoja: true,
+        tambemCliente: tambemCliente === true,
       });
     } catch {
       // segue sem papéis — a tela mostra o funcionário criado

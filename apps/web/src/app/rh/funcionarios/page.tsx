@@ -64,6 +64,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
     ? await db
         .select({
           fornecedorId: schema.fornecedorFolha.fornecedorId,
+          clienteId: schema.fornecedorFolha.clienteId,
           papel: schema.fornecedorFolha.papel,
           gerenteModelo: schema.fornecedorFolha.gerenteModelo,
           gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
@@ -159,6 +160,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
             precisaRevisao: f.precisaRevisao,
             observacao: f.observacao,
             temFornecedor: !!f.fornecedorId,
+            temCliente: !!(f.fornecedorId && pagamentoPorFornecedor.get(f.fornecedorId)?.clienteId),
             pagamento: f.fornecedorId ? pagamentoPorFornecedor.get(f.fornecedorId) ?? null : null,
             temColaborador: !!f.colaboradorId,
             temUsuarioOperacao: !!f.usuarioOperacaoId,

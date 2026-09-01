@@ -6,10 +6,13 @@
 //   • CLIENTE     — CONSOME (fiado na conta corrente, que a folha desconta)
 //
 // O modelo do Consumer separa em três tabelas e o Concilia espelha isso — mas
-// o usuário NÃO deve ter que cadastrar três vezes. Esta lib é o lugar único
-// que garante os papéis a partir do cadastro do funcionário:
-// "quando cadastrar o funcionário, ele já tem que cadastrar como cliente
-// também" (dono, 31/08/2026 — o aviso 'sem cliente' na folha era isso).
+// o usuário NÃO deve ter que cadastrar três vezes a mesma pessoa.
+//
+// ⚠️ PAPEL É ESCOLHA, NÃO CONSEQUÊNCIA (dono, 31/08/2026): "se eu cadastrar um
+// vendedor e quiser, ele vai ser um cliente; se cadastrar um cliente, ele PODE
+// ser um vendedor — não quer dizer que ele SEJA". Por isso o cliente só nasce
+// quando quem cadastra pede (`tambemCliente`). O fornecedor é a exceção
+// necessária: sem ele não existe como pagar a folha da pessoa.
 //
 // Casamento é sempre por CPF (chave forte). Sem CPF, cai pro telefone; sem
 // nenhum dos dois, cria pelo nome — aqui é seguro porque funcionário é gente
@@ -39,7 +42,14 @@ export interface PapeisGarantidos {
  */
 export async function garantirPapeisDaPessoa(
   funcionarioId: string,
-  opcoes: { criadoPor?: string; enfileirarNaLoja?: boolean } = {},
+  opcoes: {
+    criadoPor?: string;
+    enfileirarNaLoja?: boolean;
+    /** Marcar a pessoa TAMBÉM como cliente (consumo/fiado). Sem isso o papel
+     *  de cliente não é criado — quem cadastra decide. Um vínculo de cliente
+     *  que já exista continua sendo respeitado. */
+    tambemCliente?: boolean;
+  } = {},
 ): Promise<PapeisGarantidos | null> {
   const [func] = await db
     .select({
@@ -132,6 +142,18 @@ export async function garantirPapeisDaPessoa(
       )
       .limit(1);
     clienteId = achado?.id ?? null;
+  }
+
+  // Não achou cliente e ninguém pediu o papel? Fica sem — a pessoa trabalha
+  // aqui sem consumir fiado, e isso é normal.
+  if (!clienteId && !opcoes.tambemCliente) {
+    return {
+      fornecedorId: fornecedorId!,
+      clienteId: null,
+      criouFornecedor,
+      criouCliente: false,
+      comandoLojaId: null,
+    };
   }
 
   if (!clienteId) {

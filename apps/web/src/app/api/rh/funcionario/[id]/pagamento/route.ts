@@ -27,6 +27,8 @@ const Body = z.object({
   diaristaValorFixoDia: z.number().positive().nullable().optional(),
   bonusFixoSemanal: z.number().positive().nullable().optional(),
   bonusPorDia: z.number().positive().nullable().optional(),
+  /** marcar a pessoa também como cliente (consumo/fiado) — escolha de quem cadastra */
+  tambemCliente: z.boolean().optional(),
   /** 'pix' | 'banco' — como essa pessoa recebe */
   formaPagamento: z.enum(['pix', 'banco']).optional(),
   chavePix: z.string().max(100).nullable().optional(),
@@ -82,6 +84,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
   const papeis = await garantirPapeisDaPessoa(id, {
     criadoPor: user.id,
     enfileirarNaLoja: true,
+    tambemCliente: b.tambemCliente === true,
   });
   if (!papeis) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
   const fornecedorId = papeis.fornecedorId;

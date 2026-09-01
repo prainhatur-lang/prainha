@@ -20,6 +20,8 @@ interface Funcionario {
   precisaRevisao: boolean;
   observacao: string | null;
   temFornecedor: boolean;
+  /** Já marcado como cliente (consome/faz fiado na casa). */
+  temCliente: boolean;
   /** Vínculo de pagamento da folha (fornecedor_folha + PIX do fornecedor). */
   pagamento: {
     papel: string;
@@ -317,6 +319,9 @@ function FuncionarioForm({
   const [bancoAgencia, setBancoAgencia] = useState(pg?.bancoAgencia ?? '');
   const [bancoConta, setBancoConta] = useState(pg?.bancoConta ?? '');
   // como a pessoa recebe: PIX ou depósito em conta (o cadastro já diz qual é)
+  // Papel de CLIENTE é escolha, não consequência: "cadastrar um vendedor não
+  // quer dizer que ele SEJA cliente" (dono). Já vinculado = marcado e travado.
+  const [tambemCliente, setTambemCliente] = useState(funcionario?.temCliente ?? false);
   const [formaPagamento, setFormaPagamento] = useState<'pix' | 'banco'>(
     pg?.bancoNome || pg?.bancoConta ? 'banco' : 'pix',
   );
@@ -346,7 +351,7 @@ function FuncionarioForm({
         dataAdmissao: dataAdmissao || null,
         regimeSalarial: regimeSalarial || null,
         salarioBase: regimeSalarial ? salarioBase || null : null,
-        ...(editar ? { precisaRevisao: false, filiaisExtras } : {}),
+        ...(editar ? { precisaRevisao: false, filiaisExtras } : { tambemCliente }),
       };
       const res = await fetch(editar ? `/api/rh/funcionario/${funcionario.id}` : '/api/rh/funcionario', {
         method: editar ? 'PATCH' : 'POST',
@@ -382,6 +387,7 @@ function FuncionarioForm({
                 papel === 'diarista' && diaristaModelo === 'fixo_por_dia' ? num(diaristaValorDia) : null,
               bonusFixoSemanal: num(bonusSemanal),
               bonusPorDia: num(bonusDia),
+              tambemCliente,
               formaPagamento,
               chavePix: formaPagamento === 'pix' ? chavePix.trim() || null : null,
               bancoNome: formaPagamento === 'banco' ? bancoNome.trim() || null : null,
@@ -709,6 +715,24 @@ function FuncionarioForm({
             </>
           )}
         </div>
+        <label className="mt-3 flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs text-slate-700">
+          <input
+            type="checkbox"
+            checked={tambemCliente}
+            disabled={funcionario?.temCliente}
+            onChange={(e) => setTambemCliente(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-slate-300"
+          />
+          <span>
+            <b>Também é cliente</b> — consome na casa / faz fiado.
+            <span className="block text-[11px] text-slate-500">
+              {funcionario?.temCliente
+                ? 'Já cadastrado como cliente — o fiado dele aparece na folha e é descontado.'
+                : 'Marque só se essa pessoa consome aqui. O cadastro é o mesmo — não duplica quem já é cliente.'}
+            </span>
+          </span>
+        </label>
+
         {!papel && (
           <p className="mt-2 text-[11px] text-slate-500">
             Escolha como a pessoa recebe pra entrar na folha semanal — FREELA entra aqui como Diarista, com o valor por hora ou por dia. Quem é só CLT pela
