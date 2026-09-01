@@ -15740,19 +15740,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
     if (p === '/comprovantes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTES_HTML); }
     if (p === '/api/comprovantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiComprovantes(u.searchParams.get('data')))); }
-    if (req.method === 'POST' && p === '/api/nsu/casar') {
-      const b = await readBody(req);
+    // ⚠️ EXIGEM SESSÃO DE CAIXA. As três dão UPDATE em PAGAMENTOS.NSUTRANSACAO
+    // e estavam abertas na rede (e no Funnel, que é público) — dava pra
+    // carimbar NSU inventado num pagamento e fazer o caixa "bater" na
+    // conferência, ou sobrescrever NSU legítimo com sobrescrever:true.
+    // Nenhuma tela as chama: são ferramenta de manutenção do caixa.
+    if (req.method === 'POST' && (p === '/api/nsu/casar' || p === '/api/nsu/ler-fotos' || p === '/api/nsu/definir')) {
+      const quem = await caixaDaRequisicao(req, u);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiNsuCasar(b.data)));
-    }
-    if (req.method === 'POST' && p === '/api/nsu/ler-fotos') {
+      if (!quem) {
+        console.error('[nsu] RECUSADO sem sessão · ' + p + ' · ' + (req.socket?.remoteAddress || '?'));
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
+      }
       const b = await readBody(req);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
-    }
-    if (req.method === 'POST' && p === '/api/nsu/definir') {
-      const b = await readBody(req);
-      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/api/nsu/casar') return res.end(JSON.stringify(await apiNsuCasar(b.data)));
+      if (p === '/api/nsu/ler-fotos') return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
       return res.end(JSON.stringify(await apiNsuDefinir(b)));
     }
     if (p.startsWith('/foto/')) {
