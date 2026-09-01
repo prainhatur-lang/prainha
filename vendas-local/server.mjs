@@ -7022,12 +7022,16 @@ async function loopProdutoFila() {
    o fechamento do dia acusava um valor que não existe fisicamente.
    Código 14 = "iFood Online" no cadastro do Consumer. Não exige foto nem caixa
    aberto, porque não movimenta caixa. */
+// `nsu`: exige o número do comprovante. Vale pra tudo que passa na maquininha
+// — inclusive Pix, que na casa SEMPRE passa por ela (o extrato da Cielo traz
+// os Pix com NSU). Sem o NSU o pagamento não tem par na conciliação e o caixa
+// não fecha sozinho. Dinheiro e iFood não têm NSU nem maquininha.
 const FORMAS_MANUAIS = {
-  dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false },
-  ifood: { codigo: FORMA.IFOOD_ONLINE, nome: 'iFood Online', foto: false },
-  credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true },
-  debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true },
-  pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true },
+  dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false, nsu: false },
+  ifood: { codigo: FORMA.IFOOD_ONLINE, nome: 'iFood Online', foto: false, nsu: false },
+  credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true, nsu: true },
+  debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true, nsu: true },
+  pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true, nsu: true },
 };
 function tokenComprovante() {
   return randomBytes(9).toString('base64url');
@@ -7191,8 +7195,18 @@ async function apiCaixaReceberManual(body, quem) {
   }
   if (!f) return { ok: false, erro: 'forma inválida' };
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
-  if (body.nsu) {
-    const dup = await nsuJaUsadoHoje(body.nsu);
+  // NSU OBRIGATÓRIO no que passa na maquininha. Era opcional e metade dos
+  // pagamentos entrava sem — aí a conferência do caixa não acha o par, reprova
+  // e o caixa fica aberto pra sempre (15 de 19 caixas parados em 31/08). O
+  // número está impresso no comprovante que a foto já obriga a anexar, e o OCR
+  // costuma preencher sozinho.
+  const nsuLimpo = String(body.nsu ?? '').replace(/\D/g, '');
+  if (f.nsu && !nsuLimpo) {
+    return { ok: false, precisa_nsu: true,
+      erro: `${f.nome} exige o NSU do comprovante — é o número (DOC/NSU) impresso no papel da maquininha.` };
+  }
+  if (nsuLimpo) {
+    const dup = await nsuJaUsadoHoje(nsuLimpo);
     if (dup) return { ok: false, erro: `Esse NSU já foi usado HOJE no pedido ${dup.pedido ?? '?'} (R$ ${dup.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
   }
   // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
@@ -14350,8 +14364,8 @@ function manForma(f){
   // Pix na casa SEMPRE passa pela maquininha (regra do dono: não se aceita Pix
   // direto na conta) — então Pix sem NSU é erro igual cartão sem NSU.
   var nsuHtml=(f==='credito'||f==='debito'||f==='pix')
-    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
-      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto preenche sozinha" style="margin-top:6px">'
+    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante (obrigatório)</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto costuma preencher sozinha" style="margin-top:6px">'
     : '';
   box.innerHTML=nsuHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
@@ -14498,8 +14512,12 @@ async function manConfirmar(){
   if(!(v>0)){e.textContent='digite o valor que entrou';return}
   if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
   var nsu=((document.getElementById('mnsu')||{}).value||'').replace(/\\D/g,'');
+  // NSU é obrigatório (o servidor também barra). Sem ele o pagamento não tem
+  // par na conciliação e o caixa de quem recebeu não fecha sozinho.
   if((MAN.forma==='credito'||MAN.forma==='debito'||MAN.forma==='pix')&&!nsu){
-    if(!confirm('Sem o NSU esse cartão NÃO bate sozinho na conciliação e o caixa fica aberto pra conferência manual.\\n\\nO número está no comprovante (DOC/NSU). Continuar sem ele?'))return;
+    e.textContent='digite o NSU do comprovante (número DOC/NSU no papel da maquininha)';
+    var cn=document.getElementById('mnsu'); if(cn){cn.style.borderColor='#dc2626';cn.focus()}
+    return;
   }
   var b=alvo({numero:MESA,forma:MAN.forma,valor:v});
   if(nsu)b.nsu=nsu;
