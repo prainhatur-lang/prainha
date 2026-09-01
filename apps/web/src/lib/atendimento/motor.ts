@@ -708,6 +708,18 @@ export async function processarEntrada(params: {
         statusEnvio: envio.erro ? 'erro' : 'enviada',
         erro: envio.erro ?? null,
       });
+      // Janela de 24h fechada: a Meta recusa texto livre ("Re-engagement
+      // message") e a resposta fica no painel PARECENDO enviada — cliente da
+      // Fernanda/FAR quase perdeu proposta de R$ 19,5k assim (01/09). Avisa
+      // a equipe na hora pra contatar por outro canal.
+      if (envio.erro && /re-?engagement/i.test(envio.erro)) {
+        void avisarEquipe(numerosEquipe, {
+          motivo: 'Mensagem NÃO entregue (janela de 24h fechada)',
+          nomeCliente: conversa.nomeCliente ?? 'sem nome',
+          telefone: entrada.telefone,
+          filial: filialNome,
+        });
+      }
     }
     await db
       .update(schema.atendimentoConversa)
