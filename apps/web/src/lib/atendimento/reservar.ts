@@ -45,6 +45,36 @@ function ehFimDeSemana(ymd: string): boolean {
   return dia === 0 || dia === 6;
 }
 
+// DIAS DE CASA CHEIA (Elison, 01/09: 'carnaval, semana santa, feriadão,
+// verão — tudo isso a casa lota'). Feriados nacionais + São João (Sergipe!)
+// com as datas móveis de 2026/2027 fixadas; renovar a lista em 2028.
+const FERIADOS: Record<string, string> = {
+  '01-01': 'Ano Novo', '04-21': 'Tiradentes', '05-01': 'Dia do Trabalho',
+  '06-23': 'véspera de São João', '06-24': 'São João', '09-07': 'Independência',
+  '10-12': 'N. Sra. Aparecida', '11-02': 'Finados', '11-15': 'Proclamação da República',
+  '11-20': 'Consciência Negra', '12-24': 'véspera de Natal', '12-25': 'Natal', '12-31': 'Réveillon',
+  // móveis
+  '2026-02-16': 'Carnaval', '2026-02-17': 'Carnaval', '2026-04-03': 'Sexta-feira Santa',
+  '2026-06-04': 'Corpus Christi',
+  '2027-02-08': 'Carnaval', '2027-02-09': 'Carnaval', '2027-03-26': 'Sexta-feira Santa',
+  '2027-05-27': 'Corpus Christi',
+};
+
+/** Rótulo do dia de alta procura esperada, ou null. Considera o feriado, a
+ *  véspera de feriado e o verão (dez-fev). */
+function diaDeAltaProcura(ymd: string): string | null {
+  const md = ymd.slice(5);
+  if (FERIADOS[ymd]) return FERIADOS[ymd];
+  if (FERIADOS[md]) return FERIADOS[md];
+  const [y, m, d] = ymd.split('-').map(Number);
+  const amanha = new Date(y, m - 1, d + 1);
+  const amanhaYmd = `${amanha.getFullYear()}-${String(amanha.getMonth() + 1).padStart(2, '0')}-${String(amanha.getDate()).padStart(2, '0')}`;
+  const fAmanha = FERIADOS[amanhaYmd] ?? FERIADOS[amanhaYmd.slice(5)];
+  if (fAmanha) return `véspera de ${fAmanha}`;
+  if (m === 12 || m === 1 || m === 2) return 'alta temporada de verão';
+  return null;
+}
+
 function dataBr(ymd: string): string {
   return ymd.split('-').reverse().join('/');
 }
@@ -161,10 +191,16 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
       WHERE filial_id = ${filialId} AND data = ${data}::date AND status IN ('pendente','confirmada')
     `)) as unknown as Array<{ reservas: number; pessoas: number }>;
     const totalMesas = cfg.areas.filter((a) => a.ativo && !a.somenteEventos).reduce((s, a) => s + (a.mesas?.length ?? 0), 0);
-    const alta = totalMesas > 0 && ag.reservas >= totalMesas * 0.3;
+    const especial = diaDeAltaProcura(data);
+    const alta = especial !== null || (totalMesas > 0 && ag.reservas >= totalMesas * 0.3);
+    const motivo = [
+      especial ? `é ${especial} (a casa costuma LOTAR)` : null,
+      ehFimDeSemana(data) && !especial ? 'é fim de semana' : null,
+      `${ag.reservas} reserva(s) já na agenda (${ag.pessoas} pessoas)`,
+    ].filter(Boolean).join('; ');
     procura = alta
-      ? `PROCURA DESSE DIA: ALTA — já são ${ag.reservas} reservas (${ag.pessoas} pessoas) na agenda${ehFimDeSemana(data) ? ', e é fim de semana/feriado' : ''}. É PROIBIDO dizer que o dia "vai estar tranquilo" ou garantir mesa na chegada à tarde: seja honesta — a procura está alta, a recomendação é RESERVAR dentro da janela da manhã, e quem for chegar à tarde deve vir CEDO porque é ordem de chegada e pode ter espera. `
-      : `PROCURA DESSE DIA até agora: ${ag.reservas} reserva(s) na agenda. Mesmo assim, NUNCA prometa que o dia "vai estar tranquilo" — movimento futuro ninguém garante; ofereça a reserva da manhã como garantia e explique que a tarde é ordem de chegada. `;
+      ? `PROCURA DESSE DIA: ALTA — ${motivo}. É PROIBIDO dizer que o dia "vai estar tranquilo" ou garantir mesa na chegada à tarde: seja honesta — a expectativa é de casa cheia, a recomendação é RESERVAR dentro da janela da manhã enquanto há vaga, e quem for chegar à tarde deve vir CEDO porque é ordem de chegada e pode ter espera. `
+      : `PROCURA DESSE DIA até agora: ${motivo}. Mesmo assim, NUNCA prometa que o dia "vai estar tranquilo" — movimento futuro ninguém garante; ofereça a reserva da manhã como garantia e explique que a tarde é ordem de chegada. `;
   }
   return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${procura}${jan}Reserva comum é gratuita hoje.`;
 }
