@@ -148,7 +148,25 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
       jan += `(sábado, domingo e feriado a reserva vai só até ${maxDoDia} — depois disso é por ordem de chegada, convide a pessoa a vir direto). `;
     }
   }
-  return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${jan}Reserva comum é gratuita hoje.`;
+
+  // PROCURA DO DIA FUTURO (caso Ednaira 01/09): a Nina prometeu "domingo de
+  // feriadão vai estar calmo" usando a ocupação DE HOJE. Pra data futura, a
+  // única verdade é a agenda de reservas daquele dia — e a Nina fala do
+  // movimento SÓ com base nela, sem bola de cristal.
+  let procura = '';
+  if (data !== hojeBr()) {
+    const [ag] = (await db.execute(sql`
+      SELECT count(*)::int AS reservas, coalesce(sum(pessoas), 0)::int AS pessoas
+      FROM reserva
+      WHERE filial_id = ${filialId} AND data = ${data}::date AND status IN ('pendente','confirmada')
+    `)) as unknown as Array<{ reservas: number; pessoas: number }>;
+    const totalMesas = cfg.areas.filter((a) => a.ativo && !a.somenteEventos).reduce((s, a) => s + (a.mesas?.length ?? 0), 0);
+    const alta = totalMesas > 0 && ag.reservas >= totalMesas * 0.3;
+    procura = alta
+      ? `PROCURA DESSE DIA: ALTA — já são ${ag.reservas} reservas (${ag.pessoas} pessoas) na agenda${ehFimDeSemana(data) ? ', e é fim de semana/feriado' : ''}. É PROIBIDO dizer que o dia "vai estar tranquilo" ou garantir mesa na chegada à tarde: seja honesta — a procura está alta, a recomendação é RESERVAR dentro da janela da manhã, e quem for chegar à tarde deve vir CEDO porque é ordem de chegada e pode ter espera. `
+      : `PROCURA DESSE DIA até agora: ${ag.reservas} reserva(s) na agenda. Mesmo assim, NUNCA prometa que o dia "vai estar tranquilo" — movimento futuro ninguém garante; ofereça a reserva da manhã como garantia e explique que a tarde é ordem de chegada. `;
+  }
+  return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${procura}${jan}Reserva comum é gratuita hoje.`;
 }
 
 /** Onde fica uma mesa (área + lugares) — pra "mesa X fica em qual parte?". */

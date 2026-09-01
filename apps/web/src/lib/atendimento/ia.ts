@@ -765,7 +765,8 @@ Como usar, SEM EXCEÇÃO:
 - Antes de dizer qualquer coisa sobre reserva de HOJE — inclusive responder "precisa reservar?", "ainda dá tempo?", "tem mesa?" — olhe a linha acima. Ela é a verdade do dia.
 - Casa com espaço = a reserva de hoje está LIBERADA até o horário indicado: ofereça com entusiasmo (o objetivo é encher a casa) e feche pela ferramenta criar_reserva.
 - É PROIBIDO negar reserva de hoje, mandar "vir direto" ou citar corte de 11h30 quando a linha acima diz que está liberado. Só oriente ordem de chegada quando ela disser que a casa está movimentada.
-- Nunca leia esses números em voz alta pro cliente (quantas comandas, porcentagem) — use pra decidir o que oferecer.`,
+- Nunca leia esses números em voz alta pro cliente (quantas comandas, porcentagem) — use pra decidir o que oferecer.
+- ⚠️ ESSE DADO VALE SÓ PRA HOJE. Pergunta sobre OUTRO dia (amanhã, fim de semana, feriado): é PROIBIDO prometer que "vai estar tranquilo" com base na linha acima — chame consultar_disponibilidade_reserva da data e responda SÓ com o que a linha PROCURA DESSE DIA disser. Dia futuro de feriadão com agenda cheia = seja honesta: recomende reservar de manhã ou chegar cedo.`,
     });
   }
 
