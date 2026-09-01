@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
+import { garantirPapeisDaPessoa } from '@/lib/rh/pessoa-unica';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -119,7 +120,22 @@ export async function POST(req: Request) {
       return criado;
     });
 
-    return NextResponse.json({ funcionario: funcionarioCriado }, { status: 201 });
+    // CADASTRO ÚNICO: a pessoa já nasce com os papéis de fornecedor (recebe)
+    // e cliente (consome/fiado) — "quando cadastrar o funcionário, ele já tem
+    // que cadastrar como cliente também". Falha aqui não derruba o cadastro:
+    // o funcionário existe, e os papéis são garantidos de novo ao definir o
+    // pagamento.
+    let papeis = null;
+    try {
+      papeis = await garantirPapeisDaPessoa(funcionarioCriado.id, {
+        criadoPor: user.id,
+        enfileirarNaLoja: true,
+      });
+    } catch {
+      // segue sem papéis — a tela mostra o funcionário criado
+    }
+
+    return NextResponse.json({ funcionario: funcionarioCriado, papeis }, { status: 201 });
   } catch (e) {
     const msg = (e as Error).message ?? '';
     if (msg.includes('uq_funcionario_cpf')) {

@@ -313,6 +313,13 @@ function FuncionarioForm({
   const [bonusSemanal, setBonusSemanal] = useState(pg?.bonusFixoSemanal ?? '');
   const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
   const [chavePix, setChavePix] = useState(pg?.chavePix ?? '');
+  const [bancoNome, setBancoNome] = useState(pg?.bancoNome ?? '');
+  const [bancoAgencia, setBancoAgencia] = useState(pg?.bancoAgencia ?? '');
+  const [bancoConta, setBancoConta] = useState(pg?.bancoConta ?? '');
+  // como a pessoa recebe: PIX ou depósito em conta (o cadastro já diz qual é)
+  const [formaPagamento, setFormaPagamento] = useState<'pix' | 'banco'>(
+    pg?.bancoNome || pg?.bancoConta ? 'banco' : 'pix',
+  );
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
   const [salvando, setSalvando] = useState(false);
@@ -375,7 +382,11 @@ function FuncionarioForm({
                 papel === 'diarista' && diaristaModelo === 'fixo_por_dia' ? num(diaristaValorDia) : null,
               bonusFixoSemanal: num(bonusSemanal),
               bonusPorDia: num(bonusDia),
-              chavePix: chavePix.trim() || null,
+              formaPagamento,
+              chavePix: formaPagamento === 'pix' ? chavePix.trim() || null : null,
+              bancoNome: formaPagamento === 'banco' ? bancoNome.trim() || null : null,
+              bancoAgencia: formaPagamento === 'banco' ? bancoAgencia.trim() || null : null,
+              bancoConta: formaPagamento === 'banco' ? bancoConta.trim() || null : null,
             }),
           });
           if (!rp.ok) {
@@ -644,14 +655,57 @@ function FuncionarioForm({
                 />
               </label>
               <label className="text-xs text-slate-500">
-                Chave PIX (pra pagar)
-                <input
-                  value={chavePix}
-                  onChange={(e) => setChavePix(e.target.value)}
-                  placeholder="CPF, celular, e-mail..."
+                Como pagar
+                <select
+                  value={formaPagamento}
+                  onChange={(e) => setFormaPagamento(e.target.value as 'pix' | 'banco')}
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                />
+                >
+                  <option value="pix">PIX</option>
+                  <option value="banco">Depósito em conta</option>
+                </select>
               </label>
+              {formaPagamento === 'pix' ? (
+                <label className="text-xs text-slate-500">
+                  Chave PIX
+                  <input
+                    value={chavePix}
+                    onChange={(e) => setChavePix(e.target.value)}
+                    placeholder="CPF, celular, e-mail..."
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              ) : (
+                <>
+                  <label className="text-xs text-slate-500">
+                    Banco
+                    <input
+                      value={bancoNome}
+                      onChange={(e) => setBancoNome(e.target.value)}
+                      placeholder="ex: Itaú, Caixa, Nubank"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-500">
+                    Agência
+                    <input
+                      value={bancoAgencia}
+                      onChange={(e) => setBancoAgencia(e.target.value)}
+                      placeholder="0000"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-500">
+                    Conta (com dígito)
+                    <input
+                      value={bancoConta}
+                      onChange={(e) => setBancoConta(e.target.value)}
+                      placeholder="00000-0"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                    />
+                  </label>
+                </>
+              )}
             </>
           )}
         </div>

@@ -14,6 +14,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { createClient } from '@/lib/supabase/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
+import { garantirPapeisDaPessoa } from '@/lib/rh/pessoa-unica';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,8 @@ const Body = z.object({
   diaristaValorFixoDia: z.number().positive().nullable().optional(),
   bonusFixoSemanal: z.number().positive().nullable().optional(),
   bonusPorDia: z.number().positive().nullable().optional(),
+  /** 'pix' | 'banco' — como essa pessoa recebe */
+  formaPagamento: z.enum(['pix', 'banco']).optional(),
   chavePix: z.string().max(100).nullable().optional(),
   bancoNome: z.string().max(100).nullable().optional(),
   bancoAgencia: z.string().max(20).nullable().optional(),
@@ -74,23 +77,14 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
 
-  // Garante o fornecedor (quem "recebe") — cria na nuvem se não existir.
-  let fornecedorId = func.fornecedorId;
-  if (!fornecedorId) {
-    const [novo] = await db
-      .insert(schema.fornecedor)
-      .values({
-        filialId: func.filialId,
-        nome: func.nome,
-        cnpjOuCpf: func.cpf ?? null,
-      })
-      .returning({ id: schema.fornecedor.id });
-    fornecedorId = novo!.id;
-    await db
-      .update(schema.funcionario)
-      .set({ fornecedorId, atualizadoEm: new Date() })
-      .where(eq(schema.funcionario.id, id));
-  }
+  // CADASTRO ÚNICO: garante fornecedor (recebe) + cliente (consome/fiado) e
+  // amarra os dois no funcionário — uma pessoa, três papéis.
+  const papeis = await garantirPapeisDaPessoa(id, {
+    criadoPor: user.id,
+    enfileirarNaLoja: true,
+  });
+  if (!papeis) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
+  const fornecedorId = papeis.fornecedorId;
 
   await db
     .insert(schema.fornecedorFolha)
@@ -128,13 +122,30 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
   // Dados bancários/PIX moram no fornecedor (são da pessoa)
   await db
     .update(schema.fornecedor)
-    .set({
-      chavePix: b.chavePix?.trim() || null,
-      bancoNome: b.bancoNome?.trim() || null,
-      bancoAgencia: b.bancoAgencia?.trim() || null,
-      bancoConta: b.bancoConta?.trim() || null,
-    })
+    .set(
+      b.formaPagamento === 'banco'
+        ? {
+            chavePix: null,
+            bancoNome: b.bancoNome?.trim() || null,
+            bancoAgencia: b.bancoAgencia?.trim() || null,
+            bancoConta: b.bancoConta?.trim() || null,
+          }
+        : b.formaPagamento === 'pix'
+          ? { chavePix: b.chavePix?.trim() || null, bancoNome: null, bancoAgencia: null, bancoConta: null }
+          : {
+              chavePix: b.chavePix?.trim() || null,
+              bancoNome: b.bancoNome?.trim() || null,
+              bancoAgencia: b.bancoAgencia?.trim() || null,
+              bancoConta: b.bancoConta?.trim() || null,
+            },
+    )
     .where(eq(schema.fornecedor.id, fornecedorId));
 
-  return NextResponse.json({ ok: true, fornecedorId });
+  return NextResponse.json({
+    ok: true,
+    fornecedorId,
+    clienteId: papeis.clienteId,
+    criouCliente: papeis.criouCliente,
+    comandoLojaId: papeis.comandoLojaId,
+  });
 }
