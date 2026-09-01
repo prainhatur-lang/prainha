@@ -6064,7 +6064,7 @@ async function caixaMaquininhaConfere(cod) {
       // lançamento aparece em vez de passar batido.
       const ix = cielo.vendas.findIndex((v, i) =>
         !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
-        (nsu ? String(v.nsu).replace(/\D/g, '') === nsu : true));
+        (nsu ? nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) : true));
       if (ix >= 0) { usados.add(ix); continue; }
     }
 
@@ -6089,6 +6089,18 @@ async function apiCaixaConferirTodos() {
     out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', pagamentos: conf.n ?? 0, fecharia: !!conf.bate, motivo: conf.bate ? null : conf.motivo });
   }
   return { ok: true, caixas: out, fecham: out.filter((x) => x.fecharia).length, ficam: out.filter((x) => !x.fecharia).length };
+}
+/** Compara NSU do PDV com NSU do extrato da Cielo. O EDI TRUNCA o número: o
+ *  PDV grava 7 dígitos e o extrato guarda os 6 primeiros (medido em 5 Pix de
+ *  ago/2026 — 1815950→181595, 1866658→186665, 2105357→210535, 2120158→212015,
+ *  2621239→262123). Igualdade exata reprovava todos eles. Só aceita prefixo de
+ *  6+ dígitos, e sempre junto de valor+dia iguais — que é o que impede o
+ *  prefixo curto de casar transação errada. */
+function nsuCasa(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const n = Math.min(a.length, b.length);
+  return n >= 6 && a.slice(0, n) === b.slice(0, n);
 }
 /** YYYY-MM-DD de uma data vinda do banco. O driver do Firebird devolve DATE
  *  como objeto Date do JS, e `String(d).slice(0,10)` vira "Tue Aug 25" — que
