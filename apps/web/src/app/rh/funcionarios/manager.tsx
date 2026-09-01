@@ -485,31 +485,6 @@ function FuncionarioForm({
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
         </label>
-        <label className="text-xs text-slate-500">
-          Regime salarial
-          <select
-            value={regimeSalarial}
-            onChange={(e) => setRegimeSalarial(e.target.value)}
-            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-          >
-            <option value="">— (não é CLT)</option>
-            <option value="clt_mensal">CLT mensal</option>
-            <option value="intermitente_hora">Intermitente (R$/hora)</option>
-          </select>
-        </label>
-        <label className="text-xs text-slate-500">
-          Salário base {regimeSalarial === 'intermitente_hora' ? '(R$/hora)' : '(R$/mês)'}
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={salarioBase}
-            onChange={(e) => setSalarioBase(e.target.value)}
-            disabled={!regimeSalarial}
-            placeholder={regimeSalarial ? '0,00' : '—'}
-            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-          />
-        </label>
         <label className="col-span-2 text-xs text-slate-500 sm:col-span-3">
           Endereço
           <input
@@ -520,10 +495,50 @@ function FuncionarioForm({
         </label>
       </div>
 
-      {/* PAGAMENTO (folha) — unificado no cadastro: sem papel escolhido a
-          pessoa não entra na folha semanal (só existe no RH/ponto). */}
+      {/* PAGAMENTO — as DUAS trilhas que convivem na casa (a mesma pessoa
+          pode ter as duas): registro CLT (salário/horas, pago pela empresa
+          de folha) e folha SEMANAL (diárias + rateio do 10% + bônus). */}
       <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50/40 p-3">
-        <p className="text-xs font-semibold text-emerald-800">💰 Pagamento (folha semanal)</p>
+        <p className="text-xs font-semibold text-emerald-800">💰 Pagamento</p>
+
+        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          📋 Registro (CLT) — salário e horas trabalhadas
+        </p>
+        <div className="mt-1 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <label className="text-xs text-slate-500">
+            Regime
+            <select
+              value={regimeSalarial}
+              onChange={(e) => setRegimeSalarial(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">— sem registro —</option>
+              <option value="clt_mensal">CLT mensal (salário fixo)</option>
+              <option value="intermitente_hora">Intermitente (paga por hora do ponto)</option>
+            </select>
+          </label>
+          <label className="text-xs text-slate-500">
+            {regimeSalarial === 'intermitente_hora' ? 'Valor da hora (R$)' : 'Salário (R$/mês)'}
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={salarioBase}
+              onChange={(e) => setSalarioBase(e.target.value)}
+              disabled={!regimeSalarial}
+              placeholder={regimeSalarial ? '0,00' : '—'}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+            />
+          </label>
+          <p className="self-end pb-1 text-[10px] leading-4 text-slate-400">
+            Pago pela empresa de folha registrada; o intermitente usa as horas batidas no
+            ponto. Entra como custo no fechamento.
+          </p>
+        </div>
+
+        <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          📅 Folha semanal — diárias e rateio do 10%
+        </p>
         <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <label className="text-xs text-slate-500">
             Como recebe
