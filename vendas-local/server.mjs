@@ -6024,19 +6024,74 @@ async function apiCaixaDetalhe(codigo) {
 // com NSU, com par exato no venda_pagamento (mesmo NSU e valor), e ZERO
 // dinheiro. Usada pelo autofechamento (04:00) e pelo fechar-caixa da maquininha.
 async function caixaMaquininhaConfere(cod) {
-  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU
+  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
+      CAST(DATAPAGAMENTO AS DATE) DIA
     FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
   if (!pg.ok) return { bate: false, motivo: 'FB: ' + pg.err, n: 0 };
+  if (!pg.rows.length) return { bate: true, n: 0 };
+
+  // 2ª prova: o EXTRATO DA CIELO (EDI, importado pelo central). É a fonte da
+  // verdade do dinheiro — vale mais que o registro interno. Sem ele o
+  // pagamento só batia se tivesse vindo pelo app da LIO (venda_pagamento), o
+  // que reprovava pra sempre todo caixa com recebimento manual, mesmo com NSU
+  // certo. Cielo cobre cartão E Pix (o Pix da casa passa pela maquininha).
+  const cielo = await cieloExtrato().catch(() => null);
+  const usados = new Set(); // uma transação da Cielo casa com um pagamento só
+
   for (const p of pg.rows) {
     if (Number(p.F) === FORMA.DINHEIRO) return { bate: false, motivo: 'tem DINHEIRO lançado (maquininha não recebe dinheiro)', n: pg.rows.length };
-    const nsu = p.NSU != null ? String(p.NSU) : '';
-    if (!nsu) return { bate: false, motivo: `pagamento de R$ ${p.V} sem NSU`, n: pg.rows.length };
-    const [par] = await sql`SELECT id FROM venda_pagamento
-      WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
-        AND valor = ${Number(p.V)} LIMIT 1`;
-    if (!par) return { bate: false, motivo: `NSU ${nsu} (R$ ${p.V}) sem par no registro do sistema`, n: pg.rows.length };
+    const nsu = p.NSU != null ? String(p.NSU).replace(/\D/g, '') : '';
+    const valor = Number(p.V);
+    const dia = p.DIA ? String(p.DIA).slice(0, 10) : null;
+
+    // a) registro interno do app da LIO — o caminho de sempre
+    if (nsu) {
+      const [par] = await sql`SELECT id FROM venda_pagamento
+        WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
+          AND valor = ${valor} LIMIT 1`;
+      if (par) continue;
+    }
+
+    // b) extrato da Cielo — pelo NSU quando há, senão por valor+dia
+    if (cielo && dia) {
+      if (dia > cielo.ate) {
+        return { bate: false, n: pg.rows.length,
+          motivo: `extrato da Cielo ainda não cobre ${dia.split('-').reverse().join('/')} (vai até ${String(cielo.ate).split('-').reverse().join('/')}) — fecha quando chegar` };
+      }
+      // NSU recicla com o tempo (o mesmo número aparece em meses diferentes),
+      // por isso o dia entra sempre no par. `usados` impede que uma transação
+      // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
+      // lançamento aparece em vez de passar batido.
+      const ix = cielo.vendas.findIndex((v, i) =>
+        !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
+        (nsu ? String(v.nsu).replace(/\D/g, '') === nsu : true));
+      if (ix >= 0) { usados.add(ix); continue; }
+    }
+
+    return { bate: false, n: pg.rows.length,
+      motivo: nsu
+        ? `NSU ${nsu} (R$ ${valor.toFixed(2)}) sem par no sistema nem no extrato da Cielo`
+        : `pagamento de R$ ${valor.toFixed(2)} sem NSU e sem par no extrato da Cielo` };
   }
   return { bate: true, n: pg.rows.length };
+}
+/** Extrato Cielo dos últimos 30 dias, do central. Cache de 30min: a
+ *  conferência roda caixa a caixa e o extrato muda uma vez por dia. */
+let cieloCache = { em: 0, dados: null };
+async function cieloExtrato() {
+  if (Date.now() - cieloCache.em < 30 * 60e3) return cieloCache.dados;
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  try {
+    const hoje = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+    const de = new Date(Date.now() - 33 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('cielo-extrato', e), de, ate: hoje });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/cielo-extrato?${qs}`, { signal: AbortSignal.timeout(15000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !Array.isArray(j.vendas)) return null;
+    cieloCache = { em: Date.now(), dados: { ate: j.extrato_ate || '0000-00-00', vendas: j.vendas } };
+    return cieloCache.dados;
+  } catch { return null; } // central fora: cai no critério antigo, não trava
 }
 // Fechar o caixa da MAQUININHA do próprio garçom (troca de turno no aparelho).
 // Só o caixa nascido na maquininha, e só se BATER — não bateu, fica aberto
@@ -7022,12 +7077,16 @@ async function loopProdutoFila() {
    o fechamento do dia acusava um valor que não existe fisicamente.
    Código 14 = "iFood Online" no cadastro do Consumer. Não exige foto nem caixa
    aberto, porque não movimenta caixa. */
+// `nsu`: exige o número do comprovante. Vale pra tudo que passa na maquininha
+// — inclusive Pix, que na casa SEMPRE passa por ela (o extrato da Cielo traz
+// os Pix com NSU). Sem o NSU o pagamento não tem par na conciliação e o caixa
+// não fecha sozinho. Dinheiro e iFood não têm NSU nem maquininha.
 const FORMAS_MANUAIS = {
-  dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false },
-  ifood: { codigo: FORMA.IFOOD_ONLINE, nome: 'iFood Online', foto: false },
-  credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true },
-  debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true },
-  pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true },
+  dinheiro: { codigo: FORMA.DINHEIRO, nome: 'Dinheiro', foto: false, nsu: false },
+  ifood: { codigo: FORMA.IFOOD_ONLINE, nome: 'iFood Online', foto: false, nsu: false },
+  credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true, nsu: true },
+  debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true, nsu: true },
+  pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true, nsu: true },
 };
 function tokenComprovante() {
   return randomBytes(9).toString('base64url');
@@ -7191,8 +7250,18 @@ async function apiCaixaReceberManual(body, quem) {
   }
   if (!f) return { ok: false, erro: 'forma inválida' };
   if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
-  if (body.nsu) {
-    const dup = await nsuJaUsadoHoje(body.nsu);
+  // NSU OBRIGATÓRIO no que passa na maquininha. Era opcional e metade dos
+  // pagamentos entrava sem — aí a conferência do caixa não acha o par, reprova
+  // e o caixa fica aberto pra sempre (15 de 19 caixas parados em 31/08). O
+  // número está impresso no comprovante que a foto já obriga a anexar, e o OCR
+  // costuma preencher sozinho.
+  const nsuLimpo = String(body.nsu ?? '').replace(/\D/g, '');
+  if (f.nsu && !nsuLimpo) {
+    return { ok: false, precisa_nsu: true,
+      erro: `${f.nome} exige o NSU do comprovante — é o número (DOC/NSU) impresso no papel da maquininha.` };
+  }
+  if (nsuLimpo) {
+    const dup = await nsuJaUsadoHoje(nsuLimpo);
     if (dup) return { ok: false, erro: `Esse NSU já foi usado HOJE no pedido ${dup.pedido ?? '?'} (R$ ${dup.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
   }
   // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
@@ -7201,6 +7270,19 @@ async function apiCaixaReceberManual(body, quem) {
     const cx = await fbCaixaDoOperador(quem.login);
     if (!cx) return { ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' };
     caixaCodigo = cx.codigo;
+  } else if (f.codigo !== FORMA.IFOOD_ONLINE) {
+    // CARTÃO/PIX também vão pro caixa de QUEM RECEBEU. Sem isto, iam com
+    // caixa_codigo=null e caíam em fbCaixaAberto(), que pega o caixa aberto de
+    // CÓDIGO MAIS ALTO — quase sempre o caixa-maquininha de um garçom, que
+    // abre sozinho o dia todo. Medido em 30/08: 37 de 37 recebimentos do
+    // balcão caíram no caixa de outra pessoa, sempre o "mais recente". Isso
+    // punha dinheiro do balcão no caixa do garçom E travava o fechamento dele
+    // pra sempre (caixaMaquininhaConfere reprova qualquer pagamento sem NSU).
+    // Sem caixa do operador, mantém o comportamento antigo — recusar aqui
+    // travaria o recebimento no meio do movimento —, mas deixa rastro.
+    const cx = await fbCaixaDoOperador(quem.login);
+    if (cx) caixaCodigo = cx.codigo;
+    else console.error(`[caixa] ${quem.login} recebeu ${f.nome} R$ ${valor} SEM caixa próprio aberto — vai cair no caixa aberto mais recente (atribuição imprecisa)`);
   }
   // comprovante: da câmera do tablet (dataUrl) ou do token que o celular usou
   let arquivo = null;
@@ -14337,8 +14419,8 @@ function manForma(f){
   // Pix na casa SEMPRE passa pela maquininha (regra do dono: não se aceita Pix
   // direto na conta) — então Pix sem NSU é erro igual cartão sem NSU.
   var nsuHtml=(f==='credito'||f==='debito'||f==='pix')
-    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
-      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto preenche sozinha" style="margin-top:6px">'
+    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante (obrigatório)</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto costuma preencher sozinha" style="margin-top:6px">'
     : '';
   box.innerHTML=nsuHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
@@ -14485,8 +14567,12 @@ async function manConfirmar(){
   if(!(v>0)){e.textContent='digite o valor que entrou';return}
   if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
   var nsu=((document.getElementById('mnsu')||{}).value||'').replace(/\\D/g,'');
+  // NSU é obrigatório (o servidor também barra). Sem ele o pagamento não tem
+  // par na conciliação e o caixa de quem recebeu não fecha sozinho.
   if((MAN.forma==='credito'||MAN.forma==='debito'||MAN.forma==='pix')&&!nsu){
-    if(!confirm('Sem o NSU esse cartão NÃO bate sozinho na conciliação e o caixa fica aberto pra conferência manual.\\n\\nO número está no comprovante (DOC/NSU). Continuar sem ele?'))return;
+    e.textContent='digite o NSU do comprovante (número DOC/NSU no papel da maquininha)';
+    var cn=document.getElementById('mnsu'); if(cn){cn.style.borderColor='#dc2626';cn.focus()}
+    return;
   }
   var b=alvo({numero:MESA,forma:MAN.forma,valor:v});
   if(nsu)b.nsu=nsu;
@@ -15740,19 +15826,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
     if (p === '/comprovantes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(COMPROVANTES_HTML); }
     if (p === '/api/comprovantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiComprovantes(u.searchParams.get('data')))); }
-    if (req.method === 'POST' && p === '/api/nsu/casar') {
-      const b = await readBody(req);
+    // ⚠️ EXIGEM SESSÃO DE CAIXA. As três dão UPDATE em PAGAMENTOS.NSUTRANSACAO
+    // e estavam abertas na rede (e no Funnel, que é público) — dava pra
+    // carimbar NSU inventado num pagamento e fazer o caixa "bater" na
+    // conferência, ou sobrescrever NSU legítimo com sobrescrever:true.
+    // Nenhuma tela as chama: são ferramenta de manutenção do caixa.
+    if (req.method === 'POST' && (p === '/api/nsu/casar' || p === '/api/nsu/ler-fotos' || p === '/api/nsu/definir')) {
+      const quem = await caixaDaRequisicao(req, u);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiNsuCasar(b.data)));
-    }
-    if (req.method === 'POST' && p === '/api/nsu/ler-fotos') {
+      if (!quem) {
+        console.error('[nsu] RECUSADO sem sessão · ' + p + ' · ' + (req.socket?.remoteAddress || '?'));
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
+      }
       const b = await readBody(req);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
-    }
-    if (req.method === 'POST' && p === '/api/nsu/definir') {
-      const b = await readBody(req);
-      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/api/nsu/casar') return res.end(JSON.stringify(await apiNsuCasar(b.data)));
+      if (p === '/api/nsu/ler-fotos') return res.end(JSON.stringify(await apiNsuLerFotos(b.data)));
       return res.end(JSON.stringify(await apiNsuDefinir(b)));
     }
     if (p.startsWith('/foto/')) {
@@ -15979,7 +16067,24 @@ const server = http.createServer(async (req, res) => {
       atenderChamadoGarcom(n, 'conta-aberta').catch(() => {});
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n)));
     }
-    if (req.method === 'POST' && p === '/api/conta/pagar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaPagar(body))); }
+    // ⚠️ EXIGE SESSÃO. Até 31/08 esta rota chamava apiContaPagar com o corpo
+    // CRU e sem autenticação nenhuma — e o Funnel a expõe na internet. Como
+    // `comprovante:true` e `pix_online:true` dispensam a trava anti-fraude
+    // (ver apiContaPagar), qualquer um com a URL registrava pagamento falso e
+    // zerava a conta de uma mesa. Agora vale a mesma régua de /api/lio/pagar.
+    if (req.method === 'POST' && p === '/api/conta/pagar') {
+      const quem = (await garcomDaRequisicao(req, u)) || (await caixaDaRequisicao(req, u));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!quem) {
+        console.error('[conta/pagar] RECUSADO sem sessão · ' + (req.socket?.remoteAddress || '?'));
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre de novo pra registrar pagamento.', sem_sessao: true }));
+      }
+      const body = await readBody(req);
+      // Só o SERVIDOR decide o que é "integrado": vindo da rede, estes campos
+      // são a própria porta que se quer fechar.
+      delete body.comprovante; delete body.pix_online; delete body.origem;
+      return res.end(JSON.stringify(await apiContaPagar(body)));
+    }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
