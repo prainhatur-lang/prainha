@@ -58,6 +58,31 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
     extrasPorFuncionario.set(e.funcionarioId, lista);
   }
 
+  // Dados de PAGAMENTO (folha) — unificados aqui pro cadastro ser um só
+  const fornIds = funcionarios.map((f) => f.fornecedorId).filter((x): x is string => !!x);
+  const pagamentosRows = fornIds.length
+    ? await db
+        .select({
+          fornecedorId: schema.fornecedorFolha.fornecedorId,
+          papel: schema.fornecedorFolha.papel,
+          gerenteModelo: schema.fornecedorFolha.gerenteModelo,
+          gerenteValorFixoDia: schema.fornecedorFolha.gerenteValorFixoDia,
+          diaristaModelo: schema.fornecedorFolha.diaristaModelo,
+          diaristaTaxaHoraOverride: schema.fornecedorFolha.diaristaTaxaHoraOverride,
+          diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
+          bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
+          bonusPorDia: schema.fornecedorFolha.bonusPorDia,
+          chavePix: schema.fornecedor.chavePix,
+          bancoNome: schema.fornecedor.bancoNome,
+          bancoAgencia: schema.fornecedor.bancoAgencia,
+          bancoConta: schema.fornecedor.bancoConta,
+        })
+        .from(schema.fornecedorFolha)
+        .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.fornecedorFolha.fornecedorId))
+        .where(inArray(schema.fornecedorFolha.fornecedorId, fornIds))
+    : [];
+  const pagamentoPorFornecedor = new Map(pagamentosRows.map((r) => [r.fornecedorId, r]));
+
   const ativos = funcionarios.filter((f) => f.ativo).length;
   const precisaRevisao = funcionarios.filter((f) => f.precisaRevisao).length;
   const semCpf = funcionarios.filter((f) => !f.cpf).length;
@@ -71,11 +96,8 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Funcionários</h1>
             <p className="mt-1 text-sm text-slate-600">
-              Cadastro único — nome, contato, cargo e admissão. Remuneração da folha fica em{' '}
-              <a href="/folha-equipe/pessoas" className="text-blue-600 hover:underline">
-                Remuneração (folha)
-              </a>
-              .
+              Cadastro único — nome, contato, cargo, admissão e <b>pagamento</b> (papel na
+              folha, diária, bônus e PIX ficam dentro do cadastro de cada pessoa).
             </p>
           </div>
           <div className="flex gap-4 text-right text-xs text-slate-500">
@@ -137,6 +159,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
             precisaRevisao: f.precisaRevisao,
             observacao: f.observacao,
             temFornecedor: !!f.fornecedorId,
+            pagamento: f.fornecedorId ? pagamentoPorFornecedor.get(f.fornecedorId) ?? null : null,
             temColaborador: !!f.colaboradorId,
             temUsuarioOperacao: !!f.usuarioOperacaoId,
             filiaisExtras: extrasPorFuncionario.get(f.id) ?? [],

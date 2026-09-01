@@ -20,6 +20,21 @@ interface Funcionario {
   precisaRevisao: boolean;
   observacao: string | null;
   temFornecedor: boolean;
+  /** Vínculo de pagamento da folha (fornecedor_folha + PIX do fornecedor). */
+  pagamento: {
+    papel: string;
+    gerenteModelo: string | null;
+    gerenteValorFixoDia: string | null;
+    diaristaModelo: string;
+    diaristaTaxaHoraOverride: string | null;
+    diaristaValorFixoDia: string | null;
+    bonusFixoSemanal: string | null;
+    bonusPorDia: string | null;
+    chavePix: string | null;
+    bancoNome: string | null;
+    bancoAgencia: string | null;
+    bancoConta: string | null;
+  } | null;
   temColaborador: boolean;
   temUsuarioOperacao: boolean;
   /** Filiais ADICIONAIS onde também bate ponto (quem circula entre lojas). */
@@ -287,6 +302,17 @@ function FuncionarioForm({
   const [regimeSalarial, setRegimeSalarial] = useState(funcionario?.regimeSalarial ?? '');
   const [salarioBase, setSalarioBase] = useState(funcionario?.salarioBase ?? '');
   const [filiaisExtras, setFiliaisExtras] = useState<string[]>(funcionario?.filiaisExtras ?? []);
+  // --- Pagamento (folha) — unificado no cadastro ---
+  const pg = funcionario?.pagamento ?? null;
+  const [papel, setPapel] = useState(pg?.papel ?? '');
+  const [diaristaModelo, setDiaristaModelo] = useState(pg?.diaristaModelo ?? 'por_hora');
+  const [diaristaTaxaHora, setDiaristaTaxaHora] = useState(pg?.diaristaTaxaHoraOverride ?? '');
+  const [diaristaValorDia, setDiaristaValorDia] = useState(pg?.diaristaValorFixoDia ?? '');
+  const [gerenteModelo, setGerenteModelo] = useState(pg?.gerenteModelo ?? '1pp_dos_10pct');
+  const [gerenteValorDia, setGerenteValorDia] = useState(pg?.gerenteValorFixoDia ?? '');
+  const [bonusSemanal, setBonusSemanal] = useState(pg?.bonusFixoSemanal ?? '');
+  const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
+  const [chavePix, setChavePix] = useState(pg?.chavePix ?? '');
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
   const [salvando, setSalvando] = useState(false);
@@ -324,6 +350,40 @@ function FuncionarioForm({
       if (!res.ok) {
         onError(json.error ?? 'Erro ao salvar');
         return;
+      }
+      // Pagamento (folha): cria/atualiza o vínculo — o backend cria o
+      // fornecedor sozinho se a pessoa ainda não tiver.
+      if (papel) {
+        const idFunc = editar ? funcionario.id : json.funcionario?.id;
+        if (idFunc) {
+          const num = (t: string) => {
+            const v = Number(String(t).replace(/\./g, '').replace(',', '.'));
+            return Number.isFinite(v) && v > 0 ? v : null;
+          };
+          const rp = await fetch(`/api/rh/funcionario/${idFunc}/pagamento`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              papel,
+              gerenteModelo: papel === 'gerente' ? gerenteModelo : null,
+              gerenteValorFixoDia:
+                papel === 'gerente' && gerenteModelo === 'fixo_por_dia' ? num(gerenteValorDia) : null,
+              diaristaModelo: papel === 'diarista' ? diaristaModelo : 'por_hora',
+              diaristaTaxaHoraOverride:
+                papel === 'diarista' && diaristaModelo === 'por_hora' ? num(diaristaTaxaHora) : null,
+              diaristaValorFixoDia:
+                papel === 'diarista' && diaristaModelo === 'fixo_por_dia' ? num(diaristaValorDia) : null,
+              bonusFixoSemanal: num(bonusSemanal),
+              bonusPorDia: num(bonusDia),
+              chavePix: chavePix.trim() || null,
+            }),
+          });
+          if (!rp.ok) {
+            const jp = await rp.json().catch(() => ({}));
+            onError(`Cadastro salvo, mas o pagamento falhou: ${jp.error ?? rp.status}`);
+            return;
+          }
+        }
       }
       onSaved(editar ? `${nome} atualizado.` : `${nome} cadastrado.`);
     } finally {
@@ -458,6 +518,134 @@ function FuncionarioForm({
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
         </label>
+      </div>
+
+      {/* PAGAMENTO (folha) — unificado no cadastro: sem papel escolhido a
+          pessoa não entra na folha semanal (só existe no RH/ponto). */}
+      <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50/40 p-3">
+        <p className="text-xs font-semibold text-emerald-800">💰 Pagamento (folha semanal)</p>
+        <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <label className="text-xs text-slate-500">
+            Como recebe
+            <select
+              value={papel}
+              onChange={(e) => setPapel(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">— fora da folha semanal —</option>
+              <option value="funcionario">Funcionário (rateio do 10%)</option>
+              <option value="diarista">Diarista</option>
+              <option value="gerente">Gerente</option>
+            </select>
+          </label>
+
+          {papel === 'diarista' && (
+            <>
+              <label className="text-xs text-slate-500">
+                Modelo da diária
+                <select
+                  value={diaristaModelo}
+                  onChange={(e) => setDiaristaModelo(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                >
+                  <option value="por_hora">Por hora trabalhada</option>
+                  <option value="fixo_por_dia">Valor fixo por dia</option>
+                </select>
+              </label>
+              {diaristaModelo === 'por_hora' ? (
+                <label className="text-xs text-slate-500">
+                  R$/hora (vazio = padrão da filial)
+                  <input
+                    value={diaristaTaxaHora}
+                    onChange={(e) => setDiaristaTaxaHora(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="ex: 10,00"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                  />
+                </label>
+              ) : (
+                <label className="text-xs text-slate-500">
+                  R$ por dia trabalhado
+                  <input
+                    value={diaristaValorDia}
+                    onChange={(e) => setDiaristaValorDia(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="ex: 150,00"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                  />
+                </label>
+              )}
+            </>
+          )}
+
+          {papel === 'gerente' && (
+            <>
+              <label className="text-xs text-slate-500">
+                Modelo do gerente
+                <select
+                  value={gerenteModelo}
+                  onChange={(e) => setGerenteModelo(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                >
+                  <option value="1pp_dos_10pct">1 ponto do 10%</option>
+                  <option value="fixo_por_dia">Valor fixo por dia</option>
+                </select>
+              </label>
+              {gerenteModelo === 'fixo_por_dia' && (
+                <label className="text-xs text-slate-500">
+                  R$ por dia trabalhado
+                  <input
+                    value={gerenteValorDia}
+                    onChange={(e) => setGerenteValorDia(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="ex: 200,00"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                  />
+                </label>
+              )}
+            </>
+          )}
+
+          {papel && (
+            <>
+              <label className="text-xs text-slate-500">
+                Bônus fixo semanal (R$)
+                <input
+                  value={bonusSemanal}
+                  onChange={(e) => setBonusSemanal(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="opcional"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                Bônus por dia trabalhado (R$)
+                <input
+                  value={bonusDia}
+                  onChange={(e) => setBonusDia(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="opcional"
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                Chave PIX (pra pagar)
+                <input
+                  value={chavePix}
+                  onChange={(e) => setChavePix(e.target.value)}
+                  placeholder="CPF, celular, e-mail..."
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                />
+              </label>
+            </>
+          )}
+        </div>
+        {!papel && (
+          <p className="mt-2 text-[11px] text-slate-500">
+            Escolha como a pessoa recebe pra ela entrar na folha semanal. Quem é só CLT pela
+            terceirizada fica em &quot;fora da folha&quot; (o salário do bloco acima é indicador de custo).
+          </p>
+        )}
       </div>
 
       {editar && outrasFiliais.length > 0 && (
