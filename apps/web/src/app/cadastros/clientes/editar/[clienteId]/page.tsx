@@ -8,7 +8,7 @@ import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { eq, inArray, and, desc } from 'drizzle-orm';
+import { eq, inArray, and, desc, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ClienteForm, type ValoresCliente } from '../../cliente-form';
 
@@ -49,6 +49,23 @@ export default async function EditarClientePage(props: {
   }
 
   const podeFiado = await podeUsuario(user.id, 'conta_receber.update');
+
+  // Cadastro único: essa pessoa já tem papel de fornecedor (vendedor)?
+  const docCliente = (cliente.cpfOuCnpj ?? '').replace(/\D/g, '');
+  const jaFornecedor = docCliente
+    ? (
+        await db
+          .select({ id: schema.fornecedor.id })
+          .from(schema.fornecedor)
+          .where(
+            and(
+              eq(schema.fornecedor.filialId, cliente.filialId),
+              sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '[^0-9]', '', 'g') = ${docCliente}`,
+            ),
+          )
+          .limit(1)
+      ).length > 0
+    : false;
 
   // Últimas alterações mandadas pra loja — mostra se alguma travou e, o mais
   // traiçoeiro, se a loja aplicou só PARTE dos campos: o agente < v1.4.0 só
@@ -146,6 +163,7 @@ export default async function EditarClientePage(props: {
           clienteId={cliente.id}
           iniciais={iniciais}
           podeFiado={podeFiado}
+          jaFornecedor={jaFornecedor}
           saldo={saldo}
           voltarHref="/cadastros/clientes"
         />

@@ -46,6 +46,8 @@ interface Props {
   podeFiado: boolean;
   /** Saldo devedor atual, só pra contexto na tela de edição. */
   saldo?: number | null;
+  /** Essa pessoa já tem cadastro de fornecedor (vendedor) na filial? */
+  jaFornecedor?: boolean;
   voltarHref: string;
 }
 
@@ -64,10 +66,30 @@ function Campo({
 }
 
 export function ClienteForm({
-  filialId, filialNome, clienteId, iniciais, podeFiado, saldo, voltarHref,
+  filialId, filialNome, clienteId, iniciais, podeFiado, saldo, voltarHref, jaFornecedor,
 }: Props) {
   const router = useRouter();
   const editando = !!clienteId;
+  // CADASTRO ÚNICO (papel é escolha): a mesma pessoa pode também vender pra
+  // casa. Só marca quando pedem — "pode ser, não quer dizer que seja".
+  const [ehFornecedor, setEhFornecedor] = useState(!!jaFornecedor);
+  const [marcandoForn, setMarcandoForn] = useState(false);
+
+  async function marcarComoFornecedor() {
+    if (!clienteId) return;
+    setMarcandoForn(true);
+    try {
+      const r = await fetch(`/api/clientes/${clienteId}/fornecedor`, { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      setEhFornecedor(true);
+    } finally {
+      setMarcandoForn(false);
+    }
+  }
   const [v, setV] = useState<ValoresCliente>(iniciais);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -398,6 +420,34 @@ export function ClienteForm({
             placeholder="Preferências, restrição alimentar, histórico…" />
         </Campo>
       </section>
+
+      {editando && (
+        <section className="rounded-xl border border-slate-200 bg-white p-4">
+          <p className="text-sm font-semibold text-slate-900">Outros papéis desta pessoa</p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            É o mesmo cadastro — a pessoa só ganha outro papel quando você marcar.
+          </p>
+          <div className="mt-2 flex items-center gap-3">
+            {ehFornecedor ? (
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                ✓ Também é fornecedor / vendedor
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={marcarComoFornecedor}
+                disabled={marcandoForn}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {marcandoForn ? 'Marcando…' : '+ Também é fornecedor / vendedor'}
+              </button>
+            )}
+            <span className="text-[11px] text-slate-400">
+              (a casa compra dele ou paga ele)
+            </span>
+          </div>
+        </section>
+      )}
 
       {erro && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{erro}</p>}
       {aviso && <p className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-800">{aviso}</p>}

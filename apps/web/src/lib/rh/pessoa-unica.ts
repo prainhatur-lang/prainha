@@ -214,3 +214,60 @@ export async function garantirPapeisDaPessoa(
 
   return { fornecedorId: fornecedorId!, clienteId, criouFornecedor, criouCliente, comandoLojaId };
 }
+
+/**
+ * Caminho INVERSO: marca um cliente como fornecedor (vendedor) também.
+ *
+ * Mesmo princípio — é escolha de quem cadastra, nunca automático: "se eu
+ * cadastrar um cliente, ele PODE ser um vendedor; não quer dizer que ele
+ * SEJA" (dono, 31/08/2026). Reaproveita o fornecedor que já existir com o
+ * mesmo CPF/CNPJ na filial em vez de duplicar a pessoa.
+ */
+export async function marcarClienteComoFornecedor(
+  clienteId: string,
+): Promise<{ fornecedorId: string; criou: boolean } | null> {
+  const [cli] = await db
+    .select({
+      id: schema.cliente.id,
+      filialId: schema.cliente.filialId,
+      nome: schema.cliente.nome,
+      doc: schema.cliente.cpfOuCnpj,
+      celular: schema.cliente.celular,
+      telefone: schema.cliente.telefone,
+      email: schema.cliente.email,
+    })
+    .from(schema.cliente)
+    .where(eq(schema.cliente.id, clienteId))
+    .limit(1);
+  if (!cli) return null;
+
+  const doc = soDigitos(cli.doc);
+  const fone = soDigitos(cli.celular ?? cli.telefone);
+
+  if (doc) {
+    const [achado] = await db
+      .select({ id: schema.fornecedor.id })
+      .from(schema.fornecedor)
+      .where(
+        and(
+          eq(schema.fornecedor.filialId, cli.filialId),
+          isNull(schema.fornecedor.dataDelete),
+          sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '[^0-9]', '', 'g') = ${doc}`,
+        ),
+      )
+      .limit(1);
+    if (achado) return { fornecedorId: achado.id, criou: false };
+  }
+
+  const [novo] = await db
+    .insert(schema.fornecedor)
+    .values({
+      filialId: cli.filialId,
+      nome: (cli.nome ?? '').trim() || 'Sem nome',
+      cnpjOuCpf: doc || null,
+      fonePrincipal: fone || null,
+      email: cli.email ?? null,
+    })
+    .returning({ id: schema.fornecedor.id });
+  return { fornecedorId: novo!.id, criou: true };
+}
