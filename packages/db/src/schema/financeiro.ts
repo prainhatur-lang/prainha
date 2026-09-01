@@ -46,6 +46,11 @@ export const fornecedor = pgTable(
     cep: varchar('cep', { length: 10 }),
     email: varchar('email', { length: 200 }),
     fonePrincipal: varchar('fone_principal', { length: 30 }),
+    /** Número que a CASA usa pra falar com o fornecedor (WhatsApp). Existe
+     *  separado porque `fone_principal` vem do Consumer e é sobrescrito a cada
+     *  sync — normalmente pelo FIXO da empresa, onde wa.me não chega. Este
+     *  campo é só da nuvem: o mapper nunca toca nele. */
+    foneWhatsapp: varchar('fone_whatsapp', { length: 30 }),
     foneSecundario: varchar('fone_secundario', { length: 30 }),
     rgOuIe: varchar('rg_ou_ie', { length: 30 }),
     /** Flag pra cotacao: true = aparece como opção na tela de Nova Cotacao.

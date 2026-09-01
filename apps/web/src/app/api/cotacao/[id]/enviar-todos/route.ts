@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { conviteCotacaoConfigurado, enviarConviteCotacao } from '@/lib/whatsapp-otp';
 
 export const runtime = 'nodejs';
@@ -57,7 +57,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       id: schema.cotacaoFornecedor.id,
       token: schema.cotacaoFornecedor.tokenPublico,
       nome: schema.fornecedor.nome,
-      fone: schema.fornecedor.fonePrincipal,
+      // WhatsApp da casa primeiro; fone_principal vem do Consumer e costuma
+      // ser o fixo da empresa, onde a mensagem não chega.
+      fone: sql<string | null>`COALESCE(NULLIF(${schema.fornecedor.foneWhatsapp}, ''), ${schema.fornecedor.fonePrincipal})`,
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))

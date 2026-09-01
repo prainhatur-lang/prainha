@@ -57,6 +57,10 @@ export async function PATCH(
       return NextResponse.json({ error: 'fonePrincipal invalido' }, { status: 400 });
     }
     updates.fonePrincipal = f;
+    // O WhatsApp da casa vai TAMBÉM pro campo que o sync não sobrescreve.
+    // Sem isso, o número volta a ser o fixo do Consumer na próxima rodada e a
+    // mensagem some (foi o que aconteceu com o pedido 24 da Megga).
+    updates.foneWhatsapp = f;
   }
   if ('email' in body) updates.email = body.email?.trim().slice(0, 200) || null;
   if (typeof body.nome === 'string' && body.nome.trim()) {

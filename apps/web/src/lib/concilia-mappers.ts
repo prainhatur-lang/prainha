@@ -254,8 +254,10 @@ async function mapFornecedores(filialId: string, op: Operacao, chave: string, d:
         cnpjOuCpf: row.cnpjOuCpf,
         rgOuIe: row.rgOuIe,
         // Contatos (email/telefones): só sobrescreve se o Consumer mandar valor.
-        // Se vier vazio, PRESERVA o que foi cadastrado no concilia (ex.: telefone
-        // do fornecedor pra cotação no WhatsApp) — senão o sync apaga toda hora.
+        // Se vier vazio, PRESERVA o que foi cadastrado no concilia — senão o
+        // sync apaga toda hora. ATENÇÃO: quando o Consumer TEM número (quase
+        // sempre o fixo), ele ganha. Por isso o WhatsApp da casa mora em
+        // `fone_whatsapp`, que este upsert não lista de propósito.
         email: drizzleSql`COALESCE(NULLIF(excluded.email, ''), ${schema.fornecedor.email})`,
         fonePrincipal: drizzleSql`COALESCE(NULLIF(excluded.fone_principal, ''), ${schema.fornecedor.fonePrincipal})`,
         foneSecundario: drizzleSql`COALESCE(NULLIF(excluded.fone_secundario, ''), ${schema.fornecedor.foneSecundario})`,
