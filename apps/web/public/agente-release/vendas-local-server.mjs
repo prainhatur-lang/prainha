@@ -7201,6 +7201,19 @@ async function apiCaixaReceberManual(body, quem) {
     const cx = await fbCaixaDoOperador(quem.login);
     if (!cx) return { ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' };
     caixaCodigo = cx.codigo;
+  } else if (f.codigo !== FORMA.IFOOD_ONLINE) {
+    // CARTÃO/PIX também vão pro caixa de QUEM RECEBEU. Sem isto, iam com
+    // caixa_codigo=null e caíam em fbCaixaAberto(), que pega o caixa aberto de
+    // CÓDIGO MAIS ALTO — quase sempre o caixa-maquininha de um garçom, que
+    // abre sozinho o dia todo. Medido em 30/08: 37 de 37 recebimentos do
+    // balcão caíram no caixa de outra pessoa, sempre o "mais recente". Isso
+    // punha dinheiro do balcão no caixa do garçom E travava o fechamento dele
+    // pra sempre (caixaMaquininhaConfere reprova qualquer pagamento sem NSU).
+    // Sem caixa do operador, mantém o comportamento antigo — recusar aqui
+    // travaria o recebimento no meio do movimento —, mas deixa rastro.
+    const cx = await fbCaixaDoOperador(quem.login);
+    if (cx) caixaCodigo = cx.codigo;
+    else console.error(`[caixa] ${quem.login} recebeu ${f.nome} R$ ${valor} SEM caixa próprio aberto — vai cair no caixa aberto mais recente (atribuição imprecisa)`);
   }
   // comprovante: da câmera do tablet (dataUrl) ou do token que o celular usou
   let arquivo = null;
