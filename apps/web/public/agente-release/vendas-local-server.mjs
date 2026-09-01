@@ -15979,7 +15979,24 @@ const server = http.createServer(async (req, res) => {
       atenderChamadoGarcom(n, 'conta-aberta').catch(() => {});
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n)));
     }
-    if (req.method === 'POST' && p === '/api/conta/pagar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaPagar(body))); }
+    // ⚠️ EXIGE SESSÃO. Até 31/08 esta rota chamava apiContaPagar com o corpo
+    // CRU e sem autenticação nenhuma — e o Funnel a expõe na internet. Como
+    // `comprovante:true` e `pix_online:true` dispensam a trava anti-fraude
+    // (ver apiContaPagar), qualquer um com a URL registrava pagamento falso e
+    // zerava a conta de uma mesa. Agora vale a mesma régua de /api/lio/pagar.
+    if (req.method === 'POST' && p === '/api/conta/pagar') {
+      const quem = (await garcomDaRequisicao(req, u)) || (await caixaDaRequisicao(req, u));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!quem) {
+        console.error('[conta/pagar] RECUSADO sem sessão · ' + (req.socket?.remoteAddress || '?'));
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre de novo pra registrar pagamento.', sem_sessao: true }));
+      }
+      const body = await readBody(req);
+      // Só o SERVIDOR decide o que é "integrado": vindo da rede, estes campos
+      // são a própria porta que se quer fechar.
+      delete body.comprovante; delete body.pix_online; delete body.origem;
+      return res.end(JSON.stringify(await apiContaPagar(body)));
+    }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
