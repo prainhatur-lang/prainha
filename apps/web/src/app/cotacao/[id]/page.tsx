@@ -3,6 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
+import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { eq, asc, inArray, sql } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { AppHeader } from '@/components/app-header';
@@ -102,7 +103,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       fornecedorId: schema.fornecedor.id,
       fornecedorNome: schema.fornecedor.nome,
       // WhatsApp da casa primeiro; o fone do Consumer costuma ser fixo.
-      fonePrincipal: sql<string | null>`COALESCE(NULLIF(${schema.fornecedor.foneWhatsapp}, ''), ${schema.fornecedor.fonePrincipal})`,
+      fonePrincipal: foneParaWhatsapp(),
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))

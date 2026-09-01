@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
+import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { desc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
@@ -61,7 +62,7 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       criadoEm: schema.pedidoCompra.criadoEm,
       fornecedorNome: schema.fornecedor.nome,
       // WhatsApp da casa primeiro; o fone do Consumer costuma ser fixo.
-      fornecedorFone: sql<string | null>`COALESCE(NULLIF(${schema.fornecedor.foneWhatsapp}, ''), ${schema.fornecedor.fonePrincipal})`,
+      fornecedorFone: foneParaWhatsapp(),
     })
     .from(schema.pedidoCompra)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.pedidoCompra.fornecedorId))

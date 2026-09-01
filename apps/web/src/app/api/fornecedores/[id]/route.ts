@@ -28,6 +28,7 @@ export async function PATCH(
     ativoCompras?: boolean;
     categoriaCompras?: string | null;
     fonePrincipal?: string | null;
+    foneWhatsapp?: string | null;
     email?: string | null;
     nome?: string;
   };
@@ -51,6 +52,10 @@ export async function PATCH(
   }
   if (typeof body.ativoCompras === 'boolean') updates.ativoCompras = body.ativoCompras;
   if ('categoriaCompras' in body) updates.categoriaCompras = body.categoriaCompras ?? null;
+  if ('foneWhatsapp' in body) {
+    const w = body.foneWhatsapp?.trim().slice(0, 30) || null;
+    updates.foneWhatsapp = w;
+  }
   if ('fonePrincipal' in body) {
     const f = body.fonePrincipal?.trim().slice(0, 30) || null;
     if (f && f.replace(/\D/g, '').length < 10) {

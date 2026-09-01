@@ -182,6 +182,7 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'produto.update',
           },
           { label: 'Fornecedores', href: '/cadastros/fornecedores', perm: 'fornecedor.read' },
+          { label: 'Vendedores', href: '/cadastros/vendedores', perm: 'fornecedor.read' },
           {
             label: 'Categorizar produtos',
             href: '/cadastros/produtos/categorizar',

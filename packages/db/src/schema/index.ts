@@ -35,3 +35,4 @@ export * from './delivery-online';
 export * from './cancelamento';
 export * from './rh';
 export * from './escuta';
+export * from './vendedor';
