@@ -6024,19 +6024,74 @@ async function apiCaixaDetalhe(codigo) {
 // com NSU, com par exato no venda_pagamento (mesmo NSU e valor), e ZERO
 // dinheiro. Usada pelo autofechamento (04:00) e pelo fechar-caixa da maquininha.
 async function caixaMaquininhaConfere(cod) {
-  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU
+  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
+      CAST(DATAPAGAMENTO AS DATE) DIA
     FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
   if (!pg.ok) return { bate: false, motivo: 'FB: ' + pg.err, n: 0 };
+  if (!pg.rows.length) return { bate: true, n: 0 };
+
+  // 2ª prova: o EXTRATO DA CIELO (EDI, importado pelo central). É a fonte da
+  // verdade do dinheiro — vale mais que o registro interno. Sem ele o
+  // pagamento só batia se tivesse vindo pelo app da LIO (venda_pagamento), o
+  // que reprovava pra sempre todo caixa com recebimento manual, mesmo com NSU
+  // certo. Cielo cobre cartão E Pix (o Pix da casa passa pela maquininha).
+  const cielo = await cieloExtrato().catch(() => null);
+  const usados = new Set(); // uma transação da Cielo casa com um pagamento só
+
   for (const p of pg.rows) {
     if (Number(p.F) === FORMA.DINHEIRO) return { bate: false, motivo: 'tem DINHEIRO lançado (maquininha não recebe dinheiro)', n: pg.rows.length };
-    const nsu = p.NSU != null ? String(p.NSU) : '';
-    if (!nsu) return { bate: false, motivo: `pagamento de R$ ${p.V} sem NSU`, n: pg.rows.length };
-    const [par] = await sql`SELECT id FROM venda_pagamento
-      WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
-        AND valor = ${Number(p.V)} LIMIT 1`;
-    if (!par) return { bate: false, motivo: `NSU ${nsu} (R$ ${p.V}) sem par no registro do sistema`, n: pg.rows.length };
+    const nsu = p.NSU != null ? String(p.NSU).replace(/\D/g, '') : '';
+    const valor = Number(p.V);
+    const dia = p.DIA ? String(p.DIA).slice(0, 10) : null;
+
+    // a) registro interno do app da LIO — o caminho de sempre
+    if (nsu) {
+      const [par] = await sql`SELECT id FROM venda_pagamento
+        WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
+          AND valor = ${valor} LIMIT 1`;
+      if (par) continue;
+    }
+
+    // b) extrato da Cielo — pelo NSU quando há, senão por valor+dia
+    if (cielo && dia) {
+      if (dia > cielo.ate) {
+        return { bate: false, n: pg.rows.length,
+          motivo: `extrato da Cielo ainda não cobre ${dia.split('-').reverse().join('/')} (vai até ${String(cielo.ate).split('-').reverse().join('/')}) — fecha quando chegar` };
+      }
+      // NSU recicla com o tempo (o mesmo número aparece em meses diferentes),
+      // por isso o dia entra sempre no par. `usados` impede que uma transação
+      // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
+      // lançamento aparece em vez de passar batido.
+      const ix = cielo.vendas.findIndex((v, i) =>
+        !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
+        (nsu ? String(v.nsu).replace(/\D/g, '') === nsu : true));
+      if (ix >= 0) { usados.add(ix); continue; }
+    }
+
+    return { bate: false, n: pg.rows.length,
+      motivo: nsu
+        ? `NSU ${nsu} (R$ ${valor.toFixed(2)}) sem par no sistema nem no extrato da Cielo`
+        : `pagamento de R$ ${valor.toFixed(2)} sem NSU e sem par no extrato da Cielo` };
   }
   return { bate: true, n: pg.rows.length };
+}
+/** Extrato Cielo dos últimos 30 dias, do central. Cache de 30min: a
+ *  conferência roda caixa a caixa e o extrato muda uma vez por dia. */
+let cieloCache = { em: 0, dados: null };
+async function cieloExtrato() {
+  if (Date.now() - cieloCache.em < 30 * 60e3) return cieloCache.dados;
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  try {
+    const hoje = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+    const de = new Date(Date.now() - 33 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('cielo-extrato', e), de, ate: hoje });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/cielo-extrato?${qs}`, { signal: AbortSignal.timeout(15000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !Array.isArray(j.vendas)) return null;
+    cieloCache = { em: Date.now(), dados: { ate: j.extrato_ate || '0000-00-00', vendas: j.vendas } };
+    return cieloCache.dados;
+  } catch { return null; } // central fora: cai no critério antigo, não trava
 }
 // Fechar o caixa da MAQUININHA do próprio garçom (troca de turno no aparelho).
 // Só o caixa nascido na maquininha, e só se BATER — não bateu, fica aberto
