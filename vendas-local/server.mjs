@@ -6075,6 +6075,21 @@ async function caixaMaquininhaConfere(cod) {
   }
   return { bate: true, n: pg.rows.length };
 }
+/** Roda a conferência em todo caixa de maquininha aberto e devolve o veredito,
+ *  sem fechar nada. Read-only de propósito: dá pro gerente (e pro painel) ver
+ *  hoje o que a rotina das 04:00 faria de madrugada. */
+async function apiCaixaConferirTodos() {
+  const abertos = await caixasAbertos();
+  if (!abertos) return { ok: true, caixas: [] };
+  const out = [];
+  for (const c of abertos) {
+    const maquininha = String(c.obs || '').startsWith('Aberto automaticamente');
+    if (!maquininha) { out.push({ codigo: c.codigo, quem: c.quem, tipo: 'sistema', fecharia: false, motivo: 'caixa de gaveta — fecha no balcão, com conferência de dinheiro' }); continue; }
+    const conf = await caixaMaquininhaConfere(c.codigo).catch((e) => ({ bate: false, motivo: 'erro: ' + e.message, n: 0 }));
+    out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', pagamentos: conf.n ?? 0, fecharia: !!conf.bate, motivo: conf.bate ? null : conf.motivo });
+  }
+  return { ok: true, caixas: out, fecham: out.filter((x) => x.fecharia).length, ficam: out.filter((x) => !x.fecharia).length };
+}
 /** Extrato Cielo dos últimos 30 dias, do central. Cache de 30min: a
  *  conferência roda caixa a caixa e o extrato muda uma vez por dia. */
 let cieloCache = { em: 0, dados: null };
@@ -15817,6 +15832,10 @@ const server = http.createServer(async (req, res) => {
       const central = { login: 'central', nome: 'Concilia (central)', admin: true };
       if (p === '/api/central/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
       if (p === '/api/central/caixa/detalhe') return res.end(JSON.stringify(await apiCaixaDetalhe(u.searchParams.get('caixa'))));
+      // Veredito da conferência SEM fechar nada — é o mesmo caixaMaquininhaConfere
+      // que a rotina das 04:00 usa. Serve pro painel mostrar "bateu/não bateu, e
+      // por quê" em vez do gerente descobrir só na manhã seguinte.
+      if (p === '/api/central/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferirTodos()));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
