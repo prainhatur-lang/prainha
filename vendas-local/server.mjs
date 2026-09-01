@@ -6042,7 +6042,7 @@ async function caixaMaquininhaConfere(cod) {
     if (Number(p.F) === FORMA.DINHEIRO) return { bate: false, motivo: 'tem DINHEIRO lançado (maquininha não recebe dinheiro)', n: pg.rows.length };
     const nsu = p.NSU != null ? String(p.NSU).replace(/\D/g, '') : '';
     const valor = Number(p.V);
-    const dia = p.DIA ? String(p.DIA).slice(0, 10) : null;
+    const dia = ymdDoBanco(p.DIA);
 
     // a) registro interno do app da LIO — o caminho de sempre
     if (nsu) {
@@ -6089,6 +6089,24 @@ async function apiCaixaConferirTodos() {
     out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', pagamentos: conf.n ?? 0, fecharia: !!conf.bate, motivo: conf.bate ? null : conf.motivo });
   }
   return { ok: true, caixas: out, fecham: out.filter((x) => x.fecharia).length, ficam: out.filter((x) => !x.fecharia).length };
+}
+/** YYYY-MM-DD de uma data vinda do banco. O driver do Firebird devolve DATE
+ *  como objeto Date do JS, e `String(d).slice(0,10)` vira "Tue Aug 25" — que
+ *  comparado com "2026-08-31" dá maior (T > 2) e fazia TODO caixa parecer fora
+ *  da cobertura do extrato. Usa os getters locais (não toISOString) porque o
+ *  Date nasce na timezone do servidor da loja; UTC devolveria o dia anterior.  */
+function ymdDoBanco(v) {
+  if (!v) return null;
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null;
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+  }
+  const t = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);            // ISO
+  const br = t.match(/^(\d{2})[./-](\d{2})[./-](\d{4})/);              // DD.MM.YYYY
+  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? null : ymdDoBanco(d);
 }
 /** Extrato Cielo dos últimos 30 dias, do central. Cache de 30min: a
  *  conferência roda caixa a caixa e o extrato muda uma vez por dia. */
