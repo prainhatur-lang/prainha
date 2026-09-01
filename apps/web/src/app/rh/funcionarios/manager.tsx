@@ -512,7 +512,7 @@ function FuncionarioForm({
               onChange={(e) => setRegimeSalarial(e.target.value)}
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
             >
-              <option value="">— sem registro —</option>
+              <option value="">Sem registro (freela / só folha semanal)</option>
               <option value="clt_mensal">CLT mensal (salário fixo)</option>
               <option value="intermitente_hora">Intermitente (paga por hora do ponto)</option>
             </select>
@@ -549,7 +549,7 @@ function FuncionarioForm({
             >
               <option value="">— fora da folha semanal —</option>
               <option value="funcionario">Funcionário (rateio do 10%)</option>
-              <option value="diarista">Diarista</option>
+              <option value="diarista">Diarista / Freela</option>
               <option value="gerente">Gerente</option>
             </select>
           </label>
@@ -657,7 +657,7 @@ function FuncionarioForm({
         </div>
         {!papel && (
           <p className="mt-2 text-[11px] text-slate-500">
-            Escolha como a pessoa recebe pra ela entrar na folha semanal. Quem é só CLT pela
+            Escolha como a pessoa recebe pra entrar na folha semanal — FREELA entra aqui como Diarista, com o valor por hora ou por dia. Quem é só CLT pela
             terceirizada fica em &quot;fora da folha&quot; (o salário do bloco acima é indicador de custo).
           </p>
         )}
