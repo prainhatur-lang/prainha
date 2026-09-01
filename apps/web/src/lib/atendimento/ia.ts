@@ -65,6 +65,15 @@ export interface ExecutoresFerramentas {
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
   cancelarReserva: (data: string | null) => Promise<string>;
+  cadastrarFornecedor: (dados: {
+    empresa: string;
+    produtos: string;
+    vendedor: string | null;
+    cnpj: string | null;
+    email: string | null;
+    cidade: string | null;
+    telefoneContato: string | null;
+  }) => Promise<string>;
   consultarEstorno: () => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
@@ -222,6 +231,11 @@ FLUXO DE EVENTOS — você é a VENDEDORA dos eventos, não recepcionista de rec
 - Se a ferramenta responder TRAVA (valor fora da faixa), espaço sem taxa fixa (gramado/varandinha sozinha) ou capacidade estourada: NÃO cite valor — registre o lead e transfira pra equipe.
 - Evento sem data ainda, cliente só pesquisando, ou pedido complexo (festa com DECORAÇÃO contratada, corporativo com café/coquetel/exclusividade, open bar): registre o lead com o que tiver e transfira — esses são montados sob medida pela equipe. Atenção: "sem data" é o único item dessa lista que se resolve perguntando — pergunte a data antes de desistir do orçamento.
 - Perguntas de preço de espaço SEM preço informado acima: diga que a equipe confirma o valor certinho e registre o lead.
+
+VENDEDOR OFERECENDO PRODUTO OU SERVIÇO (prospecção — "trabalho com vinhos", "represento a distribuidora X", "posso mandar tabela?"):
+- NÃO despache nem transfira direto: a casa GOSTA de conhecer fornecedor novo. Acolha e colete, com jeito de conversa: nome da EMPRESA, O QUE vende (aproxime das categorias que a casa compra: vinhos e espumantes, cervejas, massas, açúcar e mercearia, pescados e camarão, hortifrúti, carnes, descartáveis e limpeza, gás, gelo...), nome do VENDEDOR, CNPJ, e-mail e cidade (esses três se a pessoa tiver à mão — não trave sem eles).
+- Com EMPRESA + O QUE VENDE em mãos, chame cadastrar_fornecedor. Confirme que o cadastro foi feito e que a equipe de compras inclui a empresa nas próximas cotações da categoria — as cotações chegam por este mesmo WhatsApp com link pra preencher preços.
+- NUNCA prometa compra, volume ou valores; negociação é com a equipe de compras. Catálogo/tabela que a pessoa mandar fica registrado aqui na conversa.
 
 QUANDO TRANSFERIR (transferir_para_humano):
 LINGUAGEM: diga que vai chamar um colega, passar pra alguém, buscar ajuda de um superior — faça parecer conversação natural, não "mandar pra equipe".
@@ -440,6 +454,27 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           data: { type: 'string', description: 'YYYY-MM-DD da reserva a cancelar (omitir se o cliente só tem uma)' },
         },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cadastrar_fornecedor',
+      description:
+        'Cadastra um VENDEDOR/EMPRESA que entrou em contato OFERECENDO produto ou serviço (prospecção) no sistema de compras — a empresa passa a poder entrar nas cotações. Chame depois de coletar pelo menos EMPRESA e O QUE ELA VENDE; os demais campos são bem-vindos mas opcionais. NUNCA use pra cliente comum.',
+      parameters: {
+        type: 'object',
+        properties: {
+          empresa: { type: 'string', description: 'nome da empresa/distribuidora' },
+          produtos: { type: 'string', description: 'o que vende, curto (ex: "vinhos e espumantes", "massas", "açúcar e mercearia", "pescados")' },
+          vendedor: { type: 'string', description: 'nome do vendedor/representante' },
+          cnpj: { type: 'string', description: 'CNPJ se informado' },
+          email: { type: 'string', description: 'e-mail comercial se informado' },
+          cidade: { type: 'string', description: 'cidade/UF se informada' },
+          telefone_contato: { type: 'string', description: 'telefone do vendedor SE diferente deste WhatsApp' },
+        },
+        required: ['empresa', 'produtos'],
       },
     },
   },
@@ -827,6 +862,16 @@ Como usar, SEM EXCEÇÃO:
           });
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
+        } else if (tc.function.name === 'cadastrar_fornecedor') {
+          resultado = await params.executores.cadastrarFornecedor({
+            empresa: String(args.empresa ?? ''),
+            produtos: String(args.produtos ?? ''),
+            vendedor: String(args.vendedor ?? '') || null,
+            cnpj: String(args.cnpj ?? '') || null,
+            email: String(args.email ?? '') || null,
+            cidade: String(args.cidade ?? '') || null,
+            telefoneContato: String(args.telefone_contato ?? '') || null,
+          });
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
         } else if (tc.function.name === 'transferir_para_humano') {

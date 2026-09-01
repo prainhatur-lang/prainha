@@ -25,7 +25,7 @@ import {
 import { consultarCardapio } from './cardapio';
 import { medirOcupacaoHoje } from './ocupacao';
 import { consultarMareTexto } from './mare';
-import { consultarCotacoesFornecedor } from './fornecedor';
+import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 
 const DEBOUNCE_MS = 6_000;
@@ -174,10 +174,15 @@ function podarEmojis(texto: string, permitidos: number): string {
 function limparMarkdown(texto: string): string {
   return texto
     .replace(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g, '$1') // imagem -> url
-    .replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, rotulo, url) =>
-      // "[Link para responder](url)" vira só a url; rótulo que agrega vira "rótulo: url"
-      /^(link|clique|aqui|acesse|responder)/i.test(String(rotulo).trim()) ? String(url) : `${rotulo}: ${url}`,
-    )
+    .replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, rotulo, url) => {
+      // "[url](url)" ou rótulo que já é URL vira SÓ a url (caso Jackson,
+      // 01/09: o link da cotação saiu duplicado com colchetes crus);
+      // "[Link para responder](url)" vira só a url; rótulo informativo
+      // vira "rótulo: url".
+      const r = String(rotulo).trim();
+      if (/^https?:\/\//i.test(r) || /^(link|clique|aqui|acesse|responder)/i.test(r)) return String(url);
+      return `${r}: ${url}`;
+    })
     .replace(/\*\*\*([^*\n]+)\*\*\*/g, '*$1*')
     .replace(/\*\*([^*\n]+)\*\*/g, '*$1*')
     .replace(/(^|\s)__([^_\n]+)__(?=\s|$|[.,!?])/g, '$1*$2*')
@@ -530,6 +535,25 @@ export async function processarEntrada(params: {
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       consultarEstorno: () => consultarEstornoWhatsApp(entrada.filialId, entrada.telefone),
+      cadastrarFornecedor: async (dados: {
+        empresa: string; produtos: string; vendedor: string | null; cnpj: string | null;
+        email: string | null; cidade: string | null; telefoneContato: string | null;
+      }) => {
+        const r = await cadastrarFornecedorProspect({
+          filialId: entrada.filialId,
+          telefoneConversa: entrada.telefone,
+          ...dados,
+        });
+        if (r.startsWith('FORNECEDOR CADASTRADO')) {
+          void avisarEquipe(numerosEquipe, {
+            motivo: `Novo fornecedor prospect: ${dados.empresa} (${dados.produtos})`,
+            nomeCliente: dados.vendedor ?? conversa.nomeCliente ?? 'vendedor',
+            telefone: entrada.telefone,
+            filial: filialNome,
+          });
+        }
+        return r;
+      },
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)

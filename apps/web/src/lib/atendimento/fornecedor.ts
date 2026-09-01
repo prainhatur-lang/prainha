@@ -37,9 +37,13 @@ export async function consultarCotacoesFornecedor(telefone: string): Promise<str
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.cotacao, eq(schema.cotacao.id, schema.cotacaoFornecedor.cotacaoId))
     .where(
+      // fecha_em no futuro: cotação com janela VENCIDA que ficou 'ABERTA' no
+      // banco é zumbi — a Nina mandou o link da nº 3 (fechada em 03/08) pro
+      // Jackson em 01/09 e a página recusou a resposta dele.
       sql`${inArray(schema.cotacaoFornecedor.fornecedorId, ids)}
           AND ${schema.cotacaoFornecedor.status} = 'PENDENTE'
-          AND ${schema.cotacao.status} = 'ABERTA'`,
+          AND ${schema.cotacao.status} = 'ABERTA'
+          AND (${schema.cotacao.fechaEm} IS NULL OR ${schema.cotacao.fechaEm} > now())`,
     )
     .orderBy(desc(schema.cotacao.numero))
     .limit(3);
@@ -100,4 +104,60 @@ export async function consultarCotacoesFornecedor(telefone: string): Promise<str
   }
 
   return blocos.join('\n\n');
+}
+
+/** Cadastro de fornecedor PROSPECT feito pela Nina (pedido do Elison 01/09):
+ *  vendedor que chega oferecendo produto/serviço vira cadastro real na
+ *  tabela fornecedor (ativo pra compras) e pode ser incluído nas cotações.
+ *  Dedupe pelo telefone: se já existe cadastro vivo com esse fone, não
+ *  duplica — devolve o nome pro modelo confirmar. */
+export async function cadastrarFornecedorProspect(p: {
+  filialId: string;
+  /** Telefone da conversa (vira fone_principal se o vendedor não der outro). */
+  telefoneConversa: string;
+  empresa: string;
+  produtos: string; // o que vende — vira categoria_compras (texto curto)
+  vendedor?: string | null;
+  cnpj?: string | null;
+  email?: string | null;
+  cidade?: string | null;
+  telefoneContato?: string | null;
+}): Promise<string> {
+  const empresa = (p.empresa ?? '').trim().slice(0, 180);
+  const produtos = (p.produtos ?? '').trim().slice(0, 90);
+  if (empresa.length < 2 || produtos.length < 3) {
+    return 'Faltou o nome da EMPRESA ou O QUE ela vende — pergunte ao vendedor e chame de novo com os dois.';
+  }
+  const fone = (p.telefoneContato ?? '').replace(/\D/g, '') || p.telefoneConversa.replace(/\D/g, '');
+  const suf = fone.slice(-8);
+
+  const existentes = (await db.execute(sql`
+    SELECT nome FROM fornecedor
+    WHERE data_delete IS NULL AND coalesce(nome, '') NOT ILIKE '%exclu%'
+      AND (right(regexp_replace(coalesce(fone_principal, ''), '\\D', '', 'g'), 8) = ${suf}
+           OR right(regexp_replace(coalesce(fone_secundario, ''), '\\D', '', 'g'), 8) = ${suf})
+    LIMIT 1
+  `)) as unknown as Array<{ nome: string }>;
+  if (existentes.length > 0) {
+    return `Este telefone já está cadastrado como fornecedor: ${existentes[0].nome}. Não cadastrei de novo — diga que a empresa já está no nosso sistema de compras e que aparece nas cotações da categoria dela.`;
+  }
+
+  const cnpj = (p.cnpj ?? '').replace(/\D/g, '').slice(0, 14) || null;
+  await db.insert(schema.fornecedor).values({
+    filialId: p.filialId,
+    nome: empresa,
+    razaoSocial: empresa,
+    cnpjOuCpf: cnpj,
+    email: (p.email ?? '').trim().slice(0, 200) || null,
+    fonePrincipal: fone.slice(0, 20),
+    foneWhatsapp: p.telefoneConversa.replace(/\D/g, '').slice(0, 20),
+    cidade: (p.cidade ?? '').trim().slice(0, 100) || null,
+    categoriaCompras: produtos,
+    ativoCompras: true,
+  });
+
+  return (
+    `FORNECEDOR CADASTRADO: ${empresa} (${produtos})${p.vendedor ? `, vendedor ${p.vendedor}` : ''}${cnpj ? ', com CNPJ' : ', SEM CNPJ (se conseguir, peça e avise a equipe)'}. ` +
+    'Confirme ao vendedor que o cadastro foi feito e que a equipe de compras vai incluir a empresa nas próximas cotações da categoria — SEM prometer compra nem valores. Se ele quiser mandar catálogo/tabela, pode enviar aqui mesmo que fica registrado.'
+  );
 }
