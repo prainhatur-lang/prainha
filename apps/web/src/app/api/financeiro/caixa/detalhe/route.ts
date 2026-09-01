@@ -7,6 +7,9 @@ import { chamarLojaCaixa } from '@/lib/caixa-loja';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// timeout da plataforma acima do AbortSignal.timeout(20000) de chamarLojaCaixa,
+// pra loja lenta virar "Loja fora do ar" em vez de erro genérico da plataforma
+export const maxDuration = 30;
 
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('relatorio.read');

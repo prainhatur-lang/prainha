@@ -6023,26 +6023,45 @@ async function apiCaixaDetalhe(codigo) {
 // A régua do BATER (regra do dono: só fecha se bater): todo pagamento do caixa
 // com NSU, com par exato no venda_pagamento (mesmo NSU e valor), e ZERO
 // dinheiro. Usada pelo autofechamento (04:00) e pelo fechar-caixa da maquininha.
+//
+// Devolve SEMPRE: {bate, n, total, categoria, motivo, bloqueios[], extrato_ate}.
+// `bloqueios` lista TUDO que trava o caixa (não só o primeiro) — é o que o
+// gerente lê na Conferência pra saber o que investigar, com NSU/valor/dia.
 async function caixaMaquininhaConfere(cod) {
-  const pg = await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
-      CAST(DATAPAGAMENTO AS DATE) DIA
-    FROM PAGAMENTOS WHERE CODIGOCAIXA=${cod} AND DATADELETE IS NULL`);
-  if (!pg.ok) return { bate: false, motivo: 'FB: ' + pg.err, n: 0 };
-  if (!pg.rows.length) return { bate: true, n: 0 };
+  const pgs = await caixaPagamentosDoCaixa(cod);
+  if (!pgs.ok) {
+    return { bate: false, n: 0, total: 0, categoria: 'erro_banco', bloqueios: [],
+      motivo: 'não deu pra ler os pagamentos deste caixa (' + pgs.err + ') — conferência não rodou' };
+  }
+  const linhas = pgs.rows;
+  const total = Math.round(linhas.reduce((s, x) => s + Number(x.V), 0) * 100) / 100;
+  if (!linhas.length) return { bate: true, n: 0, total: 0, categoria: null, motivo: null, bloqueios: [] };
 
   // 2ª prova: o EXTRATO DA CIELO (EDI, importado pelo central). É a fonte da
   // verdade do dinheiro — vale mais que o registro interno. Sem ele o
   // pagamento só batia se tivesse vindo pelo app da LIO (venda_pagamento), o
   // que reprovava pra sempre todo caixa com recebimento manual, mesmo com NSU
   // certo. Cielo cobre cartão E Pix (o Pix da casa passa pela maquininha).
-  const cielo = await cieloExtrato().catch(() => null);
+  //
+  // ⚠️ Distinguir "não consultei" de "consultei e não achei" é a diferença
+  // entre "indeterminado" e "acusar o garçom". Até 01/09 a falha do fetch
+  // virava null silencioso e o motivo dizia "nem no extrato da Cielo" mesmo
+  // sem NUNCA ter olhado o extrato.
+  const cielo = await cieloExtrato();
   const usados = new Set(); // uma transação da Cielo casa com um pagamento só
+  const bloqueios = [];
 
-  for (const p of pg.rows) {
-    if (Number(p.F) === FORMA.DINHEIRO) return { bate: false, motivo: 'tem DINHEIRO lançado (maquininha não recebe dinheiro)', n: pg.rows.length };
-    const nsu = p.NSU != null ? String(p.NSU).replace(/\D/g, '') : '';
+  for (const p of linhas) {
     const valor = Number(p.V);
     const dia = ymdDoBanco(p.DIA);
+    const nsu = p.NSU != null ? String(p.NSU).replace(/\D/g, '') : '';
+    const base = { nsu: nsu || null, valor, dia };
+
+    if (Number(p.F) === FORMA.DINHEIRO) {
+      bloqueios.push({ ...base, categoria: 'dinheiro_lancado',
+        texto: `DINHEIRO de R$ ${valor.toFixed(2)} lançado — maquininha não recebe dinheiro` });
+      continue;
+    }
 
     // a) registro interno do app da LIO — o caminho de sempre
     if (nsu) {
@@ -6053,27 +6072,61 @@ async function caixaMaquininhaConfere(cod) {
     }
 
     // b) extrato da Cielo — pelo NSU quando há, senão por valor+dia
-    if (cielo && dia) {
-      if (dia > cielo.ate) {
-        return { bate: false, n: pg.rows.length,
-          motivo: `extrato da Cielo ainda não cobre ${dia.split('-').reverse().join('/')} (vai até ${String(cielo.ate).split('-').reverse().join('/')}) — fecha quando chegar` };
-      }
-      // NSU recicla com o tempo (o mesmo número aparece em meses diferentes),
-      // por isso o dia entra sempre no par. `usados` impede que uma transação
-      // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
-      // lançamento aparece em vez de passar batido.
-      const ix = cielo.vendas.findIndex((v, i) =>
-        !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
-        (nsu ? nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) : true));
-      if (ix >= 0) { usados.add(ix); continue; }
+    if (!cielo) {
+      bloqueios.push({ ...base, categoria: 'extrato_indisponivel',
+        texto: `R$ ${valor.toFixed(2)} sem par no sistema — e não deu pra consultar o extrato da Cielo agora` });
+      continue;
     }
+    if (dia && dia > cielo.ate) {
+      bloqueios.push({ ...base, categoria: 'extrato_atrasado',
+        texto: `extrato da Cielo ainda não cobre ${brDe(dia)} (vai até ${brDe(cielo.ate)}) — fecha sozinho quando chegar` });
+      continue;
+    }
+    // NSU recicla com o tempo (o mesmo número aparece em meses diferentes),
+    // por isso o dia entra sempre no par. `usados` impede que uma transação
+    // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
+    // lançamento aparece em vez de passar batido.
+    const ix = dia == null ? -1 : cielo.vendas.findIndex((v, i) =>
+      !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
+      (nsu ? nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) : true));
+    if (ix >= 0) { usados.add(ix); continue; }
 
-    return { bate: false, n: pg.rows.length,
-      motivo: nsu
-        ? `NSU ${nsu} (R$ ${valor.toFixed(2)}) sem par no sistema nem no extrato da Cielo`
-        : `pagamento de R$ ${valor.toFixed(2)} sem NSU e sem par no extrato da Cielo` };
+    bloqueios.push({ ...base, categoria: 'sem_par',
+      texto: nsu
+        ? `NSU ${nsu} (R$ ${valor.toFixed(2)}${dia ? ' de ' + brDe(dia) : ''}) sem par no sistema nem no extrato da Cielo`
+        : `R$ ${valor.toFixed(2)}${dia ? ' de ' + brDe(dia) : ''} sem NSU e sem par no extrato da Cielo` });
   }
-  return { bate: true, n: pg.rows.length };
+
+  if (!bloqueios.length) {
+    return { bate: true, n: linhas.length, total, categoria: null, motivo: null, bloqueios: [],
+      extrato_ate: cielo?.ate ?? null };
+  }
+  // Quando a conferência NÃO PÔDE rodar (banco/extrato fora), o caixa é
+  // INDETERMINADO — nunca "sem par". Não se acusa ninguém por central caída.
+  const dom = ['erro_banco', 'extrato_indisponivel', 'dinheiro_lancado', 'sem_par', 'extrato_atrasado'];
+  const categoria = dom.find((c) => bloqueios.some((b) => b.categoria === c)) || 'sem_par';
+  const principal = bloqueios.find((b) => b.categoria === categoria);
+  const sobra = bloqueios.length - 1;
+  return { bate: false, n: linhas.length, total, categoria, bloqueios,
+    extrato_ate: cielo?.ate ?? null,
+    motivo: principal.texto + (sobra > 0 ? ` (e mais ${sobra} pendência${sobra > 1 ? 's' : ''} neste caixa)` : '') };
+}
+/** Pagamentos de um caixa, nos dois bancos. Existia só o ramo Firebird: em
+ *  BANCO=proprio a query falhava e TODO caixa voltava reprovado com "FB: ...". */
+async function caixaPagamentosDoCaixa(cod) {
+  if (nativo()) {
+    const r = await sql`SELECT forma_codigo, valor, nsu, quando::date AS dia
+      FROM pagamento_local WHERE caixa_codigo=${Number(cod)} AND cancelado_em IS NULL`;
+    return { ok: true, rows: r.map((x) => ({ F: x.forma_codigo, V: x.valor, NSU: x.nsu, DIA: x.dia })) };
+  }
+  return await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
+      CAST(DATAPAGAMENTO AS DATE) DIA
+    FROM PAGAMENTOS WHERE CODIGOCAIXA=${Number(cod)} AND DATADELETE IS NULL`);
+}
+/** DD/MM/AAAA de um YYYY-MM-DD (sem passar por Date — ver ymdDoBanco). */
+function brDe(ymd) {
+  const t = String(ymd || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t.slice(8, 10)}/${t.slice(5, 7)}/${t.slice(0, 4)}` : t;
 }
 /** Roda a conferência em todo caixa de maquininha aberto e devolve o veredito,
  *  sem fechar nada. Read-only de propósito: dá pro gerente (e pro painel) ver
@@ -6084,9 +6137,13 @@ async function apiCaixaConferirTodos() {
   const out = [];
   for (const c of abertos) {
     const maquininha = String(c.obs || '').startsWith('Aberto automaticamente');
-    if (!maquininha) { out.push({ codigo: c.codigo, quem: c.quem, tipo: 'sistema', fecharia: false, motivo: 'caixa de gaveta — fecha no balcão, com conferência de dinheiro' }); continue; }
-    const conf = await caixaMaquininhaConfere(c.codigo).catch((e) => ({ bate: false, motivo: 'erro: ' + e.message, n: 0 }));
-    out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', pagamentos: conf.n ?? 0, fecharia: !!conf.bate, motivo: conf.bate ? null : conf.motivo });
+    if (!maquininha) { out.push({ codigo: c.codigo, quem: c.quem, tipo: 'sistema', aberto_em: c.abriu, fecharia: false, categoria: 'gaveta', bloqueios: [], motivo: 'caixa de gaveta — fecha no balcão, com conferência de dinheiro' }); continue; }
+    const conf = await caixaMaquininhaConfere(c.codigo)
+      .catch((e) => ({ bate: false, n: 0, total: 0, categoria: 'erro_banco', bloqueios: [], motivo: 'conferência não rodou: ' + e.message }));
+    out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', aberto_em: c.abriu,
+      pagamentos: conf.n ?? 0, total: conf.total ?? 0, fecharia: !!conf.bate,
+      categoria: conf.bate ? null : conf.categoria, bloqueios: conf.bloqueios ?? [],
+      extrato_ate: conf.extrato_ate ?? null, motivo: conf.bate ? null : conf.motivo });
   }
   return { ok: true, caixas: out, fecham: out.filter((x) => x.fecharia).length, ficam: out.filter((x) => !x.fecharia).length };
 }
@@ -6185,20 +6242,30 @@ async function loopFecharCaixasMaquininha() {
   try {
     const agora = new Date(Date.now() - 3 * 3600 * 1000); // BRT
     const h = agora.getUTCHours();
-    if (h < 4 || h >= 7) return; // janela 04:00–07:00
+    // Janela 04:00–11:00. O bar não abre antes das 11h, então nenhum caixa de
+    // expediente corre risco — e cobre a máquina que só ligou de manhã (com a
+    // janela até 7h, PC desligado nesse intervalo = dia inteiro sem rodar).
+    if (h < 4 || h >= 11) return;
     if ((await cfgGet('caixa_autofechar', '1')) !== '1') return;
     const hoje = agora.toISOString().slice(0, 10);
     if ((await cfgGet('caixa_autofechar_dia', '')) === hoje) return; // já rodou
     const abertos = await caixasAbertos();
     if (!abertos) return;
     let n = 0, pulados = 0;
+    const categorias = [];
     for (const c of abertos) {
       if (!String(c.obs || '').startsWith('Aberto automaticamente')) continue; // sistema: não toca
       const cod = c.codigo;
+      // Caixa com menos de 2h não se toca: fbCaixaMaquininha ABRE o caixa antes
+      // de inserir o pagamento, então um caixa recém-nascido pode estar vazio só
+      // porque o recebimento ainda está em voo — fechar aqui seria fechar por
+      // baixo dele.
+      const nasceu = new Date(c.abriu).getTime();
+      if (Number.isFinite(nasceu) && Date.now() - nasceu < 2 * 3600 * 1000) continue;
       // ⚠️ REGRA DO DONO: só fecha se o caixa BATER (régua única em
       // caixaMaquininhaConfere). Não bateu = fica ABERTO pra conferência.
       const conf = await caixaMaquininhaConfere(cod);
-      if (!conf.bate) { pulados++; console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu (${conf.motivo}) — fica aberto`); continue; }
+      if (!conf.bate) { pulados++; categorias.push(conf.categoria); console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu (${conf.motivo}) — fica aberto`); continue; }
       const fundo = c.fundo;
       let esperado = fundo;
       try { const r = await fbResumoCaixa(cod); esperado = +(fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2); } catch {}
@@ -6209,8 +6276,15 @@ async function loopFecharCaixasMaquininha() {
           VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha BATEU (' + conf.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
       }
     }
-    await cfgSet('caixa_autofechar_dia', hoje);
-    if (n || pulados) console.log(`[caixa] fechamento automático: ${n} fechado(s), ${pulados} não bateu/ficou aberto`);
+    // O latch só fecha o dia quando a passada foi CONCLUSIVA. Antes ele
+    // carimbava sempre — inclusive fechando zero caixas — e um dia em que a
+    // Cielo ainda não tinha chegado às 04:00 ficava queimado até o dia
+    // seguinte. `sem_par` e `dinheiro_lancado` não mudam com o tempo (insistir
+    // não resolve); `extrato_*` e `erro_banco` mudam, então vale re-tentar no
+    // próximo tick dentro da janela.
+    const esperaTempo = categorias.some((k) => k === 'extrato_atrasado' || k === 'extrato_indisponivel' || k === 'erro_banco');
+    if (!esperaTempo) await cfgSet('caixa_autofechar_dia', hoje);
+    if (n || pulados) console.log(`[caixa] fechamento automático: ${n} fechado(s), ${pulados} não bateu/ficou aberto${esperaTempo ? ' — re-tenta no próximo tick (esperando extrato/banco)' : ''}`);
   } catch (e) { console.error('[caixa] autofechar:', e.message); }
   finally { cxAutoRodando = false; }
 }
@@ -16473,6 +16547,9 @@ async function main() {
   setInterval(() => loopNfceImpressao().catch(() => {}), 20 * 1000);
   // 04:00–07:00 BRT: fecha sozinho os caixas da MAQUININHA (nunca os do sistema)
   setInterval(() => loopFecharCaixasMaquininha().catch(() => {}), 10 * 60 * 1000);
+  // Uma passada 1min depois do boot: sem isto, servidor que subiu 04:05 só
+  // tentaria 04:15, e o que subiu 10:55 perderia a janela inteira.
+  setTimeout(() => loopFecharCaixasMaquininha().catch(() => {}), 60 * 1000);
   // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
   // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
   limparFotosAntigas();

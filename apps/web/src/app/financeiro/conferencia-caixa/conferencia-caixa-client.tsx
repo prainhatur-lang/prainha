@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface FormaTot {
   codigo: number;
@@ -25,6 +25,54 @@ interface CaixaLinha {
   formas?: CaixaFormaBreak[];
   /** 'maquininha' = nasceu sozinho no terminal (só cartão/Pix) · 'sistema' = aberto por gente (gaveta) */
   tipo?: string;
+}
+/** Veredito da conferência, vindo da loja (/api/central/caixa/conferir). É a
+ *  MESMA régua do fechamento automático — o que aparece aqui é o que vai
+ *  acontecer às 04:00, não uma estimativa. */
+/** O "por quê" em português de gente. As duas primeiras dizem que a
+ *  conferência NÃO RODOU — nesses casos o caixa é indeterminado, e acusar
+ *  alguém seria erro nosso, não dele. */
+function rotuloCategoria(c: string): string {
+  switch (c) {
+    case 'erro_banco':
+      return 'a conferência não rodou (o banco da loja não respondeu) — indeterminado';
+    case 'extrato_indisponivel':
+      return 'não deu pra consultar o extrato da Cielo agora — indeterminado, tenta de novo sozinho';
+    case 'extrato_atrasado':
+      return 'o extrato da Cielo ainda não cobre esse dia — fecha sozinho quando o arquivo chegar';
+    case 'dinheiro_lancado':
+      return 'tem DINHEIRO lançado num caixa de maquininha — precisa conferir no balcão';
+    case 'sem_par':
+      return 'pagamento sem par no sistema nem no extrato da Cielo — precisa olhar o NSU';
+    default:
+      return c;
+  }
+}
+interface Bloqueio {
+  categoria: string;
+  nsu: string | null;
+  valor: number;
+  dia: string | null;
+  texto: string;
+}
+interface CxConf {
+  codigo: number;
+  quem: string | null;
+  tipo: string;
+  pagamentos?: number;
+  total?: number;
+  fecharia: boolean;
+  categoria?: string | null;
+  motivo: string | null;
+  bloqueios?: Bloqueio[];
+  extrato_ate?: string | null;
+}
+interface Veredito {
+  ok: boolean;
+  erro?: string;
+  caixas: CxConf[];
+  fecham?: number;
+  ficam?: number;
 }
 interface Mov {
   caixa: number;
@@ -89,6 +137,11 @@ export function ConferenciaCaixaClient({
   const [loading, setLoading] = useState(false);
   const [aberto, setAberto] = useState<number | null>(null);
   const [det, setDet] = useState<Detalhe | null>(null);
+  const [conf, setConf] = useState<Veredito | null>(null);
+  const [confEm, setConfEm] = useState<string | null>(null);
+  /** guarda de corrida: o gerente clica ◂ ▸ várias vezes e as respostas do
+   *  /conferir voltam fora de ordem — só a última vale. */
+  const reqRef = useRef(0);
   const [detLoading, setDetLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [fechando, setFechando] = useState(false);
@@ -98,6 +151,21 @@ export function ConferenciaCaixaClient({
     setRel(null);
     setAberto(null);
     setDet(null);
+    setConf(null);
+    // O veredito sai EM PARALELO e sem await: ele consulta a loja caixa a caixa
+    // (~2s pra 20) e não pode segurar o relatório do dia, que é bem mais rápido.
+    const reqId = ++reqRef.current;
+    void fetch(`/api/financeiro/caixa/conferir?filial=${fil}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j: Veredito) => {
+        if (reqId === reqRef.current) {
+          setConf(j);
+          setConfEm(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+        }
+      })
+      .catch(() => {
+        if (reqId === reqRef.current) setConf({ ok: false, erro: 'sem resposta', caixas: [] });
+      });
     try {
       const r = await fetch(`/api/financeiro/caixa/relatorio?filial=${fil}&data=${data}`, {
         cache: 'no-store',
@@ -112,6 +180,25 @@ export function ConferenciaCaixaClient({
   useEffect(() => {
     void carregar();
   }, [carregar]);
+
+  /** veredito por código de caixa, pra casar com a linha da tabela do dia */
+  const vered = useMemo(
+    () => new Map((conf?.caixas ?? []).map((c) => [c.codigo, c])),
+    [conf],
+  );
+  /** o "por quê" agrupado: o gerente lê 3 linhas em vez de 14 */
+  const porQue = useMemo(() => {
+    const travados = (conf?.caixas ?? []).filter((c) => c.tipo === 'maquininha' && !c.fecharia);
+    const m = new Map<string, { n: number; valor: number; exemplo: string }>();
+    for (const c of travados) {
+      const k = c.categoria || 'sem_par';
+      const at = m.get(k) ?? { n: 0, valor: 0, exemplo: c.motivo ?? '' };
+      at.n += 1;
+      at.valor += c.total ?? 0;
+      m.set(k, at);
+    }
+    return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
+  }, [conf]);
 
   async function verDetalhe(cod: number) {
     if (aberto === cod) {
@@ -304,6 +391,43 @@ export function ConferenciaCaixaClient({
           </span>
         )}
       </div>
+      {/* POR QUE ESTE caixa não fechou — com o NSU/valor/dia pra investigar */}
+      {!c.fechado_em &&
+        (() => {
+          const v = vered.get(c.codigo);
+          if (!v || v.tipo !== 'maquininha') return null;
+          if (v.fecharia) {
+            return (
+              <div className="mt-1 text-xs font-semibold text-emerald-700">
+                🔓 bate — fecha sozinho na próxima passada
+              </div>
+            );
+          }
+          const indeterminado =
+            v.categoria === 'erro_banco' || v.categoria === 'extrato_indisponivel';
+          return (
+            <div
+              className={`mt-1 rounded border px-2 py-1 text-xs ${
+                indeterminado
+                  ? 'border-slate-200 bg-slate-50 text-slate-600'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              <div>
+                {indeterminado ? '⚪' : '⛔'} {v.motivo}
+              </div>
+              {(v.bloqueios ?? []).length > 1 && (
+                <ul className="mt-1 space-y-0.5 pl-4">
+                  {(v.bloqueios ?? []).map((b, i) => (
+                    <li key={i} className="list-disc text-amber-800">
+                      {b.texto}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })()}
       <div className="mt-1 flex gap-3 text-xs">
         <button onClick={() => void verDetalhe(c.codigo)} className="text-sky-600 underline">
           {aberto === c.codigo ? 'ocultar' : '🔎 analítico'}
@@ -464,10 +588,68 @@ export function ConferenciaCaixaClient({
             </div>
           </div>
 
-          {/* ABERTOS + fechar todos */}
-          {abertos.length > 0 && (
-            <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-              <span className="text-sm text-amber-800">
+          {/* VEREDITO DO FECHAMENTO — "fechou" ou "não fechou, e por quê".
+              Vem ao vivo da loja, rodando a MESMA régua das 04:00. */}
+          {conf === null ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+              conferindo os caixas na loja…
+            </div>
+          ) : !conf.ok ? (
+            /* Sem veredito NUNCA vira "fechou" — a loja pode estar fora do ar. */
+            <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2">
+              <div className="text-sm font-semibold text-slate-700">⚪ Sem veredito</div>
+              <div className="mt-0.5 text-xs text-slate-600">
+                a loja não respondeu ({conf.erro ?? 'sem resposta'}). Isso <b>não</b> quer dizer que fechou.
+              </div>
+            </div>
+          ) : porQue.length === 0 ? (
+            <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <span className="text-sm text-emerald-800">
+                ✅ <b>Tudo fechado</b> — nenhum caixa de maquininha travado
+                {confEm && <span className="text-emerald-600"> · conferido {confEm}</span>}
+              </span>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="text-sm font-semibold text-amber-900">
+                  ⛔ {porQue.reduce((n, [, v]) => n + v.n, 0)} caixa(s) travado(s) ·{' '}
+                  {brl(porQue.reduce((v, [, x]) => v + x.valor, 0))} parados
+                  {confEm && (
+                    <span className="ml-1 font-normal text-amber-700">· conferido {confEm}</span>
+                  )}
+                </div>
+                {(conf.fecham ?? 0) > 0 && (
+                  <button
+                    onClick={() => void fechar(null, true)}
+                    disabled={fechando}
+                    className="shrink-0 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    🔒 Fechar os {conf.fecham} que batem
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 space-y-1">
+                <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">Por quê</div>
+                {porQue.map(([cat, v]) => (
+                  <div key={cat} className="text-xs text-amber-900">
+                    <b>{v.n} caixa(s)</b> · {brl(v.valor)} — {rotuloCategoria(cat)}
+                    {cat === 'sem_par' && (
+                      <div className="mt-0.5 text-amber-700">
+                        ⚠ o extrato da Cielo às vezes chega incompleto — confira o NSU antes de
+                        concluir que faltou dinheiro
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* fechar todos — só quando há aberto e o veredito não ofereceu o botão */}
+          {abertos.length > 0 && !(conf?.ok && (conf.fecham ?? 0) > 0) && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <span className="text-sm text-slate-600">
                 <b>{abertos.length}</b> caixa(s) ainda aberto(s)
               </span>
               <button
