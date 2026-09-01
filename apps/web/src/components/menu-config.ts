@@ -176,6 +176,11 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Catálogo',
         links: [
           { label: 'Produtos', href: '/cadastros/produtos', perm: 'produto.read' },
+          {
+            label: 'O que esta loja vende',
+            href: '/cadastros/produtos/ativar',
+            perm: 'produto.update',
+          },
           { label: 'Fornecedores', href: '/cadastros/fornecedores', perm: 'fornecedor.read' },
           {
             label: 'Categorizar produtos',
