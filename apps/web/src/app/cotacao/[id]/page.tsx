@@ -102,6 +102,12 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       observacaoCf: schema.cotacaoFornecedor.observacao,
       fornecedorId: schema.fornecedor.id,
       fornecedorNome: schema.fornecedor.nome,
+      vendedorNome: sql<string | null>`(
+        SELECT v.nome FROM vendedor_fornecedor vf
+        JOIN vendedor v ON v.id = vf.vendedor_id
+        WHERE vf.fornecedor_id = ${schema.fornecedor.id}
+          AND v.ativo AND COALESCE(v.whatsapp, '') <> ''
+        ORDER BY vf.principal DESC, v.atualizado_em DESC LIMIT 1)`,
       // WhatsApp da casa primeiro; o fone do Consumer costuma ser fixo.
       fonePrincipal: foneParaWhatsapp(),
     })
@@ -369,6 +375,11 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               {fornecedores.map((f) => (
                 <tr key={f.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium text-slate-900">
+                    {f.vendedorNome && (
+                      <div className="text-[10px] font-normal text-slate-500">
+                        vai pro vendedor: {f.vendedorNome}
+                      </div>
+                    )}
                     {f.fornecedorNome}
                     {f.observacaoCf && (
                       <div className="text-[10px] font-normal text-amber-700">🚚 {f.observacaoCf}</div>
@@ -390,6 +401,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                       cotacaoFornecedorId={f.id}
                       fornecedorId={f.fornecedorId}
                       telefone={f.fonePrincipal}
+                      vendedorNome={f.vendedorNome}
                       fornecedorNome={f.fornecedorNome ?? ''}
                       filialNome={filialNome}
                       link={`${baseUrl}/cotacao/preencher/${f.tokenPublico}`}

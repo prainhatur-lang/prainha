@@ -8,6 +8,8 @@ interface Props {
   cotacaoFornecedorId: string;
   fornecedorId: string;
   telefone: string | null;
+  /** A pessoa que atende essa empresa — é com ela que se fala. */
+  vendedorNome?: string | null;
   fornecedorNome: string;
   filialNome: string;
   link: string;
@@ -34,6 +36,7 @@ export function EnviarWhatsappButton({
   cotacaoFornecedorId,
   fornecedorId,
   telefone,
+  vendedorNome,
   fornecedorNome,
   filialNome,
   link,
@@ -129,9 +132,12 @@ export function EnviarWhatsappButton({
   }
 
   const prazo = horaBr(fechaEm);
-  const primeiroNome = fornecedorNome.split(' ')[0] || 'tudo bem';
+  // Cumprimenta a PESSOA (o vendedor), mas diz de qual EMPRESA é a cotação —
+  // é assim na vida real: fala-se com o Alex, compra-se da Megga.
+  const primeiroNome = (vendedorNome ?? fornecedorNome).split(/[\s(/-]/)[0] || 'tudo bem';
   const msg =
     `Olá, ${primeiroNome}! Aqui é do ${filialNome || 'Prainha'}.\n\n` +
+    (vendedorNome ? `Cotação para ${fornecedorNome}.\n` : '') +
     `Estamos cotando alguns itens e gostaríamos do seu melhor preço. ` +
     `É rápido, só preencher por este link:\n${link}\n\n` +
     (prazo ? `⏰ Prazo para responder: até ${prazo} (4h).\n\n` : '') +

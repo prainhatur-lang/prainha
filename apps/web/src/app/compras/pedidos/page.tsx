@@ -63,6 +63,12 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       fornecedorNome: schema.fornecedor.nome,
       // WhatsApp da casa primeiro; o fone do Consumer costuma ser fixo.
       fornecedorFone: foneParaWhatsapp(),
+      vendedorNome: sql<string | null>`(
+        SELECT v.nome FROM vendedor_fornecedor vf
+        JOIN vendedor v ON v.id = vf.vendedor_id
+        WHERE vf.fornecedor_id = ${schema.fornecedor.id}
+          AND v.ativo AND COALESCE(v.whatsapp, '') <> ''
+        ORDER BY vf.principal DESC, v.atualizado_em DESC LIMIT 1)`,
     })
     .from(schema.pedidoCompra)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.pedidoCompra.fornecedorId))
@@ -102,9 +108,13 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       const pu = Number(i.precoUnitario);
       return `• ${i.produtoNome} — ${q.toLocaleString('pt-BR')} ${i.unidade} x ${brl(pu)} = ${brl(Number(i.valorTotal))}`;
     });
-    const nome = (p.fornecedorNome ?? '').split(' ')[0] || 'tudo bem';
+    // O pedido é da EMPRESA, mas quem lê é a PESSOA: cumprimenta o vendedor e
+    // deixa claro em nome de quem o pedido está sendo feito.
+    const nome = ((p as { vendedorNome?: string | null }).vendedorNome ?? p.fornecedorNome ?? '')
+      .split(/[\s(/-]/)[0] || 'tudo bem';
     return (
-      `Olá ${nome}! Pedido de compra do ${filial.nome} (nº ${p.numero}):\n\n` +
+      `Olá ${nome}! Pedido de compra do ${filial.nome} (nº ${p.numero})` +
+      `${p.fornecedorNome ? ` — ${p.fornecedorNome}` : ''}:\n\n` +
       `${linhas.join('\n')}\n\n` +
       `Total: ${p.valorTotal != null ? brl(Number(p.valorTotal)) : '—'}\n\n` +
       `Você confirma que consegue entregar? Prazo pra retorno: 4h. Obrigado!`
