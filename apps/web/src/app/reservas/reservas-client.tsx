@@ -4,7 +4,23 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { normalizaBusca } from '@/lib/texto';
+import { brl } from '@/lib/format';
 import { MapaMesas } from './mapa-mesas';
+
+/** Resposta de /api/reservas/quem — quem é a pessoa do telefone/CPF digitado. */
+interface QuemInfo {
+  ok: boolean;
+  achou: boolean;
+  curto?: boolean;
+  nome?: string | null;
+  clientePdv?: boolean;
+  fiadoSaldo?: number;
+  visitas?: number;
+  ultima?: string | null;
+  ativas?: Array<{ data: string; hora: string; status: string }>;
+  telefone?: string | null;
+  por?: string;
+}
 
 export interface Mesa {
   numero: string;
@@ -1277,6 +1293,35 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
   const [observacao, setObs] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // CADASTRO ÚNICO na entrada: o telefone (ou CPF) identifica a pessoa antes
+  // do nome — a casa vê na hora se já é de casa, quantas reservas fez e se
+  // deve fiado. A ligação da reserva ao cliente o servidor já faz sozinho.
+  const [quem, setQuem] = useState<QuemInfo | null>(null);
+  const quemTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function digitarTel(v: string) {
+    setTel(v);
+    if (quemTimer.current) clearTimeout(quemTimer.current);
+    const dig = v.replace(/\D/g, '');
+    if (dig.length < 8) {
+      setQuem(null);
+      return;
+    }
+    quemTimer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/reservas/quem?filialId=${filialId}&q=${encodeURIComponent(dig)}`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const d: QuemInfo = await r.json();
+        setQuem(d);
+        // Digitou o CPF? O telefone do cadastro entra no lugar — é ele que
+        // amarra a reserva à pessoa.
+        if (d.achou && d.por === 'cpf' && d.telefone) setTel(d.telefone);
+        if (d.achou && d.nome) setNome((atual) => (atual.trim() ? atual : d.nome!));
+      } catch {
+        // busca é conveniência — não trava a criação
+      }
+    }, 450);
+  }
 
   const filSel = filiais.find((f) => f.id === filialId);
   const espacos = (filSel?.areas ?? []).filter((a) => a.ativo && !a.somenteEventos);
@@ -1341,8 +1386,8 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
             {filiais.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
           </select>
         )}
+        <input value={clienteTelefone} onChange={(e) => digitarTel(e.target.value)} placeholder="WhatsApp ou CPF — busca quem já é de casa" inputMode="tel" className={`${inp} col-span-2 ${quem?.achou ? 'border-sky-400' : ''}`} />
         <input value={clienteNome} onChange={(e) => setNome(e.target.value)} placeholder="Nome do cliente" className={`${inp} col-span-2`} />
-        <input value={clienteTelefone} onChange={(e) => setTel(e.target.value)} placeholder="WhatsApp" inputMode="tel" className={inp} />
         <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} placeholder="Pessoas" className={inp} />
         <input type="date" value={dataR} onChange={(e) => setData(e.target.value)} className={inp} />
         <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-rose-400 text-rose-600' : ''}`} />
@@ -1390,6 +1435,39 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
         )}
         <input value={observacao} onChange={(e) => setObs(e.target.value)} placeholder="Observação" className={`${inp} col-span-2 sm:col-span-4`} />
       </div>
+      {quem?.achou && (
+        <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-2.5 text-xs text-sky-900">
+          <span>
+            ✓ Já é de casa: <b>{quem.nome ?? 'sem nome no cadastro'}</b>
+            {(quem.visitas ?? 0) > 0 && (
+              <> · {quem.visitas} reserva{(quem.visitas ?? 0) > 1 ? 's' : ''} antes{quem.ultima ? ` (última ${ymdToBr(quem.ultima)})` : ''}</>
+            )}
+            {quem.clientePdv && ' · cliente do PDV'}
+          </span>
+          {(quem.fiadoSaldo ?? 0) > 0 && (
+            <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">
+              deve {brl(quem.fiadoSaldo!)} no fiado
+            </span>
+          )}
+          {quem.nome && quem.nome !== clienteNome && (
+            <button
+              type="button"
+              onClick={() => setNome(quem.nome!)}
+              className="ml-1.5 rounded border border-sky-300 bg-white px-1.5 py-0.5 text-sky-800 hover:bg-sky-100"
+            >
+              usar "{quem.nome}"
+            </button>
+          )}
+          {(quem.ativas?.length ?? 0) > 0 && (
+            <p className="mt-1 text-amber-800">
+              ⚠ Já tem reserva ativa: {quem.ativas!.map((a) => `${ymdToBr(a.data)} ${a.hora} (${a.status})`).join(' · ')} — confira antes de criar outra.
+            </p>
+          )}
+        </div>
+      )}
+      {quem && !quem.achou && !quem.curto && (
+        <p className="mt-2 text-xs text-slate-500">Primeira vez desse telefone por aqui — sem cadastro ainda.</p>
+      )}
       {horaInvalida && (
         <p className="mt-2 text-xs text-rose-600">
           {area} aceita reserva de mesa só até {limite} — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).
