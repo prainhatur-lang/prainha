@@ -6087,17 +6087,19 @@ async function caixaMaquininhaConfere(cod) {
     // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
     // lançamento aparece em vez de passar batido.
     //
-    // Tolerância de 1 dia SÓ quando o NSU bate: medido em 28/08 o PDV gravou
-    // NSU 73745 (R$ 138, 18:32) e a Cielo lançou o mesmo NSU/valor/hora em
-    // 29/08. NSU+valor iguais já identificam a transação; exigir o dia exato
-    // reprovava venda legítima por diferença de data do adquirente. Sem NSU a
-    // regra continua estrita — só valor+dia seria fraco demais.
+    // Data NÃO manda quando o NSU bate. Regra do dono: "se o NSU bater e o
+    // valor bater, pode fechar — a data difere porque o caixa fechou noutro
+    // dia". Medido em 20 dias: 21 transações com a Cielo lançando no dia
+    // SEGUINTE ao PDV (horas normais, 13h-19h), e ZERO casos de NSU+valor
+    // iguais em dias diferentes em 60 dias — então NSU+valor identificam a
+    // transação sozinhos. Janela de 7 dias só como cinto de segurança contra
+    // o NSU reciclar meses depois. Sem NSU a regra continua estrita.
     const casa = (v, i) => !usados.has(i) && Math.abs(v.valor - valor) < 0.005;
     let ix = dia == null ? -1 : cielo.vendas.findIndex((v, i) => casa(v, i) && v.data === dia &&
       (nsu ? nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) : true));
     if (ix < 0 && nsu && dia) {
       ix = cielo.vendas.findIndex((v, i) => casa(v, i) &&
-        nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) && Math.abs(diasEntre(v.data, dia)) <= 1);
+        nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) && Math.abs(diasEntre(v.data, dia)) <= 7);
     }
     if (ix >= 0) { usados.add(ix); continue; }
 
@@ -6154,6 +6156,50 @@ function diasEntre(a, b) {
 function brDe(ymd) {
   const t = String(ymd || '');
   return /^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t.slice(8, 10)}/${t.slice(5, 7)}/${t.slice(0, 4)}` : t;
+}
+/** RASTRO de um caixa: cada pagamento do Firebird com o que a loja guarda
+ *  sobre COMO ele entrou — venda_pagamento (app da LIO / Pix da tela / TEF,
+ *  com origem, status, erro e hora exata) e recebimento_foto (manual, com
+ *  login e foto). É o que responde "esse lançamento veio de onde?" quando a
+ *  conferência acusa duplicata ou pagamento sem par. Read-only. */
+async function apiCaixaRastro(codigo) {
+  const cod = Number(codigo);
+  if (!cod) return { ok: false, erro: 'caixa inválido' };
+  const pg = await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) FORMA,
+      CAST(p.VALOR AS NUMERIC(12,2)) V, CAST(p.NSUTRANSACAO AS VARCHAR(30)) NSU,
+      CAST(p.NUMEROAUTORIZACAOCARTAO AS VARCHAR(40)) AUT, CAST(p.DATAPAGAMENTO AS VARCHAR(30)) QUANDO,
+      CAST(p.OBSERVACAO AS VARCHAR(200)) OBS, p.INTEGRADOAUTOMACAO INTEG
+    FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
+    WHERE p.CODIGOCAIXA=${cod} AND p.DATADELETE IS NULL ORDER BY p.DATAPAGAMENTO, p.CODIGO`);
+  if (!pg.ok) return { ok: false, erro: 'FB: ' + pg.err };
+  const out = [];
+  for (const x of pg.rows) {
+    const fbCod = Number(x.CODIGO);
+    const nsu = T(x.NSU) ? String(T(x.NSU)).replace(/\D/g, '') : '';
+    const valor = Number(x.V) || 0;
+    // venda_pagamento: primeiro pelo vínculo direto (pagamento_fb), senão por NSU+valor
+    let vp = await sql`SELECT id, criado_em::text criado_em, origem, status, erro, nsu, autorizacao, numero, pedido_fb
+      FROM venda_pagamento WHERE pagamento_fb=${fbCod} ORDER BY id`;
+    if (!vp.length && nsu) vp = await sql`SELECT id, criado_em::text criado_em, origem, status, erro, nsu, autorizacao, numero, pedido_fb
+      FROM venda_pagamento WHERE nsu IS NOT NULL AND regexp_replace(nsu,'\\D','','g')=${nsu} AND abs(valor-${valor})<0.005 ORDER BY id`;
+    let rf = await sql`SELECT id, quando::text quando, login, forma, nsu, arquivo IS NOT NULL tem_foto
+      FROM recebimento_foto WHERE pagamento_codigo=${fbCod} ORDER BY id`;
+    if (!rf.length && nsu) rf = await sql`SELECT id, quando::text quando, login, forma, nsu, arquivo IS NOT NULL tem_foto
+      FROM recebimento_foto WHERE nsu IS NOT NULL AND regexp_replace(nsu,'\\D','','g')=${nsu} AND abs(valor-${valor})<0.005 ORDER BY id`;
+    // veredito de CAMINHO — o que o gerente precisa saber
+    const obs = T(x.OBS) || '';
+    let caminho = 'desconhecido';
+    if (vp.some((v) => v.origem === 'lio-sdk')) caminho = 'app da maquininha (LIO)';
+    else if (vp.some((v) => v.origem === 'pix-cliente')) caminho = 'Pix da tela (QR)';
+    else if (vp.some((v) => v.origem === 'tef')) caminho = 'TEF';
+    else if (rf.length || /recebimento manual/i.test(obs)) caminho = 'manual no caixa' + (rf.length ? ' (com foto)' : ' (SEM registro de foto)');
+    else if (/ifood/i.test(obs)) caminho = 'baixa iFood';
+    else if (/prainha vendas/i.test(obs)) caminho = 'sistema (sem rastro de origem)';
+    out.push({ fb: fbCod, pedido: Number(x.PED) || null, forma: T(x.FORMA) || ('forma ' + x.F), valor, nsu: nsu || null,
+      autorizacao: T(x.AUT) || null, quando: T(x.QUANDO), obs, integrado: String(x.INTEG ?? ''), caminho,
+      venda_pagamento: vp, recebimento_foto: rf });
+  }
+  return { ok: true, caixa: cod, pagamentos: out };
 }
 /** Roda a conferência em todo caixa de maquininha aberto e devolve o veredito,
  *  sem fechar nada. Read-only de propósito: dá pro gerente (e pro painel) ver
@@ -15967,6 +16013,7 @@ const server = http.createServer(async (req, res) => {
       // que a rotina das 04:00 usa. Serve pro painel mostrar "bateu/não bateu, e
       // por quê" em vez do gerente descobrir só na manhã seguinte.
       if (p === '/api/central/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferirTodos()));
+      if (p === '/api/central/caixa/rastro') return res.end(JSON.stringify(await apiCaixaRastro(u.searchParams.get('caixa'))));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
