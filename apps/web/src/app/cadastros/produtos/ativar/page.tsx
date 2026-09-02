@@ -126,9 +126,38 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
         <div className="mb-4">
           <h1 className="text-xl font-semibold text-slate-900">O que esta loja vende</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            {filial.nome} · clique pra ligar ou desligar. O que ficar desligado sai do PDV do
-            garçom (a loja aplica em ~1 min).
+            Clique pra ligar ou desligar. O que ficar desligado sai do PDV do garçom desta loja
+            (a loja aplica em ~1 min) — as outras lojas não mudam.
           </p>
+        </div>
+
+        {/* ⚠️ QUAL LOJA — em 02/09/2026 o dono curou o cardápio achando que
+            estava na Prainha Mar e desativou 70 produtos na Prainha Bar: o nome
+            da filial era uma linha cinza de 12px. Agora é um banner, e a troca
+            de loja está AQUI, sem depender do seletor do menu. */}
+        <div className="mb-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-4">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">
+            Você está editando o cardápio de
+          </p>
+          <p className="mt-0.5 text-2xl font-bold text-amber-900">{filial.nome}</p>
+          {filiais.length > 1 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-amber-800">Trocar de loja:</span>
+              {filiais.map((f) => (
+                <a
+                  key={f.id}
+                  href={`/cadastros/produtos/ativar?filialId=${f.id}&tipo=${tipo}`}
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+                    f.id === filial.id
+                      ? 'border-amber-700 bg-amber-700 text-white'
+                      : 'border-amber-300 bg-white text-amber-900 hover:bg-amber-100'
+                  }`}
+                >
+                  {f.nome}
+                </a>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="mb-4 flex gap-2 text-xs">

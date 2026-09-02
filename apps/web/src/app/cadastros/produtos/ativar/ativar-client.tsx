@@ -104,6 +104,16 @@ export function AtivarClient({ filialId, filialNome, linhas }: Props) {
   }
 
   async function salvar() {
+    // Desativar tira o produto do PDV da loja: confirma dizendo QUAL loja.
+    // (02/09/2026: curadoria feita na loja errada por falta desse aviso.)
+    if (mudancas.desligar > 0) {
+      const ok = window.confirm(
+        `Desativar ${mudancas.desligar} produto(s) em ${filialNome}?\n\n` +
+          `Eles saem do PDV do garçom DESTA loja. As outras lojas não mudam.` +
+          (mudancas.ligar > 0 ? `\n\nTambém serão ativados ${mudancas.ligar} produto(s).` : ''),
+      );
+      if (!ok) return;
+    }
     setSalvando(true);
     setErro(null);
     setMsg(null);
@@ -179,7 +189,7 @@ export function AtivarClient({ filialId, filialNome, linhas }: Props) {
           {salvando
             ? 'Salvando…'
             : temMudanca
-              ? `Salvar (+${mudancas.ligar} / −${mudancas.desligar})`
+              ? `Salvar em ${filialNome} (+${mudancas.ligar} / −${mudancas.desligar})`
               : 'Sem mudanças'}
         </button>
       </div>
