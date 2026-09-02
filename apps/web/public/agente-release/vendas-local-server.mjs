@@ -4361,6 +4361,14 @@ async function nfceDocSugerido(numero, ped) {
   const p = (await qi(`SELECT TRIM(COALESCE(NUMERODOCUMENTODESTINATARIO,'')) DOC FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
   const doFb = soDig(p?.DOC || '');
   if (doFb.length === 11 || doFb.length === 14) return doFb;
+  // cliente do CADASTRO amarrado no pedido (fiado primeiro — quem assina a
+  // dívida é quem pede a nota; senão o contato da mesa). Era o buraco do
+  // "cadastrei o cliente e a nota pediu o CNPJ de novo" (caso SESC, 02/09).
+  const cad = (await qi(`SELECT TRIM(COALESCE(ct.CNPJOUCPF,'')) DOC FROM PEDIDOS p
+    JOIN CONTATOS ct ON ct.CODIGO = COALESCE(p.CODIGOCONTATOFIADO, p.CODIGOCONTATOCLIENTE)
+    WHERE p.CODIGO=${Number(ped)}`)).rows?.[0];
+  const doCad = soDig(cad?.DOC || '');
+  if (doCad.length === 11 || doCad.length === 14) return doCad;
   const i = (await sql`SELECT cpf FROM identificacao WHERE numero=${Number(numero)} AND cpf IS NOT NULL
     AND criado_em > now() - interval '12 hours' ORDER BY criado_em DESC LIMIT 1`)[0];
   if (i?.cpf && soDig(i.cpf).length === 11) return soDig(i.cpf);
