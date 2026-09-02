@@ -3016,7 +3016,15 @@ async function fbInserirPagamento(ped, pg) {
     if (Number(pg.forma_codigo) === FORMA.DINHEIRO) throw new Error('dinheiro exige caixa aberto do operador — abra o seu caixa');
     caixa = await fbCaixaAbertoOuSistema();
   }
-  const nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
+  let nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
+  // Pix pela Cielo (tela/QR e maquininha) chega sem NSU: o código vem em
+  // `autorizacao` como "0"+NSU de 7 dígitos (medido: "01543308" ↔ 154330 no
+  // extrato, que trunca em 6). Cartão não entra — autorização dele é
+  // alfanumérica (WC5O0L, F40099). Sem isto o Pix nunca batia na conferência.
+  if (nsu == null && pg.autorizacao) {
+    const aut = String(pg.autorizacao).replace(/\D/g, '');
+    if (aut.length >= 6 && aut.length <= 10 && aut === String(pg.autorizacao).trim()) nsu = Number(aut.replace(/^0+/, '')) || null;
+  }
   if (nativo()) {
     const cod = await proxCodigo('pagamento');
     await sql`INSERT INTO pagamento_local (codigo, pedido, forma_codigo, valor, caixa_codigo,
@@ -3031,8 +3039,24 @@ async function fbInserirPagamento(ped, pg) {
   if (nsu != null) { campos.push('NSUTRANSACAO'); vals.push(String(nsu)); }
   if (pg.autorizacao) { campos.push('NUMEROAUTORIZACAOCARTAO'); vals.push(`'${fbEsc(pg.autorizacao)}'`); }
   if (pg.bandeira) { campos.push('BANDEIRAMFE'); vals.push(`'${fbEsc(pg.bandeira)}'`); }
-  const r = await qi(`INSERT INTO PAGAMENTOS (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
-  if (!r.ok) throw new Error('FB pagamento: ' + r.err);
+  // ⚠️ INSERT SEM RETRY. qi() repete a query em timeout/erro de conexão — e
+  // um INSERT que GRAVOU mas cujo ack se perdeu era gravado de novo. Medido:
+  // NSU 73750 (cartão, LIO) e o Pix 46f5ecf1 (tela) entraram 2x com ≤1s entre
+  // eles, o primeiro órfão sem venda_pagamento e o segundo com — a busca do
+  // "recém-inserido" pegava o segundo. Agora: uma tentativa; se falhar, olha
+  // se a linha caiu mesmo assim antes de desistir (idempotente), e só então
+  // erra pra cima.
+  const obsEsc = fbEsc(pg.observacao || 'Prainha Vendas');
+  const achaRecente = () => qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS
+    WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND CODIGOFORMAPAGAMENTO=${Number(pg.forma_codigo)}
+      AND VALOR=${fbNum(pg.valor)} AND OBSERVACAO='${obsEsc}'
+      AND DATAPAGAMENTO > DATEADD(-90 SECOND TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+  const r = await qi(`INSERT INTO PAGAMENTOS (${campos.join(', ')}) VALUES (${vals.join(', ')})`, 1);
+  if (!r.ok) {
+    const j = await achaRecente();
+    if (j.ok && j.rows.length) { console.error(`[fb] INSERT de pagamento deu "${r.err}" mas a linha caiu (${j.rows[0].CODIGO}) — não repeti`); return Number(j.rows[0].CODIGO); }
+    throw new Error('FB pagamento: ' + r.err);
+  }
   // RETURNING crasha intermitente no FB4 -> busca o recém-inserido
   const g = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
   return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
