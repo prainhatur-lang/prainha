@@ -51,6 +51,38 @@ export async function GET(request: Request) {
     if (c) cliente = { nome: c.nome, telefone: c.telefone, saldo: Number(c.saldo ?? 0) };
   }
 
+  // Contatos importados (Tagme e afins): é onde mora o histórico de reservas
+  // de ANTES do Concilia — cliente antigo pode só existir aqui (caso Peterson,
+  // 02/09: telefone certo, zero reservas nossas, 1 fila no Tagme).
+  let contato: { nome: string; email: string | null; reservas: number; filas: number; origem: string } | null = null;
+  const suf10 = dig.slice(-10);
+  if (suf10.length >= 8) {
+    const [ct] = await db
+      .select({
+        nome: schema.clienteContato.nome,
+        sobrenome: schema.clienteContato.sobrenome,
+        email: schema.clienteContato.email,
+        reservas: schema.clienteContato.reservasHistorico,
+        filas: schema.clienteContato.filasEsperaHistorico,
+        origem: schema.clienteContato.origem,
+      })
+      .from(schema.clienteContato)
+      .where(and(
+        eq(schema.clienteContato.filialId, filialId),
+        sql`right(regexp_replace(coalesce(${schema.clienteContato.telefone}, ''), '\\D', '', 'g'), ${suf10.length}) = ${suf10}`,
+      ))
+      .limit(1);
+    if (ct) {
+      contato = {
+        nome: [ct.nome, ct.sobrenome].filter(Boolean).join(' '),
+        email: ct.email,
+        reservas: Number(ct.reservas ?? 0),
+        filas: Number(ct.filas ?? 0),
+        origem: ct.origem,
+      };
+    }
+  }
+
   // Histórico pelo telefone digitado — ou, quando achou por CPF, pelo telefone
   // do cadastro (é ele que amarra as reservas).
   const telHist = lig?.por === 'cpf' ? (cliente?.telefone ?? '').replace(/\D/g, '') : dig;
@@ -88,11 +120,12 @@ export async function GET(request: Request) {
     }
   }
 
-  const achou = !!lig || visitas > 0 || !!nomeReserva;
+  const achou = !!lig || visitas > 0 || !!nomeReserva || !!contato;
   return NextResponse.json({
     ok: true,
     achou,
-    nome: cliente?.nome ?? nomeReserva ?? null,
+    nome: cliente?.nome ?? nomeReserva ?? contato?.nome ?? null,
+    contato: contato ? { origem: contato.origem, reservas: contato.reservas, filas: contato.filas } : null,
     clientePdv: !!lig,
     fiadoSaldo: cliente && cliente.saldo > 0 ? cliente.saldo : 0,
     visitas,

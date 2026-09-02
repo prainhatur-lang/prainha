@@ -53,7 +53,9 @@ export async function acharCliente(
       .from(schema.cliente)
       .where(and(
         eq(schema.cliente.filialId, filialId),
-        sql`right(regexp_replace(coalesce(${schema.cliente.telefone}, ''), '[^0-9]', '', 'g'), 10) = ${fone}`,
+        // telefone OU celular — os dois campos do PDV valem como chave forte
+        sql`(right(regexp_replace(coalesce(${schema.cliente.telefone}, ''), '[^0-9]', '', 'g'), 10) = ${fone}
+          OR right(regexp_replace(coalesce(${schema.cliente.celular}, ''), '[^0-9]', '', 'g'), 10) = ${fone})`,
       ))
       .limit(2);
     if (r.length === 1) return { id: r[0].id, por: 'telefone' };

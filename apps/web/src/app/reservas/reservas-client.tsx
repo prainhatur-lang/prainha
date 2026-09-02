@@ -18,6 +18,7 @@ interface QuemInfo {
   visitas?: number;
   ultima?: string | null;
   ativas?: Array<{ data: string; hora: string; status: string }>;
+  contato?: { origem: string; reservas: number; filas: number } | null;
   telefone?: string | null;
   por?: string;
 }
@@ -1443,6 +1444,15 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
               <> · {quem.visitas} reserva{(quem.visitas ?? 0) > 1 ? 's' : ''} antes{quem.ultima ? ` (última ${ymdToBr(quem.ultima)})` : ''}</>
             )}
             {quem.clientePdv && ' · cliente do PDV'}
+            {quem.contato && (quem.contato.reservas > 0 || quem.contato.filas > 0) && (
+              <>
+                {' · '}histórico do {quem.contato.origem === 'tagme' ? 'Tagme' : quem.contato.origem}:{' '}
+                {[
+                  quem.contato.reservas > 0 ? `${quem.contato.reservas} reserva${quem.contato.reservas > 1 ? 's' : ''}` : null,
+                  quem.contato.filas > 0 ? `${quem.contato.filas} fila de espera` : null,
+                ].filter(Boolean).join(' + ')}
+              </>
+            )}
           </span>
           {(quem.fiadoSaldo ?? 0) > 0 && (
             <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">
