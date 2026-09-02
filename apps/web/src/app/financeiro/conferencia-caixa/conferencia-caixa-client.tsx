@@ -638,8 +638,8 @@ export function ConferenciaCaixaClient({
                     <b>{v.n} caixa(s)</b> · {brl(v.valor)} — {rotuloCategoria(cat)}
                     {cat === 'sem_par' && (
                       <div className="mt-0.5 text-amber-700">
-                        ⚠ o extrato da Cielo às vezes chega incompleto — confira o NSU antes de
-                        concluir que faltou dinheiro
+                        o extrato da Cielo fecha com o PDV dia a dia (medido: diferença de centavos) —
+                        sem par aqui é lançamento errado, não arquivo faltando. Comece pelo comprovante.
                       </div>
                     )}
                   </div>
