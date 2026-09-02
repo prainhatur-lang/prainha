@@ -254,6 +254,9 @@ export function ConferenciaCaixaClient({
 
   // ===== IMPRESSÃO — sintético/analítico, por caixa, por filial ou todas =====
   const [printEscopo, setPrintEscopo] = useState<'filial' | 'todas'>('filial');
+  // Corte do relatório "por horário": o dono confere o turno do almoço, que
+  // fecha às 17h — daí o padrão.
+  const [printAte, setPrintAte] = useState('17:00');
   const [printando, setPrintando] = useState(false);
 
   function esc(s: unknown): string {
@@ -280,6 +283,66 @@ export function ConferenciaCaixaClient({
           `<tr class="tot"><td colspan="4">total do caixa</td><td class="dir">${brl(pags.reduce((s, p) => s + p.valor, 0))}</td></tr></table>`;
     }
     return h + '</div>';
+  }
+
+  /** ENTRADAS POR HORÁRIO, até um limite — sem caixas e sem as retiradas da
+   *  gaveta. É o "quanto entrou até as 17h" numa lista corrida, na ordem em
+   *  que o dinheiro entrou. Pagamento sem hora não some calado: fica numa
+   *  nota no fim, fora do total. */
+  function htmlPorHorario(
+    nome: string,
+    r: Relatorio,
+    dets: Map<number, Pagamento[]>,
+    limite: string,
+  ): string {
+    interface Linha extends Pagamento { caixa: number; quem: string | null }
+    const dentro: Linha[] = [];
+    const semHora: Linha[] = [];
+    for (const c of r.caixas) {
+      for (const p of dets.get(c.codigo) ?? []) {
+        const linha: Linha = { ...p, caixa: c.codigo, quem: c.quem ?? null };
+        const hh = hora(p.quando);
+        if (!hh) semHora.push(linha);
+        else if (hh <= limite) dentro.push(linha);
+      }
+    }
+    dentro.sort((a, b) => hora(a.quando).localeCompare(hora(b.quando)));
+
+    const porForma = new Map<string, { n: number; valor: number }>();
+    for (const p of dentro) {
+      const at = porForma.get(p.forma) ?? { n: 0, valor: 0 };
+      at.n += 1;
+      at.valor += p.valor;
+      porForma.set(p.forma, at);
+    }
+    const total = dentro.reduce((s2, p) => s2 + p.valor, 0);
+
+    let h = `<h1>Entradas por horário — ${esc(nome)} — ${data.split('-').reverse().join('/')}</h1>`;
+    h += `<div class="mut">Só as ENTRADAS recebidas até ${esc(limite)} — sem retiradas da gaveta.</div>`;
+    h += '<h2>Por forma de pagamento</h2><table><tr><th>forma</th><th>qtd</th><th class="dir">valor</th></tr>' +
+      [...porForma.entries()]
+        .sort((a, b) => b[1].valor - a[1].valor)
+        .map(([f, v]) => `<tr><td>${esc(f)}</td><td>${v.n}×</td><td class="dir">${brl(v.valor)}</td></tr>`)
+        .join('') +
+      `<tr class="tot"><td colspan="2">Total até ${esc(limite)}</td><td class="dir">${brl(total)}</td></tr></table>`;
+
+    h += `<h2>Lançamentos na ordem do relógio (${dentro.length})</h2>`;
+    h += dentro.length === 0
+      ? '<div class="mut">Nenhuma entrada até esse horário.</div>'
+      : '<table><tr><th>hora</th><th>forma</th><th>quem recebeu</th><th>NSU</th><th>pedido</th><th class="dir">valor</th></tr>' +
+        dentro.map((p) =>
+          `<tr><td>${hora(p.quando)}</td><td>${esc(p.forma)}</td>` +
+          `<td>${esc(p.quem ?? `caixa ${p.caixa}`)}</td>` +
+          `<td>${esc(p.nsu ?? '')}</td><td>${p.pedido ?? ''}</td>` +
+          `<td class="dir">${brl(p.valor)}</td></tr>`).join('') +
+        `<tr class="tot"><td colspan="5">Total até ${esc(limite)}</td><td class="dir">${brl(total)}</td></tr></table>`;
+
+    if (semHora.length) {
+      const vs = semHora.reduce((s2, p) => s2 + p.valor, 0);
+      h += `<div class="mut" style="margin-top:10px">⚠ ${semHora.length} lançamento(s) sem horário registrado ` +
+        `(${brl(vs)}) ficaram FORA deste total — não dá pra saber se entraram antes ou depois de ${esc(limite)}.</div>`;
+    }
+    return h;
   }
 
   function htmlFilial(nome: string, r: Relatorio, dets: Map<number, Pagamento[]> | null): string {
@@ -344,7 +407,7 @@ export function ConferenciaCaixaClient({
     return m;
   }
 
-  async function imprimir(modo: 'sintetico' | 'analitico', caixaSo?: number) {
+  async function imprimir(modo: 'sintetico' | 'analitico' | 'horario', caixaSo?: number) {
     setPrintando(true);
     setMsg(null);
     try {
@@ -363,6 +426,12 @@ export function ConferenciaCaixaClient({
       for (const f of alvos) {
         const r = await buscarRel(f.id);
         if (!r) { partes.push(`<h1>Conferência de caixa — ${esc(f.nome)}</h1><div class="mut">sem dados (loja fora do ar?)</div>`); continue; }
+        if (modo === 'horario') {
+          // por horário precisa dos lançamentos individuais sempre
+          const dets = await buscarDetalhes(f.id, r.caixas);
+          partes.push((partes.length ? '<div class="quebra"></div>' : '') + htmlPorHorario(f.nome, r, dets, printAte));
+          continue;
+        }
         const dets = modo === 'analitico' ? await buscarDetalhes(f.id, r.caixas) : null;
         partes.push((partes.length ? '<div class="quebra"></div>' : '') + htmlFilial(f.nome, r, dets));
       }
@@ -552,6 +621,24 @@ export function ConferenciaCaixaClient({
         >
           Analítico
         </button>
+        <span className="mx-1 h-5 w-px bg-slate-200" />
+        <button
+          onClick={() => void imprimir('horario')}
+          disabled={printando}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50"
+          title="Só as entradas, na ordem do relógio, até o horário escolhido — sem as retiradas da gaveta"
+        >
+          Entradas por horário
+        </button>
+        <label className="flex items-center gap-1 text-xs text-slate-500">
+          até
+          <input
+            type="time"
+            value={printAte}
+            onChange={(e) => setPrintAte(e.target.value)}
+            className="rounded-md border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
         {printando && <span className="text-xs text-slate-400">montando o relatório…</span>}
       </div>
 
