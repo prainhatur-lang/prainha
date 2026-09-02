@@ -3978,7 +3978,29 @@ async function apiContaConferir(pagamentoId) {
 // sumir nem dobrar — então antes de gravar a rota deduplica pelo NSU: primeiro
 // no log local, depois no próprio PAGAMENTOS (cobre a janela em que o Consumer
 // gravou mas o UPDATE do log falhou). Sem NSU (raro), não há chave — registra.
+// TRAVA EM VOO por (mesa, NSU, valor). O app da LIO grava a baixa na fila de
+// reenvio ANTES de mandar (Pendentes.adicionar → Api.lioPagar), e a lista de
+// mesas reenvia a fila em silêncio a cada onResume. Garçom cobra e volta pra
+// lista enquanto o 1º envio ainda está no ar = 2º envio idêntico. Lá embaixo
+// a checagem "já existe?" lê ANTES de qualquer um gravar, então os dois
+// passam e os dois gravam — medido: NSU 73750 e 73761 em dobro, 0,3s e 1,4s
+// entre os lançamentos, cobrados 1x na Cielo. Aqui o 2º espera o 1º acabar
+// e devolve o MESMO resultado. Vale pra qualquer cliente, sem mexer no app.
+const lioPagarEmVoo = new Map();
 async function apiLioPagar(body, garcom) {
+  const chave = [Number(body.numero), String(body.nsu || '').trim(), +Number(body.valor || 0).toFixed(2)].join('|');
+  if (chave.includes('||') || !String(body.nsu || '').trim()) return apiLioPagarSemTrava(body, garcom); // sem NSU não dá pra chavear
+  const emVoo = lioPagarEmVoo.get(chave);
+  if (emVoo) {
+    console.log(`[lio] pagamento repetido em voo (${chave}) — aguardando o primeiro`);
+    const r = await emVoo.catch(() => null);
+    return r && r.ok ? { ...r, ja_registrado: true } : apiLioPagarSemTrava(body, garcom);
+  }
+  const p = apiLioPagarSemTrava(body, garcom);
+  lioPagarEmVoo.set(chave, p);
+  try { return await p; } finally { lioPagarEmVoo.delete(chave); }
+}
+async function apiLioPagarSemTrava(body, garcom) {
   const n = Number(body.numero);
   const valor = +Number(body.valor || 0).toFixed(2);
   const nsu = String(body.nsu || '').trim();
