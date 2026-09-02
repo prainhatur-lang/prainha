@@ -5,6 +5,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { pedidoCompraConfigurado, enviarPedidoCompra } from '@/lib/whatsapp-otp';
+import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { dadosFaturamentoLinha } from '@/lib/dados-faturamento';
 
 function brl(n: number): string {
@@ -37,7 +38,16 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
       filialId: schema.pedidoCompra.filialId,
       filialNome: schema.filial.nome,
       fornecedorNome: schema.fornecedor.nome,
-      fornecedorFone: schema.fornecedor.fonePrincipal,
+      // ⚠️ NUNCA fonePrincipal aqui: ele vem do Consumer e é o FIXO da empresa.
+      // Foi assim que o pedido 24 (R$ 4.880) saiu 2x pro (79) 3322-1035 e o
+      // Alex nunca recebeu. O número certo é o do VENDEDOR.
+      fornecedorFone: foneParaWhatsapp(),
+      vendedorNome: sql<string | null>`(
+        SELECT v.nome FROM vendedor_fornecedor vf
+        JOIN vendedor v ON v.id = vf.vendedor_id
+        WHERE vf.fornecedor_id = ${schema.fornecedor.id}
+          AND v.ativo AND COALESCE(v.whatsapp, '') <> ''
+        ORDER BY vf.principal DESC, v.atualizado_em DESC LIMIT 1)`,
     })
     .from(schema.pedidoCompra)
     .innerJoin(schema.filial, eq(schema.filial.id, schema.pedidoCompra.filialId))
@@ -78,7 +88,8 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
 
   try {
     await enviarPedidoCompra(tel, {
-      fornecedor: (p.fornecedorNome ?? '').split(' ')[0] || 'tudo bem',
+      // Cumprimenta a PESSOA; o nome da empresa vai no corpo do pedido.
+      fornecedor: (p.vendedorNome ?? p.fornecedorNome ?? '').split(/[\s(/-]/)[0] || 'tudo bem',
       filial: p.filialNome ?? 'Prainha',
       numero: String(p.numero),
       itens: `${itensStr || '(itens no sistema)'}${faturamento ? `; ${faturamento}` : ''}`,
