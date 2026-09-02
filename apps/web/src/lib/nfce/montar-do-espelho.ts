@@ -21,6 +21,41 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { EmitirInput } from './emitir';
+import { validarDocumento } from './documento';
+
+/** CPF/CNPJ do cliente do pedido, do cadastro que o Consumer já tem: o FIADO
+ *  primeiro (quem assina a dívida é quem pede a nota), senão o contato da
+ *  mesa. É a resposta pro "o cliente já foi cadastrado antes, por que o
+ *  painel pede o CNPJ de novo?" — agora ele vem preenchido. */
+export async function clienteDoPedido(
+  filialId: string,
+  codigoExterno: number,
+): Promise<{ documento: string | null; nome: string | null }> {
+  const [ped] = await db
+    .select({
+      fiado: schema.pedido.codigoClienteFiadoExterno,
+      contato: schema.pedido.codigoClienteContatoExterno,
+      nomeCliente: schema.pedido.nomeCliente,
+    })
+    .from(schema.pedido)
+    .where(
+      and(eq(schema.pedido.filialId, filialId), eq(schema.pedido.codigoExterno, codigoExterno)),
+    )
+    .limit(1);
+  if (!ped) return { documento: null, nome: null };
+
+  for (const cod of [ped.fiado, ped.contato]) {
+    if (!cod) continue;
+    const [cli] = await db
+      .select({ doc: schema.cliente.cpfOuCnpj, nome: schema.cliente.nome })
+      .from(schema.cliente)
+      .where(and(eq(schema.cliente.filialId, filialId), eq(schema.cliente.codigoExterno, cod)))
+      .limit(1);
+    const doc = String(cli?.doc ?? '').replace(/\D/g, '');
+    if (validarDocumento(doc)) return { documento: doc, nome: cli?.nome ?? ped.nomeCliente ?? null };
+  }
+  return { documento: null, nome: ped.nomeCliente ?? null };
+}
 
 /** Consumer.CODIGOFORMAPAGAMENTO -> tPag da NFe. Os códigos batem com o tPag
  *  até o 14 e divergem depois (Consumer 18=Pix Manual, 21=Pix Online), por

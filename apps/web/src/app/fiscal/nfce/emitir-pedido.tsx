@@ -27,11 +27,29 @@ export function EmitirPedido({
   const [erro, setErro] = useState<string | null>(null);
 
   async function emitir() {
+    // cliente já cadastrado no pedido (fiado/contato)? o prompt vem preenchido
+    setOcupado(true);
+    let sugestao: { documento: string | null; nome: string | null } = { documento: null, nome: null };
+    try {
+      const r = await fetch(
+        `/api/nfce/emitir-pedido?filialId=${filialId}&codigoExterno=${codigoExterno}`,
+      );
+      const j = await r.json();
+      if (j.ok) sugestao = j;
+    } catch {
+      /* sem sugestão: prompt vazio, como antes */
+    } finally {
+      setOcupado(false);
+    }
+
     const doc = window.prompt(
       `Emitir NFC-e — ${rotulo} · ${valor}\n\n` +
         'ATENÇÃO: a nota é enviada à SEFAZ e só pode ser cancelada em até 30 MINUTOS.\n\n' +
-        'CPF/CNPJ do consumidor (deixe em branco pra nota sem identificação):',
-      '',
+        (sugestao.documento
+          ? `Cliente do cadastro: ${sugestao.nome ?? 'sem nome'} — CPF/CNPJ abaixo JÁ PREENCHIDO.\n` +
+            'Confirme com OK, ou apague pra nota sem identificação:'
+          : 'CPF/CNPJ do consumidor (deixe em branco pra nota sem identificação):'),
+      sugestao.documento ?? '',
     );
     if (doc === null) return; // cancelou o prompt
 

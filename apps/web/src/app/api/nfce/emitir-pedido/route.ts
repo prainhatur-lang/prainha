@@ -14,7 +14,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { emitirNfcePedido } from '@/lib/nfce/emitir';
-import { montarNfceDoEspelho } from '@/lib/nfce/montar-do-espelho';
+import { montarNfceDoEspelho, clienteDoPedido } from '@/lib/nfce/montar-do-espelho';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,6 +26,36 @@ const Body = z.object({
   /** CPF/CNPJ do consumidor (opcional — nota sem destinatário é válida). */
   documento: z.string().max(20).nullish(),
 });
+
+/** GET ?filialId&codigoExterno — CPF/CNPJ do cliente do pedido (cadastro do
+ *  Consumer: fiado primeiro, senão o contato). O botão do painel chama antes
+ *  do prompt pra vir preenchido — o operador confirma ou apaga. */
+export async function GET(req: Request) {
+  const { user, error } = await exigirPermApi('nfce.emitir');
+  if (error) return error;
+
+  const sp = new URL(req.url).searchParams;
+  const filialId = sp.get('filialId') || '';
+  const codigoExterno = Number(sp.get('codigoExterno') || 0);
+  if (!/^[0-9a-f-]{36}$/i.test(filialId) || !Number.isInteger(codigoExterno) || codigoExterno <= 0) {
+    return NextResponse.json({ ok: false, erro: 'parâmetros inválidos' }, { status: 400 });
+  }
+
+  const [acesso] = await db
+    .select({ filialId: schema.usuarioFilial.filialId })
+    .from(schema.usuarioFilial)
+    .where(
+      and(
+        eq(schema.usuarioFilial.usuarioId, user.id),
+        eq(schema.usuarioFilial.filialId, filialId),
+      ),
+    )
+    .limit(1);
+  if (!acesso) return NextResponse.json({ ok: false, erro: 'sem acesso a essa filial' }, { status: 403 });
+
+  const cli = await clienteDoPedido(filialId, codigoExterno);
+  return NextResponse.json({ ok: true, ...cli });
+}
 
 export async function POST(req: Request) {
   const { user, error } = await exigirPermApi('nfce.emitir');
