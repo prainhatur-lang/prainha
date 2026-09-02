@@ -4003,7 +4003,16 @@ async function apiLioPagar(body, garcom) {
 async function apiLioPagarSemTrava(body, garcom) {
   const n = Number(body.numero);
   const valor = +Number(body.valor || 0).toFixed(2);
-  const nsu = String(body.nsu || '').trim();
+  let nsu = String(body.nsu || '').trim();
+  // PIX no menu nativo da LIO: o SDK devolve cieloCode VAZIO e o número da
+  // transação vem em authCode (medido: authCode "01543308" ↔ NSU 154330 no
+  // extrato da Cielo). O app manda nsu=cieloCode, autorizacao=authCode — então
+  // o Pix chegava sem NSU e nunca batia na conferência. Recupera aqui: zeros à
+  // esquerda fora, e nsuCasa() já lida com o truncamento do EDI.
+  if (!nsu && String(body.forma || '').toLowerCase() === 'pix') {
+    const aut = String(body.autorizacao || '').replace(/\D/g, '').replace(/^0+/, '');
+    if (aut.length >= 6 && aut.length <= 10) { nsu = aut; console.log(`[lio] pix sem cieloCode — NSU recuperado do authCode (${aut})`); }
+  }
   if (nsu) {
     const [dup] = await sql`SELECT id, pagamento_fb FROM venda_pagamento
       WHERE numero=${n} AND nsu=${nsu} AND valor=${valor} AND origem='lio-sdk' AND status='ok'
@@ -6049,7 +6058,12 @@ async function apiCaixaDetalhe(codigo) {
 // Devolve SEMPRE: {bate, n, total, categoria, motivo, bloqueios[], extrato_ate}.
 // `bloqueios` lista TUDO que trava o caixa (não só o primeiro) — é o que o
 // gerente lê na Conferência pra saber o que investigar, com NSU/valor/dia.
-async function caixaMaquininhaConfere(cod) {
+async function caixaMaquininhaConfere(cod, usados = new Set()) {
+  // `usados` pode vir de fora: numa passada por VÁRIOS caixas, a mesma
+  // transação da Cielo não pode servir de par pra dois lançamentos em caixas
+  // diferentes. Medido: R$ 200,20 na mesa 16 em 25/08 (sem NSU) e 28/08 (NSU
+  // 79493), pedidos diferentes, e UMA transação 79493 na Cielo — com o Set
+  // por caixa os dois passavam.
   const pgs = await caixaPagamentosDoCaixa(cod);
   if (!pgs.ok) {
     return { bate: false, n: 0, total: 0, categoria: 'erro_banco', bloqueios: [],
@@ -6070,8 +6084,8 @@ async function caixaMaquininhaConfere(cod) {
   // virava null silencioso e o motivo dizia "nem no extrato da Cielo" mesmo
   // sem NUNCA ter olhado o extrato.
   const cielo = await cieloExtrato();
-  const usados = new Set(); // uma transação da Cielo casa com um pagamento só
-  const bloqueios = [];
+  const bloqueios = []; // `usados`: uma transação da Cielo casa com um pagamento só
+
 
   for (const p of linhas) {
     const valor = Number(p.V);
@@ -6230,10 +6244,11 @@ async function apiCaixaConferirTodos() {
   const abertos = await caixasAbertos();
   if (!abertos) return { ok: true, caixas: [] };
   const out = [];
+  const usados = new Set(); // uma transação da Cielo, um lançamento — em TODOS os caixas da passada
   for (const c of abertos) {
     const maquininha = String(c.obs || '').startsWith('Aberto automaticamente');
     if (!maquininha) { out.push({ codigo: c.codigo, quem: c.quem, tipo: 'sistema', aberto_em: c.abriu, fecharia: false, categoria: 'gaveta', bloqueios: [], motivo: 'caixa de gaveta — fecha no balcão, com conferência de dinheiro' }); continue; }
-    const conf = await caixaMaquininhaConfere(c.codigo)
+    const conf = await caixaMaquininhaConfere(c.codigo, usados)
       .catch((e) => ({ bate: false, n: 0, total: 0, categoria: 'erro_banco', bloqueios: [], motivo: 'conferência não rodou: ' + e.message }));
     out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', aberto_em: c.abriu,
       pagamentos: conf.n ?? 0, total: conf.total ?? 0, fecharia: !!conf.bate,
@@ -6348,6 +6363,7 @@ async function loopFecharCaixasMaquininha() {
     if (!abertos) return;
     let n = 0, pulados = 0;
     const categorias = [];
+    const usados = new Set(); // ver caixaMaquininhaConfere: par da Cielo é único na passada
     for (const c of abertos) {
       if (!String(c.obs || '').startsWith('Aberto automaticamente')) continue; // sistema: não toca
       const cod = c.codigo;
@@ -6359,7 +6375,7 @@ async function loopFecharCaixasMaquininha() {
       if (Number.isFinite(nasceu) && Date.now() - nasceu < 2 * 3600 * 1000) continue;
       // ⚠️ REGRA DO DONO: só fecha se o caixa BATER (régua única em
       // caixaMaquininhaConfere). Não bateu = fica ABERTO pra conferência.
-      const conf = await caixaMaquininhaConfere(cod);
+      const conf = await caixaMaquininhaConfere(cod, usados);
       if (!conf.bate) { pulados++; categorias.push(conf.categoria); console.log(`[caixa] autofechar: caixa ${cod} NÃO bateu (${conf.motivo}) — fica aberto`); continue; }
       const fundo = c.fundo;
       let esperado = fundo;
