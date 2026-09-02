@@ -42,6 +42,8 @@ function rotuloCategoria(c: string): string {
       return 'o extrato da Cielo ainda não cobre esse dia — fecha sozinho quando o arquivo chegar';
     case 'dinheiro_lancado':
       return 'tem DINHEIRO lançado num caixa de maquininha — precisa conferir no balcão';
+    case 'duplicado':
+      return 'pagamento lançado 2x no PDV e cobrado 1x na Cielo — cancele o repetido';
     case 'sem_par':
       return 'pagamento sem par no sistema nem no extrato da Cielo — precisa olhar o NSU';
     default:

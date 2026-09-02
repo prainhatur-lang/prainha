@@ -6086,11 +6086,31 @@ async function caixaMaquininhaConfere(cod) {
     // por isso o dia entra sempre no par. `usados` impede que uma transação
     // da Cielo cubra dois lançamentos iguais — é assim que duplicata de
     // lançamento aparece em vez de passar batido.
-    const ix = dia == null ? -1 : cielo.vendas.findIndex((v, i) =>
-      !usados.has(i) && v.data === dia && Math.abs(v.valor - valor) < 0.005 &&
+    //
+    // Tolerância de 1 dia SÓ quando o NSU bate: medido em 28/08 o PDV gravou
+    // NSU 73745 (R$ 138, 18:32) e a Cielo lançou o mesmo NSU/valor/hora em
+    // 29/08. NSU+valor iguais já identificam a transação; exigir o dia exato
+    // reprovava venda legítima por diferença de data do adquirente. Sem NSU a
+    // regra continua estrita — só valor+dia seria fraco demais.
+    const casa = (v, i) => !usados.has(i) && Math.abs(v.valor - valor) < 0.005;
+    let ix = dia == null ? -1 : cielo.vendas.findIndex((v, i) => casa(v, i) && v.data === dia &&
       (nsu ? nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) : true));
+    if (ix < 0 && nsu && dia) {
+      ix = cielo.vendas.findIndex((v, i) => casa(v, i) &&
+        nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')) && Math.abs(diasEntre(v.data, dia)) <= 1);
+    }
     if (ix >= 0) { usados.add(ix); continue; }
 
+    // DUPLICATA: a Cielo TEM essa transação, mas outro lançamento deste caixa
+    // já a consumiu. É registro em dobro no PDV (duplo-clique), não dinheiro
+    // sumido — e o nome certo muda o que o gerente vai fazer com isso.
+    const dobrado = nsu && cielo.vendas.some((v, i) => usados.has(i) &&
+      Math.abs(v.valor - valor) < 0.005 && nsuCasa(nsu, String(v.nsu).replace(/\D/g, '')));
+    if (dobrado) {
+      bloqueios.push({ ...base, categoria: 'duplicado',
+        texto: `NSU ${nsu} (R$ ${valor.toFixed(2)}${dia ? ' de ' + brDe(dia) : ''}) lançado 2x no PDV — a Cielo cobrou 1x. Cancele o lançamento repetido.` });
+      continue;
+    }
     bloqueios.push({ ...base, categoria: 'sem_par',
       texto: nsu
         ? `NSU ${nsu} (R$ ${valor.toFixed(2)}${dia ? ' de ' + brDe(dia) : ''}) sem par no sistema nem no extrato da Cielo`
@@ -6103,7 +6123,7 @@ async function caixaMaquininhaConfere(cod) {
   }
   // Quando a conferência NÃO PÔDE rodar (banco/extrato fora), o caixa é
   // INDETERMINADO — nunca "sem par". Não se acusa ninguém por central caída.
-  const dom = ['erro_banco', 'extrato_indisponivel', 'dinheiro_lancado', 'sem_par', 'extrato_atrasado'];
+  const dom = ['erro_banco', 'extrato_indisponivel', 'dinheiro_lancado', 'sem_par', 'duplicado', 'extrato_atrasado'];
   const categoria = dom.find((c) => bloqueios.some((b) => b.categoria === c)) || 'sem_par';
   const principal = bloqueios.find((b) => b.categoria === categoria);
   const sobra = bloqueios.length - 1;
@@ -6122,6 +6142,13 @@ async function caixaPagamentosDoCaixa(cod) {
   return await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
       CAST(DATAPAGAMENTO AS DATE) DIA
     FROM PAGAMENTOS WHERE CODIGOCAIXA=${Number(cod)} AND DATADELETE IS NULL`);
+}
+/** Diferença em dias entre dois YYYY-MM-DD. Usa UTC nos dois lados — só a
+ *  distância importa, e assim nenhum fuso entra na conta. */
+function diasEntre(a, b) {
+  const t = (x) => Date.UTC(+String(x).slice(0, 4), +String(x).slice(5, 7) - 1, +String(x).slice(8, 10));
+  const d = t(a) - t(b);
+  return Number.isNaN(d) ? 99 : Math.round(d / 86400000);
 }
 /** DD/MM/AAAA de um YYYY-MM-DD (sem passar por Date — ver ymdDoBanco). */
 function brDe(ymd) {
