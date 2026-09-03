@@ -22,6 +22,7 @@ interface SP {
   ficha?: string; // 'com' | 'sem' | ''
   estoque?: string; // 'baixo' | 'zerado' | ''
   fornecedor?: string; // 'sem' | ''
+  grupo?: string; // codigo da etiqueta (grupo do cardápio)
   page?: string;
 }
 
@@ -58,6 +59,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     await escolherFilial(filiais, sp.filialId);
   const q = (sp.q ?? '').trim();
   const tipoFiltro = (sp.tipo ?? '').trim();
+  const grupoFiltro = (sp.grupo ?? '').trim();
   // Default: mostra só ativos. Precisa clicar 'Todos' explicitamente pra ver
   // descontinuados/pausados.
   const statusFiltro = sp.status === undefined ? 'ativo' : sp.status.trim();
@@ -97,6 +99,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       : estoqueFiltro === 'baixo'
         ? sql`COALESCE(${schema.produto.estoqueAtual}, 0) < COALESCE(${schema.produto.estoqueMinimo}, 0) AND ${schema.produto.controlaEstoque} = true AND COALESCE(${schema.produto.estoqueMinimo}, 0) > 0`
         : undefined,
+    grupoFiltro ? eq(schema.produto.codigoEtiqueta, grupoFiltro) : undefined,
     fornecedorFiltro === 'sem'
       ? sql`NOT EXISTS (SELECT 1 FROM ${schema.produtoFornecedor} WHERE ${schema.produtoFornecedor.produtoId} = ${schema.produto.id})`
       : undefined,
@@ -133,12 +136,24 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       controlaEstoque: schema.produto.controlaEstoque,
       criadoNaNuvem: schema.produto.criadoNaNuvem,
       pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
+      codigoEtiqueta: schema.produto.codigoEtiqueta,
     })
     .from(schema.produto)
     .where(where)
     .orderBy(asc(schema.produto.nome))
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
+
+  // GRUPO do produto = etiqueta do cardápio (PRODUTOETIQUETA no Consumer).
+  // Uma consulta só pra filial, e o nome sai por lookup em memória.
+  const etiquetas = await db
+    .select({ codigo: schema.produtoEtiqueta.codigoExterno, nome: schema.produtoEtiqueta.nome })
+    .from(schema.produtoEtiqueta)
+    .where(eq(schema.produtoEtiqueta.filialId, filialSelecionada.id));
+  const nomeGrupo = new Map(etiquetas.map((e) => [String(e.codigo), e.nome]));
+  const gruposOrdenados = [...etiquetas]
+    .filter((e) => (e.nome ?? '').trim() !== '')
+    .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'));
 
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPreserva = (override: Partial<SP>) => {
@@ -156,6 +171,8 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     if (nextTipo) qs.set('tipo', nextTipo);
     // Sempre seta status na URL pra ficar explicito qual filtro esta ativo
     if (nextStatus && nextStatus !== 'ativo') qs.set('status', nextStatus);
+    const nextGrupo = override.grupo !== undefined ? override.grupo : grupoFiltro;
+    if (nextGrupo) qs.set('grupo', nextGrupo);
     if (nextFicha) qs.set('ficha', nextFicha);
     if (nextEstoque) qs.set('estoque', nextEstoque);
     if (nextFornecedor) qs.set('fornecedor', nextFornecedor);
@@ -167,6 +184,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
   const temFiltroAtivo =
     !!q ||
     !!tipoFiltro ||
+    !!grupoFiltro ||
     (!!statusFiltro && statusFiltro !== 'ativo') ||
     !!fichaFiltro ||
     !!estoqueFiltro ||
@@ -348,6 +366,39 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               </Link>
             ))}
           </div>
+
+          {/* Grupo do cardápio (PRODUTOETIQUETA). Só aparece quando a filial
+              tem grupos cadastrados — filial sem etiqueta não ganha linha vazia. */}
+          {gruposOrdenados.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="w-20 shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Grupo
+              </span>
+              <Link
+                href={hrefPreserva({ grupo: '', page: '0' })}
+                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                  grupoFiltro === ''
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Todos
+              </Link>
+              {gruposOrdenados.map((g) => (
+                <Link
+                  key={g.codigo}
+                  href={hrefPreserva({ grupo: String(g.codigo), page: '0' })}
+                  className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
+                    grupoFiltro === String(g.codigo)
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {g.nome}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         <form method="GET" className="mt-3 flex items-center gap-2">
@@ -387,6 +438,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                 <th className="px-4 py-2">Código</th>
                 <th className="px-4 py-2">Nome</th>
                 <th className="px-4 py-2">Tipo</th>
+                <th className="px-4 py-2">Grupo</th>
                 <th className="px-4 py-2">Un.</th>
                 <th className="px-4 py-2 text-right">Preço venda</th>
                 <th className="px-4 py-2 text-right">Custo</th>
@@ -399,7 +451,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
             <tbody>
               {produtos.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={11} className="px-4 py-6 text-center text-xs text-slate-500">
                     {q || tipoFiltro
                       ? 'Nenhum produto com esse filtro.'
                       : 'Aguardando sincronização do agente.'}
@@ -437,6 +489,13 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                         <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>
                           {badge.label}
                         </span>
+                      </td>
+                      <td className="px-4 py-2 text-xs text-slate-600">
+                        {p.codigoEtiqueta != null && nomeGrupo.get(String(p.codigoEtiqueta)) ? (
+                          nomeGrupo.get(String(p.codigoEtiqueta))
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-500">
                         {p.unidadeEstoque}
