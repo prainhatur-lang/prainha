@@ -15,7 +15,7 @@ async function podeAFilial(userId: string, filialId: string): Promise<boolean> {
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ filialId: string }> }) {
-  const { user, error } = await exigirPermApi('usuario.editar');
+  const { user, error } = await exigirPermApi('usuario.update');
   if (error) return error;
   const { filialId } = await params;
   if (!(await podeAFilial(user.id, filialId))) {

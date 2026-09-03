@@ -18,7 +18,7 @@ export default async function EquipePage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'usuario.read');
-  const podeEditar = await podeUsuario(user.id, 'usuario.editar');
+  const podeEditar = await podeUsuario(user.id, 'usuario.update');
 
   const filiais = await filiaisDoUsuario(user.id);
 

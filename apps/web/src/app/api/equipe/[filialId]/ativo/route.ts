@@ -15,7 +15,7 @@ const Body = z.object({
 });
 
 export async function POST(request: Request, { params }: { params: Promise<{ filialId: string }> }) {
-  const { user, error } = await exigirPermApi('usuario.editar');
+  const { user, error } = await exigirPermApi('usuario.update');
   if (error) return error;
   const { filialId } = await params;
   const filiais = await filiaisDoUsuario(user.id);
