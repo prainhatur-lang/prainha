@@ -421,6 +421,36 @@ export async function processarEntrada(params: {
       }
     }
 
+    // VISÃO (pedido do Elison 02/09: "importante nina ler as imagens"): se o
+    // cliente mandou IMAGEM nesta leva (últimos 10 min), baixa da Meta e anexa
+    // na chamada do modelo — a Nina passa a VER comprovante, print, foto.
+    // Best-effort: falha no download vira o placeholder de sempre.
+    let imagem: { base64: string; mime: string } | null = null;
+    try {
+      const [imgMsg] = await db
+        .select({ mediaId: schema.atendimentoMensagem.mediaId })
+        .from(schema.atendimentoMensagem)
+        .where(
+          and(
+            eq(schema.atendimentoMensagem.conversaId, registro.conversaId),
+            eq(schema.atendimentoMensagem.direcao, 'entrada'),
+            eq(schema.atendimentoMensagem.tipo, 'imagem'),
+            sql`${schema.atendimentoMensagem.criadoEm} > now() - interval '10 minutes'`,
+          ),
+        )
+        .orderBy(desc(schema.atendimentoMensagem.criadoEm))
+        .limit(1);
+      if (imgMsg?.mediaId) {
+        const midia = await baixarMidia(imgMsg.mediaId);
+        // 4MB de imagem = ~5,3MB em base64; acima disso não anexa (limite da API)
+        if (midia && /^image\//.test(midia.mime) && midia.buffer.length <= 4 * 1024 * 1024) {
+          imagem = { base64: midia.buffer.toString('base64'), mime: midia.mime };
+        }
+      }
+    } catch (e) {
+      console.error('[nina] falha ao baixar imagem pra visão:', e instanceof Error ? e.message : e);
+    }
+
     const historicoRows = await db
       .select({
         direcao: schema.atendimentoMensagem.direcao,
@@ -594,6 +624,7 @@ export async function processarEntrada(params: {
           // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
+          imagem,
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
@@ -615,6 +646,7 @@ export async function processarEntrada(params: {
           // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
+          imagem,
         });
       }
       texto = resposta.texto;

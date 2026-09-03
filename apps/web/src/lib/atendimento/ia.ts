@@ -278,7 +278,8 @@ ${duasCasas
 DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e diga que repassa pra equipe; fechamento redondo (reserva criada, orçamento enviado, cliente se despedindo) → encerre com um desejo curtinho ligado ao contexto ("aproveita o pôr do sol lindo", "aproveitem aí juntos", "que a festa seja inesquecível") — criado na hora, nunca fórmula repetida.
 
 OUTROS:
-- Se o cliente mandou áudio/foto que você não conseguiu ver (aparece como [cliente enviou ...]), peça com carinho pra escrever — mas NUNCA presuma o tipo: se não sabe o que era, diga só que não conseguiu abrir por aqui. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
+- IMAGEM: quando o cliente manda foto/print NESTA leva, ela vem ANEXADA de verdade — você VÊ o conteúdo (comprovante de reserva, print, foto de prato, cardápio). Leia e aja sobre o que a imagem mostra, citando o que viu ("vi aqui seu comprovante: reserva 07/09 às 12h30..."). Imagem só do histórico antigo (aparece como [cliente enviou imagem] SEM anexo) você não vê mais — aí sim peça pra pessoa reenviar ou escrever.
+- Áudio o sistema transcreve sozinho ([áudio transcrito] ...). Se aparecer [cliente enviou um áudio que não foi transcrito], peça com carinho pra escrever. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
 - Nunca peça documentos, senhas ou dados de pagamento.
 - Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoNome}${blocoRetomada}`;
 }
@@ -620,6 +621,19 @@ async function completarClaude(p: {
   for (const m of p.mensagens) {
     if (m.role === 'system') continue;
     if (m.role === 'user') {
+      if (Array.isArray(m.content)) {
+        // multimodal (texto + imagem em data URL) -> blocos da Anthropic
+        const blocos: Anthropic.ContentBlockParam[] = [];
+        for (const parte of m.content) {
+          if (parte.type === 'text' && parte.text.trim()) blocos.push({ type: 'text', text: parte.text });
+          else if (parte.type === 'image_url') {
+            const m2 = /^data:([^;]+);base64,(.+)$/.exec(parte.image_url.url);
+            if (m2) blocos.push({ type: 'image', source: { type: 'base64', media_type: m2[1] as 'image/jpeg', data: m2[2] } });
+          }
+        }
+        empurrar('user', blocos);
+        continue;
+      }
       const texto = typeof m.content === 'string' ? m.content.trim() : '';
       if (texto) empurrar('user', [{ type: 'text', text: texto }]);
     } else if (m.role === 'assistant') {
@@ -720,6 +734,8 @@ export async function gerarResposta(params: {
   retomada?: boolean;
   /** false = número dedicado de UMA casa (Nina se apresenta só como ela). */
   duasCasas?: boolean;
+  /** Imagem que o cliente mandou nesta leva (base64) — a Nina VÊ o conteúdo. */
+  imagem?: { base64: string; mime: string } | null;
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
@@ -742,6 +758,17 @@ export async function gerarResposta(params: {
     { role: 'system', content: system },
     ...historicoParaMensagens(params.historico),
   ];
+  // Cliente mandou imagem nesta leva: anexa de verdade (visão) — o histórico
+  // traz só o placeholder "[cliente enviou imagem]"; isto aqui é o conteúdo.
+  if (params.imagem) {
+    mensagens.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: '[esta é a IMAGEM que o cliente acabou de enviar — leia o conteúdo dela e responda levando-o em conta]' },
+        { type: 'image_url', image_url: { url: `data:${params.imagem.mime};base64,${params.imagem.base64}` } },
+      ],
+    });
+  }
   // Retomada: a ordem vai como ÚLTIMA mensagem (posição vence a gravidade do
   // histórico — no topo do prompt o modelo repetia a promessa antiga).
   if (params.retomada) {
