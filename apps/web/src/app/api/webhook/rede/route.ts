@@ -50,6 +50,13 @@ async function processarDelivery(paymentId: string, origin: string): Promise<voi
   }
 }
 
+/** A Rede SONDA a URL com GET (visto nos logs de produção em 03/09, 01:16 —
+ *  validação de "URL válida e segura"). Sem isto respondia 405 e o cadastro da
+ *  URL em produção poderia ser recusado. */
+export async function GET() {
+  return NextResponse.json({ ok: true, webhook: 'rede' });
+}
+
 export async function POST(request: NextRequest) {
   const expected = process.env.REDE_WEBHOOK_SECRET;
   if (expected) {
