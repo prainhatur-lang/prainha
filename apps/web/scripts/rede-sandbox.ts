@@ -103,4 +103,9 @@ async function main() {
   }
   console.log('\n✅ fumaça concluída');
 }
-main().catch((e) => { console.error('❌', e.message); process.exit(1); });
+main().catch((e) => {
+  // 'fetch failed' do Node esconde a causa real (ECONNRESET, ENOTFOUND, cert…) em e.cause
+  const c = (e as { cause?: { code?: string; message?: string } }).cause;
+  console.error('❌', e.message, c ? `| causa: ${c.code || ''} ${c.message || ''}` : '');
+  process.exit(1);
+});
