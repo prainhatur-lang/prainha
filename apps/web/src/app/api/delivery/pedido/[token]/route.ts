@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { queryCieloPayment } from '@/lib/cielo';
+import { queryPayment } from '@/lib/pagamento-online';
 import {
   expirarPedidosPendentes,
   marcarDeliveryPedidoPago,
@@ -39,7 +39,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     p.pagamentoStatus === 'aguardando'
   ) {
     try {
-      const cielo = await queryCieloPayment(p.pagamentoId, p.filialId);
+      const cielo = await queryPayment(p.pagamentoId, p.filialId);
       if (cielo.status === 'pago') {
         const origin = new URL(request.url).origin;
         await marcarDeliveryPedidoPago(p.id, origin);

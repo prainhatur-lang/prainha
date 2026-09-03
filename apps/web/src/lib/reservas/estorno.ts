@@ -7,7 +7,7 @@
 
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { refundCieloPayment, queryCieloPayment } from '@/lib/cielo';
+import { refundPayment, queryPayment } from '@/lib/pagamento-online';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 
 export interface ResultadoEstorno {
@@ -59,7 +59,7 @@ export async function estornarReservaSePago(
   // de CARTÃO (volta na fatura). Best-effort: sem Cielo agora, fica neutro.
   let meioVolta = 'pelo mesmo meio do pagamento (cartão: na fatura; Pix: na conta de origem)';
   try {
-    const pg = await queryCieloPayment(reserva.pagamentoId, reserva.filialId);
+    const pg = await queryPayment(reserva.pagamentoId, reserva.filialId);
     if (pg.tipo === 'Pix') meioVolta = 'no Pix, direto na conta de origem';
     else if (pg.tipo) meioVolta = 'no CARTÃO, como estorno na fatura (até ~30 dias, conforme o banco) — NÃO chega como Pix';
   } catch {
@@ -72,13 +72,13 @@ export async function estornarReservaSePago(
   let sucesso = true;
   try {
     if (percentual === 100) {
-      const r = await refundCieloPayment(reserva.pagamentoId, undefined, reserva.filialId);
+      const r = await refundPayment(reserva.pagamentoId, undefined, reserva.filialId);
       if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado';
       rotulo = `estorno INTEGRAL de R$ ${valorPago.toFixed(2)} ${meioVolta}`;
       detalheInterno = rotulo;
     } else if (percentual === 50) {
-      const r = await refundCieloPayment(reserva.pagamentoId, Math.round(valorPago * 50), reserva.filialId);
+      const r = await refundPayment(reserva.pagamentoId, Math.round(valorPago * 50), reserva.filialId);
       if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       novoStatus = 'estornado_50';
       rotulo = `estorno de 50% — R$ ${(valorPago / 2).toFixed(2)} voltam ${meioVolta} (cancelamento entre 24h e 48h); o restante é retido`;
@@ -138,8 +138,8 @@ export async function reprocessarEstornosFalhos(): Promise<{ ok: number; pendent
     try {
       const resp =
         percentual === 100
-          ? await refundCieloPayment(r.pagamentoId, undefined, r.filialId)
-          : await refundCieloPayment(r.pagamentoId, Math.round(valorPago * 50), r.filialId);
+          ? await refundPayment(r.pagamentoId, undefined, r.filialId)
+          : await refundPayment(r.pagamentoId, Math.round(valorPago * 50), r.filialId);
       if (resp.status !== 'reembolsado') throw new Error(resp.reason ?? 'negado pela Cielo');
       const valor = percentual === 100 ? valorPago : valorPago / 2;
       await db

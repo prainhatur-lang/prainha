@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { createCieloPixPayment, queryCieloPayment } from '@/lib/cielo';
+import { createPixPayment, queryPayment } from '@/lib/pagamento-online';
 import { marcarOrcamentoEntradaPaga, eventoQueSeguraData } from '@/lib/orcamentos-server';
 
 export const dynamic = 'force-dynamic';
@@ -67,7 +67,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ to
   }
 
   try {
-    const pix = await createCieloPixPayment({
+    const pix = await createPixPayment({
       orderId: `ORC-${o.numero}-${Math.floor(Math.random() * 100000)}`,
       amount,
       customerName: o.aceiteNome ?? o.clienteNome,
@@ -107,7 +107,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
 
   if (status === 'aguardando' && o.pagamentoId) {
     try {
-      const cielo = await queryCieloPayment(o.pagamentoId, o.filialId);
+      const cielo = await queryPayment(o.pagamentoId, o.filialId);
       if (cielo.status === 'pago') {
         await marcarOrcamentoEntradaPaga(o.id);
         status = 'pago';

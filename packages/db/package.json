@@ -19,6 +19,7 @@
     "db:list-insumos": "tsx scripts/list-insumos.ts",
     "migrate:caixa-url": "tsx scripts/migrate-caixa-url.ts",
     "migrate:adquirente-maquininha": "tsx scripts/migrate-adquirente-maquininha.ts",
+    "migrate:adquirente-online": "tsx scripts/migrate-adquirente-online.ts",
     "migrate:avaliacoes": "tsx scripts/migrate-avaliacoes.ts",
     "migrate:reservas": "tsx scripts/migrate-reservas.ts",
     "migrate:reserva-config": "tsx scripts/migrate-reserva-config.ts",

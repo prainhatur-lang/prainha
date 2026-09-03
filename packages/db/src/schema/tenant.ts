@@ -358,6 +358,10 @@ export const filial = pgTable(
      *  existe) ou 'rede' (Laranjinha Smart — integração em andamento). A loja
      *  puxa isto (/api/loja/adquirente) e o app escolhe o módulo de pagamento. */
     adquirenteMaquininha: text('adquirente_maquininha').default('cielo'),
+    /** Adquirente da cobrança ONLINE desta filial (Pix/cartão nas reservas,
+     *  orçamentos, delivery, pagar-mesa): 'cielo' (e-commerce Cielo) ou 'rede'
+     *  (e.Rede). Separado da maquininha: a loja pode migrar um canal por vez. */
+    adquirenteOnline: text('adquirente_online').default('cielo'),
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),

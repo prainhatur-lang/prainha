@@ -19,7 +19,7 @@ import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
-import { queryCieloPayment } from '@/lib/cielo';
+import { queryPayment } from '@/lib/pagamento-online';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
@@ -358,7 +358,7 @@ export async function consultarEstornoWhatsApp(filialId: string, telefone: strin
     let confirmadoCielo = '';
     if (r.pagamentoId) {
       try {
-        const pg = await queryCieloPayment(r.pagamentoId, filialId);
+        const pg = await queryPayment(r.pagamentoId, filialId);
         meio = pg.tipo === 'Pix' ? 'Pix' : pg.tipo ? 'cartão' : '';
         if (pg.estornadoCentavos > 0) {
           confirmadoCielo = ` A operadora CONFIRMA estorno de R$ ${(pg.estornadoCentavos / 100).toFixed(2)}${pg.dataEstorno ? ` em ${pg.dataEstorno.slice(0, 10).split('-').reverse().join('/')}` : ''}.`;

@@ -9,7 +9,7 @@ import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva,
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
-import { createCieloPixPayment } from '@/lib/cielo';
+import { createPixPayment } from '@/lib/pagamento-online';
 import { randomBytes } from 'node:crypto';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
@@ -284,7 +284,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // (rota de status/webhook), não aqui.
   if (valorTaxa != null && nova?.id) {
     try {
-      const pix = await createCieloPixPayment({
+      const pix = await createPixPayment({
         orderId: nova.id,
         amount: Math.round(valorTaxa * 100),
         customerName: nome,

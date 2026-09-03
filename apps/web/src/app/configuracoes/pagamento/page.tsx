@@ -10,7 +10,7 @@ import { createClient } from '@/lib/supabase/server';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { segredoConfigurado } from '@/lib/segredo';
 import { PagamentoClient, type FilialCred } from './pagamento-client';
@@ -29,21 +29,29 @@ export default async function PagamentoPage() {
     ? await db
         .select({
           filialId: schema.filialCredencial.filialId,
+          provedor: schema.filialCredencial.provedor,
           chave: schema.filialCredencial.chave,
           pista: schema.filialCredencial.pista,
         })
         .from(schema.filialCredencial)
-        .where(and(
-          inArray(schema.filialCredencial.filialId, filiais.map((f) => f.id)),
-          eq(schema.filialCredencial.provedor, 'cielo'),
-        ))
+        .where(inArray(schema.filialCredencial.filialId, filiais.map((f) => f.id)))
     : [];
+  // "Cobrança online por" de cada filial (Cielo × Rede).
+  const escolhas = filiais.length
+    ? await db
+        .select({ id: schema.filial.id, adq: schema.filial.adquirenteOnline })
+        .from(schema.filial)
+        .where(inArray(schema.filial.id, filiais.map((f) => f.id)))
+    : [];
+  const adqPorFilial = new Map(escolhas.map((e) => [e.id, e.adq === 'rede' ? 'rede' : 'cielo'] as const));
 
-  const porFilial = new Map<string, Record<string, string | null>>();
+  const porFilial = new Map<string, Record<string, string | null>>();      // cielo
+  const porFilialRede = new Map<string, Record<string, string | null>>();  // rede
   for (const l of linhas) {
-    const m = porFilial.get(l.filialId) ?? {};
+    const alvo = l.provedor === 'rede' ? porFilialRede : porFilial;
+    const m = alvo.get(l.filialId) ?? {};
     m[l.chave] = l.pista;
-    porFilial.set(l.filialId, m);
+    alvo.set(l.filialId, m);
   }
 
   const dados: FilialCred[] = filiais.map((f) => ({
@@ -51,6 +59,9 @@ export default async function PagamentoPage() {
     nome: f.nome,
     propria: porFilial.has(f.id),
     pistas: porFilial.get(f.id) ?? {},
+    propriaRede: porFilialRede.has(f.id),
+    pistasRede: porFilialRede.get(f.id) ?? {},
+    adquirenteOnline: adqPorFilial.get(f.id) ?? 'cielo',
   }));
 
   return (
@@ -59,8 +70,9 @@ export default async function PagamentoPage() {
       <section className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-10">
         <h1 className="text-2xl font-semibold text-slate-900">Pagamento</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Credencial da Cielo de cada casa. Quem tem a chavinha ligada cobra na própria conta;
-          quem está desligada cobra pela credencial geral do servidor.
+          Cobrança <b>online</b> (Pix e cartão nas reservas, orçamentos, delivery e pagar-mesa) de cada casa:
+          escolha por qual adquirente ela cobra e cadastre a credencial. Quem tem a chavinha ligada cobra
+          na própria conta; quem está desligada cobra pela credencial geral do servidor.
         </p>
         <PagamentoClient filiais={dados} podeEditar={podeEditar} segredoOk={segredoConfigurado()} />
       </section>

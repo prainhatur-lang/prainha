@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { queryCieloPayment } from '@/lib/cielo';
+import { queryPayment } from '@/lib/pagamento-online';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -37,7 +37,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
 
   if (status === 'aguardando' && reserva.pagamentoId) {
     try {
-      const cielo = await queryCieloPayment(reserva.pagamentoId, filial.id);
+      const cielo = await queryPayment(reserva.pagamentoId, filial.id);
       if (cielo.status !== 'pendente') {
         status = cielo.status;
         if (status === 'pago') {

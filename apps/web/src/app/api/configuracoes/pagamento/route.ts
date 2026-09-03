@@ -16,16 +16,22 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { cifrar, pista, segredoConfigurado } from '@/lib/segredo';
-import { CHAVES_CIELO, CHAVES_CIELO_SECRETAS, type ChaveCielo } from '@/lib/cielo-credenciais';
+import { CHAVES_CIELO, CHAVES_CIELO_SECRETAS } from '@/lib/cielo-credenciais';
+import { CHAVES_REDE, CHAVES_REDE_SECRETAS } from '@/lib/rede-credenciais';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const PROVEDOR = 'cielo';
+// Dois provedores na mesma tabela: 'cielo' (padrão) e 'rede' (e.Rede).
+type Provedor = 'cielo' | 'rede';
+const provedorDe = (v: unknown): Provedor => (v === 'rede' ? 'rede' : 'cielo');
+const chavesDe = (p: Provedor): readonly string[] => (p === 'rede' ? CHAVES_REDE : CHAVES_CIELO);
+const secretasDe = (p: Provedor): readonly string[] => (p === 'rede' ? CHAVES_REDE_SECRETAS : CHAVES_CIELO_SECRETAS);
 
-export async function GET() {
+export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('configuracao.read');
   if (error) return error;
+  const PROVEDOR = provedorDe(new URL(request.url).searchParams.get('provedor'));
 
   const filiais = await filiaisDoUsuario(user.id);
   if (filiais.length === 0) return NextResponse.json({ filiais: [], segredoConfigurado: segredoConfigurado() });
@@ -52,8 +58,9 @@ export async function GET() {
 
   return NextResponse.json({
     segredoConfigurado: segredoConfigurado(),
-    chaves: CHAVES_CIELO,
-    secretas: CHAVES_CIELO_SECRETAS,
+    provedor: PROVEDOR,
+    chaves: chavesDe(PROVEDOR),
+    secretas: secretasDe(PROVEDOR),
     filiais: filiais.map((f) => ({
       id: f.id,
       nome: f.nome,
@@ -78,6 +85,7 @@ export async function PUT(request: Request) {
   const b = await request.json().catch(() => null);
   const filialId = typeof b?.filialId === 'string' ? b.filialId : null;
   if (!filialId) return NextResponse.json({ error: 'filialId obrigatório' }, { status: 400 });
+  const PROVEDOR = provedorDe(b?.provedor);
 
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((f) => f.id === filialId)) {
@@ -86,7 +94,7 @@ export async function PUT(request: Request) {
 
   const valores = (b?.valores ?? {}) as Record<string, unknown>;
   let gravadas = 0;
-  for (const chave of CHAVES_CIELO as readonly ChaveCielo[]) {
+  for (const chave of chavesDe(PROVEDOR)) {
     const bruto = valores[chave];
     // Campo em branco = "não mexi nesse" (a tela nunca devolve o segredo, só
     // a pista). Pra apagar tudo existe o DELETE.
@@ -121,7 +129,9 @@ export async function DELETE(request: Request) {
   const { user, error } = await exigirPermApi('configuracao.editar');
   if (error) return error;
 
-  const filialId = new URL(request.url).searchParams.get('filialId') ?? '';
+  const sp = new URL(request.url).searchParams;
+  const filialId = sp.get('filialId') ?? '';
+  const PROVEDOR = provedorDe(sp.get('provedor'));
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((f) => f.id === filialId)) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });

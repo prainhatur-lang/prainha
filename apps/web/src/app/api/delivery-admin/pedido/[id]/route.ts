@@ -9,7 +9,7 @@ import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { refundCieloPayment } from '@/lib/cielo';
+import { refundPayment } from '@/lib/pagamento-online';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
@@ -80,7 +80,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   let estorno: 'ok' | 'falhou' | null = null;
   if (acao === 'cancelar' && p.pagamentoStatus === 'pago' && p.pagamentoId) {
     try {
-      const r = await refundCieloPayment(p.pagamentoId, undefined, p.filialId);
+      const r = await refundPayment(p.pagamentoId, undefined, p.filialId);
       if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado pela Cielo');
       estorno = 'ok';
     } catch (e) {

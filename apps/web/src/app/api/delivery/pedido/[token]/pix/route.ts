@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { createCieloPixPayment } from '@/lib/cielo';
+import { createPixPayment } from '@/lib/pagamento-online';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,7 +37,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ token:
   }
 
   try {
-    const pix = await createCieloPixPayment({
+    const pix = await createPixPayment({
       orderId: `DLV-${p.numero}`,
       amount: Math.round(Number(p.total) * 100),
       customerName: p.clienteNome,

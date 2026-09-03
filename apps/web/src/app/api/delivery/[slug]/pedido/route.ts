@@ -10,7 +10,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { createCieloPixPayment } from '@/lib/cielo';
+import { createPixPayment } from '@/lib/pagamento-online';
 import { lojaDeliveryPorSlug } from '@/lib/delivery/config';
 import { criarPedidoDelivery, type NovoPedidoInput } from '@/lib/delivery/pedido';
 
@@ -47,7 +47,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
 
   if (b.pagamentoMetodo === 'pix') {
     try {
-      const pix = await createCieloPixPayment({
+      const pix = await createPixPayment({
         orderId: `DLV-${r.pedido.numero}`,
         amount: r.pedido.totalCentavos,
         customerName: String(b.clienteNome ?? '').slice(0, 100),
