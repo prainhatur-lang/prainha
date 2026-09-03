@@ -10,9 +10,17 @@
 //                REDE_WEBHOOK_URL=https://app.prainhabar.com/api/webhook/rede [REDE_WEBHOOK_SECRET=…]
 // Cartões de teste (doc "Tutorial Sandbox → Cartões"): Visa créd 4235647728025682 · Master créd
 // 5448280000000007 · Visa déb 4761120000000148 · Elo 4389351648020055 — validade jan/35, CVV 123.
-import { config as loadEnv } from 'dotenv';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-loadEnv({ path: resolve(process.cwd(), '../../.env') });
+// Carrega ../../.env sem depender do pacote dotenv (o apps/web não o tem — e o
+// next build type-checa esta pasta: 'Cannot find module dotenv' derrubou o
+// deploy em 03/09). Variável já setada no ambiente tem prioridade.
+try {
+  for (const linha of readFileSync(resolve(process.cwd(), '../../.env'), 'utf8').split('\n')) {
+    const m = linha.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  }
+} catch { /* sem .env: usa só o ambiente */ }
 process.env.REDE_SANDBOX = process.env.REDE_SANDBOX || 'true';
 
 async function main() {
