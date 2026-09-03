@@ -120,6 +120,7 @@ export default async function ConfiguracoesPage() {
           nome: schema.filial.nome,
           taxas: schema.filial.taxas,
           toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
+          adquirenteMaquininha: schema.filial.adquirenteMaquininha,
           parametrosConciliacao: schema.filial.parametrosConciliacao,
         })
         .from(schema.filial)
@@ -168,6 +169,7 @@ export default async function ConfiguracoesPage() {
                       filialId={f.id}
                       taxas={taxas}
                       toleranciaAutoAceite={Number(f.toleranciaAutoAceite ?? 0.90)}
+                      adquirenteMaquininha={f.adquirenteMaquininha === 'rede' ? 'rede' : 'cielo'}
                     />
                   </div>
 

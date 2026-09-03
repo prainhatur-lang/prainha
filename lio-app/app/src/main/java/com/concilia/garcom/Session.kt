@@ -53,9 +53,13 @@ object Session {
             .putInt("comanda_max", c.comandaMax)
             .putInt("numero_max", c.numeroMax)
             .putString("taxa_servico", c.taxaServico.toString())
+            .putString("adquirente", if (c.adquirente == "rede") "rede" else "cielo")
             .apply()
         saveLan(ctx, c.lan) // aprende o IP local da loja (pra preferir local dentro)
     }
+
+    /** Adquirente da maquininha desta filial (do /api/config): cielo | rede. */
+    fun adquirente(ctx: Context): String = prefs(ctx).getString("adquirente", null) ?: "cielo"
 
     fun taxaServico(ctx: Context): Double =
         prefs(ctx).getString("taxa_servico", null)?.toDoubleOrNull() ?: 10.0

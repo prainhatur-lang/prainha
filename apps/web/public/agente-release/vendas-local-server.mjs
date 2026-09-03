@@ -1498,6 +1498,27 @@ async function projetarIfood() {
  *  um ajuste feito aqui na loja (pra destravar alguma coisa no meio do
  *  expediente) seria desfeito no ciclo seguinte, sem ninguém entender por quê.
  *  Nuvem fora do ar ou filial sem cadastro lá: mantém o que está gravado. */
+// ---- ADQUIRENTE da maquininha (Cielo × Rede), escolhido no Concilia por filial ----
+// A loja puxa /api/loja/adquirente (assinado) no mesmo ciclo do iFood, guarda em
+// app_config e expõe no /api/config — o app escolhe o módulo (Lio = Cielo,
+// Rede = Laranjinha Smart). Nuvem fora do ar: vale o último valor gravado.
+let ADQUIRENTE_LOJA = 'cielo';
+async function puxarAdquirente() {
+  try { ADQUIRENTE_LOJA = (await cfgGet('adquirente', 'cielo')) === 'rede' ? 'rede' : 'cielo'; } catch {}
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s });
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/adquirente?${q}`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error('adquirente: HTTP ' + r.status);
+  const c = await r.json();
+  const novo = c && c.ok && c.adquirente === 'rede' ? 'rede' : 'cielo';
+  if (novo !== ADQUIRENTE_LOJA) {
+    console.log(`[adquirente] maquininha desta filial: ${ADQUIRENTE_LOJA} -> ${novo} (Concilia)`);
+    ADQUIRENTE_LOJA = novo;
+    try { await cfgSet('adquirente', novo); } catch {}
+  }
+}
 async function puxarConfigIfood() {
   if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
   const e = Math.floor(Date.now() / 1000) + 120;
@@ -1597,6 +1618,7 @@ async function puxarDeliverySite() {
 async function loopIfood() {
   try {
     await puxarConfigIfood().catch((e) => console.error('[ifood] config da nuvem:', e.message));
+    await puxarAdquirente().catch((e) => console.error('[adquirente] nuvem:', e.message));
     // O delivery do site não depende do iFood estar ligado — é fila própria
     // que só divide a tela do caixa.
     await puxarDeliverySite().catch((e) => console.error('[site] fila:', e.message));
@@ -4169,7 +4191,9 @@ function apiConfig() {
     // saber daqui se estava desligado no start.bat, se o download falhava ou
     // se estava só esperando a loja esvaziar.
     auto_update: AUTO_UPDATE ? 'on' : 'off',
-    auto_update_estado: autoUpdateEstado };
+    auto_update_estado: autoUpdateEstado,
+    // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
+    adquirente: ADQUIRENTE_LOJA };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----

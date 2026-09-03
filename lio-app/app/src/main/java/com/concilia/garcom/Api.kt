@@ -65,6 +65,8 @@ object Api {
         /** IP:porta da LAN da loja (ex.: "10.0.0.252:8790") — o app prefere ele
          *  dentro da loja e cai pro servidor configurado (Funnel) quando fora. */
         val lan: String? = null,
+        /** cielo | rede — adquirente da maquininha desta filial (escolhido no Concilia). */
+        val adquirente: String = "cielo",
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -218,6 +220,7 @@ object Api {
                 numeroMax = j.optInt("numero_max", 400),
                 taxaServico = j.optDouble("taxa_servico", 10.0),
                 lan = j.optStringOrNull("lan"),
+                adquirente = j.optString("adquirente", "cielo"),
             )
         } catch (_: Exception) { null }
     }

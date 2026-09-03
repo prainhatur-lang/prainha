@@ -110,8 +110,13 @@ android {
         // 1.10.10: DESCONTO/ACRÉSCIMO do pedido obedecidos no Receber e no cupom
         // (conta com desconto era cobrada CHEIA). Manda x-concilia-app; o app
         // antigo sem o header recebe o desconto dobrado no `total` pelo servidor.
-        versionCode = 35
-        versionName = "1.10.11"
+        // 1.10.12: camada de ADQUIRENTE. O app não chama o SDK direto: `Pagamento`
+        // delega pra Cielo (`Lio`, homologado) ou Rede (`Rede`, Laranjinha Smart —
+        // encaixe pronto, SDK vem pelo onboarding da Rede) conforme a filial
+        // escolheu no Concilia (Configurações → Filiais → Adquirente da
+        // maquininha, chega pelo /api/config). Rede sem SDK avisa, não trava.
+        versionCode = 36
+        versionName = "1.10.12"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
         buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")

@@ -354,6 +354,10 @@ export const filial = pgTable(
      *  falar com o vendas-local (assinado). Ex.: https://xxx.ts.net. Null = não
      *  configurada — a conferência dessa filial fica indisponível. */
     caixaUrl: text('caixa_url'),
+    /** Adquirente da MAQUININHA do garçom nesta filial: 'cielo' (LIO, o que
+     *  existe) ou 'rede' (Laranjinha Smart — integração em andamento). A loja
+     *  puxa isto (/api/loja/adquirente) e o app escolhe o módulo de pagamento. */
+    adquirenteMaquininha: text('adquirente_maquininha').default('cielo'),
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),

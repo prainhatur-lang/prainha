@@ -27,10 +27,12 @@ export function ConfiguracoesForm({
   filialId,
   taxas: taxasInicial,
   toleranciaAutoAceite: tolInicial,
+  adquirenteMaquininha: adqInicial = 'cielo',
 }: {
   filialId: string;
   taxas: TaxasFilial;
   toleranciaAutoAceite: number;
+  adquirenteMaquininha?: 'cielo' | 'rede';
 }) {
   const router = useRouter();
   const [ecs, setEcs] = useState<EstabelecimentoConfig[]>(taxasInicial.ecs ?? []);
@@ -38,6 +40,7 @@ export function ConfiguracoesForm({
     taxasInicial.default ?? defaultBase(),
   );
   const [tolAuto, setTolAuto] = useState<number>(tolInicial ?? 0.90);
+  const [adq, setAdq] = useState<'cielo' | 'rede'>(adqInicial);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
@@ -65,7 +68,7 @@ export function ConfiguracoesForm({
       const r = await fetch(`/api/filial/${filialId}/taxas`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ecs, default: defaultT, toleranciaAutoAceite: tolAuto }),
+        body: JSON.stringify({ ecs, default: defaultT, toleranciaAutoAceite: tolAuto, adquirenteMaquininha: adq }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -80,6 +83,26 @@ export function ConfiguracoesForm({
 
   return (
     <div className="space-y-6">
+      {/* Adquirente da maquininha do garçom — Cielo (LIO) ou Rede (Laranjinha Smart) */}
+      <div className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-800">Adquirente da maquininha</h3>
+          <span className="text-xs text-slate-500">qual maquininha o garçom usa nesta filial</span>
+        </div>
+        <select
+          value={adq}
+          onChange={(ev) => setAdq(ev.target.value === 'rede' ? 'rede' : 'cielo')}
+          className="rounded-md border border-slate-300 px-2 py-1 text-sm"
+        >
+          <option value="cielo">Cielo (LIO)</option>
+          <option value="rede">Rede (Laranjinha Smart)</option>
+        </select>
+        <p className="mt-2 text-xs text-slate-500">
+          A loja pega esta escolha sozinha (a cada ciclo) e o app da maquininha usa o módulo certo.
+          Rede depende da homologação do app com a Rede — até lá, a maquininha avisa que o módulo não está instalado.
+        </p>
+      </div>
+
       {/* Default */}
       <div>
         <div className="mb-2 flex items-center justify-between">

@@ -96,7 +96,7 @@ class ContaActivity : AppCompatActivity() {
         receberBtn.isEnabled = false
         lioStatus.visibility = View.VISIBLE
         lioStatus.text = "💳 Conectando à maquininha…"
-        Lio.bind(
+        Pagamento.bind(
             this,
             onReady = {
                 runOnUiThread {
@@ -831,7 +831,7 @@ class ContaActivity : AppCompatActivity() {
                 val j = Api.contaTexto(Session.servidor(this), numero, Session.token(this))
                 val blocos = Cupom.montarBlocos(j, ehComanda, Session.loja(this), rotulo, pessoas)
                 runOnUiThread {
-                    Lio.imprimirBlocos(
+                    Pagamento.imprimirBlocos(
                         this, blocos,
                         onOk = { runOnUiThread { conferenciaBtn.isEnabled = true } },
                         onErro = { msg ->
@@ -1152,7 +1152,7 @@ class ContaActivity : AppCompatActivity() {
                 val linhas = vivas.map { (p, cents) ->
                     Lio.Linha(if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}", cents)
                 }
-                Lio.cobrar(
+                Pagamento.cobrar(
                     ref = "MESA-$numero-TUDO",
                     linhas = linhas,
                     valorCentavos = total,
@@ -1241,7 +1241,7 @@ class ContaActivity : AppCompatActivity() {
                     .setTitle(if (falha == 0) "✅ Tudo pago!" else "⚠️ Pago — baixas pendentes")
                     .setMessage(msg.toString())
                     .setPositiveButton("🖨 Comprovante") { _, _ ->
-                        Lio.imprimirBlocos(this, listOf(
+                        Pagamento.imprimirBlocos(this, listOf(
                             Lio.Bloco("\n${Session.loja(this)}\nPAGAMENTO ÚNICO", negrito = true, tamanho = 22),
                             Lio.Bloco("MESA $numero + COMANDAS", negrito = true, tamanho = 24),
                             Lio.Bloco(parcelas.joinToString("\n") { (n, c) ->
@@ -1288,7 +1288,7 @@ class ContaActivity : AppCompatActivity() {
         atualizarBotoes()
 
         val ref = (if (Session.ehComanda(this, alvo)) "COMANDA-" else "MESA-") + alvo
-        Lio.cobrar(
+        Pagamento.cobrar(
             ref = ref,
             linhas = linhas,
             valorCentavos = valorCentavos,
@@ -1559,7 +1559,7 @@ class ContaActivity : AppCompatActivity() {
         val validade = r.optInt("validade_min", 90)
         val placasArr = r.optJSONArray("placas")
         val placas = (0 until (placasArr?.length() ?: 0)).mapNotNull { placasArr?.optString(it) }
-        if (!Lio.pronto) {
+        if (!Pagamento.pronto) {
             fallbackPasse(token, pessoas, fecharDepois)
             return
         }
@@ -1579,7 +1579,7 @@ class ContaActivity : AppCompatActivity() {
                     (if (placas.isNotEmpty()) "\nCancela libera pela placa" else "") +
                     (if (vias > 1) "\nvia $i/$vias" else "") + "\n\n\n\n\n\n", tamanho = 16),
             )
-            Lio.imprimirBlocos(this, blocos,
+            Pagamento.imprimirBlocos(this, blocos,
                 onOk = { runOnUiThread { via(i + 1) } },
                 onErro = { m ->
                     runOnUiThread {
@@ -1615,7 +1615,7 @@ class ContaActivity : AppCompatActivity() {
                 )
             }
             runOnUiThread {
-                Lio.imprimirBlocos(
+                Pagamento.imprimirBlocos(
                     this, blocos,
                     onOk = { runOnUiThread {
                         Toast.makeText(this, "Recibo impresso!", Toast.LENGTH_SHORT).show()
@@ -1743,7 +1743,7 @@ class ContaActivity : AppCompatActivity() {
                         Toast.makeText(this, "✓ NFC-e nº ${r.notaNumero ?: ""} autorizada", Toast.LENGTH_LONG).show()
                         depois(); return@runOnUiThread
                     }
-                    Lio.imprimirBlocos(this, r.blocos,
+                    Pagamento.imprimirBlocos(this, r.blocos,
                         onOk = { runOnUiThread {
                             Toast.makeText(this, "✓ NFC-e nº ${r.notaNumero ?: ""} impressa", Toast.LENGTH_LONG).show()
                             depois()

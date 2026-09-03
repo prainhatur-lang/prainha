@@ -195,7 +195,7 @@ class MesasActivity : AppCompatActivity() {
                     null
                 } catch (e: Exception) { null }
                 if (resumo != null) {
-                    val term = Lio.vendasDoTerminal()
+                    val term = Pagamento.vendasDoTerminal()
                     runOnUiThread { espera.dismiss(); mostrarFechamento(resumo, term) }
                 } else if (Session.token(this) != null) {
                     runOnUiThread {
@@ -206,7 +206,7 @@ class MesasActivity : AppCompatActivity() {
             }.start()
         }
         // O lado do terminal exige o serviço de pagamento conectado.
-        if (Lio.configured() && !Lio.pronto) Lio.bind(this, onReady = { prosseguir() }, onError = { prosseguir() })
+        if (Pagamento.configured() && !Pagamento.pronto) Pagamento.bind(this, onReady = { prosseguir() }, onError = { prosseguir() })
         else prosseguir()
     }
 
@@ -276,7 +276,7 @@ class MesasActivity : AppCompatActivity() {
             .setTitle("🧾 Fechamento do dia")
             .setMessage(texto)
             .setPositiveButton("🖨 Imprimir") { _, _ ->
-                Lio.imprimirBlocos(this, listOf(
+                Pagamento.imprimirBlocos(this, listOf(
                     Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DO DIA", negrito = true, tamanho = 22),
                     Lio.Bloco(Cupom.agoraBr(), tamanho = 16),
                     Lio.Bloco(texto, tamanho = 18),
@@ -332,7 +332,7 @@ class MesasActivity : AppCompatActivity() {
                 sb.appendLine("${f.optString("nome")} (${f.optInt("n")}x): ${Cupom.brl(f.optDouble("total", 0.0))}")
             }
         } else sb.appendLine("Sem recebimentos no turno.")
-        Lio.imprimirBlocos(this, listOf(
+        Pagamento.imprimirBlocos(this, listOf(
             Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DE CAIXA", negrito = true, tamanho = 22),
             Lio.Bloco(sb.toString(), tamanho = 18),
             Lio.Bloco("TOTAL ${Cupom.brl(r.optDouble("total", 0.0))}", negrito = true, tamanho = 24),
