@@ -74,9 +74,9 @@ const refDe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50) || 'C
 type Status = 'pendente' | 'pago' | 'reembolsado';
 function mapStatus(s: unknown): Status {
   const v = String(s || '').toLowerCase();
-  if (v === 'approved') return 'pago';
-  if (v === 'canceled' || v === 'cancelled') return 'reembolsado';
-  return 'pendente'; // Pending / Denied / desconhecido
+  if (['approved', 'paid', 'pago', 'settled', 'completed', 'done'].includes(v)) return 'pago';
+  if (['canceled', 'cancelled', 'refunded', 'devolvido', 'reversed'].includes(v)) return 'reembolsado';
+  return 'pendente'; // Pending / Denied / Expired / desconhecido
 }
 
 // ============================================
@@ -176,16 +176,19 @@ export async function queryRedePayment(paymentId: string, filialId?: string | nu
   const res = await fetch(`${API_URL}/${encodeURIComponent(paymentId)}`, { method: 'GET', headers: h });
   if (!res.ok) throw new Error(`Rede Query erro: ${res.status} - ${(await res.text()).substring(0, 200)}`);
   const data = await res.json();
-  const a = data.authorization || {};
+  // Cartão responde em `authorization`; Pix (QR Code) responde em `qrCodeResponse`
+  // (visto no sandbox 03/09: {qrCodeResponse:{status:'Pending', amount, kind:'Pix'…}}).
+  const ehPix = !!data.qrCodeResponse && !data.authorization;
+  const a = ehPix ? data.qrCodeResponse : (data.authorization || {});
   const kind = String(a.kind || '').toLowerCase();
-  const tipo = kind === 'pix' ? 'Pix' : kind === 'debit' ? 'DebitCard' : 'CreditCard';
+  const tipo = ehPix || kind === 'pix' ? 'Pix' : kind === 'debit' ? 'DebitCard' : 'CreditCard';
   let estornadoCentavos = 0;
   let dataEstorno: string | null = null;
   try {
     const r = await fetch(`${API_URL}/${encodeURIComponent(paymentId)}/refunds`, { method: 'GET', headers: h });
     if (r.ok) {
       const j = await r.json();
-      const lista: Array<Record<string, unknown>> = Array.isArray(j?.refunds) ? j.refunds : Array.isArray(j) ? j : [];
+      const lista: Array<Record<string, unknown>> = Array.isArray(j?.refunds) ? j.refunds : Array.isArray(j) ? j : (j && j.refundId ? [j] : []);
       for (const x of lista) {
         if (String(x.status || '').toLowerCase() === 'denied') continue;
         estornadoCentavos += Number(x.amount) || 0;
@@ -207,22 +210,46 @@ export async function queryRedePayment(paymentId: string, filialId?: string | nu
 // ============================================
 // Cancelamento / devolução (total ou parcial)
 // ============================================
+/** Valor da transação, em centavos, olhando os caminhos que a Rede usa
+ *  (cartão: authorization.amount; Pix/outros: amount na raiz). */
+function valorDe(data: Record<string, unknown>): number {
+  const a = (data.authorization as Record<string, unknown> | undefined) || {};
+  const q = (data.qrCodeResponse as Record<string, unknown> | undefined) || {};
+  return Number(a.amount ?? q.amount ?? data.amount ?? 0) || 0;
+}
+
 export async function refundRedePayment(paymentId: string, amountCents?: number, filialId?: string | null) {
   const { h } = await headers(filialId);
+  // A Rede EXIGE amount até no estorno total (returnCode 73 "Amount: Required
+  // parameter missing", visto no sandbox 03/09) — sem valor, consulta antes.
+  let amount = amountCents;
+  if (!amount) {
+    const q = await fetch(`${API_URL}/${encodeURIComponent(paymentId)}`, { method: 'GET', headers: h });
+    if (!q.ok) throw new Error(`Rede Refund: não achei a transação ${paymentId} (${q.status})`);
+    amount = valorDe(await q.json());
+    if (!amount) throw new Error(`Rede Refund: transação ${paymentId} sem valor pra estornar`);
+  }
   const res = await fetch(`${API_URL}/${encodeURIComponent(paymentId)}/refunds`, {
     method: 'POST',
     headers: h,
-    body: JSON.stringify(amountCents ? { amount: amountCents } : {}),
+    body: JSON.stringify({ amount }),
   });
   const txt = await res.text();
   console.log('Rede Refund response:', res.status, txt.substring(0, 300));
   let data: Record<string, unknown> = {};
   try { data = JSON.parse(txt); } catch { /* */ }
   if (!res.ok && !data.status) throw new Error(`Rede Refund erro: ${res.status} - ${txt.substring(0, 200)}`);
+  // Sucesso = HTTP 2xx + returnCode '360' ("Refund request has been successful",
+  // visto no sandbox 03/09 — a resposta NÃO traz `status`). Quando traz, Done/
+  // Processing também são sucesso (cartão efetiva em D+1). Denied = negado.
+  // Códigos vistos no sandbox 03/09: '360' = cartão ("Refund request has been
+  // successful"), '359' = Pix ("Refund successful."). E `refundId` só existe
+  // quando a Rede aceitou — vale como sinal de sucesso também.
   const st = String(data.status || '').toLowerCase();
-  // Done = efetivado; Processing = aceito (cartão efetiva em D+1). Denied = não.
+  const rc = String(data.returnCode || '');
+  const ok = res.ok && (rc === '359' || rc === '360' || !!data.refundId || st === 'done' || st === 'processing');
   return {
-    status: (st === 'done' || st === 'processing' ? 'reembolsado' : 'negado') as 'reembolsado' | 'negado',
+    status: (ok ? 'reembolsado' : 'negado') as 'reembolsado' | 'negado',
     reason: (data.returnMessage as string | undefined) ?? (data.status as string | undefined) ?? null,
   };
 }

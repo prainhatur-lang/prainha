@@ -1,7 +1,8 @@
 // Fumaça do e.Rede no SANDBOX — valida @/lib/rede de ponta a ponta sem tocar
 // em produção. Uso (na pasta apps/web):
 //   REDE_SANDBOX=true REDE_PV=<pv sandbox> REDE_CHAVE_INTEGRACAO=<chave sandbox> \
-//     pnpm exec tsx --tsconfig tsconfig.json scripts/rede-sandbox.ts [pix|pix-espera|cartao|webhook|tudo]
+//     ../../packages/db/node_modules/.bin/tsx --tsconfig tsconfig.json scripts/rede-sandbox.ts [pix|pix-espera|cartao|webhook|tudo]
+//   (o tsx mora no packages/db — o apps/web não o tem como dependência)
 //   pix        → gera QR e consulta (status pendente)
 //   pix-espera → gera QR, espera ~2m10s e consulta: o SANDBOX simula o pagamento
 //                sozinho 2 min depois (evento PV.UPDATE_TRANSACTION_PIX) → deve vir 'pago'
@@ -70,6 +71,21 @@ async function main() {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk.access_token}` }, body: JSON.stringify(body),
     });
     console.log(r.status, (await r.text()).slice(0, 300));
+  }
+
+  // raw <tid>: JSON cru da consulta (pra mapear formatos) · estorno <tid>: testa o estorno
+  if (modo === 'raw' || modo === 'estorno' || modo === 'consulta') {
+    const tid = process.argv[3]; if (!tid) { console.error('❌ informe o tid'); process.exit(1); }
+    if (modo === 'estorno') { console.log('=== estorno', tid, '==='); console.log(await refundRedePayment(tid, undefined, null)); return; }
+    if (modo === 'consulta') { console.log('=== consulta', tid, '==='); console.log(await queryRedePayment(tid, null)); return; }
+    const pv = process.env.REDE_PV!, chave = process.env.REDE_CHAVE_INTEGRACAO!;
+    const tk = await fetch('https://rl7-sandbox-api.useredecloud.com.br/oauth2/token', { method: 'POST',
+      headers: { Authorization: 'Basic ' + Buffer.from(`${pv}:${chave}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' }).then((r) => r.json());
+    for (const suf of ['', '/refunds']) {
+      const r = await fetch(`https://sandbox-erede.useredecloud.com.br/v2/transactions/${tid}${suf}`, { headers: { Authorization: `Bearer ${tk.access_token}` } });
+      console.log(`--- GET /v2/transactions/${tid}${suf} → ${r.status}`); console.log((await r.text()).slice(0, 1500));
+    }
+    return;
   }
 
   if (modo === 'cartao' || modo === 'tudo') {
