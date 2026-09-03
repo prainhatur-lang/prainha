@@ -4310,12 +4310,15 @@ function grupoDisponivel() { return !!(PAGAR_MESA_SECRET && FILIAL_ID); }
 // Assinatura do CENTRAL (app.prainhabar.com) pra falar com a loja pelo Funnel —
 // mesmo segredo/HMAC do canal da NFC-e, escopo 'caixa'. É o que deixa a
 // Conferência de Caixa do web ler relatório/analítico e FECHAR caixa, sem PIN.
-function centralAssinou(u) {
+// escopo = canal da assinatura ('caixa', 'equipe', ...) — cada canal do
+// central assina [FILIAL_ID, escopo, expira]; escopos não se confundem entre
+// si (uma assinatura de 'caixa' não abre '/api/central/equipe/*').
+function centralAssinou(u, escopo = 'caixa') {
   if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16) return false;
   const e = Number(u.searchParams.get('e') || 0);
   const s = String(u.searchParams.get('s') || '');
   if (!(e > Math.floor(Date.now() / 1000))) return false;
-  const esperada = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'caixa', String(e)].join('|')).digest('hex');
+  const esperada = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, escopo, String(e)].join('|')).digest('hex');
   try { const a = Buffer.from(s), b = Buffer.from(esperada); return a.length === b.length && timingSafeEqual(a, b); } catch { return false; }
 }
 async function clienteDoGrupo(cpf) {
@@ -4887,6 +4890,100 @@ async function fbCriarContato({ nome, cpf, telefone, nascimento, endereco, cidad
   if (!r.ok) throw new Error('FB cadastrar cliente: ' + r.err);
   const g = await qi(`SELECT FIRST 1 CODIGO FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(NOME)='${fbEsc(n)}' ORDER BY CODIGO DESC`);
   return g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+}
+
+// ---- EQUIPE DO CONSUMER (usuários/permissões do PDV) — gerenciada pelo CENTRAL ----
+// Antes só dava pra criar usuário/permissão mexendo direto no Firebird (feito
+// à mão algumas vezes: usuário 'cielo', ajuste do Felipe Andrade). Isso expõe
+// pro Concilia web uma tela de "Equipe da loja": lista quem tem acesso, cria
+// gente nova, liga/desliga qualquer permissão do catálogo (tabela PERMISSAO,
+// ~62 códigos). Não existe em modo `nativo()` (loja sem Consumer/Firebird).
+
+/** Usuários do Consumer + o NOME (via CONTATOS) + o conjunto de permissões
+ *  que cada um tem (ACESSO). Uma pessoa = um login = um conjunto de códigos. */
+async function fbEquipeUsuarios() {
+  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird, não tem equipe pra gerenciar aqui');
+  const r = await qi(`SELECT u.CODIGO UCOD, TRIM(u.LOGIN) LOGIN, TRIM(u.TIPO) TIPO, u.ATIVO, TRIM(c.NOME) NOME
+    FROM USUARIOS u JOIN CONTATOS c ON c.CODIGO=u.CODIGOCONTATO ORDER BY c.NOME`);
+  if (!r.ok) throw new Error('FB listar equipe: ' + r.err);
+  const pr = await qi(`SELECT USUARIO, PERMISSAO FROM ACESSO`);
+  if (!pr.ok) throw new Error('FB listar acessos: ' + pr.err);
+  const porUsuario = new Map();
+  for (const x of pr.rows) {
+    const k = Number(x.USUARIO);
+    if (!porUsuario.has(k)) porUsuario.set(k, []);
+    porUsuario.get(k).push(Number(x.PERMISSAO));
+  }
+  return r.rows.map((x) => ({
+    codigo: Number(x.UCOD), login: T(x.LOGIN), nome: T(x.NOME), tipo: T(x.TIPO),
+    ativo: String(x.ATIVO).trim().toUpperCase() === 'S',
+    permissoes: (porUsuario.get(Number(x.UCOD)) || []).sort((a, b) => a - b),
+  }));
+}
+
+/** Catálogo de permissões do Consumer (tabela PERMISSAO — o mesmo que a tela
+ *  de usuários do Consumer desktop mostra), pra a UI não precisar hardcodar
+ *  62 códigos que podem variar por versão/loja. */
+async function fbCatalogoPermissoes() {
+  if (nativo()) return [];
+  const r = await qi(`SELECT CODIGO, TRIM(RECURSO) RECURSO, TRIM(DESCRICAO) DESCRICAO FROM PERMISSAO ORDER BY CODIGO`);
+  if (!r.ok) throw new Error('FB catálogo de permissões: ' + r.err);
+  return r.rows.map((x) => ({ codigo: Number(x.CODIGO), recurso: T(x.RECURSO), descricao: T(x.DESCRICAO) }));
+}
+
+/** Cria um usuário novo (contato + login), sem senha do Consumer — o login da
+ *  maquininha/comanda mobile usa PIN próprio, criado no primeiro acesso (ver
+ *  apiGarcomEntrar). `tipo` é o texto livre que o Consumer usa (ex.:
+ *  'Atendente', 'Administrador'); default 'Atendente' cobre o caso comum. */
+async function fbEquipeCriar({ nome, login, tipo }) {
+  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
+  const n = String(nome || '').trim().slice(0, 100);
+  const l = String(login || '').trim().toLowerCase().slice(0, 20);
+  const t = String(tipo || 'Atendente').trim().slice(0, 20) || 'Atendente';
+  if (!n) throw new Error('nome é obrigatório');
+  if (!/^[a-z0-9_.]{2,20}$/.test(l)) throw new Error('login inválido (use letras/números minúsculos, 2 a 20 caracteres)');
+  const dup = await qi(`SELECT FIRST 1 CODIGO FROM USUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(l)}'`);
+  if (!dup.ok) throw new Error('FB checar login: ' + dup.err);
+  if (dup.rows.length) throw new Error(`já existe um usuário com o login "${l}"`);
+  const codigoContato = await fbCriarContato({ nome: n });
+  if (!codigoContato) throw new Error('falha ao criar o contato do novo usuário');
+  // SENHA é NOT NULL no Consumer mas não é usada por nós (ver PIN acima) —
+  // fica vazia de propósito: nunca vai "funcionar" como senha do Consumer,
+  // então ninguém consegue logar no desktop com uma senha adivinhada.
+  const r = await qi(`INSERT INTO USUARIOS (CODIGOCONTATO, LOGIN, TIPO, SENHA) VALUES (${codigoContato}, '${fbEsc(l)}', '${fbEsc(t)}', '')`);
+  if (!r.ok) throw new Error('FB criar usuário: ' + r.err);
+  const g = await qi(`SELECT FIRST 1 CODIGO FROM USUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(l)}' ORDER BY CODIGO DESC`);
+  const codigo = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  console.log(`[equipe] usuário criado: login=${l} nome="${n}" tipo=${t} codigo=${codigo}`);
+  return codigo;
+}
+
+/** Liga/desliga UMA permissão (idempotente — repetir não duplica nem erra). */
+async function fbEquipePermissao(usuario, permissao, ligar) {
+  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
+  const u = Number(usuario), p = Number(permissao);
+  if (!u || !p) throw new Error('usuário/permissão inválidos');
+  if (ligar) {
+    const dup = await qi(`SELECT FIRST 1 CODIGO FROM ACESSO WHERE USUARIO=${u} AND PERMISSAO=${p}`);
+    if (!dup.ok) throw new Error('FB checar acesso: ' + dup.err);
+    if (dup.rows.length) return; // já tem — idempotente, não duplica
+    const r = await qi(`INSERT INTO ACESSO (CODIGO, USUARIO, PERMISSAO) VALUES (GEN_ID(GEN_ACESSO_ID, 1), ${u}, ${p})`);
+    if (!r.ok) throw new Error('FB ligar permissão: ' + r.err);
+  } else {
+    const r = await qi(`DELETE FROM ACESSO WHERE USUARIO=${u} AND PERMISSAO=${p}`);
+    if (!r.ok) throw new Error('FB desligar permissão: ' + r.err);
+  }
+  console.log(`[equipe] permissão ${p} ${ligar ? 'ligada em' : 'desligada de'} usuário ${u}`);
+}
+
+/** Ativa/desativa o usuário (ATIVO='S'/'N' — não deleta, só barra o login). */
+async function fbEquipeAtivo(usuario, ativo) {
+  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
+  const u = Number(usuario);
+  if (!u) throw new Error('usuário inválido');
+  const r = await qi(`UPDATE USUARIOS SET ATIVO='${ativo ? 'S' : 'N'}' WHERE CODIGO=${u}`);
+  if (!r.ok) throw new Error('FB ativar/desativar: ' + r.err);
+  console.log(`[equipe] usuário ${u} ${ativo ? 'ativado' : 'desativado'}`);
 }
 async function apiVendaIdentificar(cpf, telefone) {
   // CPF ou WhatsApp — o que a pessoa tiver
@@ -16115,6 +16212,39 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/central/caixa/rastro') return res.end(JSON.stringify(await apiCaixaRastro(u.searchParams.get('caixa'))));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // ---- EQUIPE DO CONSUMER pelo CENTRAL (Concilia web) — assinado (escopo
+    // 'equipe', separado do 'caixa' — uma vazou não abre a outra). Lista
+    // usuários+permissões, cria usuário, liga/desliga permissão, ativa/
+    // desativa. Erros das funções fbEquipe* (ex.: login duplicado, filial em
+    // modo próprio) chegam aqui como {ok:false,erro} — nunca 500 cru.
+    if (p.startsWith('/api/central/equipe/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!centralAssinou(u, 'equipe')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      try {
+        if (p === '/api/central/equipe/usuarios') {
+          const [usuarios, permissoes] = await Promise.all([fbEquipeUsuarios(), fbCatalogoPermissoes()]);
+          return res.end(JSON.stringify({ ok: true, usuarios, permissoes }));
+        }
+        if (req.method === 'POST' && p === '/api/central/equipe/criar') {
+          const b = await readBody(req);
+          const codigo = await fbEquipeCriar(b);
+          return res.end(JSON.stringify({ ok: true, codigo }));
+        }
+        if (req.method === 'POST' && p === '/api/central/equipe/permissao') {
+          const b = await readBody(req);
+          await fbEquipePermissao(b.usuario, b.permissao, !!b.ligar);
+          return res.end(JSON.stringify({ ok: true }));
+        }
+        if (req.method === 'POST' && p === '/api/central/equipe/ativo') {
+          const b = await readBody(req);
+          await fbEquipeAtivo(b.usuario, !!b.ativo);
+          return res.end(JSON.stringify({ ok: true }));
+        }
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, erro: e.message }));
+      }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }

@@ -371,6 +371,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Acessos',
         links: [
           { label: 'Usuários', href: '/configuracoes/usuarios', perm: 'usuario.read' },
+          { label: 'Equipe da loja (PDV)', href: '/configuracoes/equipe', perm: 'usuario.read' },
           {
             label: 'Grupos e permissões',
             href: '/configuracoes/grupos',
