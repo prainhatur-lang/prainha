@@ -202,22 +202,33 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
           </div>
         </div>
 
+        {/* ⚠️ QUAL LOJA — esta tela tem seletor PRÓPRIO de filial, separado do
+            menu lateral: dá pra estar numa loja no menu e olhar outra aqui.
+            Em 03/09/2026 o dono curou o cardápio da Prainha Mar e veio conferir
+            com a tela na Prainha Bar, achando que a desativação tinha falhado.
+            Por isso a loja atual é um banner, não uma linha de 12px. */}
         {filiais.length > 1 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-slate-500">Filial:</span>
-            {filiais.map((f) => (
-              <Link
-                key={f.id}
-                href={`/cadastros/produtos?filialId=${f.id}`}
-                className={`rounded-md border px-3 py-1 text-xs ${
-                  f.id === filialSelecionada.id
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {f.nome}
-              </Link>
-            ))}
+          <div className="mt-4 rounded-xl border-2 border-sky-300 bg-sky-50 p-3">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-sky-700">
+              Mostrando os produtos de
+            </p>
+            <p className="mt-0.5 text-xl font-bold text-sky-900">{filialSelecionada.nome}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-sky-800">Trocar de loja:</span>
+              {filiais.map((f) => (
+                <Link
+                  key={f.id}
+                  href={`/cadastros/produtos?filialId=${f.id}`}
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+                    f.id === filialSelecionada.id
+                      ? 'border-sky-700 bg-sky-700 text-white'
+                      : 'border-sky-300 bg-white text-sky-900 hover:bg-sky-100'
+                  }`}
+                >
+                  {f.nome}
+                </Link>
+              ))}
+            </div>
           </div>
         )}
 
