@@ -530,7 +530,7 @@ object Api {
          *  (imprime na térmica do caixa quando autorizar). Não é erro. */
         val pendente: Boolean,
         val notaNumero: Int?,
-        val blocos: List<Lio.Bloco>,
+        val blocos: List<Bloco>,
     )
 
     /** Emite (ou reimprime — o servidor é idempotente por pedido) e devolve o
@@ -545,12 +545,12 @@ object Api {
         if (code !in 200..299) throw IOException("Servidor respondeu $code")
         val j = JSONObject(resp)
         val arr = j.optJSONArray("blocos")
-        val blocos = mutableListOf<Lio.Bloco>()
+        val blocos = mutableListOf<Bloco>()
         if (arr != null) for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val qr = o.optStringOrNull("qr")
-            if (qr != null) blocos.add(Lio.Bloco(qr = qr))
-            else blocos.add(Lio.Bloco(
+            if (qr != null) blocos.add(Bloco(qr = qr))
+            else blocos.add(Bloco(
                 texto = o.optString("texto", ""),
                 negrito = o.optBoolean("negrito", false),
                 tamanho = o.optInt("tamanho", 18),
@@ -583,7 +583,7 @@ object Api {
     }
 
     /** Body do /api/lio/pagar a partir de um pagamento aprovado no terminal. */
-    fun bodyPagamento(numero: Int, p: Lio.PagamentoLio): JSONObject = JSONObject()
+    fun bodyPagamento(numero: Int, p: PagamentoLio): JSONObject = JSONObject()
         .put("numero", numero)
         .put("forma", p.forma)
         .put("valor", p.valorCentavos / 100.0)

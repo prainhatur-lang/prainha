@@ -346,6 +346,9 @@ async function initSchema() {
     valor numeric, origem text, nsu text, autorizacao text, bandeira text,
     tef_ref text, status text, erro text, pagamento_fb integer)`;
   await addCol('venda_pagamento', 'pagamento_fb integer');
+  // de qual ADQUIRENTE veio o recebimento da maquininha (cielo | rede) — o app
+  // carimba no /api/lio/pagar; caixa/conciliação distinguem sem olhar bandeira.
+  await addCol('venda_pagamento', 'adquirente text');
   // "servir tudo junto": escolha DO PEDIDO, não regra automática. Bebida
   // normalmente vem antes; só casa as praças quando alguém pediu pra casar.
   await addCol('venda_envio', 'junto boolean DEFAULT false');
@@ -3971,8 +3974,9 @@ async function apiContaPagar(body) {
     if (!rs.ok) return { ok: false, erro: 'não deu pra somar o serviço da maquininha' };
   }
 
-  const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status)
-    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado') RETURNING id`;
+  const adquirente = body.adquirente === 'rede' ? 'rede' : (body.adquirente === 'cielo' ? 'cielo' : null);
+  const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, adquirente)
+    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado', ${adquirente}) RETURNING id`;
 
   let dados = { nsu: body.nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null };
   try {
@@ -4105,6 +4109,7 @@ async function apiLioPagarSemTrava(body, garcom) {
     numero: n, ped: body.ped, forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true, caixa_codigo: caixaCodigo,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
+    adquirente: body.adquirente || 'cielo', // app antigo não manda → é a LIO (Cielo)
     observacao: `Prainha LIO · ${garcom.login}`,
   });
   // Quitou pela maquininha = mesmo ato final do caixa (commit 625761e): fecha

@@ -29,23 +29,6 @@ object Lio {
     private var orderManager: OrderManager? = null
     private var bound = false
 
-    /** Linha da conta que vira item do pedido na LIO (visível no checkout). */
-    data class Linha(val nome: String, val valorCentavos: Long)
-
-    /** Uma transação aprovada no terminal — o que o backend precisa pra conciliar. */
-    data class PagamentoLio(
-        val forma: String,          // dinheiro nunca sai daqui: credito | debito | pix
-        val nsu: String,
-        val autorizacao: String,
-        val bandeira: String,
-        val mask: String,
-        val terminal: String,
-        val valorCentavos: Long,
-        val parcelas: Int,
-        val pagamentoId: String,
-        val descricao: String = "",   // descrição do produto Cielo (auditoria: "... DEBITO A VISTA")
-    )
-
     /** true quando as credenciais do Dev Console foram configuradas no build. */
     fun configured(): Boolean =
         BuildConfig.CIELO_CLIENT_ID.isNotBlank() && BuildConfig.CIELO_ACCESS_TOKEN.isNotBlank()
@@ -83,9 +66,6 @@ object Lio {
     }
 
     val pronto: Boolean get() = bound
-
-    /** Uma venda PAGA do catálogo deste terminal (pro fechamento do dia). */
-    data class VendaTerminal(val nsu: String, val valorCentavos: Long, val dia: String?)
 
     /**
      * Lista as vendas pagas registradas NESTE terminal. A assinatura de
@@ -226,10 +206,6 @@ object Lio {
             descricao = try { p.description ?: "" } catch (_: Exception) { "" },
         )
     }
-
-    /** Um trecho do cupom com estilo próprio (tudo centralizado no papel).
-     *  Com `qr` preenchido, o bloco imprime um QR CODE (texto é ignorado). */
-    data class Bloco(val texto: String = "", val negrito: Boolean = false, val tamanho: Int = 20, val qr: String? = null)
 
     /**
      * Imprime o cupom em blocos estilizados na térmica da maquininha —

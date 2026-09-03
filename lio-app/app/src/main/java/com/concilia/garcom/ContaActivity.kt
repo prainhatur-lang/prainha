@@ -1150,7 +1150,7 @@ class ContaActivity : AppCompatActivity() {
                 cobrando = true
                 atualizarBotoes()
                 val linhas = vivas.map { (p, cents) ->
-                    Lio.Linha(if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}", cents)
+                    Linha(if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}", cents)
                 }
                 Pagamento.cobrar(
                     ref = "MESA-$numero-TUDO",
@@ -1181,7 +1181,7 @@ class ContaActivity : AppCompatActivity() {
     /** Uma baixa POR CONTA, todas com o NSU da passada única. Cada parcela
      *  entra na fila de pendentes antes e só sai confirmada — igual ao fluxo
      *  normal. NFC-e: por pedido, depois, pelo caixa (rateio não emite). */
-    private fun registrarRateio(parcelas: List<Pair<Int, Long>>, pagamentos: List<Lio.PagamentoLio>) {
+    private fun registrarRateio(parcelas: List<Pair<Int, Long>>, pagamentos: List<PagamentoLio>) {
         val p = pagamentos.firstOrNull()
         if (p == null) {
             runOnUiThread { cobrando = false; atualizarBotoes() }
@@ -1202,6 +1202,7 @@ class ContaActivity : AppCompatActivity() {
                     .put("autorizacao", p.autorizacao)
                     .put("bandeira", p.bandeira)
                     .put("descricao", p.descricao)
+                    .put("adquirente", Pagamento.ADQUIRENTE)   // cielo | rede — de qual máquina veio
                 val id = Pendentes.adicionar(this, body)
                 var okEste = false
                 for (t in 1..3) {
@@ -1242,14 +1243,14 @@ class ContaActivity : AppCompatActivity() {
                     .setMessage(msg.toString())
                     .setPositiveButton("🖨 Comprovante") { _, _ ->
                         Pagamento.imprimirBlocos(this, listOf(
-                            Lio.Bloco("\n${Session.loja(this)}\nPAGAMENTO ÚNICO", negrito = true, tamanho = 22),
-                            Lio.Bloco("MESA $numero + COMANDAS", negrito = true, tamanho = 24),
-                            Lio.Bloco(parcelas.joinToString("\n") { (n, c) ->
+                            Bloco("\n${Session.loja(this)}\nPAGAMENTO ÚNICO", negrito = true, tamanho = 22),
+                            Bloco("MESA $numero + COMANDAS", negrito = true, tamanho = 24),
+                            Bloco(parcelas.joinToString("\n") { (n, c) ->
                                 (if (n == numero) "Mesa $n" else "Comanda $n") + "  " + Cupom.brl(c / 100.0)
                             } + "\nTOTAL ${Cupom.brl(total / 100.0)}" +
                                 "\n${p.forma.uppercase()} ${p.bandeira}" +
                                 (if (p.nsu.isNotBlank()) "\nNSU ${p.nsu} AUT ${p.autorizacao}" else ""), tamanho = 20),
-                            Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
+                            Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
                         ), onOk = { runOnUiThread { if (falha == 0) finish() } },
                             onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
                     }
@@ -1264,26 +1265,26 @@ class ContaActivity : AppCompatActivity() {
     }
 
     /** Itens reais da conta do alvo pro pedido da LIO (o certificador confere). */
-    private fun linhasDoAlvo(texto: org.json.JSONObject?, cAlvo: Api.Conta?): List<Lio.Linha> {
+    private fun linhasDoAlvo(texto: org.json.JSONObject?, cAlvo: Api.Conta?): List<Linha> {
         val arr = texto?.optJSONArray("itens")
         if (arr != null && arr.length() > 0) {
-            val out = mutableListOf<Lio.Linha>()
+            val out = mutableListOf<Linha>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 if (o.optInt("tipo", 1) == 2) continue
                 val q = o.optDouble("quantidade", 1.0)
                 val qTxt = if (q == Math.floor(q)) q.toInt().toString() else q.toString()
-                out.add(Lio.Linha("${qTxt}x " + o.optString("nome"), Math.round(o.optDouble("valor_total", 0.0) * 100)))
+                out.add(Linha("${qTxt}x " + o.optString("nome"), Math.round(o.optDouble("valor_total", 0.0) * 100)))
             }
             if (out.isNotEmpty()) return out
         }
         return (cAlvo?.itens ?: emptyList()).filter { it.tipo != 2 }.map {
             val q = if (it.qtd == Math.floor(it.qtd)) it.qtd.toInt().toString() else it.qtd.toString()
-            Lio.Linha("${q}x ${it.nome}", Math.round(it.valor * 100))
+            Linha("${q}x ${it.nome}", Math.round(it.valor * 100))
         }
     }
 
-    private fun cobrarNoTerminal(alvo: Int, linhas: List<Lio.Linha>, valorCentavos: Long) {
+    private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long) {
         cobrando = true
         atualizarBotoes()
 
@@ -1314,7 +1315,7 @@ class ContaActivity : AppCompatActivity() {
     // Aprovado no terminal → fila de pendentes ANTES, registro com retry, e só
     // então sai da fila. Rede caiu nesse meio tempo: fica pendente e a tela de
     // mesas reenvia — o pagamento nunca se perde.
-    private fun registrarPagamentos(alvo: Int, pagamentos: List<Lio.PagamentoLio>) {
+    private fun registrarPagamentos(alvo: Int, pagamentos: List<PagamentoLio>) {
         val tk = Session.token(this)
         val base = Session.servidor(this)
         Thread {
@@ -1370,7 +1371,7 @@ class ContaActivity : AppCompatActivity() {
     private fun mostrarResultado(
         alvo: Int,
         totalCentavos: Long,
-        pagamentos: List<Lio.PagamentoLio>,
+        pagamentos: List<PagamentoLio>,
         registrou: Boolean,
         quitada: Boolean,
         erro: String?,
@@ -1418,7 +1419,7 @@ class ContaActivity : AppCompatActivity() {
     private fun dialogZapComprovante(
         alvo: Int,
         totalCentavos: Long,
-        pagamentos: List<Lio.PagamentoLio>,
+        pagamentos: List<PagamentoLio>,
         quitada: Boolean,
         fecharAoSair: Boolean,
     ) {
@@ -1570,12 +1571,12 @@ class ContaActivity : AppCompatActivity() {
                 return
             }
             val blocos = mutableListOf(
-                Lio.Bloco("\n${Session.loja(this)}\nPASSE DE SAÍDA", negrito = true, tamanho = 22),
-                Lio.Bloco((if (Session.ehComanda(this, alvo)) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
-                Lio.Bloco("Vale $pessoas pessoa(s) · $validade min" +
+                Bloco("\n${Session.loja(this)}\nPASSE DE SAÍDA", negrito = true, tamanho = 22),
+                Bloco((if (Session.ehComanda(this, alvo)) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
+                Bloco("Vale $pessoas pessoa(s) · $validade min" +
                     (if (placas.isNotEmpty()) "\nCarros: ${placas.joinToString(" ")}" else ""), tamanho = 18),
-                Lio.Bloco(qr = token),
-                Lio.Bloco("Apresente o QR na catraca" +
+                Bloco(qr = token),
+                Bloco("Apresente o QR na catraca" +
                     (if (placas.isNotEmpty()) "\nCancela libera pela placa" else "") +
                     (if (vias > 1) "\nvia $i/$vias" else "") + "\n\n\n\n\n\n", tamanho = 16),
             )
@@ -1592,7 +1593,7 @@ class ContaActivity : AppCompatActivity() {
         via(1)
     }
 
-    private fun imprimirRecibo(alvo: Int, pagamentos: List<Lio.PagamentoLio>, fecharDepois: Boolean = false) {
+    private fun imprimirRecibo(alvo: Int, pagamentos: List<PagamentoLio>, fecharDepois: Boolean = false) {
         val ehComandaAlvo = Session.ehComanda(this, alvo)
         Thread {
             val extras = mutableListOf<String>()
@@ -1608,10 +1609,10 @@ class ContaActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 // Conta já fechada/indisponível: recibo mínimo, só do pagamento.
                 listOf(
-                    Lio.Bloco("\n${Session.loja(this)}\nRECIBO", negrito = true, tamanho = 22),
-                    Lio.Bloco((if (ehComandaAlvo) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
-                    Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20),
-                    Lio.Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
+                    Bloco("\n${Session.loja(this)}\nRECIBO", negrito = true, tamanho = 22),
+                    Bloco((if (ehComandaAlvo) "COMANDA" else "MESA") + " $alvo", negrito = true, tamanho = 26),
+                    Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20),
+                    Bloco("Emitido ${Cupom.agoraBr()}\n\n\n\n\n\n", tamanho = 16),
                 )
             }
             runOnUiThread {

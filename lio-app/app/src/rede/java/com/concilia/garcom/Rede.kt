@@ -22,13 +22,13 @@ object Rede {
     val pronto: Boolean get() = false
     fun bind(context: Context, onReady: () -> Unit, onError: (Throwable) -> Unit) { onError(IllegalStateException(AVISO)) }
     fun unbind() {}
-    fun vendasDoTerminal(): List<Lio.VendaTerminal>? = null
+    fun vendasDoTerminal(): List<VendaTerminal>? = null
     fun cobrar(
-        ref: String, linhas: List<Lio.Linha>, valorCentavos: Long,
+        ref: String, linhas: List<Linha>, valorCentavos: Long,
         onInicio: () -> Unit,
-        onPago: (lioOrderId: String, pagamentos: List<Lio.PagamentoLio>) -> Unit,
+        onPago: (lioOrderId: String, pagamentos: List<PagamentoLio>) -> Unit,
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
     ) { onErro(AVISO) }
-    fun imprimirBlocos(context: Context, blocos: List<Lio.Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) { onErro(AVISO) }
+    fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) { onErro(AVISO) }
 }

@@ -98,24 +98,24 @@ object Cupom {
         rotulo: String,
         pessoas: Int? = null,
         extras: List<String> = emptyList(),
-    ): List<Lio.Bloco> {
-        val blocos = mutableListOf<Lio.Bloco>()
+    ): List<Bloco> {
+        val blocos = mutableListOf<Bloco>()
         val numero = j.optInt("numero")
         val nome = j.optStringOrNull("nome")
 
         // Cabeçalho: loja + tipo do cupom, e MESA · NOME em destaque.
-        blocos.add(Lio.Bloco("\n$loja\n$rotulo", negrito = true, tamanho = 22))
-        blocos.add(Lio.Bloco(
+        blocos.add(Bloco("\n$loja\n$rotulo", negrito = true, tamanho = 22))
+        blocos.add(Bloco(
             (if (ehComanda) "COMANDA $numero" else "MESA $numero") + (nome?.let { "\n$it" } ?: ""),
             negrito = true, tamanho = 26,
         ))
         val subCab = listOfNotNull(
             dataBr(j.optStringOrNull("abertura")).ifBlank { null }?.let { "aberta $it" },
         ).joinToString(" · ")
-        if (subCab.isNotBlank()) blocos.add(Lio.Bloco(subCab, tamanho = 16))
+        if (subCab.isNotBlank()) blocos.add(Bloco(subCab, tamanho = 16))
 
         // Linha grossa separando o cabeçalho dos produtos.
-        blocos.add(Lio.Bloco(GROSSA, negrito = true, tamanho = 20))
+        blocos.add(Bloco(GROSSA, negrito = true, tamanho = 20))
 
         // Produtos (sem observações).
         val corpo = StringBuilder()
@@ -123,10 +123,10 @@ object Cupom {
         if (itens != null) for (i in 0 until itens.length()) {
             itemLinhas(corpo, itens.optJSONObject(i) ?: continue)
         }
-        if (corpo.isNotEmpty()) blocos.add(Lio.Bloco(corpo.toString().trimEnd('\n'), tamanho = 20))
+        if (corpo.isNotEmpty()) blocos.add(Bloco(corpo.toString().trimEnd('\n'), tamanho = 20))
 
         // Linha grossa antes dos totais.
-        blocos.add(Lio.Bloco(GROSSA, negrito = true, tamanho = 20))
+        blocos.add(Bloco(GROSSA, negrito = true, tamanho = 20))
 
         val totais = StringBuilder()
         totais.appendLine(linha("Consumo", num(j.optDouble("total", 0.0))))
@@ -174,14 +174,14 @@ object Cupom {
         }
         val pagoGeral = j.optDouble("pago_geral", j.optDouble("pago", 0.0))
         if (pagoGeral > 0) totais.appendLine(linha("Pago", num(pagoGeral)))
-        blocos.add(Lio.Bloco(totais.toString().trimEnd('\n'), tamanho = 20))
+        blocos.add(Bloco(totais.toString().trimEnd('\n'), tamanho = 20))
 
         // FALTA em destaque + divisão por pessoas.
         val faltaGeral = j.optDouble("falta_geral", j.optDouble("resta", 0.0))
-        blocos.add(Lio.Bloco("FALTA ${brl(faltaGeral)}", negrito = true, tamanho = 26))
+        blocos.add(Bloco("FALTA ${brl(faltaGeral)}", negrito = true, tamanho = 26))
         val nPessoas = pessoas ?: j.optInt("pessoas", 0)
         if (nPessoas > 1 && faltaGeral > 0.009) {
-            blocos.add(Lio.Bloco("Por pessoa ($nPessoas): ${brl(faltaGeral / nPessoas)}", tamanho = 20))
+            blocos.add(Bloco("Por pessoa ($nPessoas): ${brl(faltaGeral / nPessoas)}", tamanho = 20))
         }
 
         // FIADO: o saldo do cliente no papel que ele assina. Só vem do servidor
@@ -190,9 +190,9 @@ object Cupom {
         // mesma linha, então o rótulo já diz o sinal: "Já devia" / "Tinha a favor".
         val fi = j.optJSONObject("fiado")
         if (fi != null) {
-            blocos.add(Lio.Bloco(GROSSA, negrito = true, tamanho = 20))
-            blocos.add(Lio.Bloco("CONTA CORRENTE (FIADO)", negrito = true, tamanho = 20))
-            fi.optStringOrNull("nome")?.let { blocos.add(Lio.Bloco(it, tamanho = 20)) }
+            blocos.add(Bloco(GROSSA, negrito = true, tamanho = 20))
+            blocos.add(Bloco("CONTA CORRENTE (FIADO)", negrito = true, tamanho = 20))
+            fi.optStringOrNull("nome")?.let { blocos.add(Bloco(it, tamanho = 20)) }
             val saldo = fi.optDouble("saldo", 0.0)
             val conta = fi.optDouble("conta", 0.0)
             val depois = fi.optDouble("depois", saldo)
@@ -204,25 +204,25 @@ object Cupom {
                 cc.appendLine(linha("Limite", num(limite)))
                 cc.appendLine(linha("Disponível", num(fi.optDouble("disponivel", 0.0))))
             }
-            blocos.add(Lio.Bloco(cc.toString().trimEnd('\n'), tamanho = 20))
+            blocos.add(Bloco(cc.toString().trimEnd('\n'), tamanho = 20))
             if (conta > 0.009) {
-                blocos.add(Lio.Bloco(
+                blocos.add(Bloco(
                     (if (depois >= 0) "FICA DEVENDO " else "FICA A FAVOR ") + brl(Math.abs(depois)),
                     negrito = true, tamanho = 22,
                 ))
             }
             if (fi.optBoolean("estoura")) {
-                blocos.add(Lio.Bloco("*** PASSA DO LIMITE ***", negrito = true, tamanho = 20))
+                blocos.add(Bloco("*** PASSA DO LIMITE ***", negrito = true, tamanho = 20))
             }
             // é o papel da assinatura: tem que ter onde assinar
-            blocos.add(Lio.Bloco("\nAssinatura do cliente:\n\n" + "_".repeat(W), tamanho = 20))
+            blocos.add(Bloco("\nAssinatura do cliente:\n\n" + "_".repeat(W), tamanho = 20))
         }
 
         if (extras.isNotEmpty()) {
-            blocos.add(Lio.Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20))
+            blocos.add(Bloco(extras.joinToString("\n"), negrito = true, tamanho = 20))
         }
         // 6 pulinhos: o papel sai inteiro da boca da impressora sem puxar.
-        blocos.add(Lio.Bloco("Emitido ${agoraBr()}\n\n\n\n\n\n", tamanho = 16))
+        blocos.add(Bloco("Emitido ${agoraBr()}\n\n\n\n\n\n", tamanho = 16))
         return blocos
     }
 }

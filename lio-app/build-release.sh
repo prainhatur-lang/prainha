@@ -1,11 +1,14 @@
 #!/bin/bash
-# Gera o APK release ASSINADO pronto pro Dev Console da Cielo.
-# Uso: ./build-release.sh          (na pasta lio-app)
+# Gera o APK release ASSINADO de UM flavor (adquirente = máquina):
+#   ./build-release.sh          → cielo (padrão) → dist/concilia-garcom-v<versão>.apk (Cielo Store)
+#   ./build-release.sh rede     → rede           → dist/concilia-garcom-rede-v<versão>.apk (Rede Store)
 #
 # Lê tudo de secrets.properties (ver secrets.properties.example).
-# Sai em dist/concilia-garcom-v<versão>.apk — é ESSE arquivo que sobe na Cielo.
 set -euo pipefail
 cd "$(dirname "$0")"
+FLAVOR="${1:-cielo}"
+case "$FLAVOR" in cielo|rede) ;; *) echo "❌ flavor inválido: $FLAVOR (cielo|rede)"; exit 1;; esac
+FLAVOR_CAP="$(tr '[:lower:]' '[:upper:]' <<< "${FLAVOR:0:1}")${FLAVOR:1}"
 
 # JDK 17 (AGP 8.5 exige; o wrapper acha via JAVA_HOME)
 if [ -z "${JAVA_HOME:-}" ] || ! "$JAVA_HOME/bin/java" -version 2>/dev/null | grep -q 'version "17'; then
@@ -23,9 +26,9 @@ export PATH="$JAVA_HOME/bin:$PATH"
 get() { grep "^$1=" secrets.properties | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
 
 # Credenciais Cielo: sem elas o botão de receber NÃO EXISTE no APK e a
-# certificação reprova (reprovação real do CupomPro v2.0.0).
+# certificação reprova (reprovação real do CupomPro v2.0.0). Só no build cielo.
 CID="$(get CIELO_CLIENT_ID)"
-if [ -z "$CID" ] || [ -z "$(get CIELO_ACCESS_TOKEN)" ]; then
+if [ "$FLAVOR" = "cielo" ] && { [ -z "$CID" ] || [ -z "$(get CIELO_ACCESS_TOKEN)" ]; }; then
   echo "❌ CIELO_CLIENT_ID / CIELO_ACCESS_TOKEN vazios em secrets.properties."
   echo "   Pegue em https://desenvolvedores.cielo.com.br → Dev Console → app do Prainha → credenciais,"
   echo "   preencha e rode de novo. (Pra um build de teste SEM maquininha: SKIP_CIELO_CHECK=1 $0)"
@@ -35,10 +38,10 @@ fi
 KS="$(get KEYSTORE_FILE)"; KS="${KS/#\~/$HOME}"
 [ -f "$KS" ] || { echo "❌ Keystore não encontrada em $KS (a MESMA de sempre — update com outra assinatura é rejeitado)"; exit 1; }
 
-echo "▶ Compilando release (R8 + assinatura)…"
-./gradlew :app:assembleRelease --console=plain -q
+echo "▶ Compilando release $FLAVOR (R8 + assinatura)…"
+./gradlew ":app:assemble${FLAVOR_CAP}Release" --console=plain -q
 
-APK="$HOME/.concilia-lio-build/app/outputs/apk/release/app-release.apk"
+APK="$HOME/.concilia-lio-build/app/outputs/apk/$FLAVOR/release/app-$FLAVOR-release.apk"
 [ -f "$APK" ] || { echo "❌ APK não gerado em $APK"; exit 1; }
 
 # ---- Verificações obrigatórias da certificação ----
@@ -69,13 +72,19 @@ if [ -n "$WEBKIT" ]; then
 fi
 echo "✓ zero android.webkit no dex"
 
-# 3. SDK Cielo embarcado
+# 3. SDK da adquirente: Cielo PRESENTE no build cielo, AUSENTE no build rede
+#    (o APK da Rede Store não pode carregar o SDK da concorrente).
 CIELO_N=$(grep -c 'cielo/sdk' "$STR" || true)
-[ "$CIELO_N" -gt 0 ] || { echo "❌ SDK Cielo não encontrado no dex"; rm -rf "$DEX"; exit 1; }
-echo "✓ SDK Cielo no dex ($CIELO_N refs)"
+if [ "$FLAVOR" = "cielo" ]; then
+  [ "$CIELO_N" -gt 0 ] || { echo "❌ SDK Cielo não encontrado no dex"; rm -rf "$DEX"; exit 1; }
+  echo "✓ SDK Cielo no dex ($CIELO_N refs)"
+else
+  [ "$CIELO_N" -eq 0 ] || { echo "❌ SDK Cielo VAZOU pro build rede ($CIELO_N refs)"; rm -rf "$DEX"; exit 1; }
+  echo "✓ build rede sem SDK Cielo (encaixe do SDK da Rede aguardando onboarding)"
+fi
 
-# 4. Credencial embutida (BuildConfig)
-if [ -n "$CID" ]; then
+# 4. Credencial embutida (BuildConfig) — só faz sentido no build cielo
+if [ "$FLAVOR" = "cielo" ] && [ -n "$CID" ]; then
   if grep -q "$CID" "$STR"; then
     echo "✓ CIELO_CLIENT_ID embutido no APK"
   else
@@ -86,9 +95,9 @@ rm -rf "$DEX"
 
 VERSION="$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')"
 mkdir -p dist
-OUT="dist/concilia-garcom-v$VERSION.apk"
+if [ "$FLAVOR" = "cielo" ]; then OUT="dist/concilia-garcom-v$VERSION.apk"; else OUT="dist/concilia-garcom-rede-v$VERSION.apk"; fi
 cp "$APK" "$OUT"
 echo ""
-echo "✅ $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' ')) — pronto pro Dev Console da Cielo."
+if [ "$FLAVOR" = "cielo" ]; then echo "✅ $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' ')) — pronto pro Dev Console da Cielo."; else echo "✅ $OUT ($(du -h "$OUT" | cut -f1 | tr -d ' ')) — build REDE (Laranjinha Smart); pagamento só depois do SDK da Rede."; fi
 echo "   Próximos passos: subir na Cielo Store (app privado), instalar via Test Your App,"
 echo "   testar aprovada/cancelada/recusada na maquininha real e validar a baixa no vendas-local."

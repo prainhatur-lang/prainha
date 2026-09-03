@@ -117,11 +117,38 @@ android {
         // Cielo). A versão Rede será OUTRO BUILD (flavor `rede`, SDK da Rede,
         // Rede Store) na máquina da Rede. Quem escolhe com quem a filial trabalha
         // é o Concilia (Configurações → Filiais) — orienta o sistema, não o app.
-        versionCode = 37
-        versionName = "1.10.13"
+        // 1.10.14: DOIS BUILDS do mesmo código — product flavors `cielo` e `rede`
+        // (dimensão "adquirente"). A máquina define o SDK: o APK cielo é o de
+        // sempre (SDK Cielo, applicationId com.concilia.garcom, Cielo Store); o
+        // APK rede (applicationId .rede, Rede Store) já compila HOJE com o encaixe
+        // do SDK da Rede vazio — chegou o SDK, é preencher Rede.kt e homologar.
+        // Telas/tipos no main; Lio+Pagamento no src/cielo; Rede+Pagamento no
+        // src/rede. Cada recebimento carimba `adquirente` no /api/lio/pagar.
+        versionCode = 38
+        versionName = "1.10.14"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
-        buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
-        buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
+    }
+
+    // Um build por ADQUIRENTE (= por máquina). `./gradlew assembleCieloRelease`
+    // e `assembleRedeRelease`; build-release.sh recebe o flavor.
+    flavorDimensions += "adquirente"
+    productFlavors {
+        create("cielo") {
+            dimension = "adquirente"
+            isDefault = true
+            // Credenciais do Dev Console Cielo só existem neste build.
+            buildConfigField("String", "CIELO_CLIENT_ID", "\"$cieloClientId\"")
+            buildConfigField("String", "CIELO_ACCESS_TOKEN", "\"$cieloAccessToken\"")
+        }
+        create("rede") {
+            dimension = "adquirente"
+            // Identidade própria pra Rede Store (o ID congela no 1º upload lá,
+            // como na Cielo). Sem sufixo os dois nunca coexistiriam num aparelho
+            // (máquinas diferentes), mas separar evita regra de uma store valer
+            // pra outra.
+            applicationIdSuffix = ".rede"
+            versionNameSuffix = "-rede"
+        }
     }
 
     signingConfigs {
@@ -159,7 +186,7 @@ dependencies {
     // SDK Cielo LIO — pagamento NO terminal (pinpad/NFC). AAR vendorado em
     // lio-app/sdk/ (repo Maven local declarado no settings.gradle.kts).
     // Puxa transitivamente: kotlinx-coroutines, gson e cielo.smart:event-tracker.
-    implementation("com.cielo.lio:order-manager:2.5.5")
+    "cieloImplementation"("com.cielo.lio:order-manager:2.5.5")
     // Gera o QR (DANFE, passe) como Bitmap — impresso via printImage, porque o
     // printQrCode do SDK não imprime em campo. Java puro, zero WebView.
     implementation("com.google.zxing:core:3.5.3")

@@ -210,7 +210,7 @@ class MesasActivity : AppCompatActivity() {
         else prosseguir()
     }
 
-    private fun mostrarFechamento(resumo: org.json.JSONObject, term: List<Lio.VendaTerminal>?) {
+    private fun mostrarFechamento(resumo: org.json.JSONObject, term: List<VendaTerminal>?) {
         val qtd = resumo.optInt("qtd")
         val total = resumo.optDouble("total", 0.0)
         val sb = StringBuilder()
@@ -277,10 +277,10 @@ class MesasActivity : AppCompatActivity() {
             .setMessage(texto)
             .setPositiveButton("🖨 Imprimir") { _, _ ->
                 Pagamento.imprimirBlocos(this, listOf(
-                    Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DO DIA", negrito = true, tamanho = 22),
-                    Lio.Bloco(Cupom.agoraBr(), tamanho = 16),
-                    Lio.Bloco(texto, tamanho = 18),
-                    Lio.Bloco("\n\n\n\n", tamanho = 12),
+                    Bloco("\n${Session.loja(this)}\nFECHAMENTO DO DIA", negrito = true, tamanho = 22),
+                    Bloco(Cupom.agoraBr(), tamanho = 16),
+                    Bloco(texto, tamanho = 18),
+                    Bloco("\n\n\n\n", tamanho = 12),
                 ), onOk = { runOnUiThread { Toast.makeText(this, "Fechamento impresso!", Toast.LENGTH_SHORT).show() } },
                     onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
             }
@@ -333,11 +333,11 @@ class MesasActivity : AppCompatActivity() {
             }
         } else sb.appendLine("Sem recebimentos no turno.")
         Pagamento.imprimirBlocos(this, listOf(
-            Lio.Bloco("\n${Session.loja(this)}\nFECHAMENTO DE CAIXA", negrito = true, tamanho = 22),
-            Lio.Bloco(sb.toString(), tamanho = 18),
-            Lio.Bloco("TOTAL ${Cupom.brl(r.optDouble("total", 0.0))}", negrito = true, tamanho = 24),
-            Lio.Bloco("✓ BATEU — ${r.optInt("pagamentos")} pagamento(s)\nconferido(s) por NSU", tamanho = 16),
-            Lio.Bloco("\n\n\n\n", tamanho = 12),
+            Bloco("\n${Session.loja(this)}\nFECHAMENTO DE CAIXA", negrito = true, tamanho = 22),
+            Bloco(sb.toString(), tamanho = 18),
+            Bloco("TOTAL ${Cupom.brl(r.optDouble("total", 0.0))}", negrito = true, tamanho = 24),
+            Bloco("✓ BATEU — ${r.optInt("pagamentos")} pagamento(s)\nconferido(s) por NSU", tamanho = 16),
+            Bloco("\n\n\n\n", tamanho = 12),
         ), onOk = {}, onErro = { m -> runOnUiThread { Toast.makeText(this, "Fechou, mas não imprimiu: $m", Toast.LENGTH_LONG).show() } })
     }
 
