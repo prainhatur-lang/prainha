@@ -63,6 +63,9 @@ export async function POST(request: NextRequest) {
   try { body = await request.json(); } catch { return NextResponse.json({ ok: true }); }
   const eventos = Array.isArray(body?.events) ? body!.events!.map(String) : [];
   const paymentId = String(body?.data?.id || '');
+  // Log de chegada: nos logs da Vercel a linha vinha "(no message)" — sem isto
+  // não dá pra responder "a Rede avisou?" (visto na validação do sandbox 03/09).
+  console.log('[webhook rede]', eventos.join(',') || '(sem evento)', 'tid', paymentId || '(sem tid)');
   if (!paymentId || !eventos.some((e) => e === 'PV.UPDATE_TRANSACTION_PIX' || e === 'PV.REFUND_PIX')) {
     return NextResponse.json({ ok: true });
   }
