@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
 import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
@@ -143,6 +143,37 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     .orderBy(asc(schema.produto.nome))
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
+
+  // PREÇO DE PRODUTO COM TAMANHO: o preço mora na VARIANTE, não no pai — o
+  // pai fica 0,00 (190 de 190 na Prainha Bar). Mostrar 0,00 é mentira: a
+  // coluna passa a exibir a faixa (dose R$ 22 · garrafa R$ 250).
+  const idsPagina = produtos.map((p) => p.id);
+  const faixaVariante = new Map<string, { min: number; max: number; n: number }>();
+  if (idsPagina.length > 0) {
+    const faixas = await db
+      .select({
+        produtoId: schema.produtoVariante.produtoId,
+        min: sql<string>`min(${schema.produtoVariante.precoVenda})`,
+        max: sql<string>`max(${schema.produtoVariante.precoVenda})`,
+        n: sql<string>`count(*)`,
+      })
+      .from(schema.produtoVariante)
+      .where(
+        and(
+          inArray(schema.produtoVariante.produtoId, idsPagina),
+          sql`COALESCE(${schema.produtoVariante.precoVenda}, 0) > 0`,
+        ),
+      )
+      .groupBy(schema.produtoVariante.produtoId);
+    for (const f of faixas) {
+      if (!f.produtoId) continue;
+      faixaVariante.set(f.produtoId, {
+        min: Number(f.min ?? 0),
+        max: Number(f.max ?? 0),
+        n: Number(f.n ?? 0),
+      });
+    }
+  }
 
   // GRUPO do produto = etiqueta do cardápio (PRODUTOETIQUETA no Consumer).
   // Uma consulta só pra filial, e o nome sai por lookup em memória.
@@ -460,6 +491,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               ) : (
                 produtos.map((p) => {
                   const venda = Number(p.precoVenda ?? 0);
+                  const faixa = faixaVariante.get(p.id) ?? null;
                   const custo = Number(p.precoCusto ?? 0);
                   const margem = venda > 0 && custo > 0 ? ((venda - custo) / venda) * 100 : null;
                   const estoque = Number(p.estoqueAtual ?? 0);
@@ -501,7 +533,23 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                         {p.unidadeEstoque}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
-                        {ehInsumo ? <span className="text-slate-400">—</span> : brl(venda)}
+                        {ehInsumo ? (
+                          <span className="text-slate-400">—</span>
+                        ) : venda > 0 ? (
+                          brl(venda)
+                        ) : faixa ? (
+                          faixa.min === faixa.max ? (
+                            brl(faixa.min)
+                          ) : (
+                            <span title={`${faixa.n} tamanhos, do menor ao maior preço`}>
+                              {brl(faixa.min)}
+                              <span className="text-slate-400"> – </span>
+                              {brl(faixa.max)}
+                            </span>
+                          )
+                        ) : (
+                          brl(0)
+                        )}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
                         {custo > 0 ? brl(custo) : <span className="text-slate-400">—</span>}
