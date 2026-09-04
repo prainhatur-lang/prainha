@@ -305,6 +305,10 @@ export const organizacao = pgTable('organizacao', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   nome: varchar('nome', { length: 200 }).notNull(),
   cnpjRaiz: varchar('cnpj_raiz', { length: 8 }), // 8 primeiros digitos do CNPJ
+  /** Código curto da empresa (ex.: 'prainha') — o app da maquininha digita só
+   *  isso e o Concilia devolve as filiais com o túnel de cada uma (GET
+   *  /api/app/filiais?empresa=). Único; minúsculas, números e hífen. */
+  codigo: varchar('codigo', { length: 30 }).unique(),
   criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
 });
 
