@@ -25,6 +25,8 @@ class LoginActivity : AppCompatActivity() {
 
     private lateinit var servidorSp: Spinner
     private lateinit var servidorCustom: EditText
+    private lateinit var codigoEmpresaIn: EditText
+    private lateinit var buscarFiliaisBtn: Button
     private lateinit var descobertaStatus: TextView
     private lateinit var loginIn: EditText
     private lateinit var pinIn: EditText
@@ -36,6 +38,9 @@ class LoginActivity : AppCompatActivity() {
     /** (rótulo, base) — base vazia = "Outro servidor…" (URL manual). */
     private val opcoes = mutableListOf<Pair<String, String>>()
     private val descobertos = mutableListOf<Descoberta.Servidor>()
+    /** Filiais vindas do Concilia pelo CÓDIGO DA EMPRESA (túnel de cada uma) —
+     *  entram no topo do seletor. É o jeito "sem digitar URL". */
+    private val nuvem = mutableListOf<Api.FilialNuvem>()
     private var escolhaUsuario = false   // usuário mexeu no seletor — não sobrescrever
     private var ajustando = false        // setSelection programático em andamento
 
@@ -53,6 +58,13 @@ class LoginActivity : AppCompatActivity() {
         btn = findViewById(R.id.entrar)
         erro = findViewById(R.id.erro)
         findViewById<TextView>(R.id.versaoApp).text = "v" + BuildConfig.VERSION_NAME
+        codigoEmpresaIn = findViewById(R.id.codigoEmpresa)
+        buscarFiliaisBtn = findViewById(R.id.buscarFiliais)
+        codigoEmpresaIn.setText(Session.codigoEmpresa(this) ?: "")
+        buscarFiliaisBtn.setOnClickListener { buscarFiliais(manual = true) }
+        codigoEmpresaIn.setOnEditorActionListener { _, _, _ -> buscarFiliais(manual = true); true }
+        // Já tem código de outra vez: refaz a busca em silêncio, pra lista vir pronta.
+        if (!Session.codigoEmpresa(this).isNullOrBlank()) buscarFiliais(manual = false)
 
         servidorSp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
@@ -75,8 +87,9 @@ class LoginActivity : AppCompatActivity() {
     private fun montarOpcoes(selecionarBase: String? = null) {
         val atual = opcoes.getOrNull(servidorSp.selectedItemPosition)?.second
         opcoes.clear()
+        nuvem.forEach { f -> opcoes.add(Pair("${f.nome} — nuvem", f.url)) }
         descobertos.forEach { s ->
-            opcoes.add(Pair("${s.nome} — ${s.base.removePrefix("http://")}", s.base))
+            if (opcoes.none { it.second == s.base }) opcoes.add(Pair("${s.nome} — ${s.base.removePrefix("http://")}", s.base))
         }
         Session.SERVIDORES.forEach { (nome, base) ->
             if (opcoes.none { it.second == base }) opcoes.add(Pair(nome, base))
@@ -95,6 +108,36 @@ class LoginActivity : AppCompatActivity() {
         ajustando = true
         servidorSp.setSelection(if (idx >= 0) idx else 0)
         servidorSp.post { ajustando = false }
+    }
+
+    /** Pergunta ao Concilia as filiais (e o túnel) do código da empresa e põe no
+     *  seletor. `manual` = a pessoa tocou Buscar (mostra erro); silencioso no
+     *  arranque quando já havia código salvo. */
+    private fun buscarFiliais(manual: Boolean) {
+        val codigo = codigoEmpresaIn.text.toString().trim().lowercase()
+        if (codigo.length < 3) { if (manual) mostrarErro("Digite o código da empresa (ex.: prainha)"); return }
+        if (manual) { descobertaStatus.visibility = View.VISIBLE; descobertaStatus.text = "☁️ Buscando filiais de \"$codigo\"…" }
+        Thread {
+            try {
+                val (empresa, lista) = Api.filiaisDaEmpresa(codigo)
+                runOnUiThread {
+                    Session.saveCodigoEmpresa(this, codigo)
+                    nuvem.clear(); nuvem.addAll(lista)
+                    // A 1ª filial da nuvem vira a escolha, a menos que a pessoa já tenha mexido.
+                    val preferido = if (!escolhaUsuario && lista.isNotEmpty()) lista.first().url else null
+                    montarOpcoes(selecionarBase = preferido ?: Session.servidor(this))
+                    descobertaStatus.visibility = View.VISIBLE
+                    descobertaStatus.text = if (lista.isEmpty()) "$empresa: nenhuma filial com túnel cadastrado"
+                        else "☁️ $empresa: " + lista.joinToString(" · ") { it.nome }
+                    if (manual) erro.visibility = View.GONE
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (manual) mostrarErro("Não achei a empresa \"$codigo\": " + (e.message ?: "sem resposta do Concilia"))
+                    else descobertaStatus.text = "Sem internet pra buscar as filiais — usando a última escolha"
+                }
+            }
+        }.start()
     }
 
     /** Varre a rede local e vai adicionando cada servidor achado no topo. */

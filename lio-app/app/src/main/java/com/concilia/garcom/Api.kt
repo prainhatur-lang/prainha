@@ -173,6 +173,27 @@ object Api {
         }
     }
 
+    /** Uma filial devolvida pelo Concilia pro código da empresa. */
+    data class FilialNuvem(val id: String, val nome: String, val url: String)
+
+    /** Filiais (com túnel) da empresa — GET <Concilia>/api/app/filiais?empresa=<codigo>.
+     *  É o que substitui digitar a URL do túnel na mão. Lança em erro de rede/código. */
+    fun filiaisDaEmpresa(codigo: String): Pair<String, List<FilialNuvem>> {
+        val c = codigo.trim().lowercase()
+        // http() direto (não getJson): em 404/400 o corpo traz o motivo em português.
+        val (code, resp) = http("GET", BuildConfig.API_BASE.trimEnd('/') + "/api/app/filiais?empresa=" + URLEncoder.encode(c, "UTF-8"))
+        val j = try { JSONObject(resp) } catch (_: Exception) { JSONObject() }
+        if (code !in 200..299 || !j.optBoolean("ok")) throw IOException(j.optString("erro", "Concilia respondeu $code"))
+        val arr = j.optJSONArray("filiais")
+        val out = mutableListOf<FilialNuvem>()
+        if (arr != null) for (i in 0 until arr.length()) {
+            val f = arr.optJSONObject(i) ?: continue
+            val url = f.optString("url", "")
+            if (url.startsWith("https://")) out.add(FilialNuvem(f.optString("id"), f.optString("nome", "Filial"), url.trimEnd('/')))
+        }
+        return j.optString("empresa", c) to out
+    }
+
     /** GET que devolve o JSONObject; 401 → SemSessao (rotas do garçom). */
     private fun getJson(url: String, token: String? = null): JSONObject {
         val (code, resp) = http("GET", url, token)

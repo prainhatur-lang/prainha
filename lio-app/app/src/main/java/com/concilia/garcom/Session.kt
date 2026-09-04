@@ -84,6 +84,12 @@ object Session {
     fun servidorConfigurado(ctx: Context): String = prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
 
     fun lan(ctx: Context): String? = prefs(ctx).getString(K_LAN, null)?.takeIf { it.isNotBlank() }
+    /** Código da empresa digitado no login (ex.: 'prainha') — o app busca as
+     *  filiais/túneis no Concilia com ele e deixa a lista pronta na próxima vez. */
+    fun codigoEmpresa(ctx: Context): String? = prefs(ctx).getString("codigo_empresa", null)?.takeIf { it.isNotBlank() }
+    fun saveCodigoEmpresa(ctx: Context, codigo: String?) {
+        prefs(ctx).edit().putString("codigo_empresa", codigo?.trim()?.lowercase()).apply()
+    }
     fun saveLan(ctx: Context, lan: String?) {
         if (lan.isNullOrBlank()) return // servidor antigo não manda lan: não apaga o que já sabíamos
         prefs(ctx).edit().putString(K_LAN, lan.trim()).apply()

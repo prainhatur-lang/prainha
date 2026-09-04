@@ -124,8 +124,13 @@ android {
         // do SDK da Rede vazio — chegou o SDK, é preencher Rede.kt e homologar.
         // Telas/tipos no main; Lio+Pagamento no src/cielo; Rede+Pagamento no
         // src/rede. Cada recebimento carimba `adquirente` no /api/lio/pagar.
-        versionCode = 38
-        versionName = "1.10.14"
+        // 1.10.15: CÓDIGO DA EMPRESA no login — a pessoa digita 'prainha', o app
+        // pergunta ao Concilia (/api/app/filiais) e lista as filiais com o túnel de
+        // cada uma; escolhe a filial e pronto (nunca mais digita a URL do Funnel).
+        // O híbrido local×Funnel continua igual. Serve pra revenda (cada empresa
+        // tem o seu código no mesmo Concilia). "Outro servidor…" segue como opção.
+        versionCode = 39
+        versionName = "1.10.15"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
     }
 
