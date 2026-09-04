@@ -39,12 +39,12 @@ const TRANSICOES: Record<
     aviso: (n) => `Pedido #${n} saiu pra entrega! 🛵`,
   },
   concluir: {
-    de: ['pronto', 'saiu_entrega', 'em_preparo'],
+    de: ['pronto', 'saiu_entrega', 'chegou', 'em_preparo'],
     para: 'concluido',
     aviso: (n) => `Pedido #${n} finalizado. Obrigado pela preferência! 💛`,
   },
   cancelar: {
-    de: ['pendente_pagamento', 'pago', 'em_preparo', 'pronto', 'saiu_entrega'],
+    de: ['pendente_pagamento', 'pago', 'em_preparo', 'pronto', 'saiu_entrega', 'chegou'],
     para: 'cancelado',
   },
 };

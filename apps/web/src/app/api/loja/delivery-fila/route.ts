@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +60,10 @@ export async function GET(request: Request) {
       agendadoData: schema.deliveryPedido.agendadoData,
       agendadoHora: schema.deliveryPedido.agendadoHora,
       pagoEm: schema.deliveryPedido.pagoEm,
+      // 'na_entrega' = o entregador recebe na porta (a loja marca pago_online=false)
+      pagamentoMetodo: schema.deliveryPedido.pagamentoMetodo,
+      // CPF do checkout: a NFC-e da entrega já sai com ele
+      clienteCpf: schema.deliveryPedido.clienteCpf,
     })
     .from(schema.deliveryPedido)
     .where(and(
@@ -148,10 +153,52 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  if (acao === 'pronto' || acao === 'saiu_entrega' || acao === 'concluido') {
+  if (acao === 'pronto' || acao === 'saiu_entrega' || acao === 'chegou' || acao === 'concluido') {
+    const [p] = await db
+      .select({
+        numero: schema.deliveryPedido.numero,
+        status: schema.deliveryPedido.status,
+        clienteNome: schema.deliveryPedido.clienteNome,
+        clienteTelefone: schema.deliveryPedido.clienteTelefone,
+        pagamentoStatus: schema.deliveryPedido.pagamentoStatus,
+      })
+      .from(schema.deliveryPedido)
+      .where(onde)
+      .limit(1);
+    if (!p) return NextResponse.json({ error: 'pedido não encontrado' }, { status: 404 });
+    // 'chegou' depois de 'concluido' (ou repetido) não anda pra trás
+    if (p.status === 'concluido' || p.status === 'cancelado' || p.status === acao) {
+      return NextResponse.json({ ok: true, repetido: true });
+    }
     await db
       .update(schema.deliveryPedido)
       .set({ status: acao, atualizadoEm: sql`now()` })
+      .where(onde);
+    // Aviso no WhatsApp do cliente pelos toques do ENTREGADOR (saí / cheguei):
+    // é o que faz a pessoa descer pra porta com o cartão na mão.
+    const naEntrega = p.pagamentoStatus === 'na_entrega';
+    const msg =
+      acao === 'saiu_entrega'
+        ? `Seu pedido #${p.numero} saiu pra entrega! 🛵` + (naEntrega ? ' Pagamento na entrega: cartão na maquininha ou dinheiro.' : '')
+        : acao === 'chegou'
+          ? `O entregador chegou! 🔔 Pedido #${p.numero} na sua porta.` + (naEntrega ? ' Pode pagar com cartão ou Pix na maquininha.' : '')
+          : null;
+    if (msg) {
+      try {
+        await enviarAtualizacaoReserva(p.clienteTelefone, { nome: p.clienteNome.split(' ')[0], mensagem: msg });
+      } catch (e) {
+        console.error('delivery-fila: WhatsApp (' + acao + '):', (e as Error).message);
+      }
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  if (acao === 'pago_entrega') {
+    // O entregador recebeu na porta (maquininha ou dinheiro): o pedido passa a
+    // constar como pago — o status da rota não muda (chegou → concluído).
+    await db
+      .update(schema.deliveryPedido)
+      .set({ pagamentoStatus: 'pago', pagoEm: new Date(), atualizadoEm: sql`now()` })
       .where(onde);
     return NextResponse.json({ ok: true });
   }

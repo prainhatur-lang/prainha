@@ -123,6 +123,7 @@ export default async function DeliveryLojaPage(props: {
         entregaAtiva: c.entregaAtiva !== false,
         pixAtivo: c.pixAtivo !== false,
         cartaoAtivo: c.cartaoAtivo !== false,
+        naEntregaAtivo: c.naEntregaAtivo === true,
         pedidoMinimo: c.pedidoMinimo ?? null,
         gratisAcimaDe: c.gratisAcimaDe ?? null,
         gratisAteKm: c.gratisAteKm ?? null,

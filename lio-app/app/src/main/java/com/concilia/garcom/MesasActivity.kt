@@ -52,6 +52,11 @@ class MesasActivity : AppCompatActivity() {
             (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME
         findViewById<Button>(R.id.sair).setOnClickListener { logout() }
         findViewById<Button>(R.id.fechamentoDia).setOnClickListener { dialogFechamento() }
+        // 🛵 só pra quem tem "Pedidos Delivery" no Consumer (ou admin)
+        findViewById<Button>(R.id.entregas).apply {
+            visibility = if (Session.entregas(this@MesasActivity)) View.VISIBLE else View.GONE
+            setOnClickListener { startActivity(Intent(this@MesasActivity, EntregasActivity::class.java)) }
+        }
         findViewById<Button>(R.id.abrir).setOnClickListener { abrirDigitada() }
         pendentesBanner.setOnClickListener { dialogPendentes() }
 

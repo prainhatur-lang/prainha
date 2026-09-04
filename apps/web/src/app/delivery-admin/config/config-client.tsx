@@ -85,6 +85,7 @@ export function ConfigDeliveryClient({ filialId, filialNome, filiais, configInic
   );
   const [pixAtivo, setPixAtivo] = useState(c.pixAtivo !== false);
   const [cartaoAtivo, setCartaoAtivo] = useState(c.cartaoAtivo !== false);
+  const [naEntregaAtivo, setNaEntregaAtivo] = useState(c.naEntregaAtivo === true);
 
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -141,6 +142,7 @@ export function ConfigDeliveryClient({ filialId, filialNome, filiais, configInic
           tempoPreparoMax: numOuNull(preparoMax),
           pixAtivo,
           cartaoAtivo,
+          naEntregaAtivo,
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -613,7 +615,8 @@ export function ConfigDeliveryClient({ filialId, filialNome, filiais, configInic
         <div className={cardCls}>
           <h2 className="text-sm font-semibold text-slate-900">Pagamento</h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            O delivery é sempre pré-pago online (Cielo). Não há pagamento na entrega.
+            Pré-pago online (Pix/cartão) e, se você ligar, pagamento na entrega: o entregador
+            recebe na porta pela maquininha (cartão/Pix) ou em dinheiro, e a nota sai na hora.
           </p>
           <div className="mt-2 flex flex-wrap gap-4">
             <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -633,6 +636,15 @@ export function ConfigDeliveryClient({ filialId, filialNome, filiais, configInic
                 className="h-4 w-4"
               />
               Cartão (crédito/débito com 3DS)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={naEntregaAtivo}
+                onChange={(e) => setNaEntregaAtivo(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Na entrega (maquininha do entregador ou dinheiro) — só pra entrega
             </label>
           </div>
         </div>

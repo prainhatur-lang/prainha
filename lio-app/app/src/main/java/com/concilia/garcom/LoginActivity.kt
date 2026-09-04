@@ -208,7 +208,7 @@ class LoginActivity : AppCompatActivity() {
                     when {
                         r.optBoolean("ok") && !r.optStringOrNull("token").isNullOrBlank() -> {
                             Session.saveServidor(this, base, lojaLabel)
-                            Session.save(this, r.optString("token"), login, r.optStringOrNull("nome"), false)
+                            Session.save(this, r.optString("token"), login, r.optStringOrNull("nome"), false, r.optBoolean("entregas"))
                             // Config da loja (nome real + limites de mesa/comanda).
                             Thread {
                                 val c = Api.config(base)

@@ -12,7 +12,7 @@ import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 import { createPixPayment } from '@/lib/pagamento-online';
 import { lojaDeliveryPorSlug } from '@/lib/delivery/config';
-import { criarPedidoDelivery, type NovoPedidoInput } from '@/lib/delivery/pedido';
+import { criarPedidoDelivery, marcarDeliveryPedidoPago, type NovoPedidoInput } from '@/lib/delivery/pedido';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,11 +38,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
       itens: Array.isArray(b.itens) ? b.itens : [],
       cupomCodigo: typeof b.cupomCodigo === 'string' ? b.cupomCodigo : undefined,
       observacao: typeof b.observacao === 'string' ? b.observacao : undefined,
-      pagamentoMetodo: b.pagamentoMetodo as 'pix' | 'cartao',
+      pagamentoMetodo: b.pagamentoMetodo as 'pix' | 'cartao' | 'na_entrega',
     },
   });
   if (!r.ok || !r.pedido) {
     return NextResponse.json({ error: r.erro ?? 'não consegui criar o pedido' }, { status: 400 });
+  }
+
+  if (b.pagamentoMetodo === 'na_entrega') {
+    // Sem dinheiro na frente: confirma agora (vai pra fila do caixa) e o
+    // entregador recebe na porta pela maquininha.
+    await marcarDeliveryPedidoPago(r.pedido.id, new URL(request.url).origin, { naEntrega: true });
+    return NextResponse.json({ ok: true, token: r.pedido.token, numero: r.pedido.numero, totalCentavos: r.pedido.totalCentavos });
   }
 
   if (b.pagamentoMetodo === 'pix') {

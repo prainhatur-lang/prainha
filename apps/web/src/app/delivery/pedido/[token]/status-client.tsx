@@ -32,7 +32,7 @@ interface PedidoResp {
   observacao: string | null;
   canceladoMotivo: string | null;
   pagamento: {
-    metodo: 'pix' | 'cartao' | null;
+    metodo: 'pix' | 'cartao' | 'na_entrega' | null;
     status: string | null;
     qrCodeString: string | null;
     qrCodeBase64: string | null;
@@ -160,6 +160,7 @@ export function StatusClient({ token }: { token: string }) {
           { id: 'em_preparo', label: 'Na cozinha' },
           { id: 'pronto', label: 'Pronto' },
           { id: 'saiu_entrega', label: 'Saiu pra entrega' },
+          { id: 'chegou', label: 'Entregador na porta' },
           { id: 'concluido', label: 'Entregue' },
         ]
       : [
@@ -322,6 +323,11 @@ export function StatusClient({ token }: { token: string }) {
               );
             })}
           </ol>
+          {pedido.pagamento.metodo === 'na_entrega' && pedido.status !== 'concluido' ? (
+            <p className="mt-3 rounded-xl bg-[var(--dlv-surface)] px-3 py-2 text-xs text-[var(--dlv-text)]">
+              💳 <b>Pagamento na entrega</b> — {brl(pedido.total)} no cartão ou Pix na maquininha do entregador, ou em dinheiro.
+            </p>
+          ) : null}
           {pedido.status === 'pago' &&
           pedido.loja?.tempoPreparoMin != null &&
           pedido.loja?.tempoPreparoMax != null &&

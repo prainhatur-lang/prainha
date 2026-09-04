@@ -48,7 +48,7 @@ export interface NovoPedidoInput {
   itens: Array<{ itemId: string; qtd: number; obs?: string; complementos?: string[] }>;
   cupomCodigo?: string;
   observacao?: string;
-  pagamentoMetodo: 'pix' | 'cartao';
+  pagamentoMetodo: 'pix' | 'cartao' | 'na_entrega';
 }
 
 export interface PedidoCriado {
@@ -96,8 +96,12 @@ export async function criarPedidoDelivery(params: {
     return { ok: false, erro: 'Estamos sem retirada no momento — escolha entrega.' };
   }
 
-  if (input.pagamentoMetodo !== 'pix' && input.pagamentoMetodo !== 'cartao') {
+  if (input.pagamentoMetodo !== 'pix' && input.pagamentoMetodo !== 'cartao' && input.pagamentoMetodo !== 'na_entrega') {
     return { ok: false, erro: 'Escolha a forma de pagamento.' };
+  }
+  if (input.pagamentoMetodo === 'na_entrega') {
+    if (config.naEntregaAtivo !== true) return { ok: false, erro: 'Pagamento na entrega indisponível — pague online.' };
+    if (input.tipo !== 'entrega') return { ok: false, erro: 'Pagar na entrega só vale pra entrega — na retirada, pague online.' };
   }
   if (input.pagamentoMetodo === 'pix' && config.pixAtivo === false) {
     return { ok: false, erro: 'Pix indisponível — pague com cartão.' };
@@ -386,6 +390,7 @@ export async function criarPedidoDelivery(params: {
 export async function marcarDeliveryPedidoPago(
   pedidoId: string,
   appOrigin?: string,
+  opts: { naEntrega?: boolean } = {},
 ): Promise<void> {
   const [p] = await db
     .select()
@@ -397,8 +402,10 @@ export async function marcarDeliveryPedidoPago(
   await db
     .update(schema.deliveryPedido)
     .set({
+      // 'pago' é o status que põe o pedido na fila da loja; na entrega o
+      // pagamento em si fica 'na_entrega' até o entregador receber na porta
       status: 'pago',
-      pagamentoStatus: 'pago',
+      pagamentoStatus: opts.naEntrega ? 'na_entrega' : 'pago',
       pagoEm: new Date(),
       atualizadoEm: sql`now()`,
     })
@@ -425,7 +432,9 @@ export async function marcarDeliveryPedidoPago(
       const link = `${appOrigin}/delivery/pedido/${p.token}`;
       await enviarAtualizacaoReserva(p.clienteTelefone, {
         nome: p.clienteNome.split(' ')[0],
-        mensagem: `Recebemos seu pedido #${p.numero}! Acompanhe o preparo em ${link}`,
+        mensagem: opts.naEntrega
+          ? `Recebemos seu pedido #${p.numero}! Pagamento na entrega (cartão na maquininha ou dinheiro). Acompanhe em ${link}`
+          : `Recebemos seu pedido #${p.numero}! Acompanhe o preparo em ${link}`,
       });
     } catch (e) {
       console.error('delivery: erro enviando WhatsApp de confirmação:', (e as Error).message);

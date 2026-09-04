@@ -533,8 +533,9 @@ object Api {
 
     /** NFC-e ligada pra esta loja? Já tem nota? CPF do cadastro? null =
      *  desligada/servidor antigo/fora do ar → o app simplesmente não pergunta. */
-    fun nfceInfo(base: String, token: String, numero: Int): NfceInfo? = try {
-        val j = getJson("$base/api/nfce/info?n=$numero", token)
+    fun nfceInfo(base: String, token: String, numero: Int, ped: Int? = null): NfceInfo? = try {
+        // entrega: número 0 serve pra várias — o pedido vai explícito
+        val j = getJson("$base/api/nfce/info?n=$numero" + (if (ped != null) "&ped=$ped" else ""), token)
         if (!j.optBoolean("ok") || !j.optBoolean("ativo") || j.optBoolean("sem_pedido")) null
         else NfceInfo(
             emitida = j.optBoolean("emitida"),
@@ -558,9 +559,10 @@ object Api {
      *  DANFE em blocos pra sair na impressora da própria maquininha. Timeout
      *  longo: a cadeia loja → central → SEFAZ pode levar vários segundos. */
     @Throws(IOException::class)
-    fun nfceEmitir(base: String, token: String, numero: Int, documento: String?): NfceResultado {
+    fun nfceEmitir(base: String, token: String, numero: Int, documento: String?, ped: Int? = null): NfceResultado {
         val b = JSONObject().put("numero", numero).put("destino", "lio")
         if (!documento.isNullOrBlank()) b.put("documento", documento)
+        if (ped != null) b.put("ped", ped)
         val (code, resp) = http("POST", "$base/api/nfce/emitir", token, b, readTimeoutMs = 60000)
         if (code == 401) throw SemSessao()
         if (code !in 200..299) throw IOException("Servidor respondeu $code")
@@ -604,6 +606,81 @@ object Api {
     }
 
     /** Body do /api/lio/pagar a partir de um pagamento aprovado no terminal. */
+    // -------- entregas (quem tem "Pedidos Delivery" no Consumer) --------
+
+    data class EntregaItem(val nome: String, val qtd: Int, val valorCentavos: Long, val detalhes: String?)
+
+    /** Uma entrega aceita pelo caixa (site ou iFood), com o estado da rota e do
+     *  pagamento. `pedidoFb` = pedido no Consumer (nasce no aceite quando é
+     *  "pagar na entrega"; pré-pago só ganha quando o caixa emite a nota). */
+    data class Entrega(
+        val id: String,
+        val displayId: String,
+        val canal: String,             // site | ifood
+        val cliente: String?,
+        val fone: String?,
+        val endereco: String?,
+        val totalCentavos: Long,
+        val taxaCentavos: Long,
+        val pagoOnline: Boolean,
+        val pedidoFb: Int?,
+        val pagoCentavos: Long,
+        val saldoCentavos: Long,
+        val pagoEntrega: Boolean,
+        val saiu: Boolean,
+        val chegou: Boolean,
+        val entregador: String?,
+        val meu: Boolean,
+        val itens: List<EntregaItem>,
+    )
+
+    private fun centavosDe(v: Double): Long = Math.round(v * 100)
+
+    @Throws(IOException::class)
+    fun entregas(base: String, token: String): List<Entrega> {
+        val j = getJson("$base/api/entregador/pedidos", token)
+        if (!j.optBoolean("ok")) throw IOException(j.optString("erro", "não deu pra listar as entregas"))
+        val arr = j.optJSONArray("pedidos") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val its = o.optJSONArray("itens")
+            val itens = mutableListOf<EntregaItem>()
+            if (its != null) for (k in 0 until its.length()) {
+                val x = its.optJSONObject(k) ?: continue
+                itens.add(EntregaItem(x.optString("nome", "item"), x.optInt("qtd", 1), centavosDe(x.optDouble("valor", 0.0)), x.optStringOrNull("detalhes")))
+            }
+            Entrega(
+                id = o.optString("id"),
+                displayId = o.optString("display_id", ""),
+                canal = o.optString("canal", "site"),
+                cliente = o.optStringOrNull("cliente"),
+                fone = o.optStringOrNull("fone"),
+                endereco = o.optStringOrNull("endereco"),
+                totalCentavos = centavosDe(o.optDouble("total", 0.0)),
+                taxaCentavos = centavosDe(o.optDouble("taxa", 0.0)),
+                pagoOnline = o.optBoolean("pago_online"),
+                pedidoFb = if (o.isNull("pedido_fb")) null else o.optInt("pedido_fb").takeIf { it > 0 },
+                pagoCentavos = centavosDe(o.optDouble("pago", 0.0)),
+                saldoCentavos = centavosDe(o.optDouble("saldo", 0.0)),
+                pagoEntrega = o.optBoolean("pago_entrega"),
+                saiu = !o.optStringOrNull("saiu_em").isNullOrBlank(),
+                chegou = !o.optStringOrNull("chegou_em").isNullOrBlank(),
+                entregador = o.optStringOrNull("entregador"),
+                meu = o.optBoolean("meu", true),
+                itens = itens,
+            )
+        }
+    }
+
+    /** Ação do entregador (saiu | cheguei | conta | dinheiro | concluir); devolve
+     *  o JSON cru — ok/erro e, na `conta`, ped/total/pago/saldo. */
+    @Throws(IOException::class)
+    fun entregaAcao(base: String, token: String, acao: String, id: String, extra: JSONObject? = null): JSONObject {
+        val b = JSONObject().put("acao", acao).put("id", id)
+        if (extra != null) { val ks = extra.keys(); while (ks.hasNext()) { val k = ks.next(); b.put(k, extra.get(k)) } }
+        return postJson("$base/api/entregador/acao", token, b)
+    }
+
     fun bodyPagamento(numero: Int, p: PagamentoLio): JSONObject = JSONObject()
         .put("numero", numero)
         .put("forma", p.forma)

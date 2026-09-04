@@ -15,6 +15,7 @@ object Session {
     private const val K_LAN = "lan"             // IP:porta local aprendido do /api/config
     private const val K_LOJA = "loja"
     private const val K_PODE_DESCONTO = "pode_desconto"
+    private const val K_ENTREGAS = "entregas"       // Consumer: PedidosDelivery (4) ou admin
 
     // Servidor ATIVO desta execução (resolvido 1x no arranque por resolverBase):
     // o LOCAL da loja se ele responder agora, senão o configurado (Funnel). Fica
@@ -31,14 +32,17 @@ object Session {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun save(ctx: Context, token: String, login: String, nome: String?, podeDesconto: Boolean) {
+    fun save(ctx: Context, token: String, login: String, nome: String?, podeDesconto: Boolean, entregas: Boolean = false) {
         prefs(ctx).edit()
             .putString(K_TOKEN, token)
             .putString(K_LOGIN, login)
             .putString(K_NOME, nome)
             .putBoolean(K_PODE_DESCONTO, podeDesconto)
+            .putBoolean(K_ENTREGAS, entregas)
             .apply()
     }
+    /** Pode sair pra entregar e receber na porta (tela Entregas). */
+    fun entregas(ctx: Context): Boolean = prefs(ctx).getBoolean(K_ENTREGAS, false)
 
     fun saveServidor(ctx: Context, base: String, loja: String) {
         prefs(ctx).edit().putString(K_SERVIDOR, base.trimEnd('/')).putString(K_LOJA, loja).apply()
@@ -116,7 +120,7 @@ object Session {
     /** Sai mas preserva servidor/loja escolhidos (conveniência do próximo login). */
     fun clear(ctx: Context) {
         prefs(ctx).edit()
-            .remove(K_TOKEN).remove(K_LOGIN).remove(K_NOME).remove(K_PODE_DESCONTO)
+            .remove(K_TOKEN).remove(K_LOGIN).remove(K_NOME).remove(K_PODE_DESCONTO).remove(K_ENTREGAS)
             .apply()
     }
 }

@@ -299,6 +299,9 @@ export interface DeliveryConfig {
   /** Formas de pagamento online (default: ambas ativas). */
   pixAtivo?: boolean;
   cartaoAtivo?: boolean;
+  /** Pagar NA ENTREGA (cartão/Pix na maquininha do entregador, ou dinheiro).
+   *  Default desligado: o pedido vai pra cozinha sem dinheiro na frente. */
+  naEntregaAtivo?: boolean;
 }
 
 export const organizacao = pgTable('organizacao', {

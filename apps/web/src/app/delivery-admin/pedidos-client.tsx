@@ -64,9 +64,12 @@ const STATUS_INFO: Record<string, { txt: string; cls: string }> = {
   em_preparo: { txt: 'Na cozinha', cls: 'bg-amber-100 text-amber-800' },
   pronto: { txt: 'Pronto', cls: 'bg-sky-100 text-sky-700' },
   saiu_entrega: { txt: 'Saiu pra entrega', cls: 'bg-violet-100 text-violet-700' },
+  chegou: { txt: 'Entregador na porta', cls: 'bg-violet-100 text-violet-800' },
   concluido: { txt: 'Concluído', cls: 'bg-slate-100 text-slate-500' },
   cancelado: { txt: 'Cancelado', cls: 'bg-rose-100 text-rose-700' },
 };
+
+const metodoTxt = (m: string | null) => (m === 'pix' ? 'Pix' : m === 'na_entrega' ? 'na entrega' : 'cartão');
 
 const brl = (v: string | number) =>
   Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -364,7 +367,7 @@ export function PedidosClient({
               >
                 <span className="text-slate-600">
                   #{p.numero} · {p.clienteNome} · {brl(p.total)} ·{' '}
-                  {p.pagamentoMetodo === 'pix' ? 'Pix' : 'cartão'}
+                  {metodoTxt(p.pagamentoMetodo)}
                 </span>
                 <span className="text-xs text-slate-400">{hhmm(p.criadoEm)}</span>
               </div>
@@ -421,7 +424,7 @@ function CardPedido({
     if (p.tipo === 'entrega') proximas.push({ acao: 'saiu', label: 'Saiu pra entrega' });
     else proximas.push({ acao: 'concluir', label: 'Cliente retirou' });
   }
-  if (p.status === 'saiu_entrega') proximas.push({ acao: 'concluir', label: 'Entregue' });
+  if (p.status === 'saiu_entrega' || p.status === 'chegou') proximas.push({ acao: 'concluir', label: 'Entregue' });
 
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -476,7 +479,7 @@ function CardPedido({
           </div>
         ) : null}
         <div className="flex justify-between font-bold text-slate-900">
-          <span>Total {p.pagamentoMetodo === 'pix' ? '(Pix)' : '(cartão)'}</span>
+          <span>Total ({metodoTxt(p.pagamentoMetodo)})</span>
           <span>{brl(p.total)}</span>
         </div>
       </div>

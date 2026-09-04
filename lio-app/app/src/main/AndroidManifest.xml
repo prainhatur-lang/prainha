@@ -51,6 +51,12 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
+        <!-- Entregas: rota (saí/cheguei/entregue) e receber na porta pela maquininha. -->
+        <activity
+            android:name=".EntregasActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
         <!-- Lançar itens do cardápio na mesa (busca + categorias + quantidade). -->
         <activity
             android:name=".ProdutosActivity"

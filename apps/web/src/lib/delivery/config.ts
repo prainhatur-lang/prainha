@@ -42,6 +42,7 @@ const CHAVES_BOOL = [
   'gratisPrimeiraCompra',
   'pixAtivo',
   'cartaoAtivo',
+  'naEntregaAtivo',
 ] as const;
 
 function normalizarConfig(c: DeliveryConfig): DeliveryConfig {

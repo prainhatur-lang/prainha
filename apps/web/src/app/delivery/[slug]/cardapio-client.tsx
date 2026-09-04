@@ -58,6 +58,8 @@ interface LojaInfo {
   entregaAtiva: boolean;
   pixAtivo: boolean;
   cartaoAtivo: boolean;
+  /** cartão/Pix na maquininha do entregador (ou dinheiro) — só entrega */
+  naEntregaAtivo: boolean;
   pedidoMinimo: number | null;
   gratisAcimaDe: number | null;
   gratisAteKm: number | null;
@@ -174,7 +176,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   const [asap, setAsap] = useState(agendaInicial.asapDisponivel);
   const [diaSel, setDiaSel] = useState<string>('');
   const [horaSel, setHoraSel] = useState<string>('');
-  const [pagamento, setPagamento] = useState<'pix' | 'cartao'>(loja.pixAtivo ? 'pix' : 'cartao');
+  const [pagamento, setPagamento] = useState<'pix' | 'cartao' | 'na_entrega'>(loja.pixAtivo ? 'pix' : 'cartao');
+  const naEntregaDisponivel = loja.naEntregaAtivo && tipo === 'entrega';
+  // trocou pra retirada com "na entrega" marcado: volta pro online
+  useEffect(() => {
+    if (pagamento === 'na_entrega' && !naEntregaDisponivel) setPagamento(loja.pixAtivo ? 'pix' : 'cartao');
+  }, [pagamento, naEntregaDisponivel, loja.pixAtivo]);
   const [observacao, setObservacao] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -831,8 +838,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* pagamento */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>Pagamento — 100% online e seguro</p>
-          <div className="mt-2 grid grid-cols-2 gap-2">
+          <p className={lbl}>{naEntregaDisponivel ? 'Pagamento' : 'Pagamento — 100% online e seguro'}</p>
+          <div className={`mt-2 grid gap-2 ${naEntregaDisponivel ? 'grid-cols-3' : 'grid-cols-2'}`}>
             {loja.pixAtivo ? (
               <button
                 onClick={() => setPagamento('pix')}
@@ -857,9 +864,23 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 💳 Cartão
               </button>
             ) : null}
+            {naEntregaDisponivel ? (
+              <button
+                onClick={() => setPagamento('na_entrega')}
+                className={`rounded-xl border px-3 py-3 text-sm font-semibold ${
+                  pagamento === 'na_entrega'
+                    ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]'
+                    : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
+                }`}
+              >
+                🛵 Na entrega
+              </button>
+            ) : null}
           </div>
           <p className="mt-2 text-xs text-[var(--dlv-muted)]">
-            O pedido só vai pra cozinha depois do pagamento aprovado.
+            {pagamento === 'na_entrega'
+              ? 'Você paga na porta: cartão ou Pix na maquininha do entregador, ou dinheiro. O pedido já vai pra cozinha.'
+              : 'O pedido só vai pra cozinha depois do pagamento aprovado.'}
           </p>
         </section>
 

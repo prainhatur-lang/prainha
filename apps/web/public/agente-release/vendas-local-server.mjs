@@ -606,6 +606,13 @@ async function initSchema() {
   // não pode apagar "em produção".
   await addCol('ifood_pedido', 'codigo_entrega_em timestamptz');
   await addCol('ifood_pedido', 'ultimo_evento text');
+  // RECEBER NA ENTREGA: o pedido de canal vira pedido no Consumer (pedido_fb) pra
+  // a maquininha do entregador receber e a NFC-e sair na porta; carimbos da rota.
+  await addCol('ifood_pedido', 'pedido_fb integer');
+  await addCol('ifood_pedido', 'saiu_em timestamptz');
+  await addCol('ifood_pedido', 'chegou_em timestamptz');
+  await addCol('ifood_pedido', 'entregador text');
+  await addCol('ifood_pedido', 'pago_entrega_em timestamptz');
   await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
@@ -710,6 +717,15 @@ async function espelho() {
     LEFT JOIN CONTATOS col ON col.CODIGO=i.CODIGOCOLABORADOR
     WHERE p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL AND (p.DATAABERTURA >= ${DESDE} OR p.NUMERO > 0) AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
   if (!it.ok) throw new Error('FB itens: ' + it.err);
+  // PEDIDO-SOMBRA DA ENTREGA (deliveryMaterializar): existe no Consumer só pra
+  // receber/emitir nota — quem aparece no KDS e no caixa é a projeção negativa
+  // do ifood_pedido. Copiar os dois = cozinha vendo o pedido em dobro.
+  const sombra = new Set((await sql`SELECT pedido_fb FROM ifood_pedido
+    WHERE pedido_fb IS NOT NULL AND recebido_em > now() - interval '7 days'`).map((x) => Number(x.pedido_fb)));
+  if (sombra.size) {
+    c.rows = c.rows.filter((x) => !sombra.has(N(x.CODIGO)));
+    it.rows = it.rows.filter((x) => !sombra.has(N(x.PED)));
+  }
 
   const areas = az.ok ? az.rows.map((x) => ({ codigo: N(x.CODIGO), nome: T(x.D) || ('Área ' + x.CODIGO) })) : [];
   const comandas = c.rows.map((x) => ({ codigo: N(x.CODIGO), numero: N(x.NUMERO), origem: N(x.ORI), nome: T(x.NOME), valor_total: N(x.VALORTOTAL) || 0, subtotal_pago: N(x.SUBTOTALPAGO) || 0, qtd_pessoas: N(x.QP), data_abertura: x.DATAABERTURA || null, conta_pedida: T(x.CS) === 'S' }));
@@ -1383,6 +1399,7 @@ async function ifoodComando(orderId, acao, extra = null) {
       // Aceitou = a cozinha precisa do papel AGORA. Falha de impressora não
       // desfaz o aceite: o pedido já está confirmado pro cliente.
       await imprimirNotaIfood(orderId).catch((e) => console.error('[site] impressora:', e.message));
+      await deliveryAoAceitar(orderId);
       return { ok: true };
     }
     if (acao === 'pronto') {
@@ -1437,6 +1454,7 @@ async function ifoodComando(orderId, acao, extra = null) {
   // parada 30s — o evento depois confirma (ou corrige).
   const campo = { confirmar: 'confirmado_em', despachar: 'despachado_em' }[acao];
   if (campo) await sql`UPDATE ifood_pedido SET ${sql(campo)}=COALESCE(${sql(campo)}, now()) WHERE id=${orderId}`;
+  if (acao === 'confirmar') await deliveryAoAceitar(orderId);
   if (acao === 'aceitar_cancel') await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_pedido_em=NULL WHERE id=${orderId}`;
   if (acao === 'negar_cancel') await sql`UPDATE ifood_pedido SET cancel_pedido_em=NULL WHERE id=${orderId}`;
   return { ok: true };
@@ -1581,7 +1599,9 @@ async function puxarDeliverySite() {
       endereco: p.endereco ? [p.endereco.rua, p.endereco.numero, p.endereco.complemento, p.endereco.bairro, p.endereco.referencia].filter(Boolean).join(' · ') : null,
       total: Number(p.total || 0) || 0,
       taxa_entrega: Number(p.taxaEntrega || 0) || 0,
-      pago_online: true,                   // o site só manda pedido já pago
+      // 'na_entrega' = o cliente paga na porta (maquininha do entregador);
+      // qualquer outro método chega pago (Pix/cartão online).
+      pago_online: String(p.pagamentoMetodo || '') !== 'na_entrega',
       agendado_para: p.agendadoData && p.agendadoHora ? `${p.agendadoData}T${p.agendadoHora}:00` : null,
       criado_em: p.pagoEm || null,
       origem: 'site',
@@ -1668,6 +1688,218 @@ async function lancarReceberCanal(pedidoId, acao = 'abrir') {
     }),
   });
   if (!r.ok) throw new Error('receber-canal HTTP ' + r.status);
+}
+
+// ---- RECEBER NA ENTREGA ----
+// O pedido do site/iFood vive só aqui (código negativo, ver projetarIfood).
+// Pra RECEBER na porta pela maquininha e pra EMITIR NFC-e ele precisa existir
+// no Consumer: PEDIDOS número 0 (entrega), itens pelo código do PDV, taxa em
+// VALORENTREGA, cupom em TOTALDESCONTO — e SEM os 10% de serviço. O espelho
+// não copia esse pedido de volta (senão a cozinha veria em dobro): no KDS e no
+// caixa continua aparecendo a projeção negativa; o pedido do Consumer é a
+// sombra fiscal/financeira dela. Nasce no ACEITE quando é "pagar na entrega";
+// o pré-pago só ganha sombra quando o caixa pede a nota fiscal.
+const PERM_ENTREGAS = 4; // Consumer: "PedidosDelivery" — quem pode sair pra entregar
+async function deliveryMaterializar(p, quem = 'sistema') {
+  if (nativo()) throw new Error('modo próprio: entrega ainda não vira pedido local');
+  if (p.pedido_fb) return Number(p.pedido_fb);
+  const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
+  if (!itens.length) throw new Error('pedido sem itens');
+  const doSite = p.origem === 'site';
+  const linhas = [];
+  for (const i of itens) {
+    const cat = i.codigo_pdv
+      ? (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho FROM produto_local WHERE codigo_pdv=${Number(i.codigo_pdv)}`)[0]
+      : null;
+    if (!cat) throw new Error(`"${i.nome}" não tem código do PDV nesta loja — vincule o item no cardápio antes de receber`);
+    const qtd = Math.max(1, Number(i.quantidade) || 1);
+    const vt = +Number(i.valor_total || 0).toFixed(2);
+    linhas.push({ codigo_pdv: cat.codigo_pdv, produto_codigo: cat.produto_codigo, nome: cat.nome, tamanho: cat.tamanho,
+      preco: +(vt / qtd).toFixed(4), qtd,
+      obs: String(i.detalhes || '').replace(/\[[^\]]*\]/g, '').trim(), // os avisos [CONFERIR…] são da tela, não do cliente
+      login: 'delivery', nome_usuario: doSite ? 'Site' : 'iFood' });
+  }
+  const rotulo = ((doSite ? 'SITE ' : 'iFood #') + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : '')).trim().slice(0, 40);
+  const taxa = +Number(p.taxa_entrega || 0).toFixed(2);
+  const total = +Number(p.total || 0).toFixed(2);
+  // INSERT + SELECT (RETURNING crasha intermitente no FB4 — ver fbCriarPedido);
+  // a fila q() serializa, então o FIRST 1 pelo rótulo é o que acabou de entrar.
+  const ins = await q(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO, NOME)
+    VALUES (0, CURRENT_TIMESTAMP, ${IFOOD_ORIGEM}, ${fbNum(taxa)}, 1, 0, '', 'N', 'N', ${fbNum(total)}, 0, '${fbEsc(rotulo)}')`);
+  if (!ins.ok) throw new Error('FB criar pedido de entrega: ' + ins.err);
+  const ach = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=0 AND CODIGOPEDIDOORIGEM=${IFOOD_ORIGEM}
+    AND NOME='${fbEsc(rotulo)}' AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
+  const ped = ach.ok && ach.rows.length ? Number(ach.rows[0].CODIGO) : 0;
+  if (!ped) throw new Error('FB criar pedido de entrega: inserido mas não encontrado');
+  for (const l of linhas) await fbInserirItem(ped, l);
+  // a cozinha já recebeu este pedido pela projeção (KDS) e pela nota impressa
+  // no aceite — a fila de impressão do Consumer não pode mandar de novo
+  await qi(`UPDATE ITENSPEDIDO SET IMPRESSO='S' WHERE CODIGOPEDIDO=${ped}`);
+  const soma = await q(`SELECT COALESCE(SUM(VALORTOTAL),0) V FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
+  const somaItens = +(Number(soma.rows?.[0]?.V) || 0).toFixed(2);
+  // o canal manda o total FECHADO (itens - cupom/frete grátis + taxa): o que
+  // sobrar vira desconto (ou acréscimo, se o canal cobrou a mais) pra
+  // VALORTOTAL = itens - desconto + acréscimo + VALORENTREGA bater exato
+  const dif = +(total - (somaItens + taxa)).toFixed(2);
+  const desconto = dif < 0 ? -dif : 0, acrescimo = dif > 0 ? dif : 0;
+  const okTot = await pedGravarTotais(ped, { itens: somaItens, servico: 0, desconto, acrescimo, total,
+    pctDesconto: somaItens > 0 ? +(desconto / somaItens * 100).toFixed(2) : 0 });
+  if (!okTot) throw new Error('FB totais do pedido de entrega');
+  await qi(`UPDATE PEDIDOS SET PERCENTUALTAXASERVICO=0 WHERE CODIGO=${ped}`);
+  // CPF que o cliente deu no checkout já fica no pedido: a NFC-e sugere sozinha
+  let cpf = null;
+  try {
+    const pl = typeof p.payload === 'string' ? JSON.parse(p.payload) : (p.payload || {});
+    cpf = soDig(pl.clienteCpf || pl.customer?.documentNumber || '');
+  } catch { /* payload estranho: sem CPF */ }
+  if (cpf && !(cpf.length === 11 || cpf.length === 14)) cpf = null;
+  if (cpf) await fbIdentificarPedido(ped, { cpf }).catch((e) => console.error('[entrega] CPF no pedido:', e.message));
+  await sql`UPDATE ifood_pedido SET pedido_fb=${ped} WHERE id=${p.id}`;
+  console.log(`[entrega] ${rotulo} virou pedido ${ped} no Consumer (R$ ${total.toFixed(2)}, ${quem})`);
+  return ped;
+}
+/** No ACEITE: pedido de ENTREGA a receber na porta já nasce no Consumer, pra o
+ *  entregador só cobrar. Se falhar agora (produto sem código), o app tenta de
+ *  novo na hora de receber e mostra o motivo. */
+async function deliveryAoAceitar(orderId) {
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${orderId}`;
+  if (!p || p.pago_online || p.pedido_fb || p.tipo === 'TAKEOUT' || p.modo_entrega === 'IFOOD') return;
+  try { await deliveryMaterializar(p, 'aceite'); }
+  catch (e) { console.error('[entrega] ' + (p.display_id || orderId) + ' não virou pedido no Consumer agora: ' + e.message + ' — o entregador tenta de novo ao receber'); }
+}
+/** Recebido na porta (maquininha ou dinheiro): carimba e avisa o Concilia. */
+async function deliveryPagoNaPorta(ped, login) {
+  const [p] = await sql`SELECT id, origem, pago_entrega_em FROM ifood_pedido WHERE pedido_fb=${Number(ped)}`;
+  if (!p || p.pago_entrega_em) return;
+  await sql`UPDATE ifood_pedido SET pago_entrega_em=now(), entregador=COALESCE(entregador, ${login || null}) WHERE id=${p.id}`;
+  if (p.origem === 'site') await avisarNuvemSite(p.id, 'pago_entrega');
+}
+/** Fila do ENTREGADOR (app da maquininha): entregas aceitas ainda não concluídas. */
+async function apiEntregadorPedidos(login) {
+  const peds = await sql`SELECT p.* FROM ifood_pedido p
+    WHERE p.cancelado_em IS NULL AND p.concluido_em IS NULL AND p.confirmado_em IS NOT NULL
+      AND COALESCE(p.tipo,'DELIVERY') <> 'TAKEOUT' AND COALESCE(p.modo_entrega,'MERCHANT') <> 'IFOOD'
+      AND p.recebido_em > now() - interval '2 days'
+    ORDER BY (p.saiu_em IS NOT NULL), p.confirmado_em`;
+  const out = [];
+  for (const p of peds) {
+    const itens = await sql`SELECT nome, quantidade, valor_total, detalhes FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
+    const total = +Number(p.total || 0).toFixed(2);
+    let pago = 0;
+    if (p.pedido_fb && !p.pago_online) { try { pago = await fbPagoDoPedido(Number(p.pedido_fb)); } catch { /* FB fora: mostra 0 */ } }
+    out.push({
+      id: p.id, display_id: p.display_id, canal: p.origem === 'site' ? 'site' : 'ifood',
+      cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
+      total, taxa: +Number(p.taxa_entrega || 0).toFixed(2),
+      pago_online: !!p.pago_online, pedido_fb: p.pedido_fb ? Number(p.pedido_fb) : null,
+      pago: +pago.toFixed(2), saldo: p.pago_online ? 0 : +Math.max(0, total - pago).toFixed(2),
+      pago_entrega: !!p.pago_entrega_em,
+      saiu_em: p.saiu_em, chegou_em: p.chegou_em, entregador: p.entregador,
+      meu: !p.entregador || p.entregador === login,
+      agendado_para: p.agendado_para, confirmado_em: p.confirmado_em,
+      itens: itens.map((i) => ({ nome: i.nome, qtd: Number(i.quantidade) || 1,
+        valor: +Number(i.valor_total || 0).toFixed(2), detalhes: i.detalhes })),
+    });
+  }
+  return { ok: true, pedidos: out };
+}
+/** Ações do entregador. body: {acao: saiu|cheguei|conta|dinheiro|concluir, id, valor?, terminal?} */
+async function apiEntregadorAcao(body, garcom) {
+  const acao = String(body.acao || '');
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${String(body.id || '')}`;
+  if (!p) return { ok: false, erro: 'pedido não encontrado' };
+  if (p.cancelado_em) return { ok: false, erro: 'pedido cancelado' };
+  if (!p.confirmado_em) return { ok: false, erro: 'o caixa ainda não aceitou este pedido' };
+  const login = garcom.login;
+  if (acao === 'saiu') {
+    if (!p.saiu_em) {
+      await sql`UPDATE ifood_pedido SET saiu_em=now(), entregador=${login} WHERE id=${p.id}`;
+      // site: o Concilia avisa o cliente no WhatsApp; iFood: dispatch na API
+      if (!p.despachado_em) { const r = await ifoodComando(p.id, 'despachar'); if (!r.ok) return r; }
+    }
+    return { ok: true };
+  }
+  if (acao === 'cheguei') {
+    if (!p.chegou_em) {
+      await sql`UPDATE ifood_pedido SET chegou_em=now(), entregador=COALESCE(entregador, ${login}) WHERE id=${p.id}`;
+      if (p.origem === 'site') await avisarNuvemSite(p.id, 'chegou');
+    }
+    return { ok: true };
+  }
+  if (acao === 'conta') {
+    if (p.pago_online) return { ok: true, pago_online: true, ped: p.pedido_fb ? Number(p.pedido_fb) : null, total: +Number(p.total || 0).toFixed(2), pago: +Number(p.total || 0).toFixed(2), saldo: 0 };
+    let ped;
+    try { ped = await deliveryMaterializar(p, login); } catch (e) { return { ok: false, erro: e.message }; }
+    const total = (await pedTotais(ped))?.total || 0;
+    const pago = await fbPagoDoPedido(ped);
+    return { ok: true, ped, total: +total.toFixed(2), pago: +pago.toFixed(2), saldo: +Math.max(0, total - pago).toFixed(2) };
+  }
+  if (acao === 'dinheiro') {
+    if (p.pago_online) return { ok: false, erro: 'este pedido já foi pago online' };
+    let ped;
+    try { ped = await deliveryMaterializar(p, login); } catch (e) { return { ok: false, erro: e.message }; }
+    const valor = +Number(body.valor || 0).toFixed(2);
+    if (!(valor > 0)) return { ok: false, erro: 'valor inválido' };
+    // dinheiro cai no caixa DO ENTREGADOR (abre sozinho, igual à maquininha)
+    let caixaCodigo = null;
+    try { const cx = await fbCaixaMaquininha(login, body.terminal); if (cx.erro) return { ok: false, erro: cx.erro }; caixaCodigo = cx.codigo; }
+    catch (e) { return { ok: false, erro: 'caixa do entregador: ' + e.message }; }
+    if (!caixaCodigo) return { ok: false, erro: 'dinheiro exige um caixa aberto no Consumer pro seu login' };
+    const r = await apiContaPagar({ numero: 0, ped, forma: 'dinheiro', valor, modo: 'manual', origem: 'entregador',
+      caixa_codigo: caixaCodigo, observacao: `Entrega · ${login}` });
+    if (r.ok && r.quitada) {
+      try { const f = await apiCaixaFechar(0, ped); r.fechada = !!f.ok; } catch { r.fechada = false; }
+      await deliveryPagoNaPorta(ped, login).catch(() => {});
+    }
+    return r;
+  }
+  if (acao === 'concluir') {
+    const total = +Number(p.total || 0).toFixed(2);
+    if (!p.pago_online && !p.pago_entrega_em) {
+      let pago = 0;
+      if (p.pedido_fb) { try { pago = await fbPagoDoPedido(Number(p.pedido_fb)); } catch { /* FB fora */ } }
+      if (pago < total - 0.01) return { ok: false, erro: `falta receber R$ ${(total - pago).toFixed(2)} — receba antes de marcar como entregue` };
+    }
+    if (!p.concluido_em) {
+      await sql`UPDATE ifood_pedido SET concluido_em=now(), entregador=COALESCE(entregador, ${login}) WHERE id=${p.id}`;
+      if (p.origem === 'site') await avisarNuvemSite(p.id, 'concluido');
+    }
+    return { ok: true };
+  }
+  return { ok: false, erro: 'ação desconhecida' };
+}
+/** CAIXA: nota fiscal do pedido PRÉ-PAGO (site/app). Cria a sombra no Consumer,
+ *  registra o recebimento de canal (não mexe na gaveta), fecha e emite. */
+async function apiCaixaDeliveryNota(body, quem) {
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${String(body.id || '')}`;
+  if (!p) return { ok: false, erro: 'pedido não encontrado' };
+  if (p.cancelado_em) return { ok: false, erro: 'pedido cancelado' };
+  if (!p.confirmado_em) return { ok: false, erro: 'aceite o pedido antes de emitir a nota' };
+  if (!(await nfceAtiva())) return { ok: false, erro: 'NFC-e desligada na config fiscal do painel' };
+  if (!p.pago_online && !p.pago_entrega_em) {
+    return { ok: false, erro: 'Pedido a receber NA ENTREGA: a nota sai na maquininha do entregador, na hora do pagamento.' };
+  }
+  let ped;
+  try { ped = await deliveryMaterializar(p, quem.login); } catch (e) { return { ok: false, erro: e.message }; }
+  if (await pedAbertoDoNumero(ped, 0)) {
+    const total = (await pedTotais(ped))?.total || 0;
+    const pago = await fbPagoDoPedido(ped);
+    const falta = +(total - pago).toFixed(2);
+    if (falta > 0.01) {
+      const r = await apiContaPagar({ numero: 0, ped, forma: 'ifood', valor: falta, modo: 'manual', origem: 'canal',
+        observacao: `Pago no ${p.origem === 'site' ? 'site' : 'iFood'} · ${p.display_id || ''}` });
+      if (!r.ok) return { ok: false, erro: 'registrar pagamento de canal: ' + r.erro };
+    }
+    const f = await apiCaixaFechar(0, ped);
+    if (!f.ok) return { ok: false, erro: f.erro };
+  }
+  let doc = soDig(body.documento || '');
+  if (doc && !(doc.length === 11 || doc.length === 14)) return { ok: false, erro: 'CPF/CNPJ incompleto' };
+  if (!doc) {
+    const log = (await sql`SELECT dest_documento FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+    if (log && log.dest_documento) doc = soDig(log.dest_documento);
+  }
+  return nfceEmitirCore({ ped, numero: 0, documento: doc, destino: 'caixa', solicitante: quem.login });
 }
 
 // ---- LOJA ABERTA / PAUSADA no iFood (módulo Merchant) ----
@@ -4116,6 +4348,8 @@ async function apiLioPagarSemTrava(body, garcom) {
   // o pedido do jeito que o Consumer fecha e libera a mesa/comanda na hora.
   if (r.ok && r.quitada) {
     try { const f = await apiCaixaFechar(n, body.ped); r.fechada = !!f.ok; } catch { r.fechada = false; }
+    // entrega (número 0 + pedido explícito) recebida na porta
+    if (n === 0 && Number(body.ped) > 0) await deliveryPagoNaPorta(Number(body.ped), garcom.login).catch((e) => console.error('[entrega] pago na porta:', e.message));
   }
   return r;
 }
@@ -4497,12 +4731,14 @@ async function nfceDadosDoPedido(ped, numero) {
   return { itens, pagamentos, total: alvo };
 }
 /** Pergunta da tela: tem nota? tem CPF já informado? NFC-e está ligada? */
-async function apiNfceInfo(nRaw) {
+async function apiNfceInfo(nRaw, pedRaw = null) {
   const numero = Number(nRaw);
   const ativo = await nfceAtiva();
   if (!ativo) return { ok: true, ativo: false };
   let ped = null;
-  try { ped = await fbAcharPedidoNfce(numero); } catch { /* FB fora */ }
+  // entrega: número 0 serve pra várias — quem chama diz qual pedido
+  if (Number(pedRaw) > 0) ped = Number(pedRaw);
+  else try { ped = await fbAcharPedidoNfce(numero); } catch { /* FB fora */ }
   if (!ped) return { ok: true, ativo: true, sem_pedido: true };
   const jaTem = (await sql`SELECT chave, nfce_numero, serie, status, erro, dest_documento FROM nfce_log WHERE pedido_fb=${ped}`)[0];
   // CPF pedido na tentativa anterior tem prioridade sobre o do cadastro
@@ -5188,7 +5424,7 @@ async function garcomDaRequisicao(req, u) {
     // o CAIXA também vende ("abre mesa e lança como na maquininha"): quem tem
     // PedidosCaixa (5) no Consumer entra na venda mesmo sem a Comanda Mobile
     const p = await permsDoUsuario(v.login);
-    if (p.ok && p.pedidos) return { login: v.login, nome: p.nome };
+    if (p.ok && (p.pedidos || p.entregas)) return { login: v.login, nome: p.nome };
     return null;
   }
   catch { return { login: v.login, nome: null }; } // Firebird fora: não desloga quem já entrou
@@ -5256,11 +5492,15 @@ async function apiGarcomEntrar(body) {
       const p = await permsDoUsuario(login);
       // ⚠️ usuário NOSSO (usuario_local) não está no mapa do Consumer: vale a
       // permissão que o perfil dele carrega — 53 (comanda) ou 5 (pedido no caixa).
-      if (p.ok && (p.pedidos || p.comanda)) pode = { ok: true, nome: p.nome };
+      // …e o ENTREGADOR (4 = PedidosDelivery) entra pra tela de entregas
+      if (p.ok && (p.pedidos || p.comanda || p.entregas)) pode = { ok: true, nome: p.nome };
     }
   }
   catch (e) { return { ok: false, erro: e.message }; }
-  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile nem a Pedidos no Caixa. Fale com o gerente.' };
+  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile, a Pedidos no Caixa nem a Pedidos Delivery. Fale com o gerente.' };
+  // o app mostra o botão Entregas só pra quem pode (admin ou permissão 4)
+  const pfEnt = await permsDoUsuario(login).catch(() => null);
+  const entregas = !!(pfEnt && pfEnt.ok && (pfEnt.admin || pfEnt.entregas));
   const atual = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`)[0];
   if (!atual) {
     // primeira vez: cria o PIN (precisa confirmar digitando de novo)
@@ -5270,10 +5510,10 @@ async function apiGarcomEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${pode.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true, gerente: await ehGerente(login) };
+    return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true, gerente: await ehGerente(login), entregas };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: pode.nome, gerente: await ehGerente(login) };
+  return { ok: true, token: garcomGeraToken(login), nome: pode.nome, gerente: await ehGerente(login), entregas };
 }
 
 // ---- CAIXA: acesso e ajuste de conta (Bloco 1) ----
@@ -5302,6 +5542,7 @@ function perfilDeCodigos(login, nome, admin, codigos) {
     transferir: tem(PERM_TRANSFERIR),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
+    entregas: tem(PERM_ENTREGAS), // PedidosDelivery — sai pra entregar e recebe na porta
     comanda: tem(53), // AcessarComandaMobile — é o que deixa entrar na venda
     excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
 }
@@ -14524,6 +14765,17 @@ async function ifoodCxImprimir(id){
   var r=await jpost('/api/ifood/imprimir',{id:id});
   if(!r.ok)alert(r.erro||'não deu');
 }
+async function deliveryNotaCx(id){
+  var doc=prompt('Nota fiscal do pedido pré-pago.\\n\\nCPF/CNPJ na nota (só números — vazio = sem CPF):','');
+  if(doc===null)return;
+  doc=String(doc).replace(/\\D/g,'');
+  if(doc&&doc.length!==11&&doc.length!==14){alert('CPF/CNPJ incompleto — confira os dígitos');return}
+  var r=await jpost('/api/caixa/delivery-nota',{id:id,documento:doc||null});
+  if(r.ok)alert('NFC-e nº '+((r.nota||{}).numero||'?')+' autorizada'+(r.impresso?' e impressa':''));
+  else if(r.pendente)alert('Nota na fila: '+(r.erro||'SEFAZ sem resposta — sai sozinha'));
+  else alert(r.erro||'não deu');
+  carregar(MESA,PEDALVO);
+}
 async function ifoodCxCancelar(id){
   var d=await jget('/api/ifood/motivos?id='+encodeURIComponent(id));
   if(!d.ok||!d.motivos.length){alert('O iFood não devolveu motivos de cancelamento para este pedido'+(d.erro?': '+d.erro:'.'));return}
@@ -14670,7 +14922,9 @@ function pinta(el){
     }else{
       h+='<span class="mut" style="align-self:center">🛵 já saiu para entrega</span>';
     }
-    h+='<button class="seg" onclick="ifoodCxImprimir(\\''+f.id+'\\')">🧾 Imprimir nota</button>'+
+    h+='<button class="seg" onclick="ifoodCxImprimir(\\''+f.id+'\\')">🖨 Imprimir pedido</button>'+
+       // pré-pago: a NFC-e sai aqui; a receber na entrega: sai na maquininha do entregador
+       (f.pago_online?'<button class="seg" onclick="deliveryNotaCx(\\''+f.id+'\\')">🧾 Nota fiscal</button>':'')+
        '<button class="seg" style="color:#b91c1c" onclick="ifoodCxCancelar(\\''+f.id+'\\')">✕ Cancelar '+ondeVeio+'</button>'+
        '</div></div>';
   }
@@ -16351,6 +16605,11 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
         return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
       }
+      // nota fiscal do pedido de entrega PRÉ-PAGO (pago na entrega = sai na maquininha)
+      if (req.method === 'POST' && p === '/api/caixa/delivery-nota') {
+        try { return res.end(JSON.stringify(await apiCaixaDeliveryNota(await readBody(req), quem))); }
+        catch (e) { return res.end(JSON.stringify({ ok: false, erro: e.message })); }
+      }
       if (req.method === 'POST' && p === '/api/caixa/comprovante-foto') {
         return res.end(JSON.stringify(await apiComprovanteFoto(await readBody(req), quem)));
       }
@@ -16409,8 +16668,28 @@ const server = http.createServer(async (req, res) => {
       if (!quem) { const cx = await caixaDaRequisicao(req, u); if (cx) quem = { login: cx.login, nome: cx.nome }; }
       if (!quem) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       res.writeHead(200, { 'content-type': 'application/json' });
-      if (p === '/api/nfce/info') return res.end(JSON.stringify(await apiNfceInfo(u.searchParams.get('n') || 0)));
+      if (p === '/api/nfce/info') return res.end(JSON.stringify(await apiNfceInfo(u.searchParams.get('n') || 0, u.searchParams.get('ped'))));
       return res.end(JSON.stringify(await apiNfceEmitir(await readBody(req), quem)));
+    }
+    // ---- ENTREGADOR (app da maquininha): saí / cheguei / receber na porta ----
+    if (p.startsWith('/api/entregador/')) {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const pf = await permsDoUsuario(g.login).catch(() => null);
+      if (!(pf && pf.ok && (pf.admin || pf.entregas))) {
+        return res.end(JSON.stringify({ ok: false, erro: 'Seu login não tem "Pedidos Delivery" no Consumer — o gerente libera em Equipe da loja (Concilia).' }));
+      }
+      try {
+        if (p === '/api/entregador/pedidos') return res.end(JSON.stringify(await apiEntregadorPedidos(g.login)));
+        if (req.method === 'POST' && p === '/api/entregador/acao') {
+          const body = await readBody(req);
+          const r = await apiEntregadorAcao(body, g);
+          console.log('[entrega] ' + g.login + ' · ' + body.acao + ' · ' + (body.id || '') + ' → ' + (r.ok ? 'ok' : 'ERRO: ' + r.erro));
+          return res.end(JSON.stringify(r));
+        }
+      } catch (e) { return res.end(JSON.stringify({ ok: false, erro: e.message })); }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
     if (req.method === 'POST' && p === '/api/lio/pagar') {
