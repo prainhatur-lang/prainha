@@ -58,6 +58,10 @@ export const fornecedor = pgTable(
      *  Pode ser inferido do historico (categoria_conta da conta_pagar) ou
      *  marcado manualmente. */
     ativoCompras: boolean('ativo_compras').notNull().default(false),
+    /** Distribuidor que vende DE TUDO. Regra do dono: item sem histórico de
+     *  quem vende vai pros gerais — "quando não souber, manda pra todos".
+     *  Específico (Cássio=peixe, Galega=coco) só recebe a especialidade. */
+    geral: boolean('geral').notNull().default(false),
     /** Categoria livre pro modulo de compras (Bebidas, Alimentos, Limpeza,
      *  Laticinios, etc). Permite agrupar fornecedores na UI. Null = sem categoria. */
     categoriaCompras: varchar('categoria_compras', { length: 50 }),

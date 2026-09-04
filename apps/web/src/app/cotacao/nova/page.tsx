@@ -92,6 +92,9 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
       nome: schema.fornecedor.nome,
       categoria: schema.fornecedor.categoriaCompras,
       valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
+      // Distribuidor que vende de tudo: recebe cotação mesmo sem vínculo com
+      // o item. Regra do dono — "quando não souber quem vende, manda pra todos".
+      geral: schema.fornecedor.geral,
     })
     .from(schema.fornecedor)
     .where(

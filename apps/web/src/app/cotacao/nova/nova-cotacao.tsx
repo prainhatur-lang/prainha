@@ -16,6 +16,8 @@ interface Produto {
 }
 
 interface Fornecedor {
+  /** Vende de tudo — entra na cotação mesmo sem vínculo com os itens. */
+  geral?: boolean;
   id: string;
   nome: string;
   categoria: string;
@@ -170,6 +172,17 @@ export function NovaCotacaoForm(props: {
         return a.nome.localeCompare(b.nome);
       });
   }, [props.fornecedores, filtroForn, categoriaFornFiltro, supplyPorFornecedor, totalItensSelecionados]);
+
+  /** Regra do dono: item que ninguém sabe quem vende vai pros GERAIS. Sem
+   *  isso, produto sem vínculo era cotado com quem não trabalha com ele — foi
+   *  o que deixou limpeza sem preço 2 rodadas seguidas. */
+  function selecionarGerais() {
+    setFornecedoresSelecionados((prev) => {
+      const s = new Set(prev);
+      for (const f of props.fornecedores) if (f.geral) s.add(f.id);
+      return s;
+    });
+  }
 
   function selecionarRecomendados() {
     const ids = new Set<string>();
@@ -327,6 +340,14 @@ export function NovaCotacaoForm(props: {
                 </button>
               )}
             <span className="text-xs text-slate-500">
+              <button
+                type="button"
+                onClick={selecionarGerais}
+                className="mr-2 rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-800 hover:bg-sky-100"
+                title="Distribuidores que vendem de tudo — use quando não souber quem tem o item"
+              >
+                + os gerais
+              </button>
               {fornecedoresSelecionados.size}/{props.fornecedores.length} selecionados
             </span>
           </div>
@@ -398,6 +419,14 @@ export function NovaCotacaoForm(props: {
                         title={`Pedido mínimo: R$ ${minimo.toFixed(2).replace('.', ',')}`}
                       >
                         mín. R$ {minimo.toFixed(0)}
+                      </span>
+                    )}
+                    {f.geral && (
+                      <span
+                        className="rounded bg-indigo-100 px-1.5 py-0.5 text-[9px] font-medium text-indigo-900"
+                        title="Vende de tudo — bom pra item que você não sabe quem tem"
+                      >
+                        geral
                       </span>
                     )}
                     <span className="text-[10px] text-slate-400">{f.categoria}</span>
