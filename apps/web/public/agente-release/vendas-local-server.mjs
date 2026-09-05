@@ -4279,8 +4279,17 @@ async function apiContaConferir(pagamentoId) {
 // e devolve o MESMO resultado. Vale pra qualquer cliente, sem mexer no app.
 const lioPagarEmVoo = new Map();
 async function apiLioPagar(body, garcom) {
-  const chave = [Number(body.numero), String(body.nsu || '').trim(), +Number(body.valor || 0).toFixed(2)].join('|');
-  if (chave.includes('||') || !String(body.nsu || '').trim()) return apiLioPagarSemTrava(body, garcom); // sem NSU não dá pra chavear
+  // PIX no menu da LIO chega com nsu (cieloCode) VAZIO e o número em authCode
+  // (ver apiLioPagarSemTrava). Sem isto a trava em voo era pulada e o reenvio
+  // do app gravava o MESMO Pix duas vezes — mesa 8 em 05/09/2026, NSU 2798123
+  // lançado 2x com 6s de diferença.
+  let nsuChave = String(body.nsu || '').trim();
+  if (!nsuChave && String(body.forma || '').toLowerCase() === 'pix') {
+    const aut = String(body.autorizacao || '').replace(/\D/g, '').replace(/^0+/, '');
+    if (aut.length >= 6 && aut.length <= 10) nsuChave = aut;
+  }
+  const chave = [Number(body.numero), nsuChave, +Number(body.valor || 0).toFixed(2)].join('|');
+  if (!nsuChave) return apiLioPagarSemTrava(body, garcom); // sem NSU não dá pra chavear
   const emVoo = lioPagarEmVoo.get(chave);
   if (emVoo) {
     console.log(`[lio] pagamento repetido em voo (${chave}) — aguardando o primeiro`);
