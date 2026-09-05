@@ -3575,7 +3575,7 @@ async function apiVendaAbertas() {
   // Status da mesa, pra cor na tela do garçom:
   //   vermelho = conta pedida (fechando)   amarelo = tem coisa atrasada
   //   verde    = em andamento, tudo em dia
-  const rows = await sql`SELECT c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem, c.nome,
+  const rows = await sql`SELECT c.numero, c.codigo, c.valor_total, c.subtotal_pago, c.data_abertura, c.conta_pedida, c.origem, c.nome,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2))::int AS itens,
       (count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
         AND COALESCE(ci.produzido, m.pronto_em) IS NULL
@@ -3588,9 +3588,25 @@ async function apiVendaAbertas() {
     LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
     LEFT JOIN marca m ON m.item_codigo=ci.item_codigo
     LEFT JOIN praca_config pc ON pc.area_codigo=ci.area_codigo
-    GROUP BY c.numero, c.codigo, c.valor_total, c.data_abertura, c.conta_pedida, c.origem ORDER BY c.numero`;
+    GROUP BY c.numero, c.codigo, c.valor_total, c.subtotal_pago, c.data_abertura, c.conta_pedida, c.origem ORDER BY c.numero`;
   for (const r of rows) {
     r.status = r.conta_pedida ? 'fechando' : ((r.atrasados > 0 || r.parados > 0) ? 'atrasada' : 'andamento');
+  }
+  // ESTADO DO PAGAMENTO na grade (regra do dono, 05/09/2026): "pago" SÓ quando
+  // dinheiro CONFIRMADO cobre a conta; "parcial" diz quanto falta; Pix gerado no
+  // celular ou cobrança mandada pra maquininha é "em pagamento" até confirmar —
+  // nunca conta como pago. (subtotal_pago = soma dos PAGAMENTOS vivos, espelho.)
+  const pixPend = new Map((await sql`SELECT mesa, SUM(valor) v FROM pix_cobranca
+    WHERE pago_em IS NULL AND criado_em > now() - interval '10 minutes' GROUP BY mesa`).map((x) => [Number(x.mesa), Number(x.v) || 0]));
+  const cobPend = new Map((await sql`SELECT numero, SUM(valor) v FROM venda_pagamento
+    WHERE status='aguardando' AND criado_em > now() - interval '10 minutes' GROUP BY numero`).map((x) => [Number(x.numero), Number(x.v) || 0]));
+  for (const r of rows) {
+    const total = Number(r.valor_total) || 0, pago = Number(r.subtotal_pago) || 0;
+    r.pago = +pago.toFixed(2);
+    r.falta = +Math.max(0, total - pago).toFixed(2);
+    r.pendente = +((pixPend.get(Number(r.numero)) || 0) + (cobPend.get(Number(r.numero)) || 0)).toFixed(2);
+    r.pg = total > 0 && pago >= total - 0.009 ? 'pago' : (pago > 0.009 ? 'parcial' : null);
+    r.pg_pendente = r.pg !== 'pago' && r.pendente > 0;
   }
   // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
@@ -5812,7 +5828,12 @@ async function apiCaixaConta(n, pedRaw) {
     total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)),
     // lançamento a lançamento — é o que o caixa cancela quando o cartão foi
     // cancelado na maquininha ou entrou valor errado
-    pagamentos: await pagamentosDoPedido(ped).catch(() => []) };
+    pagamentos: await pagamentosDoPedido(ped).catch(() => []),
+    // Pix gerado no celular do cliente e ainda não confirmado: a tela mostra
+    // "em pagamento" — o caixa não lança na mão nem dá por pago
+    pix_pendentes: await sql`SELECT valor, criado_em FROM pix_cobranca WHERE mesa=${num} AND pago_em IS NULL
+        AND criado_em > now() - interval '10 minutes' ORDER BY criado_em DESC`
+      .then((r) => r.map((x) => ({ valor: Number(x.valor) || 0, criado_em: x.criado_em }))).catch(() => []) };
 }
 /** Recebimentos VIVOS de um pedido (os dois bancos), com quem registrou pela
  *  nossa tela/maquininha quando dá pra saber (log local). */
@@ -14607,6 +14628,8 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .mchip .mn{display:block;font-size:19px;font-weight:800;line-height:1.1}
 .mchip b{display:block;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mchip small{display:block;color:var(--mut);font-size:10.5px;margin-top:1px}
+.mchip small.pgok{color:#0a7d38;font-weight:800}.mchip small.pgpar{color:#b45309;font-weight:800}.mchip small.pgwait{color:#0b5c8a;font-weight:700}
+.ban{margin:8px 0 2px;padding:8px 10px;border-radius:10px;font-size:14px;font-weight:700}.ban.ok{background:#e7f7ec;color:#0a7d38}.ban.par{background:#fff4d6;color:#8a5a00}.ban.wait{background:#e6f2fa;color:#0b5c8a;font-weight:600}
 .mchip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
 .mchip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
 .mchip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
@@ -14760,6 +14783,14 @@ function rotuloDelivery(m){
   }
   return (ORIGEM_LBL[Number(m.origem)]||'Balcão')+(cod>0?' #'+cod:'');
 }
+/* estado do pagamento embaixo do valor: pago (confirmado) / parcial + falta /
+   em pagamento (Pix gerado ou cobrança na maquininha ainda sem confirmação) */
+function pgLinha(m){
+  var w=m.pg_pendente?'<small class="pgwait">⏳ em pagamento '+brl(m.pendente)+'</small>':'';
+  if(m.pg==='pago')return '<small class="pgok">✓ PAGO</small>';
+  if(m.pg==='parcial')return '<small class="pgpar">parcial · falta '+brl(m.falta)+'</small>'+w;
+  return w;
+}
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
   // olho de longe, nome e valor pequenos embaixo
@@ -14769,12 +14800,12 @@ function mchip(num,lbl,m){
     return '<button class="mchip st-'+(m.status||'andamento')+(Number(m.codigo)===Number(PEDALVO)?' sel':'')+'" onclick="carregar('+num+','+(m.codigo||0)+')">'+
       '<span class="mn" style="font-size:15px;line-height:1.5">🛵</span>'+
       '<b>'+esc(rotuloDelivery(m))+'</b>'+
-      '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small></button>';
+      '<small>'+brl(m.valor_total)+haQuanto(m.data_abertura)+'</small>'+pgLinha(m)+'</button>';
   }
   return '<button class="mchip st-'+(m.status||'andamento')+(Number(num)===Number(MESA)?' sel':'')+'" onclick="carregar('+num+')">'+
     '<span class="mn">'+(com?'C':'')+num+'</span>'+
     (m.nome?'<b>'+esc(m.nome)+'</b>':'')+
-    '<small>'+brl(m.valor_total)+'</small></button>';
+    '<small>'+brl(m.valor_total)+'</small>'+pgLinha(m)+'</button>';
 }
 async function listar(){
   // renova SÓ o miolo da lista: o campo "digite o número" pode estar em uso
@@ -15098,7 +15129,17 @@ function pinta(el){
         '<span><b>'+brl(g.valor)+'</b>'+((PODE.estorno||PODE.admin)?' <a class="sair" style="color:var(--red)" onclick="estornarCx('+g.codigo+')">✕ cancelar</a>':'')+'</span></div>';
     }).join('')+'</div>';
   }
-  h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
+  h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div>';
+  // ESTADO DO PAGAMENTO sem margem pra dúvida (regra do dono, 05/09/2026):
+  // pago só quando confirmado cobre a conta; parcial diz quanto falta; Pix
+  // gerado é "em pagamento" até a Cielo confirmar — nunca vale como pago.
+  if(c.total>0&&c.falta<=0.01)h+='<div class="ban ok">✓ PAGO — conta quitada. Pode fechar e liberar a mesa.</div>';
+  else if(c.pago>0)h+='<div class="ban par">⚠️ PAGAMENTO PARCIAL — entrou '+brl(c.pago)+', falta <b>'+brl(c.falta)+'</b></div>';
+  (c.pix_pendentes||[]).forEach(function(px){
+    var hh=px.criado_em?new Date(px.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+    h+='<div class="ban wait">⏳ EM PAGAMENTO — Pix de '+brl(px.valor)+(hh?' gerado às '+hh:'')+', aguardando a Cielo confirmar. Só vale quando aparecer em "Já pago".</div>';
+  });
+  h+='</div>';
   // MESA COM COMANDAS PENDURADAS: cada uma listada aqui, um toque abre a conta
   // dela (contas separadas — quem paga é cada comanda; o GERAL soma tudo)
   if(c.comandas_mesa&&c.comandas_mesa.length){
