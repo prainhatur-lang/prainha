@@ -349,6 +349,15 @@ async function initSchema() {
   // de qual ADQUIRENTE veio o recebimento da maquininha (cielo | rede) — o app
   // carimba no /api/lio/pagar; caixa/conciliação distinguem sem olhar bandeira.
   await addCol('venda_pagamento', 'adquirente text');
+  // ESTORNO NO CAIXA (05/09/2026): lançamento cancelado sai do resumo do dia e
+  // da conciliação; fica registrado quem/quando/por quê. Reabertura idem.
+  await addCol('venda_pagamento', 'estornado_em timestamptz');
+  await addCol('venda_pagamento', 'estornado_por text');
+  await addCol('venda_pagamento', 'estorno_motivo text');
+  await sql`CREATE TABLE IF NOT EXISTS pagamento_estorno (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
+    numero integer, pedido_fb integer, pagamento_fb bigint, forma text, valor numeric, nsu text, motivo text)`;
+  await sql`CREATE TABLE IF NOT EXISTS conta_reabertura (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
+    numero integer, pedido_fb integer, fechada_em timestamptz)`;
   // "servir tudo junto": escolha DO PEDIDO, não regra automática. Bebida
   // normalmente vem antes; só casa as praças quando alguém pediu pra casar.
   await addCol('venda_envio', 'junto boolean DEFAULT false');
@@ -5529,6 +5538,9 @@ const PERM_TRANSFERIR = 50; // Consumer: "Permitir transferir/copiar itens de um
 // 22 = excluir item do pedido, 28 = excluir o pedido inteiro (na 0003: 22 =
 // todo o time do caixa; 28 = só LILIAN — quem pode é decisão do Consumer)
 const PERM_EXCLUIR_ITEM = 22, PERM_EXCLUIR_PEDIDO = 28;
+// 29 = Reabrir Pedido (Histórico de Pedidos), 31 = Excluir recebimentos de
+// pedidos — as DUAS que o PDV exige pra estornar; o caixa usa o mesmo cadeado
+const PERM_REABRIR = 29, PERM_EXCLUIR_RECEB = 31;
 /** Monta o perfil a partir de um conjunto de códigos de permissão do Consumer.
  *  Uma função só pros dois cadastros (o do PDV e o nosso) — regra duplicada é
  *  regra que diverge. */
@@ -5544,7 +5556,8 @@ function perfilDeCodigos(login, nome, admin, codigos) {
     pedidos: tem(PERM_PEDIDO_CAIXA),
     entregas: tem(PERM_ENTREGAS), // PedidosDelivery — sai pra entregar e recebe na porta
     comanda: tem(53), // AcessarComandaMobile — é o que deixa entrar na venda
-    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
+    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO),
+    reabrir: tem(PERM_REABRIR), excluir_recebimento: tem(PERM_EXCLUIR_RECEB) };
 }
 /** Usuário criado por nós (não existe no Consumer). */
 async function permsLocal(l) {
@@ -5582,7 +5595,9 @@ async function permsDoUsuario(login) {
     transferir: tem(PERM_TRANSFERIR),
     divergente: tem(PERM_ABRIR_COMPLETO) || tem(PERM_DIVERGENTE),
     pedidos: tem(PERM_PEDIDO_CAIXA),
-    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO) };
+    entregas: tem(PERM_ENTREGAS), comanda: tem(53),
+    excluir_item: tem(PERM_EXCLUIR_ITEM), excluir_pedido: tem(PERM_EXCLUIR_PEDIDO),
+    reabrir: tem(PERM_REABRIR), excluir_recebimento: tem(PERM_EXCLUIR_RECEB) };
 }
 async function caixaDaRequisicao(req, u) {
   const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
@@ -5595,7 +5610,7 @@ async function apiCaixaSessao(req, u) {
   const p = await caixaDaRequisicao(req, u);
   return p ? { ok: true, login: p.login, nome: p.nome, pode_desconto: p.desconto, pode_fiado: p.fiado,
     admin: p.admin, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir,
-    pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido } : { ok: false };
+    pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, pode_reabrir: p.reabrir, pode_estorno: p.excluir_recebimento } : { ok: false };
 }
 async function apiCaixaEntrar(body) {
   const login = String(body.login || '').trim().toLowerCase();
@@ -5613,10 +5628,10 @@ async function apiCaixaEntrar(body) {
     const salt = randomBytes(16).toString('hex');
     await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, criado: true };
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, pode_reabrir: p.reabrir, pode_estorno: p.excluir_recebimento, criado: true };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, admin: p.admin, pode_desconto: p.desconto, pode_fiado: p.fiado, pode_abrir: p.abrir, pode_divergente: p.divergente, pode_mov: p.movimentar, pode_transf: p.transferir, pode_lancar: p.pedidos, pode_canc_item: p.excluir_item, pode_canc_pedido: p.excluir_pedido, pode_reabrir: p.reabrir, pode_estorno: p.excluir_recebimento };
 }
 // Conta do CAIXA: números REAIS do pedido (VALORTOTAL já reflete desconto e
 // acréscimo), não a estimativa do espelho. Itens vêm do espelho só pra mostrar.
@@ -5785,7 +5800,98 @@ async function apiCaixaConta(n, pedRaw) {
         espera_min: min, esperando, atrasado: esperando && min != null && min > (Number(i.limite) || 0) };
     }),
     subtotal: Number(p.I) || 0, servico: Number(p.S) || 0, desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0,
-    total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)) };
+    total, pago: +pago.toFixed(2), falta: Math.max(0, +(total - pago).toFixed(2)),
+    // lançamento a lançamento — é o que o caixa cancela quando o cartão foi
+    // cancelado na maquininha ou entrou valor errado
+    pagamentos: await pagamentosDoPedido(ped).catch(() => []) };
+}
+/** Recebimentos VIVOS de um pedido (os dois bancos), com quem registrou pela
+ *  nossa tela/maquininha quando dá pra saber (log local). */
+async function pagamentosDoPedido(ped) {
+  const NOME = { 1: 'Dinheiro', 3: 'Crédito', 4: 'Débito', 18: 'Pix Manual', 21: 'Pix Online', 14: 'iFood Online' };
+  let lista;
+  if (nativo()) {
+    lista = (await sql`SELECT codigo, forma_codigo f, valor, quando q, nsu, observacao obs FROM pagamento_local
+        WHERE pedido=${Number(ped)} AND cancelado_em IS NULL ORDER BY codigo`)
+      .map((r) => ({ codigo: Number(r.codigo), forma_codigo: Number(r.f), valor: Number(r.valor) || 0, quando: r.q, nsu: r.nsu || null, obs: r.obs || '' }));
+  } else {
+    const r = await qi(`SELECT g.CODIGO, g.CODIGOFORMAPAGAMENTO F, g.VALOR, g.DATAPAGAMENTO Q, g.NSUTRANSACAO NSU, TRIM(COALESCE(g.OBSERVACAO,'')) OBS
+      FROM PAGAMENTOS g WHERE g.CODIGOPEDIDO=${Number(ped)} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
+    if (!r.ok) throw new Error('FB pagamentos: ' + r.err);
+    lista = r.rows.map((x) => ({ codigo: Number(x.CODIGO), forma_codigo: Number(x.F), valor: Number(x.VALOR) || 0,
+      quando: x.Q || null, nsu: x.NSU != null ? String(x.NSU) : null, obs: T(x.OBS) || '' }));
+  }
+  const cods = lista.map((x) => x.codigo);
+  const locais = cods.length ? await sql`SELECT pagamento_fb, origem FROM venda_pagamento WHERE pagamento_fb = ANY(${cods}) AND status='ok'` : [];
+  const porFb = new Map(locais.map((l) => [Number(l.pagamento_fb), l]));
+  return lista.map((x) => ({ ...x, forma: NOME[x.forma_codigo] || ('forma ' + x.forma_codigo),
+    origem: porFb.get(x.codigo)?.origem || (x.obs ? x.obs.slice(0, 40) : 'Consumer') }));
+}
+/** CANCELAR UM LANÇAMENTO (perm 31 = Excluir recebimentos): cartão cancelado na
+ *  maquininha, valor errado. Marca como o PDV marca (DATADELETE), tira o nosso
+ *  registro do resumo do dia/conciliação e guarda o motivo. A conta tem que
+ *  estar ABERTA — fechada, primeiro "Reabrir". */
+async function apiCaixaEstornarPagamento(body, quem) {
+  if (!(quem && (quem.admin || quem.excluir_recebimento))) return { ok: false, erro: 'sem permissão (Excluir recebimentos de pedidos — nº 31 no Consumer)' };
+  const numero = Number(body.numero), pag = Number(body.pagamento);
+  if (!(pag > 0)) return { ok: false, erro: 'dados inválidos' };
+  const motivo = String(body.motivo || '').trim().slice(0, 120);
+  if (!motivo) return { ok: false, erro: 'diga o motivo (ex.: cancelado na maquininha, valor errado)' };
+  const ped = await pedidoAlvo(numero, body.ped);
+  if (!ped) return { ok: false, erro: 'a conta precisa estar aberta — se já fechou, use "Reabrir a última conta" primeiro' };
+  const g = (await pagamentosDoPedido(ped)).find((x) => x.codigo === pag);
+  if (!g) return { ok: false, erro: 'esse lançamento não está (mais) nesta conta' };
+  if (nativo()) {
+    await sql`UPDATE pagamento_local SET cancelado_em=now() WHERE codigo=${pag} AND pedido=${Number(ped)} AND cancelado_em IS NULL`;
+  } else {
+    const r = await qi(`UPDATE PAGAMENTOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pag} AND CODIGOPEDIDO=${Number(ped)} AND DATADELETE IS NULL`);
+    if (!r.ok) return { ok: false, erro: 'FB estorno: ' + r.err };
+  }
+  await sql`UPDATE venda_pagamento SET status='estornado', estornado_em=now(), estornado_por=${quem.login}, estorno_motivo=${motivo}
+    WHERE pagamento_fb=${pag} AND status='ok'`;
+  await sql`INSERT INTO pagamento_estorno (login, numero, pedido_fb, pagamento_fb, forma, valor, nsu, motivo)
+    VALUES (${quem.login}, ${numero || 0}, ${Number(ped)}, ${pag}, ${g.forma}, ${g.valor}, ${g.nsu}, ${motivo})`;
+  espelho().catch(() => {});
+  const total = (await pedTotais(ped))?.total || 0;
+  const pago = await fbPagoDoPedido(ped);
+  console.log(`[caixa] ${quem.login} cancelou lançamento ${pag} (${g.forma} R$ ${g.valor.toFixed(2)}${g.nsu ? ' NSU ' + g.nsu : ''}) da conta ${numero}/${ped}: ${motivo}`);
+  return { ok: true, pago: +pago.toFixed(2), falta: +Math.max(0, total - pago).toFixed(2) };
+}
+/** REABRIR a última conta fechada do número (perm 29 = Reabrir Pedido): volta
+ *  pra grade com itens e pagamentos como estavam. Só nas últimas 48h e só se
+ *  não houver conta aberta no número. */
+async function apiCaixaReabrir(body, quem) {
+  if (!(quem && (quem.admin || quem.reabrir))) return { ok: false, erro: 'sem permissão (Reabrir Pedido — nº 29 no Consumer)' };
+  const numero = Number(body.numero);
+  if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
+  if (await fbAcharPedido(numero)) return { ok: false, erro: 'já existe conta ABERTA nesse número — receba nela ou transfira antes de reabrir a antiga' };
+  let ped = null, fechadaEm = null;
+  if (nativo()) {
+    const [c] = await sql`SELECT codigo, fechada_em FROM comanda WHERE numero=${numero} AND fechada_em IS NOT NULL AND cancelada_em IS NULL
+      AND fechada_em > now() - interval '48 hours' ORDER BY codigo DESC LIMIT 1`;
+    if (c) { ped = Number(c.codigo); fechadaEm = c.fechada_em; }
+  } else {
+    const r = await q(`SELECT FIRST 1 CODIGO, DATAFECHAMENTO FROM PEDIDOS WHERE NUMERO=${numero} AND DATADELETE IS NULL
+      AND DATAFECHAMENTO > DATEADD(-48 HOUR TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+    if (!r.ok) return { ok: false, erro: 'FB: ' + r.err };
+    if (r.rows.length) { ped = Number(r.rows[0].CODIGO); fechadaEm = r.rows[0].DATAFECHAMENTO; }
+  }
+  if (!ped) return { ok: false, erro: 'não achei conta fechada nas últimas 48h nesse número' };
+  if (nativo()) {
+    await sql`UPDATE comanda SET fechada_em=NULL, conta_pedida=false WHERE codigo=${ped}`;
+  } else {
+    const r = await qi(`UPDATE PEDIDOS SET DATAFECHAMENTO=NULL, CONTASOLICITADA='N' WHERE CODIGO=${ped} AND DATAFECHAMENTO IS NOT NULL`);
+    if (!r.ok) return { ok: false, erro: 'FB reabrir: ' + r.err };
+  }
+  // o que fechou junto com a conta volta junto: identificação e comanda pendurada na mesa
+  await sql`UPDATE identificacao SET fechada_em=NULL WHERE numero=${numero} AND fechada_em > now() - interval '48 hours'`;
+  await sql`UPDATE mesa_comanda SET fechada_em=NULL WHERE comanda=${numero} AND fechada_em > now() - interval '48 hours'`;
+  await sql`INSERT INTO conta_reabertura (login, numero, pedido_fb, fechada_em) VALUES (${quem.login}, ${numero}, ${ped}, ${fechadaEm})`;
+  const nota = (await sql`SELECT nfce_numero, status FROM nfce_log WHERE pedido_fb=${ped}`)[0];
+  console.log(`[caixa] ${quem.login} reabriu a conta ${numero} (pedido ${ped}, fechada em ${fechadaEm})`);
+  await espelho().catch(() => {}); // a conta volta pra grade AGORA, com os itens
+  return { ok: true, pedido_fb: ped,
+    aviso: nota && nota.status === 'AUTORIZADA' ? `Já saiu NFC-e nº ${nota.nfce_numero} desta conta — receber de novo não muda a nota.` : null };
 }
 // Desconto/acréscimo SEGURO: ajusta o VALORTOTAL pelo delta exato e registra em
 // TOTALDESCONTO/TOTALACRESCIMO. Fica consistente com o total do Consumer sem
@@ -14521,7 +14627,7 @@ input.kalvo{border-color:var(--gold2)}
 <div class="wrap" id="app"></div>
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
-var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
+var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false,reabrir:false,estorno:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
 var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0,CANCEL_ON=false;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
@@ -14689,7 +14795,7 @@ function pintaMain(){
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
-  if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido};
+  if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido,reabrir:!!s.pode_reabrir,estorno:!!s.pode_estorno};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
     TELA='home';setHdr();render();listar();cxEstado()}
   else {TOK=null;TELA='login';render()}
@@ -14718,7 +14824,7 @@ async function entrar(){
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
-  NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido};
+  NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido,reabrir:!!r.pode_reabrir,estorno:!!r.pode_estorno};
   setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
 }
 var HOME_Y=0;
@@ -14765,6 +14871,21 @@ async function ifoodCxImprimir(id){
   var r=await jpost('/api/ifood/imprimir',{id:id});
   if(!r.ok)alert(r.erro||'não deu');
 }
+async function reabrirCx(n){
+  if(!confirm('Reabrir a última conta fechada da '+(n>=${COMANDA_DE}?'comanda':'mesa')+' '+n+'?\\n\\nEla volta pra grade com os itens e os pagamentos que tinha. Pra receber de novo, cancele o lançamento antigo na conta.'))return;
+  var r=await jpost('/api/caixa/reabrir',{numero:n});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  if(r.aviso)alert(r.aviso);
+  carregar(n);
+}
+async function estornarCx(cod){
+  var m=prompt('Cancelar este lançamento?\\n\\nMotivo (ex.: cancelado na maquininha, valor errado):','');
+  if(m===null)return; m=String(m).trim();
+  if(!m){alert('Diga o motivo');return}
+  var r=await jpost('/api/caixa/estornar',alvo({numero:MESA,pagamento:cod,motivo:m}));
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
+}
 async function deliveryNotaCx(id){
   var doc=prompt('Nota fiscal do pedido pré-pago.\\n\\nCPF/CNPJ na nota (só números — vazio = sem CPF):','');
   if(doc===null)return;
@@ -14804,6 +14925,8 @@ async function carregar(n,ped){
   var c=await jget('/api/caixa/conta?n='+num+(PEDALVO?'&ped='+PEDALVO:''));
   if(!c.ok){var el=document.getElementById('main');if(el)el.innerHTML='<div class="card"><div class="err">'+esc(c.erro||'não achei a conta')+'</div>'+
     (PODE.lancar&&num>0?'<button class="big o" onclick="lancarNum('+num+')">🍽 Abrir lançando produtos</button>':'')+
+    // fechou por engano / cartão cancelado depois de fechar: volta a conta (perm 29)
+    ((PODE.reabrir||PODE.admin)&&num>0?'<button class="big" style="background:#7c3aed" onclick="reabrirCx('+num+')">↩ Reabrir a última conta fechada (48h)</button>':'')+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="nfceOferecer('+num+',function(){voltarMesas()})">🧾 NFC-e do último pedido fechado (48h)</button>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
   CONTA=c; // já vem com comandas_mesa/geral do servidor (atômico — sem piscar)
@@ -14957,6 +15080,15 @@ function pinta(el){
   if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
+  // LANÇAMENTO A LANÇAMENTO, com o ✕ pra quem pode excluir recebimento (31 no
+  // Consumer): cartão cancelado na maquininha, valor errado — estorna aqui mesmo
+  if(c.pagamentos&&c.pagamentos.length){
+    h+='<div style="margin:0 0 6px 8px;font-size:13px">'+c.pagamentos.map(function(g){
+      var hh=g.quando?new Date(g.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+      return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0"><span class="mut">'+esc(g.forma)+(hh?' · '+hh:'')+(g.nsu?' · NSU '+esc(g.nsu):'')+(g.origem?' · '+esc(g.origem):'')+'</span>'+
+        '<span><b>'+brl(g.valor)+'</b>'+((PODE.estorno||PODE.admin)?' <a class="sair" style="color:var(--red)" onclick="estornarCx('+g.codigo+')">✕ cancelar</a>':'')+'</span></div>';
+    }).join('')+'</div>';
+  }
   h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div></div>';
   // MESA COM COMANDAS PENDURADAS: cada uma listada aqui, um toque abre a conta
   // dela (contas separadas — quem paga é cada comanda; o GERAL soma tudo)
@@ -16605,6 +16737,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
         return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
       }
+      if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
       // nota fiscal do pedido de entrega PRÉ-PAGO (pago na entrega = sai na maquininha)
       if (req.method === 'POST' && p === '/api/caixa/delivery-nota') {
         try { return res.end(JSON.stringify(await apiCaixaDeliveryNota(await readBody(req), quem))); }
