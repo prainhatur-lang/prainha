@@ -871,6 +871,28 @@ function comTimeout(p, ms, msg) { return Promise.race([p, sleep(ms).then(() => {
    Cadência: cobrança nova (até 10min) de 20 em 20s, porque é quando o cliente
    está olhando; depois disso de 2 em 2 minutos, até 2h. Passou disso, o cliente
    não pagou mesmo — e o Pix expira. */
+// ---- ESTORNO FEITO NO PDV reflete no nosso log ----
+// Recebimento excluído no Consumer (pelo PDV, pelo caixa novo ou direto no
+// Firebird) tem que sumir do resumo do dia da maquininha e da conciliação —
+// senão o fechamento do operador acusa diferença que não existe (mesas 3 e 8
+// em 05/09/2026). Roda a cada 10 min, olha 7 dias.
+async function sincronizarEstornosPdv() {
+  if (nativo()) return;
+  const vivos = await sql`SELECT pagamento_fb FROM venda_pagamento WHERE status='ok' AND pagamento_fb IS NOT NULL
+    AND criado_em > now() - interval '7 days'`;
+  const cods = [...new Set(vivos.map((v) => Number(v.pagamento_fb)).filter(Boolean))];
+  if (!cods.length) return;
+  const apagados = [];
+  for (let i = 0; i < cods.length; i += 300) {
+    const r = await qi(`SELECT CODIGO FROM PAGAMENTOS WHERE DATADELETE IS NOT NULL AND CODIGO IN (${cods.slice(i, i + 300).join(',')})`);
+    if (!r.ok) throw new Error(r.err);
+    for (const x of r.rows) apagados.push(Number(x.CODIGO));
+  }
+  if (!apagados.length) return;
+  await sql`UPDATE venda_pagamento SET status='estornado', estornado_em=now(), estornado_por='pdv', estorno_motivo='excluído no Consumer'
+    WHERE status='ok' AND pagamento_fb = ANY(${apagados})`;
+  console.log(`[estorno-pdv] ${apagados.length} lançamento(s) excluído(s) no Consumer marcados como estornados no log local`);
+}
 async function loopPixPendente() {
   try {
     const pend = await sql`SELECT txid FROM pix_cobranca
@@ -4167,7 +4189,62 @@ const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
 
 /** Registra um pagamento. body: {numero, forma, valor, modo, nsu?, autorizacao?, bandeira?,
  *  origem?, observacao?, pix_online?} — os três últimos vêm do app da maquininha (/api/lio/pagar). */
+// ⚠️ UMA TRANSAÇÃO = UM LANÇAMENTO (regra do dono, 05/09/2026: "não pode
+// haver 2 pagamentos"). Maquininha e recebimento manual passam AQUI. Com NSU,
+// os registros ficam SERIALIZADOS por (NSU, valor) e o segundo é recusado se
+// o primeiro já estiver vivo em QUALQUER pedido dos últimos 7 dias. Foi o que
+// faltou quando a rede lenta fez o app reenviar: mesa 8 recebeu o Pix do grupo
+// anterior na conta do grupo novo, e mesas 33/24/23/6 fecharam com cartão
+// contado em dobro. A recusa volta `ja_registrado` — o app limpa a fila dele.
+const pagarEmVoo = new Map();
+async function nsuJaLancado(nsu, valor) {
+  const n = Number(nsu);
+  if (!(n > 0)) return null;
+  const v = +Number(valor).toFixed(2);
+  if (nativo()) {
+    const [r] = await sql`SELECT codigo, pedido FROM pagamento_local WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\D','','g'),'0')=${String(n)}
+      AND valor=${v} AND cancelado_em IS NULL AND quando > now() - interval '7 days' ORDER BY codigo DESC LIMIT 1`;
+    if (r) {
+      const [c] = await sql`SELECT numero FROM comanda WHERE codigo=${Number(r.pedido)}`;
+      return { pagamento_fb: Number(r.codigo), onde: c ? `na mesa/comanda ${c.numero}` : `na conta ${r.pedido}` };
+    }
+  } else {
+    const r = await qi(`SELECT FIRST 1 g.CODIGO, p.NUMERO, CAST(g.DATAPAGAMENTO AS VARCHAR(19)) Q
+      FROM PAGAMENTOS g JOIN PEDIDOS p ON p.CODIGO=g.CODIGOPEDIDO
+      WHERE g.NSUTRANSACAO=${n} AND g.VALOR=${fbNum(v)} AND g.DATADELETE IS NULL
+        AND g.DATAPAGAMENTO > DATEADD(-7 DAY TO CURRENT_TIMESTAMP) ORDER BY g.CODIGO DESC`);
+    if (!r.ok) throw new Error('FB conferir NSU: ' + r.err);
+    if (r.rows.length) {
+      const x = r.rows[0];
+      return { pagamento_fb: Number(x.CODIGO), onde: `na mesa/comanda ${x.NUMERO} (${String(x.Q).slice(11, 16)})` };
+    }
+  }
+  // o nosso log também: cobre a janela em que o Consumer ainda não gravou
+  const [l] = await sql`SELECT pagamento_fb, numero FROM venda_pagamento
+    WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\D','','g'),'0')=${String(n)} AND valor=${v} AND status='ok'
+      AND criado_em > now() - interval '7 days' ORDER BY id DESC LIMIT 1`;
+  if (l) return { pagamento_fb: l.pagamento_fb ? Number(l.pagamento_fb) : null, onde: `na mesa/comanda ${l.numero} (registro local)` };
+  return null;
+}
 async function apiContaPagar(body) {
+  const nsuTxt = String(body.nsu || '').replace(/\D/g, '').replace(/^0+/, '');
+  const valor = +Number(body.valor || 0).toFixed(2);
+  if (!nsuTxt) return apiContaPagarSemTrava(body); // dinheiro/canal: sem NSU não há chave
+  const k = nsuTxt + '|' + valor.toFixed(2);
+  while (pagarEmVoo.has(k)) await pagarEmVoo.get(k).catch(() => {});
+  const p = (async () => {
+    const ja = await nsuJaLancado(nsuTxt, valor).catch((e) => { console.error('[pagar] conferir NSU:', e.message); return null; });
+    if (ja) {
+      console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} JÁ LANÇADO ${ja.onde} — recusado (origem ${body.origem || body.modo || '?'}, número ${body.numero})`);
+      return { ok: false, ja_registrado: true, pagamento_fb: ja.pagamento_fb,
+        erro: `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
+    }
+    return apiContaPagarSemTrava(body);
+  })();
+  pagarEmVoo.set(k, p);
+  try { return await p; } finally { pagarEmVoo.delete(k); }
+}
+async function apiContaPagarSemTrava(body) {
   const n = Number(body.numero);
   const valor = +Number(body.valor || 0).toFixed(2);
   const forma = String(body.forma || '').toLowerCase(); // dinheiro|credito|debito|pix
@@ -8020,6 +8097,12 @@ async function apiCaixaReceberManual(body, quem) {
   // e o caixa fica aberto pra sempre (15 de 19 caixas parados em 31/08). O
   // número está impresso no comprovante que a foto já obriga a anexar, e o OCR
   // costuma preencher sozinho.
+  // TOQUE DUPLO no "Registrar": o mesmo lançamento (conta, forma, valor) em
+  // menos de 20s é repetição, não um segundo pagamento (mesa 130 em 05/09
+  // levou R$ 132 duas vezes com 3s de diferença)
+  const rep = (await sql`SELECT id FROM venda_pagamento WHERE numero=${numero} AND valor=${valor} AND forma_codigo=${f.codigo}
+    AND status IN ('ok','iniciado') AND criado_em > now() - interval '20 seconds' LIMIT 1`)[0];
+  if (rep) return { ok: false, erro: `Lançamento igual (${f.nome} R$ ${valor.toFixed(2)}) registrado há poucos segundos nesta conta. Se for mesmo OUTRO pagamento, registre de novo daqui a 20 s.` };
   const nsuLimpo = String(body.nsu ?? '').replace(/\D/g, '');
   if (f.nsu && !nsuLimpo) {
     return { ok: false, precisa_nsu: true,
@@ -17308,6 +17391,8 @@ async function main() {
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
+  setTimeout(() => sincronizarEstornosPdv().catch((e) => console.error('[estorno-pdv]', e.message)), 90 * 1000);
+  setInterval(() => sincronizarEstornosPdv().catch((e) => console.error('[estorno-pdv]', e.message)), 10 * 60 * 1000);
   setInterval(() => loopNfceFila().catch(() => {}), 2 * 60 * 1000);
   // 2ª via de DANFE pedida no painel: puxa e imprime na térmica do caixa
   setInterval(() => loopNfceImpressao().catch(() => {}), 20 * 1000);
