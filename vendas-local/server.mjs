@@ -4202,7 +4202,7 @@ async function nsuJaLancado(nsu, valor) {
   if (!(n > 0)) return null;
   const v = +Number(valor).toFixed(2);
   if (nativo()) {
-    const [r] = await sql`SELECT codigo, pedido FROM pagamento_local WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\D','','g'),'0')=${String(n)}
+    const [r] = await sql`SELECT codigo, pedido FROM pagamento_local WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)}
       AND valor=${v} AND cancelado_em IS NULL AND quando > now() - interval '7 days' ORDER BY codigo DESC LIMIT 1`;
     if (r) {
       const [c] = await sql`SELECT numero FROM comanda WHERE codigo=${Number(r.pedido)}`;
@@ -4221,7 +4221,7 @@ async function nsuJaLancado(nsu, valor) {
   }
   // o nosso log também: cobre a janela em que o Consumer ainda não gravou
   const [l] = await sql`SELECT pagamento_fb, numero FROM venda_pagamento
-    WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\D','','g'),'0')=${String(n)} AND valor=${v} AND status='ok'
+    WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)} AND valor=${v} AND status='ok'
       AND criado_em > now() - interval '7 days' ORDER BY id DESC LIMIT 1`;
   if (l) return { pagamento_fb: l.pagamento_fb ? Number(l.pagamento_fb) : null, onde: `na mesa/comanda ${l.numero} (registro local)` };
   return null;
