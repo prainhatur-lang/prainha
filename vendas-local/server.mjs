@@ -8256,19 +8256,31 @@ async function apiCaixaServico(body, quem) {
   const n = Number(body.numero);
   const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
-  const p = (await qi(`SELECT TOTALSERVICO SVC, VALORTOTALITENS ITENS, VALORTOTAL TOT FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
-  const svcAtual = Number(p.SVC) || 0;
+  // pedTotais (e não SQL cru no PEDIDOS) porque no modo próprio, sem Consumer,
+  // essa leitura voltava vazia — a conta parecia sempre "já está sem os 10%".
+  const p = (await pedTotais(ped)) || {};
+  const svcAtual = Number(p.servico) || 0;
   const tirar = body.tirar !== false;
   if (tirar) {
     if (!(svcAtual > 0.009)) return { ok: false, erro: 'essa conta já está sem os 10%' };
     const pago = await fbPagoDoPedido(ped);
-    const novoTot = +((Number(p.TOT) || 0) - svcAtual).toFixed(2);
-    if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago` };
+    const novoTot = +((Number(p.total) || 0) - svcAtual).toFixed(2);
+    // JÁ PAGOU MAIS DO QUE VAI FICAR? Isso acontece de verdade: o cliente paga
+    // (Pix/cartão) com os 10% dentro e só DEPOIS se recusa a pagar a taxa.
+    // Antes a tela travava aqui e o caixa não tinha saída. Agora tira do mesmo
+    // jeito — o que sobrou vira TROCO a devolver — mas só com o caixa
+    // confirmando o valor na tela, pra ninguém dar de graça sem perceber.
+    const troco = +(pago - novoTot).toFixed(2);
+    if (troco > 0.009 && body.confirma_troco !== true) {
+      return { ok: false, precisa_troco: true, troco, pago, novo_total: novoTot,
+        erro: `já entraram R$ ${pago.toFixed(2)} e a conta cai pra R$ ${novoTot.toFixed(2)} — sobram R$ ${troco.toFixed(2)} pra devolver ao cliente` };
+    }
     await fbRemoverServico(ped);
     await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
       VALUES (${quem.login}, ${n}, ${ped}, ${'tirou'}, ${svcAtual}, ${String(body.motivo || '').slice(0, 200) || null})`;
     espelho().catch(() => {});
-    return { ok: true, acao: 'tirou', valor: svcAtual, novo_total: novoTot };
+    return { ok: true, acao: 'tirou', valor: svcAtual, novo_total: novoTot,
+      troco: troco > 0.009 ? troco : 0 };
   }
   if (svcAtual > 0.009) return { ok: false, erro: 'essa conta já está com os 10%' };
   const svc = await fbAplicarServico(ped);
@@ -15717,8 +15729,19 @@ async function tiraServico(tirar){
   var t=(tirar===1||tirar===true);
   if(t&&!confirm('Tirar os 10% de serviço desta conta? O cliente não vai pagar a taxa.'))return;
   var r=await jpost('/api/caixa/servico',alvo({numero:MESA,tirar:t}));
-  if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não deu';return}
-  FLASH=t?('✓ 10% retirados ('+brl(r.valor)+') da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA)
+  /* JÁ PAGOU COM OS 10% DENTRO: o servidor devolve a conta do troco pra o
+     caixa confirmar o valor que sai da gaveta antes de tirar a taxa. */
+  if(!r.ok&&r.precisa_troco){
+    if(!confirm('Já entraram '+brl(r.pago)+' nesta conta e sem os 10% ela fica em '+brl(r.novo_total)+'.\\n\\n'+
+                'DEVOLVER '+brl(r.troco)+' ao cliente e tirar os 10%?'))return;
+    r=await jpost('/api/caixa/servico',alvo({numero:MESA,tirar:t,confirma_troco:true}));
+  }
+  /* o erro morava num rodapé fora da tela — quem clicava aqui em cima achava
+     que o botão não fazia nada (relato do caixa, 06/09). Agora fala na cara. */
+  if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não deu';
+    alert(r.erro||'não deu pra mexer nos 10%');return}
+  FLASH=t?('✓ 10% retirados ('+brl(r.valor)+') da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+
+           (r.troco>0?' — DEVOLVER '+brl(r.troco)+' ao cliente':''))
          :('✓ 10% de volta na conta');
   await carregar(MESA);
 }
