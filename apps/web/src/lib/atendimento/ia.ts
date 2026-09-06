@@ -404,11 +404,11 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'consultar_mare',
       description:
-        'Diz se uma data tem MARÉ GRANDE (sizígia). Use quando o cliente perguntar sobre a maré, banho de rio ou o visual da água numa data — o parque AquaArena está FECHADO até o verão, então não use mais pra isso.',
+        'TÁBUA DE MARÉ oficial de Aracaju por data: devolve os HORÁRIOS de maré alta (rio cheio) e maré baixa do dia, mais o aviso de maré grande (sizígia). Chame SEMPRE que perguntarem "que horas o rio enche/está cheio/vazio?", sobre banho de rio, visual da água ou maré numa data — nunca responda maré de cabeça.',
       parameters: {
         type: 'object',
         properties: {
-          data: { type: 'string', description: 'YYYY-MM-DD da visita ao parque' },
+          data: { type: 'string', description: 'YYYY-MM-DD do dia perguntado (hoje se o cliente não disser)' },
         },
         required: ['data'],
       },
