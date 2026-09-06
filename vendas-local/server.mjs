@@ -1030,7 +1030,11 @@ async function loopAutoUpdate() {
 }
 
 async function loopEspelho() {
-  try { const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo'); console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`); }
+  try {
+    if (nativo()) return; // comanda/comanda_item são o original aqui — nada a espelhar
+    const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo');
+    if (r) console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`);
+  }
   catch (e) { ultimoStatus = { ...ultimoStatus, ok: false }; await sql`UPDATE sync_estado SET ultimo_erro=${String(e.message).slice(0, 200)} WHERE id=1`.catch(() => {}); console.error('[espelho] ERRO:', e.message); }
   finally { setTimeout(loopEspelho, INTERVALO_MS); }
 }
@@ -5497,7 +5501,20 @@ function garcomVerificaToken(token) {
 }
 // Cache de 60s da lista de quem pode: evita bater no Firebird a cada ação.
 let _permCache = { em: 0, mapa: null };
+/** Usuários NOSSOS (usuario_local) que podem entrar na venda: admin ou
+ *  permissão 53. É o cadastro inteiro no modo próprio e a rede de segurança
+ *  quando o Consumer está fora — o login não pode morrer junto com o Firebird. */
+async function garcomPermitidosLocal() {
+  const mapa = new Map();
+  for (const u of await sql`SELECT login, nome, admin, perms FROM usuario_local WHERE ativo`) {
+    const perms = (u.perms || []).map(Number);
+    if (u.admin || perms.includes(PERM_COMANDA_MOBILE)) mapa.set(String(u.login).toLowerCase(), u.nome || u.login);
+  }
+  return mapa;
+}
+let _fbUsuariosErro = null; // último erro do Consumer ao listar usuários (pra mensagem do login)
 async function garcomPermitidos() {
+  if (nativo()) return garcomPermitidosLocal();
   if (_permCache.mapa && Date.now() - _permCache.em < 60000) return _permCache.mapa;
   // Pode entrar: quem tem AcessarComandaMobile OU quem é ADMINISTRADOR — no
   // Consumer o Administrador tem acesso a tudo, mesmo sem a permissão listada.
@@ -5507,7 +5524,13 @@ async function garcomPermitidos() {
       UPPER(TRIM(COALESCE(u.TIPO,'')))='ADMINISTRADOR'
       OR EXISTS (SELECT 1 FROM ACESSO a WHERE a.USUARIO=u.CODIGO AND a.PERMISSAO=${PERM_COMANDA_MOBILE})
     )`);
-  if (!r.ok) throw new Error('cadastro de usuários indisponível: ' + r.err);
+  if (!r.ok) {
+    // Consumer fora: quem é nosso entra; quem é do Consumer recebe o motivo
+    _fbUsuariosErro = r.err;
+    console.error('[login] usuários do Consumer indisponíveis (' + r.err + ') — só os cadastros locais entram');
+    return garcomPermitidosLocal();
+  }
+  _fbUsuariosErro = null;
   const mapa = new Map();
   for (const x of r.rows) { const l = T(x.LOGIN).toLowerCase(); if (l) mapa.set(l, T(x.NOME) || T(x.LOGIN)); }
   _permCache = { em: Date.now(), mapa };
@@ -5608,7 +5631,8 @@ async function apiGarcomEntrar(body) {
     }
   }
   catch (e) { return { ok: false, erro: e.message }; }
-  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile, a Pedidos no Caixa nem a Pedidos Delivery. Fale com o gerente.' };
+  if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile, a Pedidos no Caixa nem a Pedidos Delivery. Fale com o gerente.'
+    + (_fbUsuariosErro ? ' (Consumer sem resposta agora: ' + _fbUsuariosErro + ')' : '') };
   // o app mostra o botão Entregas só pra quem pode (admin ou permissão 4)
   const pfEnt = await permsDoUsuario(login).catch(() => null);
   const entregas = !!(pfEnt && pfEnt.ok && (pfEnt.admin || pfEnt.entregas));
@@ -5670,6 +5694,7 @@ async function permsLocal(l) {
 async function permsDoUsuario(login) {
   const l = String(login || '').trim().toLowerCase();
   if (!l) return { ok: false };
+  if (nativo()) return (await permsLocal(l)) || { ok: false }; // sem Consumer: só o cadastro nosso
   let r;
   try {
     r = await qi(`SELECT TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.NOME,'')) NOME, TRIM(COALESCE(u.TIPO,'')) TIPO, a.PERMISSAO
