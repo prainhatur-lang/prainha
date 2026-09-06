@@ -154,7 +154,9 @@ function q1(s) {
     try { Firebird.attach(FB, (err, db) => { if (err) return fin({ ok: false, err: String(err.message).slice(0, 150) }); db.query(s, [], (e, rows) => { try { db.detach(() => {}); } catch {} if (e) return fin({ ok: false, err: String(e.message).slice(0, 180) }); fin({ ok: true, rows }); }); }); } catch (e) { fin({ ok: false, err: String(e.message).slice(0, 150) }); } });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function q(s, tries = 3) { const run = async () => { for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; await sleep(400); } return { ok: false, err: 'retry' }; }; const p = chain.then(run); chain = p.catch(() => {}); return p; }
+// Devolve o ÚLTIMO erro real (era 'retry', que não dizia se foi timeout,
+// crash do driver ou SQL errado — e o log do pedido gêmeo ficava mudo).
+function q(s, tries = 3) { const run = async () => { let ultimo = 'retry'; for (let i = 0; i < tries; i++) { const r = await q1(s); if (r.ok) return r; ultimo = r.err || ultimo; if (i + 1 < tries) await sleep(400); } return { ok: false, err: ultimo }; }; const p = chain.then(run); chain = p.catch(() => {}); return p; }
 // Fila SEPARADA pras telas interativas (conta/pagamento). Sem isso, abrir a
 // conta de uma mesa fica atrás do ciclo do espelho e o operador espera até 90s
 // — inaceitável na hora de fechar a conta. Cada query já abre sua própria
@@ -176,6 +178,38 @@ function qi(s, tries = 2) {
   const p = chainUi.then(run, run); // erro anterior não pode matar a fila
   chainUi = p.catch(() => {});
   return p;
+}
+/** INSERT que NÃO pode entrar duas vezes no Firebird.
+ *  q()/qi() repetem a query quando a resposta não chega — e um INSERT que
+ *  GRAVOU mas cujo ack se perdeu (timeout, crash do driver, o `resgatar`
+ *  derrubando tudo que estava em voo) entrava DE NOVO. Foi assim que a mesa
+ *  ganhou pedidos gêmeos (10 pares em 14 dias, sempre 0,45 s entre eles = o
+ *  sleep(400) do retry, o primeiro vazio) e que o pagamento entrou em dobro
+ *  (NSU 73750). A fila por mesa não segura isso: os dois INSERTs saem da
+ *  MESMA chamada.
+ *  Aqui: UMA tentativa; se falhar, `confere()` olha se a linha caiu mesmo
+ *  assim — devolve o que achou, `null` quando com certeza não entrou, e LANÇA
+ *  quando não conseguiu olhar. Só repete o INSERT com a certeza de que não
+ *  entrou; sem resposta pra conferir, desiste SEM repetir: erro na tela o
+ *  operador refaz, linha em dobro ninguém vê. */
+async function fbInserirSemDuplicar(insertSql, confere, { fila = q, tries = 3, rotulo = 'INSERT' } = {}) {
+  let ultimo = 'retry';
+  for (let i = 0; i < tries; i++) {
+    const r = await fila(insertSql, 1);
+    if (r.ok) return { ok: true };
+    ultimo = r.err || ultimo;
+    // O INSERT "que falhou" pode estar a caminho ainda (o resgate derruba a
+    // promise, não a conexão): dá tempo de o Firebird gravar ou desistir antes
+    // de olhar — olhar cedo demais é não ver, repetir, e o gêmeo nascer.
+    await sleep(700);
+    let achou = null;
+    try { achou = await confere(); } catch (e) {
+      return { ok: false, err: `${ultimo} (e não deu pra conferir se gravou: ${e.message}) — não repeti` };
+    }
+    if (achou) { console.error(`[fb] ${rotulo}: INSERT deu "${ultimo}" mas a linha caiu — não repeti`); return { ok: true, achou }; }
+    if (i + 1 < tries) console.error(`[fb] ${rotulo}: INSERT deu "${ultimo}" e não gravou — tentativa ${i + 2} de ${tries}`);
+  }
+  return { ok: false, err: ultimo };
 }
 const N = (v) => (v == null ? null : Number(v));
 const T = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
@@ -1758,13 +1792,22 @@ async function deliveryMaterializar(p, quem = 'sistema') {
   const taxa = +Number(p.taxa_entrega || 0).toFixed(2);
   const total = +Number(p.total || 0).toFixed(2);
   // INSERT + SELECT (RETURNING crasha intermitente no FB4 — ver fbCriarPedido);
-  // a fila q() serializa, então o FIRST 1 pelo rótulo é o que acabou de entrar.
-  const ins = await q(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO, NOME)
-    VALUES (0, CURRENT_TIMESTAMP, ${IFOOD_ORIGEM}, ${fbNum(taxa)}, 1, 0, '', 'N', 'N', ${fbNum(total)}, 0, '${fbEsc(rotulo)}')`);
+  // o FIRST 1 pelo rótulo é o que acabou de entrar. SEM retry cego: se o
+  // INSERT "falhar", o mesmo SELECT (últimos 3 min) confere se gravou antes de
+  // repetir — a faxina de pedidos vazios ignora o número 0, um gêmeo aqui
+  // ficaria pra sempre (ver fbInserirSemDuplicar).
+  const acharEntrega = async (conferindo) => {
+    const ach = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=0 AND CODIGOPEDIDOORIGEM=${IFOOD_ORIGEM}
+      AND NOME='${fbEsc(rotulo)}' AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL
+      ${conferindo ? 'AND DATAABERTURA > DATEADD(-180 SECOND TO CURRENT_TIMESTAMP)' : ''} ORDER BY CODIGO DESC`);
+    if (!ach.ok) throw new Error(ach.err);
+    return ach.rows.length ? Number(ach.rows[0].CODIGO) : null;
+  };
+  const ins = await fbInserirSemDuplicar(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO, NOME)
+    VALUES (0, CURRENT_TIMESTAMP, ${IFOOD_ORIGEM}, ${fbNum(taxa)}, 1, 0, '', 'N', 'N', ${fbNum(total)}, 0, '${fbEsc(rotulo)}')`,
+    () => acharEntrega(true), { rotulo: 'pedido de entrega ' + rotulo });
   if (!ins.ok) throw new Error('FB criar pedido de entrega: ' + ins.err);
-  const ach = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=0 AND CODIGOPEDIDOORIGEM=${IFOOD_ORIGEM}
-    AND NOME='${fbEsc(rotulo)}' AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
-  const ped = ach.ok && ach.rows.length ? Number(ach.rows[0].CODIGO) : 0;
+  const ped = ins.achou || await acharEntrega(false).catch(() => null) || 0;
   if (!ped) throw new Error('FB criar pedido de entrega: inserido mas não encontrado');
   for (const l of linhas) await fbInserirItem(ped, l);
   // a cozinha já recebeu este pedido pela projeção (KDS) e pela nota impressa
@@ -2594,10 +2637,17 @@ async function pedidoDaMesa(numero) {
 async function fbCriarPedido(numero) {
   if (nativo()) return pgCriarPedido(numero);
   // INSERT sem CODIGO (BI trigger gera). RETURNING crasha intermitente no FB4 -> insert simples + SELECT.
-  const ins = await q(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO)
-    VALUES (${Number(numero)}, CURRENT_TIMESTAMP, ${VENDA_ORIGEM_FB}, 0, 1, 0, '', 'N', 'N', 0, 0)`);
+  // ⚠️ SEM RETRY CEGO (06/09/2026): a mesa 10 — e mais 9 em 14 dias — ganhou
+  // pedido GÊMEO: dois INSERTs com 0,45 s entre eles, o primeiro vazio (a
+  // faxina só o apaga 2 min depois, e nesse meio tempo o caixa via duas
+  // contas). O ack do primeiro se perdia e o q() mandava de novo. Conferir =
+  // "já tem pedido aberto nesse número?" — dentro da fila por mesa, se
+  // apareceu um, é o nosso (ou serve igual): criar outro É o gêmeo.
+  const ins = await fbInserirSemDuplicar(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO)
+    VALUES (${Number(numero)}, CURRENT_TIMESTAMP, ${VENDA_ORIGEM_FB}, 0, 1, 0, '', 'N', 'N', 0, 0)`,
+    () => fbAcharPedido(numero), { rotulo: 'pedido da mesa ' + numero });
   if (!ins.ok) throw new Error('FB criar pedido: ' + ins.err);
-  const ped = await fbAcharPedido(numero);
+  const ped = ins.achou || await fbAcharPedido(numero);
   if (!ped) throw new Error('FB criar pedido: inserido mas não encontrado');
   return ped;
 }
@@ -2612,6 +2662,10 @@ async function registrarAutor(itemCod, it) {
       ON CONFLICT (item_codigo) DO NOTHING`;
   } catch (e) { console.error('[autor] item ' + itemCod + ': ' + e.message); }
 }
+// Maior CODIGO de ITENSPEDIDO que este servidor já viu ANTES de cada INSERT:
+// o recém-inserido é sempre maior que isso, então "2 linhas iguais no mesmo
+// carrinho" e "outro garçom lançando o mesmo na mesma mesa" não se confundem.
+let itemMarcaDagua = 0;
 async function fbInserirItem(ped, it) {
   if (nativo()) { const c = await pgInserirItem(ped, it); await registrarAutor(c, it); return c; }
   const vt = fbNum(it.preco * it.qtd);
@@ -2626,13 +2680,27 @@ async function fbInserirItem(ped, it) {
   // uma praça, o aviso pra sair junto. Caixa alta porque é cupom térmico.
   const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
   const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
-  const r = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPRODUTO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL, VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
-    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(nomeItem)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
+  // RETURNING crasha intermitente no FB4 — o recém-inserido é achado por
+  // SELECT: pela assinatura da linha (produto, nome, qtd, últimos 2 min) e
+  // acima da marca d'água. O MESMO SELECT confere, quando o INSERT "falha",
+  // se a linha caiu — e aí NÃO repete (era daí que vinha o item em dobro;
+  // ver fbInserirSemDuplicar). Valor fica de fora de propósito: o Firebird
+  // arredonda pra escala da coluna e 24.9999 ≠ 25.00 faria repetir.
+  const marca = itemMarcaDagua;
+  const achar = async () => {
+    const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL
+      AND CODIGOPRODUTODETALHE=${Number(it.codigo_pdv)} AND NOMEPRODUTO='${fbEsc(nomeItem)}'
+      AND ABS(QUANTIDADE - ${fbNum(it.qtd)}) < 0.01 AND CODIGO > ${marca}
+      AND DATAHORACADASTRO > DATEADD(-120 SECOND TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+    if (!g.ok) throw new Error(g.err);
+    return g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  };
+  const r = await fbInserirSemDuplicar(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPRODUTO, CODIGOPRODUTODETALHE, NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL, VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
+    VALUES (${ped}, ${Number(it.produto_codigo)}, ${Number(it.codigo_pdv)}, '${fbEsc(nomeItem)}', ${fbNum(it.qtd)}, ${fbNum(it.preco)}, ${vt}, 0, 0, ${vt}, 0, 1, '${fbEsc(detalhes)}', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`,
+    achar, { rotulo: 'item "' + nomeItem + '" do pedido ' + ped });
   if (!r.ok) throw new Error('FB item "' + nomeItem + '": ' + r.err);
-  // RETURNING crasha intermitente no FB4 — pega o recem-inserido. E' seguro
-  // porque a fila serializa: ninguem inseriu no meio.
-  const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
-  const cod = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+  const cod = r.achou || await achar().catch(() => null);
+  if (cod > itemMarcaDagua) itemMarcaDagua = cod;
   await registrarAutor(cod, it);
   return cod;
 }
@@ -2774,19 +2842,35 @@ async function fbGravarRespostas(ped, itemPai, it) {
       continue;
     }
     const v = fbNum(Number(op.preco || 0) * it.qtd);
-    const ins = await q(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
+    // O filho recém-inserido é o último deste PAI acima da marca d'água (o
+    // pai é só desta chamada). Conferindo um INSERT "que falhou", restringe
+    // ao nome e aos últimos 2 min — e não repete (ver fbInserirSemDuplicar).
+    const marca = itemMarcaDagua;
+    const acharFilho = async (conferindo) => {
+      const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped}
+        AND CODIGOPAI=${itemPai} AND DATADELETE IS NULL AND CODIGO > ${marca}
+        ${conferindo ? `AND NOMEPRODUTO='${fbEsc(op.nome)}' AND DATAHORACADASTRO > DATEADD(-120 SECOND TO CURRENT_TIMESTAMP)` : ''}
+        ORDER BY CODIGO DESC`);
+      if (!g.ok) throw new Error(g.err);
+      return g.rows.length ? Number(g.rows[0].CODIGO) : null;
+    };
+    const ins = await fbInserirSemDuplicar(`INSERT INTO ITENSPEDIDO (CODIGOPEDIDO, CODIGOPAI, CODIGOPRODUTODETALHE,
         NOMEPRODUTO, QUANTIDADE, VALORUNITARIO, VALORITEM, VALORCOMPLEMENTO, VALORFILHO, VALORTOTAL,
         VALORDESCONTO, CODIGOITEMPEDIDOTIPO, DETALHES, DATAHORACADASTRO, IMPRESSO, CODIGOPEDIDOORIGEM)
       VALUES (${ped}, ${itemPai}, ${op.produto_pdv ? Number(op.produto_pdv) : 'NULL'},
         '${fbEsc(op.nome)}', ${fbNum(it.qtd)}, ${fbNum(op.preco || 0)}, ${v}, 0, 0, ${v},
-        0, 2, 'NENHUM', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`);
+        0, 2, 'NENHUM', CURRENT_TIMESTAMP, 'N', ${VENDA_ORIGEM_FB})`,
+      () => acharFilho(true), { rotulo: 'resposta "' + op.nome + '" do item ' + itemPai });
     if (!ins.ok) { console.error('[resposta] ' + op.nome + ': ' + ins.err); continue; }
-    const g = await q(`SELECT FIRST 1 CODIGO FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped}
-      AND CODIGOPAI=${itemPai} AND DATADELETE IS NULL ORDER BY CODIGO DESC`);
-    const filho = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
+    const filho = ins.achou || await acharFilho(false).catch(() => null);
     if (!filho) continue;
-    const lig = await q(`INSERT INTO ITEMPEDIDOWIZARDOPCAO (CODIGOITEMPEDIDO, CODIGOWIZARDOPCAO)
-      VALUES (${filho}, ${Number(r)})`);
+    if (filho > itemMarcaDagua) itemMarcaDagua = filho;
+    const lig = await fbInserirSemDuplicar(`INSERT INTO ITEMPEDIDOWIZARDOPCAO (CODIGOITEMPEDIDO, CODIGOWIZARDOPCAO)
+      VALUES (${filho}, ${Number(r)})`, async () => {
+        const g = await q(`SELECT FIRST 1 CODIGOITEMPEDIDO FROM ITEMPEDIDOWIZARDOPCAO WHERE CODIGOITEMPEDIDO=${filho} AND CODIGOWIZARDOPCAO=${Number(r)}`);
+        if (!g.ok) throw new Error(g.err);
+        return g.rows.length ? Number(g.rows[0].CODIGOITEMPEDIDO) : null;
+      }, { rotulo: 'vínculo da resposta "' + op.nome + '"' });
     if (!lig.ok) console.error('[resposta] vínculo de "' + op.nome + '": ' + lig.err);
   }
 }
