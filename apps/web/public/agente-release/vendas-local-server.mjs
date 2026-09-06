@@ -684,6 +684,30 @@ async function initSchema() {
   // (loopFaceSync); sync_pendente marca quem ainda não subiu.
   await addCol('ponto_funcionario', 'face_descriptor jsonb');
   await addCol('ponto_funcionario', 'face_sync_pendente boolean NOT NULL DEFAULT false');
+
+  // ---- ESPAÇO KIDS ----
+  // Quem entrega a criança é o RESPONSÁVEL, e o vínculo é o WhatsApp dele
+  // TESTADO na hora (ele manda o QR, a Meta devolve o número de verdade). Sem
+  // isso, "chamar o pai" é chutar um número digitado errado no corre.
+  // A ponte com a Meta é da nuvem (kidsSyncLoop); aqui fica o controle.
+  await sql`CREATE TABLE IF NOT EXISTS kids_entrada (id bigserial PRIMARY KEY,
+    codigo text NOT NULL, mesa integer, responsavel_nome text NOT NULL,
+    responsavel_tel varchar(15) NOT NULL, tel_confirmado varchar(20),
+    zap_status text NOT NULL DEFAULT 'aguardando', confirmado_em timestamptz,
+    criado_em timestamptz DEFAULT now(), criado_por text, encerrada_em timestamptz,
+    nuvem_ok boolean, nuvem_erro text)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_kids_entrada_codigo ON kids_entrada (codigo)`;
+  await sql`CREATE TABLE IF NOT EXISTS kids_crianca (id bigserial PRIMARY KEY,
+    entrada_id bigint NOT NULL REFERENCES kids_entrada(id), nome text NOT NULL,
+    idade integer, observacao text, entrou_em timestamptz DEFAULT now(),
+    saiu_em timestamptz, saiu_por text)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_kids_crianca_dentro ON kids_crianca (saiu_em, entrou_em)`;
+  await sql`CREATE TABLE IF NOT EXISTS kids_evento (id bigserial PRIMARY KEY,
+    entrada_id bigint NOT NULL, crianca_id bigint, tipo text NOT NULL, motivo text,
+    texto text, wa_message_id text, erro text, criado_em timestamptz DEFAULT now(), por text)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_kids_evento_entrada ON kids_evento (entrada_id, criado_em)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_kids_evento_wa ON kids_evento (wa_message_id) WHERE wa_message_id IS NOT NULL`;
+
   await initSchemaNativo();
 }
 
@@ -8805,6 +8829,458 @@ async function atenderChamadoGarcom(mesa, por) {
     WHERE tipo='garcom' AND atendido_em IS NULL AND mesa=${n}`;
 }
 
+// ═══════════════════════════════ ESPAÇO KIDS ═══════════════════════════════
+// A monitora registra a criança no tablet (/kids); o responsável confirma o
+// WhatsApp mandando o QR (wa.me), e a partir daí a casa CHAMA ele por zap.
+// O controle é todo daqui — a nuvem (app.prainhabar.com/api/loja/kids/*) só faz
+// a ponte com a Meta, porque o webhook da Meta é uma URL só, na Vercel. Por
+// isso a loja não recebe nada de fora: ela EMPURRA o check-in e PUXA o resto
+// (kidsSyncLoop). Loja sem internet continua registrando entrada e saída.
+// Spec: docs/superpowers/specs/2026-09-03-espaco-kids-design.md
+const KIDS_ALFA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem I/O/0/1: a monitora lê em voz alta
+const KIDS_MOTIVOS = { quer_pai: 'quer o pai', hora_sair: 'hora de sair', machucou: 'se machucou, mas está bem' };
+function kidsCodigo() {
+  const b = randomBytes(12);
+  let s = '';
+  for (let i = 0; i < 6; i++) s += KIDS_ALFA[b[i] % KIDS_ALFA.length];
+  return s;
+}
+function kidsNuvemOn() { return !!(PAGAR_MESA_SECRET && PAGAR_MESA_SECRET.length >= 16 && FILIAL_ID); }
+async function kidsNuvem(rota, corpo, metodo = 'POST') {
+  if (!kidsNuvemOn()) return { ok: false, erro: 'esta loja não tem FILIAL_ID/PAGAR_MESA_SECRET' };
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'kids', String(e)].join('|')).digest('hex');
+  const assinado = { ...corpo, f: FILIAL_ID, e, s };
+  let r;
+  if (metodo === 'GET') {
+    const q = new URLSearchParams(Object.entries(assinado).map(([k, v]) => [k, String(v)]));
+    r = await fetch(`${PAGAR_MESA_URL}/api/loja/kids/${rota}?${q}`, { signal: AbortSignal.timeout(8000) });
+  } else {
+    r = await fetch(`${PAGAR_MESA_URL}/api/loja/kids/${rota}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(assinado), signal: AbortSignal.timeout(10000) });
+  }
+  const j = await r.json().catch(() => null);
+  if (!r.ok) return { ok: false, http: r.status, erro: (j && j.erro) || ('erro ' + r.status) };
+  return j || { ok: false, erro: 'a nuvem respondeu vazio' };
+}
+/** "Maria (6) e João (4)" — mesma forma que a nuvem usa nas mensagens. */
+function kidsLista(criancas) {
+  const nomes = criancas.map((c) => (c.idade == null ? c.nome : `${c.nome} (${c.idade})`));
+  if (nomes.length <= 1) return nomes[0] || '';
+  return `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}`;
+}
+function kidsHora(d) {
+  const x = d ? new Date(d) : new Date();
+  return `${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`;
+}
+function kidsTextoQr(mesa, codigo) {
+  return `Kids ${LOJA_NOME}${mesa ? ` · mesa ${mesa}` : ''} · código ${codigo}`;
+}
+async function kidsCfg() {
+  const n = Number(await cfgGet('kids_alerta_min', '5'));
+  return {
+    camera_link: await cfgGet('kids_camera_link', ''),
+    alerta_min: n >= 1 && n <= 30 ? n : 5,
+    numero_casa: await cfgGet('kids_numero_casa', ''),
+  };
+}
+/** Registra o check-in na nuvem e anota o resultado na entrada. Nunca lança:
+ *  sem internet a entrada vale do mesmo jeito e o loop reenvia depois. */
+async function kidsRegistraNuvem(entradaId) {
+  const [e] = await sql`SELECT * FROM kids_entrada WHERE id=${entradaId}`;
+  if (!e) return { ok: false, erro: 'entrada não encontrada' };
+  const cs = await sql`SELECT nome, idade FROM kids_crianca
+    WHERE entrada_id=${entradaId} AND saiu_em IS NULL ORDER BY id`;
+  const cfg = await kidsCfg();
+  let r;
+  try {
+    r = await kidsNuvem('checkin', {
+      codigo: e.codigo, telefone: e.responsavel_tel, responsavel: e.responsavel_nome,
+      criancas: cs.map((c) => ({ nome: c.nome, idade: c.idade == null ? null : Number(c.idade) })),
+      mesa: e.mesa, link_camera: cfg.camera_link || null });
+  } catch (err) { r = { ok: false, erro: err.message }; }
+  if (!r.ok) {
+    await sql`UPDATE kids_entrada SET nuvem_ok=false, nuvem_erro=${String(r.erro || '').slice(0, 200)}
+      WHERE id=${entradaId}`;
+    return r;
+  }
+  if (r.numero_casa) await cfgSet('kids_numero_casa', String(r.numero_casa));
+  // Mesmo zap já confirmado hoje nesta filial: entra sem QR (a nuvem avisa ele).
+  if (r.ja_confirmado && r.telefone_confirmado) {
+    await sql`UPDATE kids_entrada SET nuvem_ok=true, nuvem_erro=NULL, zap_status='confirmado',
+      tel_confirmado=${String(r.telefone_confirmado)}, confirmado_em=COALESCE(confirmado_em, now())
+      WHERE id=${entradaId}`;
+    await sql`INSERT INTO kids_evento (entrada_id, tipo, texto)
+      VALUES (${entradaId}, 'zap_confirmado', 'já tinha confirmado hoje')`;
+  } else {
+    await sql`UPDATE kids_entrada SET nuvem_ok=true, nuvem_erro=NULL WHERE id=${entradaId}`;
+  }
+  return r;
+}
+/** Manda um texto pro responsável, pela nuvem. Devolve {ok, wa_message_id, erro}. */
+async function kidsEnviar(codigo, texto, encerrar = false) {
+  try { return await kidsNuvem('enviar', { codigo, texto, encerrar: !!encerrar }); }
+  catch (e) { return { ok: false, erro: e.message }; }
+}
+
+// ---- login da monitora: mesmo PIN do garçom/caixa, sem exigir venda ----
+async function apiKidsEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  let p;
+  try { p = await permsDoUsuario(login); } catch (e) { return { ok: false, erro: e.message }; }
+  if (!p.ok) return { ok: false, erro: 'Login não encontrado. Fale com o gerente.' };
+  const [atual] = await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`;
+  if (!atual) {
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    if (!pin2) return { ok: true, primeira_vez: true, nome: p.nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome)
+      VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt,
+        nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, token: garcomGeraToken(login), nome: p.nome, gerente: await ehGerente(login) };
+  }
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), nome: p.nome, gerente: await ehGerente(login) };
+}
+async function kidsDaRequisicao(req, u) {
+  const tok = String(req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '');
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  // Consumer fora do ar não expulsa quem já está dentro: o token é nosso e já
+  // foi conferido na entrada. Criança no espaço não espera Firebird voltar.
+  try {
+    const p = await permsDoUsuario(v.login);
+    if (!p.ok) return null;
+    return { login: v.login, nome: p.nome || v.login };
+  } catch { return { login: v.login, nome: v.login }; }
+}
+async function apiKidsSessao(req, u) {
+  const q = await kidsDaRequisicao(req, u);
+  if (!q) return { ok: false };
+  return { ok: true, login: q.login, nome: q.nome, gerente: await ehGerente(q.login) };
+}
+
+// ---- estado da tela (o tablet pergunta a cada 5 s) ----
+async function apiKidsEstado() {
+  // QR que ninguém confirmou em 2 h vira 'expirado'. Idempotente.
+  await sql`UPDATE kids_entrada SET zap_status='expirado'
+    WHERE zap_status='aguardando' AND criado_em < now() - interval '2 hours'`;
+  const cfg = await kidsCfg();
+  const dentro = await sql`SELECT c.id, c.nome, c.idade, c.observacao, c.entrou_em,
+      e.id AS entrada_id, e.codigo, e.mesa, e.responsavel_nome, e.responsavel_tel,
+      e.tel_confirmado, e.zap_status, e.nuvem_ok, e.nuvem_erro
+    FROM kids_crianca c JOIN kids_entrada e ON e.id = c.entrada_id
+    WHERE c.saiu_em IS NULL ORDER BY c.entrou_em`;
+  const ids = [...new Set(dentro.map((c) => Number(c.entrada_id)))];
+  const evs = ids.length
+    ? await sql`SELECT entrada_id, crianca_id, tipo, motivo, texto, erro, criado_em
+        FROM kids_evento WHERE entrada_id = ANY(${ids}) AND criado_em > now() - interval '12 hours'
+        ORDER BY criado_em`
+    : [];
+  const agora = Date.now();
+  const minDe = (t) => Math.max(0, Math.floor((agora - new Date(t).getTime()) / 60000));
+  const lista = dentro.map((c) => {
+    const meus = evs.filter((x) => Number(x.entrada_id) === Number(c.entrada_id));
+    const chamadas = meus.filter((x) => x.tipo === 'chamada' && Number(x.crianca_id) === Number(c.id));
+    const ultima = chamadas.length ? chamadas[chamadas.length - 1] : null;
+    // A resposta que interessa é a que veio DEPOIS da última chamada. Sem
+    // chamada, a última do dia ainda aparece — o pai às vezes escreve sozinho.
+    const respostas = meus.filter((x) => x.tipo === 'resposta'
+      && (!ultima || new Date(x.criado_em) >= new Date(ultima.criado_em)));
+    const resp = respostas.length ? respostas[respostas.length - 1] : null;
+    const espera = ultima ? minDe(ultima.criado_em) : 0;
+    return {
+      id: Number(c.id), nome: c.nome, idade: c.idade == null ? null : Number(c.idade),
+      observacao: c.observacao || '', ha_min: minDe(c.entrou_em),
+      entrada_id: Number(c.entrada_id), codigo: c.codigo,
+      mesa: c.mesa == null ? null : Number(c.mesa),
+      responsavel: nomeCurto(c.responsavel_nome), responsavel_nome: c.responsavel_nome,
+      tel_fim: String(c.tel_confirmado || c.responsavel_tel || '').slice(-4),
+      zap_status: c.zap_status, nuvem_ok: c.nuvem_ok !== false, nuvem_erro: c.nuvem_erro || '',
+      chamada: ultima ? { ha_min: espera, motivo: ultima.motivo || '',
+        erro: ultima.erro || '', vezes: chamadas.length } : null,
+      resposta: resp ? { texto: resp.texto || '', ha_min: minDe(resp.criado_em) } : null,
+      alerta: !!(ultima && !resp && espera >= cfg.alerta_min),
+      escalado: meus.some((x) => x.tipo === 'escalada' && Number(x.crianca_id) === Number(c.id)
+        && (!ultima || new Date(x.criado_em) >= new Date(ultima.criado_em))),
+    };
+  });
+  const hoje = await sql`SELECT c.nome, c.entrou_em, c.saiu_em, e.mesa, e.responsavel_nome
+    FROM kids_crianca c JOIN kids_entrada e ON e.id = c.entrada_id
+    WHERE c.saiu_em IS NOT NULL AND c.saiu_em::date = now()::date
+    ORDER BY c.saiu_em DESC LIMIT 40`;
+  return {
+    ok: true, agora: kidsHora(), cfg, dentro: lista,
+    hoje: hoje.map((h) => ({ nome: h.nome, mesa: h.mesa == null ? null : Number(h.mesa),
+      responsavel: nomeCurto(h.responsavel_nome), entrou: kidsHora(h.entrou_em), saiu: kidsHora(h.saiu_em) })),
+    nuvem: { ligada: kidsNuvemOn(), ok: kidsSyncOk,
+      ha_s: kidsSyncEm ? Math.floor((agora - kidsSyncEm) / 1000) : null, erro: kidsSyncErro },
+  };
+}
+
+// ---- nova entrada ----
+/** Quem é o responsável? Pela mesa (identificação aberta) ou pelo telefone. */
+async function apiKidsSugerir(u) {
+  const mesa = Number(u.searchParams.get('mesa') || 0);
+  const tel = String(u.searchParams.get('tel') || '').replace(/\D/g, '');
+  const out = { ok: true, nome: '', telefone: '', fonte: '', entrada_ativa: null };
+  if (!tel) {
+    if (!(mesa >= 1)) return out;
+    const [i] = await sql`SELECT nome, nome_curto, telefone FROM identificacao
+      WHERE numero=${mesa} AND fechada_em IS NULL LIMIT 1`;
+    if (i) {
+      out.nome = i.nome || i.nome_curto || '';
+      out.telefone = String(i.telefone || '').replace(/\D/g, '');
+      out.fonte = 'mesa';
+    }
+    return out;
+  }
+  if (tel.length < 10) return out;
+  const fim8 = tel.slice(-8);
+  // Já tem criança dentro com esse zap? Então é irmão chegando, não entrada nova.
+  const [ativa] = await sql`SELECT e.id, e.codigo, e.mesa, e.responsavel_nome, e.zap_status
+    FROM kids_entrada e
+    WHERE e.encerrada_em IS NULL AND right(e.responsavel_tel, 8) = ${fim8}
+      AND EXISTS (SELECT 1 FROM kids_crianca c WHERE c.entrada_id=e.id AND c.saiu_em IS NULL)
+    ORDER BY e.id DESC LIMIT 1`;
+  if (ativa) {
+    out.entrada_ativa = { id: Number(ativa.id), mesa: ativa.mesa == null ? null : Number(ativa.mesa),
+      nome: ativa.responsavel_nome, zap_status: ativa.zap_status };
+    out.nome = ativa.responsavel_nome;
+    out.fonte = 'kids';
+    return out;
+  }
+  try {
+    const c = await contatoPorTelefone(tel);
+    if (c && c.nome) { out.nome = c.nome; out.fonte = 'consumer'; return out; }
+  } catch { /* Firebird fora do ar: segue nas fontes locais */ }
+  const [i] = await sql`SELECT nome FROM identificacao
+    WHERE right(regexp_replace(COALESCE(telefone,''), '[^0-9]', '', 'g'), 8) = ${fim8}
+      AND nome IS NOT NULL ORDER BY criado_em DESC LIMIT 1`;
+  if (i) { out.nome = i.nome; out.fonte = 'identificacao'; return out; }
+  const [k] = await sql`SELECT responsavel_nome FROM kids_entrada
+    WHERE right(responsavel_tel, 8) = ${fim8} ORDER BY id DESC LIMIT 1`;
+  if (k) { out.nome = k.responsavel_nome; out.fonte = 'kids'; }
+  return out;
+}
+function kidsValidaCriancas(lista) {
+  return (Array.isArray(lista) ? lista : []).map((x) => {
+    const c = x || {};
+    const idade = Number(c.idade);
+    return {
+      nome: String(c.nome || '').trim().slice(0, 80),
+      idade: Number.isInteger(idade) && idade >= 0 && idade <= 17 ? idade : null,
+      observacao: String(c.observacao || '').trim().slice(0, 200) || null,
+    };
+  }).filter((c) => c.nome);
+}
+async function apiKidsEntrada(body, quem) {
+  const tel = String(body.telefone || '').replace(/\D/g, '');
+  if (!(tel.length >= 10 && tel.length <= 11)) return { ok: false, erro: 'WhatsApp com DDD (10 ou 11 números)' };
+  const nome = String(body.responsavel || '').trim().slice(0, 160);
+  if (!nome) return { ok: false, erro: 'diga o nome do responsável' };
+  const m = Number(body.mesa);
+  const mesa = Number.isInteger(m) && m >= 1 && m <= NUMERO_MAX ? m : null;
+  const cs = kidsValidaCriancas(body.criancas);
+  if (!cs.length) return { ok: false, erro: 'informe pelo menos uma criança' };
+  let entradaId = null;
+  for (let i = 0; i < 3 && !entradaId; i++) {
+    try {
+      const [e] = await sql`INSERT INTO kids_entrada (codigo, mesa, responsavel_nome, responsavel_tel, criado_por)
+        VALUES (${kidsCodigo()}, ${mesa}, ${nome}, ${tel}, ${quem.login}) RETURNING id`;
+      entradaId = Number(e.id);
+    } catch (err) { if (String(err.code) !== '23505') throw err; }
+  }
+  if (!entradaId) return { ok: false, erro: 'não consegui gerar o código, tente de novo' };
+  for (const c of cs) {
+    await sql`INSERT INTO kids_crianca (entrada_id, nome, idade, observacao)
+      VALUES (${entradaId}, ${c.nome}, ${c.idade}, ${c.observacao})`;
+  }
+  return await kidsQrDaEntrada(entradaId, true);
+}
+/** Monta a tela do QR — e, se pedido, registra na nuvem (trocando o código
+ *  quando ele já existe lá: o 409 é o jeito da nuvem dizer "esse já é de outro"). */
+async function kidsQrDaEntrada(entradaId, registrar) {
+  if (registrar) {
+    for (let i = 0; i < 3; i++) {
+      const r = await kidsRegistraNuvem(entradaId);
+      if (r.ok || r.http !== 409) break;
+      await sql`UPDATE kids_entrada SET codigo=${kidsCodigo()} WHERE id=${entradaId}`;
+    }
+  }
+  const [e] = await sql`SELECT * FROM kids_entrada WHERE id=${entradaId}`;
+  const numero = await cfgGet('kids_numero_casa', '');
+  const texto = kidsTextoQr(e.mesa, e.codigo);
+  const wa = numero ? `https://wa.me/${numero}?text=${encodeURIComponent(texto)}` : '';
+  return {
+    ok: true, entrada_id: Number(e.id), codigo: e.codigo,
+    mesa: e.mesa == null ? null : Number(e.mesa), responsavel: e.responsavel_nome,
+    zap_status: e.zap_status, tel_confirmado: e.tel_confirmado || '',
+    texto_qr: texto, wa_url: wa, numero_casa: numero,
+    qr_svg: wa ? qrSvg(wa, 260) : '',
+    nuvem_ok: e.nuvem_ok !== false, nuvem_erro: e.nuvem_erro || '',
+  };
+}
+async function apiKidsQrNovo(body) {
+  const id = Number(body.entrada_id);
+  if (!id) return { ok: false, erro: 'entrada inválida' };
+  await sql`UPDATE kids_entrada SET codigo=${kidsCodigo()}, zap_status='aguardando',
+    criado_em=now(), nuvem_ok=NULL, nuvem_erro=NULL
+    WHERE id=${id} AND zap_status <> 'confirmado'`;
+  return await kidsQrDaEntrada(id, true);
+}
+/** Irmão que chegou depois: entra na MESMA entrada (mesmo zap, mesma mesa). */
+async function apiKidsCrianca(body) {
+  const id = Number(body.entrada_id);
+  const cs = kidsValidaCriancas([body]);
+  if (!id || !cs.length) return { ok: false, erro: 'informe o nome da criança' };
+  const [e] = await sql`SELECT * FROM kids_entrada WHERE id=${id}`;
+  if (!e) return { ok: false, erro: 'entrada não encontrada' };
+  const c = cs[0];
+  await sql`INSERT INTO kids_crianca (entrada_id, nome, idade, observacao)
+    VALUES (${id}, ${c.nome}, ${c.idade}, ${c.observacao})`;
+  await sql`UPDATE kids_entrada SET encerrada_em=NULL WHERE id=${id}`;
+  if (e.zap_status === 'confirmado') {
+    await kidsEnviar(e.codigo, `✅ ${kidsLista([c])} entrou no Espaço Kids às ${kidsHora()}${e.mesa ? `, mesa ${e.mesa}` : ''}.`);
+  }
+  return { ok: true, entrada_id: id };
+}
+
+// ---- chamar / escalar / saída ----
+async function apiKidsChamar(body, quem) {
+  const cid = Number(body.crianca_id);
+  const [c] = await sql`SELECT c.id, c.nome, e.id AS eid, e.codigo, e.mesa, e.responsavel_nome, e.zap_status
+    FROM kids_crianca c JOIN kids_entrada e ON e.id=c.entrada_id
+    WHERE c.id=${cid} AND c.saiu_em IS NULL`;
+  if (!c) return { ok: false, erro: 'essa criança não está no kids' };
+  if (c.zap_status !== 'confirmado') return { ok: false, erro: 'o WhatsApp do responsável ainda não foi confirmado' };
+  // Trava de toque duplo: uma chamada por criança a cada 60 s.
+  const [rec] = await sql`SELECT id FROM kids_evento
+    WHERE crianca_id=${cid} AND tipo='chamada' AND criado_em > now() - interval '60 seconds' LIMIT 1`;
+  if (rec) return { ok: true, repetido: true };
+  const motivo = KIDS_MOTIVOS[String(body.motivo || '')]
+    || (String(body.motivo) === 'outro' ? String(body.texto || '').trim().slice(0, 120) : '');
+  const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM kids_evento WHERE crianca_id=${cid} AND tipo='chamada'`;
+  const cab = n === 0 ? '📣 ' : n === 1 ? '📣 Segunda chamada: ' : n === 2 ? '📣 Terceira chamada: ' : '📣 Nova chamada: ';
+  const linhas = [`${cab}${nomeCurto(c.responsavel_nome)}, a monitora do Espaço Kids pede pra você vir buscar ${c.nome}${c.mesa ? ` (mesa ${c.mesa})` : ''}.`];
+  if (motivo) linhas.push(`Motivo: ${motivo}`);
+  linhas.push('Pode responder por aqui que ela vê na tela.');
+  const texto = linhas.join('\n');
+  const r = await kidsEnviar(c.codigo, texto);
+  await sql`INSERT INTO kids_evento (entrada_id, crianca_id, tipo, motivo, texto, wa_message_id, erro, por)
+    VALUES (${Number(c.eid)}, ${cid}, 'chamada', ${motivo || null}, ${texto},
+      ${r.wa_message_id || null}, ${r.ok ? null : String(r.erro || 'falhou').slice(0, 200)}, ${quem.login})`;
+  // Janela de 24 h fechada (131047): só o pai reabre, mandando o QR de novo.
+  if (!r.ok && /131047|24 ?h|window/i.test(String(r.erro || ''))) {
+    await sql`UPDATE kids_entrada SET zap_status='expirado' WHERE id=${Number(c.eid)}`;
+  }
+  return r.ok ? { ok: true } : { ok: false, erro: String(r.erro || 'o WhatsApp recusou') };
+}
+async function apiKidsEscalar(body, quem) {
+  const cid = Number(body.crianca_id);
+  const [c] = await sql`SELECT c.nome, c.entrada_id, e.mesa FROM kids_crianca c
+    JOIN kids_entrada e ON e.id=c.entrada_id WHERE c.id=${cid} AND c.saiu_em IS NULL`;
+  if (!c) return { ok: false, erro: 'essa criança não está no kids' };
+  const r = await apiChamadoCriar({ mesa: c.mesa, tipo: 'garcom', origem: 'kids',
+    texto: `Kids: buscar ${c.nome}` });
+  await sql`INSERT INTO kids_evento (entrada_id, crianca_id, tipo, texto, por)
+    VALUES (${Number(c.entrada_id)}, ${cid}, 'escalada', ${`garçom avisado — mesa ${c.mesa || '?'}`}, ${quem.login})`;
+  return { ok: !!r.ok, erro: r.erro };
+}
+async function apiKidsSaida(body, quem) {
+  const cid = Number(body.crianca_id);
+  const [c] = await sql`SELECT c.id, c.nome, e.id AS eid, e.codigo, e.zap_status
+    FROM kids_crianca c JOIN kids_entrada e ON e.id=c.entrada_id
+    WHERE c.id=${cid} AND c.saiu_em IS NULL`;
+  if (!c) return { ok: false, erro: 'essa criança já saiu' };
+  await sql`UPDATE kids_crianca SET saiu_em=now(), saiu_por=${quem.login} WHERE id=${cid} AND saiu_em IS NULL`;
+  const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca
+    WHERE entrada_id=${Number(c.eid)} AND saiu_em IS NULL`;
+  const ultima = n === 0;
+  if (ultima) await sql`UPDATE kids_entrada SET encerrada_em=now() WHERE id=${Number(c.eid)}`;
+  // Saiu a última: `encerrar` devolve o número pra Nina atender de novo — e isso
+  // vale mesmo se o responsável nunca confirmou o zap, senão o check-in fica
+  // aberto na nuvem pra sempre (a nuvem encerra antes de tentar mandar).
+  const esperaEnvio = c.zap_status === 'confirmado';
+  const r = (ultima || esperaEnvio)
+    ? await kidsEnviar(c.codigo, `🚪 ${c.nome} saiu do Espaço Kids às ${kidsHora()}. Obrigado pela confiança!`, ultima)
+    : null;
+  await sql`INSERT INTO kids_evento (entrada_id, crianca_id, tipo, texto, wa_message_id, erro, por)
+    VALUES (${Number(c.eid)}, ${cid}, 'saida', ${`${c.nome} saiu às ${kidsHora()}`},
+      ${(r && r.wa_message_id) || null},
+      ${esperaEnvio && r && !r.ok ? String(r.erro || 'falhou').slice(0, 200) : null}, ${quem.login})`;
+  return { ok: true, encerrada: ultima };
+}
+async function apiKidsConfig(body, quem) {
+  if (!(await ehGerente(quem.login))) return { ok: false, erro: 'só o gerente muda a configuração' };
+  if (body.camera_link !== undefined) {
+    const link = String(body.camera_link || '').trim();
+    if (link && !/^https:\/\/\S+$/.test(link)) return { ok: false, erro: 'o link tem que começar com https://' };
+    await cfgSet('kids_camera_link', link.slice(0, 500));
+  }
+  if (body.alerta_min !== undefined) {
+    const m = Number(body.alerta_min);
+    if (!(m >= 1 && m <= 30)) return { ok: false, erro: 'o alerta vai de 1 a 30 minutos' };
+    await cfgSet('kids_alerta_min', String(Math.round(m)));
+  }
+  return { ok: true, cfg: await kidsCfg() };
+}
+
+// ---- sync com a nuvem: confirmações do QR e respostas do responsável ----
+let kidsSyncEm = 0, kidsSyncOk = false, kidsSyncErro = '', kidsSyncRodando = false;
+async function kidsSyncLoop() {
+  if (kidsSyncRodando || !kidsNuvemOn()) return;
+  const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM kids_entrada e
+    WHERE e.encerrada_em IS NULL AND (e.zap_status='aguardando'
+      OR EXISTS (SELECT 1 FROM kids_crianca c WHERE c.entrada_id=e.id AND c.saiu_em IS NULL))`;
+  // Sem ninguém dentro a loja não fica batendo na nuvem de 4 em 4 segundos.
+  if (!(n > 0) && kidsSyncEm && Date.now() - kidsSyncEm < 60000) return;
+  kidsSyncRodando = true;
+  try {
+    // Check-in que não subiu (a loja estava sem internet): sobe agora.
+    const pendentes = await sql`SELECT id FROM kids_entrada
+      WHERE nuvem_ok IS NOT TRUE AND zap_status='aguardando'
+        AND criado_em > now() - interval '2 hours' LIMIT 5`;
+    for (const p of pendentes) await kidsRegistraNuvem(Number(p.id)).catch(() => {});
+
+    const desde = (await cfgGet('kids_sync_desde', '')) || new Date(Date.now() - 3600 * 1000).toISOString();
+    const r = await kidsNuvem('sync', { desde }, 'GET');
+    if (!r.ok) { kidsSyncOk = false; kidsSyncErro = String(r.erro || '').slice(0, 120); return; }
+    for (const c of r.confirmados || []) {
+      const upd = await sql`UPDATE kids_entrada
+        SET zap_status='confirmado', tel_confirmado=${String(c.telefone || '')},
+            confirmado_em=${c.confirmado_em ? new Date(c.confirmado_em) : new Date()}
+        WHERE codigo=${String(c.codigo || '')} AND zap_status <> 'confirmado' RETURNING id`;
+      if (upd.length) {
+        await sql`INSERT INTO kids_evento (entrada_id, tipo, texto)
+          VALUES (${Number(upd[0].id)}, 'zap_confirmado', 'responsável confirmou pelo QR')`;
+      }
+    }
+    for (const m of r.mensagens || []) {
+      const [e] = await sql`SELECT id FROM kids_entrada WHERE codigo=${String(m.codigo || '')} LIMIT 1`;
+      if (!e) continue;
+      try {
+        await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, wa_message_id, criado_em)
+          VALUES (${Number(e.id)}, 'resposta', ${String(m.texto || '').slice(0, 2000)},
+            ${m.wa_message_id || null}, ${m.criado_em ? new Date(m.criado_em) : new Date()})`;
+      } catch (err) { if (String(err.code) !== '23505') throw err; } // reentrega: já tinha
+    }
+    if (r.agora) await cfgSet('kids_sync_desde', String(r.agora));
+    kidsSyncOk = true; kidsSyncErro = '';
+  } catch (e) {
+    kidsSyncOk = false; kidsSyncErro = String(e.message || e).slice(0, 120);
+  } finally {
+    kidsSyncRodando = false;
+    kidsSyncEm = Date.now();
+  }
+}
+
 // ---- PRAÇAS QUE A CASA NÃO USA MAIS ----
 // Terraço e luau saíram de operação: as praças continuam no cadastro do
 // Consumer (e 399 produtos ainda apontam pra elas na 0001), mas NÃO devem
@@ -11125,10 +11601,11 @@ async function puxarChamados(){
     // levantada. Mostrar os dois como "chamou" fazia o garçom correr à toa —
     // e ignorar o vermelho depois de algumas vezes.
     var auto=(r.origem==='pedido-cliente');
-    h+='<div class="ch gar'+(auto?' ped':'')+'">'+(auto?'🍽 ':'🔔 ')+
-      (r.mesa?'Mesa '+r.mesa:'Alguém')+(auto?' pediu pelo celular':' chamou')+
+    var kids=(r.origem==='kids'); // 🧸 vem do Espaço Kids: o texto diz quem buscar
+    h+='<div class="ch gar'+(auto?' ped':'')+'">'+(auto?'🍽 ':kids?'🧸 ':'🔔 ')+
+      (r.mesa?'Mesa '+r.mesa:'Alguém')+(auto?' pediu pelo celular':kids?'':' chamou')+
       (r.ha_min>0?' · há '+r.ha_min+'min':' · agora')+
-      (auto&&r.texto?' — '+esc(String(r.texto).replace('pediu pelo celular: ','')):'')+
+      ((auto||kids)&&r.texto?' — '+esc(String(r.texto).replace('pediu pelo celular: ','')):'')+
       '<button class="ir" onclick="atender('+r.id+','+(r.mesa||0)+')">'+(auto?'Ok':'Vou lá')+'</button></div>';
   });
   el.innerHTML=h;
@@ -16680,6 +17157,324 @@ checaPedidosNovos();
 
 inicio();
 </script></body></html>`;
+// ---- TELA DO ESPAÇO KIDS (tablet da monitora) ----
+// Uma tela só, cinco estados: login → lista → nova entrada → QR → config.
+// A lista se renova sozinha a cada 5 s, então dois tablets mostram o mesmo.
+const KIDS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><meta name="mobile-web-app-capable" content="yes"><link rel="apple-touch-icon" href="/app-icon.png">
+<title>${LOJA_NOME} — Espaço Kids</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--blue:#0b5c8a}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+h1{font-size:17px;margin:0}h1 b{color:var(--gold2)}
+.wrap{max-width:900px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.card.al{border-color:#eda3a3;background:#fdf2f2;box-shadow:0 0 0 2px rgba(220,38,38,.15)}
+input,textarea{width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px;background:#fff;color:var(--ink)}
+.num{font-size:24px;text-align:center}
+.big{width:100%;padding:15px;border:0;border-radius:12px;background:var(--green);color:#fff;font:inherit;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}
+.big.g{background:#5b5b66}.big.o{background:var(--gold2)}.big.r{background:var(--red)}.big:disabled{opacity:.45}
+.mut{color:var(--mut);font-size:13px}.tit{font-weight:700;margin:14px 0 6px}
+.err{color:var(--red);font-size:13px;margin-top:6px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.seg{padding:11px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font:inherit;cursor:pointer;color:var(--ink)}
+.seg.on{border-color:var(--gold2);background:rgba(224,101,26,.08);color:var(--gold2);font-weight:700}
+.kp{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.kp button{padding:14px 0;font:inherit;font-size:22px;font-weight:800;border:1.5px solid var(--line);border-radius:12px;background:#fff;cursor:pointer}
+.kp button:active{background:#f0f0f4}
+input.kalvo{border-color:var(--gold2)}
+a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
+.kn{font-size:22px;font-weight:800;line-height:1.15}
+.sel{display:inline-block;font-size:12px;font-weight:800;border-radius:999px;padding:3px 9px;margin-left:6px;vertical-align:middle}
+.sel.ok{background:#e7f7ec;color:#0a7d38}.sel.wait{background:#fff4d6;color:#8a5a00}
+.sel.old{background:#fde8e8;color:#b91c1c}.sel.off{background:#e6f2fa;color:var(--blue)}
+.bal{background:#eef7ee;border-left:3px solid var(--green);border-radius:0 10px 10px 0;padding:8px 10px;margin-top:8px;font-size:14px;white-space:pre-wrap}
+.errbox{background:#fdecec;color:#b91c1c;border-radius:10px;padding:8px 10px;margin-top:8px;font-size:13px;font-weight:600}
+.chm{background:#fff7e8;border-radius:10px;padding:7px 10px;margin-top:8px;font-size:13.5px;font-weight:600;color:#8a5a00}
+.acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.acts .big{margin-top:0;flex:1;min-width:130px}
+.qrbox{text-align:center;padding:6px}
+.qrbox svg{width:min(78vw,260px);height:auto}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:20px;font-weight:800;letter-spacing:2px}
+.hoje{font-size:13.5px;padding:5px 0;border-bottom:1px solid #f0f0f4;display:flex;justify-content:space-between;gap:8px}
+.hoje:last-child{border:0}
+.aviso{background:#e6f2fa;color:var(--blue);border-radius:10px;padding:8px 10px;font-size:13px;font-weight:600;margin-bottom:10px}
+</style></head><body>
+<header><h1>🧸 Espaço Kids <b>${LOJA_NOME}</b></h1><span id="hdr"></span></header>
+<div class="wrap" id="app"></div>
+<script>
+var TOK=null;try{TOK=localStorage.getItem('kids_tok')||localStorage.getItem('garcom_tok')||null}catch(e){}
+var NOME=null,GER=false,TELA='login',E=null,QR=null,PASSO=1,ERRO='',TIMER=null;
+var NOVA={mesa:'',tel:'',nome:'',ativa:null,criancas:[{nome:'',idade:'',obs:''}]};
+var CHAMAR=null,CHMOT='quer_pai',CHTXT='',SAIU=null,ADDC=null;
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
+async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
+function telBr(t){var d=String(t||'').replace(/\\D/g,'');
+  if(d.length>11&&d.slice(0,2)==='55')d=d.slice(2); // o número da casa vem com o 55 da Meta
+  if(d.length===11)return '('+d.slice(0,2)+') '+d.slice(2,7)+'-'+d.slice(7);
+  if(d.length===10)return '('+d.slice(0,2)+') '+d.slice(2,6)+'-'+d.slice(6);
+  return d}
+/* teclado da casa: campo é readonly e o do Android nem abre (tablet de balcão) */
+var KP=null;
+function kpAlvo(el){KP=el.id;document.querySelectorAll('input.kalvo').forEach(function(x){x.classList.remove('kalvo')});el.classList.add('kalvo')}
+function kpHtml(alvo){KP=alvo;return '<div class="kp">'+['7','8','9','4','5','6','1','2','3','','0','⌫'].map(function(k){
+  return k===''?'<span></span>':'<button type="button" onclick="kpT(\\''+(k==='⌫'?'back':k)+'\\')">'+k+'</button>'}).join('')+'</div>'}
+function kpT(k){var e=KP&&document.getElementById(KP);if(!e)return;
+  e.value=(k==='back')?(e.value||'').slice(0,-1):(e.value||'')+k;
+  e.dispatchEvent(new Event('input'))}
+function setHdr(){var e=document.getElementById('hdr');if(!e)return;
+  e.innerHTML=NOME?((E&&E.agora?'<span class="mut">'+E.agora+' · </span>':'')+'<span class="mut">'+esc(NOME)+'</span>'+
+    (GER?' · <a class="sair" onclick="irCfg()">⚙</a>':'')+' · <a class="sair" onclick="sair()">sair</a>'):''}
+function sair(){try{localStorage.removeItem('kids_tok')}catch(e){}TOK=null;NOME=null;TELA='login';E=null;render()}
+function render(){var app=document.getElementById('app');setHdr();
+  if(TELA==='login')return telaLogin(app);
+  if(TELA==='nova')return telaNova(app);
+  if(TELA==='qr')return telaQr(app);
+  if(TELA==='cfg')return telaCfg(app);
+  return telaLista(app)}
+
+/* ---- LOGIN ---- */
+function telaLogin(el){
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Entrar no Espaço Kids</div>'+
+    '<div class="mut" style="margin-bottom:10px">Mesmo login e PIN da comanda.</div>'+
+    '<input id="lg" placeholder="seu login" autocapitalize="none">'+
+    '<input id="pn" class="num" type="password" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8" readonly onclick="kpAlvo(this)">'+
+    '<div id="pn2box"></div>'+kpHtml('pn')+
+    '<button class="big" onclick="entrar()">Entrar</button>'+
+    '<div id="lerr" class="err">'+esc(ERRO)+'</div></div>';
+  var e=document.getElementById('lg');if(e)e.focus()}
+async function entrar(){
+  var login=(document.getElementById('lg')||{}).value||'';
+  var pin=((document.getElementById('pn')||{}).value||'').replace(/\\D/g,'');
+  var z=document.getElementById('pn2');var pin2=z?(z.value||'').replace(/\\D/g,''):undefined;
+  var er=document.getElementById('lerr');er.textContent='';
+  var r=await jpost('/api/kids/entrar',{login:login,pin:pin,pin2:pin2});
+  if(r.primeira_vez&&!r.token){
+    document.getElementById('pn2box').innerHTML='<div class="mut" style="margin-top:8px">Primeira vez — repita o PIN pra criar:</div>'+
+      '<input id="pn2" class="num" type="password" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px" readonly onclick="kpAlvo(this)">';
+    er.textContent=r.erro||'';return}
+  if(!r.ok){er.textContent=r.erro||'não entrou';return}
+  TOK=r.token;try{localStorage.setItem('kids_tok',TOK)}catch(e){}
+  NOME=r.nome||login;GER=!!r.gerente;ERRO='';TELA='lista';render();puxar()}
+
+/* ---- LISTA ---- */
+async function puxar(){
+  if(!TOK)return;
+  var d;try{d=await jget('/api/kids/estado')}catch(e){return}
+  /* Painel aberto (irmão, chamar, saiu) tem campo digitado: repintar apagaria
+     o que a monitora escreveu. Guarda o dado e pinta quando ela fechar. */
+  if(d&&d.ok){E=d;if(TELA==='lista'&&!painelAberto())render();else setHdr();if(TELA==='qr')confereQr()}}
+function painelAberto(){return !!(ADDC||CHAMAR||SAIU)}
+function selo(c){
+  if(c.zap_status==='confirmado')return '<span class="sel ok">✅ zap ok</span>';
+  if(c.zap_status==='expirado')return '<span class="sel old">⚠️ sem zap</span>';
+  if(!c.nuvem_ok)return '<span class="sel off">sem conexão</span>';
+  return '<span class="sel wait">⏳ aguardando o zap</span>'}
+function telaLista(el){
+  if(!E){el.innerHTML='<div class="card mut">Carregando…</div>';return}
+  var h='';
+  if(E.nuvem&&E.nuvem.ligada&&!E.nuvem.ok)h+='<div class="aviso">Sem conexão com a nuvem'+(E.nuvem.erro?' ('+esc(E.nuvem.erro)+')':'')+'. Entrada e saída funcionam; o WhatsApp volta sozinho.</div>';
+  if(E.nuvem&&!E.nuvem.ligada)h+='<div class="aviso">Esta loja está sem a chave da nuvem — o WhatsApp do Kids não vai funcionar. Fale com o suporte.</div>';
+  h+='<button class="big" onclick="novaEntrada()">+ Nova entrada</button>';
+  if(!E.dentro.length)h+='<div class="card mut" style="margin-top:12px">Nenhuma criança no espaço agora.</div>';
+  E.dentro.forEach(function(c){
+    h+='<div class="card'+(c.alerta?' al':'')+'" style="margin-top:12px">'+
+      '<div class="kn">'+esc(c.nome)+(c.idade!=null?' <span class="mut" style="font-size:15px">('+c.idade+')</span>':'')+selo(c)+'</div>'+
+      '<div class="mut">'+(c.mesa?'Mesa '+c.mesa+' · ':'')+esc(c.responsavel)+' · '+(c.tel_fim?'…'+esc(c.tel_fim):'')+' · dentro há '+c.ha_min+' min</div>'+
+      (c.observacao?'<div class="mut" style="margin-top:4px">📝 '+esc(c.observacao)+'</div>':'');
+    if(c.chamada)h+='<div class="chm">📣 chamado há '+c.chamada.ha_min+' min'+(c.chamada.motivo?' · '+esc(c.chamada.motivo):'')+(c.chamada.vezes>1?' ('+c.chamada.vezes+'ª vez)':'')+'</div>';
+    if(c.chamada&&c.chamada.erro)h+='<div class="errbox">O WhatsApp recusou: '+esc(c.chamada.erro)+'</div>';
+    if(c.resposta)h+='<div class="bal"><b>'+esc(c.responsavel)+' respondeu</b> · há '+c.resposta.ha_min+' min\\n'+esc(c.resposta.texto)+'</div>';
+    if(c.escalado)h+='<div class="chm">🔔 garçom avisado</div>';
+    if(c.zap_status!=='confirmado')h+='<div class="mut" style="margin-top:8px">O responsável ainda não confirmou o WhatsApp.</div>';
+    h+='<div class="acts">';
+    if(c.zap_status==='confirmado')h+='<button class="big o" onclick="abrirChamar('+c.id+')">📣 '+(c.chamada?'Chamar de novo':'Chamar')+'</button>';
+    else h+='<button class="big g" onclick="qrDeNovo('+c.entrada_id+')">📱 Mostrar QR de novo</button>';
+    if(c.alerta)h+='<button class="big r" onclick="escalar('+c.id+')">🔔 Avisar o garçom</button>';
+    h+='<button class="big g" onclick="pedirSaida('+c.id+')">🚪 Saiu</button>'+
+      '<button class="big g" onclick="abrirAdd('+c.entrada_id+')">+ irmão</button></div>';
+    if(SAIU===c.id)h+='<div class="card" style="margin:10px 0 0;background:#fff7e8"><b>'+esc(c.nome)+' está saindo?</b>'+
+      '<div class="row" style="margin-top:8px"><button class="big" onclick="confirmarSaida('+c.id+')">Sim, saiu</button>'+
+      '<button class="big g" onclick="SAIU=null;render()">Não</button></div></div>';
+    if(CHAMAR===c.id)h+=painelChamar(c);
+    if(ADDC===c.entrada_id)h+=painelAdd(c);
+    h+='</div>'});
+  if(E.hoje.length){h+='<div class="card"><div class="tit" style="margin-top:0">Hoje já saíram ('+E.hoje.length+')</div>'+
+    E.hoje.map(function(x){return '<div class="hoje"><span>'+esc(x.nome)+(x.mesa?' · mesa '+x.mesa:'')+' <span class="mut">'+esc(x.responsavel)+'</span></span><span class="mut">'+x.entrou+'→'+x.saiu+'</span></div>'}).join('')+'</div>'}
+  el.innerHTML=h;
+  if(CHAMAR&&CHMOT==='outro'){var t=document.getElementById('chtxt');if(t)t.focus()}}
+
+/* ---- CHAMAR ---- */
+function painelChamar(c){
+  var ms=[['quer_pai','Quer o pai'],['hora_sair','Hora de sair'],['machucou','Se machucou (está bem)'],['outro','Outro motivo']];
+  return '<div class="card" style="margin:10px 0 0;background:#fff7e8"><b>Por que chamar '+esc(c.responsavel)+'?</b>'+
+    '<div class="row" style="margin-top:8px">'+ms.map(function(m){
+      return '<button class="seg'+(CHMOT===m[0]?' on':'')+'" onclick="CHMOT=\\''+m[0]+'\\';render()">'+m[1]+'</button>'}).join('')+'</div>'+
+    (CHMOT==='outro'?'<input id="chtxt" maxlength="120" placeholder="o que dizer (curto)" style="margin-top:8px" value="'+esc(CHTXT)+'" oninput="CHTXT=this.value">':'')+
+    '<div class="row" style="margin-top:8px"><button class="big" id="btch" onclick="chamar('+c.id+')">Enviar no WhatsApp</button>'+
+    '<button class="big g" onclick="CHAMAR=null;render()">Cancelar</button></div>'+
+    '<div id="cherr" class="err"></div></div>'}
+function abrirChamar(id){CHAMAR=id;CHMOT='quer_pai';CHTXT='';SAIU=null;ADDC=null;render()}
+async function chamar(id){
+  var b=document.getElementById('btch');if(b){b.disabled=true;b.textContent='Enviando…'}
+  var r=await jpost('/api/kids/chamar',{crianca_id:id,motivo:CHMOT,texto:CHTXT});
+  if(!r.ok){var e=document.getElementById('cherr');if(e)e.textContent=r.erro||'não enviou';if(b){b.disabled=false;b.textContent='Enviar no WhatsApp'}return}
+  CHAMAR=null;await puxar()}
+async function escalar(id){await jpost('/api/kids/escalar',{crianca_id:id});await puxar()}
+function pedirSaida(id){SAIU=id;CHAMAR=null;ADDC=null;render()}
+async function confirmarSaida(id){SAIU=null;await jpost('/api/kids/saida',{crianca_id:id});await puxar()}
+
+/* ---- irmão que chegou depois ---- */
+function painelAdd(c){
+  return '<div class="card" style="margin:10px 0 0;background:#f4f7ff"><b>Outra criança do mesmo responsável</b>'+
+    '<input id="adn" placeholder="nome da criança" style="margin-top:8px">'+
+    '<div class="row" style="margin-top:8px"><input id="adi" inputmode="numeric" maxlength="2" placeholder="idade">'+
+    '<input id="ado" maxlength="200" placeholder="observação (opcional)"></div>'+
+    '<div class="row" style="margin-top:8px"><button class="big" onclick="addCrianca('+c.entrada_id+')">Adicionar</button>'+
+    '<button class="big g" onclick="ADDC=null;render()">Cancelar</button></div>'+
+    '<div id="aderr" class="err"></div></div>'}
+function abrirAdd(eid){ADDC=eid;CHAMAR=null;SAIU=null;render()}
+async function addCrianca(eid){
+  var n=(document.getElementById('adn')||{}).value||'';
+  if(!n.trim()){document.getElementById('aderr').textContent='diga o nome';return}
+  var r=await jpost('/api/kids/crianca',{entrada_id:eid,nome:n,
+    idade:(document.getElementById('adi')||{}).value||'',observacao:(document.getElementById('ado')||{}).value||''});
+  if(!r.ok){document.getElementById('aderr').textContent=r.erro||'não deu';return}
+  ADDC=null;await puxar()}
+
+/* ---- NOVA ENTRADA (3 passos) ---- */
+function novaEntrada(){NOVA={mesa:'',tel:'',nome:'',ativa:null,criancas:[{nome:'',idade:'',obs:''}]};PASSO=1;ERRO='';TELA='nova';render()}
+function telaNova(el){
+  var h='<div class="card"><div class="mut">Passo '+PASSO+' de 3</div>';
+  if(PASSO===1){
+    h+='<div class="tit" style="margin-top:6px">Em que mesa eles estão?</div>'+
+      '<input id="me" class="num" inputmode="numeric" maxlength="4" placeholder="mesa" value="'+esc(NOVA.mesa)+'" readonly onclick="kpAlvo(this)" oninput="NOVA.mesa=this.value">'+
+      kpHtml('me')+
+      '<button class="big" onclick="passo1()">Continuar</button>'+
+      '<button class="big g" onclick="passoMesaPular()">Sem mesa</button>';
+  } else if(PASSO===2){
+    h+='<div class="tit" style="margin-top:6px">WhatsApp do responsável</div>'+
+      '<div class="mut" style="margin-bottom:8px">Com DDD. É por ele que a casa vai chamar.</div>'+
+      '<input id="te" class="num" inputmode="numeric" maxlength="11" placeholder="79 99999-9999" value="'+esc(NOVA.tel)+'" readonly onclick="kpAlvo(this)" oninput="NOVA.tel=this.value">'+
+      kpHtml('te')+
+      '<input id="rn" placeholder="nome do responsável" style="margin-top:10px" value="'+esc(NOVA.nome)+'" oninput="NOVA.nome=this.value">'+
+      (NOVA.ativa?'<div class="aviso" style="margin-top:10px">Esse WhatsApp já tem criança no espaço ('+esc(NOVA.ativa.nome)+'). Toque em continuar pra adicionar outra na mesma entrada.</div>':'')+
+      '<button class="big" onclick="passo2()">Continuar</button>'+
+      '<button class="big g" onclick="PASSO=1;render()">Voltar</button>';
+  } else {
+    h+='<div class="tit" style="margin-top:6px">Quem vai entrar?</div>';
+    NOVA.criancas.forEach(function(c,i){
+      h+='<div class="card" style="background:#fafafc"><input placeholder="nome da criança" value="'+esc(c.nome)+'" oninput="NOVA.criancas['+i+'].nome=this.value">'+
+        '<div class="row" style="margin-top:8px"><input inputmode="numeric" maxlength="2" placeholder="idade" value="'+esc(c.idade)+'" oninput="NOVA.criancas['+i+'].idade=this.value">'+
+        '<input maxlength="200" placeholder="observação" value="'+esc(c.obs)+'" oninput="NOVA.criancas['+i+'].obs=this.value"></div>'+
+        (NOVA.criancas.length>1?'<button class="big g" onclick="tiraCrianca('+i+')">Remover</button>':'')+'</div>'});
+    h+='<button class="big g" onclick="maisCrianca()">+ outra criança</button>'+
+      '<button class="big" id="btok" onclick="salvarEntrada()">Confirmar entrada</button>'+
+      '<button class="big g" onclick="PASSO=2;render()">Voltar</button>';
+  }
+  h+='<div class="err">'+esc(ERRO)+'</div>'+
+    '<button class="big g" style="background:#c9c9d1;color:#33333a" onclick="TELA=\\'lista\\';ERRO=\\'\\';render()">Cancelar</button></div>';
+  el.innerHTML=h}
+async function passo1(){
+  NOVA.mesa=((document.getElementById('me')||{}).value||'').replace(/\\D/g,'');
+  ERRO='';
+  if(NOVA.mesa){var s=await jget('/api/kids/sugerir?mesa='+encodeURIComponent(NOVA.mesa));
+    if(s&&s.ok){if(s.telefone&&!NOVA.tel)NOVA.tel=s.telefone;if(s.nome&&!NOVA.nome)NOVA.nome=s.nome}}
+  PASSO=2;render()}
+function passoMesaPular(){NOVA.mesa='';ERRO='';PASSO=2;render()}
+async function passo2(){
+  NOVA.tel=((document.getElementById('te')||{}).value||'').replace(/\\D/g,'');
+  NOVA.nome=((document.getElementById('rn')||{}).value||'');
+  if(NOVA.tel.length<10||NOVA.tel.length>11){ERRO='o WhatsApp precisa de DDD + número (10 ou 11 dígitos)';render();return}
+  ERRO='';
+  var s=await jget('/api/kids/sugerir?tel='+encodeURIComponent(NOVA.tel));
+  if(s&&s.ok){NOVA.ativa=s.entrada_ativa||null;if(!NOVA.nome.trim()&&s.nome)NOVA.nome=s.nome}
+  if(!NOVA.nome.trim()){ERRO='diga o nome do responsável';render();return}
+  PASSO=3;render()}
+function maisCrianca(){NOVA.criancas.push({nome:'',idade:'',obs:''});render()}
+function tiraCrianca(i){NOVA.criancas.splice(i,1);render()}
+async function salvarEntrada(){
+  var cs=NOVA.criancas.filter(function(c){return String(c.nome||'').trim()});
+  if(!cs.length){ERRO='informe pelo menos uma criança';render();return}
+  var b=document.getElementById('btok');if(b){b.disabled=true;b.textContent='Salvando…'}
+  var r;
+  if(NOVA.ativa){ // mesmo responsável já com criança dentro: entra na mesma entrada
+    for(var i=0;i<cs.length;i++){
+      r=await jpost('/api/kids/crianca',{entrada_id:NOVA.ativa.id,nome:cs[i].nome,idade:cs[i].idade,observacao:cs[i].obs});
+      if(!r.ok)break}
+    if(r&&r.ok){TELA='lista';ERRO='';await puxar();return}
+  } else {
+    r=await jpost('/api/kids/entrada',{mesa:NOVA.mesa,telefone:NOVA.tel,responsavel:NOVA.nome,
+      criancas:cs.map(function(c){return {nome:c.nome,idade:c.idade,observacao:c.obs}})});
+    if(r&&r.ok){QR=r;TELA='qr';ERRO='';render();puxar();return}
+  }
+  ERRO=(r&&r.erro)||'não deu pra salvar';if(b){b.disabled=false;b.textContent='Confirmar entrada'}render()}
+
+/* ---- QR: o responsável manda a mensagem e a Meta confirma o número ---- */
+function telaQr(el){
+  if(!QR){TELA='lista';return render()}
+  var ok=QR.zap_status==='confirmado';
+  var h='<div class="card">';
+  if(ok){
+    h+='<div class="kn">✅ WhatsApp confirmado</div>'+
+      '<div class="mut" style="margin-top:6px">'+esc(QR.responsavel)+(QR.tel_confirmado?' · '+telBr(QR.tel_confirmado):'')+'</div>'+
+      '<div class="mut" style="margin-top:6px">O link da câmera já foi pro celular dele.</div>'+
+      '<button class="big" onclick="TELA=\\'lista\\';render()">Voltar pra lista</button>';
+  } else if(!QR.wa_url){
+    h+='<div class="kn">Sem o número da casa</div>'+
+      '<div class="mut" style="margin-top:6px">A nuvem ainda não respondeu qual número usar'+(QR.nuvem_erro?' ('+esc(QR.nuvem_erro)+')':'')+'. A criança já está registrada; tente o QR de novo daqui a pouco.</div>'+
+      '<button class="big g" onclick="qrDeNovo('+QR.entrada_id+')">Tentar de novo</button>'+
+      '<button class="big" onclick="TELA=\\'lista\\';render()">Voltar pra lista</button>';
+  } else {
+    h+='<div class="kn">Peça pro responsável apontar a câmera</div>'+
+      '<div class="mut" style="margin-top:4px">Ele toca em enviar no WhatsApp. Só isso.</div>'+
+      '<div class="qrbox">'+QR.qr_svg+'</div>'+
+      '<div class="mono" style="text-align:center">'+esc(QR.codigo)+'</div>'+
+      '<div class="mut" style="text-align:center;margin-top:6px">'+esc(QR.texto_qr)+'</div>'+
+      '<div class="mut" style="text-align:center;margin-top:6px">Sem câmera? Ele pode mandar esse código pro WhatsApp '+esc(telBr(QR.numero_casa))+'.</div>'+
+      '<button class="big g" onclick="TELA=\\'lista\\';render()">Deixar pra depois</button>';
+  }
+  el.innerHTML=h+'</div>'}
+function confereQr(){
+  if(!QR||!E)return;
+  var c=E.dentro.filter(function(x){return x.entrada_id===QR.entrada_id})[0];
+  if(c&&c.zap_status!==QR.zap_status){QR.zap_status=c.zap_status;render()}}
+async function qrDeNovo(eid){
+  var r=await jpost('/api/kids/qr-novo',{entrada_id:eid});
+  if(r&&r.ok){QR=r;TELA='qr';render()}}
+
+/* ---- CONFIGURAÇÃO (gerente) ---- */
+function irCfg(){TELA='cfg';ERRO='';render()}
+function telaCfg(el){
+  var c=(E&&E.cfg)||{camera_link:'',alerta_min:5,numero_casa:''};
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Configuração do Espaço Kids</div>'+
+    '<div class="mut">Link da câmera ao vivo (UniFi Protect → Compartilhar transmissão). Vai junto com a confirmação no WhatsApp do responsável.</div>'+
+    '<input id="cl" placeholder="https://..." style="margin-top:8px" value="'+esc(c.camera_link)+'">'+
+    '<div class="tit">Avisar depois de quantos minutos sem resposta?</div>'+
+    '<input id="am" class="num" inputmode="numeric" maxlength="2" value="'+esc(c.alerta_min)+'">'+
+    '<div class="mut" style="margin-top:10px">Número da casa no WhatsApp: <b>'+esc(telBr(c.numero_casa)||'—')+'</b> (vem da nuvem)</div>'+
+    '<button class="big" onclick="salvarCfg()">Salvar</button>'+
+    '<button class="big g" onclick="TELA=\\'lista\\';render()">Voltar</button>'+
+    '<div class="err">'+esc(ERRO)+'</div></div>'}
+async function salvarCfg(){
+  var r=await jpost('/api/kids/config',{camera_link:(document.getElementById('cl')||{}).value||'',
+    alerta_min:(document.getElementById('am')||{}).value||''});
+  if(!r.ok){ERRO=r.erro||'não salvou';render();return}
+  ERRO='';TELA='lista';await puxar()}
+
+/* ---- entrada ---- */
+async function inicio(){
+  if(TOK){var s=null;try{s=await jget('/api/kids/sessao')}catch(e){}
+    if(s&&s.ok){NOME=s.nome||s.login;GER=!!s.gerente;TELA='lista';render();await puxar()}
+    else{TOK=null;TELA='login';render()}}
+  else{TELA='login';render()}
+  if(TIMER)clearInterval(TIMER);
+  TIMER=setInterval(function(){if(TOK&&TELA!=='login'&&TELA!=='nova'&&TELA!=='cfg')puxar()},5000)}
+/* o relógio do cabeçalho continua andando mesmo com painel aberto */
+inicio();
+</script></body></html>`;
 
 // Ícone do atalho: PNG gerado aqui (zlib do próprio Node), sem arquivo nem
 // dependência — quadrado na cor da casa com uma faixa clara no meio.
@@ -17063,6 +17858,27 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
+    // ---- ESPAÇO KIDS: tablet da monitora (mesmo login do garçom) ----
+    if (p.startsWith('/api/kids/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method === 'POST' && p === '/api/kids/entrar') return res.end(JSON.stringify(await apiKidsEntrar(await readBody(req))));
+      if (p === '/api/kids/sessao') return res.end(JSON.stringify(await apiKidsSessao(req, u)));
+      const quem = await kidsDaRequisicao(req, u); // as demais exigem gente logada
+      if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no Kids de novo.', sem_sessao: true }));
+      if (p === '/api/kids/estado') return res.end(JSON.stringify(await apiKidsEstado()));
+      if (p === '/api/kids/sugerir') return res.end(JSON.stringify(await apiKidsSugerir(u)));
+      if (req.method === 'POST') {
+        const b = await readBody(req);
+        if (p === '/api/kids/entrada') return res.end(JSON.stringify(await apiKidsEntrada(b, quem)));
+        if (p === '/api/kids/qr-novo') return res.end(JSON.stringify(await apiKidsQrNovo(b)));
+        if (p === '/api/kids/crianca') return res.end(JSON.stringify(await apiKidsCrianca(b)));
+        if (p === '/api/kids/chamar') return res.end(JSON.stringify(await apiKidsChamar(b, quem)));
+        if (p === '/api/kids/escalar') return res.end(JSON.stringify(await apiKidsEscalar(b, quem)));
+        if (p === '/api/kids/saida') return res.end(JSON.stringify(await apiKidsSaida(b, quem)));
+        if (p === '/api/kids/config') return res.end(JSON.stringify(await apiKidsConfig(b, quem)));
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     // ---- CAIXA (Bloco 1): login próprio + ações que exigem sessão de caixa ----
     if (p.startsWith('/api/caixa/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -17251,6 +18067,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
+    if (p === '/kids') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(KIDS_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
     if (p === '/api/conta') {
       const n = u.searchParams.get('n') || 0;
@@ -17621,6 +18438,11 @@ async function main() {
   // Uma passada 1min depois do boot: sem isto, servidor que subiu 04:05 só
   // tentaria 04:15, e o que subiu 10:55 perderia a janela inteira.
   setTimeout(() => loopFecharCaixasMaquininha().catch(() => {}), 60 * 1000);
+  // Espaço Kids: a confirmação do QR e a resposta do pai chegam pela nuvem (o
+  // webhook da Meta é uma URL só, na Vercel), então a loja PUXA. O loop se
+  // freia sozinho pra 60 s quando não tem criança no espaço.
+  setTimeout(() => kidsSyncLoop().catch(() => {}), 25 * 1000);
+  setInterval(() => kidsSyncLoop().catch(() => {}), 4 * 1000);
   // fotos de quem baixou: apaga o que passou do prazo. No boot e de 6 em 6h —
   // a máquina da loja passa dias ligada, e sem isso a pasta cresce pra sempre.
   limparFotosAntigas();

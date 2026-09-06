@@ -282,7 +282,7 @@ Reações/figurinhas de número ativo: consome sem gravar (retorna `true`).
    Sem `link_camera`: a linha 📹 some. Sem mesa: ", mesa <N>" some.
 3. **Chamada** (loja monta, nuvem envia):
    ```
-   📣 <nome>, a monitora do Espaço Kids pede pra você vir buscar a <criança> (mesa <N>).
+   📣 <nome>, a monitora do Espaço Kids pede pra você vir buscar <criança> (mesa <N>).
    Motivo: <quer o pai | hora de sair | se machucou, mas está bem | texto da monitora>
    Pode responder por aqui que ela vê na tela.
    ```
