@@ -20,6 +20,7 @@ import {
   remarcarReservaWhatsApp,
   cancelarReservaWhatsApp,
   consultarEstornoWhatsApp,
+  entrarListaEsperaWhatsApp,
   consultarMesa,
 } from './reservar';
 import { consultarCardapio } from './cardapio';
@@ -565,6 +566,8 @@ export async function processarEntrada(params: {
       cancelarReserva: (data: string | null) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, data }),
       consultarEstorno: () => consultarEstornoWhatsApp(entrada.filialId, entrada.telefone),
+      entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) =>
+        entrarListaEsperaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, ...dados }),
       cadastrarFornecedor: async (dados: {
         empresa: string; produtos: string; vendedor: string | null; cnpj: string | null;
         email: string | null; cidade: string | null; telefoneContato: string | null;

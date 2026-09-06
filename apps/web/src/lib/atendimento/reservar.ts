@@ -833,3 +833,49 @@ export async function remarcarReservaWhatsApp(p: {
       : '';
   return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. Confirme ao cliente em uma frase e lembre que a mesa fica guardada por 15 minutos após o horário.`;
 }
+
+/** LISTA DE ESPERA pela Nina (pedido do Elison 06/09: "estamos recebendo por
+ *  ordem de chegada — tem fila de espera?"): quando a reserva de hoje não é
+ *  possível, o cliente entra na fila da recepção direto pelo WhatsApp e o
+ *  painel /lista-espera mostra na hora. Status segue o fluxo do painel:
+ *  aguardando -> chamado -> sentado. */
+export async function entrarListaEsperaWhatsApp(p: {
+  filialId: string;
+  telefone: string;
+  nome: string;
+  pessoas: number;
+  area?: string | null;
+}): Promise<string> {
+  const nome = nomeReal(p.nome);
+  if (!nome) return 'Preciso do NOME de quem vai chegar — pergunte ao cliente e chame de novo.';
+  const pessoas = p.pessoas > 0 ? Math.min(Math.round(p.pessoas), 99) : 0;
+  if (!pessoas) return 'Preciso de QUANTAS pessoas — pergunte ao cliente e chame de novo.';
+
+  const suf = p.telefone.replace(/\D/g, '').slice(-8);
+  const [ja] = (await db.execute(sql`
+    SELECT id FROM lista_espera
+    WHERE filial_id = ${p.filialId} AND status IN ('aguardando', 'chamado')
+      AND right(regexp_replace(coalesce(telefone, ''), '\\D', '', 'g'), 8) = ${suf}
+      AND criado_em > now() - interval '6 hours'
+    LIMIT 1
+  `)) as unknown as Array<{ id: string }>;
+  if (ja) {
+    return 'Este cliente JÁ ESTÁ na lista de espera de hoje — confirme que o nome dele segue na fila e que a recepção chama assim que a mesa vagar.';
+  }
+
+  await db.execute(sql`
+    INSERT INTO lista_espera (filial_id, nome, telefone, pessoas, status, area, observacao)
+    VALUES (${p.filialId}, ${nome}, ${p.telefone.replace(/\D/g, '').slice(0, 20)}, ${pessoas},
+            'aguardando', ${(p.area ?? '').trim() || null}, 'Entrou pela Nina (WhatsApp) — cliente a caminho')
+  `);
+  const [pos] = (await db.execute(sql`
+    SELECT count(*)::int AS n FROM lista_espera
+    WHERE filial_id = ${p.filialId} AND status IN ('aguardando', 'chamado')
+      AND criado_em > now() - interval '6 hours'
+  `)) as unknown as Array<{ n: number }>;
+
+  return (
+    `NA LISTA DE ESPERA: ${nome}, ${pessoas} pessoa(s)${p.area ? `, preferência ${p.area}` : ''} — posição ${pos.n} da fila de hoje. ` +
+    'Diga ao cliente que o nome já está com a recepção: quando ele chegar, é só se apresentar que será chamado assim que vagar mesa — a fila anda conforme as mesas liberam, sem hora garantida. Convide a vir com carinho.'
+  );
+}

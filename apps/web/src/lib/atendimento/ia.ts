@@ -75,6 +75,7 @@ export interface ExecutoresFerramentas {
     telefoneContato: string | null;
   }) => Promise<string>;
   consultarEstorno: () => Promise<string>;
+  entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
   consultarMare: (data: string) => Promise<string>;
@@ -257,7 +258,8 @@ ${duasCasas
 - CLIENTE PERGUNTA SE TEM RESERVA (telefone dele): se não encontrar nada, NÃO transfira — ofereça CRIAR UMA AGORA. "Não encontrei reserva ativa no seu nome — quer fazer uma agora? Qual dia e hora você prefere?" Depois: pergunte quantas pessoas e área (Areia/Deck/Lounge). Você cria a reserva COM criar_reserva (telefone dele como CPF/identificador, se ele der o CPF use, se não use só o telefone).
 - ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, no CPF final 123 — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
 - NUNCA diga "vou confirmar/fazer sua reserva" antes da ferramenta retornar RESERVA CRIADA — a confirmação vem DEPOIS do resultado, nunca como promessa.
-- PEDIDO PRA HOJE EM CIMA DA HORA: NUNCA recuse por conta própria dizendo que "está perto do horário" — quem decide é a ferramenta, e o mínimo de antecedência MUDA com o movimento (casa com espaço aceita reserva com 20 minutos; casa cheia exige 1 hora). Se o horário pedido é hoje e ainda não passou, CHAME criar_reserva e deixe ela responder. Nunca ofereça um horário e recuse esse mesmo horário na mensagem seguinte — se você disse que dá pra reservar até as 17h, então 14h, 15h e 16h estão valendo. Só quando a ferramenta REALMENTE recusar é que você orienta a vir direto (a recepção acomoda na chegada; reservar não é obrigatório e o pôr do sol é por ordem de chegada) — com convite, sem "sinto muito".
+- PEDIDO PRA HOJE EM CIMA DA HORA: NUNCA recuse por conta própria dizendo que "está perto do horário" — quem decide é a ferramenta, e o mínimo de antecedência MUDA com o movimento (casa com espaço aceita reserva com 20 minutos; casa cheia exige 1 hora). Se o horário pedido é hoje e ainda não passou, CHAME criar_reserva e deixe ela responder. Nunca ofereça um horário e recuse esse mesmo horário na mensagem seguinte — se você disse que dá pra reservar até as 17h, então 14h, 15h e 16h estão valendo.
+- QUANDO A RESERVA DE HOJE NÃO DÁ MAIS (ferramenta recusou / janela fechou / lotado): a mensagem NUNCA é só "não dá" — a casa CONTINUA RECEBENDO por ordem de chegada. Diga isso como convite e OFEREÇA a LISTA DE ESPERA: "quer que eu já coloque seu nome na fila da recepção? Quando você chegar, é só se apresentar que te chamam assim que vagar mesa". Cliente topou → colete nome + quantas pessoas e chame entrar_lista_espera; confirme a posição na fila. Seja honesta que a fila anda conforme as mesas vagam, sem hora garantida.
 ${duasCasas
     ? `- Lounge: não crie por aqui — explique a taxa (R$ 100 dia útil / R$ 250 sáb-dom, com garçom exclusivo) e mande concluir em reservas.prainhabar.com (o Pix é pago lá).
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.`
@@ -477,6 +479,23 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           telefone_contato: { type: 'string', description: 'telefone do vendedor SE diferente deste WhatsApp' },
         },
         required: ['empresa', 'produtos'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'entrar_lista_espera',
+      description:
+        'Coloca o cliente na LISTA DE ESPERA da recepção (fila de hoje, por ordem de chegada) — use quando a reserva de HOJE não é mais possível (janela fechada ou lotado) e o cliente vai vir mesmo assim. Colete nome e quantas pessoas antes. A recepção vê a fila no painel e chama quando vagar mesa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nome: { type: 'string', description: 'nome de quem vai chegar (real, nunca placeholder)' },
+          pessoas: { type: 'number', description: 'quantas pessoas' },
+          area: { type: 'string', description: 'preferência de área se o cliente disser (Areia, Deck Superior...)' },
+        },
+        required: ['nome', 'pessoas'],
       },
     },
   },
@@ -902,6 +921,12 @@ Como usar, SEM EXCEÇÃO:
             email: String(args.email ?? '') || null,
             cidade: String(args.cidade ?? '') || null,
             telefoneContato: String(args.telefone_contato ?? '') || null,
+          });
+        } else if (tc.function.name === 'entrar_lista_espera') {
+          resultado = await params.executores.entrarListaEspera({
+            nome: String(args.nome ?? ''),
+            pessoas: Number(args.pessoas) || 0,
+            area: String(args.area ?? '') || null,
           });
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
