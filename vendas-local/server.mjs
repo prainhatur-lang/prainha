@@ -4200,48 +4200,93 @@ const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
 // faltou quando a rede lenta fez o app reenviar: mesa 8 recebeu o Pix do grupo
 // anterior na conta do grupo novo, e mesas 33/24/23/6 fecharam com cartão
 // contado em dobro. A recusa volta `ja_registrado` — o app limpa a fila dele.
+// ⚠️ A TRAVA NUNCA "ABRE" POR FALHA (06/09/2026). O Pix manual NSU 1894289
+// (R$ 442, mesa 21) entrou 2x com 5,6 s de diferença: o Firebird recusa
+// CAST(DATAPAGAMENTO AS VARCHAR(19)) — o timestamp tem 24 caracteres — e a
+// consulta só quebrava QUANDO ACHAVA o par. O erro caía no catch, virava
+// `null` e o segundo lançamento passava. Agora Consumer sem resposta ou
+// consulta quebrada = `indeterminado`: quem chama RECUSA, nada é gravado no
+// escuro, e a tela pede pra registrar de novo.
 const pagarEmVoo = new Map();
 async function nsuJaLancado(nsu, valor) {
   const n = Number(nsu);
   if (!(n > 0)) return null;
   const v = +Number(valor).toFixed(2);
-  if (nativo()) {
-    const [r] = await sql`SELECT codigo, pedido FROM pagamento_local WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)}
-      AND valor=${v} AND cancelado_em IS NULL AND quando > now() - interval '7 days' ORDER BY codigo DESC LIMIT 1`;
-    if (r) {
-      const [c] = await sql`SELECT numero FROM comanda WHERE codigo=${Number(r.pedido)}`;
-      return { pagamento_fb: Number(r.codigo), onde: c ? `na mesa/comanda ${c.numero}` : `na conta ${r.pedido}` };
+  let falha = null;
+  try {
+    if (nativo()) {
+      const [r] = await sql`SELECT codigo, pedido FROM pagamento_local WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)}
+        AND valor=${v} AND cancelado_em IS NULL AND quando > now() - interval '7 days' ORDER BY codigo DESC LIMIT 1`;
+      if (r) {
+        const [c] = await sql`SELECT numero FROM comanda WHERE codigo=${Number(r.pedido)}`;
+        return { pagamento_fb: Number(r.codigo), onde: c ? `na mesa/comanda ${c.numero}` : `na conta ${r.pedido}` };
+      }
+    } else {
+      const r = await qi(`SELECT FIRST 1 g.CODIGO, p.NUMERO, CAST(g.DATAPAGAMENTO AS VARCHAR(24)) Q
+        FROM PAGAMENTOS g JOIN PEDIDOS p ON p.CODIGO=g.CODIGOPEDIDO
+        WHERE g.NSUTRANSACAO=${n} AND g.VALOR=${fbNum(v)} AND g.DATADELETE IS NULL
+          AND g.DATAPAGAMENTO > DATEADD(-7 DAY TO CURRENT_TIMESTAMP) ORDER BY g.CODIGO DESC`);
+      if (!r.ok) falha = 'Consumer: ' + r.err;
+      else if (r.rows.length) {
+        const x = r.rows[0];
+        return { pagamento_fb: Number(x.CODIGO), onde: `na mesa/comanda ${x.NUMERO} (${String(x.Q).slice(11, 16)})` };
+      }
     }
-  } else {
-    const r = await qi(`SELECT FIRST 1 g.CODIGO, p.NUMERO, CAST(g.DATAPAGAMENTO AS VARCHAR(19)) Q
-      FROM PAGAMENTOS g JOIN PEDIDOS p ON p.CODIGO=g.CODIGOPEDIDO
-      WHERE g.NSUTRANSACAO=${n} AND g.VALOR=${fbNum(v)} AND g.DATADELETE IS NULL
-        AND g.DATAPAGAMENTO > DATEADD(-7 DAY TO CURRENT_TIMESTAMP) ORDER BY g.CODIGO DESC`);
-    if (!r.ok) throw new Error('FB conferir NSU: ' + r.err);
-    if (r.rows.length) {
-      const x = r.rows[0];
-      return { pagamento_fb: Number(x.CODIGO), onde: `na mesa/comanda ${x.NUMERO} (${String(x.Q).slice(11, 16)})` };
+  } catch (e) { falha = e.message; }
+  // o nosso log também: cobre a janela em que o Consumer ainda não gravou e o
+  // Consumer fora do ar. 'iniciado' = o lançamento irmão está sendo gravado
+  // NESTE instante (vale 10 min: um fantasma de queda no meio do caminho não
+  // pode segurar o NSU por uma semana).
+  try {
+    const [l] = await sql`SELECT pagamento_fb, numero, status FROM venda_pagamento
+      WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)} AND valor=${v}
+        AND ((status='ok' AND criado_em > now() - interval '7 days')
+          OR (status='iniciado' AND criado_em > now() - interval '10 minutes'))
+      ORDER BY id DESC LIMIT 1`;
+    if (l) {
+      return { pagamento_fb: l.pagamento_fb ? Number(l.pagamento_fb) : null,
+        onde: `na mesa/comanda ${l.numero} (registro local${l.status === 'iniciado' ? ', gravando agora' : ''})` };
     }
-  }
-  // o nosso log também: cobre a janela em que o Consumer ainda não gravou
-  const [l] = await sql`SELECT pagamento_fb, numero FROM venda_pagamento
-    WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)} AND valor=${v} AND status='ok'
-      AND criado_em > now() - interval '7 days' ORDER BY id DESC LIMIT 1`;
-  if (l) return { pagamento_fb: l.pagamento_fb ? Number(l.pagamento_fb) : null, onde: `na mesa/comanda ${l.numero} (registro local)` };
-  return null;
+  } catch (e) { falha = falha || e.message; }
+  return falha ? { indeterminado: true, erro: falha } : null;
 }
 async function apiContaPagar(body) {
   const nsuTxt = String(body.nsu || '').replace(/\D/g, '').replace(/^0+/, '');
   const valor = +Number(body.valor || 0).toFixed(2);
   if (!nsuTxt) return apiContaPagarSemTrava(body); // dinheiro/canal: sem NSU não há chave
-  const k = nsuTxt + '|' + valor.toFixed(2);
+  // fila por NSU (e não por NSU+valor): "mesmo NSU hoje com OUTRO valor"
+  // também precisa enxergar o irmão que está gravando agora
+  const k = nsuTxt;
   while (pagarEmVoo.has(k)) await pagarEmVoo.get(k).catch(() => {});
   const p = (async () => {
-    const ja = await nsuJaLancado(nsuTxt, valor).catch((e) => { console.error('[pagar] conferir NSU:', e.message); return null; });
+    const quem = `origem ${body.origem || body.modo || '?'}, número ${body.numero}`;
+    let ja;
+    try { ja = await nsuJaLancado(nsuTxt, valor); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
+    if (ja && ja.indeterminado) {
+      console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} NÃO CONFERIDO (${ja.erro}) — recusado, nada gravado (${quem})`);
+      return { ok: false, indeterminado: true,
+        erro: `Não consegui conferir se o NSU ${nsuTxt} já foi lançado (${ja.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
+    }
     if (ja) {
-      console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} JÁ LANÇADO ${ja.onde} — recusado (origem ${body.origem || body.modo || '?'}, número ${body.numero})`);
+      console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} JÁ LANÇADO ${ja.onde} — recusado (${quem})`);
       return { ok: false, ja_registrado: true, pagamento_fb: ja.pagamento_fb,
         erro: `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
+    }
+    // RECEBIMENTO MANUAL (caixa): o mesmo NSU hoje, com QUALQUER valor, também
+    // não entra — cada cupom vale uma vez. Roda AQUI, dentro da fila; a
+    // conferência de apiCaixaReceberManual é só o aviso rápido antes da foto.
+    if (/^manual/.test(String(body.origem || ''))) {
+      const hoje = await nsuJaUsadoHoje(nsuTxt);
+      if (hoje && hoje.indeterminado) {
+        console.error(`[pagar] NSU ${nsuTxt} NÃO CONFERIDO no dia (${hoje.erro}) — recusado, nada gravado (${quem})`);
+        return { ok: false, indeterminado: true,
+          erro: `Não consegui conferir o NSU ${nsuTxt} no Consumer (${hoje.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
+      }
+      if (hoje) {
+        console.error(`[pagar] NSU ${nsuTxt} JÁ USADO HOJE no pedido ${hoje.pedido ?? '?'} (R$ ${hoje.valor.toFixed(2)}) — recusado (${quem})`);
+        return { ok: false, pagamento_fb: hoje.pagamento,
+          erro: `Esse NSU já foi usado HOJE no pedido ${hoje.pedido ?? '?'} (R$ ${hoje.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
+      }
     }
     return apiContaPagarSemTrava(body);
   })();
@@ -4313,8 +4358,10 @@ async function apiContaPagarSemTrava(body) {
   }
 
   const adquirente = body.adquirente === 'rede' ? 'rede' : (body.adquirente === 'cielo' ? 'cielo' : null);
-  const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, adquirente)
-    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado', ${adquirente}) RETURNING id`;
+  // o NSU entra JÁ no 'iniciado': é por ele que nsuJaLancado enxerga o irmão
+  // que está sendo gravado neste instante, mesmo com o Consumer devagar
+  const [log] = await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, adquirente, nsu)
+    VALUES (${n}, ${ped}, ${fp.cod}, ${fp.nome}, ${valor}, ${origem}, 'iniciado', ${adquirente}, ${body.nsu ? String(body.nsu).slice(0, 30) : null}) RETURNING id`;
 
   let dados = { nsu: body.nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null };
   try {
@@ -4351,6 +4398,17 @@ async function apiContaConferir(pagamentoId) {
   if (!p.tef_ref) return { ok: false, erro: 'pagamento sem referência na Cielo' };
   const r = await lioConsultar(p.tef_ref);
   if (!r.pago) return { ok: true, pago: false, status: r.status };
+  // a mesma régua de apiContaPagar: transação já lançada (por qualquer
+  // caminho) não entra de novo; Consumer sem resposta = tenta na próxima volta
+  let ja = null;
+  try { ja = await nsuJaLancado(r.nsu, p.valor); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
+  if (ja && ja.indeterminado) return { ok: false, erro: 'Não consegui conferir o NSU no Consumer (' + ja.erro + ') — tentando de novo' };
+  if (ja) {
+    console.error(`[conta/conferir] NSU ${r.nsu} R$ ${Number(p.valor).toFixed(2)} JÁ LANÇADO ${ja.onde} — não gravei de novo (pagamento ${p.id})`);
+    await sql`UPDATE venda_pagamento SET status='duplicado', erro=${'já lançado ' + ja.onde}, nsu=${r.nsu}, autorizacao=${r.autorizacao},
+      bandeira=${r.bandeira}, pagamento_fb=${ja.pagamento_fb} WHERE id=${p.id}`;
+    return { ok: true, pago: true, ja_registrado: true, nsu: r.nsu, autorizacao: r.autorizacao, pagamento_fb: ja.pagamento_fb };
+  }
   const pagFb = await fbInserirPagamento(p.pedido_fb, {
     forma_codigo: p.forma_codigo, valor: p.valor, nsu: r.nsu,
     autorizacao: r.autorizacao, bandeira: r.bandeira, observacao: 'Prainha Vendas LIO',
@@ -8095,14 +8153,25 @@ async function apiComprovanteFoto(body, quem) {
 /** NSU repetido no MESMO DIA = comprovante usado duas vezes (erro ou golpe).
  *  Devolve o pagamento que já usa o número, ou null se está livre. */
 async function nsuJaUsadoHoje(nsu) {
-  const n = String(nsu ?? '').replace(/\D/g, '');
+  const n = String(nsu ?? '').replace(/\D/g, '').replace(/^0+/, '');
   if (!n) return null;
-  const r = await qi(`SELECT FIRST 1 CODIGO, CODIGOPEDIDO PED, CAST(VALOR AS NUMERIC(12,2)) V
-    FROM PAGAMENTOS WHERE NSUTRANSACAO=${n} AND DATADELETE IS NULL
-      AND CAST(DATAPAGAMENTO AS DATE) = CURRENT_DATE`);
-  return r.ok && r.rows.length
-    ? { pagamento: Number(r.rows[0].CODIGO), pedido: Number(r.rows[0].PED) || null, valor: Number(r.rows[0].V) || 0 }
-    : null;
+  try {
+    if (nativo()) {
+      const [r] = await sql`SELECT codigo, pedido, valor FROM pagamento_local
+        WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${n} AND cancelado_em IS NULL
+          AND quando >= date_trunc('day', now()) ORDER BY codigo DESC LIMIT 1`;
+      return r ? { pagamento: Number(r.codigo), pedido: Number(r.pedido) || null, valor: Number(r.valor) || 0 } : null;
+    }
+    const r = await qi(`SELECT FIRST 1 CODIGO, CODIGOPEDIDO PED, CAST(VALOR AS NUMERIC(12,2)) V
+      FROM PAGAMENTOS WHERE NSUTRANSACAO=${Number(n)} AND DATADELETE IS NULL
+        AND CAST(DATAPAGAMENTO AS DATE) = CURRENT_DATE`);
+    // Consumer sem resposta NÃO é "não tem": quem chama recusa e pede pra
+    // registrar de novo (mesma regra de nsuJaLancado — a trava não abre por falha)
+    if (!r.ok) return { indeterminado: true, erro: 'Consumer: ' + r.err };
+    return r.rows.length
+      ? { pagamento: Number(r.rows[0].CODIGO), pedido: Number(r.rows[0].PED) || null, valor: Number(r.rows[0].V) || 0 }
+      : null;
+  } catch (e) { return { indeterminado: true, erro: e.message }; }
 }
 async function apiCaixaReceberManual(body, quem) {
   const numero = Number(body.numero) || 0;
@@ -8134,7 +8203,10 @@ async function apiCaixaReceberManual(body, quem) {
       erro: `${f.nome} exige o NSU do comprovante — é o número (DOC/NSU) impresso no papel da maquininha.` };
   }
   if (nsuLimpo) {
+    // aviso rápido, antes de processar a foto; a conferência que VALE roda
+    // dentro da fila de apiContaPagar (mesmo NSU+valor em 7 dias, mesmo NSU hoje)
     const dup = await nsuJaUsadoHoje(nsuLimpo);
+    if (dup && dup.indeterminado) return { ok: false, indeterminado: true, erro: `Não consegui conferir o NSU no Consumer (${dup.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
     if (dup) return { ok: false, erro: `Esse NSU já foi usado HOJE no pedido ${dup.pedido ?? '?'} (R$ ${dup.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
   }
   // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
@@ -9373,6 +9445,7 @@ async function apiNsuCasar(data) {
     const nsuNum = String(o.nsu).replace(/\D/g, '');
     if (!nsuNum) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'NSU do par não é numérico' }); continue; }
     const dup = await nsuJaUsadoHoje(nsuNum);
+    if (dup && dup.indeterminado) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(p.CODIGO)) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: `NSU ${nsuNum} já usado no pagamento ${dup.pagamento}` }); continue; }
     const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsuNum} WHERE CODIGO=${Number(p.CODIGO)} AND NSUTRANSACAO IS NULL`);
     if (!up.ok) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'FB: ' + up.err }); continue; }
@@ -9404,6 +9477,7 @@ async function apiNsuLerFotos(data) {
     const nsu = String(d?.nsu ?? '').replace(/\D/g, '');
     if (!nsu) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: d ? 'IA não achou NSU no papel' : 'OCR indisponível/foto ilegível' }); continue; }
     const dup = await nsuJaUsadoHoje(nsu);
+    if (dup && dup.indeterminado) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(f.pagamento_codigo)) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: `NSU ${nsu} já usado no pagamento ${dup.pagamento} — mesmo cupom fotografado 2×?` }); continue; }
     const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${Number(f.pagamento_codigo)} AND NSUTRANSACAO IS NULL`);
     if (!up.ok) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'FB: ' + up.err }); continue; }
@@ -9422,6 +9496,7 @@ async function apiNsuDefinir(body) {
   const nsu = String(body.nsu ?? '').replace(/\D/g, '');
   if (!pagamento || !nsu) return { ok: false, erro: 'pagamento e nsu obrigatórios' };
   const dup = await nsuJaUsadoHoje(nsu);
+  if (dup && dup.indeterminado) return { ok: false, erro: `Não consegui conferir o NSU no Consumer (${dup.erro}) — tente de novo em instantes` };
   if (dup && dup.pagamento !== pagamento) {
     return { ok: false, erro: `NSU ${nsu} já usado hoje no pagamento ${dup.pagamento} (pedido ${dup.pedido ?? '?'})` };
   }
