@@ -129,8 +129,8 @@ android {
         // cada uma; escolhe a filial e pronto (nunca mais digita a URL do Funnel).
         // O híbrido local×Funnel continua igual. Serve pra revenda (cada empresa
         // tem o seu código no mesmo Concilia). "Outro servidor…" segue como opção.
-        versionCode = 40
-        versionName = "1.10.16"
+        versionCode = 41
+        versionName = "1.10.17"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
     }
 

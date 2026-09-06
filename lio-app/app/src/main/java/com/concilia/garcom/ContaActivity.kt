@@ -939,6 +939,8 @@ class ContaActivity : AppCompatActivity() {
         fun pinta() {
             val (svc, resta, cobrar) = calc()
             valorTxt.text = Cupom.brl(cobrar)
+            // o valor cobrado vai escrito NO BOTÃO — não há como confirmar sem ler
+            dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.text = "💳 Cobrar ${Cupom.brl(cobrar)}"
             subTxt.text = when {
                 valorDig != null -> "valor digitado — o resto continua na conta"
                 partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
@@ -958,16 +960,43 @@ class ContaActivity : AppCompatActivity() {
             }
         }
 
+        // DINHEIRO EM CENTAVOS, padrão de maquininha: digita SÓ números e o
+        // campo se formata sozinho (550 → R$ 5,50). O teclado numérico da LIO
+        // não tem vírgula, e o parse antigo tratava ponto como milhar — "5.50"
+        // virava 550 e cobrava a conta inteira (bug real em campo, 20/08).
+        val digIn = campo("Ou digite o valor (só números — 550 = R$ 5,50)", android.text.InputType.TYPE_CLASS_NUMBER)
+        digIn.addTextChangedListener(object : android.text.TextWatcher {
+            private var editando = false
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (editando) return
+                editando = true
+                val dig = (s?.toString() ?: "").filter { it.isDigit() }.trimStart('0').take(9)
+                val cents = dig.toLongOrNull() ?: 0L
+                valorDig = if (cents > 0) cents / 100.0 else null
+                val txt = if (cents > 0) Cupom.brl(cents / 100.0) else ""
+                digIn.setText(txt)
+                digIn.setSelection(txt.length)
+                editando = false
+                pinta()
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+        })
+
         val gorjRow = chipRow()
         listOf(10, 15).forEach { p ->
             val b = chip(gorjRow, "$p%")
-            b.setOnClickListener { gorj = p; valorDig = null; pinta() }
+            // trocar o % do serviço NÃO apaga o valor que o garçom digitou —
+            // era assim que um parcial virava a conta inteira (mesa 3, 05/09)
+            b.setOnClickListener { gorj = p; pinta() }
             gorjBtns.add(p to b)
         }
         val partesRow = chipRow()
         (1..6).forEach { k ->
             val b = chip(partesRow, "$k")
-            b.setOnClickListener { partes = k; valorDig = null; pinta() }
+            // dividir substitui o valor digitado — e limpa o campo, pra tela e
+            // cobrança dizerem a mesma coisa
+            b.setOnClickListener { partes = k; valorDig = null; digIn.setText(""); pinta() }
             partesBtns.add(k to b)
         }
 
@@ -1006,28 +1035,6 @@ class ContaActivity : AppCompatActivity() {
                 }
             }
         }
-        // DINHEIRO EM CENTAVOS, padrão de maquininha: digita SÓ números e o
-        // campo se formata sozinho (550 → R$ 5,50). O teclado numérico da LIO
-        // não tem vírgula, e o parse antigo tratava ponto como milhar — "5.50"
-        // virava 550 e cobrava a conta inteira (bug real em campo, 20/08).
-        val digIn = campo("Ou digite o valor (só números — 550 = R$ 5,50)", android.text.InputType.TYPE_CLASS_NUMBER)
-        digIn.addTextChangedListener(object : android.text.TextWatcher {
-            private var editando = false
-            override fun afterTextChanged(s: android.text.Editable?) {
-                if (editando) return
-                editando = true
-                val dig = (s?.toString() ?: "").filter { it.isDigit() }.trimStart('0').take(9)
-                val cents = dig.toLongOrNull() ?: 0L
-                valorDig = if (cents > 0) cents / 100.0 else null
-                val txt = if (cents > 0) Cupom.brl(cents / 100.0) else ""
-                digIn.setText(txt)
-                digIn.setSelection(txt.length)
-                editando = false
-                pinta()
-            }
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
-        })
 
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
@@ -1059,6 +1066,7 @@ class ContaActivity : AppCompatActivity() {
             .setNegativeButton("Cancelar", null)
             .create()
         dlg?.show()
+        pinta() // o botão só existe depois do show(): carimba o valor nele
     }
 
     // ---- RECEBER TUDO: mesa + comandas numa passada só ----
