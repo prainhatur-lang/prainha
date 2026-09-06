@@ -11631,7 +11631,15 @@ async function cieloPixStatus(paymentId) {
   if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
   const st = Number(j?.Payment?.Status);
   // 12 = pendente · 2 = pago (Payment Confirmed)
-  return { ok: true, pago: st === 2, status: st, e2e: j?.Payment?.ProofOfSale || null };
+  // Dois números na resposta, com papéis diferentes — não confundir de novo:
+  //  · EndToEndId  = o E2E do Pix (BACEN, "E6070119…", 32 chars). É o que o
+  //    cliente e o banco usam numa contestação → vai pro comprovante.
+  //  · ProofOfSale = NSU/comprovante de venda da Cielo ("02000215"). É o que
+  //    bate no extrato da Cielo → vai pra autorização/NSU do PAGAMENTOS.
+  // Até 06/09/2026 o ProofOfSale saía como "E2E" no comprovante — número
+  // errado pra uma contestação (visto no pedido 159370 da Prainha Bar).
+  const p = j?.Payment || {};
+  return { ok: true, pago: st === 2, status: st, e2e: p.EndToEndId || null, nsu: p.ProofOfSale || null };
 }
 /** mTLS: o fetch do Node não expõe client cert, então vai de https.request. */
 function interAgent(c) {
@@ -12012,12 +12020,17 @@ async function apiPixConferir(txid) {
   const cob = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
   if (!cob) return { ok: false, erro: 'cobrança não encontrada' };
   if (cob.pago_em) return { ok: true, pago: true, ja_registrado: true };
-  let pago, e2e;
+  // e2e = EndToEndId do Pix (comprovante/contestação). autorizacao = o que vai
+  // pra NUMEROAUTORIZACAOCARTAO do PAGAMENTOS: na Cielo é o ProofOfSale (NSU),
+  // de onde o fbInserirPagamento deriva o NSUTRANSACAO que bate no extrato —
+  // se fosse o E2E, o NSU sumia e o Pix nunca mais conciliava. No Inter não
+  // existe NSU: vai o próprio E2E, como sempre foi.
+  let pago, e2e, autorizacao;
   if (cob.provedor === 'cielo') {
     const s = await cieloPixStatus(String(txid));
     if (!s.ok) return s;
     if (!s.pago) return { ok: true, pago: false, status: s.status };
-    pago = true; e2e = s.e2e;
+    pago = true; e2e = s.e2e; autorizacao = s.nsu;
   } else {
     const c = interCred();
     if (!c) return { ok: false, erro: 'Pix não habilitado' };
@@ -12026,7 +12039,7 @@ async function apiPixConferir(txid) {
     const r = await interReq(c, { method: 'GET', path: '/pix/v2/cob/' + String(txid), token });
     if (r.status !== 200) return { ok: false, erro: 'consulta falhou: HTTP ' + r.status };
     if (r.data?.status !== 'CONCLUIDA') return { ok: true, pago: false, status: r.data?.status || '?' };
-    pago = true; e2e = r.data?.pix?.[0]?.endToEndId || null;
+    pago = true; e2e = r.data?.pix?.[0]?.endToEndId || null; autorizacao = e2e;
   }
   // ⚠️ DINHEIRO. Quem dá a baixa é ESTE update, não o SELECT lá em cima.
   // O `pago_em IS NULL` faz do próprio UPDATE a trava: se duas conferidas
@@ -12058,12 +12071,12 @@ async function apiPixConferir(txid) {
       if (dup.ok && dup.rows.length) console.error('[pix] ' + txid + ' já estava no Consumer — não dupliquei');
       else {
         const pagFb = await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
-          autorizacao: e2e, observacao: marca });
+          autorizacao, observacao: marca });
         // o log LOCAL também precisa do Pix: é dele que sai a lista
         // "Pagamentos" da mesa e da conta impressa — sem isto o cliente pagava
         // e o garçom não via o lançamento na tela.
         await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
-          VALUES (${Number(cob.mesa)}, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${Number(cob.valor)}, ${'pix-cliente'}, ${'ok'}, ${e2e || null}, ${pagFb})`;
+          VALUES (${Number(cob.mesa)}, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${Number(cob.valor)}, ${'pix-cliente'}, ${'ok'}, ${autorizacao || null}, ${pagFb})`;
       }
       // quitou pelo Pix = mesmo ato final do dinheiro e da maquininha: fecha o
       // pedido e libera a mesa (o apiCaixaFechar barra sozinho se faltar).
