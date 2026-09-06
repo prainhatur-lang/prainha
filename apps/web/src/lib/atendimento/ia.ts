@@ -736,13 +736,15 @@ export async function gerarResposta(params: {
   duasCasas?: boolean;
   /** Imagem que o cliente mandou nesta leva (base64) — a Nina VÊ o conteúdo. */
   imagem?: { base64: string; mime: string } | null;
+  /** Força um modelo específico (failover de motor) — ignora a env. */
+  forcarModelo?: string;
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
   // gpt-4o motivaram a troca, 25/08); qualquer outro valor segue na OpenAI.
   // gpt-4o (nao o mini): o mini chutou preco e prometeu "vou confirmar" sem
   // transferir nos testes de 08/08. Custo segue baixo (~centavos/conversa).
-  const modelo = process.env.ATENDIMENTO_MODELO || 'gpt-4o';
+  const modelo = params.forcarModelo || process.env.ATENDIMENTO_MODELO || 'gpt-4o';
   const usarClaude = modelo.startsWith('claude');
   const apiKey = usarClaude ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error(usarClaude ? 'ANTHROPIC_API_KEY nao configurada' : 'OPENAI_API_KEY nao configurada');

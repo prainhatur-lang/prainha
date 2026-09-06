@@ -631,6 +631,7 @@ export async function processarEntrada(params: {
         // Pausa antes do retry: erro transitório do provedor (overload/rate
         // limit) repetido na mesma hora falha igual e o cliente ouve fallback.
         await sleep(3000);
+        try {
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
           filialNome,
@@ -648,6 +649,29 @@ export async function processarEntrada(params: {
           duasCasas: /prainha bar/i.test(filialNome),
           imagem,
         });
+        } catch (e2) {
+          // FAILOVER DE MOTOR (domingo 06/09: 8 falhas em rajada no pico —
+          // limite do provedor): a 3ª tentativa roda no OUTRO provedor.
+          const primario = process.env.ATENDIMENTO_MODELO || 'gpt-4o';
+          const alternativo = primario.startsWith('claude') ? 'gpt-4o' : 'claude-sonnet-5';
+          console.error('[nina] tentativa 2 falhou, failover pra', alternativo, ':', e2 instanceof Error ? e2.message : e2);
+          resposta = await gerarResposta({
+            nomeAtendente: config.nomeAtendente,
+            filialNome,
+            persona: config.persona,
+            conhecimento: config.conhecimento ?? [],
+            espacos: config.espacosEvento ?? [],
+            historico,
+            executores,
+            modo,
+            ocupacaoAgora,
+            nomePerfil: conversa.nomeCliente,
+            retomada: params.retomada === true,
+            duasCasas: /prainha bar/i.test(filialNome),
+            imagem,
+            forcarModelo: alternativo,
+          });
+        }
       }
       texto = resposta.texto;
       transferiu = resposta.transferiu;
