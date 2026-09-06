@@ -44,6 +44,35 @@ export async function GET(request: Request) {
   const { db, schema } = await import('@concilia/db');
   const { and, eq, gte, lte, sql } = await import('drizzle-orm');
 
+  // ATÉ QUANDO O EXTRATO COBRE — o dia que o ARQUIVO cobre, não a maior
+  // data_venda que entrou.
+  //
+  // O arquivo da Cielo publicado no dia D (CIELO03D_<ec>_..._<D>.TXT, importado
+  // ~11:30) traz o movimento do dia D-1 — e mais uma ou outra linha DATADA COMO
+  // D: venda da noite que a Cielo carimbou no dia seguinte. Medido em toda a
+  // era EDI (2.451 linhas, 2 filiais): TODA linha é datada D-1 ou D em relação
+  // ao próprio arquivo, nenhuma mais velha — nenhum arquivo traz venda
+  // atrasada. Então o arquivo de D fecha o dia D-1, e só ele.
+  //
+  // Com `max(data_venda)` uma única linha mal datada anunciava o dia D inteiro
+  // como coberto: em 06/09/2026 a nuvem tinha 1 linha de 06/09 (NSU 74001, que
+  // no PDV é venda de 05/09 19:33) contra 195 de 05/09, e a conferência da loja
+  // acusou o cartão da mesa 110 (NSU 81593, R$ 82,30) de `sem_par` — "sumiu
+  // dinheiro" — quando o certo era `extrato_atrasado`, que fecha sozinho quando
+  // o arquivo chegar. Na Tabuará a distorção é rotina: 256 de 604 linhas do EDI
+  // são mal datadas.
+  //
+  // Linha sem data de arquivo no caminho (CSV baixado do portal à mão) cai na
+  // regra antiga — ali não há período pra ler, e o upload manual é do dia.
+  const arquivoOrigem = schema.vendaAdquirente.arquivoOrigem;
+  const coberturaDoArquivo = sql`coalesce(
+    coalesce(
+      to_date(substring(${arquivoOrigem} from '_([0-9]{8})[.]TXT$'), 'YYYYMMDD'),
+      substring(${arquivoOrigem} from '/([0-9]{4}-[0-9]{2}-[0-9]{2})/')::date
+    ) - 1,
+    ${schema.vendaAdquirente.dataVenda}
+  )`;
+
   const [vendas, [cobertura]] = await Promise.all([
     db
       .select({
@@ -62,7 +91,7 @@ export async function GET(request: Request) {
         ),
       ),
     db
-      .select({ ate: sql<string | null>`max(${schema.vendaAdquirente.dataVenda})::text` })
+      .select({ ate: sql<string | null>`max(${coberturaDoArquivo})::text` })
       .from(schema.vendaAdquirente)
       .where(eq(schema.vendaAdquirente.filialId, f)),
   ]);
@@ -77,8 +106,9 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     ok: true,
-    /** Até que dia o extrato está importado — antes disso a loja pode confiar
-     *  na ausência; depois, "sem par" só significa "ainda não importado". */
+    /** Último dia FECHADO pelo arquivo da Cielo (= data do último arquivo - 1).
+     *  Até aqui a loja pode confiar na ausência e chamar de `sem_par`; depois,
+     *  falta de par só significa "o arquivo desse dia ainda não chegou". */
     extrato_ate: cobertura?.ate ?? null,
     vendas: vendas.map((v) => ({
       data: v.data,
