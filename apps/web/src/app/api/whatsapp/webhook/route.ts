@@ -21,6 +21,7 @@ import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
 import { enviarTexto } from '@/lib/atendimento/zap';
+import { tratarKids } from '@/lib/kids';
 import {
   registrarEntrada,
   processarEntrada,
@@ -103,6 +104,9 @@ export async function POST(req: Request) {
             await tratarPayload(payload, msg.from ?? null);
             continue;
           }
+          // Espaço Kids: mensagem do QR (confirma o zap) ou resposta de um
+          // responsável com criança dentro — a Nina não vê essas.
+          if (await tratarKids(msg, value?.metadata?.phone_number_id)) continue;
           // Mensagem comum -> atendimento da Nina
           await tratarMensagemComum(msg, value?.metadata?.phone_number_id, value?.contacts);
         }

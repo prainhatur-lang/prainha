@@ -128,6 +128,7 @@
     "migrate:custo-clt": "tsx scripts/migrate-custo-clt.ts",
     "migrate:metas": "tsx scripts/migrate-metas.ts",
     "migrate:escuta": "tsx scripts/migrate-escuta.ts",
+    "migrate:kids": "tsx scripts/migrate-kids.ts",
     "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts"
   },
   "dependencies": {
