@@ -427,6 +427,11 @@ async function initSchema() {
   // Pix que caiu quando a mesa JÁ tinha fechado: o dinheiro entrou e não achou
   // conta pra pousar. Fica marcado aqui pra alguém conciliar — ver /api/pix/orfaos.
   await addCol('pix_cobranca', 'sem_conta boolean');
+  // ⚠️ DE ONDE VEIO A COBRANÇA. Vazio = conta de mesa: o pagamento entra no
+  // Consumer e FECHA a mesa. 'kids' = avulsa do Espaço Kids, que não tem
+  // pedido nenhum pra pousar — sem esta marca, o Pix da recreação pagaria a
+  // conta da mesa e fecharia a comanda de quem ainda estava jantando.
+  await addCol('pix_cobranca', 'origem text');
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
@@ -707,6 +712,22 @@ async function initSchema() {
     texto text, wa_message_id text, erro text, criado_em timestamptz DEFAULT now(), por text)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_kids_evento_entrada ON kids_evento (entrada_id, criado_em)`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_kids_evento_wa ON kids_evento (wa_message_id) WHERE wa_message_id IS NOT NULL`;
+  // COBRANÇA do espaço (pedido do dono, 06/09/2026). Dois caminhos, e a
+  // diferença entre eles é de DINHEIRO, não de tela:
+  //  · 'mesa'     — vira item na conta da mesa (o preço é o do catálogo do
+  //                 PDV, quem recebe é o caixa junto com o resto). Não fica
+  //                 "pago" aqui: quem quita é a conta.
+  //  · 'pix'      — QR na hora, dinheiro cai direto na conta da casa. NÃO
+  //                 encosta em conta nenhuma (ver `origem` em pix_cobranca).
+  //  · 'cortesia' — a casa não cobrou. Fica registrado com nome de quem
+  //                 liberou: cortesia sem rastro é furo de caixa.
+  await sql`CREATE TABLE IF NOT EXISTS kids_cobranca (id bigserial PRIMARY KEY,
+    entrada_id bigint NOT NULL, criancas integer, valor numeric NOT NULL,
+    modo text NOT NULL, mesa integer, pedido_fb integer, txid text,
+    pago_em timestamptz, cancelada_em timestamptz, cancelada_por text,
+    criado_em timestamptz DEFAULT now(), por text, obs text)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_kids_cobranca_entrada ON kids_cobranca (entrada_id)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_kids_cobranca_txid ON kids_cobranca (txid) WHERE txid IS NOT NULL`;
 
   await initSchemaNativo();
 }
@@ -3289,6 +3310,17 @@ async function imprimirGaveta(d) {
 async function dadosComprovantePix(txid) {
   const c = (await sql`SELECT * FROM pix_cobranca WHERE txid=${String(txid)}`)[0];
   if (!c) return null;
+  // Espaço Kids: cobrança avulsa, sem conta de mesa nenhuma pra somar.
+  if (c.origem === 'kids') {
+    const k = (await sql`SELECT k.criancas, e.codigo, e.mesa, e.responsavel_nome
+      FROM kids_cobranca k JOIN kids_entrada e ON e.id=k.entrada_id WHERE k.txid=${String(txid)}`)[0];
+    const nc = Number(k?.criancas) || 0;
+    return { txid: String(txid), mesa: Number(k?.mesa) || 0,
+      rotulo: 'ESPACO KIDS' + (k?.mesa ? ' · mesa ' + k.mesa : ''), nome: k?.responsavel_nome || null,
+      valor: Number(c.valor) || 0, e2e: c.e2e || null, quando: c.pago_em || c.criado_em,
+      provedor: c.provedor || 'cielo', kids: nc ? nc + (nc > 1 ? ' crianças' : ' criança') : 'recreação',
+      consumo: Number(c.valor) || 0, pago_geral: Number(c.valor) || 0, falta: 0, quitada: true, casa: LOJA_NOME };
+  }
   const numero = Number(c.mesa) || 0;
   // ⚠️ NUNCA usar apiContaTexto aqui. Ele lê `comanda.subtotal_pago`, que é o
   // ESPELHO — só sincroniza no próximo ciclo (~15s). O Pix acabou de gravar o
@@ -3317,10 +3349,11 @@ function cupomPix(d) {
     IMP.neg, IMP.alto, impLn(d.rotulo + (d.nome ? ' · ' + d.nome : '')), IMP.norm, IMP.negFim,
     impLn(q), impTraco(),
     impLn(impLR('Forma', 'Pix')),
-    IMP.neg, IMP.alto, impLn(impLR('PAGO', impMoeda(d.valor))), IMP.norm, IMP.negFim, impTraco(),
-    impLn(impLR('Consumo da mesa', impMoeda(d.consumo))),
-    impLn(impLR('Total pago', impMoeda(d.pago_geral)))];
-  if (d.quitada) b.push(IMP.centro, IMP.neg, IMP.alto, impLn('CONTA QUITADA'), IMP.norm, IMP.negFim, IMP.esquerda);
+    IMP.neg, IMP.alto, impLn(impLR('PAGO', impMoeda(d.valor))), IMP.norm, IMP.negFim, impTraco()];
+  if (d.kids) b.push(impLn(impLR('Espaço Kids', d.kids)));
+  else b.push(impLn(impLR('Consumo da mesa', impMoeda(d.consumo))), impLn(impLR('Total pago', impMoeda(d.pago_geral))));
+  if (d.kids) b.push(IMP.centro, IMP.neg, IMP.alto, impLn('RECREAÇÃO PAGA'), IMP.norm, IMP.negFim, IMP.esquerda);
+  else if (d.quitada) b.push(IMP.centro, IMP.neg, IMP.alto, impLn('CONTA QUITADA'), IMP.norm, IMP.negFim, IMP.esquerda);
   else b.push(IMP.neg, impLn(impLR('AINDA FALTA', impMoeda(d.falta))), IMP.negFim);
   b.push(impTraco());
   // o E2E é o que o banco reconhece — sem ele, contestação vira palavra contra palavra
@@ -8877,12 +8910,34 @@ function kidsHora(d) {
 function kidsTextoQr(mesa, codigo) {
   return `Kids ${LOJA_NOME}${mesa ? ` · mesa ${mesa}` : ''} · código ${codigo}`;
 }
+/** "12,50", "1.250,00", "12.50" -> número. Number('1.250') dá 1,25 e já gravou
+ *  conta errada nesta casa — ponto sozinho com 3 casas é MILHAR. */
+function kidsNum(x) {
+  let t = String(x == null ? '' : x).trim().replace(/[^\d.,-]/g, '');
+  if (!t) return NaN;
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+  return Number(t);
+}
 async function kidsCfg() {
   const n = Number(await cfgGet('kids_alerta_min', '5'));
+  const pdv = Number(await cfgGet('kids_pdv', '0')) || 0;
+  const manual = kidsNum(await cfgGet('kids_preco', '0')) || 0;
+  const prod = pdv
+    ? (await sql`SELECT codigo_pdv, nome, tamanho, preco FROM produto_local WHERE codigo_pdv=${pdv}`)[0] || null
+    : null;
+  // ⚠️ QUEM MANDA NO PREÇO É O CATÁLOGO DO PDV, quando há produto configurado.
+  // apiVendaEnviar NUNCA aceita preço vindo da tela — o que entra na conta da
+  // mesa é o do catálogo. Se o Pix cobrasse o preço "manual", a mesma criança
+  // sairia por dois valores diferentes conforme a forma de pagar.
+  const preco = prod ? Number(prod.preco) || 0 : manual;
   return {
     camera_link: await cfgGet('kids_camera_link', ''),
     alerta_min: n >= 1 && n <= 30 ? n : 5,
     numero_casa: await cfgGet('kids_numero_casa', ''),
+    pdv, pdv_ok: !!prod, pdv_nome: prod ? (prod.nome + (prod.tamanho ? ' ' + prod.tamanho : '')) : '',
+    preco_manual: manual, preco, cobra: preco > 0,
+    pix_ok: pixStatus().disponivel,
   };
 }
 /** Registra o check-in na nuvem e anota o resultado na entrada. Nunca lança:
@@ -8983,6 +9038,15 @@ async function apiKidsEstado() {
         FROM kids_evento WHERE entrada_id = ANY(${ids}) AND criado_em > now() - interval '12 hours'
         ORDER BY criado_em`
     : [];
+  const cobs = ids.length
+    ? await sql`SELECT * FROM kids_cobranca WHERE entrada_id = ANY(${ids}) AND cancelada_em IS NULL ORDER BY id`
+    : [];
+  // ⚠️ A conta é da ENTRADA inteira, não de quem ainda está dentro: irmão que
+  // já saiu brincou igual. Sem este COUNT o preço sugerido encolheria conforme
+  // as crianças fossem saindo, e a última a sair pagaria por uma só.
+  const nEnt = ids.length
+    ? await sql`SELECT entrada_id, COUNT(*)::int AS n FROM kids_crianca WHERE entrada_id = ANY(${ids}) GROUP BY entrada_id`
+    : [];
   const agora = Date.now();
   const minDe = (t) => Math.max(0, Math.floor((agora - new Date(t).getTime()) / 60000));
   const lista = dentro.map((c) => {
@@ -9006,6 +9070,8 @@ async function apiKidsEstado() {
       chamada: ultima ? { ha_min: espera, motivo: ultima.motivo || '',
         erro: ultima.erro || '', vezes: chamadas.length } : null,
       resposta: resp ? { texto: resp.texto || '', ha_min: minDe(resp.criado_em) } : null,
+      cobranca: kidsCobResumo(cobs.filter((x) => Number(x.entrada_id) === Number(c.entrada_id)).pop()),
+      criancas_entrada: Number((nEnt.find((x) => Number(x.entrada_id) === Number(c.entrada_id)) || {}).n) || 1,
       alerta: !!(ultima && !resp && espera >= cfg.alerta_min),
       escalado: meus.some((x) => x.tipo === 'escalada' && Number(x.crianca_id) === Number(c.id)
         && (!ultima || new Date(x.criado_em) >= new Date(ultima.criado_em))),
@@ -9195,7 +9261,7 @@ async function apiKidsEscalar(body, quem) {
 }
 async function apiKidsSaida(body, quem) {
   const cid = Number(body.crianca_id);
-  const [c] = await sql`SELECT c.id, c.nome, e.id AS eid, e.codigo, e.zap_status
+  const [c] = await sql`SELECT c.id, c.nome, e.id AS eid, e.codigo, e.zap_status, e.mesa, e.responsavel_nome
     FROM kids_crianca c JOIN kids_entrada e ON e.id=c.entrada_id
     WHERE c.id=${cid} AND c.saiu_em IS NULL`;
   if (!c) return { ok: false, erro: 'essa criança já saiu' };
@@ -9215,7 +9281,20 @@ async function apiKidsSaida(body, quem) {
     VALUES (${Number(c.eid)}, ${cid}, 'saida', ${`${c.nome} saiu às ${kidsHora()}`},
       ${(r && r.wa_message_id) || null},
       ${esperaEnvio && r && !r.ok ? String(r.erro || 'falhou').slice(0, 200) : null}, ${quem.login})`;
-  return { ok: true, encerrada: ultima };
+  // Última criança saindo e ninguém cobrou nada: a tela precisa dizer isso
+  // AGORA, com a família ainda na porta. Depois que eles vão embora, cobrar
+  // recreação vira conversa constrangida — ou prejuízo calado.
+  // ⚠️ A entrada some da lista quando a última criança sai. Se a cobrança não
+  // vier JUNTO com a saída, a monitora fica sem tela pra cobrar — por isso o
+  // `alvo` volta aqui com tudo que o painel precisa pra abrir na hora.
+  const cfg = await kidsCfg();
+  const cob = await kidsCobrancaViva(Number(c.eid));
+  const [tot] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca WHERE entrada_id=${Number(c.eid)}`;
+  return { ok: true, encerrada: ultima, entrada_id: Number(c.eid),
+    cobrar: !!(ultima && cfg.cobra && !cob), cobranca: kidsCobResumo(cob),
+    alvo: { entrada_id: Number(c.eid), codigo: c.codigo,
+      mesa: c.mesa == null ? null : Number(c.mesa), responsavel: c.responsavel_nome,
+      criancas_entrada: Number(tot.n) || 1 } };
 }
 async function apiKidsConfig(body, quem) {
   if (!(await ehGerente(quem.login))) return { ok: false, erro: 'só o gerente muda a configuração' };
@@ -9229,7 +9308,217 @@ async function apiKidsConfig(body, quem) {
     if (!(m >= 1 && m <= 30)) return { ok: false, erro: 'o alerta vai de 1 a 30 minutos' };
     await cfgSet('kids_alerta_min', String(Math.round(m)));
   }
+  if (body.pdv !== undefined) {
+    const cod = Number(String(body.pdv).replace(/\D/g, '')) || 0;
+    // Produto que não existe no catálogo = lançamento que vai falhar na hora
+    // de cobrar, com a família esperando. Confere agora, no ⚙, com calma.
+    if (cod && !(await sql`SELECT codigo_pdv FROM produto_local WHERE codigo_pdv=${cod}`).length) {
+      return { ok: false, erro: 'não achei o produto ' + cod + ' no catálogo do PDV' };
+    }
+    await cfgSet('kids_pdv', String(cod));
+  }
+  if (body.preco !== undefined) {
+    const v = kidsNum(body.preco);
+    if (String(body.preco).trim() && !(v >= 0 && v <= 999)) return { ok: false, erro: 'preço inválido' };
+    await cfgSet('kids_preco', String(body.preco).trim() ? v.toFixed(2) : '0');
+  }
   return { ok: true, cfg: await kidsCfg() };
+}
+
+// ---- COBRANÇA DO ESPAÇO ----
+// A cobrança é da ENTRADA (a família), não da criança: quem paga é o
+// responsável, uma vez, por todas as crianças que ele entregou.
+/** Resumo do que já foi cobrado dessa entrada — é o que a tela mostra no card
+ *  e o que impede cobrar duas vezes a mesma família. */
+function kidsCobResumo(c) {
+  if (!c) return null;
+  const pago = !!c.pago_em;
+  return {
+    id: Number(c.id), modo: c.modo, valor: Number(c.valor) || 0, mesa: c.mesa == null ? null : Number(c.mesa),
+    criancas: c.criancas == null ? null : Number(c.criancas), pago, txid: c.txid || null,
+    por: c.por || '', quando: c.pago_em || c.criado_em,
+    // O que a monitora precisa ler de relance: "resolvido" ou "falta algo".
+    rotulo: c.modo === 'cortesia' ? 'cortesia'
+      : c.modo === 'mesa' ? ('na conta da mesa ' + (c.mesa || '?'))
+        : (pago ? 'pago no Pix' : 'Pix aguardando pagamento'),
+    pendente: c.modo === 'pix' && !pago,
+  };
+}
+async function kidsCobrancaViva(entradaId) {
+  const [c] = await sql`SELECT * FROM kids_cobranca WHERE entrada_id=${Number(entradaId)}
+    AND cancelada_em IS NULL ORDER BY id DESC LIMIT 1`;
+  return c || null;
+}
+async function apiKidsCobrar(body, quem) {
+  const eid = Number(body.entrada_id);
+  const [e] = await sql`SELECT * FROM kids_entrada WHERE id=${eid}`;
+  if (!e) return { ok: false, erro: 'entrada não encontrada' };
+  const modo = String(body.modo || '').trim();
+  if (!['mesa', 'pix', 'cortesia'].includes(modo)) return { ok: false, erro: 'forma de cobrança inválida' };
+  // Cobrança viva barra a segunda: sem isto, dois toques no botão (ou duas
+  // monitoras no mesmo tablet) lançavam a recreação duas vezes na conta.
+  const viva = await kidsCobrancaViva(eid);
+  if (viva) {
+    return { ok: false, ja_tem: true, cobranca: kidsCobResumo(viva),
+      erro: viva.modo === 'pix' && !viva.pago_em
+        ? 'já existe um Pix aberto pra essa família. Cancele o Pix antes de cobrar de outro jeito.'
+        : 'essa família já foi cobrada (' + kidsCobResumo(viva).rotulo + ').' };
+  }
+  // Conta TODAS as crianças da entrada, inclusive as que já saíram: a recreação
+  // foi usada, e o irmão que saiu mais cedo não sai de graça.
+  const [{ n: nc }] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca WHERE entrada_id=${eid}`;
+  const criancas = Math.max(1, Number(nc) || 1);
+  const cfg = await kidsCfg();
+  const ger = await ehGerente(quem.login);
+  const sugerido = +(Number(cfg.preco) * criancas).toFixed(2);
+  let valor = sugerido;
+  if (modo === 'mesa') {
+    if (!cfg.pdv_ok) return { ok: false, erro: 'configure o produto do PDV no ⚙ antes de lançar na mesa' };
+    valor = sugerido; // na mesa quem manda é o catálogo — apiVendaEnviar ignora preço da tela
+  } else if (modo === 'cortesia') {
+    if (!ger) return { ok: false, erro: 'só o gerente dá cortesia' };
+    valor = 0;
+  } else if (body.valor !== undefined && String(body.valor).trim() !== '') {
+    const v = kidsNum(body.valor);
+    if (!(v >= 0 && v <= 9999)) return { ok: false, erro: 'valor inválido' };
+    valor = +v.toFixed(2);
+    if (Math.abs(valor - sugerido) > 0.009 && !ger) return { ok: false, erro: 'só o gerente muda o valor' };
+  }
+  if (modo !== 'cortesia' && !(valor > 0)) {
+    return { ok: false, erro: 'o Espaço Kids está sem preço. O gerente configura no ⚙.' };
+  }
+  const obs = String(body.obs || '').trim().slice(0, 200) || null;
+
+  if (modo === 'mesa') {
+    const mesa = Number(body.mesa || e.mesa || 0);
+    if (!(mesa >= 1)) return { ok: false, erro: 'diga em que mesa lançar' };
+    const r = await apiVendaEnviar({ numero: mesa, _garcom: quem.login, _garcom_nome: quem.nome,
+      itens: [{ codigo_pdv: cfg.pdv, qtd: criancas, obs: 'Espaço Kids · ' + e.codigo }] });
+    if (!r.ok) return { ok: false, erro: r.erro || 'não deu pra lançar na mesa' };
+    // valor de verdade = o que entrou na conta (catálogo), não o nosso palpite
+    const vreal = +(Number(r.total) || sugerido).toFixed(2);
+    const [c] = await sql`INSERT INTO kids_cobranca (entrada_id, criancas, valor, modo, mesa, pedido_fb, por, obs)
+      VALUES (${eid}, ${criancas}, ${vreal}, 'mesa', ${mesa}, ${r.pedido_fb || null}, ${quem.login}, ${obs}) RETURNING *`;
+    if (!e.mesa) await sql`UPDATE kids_entrada SET mesa=${mesa} WHERE id=${eid}`;
+    await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, por)
+      VALUES (${eid}, 'cobranca', ${impMoeda(vreal) + ' lançado na conta da mesa ' + mesa}, ${quem.login})`;
+    return { ok: true, cobranca: kidsCobResumo(c) };
+  }
+
+  if (modo === 'cortesia') {
+    const [c] = await sql`INSERT INTO kids_cobranca (entrada_id, criancas, valor, modo, mesa, pago_em, por, obs)
+      VALUES (${eid}, ${criancas}, 0, 'cortesia', ${e.mesa}, now(), ${quem.login}, ${obs}) RETURNING *`;
+    await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, por)
+      VALUES (${eid}, 'cobranca', ${'cortesia' + (obs ? ' — ' + obs : '')}, ${quem.login})`;
+    return { ok: true, cobranca: kidsCobResumo(c) };
+  }
+
+  // Pix na hora: QR avulso, sem conta de mesa nenhuma no caminho.
+  const r = await pixCriarCobranca({ valor, mesa: null, rotulo: 'KIDS' + e.codigo, origem: 'kids' });
+  if (!r.ok) return r;
+  const [c] = await sql`INSERT INTO kids_cobranca (entrada_id, criancas, valor, modo, mesa, txid, por, obs)
+    VALUES (${eid}, ${criancas}, ${valor}, 'pix', ${e.mesa}, ${r.txid}, ${quem.login}, ${obs}) RETURNING *`;
+  await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, por)
+    VALUES (${eid}, 'cobranca', ${'Pix de ' + impMoeda(valor) + ' gerado'}, ${quem.login})`;
+  return { ok: true, cobranca: kidsCobResumo(c), copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
+}
+/** A tela do QR pergunta a cada 3 s se caiu — o vigia de 20 s é lento demais
+ *  pra quem está de pé esperando com o celular na mão. */
+async function apiKidsCobrancaStatus(u) {
+  const id = Number(u.searchParams.get('id') || 0);
+  const [c0] = await sql`SELECT * FROM kids_cobranca WHERE id=${id}`;
+  if (!c0) return { ok: false, erro: 'cobrança não encontrada' };
+  let c = c0;
+  if (c.modo === 'pix' && !c.pago_em && c.txid && !c.cancelada_em) {
+    await apiPixConferir(String(c.txid)).catch(() => null);
+    [c] = await sql`SELECT * FROM kids_cobranca WHERE id=${id}`;
+  }
+  const out = { ok: true, cobranca: kidsCobResumo(c), cancelada: !!c.cancelada_em };
+  // O QR volta daqui. O tablet repinta sozinho a cada 5 s e a monitora sai da
+  // tela pra atender a porta: sem devolver o copia-e-cola, o Pix já gerado
+  // ficaria sem jeito de ser mostrado de novo e ela geraria outro.
+  if (c.modo === 'pix' && !c.pago_em && !c.cancelada_em && c.txid) {
+    const [pc] = await sql`SELECT copia_cola FROM pix_cobranca WHERE txid=${String(c.txid)}`;
+    if (pc && pc.copia_cola) { out.copia_cola = pc.copia_cola; out.imagem = pixQrImagem(pc.copia_cola); }
+  }
+  return out;
+}
+async function apiKidsCobrancaCancelar(body, quem) {
+  const id = Number(body.id);
+  const [c] = await sql`SELECT * FROM kids_cobranca WHERE id=${id}`;
+  if (!c) return { ok: false, erro: 'cobrança não encontrada' };
+  if (c.cancelada_em) return { ok: true, ja: true };
+  if (c.pago_em) return { ok: false, erro: 'essa cobrança já foi paga — o estorno é pelo caixa.' };
+  // Item já lançado no Consumer não volta atrás por aqui: quem tira item de
+  // conta é o caixa, com a permissão dele. Fingir que cancelamos deixaria a
+  // recreação na conta do cliente e sumida do nosso histórico.
+  if (c.modo === 'mesa') {
+    return { ok: false, erro: 'a recreação já está na conta da mesa ' + (c.mesa || '?') + '. Pra tirar, cancele o item no caixa.' };
+  }
+  await sql`UPDATE kids_cobranca SET cancelada_em=now(), cancelada_por=${quem.login} WHERE id=${id} AND cancelada_em IS NULL`;
+  await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, por)
+    VALUES (${Number(c.entrada_id)}, 'cobranca', ${'Pix de ' + impMoeda(c.valor) + ' cancelado'}, ${quem.login})`;
+  return { ok: true };
+}
+/** Busca produto pro ⚙ — ninguém decora código de PDV. */
+async function apiKidsProdutos(u) {
+  const t = '%' + semAcento(String(u.searchParams.get('q') || '').trim()) + '%';
+  const rows = await sql`SELECT codigo_pdv, nome, tamanho, preco FROM produto_local
+    WHERE nome_busca LIKE ${t} ORDER BY nome LIMIT 12`;
+  return { ok: true, produtos: rows.map((x) => ({ codigo_pdv: Number(x.codigo_pdv),
+    nome: x.nome + (x.tamanho ? ' ' + x.tamanho : ''), preco: Number(x.preco) || 0 })) };
+}
+
+// ---- HISTÓRICO DE ACESSOS ----
+// A lista da tela principal só enxerga quem está dentro e quem saiu HOJE. Aqui
+// é o registro de quem passou pelo espaço: quem entregou, quem levou, quanto
+// tempo ficou e o que foi cobrado. Agrupa por ENTRADA porque é assim que a
+// coisa acontece na porta — uma família de cada vez.
+async function apiKidsHistorico(u) {
+  const dias = Math.min(90, Math.max(1, Number(u.searchParams.get('dias') || 7)));
+  const busca = String(u.searchParams.get('q') || '').trim().toLowerCase();
+  const entradas = await sql`SELECT * FROM kids_entrada
+    WHERE criado_em > now() - (${dias} || ' days')::interval ORDER BY criado_em DESC LIMIT 300`;
+  const ids = entradas.map((e) => Number(e.id));
+  const criancas = ids.length
+    ? await sql`SELECT * FROM kids_crianca WHERE entrada_id = ANY(${ids}) ORDER BY entrou_em`
+    : [];
+  const cobs = ids.length
+    ? await sql`SELECT * FROM kids_cobranca WHERE entrada_id = ANY(${ids}) AND cancelada_em IS NULL ORDER BY id`
+    : [];
+  const dur = (a, b) => (a && b) ? Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60000)) : null;
+  const diaBr = (d) => new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  let itens = entradas.map((e) => {
+    const cs = criancas.filter((c) => Number(c.entrada_id) === Number(e.id));
+    const cob = cobs.filter((c) => Number(c.entrada_id) === Number(e.id)).pop();
+    const saidas = cs.map((c) => c.saiu_em).filter(Boolean);
+    const fim = cs.every((c) => c.saiu_em) && saidas.length
+      ? saidas.map((x) => new Date(x).getTime()).sort((a, b) => b - a)[0] : null;
+    return {
+      entrada_id: Number(e.id), codigo: e.codigo, dia: diaBr(e.criado_em),
+      mesa: e.mesa == null ? null : Number(e.mesa),
+      responsavel: e.responsavel_nome, tel_fim: String(e.tel_confirmado || e.responsavel_tel || '').slice(-4),
+      zap_status: e.zap_status, por: e.criado_por || '',
+      entrou: kidsHora(e.criado_em), saiu: fim ? kidsHora(fim) : null,
+      minutos: fim ? dur(e.criado_em, fim) : null, aberta: !fim,
+      criancas: cs.map((c) => ({ nome: c.nome, idade: c.idade == null ? null : Number(c.idade),
+        observacao: c.observacao || '', entrou: kidsHora(c.entrou_em),
+        saiu: c.saiu_em ? kidsHora(c.saiu_em) : null, minutos: dur(c.entrou_em, c.saiu_em),
+        saiu_por: c.saiu_por || '' })),
+      cobranca: kidsCobResumo(cob),
+    };
+  });
+  if (busca) {
+    itens = itens.filter((x) => (x.responsavel + ' ' + x.codigo + ' mesa ' + (x.mesa || '')
+      + ' ' + x.criancas.map((c) => c.nome).join(' ')).toLowerCase().includes(busca));
+  }
+  const nCriancas = itens.reduce((a, x) => a + x.criancas.length, 0);
+  const somar = (f) => +itens.reduce((a, x) => a + (x.cobranca && f(x.cobranca) ? x.cobranca.valor : 0), 0).toFixed(2);
+  return { ok: true, dias, busca, n: itens.length, criancas: nCriancas,
+    total: { cobrado: somar(() => true), pago: somar((c) => c.pago),
+      na_mesa: somar((c) => c.modo === 'mesa'), pix: somar((c) => c.modo === 'pix' && c.pago),
+      aberto: somar((c) => c.pendente), sem_cobranca: itens.filter((x) => !x.cobranca).length },
+    itens };
 }
 
 // ---- sync com a nuvem: confirmações do QR e respostas do responsável ----
@@ -12082,13 +12371,16 @@ function pixStatus() {
   if (PIX_PROVEDOR === 'cielo') return { disponivel: !!c, provedor: 'cielo', diag };
   return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR, diag };
 }
-async function cieloPixCriar(mesa, valor) {
+/** `rotulo` só existe pra cobrança SEM mesa (Espaço Kids): sem ele a Cielo
+ *  receberia "MESAnull" no pedido e ninguém acharia esse dinheiro depois. */
+async function cieloPixCriar(mesa, valor, rotulo) {
   const c = cieloCred();
+  const ordem = (rotulo ? rotulo.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 20) : 'MESA' + mesa);
   const r = await fetch(CIELO_BASE + '/1/sales/', { method: 'POST',
     headers: { 'content-type': 'application/json', MerchantId: c.id, MerchantKey: c.key },
     body: JSON.stringify({
-      MerchantOrderId: 'MESA' + mesa + '-' + Date.now(),
-      Customer: { Name: 'Mesa ' + mesa },
+      MerchantOrderId: ordem + '-' + Date.now(),
+      Customer: { Name: rotulo || ('Mesa ' + mesa) },
       // Amount em CENTAVOS
       Payment: { Type: 'Pix', Amount: Math.round(valor * 100) },
     }) });
@@ -12187,6 +12479,40 @@ function valorDaCobranca(conta, body) {
   if (!(valor > 0)) return { erro: 'não há saldo a pagar nessa mesa' };
   return { valor, pct, comGorjeta, restaTotal, partes };
 }
+const pixQrImagem = (copia) => 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(copia, 260)).toString('base64');
+/** Cria a cobrança no provedor e grava em pix_cobranca. Um caminho só pros
+ *  dois usos: a conta da mesa (mesa preenchida, origem vazia) e a avulsa do
+ *  Espaço Kids (mesa nula, origem 'kids'). Quem decide o que acontece quando
+ *  o dinheiro cai é o `origem` lá no apiPixConferir. */
+async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = null }) {
+  if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
+  const nMesa = mesa == null ? null : Number(mesa);
+  if (PIX_PROVEDOR === 'cielo') {
+    const r = await cieloPixCriar(nMesa, valor, rotulo);
+    if (!r.ok) return r;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem)
+      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'cielo', ${origem}) ON CONFLICT (txid) DO NOTHING`;
+    return { ok: true, txid: r.txid, copia: r.copia };
+  }
+  const c = interCred();
+  let token;
+  try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+  const txid = ('PRAINHA' + (nMesa == null ? 'K' : nMesa) + Date.now().toString(36) + Math.floor(Math.random() * 1e6)).replace(/[^A-Za-z0-9]/g, '').slice(0, 35);
+  const r = await interReq(c, { method: 'PUT', path: '/pix/v2/cob/' + txid, token, body: {
+    calendario: { expiracao: 1800 },
+    valor: { original: valor.toFixed(2) },
+    chave: c.chave,
+    solicitacaoPagador: (rotulo || 'Mesa ' + nMesa) + ' - ' + LOJA_NOME,
+  } });
+  if (r.status !== 201 && r.status !== 200) {
+    return { ok: false, erro: 'Inter recusou a cobrança: ' + (r.data?.detail || r.data?.title || r.raw || 'HTTP ' + r.status) };
+  }
+  const copia = r.data?.pixCopiaECola || r.data?.location || null;
+  if (!copia) return { ok: false, erro: 'Inter não devolveu o código Pix' };
+  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, origem)
+    VALUES (${txid}, ${nMesa}, ${valor}, ${copia}, ${origem}) ON CONFLICT (txid) DO NOTHING`;
+  return { ok: true, txid, copia };
+}
 async function apiPixCobrar(body) {
   if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const conta = await apiContaTexto(body.mesa);
@@ -12194,33 +12520,9 @@ async function apiPixCobrar(body) {
   const cob = valorDaCobranca(conta, body);
   if (cob.erro) return { ok: false, erro: cob.erro };
   const valor = cob.valor;
-  if (PIX_PROVEDOR === 'cielo') {
-    const r = await cieloPixCriar(Number(body.mesa), valor);
-    if (!r.ok) return r;
-    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor) VALUES (${r.txid}, ${Number(body.mesa)}, ${valor}, ${r.copia}, 'cielo')
-      ON CONFLICT (txid) DO NOTHING`;
-    return { ok: true, txid: r.txid, valor, copia_cola: r.copia,
-      imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(r.copia, 260)).toString('base64') };
-  }
-  const c = interCred();
-  let token;
-  try { token = await interToken(c); } catch (e) { return { ok: false, erro: e.message }; }
-  const txid = ('PRAINHA' + Number(body.mesa) + Date.now().toString(36) + Math.floor(Math.random() * 1e6)).replace(/[^A-Za-z0-9]/g, '').slice(0, 35);
-  const r = await interReq(c, { method: 'PUT', path: '/pix/v2/cob/' + txid, token, body: {
-    calendario: { expiracao: 1800 },
-    valor: { original: valor.toFixed(2) },
-    chave: c.chave,
-    solicitacaoPagador: 'Mesa ' + Number(body.mesa) + ' - ' + LOJA_NOME,
-  } });
-  if (r.status !== 201 && r.status !== 200) {
-    return { ok: false, erro: 'Inter recusou a cobrança: ' + (r.data?.detail || r.data?.title || r.raw || 'HTTP ' + r.status) };
-  }
-  const copia = r.data?.pixCopiaECola || r.data?.location || null;
-  if (!copia) return { ok: false, erro: 'Inter não devolveu o código Pix' };
-  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola) VALUES (${txid}, ${Number(body.mesa)}, ${valor}, ${copia})
-    ON CONFLICT (txid) DO NOTHING`;
-  return { ok: true, txid, valor, copia_cola: copia,
-    imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(copia, 260)).toString('base64') };
+  const r = await pixCriarCobranca({ valor, mesa: Number(body.mesa) });
+  if (!r.ok) return r;
+  return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
 }
 // ---- QR DE SAÍDA (catraca) ----
 // Depois de pagar, o cliente diz quantas pessoas saem com ele e recebe um QR.
@@ -12527,6 +12829,21 @@ async function apiPixConferir(txid) {
   const claim = await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e}
     WHERE txid=${String(txid)} AND pago_em IS NULL RETURNING txid`;
   if (!claim.length) return { ok: true, pago: true, ja_registrado: true };
+  // ⚠️ COBRANÇA AVULSA (Espaço Kids): PARA AQUI. Ela nasceu sem mesa e não tem
+  // pedido pra pousar — deixar cair no caminho de baixo daria fbAcharPedido(0),
+  // marcaria a cobrança como "Pix órfão" e, pior, se por acaso achasse pedido,
+  // pagaria e FECHARIA a conta de quem ainda estava jantando.
+  if (cob.origem === 'kids') {
+    await sql`UPDATE kids_cobranca SET pago_em=now() WHERE txid=${String(txid)} AND pago_em IS NULL`;
+    const [k] = await sql`SELECT entrada_id, valor FROM kids_cobranca WHERE txid=${String(txid)}`;
+    if (k) {
+      await sql`INSERT INTO kids_evento (entrada_id, tipo, texto)
+        VALUES (${Number(k.entrada_id)}, 'cobranca_paga', ${'Pix de ' + impMoeda(k.valor) + ' pago'})`;
+    }
+    imprimirComprovantePix(String(txid)).catch(() => {});
+    console.log('[pix] kids ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' — cobrança avulsa, nenhuma conta tocada');
+    return { ok: true, pago: true, e2e };
+  }
   try {
     const ped = await fbAcharPedido(Number(cob.mesa));
     const marca = 'Pix do cliente ' + txid;
@@ -17207,10 +17524,15 @@ var TOK=null;try{TOK=localStorage.getItem('kids_tok')||localStorage.getItem('gar
 var NOME=null,GER=false,TELA='login',E=null,QR=null,PASSO=1,ERRO='',TIMER=null;
 var NOVA={mesa:'',tel:'',nome:'',ativa:null,criancas:[{nome:'',idade:'',obs:''}]};
 var CHAMAR=null,CHMOT='quer_pai',CHTXT='',SAIU=null,ADDC=null;
+/* cobrança e histórico: telas próprias, porque quando a última criança sai a
+   entrada some da lista — não daria pra cobrar num card que não existe mais */
+var COB=null,COBMODO='mesa',COBMESA='',COBVAL='',COBERR='',COBQR=null,QTIMER=null;
+var HIST=null,HDIAS=7,HQ='',CFG={},PRODS=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
 async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
 async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
+function rs(v){return 'R$ '+(Number(v)||0).toFixed(2).replace('.',',')}
 function telBr(t){var d=String(t||'').replace(/\\D/g,'');
   if(d.length>11&&d.slice(0,2)==='55')d=d.slice(2); // o número da casa vem com o 55 da Meta
   if(d.length===11)return '('+d.slice(0,2)+') '+d.slice(2,7)+'-'+d.slice(7);
@@ -17233,6 +17555,9 @@ function render(){var app=document.getElementById('app');setHdr();
   if(TELA==='nova')return telaNova(app);
   if(TELA==='qr')return telaQr(app);
   if(TELA==='cfg')return telaCfg(app);
+  if(TELA==='cob')return telaCob(app);
+  if(TELA==='cobqr')return telaCobQr(app);
+  if(TELA==='hist')return telaHist(app);
   return telaLista(app)}
 
 /* ---- LOGIN ---- */
@@ -17277,7 +17602,9 @@ function telaLista(el){
   var h='';
   if(E.nuvem&&E.nuvem.ligada&&!E.nuvem.ok)h+='<div class="aviso">Sem conexão com a nuvem'+(E.nuvem.erro?' ('+esc(E.nuvem.erro)+')':'')+'. Entrada e saída funcionam; o WhatsApp volta sozinho.</div>';
   if(E.nuvem&&!E.nuvem.ligada)h+='<div class="aviso">Esta loja está sem a chave da nuvem — o WhatsApp do Kids não vai funcionar. Fale com o suporte.</div>';
-  h+='<button class="big" onclick="novaEntrada()">+ Nova entrada</button>';
+  h+='<div class="row"><button class="big" onclick="novaEntrada()">+ Nova entrada</button>'+
+    '<button class="big g" onclick="irHist()">&#128220; Histórico</button></div>';
+  var vistos={};
   if(!E.dentro.length)h+='<div class="card mut" style="margin-top:12px">Nenhuma criança no espaço agora.</div>';
   E.dentro.forEach(function(c){
     h+='<div class="card'+(c.alerta?' al':'')+'" style="margin-top:12px">'+
@@ -17295,6 +17622,13 @@ function telaLista(el){
     if(c.alerta)h+='<button class="big r" onclick="escalar('+c.id+')">🔔 Avisar o garçom</button>';
     h+='<button class="big g" onclick="pedirSaida('+c.id+')">🚪 Saiu</button>'+
       '<button class="big g" onclick="abrirAdd('+c.entrada_id+')">+ irmão</button></div>';
+    /* a conta é da FAMÍLIA: mostra uma vez só, no card do primeiro irmão, ou a
+       monitora cobraria duas vezes a mesma entrada achando que eram contas
+       diferentes */
+    if(!vistos[c.entrada_id]){vistos[c.entrada_id]=1;
+      if(c.cobranca){h+=cobLinha(c.cobranca);
+        if(c.cobranca.pendente)h+='<div class="acts"><button class="big o" onclick="verQr('+c.cobranca.id+')">📱 Mostrar o QR de novo</button></div>'}
+      else if(E.cfg.cobra)h+='<div class="acts"><button class="big o" onclick="cobrarDaLista('+c.entrada_id+')">💰 Cobrar '+rs((E.cfg.preco||0)*(c.criancas_entrada||1))+'</button></div>'}
     if(SAIU===c.id)h+='<div class="card" style="margin:10px 0 0;background:#fff7e8"><b>'+esc(c.nome)+' está saindo?</b>'+
       '<div class="row" style="margin-top:8px"><button class="big" onclick="confirmarSaida('+c.id+')">Sim, saiu</button>'+
       '<button class="big g" onclick="SAIU=null;render()">Não</button></div></div>';
@@ -17324,7 +17658,13 @@ async function chamar(id){
   CHAMAR=null;await puxar()}
 async function escalar(id){await jpost('/api/kids/escalar',{crianca_id:id});await puxar()}
 function pedirSaida(id){SAIU=id;CHAMAR=null;ADDC=null;render()}
-async function confirmarSaida(id){SAIU=null;await jpost('/api/kids/saida',{crianca_id:id});await puxar()}
+async function confirmarSaida(id){SAIU=null;
+  var r=await jpost('/api/kids/saida',{crianca_id:id});
+  await puxar();
+  /* última criança saindo e nada cobrado: é AGORA que o responsável está na
+     porta com o celular na mão. Depois disso ele já foi embora. */
+  if(r&&r.ok&&r.cobrar&&r.alvo)return abrirCobranca(r.alvo);
+  if(r&&r.ok&&r.cobranca&&r.cobranca.pendente)return verQr(r.cobranca.id)}
 
 /* ---- irmão que chegou depois ---- */
 function painelAdd(c){
@@ -17445,22 +17785,199 @@ async function qrDeNovo(eid){
   var r=await jpost('/api/kids/qr-novo',{entrada_id:eid});
   if(r&&r.ok){QR=r;TELA='qr';render()}}
 
+/* ---- COBRANÇA DA RECREAÇÃO ---- */
+/* A diferença entre os dois caminhos é de DINHEIRO, não de tela: "na mesa" vira
+   item na conta (quem recebe é o caixa, no preço do catálogo do PDV) e "Pix na
+   hora" cai direto na conta da casa, sem encostar em conta de mesa nenhuma. */
+function cobLinha(cob){
+  if(!cob)return '<div class="mut" style="margin-top:8px">sem cobrança</div>';
+  var cor=cob.pendente?'#b91c1c':(cob.modo==='cortesia'?'#8a5a00':'#0a7d38');
+  var ic=cob.pendente?'⏳':(cob.modo==='cortesia'?'🎁':'✅');
+  return '<div style="margin-top:8px;font-weight:700;color:'+cor+'">'+ic+' '+rs(cob.valor)+' · '+esc(cob.rotulo)+
+    (cob.por?' <span class="mut" style="font-weight:400">('+esc(cob.por)+')</span>':'')+'</div>'}
+function cobrarDaLista(eid){
+  var c=E.dentro.filter(function(x){return x.entrada_id===eid})[0];if(!c)return;
+  abrirCobranca({entrada_id:c.entrada_id,codigo:c.codigo,mesa:c.mesa,
+    responsavel:c.responsavel,criancas_entrada:c.criancas_entrada||1})}
+function abrirCobranca(a){
+  var cfg=(E&&E.cfg)||{};
+  COB=a;COBERR='';COBVAL='';COBMESA=a.mesa?String(a.mesa):'';
+  COBMODO=cfg.pdv_ok?'mesa':(cfg.pix_ok?'pix':'mesa');
+  SAIU=null;CHAMAR=null;ADDC=null;TELA='cob';render()}
+function telaCob(el){
+  if(!COB){TELA='lista';return render()}
+  var cfg=(E&&E.cfg)||{};
+  var n=Number(COB.criancas_entrada)||1;
+  var sug=(Number(cfg.preco)||0)*n;
+  var ms=[['mesa','🧾 Na mesa'],['pix','📱 Pix na hora'],['cortesia','🎁 Cortesia']];
+  var h='<div class="card"><div class="tit" style="margin-top:0">Cobrar o Espaço Kids</div>'+
+    '<div class="mut">'+esc(COB.responsavel||'')+' · '+n+' criança'+(n>1?'s':'')+
+    ((Number(cfg.preco)||0)>0?' · '+rs(cfg.preco)+' cada':'')+'</div>'+
+    '<div class="kn" style="margin-top:6px">'+rs(sug)+'</div>'+
+    '<div class="row3" style="margin-top:10px">'+ms.map(function(m){
+      var off=(m[0]==='mesa'&&!cfg.pdv_ok)||(m[0]==='pix'&&!cfg.pix_ok)||(m[0]==='cortesia'&&!GER);
+      return '<button class="seg'+(COBMODO===m[0]?' on':'')+'"'+(off?' disabled style="opacity:.35"':'')+
+        ' onclick="COBMODO=\\''+m[0]+'\\';COBERR=\\'\\';render()">'+m[1]+'</button>'}).join('')+'</div>';
+  if(COBMODO==='mesa'){
+    h+=cfg.pdv_ok
+      ?'<div class="mut" style="margin-top:8px">Entra na conta como <b>'+esc(cfg.pdv_nome)+'</b> ×'+n+'. Quem recebe é o caixa, junto com o resto.</div>'
+      :'<div class="errbox">Falta escolher o produto do PDV no ⚙ — sem ele a recreação não tem como entrar na conta.</div>';
+    h+='<div class="tit">Em que mesa lançar?</div>'+
+      '<input id="cbm" class="num" inputmode="numeric" maxlength="4" placeholder="mesa" value="'+esc(COBMESA)+'" readonly onclick="kpAlvo(this)" oninput="COBMESA=this.value">'+
+      kpHtml('cbm');
+  } else if(COBMODO==='pix'){
+    h+='<div class="mut" style="margin-top:8px">O QR aparece na tela e o dinheiro cai direto na conta da casa. Não vai pra conta de mesa nenhuma.</div>';
+    if(GER)h+='<div class="tit">Valor (só o gerente muda)</div>'+
+      '<input id="cbv" class="num" inputmode="decimal" placeholder="'+rs(sug)+'" value="'+esc(COBVAL)+'" oninput="COBVAL=this.value">';
+  } else {
+    h+='<div class="mut" style="margin-top:8px">A casa não vai cobrar. Fica registrado no seu nome, no histórico.</div>'+
+      '<input id="cbo" maxlength="200" placeholder="por quê? (aniversário da casa, cliente antigo…)" style="margin-top:8px">';
+  }
+  h+='<button class="big" id="btcob" onclick="cobrar()">'+
+    (COBMODO==='cortesia'?'Registrar cortesia':(COBMODO==='pix'?'Gerar o QR':'Lançar na mesa'))+'</button>'+
+    '<button class="big g" onclick="COB=null;TELA=\\'lista\\';render()">Agora não</button>'+
+    '<div class="err">'+esc(COBERR)+'</div></div>';
+  el.innerHTML=h}
+async function cobrar(){
+  var b=document.getElementById('btcob');if(b){b.disabled=true;b.textContent='Um instante…'}
+  var body={entrada_id:COB.entrada_id,modo:COBMODO};
+  if(COBMODO==='mesa')body.mesa=String(COBMESA||'').replace(/\\D/g,'');
+  if(COBMODO==='pix'&&String(COBVAL).trim())body.valor=COBVAL;
+  if(COBMODO==='cortesia')body.obs=(document.getElementById('cbo')||{}).value||'';
+  var r=await jpost('/api/kids/cobrar',body);
+  if(!r||!r.ok){
+    COBERR=(r&&r.erro)||'não deu pra cobrar';
+    if(r&&r.ja_tem&&r.cobranca&&r.cobranca.pendente){COB=null;return verQr(r.cobranca.id)}
+    if(r&&r.ja_tem){COB=null;TELA='lista';return puxar()}
+    render();return}
+  if(COBMODO==='pix'){COB=null;COBERR='';
+    COBQR={cobranca:r.cobranca,imagem:r.imagem,copia_cola:r.copia_cola};TELA='cobqr';render();pollQr();return}
+  COB=null;COBERR='';TELA='lista';await puxar()}
+function telaCobQr(el){
+  if(!COBQR||!COBQR.cobranca){TELA='lista';return render()}
+  var c=COBQR.cobranca;
+  var h='<div class="card">';
+  if(c.pago){
+    h+='<div class="kn" style="color:#0a7d38">✅ Pago · '+rs(c.valor)+'</div>'+
+      '<div class="mut" style="margin-top:6px">Caiu na conta da casa. O comprovante saiu na impressora.</div>'+
+      '<button class="big" onclick="fecharQr()">Voltar pra lista</button>';
+  } else {
+    h+='<div class="kn">Pix de '+rs(c.valor)+'</div>'+
+      '<div class="mut" style="margin-top:4px">O responsável abre o banco e aponta a câmera. Esta tela avisa sozinha quando cair.</div>'+
+      (COBQR.imagem?'<div class="qrbox"><img alt="QR do Pix" style="width:min(78vw,260px);height:auto" src="'+COBQR.imagem+'"></div>':
+        '<div class="aviso">O QR não veio — use o copia e cola abaixo.</div>')+
+      (COBQR.copia_cola?'<textarea readonly rows="3" style="font-size:11px" onclick="this.select()">'+esc(COBQR.copia_cola)+'</textarea>':'')+
+      '<div class="mut" style="text-align:center;margin-top:8px">aguardando o pagamento…</div>'+
+      '<button class="big g" onclick="fecharQr()">Deixar aberto e voltar</button>'+
+      '<button class="big r" onclick="cancelarCob('+c.id+')">Cancelar esse Pix</button>';
+  }
+  el.innerHTML=h+'<div class="err">'+esc(COBERR)+'</div></div>'}
+/* 3 s, não os 20 s do vigia: aqui tem gente de pé esperando com o celular */
+function pollQr(){
+  if(QTIMER)clearInterval(QTIMER);
+  QTIMER=setInterval(async function(){
+    if(TELA!=='cobqr'||!COBQR||!COBQR.cobranca){clearInterval(QTIMER);QTIMER=null;return}
+    var r=null;try{r=await jget('/api/kids/cobranca?id='+COBQR.cobranca.id)}catch(e){return}
+    if(!r||!r.ok||!r.cobranca)return;
+    var era=COBQR.cobranca.pago;
+    COBQR.cobranca=r.cobranca;
+    if(r.imagem)COBQR.imagem=r.imagem;
+    if(r.copia_cola)COBQR.copia_cola=r.copia_cola;
+    if(r.cancelada){clearInterval(QTIMER);QTIMER=null;return fecharQr()}
+    if(r.cobranca.pago!==era)render();
+    if(r.cobranca.pago){clearInterval(QTIMER);QTIMER=null}},3000)}
+function fecharQr(){if(QTIMER){clearInterval(QTIMER);QTIMER=null}COBQR=null;COBERR='';TELA='lista';render();puxar()}
+async function cancelarCob(id){
+  var r=await jpost('/api/kids/cobranca-cancelar',{id:id});
+  if(!r||!r.ok){COBERR=(r&&r.erro)||'não deu pra cancelar';render();return}
+  fecharQr()}
+async function verQr(id){
+  var r=null;try{r=await jget('/api/kids/cobranca?id='+id)}catch(e){return}
+  if(!r||!r.ok)return;
+  COBQR={cobranca:r.cobranca,imagem:r.imagem,copia_cola:r.copia_cola};COBERR='';TELA='cobqr';render();pollQr()}
+
+/* ---- HISTÓRICO DE ACESSOS ---- */
+/* A lista só mostra quem está dentro e quem saiu hoje. O dono pergunta "quem
+   passou por lá esta semana e quanto entrou" — é esta tela. */
+function irHist(){HIST=null;HDIAS=7;HQ='';TELA='hist';render();carregarHist()}
+async function carregarHist(){
+  var r=null;try{r=await jget('/api/kids/historico?dias='+HDIAS+'&q='+encodeURIComponent(HQ))}catch(e){return}
+  if(r&&r.ok){HIST=r;if(TELA==='hist')render()}}
+function telaHist(el){
+  var h='<div class="card"><div class="tit" style="margin-top:0">Histórico de acessos</div>'+
+    '<div class="row3">'+[[1,'Hoje'],[7,'7 dias'],[30,'30 dias']].map(function(d){
+      return '<button class="seg'+(HDIAS===d[0]?' on':'')+'" onclick="HDIAS='+d[0]+';render();carregarHist()">'+d[1]+'</button>'}).join('')+'</div>'+
+    '<input id="hq" placeholder="nome, mesa ou código" style="margin-top:8px" value="'+esc(HQ)+'" oninput="HQ=this.value" onchange="carregarHist()">'+
+    '<div class="row" style="margin-top:8px"><button class="big" onclick="carregarHist()">Buscar</button>'+
+    '<button class="big g" onclick="TELA=\\'lista\\';render()">Voltar</button></div></div>';
+  if(!HIST){el.innerHTML=h+'<div class="card mut">Carregando…</div>';return}
+  var t=HIST.total;
+  h+='<div class="card"><div class="row3">'+
+    '<div><div class="mut">entradas</div><div class="kn">'+HIST.n+'</div></div>'+
+    '<div><div class="mut">crianças</div><div class="kn">'+HIST.criancas+'</div></div>'+
+    '<div><div class="mut">cobrado</div><div class="kn">'+rs(t.cobrado)+'</div></div></div>'+
+    '<div class="mut" style="margin-top:8px">na conta da mesa '+rs(t.na_mesa)+' · Pix pago '+rs(t.pix)+
+    (t.aberto>0?' · <b style="color:#b91c1c">Pix em aberto '+rs(t.aberto)+'</b>':'')+
+    (t.sem_cobranca?' · '+t.sem_cobranca+' entrada'+(t.sem_cobranca>1?'s':'')+' sem cobrança':'')+'</div></div>';
+  if(!HIST.itens.length)h+='<div class="card mut">Nada nesse período.</div>';
+  HIST.itens.forEach(function(x){
+    h+='<div class="card"><div><b>'+esc(x.responsavel||'—')+'</b> <span class="mut">'+esc(x.dia)+' · '+esc(x.entrou)+
+      (x.saiu?' → '+esc(x.saiu):' · ainda dentro')+(x.minutos!=null?' · '+x.minutos+' min':'')+'</span></div>'+
+      '<div class="mut">'+(x.mesa?'mesa '+x.mesa+' · ':'')+'cód '+esc(x.codigo)+
+      (x.tel_fim?' · …'+esc(x.tel_fim):'')+(x.por?' · entrada por '+esc(x.por):'')+'</div>'+
+      x.criancas.map(function(c){
+        return '<div class="hoje"><span>'+esc(c.nome)+(c.idade!=null?' <span class="mut">('+c.idade+')</span>':'')+
+          (c.observacao?' <span class="mut">· '+esc(c.observacao)+'</span>':'')+'</span><span class="mut">'+
+          esc(c.entrou)+(c.saiu?' → '+esc(c.saiu):' · dentro')+(c.minutos!=null?' ('+c.minutos+' min)':'')+'</span></div>'}).join('')+
+      cobLinha(x.cobranca)+'</div>'});
+  el.innerHTML=h}
+
 /* ---- CONFIGURAÇÃO (gerente) ---- */
-function irCfg(){TELA='cfg';ERRO='';render()}
+/* O ⚙ agora repinta sozinho (busca de produto), então o que a gerente digita
+   mora em CFG e não nos <input> — senão o link da câmera sumia a cada busca. */
+function irCfg(){
+  var c=(E&&E.cfg)||{};
+  CFG={camera_link:c.camera_link||'',alerta_min:c.alerta_min||5,pdv:c.pdv||0,
+    pdv_nome:c.pdv_nome||'',preco:c.preco_manual?String(c.preco_manual).replace('.',','):''};
+  PRODS=null;ERRO='';TELA='cfg';render()}
 function telaCfg(el){
-  var c=(E&&E.cfg)||{camera_link:'',alerta_min:5,numero_casa:''};
-  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Configuração do Espaço Kids</div>'+
+  var c=(E&&E.cfg)||{};
+  var h='<div class="card"><div class="tit" style="margin-top:0">Configuração do Espaço Kids</div>'+
     '<div class="mut">Link da câmera ao vivo (UniFi Protect → Compartilhar transmissão). Vai junto com a confirmação no WhatsApp do responsável.</div>'+
-    '<input id="cl" placeholder="https://..." style="margin-top:8px" value="'+esc(c.camera_link)+'">'+
+    '<input id="cl" placeholder="https://..." style="margin-top:8px" value="'+esc(CFG.camera_link)+'" oninput="CFG.camera_link=this.value">'+
     '<div class="tit">Avisar depois de quantos minutos sem resposta?</div>'+
-    '<input id="am" class="num" inputmode="numeric" maxlength="2" value="'+esc(c.alerta_min)+'">'+
-    '<div class="mut" style="margin-top:10px">Número da casa no WhatsApp: <b>'+esc(telBr(c.numero_casa)||'—')+'</b> (vem da nuvem)</div>'+
+    '<input id="am" class="num" inputmode="numeric" maxlength="2" value="'+esc(CFG.alerta_min)+'" oninput="CFG.alerta_min=this.value">'+
+    '<div class="tit">Cobrança da recreação</div>'+
+    '<div class="mut">Escolha o produto do PDV: é ele que manda no preço quando a recreação vai pra conta da mesa — o caixa cobra o do catálogo, nunca o digitado aqui.</div>'+
+    (CFG.pdv?'<div class="bal" style="margin-top:8px"><b>'+esc(CFG.pdv_nome||('produto '+CFG.pdv))+'</b> · código '+CFG.pdv+
+      ' · <a class="sair" onclick="CFG.pdv=0;CFG.pdv_nome=\\'\\';render()">trocar</a></div>':'')+
+    '<input id="pq" placeholder="buscar produto pelo nome" style="margin-top:8px" onchange="buscarProd(this.value)">'+
+    '<button class="big g" onclick="buscarProd((document.getElementById(\\'pq\\')||{}).value||\\'\\')">Buscar no catálogo</button>';
+  if(PRODS)h+=PRODS.length?PRODS.map(function(x){
+      return '<div class="hoje"><span>'+esc(x.nome)+' <span class="mut">#'+x.codigo_pdv+'</span></span>'+
+        '<span><b>'+rs(x.preco)+'</b> · <a class="sair" onclick="escolherProd('+x.codigo_pdv+')">usar</a></span></div>'}).join('')
+    :'<div class="mut">nenhum produto com esse nome</div>';
+  h+='<div class="tit">Preço por criança, sem produto do PDV</div>'+
+    '<div class="mut">Vale quando nenhum produto foi escolhido. Zero = a casa não cobra e o botão de cobrar nem aparece.</div>'+
+    '<input id="pv" class="num" inputmode="decimal" placeholder="0,00" value="'+esc(CFG.preco)+'" oninput="CFG.preco=this.value">'+
+    '<div class="mut" style="margin-top:10px">Hoje: '+(c.cobra
+      ?('cobrando <b>'+rs(c.preco)+'</b> por criança'+(c.pdv_ok?' (preço do catálogo do PDV)':' (preço digitado aqui)'))
+      :'<b>sem cobrança</b>')+'</div>'+
+    '<div class="mut">Pix na tela: <b>'+(c.pix_ok?'ligado':'desligado nesta casa')+'</b></div>'+
+    '<div class="mut">Número da casa no WhatsApp: <b>'+esc(telBr(c.numero_casa)||'—')+'</b> (vem da nuvem)</div>'+
     '<button class="big" onclick="salvarCfg()">Salvar</button>'+
     '<button class="big g" onclick="TELA=\\'lista\\';render()">Voltar</button>'+
-    '<div class="err">'+esc(ERRO)+'</div></div>'}
+    '<div class="err">'+esc(ERRO)+'</div></div>';
+  el.innerHTML=h}
+async function buscarProd(q){
+  var r=null;try{r=await jget('/api/kids/produtos?q='+encodeURIComponent(q||''))}catch(e){return}
+  PRODS=(r&&r.ok)?r.produtos:[];render()}
+function escolherProd(cod){
+  var p=(PRODS||[]).filter(function(x){return x.codigo_pdv===cod})[0];
+  CFG.pdv=cod;CFG.pdv_nome=p?p.nome:'';PRODS=null;render()}
 async function salvarCfg(){
-  var r=await jpost('/api/kids/config',{camera_link:(document.getElementById('cl')||{}).value||'',
-    alerta_min:(document.getElementById('am')||{}).value||''});
+  var r=await jpost('/api/kids/config',{camera_link:CFG.camera_link,alerta_min:CFG.alerta_min,
+    pdv:CFG.pdv,preco:CFG.preco});
   if(!r.ok){ERRO=r.erro||'não salvou';render();return}
   ERRO='';TELA='lista';await puxar()}
 
@@ -17471,7 +17988,8 @@ async function inicio(){
     else{TOK=null;TELA='login';render()}}
   else{TELA='login';render()}
   if(TIMER)clearInterval(TIMER);
-  TIMER=setInterval(function(){if(TOK&&TELA!=='login'&&TELA!=='nova'&&TELA!=='cfg')puxar()},5000)}
+  var quieto={login:1,nova:1,cfg:1,cob:1,cobqr:1,hist:1}; // telas com campo digitado ou poll próprio
+  TIMER=setInterval(function(){if(TOK&&!quieto[TELA])puxar()},5000)}
 /* o relógio do cabeçalho continua andando mesmo com painel aberto */
 inicio();
 </script></body></html>`;
@@ -17867,6 +18385,9 @@ const server = http.createServer(async (req, res) => {
       if (!quem) return res.end(JSON.stringify({ ok: false, erro: 'Entre no Kids de novo.', sem_sessao: true }));
       if (p === '/api/kids/estado') return res.end(JSON.stringify(await apiKidsEstado()));
       if (p === '/api/kids/sugerir') return res.end(JSON.stringify(await apiKidsSugerir(u)));
+      if (p === '/api/kids/historico') return res.end(JSON.stringify(await apiKidsHistorico(u)));
+      if (p === '/api/kids/cobranca') return res.end(JSON.stringify(await apiKidsCobrancaStatus(u)));
+      if (p === '/api/kids/produtos') return res.end(JSON.stringify(await apiKidsProdutos(u)));
       if (req.method === 'POST') {
         const b = await readBody(req);
         if (p === '/api/kids/entrada') return res.end(JSON.stringify(await apiKidsEntrada(b, quem)));
@@ -17875,6 +18396,8 @@ const server = http.createServer(async (req, res) => {
         if (p === '/api/kids/chamar') return res.end(JSON.stringify(await apiKidsChamar(b, quem)));
         if (p === '/api/kids/escalar') return res.end(JSON.stringify(await apiKidsEscalar(b, quem)));
         if (p === '/api/kids/saida') return res.end(JSON.stringify(await apiKidsSaida(b, quem)));
+        if (p === '/api/kids/cobrar') return res.end(JSON.stringify(await apiKidsCobrar(b, quem)));
+        if (p === '/api/kids/cobranca-cancelar') return res.end(JSON.stringify(await apiKidsCobrancaCancelar(b, quem)));
         if (p === '/api/kids/config') return res.end(JSON.stringify(await apiKidsConfig(b, quem)));
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
