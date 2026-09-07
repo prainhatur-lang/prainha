@@ -9587,10 +9587,10 @@ const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
 // Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
 const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
 // ---- ITENS QUE NINGUÉM PRODUZ ----
-// Couvert não é prato: ninguém prepara, ninguém entrega. Ficava no balde
-// "Sem praça" (o cadastro dele não tem cozinha), pedindo baixa e contando
-// atraso na mesa. Entra JÁ BAIXADO — some do KDS sem sumir da conta.
-const ITENS_FORA_KDS_PADRAO = 'couvert';
+// Couvert e taxa de reserva (Lounge) não são prato: ninguém prepara, ninguém
+// entrega. Ficavam no balde "Sem praça" (cadastro sem cozinha), pedindo baixa
+// e contando atraso na mesa. Entram JÁ BAIXADOS — somem do KDS sem sumir da conta.
+const ITENS_FORA_KDS_PADRAO = 'couvert,lounge taxa';
 // ---- ITEM COM PRAÇA PRÓPRIA ----
 // Conserta cadastro torto sem mexer no Consumer: "BATATA FRITA" (a duplicada
 // em maiúsculas) está sem cozinha e caía no balde órfão. Formato "nome>praça".
