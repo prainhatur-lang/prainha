@@ -32,9 +32,9 @@ function MesaCard({ mesa, info, noConsumer, larguraPx }: { mesa: Mesa; info?: Re
       style={larguraPx ? { width: larguraPx } : undefined}
       className={`relative flex h-16 ${larguraPx ? '' : 'w-16'} flex-col items-center justify-center rounded-lg border px-0.5 text-center ${
         ocupada
-          ? 'border-rose-300 bg-rose-100 text-rose-700'
+          ? 'border-rose-100 bg-rose-50 text-rose-300'
           : walkIn
-            ? 'border-orange-300 bg-orange-100 text-orange-700'
+            ? 'border-orange-100 bg-orange-50 text-orange-300'
             : corLugares(mesa.lugares)
       }`}
     >
@@ -241,8 +241,8 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
       <div className="flex items-center gap-3 text-[11px] text-slate-500">
         <span>Legenda:</span>
         <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-slate-100 ring-1 ring-slate-300" /> livre</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-rose-100 ring-1 ring-rose-300" /> ocupada (reserva)</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-100 ring-1 ring-orange-300" /> ocupada no sistema (sem reserva)</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-rose-50 ring-1 ring-rose-200" /> ocupada (reserva)</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-orange-50 ring-1 ring-orange-200" /> ocupada no sistema (sem reserva)</span>
         <span>🔗 juntável</span>
       </div>
       {comMesas.map((f) => {
