@@ -9,6 +9,7 @@ import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva,
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
+import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { createPixPayment } from '@/lib/pagamento-online';
 import { randomBytes } from 'node:crypto';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
@@ -99,7 +100,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // dela; fim de semana/feriado tem corte extra pra pedido do MESMO DIA).
   const janela = await foraDaJanelaAtendimento(cfg, data, hora);
   if (janela.bloqueado) {
-    return NextResponse.json({ error: janela.motivo }, { status: 403 });
+    // CORTE DINÂMICO — mesmo desvio da Nina (lib/atendimento/reservar.ts) e
+    // da rota /disponibilidade: pedido pra HOJE barrado pelo corte padrão,
+    // mas a casa com espaço agora → libera até o corte estendido.
+    let liberadoPorOcupacao = false;
+    if (data === hojeBr()) {
+      const oc = await medirOcupacaoHoje(filial.id, cfg);
+      if (oc?.corteEstendido && hora <= oc.corteEstendido && horaAgoraBr() < oc.corteEstendido) {
+        liberadoPorOcupacao = true;
+      }
+    }
+    if (!liberadoPorOcupacao) {
+      return NextResponse.json({ error: janela.motivo }, { status: 403 });
+    }
   }
 
   // Valida espaco + hora limite

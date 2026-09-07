@@ -25,7 +25,7 @@ import { ehDiaEspecial } from './feriados';
 /** Alta estação (regra do Elison, 16/08): ~15 de dezembro até o Carnaval —
  *  reserva ANTECIPADA só pela manhã (corte curto vale TODOS os dias); a
  *  tarde do PRÓPRIO dia é liberada aos poucos conforme a ocupação real
- *  (lib/atendimento/ocupacao, hoje só no fluxo da Nina). Ajustar as datas
+ *  (lib/atendimento/ocupacao — na Nina e no site público). Ajustar as datas
  *  a cada temporada — 2026/27: 15/12 a 10/02 (quarta de cinzas). */
 export function emAltaEstacao(ymd: string): boolean {
   const md = ymd.slice(5); // MM-DD

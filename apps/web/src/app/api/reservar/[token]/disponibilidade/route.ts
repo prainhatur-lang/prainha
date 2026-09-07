@@ -8,6 +8,8 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
+import { hojeBr, horaAgoraBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,11 +38,26 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
 
   // Janela de atendimento do sistema (horário de funcionamento das reservas).
   const janela = await foraDaJanelaAtendimento(filial.reservaConfig, data);
-  if (janela.bloqueado) return NextResponse.json({ areas: [], fechado: true, motivo: janela.motivo });
+  let bloqueado = janela.bloqueado;
 
   // Até que hora ESSE dia aceita reserva (fds/feriado fecha mais cedo) — o
   // formulário usa pra só oferecer horário que vai ser aceito de verdade.
-  const horaMax = await horaMaximaDoDia(filial.reservaConfig, data);
+  let horaMax = await horaMaximaDoDia(filial.reservaConfig, data);
+
+  // CORTE DINÂMICO — mesma regra da Nina (lib/atendimento/reservar.ts): pra
+  // HOJE, casa com espaço libera reserva até 15:00/17:00 conforme a ocupação
+  // real, mesmo depois do corte padrão de fds/feriado. Sem isso o site
+  // recusava o dia que a Nina aceitava (07/09: dia 7 cinza no calendário).
+  // Se mudar a regra lá, mudar aqui também — e o /confirmar tem o mesmo desvio.
+  if (data === hojeBr()) {
+    const oc = await medirOcupacaoHoje(filial.id, filial.reservaConfig);
+    if (oc?.corteEstendido && horaAgoraBr() < oc.corteEstendido) {
+      bloqueado = false;
+      if (!horaMax || horaMax < oc.corteEstendido) horaMax = oc.corteEstendido;
+    }
+  }
+
+  if (bloqueado) return NextResponse.json({ areas: [], fechado: true, motivo: janela.motivo });
 
   const areas = ((filial.reservaConfig?.areas as AreaCfg[] | undefined) ?? []).filter(
     (a) => a.ativo && !a.somenteEventos && (a.mesas?.length ?? 0) > 0,
