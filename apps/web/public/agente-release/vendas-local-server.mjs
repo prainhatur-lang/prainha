@@ -243,8 +243,8 @@ const nativo = () => BANCO === 'proprio';
 const SEQ_INICIO = 5000000;
 
 async function addCol(tabela, ddl) {
-  try { await sql.unsafe(`ALTER TABLE ${tabela} ADD COLUMN ${ddl}`); }
-  catch (e) { if (e.code !== '42701') throw e; } // 42701 = coluna já existe
+  try { await sql.unsafe(`ALTER TABLE ${tabela} ADD COLUMN ${ddl}`); return true; }
+  catch (e) { if (e.code !== '42701') throw e; return false; } // 42701 = coluna já existe
 }
 /** Tabelas/colunas que só o modo próprio usa. Criadas sempre (custo zero) pra
  *  o corte ser só trocar a env — e pra dar pra popular e conferir ANTES. */
@@ -432,6 +432,27 @@ async function initSchema() {
   // pedido nenhum pra pousar — sem esta marca, o Pix da recreação pagaria a
   // conta da mesa e fecharia a comanda de quem ainda estava jantando.
   await addCol('pix_cobranca', 'origem text');
+  // ⚠️ PIX CONFIRMADO NUNCA FICA SEM BAIXA (07/09/2026, mesas 45 e 23: a Cielo
+  // aprovou R$ 390,50 e R$ 75,00, o Firebird falhou na hora de achar/gravar a
+  // conta e o Pix virou "órfão" pra sempre — sem retentativa e sem aviso no
+  // caixa; o cliente foi embora com a mesa cobrando de novo). Agora:
+  //  · pedido_fb amarra a cobrança à CONTA desde o QR (não ao número da mesa,
+  //    que muda de dono);
+  //  · baixado_em é a prova de que entrou no Consumer. Pago sem baixado_em =
+  //    a fila (loopPixSemBaixa) tenta de novo sozinha e o caixa vê em VERMELHO;
+  //  · nsu guardado na confirmação — a retentativa precisa dele pro extrato;
+  //  · baixa_erro/tentativas/tentada_em: o que deu errado e quando, na tela.
+  await addCol('pix_cobranca', 'pedido_fb bigint');
+  await addCol('pix_cobranca', 'nsu text');
+  const baixadoNova = await addCol('pix_cobranca', 'baixado_em timestamptz');
+  await addCol('pix_cobranca', 'baixa_erro text');
+  await addCol('pix_cobranca', 'baixa_tentativas integer DEFAULT 0');
+  await addCol('pix_cobranca', 'baixa_tentada_em timestamptz');
+  // Coluna recém-criada: o que já estava pago e NÃO era órfão foi baixado pelo
+  // código antigo (que só marcava sem_conta quando falhava). Carimba pra fila
+  // não relançar Pix velho em conta nenhuma. Órfão marcado fica sem carimbo —
+  // é justamente ele que a fila vai pegar.
+  if (baixadoNova) await sql`UPDATE pix_cobranca SET baixado_em = pago_em WHERE pago_em IS NOT NULL AND baixado_em IS NULL AND sem_conta IS NOT TRUE`;
   // consulta ao SPC e' PAGA por CPF — cache pra nunca cobrar o mesmo duas vezes.
   // Guarda o HASH do CPF, nao o CPF.
   // rastro de quem moveu conta de lugar — mexer em conta alheia deixa marca
@@ -3772,6 +3793,8 @@ async function apiVendaAbertas() {
     WHERE pago_em IS NULL AND criado_em > now() - interval '10 minutes' GROUP BY mesa`).map((x) => [Number(x.mesa), Number(x.v) || 0]));
   const cobPend = new Map((await sql`SELECT numero, SUM(valor) v FROM venda_pagamento
     WHERE status='aguardando' AND criado_em > now() - interval '10 minutes' GROUP BY numero`).map((x) => [Number(x.numero), Number(x.v) || 0]));
+  // Pix confirmado SEM BAIXA: a grade grita em vermelho na mesa da conta
+  const semBaixa = await pixSemBaixa().catch(() => []);
   for (const r of rows) {
     const total = Number(r.valor_total) || 0, pago = Number(r.subtotal_pago) || 0;
     r.pago = +pago.toFixed(2);
@@ -3779,6 +3802,8 @@ async function apiVendaAbertas() {
     r.pendente = +((pixPend.get(Number(r.numero)) || 0) + (cobPend.get(Number(r.numero)) || 0)).toFixed(2);
     r.pg = total > 0 && pago >= total - 0.009 ? 'pago' : (pago > 0.009 ? 'parcial' : null);
     r.pg_pendente = r.pg !== 'pago' && r.pendente > 0;
+    r.pix_sem_baixa = +semBaixa.filter((x) => x.mesa === Number(r.numero) && (x.pedido_fb == null || x.pedido_fb === Number(r.codigo)))
+      .reduce((a, x) => a + x.valor, 0).toFixed(2);
   }
   // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
@@ -3822,6 +3847,9 @@ async function apiVendaAbertas() {
   return {
     mesas,
     comandas: rows.filter((x) => Number(x.numero) >= COMANDA_DE).map((x) => ({ ...x, mesa: mapa.get(Number(x.numero)) ?? null })),
+    // faixa vermelha no topo do caixa: TODO Pix confirmado sem baixa (3 dias),
+    // inclusive o que ficou preso numa conta já fechada
+    pix_sem_baixa: { n: semBaixa.length, valor: +semBaixa.reduce((a, x) => a + x.valor, 0).toFixed(2), lista: semBaixa },
   };
 }
 async function apiVendaMesa(mesa) {
@@ -6139,7 +6167,10 @@ async function apiCaixaConta(n, pedRaw) {
     // "em pagamento" — o caixa não lança na mão nem dá por pago
     pix_pendentes: await sql`SELECT valor, criado_em FROM pix_cobranca WHERE mesa=${num} AND pago_em IS NULL
         AND criado_em > now() - interval '10 minutes' ORDER BY criado_em DESC`
-      .then((r) => r.map((x) => ({ valor: Number(x.valor) || 0, criado_em: x.criado_em }))).catch(() => []) };
+      .then((r) => r.map((x) => ({ valor: Number(x.valor) || 0, criado_em: x.criado_em }))).catch(() => []),
+    // Pix CONFIRMADO pela Cielo e ainda não lançado nesta conta: vermelho na
+    // tela, com "Lançar agora" — o dinheiro entrou, a conta não pode cobrar de novo
+    pix_sem_baixa: await pixSemBaixa({ mesa: num, pedido: ped }).catch(() => []) };
 }
 /** Recebimentos VIVOS de um pedido (os dois bancos), com quem registrou pela
  *  nossa tela/maquininha quando dá pra saber (log local). */
@@ -12498,14 +12529,17 @@ const pixQrImagem = (copia) => 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(
  *  dois usos: a conta da mesa (mesa preenchida, origem vazia) e a avulsa do
  *  Espaço Kids (mesa nula, origem 'kids'). Quem decide o que acontece quando
  *  o dinheiro cai é o `origem` lá no apiPixConferir. */
-async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = null }) {
+async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = null, pedido = null }) {
   if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const nMesa = mesa == null ? null : Number(mesa);
+  // pedido_fb: a CONTA que o cliente estava vendo quando gerou o QR. É nela
+  // que o Pix pousa — nunca "na mesa", que pode ter trocado de dono até cair.
+  const nPed = Number(pedido) > 0 ? Number(pedido) : null;
   if (PIX_PROVEDOR === 'cielo') {
     const r = await cieloPixCriar(nMesa, valor, rotulo);
     if (!r.ok) return r;
-    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem)
-      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'cielo', ${origem}) ON CONFLICT (txid) DO NOTHING`;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem, pedido_fb)
+      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'cielo', ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
     return { ok: true, txid: r.txid, copia: r.copia };
   }
   const c = interCred();
@@ -12523,8 +12557,8 @@ async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = nu
   }
   const copia = r.data?.pixCopiaECola || r.data?.location || null;
   if (!copia) return { ok: false, erro: 'Inter não devolveu o código Pix' };
-  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, origem)
-    VALUES (${txid}, ${nMesa}, ${valor}, ${copia}, ${origem}) ON CONFLICT (txid) DO NOTHING`;
+  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, origem, pedido_fb)
+    VALUES (${txid}, ${nMesa}, ${valor}, ${copia}, ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
   return { ok: true, txid, copia };
 }
 async function apiPixCobrar(body) {
@@ -12534,7 +12568,9 @@ async function apiPixCobrar(body) {
   const cob = valorDaCobranca(conta, body);
   if (cob.erro) return { ok: false, erro: cob.erro };
   const valor = cob.valor;
-  const r = await pixCriarCobranca({ valor, mesa: Number(body.mesa) });
+  // a CONTA que o cliente está vendo (espelho do Consumer) — o Pix fica amarrado a ela
+  const cm = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(body.mesa)} LIMIT 1`)[0];
+  const r = await pixCriarCobranca({ valor, mesa: Number(body.mesa), pedido: cm ? Number(cm.codigo) : null });
   if (!r.ok) return r;
   return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
 }
@@ -12840,7 +12876,7 @@ async function apiPixConferir(txid) {
   // disso — só uma volta com linha e só ela registra o pagamento. Em 01/08 um
   // Pix de R$ 37,28 entrou DUAS VEZES na conta do cliente por causa disso.
   // Nunca separe a checagem da gravação aqui.
-  const claim = await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e}
+  const claim = await sql`UPDATE pix_cobranca SET pago_em=now(), e2e=${e2e}, nsu=${autorizacao || null}
     WHERE txid=${String(txid)} AND pago_em IS NULL RETURNING txid`;
   if (!claim.length) return { ok: true, pago: true, ja_registrado: true };
   // ⚠️ COBRANÇA AVULSA (Espaço Kids): PARA AQUI. Ela nasceu sem mesa e não tem
@@ -12848,6 +12884,7 @@ async function apiPixConferir(txid) {
   // marcaria a cobrança como "Pix órfão" e, pior, se por acaso achasse pedido,
   // pagaria e FECHARIA a conta de quem ainda estava jantando.
   if (cob.origem === 'kids') {
+    await sql`UPDATE pix_cobranca SET baixado_em=now() WHERE txid=${String(txid)}`; // avulsa: não há conta pra baixar
     await sql`UPDATE kids_cobranca SET pago_em=now() WHERE txid=${String(txid)} AND pago_em IS NULL`;
     const [k] = await sql`SELECT entrada_id, valor FROM kids_cobranca WHERE txid=${String(txid)}`;
     if (k) {
@@ -12858,56 +12895,193 @@ async function apiPixConferir(txid) {
     console.log('[pix] kids ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' — cobrança avulsa, nenhuma conta tocada');
     return { ok: true, pago: true, e2e };
   }
-  try {
-    const ped = await fbAcharPedido(Number(cob.mesa));
-    const marca = 'Pix do cliente ' + txid;
-    if (!ped) {
-      // ⚠️ DINHEIRO SEM DONO. O Pix caiu depois que a mesa fechou (o cliente
-      // pagou, a página dele morreu, e alguém no caixa encerrou a conta por
-      // outro caminho). Até aqui isso passava CALADO: marcava a cobrança como
-      // paga e não gravava em lugar nenhum. Agora fica marcado e gritado —
-      // esse valor precisa de conciliação humana, não de palpite do sistema.
-      await sql`UPDATE pix_cobranca SET sem_conta=true WHERE txid=${String(txid)}`;
-      console.error('[pix] ⚠️ ÓRFÃO: R$ ' + Number(cob.valor).toFixed(2) + ' caiu na mesa ' + cob.mesa +
-        ' mas a conta já estava fechada — txid ' + txid + (e2e ? ' · E2E ' + e2e : '') + ' · CONCILIAR NA MÃO');
-    }
-    if (ped) {
-      // Segunda trava, do lado do Consumer: se por qualquer caminho já existe
-      // um pagamento com este txid, não grava outro.
-      const dup = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS
-        WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(String(txid))}'`);
-      if (dup.ok && dup.rows.length) console.error('[pix] ' + txid + ' já estava no Consumer — não dupliquei');
-      else {
-        const pagFb = await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor: Number(cob.valor),
-          autorizacao, observacao: marca });
-        // o log LOCAL também precisa do Pix: é dele que sai a lista
-        // "Pagamentos" da mesa e da conta impressa — sem isto o cliente pagava
-        // e o garçom não via o lançamento na tela.
-        await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
-          VALUES (${Number(cob.mesa)}, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${Number(cob.valor)}, ${'pix-cliente'}, ${'ok'}, ${autorizacao || null}, ${pagFb})`;
+  // ⚠️ A BAIXA NO CONSUMER É OUTRA FUNÇÃO, IDEMPOTENTE, E TEM FILA. Até
+  // 07/09/2026 ela vivia aqui dentro: se o Firebird falhasse (comum na 0001),
+  // a cobrança já estava marcada como paga, ninguém tentava de novo e o
+  // "órfão" só aparecia num JSON que ninguém abre. O cliente pagava, ia
+  // embora, e a mesa seguia cobrando o valor inteiro.
+  const b = await pixBaixarNaConta(String(txid)).catch((err) => ({ ok: false, erro: err.message }));
+  if (!b.ok) console.error('[pix] ⚠️ ' + txid + ' CONFIRMADO (R$ ' + Number(cob.valor).toFixed(2) + ', mesa ' + cob.mesa +
+    ') mas ainda SEM BAIXA: ' + b.erro + ' — a fila tenta de novo e o caixa vê em vermelho');
+  return { ok: true, pago: true, e2e, baixado: !!b.ok };
+}
+
+/** Pedido ABERTO com este número, anterior ao instante `desde` (cobranças
+ *  antigas, sem pedido_fb): a conta que já existia quando o QR foi gerado.
+ *  Conta aberta DEPOIS do QR é de outro cliente — nunca recebe o Pix. */
+async function pedAbertoAntesDe(numero, desde) {
+  const seg = Math.max(0, Math.ceil((Date.now() - new Date(desde).getTime()) / 1000));
+  if (nativo()) {
+    const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} AND fechada_em IS NULL AND cancelada_em IS NULL
+      AND data_abertura < ${new Date(desde)} ORDER BY codigo DESC LIMIT 1`;
+    return r.length ? Number(r[0].codigo) : null;
+  }
+  const r = await qi(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL
+    AND DATAABERTURA < DATEADD(-${seg} SECOND TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+  if (!r.ok) throw new Error('Firebird não respondeu ao procurar a conta: ' + r.err);
+  return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+}
+/** Igual a pedAbertoDoNumero, mas SEPARA "conta fechada" de "banco não
+ *  respondeu" — a fila trata os dois de jeito diferente. */
+async function pedAbertoOuErro(ped, numero) {
+  const p = Number(ped), n = Number(numero);
+  if (!(p > 0)) return false;
+  if (nativo()) return pedAbertoDoNumero(p, n);
+  const r = await qi(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE CODIGO=${p} AND NUMERO=${n}
+    AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL`);
+  if (!r.ok) throw new Error('Firebird não respondeu ao conferir a conta: ' + r.err);
+  return r.rows.length > 0;
+}
+/** ⚠️ DINHEIRO. Lança um Pix CONFIRMADO na conta do Consumer — idempotente:
+ *  pode ser chamada quantas vezes for (confirmação, fila, botão do caixa) que
+ *  o Pix entra UMA vez. Regras:
+ *   · a conta é a do pedido_fb (amarrado no QR) e tem que estar ABERTA. Se
+ *     fechou, espera reabrir — Pix nunca pousa em outra conta por conta própria;
+ *   · cobrança antiga sem pedido_fb: a conta aberta na mesa que já existia
+ *     antes do QR (pedAbertoAntesDe);
+ *   · duplicidade checada no Consumer pelo txid e FAIL-CLOSED: sem resposta,
+ *     não grava (antes gravava — era assim que entrava em dobro);
+ *   · não deixa a conta ficar paga em dobro sozinha: se o que já entrou mais
+ *     este Pix passa do total, para e avisa (o caixa manda "lançar mesmo
+ *     assim" com opts.forcar — ex.: recebeu em dinheiro e o Pix caiu depois);
+ *   · qualquer falha vira baixa_erro + tentativa contada; a fila volta.
+ *  opts.pedido = conta escolhida por quem está no caixa (botão "Lançar agora"). */
+async function pixBaixarNaConta(txid, opts = {}) {
+  txid = String(txid || '');
+  const cob0 = (await sql`SELECT mesa, origem FROM pix_cobranca WHERE txid=${txid}`)[0];
+  if (!cob0) return { ok: false, erro: 'cobrança não encontrada' };
+  if (cob0.origem) return { ok: false, erro: 'cobrança avulsa (' + cob0.origem + ') não pousa em conta' };
+  const mesa = Number(cob0.mesa);
+  if (!(mesa >= 0)) return { ok: false, erro: 'cobrança sem mesa' };
+  // na fila da mesa: não disputa com lançamento de item nem com outra baixa
+  // do mesmo Pix (confirmação e fila podem coincidir)
+  return naFilaDaMesa(mesa, async () => {
+    const cob = (await sql`SELECT * FROM pix_cobranca WHERE txid=${txid}`)[0];
+    if (!cob || !cob.pago_em) return { ok: false, erro: 'Pix ainda não confirmado' };
+    if (cob.baixado_em) return { ok: true, ja_baixado: true, pedido: cob.pedido_fb == null ? null : Number(cob.pedido_fb) };
+    const valor = Number(cob.valor) || 0;
+    const tent = (Number(cob.baixa_tentativas) || 0) + 1;
+    // marca ANTES: tentativa que estoura não pode virar looping de 30 em 30s
+    await sql`UPDATE pix_cobranca SET baixa_tentada_em=now(), baixa_tentativas=${tent} WHERE txid=${txid}`;
+    const falha = async (erro, semConta, extra) => {
+      const msg = String(erro || 'falhou').slice(0, 300);
+      try { await sql`UPDATE pix_cobranca SET baixa_erro=${msg}, sem_conta=${!!semConta} WHERE txid=${txid}`; } catch { /* o log fica */ }
+      console.error('[pix-baixa] ' + txid + ' (mesa ' + mesa + ', R$ ' + valor.toFixed(2) + ') ' + tent + 'ª tentativa: ' + msg);
+      return { ok: false, erro: msg, tentativas: tent, ...(extra || {}) };
+    };
+    try {
+      // 1. EM QUAL CONTA
+      let ped = Number(opts.pedido) > 0 ? Number(opts.pedido) : null;
+      if (ped) {
+        if (!(await pedAbertoOuErro(ped, mesa))) return falha('a conta ' + ped + ' não está aberta na mesa ' + mesa, true);
+      } else if (Number(cob.pedido_fb) > 0) {
+        ped = Number(cob.pedido_fb);
+        if (!(await pedAbertoOuErro(ped, mesa))) return falha('a conta ' + ped + ' desta cobrança está fechada — Pix não pousa em outra conta sozinho; reabra a conta ou lance pelo caixa', true);
+      } else {
+        ped = await pedAbertoAntesDe(mesa, cob.criado_em);
+        if (!ped) return falha('nenhuma conta aberta na mesa ' + mesa + ' anterior ao QR (gerado ' + new Date(cob.criado_em).toISOString() + ')', true);
       }
+      // NSU pro extrato: gravado na confirmação; cobrança antiga não tem —
+      // busca de novo na Cielo (é a mesma consulta da confirmação)
+      let nsu = cob.nsu || null;
+      if (!nsu && cob.provedor === 'cielo') {
+        const s = await cieloPixStatus(txid).catch(() => null);
+        if (s && s.ok && s.pago && s.nsu) { nsu = String(s.nsu); await sql`UPDATE pix_cobranca SET nsu=${nsu} WHERE txid=${txid}`; }
+      }
+      if (!nsu && cob.provedor !== 'cielo') nsu = cob.e2e || null;
+      const marca = 'Pix do cliente ' + txid;
+      // 2. JÁ ESTÁ NO CONSUMER? (fail-closed: sem resposta, não grava)
+      let pagFb = null;
+      if (nativo()) {
+        const d = await sql`SELECT codigo FROM pagamento_local WHERE pedido=${ped} AND observacao=${marca} AND cancelado_em IS NULL LIMIT 1`;
+        if (d.length) pagFb = Number(d[0].codigo);
+      } else {
+        const dup = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS
+          WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(txid)}'`);
+        if (!dup.ok) throw new Error('Firebird não respondeu na checagem de duplicidade: ' + dup.err);
+        if (dup.rows.length) pagFb = Number(dup.rows[0].CODIGO);
+      }
+      if (pagFb) console.error('[pix-baixa] ' + txid + ' já estava no Consumer (pagamento ' + pagFb + ') — não dupliquei');
+      else {
+        // 3. NÃO DEIXA A CONTA PAGA EM DOBRO SEM UM HUMANO MANDAR
+        if (!opts.forcar) {
+          const total = (await pedTotais(ped))?.total || 0;
+          const pago = await fbPagoDoPedido(ped);
+          if (total > 0 && pago + valor > total + 0.05) {
+            return falha('a conta ' + ped + ' já tem ' + impMoeda(pago) + ' pago de ' + impMoeda(total) + ' — lançar este Pix de ' + impMoeda(valor) +
+              ' deixaria a conta paga em dobro; confira se já foi lançado à mão', false, { conflito: true });
+          }
+        }
+        pagFb = await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor, autorizacao: nsu || undefined, observacao: marca });
+      }
+      // log LOCAL: é dele que sai a lista "Pagamentos" da mesa e a conta impressa
+      const jaLocal = pagFb ? await sql`SELECT 1 FROM venda_pagamento WHERE pagamento_fb=${pagFb} LIMIT 1` : [];
+      if (!jaLocal.length) {
+        await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
+          VALUES (${mesa}, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${valor}, ${'pix-cliente'}, ${'ok'}, ${nsu || null}, ${pagFb})`;
+      }
+      await sql`UPDATE pix_cobranca SET baixado_em=now(), pedido_fb=${ped}, sem_conta=false, baixa_erro=null WHERE txid=${txid}`;
       // quitou pelo Pix = mesmo ato final do dinheiro e da maquininha: fecha o
       // pedido e libera a mesa (o apiCaixaFechar barra sozinho se faltar).
       let fechou = false;
-      try { fechou = (await apiCaixaFechar(Number(cob.mesa)))?.fechada === true; } catch { /* parcial: segue aberta */ }
+      try { fechou = (await apiCaixaFechar(mesa, ped))?.fechada === true; } catch { /* parcial: segue aberta */ }
       // COMPROVANTE (pedido do dono, 22/08): sai na térmica do caixa assim que
-      // o Pix é reconhecido. Sai também no pagamento parcial — quem pagou a
-      // parte dele tem direito ao papel, mesmo com a mesa seguindo aberta.
-      imprimirComprovantePix(String(txid)).catch(() => {});
-      console.log('[pix] ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' na mesa ' + cob.mesa + (fechou ? ' — mesa FECHADA' : ' — mesa segue aberta (falta pagar)'));
+      // o Pix é reconhecido — também no parcial e também quando entrou pela fila.
+      imprimirComprovantePix(txid).catch(() => {});
+      console.log('[pix] ' + txid + ' pago R$ ' + valor.toFixed(2) + ' na mesa ' + mesa + ' (conta ' + ped + (tent > 1 ? ', ' + tent + 'ª tentativa' : '') +
+        (opts.quem ? ', pelo caixa ' + (opts.quem.login || opts.quem.nome || '?') : '') + ')' + (fechou ? ' — mesa FECHADA' : ' — mesa segue aberta (falta pagar)'));
+      return { ok: true, pedido: ped, pagamento: pagFb, fechou };
+    } catch (err) {
+      return falha(err.message, false);
     }
-  } catch (err) {
-    // ⚠️ Igual ao ÓRFÃO acima, mas pra quando o pedido FOI achado e o registro
-    // quebrou no meio (Firebird instável, comum na 0001 — foi o que aconteceu
-    // com a mesa 17/Thiago em 07/09: Cielo aprovou os R$ 152,90, o INSERT em
-    // PAGAMENTOS falhou, e isso ficava só no console — a mesa seguia cobrando
-    // o valor inteiro de novo e o cliente via "pago" com a conta dizendo que
-    // não pagou nada. Agora cai na mesma fila de conciliação humana.
-    console.error('[pix] registrar no Consumer falhou:', err.message);
-    try { await sql`UPDATE pix_cobranca SET sem_conta=true WHERE txid=${String(txid)}`; } catch { /* nem isso — o log acima ao menos ficou */ }
-    console.error('[pix] ⚠️ marcado pra CONCILIAR NA MÃO — txid ' + txid + ' · mesa ' + cob.mesa + ' · R$ ' + Number(cob.valor).toFixed(2));
-  }
-  return { ok: true, pago: true, e2e };
+  });
+}
+/** A FILA: Pix confirmado sem baixa volta a tentar sozinho — a cada 30s nos
+ *  primeiros 10 min (Firebird engasgado se recupera rápido), depois a cada
+ *  5 min por 3 dias (conta fechada esperando reabrir, caixa decidir). Nunca
+ *  dorme mais que isso: o dinheiro já entrou. */
+async function loopPixSemBaixa() {
+  try {
+    const fila = await sql`SELECT txid, baixa_tentativas t FROM pix_cobranca
+      WHERE pago_em IS NOT NULL AND baixado_em IS NULL AND origem IS NULL AND mesa IS NOT NULL
+        AND pago_em > now() - interval '3 days'
+        AND (baixa_tentada_em IS NULL
+             OR (COALESCE(baixa_tentativas, 0) < 20 AND baixa_tentada_em < now() - interval '30 seconds')
+             OR baixa_tentada_em < now() - interval '5 minutes')
+      ORDER BY pago_em LIMIT 10`;
+    for (const c of fila) {
+      const r = await pixBaixarNaConta(c.txid).catch((e) => ({ ok: false, erro: e.message }));
+      if (r.ok && !r.ja_baixado) console.log('[pix-baixa] ' + c.txid + ' entrou na conta ' + r.pedido + ' pela fila (' + ((Number(c.t) || 0) + 1) + 'ª tentativa)');
+    }
+  } catch (e) { console.error('[pix-baixa] ' + e.message); }
+  finally { setTimeout(loopPixSemBaixa, 30000); }
+}
+/** Pix confirmados e ainda não lançados (a lista vermelha do caixa e o
+ *  /api/pix/orfaos). Com `pedido`: só os que cabem NAQUELA conta — cobrança
+ *  amarrada a outra conta não aparece na conta nova da mesma mesa. */
+async function pixSemBaixa({ mesa = null, pedido = null, dias = 3 } = {}) {
+  const r = await sql`SELECT txid, mesa, valor, e2e, nsu, pago_em, criado_em, pedido_fb, baixa_erro, baixa_tentativas, baixa_tentada_em, sem_conta
+    FROM pix_cobranca WHERE pago_em IS NOT NULL AND baixado_em IS NULL AND origem IS NULL AND mesa IS NOT NULL
+      AND pago_em > now() - (${Math.max(1, Number(dias) || 3)}::int * interval '1 day')
+      AND (${mesa == null}::boolean OR mesa=${mesa == null ? -1 : Number(mesa)})
+    ORDER BY pago_em DESC`;
+  return r.filter((x) => pedido == null || x.pedido_fb == null || Number(x.pedido_fb) === Number(pedido))
+    .map((x) => ({ txid: x.txid, mesa: Number(x.mesa), valor: Number(x.valor) || 0, e2e: x.e2e, nsu: x.nsu, pago_em: x.pago_em, criado_em: x.criado_em,
+      pedido_fb: x.pedido_fb == null ? null : Number(x.pedido_fb), erro: x.baixa_erro, tentativas: Number(x.baixa_tentativas) || 0,
+      tentada_em: x.baixa_tentada_em, sem_conta: !!x.sem_conta }));
+}
+/** Botão "Lançar agora" do caixa: lança o Pix confirmado NA CONTA que está
+ *  na tela (quem está no caixa escolheu), com forcar quando ele confirmou
+ *  que quer mesmo passar da conta cheia. */
+async function apiCaixaPixBaixar(body, quem) {
+  const txid = String(body.txid || '').trim();
+  if (!txid) return { ok: false, erro: 'dados inválidos' };
+  const numero = Number(body.numero);
+  const ped = await pedidoAlvo(numero, body.ped);
+  if (!ped) return { ok: false, erro: 'a conta precisa estar aberta — se já fechou, use "Reabrir a última conta" primeiro' };
+  const r = await pixBaixarNaConta(txid, { pedido: ped, forcar: !!body.forcar, quem });
+  if (r.ok && body.forcar) console.error('[pix-baixa] ' + txid + ' lançado MESMO ASSIM na conta ' + ped + ' por ' + (quem?.login || '?'));
+  return r;
 }
 
 // ---- /conta/ver?n=12 — a conta na TELA, imprimível em papel comum ----
@@ -15738,8 +15912,9 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .mchip .mn{display:block;font-size:19px;font-weight:800;line-height:1.1}
 .mchip b{display:block;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mchip small{display:block;color:var(--mut);font-size:10.5px;margin-top:1px}
-.mchip small.pgok{color:#0a7d38;font-weight:800}.mchip small.pgpar{color:#b45309;font-weight:800}.mchip small.pgwait{color:#0b5c8a;font-weight:700}
-.ban{margin:8px 0 2px;padding:8px 10px;border-radius:10px;font-size:14px;font-weight:700}.ban.ok{background:#e7f7ec;color:#0a7d38}.ban.par{background:#fff4d6;color:#8a5a00}.ban.wait{background:#e6f2fa;color:#0b5c8a;font-weight:600}
+.mchip small.pgok{color:#0a7d38;font-weight:800}.mchip small.pgpar{color:#b45309;font-weight:800}.mchip small.pgwait{color:#0b5c8a;font-weight:700}.mchip small.pgerr{color:#b91c1c;font-weight:800}
+.pixsb{margin:0 0 8px;padding:9px 12px;border-radius:10px;background:#b91c1c;color:#fff;font-weight:800;font-size:14px;cursor:pointer}
+.ban{margin:8px 0 2px;padding:8px 10px;border-radius:10px;font-size:14px;font-weight:700}.ban.ok{background:#e7f7ec;color:#0a7d38}.ban.par{background:#fff4d6;color:#8a5a00}.ban.wait{background:#e6f2fa;color:#0b5c8a;font-weight:600}.ban.err{background:#fde8e8;color:#b91c1c;border:2px solid #b91c1c}.ban.err a{color:#b91c1c;text-decoration:underline;font-weight:800}
 .mchip.st-andamento{border-color:#8ed4a8;background:#f1fbf5}
 .mchip.st-atrasada{border-color:#e8c25a;background:#fffaeb}
 .mchip.st-fechando{border-color:#eda3a3;background:#fdf2f2}
@@ -15860,7 +16035,7 @@ function chips(){
   var h='';
   (MESAS.mesas||[]).forEach(function(m){h+=mchip(m.numero,'Mesa '+m.numero,m)});
   (MESAS.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
-  return h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>';
+  return pixSbHtml()+(h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>');
 }
 /* "há 14h" — entrega aberta desde ontem quase sempre é conta que ninguém
    fechou, não pedido em andamento. O tempo na cara evita a caça no fim do mês. */
@@ -15897,9 +16072,26 @@ function rotuloDelivery(m){
    em pagamento (Pix gerado ou cobrança na maquininha ainda sem confirmação) */
 function pgLinha(m){
   var w=m.pg_pendente?'<small class="pgwait">⏳ em pagamento '+brl(m.pendente)+'</small>':'';
-  if(m.pg==='pago')return '<small class="pgok">✓ PAGO</small>';
-  if(m.pg==='parcial')return '<small class="pgpar">parcial · falta '+brl(m.falta)+'</small>'+w;
-  return w;
+  // Pix confirmado e NÃO lançado: vermelho antes de qualquer outro estado
+  var e=Number(m.pix_sem_baixa)>0?'<small class="pgerr">⚠️ Pix '+brl(m.pix_sem_baixa)+' SEM LANÇAR</small>':'';
+  if(m.pg==='pago')return e+'<small class="pgok">✓ PAGO</small>';
+  if(m.pg==='parcial')return e+'<small class="pgpar">parcial · falta '+brl(m.falta)+'</small>'+w;
+  return e+w;
+}
+/* Faixa vermelha no topo da grade: Pix confirmado pela Cielo que ainda não
+   entrou em conta nenhuma (inclusive preso em conta já fechada). Toque abre
+   a lista com mesa, valor, hora e o que travou. */
+function pixSbHtml(){
+  var s=MESAS&&MESAS.pix_sem_baixa;
+  if(!s||!(s.n>0))return '';
+  return '<div class="pixsb" onclick="pixSbVer()">⚠️ '+s.n+' Pix confirmado'+(s.n>1?'s':'')+' SEM LANÇAR na conta — '+brl(s.valor)+' · toque pra ver</div>';
+}
+function pixSbVer(){
+  var s=MESAS&&MESAS.pix_sem_baixa;if(!s||!s.lista)return;
+  alert('PIX CONFIRMADO E AINDA NÃO LANÇADO\\n(o sistema tenta sozinho; abra a mesa e use "Lançar agora" se precisar)\\n\\n'+s.lista.map(function(x){
+    var hh=x.pago_em?new Date(x.pago_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    return 'Mesa '+x.mesa+' · '+brl(x.valor)+' · pago '+hh+(x.pedido_fb?' · conta '+x.pedido_fb:'')+(x.erro?'\\n   ↳ '+x.erro:'');
+  }).join('\\n\\n'));
 }
 function mchip(num,lbl,m){
   // denso de propósito: a casa tem MUITAS mesas — número grande pra bater o
@@ -16027,6 +16219,16 @@ async function reabrirCx(n){
   if(!r.ok){alert(r.erro||'não deu');return}
   if(r.aviso)alert(r.aviso);
   carregar(n);
+}
+async function baixarPixCx(txid){
+  if(!confirm('Lançar este Pix NESTA conta agora?\\n\\nSó confirme se ele ainda não aparece em "Já pago" desta conta.'))return;
+  var r=await jpost('/api/caixa/pix-baixar',alvo({numero:MESA,txid:txid}));
+  if(!r.ok&&r.conflito){
+    if(!confirm(r.erro+'\\n\\nLançar MESMO ASSIM?'))return;
+    r=await jpost('/api/caixa/pix-baixar',alvo({numero:MESA,txid:txid,forcar:true}));
+  }
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
 }
 async function estornarCx(cod){
   var m=prompt('Cancelar este lançamento?\\n\\nMotivo (ex.: cancelado na maquininha, valor errado):','');
@@ -16248,6 +16450,15 @@ function pinta(el){
   (c.pix_pendentes||[]).forEach(function(px){
     var hh=px.criado_em?new Date(px.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
     h+='<div class="ban wait">⏳ EM PAGAMENTO — Pix de '+brl(px.valor)+(hh?' gerado às '+hh:'')+', aguardando a Cielo confirmar. Só vale quando aparecer em "Já pago".</div>';
+  });
+  // Pix que a Cielo CONFIRMOU e ainda não entrou nesta conta (07/09/2026,
+  // mesas 45 e 23): o dinheiro está na conta da casa — a mesa NÃO pode cobrar
+  // de novo. O servidor tenta sozinho; o botão lança na hora nesta conta.
+  (c.pix_sem_baixa||[]).forEach(function(px){
+    var hh=px.pago_em?new Date(px.pago_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+    h+='<div class="ban err">⚠️ PIX DE '+brl(px.valor)+' CONFIRMADO PELA CIELO'+(hh?' ÀS '+hh:'')+' E AINDA NÃO LANÇADO NESTA CONTA — não cobre de novo. O sistema tenta sozinho'+
+      (px.erro?' <span style="font-weight:600">(último erro: '+esc(px.erro)+')</span>':'')+'. '+
+      '<a class="sair" onclick="baixarPixCx(\\''+esc(px.txid)+'\\')">▶ Lançar agora</a></div>';
   });
   h+='</div>';
   // MESA COM COMANDAS PENDURADAS: cada uma listada aqui, um toque abre a conta
@@ -19151,6 +19362,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/pix-baixar') return res.end(JSON.stringify(await apiCaixaPixBaixar(await readBody(req), quem)));
       // nota fiscal do pedido de entrega PRÉ-PAGO (pago na entrega = sai na maquininha)
       if (req.method === 'POST' && p === '/api/caixa/delivery-nota') {
         try { return res.end(JSON.stringify(await apiCaixaDeliveryNota(await readBody(req), quem))); }
@@ -19446,12 +19658,19 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(d ? { ok: true, ...d } : { ok: false, erro: 'comprovante não encontrado' }));
     }
     if (p === '/api/pix/orfaos') {
-      // Pix pago que não achou conta aberta (dinheiro entrou, ninguém baixou).
-      const r = await sql`SELECT txid, mesa, valor, e2e, pago_em, criado_em FROM pix_cobranca
-         WHERE sem_conta AND criado_em > now() - interval '30 days' ORDER BY pago_em DESC`;
+      // Pix pago (Cielo/Inter confirmou) que ainda NÃO entrou em conta nenhuma:
+      // dinheiro na conta da casa esperando baixa. A fila tenta sozinha; aqui
+      // é a lista pra conferir (30 dias), com o último erro de cada um.
+      const r = await pixSemBaixa({ dias: 30 });
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, n: r.length,
         total: +r.reduce((a, x) => a + Number(x.valor || 0), 0).toFixed(2), orfaos: r }));
+    }
+    if (req.method === 'POST' && p === '/api/pix/baixar') {
+      // mesma coisa que a fila faz, na hora (sem escolher conta: a amarrada no QR)
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await pixBaixarNaConta(String(body.txid || '')).catch((e) => ({ ok: false, erro: e.message }))));
     }
     if (p === '/api/pix/reimprimir') {
       const ok = await imprimirComprovantePix(u.searchParams.get('txid') || '');
@@ -19647,6 +19866,7 @@ async function main() {
   }
   loopEspelho();
   loopPixPendente();
+  loopPixSemBaixa();
   loopAutoUpdate();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
   // Desligado (o padrão), o loop apenas acorda e volta a dormir.
