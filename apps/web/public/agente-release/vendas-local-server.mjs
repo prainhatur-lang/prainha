@@ -388,6 +388,19 @@ async function initSchema() {
   await addCol('venda_pagamento', 'estornado_em timestamptz');
   await addCol('venda_pagamento', 'estornado_por text');
   await addCol('venda_pagamento', 'estorno_motivo text');
+  // ⚠️ RECEBIMENTO RETIDO (07/09/2026, mesa 10 da Prainha Bar): o app da
+  // maquininha reenviou um Pix cobrado NA VÉSPERA e ele pousou na conta do
+  // cliente NOVO — ver contaDoRecebimento. Recebimento sem conta legítima
+  // pra pousar fica aqui com status 'retido' (dinheiro guardado, conta de
+  // ninguém tocada) até um humano no caixa mandar ele pra conta certa.
+  //  · payload: o body inteiro do lançamento, pra relançar igualzinho;
+  //  · quando_transacao: quando o dinheiro foi COBRADO de verdade;
+  //  · conta_alvo: a conta que estava aberta naquele instante (mesmo fechada).
+  await addCol('venda_pagamento', 'payload jsonb');
+  await addCol('venda_pagamento', 'quando_transacao timestamptz');
+  await addCol('venda_pagamento', 'conta_alvo integer');
+  await addCol('venda_pagamento', 'resolvido_em timestamptz');
+  await addCol('venda_pagamento', 'resolvido_por text');
   await sql`CREATE TABLE IF NOT EXISTS pagamento_estorno (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
     numero integer, pedido_fb integer, pagamento_fb bigint, forma text, valor numeric, nsu text, motivo text)`;
   await sql`CREATE TABLE IF NOT EXISTS conta_reabertura (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
@@ -3795,6 +3808,8 @@ async function apiVendaAbertas() {
     WHERE status='aguardando' AND criado_em > now() - interval '10 minutes' GROUP BY numero`).map((x) => [Number(x.numero), Number(x.v) || 0]));
   // Pix confirmado SEM BAIXA: a grade grita em vermelho na mesa da conta
   const semBaixa = await pixSemBaixa().catch(() => []);
+  // Recebimento RETIDO (cobrado antes desta conta existir): vermelho na mesa
+  const retidos = await recebimentosRetidos({ dias: 7 }).catch(() => []);
   for (const r of rows) {
     const total = Number(r.valor_total) || 0, pago = Number(r.subtotal_pago) || 0;
     r.pago = +pago.toFixed(2);
@@ -3804,6 +3819,7 @@ async function apiVendaAbertas() {
     r.pg_pendente = r.pg !== 'pago' && r.pendente > 0;
     r.pix_sem_baixa = +semBaixa.filter((x) => x.mesa === Number(r.numero) && (x.pedido_fb == null || x.pedido_fb === Number(r.codigo)))
       .reduce((a, x) => a + x.valor, 0).toFixed(2);
+    r.retido = +retidos.filter((x) => x.numero === Number(r.numero)).reduce((a, x) => a + x.valor, 0).toFixed(2);
   }
   // a comanda leva junto a mesa dela: clicar na comanda abre a MESA certa
   const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE fechada_em IS NULL`;
@@ -3850,6 +3866,8 @@ async function apiVendaAbertas() {
     // faixa vermelha no topo do caixa: TODO Pix confirmado sem baixa (3 dias),
     // inclusive o que ficou preso numa conta já fechada
     pix_sem_baixa: { n: semBaixa.length, valor: +semBaixa.reduce((a, x) => a + x.valor, 0).toFixed(2), lista: semBaixa },
+    // faixa vermelha: recebimento COBRADO que não achou conta legítima
+    retidos: { n: retidos.length, valor: +retidos.reduce((a, x) => a + x.valor, 0).toFixed(2), lista: retidos },
   };
 }
 async function apiVendaMesa(mesa) {
@@ -4424,6 +4442,125 @@ async function nsuJaLancado(nsu, valor) {
   } catch (e) { falha = falha || e.message; }
   return falha ? { indeterminado: true, erro: falha } : null;
 }
+// ⚠️⚠️ O DINHEIRO POUSA NA CONTA QUE ESTAVA ABERTA QUANDO ELE FOI COBRADO.
+// 07/09/2026, mesa 10: a fila de pendentes do app da maquininha guardava um
+// Pix de R$ 353,30 cobrado NA VÉSPERA (E2E das 19:31 do dia 06). O reenvio
+// saiu às 15:13 do dia seguinte, achou a mesa 10 aberta com OUTRO cliente e
+// pagou a conta de hoje com o dinheiro de ontem: a conta de ontem ficou
+// devendo e a de hoje fechou com R$ 353,30 que ninguém pagou. A trava do NSU
+// não pega isto — o NSU era novo e legítimo, só velho.
+// Mesma regra do Pix do cliente (pedAbertoAntesDe): conta que NASCEU DEPOIS
+// da cobrança nunca recebe o dinheiro. Se a conta certa já fechou, o
+// recebimento fica RETIDO — vermelho no caixa, com "Lançar nesta conta" —
+// em vez de entrar sozinho na conta errada.
+const TOL_RELOGIO_MS = 90 * 1000; // relógio da maquininha × relógio da loja
+const fbTs = (d) => {
+  const z = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+};
+/** QUANDO o dinheiro foi cobrado, pelo que o app mandou:
+ *   · Pix da LIO: o EndToEndId ('E' + ISPB(8) + yyyyMMddHHmm em UTC + 11) —
+ *     hora do BANCO, não tem como mentir;
+ *   · aprovado_em: carimbo explícito do app (≥1.10.17), ms ou ISO;
+ *   · _id da fila de pendentes ("<millis>-<nsu>"): TODO app manda desde a 1.9
+ *     (Pendentes.adicionar carimba antes do 1º envio) — é o instante em que a
+ *     maquininha aprovou, e ele VIAJA com o reenvio de dias depois.
+ *  Vale o MAIS ANTIGO: nenhuma dessas fontes pode ser depois da cobrança.
+ *  null = sem carimbo nenhum (dinheiro, caixa, app pré-histórico). */
+function instanteDaTransacao(body) {
+  const cand = [];
+  const e2e = String(body.autorizacao || '').trim().toUpperCase();
+  const m = /^E\d{8}(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})[A-Z0-9]{11}$/.exec(e2e);
+  if (m) cand.push({ fonte: 'Pix (E2E)', quando: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])) });
+  if (body.aprovado_em) {
+    const d = typeof body.aprovado_em === 'number' ? new Date(body.aprovado_em) : new Date(String(body.aprovado_em));
+    if (!isNaN(d.getTime())) cand.push({ fonte: 'maquininha', quando: d });
+  }
+  const f = /^(\d{13})-/.exec(String(body._id || ''));
+  if (f) cand.push({ fonte: 'fila do app', quando: new Date(Number(f[1])) });
+  const agora = Date.now();
+  // relógio absurdo (device sem hora certa) não vale como prova de nada
+  const bons = cand.filter((c) => c.quando.getTime() > agora - 60 * 864e5 && c.quando.getTime() < agora + 6 * 3600e3);
+  if (!bons.length) return null;
+  return bons.sort((a, b) => a.quando - b.quando)[0];
+}
+/** DATAABERTURA da conta. Erro de banco SOBE (quem chama recusa). */
+async function aberturaDaConta(ped) {
+  if (nativo()) {
+    const [x] = await sql`SELECT data_abertura FROM comanda WHERE codigo=${Number(ped)}`;
+    return x && x.data_abertura ? new Date(x.data_abertura) : null;
+  }
+  const r = await qi(`SELECT FIRST 1 CAST(DATAABERTURA AS VARCHAR(24)) AB FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
+  if (!r.ok) throw new Error('Consumer não respondeu a abertura da conta: ' + r.err);
+  const t = r.rows[0] && r.rows[0].AB;
+  return t ? new Date(String(t).slice(0, 19).replace(' ', 'T')) : null;
+}
+/** A conta que existia na mesa/comanda `n` NO INSTANTE `quando` (a mais nova
+ *  aberta até ali), aberta ou já fechada. Erro de banco SOBE. */
+async function contaNoInstante(n, quando) {
+  const lim = new Date(quando.getTime() + TOL_RELOGIO_MS);
+  if (nativo()) {
+    const r = await sql`SELECT codigo, data_abertura, fechada_em FROM comanda
+      WHERE numero=${Number(n)} AND cancelada_em IS NULL AND data_abertura <= ${lim}
+      ORDER BY codigo DESC LIMIT 1`;
+    if (!r.length) return null;
+    return { codigo: Number(r[0].codigo), abertura: r[0].data_abertura, fechada_em: r[0].fechada_em, aberta: !r[0].fechada_em };
+  }
+  const r = await qi(`SELECT FIRST 1 CODIGO, CAST(DATAABERTURA AS VARCHAR(24)) AB, CAST(DATAFECHAMENTO AS VARCHAR(24)) FE
+    FROM PEDIDOS WHERE NUMERO=${Number(n)} AND DATADELETE IS NULL
+      AND DATAABERTURA <= '${fbTs(lim)}' ORDER BY CODIGO DESC`);
+  if (!r.ok) throw new Error('Consumer não respondeu ao procurar a conta da transação: ' + r.err);
+  if (!r.rows.length) return null;
+  const x = r.rows[0];
+  const fe = x.FE ? String(x.FE).trim() : '';
+  return { codigo: Number(x.CODIGO), abertura: x.AB || null, fechada_em: fe || null, aberta: !fe };
+}
+/** EM QUE CONTA ESTE RECEBIMENTO PODE ENTRAR.
+ *  {ped} = pode gravar nessa conta · {retido:{…}} = não tem conta legítima.
+ *  Sem carimbo de hora (dinheiro, caixa, app velho) devolve a conta de sempre:
+ *  a trava só age quando existe prova de QUANDO o dinheiro foi cobrado. */
+async function contaDoRecebimento(n, ped0, body) {
+  const t = instanteDaTransacao(body);
+  if (!t) return { ped: ped0 };
+  if (!(Number(n) > 0)) return { ped: ped0 }; // entrega (número 0): a conta vem explícita
+  if (ped0) {
+    const ab = await aberturaDaConta(ped0);
+    // conta aberta ANTES da cobrança = caminho normal, nada a fazer
+    if (!ab || ab.getTime() <= t.quando.getTime() + TOL_RELOGIO_MS) return { ped: ped0, quando: t };
+  }
+  const alvo = await contaNoInstante(n, t.quando);
+  if (alvo && alvo.aberta) return { ped: alvo.codigo, desviado: ped0 || null, quando: t, alvo };
+  return { retido: true, quando: t, alvo, ped0 };
+}
+/** Guarda um recebimento que não achou conta legítima. Idempotente por
+ *  (número, valor, NSU): o app reenvia a fila a cada onResume — não pode
+ *  virar uma lista de 40 avisos do mesmo dinheiro. */
+async function reterRecebimento(n, body, info, motivo) {
+  const nsu = body.nsu ? String(body.nsu).slice(0, 30) : null;
+  const valor = +Number(body.valor || 0).toFixed(2);
+  const [ja] = await sql`SELECT id FROM venda_pagamento WHERE status='retido' AND resolvido_em IS NULL
+    AND numero=${Number(n)} AND valor=${valor} AND COALESCE(nsu,'')=${nsu || ''}
+    AND criado_em > now() - interval '30 days' ORDER BY id DESC LIMIT 1`;
+  if (ja) { await sql`UPDATE venda_pagamento SET erro=${motivo.slice(0, 300)} WHERE id=${ja.id}`; return Number(ja.id); }
+  const [novo] = await sql`INSERT INTO venda_pagamento
+      (numero, forma, valor, origem, status, nsu, autorizacao, bandeira, adquirente, erro, payload, quando_transacao, conta_alvo)
+    VALUES (${Number(n)}, ${String(body.forma || '')}, ${valor}, ${String(body.origem || body.modo || 'lio-sdk')}, 'retido',
+      ${nsu}, ${body.autorizacao ? String(body.autorizacao).slice(0, 60) : null}, ${body.bandeira ? String(body.bandeira).slice(0, 40) : null},
+      ${body.adquirente === 'rede' ? 'rede' : (body.adquirente === 'cielo' ? 'cielo' : null)}, ${motivo.slice(0, 300)},
+      ${sql.json(body)}, ${info.quando ? info.quando.quando : null}, ${info.alvo ? Number(info.alvo.codigo) : null}) RETURNING id`;
+  return Number(novo.id);
+}
+/** A lista vermelha do caixa: recebimentos retidos e ainda não resolvidos. */
+async function recebimentosRetidos({ mesa = null, dias = 30 } = {}) {
+  const r = await sql`SELECT id, numero, valor, forma, origem, nsu, erro, criado_em, quando_transacao, conta_alvo
+    FROM venda_pagamento WHERE status='retido' AND resolvido_em IS NULL
+      AND criado_em > now() - (${String(Math.max(1, Number(dias) || 30))} || ' days')::interval
+      AND (${mesa == null} OR numero=${mesa == null ? -1 : Number(mesa)})
+    ORDER BY criado_em DESC`;
+  return r.map((x) => ({ id: Number(x.id), numero: Number(x.numero), valor: Number(x.valor) || 0, forma: x.forma,
+    origem: x.origem, nsu: x.nsu, motivo: x.erro, criado_em: x.criado_em, quando: x.quando_transacao,
+    conta_alvo: x.conta_alvo == null ? null : Number(x.conta_alvo) }));
+}
 async function apiContaPagar(body) {
   const nsuTxt = String(body.nsu || '').replace(/\D/g, '').replace(/^0+/, '');
   const valor = +Number(body.valor || 0).toFixed(2);
@@ -4504,7 +4641,36 @@ async function apiContaPagarSemTrava(body) {
   };
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
-  const ped = await pedidoAlvo(n, body.ped);
+  let ped = await pedidoAlvo(n, body.ped);
+  // ⚠️⚠️ TRAVA DA CONTA CERTA (ver contaDoRecebimento): dinheiro cobrado ANTES
+  // desta conta existir não entra nela. É o que faltou em 07/09/2026 na mesa
+  // 10 — Pix da véspera reenviado pela fila do app pagando a conta do cliente
+  // novo. Fail-closed igual à trava do NSU: banco sem resposta = não grava.
+  if (body.forcar_conta !== true) {
+    let alvo;
+    try { alvo = await contaDoRecebimento(n, ped, body); }
+    catch (e) {
+      console.error(`[pagar] conta do recebimento INDETERMINADA (número ${n}, R$ ${valor.toFixed(2)}): ${e.message} — recusado, nada gravado`);
+      return { ok: false, indeterminado: true,
+        erro: `Não consegui conferir em qual conta este recebimento entra (${e.message}). NADA foi gravado — espere uns segundos e registre de novo.` };
+    }
+    if (alvo.retido) {
+      const q = alvo.quando.quando;
+      const hora = q.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const onde = alvo.alvo
+        ? `é da conta ${alvo.alvo.codigo}, que já fechou`
+        : 'não tem conta nenhuma nesta mesa naquele horário';
+      const motivo = `Cobrado em ${hora} (${alvo.quando.fonte}) — ${onde}. A conta aberta agora nasceu depois: o dinheiro NÃO entra nela.`;
+      const id = await reterRecebimento(n, body, alvo, motivo);
+      console.error(`[pagar] ⚠️ RETIDO #${id}: ${forma} R$ ${valor.toFixed(2)} no número ${n} (NSU ${body.nsu || '-'}) — ${motivo}`);
+      return { ok: false, retido: true, pagamento_id: id,
+        erro: `${motivo} O valor ficou guardado e aparece em VERMELHO no caixa — quem está no caixa lança na conta certa (reabrindo, se precisar).` };
+    }
+    if (alvo.ped && Number(alvo.ped) !== Number(ped || 0)) {
+      console.error(`[pagar] recebimento de ${alvo.quando ? alvo.quando.quando.toISOString() : '?'} desviado da conta ${ped || '-'} pra ${alvo.ped} (a que estava aberta na cobrança), número ${n}, R$ ${valor.toFixed(2)}`);
+      ped = Number(alvo.ped);
+    }
+  }
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const cab = (await pedTotais(ped)) || {};
   const pagoAtual = await fbPagoDoPedido(ped);
@@ -4687,6 +4853,10 @@ async function apiLioPagarSemTrava(body, garcom) {
   const r = await apiContaPagar({
     numero: n, ped: body.ped, forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true, caixa_codigo: caixaCodigo,
+    // QUANDO a maquininha cobrou. Sem isto a trava de hora fica cega neste
+    // caminho (que é justamente o da fila do app reenviando cobrança velha):
+    // _id é o carimbo que o app põe ao enfileirar, aprovado_em vem do terminal.
+    _id: body._id || null, aprovado_em: body.aprovado_em || null,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     adquirente: body.adquirente || 'cielo', // app antigo não manda → é a LIO (Cielo)
     observacao: `Prainha LIO · ${garcom.login}`,
@@ -6170,7 +6340,10 @@ async function apiCaixaConta(n, pedRaw) {
       .then((r) => r.map((x) => ({ valor: Number(x.valor) || 0, criado_em: x.criado_em }))).catch(() => []),
     // Pix CONFIRMADO pela Cielo e ainda não lançado nesta conta: vermelho na
     // tela, com "Lançar agora" — o dinheiro entrou, a conta não pode cobrar de novo
-    pix_sem_baixa: await pixSemBaixa({ mesa: num, pedido: ped }).catch(() => []) };
+    pix_sem_baixa: await pixSemBaixa({ mesa: num, pedido: ped }).catch(() => []),
+    // Recebimento retido nesta mesa: o dinheiro foi cobrado, não entrou em
+    // conta nenhuma e espera alguém do caixa mandar pra conta certa
+    recebimentos_retidos: await recebimentosRetidos({ mesa: num, dias: 30 }).catch(() => []) };
 }
 /** Recebimentos VIVOS de um pedido (os dois bancos), com quem registrou pela
  *  nossa tela/maquininha quando dá pra saber (log local). */
@@ -13084,6 +13257,44 @@ async function apiCaixaPixBaixar(body, quem) {
   return r;
 }
 
+/** Botões do recebimento RETIDO. 'lancar' põe o dinheiro NA CONTA que está na
+ *  tela (decisão de gente, com forcar_conta — a trava de hora não vale contra
+ *  quem está olhando o comprovante); 'descartar' encerra com motivo (já foi
+ *  lançado à mão, ou foi estornado na maquininha). A trava do NSU continua
+ *  valendo nos dois casos: nada entra duas vezes. */
+async function apiCaixaRetido(body, quem) {
+  const id = Number(body.id);
+  const [x] = await sql`SELECT * FROM venda_pagamento WHERE id=${id}`;
+  if (!x || x.status !== 'retido') return { ok: false, erro: 'recebimento retido não encontrado' };
+  if (x.resolvido_em) return { ok: false, erro: 'esse recebimento já foi resolvido' };
+  if (String(body.acao || '') === 'descartar') {
+    const motivo = String(body.motivo || '').trim();
+    if (!motivo) return { ok: false, erro: 'diga o motivo' };
+    await sql`UPDATE venda_pagamento SET status='descartado', resolvido_em=now(), resolvido_por=${quem?.login || null},
+      erro=${(String(x.erro || '') + ' · DESCARTADO: ' + motivo).slice(0, 300)} WHERE id=${id}`;
+    console.error(`[pagar] retido #${id} (R$ ${Number(x.valor).toFixed(2)}, número ${x.numero}) DESCARTADO por ${quem?.login || '?'}: ${motivo}`);
+    return { ok: true, descartado: true };
+  }
+  const numero = Number(body.numero ?? x.numero);
+  const ped = await pedidoAlvo(numero, body.ped);
+  if (!ped) return { ok: false, erro: 'a conta precisa estar aberta — se já fechou, use "Reabrir a última conta" primeiro' };
+  const payload = (x.payload && typeof x.payload === 'object') ? x.payload : {};
+  const r = await apiContaPagar({ ...payload, numero, ped, forcar_conta: true,
+    // o caixa do garçom daquele momento pode nem estar aberto — vai pro caminho
+    // padrão, igual ao "Lançar agora" do Pix
+    caixa_codigo: null,
+    observacao: `${payload.observacao || 'Prainha Vendas'} · retido, lançado por ${quem?.nome || quem?.login || '?'}` });
+  if (r.ok) {
+    // conta_alvo, NÃO pedido_fb: o lançamento de verdade é a linha nova que
+    // apiContaPagar gravou; esta aqui é só o registro do retido resolvido e
+    // não pode aparecer como um segundo pagamento da conta.
+    await sql`UPDATE venda_pagamento SET status='resolvido', resolvido_em=now(), resolvido_por=${quem?.login || null},
+      conta_alvo=${ped} WHERE id=${id}`;
+    console.error(`[pagar] retido #${id} (R$ ${Number(x.valor).toFixed(2)}) lançado na conta ${ped} por ${quem?.login || '?'}`);
+  }
+  return r;
+}
+
 // ---- /conta/ver?n=12 — a conta na TELA, imprimível em papel comum ----
 // A impressão do Consumer (TIPOIMPRESSAO 2) depende da impressora do caixa
 // estar configurada, e a maquininha Cielo ainda está inacessível. Esta página
@@ -16035,7 +16246,7 @@ function chips(){
   var h='';
   (MESAS.mesas||[]).forEach(function(m){h+=mchip(m.numero,'Mesa '+m.numero,m)});
   (MESAS.comandas||[]).forEach(function(c){h+=mchip(c.numero,'Comanda '+c.numero,c)});
-  return pixSbHtml()+(h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>');
+  return retidoHtml()+pixSbHtml()+(h?('<div class="lst">'+h+'</div>'):'<span class="mut">nenhuma mesa aberta agora</span>');
 }
 /* "há 14h" — entrega aberta desde ontem quase sempre é conta que ninguém
    fechou, não pedido em andamento. O tempo na cara evita a caça no fim do mês. */
@@ -16074,6 +16285,8 @@ function pgLinha(m){
   var w=m.pg_pendente?'<small class="pgwait">⏳ em pagamento '+brl(m.pendente)+'</small>':'';
   // Pix confirmado e NÃO lançado: vermelho antes de qualquer outro estado
   var e=Number(m.pix_sem_baixa)>0?'<small class="pgerr">⚠️ Pix '+brl(m.pix_sem_baixa)+' SEM LANÇAR</small>':'';
+  // cobrado fora da hora desta conta: NÃO entrou em lugar nenhum
+  if(Number(m.retido)>0)e+='<small class="pgerr">⛔ '+brl(m.retido)+' RETIDO — conta errada</small>';
   if(m.pg==='pago')return e+'<small class="pgok">✓ PAGO</small>';
   if(m.pg==='parcial')return e+'<small class="pgpar">parcial · falta '+brl(m.falta)+'</small>'+w;
   return e+w;
@@ -16081,6 +16294,23 @@ function pgLinha(m){
 /* Faixa vermelha no topo da grade: Pix confirmado pela Cielo que ainda não
    entrou em conta nenhuma (inclusive preso em conta já fechada). Toque abre
    a lista com mesa, valor, hora e o que travou. */
+/* Faixa do RETIDO: dinheiro que a maquininha cobrou ANTES desta conta existir
+   (fila do app reenviando cobrança de ontem, mesa 10 em 07/09/2026). O servidor
+   recusou de propósito: entrar na conta de quem sentou depois é cobrar do
+   cliente errado. Fica aqui, vermelho, até alguém do caixa mandar pra conta
+   certa (reabrindo a antiga, se precisar) ou descartar com motivo. */
+function retidoHtml(){
+  var s=MESAS&&MESAS.retidos;
+  if(!s||!(s.n>0))return '';
+  return '<div class="pixsb" onclick="retidoVer()">⛔ '+s.n+' recebimento'+(s.n>1?'s':'')+' RETIDO'+(s.n>1?'S':'')+' (cobrado fora da conta) — '+brl(s.valor)+' · toque pra ver</div>';
+}
+function retidoVer(){
+  var s=MESAS&&MESAS.retidos;if(!s||!s.lista)return;
+  alert('RECEBIMENTO COBRADO QUE NÃO ENTROU EM CONTA NENHUMA\\n(o dinheiro existe; a conta aberta agora nasceu DEPOIS da cobrança)\\n\\nAbra a mesa e use "Lançar NESTA conta" na conta certa — se a certa já fechou, reabra ela antes.\\n\\n'+s.lista.map(function(x){
+    var hh=x.quando?new Date(x.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    return (x.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+x.numero+' · '+brl(x.valor)+(hh?' · cobrado '+hh:'')+(x.nsu?' · NSU '+x.nsu:'')+(x.motivo?'\\n   ↳ '+x.motivo:'');
+  }).join('\\n\\n'));
+}
 function pixSbHtml(){
   var s=MESAS&&MESAS.pix_sem_baixa;
   if(!s||!(s.n>0))return '';
@@ -16227,6 +16457,20 @@ async function baixarPixCx(txid){
     if(!confirm(r.erro+'\\n\\nLançar MESMO ASSIM?'))return;
     r=await jpost('/api/caixa/pix-baixar',alvo({numero:MESA,txid:txid,forcar:true}));
   }
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
+}
+async function lancarRetido(id){
+  if(!confirm('Lançar este recebimento NESTA conta?\\n\\nConfira o comprovante: ele foi cobrado ANTES desta conta abrir. Se for de um cliente anterior, reabra a conta dele e lance lá.'))return;
+  var r=await jpost('/api/caixa/retido',alvo({id:id,acao:'lancar',numero:MESA}));
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
+}
+async function descartarRetido(id){
+  var m=prompt('Descartar este recebimento retido?\\n\\nSó descarte se ele já foi lançado à mão ou estornado na maquininha.\\n\\nMotivo:','');
+  if(m===null)return; m=String(m).trim();
+  if(!m){alert('Diga o motivo');return}
+  var r=await jpost('/api/caixa/retido',{id:id,acao:'descartar',motivo:m});
   if(!r.ok){alert(r.erro||'não deu');return}
   carregar(MESA,PEDALVO);
 }
@@ -16459,6 +16703,15 @@ function pinta(el){
     h+='<div class="ban err">⚠️ PIX DE '+brl(px.valor)+' CONFIRMADO PELA CIELO'+(hh?' ÀS '+hh:'')+' E AINDA NÃO LANÇADO NESTA CONTA — não cobre de novo. O sistema tenta sozinho'+
       (px.erro?' <span style="font-weight:600">(último erro: '+esc(px.erro)+')</span>':'')+'. '+
       '<a class="sair" onclick="baixarPixCx(\\''+esc(px.txid)+'\\')">▶ Lançar agora</a></div>';
+  });
+  // RETIDO: cobrança que chegou fora da hora desta conta. Quem decide é gente
+  // olhando o comprovante — por isso os dois botões (lançar aqui / descartar).
+  (c.recebimentos_retidos||[]).forEach(function(rt){
+    var hh=rt.quando?new Date(rt.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    h+='<div class="ban err">⛔ RECEBIMENTO DE '+brl(rt.valor)+(hh?' COBRADO EM '+hh:'')+' RETIDO — não entrou em conta nenhuma'+
+      (rt.nsu?' (NSU '+esc(rt.nsu)+')':'')+'. '+(rt.motivo?'<span style="font-weight:600">'+esc(rt.motivo)+'</span> ':'')+
+      '<a class="sair" onclick="lancarRetido('+rt.id+')">▶ Lançar NESTA conta</a> '+
+      '<a class="sair" onclick="descartarRetido('+rt.id+')">✕ Descartar</a></div>';
   });
   h+='</div>';
   // MESA COM COMANDAS PENDURADAS: cada uma listada aqui, um toque abre a conta
@@ -19363,6 +19616,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/pix-baixar') return res.end(JSON.stringify(await apiCaixaPixBaixar(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/retido') return res.end(JSON.stringify(await apiCaixaRetido(await readBody(req), quem)));
       // nota fiscal do pedido de entrega PRÉ-PAGO (pago na entrega = sai na maquininha)
       if (req.method === 'POST' && p === '/api/caixa/delivery-nota') {
         try { return res.end(JSON.stringify(await apiCaixaDeliveryNota(await readBody(req), quem))); }
@@ -19463,6 +19717,9 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true }));
       }
       const body = await readBody(req);
+      // forcar_conta pula a trava de hora: é decisão de gente no caixa olhando
+      // o comprovante, nunca coisa que chega pela rede.
+      delete body.forcar_conta;
       const rl = await apiLioPagar(body, g);
       console.log('[lio] ' + g.login + ' · mesa ' + body.numero + ' · ' + body.forma
         + ' R$ ' + body.valor + (body.nsu ? ' · NSU ' + body.nsu : ' · SEM NSU')
@@ -19549,6 +19806,7 @@ const server = http.createServer(async (req, res) => {
       // Só o SERVIDOR decide o que é "integrado": vindo da rede, estes campos
       // são a própria porta que se quer fechar.
       delete body.comprovante; delete body.pix_online; delete body.origem;
+      delete body.forcar_conta; // só o caixa fura a trava de hora (/api/caixa/retido)
       return res.end(JSON.stringify(await apiContaPagar(body)));
     }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
