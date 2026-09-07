@@ -9587,10 +9587,10 @@ const PRACAS_OCULTAS_PADRAO = 'luau,terraco,coz terraco,pastel,destilados';
 // Config em cfg 'pracas_redirecionadas', formato "de>para" separado por vírgula.
 const PRACAS_REDIR_PADRAO = 'pastel>coz petisco,destilados>drinks';
 // ---- ITENS QUE NINGUÉM PRODUZ ----
-// Couvert não é prato: ninguém prepara, ninguém entrega. Ficava no balde
-// "Sem praça" (o cadastro dele não tem cozinha), pedindo baixa e contando
-// atraso na mesa. Entra JÁ BAIXADO — some do KDS sem sumir da conta.
-const ITENS_FORA_KDS_PADRAO = 'couvert';
+// Couvert e taxa de reserva (Lounge) não são prato: ninguém prepara, ninguém
+// entrega. Ficavam no balde "Sem praça" (cadastro sem cozinha), pedindo baixa
+// e contando atraso na mesa. Entram JÁ BAIXADOS — somem do KDS sem sumir da conta.
+const ITENS_FORA_KDS_PADRAO = 'couvert,lounge taxa';
 // ---- ITEM COM PRAÇA PRÓPRIA ----
 // Conserta cadastro torto sem mexer no Consumer: "BATATA FRITA" (a duplicada
 // em maiúsculas) está sem cozinha e caía no balde órfão. Formato "nome>praça".
@@ -12882,7 +12882,17 @@ async function apiPixConferir(txid) {
       imprimirComprovantePix(String(txid)).catch(() => {});
       console.log('[pix] ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' na mesa ' + cob.mesa + (fechou ? ' — mesa FECHADA' : ' — mesa segue aberta (falta pagar)'));
     }
-  } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
+  } catch (err) {
+    // ⚠️ Igual ao ÓRFÃO acima, mas pra quando o pedido FOI achado e o registro
+    // quebrou no meio (Firebird instável, comum na 0001 — foi o que aconteceu
+    // com a mesa 17/Thiago em 07/09: Cielo aprovou os R$ 152,90, o INSERT em
+    // PAGAMENTOS falhou, e isso ficava só no console — a mesa seguia cobrando
+    // o valor inteiro de novo e o cliente via "pago" com a conta dizendo que
+    // não pagou nada. Agora cai na mesma fila de conciliação humana.
+    console.error('[pix] registrar no Consumer falhou:', err.message);
+    try { await sql`UPDATE pix_cobranca SET sem_conta=true WHERE txid=${String(txid)}`; } catch { /* nem isso — o log acima ao menos ficou */ }
+    console.error('[pix] ⚠️ marcado pra CONCILIAR NA MÃO — txid ' + txid + ' · mesa ' + cob.mesa + ' · R$ ' + Number(cob.valor).toFixed(2));
+  }
   return { ok: true, pago: true, e2e };
 }
 
