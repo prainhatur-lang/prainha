@@ -12882,7 +12882,17 @@ async function apiPixConferir(txid) {
       imprimirComprovantePix(String(txid)).catch(() => {});
       console.log('[pix] ' + txid + ' pago R$ ' + Number(cob.valor).toFixed(2) + ' na mesa ' + cob.mesa + (fechou ? ' — mesa FECHADA' : ' — mesa segue aberta (falta pagar)'));
     }
-  } catch (err) { console.error('[pix] registrar no Consumer falhou:', err.message); }
+  } catch (err) {
+    // ⚠️ Igual ao ÓRFÃO acima, mas pra quando o pedido FOI achado e o registro
+    // quebrou no meio (Firebird instável, comum na 0001 — foi o que aconteceu
+    // com a mesa 17/Thiago em 07/09: Cielo aprovou os R$ 152,90, o INSERT em
+    // PAGAMENTOS falhou, e isso ficava só no console — a mesa seguia cobrando
+    // o valor inteiro de novo e o cliente via "pago" com a conta dizendo que
+    // não pagou nada. Agora cai na mesma fila de conciliação humana.
+    console.error('[pix] registrar no Consumer falhou:', err.message);
+    try { await sql`UPDATE pix_cobranca SET sem_conta=true WHERE txid=${String(txid)}`; } catch { /* nem isso — o log acima ao menos ficou */ }
+    console.error('[pix] ⚠️ marcado pra CONCILIAR NA MÃO — txid ' + txid + ' · mesa ' + cob.mesa + ' · R$ ' + Number(cob.valor).toFixed(2));
+  }
   return { ok: true, pago: true, e2e };
 }
 
