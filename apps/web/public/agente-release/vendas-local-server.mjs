@@ -3817,7 +3817,8 @@ async function apiVendaAbertas() {
     r.pendente = +((pixPend.get(Number(r.numero)) || 0) + (cobPend.get(Number(r.numero)) || 0)).toFixed(2);
     r.pg = total > 0 && pago >= total - 0.009 ? 'pago' : (pago > 0.009 ? 'parcial' : null);
     r.pg_pendente = r.pg !== 'pago' && r.pendente > 0;
-    r.pix_sem_baixa = +semBaixa.filter((x) => x.mesa === Number(r.numero) && (x.pedido_fb == null || x.pedido_fb === Number(r.codigo)))
+    r.pix_sem_baixa = +semBaixa.filter((x) => x.mesa === Number(r.numero) && (x.pedido_fb != null ? x.pedido_fb === Number(r.codigo)
+        : !(r.data_abertura && new Date(r.data_abertura).getTime() > new Date(x.criado_em).getTime())))
       .reduce((a, x) => a + x.valor, 0).toFixed(2);
     r.retido = +retidos.filter((x) => x.numero === Number(r.numero)).reduce((a, x) => a + x.valor, 0).toFixed(2);
   }
@@ -6340,7 +6341,7 @@ async function apiCaixaConta(n, pedRaw) {
       .then((r) => r.map((x) => ({ valor: Number(x.valor) || 0, criado_em: x.criado_em }))).catch(() => []),
     // Pix CONFIRMADO pela Cielo e ainda não lançado nesta conta: vermelho na
     // tela, com "Lançar agora" — o dinheiro entrou, a conta não pode cobrar de novo
-    pix_sem_baixa: await pixSemBaixa({ mesa: num, pedido: ped }).catch(() => []),
+    pix_sem_baixa: await pixSemBaixa({ mesa: num, pedido: ped, abertura: (await sql`SELECT data_abertura FROM comanda WHERE codigo=${ped} LIMIT 1`)[0]?.data_abertura || null }).catch(() => []),
     // Recebimento retido nesta mesa: o dinheiro foi cobrado, não entrou em
     // conta nenhuma e espera alguém do caixa mandar pra conta certa
     recebimentos_retidos: await recebimentosRetidos({ mesa: num, dias: 30 }).catch(() => []) };
@@ -13143,10 +13144,38 @@ async function pixBaixarNaConta(txid, opts = {}) {
       return { ok: false, erro: msg, tentativas: tent, ...(extra || {}) };
     };
     try {
+      const marca = 'Pix do cliente ' + txid;
+      // 0. JÁ ESTÁ NO CONSUMER? (lançado à mão, ou por tentativa anterior que
+      //    caiu antes de carimbar). Vale mesmo com a conta já fechada.
+      if (!nativo()) {
+        const ja = await qi(`SELECT FIRST 1 CODIGO, CODIGOPEDIDO FROM PAGAMENTOS WHERE DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(txid)}'`);
+        if (!ja.ok) throw new Error('Firebird não respondeu na checagem de duplicidade: ' + ja.err);
+        if (ja.rows.length) {
+          const pagFb = Number(ja.rows[0].CODIGO), pedJa = Number(ja.rows[0].CODIGOPEDIDO);
+          const jaLocal = await sql`SELECT 1 FROM venda_pagamento WHERE pagamento_fb=${pagFb} LIMIT 1`;
+          if (!jaLocal.length) await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
+            VALUES (${mesa}, ${pedJa}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${valor}, ${'pix-cliente'}, ${'ok'}, ${cob.nsu || null}, ${pagFb})`;
+          await sql`UPDATE pix_cobranca SET baixado_em=now(), pedido_fb=${pedJa}, sem_conta=false, baixa_erro=null WHERE txid=${txid}`;
+          console.log('[pix-baixa] ' + txid + ' já estava no Consumer (pagamento ' + pagFb + ', conta ' + pedJa + ') — só carimbei');
+          return { ok: true, pedido: pedJa, pagamento: pagFb, ja_estava: true };
+        }
+      }
       // 1. EM QUAL CONTA
       let ped = Number(opts.pedido) > 0 ? Number(opts.pedido) : null;
       if (ped) {
         if (!(await pedAbertoOuErro(ped, mesa))) return falha('a conta ' + ped + ' não está aberta na mesa ' + mesa, true);
+        // conta escolhida no caixa: se o Pix é de outra conta (amarrado no QR)
+        // ou de antes desta conta existir, é OUTRO cliente — só com "mesmo assim"
+        if (!opts.forcar) {
+          if (Number(cob.pedido_fb) > 0 && Number(cob.pedido_fb) !== ped)
+            return falha('este Pix é da conta ' + cob.pedido_fb + ', não da ' + ped + ' — reabra a conta certa', false, { conflito: true });
+          if (!(Number(cob.pedido_fb) > 0) && !nativo()) {
+            const seg = Math.max(0, Math.ceil((Date.now() - new Date(cob.criado_em).getTime()) / 1000));
+            const r = await qi(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE CODIGO=${ped} AND DATAABERTURA < DATEADD(-${seg} SECOND TO CURRENT_TIMESTAMP)`);
+            if (!r.ok) throw new Error('Firebird não respondeu ao conferir a conta: ' + r.err);
+            if (!r.rows.length) return falha('a conta ' + ped + ' foi aberta DEPOIS deste Pix — é outro cliente; o Pix era da conta anterior da mesa', false, { conflito: true });
+          }
+        }
       } else if (Number(cob.pedido_fb) > 0) {
         ped = Number(cob.pedido_fb);
         if (!(await pedAbertoOuErro(ped, mesa))) return falha('a conta ' + ped + ' desta cobrança está fechada — Pix não pousa em outra conta sozinho; reabra a conta ou lance pelo caixa', true);
@@ -13162,8 +13191,7 @@ async function pixBaixarNaConta(txid, opts = {}) {
         if (s && s.ok && s.pago && s.nsu) { nsu = String(s.nsu); await sql`UPDATE pix_cobranca SET nsu=${nsu} WHERE txid=${txid}`; }
       }
       if (!nsu && cob.provedor !== 'cielo') nsu = cob.e2e || null;
-      const marca = 'Pix do cliente ' + txid;
-      // 2. JÁ ESTÁ NO CONSUMER? (fail-closed: sem resposta, não grava)
+      // 2. JÁ ESTÁ NESTA CONTA? (fail-closed: sem resposta, não grava)
       let pagFb = null;
       if (nativo()) {
         const d = await sql`SELECT codigo FROM pagamento_local WHERE pedido=${ped} AND observacao=${marca} AND cancelado_em IS NULL LIMIT 1`;
@@ -13232,13 +13260,17 @@ async function loopPixSemBaixa() {
 /** Pix confirmados e ainda não lançados (a lista vermelha do caixa e o
  *  /api/pix/orfaos). Com `pedido`: só os que cabem NAQUELA conta — cobrança
  *  amarrada a outra conta não aparece na conta nova da mesma mesa. */
-async function pixSemBaixa({ mesa = null, pedido = null, dias = 3 } = {}) {
+async function pixSemBaixa({ mesa = null, pedido = null, abertura = null, dias = 3 } = {}) {
   const r = await sql`SELECT txid, mesa, valor, e2e, nsu, pago_em, criado_em, pedido_fb, baixa_erro, baixa_tentativas, baixa_tentada_em, sem_conta
     FROM pix_cobranca WHERE pago_em IS NOT NULL AND baixado_em IS NULL AND origem IS NULL AND mesa IS NOT NULL
       AND pago_em > now() - (${Math.max(1, Number(dias) || 3)}::int * interval '1 day')
       AND (${mesa == null}::boolean OR mesa=${mesa == null ? -1 : Number(mesa)})
     ORDER BY pago_em DESC`;
-  return r.filter((x) => pedido == null || x.pedido_fb == null || Number(x.pedido_fb) === Number(pedido))
+  // conta sem pedido_fb: só cabe em conta que já existia quando o QR nasceu
+  // (a mesa pode ter trocado de cliente — o Pix velho NÃO é da conta nova)
+  const cabe = (x) => x.pedido_fb != null ? Number(x.pedido_fb) === Number(pedido)
+    : !(abertura && new Date(abertura).getTime() > new Date(x.criado_em).getTime());
+  return r.filter((x) => pedido == null || cabe(x))
     .map((x) => ({ txid: x.txid, mesa: Number(x.mesa), valor: Number(x.valor) || 0, e2e: x.e2e, nsu: x.nsu, pago_em: x.pago_em, criado_em: x.criado_em,
       pedido_fb: x.pedido_fb == null ? null : Number(x.pedido_fb), erro: x.baixa_erro, tentativas: Number(x.baixa_tentativas) || 0,
       tentada_em: x.baixa_tentada_em, sem_conta: !!x.sem_conta }));
