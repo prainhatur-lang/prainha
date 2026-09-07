@@ -1394,8 +1394,8 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
         <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} placeholder="Pessoas" className={inp} />
         <input type="date" value={dataR} onChange={(e) => setData(e.target.value)} className={inp} />
         <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={`${inp} ${horaInvalida ? 'border-rose-400 text-rose-600' : ''}`} />
-        <select value={canal} onChange={(e) => setCanal(e.target.value)} className={inp}>
-          <option value="telefone">Telefone</option>
+        <select value={canal} onChange={(e) => setCanal(e.target.value)} title="Canal: como o cliente chegou até a reserva" className={inp}>
+          <option value="telefone">Ligação</option>
           <option value="balcao">Balcão</option>
           <option value="instagram">Instagram</option>
           <option value="site">Site</option>
