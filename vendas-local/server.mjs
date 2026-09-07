@@ -607,6 +607,11 @@ async function initSchema() {
   // já resolveu ficava olhando alarme velho (dono, 19/08).
   await addCol('cancelamento', 'visto_em timestamptz');
   await addCol('cancelamento', 'visto_por text');
+  // LIBERAÇÃO REMOTA: o caixa pede daqui, o gerente aprova no celular (/gerente)
+  // sem ir até o caixa digitar PIN. status: pendente → aprovada | negada.
+  await sql`CREATE TABLE IF NOT EXISTS liberacao (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
+    numero integer, pedido_fb integer, tipo text, item_codigo bigint, nome text, valor numeric, motivo text,
+    status text DEFAULT 'pendente', decidido_em timestamptz, decidido_por text, resposta text)`;
   // NFC-e emitida pelo Concilia (log local — a verdade fiscal mora no central):
   // serve pro "já tem nota" na tela e pra reimpressão sem repetir a pergunta.
   await sql`CREATE TABLE IF NOT EXISTS nfce_log (
@@ -6287,6 +6292,13 @@ async function validarDuplaSenha(body, quem, status) {
   const meu = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${quem.login}`)[0];
   if (!meu || !pinConfere(pinCx, meu.salt, meu.pin_hash)) return { precisa: true, erro: 'O seu PIN não confere.' };
   if (quem.admin || quem.excluir_pedido) return { gerente: quem.login }; // o caixa JÁ é gerente
+  // LIBERAÇÃO REMOTA (/gerente): aprovada pro MESMO caixa, MESMA mesa, há menos
+  // de 20 min — vale como a assinatura do gerente. O PIN do caixa segue exigido.
+  if (body.liberacao) {
+    const lib = (await sql`SELECT decidido_por FROM liberacao WHERE id=${Number(body.liberacao) || 0} AND login=${quem.login}
+      AND numero=${Number(body.numero) || 0} AND status='aprovada' AND decidido_em > now() - interval '20 minutes'`)[0];
+    if (lib && lib.decidido_por) return { gerente: lib.decidido_por };
+  }
   const gl = String(body.gerente_login || '').trim().toLowerCase();
   const gp = String(body.gerente_pin || '').replace(/\D/g, '');
   if (!gl || !gp) return { precisa: true, erro: 'Falta a autorização do gerente.' };
@@ -10817,6 +10829,7 @@ async function selecao(){
   // toca cai no PIN, então cozinha não entra por engano)
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
     '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
+    '<a class="linkbtn" href="/gerente">👔 Gerente</a>'+
     '<button class="linkbtn" onclick="abrirPontoFacial()">🕐 Ponto</button>'+
     '<a class="linkbtn" href="/tablet" title="instalar em tela cheia / atualizar">⚙</a>'+
     (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>')+
@@ -10845,6 +10858,7 @@ async function kds(){
     (nCrit?'<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626"><b>'+nCrit+'</b> estourou o prazo</span>':'')+
     '<span class="grow"></span>'+avisoCam()+somBtn()+
     '<a class="linkbtn" href="/tempos" title="tempo de preparo">⏱</a>'+
+    '<a class="linkbtn" href="/gerente" title="painel do gerente">👔</a>'+
     (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas ▸</a>')+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
@@ -15756,7 +15770,7 @@ input.kalvo{border-color:var(--gold2)}
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
 var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false,reabrir:false,estorno:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
-var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0,CANCEL_ON=false;
+var TELA='login',MESAS=null,FLASH=null,CXE=null,TICK=0,CANCEL_ON=false,LIBID=null,LIBPOLL=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -16046,7 +16060,7 @@ async function ifoodCxCancelar(id){
   if(!r.ok){alert(r.erro||'não deu');return}
   voltarMesas();
 }
-function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;PEDALVO=null;irTela('home');
+function voltarMesas(){pixPara();MESA=null;CONTA=null;CANCEL_ON=false;LIBID=null;libPara();PEDALVO=null;irTela('home');
   setTimeout(function(){window.scrollTo(0,HOME_Y)},0)} // volta NO MESMO lugar da lista
 async function carregar(n,ped){
   var num=n!=null?n:Number(((document.getElementById('nm')||{}).value||'').replace(/\\D/g,''));
@@ -16055,7 +16069,7 @@ async function carregar(n,ped){
   PEDALVO=ped?Number(ped):null;
   if(!(num>0)&&!PEDALVO){var a=document.getElementById('aerr');if(a)a.textContent='digite o número';return}
   if(TELA==='home')HOME_Y=window.scrollY||0; // pra voltar no mesmo ponto da lista
-  if(MESA==null||Number(num)!==Number(MESA)){CANCEL_ON=false;PAGON=false} // trocou de mesa: trava de novo
+  if(MESA==null||Number(num)!==Number(MESA)){CANCEL_ON=false;LIBID=null;libPara();PAGON=false} // trocou de mesa: trava de novo
   if(!CONTA||Number(CONTA.numero)!==Number(num))CONTA=null;
   MESA=num;irTela('conta');
   var c=await jget('/api/caixa/conta?n='+num+(PEDALVO?'&ped='+PEDALVO:''));
@@ -16517,7 +16531,12 @@ function telaLibCanc(el){
     (souG?'':'<input id="lcl" placeholder="login do gerente" autocapitalize="none" style="margin-top:8px">')+
     '<input id="lcp" class="num" type="password" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="PIN" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('lcp')+
     '<button class="big o" onclick="liberaCanc()">Liberar os botões de cancelar</button>'+
-    '<div id="lcerr" class="err"></div></div>';
+    '<div id="lcerr" class="err"></div>'+
+    (souG?'':'<div class="mut" style="margin-top:14px">Gerente longe do caixa? Peça pelo celular dele: aparece no painel /gerente e ele aprova de lá.</div>'+
+      '<button class="big" style="background:var(--ink)" onclick="pedirLib(this)">📲 Pedir liberação ao gerente</button>'+
+      '<div id="lcst" class="mut" style="margin-top:8px">'+(LIBID?'Já há um pedido aguardando o gerente…':'')+'</div>')+
+    '</div>';
+  if(LIBID&&!souG)libAcompanha();
   var e=document.getElementById(souG?'lcp':'lcl');if(e)e.focus();
 }
 async function liberaCanc(){
@@ -16526,6 +16545,30 @@ async function liberaCanc(){
   var r=await jpost('/api/caixa/liberar-cancel',b);
   if(!r.ok){document.getElementById('lcerr').textContent=r.erro||'não liberou';return}
   CANCEL_ON=true;irTela('conta');
+}
+/* LIBERAÇÃO REMOTA: o caixa pede, o gerente aprova no /gerente (celular).
+   Enquanto espera, consulta a cada 3s; aprovou → abre os botões de cancelar
+   e a dupla senha aceita o id da liberação no lugar do PIN do gerente. */
+function libPara(){if(LIBPOLL){clearInterval(LIBPOLL);LIBPOLL=null}}
+async function pedirLib(btn){
+  if(btn)btn.disabled=true;
+  var r=await jpost('/api/caixa/liberacao/pedir',alvo({numero:MESA,tipo:'cancelar'}));
+  if(btn)btn.disabled=false;
+  if(!r.ok){var e0=document.getElementById('lcerr');if(e0)e0.textContent=r.erro||'não deu pra pedir';return}
+  LIBID=r.id;var s=document.getElementById('lcst');if(s)s.textContent='Pedido enviado — aguardando o gerente…';
+  libAcompanha();
+}
+function libAcompanha(){
+  libPara();
+  LIBPOLL=setInterval(async function(){
+    if(!LIBID){libPara();return}
+    var st;try{st=await jget('/api/caixa/liberacao/status?id='+LIBID)}catch(e){return}
+    var e=document.getElementById('lcst');
+    if(!st.ok){libPara();LIBID=null;if(e)e.textContent=st.erro||'erro ao consultar';return}
+    if(st.status==='aprovada'){libPara();CANCEL_ON=true;if(TELA==='libcanc')irTela('conta');else pintaMain();return}
+    if(st.status==='negada'||st.status==='expirada'){libPara();LIBID=null;if(e)e.textContent=(st.status==='negada'?'O gerente NEGOU'+(st.resposta?': '+st.resposta:'')+'.':'O pedido expirou sem resposta.')+' Pode pedir de novo.';return}
+    if(e)e.textContent='Aguardando o gerente… ('+new Date().toLocaleTimeString('pt-BR').slice(0,5)+')';
+  },3000);
 }
 function telaDesc(el){
   DMODO='valor';
@@ -17305,10 +17348,10 @@ function telaCancItem(el){
     chipsMotivoHtml(MOTSEL,'selMotivoItem')+(MOTSEL===MOTIVO_DEV?devFotoHtml():'');
   if(precisa){
     h+='<input id="cpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="SEU PIN ('+esc(NOME||'')+')" style="margin-top:8px">';
-    if(!PODE.cancPed)h+='<div class="row" style="margin-top:8px">'+
+    if(!PODE.cancPed&&!(LIBID&&CANCEL_ON))h+='<div class="row" style="margin-top:8px">'+
       '<input id="cglog" placeholder="login do gerente" autocapitalize="none">'+
       '<input id="cgpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="PIN do gerente"></div>';
-    else h+='<div class="mut" style="margin-top:6px">Você já é gerente — só o seu PIN basta.</div>';
+    else h+='<div class="mut" style="margin-top:6px">'+(PODE.cancPed?'Você já é gerente — só o seu PIN basta.':'Liberação do gerente recebida pelo celular — só o seu PIN basta.')+'</div>';
   }
   h+='<button class="big" style="background:var(--red)" onclick="doCancItem(this)">Cancelar este item</button>'+
     '<div id="cierr" class="err"></div></div>';
@@ -17324,6 +17367,7 @@ async function doCancItem(btn){
   }
   if(CANCIT.resta!=null)b.qtd=CANCIT.qtd-CANCIT.resta;
   var cp=document.getElementById('cpin');if(cp)b.caixa_pin=cp.value||'';
+  if(LIBID&&CANCEL_ON)b.liberacao=LIBID;
   var gl=document.getElementById('cglog');if(gl)b.gerente_login=gl.value||'';
   var gp=document.getElementById('cgpin');if(gp)b.gerente_pin=gp.value||'';
   btn.disabled=true;
@@ -18170,6 +18214,645 @@ pinta();setInterval(pinta,3000);
 // precisa espiar o body (a do iFood no caixa) deixaria o handler seguinte sem
 // nada — todo POST do caixa cairia com corpo vazio. Guardando a promessa no
 // próprio req, a segunda chamada recebe o mesmo objeto.
+// ================= MÓDULO DO GERENTE (/gerente) =================
+// Painel LOCAL do gerente, no celular: ocupação do salão (% e mesas livres por
+// área), atrasos por praça, pedidos por setor, fluxo de clientes (hoje × ontem
+// × semana passada), reclamações/avaliações ao vivo, lista de espera + reservas
+// de hoje e as LIBERAÇÕES — o caixa pede daqui a autorização de um cancelamento
+// e o gerente aprova no celular, sem ir até o caixa digitar PIN.
+// O que mora na nuvem (mapa de mesas, lista de espera, avaliações, reservas)
+// vem por /api/loja/salao, assinado com a MESMA chave do cartão (HMAC).
+async function gerenteDaRequisicao(req, u) {
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  if (!(await ehGerente(v.login))) return null;
+  let nome = null;
+  try { nome = (await sql`SELECT nome FROM garcom_pin WHERE login=${v.login}`)[0]?.nome || null; } catch {}
+  return { login: v.login, nome: nome || v.login };
+}
+// POST /api/gerente/entrar {login, pin, pin2?} — mesma régua do caixa: PIN
+// local (garcom_pin), primeira vez cria com pin2. Só quem é gerente entra.
+async function apiGerenteEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  if (!(await ehGerente(login))) return { ok: false, erro: 'Este login não é gerente. Precisa de Administrador ou Excluir Pedido no Consumer, ou ser marcado como gerente em Gerentes.' };
+  let nome = login;
+  try { const p = await permsDoUsuario(login); if (p.ok && p.nome) nome = p.nome; } catch {}
+  const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
+  if (!atual) {
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    if (!pin2) return { ok: true, primeira_vez: true, nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, token: garcomGeraToken(login), login, nome, criado: true };
+  }
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), login, nome: atual.nome || nome };
+}
+// ---- nuvem: mapa de mesas, lista de espera, avaliações, reservas ----
+let salaoCache = { quando: 0, dados: null, erro: null };
+async function salaoDaNuvem(force = false) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem FILIAL_ID/PAGAR_MESA_SECRET', sem_chave: true };
+  if (!force && salaoCache.dados && Date.now() - salaoCache.quando < 10000) return salaoCache.dados;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/salao?f=${encodeURIComponent(FILIAL_ID)}&e=${e}&s=${nfceAssina('salao', e)}`,
+      { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (j && j.ok) { salaoCache = { quando: Date.now(), dados: j, erro: null }; return j; }
+    throw new Error((j && j.erro) || ('HTTP ' + r.status));
+  } catch (err) {
+    salaoCache.erro = err.message;
+    if (salaoCache.dados) return { ...salaoCache.dados, velho: true, erro: err.message };
+    return { ok: false, erro: err.message };
+  }
+}
+async function salaoNuvemPost(body) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem chave da nuvem' };
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/salao`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('salao', e), ...body }), signal: AbortSignal.timeout(12000) });
+    const j = await r.json().catch(() => null);
+    salaoCache.quando = 0; // próximo resumo recarrega
+    return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida da nuvem' };
+  } catch (err) { return { ok: false, erro: 'nuvem: ' + err.message }; }
+}
+const gerLimComanda = () => (Number.isFinite(COMANDA_DE) ? COMANDA_DE : 1000000000);
+// MESAS: ocupadas = comanda aberta com número de mesa. O MAPA (quais mesas
+// existem em cada área) vem da reserva_config da nuvem; mesa aberta que não
+// está no mapa entra em "Fora do mapa". Sem mapa, vale o total configurado.
+async function gerenteMesas(nuvem) {
+  const abertas = await sql`SELECT numero, qtd_pessoas, data_abertura, conta_pedida, valor_total FROM comanda
+    WHERE fechada_em IS NULL AND numero > 0 AND numero < ${gerLimComanda()}`;
+  const cartoes = (await sql`SELECT COUNT(*)::int n, COALESCE(SUM(qtd_pessoas),0)::int pes FROM comanda
+    WHERE fechada_em IS NULL AND numero >= ${gerLimComanda()}`)[0] || { n: 0, pes: 0 };
+  const porNum = new Map();
+  for (const a of abertas) porNum.set(String(a.numero), a);
+  const areas = [];
+  const vistas = new Set();
+  const lista = (nuvem && nuvem.ok && Array.isArray(nuvem.areas)) ? nuvem.areas : [];
+  for (const ar of lista) {
+    const ms = (ar.mesas || []).map((m) => String(m.numero).trim());
+    let ocup = 0, pes = 0, fech = 0, lug = 0;
+    for (const m of ar.mesas || []) {
+      const n = String(m.numero).trim(); vistas.add(n); lug += Number(m.lugares) || 0;
+      const c = porNum.get(n); if (!c) continue;
+      ocup++; pes += Number(c.qtd_pessoas) || 0; if (c.conta_pedida) fech++;
+    }
+    areas.push({ nome: ar.nome, total: ms.length, ocupadas: ocup, livres: Math.max(0, ms.length - ocup),
+      pct: ms.length ? Math.round(ocup * 100 / ms.length) : 0, pessoas: pes, fechando: fech, lugares: lug,
+      livres_lista: ms.filter((n) => !porNum.has(n)) });
+  }
+  const fora = abertas.filter((a) => !vistas.has(String(a.numero)));
+  let totalCfg = Number(await cfgGet('gerente_mesas_total', '')) || 0;
+  if (lista.length && fora.length) {
+    areas.push({ nome: 'Fora do mapa', total: fora.length, ocupadas: fora.length, livres: 0, pct: 100,
+      pessoas: fora.reduce((s, a) => s + (Number(a.qtd_pessoas) || 0), 0), fechando: fora.filter((a) => a.conta_pedida).length,
+      fora: true, numeros: fora.map((a) => a.numero).sort((x, y) => x - y) });
+  }
+  let total = lista.length ? areas.reduce((s, a) => s + a.total, 0) : (totalCfg || MESA_MAX);
+  if (!lista.length) totalCfg = totalCfg || MESA_MAX;
+  const ocupadas = abertas.length;
+  const pessoas = abertas.reduce((s, a) => s + (Number(a.qtd_pessoas) || 0), 0);
+  return { total, ocupadas, livres: Math.max(0, total - ocupadas), pct: total ? Math.round(ocupadas * 100 / total) : 0,
+    pessoas, fechando: abertas.filter((a) => a.conta_pedida).length, areas, mapa: lista.length > 0, total_cfg: totalCfg,
+    cartoes: Number(cartoes.n) || 0, cartoes_pessoas: Number(cartoes.pes) || 0 };
+}
+// ATRASOS POR PRAÇA: comandas com item a produzir, prazo da praça + extra do
+// prato mais demorado (mesma conta do KDS) — e o passe (pronto sem entregar).
+async function gerenteAtrasos() {
+  const ocultas = await pracasOcultas();
+  const entregaMin = Number(await cfgGet('entrega_min', LIMITE_ENTREGA_MIN)) || LIMITE_ENTREGA_MIN;
+  const rows = await sql`
+    SELECT ci.area_codigo, a.nome AS area, c.numero, MIN(ci.criado) AS chegada, COUNT(*)::int AS itens,
+           COALESCE(pc.minutos, ${LIMITE_ATRASO_MIN}) + COALESCE(MAX(pt.minutos_extra), 0) AS prazo
+      FROM comanda_item ci
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+      LEFT JOIN area a ON a.codigo = ci.area_codigo
+      LEFT JOIN praca_config pc ON pc.area_codigo = ci.area_codigo
+      LEFT JOIN produto_tempo pt ON pt.codigo_pdv = ci.codigo_pdv
+     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL AND c.fechada_em IS NULL
+       AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
+     GROUP BY ci.area_codigo, a.nome, c.numero, pc.minutos`;
+  const passe = await sql`
+    SELECT ci.area_codigo, COUNT(*)::int AS n,
+           COUNT(*) FILTER (WHERE COALESCE(ci.produzido, m.pronto_em) < now() - (${entregaMin} || ' minutes')::interval)::int AS parados,
+           COALESCE(MAX(EXTRACT(EPOCH FROM (now() - COALESCE(ci.produzido, m.pronto_em))) / 60), 0)::int AS maior
+      FROM comanda_item ci
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
+       AND COALESCE(ci.entregue, m.entregue_em) IS NULL AND c.fechada_em IS NULL
+       AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
+     GROUP BY ci.area_codigo`;
+  const agora = Date.now();
+  const areas = new Map();
+  const area = (cod, nome) => {
+    const k = cod == null ? 0 : Number(cod);
+    if (!areas.has(k)) areas.set(k, { codigo: k, nome: nome || (k ? 'Área ' + k : 'Sem praça'), comandas: 0, itens: 0, atrasadas: 0, criticas: 0, maior_min: 0, prazo_min: null, passe_n: 0, passe_parados: 0, passe_maior: 0, lista: [] });
+    return areas.get(k);
+  };
+  const lista = [];
+  for (const r of rows) {
+    const a = area(r.area_codigo, r.area);
+    const espera = r.chegada ? Math.max(0, Math.floor((agora - new Date(r.chegada).getTime()) / 60000)) : 0;
+    const prazo = Number(r.prazo) || LIMITE_ATRASO_MIN;
+    a.comandas++; a.itens += Number(r.itens) || 0;
+    a.maior_min = Math.max(a.maior_min, espera);
+    if (a.prazo_min == null || prazo < a.prazo_min) a.prazo_min = prazo;
+    const atras = espera >= prazo, crit = espera >= prazo * 2;
+    if (atras) a.atrasadas++;
+    if (crit) a.criticas++;
+    if (atras) {
+      const it = { area: a.nome, numero: Number(r.numero), espera_min: espera, prazo_min: prazo, itens: Number(r.itens) || 0, critico: crit };
+      a.lista.push(it); lista.push(it);
+    }
+  }
+  for (const p of passe) {
+    const a = area(p.area_codigo, null);
+    if (!a.nome || /^Área /.test(a.nome)) {
+      const nm = (await sql`SELECT nome FROM area WHERE codigo=${Number(p.area_codigo) || 0}`)[0]?.nome; if (nm) a.nome = nm;
+    }
+    a.passe_n = Number(p.n) || 0; a.passe_parados = Number(p.parados) || 0; a.passe_maior = Number(p.maior) || 0;
+  }
+  lista.sort((x, y) => y.espera_min - x.espera_min);
+  const arr = [...areas.values()].sort((x, y) => (y.criticas - x.criticas) || (y.atrasadas - x.atrasadas) || (y.comandas - x.comandas));
+  for (const a of arr) a.lista.sort((x, y) => y.espera_min - x.espera_min);
+  return { areas: arr, lista: lista.slice(0, 40), entrega_min: entregaMin,
+    total_atrasadas: lista.length, total_criticas: lista.filter((x) => x.critico).length,
+    passe_parados: passe.reduce((s, p) => s + (Number(p.parados) || 0), 0) };
+}
+// PEDIDOS POR SETOR: o que está na fila agora (espelho) + o que já saiu hoje.
+let gerSetorCache = { quando: 0, dados: null };
+async function gerenteSetores() {
+  const ocultas = await pracasOcultas();
+  const agora = await sql`
+    SELECT ci.area_codigo, a.nome,
+      COUNT(*) FILTER (WHERE COALESCE(ci.produzido, m.pronto_em) IS NULL)::int AS a_produzir,
+      COUNT(*) FILTER (WHERE COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL)::int AS pronto,
+      COUNT(*) FILTER (WHERE COALESCE(ci.entregue, m.entregue_em) IS NOT NULL)::int AS entregue,
+      COUNT(*)::int AS itens, COALESCE(SUM(ci.quantidade), 0) AS qtd, COALESCE(SUM(ci.valor_total), 0) AS valor
+      FROM comanda_item ci
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+      LEFT JOIN area a ON a.codigo = ci.area_codigo
+     WHERE ci.tipo IS DISTINCT FROM 2 AND c.fechada_em IS NULL
+       AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
+     GROUP BY ci.area_codigo, a.nome ORDER BY itens DESC`;
+  let hoje = gerSetorCache.dados;
+  if (!hoje || Date.now() - gerSetorCache.quando > 60000) {
+    hoje = [];
+    try {
+      if (nativo()) {
+        const r = await sql`SELECT ci.area_codigo, a.nome, COUNT(*)::int AS itens, COALESCE(SUM(ci.quantidade),0) AS qtd, COALESCE(SUM(ci.valor_total),0) AS valor,
+            COUNT(DISTINCT ci.comanda_codigo)::int AS comandas
+          FROM comanda_item ci LEFT JOIN area a ON a.codigo = ci.area_codigo
+          WHERE ci.tipo IS DISTINCT FROM 2 AND ci.criado >= date_trunc('day', now()) GROUP BY ci.area_codigo, a.nome`;
+        hoje = r.map((x) => ({ area_codigo: x.area_codigo == null ? 0 : Number(x.area_codigo), nome: x.nome, itens: Number(x.itens), qtd: Number(x.qtd), valor: Number(x.valor), comandas: Number(x.comandas) }));
+      } else {
+        const r = await q(`SELECT pr.CODIGOCOZINHA AREA, COUNT(*) N, SUM(i.QUANTIDADE) QTD, SUM(i.VALORTOTAL) VT, COUNT(DISTINCT i.CODIGOPEDIDO) PED
+          FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+          LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO = i.CODIGOPRODUTODETALHE
+          LEFT JOIN PRODUTOS pr ON pr.CODIGO = pd.CODIGOPRODUTO
+          WHERE i.DATADELETE IS NULL AND p.DATADELETE IS NULL AND COALESCE(i.CODIGOITEMPEDIDOTIPO, 0) <> 2
+            AND i.DATAHORACADASTRO >= CURRENT_DATE
+          GROUP BY pr.CODIGOCOZINHA`);
+        if (r.ok) {
+          const nomes = new Map((await sql`SELECT codigo, nome FROM area`).map((a) => [Number(a.codigo), a.nome]));
+          hoje = r.rows.map((x) => ({ area_codigo: Number(x.AREA) || 0, nome: nomes.get(Number(x.AREA)) || null, itens: Number(x.N) || 0, qtd: Number(x.QTD) || 0, valor: Number(x.VT) || 0, comandas: Number(x.PED) || 0 }));
+        }
+      }
+      gerSetorCache = { quando: Date.now(), dados: hoje };
+    } catch (e) { console.error('[gerente] setores hoje:', e.message); }
+  }
+  const hojeMap = new Map(hoje.map((h) => [h.area_codigo, h]));
+  const out = agora.map((r) => {
+    const k = r.area_codigo == null ? 0 : Number(r.area_codigo);
+    const h = hojeMap.get(k); hojeMap.delete(k);
+    return { codigo: k, nome: r.nome || (k ? 'Área ' + k : 'Sem praça'), a_produzir: r.a_produzir, pronto: r.pronto, entregue: r.entregue,
+      itens: r.itens, qtd: Number(r.qtd), valor: Number(r.valor), hoje_itens: h ? h.itens : 0, hoje_qtd: h ? h.qtd : 0, hoje_valor: h ? h.valor : 0, hoje_comandas: h ? h.comandas : 0 };
+  });
+  for (const h of hojeMap.values()) {
+    if (ocultas.includes(h.area_codigo)) continue;
+    out.push({ codigo: h.area_codigo, nome: h.nome || (h.area_codigo ? 'Área ' + h.area_codigo : 'Sem praça'), a_produzir: 0, pronto: 0, entregue: 0, itens: 0, qtd: 0, valor: 0,
+      hoje_itens: h.itens, hoje_qtd: h.qtd, hoje_valor: h.valor, hoje_comandas: h.comandas });
+  }
+  out.sort((x, y) => (y.hoje_valor - x.hoje_valor) || (y.itens - x.itens));
+  return { setores: out, hoje_total: out.reduce((s, x) => s + x.hoje_valor, 0), hoje_itens: out.reduce((s, x) => s + x.hoje_itens, 0) };
+}
+// FLUXO DE CLIENTES: comandas abertas por hora — hoje, ontem e o mesmo dia da
+// semana passada. Aumento/queda = hora atual × hora anterior, e o acumulado
+// de hoje × o mesmo horário de 7 dias atrás.
+let gerFluxoCache = { quando: 0, dados: null };
+const gerYmd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+async function gerenteFluxo() {
+  if (gerFluxoCache.dados && Date.now() - gerFluxoCache.quando < 60000) return gerFluxoCache.dados;
+  const dias = new Map(); // ymd -> [24]{n,pes,valor}
+  const put = (ymd, h, n, pes, val) => {
+    if (!dias.has(ymd)) dias.set(ymd, Array.from({ length: 24 }, () => ({ n: 0, pes: 0, valor: 0 })));
+    const b = dias.get(ymd)[h]; if (!b) return; b.n += n; b.pes += pes; b.valor += val;
+  };
+  let fonte = 'consumer';
+  try {
+    if (nativo()) {
+      fonte = 'local';
+      const r = await sql`SELECT to_char(data_abertura, 'YYYY-MM-DD') AS d, EXTRACT(HOUR FROM data_abertura)::int AS h, COUNT(*)::int AS n,
+          COALESCE(SUM(qtd_pessoas),0)::int AS pes, COALESCE(SUM(valor_total),0) AS vt
+        FROM comanda WHERE numero > 0 AND data_abertura >= date_trunc('day', now()) - interval '8 days' GROUP BY 1, 2`;
+      for (const x of r) put(x.d, Number(x.h), Number(x.n), Number(x.pes), Number(x.vt));
+    } else {
+      const r = await q(`SELECT CAST(p.DATAABERTURA AS DATE) D, EXTRACT(HOUR FROM p.DATAABERTURA) H, COUNT(*) N,
+          SUM(COALESCE(p.QUANTIDADEPESSOAS, 0)) PES, SUM(COALESCE(p.VALORTOTAL, 0)) VT
+        FROM PEDIDOS p WHERE p.DATADELETE IS NULL AND p.NUMERO > 0 AND p.DATAABERTURA >= CURRENT_DATE - 8
+        GROUP BY 1, 2`);
+      if (!r.ok) throw new Error(r.err);
+      for (const x of r.rows) {
+        const d = x.D instanceof Date ? gerYmd(x.D) : String(x.D).slice(0, 10);
+        put(d, Number(x.H), Number(x.N) || 0, Number(x.PES) || 0, Number(x.VT) || 0);
+      }
+    }
+  } catch (e) { console.error('[gerente] fluxo:', e.message); if (gerFluxoCache.dados) return gerFluxoCache.dados; }
+  const hojeD = new Date(); const hora = hojeD.getHours();
+  const ontemD = new Date(hojeD.getTime() - 86400000); const semD = new Date(hojeD.getTime() - 7 * 86400000);
+  const vazio = () => Array.from({ length: 24 }, () => ({ n: 0, pes: 0, valor: 0 }));
+  const hoje = dias.get(gerYmd(hojeD)) || vazio(), ontem = dias.get(gerYmd(ontemD)) || vazio(), sem = dias.get(gerYmd(semD)) || vazio();
+  const ate = (arr, h) => arr.slice(0, h + 1).reduce((s, b) => ({ n: s.n + b.n, pes: s.pes + b.pes, valor: s.valor + b.valor }), { n: 0, pes: 0, valor: 0 });
+  const tot = (arr) => ate(arr, 23);
+  const pct = (a, b) => (b > 0 ? Math.round((a - b) * 100 / b) : (a > 0 ? 100 : 0));
+  const atual = hoje[hora], anterior = hora > 0 ? hoje[hora - 1] : { n: 0, pes: 0, valor: 0 };
+  const hojeAte = ate(hoje, hora), semAte = ate(sem, hora), ontemAte = ate(ontem, hora);
+  const dados = { fonte, hora, hoje, ontem, semana: sem,
+    hora_atual: atual, hora_anterior: anterior, delta_hora_pct: pct(atual.n, anterior.n),
+    hoje_ate: hojeAte, ontem_ate: ontemAte, semana_ate: semAte,
+    delta_semana_pct: pct(hojeAte.n, semAte.n), delta_ontem_pct: pct(hojeAte.n, ontemAte.n),
+    delta_pessoas_semana_pct: pct(hojeAte.pes, semAte.pes),
+    ontem_total: tot(ontem), semana_total: tot(sem), semana_dia: gerYmd(semD) };
+  gerFluxoCache = { quando: Date.now(), dados };
+  return dados;
+}
+// LIBERAÇÕES: o caixa pede, o gerente decide no celular. Pendente por até 30
+// min; aprovada vale 20 min pro mesmo caixa na mesma mesa (como CANCEL_ON).
+async function apiCaixaLiberacaoPedir(body, quem) {
+  const numero = Number(body.numero);
+  if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
+  const tipo = String(body.tipo || 'cancelar').slice(0, 30);
+  const ja = (await sql`SELECT id FROM liberacao WHERE login=${quem.login} AND numero=${numero} AND tipo=${tipo}
+    AND status='pendente' AND quando > now() - interval '30 minutes' ORDER BY id DESC LIMIT 1`)[0];
+  if (ja) return { ok: true, id: Number(ja.id), repetida: true };
+  const ped = body.ped != null && Number(body.ped) > 0 ? Number(body.ped) : null;
+  const r = await sql`INSERT INTO liberacao (login, numero, pedido_fb, tipo, item_codigo, nome, valor, motivo)
+    VALUES (${quem.login}, ${numero}, ${ped}, ${tipo}, ${Number(body.item_codigo) || null}, ${T(body.nome)}, ${Number(body.valor) || null}, ${T(body.motivo)}) RETURNING id`;
+  return { ok: true, id: Number(r[0].id) };
+}
+async function apiCaixaLiberacaoStatus(id, quem) {
+  const l = (await sql`SELECT id, status, decidido_por, resposta, quando, decidido_em FROM liberacao WHERE id=${Number(id) || 0} AND login=${quem.login}`)[0];
+  if (!l) return { ok: false, erro: 'liberação não encontrada' };
+  let status = l.status;
+  if (status === 'pendente' && Date.now() - new Date(l.quando).getTime() > 30 * 60000) status = 'expirada';
+  return { ok: true, id: Number(l.id), status, por: l.decidido_por, resposta: l.resposta };
+}
+async function apiGerenteLiberacao(body, g) {
+  const id = Number(body.id);
+  if (!id) return { ok: false, erro: 'id' };
+  const status = body.acao === 'aprovar' ? 'aprovada' : 'negada';
+  const r = await sql`UPDATE liberacao SET status=${status}, decidido_em=now(), decidido_por=${g.login}, resposta=${T(body.resposta)}
+    WHERE id=${id} AND status='pendente' RETURNING id`;
+  if (!r.length) return { ok: false, erro: 'essa liberação já foi decidida (ou expirou)' };
+  return { ok: true, status };
+}
+async function gerenteLiberacoes() {
+  const pendentes = await sql`SELECT id, quando, login, numero, tipo, item_codigo, nome, valor, motivo,
+      EXTRACT(EPOCH FROM (now() - quando))::int / 60 AS ha_min
+    FROM liberacao WHERE status='pendente' AND quando > now() - interval '30 minutes' ORDER BY quando`;
+  const decididas = await sql`SELECT id, quando, login, numero, tipo, nome, valor, motivo, status, decidido_em, decidido_por, resposta
+    FROM liberacao WHERE status <> 'pendente' AND quando > now() - interval '24 hours' ORDER BY decidido_em DESC LIMIT 30`;
+  const canc = await sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo, visto_em, visto_por
+    FROM cancelamento WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 60`;
+  const est = await sql`SELECT id, quando, login, numero, forma, valor, motivo FROM pagamento_estorno WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
+  const reab = await sql`SELECT id, quando, login, numero, fechada_em FROM conta_reabertura WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
+  const serv = await sql`SELECT id, quando, login, numero, acao, valor, motivo FROM servico_ajuste WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
+  const num = (r) => ({ ...r, valor: r.valor == null ? null : Number(r.valor) });
+  return { pendentes: pendentes.map(num), decididas: decididas.map(num), cancelamentos: canc.map(num), estornos: est.map(num), reaberturas: reab, servico: serv.map(num),
+    cancelamentos_nao_vistos: canc.filter((c) => !c.visto_em).length,
+    cancelado_hoje: canc.filter((c) => new Date(c.quando).getTime() >= new Date().setHours(0, 0, 0, 0)).reduce((s, c) => s + (Number(c.valor) || 0), 0) };
+}
+async function apiGerenteResumo(g) {
+  const nuvem = await salaoDaNuvem();
+  const [mesas, atrasos, setores, fluxo, chamados, lib] = await Promise.all([
+    gerenteMesas(nuvem), gerenteAtrasos(), gerenteSetores(), gerenteFluxo(), apiChamados(), gerenteLiberacoes(),
+  ]);
+  const avaliacoes = (nuvem && nuvem.ok && Array.isArray(nuvem.avaliacoes)) ? nuvem.avaliacoes : [];
+  return { ok: true, agora: new Date().toISOString(), online: ultimoStatus.ok, versao: INICIADO_EM, eu: g,
+    nuvem: { ok: !!(nuvem && nuvem.ok), erro: nuvem && nuvem.erro || null, velho: !!(nuvem && nuvem.velho), sem_chave: !!(nuvem && nuvem.sem_chave) },
+    mesas, atrasos, setores, fluxo,
+    reclamacoes: { abertas: chamados.reclamacoes, garcom: chamados.garcom, avaliacoes,
+      avaliacoes_ruins: avaliacoes.filter((a) => Number(a.nota) <= 3 && a.status === 'novo').length },
+    espera: (nuvem && nuvem.ok && nuvem.espera) || [], reservas: (nuvem && nuvem.ok && nuvem.reservas) || [],
+    liberacoes: lib };
+}
+
+// ---- TELA /gerente: painel do gerente no celular ----
+const GERENTE_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>${LOJA_NOME} — Gerente</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--red:#dc2626;--amber:#d97706;--blue:#2563eb}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;flex:1}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:6px 11px;font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
+.pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:3px 9px;color:var(--mut);display:inline-flex;align-items:center;gap:5px;background:#fff}
+.dot{width:8px;height:8px;border-radius:50%;background:#bbb}.dot.on{background:var(--green)}.dot.off{background:var(--red)}
+.wrap{max-width:860px;margin:0 auto;padding:12px 12px 40px}
+h2{font-size:14px;color:var(--mut);font-weight:600;margin:20px 0 8px;display:flex;align-items:center;gap:8px;text-transform:uppercase;letter-spacing:.4px}
+h2 .n{background:var(--ink);color:#fff;border-radius:999px;font-size:12px;padding:1px 8px}
+h2 .n.red{background:var(--red)}h2 .n.amb{background:var(--amber)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:8px}
+.card.alert{border-color:var(--red);box-shadow:0 0 0 2px rgba(220,38,38,.12)}
+.l{display:flex;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid #f1f1f5;font-size:14.5px}
+.l:first-child{border-top:0}.l .nm{flex:1;min-width:0}.l .nm small{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
+.mut{color:var(--mut);font-size:13px;line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.kpi .v{font-size:26px;font-weight:700;line-height:1.1}.kpi .t{font-size:12.5px;color:var(--mut);margin-top:3px}
+.kpi.red .v{color:var(--red)}.kpi.green .v{color:var(--green)}.kpi.amb .v{color:var(--amber)}
+.bar{height:8px;background:#eee;border-radius:999px;overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--green)}
+.bar.amb i{background:var(--amber)}.bar.red i{background:var(--red)}
+.tag{font-size:11.5px;border-radius:6px;padding:2px 7px;background:#f0f0f4;color:var(--mut);white-space:nowrap}
+.tag.red{background:#fee2e2;color:#991b1b}.tag.amb{background:#fef3c7;color:#92400e}.tag.green{background:#dcfce7;color:#166534}.tag.blue{background:#dbeafe;color:#1e40af}
+button.b{font:inherit;font-size:13.5px;border:1px solid var(--line);background:#fff;border-radius:9px;padding:7px 11px;cursor:pointer;white-space:nowrap}
+button.b.ok{background:var(--green);border-color:var(--green);color:#fff}button.b.no{background:#fff;border-color:var(--red);color:var(--red)}
+button.b.go{background:var(--ink);color:#fff;border-color:var(--ink)}
+button.b:disabled{opacity:.5}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+.delta{font-weight:700}.delta.up{color:var(--green)}.delta.dn{color:var(--red)}
+.hist{display:flex;align-items:flex-end;gap:2px;height:70px;padding:10px 14px 4px}
+.hist .h{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:1px;position:relative}
+.hist .h i{display:block;border-radius:2px 2px 0 0}.hist .h i.a{background:var(--gold2)}.hist .h i.s{background:#cfcfd6}
+.hist .h.now i.a{outline:2px solid var(--ink)}
+.hx{display:flex;gap:2px;padding:0 14px 10px}.hx span{flex:1;font-size:9.5px;color:var(--mut);text-align:center}
+.leg{font-size:12px;color:var(--mut);padding:0 14px 10px;display:flex;gap:12px}
+.leg i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+.stars{color:#f59e0b;letter-spacing:1px}
+.login{max-width:380px;margin:60px auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.login input{width:100%;font:inherit;font-size:17px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;margin-top:8px}
+.login input:focus{outline:none;border-color:var(--gold2)}
+.big{width:100%;margin-top:12px;font:inherit;font-size:16px;font-weight:600;padding:13px;border:0;border-radius:10px;background:var(--gold2);color:#fff;cursor:pointer}
+.err{color:var(--red);font-size:13.5px;margin-top:8px;min-height:18px}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;-webkit-overflow-scrolling:touch}
+.chips a{white-space:nowrap;font-size:12.5px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 10px;color:var(--ink);text-decoration:none}
+.chips a b{color:var(--red)}
+.livres{font-size:12px;color:var(--mut);margin-top:6px;line-height:1.6}
+.livres span{display:inline-block;background:#dcfce7;color:#166534;border-radius:5px;padding:0 5px;margin:0 3px 2px 0}
+textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:8px;margin-top:6px}
+</style></head><body>
+<header id="hd"><a class="back" href="/">◂ KDS</a><h1>Painel do <b>gerente</b></h1><span id="st"></span></header>
+<div class="wrap" id="app">carregando…</div>
+<script>
+var TOK=null;try{TOK=localStorage.getItem('gerente_tok')||null}catch(e){}
+var EU=null,D=null,TICK=0,SOM=true,ULT={lib:null,rec:null,aval:null},PRIM=false,ABERTO={},TIMER=null,PAUSA=false;
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
+async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
+function hm(iso){if(!iso)return '';var d=new Date(iso);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
+function haMin(iso){if(!iso)return 0;return Math.max(0,Math.floor((Date.now()-new Date(iso).getTime())/60000))}
+function pctS(p){return (p>0?'+':'')+p+'%'}
+var ACTX=null;function beep(n){if(!SOM)return;try{ACTX=ACTX||new (window.AudioContext||window.webkitAudioContext)();var t=ACTX.currentTime;for(var i=0;i<(n||1);i++){var o=ACTX.createOscillator(),g=ACTX.createGain();o.connect(g);g.connect(ACTX.destination);o.frequency.value=i%2?660:880;g.gain.setValueAtTime(.0001,t+i*.22);g.gain.exponentialRampToValueAtTime(.3,t+i*.22+.02);g.gain.exponentialRampToValueAtTime(.0001,t+i*.22+.2);o.start(t+i*.22);o.stop(t+i*.22+.21)}}catch(e){}}
+/* ---- login ---- */
+function telaLogin(msg){
+  document.getElementById('st').innerHTML='';
+  document.getElementById('app').innerHTML='<div class="login"><div style="font-size:18px;font-weight:700">Entrar como gerente</div>'+
+    '<div class="mut" style="margin-top:4px">Mesmo login e PIN do caixa/comanda. Só gerente entra.</div>'+
+    '<input id="lg" placeholder="login" autocapitalize="none" autocomplete="username">'+
+    '<input id="pn" type="password" inputmode="numeric" maxlength="8" placeholder="PIN" autocomplete="off">'+
+    '<div id="p2w" hidden><input id="pn2" type="password" inputmode="numeric" maxlength="8" placeholder="repita o PIN (primeira vez)" autocomplete="off"></div>'+
+    '<button class="big" onclick="entrar()">Entrar</button><div class="err" id="lerr">'+esc(msg||'')+'</div></div>';
+  try{var u=localStorage.getItem('gerente_login');if(u)document.getElementById('lg').value=u}catch(e){}
+  document.getElementById('pn').addEventListener('keydown',function(e){if(e.key==='Enter')entrar()});
+}
+async function entrar(){
+  var lg=document.getElementById('lg').value.trim(),pn=document.getElementById('pn').value,p2=(document.getElementById('pn2')||{}).value||'';
+  var r=await jpost('/api/gerente/entrar',{login:lg,pin:pn,pin2:p2});
+  if(r.ok&&r.primeira_vez&&!r.token){document.getElementById('p2w').hidden=false;document.getElementById('lerr').textContent='Primeira vez de '+(r.nome||lg)+': repita o PIN pra criar.';document.getElementById('pn2').focus();return}
+  if(!r.ok){document.getElementById('lerr').textContent=r.erro||'não entrou';return}
+  TOK=r.token;EU={login:r.login,nome:r.nome};try{localStorage.setItem('gerente_tok',TOK);localStorage.setItem('gerente_login',lg)}catch(e){}
+  beep(1);PRIM=true;iniciar();
+}
+function sair(){TOK=null;EU=null;try{localStorage.removeItem('gerente_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;telaLogin()}
+/* ---- ciclo ---- */
+async function iniciar(){
+  var s=await jget('/api/gerente/sessao');
+  if(!s.ok){telaLogin(TOK?'Sessão venceu — entre de novo.':'');return}
+  EU={login:s.login,nome:s.nome};
+  await tick();if(TIMER)clearInterval(TIMER);TIMER=setInterval(tick,5000);
+}
+async function tick(){
+  if(PAUSA)return;
+  var r;try{r=await jget('/api/gerente/resumo')}catch(e){return}
+  if(!r.ok){if(r.sem_sessao){sair();return}return}
+  var lib=r.liberacoes.pendentes.length,rec=r.reclamacoes.abertas.length,ruim=r.reclamacoes.avaliacoes_ruins;
+  if(ULT.lib!=null&&lib>ULT.lib)beep(3);
+  else if(ULT.rec!=null&&(rec>ULT.rec||ruim>ULT.aval))beep(2);
+  ULT={lib:lib,rec:rec,aval:ruim};D=r;TICK++;pintar();
+}
+var ULT_HTML='';
+function toggle(k){ABERTO[k]=!ABERTO[k];pintar()}
+/* ---- render ---- */
+function pintar(){
+  var d=D;if(!d)return;
+  document.getElementById('st').innerHTML='<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'PDV offline')+'</span>'+
+    '<span class="pill" title="nuvem"><span class="dot '+(d.nuvem.ok?(d.nuvem.velho?'':'on'):'off')+'"></span>nuvem</span>'+
+    '<button class="back" onclick="SOM=!SOM;pintar()">'+(SOM?'🔔':'🔕')+'</button>'+
+    '<button class="back" onclick="sair()" title="'+esc(EU?EU.login:'')+'">'+esc(EU&&EU.nome?EU.nome.split(' ')[0]:'sair')+' ▸</button>';
+  var m=d.mesas,a=d.atrasos,f=d.fluxo,L=d.liberacoes,R=d.reclamacoes;
+  var h='<div class="chips">'+
+    '<a href="#lib">🔓 Liberações '+(L.pendentes.length?'<b>'+L.pendentes.length+'</b>':'')+'</a>'+
+    '<a href="#mesas">🪑 Mesas '+m.pct+'%</a>'+
+    '<a href="#atrasos">⏱ Atrasos '+(a.total_atrasadas?'<b>'+a.total_atrasadas+'</b>':'0')+'</a>'+
+    '<a href="#recl">💬 Reclamações '+((R.abertas.length+R.avaliacoes_ruins)?'<b>'+(R.abertas.length+R.avaliacoes_ruins)+'</b>':'0')+'</a>'+
+    '<a href="#espera">📋 Espera '+(d.espera.length||0)+'</a>'+
+    '<a href="#fluxo">📈 Fluxo</a><a href="#setor">🍳 Setores</a><a href="#hist">🧾 Histórico</a></div>';
+  h+=secLib(L)+secMesas(m)+secAtrasos(a)+secRecl(R)+secEspera(d.espera,d.reservas)+secFluxo(f)+secSetores(d.setores)+secHist(L);
+  if(!d.nuvem.ok)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem indisponível'+(d.nuvem.sem_chave?' (loja sem FILIAL_ID/PAGAR_MESA_SECRET no start.bat)':'')+': mapa de mesas, lista de espera e avaliações ficam de fora'+(d.nuvem.erro?' — '+esc(d.nuvem.erro):'')+'.</div>';
+  else if(d.nuvem.velho)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem sem resposta agora — mostrando o último dado recebido.</div>';
+  if(h===ULT_HTML)return;ULT_HTML=h;
+  document.getElementById('app').innerHTML=h;
+}
+function secLib(L){
+  var h='<h2 id="lib">🔓 Liberações pendentes '+(L.pendentes.length?'<span class="n red">'+L.pendentes.length+'</span>':'')+'</h2>';
+  if(!L.pendentes.length)return h+'<div class="card"><div class="l mut">Nenhum pedido de liberação agora. Quando o caixa precisar cancelar um item já pronto/entregue, o pedido aparece aqui e você aprova sem sair do salão.</div></div>';
+  L.pendentes.forEach(function(x){
+    h+='<div class="card alert"><div class="l"><div class="nm"><b>Mesa/comanda '+x.numero+'</b> · '+esc(x.tipo==='cancelar'?'cancelar item':x.tipo)+
+      (x.nome?' — '+esc(x.nome):'')+(x.valor!=null?' <b>'+brl(x.valor)+'</b>':'')+
+      '<small>pedido por <b>'+esc(x.login)+'</b> há '+x.ha_min+' min'+(x.motivo?' · motivo: '+esc(x.motivo):'')+'</small></div></div>'+
+      '<div class="l"><div class="row" style="flex:1"><button class="b ok" onclick="decidir('+x.id+',\\'aprovar\\',this)">✔ Aprovar</button>'+
+      '<button class="b no" onclick="decidir('+x.id+',\\'negar\\',this)">✘ Negar</button></div></div></div>';
+  });
+  return h;
+}
+async function decidir(id,acao,btn){
+  var resp=acao==='negar'?(prompt('Motivo pra negar (opcional):')||''):'';
+  if(btn)btn.disabled=true;
+  var r=await jpost('/api/gerente/liberacao',{id:id,acao:acao,resposta:resp});
+  if(!r.ok)alert(r.erro||'não deu');
+  await tick();
+}
+function secMesas(m){
+  var cls=m.pct>=90?'red':(m.pct>=70?'amb':'green');
+  var h='<h2 id="mesas">🪑 Mesas</h2><div class="grid">'+
+    '<div class="kpi '+cls+'"><div class="v">'+m.pct+'%</div><div class="t">ocupação'+(m.mapa?'':' (de '+m.total+' mesas)')+'</div><div class="bar '+cls+'"><i style="width:'+Math.min(100,m.pct)+'%"></i></div></div>'+
+    '<div class="kpi green"><div class="v">'+m.livres+'</div><div class="t">mesas livres de '+m.total+'</div></div>'+
+    '<div class="kpi"><div class="v">'+m.ocupadas+'</div><div class="t">mesas ocupadas'+(m.fechando?' · <b>'+m.fechando+'</b> pedindo conta':'')+'</div></div>'+
+    '<div class="kpi"><div class="v">'+m.pessoas+'</div><div class="t">pessoas sentadas'+(m.cartoes?' · +'+m.cartoes+' comandas ('+m.cartoes_pessoas+' pes.)':'')+'</div></div></div>';
+  if(m.areas&&m.areas.length){
+    h+='<div class="card" style="margin-top:8px">';
+    m.areas.forEach(function(a,i){
+      var c=a.pct>=90?'red':(a.pct>=70?'amb':'green');
+      h+='<div class="l" style="flex-wrap:wrap"><div class="nm"><b>'+esc(a.nome)+'</b> <span class="tag '+c+'">'+a.pct+'%</span>'+
+        '<small>'+a.ocupadas+' ocupadas · <b style="color:var(--green)">'+a.livres+' livres</b>'+(a.total?' de '+a.total:'')+' · '+a.pessoas+' pessoas'+(a.fechando?' · '+a.fechando+' pedindo conta':'')+
+        (a.fora?' · mesas '+a.numeros.join(', ')+' (não estão no mapa de reservas)':'')+'</small>'+
+        (a.livres_lista&&a.livres_lista.length?'<div class="livres">livres: '+a.livres_lista.map(function(n){return '<span>'+esc(n)+'</span>'}).join('')+'</div>':'')+
+        '</div><div style="width:90px"><div class="bar '+c+'" style="margin:0"><i style="width:'+Math.min(100,a.pct)+'%"></i></div></div></div>';
+    });
+    h+='</div>';
+  } else {
+    h+='<div class="card" style="margin-top:8px"><div class="l"><div class="nm mut">Sem mapa de mesas da nuvem: o total de mesas é '+m.total+'. '+
+      '<a href="#" onclick="cfgMesas();return false">ajustar total</a></div></div></div>';
+  }
+  return h;
+}
+async function cfgMesas(){var n=prompt('Quantas mesas tem a casa?',D.mesas.total);if(n==null)return;var r=await jpost('/api/gerente/config',{mesas_total:Number(n)});if(!r.ok)alert(r.erro||'não salvou');tick()}
+function secAtrasos(a){
+  var h='<h2 id="atrasos">⏱ Atrasos por praça '+(a.total_criticas?'<span class="n red">'+a.total_criticas+' estourou</span>':(a.total_atrasadas?'<span class="n amb">'+a.total_atrasadas+'</span>':''))+'</h2>';
+  if(!a.areas.length)return h+'<div class="card"><div class="l mut">Nada em produção agora.</div></div>';
+  h+='<div class="card">';
+  a.areas.forEach(function(x){
+    var c=x.criticas?'red':(x.atrasadas?'amb':'green');
+    h+='<div class="l" style="flex-wrap:wrap"><div class="nm"><b>'+esc(x.nome)+'</b> '+
+      (x.atrasadas?'<span class="tag '+c+'">'+x.atrasadas+' atrasada'+(x.atrasadas>1?'s':'')+(x.criticas?' · '+x.criticas+' crítica'+(x.criticas>1?'s':''):'')+'</span>':'<span class="tag green">em dia</span>')+
+      (x.passe_parados?' <span class="tag amb">passe: '+x.passe_parados+' parado'+(x.passe_parados>1?'s':'')+' ('+x.passe_maior+' min)</span>':'')+
+      '<small>'+x.comandas+' comanda'+(x.comandas!=1?'s':'')+' · '+x.itens+' itens na fila'+(x.prazo_min!=null?' · prazo '+x.prazo_min+' min':'')+' · maior espera <b>'+x.maior_min+' min</b>'+(x.passe_n?' · '+x.passe_n+' pronto'+(x.passe_n>1?'s':'')+' a entregar':'')+'</small>'+
+      (x.lista.length?'<div class="row" style="margin-top:6px">'+x.lista.slice(0,12).map(function(l){return '<span class="tag '+(l.critico?'red':'amb')+'">'+(l.numero)+' · '+l.espera_min+'/'+l.prazo_min+' min</span>'}).join('')+(x.lista.length>12?'<span class="tag">+'+(x.lista.length-12)+'</span>':'')+'</div>':'')+
+      '</div></div>';
+  });
+  return h+'</div>';
+}
+function stars(n){n=Number(n)||0;var s='';for(var i=1;i<=5;i++)s+=i<=n?'★':'☆';return '<span class="stars">'+s+'</span>'}
+function secRecl(R){
+  var tot=R.abertas.length+R.avaliacoes_ruins;
+  var h='<h2 id="recl">💬 Reclamações e avaliações '+(tot?'<span class="n red">'+tot+'</span>':'')+'</h2>';
+  if(!R.abertas.length&&!R.avaliacoes.length&&!R.garcom.length)return h+'<div class="card"><div class="l mut">Nenhuma reclamação aberta nem avaliação nas últimas 24h.</div></div>';
+  h+='<div class="card">';
+  R.abertas.forEach(function(x){
+    h+='<div class="l"><div class="nm"><b>'+(x.mesa?'Mesa '+x.mesa:'Sem mesa')+'</b> '+(x.nota?stars(x.nota):'')+' <span class="tag red">reclamação · '+x.ha_min+' min</span>'+
+      '<small>'+esc(x.assunto||'')+(x.assunto&&x.texto?' — ':'')+esc(x.texto||'')+(x.origem?' · via '+esc(x.origem):'')+'</small></div>'+
+      '<button class="b go" onclick="atender('+x.id+',this)">Vou lá</button></div>';
+  });
+  R.garcom.forEach(function(x){
+    h+='<div class="l"><div class="nm"><b>Mesa '+x.mesa+'</b> <span class="tag amb">chamou o garçom · '+x.ha_min+' min</span><small>'+esc(x.texto||'')+'</small></div>'+
+      '<button class="b" onclick="atender('+x.id+',this)">Atendi</button></div>';
+  });
+  R.avaliacoes.forEach(function(x){
+    var ruim=Number(x.nota)<=3;
+    h+='<div class="l"><div class="nm">'+stars(x.nota)+' <b>'+esc(x.nome||'anônimo')+'</b> '+(x.origem?'<span class="tag">'+esc(x.origem)+'</span>':'')+
+      ' <span class="tag '+(x.status==='novo'?(ruim?'red':'blue'):(x.status==='em_contato'?'amb':'green'))+'">'+esc(x.status==='em_contato'?'em contato':x.status)+' · '+hm(x.criado_em)+'</span>'+
+      '<small>'+esc(x.comentario||'(sem comentário)')+(x.whatsapp?' · '+esc(x.whatsapp):'')+'</small></div>'+
+      (x.status!=='resolvido'?'<div class="row">'+(x.status==='novo'&&x.whatsapp?'<a class="b" style="text-decoration:none;display:inline-block" target="_blank" href="https://wa.me/'+esc(String(x.whatsapp).replace(/[^0-9]/g,''))+'" onclick="aval(\\''+esc(x.id)+'\\',\\'em_contato\\')">💬</a>':'')+
+        '<button class="b ok" onclick="aval(\\''+esc(x.id)+'\\',\\'resolvido\\',this)">✔</button></div>':'')+'</div>';
+  });
+  return h+'</div>';
+}
+async function atender(id,btn){if(btn)btn.disabled=true;var r=await jpost('/api/gerente/chamado-atender',{id:id});if(!r.ok)alert(r.erro||'não deu');tick()}
+async function aval(id,status,btn){if(btn)btn.disabled=true;var r=await jpost('/api/gerente/avaliacao',{id:id,status:status});if(!r.ok)alert(r.erro||'não deu');tick()}
+function secEspera(E,Rs){
+  var h='<h2 id="espera">📋 Lista de espera '+(E.length?'<span class="n">'+E.length+'</span>':'')+'</h2>';
+  if(!E.length)h+='<div class="card"><div class="l mut">Ninguém esperando mesa.</div></div>';
+  else{
+    h+='<div class="card">';
+    E.forEach(function(x){
+      var min=haMin(x.criado_em);
+      h+='<div class="l"><div class="nm"><b>'+esc(x.nome)+'</b> · '+x.pessoas+' pes. '+(x.area?'<span class="tag">'+esc(x.area)+'</span>':'')+
+        ' <span class="tag '+(x.status==='chamado'?'blue':(min>=30?'red':(min>=15?'amb':'')))+'">'+(x.status==='chamado'?'chamado '+hm(x.chamado_em):'esperando '+min+' min')+'</span>'+
+        '<small>'+esc(x.telefone||'')+(x.observacao?' · '+esc(x.observacao):'')+'</small></div>'+
+        '<div class="row">'+(x.status!=='chamado'?'<button class="b go" onclick="espera(\\''+esc(x.id)+'\\',\\'chamar\\',this)">📲 Chamar</button>':'')+
+        '<button class="b ok" onclick="espera(\\''+esc(x.id)+'\\',\\'sentou\\',this)">Sentou</button>'+
+        '<button class="b no" onclick="espera(\\''+esc(x.id)+'\\',\\'desistiu\\',this)">✘</button></div></div>';
+    });
+    h+='</div>';
+  }
+  if(Rs&&Rs.length){
+    h+='<h2>📅 Reservas de hoje <span class="n">'+Rs.length+'</span></h2><div class="card">';
+    Rs.forEach(function(r){
+      h+='<div class="l"><div class="nm"><b>'+esc((r.hora||'').slice(0,5))+'</b> '+esc(r.nome)+' · '+r.pessoas+' pes.'+(r.area?' <span class="tag">'+esc(r.area)+(r.mesa?' · mesa '+esc(r.mesa)+(r.mesa_juntada?'+'+esc(r.mesa_juntada):''):'')+'</span>':'')+
+        ' <span class="tag '+(r.status==='sentada'?'green':(r.status==='confirmada'?'blue':'amb'))+'">'+esc(r.status)+'</span><small>'+esc(r.telefone||'')+'</small></div></div>';
+    });
+    h+='</div>';
+  }
+  return h;
+}
+async function espera(id,acao,btn){
+  if(acao==='desistiu'&&!confirm('Tirar da lista como desistiu?'))return;
+  if(btn)btn.disabled=true;
+  var r=await jpost('/api/gerente/espera',{id:id,acao:acao});
+  if(!r.ok)alert(r.erro||'não deu');else if(acao==='chamar'&&r.zap&&r.zap!=='enviado')alert('Marcado como chamado, mas o WhatsApp não saiu ('+r.zap+') — chame pelo nome.');
+  tick();
+}
+function delta(p){return '<span class="delta '+(p>0?'up':(p<0?'dn':''))+'">'+(p>0?'▲ ':(p<0?'▼ ':''))+pctS(p)+'</span>'}
+function secFluxo(f){
+  var h='<h2 id="fluxo">📈 Fluxo de clientes</h2><div class="grid">'+
+    '<div class="kpi"><div class="v">'+f.hora_atual.n+'</div><div class="t">mesas abertas nesta hora ('+String(f.hora).padStart(2,'0')+'h) · '+delta(f.delta_hora_pct)+' vs hora anterior ('+f.hora_anterior.n+')</div></div>'+
+    '<div class="kpi"><div class="v">'+f.hoje_ate.n+'</div><div class="t">mesas hoje até agora · '+delta(f.delta_semana_pct)+' vs semana passada ('+f.semana_ate.n+') · '+delta(f.delta_ontem_pct)+' vs ontem ('+f.ontem_ate.n+')</div></div>'+
+    '<div class="kpi"><div class="v">'+f.hoje_ate.pes+'</div><div class="t">pessoas hoje até agora · '+delta(f.delta_pessoas_semana_pct)+' vs semana passada ('+f.semana_ate.pes+')</div></div>'+
+    '<div class="kpi"><div class="v" style="font-size:20px">'+brl(f.hoje_ate.valor)+'</div><div class="t">em comandas abertas hoje · semana passada no mesmo horário: '+brl(f.semana_ate.valor)+' (dia todo: '+brl(f.semana_total.valor)+')</div></div></div>';
+  var max=1;for(var i=0;i<24;i++)max=Math.max(max,f.hoje[i].n,f.semana[i].n,f.ontem[i].n);
+  var de=Math.max(0,Math.min(f.hora,8));var ate=23;for(var j=23;j>de+6;j--){if(f.hoje[j].n||f.semana[j].n||f.ontem[j].n||j<=f.hora){ate=j;break}}
+  h+='<div class="card" style="margin-top:8px"><div class="hist">';
+  for(var k=de;k<=ate;k++){
+    h+='<div class="h '+(k===f.hora?'now':'')+'" title="'+k+'h: hoje '+f.hoje[k].n+' · semana passada '+f.semana[k].n+' · ontem '+f.ontem[k].n+'">'+
+      '<div style="display:flex;align-items:flex-end;gap:1px;height:56px"><i class="a" style="flex:1;height:'+Math.round(f.hoje[k].n*56/max)+'px"></i><i class="s" style="flex:1;height:'+Math.round(f.semana[k].n*56/max)+'px"></i></div></div>';
+  }
+  h+='</div><div class="hx">';for(var k2=de;k2<=ate;k2++)h+='<span>'+k2+'</span>';
+  h+='</div><div class="leg"><span><i style="background:var(--gold2)"></i>hoje</span><span><i style="background:#cfcfd6"></i>semana passada ('+esc(f.semana_dia.slice(8)+'/'+f.semana_dia.slice(5,7))+')</span><span>fonte: '+(f.fonte==='local'?'PDV local':'Consumer')+'</span></div></div>';
+  return h;
+}
+function secSetores(S){
+  var h='<h2 id="setor">🍳 Pedidos por setor <span class="pill">hoje '+brl(S.hoje_total)+' · '+S.hoje_itens+' itens</span></h2>';
+  if(!S.setores.length)return h+'<div class="card"><div class="l mut">Sem itens hoje.</div></div>';
+  h+='<div class="card">';
+  S.setores.forEach(function(s){
+    h+='<div class="l"><div class="nm"><b>'+esc(s.nome)+'</b> <span class="tag">'+s.a_produzir+' na fila</span> <span class="tag blue">'+s.pronto+' pronto'+(s.pronto!=1?'s':'')+'</span> <span class="tag green">'+s.entregue+' entregue'+(s.entregue!=1?'s':'')+'</span>'+
+      '<small>hoje: <b>'+s.hoje_itens+'</b> itens em '+s.hoje_comandas+' comandas · '+brl(s.hoje_valor)+(s.itens?' · em aberto agora: '+s.itens+' itens · '+brl(s.valor):'')+'</small></div></div>';
+  });
+  return h+'</div>';
+}
+function secHist(L){
+  var h='<h2 id="hist">🧾 Últimas 24h '+(L.cancelamentos_nao_vistos?'<span class="n amb">'+L.cancelamentos_nao_vistos+' cancel. sem "vi"</span>':'')+'<span class="pill">cancelado hoje: '+brl(L.cancelado_hoje)+'</span></h2>';
+  var itens=[];
+  L.cancelamentos.forEach(function(c){itens.push({q:c.quando,t:'cancelamento',h:'<b>'+(c.numero||'')+'</b> '+esc(c.nome||'')+' <b>'+brl(c.valor)+'</b> <span class="tag '+(c.status_item==='a_produzir'?'':'amb')+'">'+esc(c.status_item||'')+'</span><small>por '+esc(c.login)+(c.gerente&&c.gerente!==c.login?' · autorizou '+esc(c.gerente):'')+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:!c.visto_em?'<button class="b" onclick="visto('+c.id+',this)">Vi</button>':'<span class="tag green">visto '+esc(c.visto_por||'')+'</span>'})});
+  L.estornos.forEach(function(c){itens.push({q:c.quando,t:'estorno',h:'<b>'+(c.numero||'')+'</b> estorno '+esc(c.forma||'')+' <b>'+brl(c.valor)+'</b><small>por '+esc(c.login)+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:''})});
+  L.reaberturas.forEach(function(c){itens.push({q:c.quando,t:'reabertura',h:'<b>'+(c.numero||'')+'</b> conta reaberta<small>por '+esc(c.login)+(c.fechada_em?' · fechada às '+hm(c.fechada_em):'')+'</small>',b:''})});
+  L.servico.forEach(function(c){itens.push({q:c.quando,t:'serviço',h:'<b>'+(c.numero||'')+'</b> serviço: '+esc(c.acao||'')+(c.valor!=null?' '+brl(c.valor):'')+'<small>por '+esc(c.login)+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:''})});
+  L.decididas.forEach(function(c){itens.push({q:c.decidido_em||c.quando,t:'liberação',h:'<b>'+(c.numero||'')+'</b> liberação '+esc(c.tipo)+(c.nome?' — '+esc(c.nome):'')+' <span class="tag '+(c.status==='aprovada'?'green':'red')+'">'+esc(c.status)+'</span><small>pedida por '+esc(c.login)+' · decidiu '+esc(c.decidido_por||'')+(c.resposta?' · '+esc(c.resposta):'')+'</small>',b:''})});
+  itens.sort(function(a,b){return new Date(b.q)-new Date(a.q)});
+  if(!itens.length)return h+'<div class="card"><div class="l mut">Nenhum cancelamento, estorno ou reabertura nas últimas 24h.</div></div>';
+  var lim=ABERTO.hist?itens.length:15;
+  h+='<div class="card">';
+  itens.slice(0,lim).forEach(function(i){h+='<div class="l"><span class="mut" style="min-width:42px">'+hm(i.q)+'</span><div class="nm">'+i.h+'</div>'+i.b+'</div>'});
+  if(itens.length>15)h+='<div class="l"><button class="b" style="flex:1" onclick="toggle(\\'hist\\')">'+(ABERTO.hist?'mostrar menos':'ver todos ('+itens.length+')')+'</button></div>';
+  return h+'</div>';
+}
+async function visto(id,btn){if(btn)btn.disabled=true;await jpost('/api/gerente/cancelado-visto',{id:id});tick()}
+document.addEventListener('visibilitychange',function(){PAUSA=document.hidden;if(!PAUSA&&TOK)tick()});
+if(TOK)iniciar();else telaLogin();
+</script></body></html>`;
+
 function readBody(req) {
   if (req._corpo) return req._corpo;
   req._corpo = new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); });
@@ -18357,6 +19040,33 @@ const server = http.createServer(async (req, res) => {
     // ---- login do garçom (PIN) ----
     if (req.method === 'POST' && p === '/api/garcom/entrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomEntrar(body))); }
     if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
+    // ---- PAINEL DO GERENTE (/gerente): entrar, resumo ao vivo e ações ----
+    if (p === '/gerente') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(GERENTE_HTML); }
+    if (p.startsWith('/api/gerente/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method === 'POST' && p === '/api/gerente/entrar') return res.end(JSON.stringify(await apiGerenteEntrar(await readBody(req))));
+      const g = await gerenteDaRequisicao(req, u);
+      if (p === '/api/gerente/sessao') return res.end(JSON.stringify(g ? { ok: true, login: g.login, nome: g.nome } : { ok: false }));
+      if (!g) return res.end(JSON.stringify({ ok: false, erro: 'Entre como gerente de novo.', sem_sessao: true }));
+      if (p === '/api/gerente/resumo') return res.end(JSON.stringify(await apiGerenteResumo(g)));
+      const b = req.method === 'POST' ? await readBody(req) : {};
+      const quemG = (g.nome || g.login);
+      if (p === '/api/gerente/liberacao') return res.end(JSON.stringify(await apiGerenteLiberacao(b, g)));
+      if (p === '/api/gerente/chamado-atender') return res.end(JSON.stringify(await apiChamadoAtender({ id: b.id, por: quemG })));
+      if (p === '/api/gerente/espera') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'espera', id: String(b.id || ''), acao: String(b.acao || ''), por: quemG + ' (loja)' })));
+      if (p === '/api/gerente/avaliacao') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'avaliacao', id: String(b.id || ''), status: String(b.status || ''), por: quemG + ' (loja)' })));
+      if (p === '/api/gerente/cancelado-visto') {
+        await sql`UPDATE cancelamento SET visto_em=now(), visto_por=${String(quemG).slice(0, 40)} WHERE id=${Number(b.id) || 0} AND visto_em IS NULL`;
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      if (p === '/api/gerente/config') {
+        const n = Number(b.mesas_total);
+        if (!(n > 0 && n < 10000)) return res.end(JSON.stringify({ ok: false, erro: 'total inválido' }));
+        await cfgSet('gerente_mesas_total', String(Math.round(n)));
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     if (p === '/api/gerentes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerentesListar(req, u))); }
     if (req.method === 'POST' && p === '/api/gerente') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGerenteSet(req, u, body))); }
     // ---- PONTO: reconhecimento facial (botão no KDS) — PIN é legado (tela /ponto) ----
@@ -18491,6 +19201,8 @@ const server = http.createServer(async (req, res) => {
       // pedir a conta pelo caixa = mesmo ato do garçom: aplica o serviço,
       // trava novos lançamentos e imprime a conferência
       if (req.method === 'POST' && p === '/api/caixa/pedir-conta') { const b = await readBody(req); return res.end(JSON.stringify(await apiVendaConta({ numero: b.numero, acao: 'fechar' }))); }
+      if (req.method === 'POST' && p === '/api/caixa/liberacao/pedir') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaLiberacaoPedir(b, quem))); }
+      if (p === '/api/caixa/liberacao/status') return res.end(JSON.stringify(await apiCaixaLiberacaoStatus(u.searchParams.get('id'), quem)));
       if (req.method === 'POST' && p === '/api/caixa/liberar-cancel') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaLiberarCancel(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-item') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarItem(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
@@ -18870,7 +19582,7 @@ function conferirTelas() {
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
     '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML, '/ponto': PONTO_HTML,
-    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML };
+    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
