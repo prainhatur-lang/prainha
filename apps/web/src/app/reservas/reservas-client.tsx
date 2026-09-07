@@ -833,14 +833,16 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
             <option value="">sem mesa</option>
-            {mesasDoEsp.map((m) => {
-              const st = statusMesa(m.numero);
-              return (
-                <option key={m.numero} value={m.numero} disabled={st.bloqueada}>
-                  mesa {m.numero} ({m.lugares}p){st.sufixo}
-                </option>
-              );
-            })}
+            {mesasDoEsp
+              .filter((m) => m.numero === val || !statusMesa(m.numero).bloqueada)
+              .map((m) => {
+                const st = statusMesa(m.numero);
+                return (
+                  <option key={m.numero} value={m.numero} disabled={st.bloqueada}>
+                    mesa {m.numero} ({m.lugares}p){st.sufixo}
+                  </option>
+                );
+              })}
           </select>
         ) : (
           <input
@@ -1422,14 +1424,16 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
             className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}
           >
             <option value="">Mesa…</option>
-            {mesasDoEspaco.map((mm) => {
-              const st = statusMesa(mm.numero);
-              return (
-                <option key={mm.numero} value={mm.numero} disabled={st.bloqueada}>
-                  Mesa {mm.numero} ({mm.lugares} lug){st.sufixo}
-                </option>
-              );
-            })}
+            {mesasDoEspaco
+              .filter((mm) => mm.numero === mesa || !statusMesa(mm.numero).bloqueada)
+              .map((mm) => {
+                const st = statusMesa(mm.numero);
+                return (
+                  <option key={mm.numero} value={mm.numero} disabled={st.bloqueada}>
+                    Mesa {mm.numero} ({mm.lugares} lug){st.sufixo}
+                  </option>
+                );
+              })}
           </select>
         ) : (
           <input value={mesa} onChange={(e) => setMesa(e.target.value)} placeholder="Mesa" className={inp} />
