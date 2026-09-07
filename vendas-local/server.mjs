@@ -290,6 +290,11 @@ async function initSchemaNativo() {
   await addCol('comanda', 'fiado_codigo integer');
   await sql`CREATE INDEX IF NOT EXISTS idx_pagamento_local_pedido ON pagamento_local (pedido)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_cc_local_cliente ON conta_corrente_local (cliente_codigo)`;
+  // Marca quem já subiu pro Concilia (sync loja→nuvem em modo próprio, ver
+  // loopPedidoNativoNuvem/loopPagamentoNativoNuvem/loopClienteNativoNuvem).
+  await addCol('comanda', 'sync_nuvem_em timestamptz');
+  await addCol('pagamento_local', 'sync_nuvem_em timestamptz');
+  await addCol('cliente_local', 'sync_nuvem_em timestamptz');
 }
 /** Próximo código nosso (≥ 5.000.000). */
 async function proxCodigo(seq) {
@@ -5052,6 +5057,10 @@ const PAGAR_MESA_URL = process.env.PAGAR_MESA_URL || 'https://app.prainhabar.com
 const PAGAR_MESA_SECRET = process.env.PAGAR_MESA_SECRET || '';
 const FILIAL_ID = process.env.FILIAL_ID || '';
 const CLIENTE_SALT = process.env.CLIENTE_HASH_SALT || '';
+// Token do agente-local (filial.agente_token) — em modo próprio (nativo())
+// não tem agente-local rodando, então é o server.mjs quem chama /api/ingest*
+// direto com este token pra subir pedido/pagamento/cliente pra nuvem.
+const AGENTE_TOKEN = process.env.AGENTE_TOKEN || '';
 function hashCpfGrupo(cpf) {
   return createHash('sha256').update(`${CLIENTE_SALT}::${soDig(cpf)}`).digest('hex');
 }
@@ -7899,6 +7908,214 @@ async function loopPontoRoster() {
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
   } catch (err) { console.error('[ponto] roster:', err.message); }
   finally { pontoRosterRodando = false; }
+}
+
+// ---- SYNC NATIVO → NUVEM (modo próprio) ----
+// Em BANCO=proprio não tem agente-local nem Firebird: quem sobe pedido/
+// pagamento/cliente pros mesmos endpoints /api/ingest* que o agente usa nas
+// lojas com Consumer é este trio de loops, batendo com o agente_token da
+// filial (mesmo token, mesma rota — a nuvem não sabe nem precisa saber que
+// quem chamou foi o próprio vendas-local). Sem cursor numérico (diferente do
+// loopPontoNuvem): comanda/pagamento_local MUDAM depois de criados (fecha,
+// estorna), e um cursor por id perderia quem fechou fora de ordem. Em vez
+// disso, cada linha tem sync_nuvem_em — fica NULL até subir com sucesso.
+// Produto (cardápio) fica de fora por enquanto: produto_local é um cache
+// truncado/reconstruído a cada ciclo (loopCatalogoNuvem), não uma fonte
+// estável — sincronizar produto pede uma tabela nativa própria, ainda não
+// existe.
+const FORMA_NOME = {
+  [FORMA.DINHEIRO]: 'Dinheiro',
+  [FORMA.CREDITO]: 'Crédito',
+  [FORMA.DEBITO]: 'Débito',
+  [FORMA.PIX_MANUAL]: 'Pix',
+  [FORMA.PIX_ONLINE]: 'Pix',
+  [FORMA.IFOOD_ONLINE]: 'iFood Online',
+};
+
+let pedidoNativoNuvemRodando = false;
+async function loopPedidoNativoNuvem() {
+  if (pedidoNativoNuvemRodando || !nativo() || !AGENTE_TOKEN) return;
+  pedidoNativoNuvemRodando = true;
+  try {
+    // Só sobe comanda FECHADA — enquanto aberta é operação em andamento, não
+    // dado financeiro; e evita reenviar o mesmo pedido a cada item novo.
+    const comandas = await sql`SELECT codigo, numero, nome, contato_codigo, fiado_codigo,
+        valor_total, subtotal_pago, total_desconto, percentual_desconto, total_acrescimo,
+        total_servico, percentual_servico, valor_entrega, qtd_pessoas, data_abertura, fechada_em
+      FROM comanda WHERE fechada_em IS NOT NULL AND sync_nuvem_em IS NULL
+      ORDER BY fechada_em LIMIT 100`;
+    if (!comandas.length) return;
+    const codigos = comandas.map((c) => Number(c.codigo));
+    const itens = await sql`SELECT item_codigo, codigo_pai, comanda_codigo, codigo_pdv, nome,
+        quantidade, valor_unitario, valor_total, tipo, detalhes, criado
+      FROM comanda_item WHERE comanda_codigo = ANY(${codigos}) AND cancelado_em IS NULL`;
+    const pedidos = comandas.map((c) => ({
+      codigoExterno: Number(c.codigo),
+      numero: c.numero == null ? null : Number(c.numero),
+      senha: null,
+      codigoClienteContatoExterno: c.contato_codigo == null ? null : Number(c.contato_codigo),
+      codigoClienteFiadoExterno: c.fiado_codigo == null ? null : Number(c.fiado_codigo),
+      nomeCliente: c.nome || null,
+      codigoColaborador: null,
+      codigoUsuarioCriador: null,
+      dataAbertura: c.data_abertura ? new Date(c.data_abertura).toISOString() : null,
+      dataFechamento: c.fechada_em ? new Date(c.fechada_em).toISOString() : null,
+      valorTotal: c.valor_total == null ? null : Number(c.valor_total),
+      valorTotalItens: null,
+      subtotalPago: c.subtotal_pago == null ? null : Number(c.subtotal_pago),
+      totalDesconto: c.total_desconto == null ? null : Number(c.total_desconto),
+      percentualDesconto: c.percentual_desconto == null ? null : Number(c.percentual_desconto),
+      totalAcrescimo: c.total_acrescimo == null ? null : Number(c.total_acrescimo),
+      totalServico: c.total_servico == null ? null : Number(c.total_servico),
+      percentualTaxaServico: c.percentual_servico == null ? null : Number(c.percentual_servico),
+      valorEntrega: c.valor_entrega == null ? null : Number(c.valor_entrega),
+      valorTroco: null,
+      valorIva: null,
+      quantidadePessoas: c.qtd_pessoas == null ? null : Number(c.qtd_pessoas),
+      notaEmitida: null,
+      tag: null,
+      codigoPedidoOrigem: null,
+      codigoCupom: null,
+      dataDelete: null,
+      versaoReg: null,
+    }));
+    const pedidoItens = itens.map((it) => ({
+      codigoExterno: Number(it.item_codigo),
+      codigoPedidoExterno: Number(it.comanda_codigo),
+      codigoProdutoExterno: it.codigo_pdv == null ? null : Number(it.codigo_pdv),
+      nomeProduto: it.nome || null,
+      quantidade: it.quantidade == null ? null : Number(it.quantidade),
+      valorUnitario: it.valor_unitario == null ? null : Number(it.valor_unitario),
+      precoCusto: null,
+      valorItem: it.valor_total == null ? null : Number(it.valor_total),
+      valorComplemento: null,
+      valorFilho: null,
+      valorDesconto: null,
+      valorGorjeta: null,
+      valorTotal: it.valor_total == null ? null : Number(it.valor_total),
+      codigoPai: it.codigo_pai == null ? null : Number(it.codigo_pai),
+      codigoItemPedidoTipo: it.tipo == null ? null : Number(it.tipo),
+      codigoPagamento: null,
+      codigoColaborador: null,
+      dataHoraCadastro: it.criado ? new Date(it.criado).toISOString() : null,
+      dataDelete: null,
+      detalhes: it.detalhes || null,
+      versaoReg: null,
+    }));
+    const r = await fetch(`${PAGAR_MESA_URL}/api/ingest/pdv`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENTE_TOKEN}` },
+      body: JSON.stringify({ pedidos, pedidoItens }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      console.error('[sync-nativo] pedido: nuvem recusou', r.status, await r.text().catch(() => ''));
+      return;
+    }
+    await sql`UPDATE comanda SET sync_nuvem_em = now() WHERE codigo = ANY(${codigos})`;
+    console.log(`[sync-nativo] ${comandas.length} pedido(s) / ${itens.length} item(ns) na nuvem`);
+  } catch (err) { console.error('[sync-nativo] pedido:', err.message); }
+  finally { pedidoNativoNuvemRodando = false; }
+}
+
+let pagamentoNativoNuvemRodando = false;
+async function loopPagamentoNativoNuvem() {
+  if (pagamentoNativoNuvemRodando || !nativo() || !AGENTE_TOKEN) return;
+  pagamentoNativoNuvemRodando = true;
+  try {
+    // Pagamento estornado antes de subir nunca sobe (não tem valor pra nuvem
+    // reconciliar); estorno DEPOIS de já sincronizado não é refletido — a
+    // rota /api/ingest não tem conceito de cancelar pagamento.
+    const pagos = await sql`SELECT codigo, pedido, forma_codigo, valor, nsu, autorizacao, bandeira, quando
+      FROM pagamento_local WHERE cancelado_em IS NULL AND sync_nuvem_em IS NULL
+      ORDER BY codigo LIMIT 200`;
+    if (!pagos.length) return;
+    const codigos = pagos.map((p) => Number(p.codigo));
+    const pagamentos = pagos.map((p) => ({
+      codigoExterno: Number(p.codigo),
+      codigoPedidoExterno: p.pedido == null ? null : Number(p.pedido),
+      formaPagamento: FORMA_NOME[Number(p.forma_codigo)] || null,
+      valor: Number(p.valor),
+      percentualTaxa: null,
+      dataPagamento: p.quando ? new Date(p.quando).toISOString() : null,
+      dataCredito: null,
+      nsuTransacao: p.nsu || null,
+      numeroAutorizacaoCartao: p.autorizacao || null,
+      bandeiraMfe: p.bandeira || null,
+      adquirenteMfe: null,
+      nroParcela: null,
+      codigoCredenciadoraCartao: null,
+      codigoContaCorrente: null,
+    }));
+    const r = await fetch(`${PAGAR_MESA_URL}/api/ingest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENTE_TOKEN}` },
+      body: JSON.stringify({ pagamentos }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      console.error('[sync-nativo] pagamento: nuvem recusou', r.status, await r.text().catch(() => ''));
+      return;
+    }
+    await sql`UPDATE pagamento_local SET sync_nuvem_em = now() WHERE codigo = ANY(${codigos})`;
+    console.log(`[sync-nativo] ${pagos.length} pagamento(s) na nuvem`);
+  } catch (err) { console.error('[sync-nativo] pagamento:', err.message); }
+  finally { pagamentoNativoNuvemRodando = false; }
+}
+
+let clienteNativoNuvemRodando = false;
+async function loopClienteNativoNuvem() {
+  if (clienteNativoNuvemRodando || !nativo() || !AGENTE_TOKEN) return;
+  clienteNativoNuvemRodando = true;
+  try {
+    // Cliente muda de saldo a cada lançamento de fiado (fbLancarContaCorrente
+    // toca atualizado_em) — por isso o filtro não é só "nunca subiu", é
+    // também "mudou depois da última subida". `agora` é capturado ANTES do
+    // select pra nunca marcar como sincronizada uma mudança que aconteceu
+    // durante a própria chamada HTTP (senão ela se perderia pra sempre).
+    const agora = new Date();
+    const clientes = await sql`SELECT codigo, nome, cpf, telefone, limite_credito, saldo_atual, bloqueia_apos_limite
+      FROM cliente_local
+      WHERE atualizado_em <= ${agora} AND (sync_nuvem_em IS NULL OR atualizado_em > sync_nuvem_em)
+      ORDER BY codigo LIMIT 200`;
+    if (!clientes.length) return;
+    const codigos = clientes.map((c) => Number(c.codigo));
+    const rows = clientes.map((c) => ({
+      codigoExterno: Number(c.codigo),
+      cpfOuCnpj: c.cpf || null,
+      nome: c.nome || null,
+      email: null,
+      telefone: c.telefone || null,
+      saldoAtualContaCorrente: c.saldo_atual == null ? null : Number(c.saldo_atual),
+      limiteCreditoContaCorrente: c.limite_credito == null ? null : Number(c.limite_credito),
+      bloquearVendaAposLimite: !!c.bloqueia_apos_limite,
+      arquivarFiado: false,
+      celular: c.telefone || null,
+      dataNascimento: null,
+      endereco: null,
+      numero: null,
+      complemento: null,
+      bairro: null,
+      cidade: null,
+      uf: null,
+      cep: null,
+      dataDelete: null,
+      versaoReg: null,
+    }));
+    const r = await fetch(`${PAGAR_MESA_URL}/api/ingest/financeiro`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENTE_TOKEN}` },
+      body: JSON.stringify({ clientes: rows }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      console.error('[sync-nativo] cliente: nuvem recusou', r.status, await r.text().catch(() => ''));
+      return;
+    }
+    await sql`UPDATE cliente_local SET sync_nuvem_em = ${agora} WHERE codigo = ANY(${codigos})`;
+    console.log(`[sync-nativo] ${clientes.length} cliente(s) na nuvem`);
+  } catch (err) { console.error('[sync-nativo] cliente:', err.message); }
+  finally { clienteNativoNuvemRodando = false; }
 }
 
 // ---- CANCELAMENTOS → NUVEM: o dono quer o histórico (com motivo) no dashboard ----
@@ -20170,6 +20387,13 @@ async function main() {
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopPontoNuvem().catch(() => {}), 45 * 1000);
   setInterval(() => loopPontoNuvem().catch(() => {}), 60 * 1000);
+  // sync nativo → nuvem (só roda de verdade se nativo() e AGENTE_TOKEN setado)
+  setTimeout(() => loopPedidoNativoNuvem().catch(() => {}), 42 * 1000);
+  setInterval(() => loopPedidoNativoNuvem().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopPagamentoNativoNuvem().catch(() => {}), 52 * 1000);
+  setInterval(() => loopPagamentoNativoNuvem().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopClienteNativoNuvem().catch(() => {}), 58 * 1000);
+  setInterval(() => loopClienteNativoNuvem().catch(() => {}), 60 * 1000);
   loopPontoRoster().catch(() => {});
   setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopFaceSync().catch(() => {}), 35 * 1000);
