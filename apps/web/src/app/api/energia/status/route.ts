@@ -6,7 +6,13 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { getDeviceStatus, interpretarStatus } from '@/lib/tuya';
+import {
+  getDeviceStatus,
+  interpretarStatus,
+  interpretarPorta,
+  interpretarPresenca,
+  interpretarTemperatura,
+} from '@/lib/tuya';
 
 export async function GET(req: Request) {
   const guard = await exigirPermApi('tuya.read');
@@ -24,7 +30,15 @@ export async function GET(req: Request) {
     dispositivos.map(async (d) => {
       try {
         const items = await getDeviceStatus(d.tuyaDeviceId);
-        return { id: d.id, ...interpretarStatus(items, d.codigoSwitch), online: true, erro: null as string | null };
+        const leitura =
+          d.tipo === 'sensor_porta'
+            ? interpretarPorta(items)
+            : d.tipo === 'sensor_presenca'
+              ? interpretarPresenca(items)
+              : d.tipo === 'sensor_temperatura'
+                ? interpretarTemperatura(items)
+                : interpretarStatus(items, d.codigoSwitch);
+        return { id: d.id, ...leitura, online: true, erro: null as string | null };
       } catch (e) {
         return {
           id: d.id,
@@ -33,6 +47,10 @@ export async function GET(req: Request) {
           tensaoV: null,
           correnteA: null,
           energiaKwh: null,
+          portaAberta: null,
+          presencaDetectada: null,
+          temperaturaC: null,
+          umidadePct: null,
           online: false,
           erro: (e as Error).message,
         };

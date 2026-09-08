@@ -22,6 +22,10 @@ interface Leitura {
   energiaKwh: number | null;
   online: boolean;
   erro: string | null;
+  portaAberta: boolean | null;
+  presencaDetectada: boolean | null;
+  temperaturaC: number | null;
+  umidadePct: number | null;
 }
 
 interface Props {
@@ -39,8 +43,13 @@ const TIPO_LABEL: Record<string, string> = {
   luz: 'Luz',
   bomba: 'Bomba',
   motor: 'Motor',
+  sensor_porta: 'Sensor de porta',
+  sensor_presenca: 'Sensor de presença',
+  sensor_temperatura: 'Sensor de temperatura',
   outro: 'Outro',
 };
+
+const TIPOS_SENSOR = new Set(['sensor_porta', 'sensor_presenca', 'sensor_temperatura']);
 
 const POLL_MS = 15000;
 
@@ -117,6 +126,9 @@ export function EnergiaDashboardClient({
     const l = leituras[d.id];
     const ligado = l?.ligado ?? null;
     const carregandoAcao = aguardando.has(d.id);
+    const offline = l && !l.online;
+    const isSensor = TIPOS_SENSOR.has(d.tipo);
+
     return (
       <li className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="flex items-start justify-between">
@@ -124,14 +136,34 @@ export function EnergiaDashboardClient({
             <p className="text-sm font-semibold text-slate-900">{d.nome}</p>
             <p className="text-xs text-slate-500">{TIPO_LABEL[d.tipo] ?? d.tipo}</p>
           </div>
-          {l && !l.online ? (
+          {offline ? (
             <span
               title={l.erro ?? undefined}
               className="cursor-help rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600"
             >
               offline
             </span>
-          ) : ligado === true ? (
+          ) : d.tipo === 'sensor_porta' ? (
+            l?.portaAberta === true ? (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                aberta
+              </span>
+            ) : l?.portaAberta === false ? (
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                fechada
+              </span>
+            ) : null
+          ) : d.tipo === 'sensor_presenca' ? (
+            l?.presencaDetectada === true ? (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                presença
+              </span>
+            ) : l?.presencaDetectada === false ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                livre
+              </span>
+            ) : null
+          ) : d.tipo === 'sensor_temperatura' ? null : ligado === true ? (
             <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
               ligado
             </span>
@@ -142,32 +174,45 @@ export function EnergiaDashboardClient({
           ) : null}
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">Potência</p>
-            <p className="text-sm font-medium text-slate-900">{fmtNum(l?.potenciaW ?? null, 0)} W</p>
-          </div>
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">Energia acum.</p>
-            <p className="text-sm font-medium text-slate-900">{fmtNum(l?.energiaKwh ?? null, 2)} kWh</p>
-          </div>
-          {l?.tensaoV != null ? (
+        {d.tipo === 'sensor_temperatura' ? (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
             <div>
-              <p className="text-[11px] uppercase tracking-wide text-slate-400">Tensão</p>
-              <p className="text-sm text-slate-700">{fmtNum(l.tensaoV, 0)} V</p>
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Temperatura</p>
+              <p className="text-sm font-medium text-slate-900">{fmtNum(l?.temperaturaC ?? null, 1)} °C</p>
             </div>
-          ) : null}
-          {l?.correnteA != null ? (
             <div>
-              <p className="text-[11px] uppercase tracking-wide text-slate-400">Corrente</p>
-              <p className="text-sm text-slate-700">{fmtNum(l.correnteA, 2)} A</p>
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Umidade</p>
+              <p className="text-sm font-medium text-slate-900">{fmtNum(l?.umidadePct ?? null, 0)} %</p>
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : !isSensor ? (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Potência</p>
+              <p className="text-sm font-medium text-slate-900">{fmtNum(l?.potenciaW ?? null, 0)} W</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Energia acum.</p>
+              <p className="text-sm font-medium text-slate-900">{fmtNum(l?.energiaKwh ?? null, 2)} kWh</p>
+            </div>
+            {l?.tensaoV != null ? (
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">Tensão</p>
+                <p className="text-sm text-slate-700">{fmtNum(l.tensaoV, 0)} V</p>
+              </div>
+            ) : null}
+            {l?.correnteA != null ? (
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">Corrente</p>
+                <p className="text-sm text-slate-700">{fmtNum(l.correnteA, 2)} A</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
-        {l && !l.online && l.erro ? <p className="mt-2 text-xs text-rose-600">{l.erro}</p> : null}
+        {offline && l.erro ? <p className="mt-2 text-xs text-rose-600">{l.erro}</p> : null}
 
-        {podeControlar && ligado !== null ? (
+        {podeControlar && !isSensor && ligado !== null ? (
           <button
             onClick={() => alternar(d, !ligado)}
             disabled={carregandoAcao}

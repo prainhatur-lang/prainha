@@ -7,7 +7,17 @@ import { db, schema } from '@concilia/db';
 import { asc, eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 
-const TIPOS = ['entrada', 'saida', 'luz', 'bomba', 'motor', 'outro'] as const;
+const TIPOS = [
+  'entrada',
+  'saida',
+  'luz',
+  'bomba',
+  'motor',
+  'sensor_porta',
+  'sensor_presenca',
+  'sensor_temperatura',
+  'outro',
+] as const;
 
 export async function GET(req: Request) {
   const guard = await exigirPermApi('tuya.read');

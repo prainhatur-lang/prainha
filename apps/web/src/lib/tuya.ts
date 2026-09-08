@@ -128,7 +128,25 @@ export interface TuyaLeitura {
   /** Consumo acumulado (contador de energia do dispositivo), em kWh. */
   energiaKwh: number | null;
   online: boolean | null;
+  /** Sensor de porta/janela (doorcontact_state): true = aberta. */
+  portaAberta: boolean | null;
+  /** Sensor de presença (presence_state): true = presença detectada. */
+  presencaDetectada: boolean | null;
+  temperaturaC: number | null;
+  umidadePct: number | null;
 }
+
+const LEITURA_VAZIA: Omit<TuyaLeitura, 'online'> = {
+  ligado: null,
+  potenciaW: null,
+  tensaoV: null,
+  correnteA: null,
+  energiaKwh: null,
+  portaAberta: null,
+  presencaDetectada: null,
+  temperaturaC: null,
+  umidadePct: null,
+};
 
 /**
  * Interpreta os datapoints padrão da Tuya pra tomadas/disjuntores com
@@ -143,11 +161,40 @@ export function interpretarStatus(items: TuyaStatusItem[], codigoSwitch: string)
   const current = get('cur_current');
   const energy = get('add_ele');
   return {
+    ...LEITURA_VAZIA,
     ligado: typeof switchVal === 'boolean' ? switchVal : null,
     potenciaW: typeof power === 'number' ? power / 10 : null,
     tensaoV: typeof voltage === 'number' ? voltage / 10 : null,
     correnteA: typeof current === 'number' ? current / 1000 : null,
     energiaKwh: typeof energy === 'number' ? energy / 100 : null,
+    online: null,
+  };
+}
+
+/** Sensor magnético de porta/janela (GA-M400A): datapoint doorcontact_state. */
+export function interpretarPorta(items: TuyaStatusItem[]): TuyaLeitura {
+  const aberta = items.find((i) => i.code === 'doorcontact_state')?.value;
+  return { ...LEITURA_VAZIA, portaAberta: typeof aberta === 'boolean' ? aberta : null, online: null };
+}
+
+/** Sensor de presença (Presence PS10): datapoint presence_state ({none, presence}). */
+export function interpretarPresenca(items: TuyaStatusItem[]): TuyaLeitura {
+  const presenca = items.find((i) => i.code === 'presence_state')?.value;
+  return {
+    ...LEITURA_VAZIA,
+    presencaDetectada: presenca === 'presence' ? true : presenca === 'none' ? false : null,
+    online: null,
+  };
+}
+
+/** Painel com sensor de temperatura/umidade embutido (ex: IR suite): va_temperature/va_humidity, escala 1 (÷10). */
+export function interpretarTemperatura(items: TuyaStatusItem[]): TuyaLeitura {
+  const temp = items.find((i) => i.code === 'va_temperature')?.value;
+  const umid = items.find((i) => i.code === 'va_humidity')?.value;
+  return {
+    ...LEITURA_VAZIA,
+    temperaturaC: typeof temp === 'number' ? temp / 10 : null,
+    umidadePct: typeof umid === 'number' ? umid : null,
     online: null,
   };
 }
