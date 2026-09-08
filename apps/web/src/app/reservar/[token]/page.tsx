@@ -2,6 +2,7 @@
 // Cliente escolhe espaco/data/hora/pessoas, valida WhatsApp por OTP e confirma.
 
 import { notFound } from 'next/navigation';
+import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
@@ -31,6 +32,11 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
 
   const tema = temaDaFilial(filial.nome);
 
+  // Aberta pelo domínio próprio da casa? Então a reserva é uma seção do site,
+  // e não uma página solta em outro endereço: mostra o caminho de volta.
+  const host = ((await headers()).get('host') ?? '').split(':')[0];
+  const siteUrl = /^(www\.)?tabuara\.com\.br$/.test(host) ? '/' : null;
+
   return (
     <main
       className="relative flex min-h-screen items-center justify-center overflow-hidden p-4"
@@ -59,6 +65,14 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
         <div className="lg:grid lg:grid-cols-2 lg:items-center lg:gap-14">
           {/* Marca + destaque (no computador vira um painel à esquerda) */}
           <div className="mb-6 text-center lg:mb-0 lg:text-left">
+            {siteUrl ? (
+              <a
+                href={siteUrl}
+                className="mb-4 block text-xs tracking-[0.2em] text-[var(--rsv-on-bg)]/60 transition-opacity hover:opacity-70"
+              >
+                ◂ VOLTAR AO SITE
+              </a>
+            ) : null}
             <span
               className="text-3xl tracking-tight text-[var(--rsv-brand)] lg:text-4xl"
               style={{ fontFamily: 'var(--rsv-display)' }}

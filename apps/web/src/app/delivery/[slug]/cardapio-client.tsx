@@ -68,6 +68,10 @@ interface LojaInfo {
   tempoPreparoMax: number | null;
   cidade: string;
   uf: string;
+  /** Link de volta pro site da casa. Só vem preenchido quando o cardápio foi
+   *  aberto pelo domínio próprio da loja (tabuara.com.br) — aí o cliente veio
+   *  do site e tem que conseguir voltar; no /delivery genérico não há pra onde. */
+  siteUrl?: string | null;
 }
 
 interface Props {
@@ -946,8 +950,16 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             'var(--dlv-capa)',
         }}
       >
+        {loja.siteUrl ? (
+          <a
+            href={loja.siteUrl}
+            className="mb-4 block text-xs tracking-[0.2em] text-[var(--dlv-linha-suave)] transition-opacity hover:opacity-70"
+          >
+            ◂ VOLTAR AO SITE
+          </a>
+        ) : null}
         <span
-          className="text-3xl tracking-tight text-[var(--dlv-accent-ink)] lg:text-5xl"
+          className="block text-3xl tracking-tight text-[var(--dlv-accent-ink)] lg:text-5xl"
           style={{ fontFamily: 'var(--dlv-display)' }}
         >
           {loja.titulo}

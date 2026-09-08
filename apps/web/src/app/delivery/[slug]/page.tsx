@@ -3,6 +3,7 @@
 // o resto (sacola, endereço, agendamento, cupom, pagamento) é o client.
 
 import { notFound } from 'next/navigation';
+import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq } from 'drizzle-orm';
 import { lojaDeliveryPorSlug, abertaAgora, agendaDelivery } from '@/lib/delivery/config';
@@ -108,6 +109,11 @@ export default async function DeliveryLojaPage(props: {
   // que o cliente acabou de ver no site. Aqui a paleta e o par de fontes.
   const tema = temaDeliveryDaFilial(loja.nome);
 
+  // Veio pelo domínio próprio da casa? Então o cardápio é uma seção do site,
+  // não uma ilha: mostra o caminho de volta.
+  const host = ((await headers()).get('host') ?? '').split(':')[0];
+  const siteUrl = /^(www\.)?tabuara\.com\.br$/.test(host) ? '/' : null;
+
   return (
     <div style={estiloTemaDelivery(tema) as React.CSSProperties} className="min-h-screen">
     <CardapioClient
@@ -132,6 +138,7 @@ export default async function DeliveryLojaPage(props: {
         tempoPreparoMax: c.tempoPreparoMax ?? null,
         cidade: c.endereco?.cidade ?? 'Aracaju',
         uf: c.endereco?.uf ?? 'SE',
+        siteUrl,
       }}
       categorias={categorias.map((cat) => ({
         ...cat,

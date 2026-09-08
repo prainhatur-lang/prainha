@@ -12,9 +12,19 @@ const RESERVAS_TOKEN_PRAINHA_BAR =
 // cardápio público (/delivery). Requer o CNAME no DNS + domínio na Vercel.
 const DELIVERY_HOST = 'delivery.prainhabar.com';
 
-// Domínio próprio da Tabuará. tabuara.com.br (root) serve a landing pública
-// da filial Tabuará (/tabuara). Requer o domínio apontado pra Vercel.
+// Domínio próprio da Tabuará. tabuara.com.br serve a casa inteira sem sair do
+// domínio: a landing (/tabuara), a reserva e o delivery. Antes a reserva
+// apontava pra app.prainhabar.com — o cliente saía do site da Tabuará no meio
+// do caminho e parecia que tinha caído em outro lugar.
 const TABUARA_HOSTS = new Set(['tabuara.com.br', 'www.tabuara.com.br']);
+// avaliacaoToken da filial Tabuará (público, vai na URL mesmo).
+const TABUARA_RESERVA_TOKEN =
+  '6dd10ed01259fc44d1e0c67d1d29bf986ccb22e8a527d0419cc6a4c35a6e534e';
+const TABUARA_REWRITES: Record<string, string> = {
+  '/': '/tabuara',
+  '/reserva': `/reservar/${TABUARA_RESERVA_TOKEN}`,
+  '/delivery': '/delivery/tabuara',
+};
 
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
@@ -28,10 +38,13 @@ export async function proxy(request: NextRequest) {
     url.pathname = '/delivery';
     return NextResponse.rewrite(url);
   }
-  if (TABUARA_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
-    const url = request.nextUrl.clone();
-    url.pathname = '/tabuara';
-    return NextResponse.rewrite(url);
+  if (TABUARA_HOSTS.has(hostname)) {
+    const destino = TABUARA_REWRITES[request.nextUrl.pathname];
+    if (destino) {
+      const url = request.nextUrl.clone();
+      url.pathname = destino;
+      return NextResponse.rewrite(url);
+    }
   }
 
   let response = NextResponse.next({ request });

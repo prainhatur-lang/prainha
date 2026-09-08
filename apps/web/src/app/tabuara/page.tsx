@@ -1,7 +1,11 @@
 import Image from 'next/image';
+import { headers } from 'next/headers';
 import { TabuaraGallery } from '@/components/tabuara-gallery';
 
-export const dynamic = 'force-static';
+// Dinâmica de propósito: os links de reserva e delivery dependem do domínio
+// que serviu a página (ver LINKS_TABUARA / proxy.ts). Não há query aqui — o
+// custo é só de render.
+export const dynamic = 'force-dynamic';
 
 type IconProps = { className?: string };
 const S = (props: IconProps & { children: React.ReactNode }) => (
@@ -17,11 +21,20 @@ const Phone = (p: IconProps) => <S {...p}><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19
 const Clock = (p: IconProps) => <S {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></S>;
 const ArrowRight = (p: IconProps) => <S {...p}><path d="M5 12h14M13 6l6 6-6 6" /></S>;
 
-const RESERVA_URL =
-  'https://app.prainhabar.com/reservar/6dd10ed01259fc44d1e0c67d1d29bf986ccb22e8a527d0419cc6a4c35a6e534e';
-// DELIVERY PRÓPRIO (08/09): o pedido sai daqui pro nosso /delivery, não mais
-// pro Menudino — mesmo carrinho, mesmo checkout e mesma cozinha do Prainha.
-const DELIVERY_URL = '/delivery/tabuara';
+// Reserva e delivery são da CASA, não de um parceiro: têm que abrir na mesma
+// aba e no mesmo domínio, senão o cliente acha que foi jogado pra fora do site
+// no meio do caminho. Em tabuara.com.br o proxy serve /reserva e /delivery
+// direto (ver TABUARA_REWRITES em proxy.ts); em qualquer outro host (o
+// app.prainhabar.com/tabuara, por ex.) vale o caminho de verdade.
+const TABUARA_HOSTS = new Set(['tabuara.com.br', 'www.tabuara.com.br']);
+const RESERVA_TOKEN = '6dd10ed01259fc44d1e0c67d1d29bf986ccb22e8a527d0419cc6a4c35a6e534e';
+
+async function linksDaCasa(): Promise<{ reserva: string; delivery: string }> {
+  const host = ((await headers()).get('host') ?? '').split(':')[0];
+  return TABUARA_HOSTS.has(host)
+    ? { reserva: '/reserva', delivery: '/delivery' }
+    : { reserva: `/reservar/${RESERVA_TOKEN}`, delivery: '/delivery/tabuara' };
+}
 const INSTAGRAM_URL = 'https://instagram.com/tabuara.se';
 const MAPS_URL =
   'https://www.google.com/maps/search/?api=1&query=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju';
@@ -77,7 +90,8 @@ const AUTORAIS = [
   { nome: 'Fitzgerald', desc: 'Gin, limão siciliano, xarope de açúcar e Angostura bitter' },
 ];
 
-export default function TabuaraPage() {
+export default async function TabuaraPage() {
+  const { reserva: RESERVA_URL, delivery: DELIVERY_URL } = await linksDaCasa();
   return (
     <main className="min-h-screen bg-[#0d0b09] text-[#f3ede1] [font-family:var(--font-sans-tab)] antialiased">
       {/* ---------- NAV ---------- */}
@@ -93,7 +107,7 @@ export default function TabuaraPage() {
             <a href={INSTAGRAM_URL} target="_blank" rel="noopener" aria-label="Instagram" className="transition-colors hover:text-[#d9bd82]">
               <Instagram className="h-5 w-5" />
             </a>
-            <a href={RESERVA_URL} target="_blank" rel="noopener" className="rounded-full border border-[#c9a24b]/50 px-4 py-1.5 text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
+            <a href={RESERVA_URL} className="rounded-full border border-[#c9a24b]/50 px-4 py-1.5 text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
               Reservar
             </a>
           </nav>
@@ -113,10 +127,10 @@ export default function TabuaraPage() {
             Cozinha autoral, coquetelaria e carta de vinhos, num ambiente pensado para despertar os sentidos.
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
-            <a href={RESERVA_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-7 py-3.5 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
+            <a href={RESERVA_URL} className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-7 py-3.5 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
               <CalendarDays className="h-4 w-4" /> Reservar mesa
             </a>
-            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-7 py-3.5 text-sm font-medium text-[#f3ede1] backdrop-blur-sm transition-all hover:border-[#f3ede1]/70">
+            <a href={DELIVERY_URL} className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-7 py-3.5 text-sm font-medium text-[#f3ede1] backdrop-blur-sm transition-all hover:border-[#f3ede1]/70">
               <ShoppingBag className="h-4 w-4" /> Delivery
             </a>
           </div>
@@ -176,7 +190,7 @@ export default function TabuaraPage() {
             ))}
           </div>
           <div className="mt-14 text-center">
-            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#c9a24b]/50 px-8 py-3.5 text-sm font-medium text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
+            <a href={DELIVERY_URL} className="inline-flex items-center gap-2 rounded-full border border-[#c9a24b]/50 px-8 py-3.5 text-sm font-medium text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
               Ver cardápio e pedir <ArrowRight className="h-4 w-4" />
             </a>
           </div>
@@ -236,10 +250,10 @@ export default function TabuaraPage() {
           <h2 className="text-4xl text-[#f6f0e6] sm:text-5xl" style={serif}>Reserve sua experiência</h2>
           <p className="mx-auto mt-4 max-w-lg text-[#c8bda9]">Garanta sua mesa ou receba a Tabuará em casa pelo delivery.</p>
           <div className="mt-9 flex flex-wrap items-center justify-center gap-4">
-            <a href={RESERVA_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-8 py-4 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
+            <a href={RESERVA_URL} className="inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-8 py-4 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
               <CalendarDays className="h-4 w-4" /> Reservar mesa
             </a>
-            <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-8 py-4 text-sm font-medium text-[#f3ede1] transition-all hover:border-[#f3ede1]/70">
+            <a href={DELIVERY_URL} className="inline-flex items-center gap-2 rounded-full border border-[#f3ede1]/30 px-8 py-4 text-sm font-medium text-[#f3ede1] transition-all hover:border-[#f3ede1]/70">
               <ShoppingBag className="h-4 w-4" /> Pedir delivery
             </a>
           </div>
