@@ -13,7 +13,7 @@
 
 import crypto from 'node:crypto';
 
-const API_BASE = process.env.TUYA_API_BASE || 'https://openapi.tuyacn.com';
+const API_BASE = process.env.TUYA_API_BASE || 'https://openapi.tuyaus.com';
 const CLIENT_ID = process.env.TUYA_CLIENT_ID;
 const CLIENT_SECRET = process.env.TUYA_CLIENT_SECRET;
 
