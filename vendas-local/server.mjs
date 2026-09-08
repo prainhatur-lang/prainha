@@ -7155,8 +7155,10 @@ async function apiCaixaEstado(quem) {
  *  nasce com fundo zero e não guarda dinheiro nenhum). */
 async function caixasDeOperadorAbertos() {
   if (nativo()) {
-    return (await sql`SELECT codigo, codigo_usuario, saldo_inicial AS fundo FROM caixa_local
-      WHERE fechado_em IS NULL AND COALESCE(saldo_inicial,0) > 0`)
+    // (as colunas são usuario_codigo/fundo — 'codigo_usuario'/'saldo_inicial'
+    // eram do CAIXA do Firebird e quebravam o "Abrir caixa" com fundo no modo próprio)
+    return (await sql`SELECT codigo, usuario_codigo, fundo FROM caixa_local
+      WHERE fechado_em IS NULL AND COALESCE(fundo,0) > 0`)
       .map((c) => ({ codigo: Number(c.codigo), fundo: Number(c.fundo) || 0 }));
   }
   const r = await qi(`SELECT CODIGO, SALDOINICIAL FROM CAIXA
@@ -20814,9 +20816,19 @@ function conferirTelas() {
 // — é o caso de repetir a parte que falhou sem reescrever 32 mil linhas.
 // As leituras do Firebird saem num attach SÓ (fbSerie): dois attaches seguidos
 // crasharam o driver na Prainha Bar e a migração parou depois dos clientes.
+// --so-caixas [--dias N]: caixas do Consumer ainda ABERTOS (ou abertos nos
+// últimos N dias, padrão 2) + os pagamentos e operações deles → caixa_local /
+// pagamento_local / caixa_operacao_local, com os MESMOS códigos. É o que a
+// Conferência de Caixa da nuvem lê no modo próprio: sem isso os caixas do dia
+// do flip (abertos na maquininha, no Firebird parado) somem da tela e ninguém
+// fecha. Pagamentos entram já marcados como sincronizados (a nuvem os tem
+// pelo agente). Idempotente: caixa que a loja já FECHOU no modo próprio não
+// reabre ao rodar de novo. Precisa do Firebird LIGADO (Start-Service) só
+// durante a cópia.
 async function migrarConsumer() {
   if (nativo()) { console.error('[migrar] rode SEM BANCO=proprio — precisa ler o Firebird ainda'); process.exit(2); }
   await initSchema();
+  if (process.argv.includes('--so-caixas')) { await migrarCaixasConsumer(); return; }
   const agora = new Date();
   const soUsuarios = process.argv.includes('--so-usuarios');
   const SQL_CLI = `SELECT CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
@@ -20866,6 +20878,73 @@ async function migrarConsumer() {
     (Number(s.prod) ? '' : '  ⚠️ produto_nuvem vazio: o catálogo vem da nuvem no 1º ciclo do loopCatalogoNuvem (precisa FILIAL_ID + PAGAR_MESA_SECRET)'));
   await sql.end({ timeout: 5 }).catch(() => {});
   process.exit(0);
+}
+async function migrarCaixasConsumer() {
+  const iD = process.argv.indexOf('--dias');
+  const dias = iD > 0 ? Math.max(0, Number(process.argv[iD + 1]) || 0) : 2;
+  const COND = `(c.DATAFECHAMENTO IS NULL OR c.DATAABERTURA >= DATEADD(-${dias} DAY TO CURRENT_DATE))`;
+  const SQL_CX = `SELECT c.CODIGO, c.CODIGOUSUARIO UCOD, TRIM(COALESCE(u.LOGIN,'')) LOGIN, c.DATAABERTURA AB, c.DATAFECHAMENTO FE,
+      COALESCE(c.SALDOINICIAL,0) FUNDO, c.SALDOFINAL SF, c.SALDOFINALINFORMADO SI, TRIM(COALESCE(c.OBSERVACAO,'')) OBS
+    FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE ${COND}`;
+  const SQL_PG = `SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F, CAST(p.VALOR AS NUMERIC(12,2)) V, p.CODIGOCAIXA CX,
+      CAST(p.NSUTRANSACAO AS VARCHAR(30)) NSU, TRIM(COALESCE(p.NUMEROAUTORIZACAOCARTAO,'')) AUT, TRIM(COALESCE(p.BANDEIRAMFE,'')) BAND,
+      TRIM(COALESCE(p.OBSERVACAO,'')) OBS, p.DATAPAGAMENTO DT, p.DATADELETE DEL
+    FROM PAGAMENTOS p WHERE p.CODIGOCAIXA IN (SELECT c.CODIGO FROM CAIXA c WHERE ${COND})`;
+  const SQL_OP = `SELECT o.CODIGOCAIXA CX, o.DATAOPERACAO DT, COALESCE(o.VALORENTRADA,0) E, COALESCE(o.VALORSAIDA,0) S,
+      o.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(o.OBSERVACAO,'')) OBS
+    FROM CAIXAOPERACAO o WHERE o.DATADELETE IS NULL AND o.CODIGOCAIXA IN (SELECT c.CODIGO FROM CAIXA c WHERE ${COND})`;
+  const r = await fbSerie([SQL_CX, SQL_PG, SQL_OP], 300000);
+  if (!r.ok) { console.error('[migrar] leitura do Consumer (CAIXA/PAGAMENTOS/CAIXAOPERACAO): ' + r.err + ' — o Firebird está ligado?'); process.exit(1); }
+  const [cxRows, pgRows, opRows] = r.rows;
+  const n = await gravarCaixasMigrados(cxRows, pgRows, opRows);
+  console.log(`[migrar] caixas: ${n.caixas} em caixa_local (${n.abertos} ainda abertos) · pagamentos: ${n.pagamentos} em pagamento_local (${n.cancelados} cancelados) · operações: ${n.operacoes} em caixa_operacao_local · janela: abertos ou últimos ${dias} dias`);
+  const [s] = await sql`SELECT (SELECT count(*) FROM caixa_local WHERE fechado_em IS NULL) ab,
+    (SELECT COALESCE(SUM(valor),0) FROM pagamento_local p WHERE p.cancelado_em IS NULL AND p.quando >= CURRENT_DATE) hoje`;
+  console.log(`[migrar] conferência: caixa_local abertos=${s.ab} · recebido hoje em pagamento_local=R$ ${Number(s.hoje).toFixed(2)}`);
+  await sql.end({ timeout: 5 }).catch(() => {});
+  process.exit(0);
+}
+// Só a gravação no Postgres (separada pra ensaiar no Mac sem Firebird).
+async function gravarCaixasMigrados(cxRows, pgRows, opRows) {
+  const agora = new Date();
+  const n = { caixas: 0, abertos: 0, pagamentos: 0, cancelados: 0, operacoes: 0 };
+  const cods = [];
+  for (const x of cxRows) {
+    const codigo = Number(x.CODIGO);
+    if (!codigo) continue;
+    const login = String(x.LOGIN || '').trim().toLowerCase() || (x.UCOD == null ? 'ser' : String(x.UCOD));
+    // fechado_em/saldos: se a loja já fechou este caixa no modo próprio, fica o dela
+    await sql`INSERT INTO caixa_local (codigo, login, usuario_codigo, aberto_em, fundo, fechado_em, saldo_final, saldo_informado, obs)
+      VALUES (${codigo}, ${login}, ${x.UCOD == null ? null : Number(x.UCOD)}, ${x.AB || agora}, ${Number(x.FUNDO) || 0},
+        ${x.FE || null}, ${x.SF == null ? null : Number(x.SF)}, ${x.SI == null ? null : Number(x.SI)}, ${T(x.OBS) || null})
+      ON CONFLICT (codigo) DO UPDATE SET login=EXCLUDED.login, usuario_codigo=EXCLUDED.usuario_codigo, aberto_em=EXCLUDED.aberto_em,
+        fundo=EXCLUDED.fundo, fechado_em=COALESCE(caixa_local.fechado_em, EXCLUDED.fechado_em),
+        saldo_final=COALESCE(caixa_local.saldo_final, EXCLUDED.saldo_final),
+        saldo_informado=COALESCE(caixa_local.saldo_informado, EXCLUDED.saldo_informado), obs=EXCLUDED.obs`;
+    cods.push(codigo); n.caixas++; if (!x.FE) n.abertos++;
+  }
+  for (const x of pgRows) {
+    const codigo = Number(x.CODIGO);
+    if (!codigo) continue;
+    const nsu = String(x.NSU || '').replace(/\D/g, '') || null;
+    await sql`INSERT INTO pagamento_local (codigo, pedido, forma_codigo, valor, caixa_codigo, nsu, autorizacao, bandeira, observacao, quando, cancelado_em, sync_nuvem_em)
+      VALUES (${codigo}, ${Number(x.PED) || null}, ${Number(x.F) || null}, ${Number(x.V) || 0}, ${Number(x.CX) || null},
+        ${nsu}, ${T(x.AUT) || null}, ${T(x.BAND) || null}, ${T(x.OBS) || 'Consumer'}, ${x.DT || agora}, ${x.DEL || null}, ${agora})
+      ON CONFLICT (codigo) DO UPDATE SET forma_codigo=EXCLUDED.forma_codigo, valor=EXCLUDED.valor, caixa_codigo=EXCLUDED.caixa_codigo,
+        nsu=EXCLUDED.nsu, autorizacao=EXCLUDED.autorizacao, bandeira=EXCLUDED.bandeira, quando=EXCLUDED.quando,
+        cancelado_em=COALESCE(pagamento_local.cancelado_em, EXCLUDED.cancelado_em), sync_nuvem_em=COALESCE(pagamento_local.sync_nuvem_em, EXCLUDED.sync_nuvem_em)`;
+    n.pagamentos++; if (x.DEL) n.cancelados++;
+  }
+  if (cods.length) await sql`DELETE FROM caixa_operacao_local WHERE login='migrar-consumer' AND caixa_codigo = ANY(${cods})`;
+  for (const x of opRows) {
+    const e = Number(x.E) || 0, s = Number(x.S) || 0;
+    if (!e && !s) continue;
+    await sql`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando)
+      VALUES (${Number(x.CX)}, ${e > 0 ? 'suprimento' : 'sangria'}, ${e > 0 ? e : s}, ${Number(x.F) || FORMA.DINHEIRO},
+        ${T(x.OBS) || null}, 'migrar-consumer', ${x.DT || agora})`;
+    n.operacoes++;
+  }
+  return n;
 }
 async function main() {
   conferirTelas();

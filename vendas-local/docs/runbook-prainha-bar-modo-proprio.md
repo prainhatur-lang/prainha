@@ -121,6 +121,30 @@ Stop-Service FirebirdServerDefaultInstance -ErrorAction SilentlyContinue; Set-Se
 ```
 Religar (só faz sentido junto com o rollback): `Set-Service FirebirdServerDefaultInstance -StartupType Automatic; Start-Service FirebirdServerDefaultInstance`.
 
+## Conferência de Caixa vazia depois do flip ("nao veio os caixas", 07/09/2026 23:19)
+A Conferência da nuvem lê a LOJA VIVA (`/api/central/caixa/relatorio`), e no modo
+próprio a loja lê só `caixa_local`/`pagamento_local`. Os caixas do dia do flip
+(14 na Prainha Bar: 5569–5582, todos abertos na maquininha, R$ ~47 mil em 211
+recebimentos) ficaram no CAIXA do Firebird parado — a migração do passo 1 só
+levou clientes e usuários. Resultado: "nenhum caixa nesse dia", ninguém fecha.
+Desde o release `06cb0a31` existe `--migrar-consumer --so-caixas [--dias N]`: copia
+os caixas ainda ABERTOS (ou abertos nos últimos N dias, padrão 2) + PAGAMENTOS
++ CAIXAOPERACAO deles pras tabelas locais com os MESMOS códigos; pagamentos já
+entram como sincronizados (a nuvem os tem pelo agente); rodar de novo não
+reabre caixa que a loja já fechou no modo próprio. Precisa do Firebird ligado
+só durante a cópia (é só leitura nele). Comando completo (liga o Firebird,
+baixa o release, migra, desliga o Firebird de novo):
+```powershell
+Start-Service FirebirdServerDefaultInstance; $cfg = Get-Content C:\concilia-agente\config.json -Raw | ConvertFrom-Json; cd C:\prainha-vendas; Copy-Item server.mjs server-anterior.mjs -Force; Invoke-WebRequest -UseBasicParsing "https://app.prainhabar.com/agente-release/vendas-local-server.mjs" -OutFile server.mjs; "baixado: " + (Get-FileHash server.mjs -Algorithm SHA256).Hash.Substring(0,8).ToLower(); $env:FB_HOST = $cfg.firebird.host; $env:FB_DATABASE = $cfg.firebird.database; $env:FB_PASSWORD = $cfg.firebird.password; Get-Content start.bat | ForEach-Object { if ($_ -match '^\s*set\s+"?([A-Za-z0-9_]+)\s*=\s*(.*?)"?\s*$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] } }; Remove-Item env:BANCO -ErrorAction SilentlyContinue; node server.mjs --migrar-consumer --so-caixas 2>&1 | Select-String '^\[migrar\]'; Stop-Service FirebirdServerDefaultInstance; Get-Service FirebirdServerDefaultInstance
+```
+Esperado: `[migrar] caixas: N em caixa_local (A ainda abertos) · pagamentos: … ·
+operações: …` e `[migrar] conferência: caixa_local abertos=… · recebido hoje…`.
+O servidor no ar não precisa reiniciar (a tela lê o banco); o auto-update troca
+pro release novo sozinho em ~20-30 min. Depois: abrir a Conferência de Caixa da
+Prainha Bar em 07/09 — os caixas aparecem e "Fechar" fecha em `caixa_local`.
+Mesmo release corrige `caixasDeOperadorAbertos` (lia `saldo_inicial`/
+`codigo_usuario`, colunas do Firebird, e quebrava o "Abrir caixa" com fundo).
+
 ## Conferência de Caixa "Loja fora do ar — fetch failed (ENOTFOUND)" (07/09/2026 22:47–23:10)
 Não era a loja: o servidor nunca caiu e o Funnel estava ligado. Era o DNS do
 nome do Funnel (`win-3tt8lmsanuh.tailb22e0d.ts.net`): o Tailscale tira o
