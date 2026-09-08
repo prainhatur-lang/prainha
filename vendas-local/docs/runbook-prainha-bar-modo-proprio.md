@@ -121,12 +121,24 @@ Stop-Service FirebirdServerDefaultInstance -ErrorAction SilentlyContinue; Set-Se
 ```
 Religar (só faz sentido junto com o rollback): `Set-Service FirebirdServerDefaultInstance -StartupType Automatic; Start-Service FirebirdServerDefaultInstance`.
 
-## Conferência de Caixa "Loja fora do ar — fetch failed" (07/09/2026 22:47)
-Não era a loja: o Vercel registrou as duas chamadas e a mesma URL assinada
-(`/api/central/caixa/conferir` no Funnel) respondeu `{ok:true}` minutos
-depois. Blip de rede Vercel → Funnel. Desde o commit 19c988a a leitura repete
-uma vez sozinha e a mensagem traz a causa real (ENOTFOUND/ECONNRESET/…).
-Pra testar do Mac sem passar pela nuvem: assinar `filialId|caixa|e` com o
+## Conferência de Caixa "Loja fora do ar — fetch failed (ENOTFOUND)" (07/09/2026 22:47–23:10)
+Não era a loja: o servidor nunca caiu e o Funnel estava ligado. Era o DNS do
+nome do Funnel (`win-3tt8lmsanuh.tailb22e0d.ts.net`): o Tailscale tira o
+registro público quando o nó pisca e repõe quando volta; quem consultou nesse
+instante guardou "não existe" (cache negativo). Às 23:10 os 4 NS do ts.net,
+Google, Quad9, OpenDNS e o DoH da Cloudflare já respondiam certo, mas o
+resolver da Vercel (e o 1.1.1.1, e o roteador do Mac) seguiam com NXDOMAIN —
+mais de 25 min, bem além dos 300 s do SOA. Repetir a chamada (19c988a) não
+adiantava. Desde a versão de 07/09 23:15 a nuvem, ao receber ENOTFOUND,
+resolve o nome por DNS-over-HTTPS (Google, depois Cloudflare) e chama a loja
+direto no IP do ingress, com o nome no SNI/Host (node:https com `lookup`
+fixo). Log na Vercel: `[caixa-loja] … via IP 199.38.181.54 (DoH dns.google):
+HTTP 200`. Se o DoH também disser NXDOMAIN, aí o Funnel está desligado na loja
+mesmo (é o caso da Tabuará) — a tela diz isso em vez de "fetch failed".
+Conferir de fora: na loja `tailscale funnel status` (tem que listar
+`https://<nome> (Funnel on) |-- / proxy http://127.0.0.1:8790`); do Mac,
+`dig @ns1.dnsimple.com A <nome>` diz se o registro existe na fonte. Pra testar
+o caminho da nuvem sem a nuvem: assinar `filialId|caixa|e` com o
 PAGAR_MESA_SECRET do `.env` e chamar o Funnel; pela VPN, `10.0.0.252:8790`
 responde sem assinatura em `/api/versao`.
 
