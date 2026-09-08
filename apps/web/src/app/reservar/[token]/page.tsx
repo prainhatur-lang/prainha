@@ -11,6 +11,20 @@ import { temaDaFilial } from './tema';
 
 export const dynamic = 'force-dynamic';
 
+// A aba do navegador é parte da marca: sem isto a reserva da Tabuará abria
+// como "Prainha Bar — Concilia" (o title do layout raiz), o que denuncia que a
+// página é de outra casa justo na hora em que o cliente vai confiar o telefone.
+export async function generateMetadata(props: { params: Promise<{ token: string }> }) {
+  const { token } = await props.params;
+  const [f] = await db
+    .select({ nome: schema.filial.nome })
+    .from(schema.filial)
+    .where(eq(schema.filial.avaliacaoToken, token))
+    .limit(1);
+  const marca = f ? temaDaFilial(f.nome).marca : 'Reserva';
+  return { title: `Reserva · ${marca}` };
+}
+
 export default async function ReservarPage(props: { params: Promise<{ token: string }> }) {
   const { token } = await props.params;
   if (!token || token.length < 20) notFound();

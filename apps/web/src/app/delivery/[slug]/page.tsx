@@ -13,6 +13,15 @@ import { temaDeliveryDaFilial, estiloTemaDelivery } from '@/lib/tema-delivery';
 
 export const dynamic = 'force-dynamic';
 
+// Idem reserva: o title do layout do delivery é só "Delivery", genérico pras
+// duas casas. Aqui já se sabe qual é a loja — a aba passa a dizer o nome dela.
+export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  const { slug } = await props.params;
+  const loja = await lojaDeliveryPorSlug(slug);
+  if (!loja) return { title: 'Delivery' };
+  return { title: `Delivery · ${loja.config.titulo ?? loja.nome}` };
+}
+
 export default async function DeliveryLojaPage(props: {
   params: Promise<{ slug: string }>;
 }) {
