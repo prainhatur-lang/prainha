@@ -113,7 +113,11 @@ Parar o Firebird e deixar manual (o .fdb fica pra consulta de histórico):
 Stop-Service FirebirdServerDefaultInstance -ErrorAction SilentlyContinue; Set-Service FirebirdServerDefaultInstance -StartupType Manual
 ```
 
-## Pendências fiscais (não bloqueiam a venda)
-NFC-e no modo próprio já lê itens/pagamentos/fiado das tabelas locais e NCM/CFOP
-do catálogo da nuvem — mas só emite com CSC (portal SEFAZ-SE) + certificado A1
-da filial 01 cadastrados em /configuracoes/fiscal. Enquanto isso, sem nota.
+## Fiscal (já cadastrado — não é pendência)
+A filial 01 já tem tudo em /configuracoes/fiscal: NFC-e ativa em produção,
+série 20, CSC id 000001 e certificado A1 do CNPJ 0001-66 válido até 14/04/2027
+(o mesmo da distribuição DF-e). Até o flip a nuvem já tinha autorizado 402 notas
+da série 20. No modo próprio a emissão lê itens/pagamentos/fiado das tabelas
+locais e NCM/CFOP do catálogo da nuvem; a chave do pedido muda de `fb:<código>`
+pra o código local (≥ 5.000.000). Conferir a 1ª nota do modo próprio em
+/fiscal/nfce.
