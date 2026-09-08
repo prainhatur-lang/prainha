@@ -5,11 +5,13 @@
 //
 // GET  /api/atendimento/numeros-meta            → lista { id, numero, nome, waba }
 // POST /api/atendimento/numeros-meta            → vincula { phoneNumberId, filialId, atendenteAtivo? }
-// Auth: Authorization: Bearer <CRON_SECRET> (mesma das rotas de cron).
+// Auth: sessão com a permissão atendimento.config (dá pra abrir o GET no
+// navegador logado) ou Authorization: Bearer <CRON_SECRET>.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
+import { exigirPermApi } from '@/lib/exigir-perm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,9 +19,11 @@ export const runtime = 'nodejs';
 const token = () => process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META || '';
 const versao = () => process.env.WHATSAPP_API_VERSION || 'v21.0';
 
-function autorizado(req: Request): boolean {
+async function autorizado(req: Request): Promise<boolean> {
   const esperado = `Bearer ${process.env.CRON_SECRET}`;
-  return !!process.env.CRON_SECRET && req.headers.get('authorization') === esperado;
+  if (process.env.CRON_SECRET && req.headers.get('authorization') === esperado) return true;
+  const { error } = await exigirPermApi('atendimento.config');
+  return !error;
 }
 
 async function graph<T>(caminho: string): Promise<T | { erro: string }> {
@@ -32,7 +36,7 @@ async function graph<T>(caminho: string): Promise<T | { erro: string }> {
 }
 
 export async function GET(req: Request) {
-  if (!autorizado(req)) return NextResponse.json({ erro: 'nao autorizado' }, { status: 401 });
+  if (!(await autorizado(req))) return NextResponse.json({ erro: 'nao autorizado' }, { status: 401 });
   if (!token()) return NextResponse.json({ erro: 'WHATSAPP_TOKEN/META ausente' }, { status: 500 });
 
   // As WABAs que o token alcança vêm do debug_token (granular_scopes do
@@ -74,7 +78,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  if (!autorizado(req)) return NextResponse.json({ erro: 'nao autorizado' }, { status: 401 });
+  if (!(await autorizado(req))) return NextResponse.json({ erro: 'nao autorizado' }, { status: 401 });
   const b = (await req.json().catch(() => ({}))) as {
     phoneNumberId?: string;
     filialId?: string;
