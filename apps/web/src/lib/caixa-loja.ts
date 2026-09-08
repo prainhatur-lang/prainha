@@ -45,17 +45,44 @@ export async function chamarLojaCaixa(
   }
   const sep = path.includes('?') ? '&' : '?';
   const url = `${base}/api/central/caixa${path}${sep}e=${e}&s=${s}`;
-  try {
-    const r = await fetch(url, {
-      method: opts.method ?? 'GET',
-      headers: opts.body ? { 'content-type': 'application/json' } : undefined,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(20000),
-    });
-    const j = (await r.json().catch(() => null)) as Resp | null;
-    if (!j) return { ok: false, erro: `loja respondeu ${r.status} sem JSON` };
-    return j;
-  } catch (err) {
-    return { ok: false, erro: 'Loja fora do ar — ' + (err instanceof Error ? err.message : 'sem resposta') };
+  const method = opts.method ?? 'GET';
+  // Uma tentativa a mais SÓ pra GET (leitura) e só quando a 1ª morreu rápido
+  // em erro de rede (DNS/TLS/reset no caminho Vercel → Funnel — o "fetch
+  // failed" que a Conferência mostrou em 07/09/2026 com a loja no ar e
+  // respondendo em 1 s). Timeout de 20 s não repete: a rota tem maxDuration
+  // 30 e a 2ª tentativa estouraria o teto.
+  const t0 = Date.now();
+  for (let tentativa = 1; ; tentativa++) {
+    try {
+      const r = await fetch(url, {
+        method,
+        headers: opts.body ? { 'content-type': 'application/json' } : undefined,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+        signal: AbortSignal.timeout(Math.min(20000, 27000 - (Date.now() - t0))),
+      });
+      const j = (await r.json().catch(() => null)) as Resp | null;
+      if (!j) return { ok: false, erro: `loja respondeu ${r.status} sem JSON` };
+      return j;
+    } catch (err) {
+      const causa = descreverFalha(err);
+      console.warn(`[caixa-loja] ${filialId.slice(0, 8)} ${method} ${path.split('?')[0]} tentativa ${tentativa}: ${causa}`);
+      const rapido = Date.now() - t0 < 6000;
+      const timeout = err instanceof Error && err.name === 'TimeoutError';
+      if (tentativa === 1 && method === 'GET' && rapido && !timeout) {
+        await new Promise((res) => setTimeout(res, 1500));
+        continue;
+      }
+      return { ok: false, erro: 'Loja fora do ar — ' + causa };
+    }
   }
+}
+
+/** "fetch failed" sozinho não diz nada; o motivo real (ENOTFOUND, ECONNRESET,
+ *  certificado…) vem em err.cause. */
+function descreverFalha(err: unknown): string {
+  if (!(err instanceof Error)) return 'sem resposta';
+  if (err.name === 'TimeoutError') return 'a loja não respondeu em 20 s';
+  const c = (err as Error & { cause?: { code?: string; message?: string } }).cause;
+  const detalhe = c?.code || c?.message;
+  return detalhe ? `${err.message} (${detalhe})` : err.message;
 }
