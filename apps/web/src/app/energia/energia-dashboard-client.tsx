@@ -125,7 +125,10 @@ export function EnergiaDashboardClient({
             <p className="text-xs text-slate-500">{TIPO_LABEL[d.tipo] ?? d.tipo}</p>
           </div>
           {l && !l.online ? (
-            <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600">
+            <span
+              title={l.erro ?? undefined}
+              className="cursor-help rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600"
+            >
               offline
             </span>
           ) : ligado === true ? (
@@ -161,6 +164,8 @@ export function EnergiaDashboardClient({
             </div>
           ) : null}
         </div>
+
+        {l && !l.online && l.erro ? <p className="mt-2 text-xs text-rose-600">{l.erro}</p> : null}
 
         {podeControlar && ligado !== null ? (
           <button
