@@ -614,6 +614,7 @@ export async function processarEntrada(params: {
       try {
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
+          filialId: entrada.filialId,
           filialNome,
           persona: config.persona,
           conhecimento: config.conhecimento ?? [],
@@ -637,6 +638,7 @@ export async function processarEntrada(params: {
         try {
         resposta = await gerarResposta({
           nomeAtendente: config.nomeAtendente,
+          filialId: entrada.filialId,
           filialNome,
           persona: config.persona,
           conhecimento: config.conhecimento ?? [],
@@ -660,6 +662,7 @@ export async function processarEntrada(params: {
           console.error('[nina] tentativa 2 falhou, failover pra', alternativo, ':', e2 instanceof Error ? e2.message : e2);
           resposta = await gerarResposta({
             nomeAtendente: config.nomeAtendente,
+            filialId: entrada.filialId,
             filialNome,
             persona: config.persona,
             conhecimento: config.conhecimento ?? [],

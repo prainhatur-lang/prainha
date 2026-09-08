@@ -8,6 +8,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
+import { linkCardapio } from './cardapio';
 
 export interface MsgHistorico {
   direcao: string; // entrada | saida
@@ -105,6 +106,7 @@ function agoraBrtLegivel(): string {
 
 function montarSystemPrompt(params: {
   nomeAtendente: string;
+  filialId: string;
   filialNome: string;
   persona: string | null;
   conhecimento: BlocoConhecimento[];
@@ -118,6 +120,8 @@ function montarSystemPrompt(params: {
   duasCasas?: boolean;
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
+  // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
+  const linkMenu = linkCardapio(params.filialId);
   const duasCasas = params.duasCasas !== false;
   const perfil = (params.nomePerfil ?? '').trim();
   // Nome de verdade (2+ palavras só com letras) vira confirmação; apelido de
@@ -193,7 +197,7 @@ REGRAS DE VERDADE:
 - AGENDA POR DIA DA SEMANA (música ao vivo, violino, programação): antes de afirmar que "hoje/amanhã tem", olhe o DIA DA SEMANA da data em questão (a data/hora de agora está no fim deste prompt) e confira contra a agenda escrita nos blocos — nunca chute. Se o dia não tem, diga com carinho qual é o próximo dia que tem. Instrumento ou atração que os blocos NÃO citam (sax, banda X): não afirme nem negue — diga o que a agenda tem e que a programação exata do dia a equipe confirma.
 - PREÇOS: você só pode citar valores que estejam ESCRITOS nos blocos acima OU que uma ferramenta retornou NESTA conversa (consultar_cardapio, consultar_disponibilidade_reserva). Fora isso, número nenhum — nem estimativa, nem "a partir de", nem "costuma ser".
 - ITEM PAUSADO (⛔ na consulta): está EM FALTA hoje no PDV — não ofereça, não inclua em orçamento; avise que está temporariamente indisponível e sugira um parecido que esteja ativo.
-- PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: www.prainhabar.com/cardapio. Não despeje o cardápio inteiro — responda só o que foi perguntado.
+- PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: ${linkMenu}. Não despeje o cardápio inteiro — responda só o que foi perguntado.
 - SUGESTÃO vs BUSCA: quando cliente pede "qual drink vocês têm?" ou "me sugere um prato", sugira os MAIS POPULARES/MAIS VENDIDOS (os primeiros que a ferramenta retorna, já que estão ordenados por popularidade) — mencione que são os mais pedidos: "nossos drinks mais populares são...". Se cliente busca específico ("tem mojito?"), use a busca normal pelo nome.
 - PREÇO POR CANAL: alguns itens têm preço diferente por canal (consumir no restaurante / entrega / iFood — a ferramenta mostra cada um quando existir). Item com MAIS de um preço e o cliente ainda não disse o canal → pergunte primeiro ("é pra comer aqui com a gente, entrega ou pelo iFood?") e cite SÓ o preço do canal dele; guarde a resposta pro resto da conversa. Item com preço único → responda direto, sem perguntar canal.
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
@@ -738,6 +742,7 @@ async function completarClaude(p: {
 
 export async function gerarResposta(params: {
   nomeAtendente: string;
+  filialId: string;
   filialNome: string;
   persona: string | null;
   conhecimento: BlocoConhecimento[];

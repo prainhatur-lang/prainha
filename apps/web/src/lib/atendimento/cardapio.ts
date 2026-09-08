@@ -6,7 +6,19 @@
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 
-const LINK_CARDAPIO = 'https://www.prainhabar.com/cardapio';
+// Link do cardápio por CASA (08/09): a Tabuará tem cardápio próprio no
+// Menudino — mandar prainhabar.com/cardapio pro cliente dela é cardápio
+// errado. Filial sem link específico cai no do Prainha.
+const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
+const LINK_CARDAPIO_PADRAO = 'https://www.prainhabar.com/cardapio';
+const LINK_CARDAPIO_POR_FILIAL: Record<string, string> = {
+  [FILIAL_TABUARA]: 'https://tabuara.menudino.com.br',
+};
+
+/** Cardápio online da casa — usado nas respostas da IA e no prompt. */
+export function linkCardapio(filialId: string): string {
+  return LINK_CARDAPIO_POR_FILIAL[filialId] ?? LINK_CARDAPIO_PADRAO;
+}
 
 export interface ItemCardapio {
   nome: string;
@@ -124,6 +136,7 @@ export async function buscarItensCardapio(
 }
 
 export async function consultarCardapio(filialId: string, termo: string): Promise<string> {
+  const LINK_CARDAPIO = linkCardapio(filialId);
   const temTermo = dobrar(termo ?? '').replace(/[^a-z0-9\s]/g, '').trim().length >= 3;
   if (!temTermo) {
     return `Termo de busca vazio. Busque por uma palavra do prato (ex.: "moqueca", "camarão", "robalo"). Cardápio completo com fotos: ${LINK_CARDAPIO}`;
