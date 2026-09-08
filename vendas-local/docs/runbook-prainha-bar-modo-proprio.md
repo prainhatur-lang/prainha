@@ -45,7 +45,11 @@ if ($env:PG_URL) { node server.mjs --migrar-consumer 2>&1 | Select-String '^\[mi
 Só usuários (clientes já migrados): `node server.mjs --migrar-consumer --so-usuarios`.
 Esperado: `[migrar] clientes: N em cliente_local`, `[migrar] usuários: N em usuario_local`,
 `[migrar] conferência: cliente_local=… usuario_local ativos=… produto_nuvem=…`.
-Na Prainha Bar (07/09/2026): 32.663 clientes, 121 usuários (34 ativos), 982 produtos.
+Na Prainha Bar (07/09/2026): 32.663 clientes, 121 usuários do Consumer (33 ativos) +
+o `paulao` já criado na loja → `usuario_local ativos=34`; `produto_nuvem` ≈ 981–982
+(varia com o catálogo). Rodado de verdade às 22:07 com `--so-usuarios`: conferido de
+fora pelo Funnel (`/api/central/equipe/usuarios`) — 122 usuários, 34 ativos, elison e
+marta admins.
 Se `produto_nuvem=0`: o start.bat está sem `FILIAL_ID`/`PAGAR_MESA_SECRET` — corrigir
 antes do flip (o cardápio do modo próprio vem da nuvem por esse par).
 
