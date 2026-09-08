@@ -223,6 +223,11 @@ export const PERMISSOES: PermissaoDef[] = [
     { acao: 'configurar', descricao: 'Configurar delivery (horários, taxas, frete grátis)' },
   ]),
 
+  // === Energia (painel Tuya: consumo e controle de luzes/bombas/motores) ===
+  { codigo: 'tuya.read', modulo: 'tuya', acao: 'read', descricao: 'Ver painel de energia (consumo e estado dos dispositivos)' },
+  { codigo: 'tuya.control', modulo: 'tuya', acao: 'control', descricao: 'Ligar/desligar luzes, bombas e motores pelo painel de energia' },
+  { codigo: 'tuya.configurar', modulo: 'tuya', acao: 'configurar', descricao: 'Cadastrar/editar dispositivos Tuya por filial' },
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

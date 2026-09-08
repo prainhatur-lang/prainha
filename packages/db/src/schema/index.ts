@@ -37,3 +37,4 @@ export * from './rh';
 export * from './escuta';
 export * from './vendedor';
 export * from './kids';
+export * from './tuya';
