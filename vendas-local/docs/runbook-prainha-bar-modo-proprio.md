@@ -107,11 +107,28 @@ cd C:\prainha-vendas; Copy-Item start-antes-proprio.bat start.bat -Force; Set-Se
 ⚠️ Vendas feitas em modo próprio ficam no Postgres local + nuvem; NÃO existem
 no Consumer. Não fazer rollback com contas abertas.
 
-## Depois de uns dias estável (opcional)
-Parar o Firebird e deixar manual (o .fdb fica pra consulta de histórico):
+## Parar o Firebird (feito na Prainha Bar em 07/09/2026 22:48)
+O dono parou no mesmo dia do flip, com a loja já no 68059901 (servidor no ar
+desde 22:37). Auditoria estática do server.mjs no mesmo dia: nenhum loop do
+modo próprio chega no Firebird — todo caminho de caixa/pedido/pagamento/fiado/
+NFC-e tem ramo `nativo()` nas tabelas locais, e o único helper só-Firebird
+alcançável (`fbAlterarProduto`) fica atrás de `loopProdutoFila`, que sai cedo
+em modo próprio. Se alguma chamada perdida bater no Firebird parado, `qi()`
+falha em 8 s com `{ok:false}` — erro na tela, nunca trava. O .fdb fica no
+disco pra consulta de histórico.
 ```powershell
-Stop-Service FirebirdServerDefaultInstance -ErrorAction SilentlyContinue; Set-Service FirebirdServerDefaultInstance -StartupType Manual
+Stop-Service FirebirdServerDefaultInstance -ErrorAction SilentlyContinue; Set-Service FirebirdServerDefaultInstance -StartupType Manual; Get-Service FirebirdServerDefaultInstance
 ```
+Religar (só faz sentido junto com o rollback): `Set-Service FirebirdServerDefaultInstance -StartupType Automatic; Start-Service FirebirdServerDefaultInstance`.
+
+## Conferência de Caixa "Loja fora do ar — fetch failed" (07/09/2026 22:47)
+Não era a loja: o Vercel registrou as duas chamadas e a mesma URL assinada
+(`/api/central/caixa/conferir` no Funnel) respondeu `{ok:true}` minutos
+depois. Blip de rede Vercel → Funnel. Desde o commit 19c988a a leitura repete
+uma vez sozinha e a mensagem traz a causa real (ENOTFOUND/ECONNRESET/…).
+Pra testar do Mac sem passar pela nuvem: assinar `filialId|caixa|e` com o
+PAGAR_MESA_SECRET do `.env` e chamar o Funnel; pela VPN, `10.0.0.252:8790`
+responde sem assinatura em `/api/versao`.
 
 ## Fiscal (já cadastrado — não é pendência)
 A filial 01 já tem tudo em /configuracoes/fiscal: NFC-e ativa em produção,
