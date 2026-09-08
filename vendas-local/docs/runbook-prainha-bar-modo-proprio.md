@@ -174,3 +174,36 @@ da série 20. No modo próprio a emissão lê itens/pagamentos/fiado das tabelas
 locais e NCM/CFOP do catálogo da nuvem; a chave do pedido muda de `fb:<código>`
 pra o código local (≥ 5.000.000). Conferir a 1ª nota do modo próprio em
 /fiscal/nfce.
+
+## Tabuará (filial 02, SERVIDORDELL, 192.168.0.100, Postgres 16) — FEITO 07/09/2026 23:55
+Mesmo roteiro (passos 0–4) rodado pelo dono via Chrome Remote Desktop, em
+PowerShell como administrador, tudo em um-liners completos. Números:
+234 clientes, 31 usuários (16 ativos), 15 caixas (3 abertos) + 91 pagamentos +
+2 operações (`--so-caixas --dias 3`), catálogo 426 produtos / 3 áreas / 19
+observações. Serviço `ConciliaAgente` parado + Disabled; `start.bat` guardado
+em `start-antes-proprio.bat`; tarefas agendadas `PrainhaVendas`,
+`PrainhaVendasUpdater`, `ConciliaAgente`. Release já era o 06cb0a31 (auto-update).
+Fiscal: série 2, CSC 000002, 97 notas antes do flip — não é pendência.
+
+O que foi diferente da 0001:
+- `produto_nuvem=0` no fim do passo 1 é normal: quem enche a tabela é o
+  processo do servidor (`loopCatalogoNuvem`, no boot e a cada 5 min), não a
+  migração. Depois do restart do passo 4 apareceram os 426 sozinhos.
+- PowerShell dentro de `node -e "..."`: crases viram erro de sintaxe (usar
+  `p.unsafe('...')`) e `$1..$N` são expandidos pelo PowerShell (montar os
+  placeholders em JS: `String.fromCharCode(36)+(i+1)`). `schtasks /fo CSV |
+  ConvertFrom-Csv` tem cabeçalho em pt-BR → usar `/fo LIST | Select-String`.
+- Mesas abertas espelhadas do Consumer aparecem em `/api/venda/abertas` depois
+  do flip (49/50 velhas de agosto, 8/20 da própria noite). As contas moram no
+  Firebird: receber antes do flip ou cancelar na tela de mesas depois.
+- Funnel `servidordell.tailb22e0d.ts.net`: `funnel status` diz "Available on
+  the internet", `tailscale cert` emite o certificado, MAS o painel do
+  Tailscale nunca publicou o registro A público (ns1.dnsimple.com e DoH dão
+  NXDOMAIN; de dentro da máquina `Resolve-DnsName` engana, o resolvedor local
+  responde 100.x). O ingress do Funnel roteia pelo SNI, então
+  `caixa-loja.ts` (11f7239) cai nos IPs fixos do ingress (199.38.181.54 /
+  209.177.145.137) quando o DoH diz NXDOMAIN num nome `.ts.net`. Log:
+  `via IP 199.38.181.54 (DoH ingress fixo): HTTP 200`.
+- iFood: o Gestor de Pedidos roda nessa máquina; pedido do iFood que entrava
+  pelo Consumer não entra mais no PDV (integração própria do vendas-local
+  existe mas está desligada/sem homologação).
