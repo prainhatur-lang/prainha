@@ -39,6 +39,15 @@ interface SP {
   filialId?: string;
 }
 
+function Info({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="mt-0.5 text-sm text-slate-800">{value || '—'}</div>
+    </div>
+  );
+}
+
 export default async function ClienteDetalhe(props: {
   params: Promise<{ id: string }>;
   searchParams: Promise<SP>;
@@ -201,13 +210,6 @@ export default async function ClienteDetalhe(props: {
   if (reservas.length > 0) fontes.push('Reserva');
   if (cadastro) fontes.push('Cadastro (PDV)');
   if (contato) fontes.push('Importado pelo Tagme');
-
-  const Info = ({ label, value }: { label: string; value: React.ReactNode }) => (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
-      <div className="mt-0.5 text-sm text-slate-800">{value || '—'}</div>
-    </div>
-  );
 
   return (
     <main className="min-h-screen bg-slate-50">
