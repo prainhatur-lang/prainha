@@ -19,7 +19,9 @@ const ArrowRight = (p: IconProps) => <S {...p}><path d="M5 12h14M13 6l6 6-6 6" /
 
 const RESERVA_URL =
   'https://app.prainhabar.com/reservar/6dd10ed01259fc44d1e0c67d1d29bf986ccb22e8a527d0419cc6a4c35a6e534e';
-const DELIVERY_URL = 'https://tabuara.menudino.com.br';
+// DELIVERY PRÓPRIO (08/09): o pedido sai daqui pro nosso /delivery, não mais
+// pro Menudino — mesmo carrinho, mesmo checkout e mesma cozinha do Prainha.
+const DELIVERY_URL = '/delivery/tabuara';
 const INSTAGRAM_URL = 'https://instagram.com/tabuara.se';
 const MAPS_URL =
   'https://www.google.com/maps/search/?api=1&query=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju';
@@ -175,7 +177,7 @@ export default function TabuaraPage() {
           </div>
           <div className="mt-14 text-center">
             <a href={DELIVERY_URL} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-full border border-[#c9a24b]/50 px-8 py-3.5 text-sm font-medium text-[#d9bd82] transition-colors hover:bg-[#c9a24b]/10">
-              Ver cardápio completo <ArrowRight className="h-4 w-4" />
+              Ver cardápio e pedir <ArrowRight className="h-4 w-4" />
             </a>
           </div>
         </div>
