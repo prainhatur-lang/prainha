@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, sql, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, or, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 
@@ -107,6 +107,34 @@ export default async function ClienteDetalhe(props: {
       .orderBy(sql`(${schema.cliente.cpfOuCnpj} IS NOT NULL) DESC`)
       .limit(1);
   }
+
+  // DE ONDE é o cliente: todos os cadastros do PDV dessa pessoa no grupo (pelo
+  // telefone/e-mail da rota e, se o escolhido tem CPF, pelo CPF também). A tela
+  // dizia só "Editar cadastro", sem a loja — e limite/fiado são por loja.
+  const docCadastro = (cadastro?.cpfOuCnpj ?? '').replace(/\D/g, '');
+  const cadastros = await db
+    .select({
+      id: schema.cliente.id,
+      filialId: schema.cliente.filialId,
+      codigo: schema.cliente.codigoExterno,
+      saldo: schema.cliente.saldoAtualContaCorrente,
+    })
+    .from(schema.cliente)
+    .where(
+      and(
+        inArray(schema.cliente.filialId, filiaisIds),
+        isNull(schema.cliente.dataDelete),
+        docCadastro
+          ? or(
+              matchCliente,
+              sql`regexp_replace(coalesce(${schema.cliente.cpfOuCnpj}, ''), '[^0-9]', '', 'g') = ${docCadastro}`,
+            )
+          : matchCliente,
+      ),
+    )
+    .orderBy(schema.cliente.filialId, schema.cliente.codigoExterno);
+  const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
+  const lojaDoCadastro = cadastro ? (nomeFilial.get(cadastro.filialId) ?? '?') : null;
 
   // ⚠️ CASAR SÓ PELO TELEFONE ESCONDE DÍVIDA — e não há atalho bom.
   // Medido em 22/08: dos 137 clientes com fiado em aberto, 104 estão SEM
@@ -212,7 +240,7 @@ export default async function ClienteDetalhe(props: {
                   href={`/cadastros/clientes/editar/${cadastro.id}`}
                   className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
                 >
-                  Editar cadastro
+                  Editar cadastro · {lojaDoCadastro}
                 </Link>
               ) : (
                 // Sem cadastro no PDV não havia saída nenhuma nesta tela: nem
@@ -255,7 +283,7 @@ export default async function ClienteDetalhe(props: {
             <Info label="Gênero" value={contato?.genero} />
             <Info label="Pontos de fidelidade" value={contato?.pontosFidelidade ?? null} />
             <Info
-              label="Fiado (conta corrente)"
+              label={`Fiado (conta corrente)${lojaDoCadastro ? ` · ${lojaDoCadastro}` : ''}`}
               value={
                 !cadastro ? (
                   // NUNCA dizer "sem saldo" sem ter achado a conta: é a mesma
@@ -292,6 +320,24 @@ export default async function ClienteDetalhe(props: {
               }
             />
           </div>
+
+          {cadastros.length > 0 && (
+            <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 text-sm">
+              <span className="font-medium text-slate-900">Cadastro no PDV:</span>{' '}
+              {cadastros.map((k, i) => (
+                <span key={k.id}>
+                  {i > 0 && ' · '}
+                  <Link href={`/cadastros/clientes/editar/${k.id}`} className="text-sky-700 hover:underline">
+                    {nomeFilial.get(k.filialId) ?? '?'} (cód. {k.codigo}
+                    {k.saldo != null && Number(k.saldo) !== 0 ? `, fiado ${brl(Number(k.saldo))}` : ''})
+                  </Link>
+                </span>
+              ))}
+              {cadastros.length > 1 && (
+                <span className="ml-1 text-xs text-slate-500">— limite e fiado são por loja</span>
+              )}
+            </div>
+          )}
 
           {preferencias && (
             <div className="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">

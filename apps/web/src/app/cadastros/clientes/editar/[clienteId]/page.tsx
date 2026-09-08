@@ -8,7 +8,7 @@ import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { eq, inArray, and, desc, sql } from 'drizzle-orm';
+import { eq, inArray, and, desc, sql, isNull, ne } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ClienteForm, type ValoresCliente } from '../../cliente-form';
 
@@ -66,6 +66,43 @@ export default async function EditarClientePage(props: {
           .limit(1)
       ).length > 0
     : false;
+
+  // DE ONDE é o cliente + quem mais é a mesma pessoa (mesmo CPF; senão, mesmo
+  // telefone): nas outras casas (o espelho manda a edição pra elas) e as
+  // duplicatas na própria loja. Em 07/09/2026 o dono deu limite no cadastro da
+  // Tabuará achando que era o da Prainha Bar, onde havia 5 com o mesmo CPF.
+  const foneCliente = (cliente.celular ?? cliente.telefone ?? '').replace(/\D/g, '');
+  const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
+  const parecidos =
+    docCliente || foneCliente
+      ? await db
+          .select({
+            id: schema.cliente.id,
+            filialId: schema.cliente.filialId,
+            codigo: schema.cliente.codigoExterno,
+            saldo: schema.cliente.saldoAtualContaCorrente,
+          })
+          .from(schema.cliente)
+          .where(
+            and(
+              inArray(schema.cliente.filialId, filiais.map((f) => f.id)),
+              isNull(schema.cliente.dataDelete),
+              ne(schema.cliente.id, cliente.id),
+              docCliente
+                ? sql`regexp_replace(coalesce(${schema.cliente.cpfOuCnpj}, ''), '[^0-9]', '', 'g') = ${docCliente}`
+                : sql`regexp_replace(coalesce(${schema.cliente.celular}, ${schema.cliente.telefone}, ''), '[^0-9]', '', 'g') = ${foneCliente}`,
+            ),
+          )
+          .orderBy(schema.cliente.filialId, schema.cliente.codigoExterno)
+      : [];
+  const fmtSaldo = (v: string | null) =>
+    v != null && Number(v) !== 0
+      ? `, fiado ${Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`
+      : '';
+  const irmaos = parecidos
+    .filter((p) => p.filialId !== cliente.filialId)
+    .map((p) => ({ ...p, loja: nomeFilial.get(p.filialId) ?? '?' }));
+  const duplicados = parecidos.filter((p) => p.filialId === cliente.filialId);
 
   // Últimas alterações mandadas pra loja — mostra se alguma travou e, o mais
   // traiçoeiro, se a loja aplicou só PARTE dos campos: o agente < v1.4.0 só
@@ -139,8 +176,46 @@ export default async function EditarClientePage(props: {
           ← Voltar para Clientes
         </Link>
         <h1 className="mt-3 text-2xl font-bold text-slate-900">{cliente.nome ?? 'Cliente'}</h1>
-        <p className="mb-6 mt-1 text-sm text-slate-600">
-          {filial.nome} · código {cliente.codigoExterno} no PDV
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+          <span className="rounded-full bg-amber-100 px-2.5 py-0.5 font-semibold text-amber-800">
+            Cadastro da {filial.nome}
+          </span>
+          <span className="text-slate-600">código {cliente.codigoExterno} no PDV</span>
+        </div>
+        <p className="mb-6 mt-1 text-xs text-slate-600">
+          {irmaos.length > 0 ? (
+            <>
+              Mesma pessoa em:{' '}
+              {irmaos.map((k, i) => (
+                <span key={k.id}>
+                  {i > 0 && ' · '}
+                  <Link href={`/cadastros/clientes/editar/${k.id}`} className="text-sky-700 hover:underline">
+                    {k.loja} (cód. {k.codigo}{fmtSaldo(k.saldo)})
+                  </Link>
+                </span>
+              ))}
+              . Limite e fiado são por loja; salvar aqui espelha a alteração lá.
+            </>
+          ) : (
+            <>Só tem cadastro nesta loja; ao salvar, as outras casas recebem um cadastro novo.</>
+          )}
+          {duplicados.length > 0 && (
+            <>
+              {' '}
+              <span className="text-amber-800">
+                Outros cadastros nesta loja com o mesmo {docCliente ? 'CPF' : 'telefone'}:
+              </span>{' '}
+              {duplicados.map((k, i) => (
+                <span key={k.id}>
+                  {i > 0 && ' · '}
+                  <Link href={`/cadastros/clientes/editar/${k.id}`} className="text-sky-700 hover:underline">
+                    cód. {k.codigo}{fmtSaldo(k.saldo)}
+                  </Link>
+                </span>
+              ))}
+              .
+            </>
+          )}
         </p>
 
         {parcial && (

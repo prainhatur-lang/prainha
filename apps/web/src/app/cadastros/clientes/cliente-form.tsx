@@ -384,7 +384,7 @@ export function ClienteForm({
 
       {podeFiado && (
         <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-5 shadow-sm">
-          <h2 className="text-sm font-bold text-slate-900">Fiado (conta corrente)</h2>
+          <h2 className="text-sm font-bold text-slate-900">Fiado (conta corrente) · {filialNome}</h2>
           <p className="mt-0.5 text-xs text-slate-600">
             O caixa libera fiado quando o <b>limite é maior que zero</b>. Limite zero (ou em
             branco) = cliente não faz fiado.

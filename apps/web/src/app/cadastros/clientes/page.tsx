@@ -63,6 +63,11 @@ interface Unificado {
   /** id do cadastro do PDV (tabela cliente) — porta de entrada da edição
    *  quando o cliente não tem telefone nem e-mail pra rota unificada. */
   clienteId: string | null;
+  /** Cadastros do PDV por loja (filialId → cadastro): é o que diz DE ONDE é o
+   *  cliente. A linha unificada junta casas diferentes e, sem isso, o "Editar"
+   *  abria o cadastro de OUTRA loja sem avisar — em 07/09/2026 o dono deu
+   *  limite de fiado no cadastro da Tabuará achando que era o da Prainha Bar. */
+  casas: Map<string, { nome: string; clienteId: string; codigo: number; saldo: number }>;
 }
 
 export default async function ClientesPage(props: { searchParams: Promise<SP> }) {
@@ -97,11 +102,14 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   // telefone/e-mail/CPF junta o mesmo cliente de casas diferentes numa linha.
   // A filial ativa fica só pro link de "+ Novo cliente".
   const filiaisIds = filiais.map((f) => f.id);
+  const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
   // 1) Cadastro do PDV (Consumer) — fiado / conta corrente
   const consumer = await db
     .select({
       id: schema.cliente.id,
+      filialId: schema.cliente.filialId,
+      codigo: schema.cliente.codigoExterno,
       nome: schema.cliente.nome,
       cpf: schema.cliente.cpfOuCnpj,
       // celular primeiro: é onde o form "Celular/WhatsApp" grava — sem ele o
@@ -153,7 +161,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   const novo = (): Unificado => ({
     nome: '', fone: '', email: null, cpf: null, saldo: null, reservas: 0,
     ultima: null, reservasTagme: 0, aniversario: null, canais: [], preferencias: null,
-    fontes: new Set(), clienteId: null,
+    fontes: new Set(), clienteId: null, casas: new Map(),
   });
 
   for (const c of consumer) {
@@ -161,11 +169,22 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
     const u = map.get(k) ?? novo();
     u.fontes.add('consumer');
     if (!u.clienteId) u.clienteId = c.id;
+    const casa = u.casas.get(c.filialId);
+    if (casa) casa.saldo += Number(c.saldo ?? 0);
+    else {
+      u.casas.set(c.filialId, {
+        nome: nomeFilial.get(c.filialId) ?? '?',
+        clienteId: c.id,
+        codigo: c.codigo,
+        saldo: Number(c.saldo ?? 0),
+      });
+    }
     if (!u.nome) u.nome = c.nome?.trim() || '';
     if (!u.fone) u.fone = c.telefone ?? '';
     if (!u.email) u.email = c.email ?? null;
     if (!u.cpf) u.cpf = c.cpf ?? null;
-    if (c.saldo != null) u.saldo = Number(c.saldo);
+    // fiado da linha = soma das casas (antes ficava o de um cadastro qualquer)
+    if (c.saldo != null) u.saldo = (u.saldo ?? 0) + Number(c.saldo);
     map.set(k, u);
   }
   for (const r of reservas) {
@@ -193,7 +212,12 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
   }
 
   let lista = [...map.values()];
-  for (const u of lista) if (!u.nome) u.nome = 'Sem nome';
+  for (const u of lista) {
+    if (!u.nome) u.nome = 'Sem nome';
+    // Link direto por id (sem telefone/e-mail) prefere o cadastro da loja ativa.
+    const daAtiva = u.casas.get(fid);
+    if (daAtiva) u.clienteId = daAtiva.clienteId;
+  }
 
   if (q) {
     const qlow = normalizaBusca(q);
@@ -285,7 +309,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                 <th className="px-4 py-2 text-right">Reservas</th>
                 <th className="px-4 py-2">Última</th>
                 <th className="px-4 py-2 text-right">Fiado</th>
-                <th className="px-4 py-2">Tipo de cliente</th>
+                <th className="px-4 py-2">Tipo · loja</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
@@ -347,18 +371,34 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                   <td className="px-4 py-2">
                     <div className="flex flex-wrap gap-1">
                       {c.fontes.has('reserva') && chip('Reserva', 'bg-sky-100 text-sky-700')}
-                      {c.fontes.has('consumer') && chip('Cadastro (PDV)', 'bg-amber-100 text-amber-700')}
+                      {[...c.casas.values()].map((k) => (
+                        <span
+                          key={k.clienteId}
+                          title={`cadastro no PDV da ${k.nome} · código ${k.codigo}${k.saldo ? ` · fiado ${brl(k.saldo)}` : ''}`}
+                          className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700"
+                        >
+                          PDV {k.nome}
+                        </span>
+                      ))}
                       {c.fontes.has('tagme') && chip('Importado pelo Tagme', 'bg-emerald-100 text-emerald-700')}
                     </div>
                   </td>
                   <td className="px-4 py-2 text-right">
-                    {c.clienteId ? (
-                      <Link
-                        href={`/cadastros/clientes/editar/${c.clienteId}`}
-                        className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        ✎ Editar
-                      </Link>
+                    {c.casas.size > 0 ? (
+                      // Um botão POR LOJA: limite e fiado são por loja, e o
+                      // botão único abria o cadastro de outra casa sem dizer.
+                      <div className="flex flex-col items-end gap-1">
+                        {[...c.casas.values()].map((k) => (
+                          <Link
+                            key={k.clienteId}
+                            href={`/cadastros/clientes/editar/${k.clienteId}`}
+                            title={`editar o cadastro da ${k.nome} (código ${k.codigo} no PDV)`}
+                            className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          >
+                            ✎ {c.casas.size > 1 ? k.nome : `Editar · ${k.nome}`}
+                          </Link>
+                        ))}
+                      </div>
                     ) : (
                       <span
                         className="text-[10px] text-slate-300"
