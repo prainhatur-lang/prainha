@@ -47,6 +47,8 @@ export async function GET(request: Request) {
       cardapio_digital: schema.produtoVariante.cardapioDigital,
       categoria: schema.produtoEtiqueta.nome,
       descricao: schema.produto.descricao,
+      ncm: schema.produto.ncm,
+      cfop: schema.produto.cfop,
       pausado: schema.produtoVariante.dataPausado,
       // saldo é do PRODUTO (o insumo/revenda), não do tamanho — é assim que o
       // motor de baixa trata, e é o que o garçom precisa ver como "esgotou"
@@ -114,6 +116,8 @@ export async function GET(request: Request) {
       cardapio_digital: !!l.cardapio_digital,
       categoria: l.categoria,
       descricao: l.descricao,
+      ncm: l.ncm ?? null,
+      cfop: l.cfop ?? null,
       // sem_estoque só faz sentido em produto que controla estoque; no resto
       // fica null e a tela não mostra número nenhum (mesma regra do Firebird)
       saldo: l.controla ? Number(l.saldo ?? 0) : null,

@@ -145,12 +145,15 @@ const resgatar = (err) => { for (const fin of [...pendentes]) fin({ ok: false, e
 process.on('uncaughtException', () => resgatar('uncaught'));
 process.on('unhandledRejection', () => resgatar('unhandled'));
 let chain = Promise.resolve();
-function q1(s) {
+function q1(s, ms = 15000) {
+  // modo próprio: NENHUMA query vai pro Firebird — quem ainda chamar q()/qi()
+  // recebe falha na hora, em vez de esperar 15s de attach numa porta que não existe
+  if (nativo()) return Promise.resolve({ ok: false, err: 'modo próprio: sem Firebird' });
   return new Promise((res) => {
     let done = false;
     const fin = (r) => { if (done) return; done = true; pendentes.delete(fin); res(r); };
     pendentes.add(fin);
-    setTimeout(() => fin({ ok: false, err: 'timeout' }), 15000);
+    setTimeout(() => fin({ ok: false, err: 'timeout' }), ms);
     try { Firebird.attach(FB, (err, db) => { if (err) return fin({ ok: false, err: String(err.message).slice(0, 150) }); db.query(s, [], (e, rows) => { try { db.detach(() => {}); } catch {} if (e) return fin({ ok: false, err: String(e.message).slice(0, 180) }); fin({ ok: true, rows }); }); }); } catch (e) { fin({ ok: false, err: String(e.message).slice(0, 150) }); } });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -249,7 +252,7 @@ async function addCol(tabela, ddl) {
 /** Tabelas/colunas que só o modo próprio usa. Criadas sempre (custo zero) pra
  *  o corte ser só trocar a env — e pra dar pra popular e conferir ANTES. */
 async function initSchemaNativo() {
-  for (const nome of ['pedido', 'item', 'pagamento', 'caixa', 'cc', 'cliente']) {
+  for (const nome of ['pedido', 'item', 'pagamento', 'caixa', 'contacorrente', 'cliente']) {
     // Postgres 9.5 na 0001: CREATE SEQUENCE IF NOT EXISTS existe desde a 9.5.
     await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS seq_${nome} START ${SEQ_INICIO} MINVALUE ${SEQ_INICIO}`);
   }
@@ -360,6 +363,9 @@ async function initSchema() {
     categoria text, descricao text, atualizado timestamptz DEFAULT now())`;
   // saldo vem da nuvem no modo próprio: o ESTOQUEMOVIMENTACAO era do Firebird
   await addCol('produto_nuvem', 'saldo numeric');
+  // NFC-e no modo próprio: a classificação fiscal vem junto com o catálogo
+  await addCol('produto_nuvem', 'ncm text');
+  await addCol('produto_nuvem', 'cfop text');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -527,6 +533,12 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS usuario_local (login text PRIMARY KEY,
     nome text, pin_hash text, salt text, perms integer[], admin boolean NOT NULL DEFAULT false,
     ativo boolean NOT NULL DEFAULT true, criado_em timestamptz DEFAULT now(), criado_por text)`;
+  // codigo numérico = o que a tela de Equipe do Concilia usa pra ligar/desligar
+  // permissão (no Consumer era USUARIOS.CODIGO; migrado vem com o mesmo número,
+  // criado aqui ganha um da sequência — nunca colide com os do Consumer).
+  await addCol('usuario_local', 'codigo integer');
+  await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS seq_usuario START ${SEQ_INICIO} MINVALUE ${SEQ_INICIO}`);
+  await sql`UPDATE usuario_local SET codigo = nextval('seq_usuario') WHERE codigo IS NULL`;
   // TIRAR OS 10%: é dinheiro do garçom saindo — quem tirou e de qual mesa
   // fica registrado, senão vira boca a boca no fim do mês.
   await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
@@ -1858,8 +1870,16 @@ async function lancarReceberCanal(pedidoId, acao = 'abrir') {
 // sombra fiscal/financeira dela. Nasce no ACEITE quando é "pagar na entrega";
 // o pré-pago só ganha sombra quando o caixa pede a nota fiscal.
 const PERM_ENTREGAS = 4; // Consumer: "PedidosDelivery" — quem pode sair pra entregar
+/** CPF que o cliente deu no checkout (site) ou o documento do iFood. */
+function cpfDoPayload(p) {
+  let cpf = null;
+  try {
+    const pl = typeof p.payload === 'string' ? JSON.parse(p.payload) : (p.payload || {});
+    cpf = soDig(pl.clienteCpf || pl.customer?.documentNumber || '');
+  } catch { /* payload estranho: sem CPF */ }
+  return cpf && (cpf.length === 11 || cpf.length === 14) ? cpf : null;
+}
 async function deliveryMaterializar(p, quem = 'sistema') {
-  if (nativo()) throw new Error('modo próprio: entrega ainda não vira pedido local');
   if (p.pedido_fb) return Number(p.pedido_fb);
   const itens = await sql`SELECT * FROM ifood_item WHERE pedido_id=${p.id} ORDER BY seq`;
   if (!itens.length) throw new Error('pedido sem itens');
@@ -1880,6 +1900,30 @@ async function deliveryMaterializar(p, quem = 'sistema') {
   const rotulo = ((doSite ? 'SITE ' : 'iFood #') + (p.display_id || '') + (p.cliente_nome ? ' · ' + p.cliente_nome : '')).trim().slice(0, 40);
   const taxa = +Number(p.taxa_entrega || 0).toFixed(2);
   const total = +Number(p.total || 0).toFixed(2);
+  if (nativo()) {
+    // MODO PRÓPRIO: a conta da entrega nasce em `comanda` — pedido-sombra, igual
+    // ao do Consumer: existe pra receber/emitir nota. Quem aparece no KDS e no
+    // caixa continua sendo a projeção negativa do ifood_pedido; por isso os
+    // itens já entram baixados (a cozinha recebeu pela projeção) e a grade
+    // pula o código (apiVendaAbertas: NOT EXISTS ifood_pedido.pedido_fb).
+    const ped = await proxCodigo('pedido');
+    await sql`INSERT INTO comanda (codigo, numero, origem, nome, valor_total, subtotal_pago, qtd_pessoas, data_abertura,
+        total_itens, total_servico, percentual_servico, total_desconto, total_acrescimo, valor_entrega, criado_por)
+      VALUES (${ped}, 0, ${IFOOD_ORIGEM}, ${rotulo}, ${total}, 0, 1, now(), 0, 0, 0, 0, 0, ${taxa}, ${String(quem || 'sistema').slice(0, 40)})`;
+    for (const l of linhas) await fbInserirItem(ped, l);
+    await sql`UPDATE comanda_item SET produzido=COALESCE(produzido, now()), entregue=COALESCE(entregue, now()) WHERE comanda_codigo=${ped}`;
+    const [s] = await sql`SELECT COALESCE(SUM(valor_total),0) v FROM comanda_item WHERE comanda_codigo=${ped} AND cancelado_em IS NULL`;
+    const somaItens = +(Number(s.v) || 0).toFixed(2);
+    const dif = +(total - (somaItens + taxa)).toFixed(2);
+    const desconto = dif < 0 ? -dif : 0, acrescimo = dif > 0 ? dif : 0;
+    await pedGravarTotais(ped, { itens: somaItens, servico: 0, desconto, acrescimo, total,
+      pctDesconto: somaItens > 0 ? +(desconto / somaItens * 100).toFixed(2) : 0 });
+    const cpfN = cpfDoPayload(p);
+    if (cpfN) await fbIdentificarPedido(ped, { cpf: cpfN }).catch((e) => console.error('[entrega] CPF no pedido:', e.message));
+    await sql`UPDATE ifood_pedido SET pedido_fb=${ped} WHERE id=${p.id}`;
+    console.log(`[entrega] ${rotulo} virou conta ${ped} (próprio, R$ ${total.toFixed(2)}, ${quem})`);
+    return ped;
+  }
   // INSERT + SELECT (RETURNING crasha intermitente no FB4 — ver fbCriarPedido);
   // o FIRST 1 pelo rótulo é o que acabou de entrar. SEM retry cego: se o
   // INSERT "falhar", o mesmo SELECT (últimos 3 min) confere se gravou antes de
@@ -2472,6 +2516,13 @@ async function pgTotalPedido(ped) {
   const [r] = await sql`SELECT COALESCE(valor_total,0) v FROM comanda WHERE codigo=${Number(ped)}`;
   return r ? Number(r.v) || 0 : 0;
 }
+/** comanda.subtotal_pago = soma dos pagamentos vivos. No espelho quem fazia
+ *  isso era o próprio espelho; aqui é chamado a cada lançamento/estorno. */
+async function pgAtualizarPago(ped) {
+  if (!ped) return;
+  await sql`UPDATE comanda SET subtotal_pago=(SELECT COALESCE(SUM(valor),0) FROM pagamento_local
+      WHERE pedido=${Number(ped)} AND cancelado_em IS NULL) WHERE codigo=${Number(ped)}`;
+}
 async function pgPagoDoPedido(ped) {
   const [r] = await sql`SELECT COALESCE(SUM(valor),0) v FROM pagamento_local
     WHERE pedido=${Number(ped)} AND cancelado_em IS NULL`;
@@ -2503,6 +2554,15 @@ async function pedTotais(ped) {
   if (!p) return null;
   return { itens: Number(p.I) || 0, servico: Number(p.S) || 0, total: Number(p.T) || 0,
     desconto: Number(p.D) || 0, acrescimo: Number(p.A) || 0 };
+}
+/** Cabeçalho da comanda no formato das colunas do PEDIDOS (I,S,D,A,T,NOME,CS) —
+ *  as telas que já leem assim não precisam de dois caminhos. */
+async function pgCabecalhoPedido(ped) {
+  const [r] = await sql`SELECT COALESCE(total_itens,0) i, COALESCE(total_servico,0) s, COALESCE(total_desconto,0) d,
+      COALESCE(total_acrescimo,0) a, COALESCE(valor_total,0) t, COALESCE(nome,'') nome, COALESCE(conta_pedida,false) cs
+    FROM comanda WHERE codigo=${Number(ped)}`;
+  if (!r) return {};
+  return { I: r.i, S: r.s, D: r.d, A: r.a, T: r.t, NOME: r.nome, CS: r.cs ? 'S' : 'N' };
 }
 /** Grava só o que veio: {itens, servico, total, desconto, acrescimo, pctDesconto}. */
 async function pedGravarTotais(ped, c) {
@@ -3152,6 +3212,7 @@ async function imprimirComandasNovas() {
         LEFT JOIN comanda_impressa fe ON fe.item_codigo = ci.item_codigo
         LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
        WHERE fe.item_codigo IS NULL AND ci.produzido IS NULL AND ci.entregue IS NULL
+         AND ci.cancelado_em IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
          AND (k.item_codigo IS NULL OR (k.pronto_em IS NULL AND k.entregue_em IS NULL))
        ORDER BY ci.item_codigo`;
     if (novos.length) {
@@ -3250,7 +3311,7 @@ async function imprimirComandasNovas() {
 // os mesmos da tela do caixa) + itens/comandas/pagamentos do apiContaTexto.
 async function cupomConta(numero, ped) {
   const ct = await apiContaTexto(numero, false, true).catch(() => ({ ok: false }));
-  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0] || {};
+  const p = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0] || {};
   let pago = 0; try { pago = await fbPagoDoPedido(ped); } catch { /* sem FB agora: segue sem o pago */ }
   const subtotal = Number(p.I) || 0, servico = Number(p.S) || 0, desconto = Number(p.D) || 0, acrescimo = Number(p.A) || 0, total = Number(p.T) || 0;
   const falta = Math.max(0, +(total - pago).toFixed(2));
@@ -3509,6 +3570,7 @@ async function fbInserirPagamento(ped, pg) {
       VALUES (${cod}, ${Number(ped)}, ${Number(pg.forma_codigo)}, ${Number(pg.valor)}, ${Number(caixa)},
         ${nsu == null ? null : String(nsu)}, ${pg.autorizacao || null}, ${pg.bandeira || null},
         ${pg.observacao || 'Prainha Vendas'}, now())`;
+    await pgAtualizarPago(ped);
     return cod;
   }
   const campos = ['CODIGOPEDIDO', 'CODIGOFORMAPAGAMENTO', 'VALOR', 'DATAPAGAMENTO', 'CODIGOCAIXA', 'CODIGOCATEGORIACONTAS', 'PERCENTUALTAXA', 'INTEGRADOAUTOMACAO', 'OBSERVACAO'];
@@ -3796,9 +3858,11 @@ async function apiVendaAbertas() {
         AND COALESCE(ci.entregue, m.entregue_em) IS NULL
         AND COALESCE(ci.produzido, m.pronto_em) < now() - interval '5 minutes'))::int AS parados
     FROM comanda c
-    LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
+    LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo AND ci.cancelado_em IS NULL
     LEFT JOIN marca m ON m.item_codigo=ci.item_codigo
     LEFT JOIN praca_config pc ON pc.area_codigo=ci.area_codigo
+    WHERE c.fechada_em IS NULL AND c.cancelada_em IS NULL
+      AND NOT EXISTS (SELECT 1 FROM ifood_pedido s WHERE s.pedido_fb = c.codigo AND s.recebido_em > now() - interval '7 days')
     GROUP BY c.numero, c.codigo, c.valor_total, c.subtotal_pago, c.data_abertura, c.conta_pedida, c.origem ORDER BY c.numero`;
   for (const r of rows) {
     r.status = r.conta_pedida ? 'fechando' : ((r.atrasados > 0 || r.parados > 0) ? 'atrasada' : 'andamento');
@@ -3881,15 +3945,15 @@ async function apiVendaMesa(mesa) {
   const comandas = await sql`SELECT comanda, nome_curto FROM mesa_comanda WHERE mesa=${m} AND fechada_em IS NULL ORDER BY comanda`;
   const numeros = [m, ...comandas.map((x) => x.comanda)];
   const abertos = await sql`SELECT c.numero, count(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS itens, c.valor_total
-    FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo
-    WHERE c.numero = ANY(${numeros}) GROUP BY c.numero, c.codigo ORDER BY c.numero`;
+    FROM comanda c LEFT JOIN comanda_item ci ON ci.comanda_codigo=c.codigo AND ci.cancelado_em IS NULL
+    WHERE c.numero = ANY(${numeros}) AND c.fechada_em IS NULL AND c.cancelada_em IS NULL GROUP BY c.numero, c.codigo ORDER BY c.numero`;
   const nums = [m, ...comandas.map((x) => Number(x.comanda))];
   const ids = await sql`SELECT numero, nome_curto FROM identificacao WHERE numero = ANY(${nums}) AND fechada_em IS NULL`;
   const nomes = Object.fromEntries(comandas.filter((x) => x.nome_curto).map((x) => [x.comanda, x.nome_curto]));
   for (const i of ids) if (i.nome_curto) nomes[i.numero] = i.nome_curto; // identificacao ganha da antiga
   // conta pedida: vem do ESPELHO (barato). apiVendaConta atualiza o espelho na
   // hora, entao nao ha janela em que a tela mostre "aberta" com a conta pedida.
-  const cp = await sql`SELECT bool_or(conta_pedida) AS pedida FROM comanda WHERE numero = ANY(${numeros})`;
+  const cp = await sql`SELECT bool_or(conta_pedida) AS pedida FROM comanda WHERE numero = ANY(${numeros}) AND fechada_em IS NULL AND cancelada_em IS NULL`;
   return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos,
     conta_pedida: !!cp[0]?.pedida };
 }
@@ -3969,7 +4033,7 @@ const SESSAO_MESA_MIN = Number(process.env.SESSAO_MESA_MIN || 60);
 async function apiMesaSessao(numero, comandaCliente, desde) {
   const n = Number(numero);
   if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, motivo: 'mesa inválida' };
-  const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+  const c = (await sql`SELECT codigo, data_abertura FROM comanda WHERE numero=${n} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   // atual = null quer dizer MESA VAZIA (ainda sem conta aberta), e isso NÃO é
   // erro: o primeiro pedido do cliente é que abre a conta — apiVendaEnviar faz
   // `pedidoDaMesa(numero)`.
@@ -4025,7 +4089,7 @@ async function jaPedidoDe(contaCodigo) {
   const r = await sql`SELECT ci.item_codigo, ci.codigo_pai, ci.nome, ci.quantidade, ci.detalhes, ci.tipo,
       COALESCE(ci.produzido, m.pronto_em) AS pronto, COALESCE(ci.entregue, m.entregue_em) AS entregue, ci.criado
     FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-    WHERE ci.comanda_codigo=${contaCodigo}
+    WHERE ci.comanda_codigo=${contaCodigo} AND ci.cancelado_em IS NULL
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const agora = Date.now();
   const pais = [];
@@ -4068,7 +4132,7 @@ async function jaPedidoDe(contaCodigo) {
 // cada comanda com o número, pra dar pra saber de quem foi o quê.
 async function apiJaPedido(numero) {
   const n = Number(numero);
-  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${n} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   const grupos = [];
   if (c) {
     const its = await jaPedidoDe(c.codigo);
@@ -4078,7 +4142,7 @@ async function apiJaPedido(numero) {
     const vinc = await sql`SELECT comanda, nome_curto FROM mesa_comanda
       WHERE mesa=${n} AND fechada_em IS NULL ORDER BY comanda`;
     for (const v of vinc) {
-      const cc = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0];
+      const cc = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
       if (!cc) continue;                       // sem conta ainda: nada pedido
       const its = await jaPedidoDe(cc.codigo);
       if (!its.length) continue;
@@ -4168,7 +4232,8 @@ async function contaPedidaDe(numero, mesa) {
     // ⚠️ q(), NAO qi(). fbAcharPedido logo acima roda na fila q; trocar de fila
     // no meio da mesma operacao trava as duas — foi o que pendurou o servidor
     // no teste de 01/08.
-    const r = await q(`SELECT FIRST 1 CONTASOLICITADA CS FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
+    const r = nativo() ? { ok: true, rows: [await pgCabecalhoPedido(ped)] }
+      : await q(`SELECT FIRST 1 CONTASOLICITADA CS FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
     if (r.ok && r.rows.length && String(r.rows[0].CS || '').trim().toUpperCase() === 'S') {
       return { pedida: true, onde: n, ehMesa: Number(n) !== Number(numero) };
     }
@@ -4358,17 +4423,27 @@ async function apiConta(numero) {
   if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'nenhuma comanda aberta com o número ' + n };
-  const it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO
-    FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO`);
-  if (!it.ok) throw new Error('FB itens: ' + it.err);
-  const cab = await qi(`SELECT VALORTOTAL, TOTALSERVICO, NUMERO FROM PEDIDOS WHERE CODIGO=${ped}`);
-  if (!cab.ok) throw new Error('FB pedido: ' + cab.err);
+  let it, cab;
+  if (nativo()) {
+    it = { ok: true, rows: (await sql`SELECT nome, quantidade, valor_total, tipo FROM comanda_item
+      WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL ORDER BY item_codigo, id`)
+      .map((x) => ({ NOME: x.nome, QTD: x.quantidade, VT: x.valor_total, TIPO: x.tipo })) };
+    const h = await pgCabecalhoPedido(ped);
+    cab = { ok: true, rows: [{ VALORTOTAL: h.T, TOTALSERVICO: h.S }] };
+  } else {
+    it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO
+      FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO`);
+    if (!it.ok) throw new Error('FB itens: ' + it.err);
+    cab = await qi(`SELECT VALORTOTAL, TOTALSERVICO, NUMERO FROM PEDIDOS WHERE CODIGO=${ped}`);
+    if (!cab.ok) throw new Error('FB pedido: ' + cab.err);
+  }
   const total = Number(cab.rows[0]?.VALORTOTAL) || 0;
   const servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
   const pago = await fbPagoDoPedido(ped);
   const mesa = n >= COMANDA_DE ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
   // conta pedida: e' o que apaga o botao de lancar e acende o "liberar"
-  const cs = await qi(`SELECT FIRST 1 CONTASOLICITADA V FROM PEDIDOS WHERE CODIGO=${ped}`);
+  const cs = nativo() ? { ok: true, rows: [{ V: (await pgCabecalhoPedido(ped)).CS }] }
+    : await qi(`SELECT FIRST 1 CONTASOLICITADA V FROM PEDIDOS WHERE CODIGO=${ped}`);
   const contaPedida = cs.ok && cs.rows.length && String(cs.rows[0].V || '').trim().toUpperCase() === 'S';
   return {
     ok: true, numero: n, mesa, pedido_fb: ped, conta_pedida: contaPedida,
@@ -4823,7 +4898,9 @@ async function apiLioPagarSemTrava(body, garcom) {
     const ped = nsuNum != null ? await fbAcharPedido(n).catch(() => null) : null;
     if (ped) {
       // ⚠️ q(), NÃO qi(): fbAcharPedido logo acima roda na fila q (ver contaPedidaDe).
-      const r = await q(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${Number(ped)} AND NSUTRANSACAO=${nsuNum} AND VALOR=${fbNum(valor)} AND DATADELETE IS NULL`);
+      const r = nativo()
+        ? { ok: true, rows: await sql`SELECT codigo "CODIGO" FROM pagamento_local WHERE pedido=${Number(ped)} AND ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(nsuNum)} AND abs(valor-${Number(valor)})<0.005 AND cancelado_em IS NULL LIMIT 1` }
+        : await q(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE CODIGOPEDIDO=${Number(ped)} AND NSUTRANSACAO=${nsuNum} AND VALOR=${fbNum(valor)} AND DATADELETE IS NULL`);
       if (r.ok && r.rows.length) return { ok: true, ja_registrado: true, pagamento_fb: Number(r.rows[0].CODIGO) };
     }
   }
@@ -4998,7 +5075,10 @@ async function contatoPorCpf(cpf) {
   // foi repetindo. Com FIRST 1 sem filtro, digitar esse CPF na comanda trazia
   // "ROSANA", uma operadora, como se fosse a cliente. Na base ha 33 documentos
   // repetidos assim.
-  const r = await qi(`SELECT CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(TIPO,'')) TIPO FROM CONTATOS
+  const r = nativo()
+    ? { ok: true, rows: c.length < 11 ? [] : (await sql`SELECT codigo, nome FROM cliente_local WHERE ativo AND regexp_replace(COALESCE(cpf,''),'\\D','','g')=${c} ORDER BY codigo DESC`)
+        .map((x) => ({ CODIGO: x.codigo, NOME: x.nome, TIPO: 'CF' })) }
+    : await qi(`SELECT CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(TIPO,'')) TIPO FROM CONTATOS
     WHERE DATADELETE IS NULL AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') = '${c}'
     ORDER BY CODIGO DESC`);
   // banco fora do ar NÃO é "cliente não cadastrado" — o garçom precisa saber a diferença
@@ -5144,6 +5224,11 @@ async function nfceAtiva() {
 async function fbAcharPedidoNfce(numero) {
   const aberto = await fbAcharPedido(numero).catch(() => null);
   if (aberto) return aberto;
+  if (nativo()) {
+    const [c] = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} AND cancelada_em IS NULL
+      AND fechada_em > now() - interval '48 hours' ORDER BY codigo DESC LIMIT 1`;
+    return c ? Number(c.codigo) : null;
+  }
   const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATADELETE IS NULL
     AND DATAFECHAMENTO > DATEADD(-48 HOUR TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
   if (!r.ok) throw new Error('FB pedido p/ nota: ' + r.err);
@@ -5151,6 +5236,20 @@ async function fbAcharPedidoNfce(numero) {
 }
 /** CPF/CNPJ que o cliente já deu antes (identificação da mesa ou Consumer). */
 async function nfceDocSugerido(numero, ped) {
+  if (nativo()) {
+    // CPF dado na conta, senão o do cadastro amarrado (fiado primeiro), senão
+    // a identificação da mesa/comanda — mesma ordem do ramo Firebird abaixo.
+    const [c] = await sql`SELECT COALESCE(c.cpf,'') doc, COALESCE(cl.cpf,'') cad FROM comanda c
+      LEFT JOIN cliente_local cl ON cl.codigo = COALESCE(c.fiado_codigo, c.contato_codigo)
+      WHERE c.codigo=${Number(ped)}`;
+    for (const d of [soDig(c?.doc || ''), soDig(c?.cad || '')]) if (d.length === 11 || d.length === 14) return d;
+    const i = (await sql`SELECT cpf FROM identificacao WHERE numero=${Number(numero)} AND cpf IS NOT NULL
+      AND criado_em > now() - interval '12 hours' ORDER BY criado_em DESC LIMIT 1`)[0];
+    if (i?.cpf && soDig(i.cpf).length === 11) return soDig(i.cpf);
+    const mc = (await sql`SELECT cpf FROM mesa_comanda WHERE comanda=${Number(numero)} AND cpf IS NOT NULL
+      AND aberta_em > now() - interval '12 hours' ORDER BY aberta_em DESC LIMIT 1`)[0];
+    return mc?.cpf && soDig(mc.cpf).length === 11 ? soDig(mc.cpf) : null;
+  }
   const p = (await qi(`SELECT TRIM(COALESCE(NUMERODOCUMENTODESTINATARIO,'')) DOC FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
   const doFb = soDig(p?.DOC || '');
   if (doFb.length === 11 || doFb.length === 14) return doFb;
@@ -5186,17 +5285,31 @@ function nfceTBand(bandeira) {
  *  vNF alvo = VALORTOTAL do pedido (o que o cliente pagou de fato): o
  *  desconto/acréscimo é recalibrado por cima dos itens pra fechar exato. */
 async function nfceDadosDoPedido(ped, numero) {
-  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T
-    FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
-  if (!p) throw new Error('pedido não encontrado no Consumer');
-  const it = await qi(`SELECT i.CODIGO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT,
-      i.CODIGOITEMPEDIDOTIPO TIPO, i.CODIGOPRODUTODETALHE PDV, pr.NCM, pr.CFOP
-    FROM ITENSPEDIDO i
-    LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
-    LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
-    WHERE i.CODIGOPEDIDO=${Number(ped)} AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
-  if (!it.ok) throw new Error('FB itens p/ nota: ' + it.err);
-  const itens = it.rows
+  // MODO PRÓPRIO: cabeçalho/itens/pagamentos vêm das tabelas locais e o
+  // NCM/CFOP do produto_nuvem (a nuvem manda junto com o catálogo). As linhas
+  // saem no MESMO formato do Firebird pra matemática abaixo ser uma só.
+  let p, linhas;
+  if (nativo()) {
+    p = await pgCabecalhoPedido(ped);
+    if (p.T == null) throw new Error('conta não encontrada');
+    linhas = await sql`SELECT ci.item_codigo "CODIGO", ci.nome "NOME", ci.quantidade "QTD", ci.valor_total "VT",
+        ci.tipo "TIPO", ci.codigo_pdv "PDV", pn.ncm "NCM", pn.cfop "CFOP"
+      FROM comanda_item ci LEFT JOIN produto_nuvem pn ON pn.codigo_pdv = ci.codigo_pdv
+      WHERE ci.comanda_codigo=${Number(ped)} AND ci.cancelado_em IS NULL ORDER BY ci.item_codigo`;
+  } else {
+    p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T
+      FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
+    if (!p) throw new Error('pedido não encontrado no Consumer');
+    const it = await qi(`SELECT i.CODIGO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT,
+        i.CODIGOITEMPEDIDOTIPO TIPO, i.CODIGOPRODUTODETALHE PDV, pr.NCM, pr.CFOP
+      FROM ITENSPEDIDO i
+      LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
+      LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
+      WHERE i.CODIGOPEDIDO=${Number(ped)} AND i.DATADELETE IS NULL ORDER BY i.CODIGO`);
+    if (!it.ok) throw new Error('FB itens p/ nota: ' + it.err);
+    linhas = it.rows;
+  }
+  const itens = linhas
     .map((r) => ({
       codigo: String(r.PDV || r.CODIGO || ''), descricao: T(r.NOME) || 'ITEM',
       quantidade: Number(r.QTD) || 0, valorTotal: +(Number(r.VT) || 0).toFixed(2),
@@ -5221,19 +5334,26 @@ async function nfceDadosDoPedido(ped, numero) {
   }
   if (extra > 0) itens[0].valorOutro = extra; // serviço/acréscimo (vOutro no 1º item)
 
-  const pg = await qi(`SELECT g.VALOR, g.CODIGOFORMAPAGAMENTO F, g.NSUTRANSACAO NSU
-    FROM PAGAMENTOS g WHERE g.CODIGOPEDIDO=${Number(ped)} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
-  if (!pg.ok) throw new Error('FB pagamentos p/ nota: ' + pg.err);
+  let pgRows;
+  if (nativo()) {
+    pgRows = await sql`SELECT valor "VALOR", forma_codigo "F", nsu "NSU", bandeira "BAND" FROM pagamento_local
+      WHERE pedido=${Number(ped)} AND cancelado_em IS NULL ORDER BY codigo`;
+  } else {
+    const pg = await qi(`SELECT g.VALOR, g.CODIGOFORMAPAGAMENTO F, g.NSUTRANSACAO NSU
+      FROM PAGAMENTOS g WHERE g.CODIGOPEDIDO=${Number(ped)} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
+    if (!pg.ok) throw new Error('FB pagamentos p/ nota: ' + pg.err);
+    pgRows = pg.rows;
+  }
   const bandeiras = await sql`SELECT nsu, bandeira FROM venda_pagamento
     WHERE pedido_fb=${Number(ped)} AND status='ok' AND bandeira IS NOT NULL`;
   const bandPorNsu = new Map(bandeiras.map((b) => [String(b.nsu || ''), b.bandeira]));
-  const pagamentos = pg.rows
+  const pagamentos = pgRows
     .map((g) => {
       const tPag = NFCE_TPAG[Number(g.F)] || '99';
       const nsu = g.NSU != null ? String(g.NSU) : '';
       const out = { tPag, valor: +(Number(g.VALOR) || 0).toFixed(2) };
       if (tPag === '03' || tPag === '04') {
-        const band = bandPorNsu.get(nsu);
+        const band = bandPorNsu.get(nsu) || g.BAND;
         if (band) out.tBand = nfceTBand(band);
         if (nsu && nsu !== '0') out.cAut = nsu.slice(0, 20);
       }
@@ -5248,9 +5368,16 @@ async function nfceDadosDoPedido(ped, numero) {
   // conseguia nota — a emissão morria no erro de "sem pagamentos".
   const somaPg = r2c(pagamentos.reduce((s, x) => s + x.valor, 0));
   if (somaPg < alvo - 0.009) {
-    const cc = await qi(`SELECT FIRST 1 COALESCE(CREDITO,0) V FROM CONTACORRENTE
-      WHERE CODIGOPEDIDO=${Number(ped)} AND COALESCE(CREDITO,0) > 0 ORDER BY CODIGO DESC`);
-    const vFiado = cc.ok && cc.rows.length ? r2c(Number(cc.rows[0].V) || 0) : 0;
+    let vFiado = 0;
+    if (nativo()) {
+      const [cc] = await sql`SELECT COALESCE(credito,0) v FROM conta_corrente_local
+        WHERE pedido=${Number(ped)} AND COALESCE(credito,0) > 0 ORDER BY codigo DESC LIMIT 1`;
+      vFiado = cc ? r2c(Number(cc.v) || 0) : 0;
+    } else {
+      const cc = await qi(`SELECT FIRST 1 COALESCE(CREDITO,0) V FROM CONTACORRENTE
+        WHERE CODIGOPEDIDO=${Number(ped)} AND COALESCE(CREDITO,0) > 0 ORDER BY CODIGO DESC`);
+      vFiado = cc.ok && cc.rows.length ? r2c(Number(cc.rows[0].V) || 0) : 0;
+    }
     if (vFiado > 0) pagamentos.push({ tPag: '05', valor: Math.min(vFiado, r2c(alvo - somaPg)) });
   }
   if (!pagamentos.length) throw new Error('pedido sem pagamentos — receba antes de emitir a nota');
@@ -5615,6 +5742,10 @@ async function contatoPorTelefone(tel) {
   const t = soDig(tel);
   if (t.length < 10) return null;
   const ult8 = t.slice(-8); // ignora DDD e o 9 extra, que variam no cadastro
+  if (nativo()) {
+    const [x] = await sql`SELECT codigo, nome FROM cliente_local WHERE ativo AND regexp_replace(COALESCE(telefone,''),'\\D','','g') LIKE ${'%' + ult8} ORDER BY codigo DESC LIMIT 1`;
+    return x ? { contato_fb: Number(x.codigo), nome: T(x.nome), fonte: 'consumer' } : null;
+  }
   const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(NOME) NOME FROM CONTATOS
     WHERE DATADELETE IS NULL AND (
       REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(FONECELULAR,''),'(',''),')',''),'-',''),' ','') LIKE '%${ult8}'
@@ -5665,7 +5796,12 @@ async function fbCriarContato({ nome, cpf, telefone, nascimento, endereco, cidad
 /** Usuários do Consumer + o NOME (via CONTATOS) + o conjunto de permissões
  *  que cada um tem (ACESSO). Uma pessoa = um login = um conjunto de códigos. */
 async function fbEquipeUsuarios() {
-  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird, não tem equipe pra gerenciar aqui');
+  if (nativo()) {
+    await sql`UPDATE usuario_local SET codigo = nextval('seq_usuario') WHERE codigo IS NULL`;
+    const rows = await sql`SELECT codigo, login, COALESCE(nome, login) nome, admin, ativo, perms FROM usuario_local ORDER BY nome, login`;
+    return rows.map((x) => ({ codigo: Number(x.codigo), login: x.login, nome: x.nome, tipo: x.admin ? 'Administrador' : 'Atendente',
+      ativo: !!x.ativo, permissoes: (x.perms || []).map(Number).filter(Boolean).sort((a, b) => a - b) }));
+  }
   const r = await qi(`SELECT u.CODIGO UCOD, TRIM(u.LOGIN) LOGIN, TRIM(u.TIPO) TIPO, u.ATIVO, TRIM(c.NOME) NOME
     FROM USUARIOS u JOIN CONTATOS c ON c.CODIGO=u.CODIGOCONTATO ORDER BY c.NOME`);
   if (!r.ok) throw new Error('FB listar equipe: ' + r.err);
@@ -5687,8 +5823,27 @@ async function fbEquipeUsuarios() {
 /** Catálogo de permissões do Consumer (tabela PERMISSAO — o mesmo que a tela
  *  de usuários do Consumer desktop mostra), pra a UI não precisar hardcodar
  *  62 códigos que podem variar por versão/loja. */
+// Modo próprio: só existem as permissões que o vendas-local de fato usa (os
+// mesmos códigos do Consumer, pra regra ser uma só — ver perfilDeCodigos).
+const PERMISSOES_NATIVAS = [
+  [1, 'ControleCaixa', 'Controle de caixa completo (abrir, fechar, gaveta, divergente)'],
+  [4, 'PedidosDelivery', 'Entregas: sai pra entregar e recebe na porta'],
+  [5, 'PedidosCaixa', 'Lançar pedidos pelo caixa'],
+  [10, 'AbrirTelaPagamento', 'Entrar no caixa (receber)'],
+  [12, 'AplicarDesconto', 'Aplicar desconto na conta'],
+  [16, 'ContaCorrente', 'Fiado (conta corrente do cliente)'],
+  [22, 'ExcluirItemPedido', 'Cancelar item do pedido'],
+  [26, 'MovimentoCaixa', 'Entradas e saídas da gaveta'],
+  [28, 'ExcluirPedido', 'Cancelar pedido inteiro / autorizar cancelamento'],
+  [29, 'ReabrirPedido', 'Reabrir conta já fechada'],
+  [30, 'ControleCaixaSimplificado', 'Abrir/fechar o próprio caixa'],
+  [31, 'ExcluirRecebimentos', 'Estornar recebimento'],
+  [48, 'FecharCaixaDivergente', 'Fechar caixa com saldo diferente do esperado'],
+  [50, 'TransferirItens', 'Transferir/copiar itens entre pedidos'],
+  [53, 'AcessarComandaMobile', 'Comanda mobile (garçom)'],
+];
 async function fbCatalogoPermissoes() {
-  if (nativo()) return [];
+  if (nativo()) return PERMISSOES_NATIVAS.map(([codigo, recurso, descricao]) => ({ codigo, recurso, descricao }));
   const r = await qi(`SELECT CODIGO, TRIM(RECURSO) RECURSO, TRIM(DESCRICAO) DESCRICAO FROM PERMISSAO ORDER BY CODIGO`);
   if (!r.ok) throw new Error('FB catálogo de permissões: ' + r.err);
   return r.rows.map((x) => ({ codigo: Number(x.CODIGO), recurso: T(x.RECURSO), descricao: T(x.DESCRICAO) }));
@@ -5699,12 +5854,20 @@ async function fbCatalogoPermissoes() {
  *  apiGarcomEntrar). `tipo` é o texto livre que o Consumer usa (ex.:
  *  'Atendente', 'Administrador'); default 'Atendente' cobre o caso comum. */
 async function fbEquipeCriar({ nome, login, tipo }) {
-  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
   const n = String(nome || '').trim().slice(0, 100);
   const l = String(login || '').trim().toLowerCase().slice(0, 20);
   const t = String(tipo || 'Atendente').trim().slice(0, 20) || 'Atendente';
   if (!n) throw new Error('nome é obrigatório');
   if (!/^[a-z0-9_.]{2,20}$/.test(l)) throw new Error('login inválido (use letras/números minúsculos, 2 a 20 caracteres)');
+  if (nativo()) {
+    const [dup] = await sql`SELECT 1 FROM usuario_local WHERE login=${l}`;
+    if (dup) throw new Error(`já existe um usuário com o login "${l}"`);
+    const codigo = await proxCodigo('usuario');
+    await sql`INSERT INTO usuario_local (login, codigo, nome, perms, admin, ativo, criado_por)
+      VALUES (${l}, ${codigo}, ${n}, '{}', ${t.toLowerCase() === 'administrador'}, true, 'central')`;
+    console.log(`[equipe] usuário criado (próprio): login=${l} nome="${n}" tipo=${t} codigo=${codigo}`);
+    return codigo;
+  }
   const dup = await qi(`SELECT FIRST 1 CODIGO FROM USUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(l)}'`);
   if (!dup.ok) throw new Error('FB checar login: ' + dup.err);
   if (dup.rows.length) throw new Error(`já existe um usuário com o login "${l}"`);
@@ -5723,9 +5886,17 @@ async function fbEquipeCriar({ nome, login, tipo }) {
 
 /** Liga/desliga UMA permissão (idempotente — repetir não duplica nem erra). */
 async function fbEquipePermissao(usuario, permissao, ligar) {
-  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
   const u = Number(usuario), p = Number(permissao);
   if (!u || !p) throw new Error('usuário/permissão inválidos');
+  if (nativo()) {
+    const r = ligar
+      ? await sql`UPDATE usuario_local SET perms = (SELECT array_agg(x ORDER BY x) FROM (SELECT DISTINCT x FROM unnest(array_append(COALESCE(perms,'{}'), ${p}::int)) x) s)
+          WHERE codigo=${u}`
+      : await sql`UPDATE usuario_local SET perms = array_remove(COALESCE(perms,'{}'), ${p}::int) WHERE codigo=${u}`;
+    if (!r.count) throw new Error('usuário não encontrado');
+    console.log(`[equipe] permissão ${p} ${ligar ? 'ligada em' : 'desligada de'} usuário ${u} (próprio)`);
+    return;
+  }
   if (ligar) {
     const dup = await qi(`SELECT FIRST 1 CODIGO FROM ACESSO WHERE USUARIO=${u} AND PERMISSAO=${p}`);
     if (!dup.ok) throw new Error('FB checar acesso: ' + dup.err);
@@ -5741,9 +5912,14 @@ async function fbEquipePermissao(usuario, permissao, ligar) {
 
 /** Ativa/desativa o usuário (ATIVO='S'/'N' — não deleta, só barra o login). */
 async function fbEquipeAtivo(usuario, ativo) {
-  if (nativo()) throw new Error('Esta filial está em modo próprio — sem Consumer/Firebird');
   const u = Number(usuario);
   if (!u) throw new Error('usuário inválido');
+  if (nativo()) {
+    const r = await sql`UPDATE usuario_local SET ativo=${!!ativo} WHERE codigo=${u}`;
+    if (!r.count) throw new Error('usuário não encontrado');
+    console.log(`[equipe] usuário ${u} ${ativo ? 'ativado' : 'desativado'} (próprio)`);
+    return;
+  }
   const r = await qi(`UPDATE USUARIOS SET ATIVO='${ativo ? 'S' : 'N'}' WHERE CODIGO=${u}`);
   if (!r.ok) throw new Error('FB ativar/desativar: ' + r.err);
   console.log(`[equipe] usuário ${u} ${ativo ? 'ativado' : 'desativado'}`);
@@ -6270,10 +6446,10 @@ async function apiCaixaConta(n, pedRaw) {
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
   // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
   await fbAplicarServico(ped).catch(() => {});
-  const p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+  const p = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
   const pago = await fbPagoDoPedido(ped);
   const total = Number(p.T) || 0;
-  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${num} LIMIT 1`)[0];
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${num} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   // status efetivo (Consumer OU baixa do KDS) vai junto: cancelar item pronto/
   // entregue muda de liturgia na tela (dupla senha)
   // complementos (tipo 2) VÊM JUNTO: o caixa precisa ver "com gelo"/"1 copo"
@@ -6294,7 +6470,7 @@ async function apiCaixaConta(n, pedRaw) {
     FROM comanda_item ci LEFT JOIN marca k ON k.item_codigo = ci.item_codigo
     LEFT JOIN item_autor a ON a.item_codigo = ci.item_codigo
     LEFT JOIN praca_config pc ON pc.area_codigo = ci.area_codigo
-    WHERE ci.comanda_codigo=${c.codigo} ORDER BY ci.criado NULLS LAST, ci.id` : [];
+    WHERE ci.comanda_codigo=${c.codigo} AND ci.cancelado_em IS NULL ORDER BY ci.criado NULLS LAST, ci.id` : [];
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${num} AND fechada_em IS NULL`)[0];
   // COMANDAS DA MESA vêm JUNTO (atômico): o refresher de 10s substitui a CONTA
   // inteira — enriquecer no cliente fazia as comandas piscarem e sumirem.
@@ -6393,6 +6569,7 @@ async function apiCaixaEstornarPagamento(body, quem) {
   if (!g) return { ok: false, erro: 'esse lançamento não está (mais) nesta conta' };
   if (nativo()) {
     await sql`UPDATE pagamento_local SET cancelado_em=now() WHERE codigo=${pag} AND pedido=${Number(ped)} AND cancelado_em IS NULL`;
+    await pgAtualizarPago(ped);
   } else {
     const r = await qi(`UPDATE PAGAMENTOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${pag} AND CODIGOPEDIDO=${Number(ped)} AND DATADELETE IS NULL`);
     if (!r.ok) return { ok: false, erro: 'FB estorno: ' + r.err };
@@ -6495,6 +6672,11 @@ async function apiCaixaAjuste(body, quem) {
 // — mesma regra do desconto). Estorno de pagamento (31) NÃO acontece aqui:
 // cancelar jamais deixa o total abaixo do que já entrou.
 async function statusDoItem(item) {
+  if (nativo()) {
+    const [ci] = await sql`SELECT produzido p, entregue e FROM comanda_item WHERE item_codigo=${Number(item)} ORDER BY id DESC LIMIT 1`;
+    const [mk] = await sql`SELECT pronto_em, entregue_em FROM marca WHERE item_codigo=${Number(item)}`;
+    return (ci?.e || mk?.entregue_em) ? 'entregue' : (ci?.p || mk?.pronto_em) ? 'pronto' : 'a_produzir';
+  }
   const fb = (await qi(`SELECT DATAHORAPRODUZIDO P, DATAHORAENTREGUE E FROM ITENSPEDIDO WHERE CODIGO=${Number(item)}`)).rows?.[0] || {};
   const mk = (await sql`SELECT pronto_em, entregue_em FROM marca WHERE item_codigo=${Number(item)}`)[0] || {};
   return (fb.E || mk.entregue_em) ? 'entregue' : (fb.P || mk.pronto_em) ? 'pronto' : 'a_produzir';
@@ -6681,7 +6863,8 @@ async function apiCaixaCancelarPedido(body, quem) {
   // o aviso pras praças sai ANTES do pedido sumir do espelho
   const vivos = await sql`SELECT ci.item_codigo, ci.area_codigo, ci.nome, ci.quantidade FROM comanda_item ci
     JOIN comanda c ON c.codigo = ci.comanda_codigo
-    WHERE c.numero=${numero} AND ci.tipo IS DISTINCT FROM 2 AND ci.produzido IS NULL AND ci.entregue IS NULL`;
+    WHERE c.numero=${numero} AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
+      AND ci.tipo IS DISTINCT FROM 2 AND ci.produzido IS NULL AND ci.entregue IS NULL`;
   const rd = await pedApagar(ped);
   if (!rd) return { ok: false, erro: 'não deu pra excluir o pedido' };
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
@@ -6736,6 +6919,16 @@ function fbHoraLocal() {
   return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Maceio' });
 }
 async function fbUsuarioCodigo(login) {
+  if (nativo()) {
+    // sem Consumer o operador é o usuario_local (ou o garçom com PIN) — não
+    // existe CODIGO de lá; o caixa passa a ser do LOGIN (fbAbrirCaixa/fbSaldoAnterior)
+    const l = String(login || '').trim().toLowerCase();
+    if (!l) return null;
+    const [u] = await sql`SELECT nome, ativo FROM usuario_local WHERE lower(login)=${l}`;
+    if (u) return u.ativo === false ? null : { codigo: null, nome: T(u.nome) || l, login: l };
+    const [g] = await sql`SELECT nome FROM garcom_pin WHERE lower(login)=${l}`;
+    return { codigo: null, nome: T(g?.nome) || l, login: l };
+  }
   const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(COALESCE(NOME,'')) NOME FROM VWUSUARIOS WHERE ATIVO='S' AND LOWER(TRIM(LOGIN))='${fbEsc(String(login || '').toLowerCase())}'`);
   if (!r.ok || !r.rows.length) return null;
   return { codigo: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME) };
@@ -6815,9 +7008,10 @@ async function fbCaixaMaquininha(login, terminal) {
   }
   const u = await fbUsuarioCodigo(login);
   if (!u) return { codigo: null }; // sem usuário no Consumer: cai no caminho antigo ('ser')
-  const fundo = await fbSaldoAnterior(u.codigo);
+  const fundo = await fbSaldoAnterior(u.codigo, nativo() ? String(login || '').toLowerCase() : null);
   const cod = await fbAbrirCaixa(u.codigo, fundo,
-    `Aberto automaticamente às ${fbHoraLocal()} (maquininha ${login}${term ? ' ' + term : ''})`);
+    `Aberto automaticamente às ${fbHoraLocal()} (maquininha ${login}${term ? ' ' + term : ''})`,
+    nativo() ? String(login || '').toLowerCase() : null);
   if (cod && term) await sql`INSERT INTO caixa_maquininha (caixa_codigo, terminal) VALUES (${cod}, ${term})
     ON CONFLICT (caixa_codigo) DO NOTHING`;
   return { codigo: cod };
@@ -6966,8 +7160,9 @@ async function apiCaixaAbrir(body, quem) {
     }
   }
   const u = await fbUsuarioCodigo(quem.login);
-  if (!u) return { ok: false, erro: 'não achei seu usuário no Consumer' };
-  const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`);
+  if (!u) return { ok: false, erro: nativo() ? 'não achei seu usuário' : 'não achei seu usuário no Consumer' };
+  const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`,
+    nativo() ? String(quem.login || '').toLowerCase() : null);
   return { ok: true, codigo: cod, fundo };
 }
 /** Conferência do fechamento: recebe o que o operador CONTOU e devolve o
@@ -7101,6 +7296,18 @@ async function apiCaixaFecharUm(body, quem) {
 async function apiCaixaDetalhe(codigo) {
   const cod = Number(codigo);
   if (!cod) return { ok: false, erro: 'caixa inválido' };
+  if (nativo()) {
+    const [c] = await sql`SELECT c.codigo, COALESCE((SELECT u.nome FROM usuario_local u WHERE lower(u.login)=lower(c.login)), c.login) quem,
+        c.aberto_em, c.fechado_em, COALESCE(c.fundo,0) fundo, c.saldo_final, c.saldo_informado
+      FROM caixa_local c WHERE c.codigo=${cod}`;
+    if (!c) return { ok: false, erro: 'caixa não encontrado' };
+    const pg = await sql`SELECT pedido, forma_codigo f, valor, nsu, quando::text quando FROM pagamento_local
+      WHERE caixa_codigo=${cod} AND cancelado_em IS NULL ORDER BY quando, codigo`;
+    return { ok: true,
+      caixa: { codigo: cod, quem: T(c.quem), aberto_em: c.aberto_em, fechado_em: c.fechado_em,
+        fundo: Number(c.fundo) || 0, esperado: c.saldo_final == null ? null : Number(c.saldo_final), contado: c.saldo_informado == null ? null : Number(c.saldo_informado) },
+      pagamentos: pg.map((x) => ({ pedido: Number(x.pedido) || null, forma: nomeFormaLocal(x.f), valor: Number(x.valor) || 0, nsu: T(x.nsu) || null, quando: x.quando })) };
+  }
   const cx = (await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME,u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, COALESCE(c.SALDOINICIAL,0) FUNDO, c.SALDOFINAL, c.SALDOFINALINFORMADO
     FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO WHERE c.CODIGO=${cod}`)).rows?.[0];
   if (!cx) return { ok: false, erro: 'caixa não encontrado' };
@@ -7263,7 +7470,12 @@ function brDe(ymd) {
 async function apiCaixaRastro(codigo) {
   const cod = Number(codigo);
   if (!cod) return { ok: false, erro: 'caixa inválido' };
-  const pg = await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) FORMA,
+  const pg = nativo()
+    ? { ok: true, rows: (await sql`SELECT codigo, pedido, forma_codigo, valor, nsu, autorizacao, quando::text quando, observacao
+        FROM pagamento_local WHERE caixa_codigo=${cod} AND cancelado_em IS NULL ORDER BY quando, codigo`)
+        .map((x) => ({ CODIGO: x.codigo, PED: x.pedido, F: x.forma_codigo, FORMA: nomeFormaLocal(x.forma_codigo), V: x.valor, NSU: x.nsu,
+          AUT: x.autorizacao, QUANDO: x.quando, OBS: x.observacao, INTEG: '' })) }
+    : await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) FORMA,
       CAST(p.VALOR AS NUMERIC(12,2)) V, CAST(p.NSUTRANSACAO AS VARCHAR(30)) NSU,
       CAST(p.NUMEROAUTORIZACAOCARTAO AS VARCHAR(40)) AUT, CAST(p.DATAPAGAMENTO AS VARCHAR(30)) QUANDO,
       CAST(p.OBSERVACAO AS VARCHAR(200)) OBS, p.INTEGRADOAUTOMACAO INTEG
@@ -7393,7 +7605,11 @@ async function apiLioFecharCaixa(garcom) {
   // por forma + período. O fechamento do turno merece papel.
   let formas = [];
   try {
-    const fr = await qi(`SELECT TRIM(COALESCE(f.DESCRICAO,'')) NOME, COUNT(*) N, CAST(SUM(p.VALOR) AS NUMERIC(12,2)) V
+    const fr = nativo()
+      ? { ok: true, rows: (await sql`SELECT forma_codigo f, COUNT(*) n, SUM(valor) v FROM pagamento_local
+          WHERE caixa_codigo=${Number(cx.codigo)} AND cancelado_em IS NULL GROUP BY forma_codigo ORDER BY 3 DESC`)
+          .map((x) => ({ NOME: nomeFormaLocal(x.f), N: x.n, V: x.v })) }
+      : await qi(`SELECT TRIM(COALESCE(f.DESCRICAO,'')) NOME, COUNT(*) N, CAST(SUM(p.VALOR) AS NUMERIC(12,2)) V
       FROM PAGAMENTOS p LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO=p.CODIGOFORMAPAGAMENTO
       WHERE p.CODIGOCAIXA=${cx.codigo} AND p.DATADELETE IS NULL GROUP BY f.DESCRICAO ORDER BY 3 DESC`);
     if (fr.ok) formas = fr.rows.map((x) => ({ nome: T(x.NOME) || 'Outros', n: Number(x.N), total: Number(x.V) || 0 }));
@@ -7490,7 +7706,7 @@ async function apiUsuarioLocalSalvar(body, quem) {
   // login que já existe no Consumer fica com o Consumer — dois cadastros com
   // o mesmo nome é confusão garantida na hora de apurar quem fez o quê
   let doPdv = null;
-  try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
+  if (!nativo()) try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
   if (doPdv?.ok && doPdv.rows.length) return { ok: false, erro: `"${login}" já existe no Consumer — use outro nome ou dê a permissão por lá` };
   const ja = (await sql`SELECT login FROM usuario_local WHERE login=${login}`)[0];
   if (!ja && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
@@ -7585,6 +7801,17 @@ async function apiCaixaFiadoBusca(termo) {
   const t = String(termo || '').trim().toUpperCase();
   if (t.length < 3) return { ok: true, clientes: [] };
   const so = t.replace(/\D/g, '');
+  if (nativo()) {
+    const rows = await sql`SELECT codigo, nome, cpf doc, COALESCE(limite_credito,0) lim, COALESCE(saldo_atual,0) saldo
+      FROM cliente_local WHERE ativo AND (upper(nome) LIKE ${'%' + t + '%'}
+        ${so.length >= 3 ? sql`OR regexp_replace(COALESCE(cpf,''),'\\D','','g') LIKE ${'%' + so + '%'}` : sql``})
+      ORDER BY nome LIMIT 12`;
+    return { ok: true, clientes: rows.map((x) => ({
+      codigo: Number(x.codigo), nome: T(x.nome), doc: T(x.doc),
+      limite: Number(x.lim) || 0, saldo: Number(x.saldo) || 0,
+      habilitado: (Number(x.lim) || 0) > 0,
+      disponivel: +(((Number(x.lim) || 0) - (Number(x.saldo) || 0))).toFixed(2) })) };
+  }
   const cond = so.length >= 3
     ? `(UPPER(NOME) LIKE '%${fbEsc(t)}%' OR REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') LIKE '%${fbEsc(so)}%')`
     : `UPPER(NOME) LIKE '%${fbEsc(t)}%'`;
@@ -7632,6 +7859,7 @@ async function fbLancarContaCorrente({ cliente, tipo, valor, obs, pedido = null,
           observacao, conta_corrente, quando)
         VALUES (${pagCod}, ${pedido ? Number(pedido) : null}, ${Number(forma)}, ${v}, null,
           ${String(obs || 'Pagamento de fiado').slice(0, 120)}, ${cod}, now())`;
+      if (pedido) await pgAtualizarPago(pedido);
     }
     await sql`INSERT INTO conta_corrente_local (codigo, cliente_codigo, pedido, credito, debito,
         saldo_inicial, saldo_final, observacao, pagamento_codigo, login, quando)
@@ -8118,6 +8346,137 @@ async function loopClienteNativoNuvem() {
   finally { clienteNativoNuvemRodando = false; }
 }
 
+// ---- FILA DE COMANDOS DA NUVEM (modo próprio) ----
+// No modo Firebird quem executa `agente_comando` (cadastro de cliente vindo
+// do Financeiro, baixa de fiado da folha, bebida da reserva) é o agente-local.
+// Sem Consumer não há agente: o vendas-local assume a fila — mesmo endpoint,
+// mesmo token (Bearer AGENTE_TOKEN), long-poll de 25 s do lado da nuvem.
+function clienteCamposDaNuvem(c) {
+  const out = { nome: null, cpf: null, telefone: null, limite: null, bloq: null, aplicados: {}, ignoradas: [] };
+  const simNao = (v) => (v === true || v === 'S' || v === 1 || v === '1') ? true
+    : (v === false || v === 'N' || v === 0 || v === '0') ? false : null;
+  for (const [k, v] of Object.entries(c || {})) {
+    if (k === 'nome' && v != null) out.nome = String(v).trim().slice(0, 100) || null;
+    else if (k === 'cnpjOuCpf' && v != null) out.cpf = soDig(String(v)) || null;
+    else if ((k === 'celular' || k === 'telefone') && v != null) {
+      const t = soDig(String(v));
+      if (t && (k === 'celular' || !out.telefone)) out.telefone = t;
+    }
+    else if (k === 'limiteCredito' && v != null && Number.isFinite(Number(v))) out.limite = Number(v);
+    else if (k === 'bloquearVendaAposLimite') out.bloq = simNao(v);
+    else { out.ignoradas.push(k); continue; }
+    out.aplicados[k] = v;
+  }
+  return out;
+}
+async function comandoNuvemStatus(id, status, resultado) {
+  const r = await fetch(`${PAGAR_MESA_URL}/api/agente/comandos`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENTE_TOKEN}` },
+    body: JSON.stringify(resultado === undefined ? { id, status } : { id, status, resultado }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error(`nuvem ${r.status} ao reportar comando`);
+}
+/** Executa um comando; devolve {status?, resultado}. Erro lançado = 'erro'. */
+async function comandoNuvemExecutar(tipo, pl) {
+  switch (tipo) {
+    case 'atualizar_cliente': {
+      const cod = Number(pl.codigoExterno);
+      if (!(cod > 0)) throw new Error('codigoExterno inválido');
+      const s = clienteCamposDaNuvem(pl.campos);
+      if (!Object.keys(s.aplicados).length) throw new Error('sem campos válidos');
+      const r = await sql`UPDATE cliente_local SET
+          nome = COALESCE(${s.nome}::text, nome), cpf = COALESCE(${s.cpf}::text, cpf),
+          telefone = COALESCE(${s.telefone}::text, telefone),
+          limite_credito = COALESCE(${s.limite}::numeric, limite_credito),
+          bloqueia_apos_limite = COALESCE(${s.bloq}::boolean, bloqueia_apos_limite),
+          atualizado_em = now()
+        WHERE codigo=${cod}`;
+      if (!r.count) throw new Error('cliente ' + cod + ' não existe nesta loja');
+      return { resultado: { afetados: r.count, tabela: 'cliente_local', codigo: cod, campos: s.aplicados, ignoradas: s.ignoradas } };
+    }
+    case 'criar_cliente': {
+      const s = clienteCamposDaNuvem(pl.campos);
+      if (!s.nome) throw new Error('nome obrigatorio');
+      const codigo = await fbCriarContato({ nome: s.nome, cpf: s.cpf, telefone: s.telefone });
+      if (s.limite != null || s.bloq != null) {
+        await sql`UPDATE cliente_local SET limite_credito = COALESCE(${s.limite}::numeric, limite_credito),
+          bloqueia_apos_limite = COALESCE(${s.bloq}::boolean, bloqueia_apos_limite) WHERE codigo=${codigo}`;
+      }
+      return { resultado: { codigo, tabela: 'cliente_local', campos: s.aplicados, ignoradas: s.ignoradas } };
+    }
+    case 'baixar_fiado': {
+      // mesma regra do agente: baixa até o saldo; sem valorBaixar zera a dívida
+      const cod = Number(pl.codigoCliente);
+      const cli = await fbClienteFiado(cod);
+      if (!cli) throw new Error('cliente ' + cod + ' não existe nesta loja');
+      const saldoAnterior = +Number(cli.saldo).toFixed(2);
+      if (saldoAnterior <= 0) return { resultado: { saldoAnterior, saldoNovo: saldoAnterior, codigo: null } };
+      const vb = Number(pl.valorBaixar);
+      const credito = vb > 0 ? Math.min(vb, saldoAnterior) : saldoAnterior;
+      const r = await fbLancarContaCorrente({ cliente: cod, tipo: 'pagamento', valor: credito,
+        obs: String(pl.observacao || 'Compensado em folha') });
+      if (!r.ok) throw new Error(r.erro);
+      return { resultado: { saldoAnterior, saldoNovo: r.saldo, codigo: r.codigo } };
+    }
+    case 'lancar_bebida_reserva': {
+      const numero = Number(pl.numero);
+      if (!(numero > 0)) throw new Error('número da mesa inválido');
+      const qtd = Math.max(1, Math.trunc(Number(pl.quantidade) || 1));
+      const prod = (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco FROM produto_local
+        WHERE codigo_pdv=${Number(pl.codigoProdutoDetalhe) || 0} LIMIT 1`)[0];
+      if (!prod) throw new Error(`"${pl.nomeProduto || pl.codigoProdutoDetalhe}" não está no cardápio desta loja`);
+      // como o agente fazia: mesa fechada abre agora, a bebida espera o cliente
+      const { ped, criado } = await pedidoDaMesa(numero);
+      if (criado) {
+        if (Number(pl.pessoas) > 0) await sql`UPDATE comanda SET qtd_pessoas=${Math.trunc(Number(pl.pessoas))} WHERE codigo=${ped}`;
+        if (pl.nomeCliente) await fbIdentificarPedido(ped, { nome: String(pl.nomeCliente).slice(0, 40) }).catch(() => {});
+      }
+      await fbInserirItem(ped, { codigo_pdv: Number(prod.codigo_pdv), produto_codigo: prod.produto_codigo, nome: prod.nome,
+        tamanho: prod.tamanho, preco: Number(prod.preco) || 0, qtd, obs: 'RESERVA', login: 'reserva', tipo: 1 });
+      await fbAtualizarTotal(ped);
+      await fbJobCozinha(ped).catch((e) => console.error('[comandos] cozinha:', e.message));
+      return { resultado: { lancado: true, pedidoCodigo: ped, mesaAberta: criado } };
+    }
+    case 'auto_update': case 'instalar_cdc': case 'desinstalar_cdc':
+      return { resultado: { aviso: 'modo próprio: esta loja não tem agente-local nem Consumer — nada a fazer' } };
+    default:
+      return { status: 'erro', resultado: { msg: `tipo ${tipo} não se aplica em modo próprio (sem Consumer)` } };
+  }
+}
+let comandosNuvemRodando = false;
+async function loopComandosNuvem() {
+  if (!nativo() || !AGENTE_TOKEN || comandosNuvemRodando) return;
+  comandosNuvemRodando = true;
+  let espera = 1000; // a espera de verdade é o long-poll da nuvem (25 s)
+  try {
+    const r = await fetch(`${PAGAR_MESA_URL}/api/agente/comandos`, {
+      headers: { authorization: `Bearer ${AGENTE_TOKEN}` }, signal: AbortSignal.timeout(40000) });
+    if (!r.ok) { console.error('[comandos] nuvem respondeu', r.status); espera = 30000; }
+    else {
+      const j = await r.json().catch(() => null);
+      for (const cmd of (j?.comandos || [])) {
+        const pl = cmd.payload && typeof cmd.payload === 'object' ? cmd.payload : {};
+        try {
+          await comandoNuvemStatus(cmd.id, 'executando');
+          const out = await comandoNuvemExecutar(cmd.tipo, pl);
+          await comandoNuvemStatus(cmd.id, out.status || 'sucesso', out.resultado);
+          if (out.status === 'pendente') espera = 30000;
+          console.log(`[comandos] ${cmd.tipo}: ${out.status || 'sucesso'}`, JSON.stringify(out.resultado || {}).slice(0, 160));
+        } catch (e) {
+          console.error(`[comandos] ${cmd.tipo} falhou:`, e.message);
+          await comandoNuvemStatus(cmd.id, 'erro', { msg: e.message }).catch(() => {});
+        }
+      }
+    }
+  } catch (e) { console.error('[comandos]', e.message); espera = 30000; }
+  finally {
+    comandosNuvemRodando = false;
+    setTimeout(() => loopComandosNuvem().catch(() => {}), espera);
+  }
+}
+
 // ---- CANCELAMENTOS → NUVEM: o dono quer o histórico (com motivo) no dashboard ----
 // A tabela `cancelamento` só existe aqui; o Consumer marca DATADELETE e nada mais.
 // Manda em lotes de 200 por minuto, guardando até que id já foi; a nuvem faz
@@ -8345,7 +8704,7 @@ async function fbAlterarProduto({ produto, variante, campo, valor, alvo_codigo }
 // com o resto do canal HMAC.
 let espelhoWizardRodando = false;
 async function loopEspelhoWizard() {
-  if (espelhoWizardRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  if (espelhoWizardRodando || !FILIAL_ID || !PAGAR_MESA_SECRET || nativo()) return;
   espelhoWizardRodando = true;
   try {
     const perg = await qi(`SELECT CODIGO C, TRIM(DESCRICAO) D, QTDRESPOSTASMIN MN, QTDRESPOSTASMAX MX
@@ -8428,15 +8787,16 @@ async function loopCatalogoNuvem() {
     await sql.begin(async (t) => {
       for (const p of j.produtos) {
         await t`INSERT INTO produto_nuvem (codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-            comanda_mobile, cardapio_digital, categoria, descricao, saldo, atualizado)
+            comanda_mobile, cardapio_digital, categoria, descricao, saldo, ncm, cfop, atualizado)
           VALUES (${Number(p.codigo_pdv)}, ${Number(p.produto_codigo)}, ${p.nome || ''}, ${p.tamanho || null},
             ${Number(p.preco) || 0}, ${p.area_codigo == null ? null : Number(p.area_codigo)},
             ${p.comanda_mobile !== false}, ${!!p.cardapio_digital}, ${p.categoria || null},
-            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, now())
+            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, ${p.ncm || null}, ${p.cfop || null}, now())
           ON CONFLICT (codigo_pdv) DO UPDATE SET produto_codigo=EXCLUDED.produto_codigo, nome=EXCLUDED.nome,
             tamanho=EXCLUDED.tamanho, preco=EXCLUDED.preco, area_codigo=EXCLUDED.area_codigo,
             comanda_mobile=EXCLUDED.comanda_mobile, cardapio_digital=EXCLUDED.cardapio_digital,
-            categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, saldo=EXCLUDED.saldo, atualizado=now()`;
+            categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, saldo=EXCLUDED.saldo,
+            ncm=EXCLUDED.ncm, cfop=EXCLUDED.cfop, atualizado=now()`;
       }
       // pausado/descontinuado na nuvem some daqui — a resposta é a lista inteira
       if (codigos.length) await t`DELETE FROM produto_nuvem WHERE NOT (codigo_pdv = ANY(${codigos}))`;
@@ -8522,7 +8882,7 @@ async function catalogoNativo() {
 }
 let produtoFilaRodando = false;
 async function loopProdutoFila() {
-  if (produtoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  if (produtoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET || nativo()) return; // cadastro no PDV é do Consumer; no modo próprio o produto já mora na nuvem
   produtoFilaRodando = true;
   try {
     const e = Math.floor(Date.now() / 1000) + 120;
@@ -8588,6 +8948,13 @@ const FORMAS_MANUAIS = {
   debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true, nsu: true },
   pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true, nsu: true },
 };
+/** Nome da forma pelo código — o modo próprio não tem FORMASPAGAMENTO. */
+function nomeFormaLocal(codigo) {
+  const c = Number(codigo);
+  for (const f of Object.values(FORMAS_MANUAIS)) if (f.codigo === c) return f.nome;
+  if (c === FORMA.PIX_ONLINE) return 'Pix online';
+  return c ? 'forma ' + c : 'Outros';
+}
 function tokenComprovante() {
   return randomBytes(9).toString('base64url');
 }
@@ -9027,6 +9394,7 @@ async function comprovanteGaveta(cx, quem, body, valor, motivo, leva) {
 async function apiCaixaFornecedores(qRaw) {
   const t = String(qRaw || '').trim().toUpperCase();
   if (t.length < 2) return { ok: true, fornecedores: [] };
+  if (nativo()) return { ok: true, fornecedores: [] }; // cadastro de fornecedor mora na nuvem; a saída aceita nome livre
   const r = await qi(`SELECT FIRST 12 CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC FROM FORNECEDORES
     WHERE DATADELETE IS NULL AND UPPER(NOME) LIKE '%${fbEsc(t)}%' ORDER BY NOME`);
   if (!r.ok) return { ok: false, erro: r.err };
@@ -9037,6 +9405,32 @@ async function apiCaixaFornecedores(qRaw) {
 // `data` = 'YYYY-MM-DD' pra ver outros dias.
 async function apiCaixaRelatorio(data) {
   const d = /^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) ? String(data) : null;
+  if (nativo()) {
+    const dia = d || new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+    const formas = await sql`SELECT forma_codigo f, SUM(valor) v, COUNT(*) n FROM pagamento_local
+      WHERE cancelado_em IS NULL AND quando >= ${dia}::date AND quando < (${dia}::date + 1) GROUP BY forma_codigo ORDER BY 2 DESC`;
+    const porCx = await sql`SELECT caixa_codigo cx, forma_codigo f, SUM(valor) v, COUNT(*) n FROM pagamento_local
+      WHERE cancelado_em IS NULL AND quando >= ${dia}::date AND quando < (${dia}::date + 1) GROUP BY caixa_codigo, forma_codigo`;
+    const caixas = await sql`SELECT c.codigo, COALESCE((SELECT u.nome FROM usuario_local u WHERE lower(u.login)=lower(c.login)), c.login) quem,
+        c.aberto_em, c.fechado_em, c.fundo, c.saldo_final, c.saldo_informado, COALESCE(c.obs,'') obs
+      FROM caixa_local c
+      WHERE (c.aberto_em >= ${dia}::date AND c.aberto_em < (${dia}::date + 1)) OR (c.fechado_em IS NULL AND c.aberto_em < (${dia}::date + 1))
+      ORDER BY c.codigo DESC`;
+    const movs = await sql`SELECT caixa_codigo cx, quando dt, CASE WHEN tipo='suprimento' THEN valor ELSE 0 END e,
+        CASE WHEN tipo='suprimento' THEN 0 ELSE valor END s, COALESCE(obs,'') obs
+      FROM caixa_operacao_local WHERE quando >= ${dia}::date AND quando < (${dia}::date + 1) ORDER BY id DESC`;
+    const fmap = {};
+    for (const x of porCx) {
+      const cx = Number(x.cx); (fmap[cx] = fmap[cx] || []).push({ codigo: Number(x.f), nome: nomeFormaLocal(x.f), valor: +(Number(x.v) || 0).toFixed(2), n: Number(x.n) });
+    }
+    return { ok: true, data: d,
+      formas: formas.map((x) => ({ codigo: Number(x.f), nome: nomeFormaLocal(x.f), valor: +(Number(x.v) || 0).toFixed(2), n: Number(x.n) })),
+      caixas: caixas.map((x) => ({ codigo: Number(x.codigo), quem: T(x.quem), aberto_em: x.aberto_em, fechado_em: x.fechado_em,
+        fundo: Number(x.fundo) || 0, esperado: x.saldo_final == null ? null : Number(x.saldo_final), contado: x.saldo_informado == null ? null : Number(x.saldo_informado),
+        tipo: String(x.obs || '').startsWith('Aberto automaticamente') ? 'maquininha' : 'sistema',
+        formas: fmap[Number(x.codigo)] || [], recebido: +(fmap[Number(x.codigo)] || []).reduce((s, y) => s + y.valor, 0).toFixed(2) })),
+      movs: movs.map((x) => ({ caixa: Number(x.cx), quando: x.dt, entrada: Number(x.e) || 0, saida: Number(x.s) || 0, obs: T(x.obs) })) };
+  }
   const ini = d ? `TIMESTAMP '${d} 00:00:00'` : 'CURRENT_DATE';
   const fim = `DATEADD(1 DAY TO ${ini})`;
   const formas = await qi(`SELECT p.CODIGOFORMAPAGAMENTO F, TRIM(COALESCE(f.DESCRICAO,'')) NOME, SUM(p.VALOR) V, COUNT(*) N
@@ -9132,6 +9526,7 @@ async function apiTemposSalvar(body) {
  *  que NOS gravamos, entao o nome errado continua voltando. Isto limpa. Roda no
  *  boot, e' idempotente e, sem colaborador vinculado, nao toca em nada. */
 async function repararNomesDeColaborador() {
+  if (nativo()) return;
   const alvos = await sql`SELECT DISTINCT contato_fb FROM (
       SELECT contato_fb FROM identificacao WHERE contato_fb IS NOT NULL
       UNION ALL SELECT contato_fb FROM mesa_comanda WHERE contato_fb IS NOT NULL) t`;
@@ -9173,6 +9568,7 @@ async function limparTestes() {
 }
 
 async function repararPorCpfDeColaborador() {
+  if (nativo()) return;
   const cpfs = await sql`SELECT DISTINCT cpf FROM identificacao
     WHERE cpf IS NOT NULL AND contato_fb IS NULL AND nome IS NOT NULL`;
   if (!cpfs.length) return;
@@ -10076,7 +10472,8 @@ async function apiAreas() {
         AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
         AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
     FROM area a
-    LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo
+    LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo AND ci.cancelado_em IS NULL
+      AND EXISTS (SELECT 1 FROM comanda c WHERE c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL)
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE a.codigo <> ALL(${ocultas})
     GROUP BY a.codigo, a.nome
@@ -10094,7 +10491,8 @@ async function apiAreas() {
              AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
              AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
       FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-     WHERE ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas})`)[0];
+     JOIN comanda c ON c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+     WHERE ci.cancelado_em IS NULL AND (ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`)[0];
   if (Number(semArea?.total ?? 0) > 0) {
     rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
       a_produzir: Number(semArea.a_produzir), total: Number(semArea.total),
@@ -10102,7 +10500,8 @@ async function apiAreas() {
   }
   const ent = (await sql`
     SELECT COUNT(*) AS n FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-    WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
+    JOIN comanda c ON c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+    WHERE ci.cancelado_em IS NULL AND ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
   const est = (await sql`SELECT * FROM sync_estado WHERE id=1`)[0] || null;
   return { areas: rows, entrega_n: Number(ent?.n ?? 0), online: ultimoStatus.ok, sync: est,
     tem_entrega: await kdsTem('entrega') };
@@ -10134,6 +10533,7 @@ async function apiKds(areaCod) {
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ${cond} AND COALESCE(ci.produzido, m.pronto_em) IS NULL
+      AND ci.cancelado_em IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const r = agrupar(itens, 'chegada');
   await rotularComandas(r.comandas);
@@ -10229,7 +10629,8 @@ async function apiEntrega(areaCod = null) {
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     LEFT JOIN area a ON a.codigo = ci.area_codigo
-    WHERE COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
+    WHERE ci.cancelado_em IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+      AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
       AND COALESCE(ci.entregue, m.entregue_em) IS NULL
       AND ${filtroArea}
     ORDER BY COALESCE(ci.produzido, m.pronto_em), ci.id`;
@@ -10697,11 +11098,26 @@ carregar();
  *  maquininha registrada no sistema (venda_pagamento ok, órfã). Só grava
  *  quando o par é ÚNICO (mesma forma, mesmo valor, mesmo dia) — ambíguo ou
  *  sem par fica no relatório pra resolver na mão (foto em /comprovantes). */
+/** Grava o NSU num pagamento (Consumer ou pagamento_local). soSeVazio = não sobrescreve. */
+async function nsuGravar(pagamento, nsu, soSeVazio) {
+  if (nativo()) {
+    try {
+      await sql`UPDATE pagamento_local SET nsu=${String(nsu)} WHERE codigo=${Number(pagamento)} ${soSeVazio ? sql`AND nsu IS NULL` : sql``}`;
+      return { ok: true };
+    } catch (e) { return { ok: false, err: e.message }; }
+  }
+  return qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${Number(pagamento)}${soSeVazio ? ' AND NSUTRANSACAO IS NULL' : ''}`);
+}
 async function apiNsuCasar(data) {
   const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(data || ''))
     ? String(data)
     : new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
-  const pend = await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F,
+  const pend = nativo()
+    ? { ok: true, rows: (await sql`SELECT codigo, pedido, forma_codigo, valor, quando::text quando FROM pagamento_local
+        WHERE cancelado_em IS NULL AND nsu IS NULL AND forma_codigo IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})
+          AND quando >= ${dia}::date AND quando < (${dia}::date + 1)`)
+        .map((x) => ({ CODIGO: x.codigo, PED: x.pedido, F: x.forma_codigo, V: x.valor, QUANDO: x.quando })) }
+    : await qi(`SELECT p.CODIGO, p.CODIGOPEDIDO PED, p.CODIGOFORMAPAGAMENTO F,
       CAST(p.VALOR AS NUMERIC(12,2)) V, CAST(p.DATAPAGAMENTO AS VARCHAR(30)) QUANDO
     FROM PAGAMENTOS p
     WHERE p.DATADELETE IS NULL AND p.NSUTRANSACAO IS NULL
@@ -10730,7 +11146,7 @@ async function apiNsuCasar(data) {
     const dup = await nsuJaUsadoHoje(nsuNum);
     if (dup && dup.indeterminado) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(p.CODIGO)) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: `NSU ${nsuNum} já usado no pagamento ${dup.pagamento}` }); continue; }
-    const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsuNum} WHERE CODIGO=${Number(p.CODIGO)} AND NSUTRANSACAO IS NULL`);
+    const up = await nsuGravar(p.CODIGO, nsuNum, true);
     if (!up.ok) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'FB: ' + up.err }); continue; }
     await sql`UPDATE venda_pagamento SET pagamento_fb=${Number(p.CODIGO)} WHERE id=${Number(o.id)}`;
     try { await sql`UPDATE recebimento_foto SET nsu=${nsuNum} WHERE pagamento_codigo=${Number(p.CODIGO)} AND nsu IS NULL`; } catch { /* segue */ }
@@ -10762,7 +11178,7 @@ async function apiNsuLerFotos(data) {
     const dup = await nsuJaUsadoHoje(nsu);
     if (dup && dup.indeterminado) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(f.pagamento_codigo)) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: `NSU ${nsu} já usado no pagamento ${dup.pagamento} — mesmo cupom fotografado 2×?` }); continue; }
-    const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${Number(f.pagamento_codigo)} AND NSUTRANSACAO IS NULL`);
+    const up = await nsuGravar(f.pagamento_codigo, nsu, true);
     if (!up.ok) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'FB: ' + up.err }); continue; }
     await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE id=${Number(f.id)}`;
     lidos.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, nsu,
@@ -10783,14 +11199,16 @@ async function apiNsuDefinir(body) {
   if (dup && dup.pagamento !== pagamento) {
     return { ok: false, erro: `NSU ${nsu} já usado hoje no pagamento ${dup.pagamento} (pedido ${dup.pedido ?? '?'})` };
   }
-  const atual = await qi(`SELECT CODIGO, NSUTRANSACAO FROM PAGAMENTOS WHERE CODIGO=${pagamento} AND DATADELETE IS NULL`);
+  const atual = nativo()
+    ? { ok: true, rows: await sql`SELECT codigo "CODIGO", nsu "NSUTRANSACAO" FROM pagamento_local WHERE codigo=${pagamento} AND cancelado_em IS NULL` }
+    : await qi(`SELECT CODIGO, NSUTRANSACAO FROM PAGAMENTOS WHERE CODIGO=${pagamento} AND DATADELETE IS NULL`);
   if (!atual.ok || !atual.rows.length) return { ok: false, erro: 'pagamento não encontrado' };
   // sobrescrever=true corrige leitura errada da IA (ex.: pegou o nº do
   // estabelecimento em vez do DOC) — sem a flag, NSU existente é intocável.
   if (atual.rows[0].NSUTRANSACAO != null && body.sobrescrever !== true) {
     return { ok: false, erro: `já tem NSU (${atual.rows[0].NSUTRANSACAO}) — não sobrescrevo (mande sobrescrever:true se for correção)` };
   }
-  const up = await qi(`UPDATE PAGAMENTOS SET NSUTRANSACAO=${nsu} WHERE CODIGO=${pagamento}`);
+  const up = await nsuGravar(pagamento, nsu, false);
   if (!up.ok) return { ok: false, erro: 'FB: ' + up.err };
   try { await sql`UPDATE recebimento_foto SET nsu=${nsu} WHERE pagamento_codigo=${pagamento}`; } catch { /* segue */ }
   // forma errada no lançamento (caso real: DÉBITO registrado como Pix) —
@@ -10799,7 +11217,9 @@ async function apiNsuDefinir(body) {
   if (body.forma) {
     const nova = FORMAS_MANUAIS[String(body.forma)];
     if (!nova || nova.codigo === FORMA.DINHEIRO) return { ok: true, pagamento, nsu, aviso: 'forma inválida — NSU gravado, forma mantida' };
-    const uf = await qi(`UPDATE PAGAMENTOS SET CODIGOFORMAPAGAMENTO=${nova.codigo} WHERE CODIGO=${pagamento} AND CODIGOFORMAPAGAMENTO IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})`);
+    const uf = nativo()
+      ? await sql`UPDATE pagamento_local SET forma_codigo=${nova.codigo} WHERE codigo=${pagamento} AND forma_codigo IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})`.then(() => ({ ok: true }), (e) => ({ ok: false, err: e.message }))
+      : await qi(`UPDATE PAGAMENTOS SET CODIGOFORMAPAGAMENTO=${nova.codigo} WHERE CODIGO=${pagamento} AND CODIGOFORMAPAGAMENTO IN (${FORMA.CREDITO},${FORMA.DEBITO},${FORMA.PIX_MANUAL},${FORMA.PIX_ONLINE})`);
     if (uf.ok) {
       formaCorrigida = nova.nome;
       try { await sql`UPDATE recebimento_foto SET forma=${nova.nome} WHERE pagamento_codigo=${pagamento}`; } catch { /* segue */ }
@@ -12472,15 +12892,26 @@ async function apiClienteHistorico({ numero, contato }) {
   // quem se cadastrou com o Firebird fora do ar (fbCriarContato falha e o
   // contato_fb fica nulo, mas o nome foi gravado do mesmo jeito).
   if (!contatoFb) return { ok: true, identificado: !!nome, nome, itens: [], visitas: 0 };
-  const r = await qi(`SELECT FIRST 12 TRIM(i.NOMEPRODUTO) NOME, i.CODIGOPRODUTODETALHE PDV,
-      COUNT(*) VEZES, MAX(p.DATAABERTURA) ULT
-    FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
-    WHERE p.CODIGOCONTATOCLIENTE = ${contatoFb} AND i.DATADELETE IS NULL
-      AND p.DATADELETE IS NULL AND i.CODIGOITEMPEDIDOTIPO <> 2
-    GROUP BY 1, 2 ORDER BY 3 DESC`);
-  if (!r.ok) return { ok: false, erro: 'histórico indisponível: ' + r.err };
-  const v = await qi(`SELECT COUNT(*) VISITAS, COALESCE(SUM(VALORTOTAL),0) GASTO, MAX(DATAABERTURA) ULT
-    FROM PEDIDOS WHERE CODIGOCONTATOCLIENTE = ${contatoFb} AND DATADELETE IS NULL`);
+  let r, v;
+  if (nativo()) {
+    r = { ok: true, rows: (await sql`SELECT i.nome, i.codigo_pdv pdv, COUNT(*) vezes, MAX(c.data_abertura) ult
+        FROM comanda_item i JOIN comanda c ON c.codigo = i.comanda_codigo
+        WHERE c.contato_codigo = ${contatoFb} AND i.cancelado_em IS NULL AND c.cancelada_em IS NULL AND COALESCE(i.tipo,1) <> 2
+        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 12`).map((x) => ({ NOME: x.nome, PDV: x.pdv, VEZES: x.vezes, ULT: x.ult })) };
+    const [s] = await sql`SELECT COUNT(*) visitas, COALESCE(SUM(valor_total),0) gasto, MAX(data_abertura) ult
+      FROM comanda WHERE contato_codigo = ${contatoFb} AND cancelada_em IS NULL`;
+    v = { ok: true, rows: [{ VISITAS: s?.visitas, GASTO: s?.gasto, ULT: s?.ult }] };
+  } else {
+    r = await qi(`SELECT FIRST 12 TRIM(i.NOMEPRODUTO) NOME, i.CODIGOPRODUTODETALHE PDV,
+        COUNT(*) VEZES, MAX(p.DATAABERTURA) ULT
+      FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO = i.CODIGOPEDIDO
+      WHERE p.CODIGOCONTATOCLIENTE = ${contatoFb} AND i.DATADELETE IS NULL
+        AND p.DATADELETE IS NULL AND i.CODIGOITEMPEDIDOTIPO <> 2
+      GROUP BY 1, 2 ORDER BY 3 DESC`);
+    if (!r.ok) return { ok: false, erro: 'histórico indisponível: ' + r.err };
+    v = await qi(`SELECT COUNT(*) VISITAS, COALESCE(SUM(VALORTOTAL),0) GASTO, MAX(DATAABERTURA) ULT
+      FROM PEDIDOS WHERE CODIGOCONTATOCLIENTE = ${contatoFb} AND DATADELETE IS NULL`);
+  }
   // só oferece o que dá pra vender AGORA (preço, não pausado, com estoque)
   const pdvs = r.rows.map((x) => N(x.PDV)).filter(Boolean);
   const vend = pdvs.length
@@ -12960,7 +13391,7 @@ async function apiPixCobrar(body) {
   if (cob.erro) return { ok: false, erro: cob.erro };
   const valor = cob.valor;
   // a CONTA que o cliente está vendo (espelho do Consumer) — o Pix fica amarrado a ela
-  const cm = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(body.mesa)} LIMIT 1`)[0];
+  const cm = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(body.mesa)} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   const r = await pixCriarCobranca({ valor, mesa: Number(body.mesa), pedido: cm ? Number(cm.codigo) : null });
   if (!r.ok) return r;
   return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
@@ -13555,7 +13986,8 @@ const TAXA_SERVICO = Number(process.env.TAXA_SERVICO ?? 10);
 // conta abre, só sem o ajuste).
 async function fbAjustesPedido(codigo) {
   try {
-    const r = await qi(`SELECT COALESCE(TOTALDESCONTO,0) D, COALESCE(TOTALACRESCIMO,0) A FROM PEDIDOS WHERE CODIGO=${Number(codigo)}`);
+    const r = nativo() ? { ok: true, rows: [await pgCabecalhoPedido(codigo)] }
+      : await qi(`SELECT COALESCE(TOTALDESCONTO,0) D, COALESCE(TOTALACRESCIMO,0) A FROM PEDIDOS WHERE CODIGO=${Number(codigo)}`);
     const x = r.ok && r.rows[0];
     return { desconto: +(Number(x?.D) || 0).toFixed(2), acrescimo: +(Number(x?.A) || 0).toFixed(2) };
   } catch { return { desconto: 0, acrescimo: 0 }; }
@@ -13563,10 +13995,10 @@ async function fbAjustesPedido(codigo) {
 async function apiContaTexto(numero, modoApp = false, comFiado = false) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
-    FROM comanda WHERE numero=${n} LIMIT 1`)[0];
+    FROM comanda WHERE numero=${n} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   if (!c) return { ok: false, erro: 'não há conta aberta no número ' + n };
   const itens = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
-    WHERE comanda_codigo=${c.codigo} ORDER BY criado NULLS LAST, id`;
+    WHERE comanda_codigo=${c.codigo} AND cancelado_em IS NULL ORDER BY criado NULLS LAST, id`;
   // nome: a identificacao nova ganha da tabela antiga de vinculo
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${n} AND fechada_em IS NULL`)[0];
   const quem = ident || (await sql`SELECT nome_curto FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0];
@@ -13597,13 +14029,13 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
       // Comanda recém-aberta ainda não tem PEDIDOS no Consumer (ele nasce no
       // primeiro item). Antes disso ela sumia da conta — o garçom abria e não
       // via. Agora aparece zerada, que é a verdade: existe e não consumiu nada.
-      const cc = (await sql`SELECT codigo, nome, subtotal_pago FROM comanda WHERE numero=${Number(v.comanda)} LIMIT 1`)[0]
+      const cc = (await sql`SELECT codigo, nome, subtotal_pago FROM comanda WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0]
         || { codigo: null, nome: null, subtotal_pago: 0 };
       // Os ITENS da comanda vão junto: sem eles o cupom mostrava só um total
       // solto ("302 — R$ 17,60") e a pessoa não tinha como conferir o que
       // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
       const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
-        WHERE comanda_codigo=${cc.codigo} ORDER BY criado NULLS LAST, id`;
+        WHERE comanda_codigo=${cc.codigo} AND cancelado_em IS NULL ORDER BY criado NULLS LAST, id`;
       const sub = its.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0); // inclui complemento com preço (ver total da mesa acima)
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
       // rastro da transferência: de onde essa comanda veio, quando e por quem
@@ -13641,7 +14073,10 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
   try {
     const ped = await fbAcharPedido(n);
     if (ped) {
-      const r = await qi(`SELECT g.VALOR V, g.DATAPAGAMENTO Q, TRIM(g.OBSERVACAO) OBS,
+      const r = nativo()
+        ? { ok: true, rows: (await sql`SELECT valor, quando, observacao, forma_codigo FROM pagamento_local WHERE pedido=${Number(ped)} AND cancelado_em IS NULL ORDER BY codigo`)
+            .map((x) => ({ V: x.valor, Q: x.quando, OBS: x.observacao, FORMA: nomeFormaLocal(x.forma_codigo) })) }
+        : await qi(`SELECT g.VALOR V, g.DATAPAGAMENTO Q, TRIM(g.OBSERVACAO) OBS,
           TRIM(f.DESCRICAO) FORMA
         FROM PAGAMENTOS g LEFT JOIN FORMASPAGAMENTO f ON f.CODIGO = g.CODIGOFORMAPAGAMENTO
         WHERE g.CODIGOPEDIDO = ${ped} AND g.DATADELETE IS NULL ORDER BY g.CODIGO`);
@@ -19051,7 +19486,7 @@ async function gerenteAtrasos() {
       LEFT JOIN area a ON a.codigo = ci.area_codigo
       LEFT JOIN praca_config pc ON pc.area_codigo = ci.area_codigo
       LEFT JOIN produto_tempo pt ON pt.codigo_pdv = ci.codigo_pdv
-     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL AND c.fechada_em IS NULL
+     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
        AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
      GROUP BY ci.area_codigo, a.nome, c.numero, pc.minutos`;
   const passe = await sql`
@@ -19062,7 +19497,7 @@ async function gerenteAtrasos() {
       JOIN comanda c ON c.codigo = ci.comanda_codigo
       LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
      WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
-       AND COALESCE(ci.entregue, m.entregue_em) IS NULL AND c.fechada_em IS NULL
+       AND COALESCE(ci.entregue, m.entregue_em) IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
        AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
      GROUP BY ci.area_codigo`;
   const agora = Date.now();
@@ -19116,7 +19551,7 @@ async function gerenteSetores() {
       JOIN comanda c ON c.codigo = ci.comanda_codigo
       LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
       LEFT JOIN area a ON a.codigo = ci.area_codigo
-     WHERE ci.tipo IS DISTINCT FROM 2 AND c.fechada_em IS NULL
+     WHERE ci.tipo IS DISTINCT FROM 2 AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
        AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
      GROUP BY ci.area_codigo, a.nome ORDER BY itens DESC`;
   let hoje = gerSetorCache.dados;
@@ -19127,7 +19562,7 @@ async function gerenteSetores() {
         const r = await sql`SELECT ci.area_codigo, a.nome, COUNT(*)::int AS itens, COALESCE(SUM(ci.quantidade),0) AS qtd, COALESCE(SUM(ci.valor_total),0) AS valor,
             COUNT(DISTINCT ci.comanda_codigo)::int AS comandas
           FROM comanda_item ci LEFT JOIN area a ON a.codigo = ci.area_codigo
-          WHERE ci.tipo IS DISTINCT FROM 2 AND ci.criado >= date_trunc('day', now()) GROUP BY ci.area_codigo, a.nome`;
+          WHERE ci.tipo IS DISTINCT FROM 2 AND ci.cancelado_em IS NULL AND ci.criado >= date_trunc('day', now()) GROUP BY ci.area_codigo, a.nome`;
         hoje = r.map((x) => ({ area_codigo: x.area_codigo == null ? 0 : Number(x.area_codigo), nome: x.nome, itens: Number(x.itens), qtd: Number(x.qtd), valor: Number(x.valor), comandas: Number(x.comandas) }));
       } else {
         const r = await q(`SELECT pr.CODIGOCOZINHA AREA, COUNT(*) N, SUM(i.QUANTIDADE) QTD, SUM(i.VALORTOTAL) VT, COUNT(DISTINCT i.CODIGOPEDIDO) PED
@@ -19988,7 +20423,7 @@ const server = http.createServer(async (req, res) => {
       const ped = await fbAcharPedido(Number(body.numero)).catch(() => null);
       if (!ped) return res.end(JSON.stringify({ ok: false, erro: 'não há pedido aberto nesse número' }));
       try { await fbAtualizarTotal(ped); espelho().catch(() => {}); } catch (e) { return res.end(JSON.stringify({ ok: false, erro: e.message })); }
-      const t = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
+      const t = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
       return res.end(JSON.stringify({ ok: true, itens: Number(t.I) || 0, servico: Number(t.S) || 0, total: Number(t.T) || 0 }));
     }
     // Fechamento do dia da maquininha (leitura; exige garçom logado).
@@ -20334,8 +20769,72 @@ function conferirTelas() {
   }
   console.log(ruins ? `[telas] ${ruins} bloco(s) quebrado(s)` : '[telas] ok — todas compilam');
 }
+// ---- MIGRAÇÃO CONSUMER → PRÓPRIO (roda UMA vez, ANTES de ligar BANCO=proprio) ----
+// node server.mjs --migrar-consumer
+// Copia do Firebird o que a loja precisa continuar tendo sem ele:
+//   · clientes (CONTATOS TIPO='CF') → cliente_local, com o MESMO código — o
+//     fiado, a identificação por CPF/telefone e o histórico seguem funcionando.
+//     Já marcados como sincronizados: a nuvem já os tem pelo agente/CDC.
+//   · usuários + permissões (USUARIOS/ACESSO) → usuario_local, com o MESMO
+//     código e os mesmos códigos de permissão (perfilDeCodigos é uma só).
+//     O PIN mora em garcom_pin, por login — não é tocado: todo mundo entra
+//     com o PIN de sempre.
+// Idempotente: rodar de novo só atualiza. Sai do processo ao terminar.
+async function migrarConsumer() {
+  if (nativo()) { console.error('[migrar] rode SEM BANCO=proprio — precisa ler o Firebird ainda'); process.exit(2); }
+  await initSchema();
+  const agora = new Date();
+  const c = await q1(`SELECT CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
+      TRIM(COALESCE(FONECELULAR,'')) TEL, COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM,
+      COALESCE(SALDOATUALCONTACORRENTE,0) SALDO, TRIM(COALESCE(BLOQUEARVENDAAPOSLIMITE,'N')) BLOQ
+    FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(COALESCE(TIPO,''))='CF'`, 180000);
+  if (!c.ok) { console.error('[migrar] clientes do Consumer: ' + c.err); process.exit(1); }
+  let nCli = 0;
+  for (let i = 0; i < c.rows.length; i += 500) {
+    const lote = c.rows.slice(i, i + 500).map((x) => ({
+      codigo: Number(x.CODIGO), nome: T(x.NOME) || null, cpf: soDig(x.DOC) || null, telefone: soDig(x.TEL) || null,
+      limite_credito: Number(x.LIM) || 0, saldo_atual: Number(x.SALDO) || 0, ativo: true,
+      bloqueia_apos_limite: T(x.BLOQ).toUpperCase() === 'S', atualizado_em: agora, sync_nuvem_em: agora,
+    })).filter((x) => x.codigo > 0);
+    if (!lote.length) continue;
+    await sql`INSERT INTO cliente_local ${sql(lote, 'codigo', 'nome', 'cpf', 'telefone', 'limite_credito', 'saldo_atual', 'ativo', 'bloqueia_apos_limite', 'atualizado_em', 'sync_nuvem_em')}
+      ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome, cpf=EXCLUDED.cpf, telefone=EXCLUDED.telefone,
+        limite_credito=EXCLUDED.limite_credito, saldo_atual=EXCLUDED.saldo_atual, ativo=true,
+        bloqueia_apos_limite=EXCLUDED.bloqueia_apos_limite, atualizado_em=EXCLUDED.atualizado_em, sync_nuvem_em=EXCLUDED.sync_nuvem_em`;
+    nCli += lote.length;
+  }
+  console.log(`[migrar] clientes: ${nCli} em cliente_local`);
+  const u = await q1(`SELECT u.CODIGO UCOD, TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.TIPO,'')) TIPO, u.ATIVO, TRIM(COALESCE(c.NOME,'')) NOME
+    FROM USUARIOS u LEFT JOIN CONTATOS c ON c.CODIGO=u.CODIGOCONTATO`, 60000);
+  if (!u.ok) { console.error('[migrar] usuários do Consumer: ' + u.err); process.exit(1); }
+  const a = await q1(`SELECT USUARIO, PERMISSAO FROM ACESSO`, 60000);
+  if (!a.ok) { console.error('[migrar] permissões do Consumer: ' + a.err); process.exit(1); }
+  const perms = new Map();
+  for (const x of a.rows) { const k = Number(x.USUARIO); if (!perms.has(k)) perms.set(k, new Set()); perms.get(k).add(Number(x.PERMISSAO)); }
+  let nUsu = 0;
+  for (const x of u.rows) {
+    const login = T(x.LOGIN).toLowerCase();
+    if (!login) continue;
+    const codigo = Number(x.UCOD);
+    const lista = [...(perms.get(codigo) || [])].filter(Boolean).sort((p, q) => p - q);
+    await sql`INSERT INTO usuario_local (login, codigo, nome, perms, admin, ativo, criado_por)
+      VALUES (${login}, ${codigo}, ${T(x.NOME) || login}, ${lista}, ${T(x.TIPO).toUpperCase() === 'ADMINISTRADOR'},
+        ${String(x.ATIVO || '').trim().toUpperCase() === 'S'}, 'migrar-consumer')
+      ON CONFLICT (login) DO UPDATE SET codigo=EXCLUDED.codigo, nome=EXCLUDED.nome, perms=EXCLUDED.perms,
+        admin=EXCLUDED.admin, ativo=EXCLUDED.ativo`;
+    nUsu++;
+  }
+  console.log(`[migrar] usuários: ${nUsu} em usuario_local (PIN de cada um preservado em garcom_pin)`);
+  const [s] = await sql`SELECT (SELECT count(*) FROM cliente_local) cli, (SELECT count(*) FROM usuario_local WHERE ativo) usu,
+    (SELECT count(*) FROM produto_nuvem) prod`;
+  console.log(`[migrar] conferência: cliente_local=${s.cli} usuario_local ativos=${s.usu} produto_nuvem=${s.prod}` +
+    (Number(s.prod) ? '' : '  ⚠️ produto_nuvem vazio: o catálogo vem da nuvem no 1º ciclo do loopCatalogoNuvem (precisa FILIAL_ID + PAGAR_MESA_SECRET)'));
+  await sql.end({ timeout: 5 }).catch(() => {});
+  process.exit(0);
+}
 async function main() {
   conferirTelas();
+  if (process.argv.includes('--migrar-consumer')) { await migrarConsumer(); return; }
   const iF = process.argv.indexOf('--fotos');
   if (iF > 0) {
     // com --fotos, ou importa ou SAI — caminho vazio/errado não pode virar um
@@ -20394,6 +20893,8 @@ async function main() {
   setInterval(() => loopPagamentoNativoNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopClienteNativoNuvem().catch(() => {}), 58 * 1000);
   setInterval(() => loopClienteNativoNuvem().catch(() => {}), 60 * 1000);
+  // fila agente_comando da nuvem (só em modo próprio: sem Consumer não há agente-local)
+  setTimeout(() => loopComandosNuvem().catch(() => {}), 30 * 1000);
   loopPontoRoster().catch(() => {});
   setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopFaceSync().catch(() => {}), 35 * 1000);
