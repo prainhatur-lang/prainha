@@ -59,7 +59,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ dispositivo: criado });
   } catch (e) {
     if ((e as { code?: string }).code === '23505') {
-      return NextResponse.json({ error: 'esse Device ID já está cadastrado nessa filial' }, { status: 409 });
+      return NextResponse.json(
+        { error: 'esse Device ID + código de switch já está cadastrado nessa filial' },
+        { status: 409 },
+      );
     }
     throw e;
   }

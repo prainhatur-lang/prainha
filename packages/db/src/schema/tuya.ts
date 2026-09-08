@@ -24,6 +24,10 @@ export const tuyaDispositivo = pgTable(
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    uqFilialDevice: unique('uq_tuya_dispositivo_filial_device').on(t.filialId, t.tuyaDeviceId),
+    uqFilialDeviceSwitch: unique('uq_tuya_dispositivo_filial_device_switch').on(
+      t.filialId,
+      t.tuyaDeviceId,
+      t.codigoSwitch,
+    ),
   }),
 );
