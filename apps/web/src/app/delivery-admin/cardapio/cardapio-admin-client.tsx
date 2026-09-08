@@ -100,6 +100,19 @@ export function CardapioAdminClient({
   const [novoEm, setNovoEm] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
 
+  // painel "Preços por canal" (reajuste em massa)
+  const [precosAberto, setPrecosAberto] = useState(false);
+  const [pCanal, setPCanal] = useState<'delivery' | 'ifood'>('delivery');
+  const [pBase, setPBase] = useState<'salao' | 'delivery'>('salao');
+  const [pPercentual, setPPercentual] = useState('15');
+  const [pArredondar, setPArredondar] = useState<'centavo' | 'real' | 'noventa'>('centavo');
+  const [pCategoria, setPCategoria] = useState('');
+  const [pSoIguais, setPSoIguais] = useState(false);
+  const [pPrevia, setPPrevia] = useState<{
+    mudancas: Array<{ id: string; nome: string; de: number | null; para: number }>;
+    semBase: string[];
+  } | null>(null);
+
   // janela "Trazer produtos"
   const [janelaAberta, setJanelaAberta] = useState(false);
   const [salao, setSalao] = useState<ItemSalao[] | null>(null);
@@ -315,6 +328,43 @@ export function CardapioAdminClient({
     }
   }
 
+  /** Prévia (aplicar=false) e gravação (aplicar=true) do reajuste em massa.
+   *  Sempre passa pela prévia antes: o dono vê item a item o que vai mudar. */
+  async function reajustar(aplicar: boolean) {
+    setSalvando(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/delivery-admin/precos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filialId,
+          canal: pCanal,
+          base: pBase,
+          percentual: Number(pPercentual.replace(',', '.')),
+          arredondar: pArredondar,
+          categoriaId: pCategoria || null,
+          somenteIguaisABase: pSoIguais,
+          aplicar,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      if (aplicar) {
+        setPPrevia(null);
+        ok(`${d.aplicados} preço(s) de ${pCanal === 'ifood' ? 'iFood' : 'delivery'} atualizado(s).`);
+        start(() => router.refresh());
+      } else {
+        setPPrevia({ mudancas: d.mudancas ?? [], semBase: d.semBase ?? [] });
+      }
+    } finally {
+      setSalvando(false);
+    }
+  }
+
   const botaoTrazer = podeCriar ? (
     <button
       onClick={() => void abrirJanela()}
@@ -379,6 +429,168 @@ export function CardapioAdminClient({
           >
             Criar categoria
           </button>
+        </div>
+      ) : null}
+
+      {podeEditar && itens.length > 0 ? (
+        <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+          <button
+            onClick={() => setPrecosAberto((v) => !v)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <span>
+              <span className="text-sm font-semibold text-slate-900">Preços por canal</span>
+              <span className="ml-2 text-xs text-slate-500">
+                reajustar o cardápio inteiro de uma vez
+              </span>
+            </span>
+            <span className="text-slate-400">{precosAberto ? '▴' : '▾'}</span>
+          </button>
+
+          {precosAberto ? (
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="block">
+                  <span className={lblCls}>Reajustar o preço de</span>
+                  <select
+                    value={pCanal}
+                    onChange={(e) => {
+                      setPCanal(e.target.value as 'delivery' | 'ifood');
+                      setPPrevia(null);
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="delivery">Nosso delivery</option>
+                    <option value="ifood">iFood</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className={lblCls}>Calculando sobre</span>
+                  <select
+                    value={pBase}
+                    onChange={(e) => {
+                      setPBase(e.target.value as 'salao' | 'delivery');
+                      setPPrevia(null);
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="salao">Preço do salão (PDV)</option>
+                    <option value="delivery">Preço do nosso delivery</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className={lblCls}>Acréscimo (%)</span>
+                  <input
+                    value={pPercentual}
+                    onChange={(e) => {
+                      setPPercentual(e.target.value);
+                      setPPrevia(null);
+                    }}
+                    inputMode="decimal"
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block">
+                  <span className={lblCls}>Arredondar</span>
+                  <select
+                    value={pArredondar}
+                    onChange={(e) => {
+                      setPArredondar(e.target.value as 'centavo' | 'real' | 'noventa');
+                      setPPrevia(null);
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="centavo">Centavo exato</option>
+                    <option value="real">Real cheio</option>
+                    <option value="noventa">Terminar em ,90</option>
+                  </select>
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className={lblCls}>Categoria</span>
+                  <select
+                    value={pCategoria}
+                    onChange={(e) => {
+                      setPCategoria(e.target.value);
+                      setPPrevia(null);
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="">Todas as categorias</option>
+                    {categorias.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nome}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-end gap-2 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={pSoIguais}
+                    onChange={(e) => {
+                      setPSoIguais(e.target.checked);
+                      setPPrevia(null);
+                    }}
+                    className="mb-3 h-4 w-4"
+                  />
+                  <span className="mb-2.5 text-xs text-slate-600">
+                    Só os que ainda estão iguais à base (não mexe em preço já ajustado na mão)
+                  </span>
+                </label>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => void reajustar(false)}
+                  disabled={salvando}
+                  className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Ver prévia
+                </button>
+                {pPrevia && pPrevia.mudancas.length > 0 ? (
+                  <button
+                    onClick={() => void reajustar(true)}
+                    disabled={salvando}
+                    className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    Aplicar em {pPrevia.mudancas.length} item(ns)
+                  </button>
+                ) : null}
+              </div>
+
+              {pPrevia ? (
+                <div className="mt-3">
+                  {pPrevia.mudancas.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      Nenhum preço mudaria com esses parâmetros.
+                    </p>
+                  ) : (
+                    <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                      {pPrevia.mudancas.map((m) => (
+                        <li
+                          key={m.id}
+                          className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs"
+                        >
+                          <span className="truncate text-slate-700">{m.nome}</span>
+                          <span className="shrink-0 tabular-nums text-slate-500">
+                            {m.de != null ? brl(m.de) : '—'} →{' '}
+                            <strong className="text-slate-900">{brl(m.para)}</strong>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {pPrevia.semBase.length > 0 ? (
+                    <p className="mt-2 text-xs text-amber-700">
+                      {pPrevia.semBase.length} item(ns) ficaram de fora por não ter preço de base
+                      (item sem vínculo com o PDV): {pPrevia.semBase.slice(0, 5).join(', ')}
+                      {pPrevia.semBase.length > 5 ? '…' : ''}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
