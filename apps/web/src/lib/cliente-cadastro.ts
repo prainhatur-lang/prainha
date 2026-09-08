@@ -7,6 +7,8 @@
 // agente, em agente-local/src/index.ts): mudar um lado sem o outro faz o
 // campo salvar na nuvem e não chegar na loja.
 
+import { parseValorBr } from './format';
+
 export interface CamposCliente {
   nome?: string;
   cpfOuCnpj?: string | null;
@@ -142,8 +144,11 @@ export function normalizarCliente(
       nuvem.limiteCreditoContaCorrente = null;
       loja.limiteCredito = 0;
     } else {
-      const n = Number(String(bruto).replace(/\./g, '').replace(',', '.'));
-      if (!Number.isFinite(n) || n < 0) throw new ErroCadastro('limite inválido');
+      // parseValorBr aceita o que o usuário digita ('30.000', '1.500,50') E o numeric
+      // do banco ('30000.00'): o replace cego de ponto lia '30000.00' como 3.000.000
+      // e o espelho pras outras casas morria calado no teto (07/09/2026).
+      const n = parseValorBr(bruto);
+      if (n === null || n < 0) throw new ErroCadastro('limite inválido');
       if (n > 1_000_000) throw new ErroCadastro('limite acima do teto (R$ 1.000.000)');
       nuvem.limiteCreditoContaCorrente = n.toFixed(2);
       loja.limiteCredito = n;
