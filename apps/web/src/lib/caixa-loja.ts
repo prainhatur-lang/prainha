@@ -96,7 +96,15 @@ async function lerJson(r: Response): Promise<Resp> {
 /** Plano B do DNS: resolve o nome por DoH e chama a loja direto no IP. */
 async function chamarPeloIp(url: string, method: string, body: string | undefined, timeoutMs: number, tag: string): Promise<Resp> {
   const host = new URL(url).hostname;
-  const dns = await resolverPorDoH(host, timeoutMs);
+  let dns = await resolverPorDoH(host, timeoutMs);
+  if (!dns.ip && dns.nxdomain && host.endsWith('.ts.net')) {
+    // Funnel ligado mas SEM o registro A público (caso da Tabuará,
+    // servidordell.tailb22e0d.ts.net, 08/09/2026: `tailscale cert` emite, o
+    // ingress atende pelo SNI, e o painel nunca publica o A). O ingress do
+    // Funnel roteia pelo SNI, então bate direto nos IPs conhecidos dele.
+    const ip = await primeiroIngressVivo(host, Math.min(8000, timeoutMs));
+    if (ip) dns = { ip, fonte: 'ingress fixo' };
+  }
   if (!dns.ip) {
     console.warn(`${tag} DoH ${host}: ${dns.nxdomain ? 'NXDOMAIN' : dns.erro}`);
     return {
@@ -119,6 +127,23 @@ async function chamarPeloIp(url: string, method: string, body: string | undefine
     console.warn(`${tag} via IP ${dns.ip} (DoH ${dns.fonte}): ${causa}`);
     return { ok: false, erro: 'Loja fora do ar — ' + causa };
   }
+}
+
+/** IPs do ingress do Tailscale Funnel (os mesmos que o DNS devolve pros nós
+ *  que têm o registro publicado, ex. win-3tt8lmsanuh). Testa a conexão TLS
+ *  com o nome no SNI e devolve o primeiro que aceita. */
+const INGRESS_FUNNEL = ['199.38.181.54', '209.177.145.137'];
+async function primeiroIngressVivo(host: string, timeoutMs: number): Promise<string | undefined> {
+  const tls = await import('node:tls');
+  for (const ip of INGRESS_FUNNEL) {
+    const ok = await new Promise<boolean>((res) => {
+      const s = tls.connect({ host: ip, port: 443, servername: host, timeout: timeoutMs }, () => { s.destroy(); res(true); });
+      s.on('timeout', () => { s.destroy(); res(false); });
+      s.on('error', () => res(false));
+    });
+    if (ok) return ip;
+  }
+  return undefined;
 }
 
 /** DNS-over-HTTPS: Google, depois Cloudflare. nxdomain só quando TODOS dizem
