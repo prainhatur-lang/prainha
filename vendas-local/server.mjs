@@ -5030,6 +5030,7 @@ function apiConfig() {
     // saber daqui se estava desligado no start.bat, se o download falhava ou
     // se estava só esperando a loja esvaziar.
     auto_update: AUTO_UPDATE ? 'on' : 'off',
+    banco: BANCO, // 'firebird' (Consumer) ou 'proprio' — o runbook do flip confere aqui
     auto_update_estado: autoUpdateEstado,
     // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
     adquirente: ADQUIRENTE_LOJA };
