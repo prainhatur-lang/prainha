@@ -156,6 +156,35 @@ function q1(s, ms = 15000) {
     setTimeout(() => fin({ ok: false, err: 'timeout' }), ms);
     try { Firebird.attach(FB, (err, db) => { if (err) return fin({ ok: false, err: String(err.message).slice(0, 150) }); db.query(s, [], (e, rows) => { try { db.detach(() => {}); } catch {} if (e) return fin({ ok: false, err: String(e.message).slice(0, 180) }); fin({ ok: true, rows }); }); }); } catch (e) { fin({ ok: false, err: String(e.message).slice(0, 150) }); } });
 }
+/** Várias queries num attach SÓ, em ordem. O node-firebird crasha FORA da
+ *  promise ("pluginName") quando se abre outro attach logo depois de um detach
+ *  pesado — foi assim que a migração de usuários da Prainha Bar morreu com
+ *  'uncaught' (07/09/2026), no attach seguinte aos 32 mil clientes. Resolve
+ *  {ok:true, rows:[linhas da 1ª, da 2ª, ...]} ou {ok:false, err}; o resgate do
+ *  uncaughtException acorda esta promise como qualquer outra. */
+function fbSerie(sqls, ms = 60000) {
+  if (nativo()) return Promise.resolve({ ok: false, err: 'modo próprio: sem Firebird' });
+  return new Promise((res) => {
+    let done = false;
+    const fin = (r) => { if (done) return; done = true; pendentes.delete(fin); res(r); };
+    pendentes.add(fin);
+    setTimeout(() => fin({ ok: false, err: 'timeout' }), ms);
+    try {
+      Firebird.attach(FB, (err, db) => {
+        if (err) return fin({ ok: false, err: String(err.message).slice(0, 150) });
+        const rows = [];
+        const passo = (i) => {
+          if (i >= sqls.length) { try { db.detach(() => {}); } catch {} return fin({ ok: true, rows }); }
+          db.query(sqls[i], [], (e, r) => {
+            if (e) { try { db.detach(() => {}); } catch {} return fin({ ok: false, err: String(e.message).slice(0, 180) }); }
+            rows.push(r || []); passo(i + 1);
+          });
+        };
+        passo(0);
+      });
+    } catch (e) { fin({ ok: false, err: String(e.message).slice(0, 150) }); }
+  });
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Devolve o ÚLTIMO erro real (era 'retry', que não dizia se foi timeout,
 // crash do driver ou SQL errado — e o log do pedido gêmeo ficava mudo).
@@ -20781,18 +20810,28 @@ function conferirTelas() {
 //     O PIN mora em garcom_pin, por login — não é tocado: todo mundo entra
 //     com o PIN de sempre.
 // Idempotente: rodar de novo só atualiza. Sai do processo ao terminar.
+// --so-usuarios: pula os clientes (já migrados) e refaz só usuários/permissões
+// — é o caso de repetir a parte que falhou sem reescrever 32 mil linhas.
+// As leituras do Firebird saem num attach SÓ (fbSerie): dois attaches seguidos
+// crasharam o driver na Prainha Bar e a migração parou depois dos clientes.
 async function migrarConsumer() {
   if (nativo()) { console.error('[migrar] rode SEM BANCO=proprio — precisa ler o Firebird ainda'); process.exit(2); }
   await initSchema();
   const agora = new Date();
-  const c = await q1(`SELECT CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
+  const soUsuarios = process.argv.includes('--so-usuarios');
+  const SQL_CLI = `SELECT CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
       TRIM(COALESCE(FONECELULAR,'')) TEL, COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM,
       COALESCE(SALDOATUALCONTACORRENTE,0) SALDO, TRIM(COALESCE(BLOQUEARVENDAAPOSLIMITE,'N')) BLOQ
-    FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(COALESCE(TIPO,''))='CF'`, 180000);
-  if (!c.ok) { console.error('[migrar] clientes do Consumer: ' + c.err); process.exit(1); }
+    FROM CONTATOS WHERE DATADELETE IS NULL AND TRIM(COALESCE(TIPO,''))='CF'`;
+  const SQL_USU = `SELECT u.CODIGO UCOD, TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.TIPO,'')) TIPO, u.ATIVO, TRIM(COALESCE(c.NOME,'')) NOME
+    FROM USUARIOS u LEFT JOIN CONTATOS c ON c.CODIGO=u.CODIGOCONTATO`;
+  const SQL_ACE = `SELECT USUARIO, PERMISSAO FROM ACESSO`;
+  const r = await fbSerie(soUsuarios ? [SQL_USU, SQL_ACE] : [SQL_CLI, SQL_USU, SQL_ACE], 300000);
+  if (!r.ok) { console.error('[migrar] leitura do Consumer: ' + r.err); process.exit(1); }
+  const [cRows, uRows, aRows] = soUsuarios ? [[], r.rows[0], r.rows[1]] : r.rows;
   let nCli = 0;
-  for (let i = 0; i < c.rows.length; i += 500) {
-    const lote = c.rows.slice(i, i + 500).map((x) => ({
+  for (let i = 0; i < cRows.length; i += 500) {
+    const lote = cRows.slice(i, i + 500).map((x) => ({
       codigo: Number(x.CODIGO), nome: T(x.NOME) || null, cpf: soDig(x.DOC) || null, telefone: soDig(x.TEL) || null,
       limite_credito: Number(x.LIM) || 0, saldo_atual: Number(x.SALDO) || 0, ativo: true,
       bloqueia_apos_limite: T(x.BLOQ).toUpperCase() === 'S', atualizado_em: agora, sync_nuvem_em: agora,
@@ -20804,16 +20843,11 @@ async function migrarConsumer() {
         bloqueia_apos_limite=EXCLUDED.bloqueia_apos_limite, atualizado_em=EXCLUDED.atualizado_em, sync_nuvem_em=EXCLUDED.sync_nuvem_em`;
     nCli += lote.length;
   }
-  console.log(`[migrar] clientes: ${nCli} em cliente_local`);
-  const u = await q1(`SELECT u.CODIGO UCOD, TRIM(u.LOGIN) LOGIN, TRIM(COALESCE(u.TIPO,'')) TIPO, u.ATIVO, TRIM(COALESCE(c.NOME,'')) NOME
-    FROM USUARIOS u LEFT JOIN CONTATOS c ON c.CODIGO=u.CODIGOCONTATO`, 60000);
-  if (!u.ok) { console.error('[migrar] usuários do Consumer: ' + u.err); process.exit(1); }
-  const a = await q1(`SELECT USUARIO, PERMISSAO FROM ACESSO`, 60000);
-  if (!a.ok) { console.error('[migrar] permissões do Consumer: ' + a.err); process.exit(1); }
+  console.log(soUsuarios ? '[migrar] clientes: pulados (--so-usuarios)' : `[migrar] clientes: ${nCli} em cliente_local`);
   const perms = new Map();
-  for (const x of a.rows) { const k = Number(x.USUARIO); if (!perms.has(k)) perms.set(k, new Set()); perms.get(k).add(Number(x.PERMISSAO)); }
+  for (const x of aRows) { const k = Number(x.USUARIO); if (!perms.has(k)) perms.set(k, new Set()); perms.get(k).add(Number(x.PERMISSAO)); }
   let nUsu = 0;
-  for (const x of u.rows) {
+  for (const x of uRows) {
     const login = T(x.LOGIN).toLowerCase();
     if (!login) continue;
     const codigo = Number(x.UCOD);
