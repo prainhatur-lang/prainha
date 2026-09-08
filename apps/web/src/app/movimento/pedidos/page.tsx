@@ -91,11 +91,12 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     .offset(page * PAGE_SIZE);
 
   // Top produtos no período
+  const valorProdutoSum = sql<number>`COALESCE(SUM(${schema.pedidoItem.valorTotal}), 0)`;
   const topProdutos = await db
     .select({
       nome: schema.pedidoItem.nomeProduto,
       qtd: sql<string>`COALESCE(SUM(${schema.pedidoItem.quantidade}), 0)::text`,
-      valor: sql<string>`COALESCE(SUM(${schema.pedidoItem.valorTotal}), 0)::text`,
+      valor: sql<string>`${valorProdutoSum}::text`,
     })
     .from(schema.pedidoItem)
     .innerJoin(schema.pedido, eq(schema.pedido.id, schema.pedidoItem.pedidoId))
@@ -110,7 +111,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
       ),
     )
     .groupBy(schema.pedidoItem.nomeProduto)
-    .orderBy(sql`3 DESC`)
+    .orderBy(desc(valorProdutoSum))
     .limit(10);
 
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
