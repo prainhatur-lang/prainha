@@ -11,6 +11,7 @@ import { brl, formatDateTime, formatFone, pareceFixo } from '@/lib/format';
 import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
+import { GerarPedidoButton, type ItemPraPedido } from './gerar-pedido-button';
 import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
@@ -180,6 +181,79 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       Number(r.precoUnitarioNormalizado) < Number(min.precoUnitarioNormalizado) ? r : min,
     );
   }
+
+  // Pedidos que já saíram desta cotação.
+  //
+  // A aprovação é única e irrepetível: gera o pedido de todo mundo de uma vez e
+  // depois recusa rodar de novo. Quem respondeu DEPOIS — a Vinhedo do Fernando,
+  // que mandou os preços quando os pedidos já tinham saído — ficava sem pedido
+  // nenhum e sem caminho no app. Daqui a tela sabe quem ficou de fora e quais
+  // produtos já têm dono, pra ninguém comprar a mesma coisa duas vezes.
+  const pedidosDaCotacao = await db
+    .select({
+      id: schema.pedidoCompra.id,
+      numero: schema.pedidoCompra.numero,
+      fornecedorId: schema.pedidoCompra.fornecedorId,
+      status: schema.pedidoCompra.status,
+    })
+    .from(schema.pedidoCompra)
+    .where(eq(schema.pedidoCompra.cotacaoId, id));
+  const pedidosVivos = pedidosDaCotacao.filter((p) => p.status !== 'CANCELADO');
+  const pedidoPorFornecedor = new Map(pedidosVivos.map((p) => [p.fornecedorId, p]));
+
+  const itensJaPedidos =
+    pedidosVivos.length === 0
+      ? []
+      : await db
+          .select({
+            produtoId: schema.pedidoCompraItem.produtoId,
+            pedidoId: schema.pedidoCompraItem.pedidoCompraId,
+          })
+          .from(schema.pedidoCompraItem)
+          .where(inArray(schema.pedidoCompraItem.pedidoCompraId, pedidosVivos.map((p) => p.id)));
+
+  const nomePorFornecedorId = new Map(
+    fornecedores.map((f) => [f.fornecedorId, f.fornecedorNome ?? 'fornecedor']),
+  );
+  const pedidoPorId = new Map(pedidosVivos.map((p) => [p.id, p]));
+  const donoDoProduto = new Map<string, string>();
+  for (const it of itensJaPedidos) {
+    const p = pedidoPorId.get(it.pedidoId);
+    if (!p) continue;
+    donoDoProduto.set(it.produtoId, `${nomePorFornecedorId.get(p.fornecedorId) ?? 'outro'} (#${p.numero})`);
+  }
+
+  const itemById = new Map(itens.map((i) => [i.id, i]));
+  /** O que dá pra comprar deste fornecedor: tudo que ele cotou com preço. */
+  function itensPraPedido(cfId: string): ItemPraPedido[] {
+    return respostasVisiveis
+      .filter((r) => r.cotacaoFornecedorId === cfId && r.precoUnitarioNormalizado != null)
+      .map((r) => {
+        const it = itemById.get(r.cotacaoItemId);
+        if (!it) return null;
+        const preco = Number(r.precoUnitarioNormalizado);
+        const qtd = Number(it.quantidade);
+        return {
+          cotacaoItemId: r.cotacaoItemId,
+          produtoNome: it.produtoNome ?? 'item',
+          qtd,
+          unidade: it.unidade ?? '',
+          preco,
+          total: preco * qtd,
+          marcaNome: r.marcaNome,
+          jaPedidoPor: donoDoProduto.get(it.produtoId) ?? null,
+        } satisfies ItemPraPedido;
+      })
+      .filter((x): x is ItemPraPedido => x !== null)
+      .sort((a, b) => a.produtoNome.localeCompare(b.produtoNome, 'pt-BR'));
+  }
+
+  // Depois de aprovada o pedido de quem respondeu no prazo já existe; só aqui
+  // faz sentido oferecer "gerar pedido" pra quem sobrou.
+  const podeGerarPedidoAvulso = c.status === 'APROVADA' || c.status === 'CONCLUIDA';
+  const semPedido = podeGerarPedidoAvulso
+    ? fornecedores.filter((f) => f.respondidoEm && !pedidoPorFornecedor.has(f.fornecedorId))
+    : [];
 
   const fornecedorById = new Map(fornecedores.map((f) => [f.id, f]));
   const respondidasCount = fornecedores.filter((f) => f.status === 'RESPONDIDA').length;
@@ -369,6 +443,13 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               <EnviarTodosButton cotacaoId={id} naoAbriram={naoAbriram.length} />
             )}
           </div>
+          {semPedido.length > 0 && (
+            <div className="mb-3 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-[11px] text-violet-900">
+              🧾 <strong>{semPedido.length}</strong> respondeu(ram) mas ficou(aram) sem pedido:{' '}
+              {semPedido.map((f) => f.fornecedorNome).join(', ')} — a resposta chegou depois da
+              aprovação. Use <strong>Gerar pedido</strong> na linha dele pra comprar mesmo assim.
+            </div>
+          )}
           {(naoAbriram.length > 0 || semZap.length > 0) && (
             <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
               {semZap.length > 0 && (
@@ -394,6 +475,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                 <th className="px-3 py-2 text-left font-medium">Link enviado</th>
                 <th className="px-3 py-2 text-left font-medium">Aberto</th>
                 <th className="px-3 py-2 text-left font-medium">Respondido</th>
+                <th className="px-3 py-2 text-center font-medium">Pedido</th>
                 <th className="px-3 py-2 text-center font-medium">WhatsApp</th>
                 <th className="px-3 py-2 text-right font-medium">Link público</th>
               </tr>
@@ -431,6 +513,20 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                   </td>
                   <td className="px-3 py-2 text-slate-600">
                     {formatDateTime(f.respondidoEm)}
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <PedidoDoFornecedor
+                      pedido={pedidoPorFornecedor.get(f.fornecedorId) ?? null}
+                      podeGerar={podeGerarPedidoAvulso && !!f.respondidoEm}
+                      cotacaoId={id}
+                      cotacaoFornecedorId={f.id}
+                      fornecedorNome={f.fornecedorNome ?? ''}
+                      itens={
+                        podeGerarPedidoAvulso && !!f.respondidoEm && !pedidoPorFornecedor.has(f.fornecedorId)
+                          ? itensPraPedido(f.id)
+                          : []
+                      }
+                    />
                   </td>
                   <td className="px-3 py-2 text-center">
                     <EnviarWhatsappButton
@@ -610,5 +706,44 @@ function DestinoWhatsapp({
         </div>
       )}
     </div>
+  );
+}
+
+/** Coluna "Pedido": mostra o pedido que já saiu, ou o botão de gerar pro
+ *  fornecedor que respondeu tarde e ficou de fora da aprovação. */
+function PedidoDoFornecedor({
+  pedido,
+  podeGerar,
+  cotacaoId,
+  cotacaoFornecedorId,
+  fornecedorNome,
+  itens,
+}: {
+  pedido: { id: string; numero: number; status: string } | null;
+  podeGerar: boolean;
+  cotacaoId: string;
+  cotacaoFornecedorId: string;
+  fornecedorNome: string;
+  itens: ItemPraPedido[];
+}) {
+  if (pedido) {
+    return (
+      <Link
+        href={`/compras/pedidos/${pedido.id}`}
+        className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-100"
+        title={`Pedido ${pedido.status.toLowerCase()}`}
+      >
+        #{pedido.numero}
+      </Link>
+    );
+  }
+  if (!podeGerar) return <span className="text-[10px] text-slate-400">—</span>;
+  return (
+    <GerarPedidoButton
+      cotacaoId={cotacaoId}
+      cotacaoFornecedorId={cotacaoFornecedorId}
+      fornecedorNome={fornecedorNome}
+      itens={itens}
+    />
   );
 }
