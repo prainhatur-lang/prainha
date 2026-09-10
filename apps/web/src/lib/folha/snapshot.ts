@@ -85,11 +85,40 @@ export async function snapshotFolha(folhaId: string): Promise<ResultadoCalculo> 
   }
 
   // Empresa fica: ppEmpresa/10 do 10% total (só informativo).
-  const cfg = folha?.configSnapshot as { ppEmpresa?: string | number } | null;
+  const cfg = folha?.configSnapshot as {
+    ppEmpresa?: string | number;
+    ppFuncionarios?: string | number;
+  } | null;
   const dezPct = (folha?.dezPctPorDia as Record<string, number>) ?? {};
   const totalDez = Object.values(dezPct).reduce((a, b) => a + (b ?? 0), 0);
   const ppEmpresa = cfg?.ppEmpresa != null ? Number(cfg.ppEmpresa) : 0;
   const totalEmpresa = round2(totalDez * (ppEmpresa / 10));
+
+  // Perdas: as linhas de folha_perda sobrevivem ao fechamento, e tanto o
+  // dezPctPorDia quanto o configSnapshot ficam congelados — então dá pra
+  // reproduzir exatamente quanto foi abatido, com a mesma regra do motor
+  // (clamp no pote do dia + sobra rolando pro dia seguinte).
+  const perdasRows = await db
+    .select({ dia: schema.folhaPerda.dia, valor: schema.folhaPerda.valor })
+    .from(schema.folhaPerda)
+    .where(eq(schema.folhaPerda.folhaSemanaId, folhaId));
+  const perdasPorDia: Record<string, number> = {};
+  for (const pd of perdasRows) {
+    perdasPorDia[pd.dia] = (perdasPorDia[pd.dia] ?? 0) + Number(pd.valor);
+  }
+  const ppFuncionarios = cfg?.ppFuncionarios != null ? Number(cfg.ppFuncionarios) : 0;
+  const totalPerdas = Object.values(perdasPorDia).reduce((a, b) => a + b, 0);
+  let perdaSobra = 0;
+  let totalPerdasAplicadas = 0;
+  for (const dia of Array.from(
+    new Set([...Object.keys(dezPct), ...Object.keys(perdasPorDia)]),
+  ).sort()) {
+    const potePessoal = (ppFuncionarios / 10) * (dezPct[dia] ?? 0);
+    const pendente = (perdasPorDia[dia] ?? 0) + perdaSobra;
+    const aplicada = Math.min(pendente, potePessoal);
+    perdaSobra = pendente - aplicada;
+    totalPerdasAplicadas += aplicada;
+  }
 
   return {
     lancamentos,
@@ -99,6 +128,8 @@ export async function snapshotFolha(folhaId: string): Promise<ResultadoCalculo> 
     totalLiquido: round2(totalLiquido),
     totalDescontos: round2(totalDescontos),
     totalAcrescimos: round2(totalAcrescimos),
+    totalPerdas: round2(totalPerdas),
+    totalPerdasAplicadas: round2(totalPerdasAplicadas),
     avisos: [],
   };
 }

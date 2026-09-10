@@ -35,6 +35,9 @@ export interface InputsFolha {
   pessoas: PessoaInput[];
   horasMap: Map<string, Record<string, number>>;
   ajustesMap: AjustesMap;
+  /** Perdas/quebras da semana somadas por dia: { 'YYYY-MM-DD': valor }.
+   *  Abatem o pote dos funcionarios daquele dia no motor. */
+  perdasPorDia: Record<string, number>;
 }
 
 /** Carrega config+pessoas+horas+ajustes de uma folha e monta os inputs
@@ -73,6 +76,12 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
 
   const horasRows = await db.select().from(schema.folhaHoras).where(eq(schema.folhaHoras.folhaSemanaId, folhaSemanaId));
   const ajustesRows = await db.select().from(schema.folhaAjuste).where(eq(schema.folhaAjuste.folhaSemanaId, folhaSemanaId));
+  const perdasRows = await db.select().from(schema.folhaPerda).where(eq(schema.folhaPerda.folhaSemanaId, folhaSemanaId));
+
+  const perdasPorDia: Record<string, number> = {};
+  for (const pd of perdasRows) {
+    perdasPorDia[pd.dia] = (perdasPorDia[pd.dia] ?? 0) + Number(pd.valor);
+  }
 
   const horasMap = new Map<string, Record<string, number>>();
   for (const h of horasRows) {
@@ -136,5 +145,5 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
   }));
 
-  return { config, cfg, pessoasRows, pessoas, horasMap, ajustesMap };
+  return { config, cfg, pessoasRows, pessoas, horasMap, ajustesMap, perdasPorDia };
 }

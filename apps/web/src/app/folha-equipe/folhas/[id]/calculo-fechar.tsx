@@ -39,6 +39,8 @@ interface Resultado {
   totalDescontos: number;
   totalAcrescimos: number;
   totalEmpresa: number;
+  totalPerdas: number;
+  totalPerdasAplicadas: number;
   avisos: string[];
 }
 
@@ -55,6 +57,9 @@ interface Props {
   status: string;
   pessoas: Pessoa[];
   ajustesIniciais: AjusteRow[];
+  /** Assinatura das perdas da semana. Muda => re-busca o preview (as perdas
+   *  são editadas em outro componente, fora deste). */
+  perdasKey: string;
   pagamentoStatus: PagamentoStatus;
 }
 
@@ -63,6 +68,7 @@ export function CalculoFechar({
   status,
   pessoas,
   ajustesIniciais,
+  perdasKey,
   pagamentoStatus,
 }: Props) {
   const router = useRouter();
@@ -101,6 +107,21 @@ export function CalculoFechar({
   useEffect(() => {
     setAjustes(ajustesIniciais);
   }, [ajustesIniciais]);
+
+  // Perdas são lançadas no PerdasManager (outro componente) — quando mudam,
+  // o preview aqui precisa ser recalculado. Pula a 1ª execução: o efeito de
+  // mount abaixo já chama refreshPreview.
+  const perdasKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (perdasKeyRef.current === null) {
+      perdasKeyRef.current = perdasKey;
+      return;
+    }
+    if (perdasKeyRef.current === perdasKey) return;
+    perdasKeyRef.current = perdasKey;
+    refreshPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perdasKey]);
 
   // Auto-puxa fiados ao abrir a folha (silencioso). Substitui o clique
   // manual no botão "⤓ Puxar fiados" — sempre traz o saldo mais recente
@@ -614,8 +635,19 @@ export function CalculoFechar({
           <p className="text-xs text-slate-500">Calculando...</p>
         ) : (
           <>
-            <div className="mb-4 grid grid-cols-5 gap-3 rounded bg-slate-50 p-3">
+            <div
+              className={`mb-4 grid gap-3 rounded bg-slate-50 p-3 ${
+                resultado.totalPerdas > 0 ? 'grid-cols-6' : 'grid-cols-5'
+              }`}
+            >
               <Box label="Empresa fica" valor={brl(resultado.totalEmpresa)} cor="text-slate-600" />
+              {resultado.totalPerdas > 0 && (
+                <Box
+                  label="💥 Perdas"
+                  valor={brl(resultado.totalPerdasAplicadas)}
+                  cor="text-rose-700"
+                />
+              )}
               <Box
                 label="Bruto a pagar"
                 valor={brl(resultado.totalBruto)}

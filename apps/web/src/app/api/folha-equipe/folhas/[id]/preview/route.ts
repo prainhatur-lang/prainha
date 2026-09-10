@@ -50,6 +50,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     pessoas: inputs.pessoas,
     horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(inputs.ajustesMap),
+    perdasPorDia: inputs.perdasPorDia,
   });
 
   return NextResponse.json(resultado);

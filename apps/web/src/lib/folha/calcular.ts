@@ -64,6 +64,11 @@ export interface ResultadoCalculo {
   /** Total acrescimos (gratificacoes geradas a partir dos acrescimos manuais
    *  + bonus fixo semanal — incluso em totalBruto). */
   totalAcrescimos: number;
+  /** Total de perdas/quebras LANCADAS na semana (folha_perda). */
+  totalPerdas: number;
+  /** Quanto das perdas realmente saiu do pote dos funcionarios. Menor que
+   *  totalPerdas quando o 10% da semana nao cobre a perda. */
+  totalPerdasAplicadas: number;
   /** Aviso por pessoa, se calculou algo estranho (ex: gerente sem horas). */
   avisos: string[];
 }
@@ -76,8 +81,8 @@ const DIAS_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'] as const;
  *   - Empresa fica com (ppEmpresa/10) × dezPct[D]
  *   - Gerente recebe (ppGerente/10) × dezPct[D] (se modelo='1pp_dos_10pct')
  *     OU gerente_valor_fixo_dia se trabalhou nesse dia
- *   - Funcionarios rateiam (ppFuncionarios/10) × dezPct[D] por hora
- *     trabalhada (proporcional)
+ *   - Funcionarios rateiam (ppFuncionarios/10) × dezPct[D] MENOS as perdas
+ *     do dia D, por hora trabalhada (proporcional)
  * - Diaristas (papel='diarista') recebem ALEM da comissao:
  *   horas_total × taxa_diarista_hora (override por pessoa OU padrao da filial)
  * - Aux transporte (se ativo): horas em dias selecionados × valor_hora
@@ -95,9 +100,17 @@ export function calcularFolha(args: {
     string,
     Array<{ tipo: 'desconto' | 'acrescimo' | 'premiacao'; valor: number; descricao?: string }>
   >;
+  /** Perdas/quebras por dia (folha_perda): { 'YYYY-MM-DD': valor }. Abatem
+   *  SO o pote dos funcionarios daquele dia, antes do rateio por horas —
+   *  empresa e gerente ficam com os pp deles sobre o 10% cheio. */
+  perdasPorDia?: Record<string, number>;
 }): ResultadoCalculo {
-  const { config, dezPctPorDia, pessoas, horas, ajustes = {} } = args;
-  const dias = Object.keys(dezPctPorDia).sort();
+  const { config, dezPctPorDia, pessoas, horas, ajustes = {}, perdasPorDia = {} } = args;
+  // Inclui dias que so tem perda lancada (dia sem movimento nao aparece em
+  // dezPctPorDia) — senao a perda desse dia nunca seria abatida.
+  const dias = Array.from(
+    new Set([...Object.keys(dezPctPorDia), ...Object.keys(perdasPorDia)]),
+  ).sort();
   const horasMap = new Map(horas.map((h) => [h.fornecedorId, h.porDia]));
 
   // Identifica gerente (papel='gerente') — pode ter zero ou um por filial.
@@ -114,11 +127,24 @@ export function calcularFolha(args: {
   const comissaoPorPessoa = new Map<string, number>();
   for (const p of naoGerentes) comissaoPorPessoa.set(p.fornecedorId, 0);
 
+  // Perda que nao coube no pote do dia e rola pro dia seguinte da semana.
+  let perdaSobra = 0;
+  const totalPerdas = Object.values(perdasPorDia).reduce((a, b) => a + b, 0);
+  let totalPerdasAplicadas = 0;
+
   for (const dia of dias) {
     const dezPctDia = dezPctPorDia[dia] ?? 0;
     const empresaDia = (config.ppEmpresa / 10) * dezPctDia;
-    const funcionariosDia = (config.ppFuncionarios / 10) * dezPctDia;
     totalEmpresa += empresaDia;
+
+    // Perda do dia (+ o que sobrou dos dias anteriores) sai do pote dos
+    // funcionarios ANTES do rateio por horas. Empresa e gerente nao pagam.
+    const potePessoal = (config.ppFuncionarios / 10) * dezPctDia;
+    const perdaPendente = (perdasPorDia[dia] ?? 0) + perdaSobra;
+    const perdaAplicada = Math.min(perdaPendente, potePessoal);
+    perdaSobra = perdaPendente - perdaAplicada;
+    totalPerdasAplicadas += perdaAplicada;
+    const funcionariosDia = potePessoal - perdaAplicada;
 
     // Total de minutos trabalhados nesse dia (somente nao-gerentes —
     // gerente nao rateia).
@@ -137,6 +163,13 @@ export function calcularFolha(args: {
         (comissaoPorPessoa.get(p.fornecedorId) ?? 0) + fatia,
       );
     }
+  }
+
+  if (perdaSobra > 0.005) {
+    avisos.push(
+      `Perdas de ${brl(perdaSobra)} nao couberam no ${config.ppFuncionarios}pp dos 10% da semana — ` +
+        `NAO foram abatidas e nao carregam pra semana seguinte.`,
+    );
   }
 
   // Gera lancamento de COMISSAO + DIARIA + TRANSPORTE pros nao-gerentes.
@@ -173,7 +206,7 @@ export function calcularFolha(args: {
         descricao: `Comissão semana — ${p.nome}`,
         detalhe: `${minutosToHM(minTotal)} de horas; rateio do ${
           config.ppFuncionarios
-        }pp do 10%`,
+        }pp do 10%${totalPerdasAplicadas > 0 ? ' (ja liquido das perdas do dia)' : ''}`,
       });
     } else if (descontoComissao > 0) {
       // Pessoa sem comissão mas com fiado — fica em aberto (não vira débito).
@@ -379,6 +412,8 @@ export function calcularFolha(args: {
     totalLiquido: round2(totalLiquido),
     totalDescontos: round2(totalDescontos),
     totalAcrescimos: round2(totalAcrescimos),
+    totalPerdas: round2(totalPerdas),
+    totalPerdasAplicadas: round2(totalPerdasAplicadas),
     avisos,
   };
 }

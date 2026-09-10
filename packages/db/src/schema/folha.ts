@@ -279,3 +279,31 @@ export const metaEquipeRateio = pgTable(
     uniq: unique('uq_meta_equipe_rateio_meta_pessoa').on(t.metaEquipeId, t.fornecedorId),
   }),
 );
+
+/** Perda / quebra lancada num dia da semana da folha (ex: garcom quebrou
+ *  copos). Abate o pote dos FUNCIONARIOS (pp_funcionarios do 10%) DAQUELE
+ *  DIA, antes do rateio por horas — quem trabalhou no dia da quebra e quem
+ *  sente o desconto. Empresa e gerente continuam recebendo os pp deles
+ *  sobre o 10% cheio.
+ *
+ *  Se a perda passa do pote de funcionarios do dia, o excedente rola pros
+ *  dias seguintes da mesma semana; o que ainda sobrar vira aviso (nunca
+ *  gera comissao negativa nem carrega pra semana seguinte). */
+export const folhaPerda = pgTable(
+  'folha_perda',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    folhaSemanaId: uuid('folha_semana_id')
+      .notNull()
+      .references(() => folhaSemana.id, { onDelete: 'cascade' }),
+    /** Dia da semana da folha em que a perda aconteceu. */
+    dia: date('dia').notNull(),
+    valor: numeric('valor', { precision: 10, scale: 2 }).notNull(),
+    descricao: varchar('descricao', { length: 200 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    criadoPor: uuid('criado_por'),
+  },
+  (t) => ({
+    folhaIdx: index('idx_folha_perda_folha').on(t.folhaSemanaId, t.dia),
+  }),
+);

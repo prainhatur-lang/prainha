@@ -11,6 +11,7 @@ import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
 import { RecalcularPontoButton } from './recalcular-ponto-button';
 import { CalculoFechar } from './calculo-fechar';
+import { PerdasManager } from './perdas-manager';
 
 export const dynamic = 'force-dynamic';
 
@@ -116,6 +117,16 @@ export default async function FolhaDetalhePage(props: {
     .from(schema.folhaAjuste)
     .where(eq(schema.folhaAjuste.folhaSemanaId, folha.id));
 
+  // Perdas/quebras da semana — abatem o pote dos funcionários no dia.
+  const perdasRows = await db
+    .select()
+    .from(schema.folhaPerda)
+    .where(eq(schema.folhaPerda.folhaSemanaId, folha.id));
+  const perdasPorDia: Record<string, number> = {};
+  for (const pd of perdasRows) {
+    perdasPorDia[pd.dia] = (perdasPorDia[pd.dia] ?? 0) + Number(pd.valor);
+  }
+
   // Metas vinculadas a esta folha (premiação já entrou como folha_ajuste
   // tipo='premiacao' — não editável na tela de ajustes manuais, só via
   // /rh/metas/[id] → reabrir).
@@ -185,6 +196,38 @@ export default async function FolhaDetalhePage(props: {
     });
   }
 
+  // Quebra do 10% por dia, com a perda já abatida do pote dos funcionários
+  // (mesma regra do motor: clamp no pote do dia, sobra rola pro dia seguinte).
+  const cfgSnap = folha.configSnapshot as {
+    ppEmpresa?: string | number;
+    ppGerente?: string | number;
+    ppFuncionarios?: string | number;
+  } | null;
+  const ppE = Number(cfgSnap?.ppEmpresa ?? 1);
+  const ppG = Number(cfgSnap?.ppGerente ?? 1);
+  const ppF = Number(cfgSnap?.ppFuncionarios ?? 8);
+  let perdaSobra = 0;
+  const potePorDia: Record<string, number> = {};
+  const linhasDez = dias.map((dia) => {
+    const valor = dezPct[dia] ?? 0;
+    const pote = valor * (ppF / 10);
+    potePorDia[dia] = pote;
+    const pendente = (perdasPorDia[dia] ?? 0) + perdaSobra;
+    const perdaAplicada = Math.min(pendente, pote);
+    perdaSobra = pendente - perdaAplicada;
+    return {
+      dia,
+      valor,
+      empresa: valor * (ppE / 10),
+      gerente: valor * (ppG / 10),
+      perda: perdaAplicada,
+      funcionarios: pote - perdaAplicada,
+    };
+  });
+  const totalPerdaAplicada = linhasDez.reduce((s, l) => s + l.perda, 0);
+  const totalFuncionarios = linhasDez.reduce((s, l) => s + l.funcionarios, 0);
+  const temPerda = Object.keys(perdasPorDia).length > 0;
+
   const config = folha.configSnapshot as {
     ppEmpresa?: string | number;
     ppGerente?: string | number;
@@ -243,44 +286,49 @@ export default async function FolhaDetalhePage(props: {
                       <th className="px-3 py-2 text-right font-medium text-slate-500">
                         Gerente ({Number(config.ppGerente)}pp)
                       </th>
+                      {temPerda && (
+                        <th className="px-3 py-2 text-right font-medium text-slate-500">
+                          ↓ Perdas
+                        </th>
+                      )}
                       <th className="px-3 py-2 text-right font-medium text-slate-500">
                         Funcionários ({Number(config.ppFuncionarios)}pp)
+                        {temPerda && <span className="block text-[10px] font-normal">já sem as perdas</span>}
                       </th>
                     </>
                   )}
                 </tr>
               </thead>
               <tbody>
-                {dias.map((dia) => {
-                  const valor = dezPct[dia] ?? 0;
-                  const ppE = Number(config?.ppEmpresa ?? 1);
-                  const ppG = Number(config?.ppGerente ?? 1);
-                  const ppF = Number(config?.ppFuncionarios ?? 8);
-                  return (
-                    <tr key={dia} className="border-t border-slate-100">
-                      <td className="px-3 py-2">
-                        <span className="text-xs uppercase text-slate-500 mr-2">{nomeDia(dia)}</span>
-                        {formatBr(dia)}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono">
-                        {brl(valor)}
-                      </td>
-                      {config && (
-                        <>
-                          <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
-                            {brl(valor * (ppE / 10))}
+                {linhasDez.map((l) => (
+                  <tr key={l.dia} className="border-t border-slate-100">
+                    <td className="px-3 py-2">
+                      <span className="text-xs uppercase text-slate-500 mr-2">{nomeDia(l.dia)}</span>
+                      {formatBr(l.dia)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {brl(l.valor)}
+                    </td>
+                    {config && (
+                      <>
+                        <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
+                          {brl(l.empresa)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
+                          {brl(l.gerente)}
+                        </td>
+                        {temPerda && (
+                          <td className="px-3 py-2 text-right font-mono text-xs text-rose-700">
+                            {l.perda > 0 ? `− ${brl(l.perda)}` : '—'}
                           </td>
-                          <td className="px-3 py-2 text-right font-mono text-xs text-slate-500">
-                            {brl(valor * (ppG / 10))}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono text-xs text-emerald-700 font-medium">
-                            {brl(valor * (ppF / 10))}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
+                        )}
+                        <td className="px-3 py-2 text-right font-mono text-xs text-emerald-700 font-medium">
+                          {brl(l.funcionarios)}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ))}
                 <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
                   <td className="px-3 py-2">TOTAL</td>
                   <td className="px-3 py-2 text-right font-mono">{brl(totalDezPct)}</td>
@@ -292,8 +340,13 @@ export default async function FolhaDetalhePage(props: {
                       <td className="px-3 py-2 text-right font-mono">
                         {brl(totalDezPct * (Number(config.ppGerente) / 10))}
                       </td>
+                      {temPerda && (
+                        <td className="px-3 py-2 text-right font-mono text-rose-700">
+                          − {brl(totalPerdaAplicada)}
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-right font-mono text-emerald-700">
-                        {brl(totalDezPct * (Number(config.ppFuncionarios) / 10))}
+                        {brl(totalFuncionarios)}
                       </td>
                     </>
                   )}
@@ -302,6 +355,20 @@ export default async function FolhaDetalhePage(props: {
             </table>
           </div>
         </section>
+
+        <PerdasManager
+          folhaId={folha.id}
+          aberta={folha.status === 'aberta'}
+          dias={dias}
+          perdas={perdasRows.map((pd) => ({
+            id: pd.id,
+            dia: pd.dia,
+            valor: Number(pd.valor),
+            descricao: pd.descricao,
+          }))}
+          potePorDia={potePorDia}
+          ppFuncionarios={ppF}
+        />
 
         {/* Upload do espelho de ponto */}
         {folha.status === 'aberta' && (
@@ -456,6 +523,10 @@ export default async function FolhaDetalhePage(props: {
               descricao: a.descricao,
               origem: a.origem,
             }))}
+          perdasKey={perdasRows
+            .map((pd) => `${pd.id}:${pd.valor}`)
+            .sort()
+            .join('|')}
           pagamentoStatus={{
             total: Number(pgtoStatus?.total ?? 0),
             abertas: Number(pgtoStatus?.abertas ?? 0),

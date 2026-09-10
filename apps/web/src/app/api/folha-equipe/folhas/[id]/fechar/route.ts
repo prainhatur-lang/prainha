@@ -69,6 +69,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     pessoas: inputs.pessoas,
     horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(inputs.ajustesMap),
+    perdasPorDia: inputs.perdasPorDia,
   });
 
   // Mapeia tipo de lancamento → categoriaId da config
