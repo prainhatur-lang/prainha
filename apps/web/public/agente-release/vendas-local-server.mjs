@@ -4316,6 +4316,17 @@ async function apiTransferir(body) {
   const de = Number(body.de), para = Number(body.para);
   if (!(de >= 1 && de <= NUMERO_MAX) || !(para >= 1 && para <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
+  // ⚠️ MESA NÃO ENTRA DENTRO DE COMANDA (10/09/2026). O campo "mesa destino"
+  // do caixa aceitava qualquer número: alguém digitou 300 e uma fila de mesas
+  // foi parar dentro da comanda 300 — cada origem fechou como esvaziada e,
+  // quando a tal comanda sumiu, levou o consumo de todas junto (as mesas
+  // voltaram sozinhas depois, mas o estrago já estava feito).
+  // A hierarquia do salão é uma só: a COMANDA é a pessoa e mora NUMA mesa —
+  // quem muda de lugar é ela (vincular). A mesa é o lugar: vai pra outro
+  // lugar, nunca pra dentro de uma pessoa.
+  if (de < COMANDA_DE && para >= COMANDA_DE) {
+    return { ok: false, erro: `a mesa ${de} não pode ir pra dentro da comanda ${para} — é a comanda que fica numa mesa, não o contrário. Destino de mesa é outra mesa (1–${MESA_MAX}); pra juntar as duas, vincule a comanda ${para} à mesa ${de}.` };
+  }
   const quem = String(body.por || '').slice(0, 60) || null;
 
   // comanda mudando de mesa: só o vínculo
@@ -7972,6 +7983,16 @@ async function apiCaixaTransferirItens(body, quem) {
   if (!(de >= 1 && para >= 1)) return { ok: false, erro: 'número inválido' };
   if (de === para) return { ok: false, erro: 'origem e destino são iguais' };
   if (!cods.length) return { ok: false, erro: 'marque o que vai' };
+  // ITEM avulso pra uma comanda pode (a cerveja que era do fulano vai pro
+  // cartão dele) — com as duas travas que faltavam quando a comanda 300
+  // engoliu meia casa: a comanda tem que EXISTIR COM CADASTRO (senão a
+  // transferência criava conta anônima do nada), e levar TUDO é a mesa
+  // inteira indo pra dentro de uma comanda — isso é o inverso da hierarquia
+  // e está bloqueado no /api/venda/transferir também.
+  if (para >= COMANDA_DE && !(await comandaIdentificada(para))) {
+    return { ok: false, precisa_cadastro: true, numero: para,
+      erro: `a comanda ${para} não tem cadastro. Identifique quem vai usar antes de mandar item pra ela.` };
+  }
   let pedDe, pedPara;
   try {
     pedDe = await fbAcharPedido(de);
@@ -7983,6 +8004,9 @@ async function apiCaixaTransferirItens(body, quem) {
   const lista = await itensDoPedido(pedDe, { codigos: cods });
   const mover = lista.map((x) => x.codigo);
   if (!mover.length) return { ok: false, erro: 'esses itens não estão mais nessa conta' };
+  if (de < COMANDA_DE && para >= COMANDA_DE && mover.length >= (await itensContar(pedDe))) {
+    return { ok: false, erro: `isso é a mesa ${de} INTEIRA indo pra dentro da comanda ${para} — a comanda é que fica na mesa. Vincule a comanda ${para} à mesa ${de}, ou mande a mesa pra outra mesa.` };
+  }
   const movidos = await itensMover(pedDe, pedPara, mover);
   if (!movidos) return { ok: false, erro: 'não consegui mover os itens' };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* recalcula no ciclo */ }
@@ -7997,7 +8021,8 @@ async function apiCaixaTransferirItens(body, quem) {
   await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
     VALUES (${de}, ${para}, 'item', ${mover.length}, ${quem.login}, ${pedDe}, ${pedPara})`;
   espelho().catch(() => {});
-  return { ok: true, itens: mover.length, msg: `${cods.length} item(ns) foram pra mesa ${para}.` };
+  return { ok: true, itens: mover.length,
+    msg: `${cods.length} item(ns) foram pra ${para >= COMANDA_DE ? 'comanda' : 'mesa'} ${para}.` };
 }
 // ---- FIADO (conta corrente do cliente) ----
 // Conferido no banco real da 0001 antes de escrever (10.917 lançamentos):
@@ -18584,8 +18609,8 @@ function transfCx(){
   ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML='<div class="card" style="max-width:380px;width:100%;margin:0">'+
     '<div class="tit" style="margin-top:0">⇄ Transferir '+(MESA>=${COMANDA_DE}?'comanda':'mesa')+' '+MESA+'</div>'+
-    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Pra qual mesa vai?')+'</div>'+
-    '<input id="trdest" class="num" inputmode="numeric" placeholder="mesa destino" style="margin-top:8px">'+
+    '<div class="mut">'+(MESA>=${COMANDA_DE}?'Pra qual MESA vai a comanda?':'Pra qual mesa vai? (1–${MESA_MAX} — mesa não vai pra dentro de comanda; comanda é que fica na mesa)')+'</div>'+
+    '<input id="trdest" class="num" inputmode="numeric" placeholder="mesa destino (1–${MESA_MAX})" style="margin-top:8px">'+
     // ⚠️ ANTES ERA TUDO OU NADA: só dava pra levar a mesa inteira. O caixa
     // precisa mover UM item (a cerveja que era da mesa ao lado, o prato
     // lançado no número errado). Marcou algum? vai só o marcado.
@@ -18626,6 +18651,10 @@ async function doTransfCx(btn,tudo){
   var d=Number(((document.getElementById('trdest')||{}).value||'').replace(/\\D/g,''));
   var er=document.getElementById('trerr');
   if(!(d>0)){if(er)er.textContent='digite a mesa destino';return}
+  // a conta INTEIRA de uma mesa só vai pra outra MESA — digitar 300 aqui
+  // mandava a mesa pra dentro da comanda 300 (10/09/2026)
+  if(tudo&&MESA<${COMANDA_DE}&&d>=${COMANDA_DE}){
+    if(er)er.textContent='destino tem que ser uma MESA (1–${MESA_MAX}). A comanda é que fica na mesa — pra juntar, vincule a comanda à mesa.';return}
   var marcados=tudo?[]:[].slice.call(document.querySelectorAll('.tri:checked')).map(function(c){return Number(c.value)});
   if(!tudo&&!marcados.length){if(er)er.textContent='marque os itens (ou use "a mesa INTEIRA")';return}
   btn.disabled=true;
