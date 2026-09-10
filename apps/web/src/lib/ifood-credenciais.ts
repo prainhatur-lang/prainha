@@ -23,6 +23,7 @@ export const CAMPOS_IFOOD = [
   { chave: 'modo', rotulo: 'Tipo do app', ajuda: 'centralizado (client_credentials) ou distribuido (autorização da loja)' },
   { chave: 'codigoPdv', rotulo: 'Código de PDV do cardápio', ajuda: 'produto (PRODUTOS) é o que a Prainha usa; variante (PRODUTODETALHE) fica pra quem cadastrou diferente' },
   { chave: 'autoConfirmar', rotulo: 'Aceitar pedido automaticamente', ajuda: '1 = aceita sozinho' },
+  { chave: 'puxador', rotulo: 'Quem puxa os pedidos', ajuda: 'loja (o vendas-local fala com o iFood) ou nuvem (o Concilia puxa e distribui). Tem que ser IGUAL em todas as casas do mesmo client_id' },
   { chave: 'ativo', rotulo: 'Integração ligada', ajuda: '1 = a loja recebe pedidos do iFood por aqui' },
 ] as const;
 
@@ -40,6 +41,10 @@ export interface ConfigIfood {
   codigoPdv: 'variante' | 'produto';
   autoConfirmar: boolean;
   ativo: boolean;
+  /** Quem faz o polling na API do iFood. A fila de eventos é por CREDENCIAL,
+   *  não por loja: com duas casas no mesmo client_id, ou as duas puxam pela
+   *  nuvem ou as duas puxam sozinhas — misturar divide a fila e some pedido. */
+  puxador: 'loja' | 'nuvem';
   /** Tem credencial cadastrada pra esta filial. */
   configurada: boolean;
 }
@@ -47,7 +52,7 @@ export interface ConfigIfood {
 const VAZIA: ConfigIfood = {
   clientId: '', clientSecret: '', merchantId: '',
   modo: 'centralizado', codigoPdv: 'produto',
-  autoConfirmar: true, ativo: false, configurada: false,
+  autoConfirmar: true, ativo: false, puxador: 'loja', configurada: false,
 };
 
 /** Config desta filial, já decifrada. Filial sem cadastro volta VAZIA e
@@ -77,6 +82,44 @@ export async function configIfood(filialId: string): Promise<ConfigIfood> {
     codigoPdv: m.codigoPdv === 'variante' ? 'variante' : 'produto',
     autoConfirmar: m.autoConfirmar !== '0',
     ativo: m.ativo === '1',
+    // Default 'loja': quem já estava rodando não muda de dono do polling por
+    // causa de deploy — a virada é explícita, casa por casa.
+    puxador: m.puxador === 'nuvem' ? 'nuvem' : 'loja',
     configurada: true,
   };
+}
+
+/** Config de TODAS as filiais que têm credencial do iFood, já decifrada.
+ *  É o que o puxador da nuvem usa pra saber quais merchants são dele e de
+ *  quem é cada pedido que chegar. */
+export async function configsIfoodTodas(): Promise<Array<ConfigIfood & { filialId: string }>> {
+  if (!segredoConfigurado()) return [];
+  const linhas = await db
+    .select({
+      filialId: schema.filialCredencial.filialId,
+      chave: schema.filialCredencial.chave,
+      valor: schema.filialCredencial.valor,
+    })
+    .from(schema.filialCredencial)
+    .where(eq(schema.filialCredencial.provedor, PROVEDOR_IFOOD));
+
+  const porFilial = new Map<string, Record<string, string>>();
+  for (const l of linhas) {
+    const m = porFilial.get(l.filialId) ?? {};
+    try { m[l.chave] = decifrar(l.valor); } catch { /* chave ilegível */ }
+    porFilial.set(l.filialId, m);
+  }
+
+  return [...porFilial.entries()].map(([filialId, m]) => ({
+    filialId,
+    clientId: m.clientId ?? '',
+    clientSecret: m.clientSecret ?? '',
+    merchantId: m.merchantId ?? '',
+    modo: m.modo === 'distribuido' ? ('distribuido' as const) : ('centralizado' as const),
+    codigoPdv: m.codigoPdv === 'variante' ? ('variante' as const) : ('produto' as const),
+    autoConfirmar: m.autoConfirmar !== '0',
+    ativo: m.ativo === '1',
+    puxador: m.puxador === 'nuvem' ? ('nuvem' as const) : ('loja' as const),
+    configurada: true,
+  }));
 }

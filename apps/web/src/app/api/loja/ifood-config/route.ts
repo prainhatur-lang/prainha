@@ -52,5 +52,7 @@ export async function GET(request: Request) {
     client_id: c.clientId,
     client_secret: c.clientSecret,
     merchant_id: c.merchantId,
+    // quem faz o polling: 'loja' (o vendas-local) ou 'nuvem' (o cron do Concilia)
+    puxador: c.puxador,
   });
 }
