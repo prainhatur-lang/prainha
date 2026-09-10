@@ -350,6 +350,16 @@ async function initSchema() {
   // cancelar ≠ fechar: pedido cancelado some da mesa mas NÃO virou venda.
   await addCol('comanda', 'cancelada_em timestamptz');
   await addCol('comanda', 'cancelada_por text');
+  // ESVAZIADA POR TRANSFERÊNCIA ≠ CANCELADA. Levaram todos os itens pra outra
+  // conta: a casca não pode continuar ocupando a mesa, mas marcar cancelamento
+  // é mentira — ninguém cancelou nada — e fazia a conta sumir do mundo (comanda
+  // 300, 10/09/2026: as mesas 6/200/250/270 viraram "canceladas" e o ↩ Reabrir
+  // não alcançava mais nenhuma delas). Agora ela FECHA marcada com o destino:
+  // libera a mesa, fica em "Fechadas hoje", volta pelo Reabrir, e não sobe pra
+  // nuvem como venda de R$ 0.
+  await addCol('comanda', 'esvaziada_em timestamptz');
+  await addCol('comanda', 'esvaziada_para integer');
+  await addCol('comanda', 'esvaziada_por text');
   await sql`CREATE TABLE IF NOT EXISTS marca (item_codigo bigint PRIMARY KEY, pronto_em timestamptz, entregue_em timestamptz)`;
   await addCol('marca', 'criado_em timestamptz');
   await addCol('marca', 'comanda_codigo integer');
@@ -687,6 +697,24 @@ async function initSchema() {
   // já resolveu ficava olhando alarme velho (dono, 19/08).
   await addCol('cancelamento', 'visto_em timestamptz');
   await addCol('cancelamento', 'visto_por text');
+  // CONSERTO RETROATIVO das cascas que a transferência cancelou antes de existir
+  // o estado "esvaziada". Cancelar conta SEMPRE deixa linha em `cancelamento`
+  // ("PEDIDO INTEIRO", item_codigo nulo) — sem essa linha, com transferência
+  // saindo dela e sem pagamento vivo, ninguém cancelou coisa alguma: a conta foi
+  // esvaziada. Vira fechada+esvaziada, volta a aparecer e a ser reabrível.
+  // (mesas 6/200/250/270 da comanda 300, 10/09/2026)
+  try {
+    const rp = await sql`UPDATE comanda c SET cancelada_em=NULL, fechada_em=c.cancelada_em,
+        esvaziada_em=c.cancelada_em, esvaziada_para=t.para_numero, esvaziada_por=t.por
+      FROM (SELECT DISTINCT ON (pedido_de) pedido_de, para_numero, por FROM transferencia
+             WHERE pedido_de IS NOT NULL ORDER BY pedido_de, criado_em DESC) t
+      WHERE t.pedido_de=c.codigo AND c.cancelada_em IS NOT NULL AND c.fechada_em IS NULL
+        AND c.esvaziada_em IS NULL AND c.cancelada_em > now() - interval '30 days'
+        AND NOT EXISTS (SELECT 1 FROM cancelamento x WHERE x.pedido_fb=c.codigo AND x.item_codigo IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM pagamento_local p WHERE p.pedido=c.codigo AND p.cancelado_em IS NULL)
+      RETURNING c.codigo`;
+    if (rp.length) console.log('[schema] ' + rp.length + ' conta(s) esvaziada(s) por transferência não constam mais como canceladas');
+  } catch (e) { console.error('[schema] conserto das esvaziadas:', e.message); }
   // LIBERAÇÃO REMOTA: o caixa pede daqui, o gerente aprova no celular (/gerente)
   // sem ir até o caixa digitar PIN. status: pendente → aprovada | negada.
   await sql`CREATE TABLE IF NOT EXISTS liberacao (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
@@ -2684,6 +2712,21 @@ async function pedApagar(ped, { soAberto = false } = {}) {
   const r = await qi(`UPDATE PEDIDOS SET DATADELETE=CURRENT_TIMESTAMP WHERE CODIGO=${Number(ped)}${onde}`);
   return !!r.ok;
 }
+/** A CASCA da origem depois de levarem TODOS os itens embora. Não é
+ *  cancelamento — ninguém cancelou a conta, os itens só mudaram de lugar —
+ *  então ela FECHA carimbada com o destino: a mesa libera, a conta continua
+ *  listada em "Fechadas hoje" e o ↩ Reabrir traz ela de volta se a
+ *  transferência foi engano. No Firebird segue o DATADELETE: lá fechar um
+ *  pedido vazio criaria uma venda de R$ 0 nos relatórios do Consumer. */
+async function pedEsvaziou(ped, paraNumero, por) {
+  if (nativo()) {
+    const r = await sql`UPDATE comanda SET fechada_em=now(), conta_pedida=false, esvaziada_em=now(),
+        esvaziada_para=${paraNumero == null ? null : Number(paraNumero)}, esvaziada_por=${por || null}
+      WHERE codigo=${Number(ped)} AND fechada_em IS NULL AND cancelada_em IS NULL RETURNING codigo`;
+    return r.length > 0;
+  }
+  return pedApagar(ped, { soAberto: true });
+}
 /** Itens vivos do pedido. `alvo` traz o item e os filhos dele. */
 async function itensDoPedido(ped, { alvo = null, codigos = null } = {}) {
   if (nativo()) {
@@ -4284,12 +4327,12 @@ async function apiTransferir(body) {
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* total recalcula no próximo ciclo */ }
   // ⚠️ A CASCA DA ORIGEM. Levou TODOS os itens embora e o pedido da mesa de
   // origem ficava aberto com zero item — a mesa seguia "ocupada" na tela pra
-  // sempre (mesa 129, 19/08). Sem item e sem pagamento não há o que guardar:
-  // some, do mesmo jeito que o Consumer faz com pedido aberto por engano.
+  // sempre (mesa 129, 19/08). A casca é encerrada, mas como CONTA ESVAZIADA,
+  // não como cancelamento: transferir nunca cancela conta de ninguém.
   const sobrou = await itensContar(pedDe);
   const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
   if (sobrou === 0 && pagoDe <= 0.009) {
-    const rm = await pedApagar(pedDe, { soAberto: true });
+    const rm = await pedEsvaziou(pedDe, para, quem);
     if (!rm) console.error('[transferir] casca da mesa ' + de + ' ficou aberta');
     await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
   }
@@ -5357,7 +5400,7 @@ async function fbAcharPedidoNfce(numero) {
   if (aberto) return aberto;
   if (nativo()) {
     const [c] = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)} AND cancelada_em IS NULL
-      AND fechada_em > now() - interval '48 hours' ORDER BY codigo DESC LIMIT 1`;
+      AND esvaziada_em IS NULL AND fechada_em > now() - interval '48 hours' ORDER BY codigo DESC LIMIT 1`;
     return c ? Number(c.codigo) : null;
   }
   const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=${Number(numero)} AND DATADELETE IS NULL
@@ -6728,7 +6771,7 @@ async function apiCaixaFechadas() {
   if (ini.getUTCHours() < 3) ini.setUTCDate(ini.getUTCDate() - 1);
   ini.setUTCHours(3, 0, 0, 0);
   const rows = await sql`SELECT c.codigo, c.numero, c.nome, COALESCE(c.valor_total,0) total,
-      COALESCE(c.subtotal_pago,0) pago, c.fechada_em,
+      COALESCE(c.subtotal_pago,0) pago, c.fechada_em, c.esvaziada_para,
       (SELECT string_agg(x.obs, ' · ') FROM (
          SELECT DISTINCT COALESCE(NULLIF(btrim(p.observacao),''),'—') obs FROM pagamento_local p
           WHERE p.pedido=c.codigo AND p.cancelado_em IS NULL) x) quem
@@ -6738,7 +6781,8 @@ async function apiCaixaFechadas() {
   return { ok: true, itens: rows.map((r) => ({
     codigo: Number(r.codigo), numero: Number(r.numero), nome: T(r.nome) || null,
     total: Number(r.total) || 0, pago: Number(r.pago) || 0,
-    fechada_em: r.fechada_em, quem: T(r.quem) || null })) };
+    fechada_em: r.fechada_em, quem: T(r.quem) || null,
+    esvaziada_para: r.esvaziada_para == null ? null : Number(r.esvaziada_para) })) };
 }
 /** REABRIR a última conta fechada do número (perm 29 = Reabrir Pedido): volta
  *  pra grade com itens e pagamentos como estavam. Só nas últimas 48h e só se
@@ -6761,7 +6805,8 @@ async function apiCaixaReabrir(body, quem) {
   }
   if (!ped) return { ok: false, erro: 'não achei conta fechada nas últimas 48h nesse número' };
   if (nativo()) {
-    await sql`UPDATE comanda SET fechada_em=NULL, conta_pedida=false WHERE codigo=${ped}`;
+    await sql`UPDATE comanda SET fechada_em=NULL, conta_pedida=false,
+        esvaziada_em=NULL, esvaziada_para=NULL, esvaziada_por=NULL WHERE codigo=${ped}`;
   } else {
     const r = await qi(`UPDATE PEDIDOS SET DATAFECHAMENTO=NULL, CONTASOLICITADA='N' WHERE CODIGO=${ped} AND DATAFECHAMENTO IS NOT NULL`);
     if (!r.ok) return { ok: false, erro: 'FB reabrir: ' + r.err };
@@ -7898,8 +7943,9 @@ async function apiUsuarioLocalSalvar(body, quem) {
 /** TRANSFERIR ITENS ESCOLHIDOS pra outra mesa. O "Transferir" que já existia
  *  leva a mesa INTEIRA; aqui o caixa marca o que vai (a cerveja que era da
  *  mesa ao lado, o prato lançado no número errado). Move os complementos
- *  junto — molho não fica órfão na mesa antiga — e se a origem ficar vazia,
- *  a casca é encerrada (senão a mesa fica "ocupada" pra sempre). */
+ *  junto — molho não fica órfão na mesa antiga — e se a origem ficar vazia, a
+ *  casca é FECHADA como esvaziada (senão a mesa fica "ocupada" pra sempre);
+ *  fechada e não cancelada: ela continua em "Fechadas hoje" e volta no ↩ Reabrir. */
 async function apiCaixaTransferirItens(body, quem) {
   if (!(quem && (quem.transferir || quem.admin))) return { ok: false, erro: 'sem permissão (Transferir itens de um pedido para o outro)' };
   const de = Number(body.de), para = Number(body.para);
@@ -7921,11 +7967,12 @@ async function apiCaixaTransferirItens(body, quem) {
   const movidos = await itensMover(pedDe, pedPara, mover);
   if (!movidos) return { ok: false, erro: 'não consegui mover os itens' };
   try { await fbAtualizarTotal(pedPara); await fbAtualizarTotal(pedDe); } catch { /* recalcula no ciclo */ }
-  // origem esvaziou? mesma regra da transferência de mesa inteira
+  // origem esvaziou? mesma regra da transferência de mesa inteira: fecha como
+  // ESVAZIADA (reabrível), nunca cancela
   const sobrou = await itensContar(pedDe);
   const pagoDe = await fbPagoDoPedido(pedDe).catch(() => 0);
   if (sobrou === 0 && pagoDe <= 0.009) {
-    await pedApagar(pedDe, { soAberto: true });
+    await pedEsvaziou(pedDe, para, quem.login);
     await sql`UPDATE identificacao SET fechada_em=now() WHERE numero=${de} AND fechada_em IS NULL`;
   }
   await sql`INSERT INTO transferencia (de_numero, para_numero, tipo, itens_movidos, por, pedido_de, pedido_para)
@@ -8339,6 +8386,7 @@ async function loopPedidoNativoNuvem() {
         valor_total, subtotal_pago, total_desconto, percentual_desconto, total_acrescimo,
         total_servico, percentual_servico, valor_entrega, qtd_pessoas, data_abertura, fechada_em
       FROM comanda WHERE fechada_em IS NOT NULL AND sync_nuvem_em IS NULL
+        AND esvaziada_em IS NULL
       ORDER BY fechada_em LIMIT 100`;
     if (!comandas.length) return;
     const codigos = comandas.map((c) => Number(c.codigo));
@@ -13586,6 +13634,7 @@ function placaValida(x) { return /^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(normPlac
 async function pedidoFechadoRecente(numero, minutos = 30) {
   if (nativo()) {
     const r = await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
+       AND cancelada_em IS NULL AND esvaziada_em IS NULL
        AND fechada_em IS NOT NULL AND fechada_em > now() - (${minutos} || ' minutes')::interval
        ORDER BY fechada_em DESC LIMIT 1`;
     return r.length ? Number(r[0].codigo) : null;
@@ -17123,9 +17172,12 @@ function cardFechadas(){
   if(!FECH.length)return h+'<div class="mut">nenhuma conta fechada hoje.</div>';
   h+='<div class="mut">Conta quitada sai da grade mas fica AQUI — nada some.</div>';
   for(var i=0;i<FECH.length;i++){var f=FECH[i];
+    /* conta esvaziada por transferência: não teve pagamento, teve destino */
+    var sub=f.esvaziada_para?('itens foram pra <b>'+esc(String(f.esvaziada_para))+'</b>')
+                            :(brl(f.pago)+(f.quem?' · '+esc(f.quem):''));
     h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">'+
       '<span><b>'+esc(String(f.numero))+'</b>'+(f.nome?' <span class="mut">'+esc(f.nome)+'</span>':'')+
-      '<br><span class="mut">'+esc(hhmm(f.fechada_em))+' · '+brl(f.pago)+(f.quem?' · '+esc(f.quem):'')+'</span></span>'+
+      '<br><span class="mut">'+esc(hhmm(f.fechada_em))+' · '+sub+'</span></span>'+
       ((PODE.reabrir||PODE.admin)?'<a class="sair" onclick="reabrirCx('+f.numero+')">↩ reabrir</a>':'')+
     '</div>';}
   return h;
