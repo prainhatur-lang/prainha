@@ -3,11 +3,11 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { foneParaWhatsapp } from '@/lib/vendedor-fone';
+import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
 import { eq, asc, inArray, sql } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { AppHeader } from '@/components/app-header';
-import { brl, formatDateTime } from '@/lib/format';
+import { brl, formatDateTime, formatFone, pareceFixo } from '@/lib/format';
 import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
@@ -110,11 +110,19 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
         ORDER BY vf.principal DESC, v.atualizado_em DESC LIMIT 1)`,
       // WhatsApp da casa primeiro; o fone do Consumer costuma ser fixo.
       fonePrincipal: foneParaWhatsapp(),
+      foneOrigem: origemDoFone(),
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))
     .where(eq(schema.cotacaoFornecedor.cotacaoId, id))
     .orderBy(asc(schema.fornecedor.nome));
+
+  // Quem não vai receber (sem número / número fixo) e quem recebeu mas nunca
+  // abriu o link. Sem isso a tela só dizia "enviado" e o fornecedor sumia.
+  const semZap = fornecedores.filter((f) => !f.fonePrincipal || pareceFixo(f.fonePrincipal));
+  const naoAbriram = fornecedores.filter(
+    (f) => f.linkEnviadoEm && !f.linkAbertoEm && !f.respondidoEm && !semZap.includes(f),
+  );
 
   const respostasAll = fornecedores.length === 0
     ? []
@@ -357,12 +365,31 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
         <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-900">Fornecedores convocados</h2>
-            {conviteCotacaoConfigurado() && <EnviarTodosButton cotacaoId={id} />}
+            {conviteCotacaoConfigurado() && (
+              <EnviarTodosButton cotacaoId={id} naoAbriram={naoAbriram.length} />
+            )}
           </div>
+          {(naoAbriram.length > 0 || semZap.length > 0) && (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+              {semZap.length > 0 && (
+                <div>
+                  ⚠ <strong>{semZap.length}</strong> sem WhatsApp válido (ou é fixo):{' '}
+                  {semZap.map((f) => f.fornecedorNome).join(', ')} — a cotação não chega neles.
+                </div>
+              )}
+              {naoAbriram.length > 0 && (
+                <div>
+                  🔔 <strong>{naoAbriram.length}</strong> receberam e não abriram o link:{' '}
+                  {naoAbriram.map((f) => f.fornecedorNome).join(', ')}.
+                </div>
+              )}
+            </div>
+          )}
           <table className="w-full text-xs">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
                 <th className="px-3 py-2 text-left font-medium">Fornecedor</th>
+                <th className="px-3 py-2 text-left font-medium">Vai pra</th>
                 <th className="px-3 py-2 text-left font-medium">Status</th>
                 <th className="px-3 py-2 text-left font-medium">Link enviado</th>
                 <th className="px-3 py-2 text-left font-medium">Aberto</th>
@@ -375,22 +402,32 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               {fornecedores.map((f) => (
                 <tr key={f.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium text-slate-900">
-                    {f.vendedorNome && (
-                      <div className="text-[10px] font-normal text-slate-500">
-                        vai pro vendedor: {f.vendedorNome}
-                      </div>
-                    )}
                     {f.fornecedorNome}
                     {f.observacaoCf && (
                       <div className="text-[10px] font-normal text-amber-700">🚚 {f.observacaoCf}</div>
                     )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <DestinoWhatsapp
+                      vendedorNome={f.vendedorNome}
+                      fone={f.fonePrincipal}
+                      origem={f.foneOrigem}
+                    />
                   </td>
                   <td className="px-3 py-2 text-slate-700">{f.status}</td>
                   <td className="px-3 py-2 text-slate-600">
                     {formatDateTime(f.linkEnviadoEm)}
                   </td>
                   <td className="px-3 py-2 text-slate-600">
-                    {formatDateTime(f.linkAbertoEm)}
+                    {f.linkAbertoEm ? (
+                      formatDateTime(f.linkAbertoEm)
+                    ) : f.linkEnviadoEm ? (
+                      <span className="font-medium text-rose-600" title="Foi disparado mas o fornecedor nunca abriu o link — provavelmente não recebeu ou não viu">
+                        ⚠ não abriu
+                      </span>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td className="px-3 py-2 text-slate-600">
                     {formatDateTime(f.respondidoEm)}
@@ -407,6 +444,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
                       link={`${baseUrl}/cotacao/preencher/${f.tokenPublico}`}
                       fechaEm={c.fechaEm ? new Date(c.fechaEm).toISOString() : null}
                       jaEnviado={!!f.linkEnviadoEm}
+                      jaAbriu={!!f.linkAbertoEm}
                     />
                   </td>
                   <td className="px-3 py-2 text-right">
@@ -525,5 +563,52 @@ function CopiarLinkButton({ tokenPublico }: { tokenPublico: string }) {
     >
       Abrir link
     </Link>
+  );
+}
+
+/** Pra onde a mensagem vai — nome de quem atende e o número, à vista.
+ *
+ *  Existe porque "o fornecedor não recebeu a cotação" é semanal, e a tela não
+ *  dizia pra onde tinha mandado: se o número veio do Consumer é o FIXO da
+ *  empresa, e aí o wa.me abre um chat que não existe / a Meta responde 200 e
+ *  não entrega. Agora dá pra ver antes de apertar. */
+function DestinoWhatsapp({
+  vendedorNome,
+  fone,
+  origem,
+}: {
+  vendedorNome: string | null;
+  fone: string | null;
+  origem: string | null;
+}) {
+  if (!fone) {
+    return (
+      <span className="text-[11px] font-medium text-rose-600" title="Sem número: a cotação não sai pra esse fornecedor">
+        ⚠ sem WhatsApp
+      </span>
+    );
+  }
+  const fixo = pareceFixo(fone);
+  const doConsumer = origem === 'consumer';
+  const alerta = fixo || doConsumer;
+  return (
+    <div className="leading-tight">
+      <div className="text-[11px] font-medium text-slate-900">
+        {vendedorNome ?? <span className="font-normal text-slate-500">sem vendedor</span>}
+      </div>
+      <div className={`text-[11px] tabular-nums ${alerta ? 'text-amber-800' : 'text-slate-600'}`}>
+        {formatFone(fone)}
+      </div>
+      {fixo && (
+        <div className="text-[10px] font-medium text-rose-600" title="Número de 10 dígitos ou sem o 9 — fixo não tem WhatsApp, a mensagem não chega">
+          ⚠ parece fixo — não chega
+        </div>
+      )}
+      {!fixo && doConsumer && (
+        <div className="text-[10px] text-amber-700" title="Número veio do cadastro do Consumer (costuma ser o telefone da empresa). Cadastre o vendedor pra garantir.">
+          fone do Consumer
+        </div>
+      )}
+    </div>
   );
 }

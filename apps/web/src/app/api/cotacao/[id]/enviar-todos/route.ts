@@ -21,7 +21,7 @@ function normTelefone(v: string | null): string | null {
   return d;
 }
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -34,6 +34,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       { status: 400 },
     );
   }
+
+  // Cobrança: reenvia pra quem foi disparado mas NUNCA abriu o link. É o caso
+  // do "fornecedor não recebeu a cotação" — a mensagem chegou e afundou na
+  // conversa, ou o número era o fixo e nunca entregou.
+  const body = await req.json().catch(() => ({}));
+  const cobrar = body?.cobrarNaoAbertos === true;
 
   const { id } = await params;
   const [c] = await db
@@ -64,8 +70,20 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     })
     .from(schema.cotacaoFornecedor)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.cotacaoFornecedor.fornecedorId))
-    // Só quem ainda não recebeu — evita reenvio duplicado ao reapertar "Enviar pra todos".
-    .where(and(eq(schema.cotacaoFornecedor.cotacaoId, id), isNull(schema.cotacaoFornecedor.linkEnviadoEm)));
+    .where(
+      and(
+        eq(schema.cotacaoFornecedor.cotacaoId, id),
+        cobrar
+          // Já foi disparado e o fornecedor nunca abriu o link.
+          ? and(
+              sql`${schema.cotacaoFornecedor.linkEnviadoEm} IS NOT NULL`,
+              isNull(schema.cotacaoFornecedor.linkAbertoEm),
+              isNull(schema.cotacaoFornecedor.respondidoEm),
+            )
+          // Só quem ainda não recebeu — evita reenvio duplicado ao reapertar "Enviar pra todos".
+          : isNull(schema.cotacaoFornecedor.linkEnviadoEm),
+      ),
+    );
 
   let enviados = 0;
   let semTelefone = 0;
@@ -84,15 +102,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         prazo,
         token: f.token,
       });
-      await db
-        .update(schema.cotacaoFornecedor)
-        .set({ linkEnviadoEm: new Date() })
-        .where(and(eq(schema.cotacaoFornecedor.id, f.id), eq(schema.cotacaoFornecedor.cotacaoId, id)));
+      if (!cobrar) {
+        await db
+          .update(schema.cotacaoFornecedor)
+          .set({ linkEnviadoEm: new Date() })
+          .where(and(eq(schema.cotacaoFornecedor.id, f.id), eq(schema.cotacaoFornecedor.cotacaoId, id)));
+      }
       enviados++;
     } catch (e) {
       falhas.push(`${f.nome}: ${(e as Error).message}`);
     }
   }
 
-  return NextResponse.json({ ok: true, enviados, semTelefone, falhas });
+  return NextResponse.json({ ok: true, enviados, semTelefone, falhas, cobranca: cobrar });
 }

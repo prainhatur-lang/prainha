@@ -30,3 +30,15 @@ export function foneParaWhatsapp(): SQL<string | null> {
     NULLIF(${schema.fornecedor.fonePrincipal}, '')
   )`;
 }
+
+/** De ONDE saiu o número que vai ser usado — pra tela poder avisar quando o
+ *  destino é o fixo que veio do Consumer (a mensagem não chega e ninguém fica
+ *  sabendo: o wa.me abre um chat vazio e a API da Meta responde 200). */
+export function origemDoFone(): SQL<string | null> {
+  return sql<string | null>`CASE
+    WHEN ${foneDoVendedor(schema.fornecedor.id)} IS NOT NULL THEN 'vendedor'
+    WHEN NULLIF(${schema.fornecedor.foneWhatsapp}, '') IS NOT NULL THEN 'cadastro'
+    WHEN NULLIF(${schema.fornecedor.fonePrincipal}, '') IS NOT NULL THEN 'consumer'
+    ELSE NULL
+  END`;
+}

@@ -107,3 +107,23 @@ export function parseValorBr(bruto: string | number | null | undefined): number 
 export function formatValorBr(n: number): string {
   return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+/** Telefone brasileiro legível: 5579999998888 -> (79) 99999-8888.
+ *  Serve pra CONFERIR pra onde a mensagem vai antes de mandar. */
+export function formatFone(v: string | null | undefined): string {
+  const d = (v ?? '').replace(/\D/g, '');
+  const semDdi = d.startsWith('55') && d.length > 11 ? d.slice(2) : d;
+  if (semDdi.length === 11) return `(${semDdi.slice(0, 2)}) ${semDdi.slice(2, 7)}-${semDdi.slice(7)}`;
+  if (semDdi.length === 10) return `(${semDdi.slice(0, 2)}) ${semDdi.slice(2, 6)}-${semDdi.slice(6)}`;
+  return v ?? '';
+}
+
+/** Fixo não tem WhatsApp: celular no Brasil tem 11 dígitos e o 3º é 9.
+ *  O fone que vem do Consumer costuma ser o fixo da empresa — a mensagem
+ *  some sem erro nenhum (a Meta aceita e nunca entrega). */
+export function pareceFixo(v: string | null | undefined): boolean {
+  const d = (v ?? '').replace(/\D/g, '');
+  const semDdi = d.startsWith('55') && d.length > 11 ? d.slice(2) : d;
+  if (semDdi.length < 10) return false;
+  return semDdi.length === 10 || semDdi[2] !== '9';
+}

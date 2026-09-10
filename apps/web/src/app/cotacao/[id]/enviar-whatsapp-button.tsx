@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { formatFone } from '@/lib/format';
 
 interface Props {
   cotacaoId: string;
@@ -15,6 +16,8 @@ interface Props {
   link: string;
   fechaEm: string | null; // ISO
   jaEnviado: boolean;
+  /** Já abriu o link. Se foi enviado e NÃO abriu, o botão vira cobrança. */
+  jaAbriu?: boolean;
 }
 
 function normTelefone(v: string | null): string | null {
@@ -42,6 +45,7 @@ export function EnviarWhatsappButton({
   link,
   fechaEm,
   jaEnviado,
+  jaAbriu,
 }: Props) {
   const router = useRouter();
   const [enviando, setEnviando] = useState(false);
@@ -135,13 +139,19 @@ export function EnviarWhatsappButton({
   // Cumprimenta a PESSOA (o vendedor), mas diz de qual EMPRESA é a cotação —
   // é assim na vida real: fala-se com o Alex, compra-se da Megga.
   const primeiroNome = (vendedorNome ?? fornecedorNome).split(/[\s(/-]/)[0] || 'tudo bem';
-  const msg =
-    `Olá, ${primeiroNome}! Aqui é do ${filialNome || 'Prainha'}.\n\n` +
-    (vendedorNome ? `Cotação para ${fornecedorNome}.\n` : '') +
-    `Estamos cotando alguns itens e gostaríamos do seu melhor preço. ` +
-    `É rápido, só preencher por este link:\n${link}\n\n` +
-    (prazo ? `⏰ Prazo para responder: até ${prazo} (4h).\n\n` : '') +
-    `Obrigado!`;
+  // Enviado e não abriu = a mensagem se perdeu no meio da conversa. Cobrar com
+  // o mesmo texto de antes só afunda de novo; texto curto de cobrança funciona.
+  const cobrando = jaEnviado && !jaAbriu;
+  const msg = cobrando
+    ? `Oi, ${primeiroNome}! Mandei a cotação do ${filialNome || 'Prainha'} e ainda não chegou resposta — ` +
+      `você chegou a ver?\n\n${link}\n\n` +
+      (prazo ? `⏰ Fecha ${prazo}.` : '')
+    : `Olá, ${primeiroNome}! Aqui é do ${filialNome || 'Prainha'}.\n\n` +
+      (vendedorNome ? `Cotação para ${fornecedorNome}.\n` : '') +
+      `Estamos cotando alguns itens e gostaríamos do seu melhor preço. ` +
+      `É rápido, só preencher por este link:\n${link}\n\n` +
+      (prazo ? `⏰ Prazo para responder: até ${prazo} (4h).\n\n` : '') +
+      `Obrigado!`;
 
   const waUrl = `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
 
@@ -170,13 +180,21 @@ export function EnviarWhatsappButton({
       onClick={enviar}
       disabled={enviando}
       className={`rounded px-2 py-0.5 text-xs font-medium ${
-        jaEnviado
-          ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-          : 'bg-emerald-600 text-white hover:bg-emerald-700'
+        cobrando
+          ? 'bg-amber-500 text-white hover:bg-amber-600'
+          : jaEnviado
+            ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+            : 'bg-emerald-600 text-white hover:bg-emerald-700'
       } disabled:opacity-50`}
-      title={jaEnviado ? 'Já enviado — clique pra reenviar' : 'Abrir WhatsApp com a mensagem pronta'}
+      title={
+        cobrando
+          ? `Enviado, mas não abriu o link. Abre o WhatsApp de ${formatFone(telefone)} com um lembrete curto.`
+          : jaEnviado
+            ? `Já enviado — clique pra reenviar pra ${formatFone(telefone)}`
+            : `Abrir WhatsApp de ${formatFone(telefone)} com a mensagem pronta`
+      }
     >
-      {jaEnviado ? '📲 reenviar' : '📲 WhatsApp'}
+      {cobrando ? '🔔 cobrar' : jaEnviado ? '📲 reenviar' : '📲 WhatsApp'}
     </button>
   );
 }
