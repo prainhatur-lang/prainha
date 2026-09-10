@@ -49,6 +49,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
   const [modo, setModo] = useState(v.modo === 'distribuido' ? 'distribuido' : 'centralizado');
   const [codigoPdv, setCodigoPdv] = useState(v.codigoPdv === 'variante' ? 'variante' : 'produto');
   const [autoConfirmar, setAutoConfirmar] = useState(v.autoConfirmar !== '0');
+  const [puxador, setPuxador] = useState(v.puxador === 'nuvem' ? 'nuvem' : 'loja');
   const [clientId, setClientId] = useState(v.clientId ?? '');
   const [merchantId, setMerchantId] = useState(v.merchantId ?? '');
   const [clientSecret, setClientSecret] = useState('');
@@ -60,7 +61,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
     setMsg(null);
     try {
       const valores: Record<string, string> = {
-        clientId, merchantId, modo, codigoPdv,
+        clientId, merchantId, modo, codigoPdv, puxador,
         autoConfirmar: autoConfirmar ? '1' : '0',
         ativo: ativo ? '1' : '0',
         ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
@@ -101,7 +102,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
     try {
       const r = await fetch(`/api/configuracoes/ifood?filialId=${filial.id}`, { method: 'DELETE' });
       if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(d.error ?? `Erro ${r.status}`); return; }
-      setConfigurada(false); setAtivo(false); setClientId(''); setMerchantId(''); setClientSecret('');
+      setConfigurada(false); setAtivo(false); setClientId(''); setMerchantId(''); setClientSecret(''); setPuxador('loja');
       setMsg('Apagado');
     } finally {
       setSalvando(false);
@@ -165,6 +166,19 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
             O cardápio da Prainha usa o código do <b>produto</b>. Os dois códigos se sobrepõem no
             Consumer, então errar aqui manda o prato errado pra cozinha — o item sempre sai
             conferido pelo nome.
+          </span>
+        </label>
+        <label className="block text-sm">
+          <span className="text-slate-700">Quem puxa os pedidos</span>
+          <select className={inp} value={puxador} disabled={!podeEditar} onChange={(e) => setPuxador(e.target.value)}>
+            <option value="loja">loja (o vendas-local fala com o iFood)</option>
+            <option value="nuvem">nuvem (o Concilia puxa e distribui)</option>
+          </select>
+          <span className="mt-1 block text-xs text-slate-500">
+            A fila de eventos do iFood é por <b>credencial</b>, não por loja: duas máquinas
+            puxando com o mesmo client_id dividem a fila e some pedido. Por isso este campo tem
+            que ficar <b>igual em todas as casas do mesmo client_id</b> — grupo misto não é
+            puxado por ninguém, de propósito.
           </span>
         </label>
         <label className="mt-6 flex items-center gap-2 text-sm text-slate-700">

@@ -86,6 +86,12 @@ export const MENU_AREAS: MenuArea[] = [
         ],
       },
       {
+        label: 'iFood',
+        links: [
+          { label: 'Loja (abrir e pausar)', href: '/ifood', perm: 'delivery.read' },
+        ],
+      },
+      {
         label: 'Delivery',
         links: [
           { label: 'Pedidos', href: '/delivery-admin', perm: 'delivery.read' },
