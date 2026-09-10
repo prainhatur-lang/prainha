@@ -1127,7 +1127,11 @@ async function loopPixPendente() {
         sozinho, sem ninguém rodando comando nenhum pra perceber.
    Kill switch: AUTO_UPDATE=off no start.bat desliga tudo isto. */
 const AUTO_UPDATE = String(process.env.AUTO_UPDATE || '').toLowerCase() !== 'off';
-const AUTO_UPDATE_POLL_MS = 20 * 60 * 1000; // 20min — não é urgente feito o Pix
+// 2min. Era 20min ("não é urgente feito o Pix") — mas publicar um conserto e
+// ficar 20min sem saber se chegou é insuportável na hora do problema, e o
+// custo do ciclo é um GET de 40 bytes. Com a tarefa elevada vigiando o sinal
+// de 10 em 10s, release publicado entra na loja em ~2-3min.
+const AUTO_UPDATE_POLL_MS = 2 * 60 * 1000;
 const AUTO_UPDATE_FORCA_APOS_MS = 4 * 3600 * 1000; // 4h esperando: aplica mesmo ocupado
 let autoUpdatePendenteDesde = null;
 /** O que o último ciclo viu — aparece em /api/config pra diagnóstico remoto. */
@@ -1194,6 +1198,12 @@ async function autoUpdateAplicar(dir, versaoEsperada) {
 
 async function loopAutoUpdate() {
   if (!AUTO_UPDATE) { console.log('[auto-update] desligado (AUTO_UPDATE=off)'); return; }
+  try { await autoUpdateCiclo(false); } finally { setTimeout(loopAutoUpdate, AUTO_UPDATE_POLL_MS); }
+}
+/** Uma passada do auto-update. `forcar` = pedido humano ("atualizar agora"):
+ *  não espera a loja esvaziar. É o botão pra quem acabou de publicar um
+ *  conserto e não tem por que ficar olhando o relógio. */
+async function autoUpdateCiclo(forcar) {
   try {
     const dir = path.dirname(fileURLToPath(import.meta.url));
     await autoUpdateSincronizarScript(dir);
@@ -1205,7 +1215,7 @@ async function loopAutoUpdate() {
     else {
       if (!autoUpdatePendenteDesde) { autoUpdatePendenteDesde = Date.now(); console.log('[auto-update] versão ' + nova + ' disponível'); }
       const esperando = Date.now() - autoUpdatePendenteDesde;
-      const ocupada = await autoUpdateLojaOcupada();
+      const ocupada = forcar ? false : await autoUpdateLojaOcupada();
       if (!ocupada || esperando > AUTO_UPDATE_FORCA_APOS_MS) {
         if (ocupada) console.log('[auto-update] loja ocupada há ' + Math.round(esperando / 3600000) + 'h esperando — aplica mesmo assim');
         await autoUpdateAplicar(dir, nova);
@@ -1218,7 +1228,16 @@ async function loopAutoUpdate() {
     autoUpdateEstado = { checado_em: new Date().toISOString(), disponivel: null, erro: String(e.message).slice(0, 200), motivo: 'falhou' };
     console.error('[auto-update] ' + e.message);
   }
-  finally { setTimeout(loopAutoUpdate, AUTO_UPDATE_POLL_MS); }
+  return autoUpdateEstado;
+}
+/** ATUALIZAR AGORA (Administrador). Checa na hora e aplica sem esperar a loja
+ *  esvaziar — quem apertou sabe o que está fazendo. A troca em si continua
+ *  sendo da tarefa elevada, que vê o sinal em até ~10s. */
+async function apiCaixaAtualizarAgora(quem) {
+  if (!(quem && quem.admin)) return { ok: false, erro: 'só Administrador atualiza a loja na mão' };
+  if (!AUTO_UPDATE) return { ok: false, erro: 'auto-update desligado nesta loja (AUTO_UPDATE=off no start.bat)' };
+  const e = await autoUpdateCiclo(true);
+  return { ok: true, versao: VERSAO, disponivel: e.disponivel || null, motivo: e.motivo || '', erro: e.erro || null };
 }
 
 async function loopEspelho() {
@@ -20572,6 +20591,7 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
       }
       if (p === '/api/caixa/fechadas') return res.end(JSON.stringify(await apiCaixaFechadas()));
+      if (req.method === 'POST' && p === '/api/caixa/atualizar-agora') return res.end(JSON.stringify(await apiCaixaAtualizarAgora(quem)));
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/pix-baixar') return res.end(JSON.stringify(await apiCaixaPixBaixar(await readBody(req), quem)));

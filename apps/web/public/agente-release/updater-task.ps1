@@ -1,5 +1,6 @@
 # updater-task.ps1 - roda como tarefa agendada propria (SYSTEM, elevada),
-# a cada 5 minutos. ARQUIVO 100% ASCII (mesma regra do auto-update.ps1).
+# a cada 5 minutos, e VIGIA o sinal por ~4min30s por disparo (de 10 em 10s).
+# ARQUIVO 100% ASCII (mesma regra do auto-update.ps1).
 #
 # Por que existe: o server.mjs (Node, dentro da tarefa PrainhaVendas) nao
 # consegue disparar um powershell que execute de verdade - o processo nasce
@@ -25,9 +26,23 @@ try {
   if ((Get-Item $tmp).Length -gt 500) { Move-Item $tmp (Join-Path $PSScriptRoot 'auto-update.ps1') -Force }
 } catch {}
 
-if (-not (Test-Path $Flag)) { exit 0 }
-$hash = (Get-Content $Flag -Raw).Trim().ToLower()
-Remove-Item $Flag -Force -ErrorAction SilentlyContinue
+# VIGIA o sinal de 10 em 10s ate quase completar o intervalo da tarefa, em vez
+# de olhar uma vez so e sair. Com a passada unica, um release ficava ate 5
+# minutos parado com o server.novo.mjs ja baixado no disco esperando a proxima
+# passada - somado ao ciclo do Node, publicar um conserto e ve-lo na loja
+# levava quase meia hora. Vigiando, o sinal e' atendido em ate ~10s. O corte em
+# 4min30s faz esta instancia morrer antes do proximo disparo (sem sobreposicao).
+$Fim = (Get-Date).AddSeconds(270)
+$hash = $null
+while ($true) {
+  if (Test-Path $Flag) {
+    $hash = (Get-Content $Flag -Raw).Trim().ToLower()
+    Remove-Item $Flag -Force -ErrorAction SilentlyContinue
+    break
+  }
+  if ((Get-Date) -ge $Fim) { exit 0 }
+  Start-Sleep -Seconds 10
+}
 if ($hash -notmatch '^[0-9a-f]{8}$') { Reg ("sinal invalido: '" + $hash + "' - ignorado"); exit 1 }
 if (-not (Test-Path (Join-Path $PSScriptRoot 'server.novo.mjs'))) { Reg ("sinal " + $hash + " sem server.novo.mjs - ignorado"); exit 1 }
 Reg ("sinal recebido: aplicar " + $hash)
