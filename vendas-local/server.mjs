@@ -1287,16 +1287,42 @@ async function ifoodApi(caminho, { metodo = 'GET', corpo = null, headers = {}, c
   }
 }
 
-/** Testa a credencial e descobre as lojas que ela enxerga. É o passo que diz
- *  se o app é centralizado (client_credentials passa) e qual merchant usar. */
+/** Testa a credencial e a loja em 3 etapas, e diz QUAL falhou:
+ *  1. credencial — token novo forçado (400 "Invalid UUID" = client_id cortado,
+ *     401 = client_secret errado);
+ *  2. lojas que a credencial enxerga — precisa do módulo Merchant, que o app
+ *     centralizado da Prainha (Concilia PDV Central) NÃO tem: só Order + Events.
+ *     403 aqui é NORMAL e não é erro de credencial. Até 10/09/2026 esse 403
+ *     derrubava o teste inteiro e a tela dizia "erro" com a loja funcionando;
+ *  3. loja autorizada — quem prova é o polling (403 "merchants are not
+ *     authorized" quando não está). Espera o próximo ciclo (≤40s) pra
+ *     responder com o token novo, não com o cache do app antigo. */
 async function ifoodTestar() {
+  try { await ifoodToken(true); }
+  catch (e) { return { ok: false, etapa: 'credencial', erro: String(e.message).slice(0, 300) }; }
+  let lojas = null, lojasErro = null;
   try {
-    await ifoodToken(true);
-    const lojas = await ifoodApi('/merchant/v1.0/merchants');
-    const lista = (Array.isArray(lojas) ? lojas : []).map((m) => ({ id: m.id, nome: m.name || m.corporateName }));
-    if (lista.length === 1) await cfgSet('ifood_merchant_id', lista[0].id);
-    return { ok: true, lojas: lista };
-  } catch (e) { return { ok: false, erro: String(e.message).slice(0, 300) }; }
+    const r = await ifoodApi('/merchant/v1.0/merchants');
+    lojas = (Array.isArray(r) ? r : []).map((m) => ({ id: m.id, nome: m.name || m.corporateName }));
+    // só preenche o merchant se estiver vazio — nunca por cima do que está gravado
+    if (lojas.length === 1 && !(await cfgGet('ifood_merchant_id', ''))) await cfgSet('ifood_merchant_id', lojas[0].id);
+  } catch (e) {
+    lojasErro = /→ 403/.test(e.message)
+      ? 'o app não tem o módulo Merchant (normal no Concilia PDV Central) — a loja é conferida pelo polling abaixo'
+      : String(e.message).slice(0, 200);
+  }
+  const c = await ifoodConf();
+  let polling;
+  if (!c.merchantId) polling = { ok: false, erro: 'merchant_id vazio — cole o UUID da loja' };
+  else if (!c.ativo) polling = { ok: false, erro: 'integração desligada (ligue em "ativo") — sem polling não dá pra conferir a loja' };
+  else {
+    const ref = ifoodStatus, t0 = Date.now();
+    while (ifoodStatus === ref && Date.now() - t0 < 40000) await new Promise((r) => setTimeout(r, 500));
+    if (ifoodStatus === ref) polling = { ok: false, erro: 'o polling não rodou em 40s — veja o log do servidor' };
+    else if (ifoodStatus.ultimo_ok !== ref.ultimo_ok) polling = { ok: true, em: ifoodStatus.ultimo_ok };
+    else polling = { ok: false, erro: ifoodStatus.ultimo_erro || 'polling falhou sem mensagem' };
+  }
+  return { ok: true, credencial: 'ok', lojas, lojas_erro: lojasErro, merchant: c.merchantId, polling };
 }
 
 // ---- pareamento da loja (app distribuído, o mesmo fluxo do Consumer) ----
@@ -2288,9 +2314,16 @@ async function apiIfoodSalvar(b) {
   const cid = b.client_id != null ? String(b.client_id).trim() : '';
   const sec = b.client_secret != null ? String(b.client_secret).trim() : '';
   const mid = b.merchant_id != null ? String(b.merchant_id).trim() : '';
-  if (cid && !IFOOD_UUID_RE.test(cid)) return { ok: false, erro: 'client_id incompleto — cole o UUID inteiro do app (36 caracteres, com os traços)' };
+  if (cid && !IFOOD_UUID_RE.test(cid)) {
+    return { ok: false, erro: cid.length > 40
+      ? 'isso no campo client_id parece ser o client_secret — o client_id é o UUID de 36 caracteres (Portal do Desenvolvedor → Credenciais → clientId)'
+      : 'client_id incompleto — cole o UUID inteiro do app (36 caracteres, com os traços)' };
+  }
   if (mid && !IFOOD_UUID_RE.test(mid)) return { ok: false, erro: 'merchant_id incompleto — cole o UUID inteiro da loja (36 caracteres, com os traços)' };
   if (sec && /\s/.test(sec)) return { ok: false, erro: 'client_secret com espaço ou quebra de linha — cole só o segredo, sem o client_id junto' };
+  if (sec && IFOOD_UUID_RE.test(sec)) {
+    return { ok: false, erro: 'isso no campo client_secret é um client_id (UUID) — o segredo é a chave longa de letras e números (Credenciais → clientSecret). Copie e cole um de cada vez: a área de transferência só guarda o último "Copiar"' };
+  }
   const midEfetivo = mid || (await cfgGet('ifood_merchant_id', ''));
   if (cid && midEfetivo && cid.toLowerCase() === midEfetivo.toLowerCase()) {
     return { ok: false, erro: 'esse valor é o merchant_id (a loja). O client_id é o do APP, na aba Credenciais do Portal do Desenvolvedor' };
@@ -14967,7 +15000,7 @@ function pinta(){
     '<div class="l"><div class="nm">Loja (merchant_id)<small>preenche sozinho quando o pareamento acha uma loja só</small></div>'+
       '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
     '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button>'+
-      '<button class="b o" onclick="testar()">testar e achar a loja</button><span class="mut" id="okc"></span></div>'+
+      '<button class="b o" onclick="testar()">testar credencial e loja</button><span class="mut" id="okc"></span></div>'+
     '<div id="tst"></div></div>';
   // ---- pareamento: só existe no app distribuído ----
   if(d.modo==='distribuido'){
@@ -15037,16 +15070,38 @@ async function salvarCred(){
   var r=await jpost('/api/ifood/salvar',b);
   if(!r.ok){alert(r.erro||'não salvou');return}
   await carregar(); // redesenha: o client_id novo vira a pista mascarada e o segredo some do campo
-  var ok=document.getElementById('okc');if(ok)ok.textContent='salvo ✓';
+  var ok=document.getElementById('okc');if(ok)ok.textContent='salvo ✓ — testando…';
+  testar(); // já confere credencial + loja, sem precisar de outro clique
 }
 async function testar(){
+  // 3 etapas (credencial → lojas → polling da loja); a última espera o próximo
+  // ciclo do polling, por isso pode levar até 40s.
+  var el=document.getElementById('tst');
+  if(el)el.innerHTML='<div class="pd mut">testando… a credencial responde na hora; a loja é conferida no próximo ciclo do polling (até 40s)</div>';
   var r=await jpost('/api/ifood/testar');
-  await carregar(); // re-renderiza: o merchant_id pode ter sido preenchido sozinho
-  var el=document.getElementById('tst');if(!el)return;
-  if(!r.ok){el.innerHTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';return}
-  el.innerHTML='<div class="pd"><div class="mut">Credencial ok. Lojas que ela enxerga:</div>'+
-    (r.lojas.length?r.lojas.map(function(l){return '<div style="margin-top:6px"><b>'+esc(l.nome)+'</b><br><span class="mut">'+esc(l.id)+'</span></div>'}).join('')
-      :'<div style="margin-top:6px;color:#dc2626">nenhuma — a loja ainda não está vinculada a este app</div>')+'</div>';
+  await carregar(); // re-renderiza: o merchant_id pode ter sido preenchido (só se estava vazio)
+  el=document.getElementById('tst');if(!el)return;
+  if(!r.ok){
+    el.innerHTML='<div class="pd" style="color:#dc2626"><b>o iFood recusou a credencial:</b> '+esc(r.erro)+
+      '<div class="mut" style="margin-top:6px">"Invalid UUID" = client_id cortado (cole o UUID inteiro) · 401 = client_secret errado (cole o segredo de novo)</div></div>';
+    return;
+  }
+  var h='<div class="pd"><div style="color:#16a34a"><b>credencial ok ✓</b> — o iFood aceitou client_id + client_secret</div>';
+  if(r.lojas&&r.lojas.length){
+    h+='<div class="mut" style="margin-top:6px">lojas que ela enxerga:</div>'+
+      r.lojas.map(function(l){return '<div style="margin-top:4px"><b>'+esc(l.nome)+'</b><br><span class="mut">'+esc(l.id)+'</span></div>'}).join('');
+  }else if(r.lojas_erro){
+    h+='<div class="mut" style="margin-top:6px">lista de lojas: '+esc(r.lojas_erro)+'</div>';
+  }else{
+    h+='<div class="mut" style="margin-top:6px">a credencial não enxerga loja nenhuma pelo módulo Merchant</div>';
+  }
+  if(r.polling&&r.polling.ok){
+    h+='<div style="margin-top:6px;color:#16a34a"><b>loja '+esc(r.merchant)+' autorizada ✓</b> — polling ok às '+new Date(r.polling.em).toLocaleTimeString('pt-BR')+'</div>';
+  }else if(r.polling){
+    h+='<div style="margin-top:6px;color:#dc2626"><b>polling com erro:</b> '+esc(r.polling.erro)+
+      '<div class="mut">"merchants are not authorized" = a loja não está autorizada pra este app no Portal do Desenvolvedor (Permissões)</div></div>';
+  }
+  el.innerHTML=h+'</div>';
 }
 async function parear(){
   var r=await jpost('/api/ifood/parear');
