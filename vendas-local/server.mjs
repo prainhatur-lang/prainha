@@ -2224,11 +2224,29 @@ async function ifoodLojaStatus() {
   const c = await ifoodConf();
   if (!c.merchantId) return { ok: false, erro: 'sem merchant_id configurado' };
   const base = '/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId);
+  // ⚠️ NÃO ENGOLIR O ERRO (10/09/2026): os dois .catch() devolviam null/[]
+  // e a tela dizia "Loja fechada" com a integração funcionando — o app
+  // centralizado da Prainha (Concilia PDV Central) tem só Order + Events, então
+  // /status responde 403 SEMPRE. Dizer "fechada" aí manda a loja caçar um
+  // problema que não existe. Sem o módulo Merchant a resposta honesta é "não dá
+  // pra saber por aqui" — quem prova que a integração está viva é o polling.
+  let erroSt = null;
   const [st, itr] = await Promise.all([
-    ifoodApi(base + '/status').catch(() => null),
-    ifoodApi(base + '/interruptions').catch(() => []),
+    ifoodApi(base + '/status').catch((e) => { erroSt = e; return null; }),
+    ifoodApi(base + '/interruptions').catch((e) => { erroSt = erroSt || e; return []; }),
   ]);
   const linha = Array.isArray(st) ? (st.find((x) => x.operation === 'DELIVERY' || x.operation === 'delivery') || st[0]) : st;
+  if (!linha && erroSt) {
+    const semModulo = /→ 403/.test(String(erroSt.message));
+    return {
+      ok: true, sabe: false, sem_modulo: semModulo, aberta: null, pausada: false,
+      titulo: semModulo ? 'não dá pra saber por aqui' : 'não consegui consultar a loja',
+      detalhe: semModulo
+        ? 'este app tem só os módulos Order + Events — abrir, fechar e pausar seguem no app iFood Gestor de Pedidos. Não é erro: o recebimento de pedido aqui não depende disso.'
+        : String(erroSt.message).slice(0, 200),
+      motivos: [], pausas: [],
+    };
+  }
   // Uma pausa ATIVA agora é o sinal confiável de "não está recebendo": o
   // /status da loja de teste não reflete a interrupção (conferido em 23/08 —
   // pausa criada e listada, status seguiu "Loja aberta"). Confiar só no status
@@ -2242,6 +2260,7 @@ async function ifoodLojaStatus() {
   const pausada = pausas.some(dentro);
   return {
     ok: true,
+    sabe: true,
     aberta: !!linha?.available && !pausada,
     pausada,
     titulo: pausada ? 'Pausada pela loja' : (linha?.message?.title || (linha?.available ? 'Loja aberta' : 'Loja fechada')),
@@ -15032,7 +15051,13 @@ input:focus{outline:none;border-color:var(--red)}
 <header><a class="back" href="/">◂ KDS</a><h1>i<b>Food</b></h1><span id="est" class="tag">—</span></header>
 <div class="wrap" id="app">carregando…</div>
 <script>
-var D=null,LOJA_PINTADA=false;
+// ⚠️ pinta() reescreve o #app INTEIRO a cada 15s: tudo que for escrito
+// direto no DOM some sozinho no ciclo seguinte. Era por isso que "A loja no
+// iFood" ficava eterno em "consultando…" (pintaLoja rodava UMA vez), que o
+// resultado do "testar credencial e loja" sumia antes de ser lido e que o
+// código de pareamento evaporava. Agora todo resultado vira ESTADO e o
+// pinta() redesenha a partir dele.
+var D=null,LOJA=null,TESTE_HTML='',PAR_HTML='';
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function din(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function hora(s){if(!s)return '';var d=new Date(s);return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
@@ -15060,6 +15085,19 @@ function pinta(){
   document.getElementById('est').className='tag '+(d.ativo?'on':'off');
   document.getElementById('est').textContent=d.ativo?'ligado':'desligado';
   if(!d.ativo)h+='<div class="aviso"><b>Integração desligada.</b> Enquanto estiver assim, quem recebe os pedidos do iFood é o Consumer — nada muda na operação. Ligue só depois de autorizar esta loja no Portal do Parceiro: o iFood aceita <b>uma integradora por loja</b>, e ao autorizar aqui o Consumer para de receber.</div>';
+  // A pergunta que a tela tem que responder sem ninguém clicar em nada é
+  // ESTÁ NO AR? Antes só existia a hora da última consulta — quem não sabe
+  // que o polling roda a cada 30s não tinha como ler aquilo como bom sinal,
+  // e o único botão que dava um veredito escondia a resposta 15s depois.
+  var atraso=d.status.ultimo_ok?Math.round((Date.now()-Date.parse(d.status.ultimo_ok))/1000):null;
+  if(d.ativo){
+    if(d.status.ultimo_erro)
+      h+='<div class="aviso" style="background:#fef2f2;border-color:#fecaca;color:#991b1b"><b>Fora do ar.</b> O iFood recusou a última consulta: '+esc(d.status.ultimo_erro)+'</div>';
+    else if(atraso===null||atraso>d.poll_seg*3)
+      h+='<div class="aviso"><b>Sem resposta do iFood'+(atraso===null?'':' há '+atraso+'s')+'.</b> Devia responder a cada '+d.poll_seg+'s. Se não voltar sozinho em 2 minutos, veja o log do servidor da loja.</div>';
+    else
+      h+='<div class="aviso" style="background:#f0fdf4;border-color:#bbf7d0;color:#166534"><b>✓ No ar.</b> O iFood respondeu há '+atraso+'s'+(d.merchant_id?' pela loja <b>'+esc(d.merchant_id.slice(0,8))+'…</b>':'')+'. Pedido novo aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha — não precisa clicar em nada.</div>';
+  }
   // ---- estado ----
   h+='<h2>Situação</h2><div class="card">'+
     '<div class="l"><div class="nm">Receber pedidos do iFood aqui<small>'+(d.pronto?'credencial pronta':'falta credencial — passos abaixo')+'</small></div>'+
@@ -15075,7 +15113,7 @@ function pinta(){
       '<span class="mut">'+(d.status.ultimo_ok?hora(d.status.ultimo_ok):'—')+'</span></div>'+
     '</div>';
   // ---- loja aberta/pausada ----
-  h+='<h2>A loja no iFood</h2><div class="card" id="loja"><div class="pd mut">consultando…</div></div>';
+  h+='<h2>A loja no iFood</h2><div class="card" id="loja">'+lojaHtml()+'</div>';
   // ---- credencial ----
   h+='<h2>1 · Credencial do app (Portal do Desenvolvedor)</h2><div class="card">'+
     '<div class="l"><div class="nm">Tipo do app<small>centralizado = a loja é do mesmo dono do app (não precisa parear). distribuído = a loja autoriza no Portal do Parceiro, como o Consumer está hoje.</small></div>'+
@@ -15094,12 +15132,12 @@ function pinta(){
       '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
     '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button>'+
       '<button class="b o" onclick="testar()">testar credencial e loja</button><span class="mut" id="okc"></span></div>'+
-    '<div id="tst"></div></div>';
+    '<div id="tst">'+TESTE_HTML+'</div></div>';
   // ---- pareamento: só existe no app distribuído ----
   if(d.modo==='distribuido'){
     h+='<h2>2 · Autorizar a loja</h2><div class="card"><div class="l"><div class="nm">'+
       (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho que o Consumer usou pra ser autorizado</small>')+
-      '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par"></div></div>';
+      '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par">'+PAR_HTML+'</div></div>';
   }
   // ---- pedidos ----
   // Busca por número: com dois dias de pedidos na tela é fácil agir no pedido
@@ -15144,7 +15182,6 @@ function pinta(){
   });
   h+='</div>';
   document.getElementById('app').innerHTML=h;
-  if(!LOJA_PINTADA){LOJA_PINTADA=true;pintaLoja()}
 }
 async function salvar(b){await jpost('/api/ifood/salvar',b);await carregar()}
 async function liga(v){
@@ -15169,17 +15206,18 @@ async function salvarCred(){
 async function testar(){
   // 3 etapas (credencial → lojas → polling da loja); a última espera o próximo
   // ciclo do polling, por isso pode levar até 40s.
+  TESTE_HTML='<div class="pd mut">testando… a credencial responde na hora; a loja é conferida no próximo ciclo do polling (até 40s)</div>';
   var el=document.getElementById('tst');
-  if(el)el.innerHTML='<div class="pd mut">testando… a credencial responde na hora; a loja é conferida no próximo ciclo do polling (até 40s)</div>';
+  if(el)el.innerHTML=TESTE_HTML;
   var r=await jpost('/api/ifood/testar');
   await carregar(); // re-renderiza: o merchant_id pode ter sido preenchido (só se estava vazio)
-  el=document.getElementById('tst');if(!el)return;
   if(!r.ok){
-    el.innerHTML='<div class="pd" style="color:#dc2626"><b>o iFood recusou a credencial:</b> '+esc(r.erro)+
+    TESTE_HTML='<div class="pd" style="color:#dc2626"><b>o iFood recusou a credencial:</b> '+esc(r.erro)+
       '<div class="mut" style="margin-top:6px">"Invalid UUID" = client_id cortado (cole o UUID inteiro) · 401 = client_secret errado (cole o segredo de novo)</div></div>';
+    pinta();
     return;
   }
-  var h='<div class="pd"><div style="color:#16a34a"><b>credencial ok ✓</b> — o iFood aceitou client_id + client_secret</div>';
+  var h='<div class="pd"><div class="mut">teste das '+new Date().toLocaleTimeString('pt-BR')+'</div><div style="color:#16a34a"><b>credencial ok ✓</b> — o iFood aceitou client_id + client_secret</div>';
   if(r.lojas&&r.lojas.length){
     h+='<div class="mut" style="margin-top:6px">lojas que ela enxerga:</div>'+
       r.lojas.map(function(l){return '<div style="margin-top:4px"><b>'+esc(l.nome)+'</b><br><span class="mut">'+esc(l.id)+'</span></div>'}).join('');
@@ -15194,19 +15232,20 @@ async function testar(){
     h+='<div style="margin-top:6px;color:#dc2626"><b>polling com erro:</b> '+esc(r.polling.erro)+
       '<div class="mut">"merchants are not authorized" = a loja não está autorizada pra este app no Portal do Desenvolvedor (Permissões)</div></div>';
   }
-  el.innerHTML=h+'</div>';
+  TESTE_HTML=h+'</div>';
+  pinta();
 }
 async function parear(){
   var r=await jpost('/api/ifood/parear');
-  var el=document.getElementById('par');
-  if(!r.ok){el.innerHTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';return}
-  el.innerHTML='<div class="pd"><div class="mut">1. Abra o portal e cole este código '+
+  if(!r.ok){PAR_HTML='<div class="pd" style="color:#dc2626">'+esc(r.erro)+'</div>';pinta();return}
+  PAR_HTML='<div class="pd"><div class="mut">1. Abra o portal e cole este código '+
     '<b>(vale '+Math.round((r.expira_seg||600)/60)+' minutos)</b>:</div>'+
     '<div class="cod">'+esc(r.codigo)+'</div>'+
     '<a class="b" style="text-decoration:none;display:inline-block" target="_blank" href="'+esc(r.url)+'">abrir o Portal do Parceiro</a>'+
     '<div class="mut" style="margin-top:12px">2. Autorize a loja. O portal devolve um <b>código de autorização</b> — cole abaixo:</div>'+
     '<div class="acoes"><input id="acode" placeholder="código de autorização" style="width:280px">'+
     '<button class="b g" onclick="concluir()">concluir</button></div></div>';
+  pinta();
 }
 async function concluir(){
   var r=await jpost('/api/ifood/concluir',{codigo:document.getElementById('acode').value});
@@ -15229,16 +15268,22 @@ async function imprimir(id){
   var r=await jpost('/api/ifood/imprimir',{id:id});
   if(!r.ok)alert(r.erro||'nao deu'); 
 }
-async function pintaLoja(){
-  var el=document.getElementById('loja'); if(!el)return;
-  var d=await jget('/api/ifood/loja');
-  if(!d.ok){el.innerHTML='<div class="pd mut">'+esc(d.erro||'sem status')+'</div>';return}
+function lojaHtml(){
+  var d=LOJA;
+  if(!d)return '<div class="pd mut">consultando…</div>';
+  if(!d.ok)return '<div class="pd mut">'+esc(d.erro||'sem status')+'</div>';
+  // Sem o módulo Merchant o iFood não conta se a loja está aberta — e dizer
+  // "Loja fechada" nessa hora (o que a tela fazia até 10/09/2026) é acusar um
+  // problema que não existe: pedido entra do mesmo jeito, quem prova isso é o
+  // banner "No ar" lá em cima.
+  if(d.sabe===false)return '<div class="pd"><div class="nm">'+esc(d.titulo)+'</div>'+
+    '<div class="mut" style="margin-top:4px">'+esc(d.detalhe||'')+'</div></div>';
   var h='<div class="l"><div class="nm">'+(d.aberta?'<b style="color:var(--green)">Loja aberta</b>':'<b style="color:var(--red)">'+esc(d.titulo)+'</b>')+
     '<small>'+(d.motivos.length?esc(d.motivos.join(' · ')):'recebendo pedidos normalmente')+'</small></div></div>';
   if(d.pausas.length){
     d.pausas.forEach(function(x){
       h+='<div class="l"><div class="nm">Pausada'+(x.descricao?': '+esc(x.descricao):'')+'<small>até '+esc(String(x.fim||'').slice(11,16))+'</small></div>'+
-        '<button class="b g" onclick="retomar(\\''+x.id+'\\')">voltar a receber</button></div>';
+        '<button class="b g" onclick="retomar(\''+x.id+'\')">voltar a receber</button></div>';
     });
   }else{
     h+='<div class="l"><div class="nm">Pausar o recebimento<small>o iFood reabre sozinho na hora marcada; o horário de funcionamento não muda</small></div>'+
@@ -15246,7 +15291,12 @@ async function pintaLoja(){
       '<button class="b o" onclick="pausar(30)">30 min</button>'+
       '<button class="b o" onclick="pausar(60)">1 h</button></div>';
   }
-  el.innerHTML=h;
+  return h;
+}
+async function pintaLoja(){
+  try{ LOJA=await jget('/api/ifood/loja') }
+  catch(e){ LOJA={ok:false,erro:'não consegui falar com o servidor da loja'} }
+  var el=document.getElementById('loja'); if(el)el.innerHTML=lojaHtml();
 }
 async function pausar(min){
   var motivo=prompt('Pausar '+min+' min. Motivo (aparece no iFood):','Cozinha cheia');
@@ -15273,6 +15323,7 @@ async function escolherMotivo(id){
   return m;
 }
 carregar();setInterval(carregar,15000);
+pintaLoja();setInterval(pintaLoja,60000);
 // o estado da loja tem ritmo próprio: a lista atualiza de 15 em 15s, mas
 // consultar o Merchant a cada 15s seria bater na API à toa.
 pintaLoja();setInterval(pintaLoja,60000);
