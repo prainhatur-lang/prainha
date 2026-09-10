@@ -3601,7 +3601,14 @@ async function fbInserirPagamento(ped, pg) {
   let caixa = pg.caixa_codigo || null;
   if (!caixa) {
     if (Number(pg.forma_codigo) === FORMA.DINHEIRO) throw new Error('dinheiro exige caixa aberto do operador — abra o seu caixa');
-    caixa = await fbCaixaAbertoOuSistema();
+    // ⚠️ NUNCA no caixa de OUTRA pessoa (comanda 300, 10/09/2026). A cobrança
+    // veio de um operador identificado, não deu pra resolver o caixa dele, e
+    // fbCaixaAbertoOuSistema() escolhia "o 1º caixa aberto" — que naquele dia
+    // era o do Matheus. Resultado: R$ 1.189,45 de recebimento da LIO (logins
+    // `cielo` e `felipeandrade`) entraram no caixa dele, e o fechamento dele
+    // passou a cobrar um dinheiro que ele nunca pegou. Com dono conhecido o
+    // destino de emergência é o caixa do SISTEMA, que é de ninguém.
+    caixa = pg.caixa_sistema ? await fbCaixaSistema() : await fbCaixaAbertoOuSistema();
   }
   let nsu = pg.nsu ? Number(String(pg.nsu).replace(/\D/g, '')) || null : null;
   // Pix pela Cielo (tela/QR e maquininha) chega sem NSU: o código vem em
@@ -4885,7 +4892,7 @@ async function apiContaPagarSemTrava(body) {
     const pagFb = await fbInserirPagamento(ped, {
       forma_codigo: fp.cod, valor, nsu: dados.nsu, autorizacao: dados.autorizacao,
       bandeira: dados.bandeira, observacao: body.observacao || 'Prainha Vendas',
-      caixa_codigo: body.caixa_codigo || null,
+      caixa_codigo: body.caixa_codigo || null, caixa_sistema: !!body.caixa_sistema,
     });
     await sql`UPDATE venda_pagamento SET status='ok', nsu=${dados.nsu}, autorizacao=${dados.autorizacao},
       bandeira=${dados.bandeira}, pagamento_fb=${pagFb} WHERE id=${log.id}`;
@@ -4996,7 +5003,9 @@ async function apiLioPagarSemTrava(body, garcom) {
   // sozinho (fundo = saldo anterior) pra o recebimento cair no caixa dele e o
   // fechamento bater. Antes caía no 1º caixa aberto/'ser' e sumia do dele.
   // Se o caixa dele estiver aberto em OUTRA maquininha (serial diferente),
-  // bloqueia. Falha na resolução = caminho antigo (caixa_codigo null → 'ser').
+  // bloqueia. Falha na resolução = caixa do SISTEMA ('ser'), NUNCA o de outra
+  // pessoa: com `caixa_sistema` ligado, fbInserirPagamento para de escolher "o
+  // 1º caixa aberto" (era assim que a cobrança de um caía no caixa do outro).
   let caixaCodigo = null;
   try {
     const cx = await fbCaixaMaquininha(garcom.login, body.terminal);
@@ -5023,7 +5032,7 @@ async function apiLioPagarSemTrava(body, garcom) {
   }
   const r = await apiContaPagar({
     numero: n, ped: body.ped, forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
-    permitir_servico: true, caixa_codigo: caixaCodigo,
+    permitir_servico: true, caixa_codigo: caixaCodigo, caixa_sistema: true,
     // QUANDO a maquininha cobrou. Sem isto a trava de hora fica cega neste
     // caminho (que é justamente o da fila do app reenviando cobrança velha):
     // _id é o carimbo que o app põe ao enfileirar, aprovado_em vem do terminal.
@@ -6673,6 +6682,31 @@ async function apiCaixaEstornarPagamento(body, quem) {
   console.log(`[caixa] ${quem.login} cancelou lançamento ${pag} (${g.forma} R$ ${g.valor.toFixed(2)}${g.nsu ? ' NSU ' + g.nsu : ''}) da conta ${numero}/${ped}: ${motivo}`);
   return { ok: true, pago: +pago.toFixed(2), falta: +Math.max(0, total - pago).toFixed(2) };
 }
+/** FECHADAS HOJE. Conta que sai da grade não pode simplesmente SUMIR: aqui
+ *  ela fica listada com hora, valor e QUEM recebeu, com o ↩ Reabrir do lado.
+ *  Episódio da comanda 300 (10/09/2026): 4 mesas foram consolidadas nela, a
+ *  maquininha quitou os R$ 1.064,80 às 09:07 e o servidor fechou a conta
+ *  sozinho (`r.quitada` → apiCaixaFechar). Do salão, a conta simplesmente
+ *  desapareceu, e descobrir pra onde ela foi exigiu ler o banco na mão. */
+async function apiCaixaFechadas() {
+  if (!nativo()) return { ok: true, itens: [] };
+  // dia da casa em horário de Sergipe (UTC-3 fixo): meia-noite local = 03:00Z
+  const ini = new Date();
+  if (ini.getUTCHours() < 3) ini.setUTCDate(ini.getUTCDate() - 1);
+  ini.setUTCHours(3, 0, 0, 0);
+  const rows = await sql`SELECT c.codigo, c.numero, c.nome, COALESCE(c.valor_total,0) total,
+      COALESCE(c.subtotal_pago,0) pago, c.fechada_em,
+      (SELECT string_agg(x.obs, ' · ') FROM (
+         SELECT DISTINCT COALESCE(NULLIF(btrim(p.observacao),''),'—') obs FROM pagamento_local p
+          WHERE p.pedido=c.codigo AND p.cancelado_em IS NULL) x) quem
+    FROM comanda c
+    WHERE c.cancelada_em IS NULL AND c.fechada_em IS NOT NULL AND c.fechada_em >= ${ini}
+    ORDER BY c.fechada_em DESC LIMIT 120`;
+  return { ok: true, itens: rows.map((r) => ({
+    codigo: Number(r.codigo), numero: Number(r.numero), nome: T(r.nome) || null,
+    total: Number(r.total) || 0, pago: Number(r.pago) || 0,
+    fechada_em: r.fechada_em, quem: T(r.quem) || null })) };
+}
 /** REABRIR a última conta fechada do número (perm 29 = Reabrir Pedido): volta
  *  pra grade com itens e pagamentos como estavam. Só nas últimas 48h e só se
  *  não houver conta aberta no número. */
@@ -7107,9 +7141,19 @@ async function fbCaixaMaquininha(login, terminal) {
 }
 // Caixa pro pagamento ELETRÔNICO: o aberto que houver; sem nenhum, abre o do
 // usuário "ser" (sistema) sozinho — a maquininha não pode travar por caixa.
+// ⚠️ Só chame isto pra dinheiro SEM dono (Pix do QR, iFood). Recebimento com
+// operador identificado usa fbCaixaSistema() no lugar — ver fbInserirPagamento.
 async function fbCaixaAbertoOuSistema() {
   try { return await fbCaixaAberto(); } catch { /* nenhum aberto: abre o do sistema */ }
+  return fbCaixaSistema();
+}
+// Caixa do SISTEMA ('ser'), reaproveitando o que já estiver aberto. É onde
+// pousa o recebimento que não conseguiu achar o caixa de quem cobrou: melhor
+// ficar visível no caixa do sistema do que entrar no caixa de OUTRA pessoa.
+async function fbCaixaSistema() {
   if (nativo()) {
+    const meu = await fbCaixaDoOperador('ser').catch(() => null);
+    if (meu) return meu.codigo;
     const cod = await fbAbrirCaixa(null, 0,
       `Aberto automaticamente às ${fbHoraLocal()} (maquininha/Pix, sem caixa aberto)`, 'ser');
     if (cod == null) throw new Error('não consegui abrir o caixa automático');
@@ -16980,7 +17024,8 @@ function render(){
     app.innerHTML='<div id="hgrid">'+
       (FLASH?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(FLASH)+'</div>':'')+
       '<div class="card"><div class="tit" style="margin-top:0">Mesas abertas — toque pra receber</div><div id="lista">'+chips()+'</div></div>'+
-      '<div class="card" id="cxbx">'+bannerCx()+'</div></div>'+
+      '<div class="card" id="cxbx">'+bannerCx()+'</div>'+
+      '<div class="card" id="fechbx">'+cardFechadas()+'</div></div>'+
       '<div id="hside"><div class="card"><div class="tit" style="margin-top:0">Nº da mesa</div>'+
       '<input id="nm" class="num" inputmode="numeric" placeholder="número" readonly onclick="kpAlvo(this)">'+kpHtml('nm')+
       '<button class="big" onclick="carregar()">Abrir</button><div id="aerr" class="err"></div>'+
@@ -17012,6 +17057,28 @@ function bannerCx(){
       '<a class="sair" onclick="irTela(\\'rel\\')">📊 Movimento do caixa</a>'+
       (PODE.admin?' · <a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a>':'')+
     '</div>';
+}
+/* FECHADAS HOJE: a conta quitada some da grade de mesas — e antes sumia do
+   mundo. Aqui ela continua à vista, com a hora, o valor e quem recebeu, e o
+   ↩ Reabrir fica a um toque (perm 29). Foi o buraco da comanda 300 (10/09). */
+var FECH=null;
+function cardFechadas(){
+  var h='<div class="tit" style="margin-top:0">✅ Fechadas hoje</div>';
+  if(FECH==null)return h+'<div class="mut">carregando…</div>';
+  if(!FECH.length)return h+'<div class="mut">nenhuma conta fechada hoje.</div>';
+  h+='<div class="mut">Conta quitada sai da grade mas fica AQUI — nada some.</div>';
+  for(var i=0;i<FECH.length;i++){var f=FECH[i];
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">'+
+      '<span><b>'+esc(String(f.numero))+'</b>'+(f.nome?' <span class="mut">'+esc(f.nome)+'</span>':'')+
+      '<br><span class="mut">'+esc(hhmm(f.fechada_em))+' · '+brl(f.pago)+(f.quem?' · '+esc(f.quem):'')+'</span></span>'+
+      ((PODE.reabrir||PODE.admin)?'<a class="sair" onclick="reabrirCx('+f.numero+')">↩ reabrir</a>':'')+
+    '</div>';}
+  return h;
+}
+function hhmm(t){try{var d=new Date(t);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}catch(e){return ''}}
+async function fechadasCx(){
+  try{var r=await jget('/api/caixa/fechadas');FECH=(r&&r.ok)?r.itens:[]}catch(e){FECH=[]}
+  var b=document.getElementById('fechbx');if(b)b.innerHTML=cardFechadas();
 }
 async function cxEstado(){
   try{var r=await jget('/api/caixa/estado');if(r&&r.ok)CXE=r}catch(e){}
@@ -17153,7 +17220,7 @@ async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
   if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido,reabrir:!!s.pode_reabrir,estorno:!!s.pode_estorno};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
-    TELA='home';setHdr();render();listar();cxEstado()}
+    TELA='home';setHdr();render();listar();cxEstado();fechadasCx()}
   else {TOK=null;TELA='login';render()}
 }
 function telaLogin(el){
@@ -17181,7 +17248,7 @@ async function entrar(){
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
   NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido,reabrir:!!r.pode_reabrir,estorno:!!r.pode_estorno};
-  setHdr();TELA='home';MESAS=null;render();listar();cxEstado();
+  setHdr();TELA='home';MESAS=null;render();listar();cxEstado();fechadasCx();
 }
 var HOME_Y=0;
 /* ALVO da conta aberta: null = mesa comum (o servidor acha pelo número);
@@ -18684,7 +18751,7 @@ async function telaCancRel(el){
 setInterval(function(){
   if(document.hidden||!TOK||TELA==='login')return;
   listar();
-  TICK++;if(TICK%3===0)cxEstado(); // banner do caixa a cada 30s
+  TICK++;if(TICK%3===0){cxEstado();if(TELA==='home')fechadasCx()} // banner do caixa a cada 30s
   if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA).then(function(c){
     if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)){CONTA=c;pintaMain()}}).catch(function(){});
 },10000);
@@ -20397,6 +20464,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/receber-manual') {
         return res.end(JSON.stringify(await apiCaixaReceberManual(await readBody(req), quem)));
       }
+      if (p === '/api/caixa/fechadas') return res.end(JSON.stringify(await apiCaixaFechadas()));
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/pix-baixar') return res.end(JSON.stringify(await apiCaixaPixBaixar(await readBody(req), quem)));
