@@ -449,6 +449,13 @@ object Api {
      */
     @Throws(IOException::class)
     fun lioPagar(base: String, token: String, body: JSONObject): PagarRes {
+        // RELÓGIO DO APARELHO, carimbado AGORA (não na hora da cobrança): é o
+        // que deixa o servidor medir o desvio da maquininha e descontá-lo dos
+        // carimbos que saíram daqui (_id da fila, aprovado_em). Em 10/09/2026
+        // uma LIO com 18h36 de atraso fez a trava da conta certa reter R$ 67
+        // legítimos da mesa 2. Vai em TODA tentativa — inclusive nos reenvios
+        // da fila de pendentes, onde o body é o mesmo mas a hora é outra.
+        body.put("agora", System.currentTimeMillis())
         val j = try {
             postJson("$base/api/lio/pagar", token, body)
         } catch (e: IOException) {

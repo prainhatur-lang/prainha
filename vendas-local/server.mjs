@@ -4510,7 +4510,7 @@ const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
 // consulta quebrada = `indeterminado`: quem chama RECUSA, nada é gravado no
 // escuro, e a tela pede pra registrar de novo.
 const pagarEmVoo = new Map();
-async function nsuJaLancado(nsu, valor) {
+async function nsuJaLancado(nsu, valor, ignorarRetido = null) {
   const n = Number(nsu);
   if (!(n > 0)) return null;
   const v = +Number(valor).toFixed(2);
@@ -4550,6 +4550,28 @@ async function nsuJaLancado(nsu, valor) {
         onde: `na mesa/comanda ${l.numero} (registro local${l.status === 'iniciado' ? ', gravando agora' : ''})` };
     }
   } catch (e) { falha = falha || e.message; }
+  // ⚠️ RETIDO e DESCARTADO também JÁ ESTÃO no sistema (10/09/2026). A fila do
+  // app reenvia a cada onResume e isto aqui só olhava 'ok'/'iniciado': o
+  // recebimento descartado no caixa renascia como retido novo a cada volta,
+  // pra sempre, e o retido em aberto nunca saía da fila do aparelho. A linha
+  // do retido guarda o payload inteiro — quem decide o destino é o caixa
+  // (botão "Lançar nesta conta"), não um reenvio. `ignorarRetido` é o próprio
+  // retido sendo lançado agora por apiCaixaRetido: ele não pode esbarrar em
+  // si mesmo. Mesma janela de 30 dias da idempotência de reterRecebimento.
+  try {
+    const [r] = await sql`SELECT id, numero, status FROM venda_pagamento
+      WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)} AND valor=${v}
+        AND status IN ('retido','descartado') AND criado_em > now() - interval '30 days'
+        AND id <> ${Number(ignorarRetido) || -1}
+      ORDER BY id DESC LIMIT 1`;
+    if (r) {
+      const onde = r.status === 'descartado'
+        ? `— foi DESCARTADA no caixa (número ${r.numero})`
+        : `— está RETIDA no caixa (número ${r.numero}), esperando quem lança na conta certa`;
+      return { pagamento_fb: null, retido_id: Number(r.id), onde,
+        msg: `Essa transação (NSU ${n}, R$ ${v.toFixed(2)}) já entrou no sistema ${onde}. Não precisa registrar de novo.` };
+    }
+  } catch (e) { falha = falha || e.message; }
   return falha ? { indeterminado: true, erro: falha } : null;
 }
 // ⚠️⚠️ O DINHEIRO POUSA NA CONTA QUE ESTAVA ABERTA QUANDO ELE FOI COBRADO.
@@ -4584,11 +4606,25 @@ function instanteDaTransacao(body) {
   if (m) cand.push({ fonte: 'Pix (E2E)', quando: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])) });
   if (body.aprovado_em) {
     const d = typeof body.aprovado_em === 'number' ? new Date(body.aprovado_em) : new Date(String(body.aprovado_em));
-    if (!isNaN(d.getTime())) cand.push({ fonte: 'maquininha', quando: d });
+    if (!isNaN(d.getTime())) cand.push({ fonte: 'maquininha', quando: d, doDevice: true });
   }
   const f = /^(\d{13})-/.exec(String(body._id || ''));
-  if (f) cand.push({ fonte: 'fila do app', quando: new Date(Number(f[1])) });
+  if (f) cand.push({ fonte: 'fila do app', quando: new Date(Number(f[1])), doDevice: true });
   const agora = Date.now();
+  // ⚠️ RELÓGIO ATRASADO DA MAQUININHA (10/09/2026, mesa 2): os NSUs 133763 e
+  // 133764 chegaram às 09:15 carimbados de 09/09 14:39 — o aparelho estava
+  // 18h36 atrasado e a trava reteve dinheiro legítimo da conta que ESTAVA
+  // aberta. `aprovado_em` e o `_id` da fila saem do MESMO relógio, então um
+  // nunca desmente o outro: quem desmente é o `agora` que o app carimba no
+  // instante do POST (Api.lioPagar, ≥1.10.18). desvio = relógio do aparelho −
+  // o nosso; descontá-lo devolve a hora real da cobrança SEM afrouxar a trava
+  // — pendência que ficou mesmo 18h na fila continua 18h velha depois da
+  // correção (o desvio é o mesmo nos dois carimbos). O E2E do Pix não entra
+  // nessa conta: aquela hora é do banco, não do aparelho.
+  // App sem `agora` = desvio 0, exatamente o comportamento de antes.
+  const dv = Number(body.agora);
+  const desvio = Number.isFinite(dv) && dv > 0 && Math.abs(dv - agora) > TOL_RELOGIO_MS ? dv - agora : 0;
+  if (desvio) for (const c of cand) if (c.doDevice) c.quando = new Date(c.quando.getTime() - desvio);
   // relógio absurdo (device sem hora certa) não vale como prova de nada
   const bons = cand.filter((c) => c.quando.getTime() > agora - 60 * 864e5 && c.quando.getTime() < agora + 6 * 3600e3);
   if (!bons.length) return null;
@@ -4682,7 +4718,7 @@ async function apiContaPagar(body) {
   const p = (async () => {
     const quem = `origem ${body.origem || body.modo || '?'}, número ${body.numero}`;
     let ja;
-    try { ja = await nsuJaLancado(nsuTxt, valor); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
+    try { ja = await nsuJaLancado(nsuTxt, valor, body.retido_id); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
     if (ja && ja.indeterminado) {
       console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} NÃO CONFERIDO (${ja.erro}) — recusado, nada gravado (${quem})`);
       return { ok: false, indeterminado: true,
@@ -4691,7 +4727,7 @@ async function apiContaPagar(body) {
     if (ja) {
       console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} JÁ LANÇADO ${ja.onde} — recusado (${quem})`);
       return { ok: false, ja_registrado: true, pagamento_fb: ja.pagamento_fb,
-        erro: `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
+        erro: ja.msg || `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
     }
     // RECEBIMENTO MANUAL (caixa): o mesmo NSU hoje, com QUALQUER valor, também
     // não entra — cada cupom vale uma vez. Roda AQUI, dentro da fila; a
@@ -4773,7 +4809,10 @@ async function apiContaPagarSemTrava(body) {
       const motivo = `Cobrado em ${hora} (${alvo.quando.fonte}) — ${onde}. A conta aberta agora nasceu depois: o dinheiro NÃO entra nela.`;
       const id = await reterRecebimento(n, body, alvo, motivo);
       console.error(`[pagar] ⚠️ RETIDO #${id}: ${forma} R$ ${valor.toFixed(2)} no número ${n} (NSU ${body.nsu || '-'}) — ${motivo}`);
-      return { ok: false, retido: true, pagamento_id: id,
+      // ja_registrado: o dinheiro JÁ está guardado (a linha do retido tem o
+      // payload inteiro) — sem isto o app fica reenviando a mesma pendência a
+      // cada onResume até alguém limpar a fila na mão.
+      return { ok: false, retido: true, ja_registrado: true, pagamento_id: id,
         erro: `${motivo} O valor ficou guardado e aparece em VERMELHO no caixa — quem está no caixa lança na conta certa (reabrindo, se precisar).` };
     }
     if (alvo.ped && Number(alvo.ped) !== Number(ped || 0)) {
@@ -13991,7 +14030,7 @@ async function apiCaixaRetido(body, quem) {
   const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'a conta precisa estar aberta — se já fechou, use "Reabrir a última conta" primeiro' };
   const payload = (x.payload && typeof x.payload === 'object') ? x.payload : {};
-  const r = await apiContaPagar({ ...payload, numero, ped, forcar_conta: true,
+  const r = await apiContaPagar({ ...payload, numero, ped, forcar_conta: true, retido_id: id,
     // o caixa do garçom daquele momento pode nem estar aberto — vai pro caminho
     // padrão, igual ao "Lançar agora" do Pix
     caixa_codigo: null,
