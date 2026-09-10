@@ -3,6 +3,7 @@
 import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { normalizaBusca } from '@/lib/texto';
+import { agruparDuplicados } from '@/lib/fornecedor-duplicado';
 
 interface Produto {
   id: string;
@@ -22,6 +23,9 @@ interface Fornecedor {
   nome: string;
   categoria: string;
   valorPedidoMinimo: string | null;
+  cnpjOuCpf?: string | null;
+  /** WhatsApp de destino — dois cadastros no mesmo número é a mesma pessoa. */
+  fone?: string | null;
 }
 
 interface ItemSelecionado {
@@ -133,6 +137,36 @@ export function NovaCotacaoForm(props: {
   const categoriasForn = useMemo(() => {
     return Array.from(new Set(props.fornecedores.map((f) => f.categoria))).sort();
   }, [props.fornecedores]);
+
+  // Mesma empresa cadastrada 2x (matriz+filial do Consumer, ou mesmo vendedor).
+  // Convocar as duas manda dois links pro mesmo sujeito e faz os preços dele
+  // disputarem contra ele mesmo — foi o "tem 2 asa branca".
+  const gemeoDe = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const g of agruparDuplicados(props.fornecedores)) {
+      for (const f of g) {
+        m.set(
+          f.id,
+          g.filter((o) => o.id !== f.id).map((o) => o.nome),
+        );
+      }
+    }
+    return m;
+  }, [props.fornecedores]);
+
+  /** Duplicados que estão os DOIS marcados agora — é aí que dá problema. */
+  const dupSelecionados = useMemo(() => {
+    const pares: string[][] = [];
+    const vistos = new Set<string>();
+    for (const g of agruparDuplicados(props.fornecedores)) {
+      const marcados = g.filter((f) => fornecedoresSelecionados.has(f.id));
+      if (marcados.length > 1 && !vistos.has(marcados[0].id)) {
+        for (const m of marcados) vistos.add(m.id);
+        pares.push(marcados.map((m) => m.nome));
+      }
+    }
+    return pares;
+  }, [props.fornecedores, fornecedoresSelecionados]);
 
   // Pra cada fornecedor, quantos itens selecionados ele supplya (via produto_fornecedor)
   const supplyPorFornecedor = useMemo(() => {
@@ -352,6 +386,18 @@ export function NovaCotacaoForm(props: {
             </span>
           </div>
         </div>
+        {dupSelecionados.length > 0 && (
+          <div className="mb-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] text-rose-900">
+            ⚠ <strong>Mesmo fornecedor marcado duas vezes.</strong> São cadastros diferentes da
+            mesma empresa (mesmo CNPJ ou mesmo WhatsApp): quem atende vai receber dois links e os
+            preços dele vão disputar contra ele mesmo. Deixe só um marcado.
+            <ul className="mt-1 list-disc pl-5">
+              {dupSelecionados.map((par, i) => (
+                <li key={i}>{par.join('  ·  ')}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {props.fornecedores.length === 0 ? (
           <p className="text-xs text-slate-500">
             Nenhum fornecedor marcado como <strong>ativo pra compras</strong>. Rode{' '}
@@ -405,6 +451,14 @@ export function NovaCotacaoForm(props: {
                       className="h-3.5 w-3.5"
                     />
                     <span className="flex-1">{f.nome}</span>
+                    {gemeoDe.has(f.id) && (
+                      <span
+                        className="rounded bg-rose-100 px-1.5 py-0.5 text-[9px] font-medium text-rose-800"
+                        title={`Mesmo CNPJ ou mesmo WhatsApp de: ${gemeoDe.get(f.id)!.join(', ')}. Marque só um.`}
+                      >
+                        duplicado
+                      </span>
+                    )}
                     {totalItensSelecionados > 0 && supply > 0 && (
                       <span
                         className="rounded bg-sky-100 px-1.5 py-0.5 text-[9px] font-medium text-sky-900"

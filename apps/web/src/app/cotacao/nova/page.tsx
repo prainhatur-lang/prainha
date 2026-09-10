@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
+import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { and, asc, eq, isNotNull, isNull, not, ilike } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { NovaCotacaoForm } from './nova-cotacao';
@@ -92,6 +93,10 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
       nome: schema.fornecedor.nome,
       categoria: schema.fornecedor.categoriaCompras,
       valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
+      // Pra apontar cadastro duplicado (mesma empresa 2x) antes de convocar
+      // os dois e o vendedor receber dois links.
+      cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
+      fone: foneParaWhatsapp(),
       // Distribuidor que vende de tudo: recebe cotação mesmo sem vínculo com
       // o item. Regra do dono — "quando não souber quem vende, manda pra todos".
       geral: schema.fornecedor.geral,

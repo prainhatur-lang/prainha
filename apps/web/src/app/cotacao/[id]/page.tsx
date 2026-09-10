@@ -12,6 +12,8 @@ import { AprovarButton } from './aprovar';
 import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
 import { GerarPedidoButton, type ItemPraPedido } from './gerar-pedido-button';
+import { TirarDasCotacoes } from './tirar-das-cotacoes';
+import { agruparDuplicados } from '@/lib/fornecedor-duplicado';
 import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
@@ -103,6 +105,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       observacaoCf: schema.cotacaoFornecedor.observacao,
       fornecedorId: schema.fornecedor.id,
       fornecedorNome: schema.fornecedor.nome,
+      cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
       vendedorNome: sql<string | null>`(
         SELECT v.nome FROM vendedor_fornecedor vf
         JOIN vendedor v ON v.id = vf.vendedor_id
@@ -123,6 +126,19 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
   const semZap = fornecedores.filter((f) => !f.fonePrincipal || pareceFixo(f.fonePrincipal));
   const naoAbriram = fornecedores.filter(
     (f) => f.linkEnviadoEm && !f.linkAbertoEm && !f.respondidoEm && !semZap.includes(f),
+  );
+
+  // Mesma empresa cadastrada 2x (matriz+filial no Consumer, ou mesmo vendedor):
+  // o cara recebe DOIS links e os preços dele disputam contra ele mesmo.
+  const duplicados = agruparDuplicados(
+    fornecedores.map((f) => ({
+      id: f.id,
+      nome: f.fornecedorNome,
+      cnpjOuCpf: f.cnpjOuCpf,
+      fone: f.fonePrincipal,
+      fornecedorId: f.fornecedorId,
+      vendedorNome: f.vendedorNome,
+    })),
   );
 
   const respostasAll = fornecedores.length === 0
@@ -443,6 +459,29 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               <EnviarTodosButton cotacaoId={id} naoAbriram={naoAbriram.length} />
             )}
           </div>
+          {duplicados.length > 0 && (
+            <div className="mb-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] text-rose-900">
+              <div className="font-semibold">
+                ⚠ {duplicados.length === 1 ? 'Um fornecedor está' : `${duplicados.length} fornecedores estão`} cadastrado(s) duas vezes
+              </div>
+              <div className="mt-0.5 text-rose-800">
+                Cadastros diferentes, mesma empresa (mesmo CNPJ ou mesmo WhatsApp). Quem atende
+                recebe dois links e os preços dele disputam contra ele mesmo.
+              </div>
+              {duplicados.map((g) => (
+                <div key={g[0].id} className="mt-2 space-y-1">
+                  {g.map((d) => (
+                    <div key={d.id} className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{d.nome}</span>
+                      {d.vendedorNome && <span className="text-rose-700">· {d.vendedorNome}</span>}
+                      {d.fone && <span className="text-rose-700">· {formatFone(d.fone)}</span>}
+                      <TirarDasCotacoes fornecedorId={d.fornecedorId} fornecedorNome={d.nome ?? ''} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
           {semPedido.length > 0 && (
             <div className="mb-3 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-[11px] text-violet-900">
               🧾 <strong>{semPedido.length}</strong> respondeu(ram) mas ficou(aram) sem pedido:{' '}
