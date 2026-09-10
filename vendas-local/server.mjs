@@ -2276,10 +2276,30 @@ async function apiIfood() {
   };
 }
 
+const IFOOD_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function apiIfoodSalvar(b) {
-  if (b.client_id != null) await cfgSet('ifood_client_id', String(b.client_id).trim());
-  if (b.client_secret != null && String(b.client_secret).trim()) await cfgSet('ifood_client_secret', String(b.client_secret).trim());
-  if (b.merchant_id != null) await cfgSet('ifood_merchant_id', String(b.merchant_id).trim());
+  // Credencial: campo vazio = mantém o que está gravado. A tela mostra o
+  // client_id gravado MASCARADO ("8e6715c3…") e, até 10/09/2026, devolvia isso
+  // no "salvar credencial" — a Prainha Bar ficou com o client_id cortado, o
+  // iFood respondendo "Invalid UUID string" e pedido real sem chegar. Agora
+  // valor que não é UUID inteiro não entra, e trocar id/segredo zera o token
+  // em cache (valia ~6h e escondia a troca: a loja seguia com o token antigo).
+  const cid = b.client_id != null ? String(b.client_id).trim() : '';
+  const sec = b.client_secret != null ? String(b.client_secret).trim() : '';
+  const mid = b.merchant_id != null ? String(b.merchant_id).trim() : '';
+  if (cid && !IFOOD_UUID_RE.test(cid)) return { ok: false, erro: 'client_id incompleto — cole o UUID inteiro do app (36 caracteres, com os traços)' };
+  if (mid && !IFOOD_UUID_RE.test(mid)) return { ok: false, erro: 'merchant_id incompleto — cole o UUID inteiro da loja (36 caracteres, com os traços)' };
+  if (sec && /\s/.test(sec)) return { ok: false, erro: 'client_secret com espaço ou quebra de linha — cole só o segredo, sem o client_id junto' };
+  const midEfetivo = mid || (await cfgGet('ifood_merchant_id', ''));
+  if (cid && midEfetivo && cid.toLowerCase() === midEfetivo.toLowerCase()) {
+    return { ok: false, erro: 'esse valor é o merchant_id (a loja). O client_id é o do APP, na aba Credenciais do Portal do Desenvolvedor' };
+  }
+  let credMudou = false;
+  if (cid && cid !== (await cfgGet('ifood_client_id', ''))) { await cfgSet('ifood_client_id', cid); credMudou = true; }
+  if (sec && sec !== (await cfgGet('ifood_client_secret', ''))) { await cfgSet('ifood_client_secret', sec); credMudou = true; }
+  if (mid) await cfgSet('ifood_merchant_id', mid);
+  if (credMudou) await cfgSet('ifood_access_token', ''); // token da credencial antiga não serve
   if (b.auto_confirmar != null) await cfgSet('ifood_auto_confirmar', b.auto_confirmar ? '1' : '0');
   if (b.codigo_pdv != null) await cfgSet('ifood_codigo_pdv', b.codigo_pdv === 'produto' ? 'produto' : 'variante');
   if (b.modo != null) {
@@ -14893,10 +14913,13 @@ function pinta(){
         '<option value="centralizado"'+(d.modo!=='distribuido'?' selected':'')+'>centralizado</option>'+
         '<option value="distribuido"'+(d.modo==='distribuido'?' selected':'')+'>distribuído</option>'+
       '</select></div>'+
-    '<div class="l"><div class="nm">client_id<small>'+(d.tem_credencial?'gravado':'cole o do seu app')+'</small></div>'+
-      '<input id="cid" value="'+esc(d.client_id)+'" placeholder="uuid do app" style="width:290px"></div>'+
-    '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta</small></div>'+
-      '<input id="csec" type="password" placeholder="••••••••" style="width:290px"></div>'+
+    // O client_id gravado aparece só como pista (mascarado) — NUNCA como valor
+    // do campo: se voltasse no salvar, o valor cortado viraria a credencial
+    // (aconteceu em 10/09/2026). Campo vazio = mantém o que está gravado.
+    '<div class="l"><div class="nm">client_id<small>'+(d.client_id?'gravado: <b>'+esc(d.client_id)+'</b> — deixe vazio pra manter; pra trocar, cole o UUID inteiro':'cole o UUID do seu app (aba Credenciais do Portal do Desenvolvedor)')+'</small></div>'+
+      '<input id="cid" value="" placeholder="'+(d.client_id?esc(d.client_id)+' (gravado)':'uuid do app')+'" style="width:290px"></div>'+
+    '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta — deixe vazio pra manter</small></div>'+
+      '<input id="csec" type="password" placeholder="'+(d.tem_credencial?'•••••••• (gravado)':'••••••••')+'" style="width:290px"></div>'+
     '<div class="l"><div class="nm">Loja (merchant_id)<small>preenche sozinho quando o pareamento acha uma loja só</small></div>'+
       '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
     '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button>'+
@@ -14960,11 +14983,17 @@ async function liga(v){
   await carregar();
 }
 async function salvarCred(){
-  var b={client_id:document.getElementById('cid').value,merchant_id:document.getElementById('mid').value};
+  // Só manda o que foi preenchido: campo vazio = mantém o gravado. O client_id
+  // gravado aparece mascarado ("8e6715c3…") e não pode voltar pro servidor.
+  var b={};
+  var cid=document.getElementById('cid').value.trim();if(cid)b.client_id=cid;
   var s=document.getElementById('csec').value;if(s)b.client_secret=s;
-  await jpost('/api/ifood/salvar',b);
-  document.getElementById('okc').textContent='salvo';
-  await carregar();
+  var mid=document.getElementById('mid').value.trim();if(mid)b.merchant_id=mid;
+  if(!Object.keys(b).length){document.getElementById('okc').textContent='nada preenchido — nada mudou';return}
+  var r=await jpost('/api/ifood/salvar',b);
+  if(!r.ok){alert(r.erro||'não salvou');return}
+  await carregar(); // redesenha: o client_id novo vira a pista mascarada e o segredo some do campo
+  var ok=document.getElementById('okc');if(ok)ok.textContent='salvo ✓';
 }
 async function testar(){
   var r=await jpost('/api/ifood/testar');

@@ -2276,10 +2276,30 @@ async function apiIfood() {
   };
 }
 
+const IFOOD_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function apiIfoodSalvar(b) {
-  if (b.client_id != null) await cfgSet('ifood_client_id', String(b.client_id).trim());
-  if (b.client_secret != null && String(b.client_secret).trim()) await cfgSet('ifood_client_secret', String(b.client_secret).trim());
-  if (b.merchant_id != null) await cfgSet('ifood_merchant_id', String(b.merchant_id).trim());
+  // Credencial: campo vazio = mantém o que está gravado. A tela mostra o
+  // client_id gravado MASCARADO ("8e6715c3…") e, até 10/09/2026, devolvia isso
+  // no "salvar credencial" — a Prainha Bar ficou com o client_id cortado, o
+  // iFood respondendo "Invalid UUID string" e pedido real sem chegar. Agora
+  // valor que não é UUID inteiro não entra, e trocar id/segredo zera o token
+  // em cache (valia ~6h e escondia a troca: a loja seguia com o token antigo).
+  const cid = b.client_id != null ? String(b.client_id).trim() : '';
+  const sec = b.client_secret != null ? String(b.client_secret).trim() : '';
+  const mid = b.merchant_id != null ? String(b.merchant_id).trim() : '';
+  if (cid && !IFOOD_UUID_RE.test(cid)) return { ok: false, erro: 'client_id incompleto — cole o UUID inteiro do app (36 caracteres, com os traços)' };
+  if (mid && !IFOOD_UUID_RE.test(mid)) return { ok: false, erro: 'merchant_id incompleto — cole o UUID inteiro da loja (36 caracteres, com os traços)' };
+  if (sec && /\s/.test(sec)) return { ok: false, erro: 'client_secret com espaço ou quebra de linha — cole só o segredo, sem o client_id junto' };
+  const midEfetivo = mid || (await cfgGet('ifood_merchant_id', ''));
+  if (cid && midEfetivo && cid.toLowerCase() === midEfetivo.toLowerCase()) {
+    return { ok: false, erro: 'esse valor é o merchant_id (a loja). O client_id é o do APP, na aba Credenciais do Portal do Desenvolvedor' };
+  }
+  let credMudou = false;
+  if (cid && cid !== (await cfgGet('ifood_client_id', ''))) { await cfgSet('ifood_client_id', cid); credMudou = true; }
+  if (sec && sec !== (await cfgGet('ifood_client_secret', ''))) { await cfgSet('ifood_client_secret', sec); credMudou = true; }
+  if (mid) await cfgSet('ifood_merchant_id', mid);
+  if (credMudou) await cfgSet('ifood_access_token', ''); // token da credencial antiga não serve
   if (b.auto_confirmar != null) await cfgSet('ifood_auto_confirmar', b.auto_confirmar ? '1' : '0');
   if (b.codigo_pdv != null) await cfgSet('ifood_codigo_pdv', b.codigo_pdv === 'produto' ? 'produto' : 'variante');
   if (b.modo != null) {
@@ -4510,7 +4530,7 @@ const PAGAMENTO_MANUAL = process.env.PAGAMENTO_MANUAL || 'off';
 // consulta quebrada = `indeterminado`: quem chama RECUSA, nada é gravado no
 // escuro, e a tela pede pra registrar de novo.
 const pagarEmVoo = new Map();
-async function nsuJaLancado(nsu, valor) {
+async function nsuJaLancado(nsu, valor, ignorarRetido = null) {
   const n = Number(nsu);
   if (!(n > 0)) return null;
   const v = +Number(valor).toFixed(2);
@@ -4550,6 +4570,28 @@ async function nsuJaLancado(nsu, valor) {
         onde: `na mesa/comanda ${l.numero} (registro local${l.status === 'iniciado' ? ', gravando agora' : ''})` };
     }
   } catch (e) { falha = falha || e.message; }
+  // ⚠️ RETIDO e DESCARTADO também JÁ ESTÃO no sistema (10/09/2026). A fila do
+  // app reenvia a cada onResume e isto aqui só olhava 'ok'/'iniciado': o
+  // recebimento descartado no caixa renascia como retido novo a cada volta,
+  // pra sempre, e o retido em aberto nunca saía da fila do aparelho. A linha
+  // do retido guarda o payload inteiro — quem decide o destino é o caixa
+  // (botão "Lançar nesta conta"), não um reenvio. `ignorarRetido` é o próprio
+  // retido sendo lançado agora por apiCaixaRetido: ele não pode esbarrar em
+  // si mesmo. Mesma janela de 30 dias da idempotência de reterRecebimento.
+  try {
+    const [r] = await sql`SELECT id, numero, status FROM venda_pagamento
+      WHERE ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${String(n)} AND valor=${v}
+        AND status IN ('retido','descartado') AND criado_em > now() - interval '30 days'
+        AND id <> ${Number(ignorarRetido) || -1}
+      ORDER BY id DESC LIMIT 1`;
+    if (r) {
+      const onde = r.status === 'descartado'
+        ? `— foi DESCARTADA no caixa (número ${r.numero})`
+        : `— está RETIDA no caixa (número ${r.numero}), esperando quem lança na conta certa`;
+      return { pagamento_fb: null, retido_id: Number(r.id), onde,
+        msg: `Essa transação (NSU ${n}, R$ ${v.toFixed(2)}) já entrou no sistema ${onde}. Não precisa registrar de novo.` };
+    }
+  } catch (e) { falha = falha || e.message; }
   return falha ? { indeterminado: true, erro: falha } : null;
 }
 // ⚠️⚠️ O DINHEIRO POUSA NA CONTA QUE ESTAVA ABERTA QUANDO ELE FOI COBRADO.
@@ -4584,11 +4626,25 @@ function instanteDaTransacao(body) {
   if (m) cand.push({ fonte: 'Pix (E2E)', quando: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])) });
   if (body.aprovado_em) {
     const d = typeof body.aprovado_em === 'number' ? new Date(body.aprovado_em) : new Date(String(body.aprovado_em));
-    if (!isNaN(d.getTime())) cand.push({ fonte: 'maquininha', quando: d });
+    if (!isNaN(d.getTime())) cand.push({ fonte: 'maquininha', quando: d, doDevice: true });
   }
   const f = /^(\d{13})-/.exec(String(body._id || ''));
-  if (f) cand.push({ fonte: 'fila do app', quando: new Date(Number(f[1])) });
+  if (f) cand.push({ fonte: 'fila do app', quando: new Date(Number(f[1])), doDevice: true });
   const agora = Date.now();
+  // ⚠️ RELÓGIO ATRASADO DA MAQUININHA (10/09/2026, mesa 2): os NSUs 133763 e
+  // 133764 chegaram às 09:15 carimbados de 09/09 14:39 — o aparelho estava
+  // 18h36 atrasado e a trava reteve dinheiro legítimo da conta que ESTAVA
+  // aberta. `aprovado_em` e o `_id` da fila saem do MESMO relógio, então um
+  // nunca desmente o outro: quem desmente é o `agora` que o app carimba no
+  // instante do POST (Api.lioPagar, ≥1.10.18). desvio = relógio do aparelho −
+  // o nosso; descontá-lo devolve a hora real da cobrança SEM afrouxar a trava
+  // — pendência que ficou mesmo 18h na fila continua 18h velha depois da
+  // correção (o desvio é o mesmo nos dois carimbos). O E2E do Pix não entra
+  // nessa conta: aquela hora é do banco, não do aparelho.
+  // App sem `agora` = desvio 0, exatamente o comportamento de antes.
+  const dv = Number(body.agora);
+  const desvio = Number.isFinite(dv) && dv > 0 && Math.abs(dv - agora) > TOL_RELOGIO_MS ? dv - agora : 0;
+  if (desvio) for (const c of cand) if (c.doDevice) c.quando = new Date(c.quando.getTime() - desvio);
   // relógio absurdo (device sem hora certa) não vale como prova de nada
   const bons = cand.filter((c) => c.quando.getTime() > agora - 60 * 864e5 && c.quando.getTime() < agora + 6 * 3600e3);
   if (!bons.length) return null;
@@ -4682,7 +4738,7 @@ async function apiContaPagar(body) {
   const p = (async () => {
     const quem = `origem ${body.origem || body.modo || '?'}, número ${body.numero}`;
     let ja;
-    try { ja = await nsuJaLancado(nsuTxt, valor); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
+    try { ja = await nsuJaLancado(nsuTxt, valor, body.retido_id); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
     if (ja && ja.indeterminado) {
       console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} NÃO CONFERIDO (${ja.erro}) — recusado, nada gravado (${quem})`);
       return { ok: false, indeterminado: true,
@@ -4691,7 +4747,7 @@ async function apiContaPagar(body) {
     if (ja) {
       console.error(`[pagar] NSU ${nsuTxt} R$ ${valor.toFixed(2)} JÁ LANÇADO ${ja.onde} — recusado (${quem})`);
       return { ok: false, ja_registrado: true, pagamento_fb: ja.pagamento_fb,
-        erro: `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
+        erro: ja.msg || `Essa transação (NSU ${nsuTxt}, R$ ${valor.toFixed(2)}) já está lançada ${ja.onde}. Não entra duas vezes — confira o comprovante.` };
     }
     // RECEBIMENTO MANUAL (caixa): o mesmo NSU hoje, com QUALQUER valor, também
     // não entra — cada cupom vale uma vez. Roda AQUI, dentro da fila; a
@@ -4773,7 +4829,10 @@ async function apiContaPagarSemTrava(body) {
       const motivo = `Cobrado em ${hora} (${alvo.quando.fonte}) — ${onde}. A conta aberta agora nasceu depois: o dinheiro NÃO entra nela.`;
       const id = await reterRecebimento(n, body, alvo, motivo);
       console.error(`[pagar] ⚠️ RETIDO #${id}: ${forma} R$ ${valor.toFixed(2)} no número ${n} (NSU ${body.nsu || '-'}) — ${motivo}`);
-      return { ok: false, retido: true, pagamento_id: id,
+      // ja_registrado: o dinheiro JÁ está guardado (a linha do retido tem o
+      // payload inteiro) — sem isto o app fica reenviando a mesma pendência a
+      // cada onResume até alguém limpar a fila na mão.
+      return { ok: false, retido: true, ja_registrado: true, pagamento_id: id,
         erro: `${motivo} O valor ficou guardado e aparece em VERMELHO no caixa — quem está no caixa lança na conta certa (reabrindo, se precisar).` };
     }
     if (alvo.ped && Number(alvo.ped) !== Number(ped || 0)) {
@@ -13991,7 +14050,7 @@ async function apiCaixaRetido(body, quem) {
   const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'a conta precisa estar aberta — se já fechou, use "Reabrir a última conta" primeiro' };
   const payload = (x.payload && typeof x.payload === 'object') ? x.payload : {};
-  const r = await apiContaPagar({ ...payload, numero, ped, forcar_conta: true,
+  const r = await apiContaPagar({ ...payload, numero, ped, forcar_conta: true, retido_id: id,
     // o caixa do garçom daquele momento pode nem estar aberto — vai pro caminho
     // padrão, igual ao "Lançar agora" do Pix
     caixa_codigo: null,
@@ -14854,10 +14913,13 @@ function pinta(){
         '<option value="centralizado"'+(d.modo!=='distribuido'?' selected':'')+'>centralizado</option>'+
         '<option value="distribuido"'+(d.modo==='distribuido'?' selected':'')+'>distribuído</option>'+
       '</select></div>'+
-    '<div class="l"><div class="nm">client_id<small>'+(d.tem_credencial?'gravado':'cole o do seu app')+'</small></div>'+
-      '<input id="cid" value="'+esc(d.client_id)+'" placeholder="uuid do app" style="width:290px"></div>'+
-    '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta</small></div>'+
-      '<input id="csec" type="password" placeholder="••••••••" style="width:290px"></div>'+
+    // O client_id gravado aparece só como pista (mascarado) — NUNCA como valor
+    // do campo: se voltasse no salvar, o valor cortado viraria a credencial
+    // (aconteceu em 10/09/2026). Campo vazio = mantém o que está gravado.
+    '<div class="l"><div class="nm">client_id<small>'+(d.client_id?'gravado: <b>'+esc(d.client_id)+'</b> — deixe vazio pra manter; pra trocar, cole o UUID inteiro':'cole o UUID do seu app (aba Credenciais do Portal do Desenvolvedor)')+'</small></div>'+
+      '<input id="cid" value="" placeholder="'+(d.client_id?esc(d.client_id)+' (gravado)':'uuid do app')+'" style="width:290px"></div>'+
+    '<div class="l"><div class="nm">client_secret<small>fica gravado só aqui na loja; nunca é exibido de volta — deixe vazio pra manter</small></div>'+
+      '<input id="csec" type="password" placeholder="'+(d.tem_credencial?'•••••••• (gravado)':'••••••••')+'" style="width:290px"></div>'+
     '<div class="l"><div class="nm">Loja (merchant_id)<small>preenche sozinho quando o pareamento acha uma loja só</small></div>'+
       '<input id="mid" value="'+esc(d.merchant_id)+'" placeholder="uuid da loja" style="width:290px"></div>'+
     '<div class="l"><button class="b" onclick="salvarCred()">salvar credencial</button>'+
@@ -14921,11 +14983,17 @@ async function liga(v){
   await carregar();
 }
 async function salvarCred(){
-  var b={client_id:document.getElementById('cid').value,merchant_id:document.getElementById('mid').value};
+  // Só manda o que foi preenchido: campo vazio = mantém o gravado. O client_id
+  // gravado aparece mascarado ("8e6715c3…") e não pode voltar pro servidor.
+  var b={};
+  var cid=document.getElementById('cid').value.trim();if(cid)b.client_id=cid;
   var s=document.getElementById('csec').value;if(s)b.client_secret=s;
-  await jpost('/api/ifood/salvar',b);
-  document.getElementById('okc').textContent='salvo';
-  await carregar();
+  var mid=document.getElementById('mid').value.trim();if(mid)b.merchant_id=mid;
+  if(!Object.keys(b).length){document.getElementById('okc').textContent='nada preenchido — nada mudou';return}
+  var r=await jpost('/api/ifood/salvar',b);
+  if(!r.ok){alert(r.erro||'não salvou');return}
+  await carregar(); // redesenha: o client_id novo vira a pista mascarada e o segredo some do campo
+  var ok=document.getElementById('okc');if(ok)ok.textContent='salvo ✓';
 }
 async function testar(){
   var r=await jpost('/api/ifood/testar');
