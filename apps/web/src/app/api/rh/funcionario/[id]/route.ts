@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
+import { garantirVinculoFolhaNasFiliais } from '@/lib/rh/vincular-folha-extras';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -95,6 +96,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
 
   try {
+    let vinculos: Awaited<ReturnType<typeof garantirVinculoFolhaNasFiliais>> = [];
     await db.transaction(async (tx) => {
       if (Object.keys(set).length > 1) {
         await tx.update(schema.funcionario).set(set).where(eq(schema.funcionario.id, id));
@@ -105,10 +107,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           await tx
             .insert(schema.funcionarioFilialExtra)
             .values(filiaisExtras.map((filialId) => ({ funcionarioId: id, filialId })));
+          // Desmarcar não desativa o vínculo de folha da outra casa: pode
+          // haver histórico e ajuste lançado lá. Baixa manual em /folha-equipe/pessoas.
+          vinculos = await garantirVinculoFolhaNasFiliais(tx, id, filiaisExtras);
         }
       }
     });
-    return NextResponse.json({ id, ok: true });
+    return NextResponse.json({ id, ok: true, vinculos });
   } catch (e) {
     const msg = (e as Error).message ?? '';
     if (msg.includes('uq_funcionario_cpf')) {
