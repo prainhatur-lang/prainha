@@ -90,7 +90,6 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Loja (abrir e pausar)', href: '/ifood', perm: 'delivery.read' },
           { label: 'Cardápio no iFood', href: '/ifood/cardapio', perm: 'delivery.read' },
-          { label: 'Faturamento do iFood', href: '/ifood/financeiro', perm: 'conta_receber.read' },
         ],
       },
       {
@@ -243,6 +242,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Contas a pagar', href: '/financeiro', perm: 'conta_pagar.read' },
           { label: 'Contas a receber', href: '/financeiro/receber', perm: 'conta_receber.read' },
           { label: 'A receber de canais (iFood)', href: '/financeiro/receber-canal', perm: 'conta_receber.read' },
+          { label: 'Faturamento do iFood', href: '/ifood/financeiro', perm: 'conta_receber.read' },
           { label: 'Plano de contas', href: '/cadastros/plano-contas', perm: 'configuracao.read' },
         ],
       },
