@@ -55,6 +55,14 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
   const [clientSecret, setClientSecret] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // App do Financeiro: outra credencial, salva e apagada à parte.
+  const [finTem, setFinTem] = useState(Boolean(v.finClientId || v.finClientSecret));
+  const [finClientId, setFinClientId] = useState(v.finClientId ?? '');
+  const [finClientSecret, setFinClientSecret] = useState('');
+  const [finPista, setFinPista] = useState(v.finClientSecret ?? '');
+  const [finMerchantId, setFinMerchantId] = useState(v.finMerchantId ?? '');
+  const [finHomologacao, setFinHomologacao] = useState(v.finHomologacao === '1');
+  const [finMsg, setFinMsg] = useState<string | null>(null);
 
   async function salvar(sobrepor?: Record<string, string>) {
     setSalvando(true);
@@ -104,6 +112,53 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
       if (!r.ok) { const d = await r.json().catch(() => ({})); setMsg(d.error ?? `Erro ${r.status}`); return; }
       setConfigurada(false); setAtivo(false); setClientId(''); setMerchantId(''); setClientSecret(''); setPuxador('loja');
       setMsg('Apagado');
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function salvarFin() {
+    setSalvando(true);
+    setFinMsg(null);
+    try {
+      const valores: Record<string, string> = {
+        finClientId: finClientId.trim(),
+        finMerchantId: finMerchantId.trim(),
+        finHomologacao: finHomologacao ? '1' : '0',
+        ...(finClientSecret.trim() ? { finClientSecret: finClientSecret.trim() } : {}),
+      };
+      if (!finTem && (!valores.finClientId || !valores.finClientSecret)) {
+        setFinMsg('preencha client_id e client_secret do app do Financeiro');
+        return;
+      }
+      const r = await fetch('/api/configuracoes/ifood', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        // Loja em branco = volta a usar a mesma dos pedidos.
+        body: JSON.stringify({ filialId: filial.id, valores, apagar: valores.finMerchantId ? [] : ['finMerchantId'] }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setFinMsg(d.error ?? `Erro ${r.status}`); return; }
+      if (finClientSecret.trim()) setFinPista('salvo');
+      setFinClientSecret('');
+      setFinTem(true);
+      setFinMsg('Salvo ✓');
+    } catch (e) {
+      setFinMsg((e as Error).message);
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function apagarFin() {
+    if (!confirm(`Apagar a credencial do app do Financeiro de ${filial.nome}? Os pedidos do iFood não são afetados.`)) return;
+    setSalvando(true);
+    setFinMsg(null);
+    try {
+      const r = await fetch(`/api/configuracoes/ifood?filialId=${filial.id}&escopo=fin`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); setFinMsg(d.error ?? `Erro ${r.status}`); return; }
+      setFinTem(false); setFinClientId(''); setFinClientSecret(''); setFinPista(''); setFinMerchantId(''); setFinHomologacao(false);
+      setFinMsg('Apagado');
     } finally {
       setSalvando(false);
     }
@@ -203,6 +258,65 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
           </button>
         )}
         {msg && <span className="text-sm text-slate-600">{msg}</span>}
+      </div>
+
+      <div className="mt-6 border-t border-slate-200 pt-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h3 className="flex-1 text-sm font-semibold text-slate-900">App do Financeiro</h3>
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+            finTem ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
+          }`}>
+            {finTem ? (finHomologacao ? 'cadastrado · homologação' : 'cadastrado') : 'sem app próprio'}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Repasses, taxas e conciliação vêm da API Financial, que o iFood só libera em app de
+          categoria <b>Finanças</b> — outro app no Portal do Desenvolvedor, com outra credencial.
+          Estes campos não mexem nos pedidos: o puxador e o PDV da loja nunca usam esta credencial.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="text-slate-700">client_id do app Financeiro</span>
+            <input className={inp} value={finClientId} disabled={!podeEditar} placeholder="uuid do app de Finanças"
+              onChange={(e) => setFinClientId(e.target.value)} />
+          </label>
+          <label className="block text-sm">
+            <span className="text-slate-700">client_secret do app Financeiro</span>
+            <input className={inp} type="password" value={finClientSecret} disabled={!podeEditar}
+              placeholder={finPista ? `salvo (${finPista}) — em branco mantém` : 'cole o segredo do app'}
+              onChange={(e) => setFinClientSecret(e.target.value)} />
+          </label>
+          <label className="block text-sm">
+            <span className="text-slate-700">Loja no Financeiro (merchant_id)</span>
+            <input className={inp} value={finMerchantId} disabled={!podeEditar}
+              placeholder={merchantId ? 'em branco = a mesma dos pedidos' : 'uuid da loja no iFood'}
+              onChange={(e) => setFinMerchantId(e.target.value)} />
+          </label>
+          <label className="mt-6 flex items-start gap-2 text-sm text-slate-700">
+            <input type="checkbox" className="mt-0.5 h-4 w-4" checked={finHomologacao} disabled={!podeEditar}
+              onChange={(e) => setFinHomologacao(e.target.checked)} />
+            <span>
+              Ambiente de homologação
+              <span className="block text-xs text-slate-500">
+                Manda o header <code>x-request-homologation</code> que o iFood pede no teste do
+                módulo Financeiro. Desmarque depois de homologado.
+              </span>
+            </span>
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button onClick={salvarFin} disabled={!podeEditar || salvando}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">
+            {salvando ? 'salvando…' : 'Salvar app do Financeiro'}
+          </button>
+          {finTem && (
+            <button onClick={apagarFin} disabled={!podeEditar || salvando}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 disabled:opacity-40">
+              Apagar
+            </button>
+          )}
+          {finMsg && <span className="text-sm text-slate-600">{finMsg}</span>}
+        </div>
       </div>
     </div>
   );

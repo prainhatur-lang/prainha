@@ -4,15 +4,17 @@
 //            resto volta inteiro, porque é identificação/ajuste e esconder
 //            atrapalharia quem precisa conferir qual loja está apontada.
 //   PUT    → grava as chaves de UMA filial (cifradas).
-//   DELETE → apaga a config da filial; ela para de receber pelo Concilia.
+//   DELETE → apaga a config de PEDIDOS da filial (ela para de receber pelo
+//            Concilia); `?escopo=fin` apaga só a do app do Financeiro. Uma
+//            nunca leva a outra junto.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { cifrar, decifrar, pista, segredoConfigurado } from '@/lib/segredo';
-import { CHAVES_IFOOD, CHAVES_IFOOD_SECRETAS, CAMPOS_IFOOD, PROVEDOR_IFOOD, type ChaveIfood } from '@/lib/ifood-credenciais';
+import { CHAVES_IFOOD, CHAVES_IFOOD_FIN, CHAVES_IFOOD_SECRETAS, CAMPOS_IFOOD, PROVEDOR_IFOOD, type ChaveIfood } from '@/lib/ifood-credenciais';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,7 +40,9 @@ export async function GET() {
     ));
 
   const porFilial = new Map<string, Record<string, string>>();
+  const comPedidos = new Set<string>();
   for (const l of linhas) {
+    if (!(CHAVES_IFOOD_FIN as string[]).includes(l.chave)) comPedidos.add(l.filialId);
     const m = porFilial.get(l.filialId) ?? {};
     if ((CHAVES_IFOOD_SECRETAS as string[]).includes(l.chave)) {
       m[l.chave] = l.pista ?? '••••';
@@ -55,7 +59,7 @@ export async function GET() {
     filiais: filiais.map((f) => ({
       id: f.id,
       nome: f.nome,
-      configurada: porFilial.has(f.id),
+      configurada: comPedidos.has(f.id),
       valores: porFilial.get(f.id) ?? {},
     })),
   });
@@ -121,14 +125,32 @@ export async function PUT(request: Request) {
     gravadas += 1;
   }
 
-  return NextResponse.json({ ok: true, gravadas });
+  // "Em branco = não mexi" não deixa esvaziar campo. Só as chaves do app do
+  // Financeiro podem ser apagadas uma a uma (ex.: voltar a loja do Financeiro
+  // pra mesma dos pedidos); as de pedidos saem pelo DELETE, com confirmação.
+  const apagar = (Array.isArray(b?.apagar) ? b.apagar : []).filter(
+    (c: unknown): c is string => typeof c === 'string' && (CHAVES_IFOOD_FIN as string[]).includes(c),
+  );
+  if (apagar.length) {
+    await db
+      .delete(schema.filialCredencial)
+      .where(and(
+        eq(schema.filialCredencial.filialId, filialId),
+        eq(schema.filialCredencial.provedor, PROVEDOR_IFOOD),
+        inArray(schema.filialCredencial.chave, apagar),
+      ));
+  }
+
+  return NextResponse.json({ ok: true, gravadas, apagadas: apagar.length });
 }
 
 export async function DELETE(request: Request) {
   const { user, error } = await exigirPermApi('configuracao.editar');
   if (error) return error;
 
-  const filialId = new URL(request.url).searchParams.get('filialId') ?? '';
+  const sp = new URL(request.url).searchParams;
+  const filialId = sp.get('filialId') ?? '';
+  const soFin = sp.get('escopo') === 'fin';
   const filiais = await filiaisDoUsuario(user.id);
   if (!filiais.some((f) => f.id === filialId)) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
@@ -139,6 +161,9 @@ export async function DELETE(request: Request) {
     .where(and(
       eq(schema.filialCredencial.filialId, filialId),
       eq(schema.filialCredencial.provedor, PROVEDOR_IFOOD),
+      soFin
+        ? inArray(schema.filialCredencial.chave, CHAVES_IFOOD_FIN)
+        : notInArray(schema.filialCredencial.chave, CHAVES_IFOOD_FIN),
     ));
 
   return NextResponse.json({ ok: true });

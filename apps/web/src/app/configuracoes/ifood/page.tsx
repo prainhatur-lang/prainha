@@ -13,7 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { segredoConfigurado, decifrar } from '@/lib/segredo';
-import { CHAVES_IFOOD_SECRETAS, PROVEDOR_IFOOD } from '@/lib/ifood-credenciais';
+import { CHAVES_IFOOD_FIN, CHAVES_IFOOD_SECRETAS, PROVEDOR_IFOOD } from '@/lib/ifood-credenciais';
 import { IfoodClient, type FilialIfood } from './ifood-client';
 
 export const dynamic = 'force-dynamic';
@@ -42,7 +42,10 @@ export default async function IfoodPage() {
     : [];
 
   const porFilial = new Map<string, Record<string, string>>();
+  // Só a credencial do app do Financeiro não faz a casa "configurada" pra pedidos.
+  const comPedidos = new Set<string>();
   for (const l of linhas) {
+    if (!(CHAVES_IFOOD_FIN as string[]).includes(l.chave)) comPedidos.add(l.filialId);
     const m = porFilial.get(l.filialId) ?? {};
     // O segredo vira pista; o resto vai inteiro pra tela poder conferir qual
     // loja do iFood está apontada em cada casa.
@@ -54,7 +57,7 @@ export default async function IfoodPage() {
   const dados: FilialIfood[] = filiais.map((f) => ({
     id: f.id,
     nome: f.nome,
-    configurada: porFilial.has(f.id),
+    configurada: comPedidos.has(f.id),
     valores: porFilial.get(f.id) ?? {},
   }));
 
