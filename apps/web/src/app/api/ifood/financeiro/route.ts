@@ -102,6 +102,8 @@ async function casa(userId: string, filialId: string) {
 /** Erro do iFood → recado claro por status (critério da homologação). */
 function falha(e: unknown) {
   const x = explicarErroIfood(e, 'Financeiro');
+  // O recado de tela resume; o bruto fica no log da Vercel pra diagnóstico.
+  console.error('[ifood/financeiro]', x.status, String((e as Error)?.message ?? e).slice(0, 500));
   return NextResponse.json({ error: x.mensagem, semModulo: x.semModulo, codigo: x.codigo }, { status: x.status });
 }
 

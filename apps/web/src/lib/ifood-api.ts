@@ -36,7 +36,14 @@ export async function ifoodToken(c: CredIfood, forcar = false): Promise<string> 
   const j = (await r.json().catch(() => ({}))) as { accessToken?: string; expiresIn?: number; error?: { message?: string } };
   if (!r.ok || !j.accessToken) {
     // 400 costuma ser client_id cortado (tem que ter 36 chars), 401 é o par errado.
-    throw new Error('token iFood ' + r.status + ': ' + (j.error?.message || JSON.stringify(j).slice(0, 200)));
+    // IfoodErro (e não Error) pra o status chegar no recado de tela: sem ele
+    // um segredo errado virava "o iFood não respondeu".
+    throw new IfoodErro(
+      'token iFood ' + r.status + ': ' + (j.error?.message || JSON.stringify(j).slice(0, 200)),
+      r.status,
+      'TOKEN',
+      JSON.stringify(j).slice(0, 2000),
+    );
   }
   tokens.set(c.clientId, {
     token: j.accessToken,
@@ -200,6 +207,16 @@ export function explicarErroIfood(
   }
   const sobreposto = /overlap/i.test(codigo + ' ' + doIfood);
   const r = (mensagem: string, st: number, semModulo = false) => ({ mensagem, status: st, semModulo, codigo });
+
+  // Falha no /oauth/token é credencial (par errado, client_id cortado, app
+  // desativado), não iFood fora do ar.
+  if (codigo === 'TOKEN' && status > 0 && status < 500) {
+    const onde = modulo === 'Financeiro' ? 'do app do Financeiro' : 'desta casa';
+    return r(
+      `o iFood recusou a credencial ${onde} (token ${status}${doIfood ? ': ' + doIfood : ''}) — confira client_id e client_secret em Configurações → iFood`,
+      502,
+    );
+  }
 
   if (status === 409 || (status === 400 && sobreposto && /interruption/i.test(bruto))) {
     return r(
