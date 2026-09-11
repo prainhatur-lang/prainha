@@ -128,12 +128,13 @@ function hora(q: string | null): string {
 
 export function ConferenciaCaixaClient({
   filialId,
-  filiais,
+  filialNome,
 }: {
   filialId: string;
-  filiais: { id: string; nome: string }[];
+  filialNome: string;
 }) {
-  const [fil, setFil] = useState(filialId);
+  // Fixo na filial ativa do menu — trocar de casa é pelo seletor do menu.
+  const fil = filialId;
   const [data, setData] = useState(hojeBr());
   const [rel, setRel] = useState<Relatorio | null>(null);
   const [loading, setLoading] = useState(false);
@@ -252,8 +253,7 @@ export function ConferenciaCaixaClient({
   const maq = (rel?.caixas ?? []).filter((c) => c.tipo === 'maquininha');
   const sis = (rel?.caixas ?? []).filter((c) => c.tipo !== 'maquininha');
 
-  // ===== IMPRESSÃO — sintético/analítico, por caixa, por filial ou todas =====
-  const [printEscopo, setPrintEscopo] = useState<'filial' | 'todas'>('filial');
+  // ===== IMPRESSÃO — sintético/analítico, por caixa, só desta filial =====
   // Corte do relatório "por horário": o dono confere o turno do almoço, que
   // fecha às 17h — daí o padrão.
   const [printAte, setPrintAte] = useState('17:00');
@@ -417,25 +417,21 @@ export function ConferenciaCaixaClient({
         const c = r?.caixas.find((x) => x.codigo === caixaSo);
         if (!r || !c) { setMsg('Caixa não encontrado no dia.'); return; }
         const dets = await buscarDetalhes(fil, [c]);
-        const nome = filiais.find((f) => f.id === fil)?.nome ?? '';
-        abrirImpressao(htmlFilial(nome + ` · caixa ${caixaSo}`, { ...r, formas: c.formas?.map((fb, i) => ({ codigo: i, nome: fb.nome, valor: fb.valor, n: fb.n })) ?? [], caixas: [c], movs: [] }, dets));
+        abrirImpressao(htmlFilial(filialNome + ` · caixa ${caixaSo}`, { ...r, formas: c.formas?.map((fb, i) => ({ codigo: i, nome: fb.nome, valor: fb.valor, n: fb.n })) ?? [], caixas: [c], movs: [] }, dets));
         return;
       }
-      const alvos = printEscopo === 'todas' ? filiais : filiais.filter((f) => f.id === fil);
-      const partes: string[] = [];
-      for (const f of alvos) {
-        const r = await buscarRel(f.id);
-        if (!r) { partes.push(`<h1>Conferência de caixa — ${esc(f.nome)}</h1><div class="mut">sem dados (loja fora do ar?)</div>`); continue; }
-        if (modo === 'horario') {
-          // por horário precisa dos lançamentos individuais sempre
-          const dets = await buscarDetalhes(f.id, r.caixas);
-          partes.push((partes.length ? '<div class="quebra"></div>' : '') + htmlPorHorario(f.nome, r, dets, printAte));
-          continue;
-        }
-        const dets = modo === 'analitico' ? await buscarDetalhes(f.id, r.caixas) : null;
-        partes.push((partes.length ? '<div class="quebra"></div>' : '') + htmlFilial(f.nome, r, dets));
+      const r = await buscarRel(fil);
+      if (!r) {
+        abrirImpressao(`<h1>Conferência de caixa — ${esc(filialNome)}</h1><div class="mut">sem dados (loja fora do ar?)</div>`);
+        return;
       }
-      abrirImpressao(partes.join(''));
+      if (modo === 'horario') {
+        // por horário precisa dos lançamentos individuais sempre
+        abrirImpressao(htmlPorHorario(filialNome, r, await buscarDetalhes(fil, r.caixas), printAte));
+        return;
+      }
+      const dets = modo === 'analitico' ? await buscarDetalhes(fil, r.caixas) : null;
+      abrirImpressao(htmlFilial(filialNome, r, dets));
     } finally {
       setPrintando(false);
     }
@@ -557,19 +553,7 @@ export function ConferenciaCaixaClient({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3">
-        {filiais.length > 1 && (
-          <select
-            value={fil}
-            onChange={(e) => setFil(e.target.value)}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-          >
-            {filiais.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.nome}
-              </option>
-            ))}
-          </select>
-        )}
+        <span className="rounded-md bg-slate-100 px-2 py-1.5 text-sm font-semibold text-slate-700">{filialNome}</span>
         <button onClick={() => setData(diaMais(data, -1))} className="rounded-md border border-slate-300 px-2 py-1.5 text-sm">
           ◂
         </button>
@@ -596,17 +580,9 @@ export function ConferenciaCaixaClient({
         </button>
       </div>
 
-      {/* Impressão: sintético/analítico × esta filial/todas (por caixa é o 🖨 na linha) */}
+      {/* Impressão: sintético/analítico desta filial (por caixa é o 🖨 na linha) */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3">
         <span className="text-sm font-semibold text-slate-700">🖨 Imprimir:</span>
-        <select
-          value={printEscopo}
-          onChange={(e) => setPrintEscopo(e.target.value as 'filial' | 'todas')}
-          className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-        >
-          <option value="filial">esta filial</option>
-          <option value="todas">todas as filiais</option>
-        </select>
         <button
           onClick={() => void imprimir('sintetico')}
           disabled={printando}

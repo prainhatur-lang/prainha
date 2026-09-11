@@ -23,10 +23,9 @@ export default async function ConferenciaCaixaPage(props: { searchParams: Promis
       {!sel ? (
         <div className="p-6 text-slate-500">Nenhuma filial acessível.</div>
       ) : (
-        <ConferenciaCaixaClient
-          filialId={sel.id}
-          filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-        />
+        // Só a filial ativa (seletor do menu): a conferência não mostra caixa
+        // de outra casa. key remonta o client quando o menu troca a filial.
+        <ConferenciaCaixaClient key={sel.id} filialId={sel.id} filialNome={sel.nome} />
       )}
     </>
   );
