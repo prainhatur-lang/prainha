@@ -2,10 +2,11 @@
 // cliente e ainda vai repassar. Nasce sozinho quando o ingest recebe um
 // pedido desse canal (ver api/ingest/pdv/conta-receber-canal.ts).
 //
-// Hoje o valor é sempre o BRUTO: a leitura automática do líquido depende da
-// API financeira do canal, que ainda não está ligada (ver memória
-// ifood-integracao-propria). A baixa é manual: o financeiro bate o repasse
-// que caiu no banco contra os lançamentos abertos do período.
+// O valor nasce BRUTO (é o que o pedido traz). O líquido esperado é preenchido
+// pela tela /ifood/financeiro, que lê a API financeira do iFood (Sales v2.1) —
+// só funciona quando o módulo Financeiro estiver liberado pro app. A baixa
+// segue manual: o financeiro bate o repasse que caiu no banco contra os
+// lançamentos abertos do período (em /ifood/financeiro, aba "Repasses").
 
 import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
@@ -81,6 +82,12 @@ export default async function ReceberCanalPage(props: { searchParams: Promise<SP
       <section className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="text-xl font-bold text-slate-900">A receber de canais</h1>
+          <a
+            href={`/ifood/financeiro?filialId=${fid}`}
+            className="text-sm font-medium text-rose-700 hover:underline"
+          >
+            Faturamento do iFood →
+          </a>
         </div>
         <p className="mt-1 text-sm text-slate-500">
           Pedido de canal que já cobra do cliente (iFood…) — o dinheiro está com o canal, não é dívida do cliente.
@@ -124,6 +131,7 @@ export default async function ReceberCanalPage(props: { searchParams: Promise<SP
                 <th className="px-4 py-2.5">Cliente</th>
                 <th className="px-4 py-2.5">Data</th>
                 <th className="px-4 py-2.5 text-right">Bruto</th>
+                <th className="px-4 py-2.5 text-right">Esperado</th>
                 <th className="px-4 py-2.5 text-right">Recebido</th>
                 <th className="px-4 py-2.5">Ações</th>
               </tr>
@@ -131,7 +139,7 @@ export default async function ReceberCanalPage(props: { searchParams: Promise<SP
             <tbody className="divide-y divide-slate-100">
               {lancamentos.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                  <td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                     Nada por aqui.
                   </td>
                 </tr>
@@ -142,17 +150,26 @@ export default async function ReceberCanalPage(props: { searchParams: Promise<SP
                       {CANAL_LABEL[l.canal] ?? l.canal}
                     </td>
                     <td className="px-4 py-2.5 text-slate-600">
-                      #{l.pedidoCodigoExterno}
-                      {l.pedidoNumero ? ` · mesa ${l.pedidoNumero}` : ' · entrega'}
+                      {l.pedidoCodigoExterno
+                        ? `#${l.pedidoCodigoExterno}${l.pedidoNumero ? ` · mesa ${l.pedidoNumero}` : ' · entrega'}`
+                        : `#${l.pedidoNumero ?? '—'} · ${CANAL_LABEL[l.canal] ?? l.canal} direto`}
                     </td>
                     <td className="px-4 py-2.5 text-slate-600">{l.nomeCliente || '—'}</td>
                     <td className="px-4 py-2.5 text-slate-500">{formatDateTime(l.dataPedido)}</td>
                     <td className="px-4 py-2.5 text-right font-medium text-slate-800">{brl(l.valorBruto)}</td>
                     <td className="px-4 py-2.5 text-right text-slate-600">
+                      {l.valorLiquidoEsperado ? brl(l.valorLiquidoEsperado) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-slate-600">
                       {l.valorRecebido ? brl(l.valorRecebido) : '—'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <LinhaReceberCanal id={l.id} status={l.status} valorBruto={Number(l.valorBruto)} />
+                      <LinhaReceberCanal
+                        id={l.id}
+                        status={l.status}
+                        valorBruto={Number(l.valorBruto)}
+                        liquidoEsperado={l.valorLiquidoEsperado == null ? null : Number(l.valorLiquidoEsperado)}
+                      />
                     </td>
                   </tr>
                 ))

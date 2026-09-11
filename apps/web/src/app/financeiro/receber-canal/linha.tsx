@@ -7,14 +7,19 @@ export function LinhaReceberCanal({
   id,
   status,
   valorBruto,
+  liquidoEsperado = null,
 }: {
   id: string;
   status: string;
   valorBruto: number;
+  /** O que o canal diz que vai repassar (vem de /ifood/financeiro). Quando
+   *  existe, é ELE que o campo já vem preenchido: o repasse que cai no banco é
+   *  o líquido, e deixar o bruto aí dava baixa por dinheiro que nunca chegou. */
+  liquidoEsperado?: number | null;
 }) {
   const router = useRouter();
   const [aberto, setAberto] = useState<'receber' | 'cancelar' | null>(null);
-  const [valor, setValor] = useState(valorBruto.toFixed(2).replace('.', ','));
+  const [valor, setValor] = useState((liquidoEsperado ?? valorBruto).toFixed(2).replace('.', ','));
   const [motivo, setMotivo] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -60,6 +65,11 @@ export function LinhaReceberCanal({
       <div className="flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2">
         <label className="text-[11px] text-slate-500">
           Valor líquido que caiu (o repasse, não o bruto do pedido)
+          {liquidoEsperado != null && (
+            <span className="block text-[10px] text-slate-400">
+              o iFood informou {liquidoEsperado.toFixed(2).replace('.', ',')} pra este pedido
+            </span>
+          )}
           <input
             value={valor}
             onChange={(e) => setValor(e.target.value)}
