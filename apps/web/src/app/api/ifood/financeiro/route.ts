@@ -506,8 +506,13 @@ async function pedirConciliacao(corpo: { filialId?: string; competencia?: string
     if (r.conflito) {
       const valido = recentes.find((p) => p.fase !== 'expirado');
       if (valido) return NextResponse.json({ ok: true, requestId: valido.requestId, reaproveitado: true });
+      if (r.requestId) {
+        // O iFood contou qual é o pedido vigente: passa a acompanhar ele.
+        await db.insert(t).values({ filialId, merchantId: k.merchantId, competencia, requestId: r.requestId, pedidoPor: user.id }).onConflictDoNothing();
+        return NextResponse.json({ ok: true, requestId: r.requestId, reaproveitado: true });
+      }
       return erroJson(
-        'o iFood já tem um pedido recente desta competência (feito fora do Concilia) e só aceita outro depois de 6 h',
+        'o iFood já tem um pedido recente desta competência que o Concilia não registrou, e só aceita outro depois de 6 h',
         409,
       );
     }

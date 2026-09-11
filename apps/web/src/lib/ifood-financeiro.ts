@@ -801,20 +801,40 @@ export async function pedirConciliacaoSobDemanda(
   c: CredFin,
   merchantId: string,
   competencia: string,
-): Promise<{ requestId: string; conflito: false } | { requestId: null; conflito: true }> {
+): Promise<{ requestId: string; conflito: false } | { requestId: string | null; conflito: true }> {
+  const caminho = V3 + merchantId + '/reconciliation/on-demand';
+  // Resposta crua: o wrapper devolve {} em 202 e o requestId se perdia (11/09,
+  // homologação: "aceitou mas não devolveu o requestId").
+  const r = (await api(c, caminho, {
+    metodo: 'POST',
+    corpo: { competence: competencia },
+    timeoutMs: 30000,
+    cru: true,
+  })) as Response;
+  const corpo = await r.text();
+  let j: Obj = {};
   try {
-    const r = obj(await api(c, V3 + merchantId + '/reconciliation/on-demand', {
-      metodo: 'POST',
-      corpo: { competence: competencia },
-      timeoutMs: 30000,
-    }));
-    const requestId = txt(r.requestId);
-    if (!requestId) throw new Error('o iFood aceitou o pedido mas não devolveu o requestId');
-    return { requestId, conflito: false };
-  } catch (e) {
-    if (e instanceof IfoodErro && e.status === 409) return { requestId: null, conflito: true };
-    throw e;
+    j = obj(JSON.parse(corpo));
+  } catch {
+    // corpo vazio ou texto
   }
+  const erro = obj(j.error);
+  const codigo = txt(j.code) || txt(erro.code);
+  const mensagem = txt(j.message) || txt(erro.message);
+  const requestId = txt(j.requestId) || txt(j.id) || txt(obj(j.data).requestId);
+
+  // Pedido recente ainda válido: a spec documenta 409 e também 400 com
+  // code "409" ("There is already a recent and valid request").
+  if (r.status === 409 || (r.status === 400 && (codigo === '409' || /recent and valid request/i.test(mensagem)))) {
+    return { requestId: requestId || null, conflito: true };
+  }
+  if (!r.ok) {
+    throw new IfoodErro('iFood POST ' + caminho + ' → ' + r.status + ': ' + corpo.slice(0, 300), r.status, codigo, corpo.slice(0, 2000));
+  }
+  if (!requestId) {
+    throw new Error(`o iFood aceitou o pedido (HTTP ${r.status}) mas não devolveu o requestId: ${corpo.slice(0, 300) || 'corpo vazio'}`);
+  }
+  return { requestId, conflito: false };
 }
 
 export type FaseSobDemanda = 'processando' | 'pronto' | 'erro' | 'expirado';
@@ -845,7 +865,8 @@ export async function statusConciliacaoSobDemanda(
   const url = txt(r.downloadPath) || txt(r.filePath);
   const erro = txt(r.errorMessage) || txt(r.message);
   if (url) return { status, fase: 'pronto', erro: '', url };
-  if (/error|fail/i.test(status)) return { status, fase: 'erro', erro: erro || 'o iFood não conseguiu gerar o arquivo', url: '' };
+  // Spec: errorMessage só vem quando falhou ("File generation failed: No financial entries exist").
+  if (/error|fail/i.test(status) || erro) return { status, fase: 'erro', erro: erro || 'o iFood não conseguiu gerar o arquivo', url: '' };
   // 202, created, enqueue, processing: ainda na fila.
   return { status, fase: 'processando', erro: '', url: '' };
 }
