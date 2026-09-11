@@ -16,7 +16,7 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -77,8 +77,16 @@ export async function POST(request: Request) {
       dataPedido: Number.isFinite(dataPedido.getTime()) ? dataPedido : new Date(),
       valorBruto: valor.toFixed(2),
     })
-    // reprocessou o mesmo pedido: não recria e não mexe no que já existe
-    .onConflictDoNothing()
+    // reprocessou o mesmo pedido: não recria e não mexe no que já existe.
+    // O alvo é o índice PARCIAL uq_crc_filial_ref — o unique antigo
+    // (filial, pedido_codigo_externo) não pega nada aqui, porque o código do
+    // Consumer vem NULO e NULL não conflita. O WHERE tem que repetir o
+    // predicado do índice, senão o Postgres não o reconhece como árbitro.
+    // Sem o índice o insert falha alto em vez de duplicar em silêncio.
+    .onConflictDoNothing({
+      target: [schema.contaReceberCanal.filialId, schema.contaReceberCanal.pedidoRef],
+      where: sql`pedido_ref IS NOT NULL`,
+    })
     .returning({ id: schema.contaReceberCanal.id });
 
   return NextResponse.json({ ok: true, criado: r.length > 0 });

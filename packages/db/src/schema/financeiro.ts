@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, jsonb, index, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, jsonb, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -386,6 +386,11 @@ export const contaReceberCanal = pgTable(
   },
   (t) => ({
     uniqPedido: unique('uq_crc_filial_pedido').on(t.filialId, t.pedidoCodigoExterno),
+    /** Pedido do iFood direto tem pedido_codigo_externo NULO, e NULL não
+     *  conflita no unique acima — sem este índice, pedido repostado vira
+     *  lançamento duplicado. Parcial pra não pegar as linhas do Consumer.
+     *  O ON CONFLICT de /api/loja/receber-canal aponta pra ele. */
+    uniqRef: uniqueIndex('uq_crc_filial_ref').on(t.filialId, t.pedidoRef).where(sql`pedido_ref IS NOT NULL`),
     statusIdx: index('idx_crc_filial_status').on(t.filialId, t.status),
     canalIdx: index('idx_crc_canal').on(t.filialId, t.canal),
   }),
