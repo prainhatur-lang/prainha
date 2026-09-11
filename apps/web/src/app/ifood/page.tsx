@@ -19,6 +19,7 @@ export default async function IfoodLojaPage() {
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'delivery.read');
   const podeAgir = await podeUsuario(user.id, 'delivery.update');
+  const podeHorario = await podeUsuario(user.id, 'configuracao.editar');
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -30,7 +31,7 @@ export default async function IfoodLojaPage() {
           Pausa é temporária: o iFood reabre sozinho na hora marcada, sem mexer no horário
           de funcionamento.
         </p>
-        <LojaIfoodClient podeAgir={podeAgir} />
+        <LojaIfoodClient podeAgir={podeAgir} podeHorario={podeHorario} />
       </section>
     </main>
   );
