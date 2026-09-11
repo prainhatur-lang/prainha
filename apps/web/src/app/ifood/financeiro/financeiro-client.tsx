@@ -105,6 +105,8 @@ interface Base {
 
 interface RespVendas extends Base {
   total: number;
+  /** Quantas o iFood mandou na lista, antes de tirar repetidas. */
+  recebidas: number;
   incompleto: boolean;
   resumo: {
     pedidos: number; pedidosOnline: number; cancelados: number; naEntrega: number;
@@ -158,9 +160,15 @@ interface PedidoSD {
 
 const reais = (n: number | null | undefined) =>
   (n ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-/** 'yyyy-mm-dd' → 'dd/mm'. Fatiar string é de propósito: `new Date(ymd)` lê
- *  como UTC e mostra um dia a menos no Brasil. */
-const dia = (ymd: string) => (ymd && ymd.length >= 10 ? ymd.slice(8, 10) + '/' + ymd.slice(5, 7) : '—');
+/** 'yyyy-mm-dd' → 'dd/mm' (com '/aa' fora do ano corrente). Fatiar string é de
+ *  propósito: `new Date(ymd)` lê como UTC e mostra um dia a menos no Brasil. */
+const ANO = String(new Date().getFullYear());
+const dia = (ymd: string) =>
+  ymd && ymd.length >= 10
+    ? ymd.slice(8, 10) + '/' + ymd.slice(5, 7) + (ymd.slice(0, 4) === ANO ? '' : '/' + ymd.slice(2, 4))
+    : '—';
+/** Desconto com sinal: positivo sai do repasse, negativo é crédito. */
+const menos = (n: number) => (n < 0 ? '+ ' + reais(-n) : '- ' + reais(n));
 /** Instante ISO → 'dd/mm hh:mm' no fuso de Aracaju. */
 const quando = (iso: string | null | undefined) =>
   iso
@@ -458,6 +466,12 @@ export function FinanceiroIfoodClient({
         ))}
       </div>
 
+      {atual?.homologacao && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          Ambiente de homologação do iFood: ele responde com dados de exemplo fixos (loja de teste, agosto/2025),
+          qualquer que seja o período escolhido. Os números não são da casa.
+        </p>
+      )}
       {erro && <p className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{erro}</p>}
       {carregando && !atual && <p className="text-sm text-slate-500">lendo o iFood…</p>}
 
@@ -466,10 +480,10 @@ export function FinanceiroIfoodClient({
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             <Card t="Bruto (pago pelo iFood)" v={reais(rv.resumo.bruto)} s={`${rv.resumo.pedidosOnline} pedidos`} />
-            <Card t="Comissão iFood" v={'- ' + reais(rv.resumo.comissao)} s="inclui comissão de entrega" />
-            <Card t="Taxa de cartão" v={'- ' + reais(rv.resumo.taxaCartao)} />
-            <Card t="Outras taxas e promoções" v={'- ' + reais(rv.resumo.outrasTaxas + rv.resumo.promoLoja)}
-              s={rv.resumo.promoLoja ? 'promoção da casa: ' + reais(rv.resumo.promoLoja) : ''} />
+            <Card t="Comissão iFood" v={menos(rv.resumo.comissao)} s="inclui comissão de entrega" />
+            <Card t="Taxa de cartão" v={menos(rv.resumo.taxaCartao)} />
+            <Card t="Outras taxas e promoções" v={menos(rv.resumo.outrasTaxas)}
+              s={rv.resumo.promoLoja ? 'inclui promoção da casa: ' + reais(rv.resumo.promoLoja) : ''} />
             <Card t="Sobra pra casa" v={reais(rv.resumo.liquido)}
               s={rv.resumo.bruto ? (100 * rv.resumo.liquido / rv.resumo.bruto).toFixed(1) + '% do bruto' : ''} />
           </div>
@@ -481,7 +495,12 @@ export function FinanceiroIfoodClient({
           </p>
           {rv.incompleto && (
             <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-              O iFood tem {rv.total} pedidos no período e só {rv.vendas.length} couberam nesta leitura. Aperte o intervalo pra ver todos.
+              A leitura parou no limite de páginas: vieram {rv.vendas.length} de {rv.total} pedidos. Aperte o intervalo pra ver todos.
+            </p>
+          )}
+          {!rv.incompleto && rv.total > rv.recebidas && (
+            <p className="text-xs text-slate-500">
+              O iFood informa {rv.total} pedidos no período, mas a lista dele trouxe {rv.recebidas}.
             </p>
           )}
 
@@ -810,7 +829,7 @@ function FragmentoVenda({ v, aberto, alternar }: { v: Venda; aberto: boolean; al
         <td className={`${cx.td} text-right text-slate-900`}>{reais(v.bruto)}</td>
         <td className={`${cx.td} text-right text-slate-600`}>{reais(v.comissao + v.comissaoEntrega)}</td>
         <td className={`${cx.td} text-right text-slate-600`}>{reais(v.taxaCartao)}</td>
-        <td className={`${cx.td} text-right text-slate-600`}>{reais(v.taxaAntecipacao - v.outras + v.promoLoja)}</td>
+        <td className={`${cx.td} text-right text-slate-600`}>{reais(v.taxaAntecipacao + v.outras)}</td>
         <td className={`${cx.td} text-right font-semibold text-slate-900`}>{reais(v.liquido)}</td>
         <td className={cx.td}>
           <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${

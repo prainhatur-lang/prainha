@@ -72,6 +72,15 @@ export function somarDias(ymd: string, n: number): string {
 export function diasEntre(de: string, ate: string): number {
   return Math.round((Date.parse(ate + 'T00:00:00Z') - Date.parse(de + 'T00:00:00Z')) / 86400000);
 }
+/** Parte [de, ate] em pedaços de até `n` dias (contando as duas pontas). */
+export function janelas(de: string, ate: string, n: number): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (let ini = de; ini <= ate; ini = somarDias(ini, n)) {
+    const fim = somarDias(ini, n - 1);
+    out.push([ini, fim < ate ? fim : ate]);
+  }
+  return out;
+}
 export function ultimoDiaDoMes(competencia: string): string {
   const [a, m] = competencia.split('-').map(Number);
   return new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
@@ -126,7 +135,8 @@ export interface VendaIfood {
   comissaoEntrega: number;
   taxaCartao: number;
   taxaAntecipacao: number;
-  /** Lançamentos que não se encaixam nos de cima (com sinal). */
+  /** O resto que o iFood desconta (positivo) ou credita (negativo), de modo
+   *  que bruto − taxas − outras = líquido. Inclui a promoção da casa. */
   outras: number;
   /** `billingSummary.saleBalance`: o que o iFood diz que sobra da venda. */
   liquido: number;
@@ -135,12 +145,17 @@ export interface VendaIfood {
   entregaPor: string;
 }
 
-function classeLancamento(nome: string): 'comissao' | 'comissaoEntrega' | 'taxaCartao' | 'taxaAntecipacao' | 'outras' {
+type ClasseLancamento = 'comissao' | 'comissaoEntrega' | 'taxaCartao' | 'taxaAntecipacao' | 'servico' | 'outras';
+
+function classeLancamento(nome: string): ClasseLancamento {
   const n = nome.toUpperCase();
   if (/ANTICIPATION/.test(n)) return 'taxaAntecipacao';
-  if (/DELIVERY/.test(n) && /COMMISSION|FEE/.test(n)) return 'comissaoEntrega';
+  if (/DELIVERY/.test(n) && /COMMISSION/.test(n)) return 'comissaoEntrega';
   if (/COMMISSION/.test(n)) return 'comissao';
-  if (/PAYMENT|TRANSACTION|ACQUIRER|CARD/.test(n)) return 'taxaCartao';
+  // Não casar "PAYMENT" solto: ORDER_PAYMENT é o que o cliente pagou.
+  if (/TRANSACTION_FEE|ACQUIRER|CARD_FEE/.test(n)) return 'taxaCartao';
+  // Taxa de serviço do cliente: entra no ORDER_PAYMENT e sai aqui, é do iFood.
+  if (/SERVICE_FEE/.test(n)) return 'servico';
   return 'outras';
 }
 
@@ -154,13 +169,14 @@ function venda(s: Obj): VendaIfood {
   const t = Date.parse(criado);
 
   const lancamentos = lista(cobranca.billingEntries).map((b) => ({ nome: txt(b.name), valor: num(b.value) }));
-  const soma = { comissao: 0, comissaoEntrega: 0, taxaCartao: 0, taxaAntecipacao: 0, outras: 0 };
-  for (const l of lancamentos) {
-    const c = classeLancamento(l.nome);
-    // Taxa é taxa: o sinal do iFood varia por lançamento, a tela mostra o
-    // tamanho. "outras" guarda o sinal porque pode ser crédito.
-    soma[c] += c === 'outras' ? l.valor : Math.abs(l.valor);
-  }
+  // Cobrado = o NEGATIVO do lançamento. O saldo da venda é a soma com sinal
+  // (ORDER_PAYMENT e IFOOD_SUBSIDY entram positivos) e estorno (REFUND_*,
+  // positivo) abate da própria classe. Taxa em módulo fazia o pagamento do
+  // cliente virar "taxa de cartão".
+  const cobrado: Record<ClasseLancamento, number> = {
+    comissao: 0, comissaoEntrega: 0, taxaCartao: 0, taxaAntecipacao: 0, servico: 0, outras: 0,
+  };
+  for (const l of lancamentos) cobrado[classeLancamento(l.nome)] -= l.valor;
 
   let promoLoja = 0;
   let promoIfood = 0;
@@ -177,6 +193,12 @@ function venda(s: Obj): VendaIfood {
     (responsaveis.length === 1 && responsaveis[0] === 'MERCHANT');
   const itens = num(bruto.bag);
   const taxaEntrega = num(bruto.deliveryFee);
+  const liquido = num(cobranca.saleBalance);
+  const taxas = cobrado.comissao + cobrado.comissaoEntrega + cobrado.taxaCartao + cobrado.taxaAntecipacao;
+  // "Outras" fecha a conta bruto − taxas − outras = sobra: promoção da casa,
+  // entrega sob demanda, anúncio… o que o iFood desconta sem classe própria.
+  // Na entrega o bruto não passa pelo iFood — lá só contam os lançamentos.
+  const outras = offline ? cobrado.outras : itens + taxaEntrega - taxas - liquido;
 
   return {
     orderId: txt(s.id),
@@ -192,15 +214,15 @@ function venda(s: Obj): VendaIfood {
     bruto: r2(itens + taxaEntrega),
     itens,
     taxaEntrega,
-    taxaServico: num(bruto.serviceFee),
+    taxaServico: Math.abs(num(bruto.serviceFee)),
     promoLoja: r2(promoLoja),
     promoIfood: r2(promoIfood),
-    comissao: r2(soma.comissao),
-    comissaoEntrega: r2(soma.comissaoEntrega),
-    taxaCartao: r2(soma.taxaCartao),
-    taxaAntecipacao: r2(soma.taxaAntecipacao),
-    outras: r2(soma.outras),
-    liquido: num(cobranca.saleBalance),
+    comissao: r2(cobrado.comissao),
+    comissaoEntrega: r2(cobrado.comissaoEntrega),
+    taxaCartao: r2(cobrado.taxaCartao),
+    taxaAntecipacao: r2(cobrado.taxaAntecipacao),
+    outras: r2(outras),
+    liquido,
     lancamentos,
     entregaPor: txt(obj(obj(entrega.deliveryParameters)).logisticProvider),
   };
@@ -215,9 +237,10 @@ export async function vendasIfood(
   de: string,
   ate: string,
   maxPaginas = 20,
-): Promise<{ vendas: VendaIfood[]; total: number; paginas: number; incompleto: boolean }> {
+): Promise<{ vendas: VendaIfood[]; total: number; recebidas: number; paginas: number; incompleto: boolean }> {
   const porId = new Map<string, VendaIfood>();
   let total = 0;
+  let recebidas = 0;
   let paginas = 0;
   let pageCount = 1;
   for (let page = 1; page <= pageCount && page <= maxPaginas; page++) {
@@ -227,6 +250,7 @@ export async function vendasIfood(
     total = Math.max(total, num(r.total));
     pageCount = Math.max(1, num(r.pageCount));
     const vendas = lista(r.sales);
+    recebidas += vendas.length;
     // Mesma venda em duas páginas (lista mudou no meio da leitura) não duplica.
     for (const s of vendas) {
       const v = venda(s);
@@ -235,7 +259,10 @@ export async function vendasIfood(
     if (!vendas.length) break;
   }
   const vendas = [...porId.values()].sort((a, b) => (a.dataHora < b.dataHora ? 1 : -1));
-  return { vendas, total, paginas, incompleto: paginas < pageCount || (total > 0 && vendas.length < total) };
+  // Incompleto = parou no teto de páginas. `total` maior que o recebido lendo
+  // tudo é o iFood contando diferente da própria lista (visto na homologação:
+  // total 2, uma venda) — a tela avisa à parte, sem mandar apertar o período.
+  return { vendas, total, recebidas, paginas, incompleto: paginas >= maxPaginas && paginas < pageCount };
 }
 
 /** Soma o que interessa num fechamento. Pagamento na entrega fica de fora do
@@ -252,7 +279,7 @@ export function resumoVendas(vendas: VendaIfood[]) {
     bruto: soma((v) => v.bruto),
     comissao: soma((v) => v.comissao + v.comissaoEntrega),
     taxaCartao: soma((v) => v.taxaCartao),
-    outrasTaxas: soma((v) => v.taxaAntecipacao - v.outras),
+    outrasTaxas: soma((v) => v.taxaAntecipacao + v.outras),
     promoLoja: soma((v) => v.promoLoja),
     liquido: soma((v) => v.liquido),
   };
@@ -281,6 +308,10 @@ export interface RepasseIfood {
 
 /** Títulos de repasse por DATA DE PAGAMENTO (o que bate com o extrato) ou
  *  por PERÍODO DE CÁLCULO (o que bate com a semana de vendas). */
+/** Título com mais de 31 dias por consulta volta 5xx do iFood (testado na
+ *  homologação: 31 dias passa, 38 não). Lê em partes. */
+const JANELA_TITULOS = 30;
+
 export async function repassesIfood(
   c: CredFin,
   merchantId: string,
@@ -288,39 +319,46 @@ export async function repassesIfood(
   ate: string,
   base: 'pagamento' | 'calculo' = 'pagamento',
 ): Promise<{ saldo: number; itens: RepasseIfood[] }> {
-  const q = new URLSearchParams(
-    base === 'calculo'
-      ? { beginCalculationDate: de, endCalculationDate: ate }
-      : { beginPaymentDate: de, endPaymentDate: ate },
-  );
-  let r: Obj;
-  try {
-    r = obj(await api(c, V3 + merchantId + '/settlements?' + q.toString(), { timeoutMs: 60000 }));
-  } catch (e) {
-    // NO_SETTLEMENTS_FOUND: período sem título ainda não é erro.
-    if (e404(e)) return { saldo: 0, itens: [] };
-    throw e;
-  }
-
-  const itens: RepasseIfood[] = [];
-  for (const s of lista(r.settlements)) {
-    for (const i of lista(s.closingItems)) {
-      itens.push({
-        calculoDe: txt(s.startDateCalculation),
-        calculoAte: txt(s.endDateCalculation),
-        id: txt(i.id),
-        tipo: txt(i.type),
-        produto: txt(i.product),
-        valor: num(i.amount),
-        situacao: txt(i.status),
-        transacaoId: txt(i.transactionId),
-        pagoEm: txt(i.paymentDate),
-        ...contaBancaria(obj(i.accountDetails)),
-      });
+  const porChave = new Map<string, RepasseIfood>();
+  let saldo = 0;
+  for (const [ini, fim] of janelas(de, ate, JANELA_TITULOS)) {
+    const q = new URLSearchParams(
+      base === 'calculo'
+        ? { beginCalculationDate: ini, endCalculationDate: fim }
+        : { beginPaymentDate: ini, endPaymentDate: fim },
+    );
+    let r: Obj;
+    try {
+      r = obj(await api(c, V3 + merchantId + '/settlements?' + q.toString(), { timeoutMs: 60000 }));
+    } catch (e) {
+      // NO_SETTLEMENTS_FOUND: período sem título ainda não é erro.
+      if (e404(e)) continue;
+      throw e;
+    }
+    // Saldo é o do momento da leitura: vale o da última parte, não se soma.
+    saldo = num(r.balance);
+    for (const s of lista(r.settlements)) {
+      for (const i of lista(s.closingItems)) {
+        const item: RepasseIfood = {
+          calculoDe: txt(s.startDateCalculation),
+          calculoAte: txt(s.endDateCalculation),
+          id: txt(i.id),
+          tipo: txt(i.type),
+          produto: txt(i.product),
+          valor: num(i.amount),
+          situacao: txt(i.status),
+          transacaoId: txt(i.transactionId),
+          pagoEm: txt(i.paymentDate),
+          ...contaBancaria(obj(i.accountDetails)),
+        };
+        // Semana de cálculo que atravessa duas partes volta nas duas.
+        porChave.set(item.id || [item.transacaoId, item.pagoEm, item.tipo, item.valor].join('|'), item);
+      }
     }
   }
+  const itens = [...porChave.values()];
   itens.sort((a, b) => (a.pagoEm < b.pagoEm ? 1 : a.pagoEm > b.pagoEm ? -1 : 0));
-  return { saldo: num(r.balance), itens };
+  return { saldo, itens };
 }
 
 // ─── Eventos financeiros ────────────────────────────────────────────────────
@@ -350,8 +388,9 @@ export interface EventoFinanceiroIfood {
   recebedor: string;
 }
 
-/** O iFood entrega no máximo 33 dias por consulta; janela de 30 deixa folga. */
-const JANELA_EVENTOS = 30;
+/** O iFood entrega no máximo 33 dias por consulta. 31 põe um mês inteiro numa
+ *  leitura só — em duas, a homologação devolve os mesmos eventos nas duas. */
+const JANELA_EVENTOS = 31;
 
 /** Eventos financeiros — a explicação linha a linha do repasse. Períodos
  *  maiores que a janela são lidos em partes; cada parte é paginada (500 por
@@ -367,8 +406,7 @@ export async function eventosIfood(
   const eventos: EventoFinanceiroIfood[] = [];
   let leituras = 0;
 
-  for (let ini = de; ini <= ate; ini = somarDias(ini, JANELA_EVENTOS)) {
-    const fim = somarDias(ini, JANELA_EVENTOS - 1) < ate ? somarDias(ini, JANELA_EVENTOS - 1) : ate;
+  for (const [ini, fim] of janelas(de, ate, JANELA_EVENTOS)) {
     for (let page = 1; ; page++) {
       if (leituras >= maxPaginas) return { eventos, temMais: true, leituras };
       const q = new URLSearchParams({ beginDate: ini, endDate: fim, page: String(page), size: '500' });
@@ -385,7 +423,8 @@ export async function eventosIfood(
           descricao: txt(e.description),
           produto: txt(e.product),
           gatilho: txt(e.trigger),
-          quando: txt(e.dateTime),
+          // A homologação manda sem dateTime; a data da referência é o que sobra.
+          quando: txt(e.dateTime) || txt(ref.date),
           competencia: txt(e.competence),
           periodoDe: txt(per.beginDate),
           periodoAte: txt(per.endDate),
@@ -809,4 +848,16 @@ export async function statusConciliacaoSobDemanda(
   if (/error|fail/i.test(status)) return { status, fase: 'erro', erro: erro || 'o iFood não conseguiu gerar o arquivo', url: '' };
   // 202, created, enqueue, processing: ainda na fila.
   return { status, fase: 'processando', erro: '', url: '' };
+}
+
+/** Resposta CRUA do iFood (só leitura, só os recursos daqui) — pra conferir
+ *  o contrato quando um número não bate e pra anexar como log na homologação. */
+export async function leituraCrua(
+  c: CredFin,
+  merchantId: string,
+  recurso: 'sales' | 'financial-events' | 'settlements' | 'anticipations',
+  params: Record<string, string>,
+): Promise<{ caminho: string; homologacao: boolean; resposta: unknown }> {
+  const caminho = V3 + merchantId + '/' + recurso + '?' + new URLSearchParams(params).toString();
+  return { caminho, homologacao: Boolean(c.homologacao), resposta: await api(c, caminho, { timeoutMs: 60000 }) };
 }

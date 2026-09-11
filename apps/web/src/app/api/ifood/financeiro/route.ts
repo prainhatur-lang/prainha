@@ -41,7 +41,7 @@ import {
   vendasIfood, repassesIfood, eventosIfood, antecipacoesIfood, resumoVendas,
   arquivoConciliacaoMensal, baixarConciliacao, resumoConciliacao, csvConciliacao, csvDe,
   pedirConciliacaoSobDemanda, statusConciliacaoSobDemanda,
-  diasEntre, somarDias, ultimoDiaDoMes,
+  diasEntre, somarDias, ultimoDiaDoMes, leituraCrua,
   type CredFin, type VendaIfood,
 } from '@/lib/ifood-financeiro';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -216,8 +216,21 @@ export async function GET(request: Request) {
 
     if (visao === 'conciliacao') return await conciliacao(sp, base, filialId, merchantId, c, csv, filial.nome);
 
+    if (visao === 'cru') {
+      // Resposta crua do iFood, só GET: conferir contrato e anexar log na homologação.
+      const recurso = sp.get('recurso');
+      if (recurso !== 'sales' && recurso !== 'financial-events' && recurso !== 'settlements' && recurso !== 'anticipations') {
+        return erroJson('recurso: sales, financial-events, settlements ou anticipations');
+      }
+      const params: Record<string, string> = {};
+      for (const [k2, v] of sp) {
+        if (!['filialId', 'visao', 'recurso', 'formato', 'de', 'ate'].includes(k2) && /^[A-Za-z]{1,40}$/.test(k2)) params[k2] = v.slice(0, 40);
+      }
+      return NextResponse.json({ ...base, ...(await leituraCrua(c, merchantId, recurso, params)) });
+    }
+
     // ─── vendas ───
-    const { vendas, total, incompleto } = await vendasIfood(c, merchantId, de, ate);
+    const { vendas, total, recebidas, incompleto } = await vendasIfood(c, merchantId, de, ate);
     const linhas = await casarComConcilia(filialId, vendas);
     if (csv) {
       return csvResposta(arquivo('vendas'), csvDe(
@@ -228,6 +241,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ...base,
       total,
+      recebidas,
       incompleto,
       resumo: resumoVendas(vendas),
       comProblema: linhas.filter((l) => l.problema).length,
