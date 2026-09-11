@@ -10839,6 +10839,24 @@ async function alinharComplementosAbertos() {
     total += r.count;
   }
   if (total) console.log('[complemento] ' + total + ' complemento(s) aberto(s) movido(s) pra praça do item-pai');
+  // Pai que JÁ saiu: o "Tudo pronto" da praça dele não levou o complemento que
+  // estava em outro balde. Movido pra lá, ele reapareceria como cartão sozinho e
+  // estourado — então sai com a mesma hora do pai.
+  const b = await sql`INSERT INTO marca (item_codigo, pronto_em, entregue_em, criado_em, comanda_codigo, area_codigo, nome, numero)
+    SELECT f.item_codigo, COALESCE(p.produzido, mp.pronto_em), COALESCE(p.entregue, mp.entregue_em),
+           f.criado, f.comanda_codigo, f.area_codigo, f.nome, c.numero
+      FROM comanda_item f
+      JOIN comanda_item p ON p.item_codigo = f.codigo_pai
+      JOIN comanda c ON c.codigo = f.comanda_codigo
+      LEFT JOIN marca mp ON mp.item_codigo = p.item_codigo
+      LEFT JOIN marca mf ON mf.item_codigo = f.item_codigo
+     WHERE f.tipo = 2 AND f.item_codigo IS NOT NULL AND f.cancelado_em IS NULL
+       AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+       AND COALESCE(p.produzido, mp.pronto_em) IS NOT NULL
+       AND COALESCE(f.produzido, mf.pronto_em) IS NULL
+    ON CONFLICT (item_codigo) DO UPDATE SET pronto_em = EXCLUDED.pronto_em,
+      entregue_em = COALESCE(marca.entregue_em, EXCLUDED.entregue_em)`;
+  if (b.count) console.log('[complemento] ' + b.count + ' complemento(s) de item que já saiu baixado(s) junto');
 }
 async function mapaItemPraca() {
   const txt = await cfgGet('itens_praca', ITENS_PRACA_PADRAO);
