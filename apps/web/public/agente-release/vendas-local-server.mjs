@@ -940,11 +940,6 @@ async function espelho() {
     const feito = x.CRIADO || x.PROD || x.ENTR || null;
     return { item_codigo: N(x.ITEM), codigo_pai: N(x.PAI), comanda_codigo: N(x.PED), codigo_pdv: N(x.PDV), criado: x.CRIADO || null, nome: T(x.NOME), quantidade: N(x.QTD) || 0, valor_total: N(x.VT) || 0, tipo: N(x.TIPO), detalhes: T(x.DET), area_codigo: N(x.AREA), produzido: x.PROD || (antigo ? feito : null), entregue: x.ENTR || (antigo ? feito : null), colaborador: N(x.COLAB), colaborador_nome: T(x.COLABNOME) || null };
   });
-  // COMPLEMENTO (tipo 2) sai na cozinha do PRATO-PAI: se não tem área própria, herda a do pai (CODIGOPAI).
-  const areaPorItem = new Map(itens.map((i) => [i.item_codigo, i.area_codigo]));
-  for (const i of itens) {
-    if (i.tipo === 2 && i.area_codigo == null && i.codigo_pai != null && areaPorItem.get(i.codigo_pai) != null) i.area_codigo = areaPorItem.get(i.codigo_pai);
-  }
   // praça juntada com outra: o item entra já na cozinha que produz
   const redir = await mapaRedirPracas();
   if (redir.size) for (const i of itens) {
@@ -967,6 +962,9 @@ async function espelho() {
       if (!i.entregue) i.entregue = quando;
     }
   }
+  // complemento vai na praça do item-pai — DEPOIS do redirect e do itens_praca,
+  // que podem ter mudado a praça do pai
+  herdarPracaDoPai(itens);
 
   // ⚠️ CARIMBA O FECHAMENTO ANTES DE TRUNCAR. Compara o que havia com o que
   // veio: numero cuja conta SUMIU (ou virou outra conta) teve a conta
@@ -2620,7 +2618,12 @@ async function pgInserirItem(ped, it) {
   const pdvCod = it.codigo_pdv == null ? null : Number(it.codigo_pdv);
   const [pl] = pdvCod == null ? [null]
     : await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
-  const area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
+  let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
+  // complemento vai na praça do item-pai, sempre (ver herdarPracaDoPai)
+  if (Number(it.tipo) === 2 && it.codigo_pai != null) {
+    const [pai] = await sql`SELECT area_codigo FROM comanda_item WHERE item_codigo=${Number(it.codigo_pai)} LIMIT 1`;
+    if (pai) area = pai.area_codigo == null ? null : Number(pai.area_codigo);
+  }
   // item que ninguém produz (couvert) entra já baixado: some do KDS e para de
   // contar atraso, sem sumir da conta — mesma regra que o espelho aplicava.
   const fora = await itensForaKds();
@@ -10707,6 +10710,38 @@ const ITENS_PRACA_PADRAO = 'batata frita>coz petisco';
 async function itensForaKds() {
   const txt = await cfgGet('itens_fora_kds', ITENS_FORA_KDS_PADRAO);
   return String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean);
+}
+// ---- COMPLEMENTO VAI COM O ITEM-PAI ----
+// Resposta de pergunta e acompanhamento (tipo 2, codigo_pai) são PARTE do item:
+// a vodka escolhida vai no drinque, o ketchup no pastel, o molho na isca. Com a
+// praça do cadastro do próprio complemento ele saía separado: sem cozinha no
+// cadastro, caía no balde "Sem área" do KDS (11/09/2026); com cozinha própria,
+// ia pra outra estação. A praça do pai GANHA de tudo, inclusive do itens_praca,
+// e vale até com o pai sem praça — os dois ficam no mesmo balde.
+function herdarPracaDoPai(itens) {
+  const porCod = new Map(itens.map((i) => [Number(i.item_codigo), i]));
+  const raiz = (i) => { // sobe pai→avô (resposta de resposta) até um item que não é complemento
+    let p = i;
+    for (let n = 0; n < 5 && Number(p.tipo) === 2 && p.codigo_pai != null && porCod.has(Number(p.codigo_pai)); n++) p = porCod.get(Number(p.codigo_pai));
+    return p;
+  };
+  const novas = itens.map((i) => (Number(i.tipo) === 2 && i.codigo_pai != null && porCod.has(Number(i.codigo_pai)) ? raiz(i).area_codigo ?? null : undefined));
+  itens.forEach((i, k) => { if (novas[k] !== undefined) i.area_codigo = novas[k]; });
+}
+/** Complemento que JÁ estava aberto numa praça diferente da do pai (lançado
+ *  antes da regra acima): realinha na subida. Só conta aberta — histórico fica. */
+async function alinharComplementosAbertos() {
+  let total = 0;
+  for (let n = 0; n < 5; n++) { // cada passada desce um nível (resposta de resposta)
+    const r = await sql`UPDATE comanda_item f SET area_codigo = p.area_codigo
+      FROM comanda_item p, comanda c
+      WHERE f.tipo = 2 AND f.codigo_pai = p.item_codigo AND c.codigo = f.comanda_codigo
+        AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+        AND f.area_codigo IS DISTINCT FROM p.area_codigo`;
+    if (!r.count) break;
+    total += r.count;
+  }
+  if (total) console.log('[complemento] ' + total + ' complemento(s) aberto(s) movido(s) pra praça do item-pai');
 }
 async function mapaItemPraca() {
   const txt = await cfgGet('itens_praca', ITENS_PRACA_PADRAO);
@@ -21302,6 +21337,7 @@ async function main() {
     await importarFotos(dirFotos); return;
   }
   await initSchema(); console.log('[schema] ok');
+  await alinharComplementosAbertos().catch((e) => console.error('[complemento] ' + e.message));
   await carregarGarcomSecret().catch((e) => console.error('[garcom] segredo: ' + e.message));
   // limpa nome de colaborador que a busca antiga gravou como se fosse cliente
   // ⚠️ Os dois sao INDEPENDENTES: encadear o segundo no fim do primeiro fazia
