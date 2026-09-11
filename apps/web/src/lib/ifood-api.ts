@@ -212,6 +212,15 @@ export function explicarErroIfood(
   // desativado), não iFood fora do ar.
   if (codigo === 'TOKEN' && status > 0 && status < 500) {
     const onde = modulo === 'Financeiro' ? 'do app do Financeiro' : 'desta casa';
+    // 403 no token = par certo, mas o app não tem NENHUMA loja vinculada
+    // ("No permissions granted to client …"). Trocar o segredo não resolve.
+    if (status === 403) {
+      return r(
+        `o iFood aceitou a credencial ${onde}, mas o app ainda não tem nenhuma loja vinculada — vincule a loja ao app no Portal do Desenvolvedor (loja de teste) ou autorize no Portal do Parceiro`,
+        409,
+        true,
+      );
+    }
     return r(
       `o iFood recusou a credencial ${onde} (token ${status}${doIfood ? ': ' + doIfood : ''}) — confira client_id e client_secret em Configurações → iFood`,
       502,
