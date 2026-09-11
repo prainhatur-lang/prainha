@@ -61,6 +61,21 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
   const [vinculandoCliente, setVinculandoCliente] = useState<Pessoa | null>(null);
   const [editandoConsumer, setEditandoConsumer] = useState<Pessoa | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
+  // Busca na lista: a filial tem ~50 pessoas e rolar a tabela inteira pra achar
+  // alguem (ex: um gerente que tambem trabalha em outra loja) e um saco.
+  const [busca, setBusca] = useState('');
+
+  const termo = normalizaBusca(busca);
+  const termoDigitos = termo.replace(/\D/g, ''); // vazio quando busca por nome
+  const pessoasVisiveis = termo
+    ? pessoas.filter(
+        (p) =>
+          normalizaBusca(p.fornecedorNome).includes(termo) ||
+          normalizaBusca(p.clienteNome).includes(termo) ||
+          (termoDigitos.length > 0 &&
+            (p.fornecedorCpf ?? '').replace(/\D/g, '').includes(termoDigitos)),
+      )
+    : pessoas;
 
   return (
     <div className="space-y-6">
@@ -80,9 +95,16 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
       <section className="rounded-xl border border-slate-200 bg-white">
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <h2 className="text-base font-semibold text-slate-900">
-            Pessoas vinculadas ({pessoas.length})
+            Pessoas vinculadas ({termo ? `${pessoasVisiveis.length} de ${pessoas.length}` : pessoas.length})
           </h2>
           <div className="flex items-center gap-2">
+            <input
+              type="search"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="🔎 Buscar por nome ou CPF"
+              className="w-56 rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+            />
             <AutoVincularButton filialId={filialId} pessoas={pessoas} />
             <button
               type="button"
@@ -99,6 +121,17 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
           <p className="px-5 py-8 text-center text-sm text-slate-500">
             Ainda não há pessoas cadastradas. Clique em &quot;Adicionar pessoa&quot;.
           </p>
+        ) : pessoasVisiveis.length === 0 ? (
+          <p className="px-5 py-8 text-center text-sm text-slate-500">
+            Ninguém encontrado com &quot;{busca}&quot; nesta filial.{' '}
+            <button
+              type="button"
+              onClick={() => setBusca('')}
+              className="font-medium text-blue-600 hover:underline"
+            >
+              Limpar busca
+            </button>
+          </p>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs">
@@ -112,7 +145,7 @@ export function PessoasManager({ filialId, pessoas, candidatos }: Props) {
               </tr>
             </thead>
             <tbody>
-              {pessoas.map((p) => {
+              {pessoasVisiveis.map((p) => {
                 const isEditando = editando === p.fornecedorId;
                 if (isEditando) {
                   return (
