@@ -90,6 +90,7 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Loja (abrir e pausar)', href: '/ifood', perm: 'delivery.read' },
           { label: 'Cardápio no iFood', href: '/ifood/cardapio', perm: 'delivery.read' },
+          { label: 'Credenciais do iFood', href: '/configuracoes/ifood', perm: 'configuracao.read' },
         ],
       },
       {
@@ -382,6 +383,11 @@ export const MENU_AREAS: MenuArea[] = [
           {
             label: 'Pagamento (Cielo por casa)',
             href: '/configuracoes/pagamento',
+            perm: 'configuracao.read',
+          },
+          {
+            label: 'iFood (credencial por casa)',
+            href: '/configuracoes/ifood',
             perm: 'configuracao.read',
           },
         ],
