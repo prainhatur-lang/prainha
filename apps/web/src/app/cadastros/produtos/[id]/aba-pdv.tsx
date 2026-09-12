@@ -28,7 +28,21 @@ export interface PendentePdv {
   valor: string | null;
   valorAntes: string | null;
   erro: string | null;
+  /** 'pendente' (na fila) ou 'erro' (a loja recusou). */
+  status: string;
+  /** "DD/MM HH:MM" em BRT — quando foi pedido. */
+  criadoEm: string;
   varianteCodigoExterno: number | null;
+}
+
+/** Valor da fila em português: '1'/'0' vira o que o campo significa. */
+function valorLegivel(campo: string, v: string | null): string {
+  if (v == null || v === '') return '—';
+  if (campo === 'pausado') return v === '1' ? 'pausado' : 'à venda';
+  if (campo === 'descontinuado' || campo === 'estoque_controlado' || campo === 'comanda_mobile' || campo === 'cardapio_digital') {
+    return v === '1' ? 'sim' : 'não';
+  }
+  return v;
 }
 
 export interface OpcaoPdv {
@@ -103,6 +117,19 @@ const ROTULO: Record<string, string> = {
   opcao_preco: 'Preço da opção',
 };
 
+/** O mesmo pedido clicado 3× vira uma linha só (×3) — a lista repetida confunde. */
+function dedupePendentes(lista: PendentePdv[]): Array<PendentePdv & { vezes: number }> {
+  const out: Array<PendentePdv & { vezes: number }> = [];
+  for (const x of lista) {
+    const igual = out.find(
+      (y) => y.campo === x.campo && y.valor === x.valor && y.varianteCodigoExterno === x.varianteCodigoExterno && y.status === x.status,
+    );
+    if (igual) igual.vezes++;
+    else out.push({ ...x, vezes: 1 });
+  }
+  return out;
+}
+
 function moeda(v: string | null) {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n.toFixed(2).replace('.', ',') : '';
@@ -166,14 +193,32 @@ export function AbaPdv(p: Props) {
     <div className="space-y-5">
       {p.pendentes.length > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-          <p className="text-sm font-semibold text-amber-900">Aguardando a loja aplicar</p>
+          <p className="text-sm font-semibold text-amber-900">
+            Mudanças que ainda não valem na loja
+          </p>
+          <p className="mt-0.5 text-xs text-amber-800">
+            O cadastro abaixo mostra o que a loja tem <b>agora</b>. O que você pediu fica aqui até o
+            PDV confirmar (normalmente em 1 minuto; se a loja estiver desligada, quando ela voltar).
+          </p>
           <ul className="mt-2 space-y-1 text-sm text-amber-900">
-            {p.pendentes.map((x) => (
+            {dedupePendentes(p.pendentes).map((x) => (
               <li key={x.id}>
-                {ROTULO[x.campo] ?? x.campo}
-                {x.varianteCodigoExterno ? ` (tamanho ${x.varianteCodigoExterno})` : ''}:{' '}
-                <span className="line-through opacity-60">{x.valorAntes ?? '—'}</span> → <b>{x.valor ?? '—'}</b>
-                {x.erro ? <span className="ml-2 font-semibold text-rose-700">erro: {x.erro}</span> : ' · na fila'}
+                {x.varianteCodigoExterno ? <span className="font-mono text-xs text-amber-700">tam {x.varianteCodigoExterno} · </span> : null}
+                {x.campo === 'pausado' ? (
+                  <b>{x.valor === '1' ? 'Pausar (tirar do cardápio)' : 'Reativar (voltar a vender)'}</b>
+                ) : (
+                  <>
+                    {ROTULO[x.campo] ?? x.campo}:{' '}
+                    <span className="line-through opacity-60">{valorLegivel(x.campo, x.valorAntes)}</span> →{' '}
+                    <b>{valorLegivel(x.campo, x.valor)}</b>
+                  </>
+                )}
+                <span className="ml-2 text-xs text-amber-700">pedido {x.criadoEm}{x.vezes > 1 ? ` (×${x.vezes})` : ''}</span>
+                {x.status === 'erro' ? (
+                  <span className="ml-2 font-semibold text-rose-700">a loja recusou: {x.erro || 'erro'}</span>
+                ) : (
+                  <span className="ml-2 text-xs font-medium text-amber-700">⏳ aguardando a loja</span>
+                )}
               </li>
             ))}
           </ul>

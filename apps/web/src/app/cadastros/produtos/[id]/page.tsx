@@ -232,6 +232,8 @@ export default async function ProdutoDetalhePage(props: {
             valor: schema.produtoAlteracao.valor,
             valorAntes: schema.produtoAlteracao.valorAntes,
             erro: schema.produtoAlteracao.erro,
+            status: schema.produtoAlteracao.status,
+            criadoEm: sqlDrizzle<string>`to_char(${schema.produtoAlteracao.criadoEm} AT TIME ZONE 'America/Maceio', 'DD/MM HH24:MI')`,
             varianteCodigoExterno: schema.produtoAlteracao.varianteCodigoExterno,
           })
           .from(schema.produtoAlteracao)
