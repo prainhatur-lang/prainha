@@ -1,5 +1,4 @@
 // POST /api/fornecedores — cria fornecedor manualmente (origem nuvem).
-// codigoExterno fica null ate o agente sincronizar e fazer match por CNPJ.
 
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';

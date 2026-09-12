@@ -252,10 +252,6 @@ export function VincularFornecedorBtn({
                     />
                   </div>
                 </div>
-                <p className="text-[10px] text-slate-500">
-                  Quando o agente sincronizar do Consumer, vai fazer match por CNPJ
-                  e atualizar este registro com o código original.
-                </p>
                 <button
                   type="submit"
                   disabled={salvando || !nomeForm.trim() || !cnpjForm.trim()}

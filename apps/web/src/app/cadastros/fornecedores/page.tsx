@@ -10,6 +10,7 @@ import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
+import { NovoFornecedor } from './novo-fornecedor';
 
 export const dynamic = 'force-dynamic';
 
@@ -137,10 +138,15 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
       <AppHeader userEmail={user.email} />
 
       <section className="mx-auto max-w-7xl px-6 py-10">
-        <h1 className="text-2xl font-bold text-slate-900">Fornecedores</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          {int(Number(stats?.qtd ?? 0))} fornecedor(es) ativo(s) na {filialSelecionada.nome}.
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Fornecedores</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              {int(Number(stats?.qtd ?? 0))} fornecedor(es) ativo(s) na {filialSelecionada.nome}.
+            </p>
+          </div>
+          <NovoFornecedor filialId={filialSelecionada.id} />
+        </div>
 
         {filiais.length > 1 && (
           <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
