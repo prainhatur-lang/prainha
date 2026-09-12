@@ -205,6 +205,13 @@ function recado(e: unknown): string {
     : m;
 }
 
+/** Traduz os erros que o iFood devolve no pedido sob demanda. */
+function motivo(erro: string): string | null {
+  if (/no financial entries exist/i.test(erro)) return 'o iFood não tem nenhum lançamento financeiro nesta competência para esta loja.';
+  if (/already a recent and valid request/i.test(erro)) return 'já existe um pedido recente para esta competência — o iFood aceita um a cada 6 horas.';
+  return null;
+}
+
 const cx = {
   campo: 'mt-0.5 block rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-900',
   botao: 'rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 disabled:opacity-40',
@@ -337,7 +344,13 @@ export function FinanceiroIfoodClient({
       setPedidos(lista);
       setSdLidoEm(Date.now());
       const proc = lista.find((p) => p.fase === 'processando');
-      if (!proc) { tentativa.current = 0; return; }
+      if (!proc) {
+        tentativa.current = 0;
+        // Nada mais gerando: o "esta tela confere sozinha" viraria mentira ao lado do resultado.
+        setSdAviso((a) => (a && a.includes('confere sozinha') ? null : a));
+        setProxima(null);
+        return;
+      }
       if (Date.now() - new Date(proc.pedidoEm).getTime() > LIMITE_POLLING_MS) { setParado(true); return; }
       if (auto) tentativa.current += 1;
       setProxima(Date.now() + Math.min(ESPERA_INICIAL_MS * 2 ** tentativa.current, ESPERA_MAX_MS));
@@ -801,6 +814,9 @@ export function FinanceiroIfoodClient({
                       {p.prontoEm && <span className="text-xs text-slate-500">pronto às {quando(p.prontoEm)}</span>}
                       {p.erro && <span className="text-xs text-rose-700">{p.erro}</span>}
                       <span className="font-mono text-xs text-slate-400">{p.requestId.slice(0, 8)}</span>
+                      {p.erro && motivo(p.erro) && (
+                        <span className="basis-full text-xs text-slate-500">Ou seja: {motivo(p.erro)}</span>
+                      )}
                       {p.fase === 'pronto' && (
                         <button onClick={() => setRequestId(p.requestId)}
                           className={`ml-auto ${requestId === p.requestId ? 'rounded-md bg-slate-800 px-3 py-1 text-sm text-white' : cx.botao}`}>
