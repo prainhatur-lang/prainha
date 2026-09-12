@@ -197,6 +197,14 @@ const ESPERA_INICIAL_MS = 30_000;
 const ESPERA_MAX_MS = 5 * 60_000;
 const LIMITE_POLLING_MS = 60 * 60_000;
 
+/** Falha de rede vira recado em português: 'Failed to fetch' não diz nada pra ninguém. */
+function recado(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  return /failed to fetch|networkerror|load failed|network request failed/i.test(m)
+    ? 'sem conexão com o Concilia agora — tentando de novo'
+    : m;
+}
+
 const cx = {
   campo: 'mt-0.5 block rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-900',
   botao: 'rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 disabled:opacity-40',
@@ -291,7 +299,7 @@ export function FinanceiroIfoodClient({
       if (!r.ok) { setErro(j.error ?? `Erro ${r.status}`); return; }
       setDados(j);
     } catch (e) {
-      if (n === seq.current) setErro((e as Error).message);
+      if (n === seq.current) setErro(recado(e));
     } finally {
       if (n === seq.current) setCarregando(false);
     }
@@ -334,7 +342,10 @@ export function FinanceiroIfoodClient({
       if (auto) tentativa.current += 1;
       setProxima(Date.now() + Math.min(ESPERA_INICIAL_MS * 2 ** tentativa.current, ESPERA_MAX_MS));
     } catch (e) {
-      if (chave === chaveAtual.current) setSdErro((e as Error).message);
+      if (chave !== chaveAtual.current) return;
+      setSdErro(recado(e));
+      // Queda de rede não encerra o acompanhamento: volta a consultar sozinho.
+      setProxima(Date.now() + ESPERA_INICIAL_MS);
     } finally {
       if (chave === chaveAtual.current) setSdLendo(false);
     }
