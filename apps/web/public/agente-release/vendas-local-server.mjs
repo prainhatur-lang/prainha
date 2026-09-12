@@ -1270,17 +1270,27 @@ async function ifoodConf() {
   //                  Consumer está autorizado na Prainha Bar), e aí vale
   //                  userCode → authorization_code → refresh_token rotativo.
   const modo = await cfgGet('ifood_auth', 'centralizado');
+  // QUEM PUXA a fila de eventos. 'loja' = esta máquina fala com o iFood (o
+  // jeito de sempre). 'nuvem' = o Concilia puxa uma vez por credencial e
+  // distribui — obrigatório quando duas casas dividem o mesmo client_id,
+  // porque a fila do iFood é por credencial e não por loja: as duas puxando
+  // dividem os eventos e some pedido (foi o que aconteceu em ago/2026).
+  const puxador = (await cfgGet('ifood_puxador', 'loja')) === 'nuvem' ? 'nuvem' : 'loja';
   const clientId = process.env.IFOOD_CLIENT_ID || (await cfgGet('ifood_client_id', ''));
   const clientSecret = process.env.IFOOD_CLIENT_SECRET || (await cfgGet('ifood_client_secret', ''));
   const refreshToken = await cfgGet('ifood_refresh_token', '');
   return {
     ativo: (await cfgGet('ifood_ativo', '0')) === '1',
     autoConfirmar: (await cfgGet('ifood_auto_confirmar', '1')) === '1',
-    modo, clientId, clientSecret, refreshToken,
+    modo, puxador, clientId, clientSecret, refreshToken,
     merchantId: await cfgGet('ifood_merchant_id', ''),
-    // "pronto pra falar com o iFood": no centralizado basta a credencial;
-    // no distribuído só depois que a loja autorizar.
-    pronto: !!(clientId && clientSecret) && (modo === 'centralizado' || !!refreshToken),
+    // "pronto pra receber pedido": puxando pela nuvem, basta saber qual filial
+    // esta máquina é — a credencial do iFood nem é usada aqui. Puxando na
+    // loja, no centralizado basta a credencial; no distribuído só depois que
+    // a loja autorizar.
+    pronto: puxador === 'nuvem'
+      ? !!(FILIAL_ID && PAGAR_MESA_SECRET && PAGAR_MESA_SECRET.length >= 16)
+      : !!(clientId && clientSecret) && (modo === 'centralizado' || !!refreshToken),
   };
 }
 
@@ -1478,6 +1488,72 @@ async function ifoodPoll() {
     ultimo_erro: pend?.n ? pend.n + ' evento(s) aguardando reprocesso' : null, abertos: ab?.n || 0 };
 }
 
+/** Assina e chama uma rota /api/loja/* do Concilia. Mesma assinatura HMAC do
+ *  /pagar-mesa: filial assinada, prazo curto. */
+async function chamarNuvem(rota, { metodo = 'GET', corpo = null, timeout = 12000 } = {}) {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) throw new Error('sem FILIAL_ID/PAGAR_MESA_SECRET');
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s });
+  const r = await fetch(`${PAGAR_MESA_URL}${rota}?${q}`, {
+    method: metodo,
+    headers: corpo ? { 'content-type': 'application/json' } : {},
+    body: corpo ? JSON.stringify(corpo) : undefined,
+    signal: AbortSignal.timeout(timeout),
+  });
+  const txt = await r.text();
+  const j = txt ? JSON.parse(txt) : {};
+  if (!r.ok) throw new Error(rota + ' → ' + r.status + ': ' + (j.error || txt.slice(0, 200)));
+  return j;
+}
+
+/** Recebimento quando QUEM PUXA É A NUVEM.
+ *
+ *  A fila de eventos do iFood é por credencial, não por loja: com as três
+ *  casas no mesmo app homologado, quem chama events:polling tem que ser um só,
+ *  senão os eventos se dividem entre as máquinas e some pedido. Então o
+ *  Concilia puxa, roteia por merchant e cada casa consome só o que é dela.
+ *
+ *  Daqui pra baixo é IGUAL ao polling direto: o evento é gravado no
+ *  ifood_evento local (PK impede duplicar), aplicado, e só depois a nuvem é
+ *  avisada. Loja sem rede ou processo que morre no meio não perde pedido — o
+ *  evento continua na fila da nuvem até ser confirmado daqui. */
+async function ifoodPuxarNuvem() {
+  const c = await ifoodConf();
+  if (!c.ativo) { ifoodStatus = { ...ifoodStatus, ativo: false }; return; }
+  const d = await chamarNuvem('/api/loja/ifood-fila');
+  const eventos = Array.isArray(d?.eventos) ? d.eventos : [];
+  const feitos = [];
+  for (const ev of eventos) {
+    if (!ev?.id || !ev.orderId) continue;
+    // GRAVA PRIMEIRO, avisa a nuvem DEPOIS (mesma regra do ack do iFood).
+    const novo = await sql`INSERT INTO ifood_evento (id, code, order_id) VALUES (${ev.id}, ${ev.codigo}, ${ev.orderId})
+      ON CONFLICT (id) DO NOTHING RETURNING id`;
+    feitos.push(ev.id);
+    if (!novo.length) continue; // já tratado antes
+    try {
+      await ifoodAplicarEvento(ev.orderId, ev.codigo, c, d.pedidos?.[ev.orderId] || null);
+      await sql`UPDATE ifood_evento SET ack_em=now(), erro=NULL WHERE id=${ev.id}`;
+    } catch (e) {
+      // Igual ao polling direto: a confirmação vai, e quem garante o pedido é
+      // a nossa fila de reprocesso — não a reentrega da nuvem.
+      await sql`UPDATE ifood_evento SET erro=${String(e.message).slice(0, 250)}, tentativas=COALESCE(tentativas,0)+1
+        WHERE id=${ev.id}`.catch(() => {});
+      console.error('[ifood/nuvem] evento', ev.codigo, ev.orderId, '—', e.message, '— vai pra fila de reprocesso');
+    }
+  }
+  if (feitos.length) {
+    await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { feitos } })
+      .catch((e) => console.error('[ifood/nuvem] confirmar consumo:', e.message));
+  }
+  await ifoodReprocessar(c).catch((e) => console.error('[ifood] reprocesso:', e.message));
+  await projetarIfood();
+  const [ab] = await sql`SELECT count(*)::int n FROM ifood_pedido WHERE concluido_em IS NULL AND cancelado_em IS NULL`;
+  const [pend] = await sql`SELECT count(*)::int n FROM ifood_evento WHERE erro IS NOT NULL AND ack_em IS NULL`;
+  ifoodStatus = { ativo: true, pareado: true, ultimo_ok: new Date().toISOString(),
+    ultimo_erro: pend?.n ? pend.n + ' evento(s) aguardando reprocesso' : null, abertos: ab?.n || 0 };
+}
+
 /** Fila de reprocesso NOSSA — o que garante que pedido não some.
  *
  *  O ack já foi dado (o iFood exige isso), então não existe reentrega pra
@@ -1507,9 +1583,9 @@ async function ifoodReprocessar(c) {
   return ok;
 }
 
-async function ifoodAplicarEvento(orderId, code, c) {
+async function ifoodAplicarEvento(orderId, code, c, prontinho = null) {
   if (!orderId) return;
-  if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId);
+  if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId, prontinho);
   // o lançamento financeiro segue o evento, não o comando: só o evento diz que
   // o iFood REALMENTE aceitou (o confirm responde 202 e pode não valer)
   if (code === 'CONFIRMED') await lancarReceberCanal(orderId, 'abrir').catch((e) => console.error('[ifood] receber-canal:', e.message));
@@ -1576,8 +1652,12 @@ async function ifoodResolverProduto(cod, nomeIfood) {
 
 /** Detalhe do pedido → nossas tabelas. Reescreve os itens: pedido editado no
  *  iFood (item em falta, troca) chega como evento novo e tem que refletir. */
-async function ifoodBaixarPedido(orderId) {
-  const o = await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId));
+async function ifoodBaixarPedido(orderId, prontinho = null) {
+  // Puxando pela nuvem, o pedido inteiro já vem junto do evento — não custa
+  // uma chamada nem depende do iFood responder agora. Sem ele (reprocesso de
+  // evento antigo), busca direto: GET de pedido NÃO mexe na fila de eventos,
+  // então não briga com o puxador da nuvem.
+  const o = prontinho || await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId));
   const ent = o.delivery || {};
   const end = ent.deliveryAddress || {};
   const endereco = [end.formattedAddress || [end.streetName, end.streetNumber].filter(Boolean).join(', '),
@@ -1634,6 +1714,11 @@ const IFOOD_ACOES = {
  *  AQUELE pedido (é critério de homologação: quem cancela escolhe da lista, o
  *  PDV não inventa código). Sem isso o primeiro cancelamento voltaria erro. */
 async function ifoodMotivosCancel(orderId) {
+  // Puxando pela nuvem a credencial mora lá — quem pergunta a lista é o Concilia.
+  if ((await ifoodConf()).puxador === 'nuvem') {
+    const d = await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { orderId, acao: 'motivos_cancel' } });
+    return { ok: true, motivos: d.motivos || [] };
+  }
   const r = await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/cancellationReasons');
   const lista = Array.isArray(r) ? r : (r.reasons || []);
   return { ok: true, motivos: lista.map((m) => ({
@@ -1701,6 +1786,10 @@ async function ifoodComando(orderId, acao, extra = null) {
 
   const caminho = IFOOD_ACOES[acao];
   if (!caminho) return { ok: false, erro: 'ação desconhecida' };
+  // Puxando pela nuvem, o comando vai pelo Concilia (é lá que está a
+  // credencial). O carimbo local é o mesmo nos dois caminhos.
+  const naNuvem = (await ifoodConf()).puxador === 'nuvem';
+  const mandar = (corpo) => chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { orderId, acao, extra: corpo } });
   if (acao === 'cancelar') {
     const cod = String(extra?.codigo || '').trim();
     if (!cod) return { ok: false, erro: 'escolha o motivo do cancelamento' };
@@ -1708,7 +1797,10 @@ async function ifoodComando(orderId, acao, extra = null) {
     // e {reason: "<código>"}. Manda a primeira e, se ela for recusada, repete na
     // segunda — cancelamento é raro e não pode falhar por causa de nome de campo.
     const url = '/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho;
-    try {
+    if (naNuvem) {
+      // A nuvem faz as duas tentativas de formato lá — aqui é um POST só.
+      await mandar(extra);
+    } else try {
       await ifoodApi(url, { metodo: 'POST', corpo: { reason: extra.descricao || 'cancelamento pela loja', cancellationCode: cod } });
     } catch (e) {
       if (!/ 4\d\d/.test(String(e.message))) throw e;
@@ -1718,7 +1810,8 @@ async function ifoodComando(orderId, acao, extra = null) {
     await sql`UPDATE ifood_pedido SET cancelado_em=now(), cancel_motivo=${(extra.descricao || cod).slice(0, 120)} WHERE id=${orderId}`;
     return { ok: true };
   }
-  await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho, { metodo: 'POST', corpo: extra });
+  if (naNuvem) await mandar(extra);
+  else await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId) + '/' + caminho, { metodo: 'POST', corpo: extra });
   // O iFood responde 202: o status só vale quando o evento correspondente
   // voltar no polling. O carimbo local aqui é otimista, pra tela não ficar
   // parada 30s — o evento depois confirma (ou corrige).
@@ -1831,6 +1924,7 @@ async function puxarConfigIfood() {
     ['ifood_codigo_pdv', c.codigo_pdv === 'produto' ? 'produto' : 'variante'],
     ['ifood_auto_confirmar', c.auto_confirmar ? '1' : '0'],
     ['ifood_ativo', c.ativo ? '1' : '0'],
+    ['ifood_puxador', c.puxador === 'nuvem' ? 'nuvem' : 'loja'],
   ];
   for (const [k, v] of pares) { if (v !== '') await cfgSet(k, v); }
   await cfgSet('ifood_nuvem_hash', assinatura);
@@ -1923,7 +2017,9 @@ async function loopIfood() {
     await imprimirComandasNovas().catch(() => {});
     const c = await ifoodConf();
     if (c.ativo && c.pronto) {
-      await comTimeout(ifoodPoll(), 25000, 'polling travou (>25s)');
+      // Quem puxa depende da config da nuvem: 'loja' fala direto com o iFood,
+      // 'nuvem' consome a fila que o Concilia já puxou e roteou.
+      await comTimeout(c.puxador === 'nuvem' ? ifoodPuxarNuvem() : ifoodPoll(), 25000, 'polling travou (>25s)');
       // a comanda do iFood sai no papel pelo mesmo caminho da comanda da mesa
       await imprimirComandasNovas().catch((e) => console.error('[ifood] impressora:', e.message));
     }
@@ -2350,6 +2446,7 @@ async function apiIfood() {
     ORDER BY (p.concluido_em IS NULL AND p.cancelado_em IS NULL) DESC, p.recebido_em DESC LIMIT 60`;
   return {
     ok: true, ativo: c.ativo, auto_confirmar: c.autoConfirmar, modo: c.modo, pronto: c.pronto,
+    puxador: c.puxador,
     tem_credencial: !!(c.clientId && c.clientSecret), pareado: !!c.refreshToken,
     client_id: c.clientId ? c.clientId.slice(0, 8) + '…' : '', merchant_id: c.merchantId,
     status: ifoodStatus, poll_seg: Math.round(IFOOD_POLL_MS / 1000),
@@ -15149,7 +15246,7 @@ function pinta(){
     else if(atraso===null||atraso>d.poll_seg*3)
       h+='<div class="aviso"><b>Sem resposta do iFood'+(atraso===null?'':' há '+atraso+'s')+'.</b> Devia responder a cada '+d.poll_seg+'s. Se não voltar sozinho em 2 minutos, veja o log do servidor da loja.</div>';
     else
-      h+='<div class="aviso" style="background:#f0fdf4;border-color:#bbf7d0;color:#166534"><b>✓ No ar.</b> O iFood respondeu há '+atraso+'s'+(d.merchant_id?' pela loja <b>'+esc(d.merchant_id.slice(0,8))+'…</b>':'')+'. Pedido novo aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha — não precisa clicar em nada.</div>';
+      h+='<div class="aviso" style="background:#f0fdf4;border-color:#bbf7d0;color:#166534"><b>✓ No ar.</b> O iFood respondeu há '+atraso+'s'+(d.merchant_id?' pela loja <b>'+esc(d.merchant_id.slice(0,8))+'…</b>':'')+'. Pedido novo aparece aqui em até '+d.poll_seg+'s e cai direto na cozinha — não precisa clicar em nada.'+(d.puxador==='nuvem'?' Quem fala com o iFood é o Concilia (as três casas dividem a mesma credencial).':'')+'</div>';
   }
   // ---- estado ----
   h+='<h2>Situação</h2><div class="card">'+
