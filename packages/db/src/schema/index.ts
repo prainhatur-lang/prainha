@@ -40,3 +40,4 @@ export * from './kids';
 export * from './tuya';
 export * from './ifood-nuvem';
 export * from './ifood-conciliacao';
+export * from './balanco';

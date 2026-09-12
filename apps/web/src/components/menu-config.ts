@@ -45,6 +45,7 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Meu painel', href: '/' },
           { label: 'Dashboard analítico', href: '/dashboard', perm: 'dashboard.read' },
+          { label: 'Balanço do dia', href: '/balanco', perm: 'dashboard.read' },
           { label: 'Relatório consolidado', href: '/relatorio', perm: 'relatorio.read' },
         ],
       },

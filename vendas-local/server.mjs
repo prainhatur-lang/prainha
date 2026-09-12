@@ -20229,6 +20229,113 @@ async function apiGerenteResumo(g) {
     liberacoes: lib };
 }
 
+// ---- BALANÇO DO DIA → NUVEM (Concilia /balanco) ----
+// De 10 em 10 min a loja tira uma "foto" do dia (comandas/pessoas/recebido
+// até agora × ontem × semana passada, ocupação, atrasos por praça, o que deu
+// errado: cancelamentos, estornos, reaberturas, liberações, reclamações) e
+// manda pro Concilia. Lá cada foto vira uma linha — o dono acompanha a
+// evolução durante o dia e a última do dia é o balanço final. Mesmas fontes
+// do painel /gerente; nada aqui muda o banco da loja.
+async function montarBalanco() {
+  const nuvem = await salaoDaNuvem().catch(() => null);
+  const seguro = (p) => p.catch((e) => { console.error('[balanco]', e.message); return null; });
+  const [mesas, atrasos, setores, fluxo, chamados, lib] = await Promise.all([
+    seguro(gerenteMesas(nuvem)), seguro(gerenteAtrasos()), seguro(gerenteSetores()), seguro(gerenteFluxo()),
+    seguro(apiChamados()), seguro(gerenteLiberacoes()),
+  ]);
+  const dia = gerYmd(new Date());
+  const num = (v) => (v == null ? null : Number(v));
+  const one = async (q) => { try { return (await q)[0] || {}; } catch (e) { console.error('[balanco]', e.message); return {}; } };
+  const many = async (q) => { try { return await q; } catch (e) { console.error('[balanco]', e.message); return []; } };
+  // Contadores do dia (desde 00:00 local da loja) — as listas do painel do
+  // gerente são "últimas 24h", aqui é o DIA, que é o que fecha o balanço.
+  const canc = await one(sql`SELECT COUNT(*)::int n, COALESCE(SUM(valor),0)::float valor,
+      COUNT(*) FILTER (WHERE item_codigo IS NULL OR status_item='pedido')::int pedidos,
+      COUNT(*) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido'))::int produzidos,
+      COALESCE(SUM(valor) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido')),0)::float valor_produzidos,
+      COUNT(*) FILTER (WHERE motivo ILIKE 'devolu%')::int devolucoes
+    FROM cancelamento WHERE quando >= ${dia}::date`);
+  const cancLista = await many(sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo
+    FROM cancelamento WHERE quando >= ${dia}::date ORDER BY quando DESC LIMIT 40`);
+  const est = await one(sql`SELECT COUNT(*)::int n, COALESCE(SUM(valor),0)::float valor FROM pagamento_estorno WHERE quando >= ${dia}::date`);
+  const estLista = await many(sql`SELECT id, quando, login, numero, forma, valor, motivo FROM pagamento_estorno WHERE quando >= ${dia}::date ORDER BY quando DESC LIMIT 30`);
+  const reab = await one(sql`SELECT COUNT(*)::int n FROM conta_reabertura WHERE quando >= ${dia}::date`);
+  const reabLista = await many(sql`SELECT id, quando, login, numero, fechada_em FROM conta_reabertura WHERE quando >= ${dia}::date ORDER BY quando DESC LIMIT 30`);
+  const libDia = await one(sql`SELECT COUNT(*) FILTER (WHERE status='aprovada')::int aprovadas, COUNT(*) FILTER (WHERE status='negada')::int negadas,
+      COUNT(*) FILTER (WHERE status='pendente' AND quando > now() - interval '30 minutes')::int pendentes,
+      COUNT(*) FILTER (WHERE status='pendente' AND quando <= now() - interval '30 minutes')::int expiradas
+    FROM liberacao WHERE quando >= ${dia}::date`);
+  const libLista = await many(sql`SELECT id, quando, login, numero, tipo, nome, valor, motivo, status, decidido_em, decidido_por, resposta
+    FROM liberacao WHERE quando >= ${dia}::date AND status <> 'pendente' ORDER BY quando DESC LIMIT 30`);
+  const cham = await one(sql`SELECT COUNT(*) FILTER (WHERE tipo='reclamacao')::int reclamacoes,
+      COUNT(*) FILTER (WHERE tipo='reclamacao' AND atendido_em IS NULL)::int reclamacoes_abertas,
+      COUNT(*) FILTER (WHERE tipo='garcom')::int garcom,
+      COUNT(*) FILTER (WHERE tipo='garcom' AND atendido_em IS NULL)::int garcom_abertos,
+      COALESCE(AVG(EXTRACT(EPOCH FROM (atendido_em - criado_em)) / 60) FILTER (WHERE atendido_em IS NOT NULL), 0)::float atendimento_min
+    FROM chamado WHERE criado_em >= ${dia}::date`);
+  const chamLista = await many(sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, criado_em, atendido_em, atendido_por
+    FROM chamado WHERE criado_em >= ${dia}::date AND tipo='reclamacao' ORDER BY criado_em DESC LIMIT 30`);
+  let caixa = null;
+  try {
+    const r = await apiCaixaRelatorio(null);
+    if (r && r.ok) caixa = { total: (r.formas || []).reduce((s, f) => s + (Number(f.valor) || 0), 0),
+      lancamentos: (r.formas || []).reduce((s, f) => s + (Number(f.n) || 0), 0),
+      formas: (r.formas || []).map((f) => ({ codigo: f.codigo, nome: f.nome, valor: Number(f.valor) || 0, n: Number(f.n) || 0 })),
+      caixas_abertos: (r.caixas || []).filter((c) => !c.fechado_em).length, caixas: (r.caixas || []).length };
+  } catch (e) { console.error('[balanco] caixa:', e.message); }
+  const lin = (x) => ({ ...x, valor: num(x.valor) });
+  return {
+    agora: new Date().toISOString(), dia, versao: VERSAO, iniciado_em: INICIADO_EM, online: ultimoStatus.ok,
+    fonte: nativo() ? 'local' : 'consumer', loja: LOJA_NOME,
+    nuvem_ok: !!(nuvem && nuvem.ok),
+    mesas: mesas && { total: mesas.total, ocupadas: mesas.ocupadas, livres: mesas.livres, pct: mesas.pct, pessoas: mesas.pessoas,
+      fechando: mesas.fechando, mapa: mesas.mapa, cartoes: mesas.cartoes, cartoes_pessoas: mesas.cartoes_pessoas,
+      areas: (mesas.areas || []).map((a) => ({ nome: a.nome, total: a.total, ocupadas: a.ocupadas, livres: a.livres, pct: a.pct,
+        pessoas: a.pessoas, fechando: a.fechando, fora: !!a.fora })) },
+    atrasos: atrasos && { entrega_min: atrasos.entrega_min, total_atrasadas: atrasos.total_atrasadas, total_criticas: atrasos.total_criticas,
+      passe_parados: atrasos.passe_parados,
+      areas: (atrasos.areas || []).map((a) => ({ codigo: a.codigo, nome: a.nome, comandas: a.comandas, itens: a.itens, atrasadas: a.atrasadas,
+        criticas: a.criticas, maior_min: a.maior_min, prazo_min: a.prazo_min, passe_n: a.passe_n, passe_parados: a.passe_parados, passe_maior: a.passe_maior })),
+      lista: (atrasos.lista || []).slice(0, 15).map((x) => ({ numero: x.numero, area: x.area || x.area_nome || null, espera_min: x.espera_min,
+        prazo_min: x.prazo_min, critico: !!x.critico, itens: x.itens })) },
+    setores: setores && { hoje_total: setores.hoje_total, hoje_itens: setores.hoje_itens,
+      setores: (setores.setores || []).map((x) => ({ codigo: x.codigo, nome: x.nome, a_produzir: x.a_produzir, pronto: x.pronto,
+        itens: x.itens, hoje_itens: x.hoje_itens, hoje_qtd: x.hoje_qtd, hoje_valor: x.hoje_valor, hoje_comandas: x.hoje_comandas })) },
+    fluxo: fluxo && { fonte: fluxo.fonte, hora: fluxo.hora, hoje: fluxo.hoje, ontem: fluxo.ontem, semana: fluxo.semana,
+      hoje_ate: fluxo.hoje_ate, ontem_ate: fluxo.ontem_ate, semana_ate: fluxo.semana_ate,
+      delta_ontem_pct: fluxo.delta_ontem_pct, delta_semana_pct: fluxo.delta_semana_pct, delta_pessoas_semana_pct: fluxo.delta_pessoas_semana_pct,
+      ontem_total: fluxo.ontem_total, semana_total: fluxo.semana_total, semana_dia: fluxo.semana_dia },
+    caixa,
+    cancelamentos: { n: canc.n || 0, valor: canc.valor || 0, pedidos: canc.pedidos || 0, produzidos: canc.produzidos || 0,
+      valor_produzidos: canc.valor_produzidos || 0, devolucoes: canc.devolucoes || 0, lista: cancLista.map(lin) },
+    estornos: { n: est.n || 0, valor: est.valor || 0, lista: estLista.map(lin) },
+    reaberturas: { n: reab.n || 0, lista: reabLista },
+    liberacoes: { pendentes: libDia.pendentes || 0, aprovadas: libDia.aprovadas || 0, negadas: libDia.negadas || 0, expiradas: libDia.expiradas || 0,
+      pendentes_lista: ((lib && lib.pendentes) || []).slice(0, 20), lista: libLista.map(lin) },
+    reclamacoes: { hoje: cham.reclamacoes || 0, abertas: cham.reclamacoes_abertas || 0, garcom: cham.garcom || 0,
+      garcom_abertos: cham.garcom_abertos || 0, atendimento_min: Math.round((cham.atendimento_min || 0) * 10) / 10,
+      abertas_lista: ((chamados && chamados.reclamacoes) || []).slice(0, 20), lista: chamLista },
+  };
+}
+let balancoNuvemRodando = false;
+async function loopBalancoNuvem() {
+  if (balancoNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  balancoNuvemRodando = true;
+  try {
+    const balanco = await montarBalanco();
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/balanco`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('balanco', e), balanco }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) { console.error('[balanco] nuvem recusou:', j?.erro || r.status); return; }
+    console.log(`[balanco] foto do dia na nuvem (${balanco.fluxo ? balanco.fluxo.hoje_ate.n : '?'} comandas, ${balanco.cancelamentos.n} canc, ${balanco.estornos.n} estorno)`);
+  } catch (err) { console.error('[balanco] nuvem:', err.message); }
+  finally { balancoNuvemRodando = false; }
+}
+
 // ---- TELA /gerente: painel do gerente no celular ----
 const GERENTE_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${LOJA_NOME} — Gerente</title><style>
@@ -20619,6 +20726,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (!centralAssinou(u)) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
       const central = { login: 'central', nome: 'Concilia (central)', admin: true };
+      if (p === '/api/central/caixa/balanco') return res.end(JSON.stringify({ ok: true, balanco: await montarBalanco() }));
       if (p === '/api/central/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
       if (p === '/api/central/caixa/detalhe') return res.end(JSON.stringify(await apiCaixaDetalhe(u.searchParams.get('caixa'))));
       // Veredito da conferência SEM fechar nada — é o mesmo caixaMaquininhaConfere
@@ -21492,6 +21600,9 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
+  // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
+  setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
+  setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopPontoNuvem().catch(() => {}), 45 * 1000);
   setInterval(() => loopPontoNuvem().catch(() => {}), 60 * 1000);
   // sync nativo → nuvem (só roda de verdade se nativo() e AGENTE_TOKEN setado)

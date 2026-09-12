@@ -92,6 +92,7 @@ export function podeAcessarPath(role: Role | null, pathname: string): boolean {
       pathname.startsWith('/excecoes') ||
       pathname.startsWith('/fechamento') ||
       pathname.startsWith('/relatorio') ||
+      pathname.startsWith('/balanco') ||
       pathname.startsWith('/upload') ||
       pathname.startsWith('/cadastros/fornecedores') ||
       pathname.startsWith('/cadastros/plano-contas')

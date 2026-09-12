@@ -133,7 +133,8 @@
     "migrate:tuya": "tsx scripts/migrate-tuya.ts",
     "migrate:tuya-multi-canal": "tsx scripts/migrate-tuya-multi-canal.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
-    "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts"
+    "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",
+    "migrate:balanco": "tsx scripts/migrate-balanco.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
