@@ -9261,7 +9261,13 @@ async function catalogoNativo() {
 }
 let produtoFilaRodando = false;
 async function loopProdutoFila() {
-  if (produtoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET || nativo()) return; // cadastro no PDV é do Consumer; no modo próprio o produto já mora na nuvem
+  if (produtoFilaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  // No banco PRÓPRIO o cadastro mora na nuvem: não há Firebird pra escrever.
+  // Mesmo assim a fila precisa ser confirmada — é o "ok" da loja que faz a
+  // nuvem gravar em produto/produto_variante (o espelho dela só muda depois da
+  // confirmação, por desenho). Sem isso a alteração ficava presa em
+  // "Aguardando a loja aplicar" pra sempre e o produto despausado nunca
+  // voltava ao cardápio (Catado de Caranguejo / Corona Zero, 12/09/2026).
   produtoFilaRodando = true;
   try {
     const e = Math.floor(Date.now() / 1000) + 120;
@@ -9272,8 +9278,11 @@ async function loopProdutoFila() {
     let mudou = 0;
     for (const a of j.alteracoes) {
       let res;
-      try { res = await fbAlterarProduto(a); }
-      catch (err) { res = { ok: false, erro: err.message }; }
+      if (nativo()) res = { ok: true };
+      else {
+        try { res = await fbAlterarProduto(a); }
+        catch (err) { res = { ok: false, erro: err.message }; }
+      }
       if (res.ok) mudou++;
       const e2 = Math.floor(Date.now() / 1000) + 120;
       await fetch(`${PAGAR_MESA_URL}/api/loja/produto-fila`, {
@@ -9287,6 +9296,9 @@ async function loopProdutoFila() {
     }
     // Catálogo da loja (garçom, KDS, cardápio do cliente) sai do espelho local:
     // sem isto o preço novo só apareceria no próximo ciclo de 5 min.
+    // No banco próprio o cardápio é remontado do pacote da nuvem (que já traz
+    // o wizard junto), então um ciclo do catálogo cobre tudo.
+    if (mudou && nativo()) { await loopCatalogoNuvem().catch((err) => console.error('[produto] catálogo:', err.message)); return; }
     if (mudou) await espelhoCatalogo().catch((err) => console.error('[produto] espelho:', err.message));
     // Mexeu em pergunta/opção? O espelho da nuvem é substituído por envio
     // inteiro — sem isso a tela mostraria o texto velho até o próximo ciclo.
