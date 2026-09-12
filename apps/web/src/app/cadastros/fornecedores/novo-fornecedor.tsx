@@ -16,6 +16,8 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
   const [uf, setUf] = useState('');
   const [email, setEmail] = useState('');
   const [fone, setFone] = useState('');
+  const [vendedorNome, setVendedorNome] = useState('');
+  const [vendedorZap, setVendedorZap] = useState('');
 
   function limpar() {
     setNome('');
@@ -25,6 +27,8 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
     setUf('');
     setEmail('');
     setFone('');
+    setVendedorNome('');
+    setVendedorZap('');
     setErro(null);
   }
 
@@ -52,6 +56,29 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
         setErro(d.error ?? `HTTP ${r.status}`);
         return;
       }
+
+      // Vendedor é opcional, mas é onde mora o WhatsApp que de fato recebe
+      // cotação/pedido — o fone do fornecedor sozinho costuma ser o fixo.
+      if (vendedorNome.trim() || vendedorZap.trim()) {
+        const rv = await fetch('/api/vendedores', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            acao: 'criar',
+            filialId,
+            fornecedorId: d.id,
+            nome: vendedorNome.trim() || nome.trim(),
+            whatsapp: vendedorZap.trim() || null,
+          }),
+        });
+        if (!rv.ok) {
+          const dv = await rv.json().catch(() => ({}));
+          setErro(`Fornecedor criado, mas o vendedor deu erro: ${dv.error ?? rv.status}`);
+          router.refresh();
+          return;
+        }
+      }
+
       setAberto(false);
       limpar();
       router.refresh();
@@ -168,6 +195,42 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
                     onChange={(e) => setFone(e.target.value)}
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                   />
+                </div>
+              </div>
+
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-amber-800">
+                  Vendedor (WhatsApp de cotação/pedido)
+                </p>
+                <p className="mt-0.5 text-[10px] text-amber-700">
+                  Sem isso, cotação e pedido não têm pra onde ir — telefone do
+                  fornecedor sozinho costuma ser o fixo da empresa.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Nome do vendedor
+                    </label>
+                    <input
+                      type="text"
+                      value={vendedorNome}
+                      onChange={(e) => setVendedorNome(e.target.value)}
+                      placeholder={nome || 'ex: Alex'}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      WhatsApp
+                    </label>
+                    <input
+                      type="text"
+                      value={vendedorZap}
+                      onChange={(e) => setVendedorZap(e.target.value)}
+                      placeholder="(79) 99999-9999"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                    />
+                  </div>
                 </div>
               </div>
 

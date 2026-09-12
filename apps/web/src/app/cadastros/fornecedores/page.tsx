@@ -8,9 +8,10 @@ import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, ilike, isNull, sql, sum } from 'drizzle-orm';
 import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
-import { brl, int, maskCnpj } from '@/lib/format';
+import { brl, formatFone, int, maskCnpj, pareceFixo } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
 import { NovoFornecedor } from './novo-fornecedor';
+import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,6 +84,8 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
       email: schema.fornecedor.email,
       fonePrincipal: schema.fornecedor.fonePrincipal,
       valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
+      whatsapp: foneParaWhatsapp(),
+      whatsappOrigem: origemDoFone(),
     })
     .from(schema.fornecedor)
     .where(where)
@@ -145,7 +148,15 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
               {int(Number(stats?.qtd ?? 0))} fornecedor(es) ativo(s) na {filialSelecionada.nome}.
             </p>
           </div>
-          <NovoFornecedor filialId={filialSelecionada.id} />
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/cadastros/vendedores?filialId=${filialSelecionada.id}`}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              Vendedores →
+            </Link>
+            <NovoFornecedor filialId={filialSelecionada.id} />
+          </div>
         </div>
 
         {filiais.length > 1 && (
@@ -227,7 +238,33 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                         {f.cidade ? `${f.cidade}${f.uf ? '/' + f.uf : ''}` : '—'}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-600">
-                        {[f.email, f.fonePrincipal].filter(Boolean).join(' · ') || '—'}
+                        {f.whatsapp ? (
+                          <a
+                            href={`https://wa.me/${f.whatsapp.replace(/\D/g, '')}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={
+                              f.whatsappOrigem === 'consumer' || pareceFixo(f.whatsapp)
+                                ? 'text-amber-700 underline decoration-dotted'
+                                : 'text-emerald-700 hover:underline'
+                            }
+                            title={
+                              f.whatsappOrigem === 'consumer'
+                                ? 'Veio do sync antigo — pode ser o fixo da empresa, confira antes de confiar'
+                                : 'WhatsApp do vendedor'
+                            }
+                          >
+                            📱 {formatFone(f.whatsapp)}
+                          </a>
+                        ) : (
+                          <Link
+                            href={`/cadastros/vendedores?filialId=${filialSelecionada.id}`}
+                            className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800 hover:bg-amber-100"
+                          >
+                            + vendedor
+                          </Link>
+                        )}
+                        {f.email && <span className="ml-1 text-slate-400">· {f.email}</span>}
                       </td>
                       <td className="px-4 py-2 text-right">
                         <EditPedidoMinimo fornecedorId={f.id} valorAtual={f.valorPedidoMinimo} />
