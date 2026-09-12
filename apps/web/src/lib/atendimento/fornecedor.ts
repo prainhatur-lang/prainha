@@ -51,7 +51,7 @@ export async function consultarCotacoesFornecedor(telefone: string): Promise<str
   const blocos: string[] = [`Fornecedor identificado: ${nomeForn}.`];
 
   if (pendentes.length === 0) {
-    blocos.push('Nenhuma cotação pendente de resposta agora.');
+    blocos.push('Nenhuma cotação pendente de resposta agora. Se o fornecedor está oferecendo produto ou perguntando se a casa vai comprar, NÃO diga que não há cotações nem prometa contato: diga que por aqui você só envia pedidos e cotações e não sabe responder sobre outras coisas.');
   }
   for (const c of pendentes) {
     const itens = (await db.execute(sql`
