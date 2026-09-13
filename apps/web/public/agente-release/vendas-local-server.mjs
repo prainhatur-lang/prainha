@@ -7328,9 +7328,17 @@ async function fbAbrirCaixa(usuarioCodigo, fundo, obs, login = null) {
 // carrega as vendas de ontem como fundo). 0 se ele nunca teve caixa.
 async function fbSaldoAnterior(usuarioCodigo, login = null) {
   if (nativo()) {
-    const [c] = await sql`SELECT COALESCE(fundo,0) f FROM caixa_local
-      WHERE fechado_em IS NOT NULL AND (${login} IS NULL OR lower(login)=lower(${login}))
-      ORDER BY codigo DESC LIMIT 1`;
+    // ⚠️ Nunca `${login} IS NULL` direto: o postgres.js manda o parâmetro sem
+    // tipo e o Postgres responde "could not determine data type of parameter
+    // $1". Foi isso que, de 08 a 12/09/2026, derrubou o auto-abrir do caixa do
+    // garçom (fbCaixaMaquininha lançava aqui, apiLioPagarSemTrava engolia e
+    // TODO recebimento de maquininha caía no caixa do sistema 'ser').
+    const l = String(login || '').trim().toLowerCase();
+    const [c] = l
+      ? await sql`SELECT COALESCE(fundo,0) f FROM caixa_local
+          WHERE fechado_em IS NOT NULL AND lower(login)=${l} ORDER BY codigo DESC LIMIT 1`
+      : await sql`SELECT COALESCE(fundo,0) f FROM caixa_local
+          WHERE fechado_em IS NOT NULL ORDER BY codigo DESC LIMIT 1`;
     return c ? Number(c.f) || 0 : 0;
   }
   const r = await qi(`SELECT FIRST 1 COALESCE(SALDOINICIAL, 0) S FROM CAIXA
