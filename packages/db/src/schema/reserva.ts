@@ -41,12 +41,13 @@ export const reserva = pgTable(
     area: varchar('area', { length: 100 }),
     /** Mesa (numero/identificacao). */
     mesa: varchar('mesa', { length: 20 }),
-    /** Segunda mesa, juntada lateralmente à `mesa` pra caber um grupo maior
-     *  que a capacidade de uma mesa só (ex: 2 mesas de 4 lugares = 8). Só
-     *  entre mesas marcadas `juntavel` no mesmo espaço — a equipe escolhe
-     *  olhando o mapa (não há adjacência física modelada no sistema, é
-     *  julgamento de quem conhece o salão). Null = reserva numa mesa só. */
-    mesaJuntada: varchar('mesa_juntada', { length: 20 }),
+    /** Mesas EXTRAS juntadas lateralmente à `mesa` pra caber um grupo maior
+     *  que a capacidade de uma mesa só (ex: 3 mesas de 4 lugares = 12).
+     *  Lista separada por vírgula ("13,14") — helpers em
+     *  `@/lib/reservas/mesas-juntadas`. A equipe escolhe olhando o mapa (não
+     *  há adjacência física modelada no sistema, é julgamento de quem conhece
+     *  o salão). Null = reserva numa mesa só. */
+    mesaJuntada: varchar('mesa_juntada', { length: 100 }),
     /** Canal de origem: google | instagram | site | telefone | balcao | widget | outro */
     canal: varchar('canal', { length: 30 }).notNull().default('outro'),
     /** Observacao do cliente / da reserva. */

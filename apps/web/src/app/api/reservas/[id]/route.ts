@@ -7,6 +7,7 @@ import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { mesasDaReserva, parseJuntadas, serializeJuntadas } from '@/lib/reservas/mesas-juntadas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
 
@@ -40,10 +41,20 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.status = b.status;
   }
   if (b?.mesa !== undefined) set.mesa = typeof b.mesa === 'string' && b.mesa.trim() ? b.mesa.trim().slice(0, 20) : null;
-  // Segunda mesa juntada lateralmente (grupo maior que 1 mesa só). null =
-  // desfaz a junção (volta a ser só a mesa principal).
-  if (b?.mesaJuntada !== undefined)
-    set.mesaJuntada = typeof b.mesaJuntada === 'string' && b.mesaJuntada.trim() ? b.mesaJuntada.trim().slice(0, 20) : null;
+  // Mesas extras juntadas lateralmente (grupo maior que 1 mesa só) — lista
+  // (`mesasJuntadas: ['13','14']`) ou texto ("13,14"). null/[] = desfaz a
+  // junção (volta a ser só a mesa principal).
+  if (Array.isArray(b?.mesasJuntadas)) {
+    set.mesaJuntada = serializeJuntadas(
+      b.mesasJuntadas.filter((x: unknown): x is string => typeof x === 'string'),
+      typeof set.mesa === 'string' ? set.mesa : null,
+    );
+  } else if (b?.mesaJuntada !== undefined) {
+    set.mesaJuntada = serializeJuntadas(
+      parseJuntadas(typeof b.mesaJuntada === 'string' ? b.mesaJuntada : null),
+      typeof set.mesa === 'string' ? set.mesa : null,
+    );
+  }
   if (b?.area !== undefined) set.area = typeof b.area === 'string' && b.area.trim() ? b.area.trim().slice(0, 100) : null;
   if (b?.observacao !== undefined)
     set.observacao = typeof b.observacao === 'string' && b.observacao.trim() ? b.observacao.trim().slice(0, 2000) : null;
@@ -148,9 +159,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     mesasValidas = espacoCfg?.mesas?.map((m) => String(m.numero));
   }
 
-  // Troca de mesa e/ou junção (recepção): a mesa (ou o par mesa+mesaJuntada)
+  // Troca de mesa e/ou junção (recepção): a mesa (ou o conjunto mesa+juntadas)
   // não pode já estar ocupada por outra reserva ativa no mesmo espaço/data.
-  // Só checa quando o par final mudou — manter o que já tinha é sempre
+  // Só checa quando o conjunto final mudou — manter o que já tinha é sempre
   // permitido, mesmo que o Consumer mostre ocupada (é a própria comanda).
   if ((mudaMesa || mudaMesaJuntada) && atual) {
     const areaFinal = (typeof set.area === 'string' ? set.area : atual.area) as string | null;
@@ -158,7 +169,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const mesaJuntadaFinal = (mudaMesaJuntada ? set.mesaJuntada : atual.mesaJuntada) as string | null;
     const parMudou = mesaFinal !== atual.mesa || mesaJuntadaFinal !== atual.mesaJuntada;
     if (areaFinal && mesaFinal && parMudou) {
-      const mesas = mesaJuntadaFinal ? [mesaFinal, mesaJuntadaFinal] : [mesaFinal];
+      const mesas = mesasDaReserva(mesaFinal, mesaJuntadaFinal);
       const livre = await mesasEstaoLivres({
         filialId: atual.filialId,
         data: atual.data,
@@ -182,7 +193,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   // nesse mesmo PATCH, a checagem acima já validou o par novo — não
   // precisa checar o antigo de novo.
   if (vaiSentar && !mudaMesa && !mudaMesaJuntada && atual?.mesa && atual.area) {
-    const mesas = atual.mesaJuntada ? [atual.mesa, atual.mesaJuntada] : [atual.mesa];
+    const mesas = mesasDaReserva(atual.mesa, atual.mesaJuntada);
     const livre = await mesasEstaoLivres({
       filialId: atual.filialId,
       data: atual.data,

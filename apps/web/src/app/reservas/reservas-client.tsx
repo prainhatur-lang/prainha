@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { normalizaBusca } from '@/lib/texto';
 import { brl } from '@/lib/format';
 import { MapaMesas } from './mapa-mesas';
+import { parseJuntadas, textoMesas } from '@/lib/reservas/mesas-juntadas';
 
 /** Resposta de /api/reservas/quem — quem é a pessoa do telefone/CPF digitado. */
 interface QuemInfo {
@@ -758,22 +759,21 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
   const [editando, setEditando] = useState(false);
   const [esp, setEsp] = useState(areaInicial ?? '');
   const [val, setVal] = useState(inicial ?? '');
-  const [valJuntada, setValJuntada] = useState(inicialJuntada ?? '');
+  // Mesas extras juntadas à principal (lista — a recepção junta 2, 3, 4…).
+  const [juntadas, setJuntadas] = useState<string[]>(() => parseJuntadas(inicialJuntada));
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
   const temEspacos = areasDaFilial.length > 0;
   const mesasDoEsp = temEspacos ? (areasDaFilial.find((a) => a.nome === esp)?.mesas ?? []) : mesasDoEspaco;
   const mesaSel = mesasDoEsp.find((m) => m.numero === val);
-  // Mesas juntáveis do espaço, sem a que já está selecionada — equipe junta
-  // olhando o mapa quem fica do lado (sistema não sabe a planta física).
-  const opcoesJuntar = mesasDoEsp.filter((m) => m.juntavel && m.numero !== val);
+  const lugaresTotal = (mesaSel?.lugares ?? 0) + juntadas.reduce((acc, n) => acc + (mesasDoEsp.find((m) => m.numero === n)?.lugares ?? 0), 0);
 
   const setOcupadas = new Set(ocupadas);
   const setOcupadasConsumer = new Set(ocupadasConsumer);
   // A própria mesa da reserva conta como ocupada no dia — não bloqueia ela
   // mesma (só vale quando ainda estamos no espaço original).
-  const minhas = new Set(esp === (areaInicial ?? '') ? [inicial, inicialJuntada].filter(Boolean) : []);
+  const minhas = new Set(esp === (areaInicial ?? '') ? [inicial, ...parseJuntadas(inicialJuntada)].filter(Boolean) : []);
   function statusMesa(numero: string): { sufixo: string; bloqueada: boolean } {
     if (minhas.has(numero)) return { sufixo: '', bloqueada: false };
     const k = `${filialId}:${numero}`;
@@ -789,7 +789,7 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
     setSalvando(true);
     setErro(null);
     try {
-      const body: Record<string, unknown> = { mesa: val, mesaJuntada: valJuntada || null };
+      const body: Record<string, unknown> = { mesa: val, mesasJuntadas: val ? juntadas : [] };
       if (temEspacos && esp && esp !== (areaInicial ?? '')) body.area = esp;
       const r = await fetch(`/api/reservas/${reservaId}`, {
         method: 'PATCH',
@@ -814,7 +814,7 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
         {temEspacos && (
           <select
             value={esp}
-            onChange={(e) => { setEsp(e.target.value); setVal(''); setValJuntada(''); }}
+            onChange={(e) => { setEsp(e.target.value); setVal(''); setJuntadas([]); }}
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
             {areaInicial && !areasDaFilial.some((a) => a.nome === areaInicial) && (
@@ -828,7 +828,7 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
         {mesasDoEsp.length > 0 ? (
           <select
             value={val}
-            onChange={(e) => { setVal(e.target.value); setValJuntada(''); }}
+            onChange={(e) => { setVal(e.target.value); setJuntadas([]); }}
             autoFocus
             className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           >
@@ -854,25 +854,21 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
             className="w-20 rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
           />
         )}
-        {mesaSel?.juntavel && opcoesJuntar.length > 0 && (
-          <select
-            value={valJuntada}
-            onChange={(e) => setValJuntada(e.target.value)}
-            className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px]"
-          >
-            <option value="">+ juntar…</option>
-            {opcoesJuntar.map((m) => {
-              const st = statusMesa(m.numero);
-              return (
-                <option key={m.numero} value={m.numero} disabled={st.bloqueada}>
-                  + mesa {m.numero} ({m.lugares}p){st.sufixo}
-                </option>
-              );
-            })}
-          </select>
+        {mesaSel && mesasDoEsp.length > 1 && (
+          <JuntarMesas
+            mesas={mesasDoEsp}
+            principal={val}
+            selecionadas={juntadas}
+            onChange={setJuntadas}
+            statusMesa={statusMesa}
+            compacto
+          />
+        )}
+        {juntadas.length > 0 && mesaSel && (
+          <span className="text-[11px] text-amber-700">= {lugaresTotal} lugares</span>
         )}
         <button onClick={salvar} disabled={salvando} className="rounded bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-50">{salvando ? '…' : 'salvar'}</button>
-        <button onClick={() => { setEsp(areaInicial ?? ''); setVal(inicial ?? ''); setValJuntada(inicialJuntada ?? ''); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
+        <button onClick={() => { setEsp(areaInicial ?? ''); setVal(inicial ?? ''); setJuntadas(parseJuntadas(inicialJuntada)); setErro(null); setEditando(false); }} className="text-[11px] text-slate-400">cancelar</button>
         {erro && <span className="text-[11px] font-medium text-rose-600">{erro}</span>}
       </span>
     );
@@ -894,7 +890,81 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
 }
 function mesaTexto(mesa: string | null, mesaJuntada?: string | null) {
   if (!mesa) return 'sem mesa';
-  return mesaJuntada ? `mesa ${mesa}+${mesaJuntada}` : `mesa ${mesa}`;
+  return `mesa ${textoMesas(mesa, mesaJuntada)}`;
+}
+
+// Checkboxes pra juntar mesas à principal — a equipe marca quantas precisar
+// (2, 3, 4…) olhando o mapa quem fica do lado (o sistema não sabe a planta
+// física). Mostra as mesas marcadas `juntavel` na config (🔗); um toque em
+// "todas" abre o resto do espaço — quem conhece o salão decide. Espaço sem
+// nenhuma juntável já mostra todas. Mesa reservada/ocupada no dia fica
+// desabilitada (a Areia tem 60 mesas — sem isso vira uma parede de chips).
+function JuntarMesas({ mesas, principal, selecionadas, onChange, statusMesa, compacto }: {
+  mesas: Mesa[];
+  principal: string;
+  selecionadas: string[];
+  onChange: (v: string[]) => void;
+  statusMesa: (numero: string) => { sufixo: string; bloqueada: boolean };
+  compacto?: boolean;
+}) {
+  const [todas, setTodas] = useState(false);
+  const outras = mesas.filter((m) => m.numero !== principal);
+  const temJuntavel = outras.some((m) => m.juntavel);
+  const opcoes = (todas || !temJuntavel ? outras : outras.filter((m) => m.juntavel || selecionadas.includes(m.numero)))
+    .slice()
+    .sort((a, b) => Number(!!b.juntavel) - Number(!!a.juntavel));
+  if (outras.length === 0) return null;
+  const escondidas = outras.length - opcoes.length;
+  function alternar(numero: string, marcada: boolean) {
+    if (marcada) onChange(selecionadas.includes(numero) ? selecionadas : [...selecionadas, numero]);
+    else onChange(selecionadas.filter((n) => n !== numero));
+  }
+  const cls = compacto ? 'gap-1' : 'gap-1.5';
+  const chip = compacto ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs';
+  return (
+    <span className={`inline-flex flex-wrap items-center ${cls}`}>
+      {!compacto && <span className="mr-1 text-xs text-slate-600">Juntar com:</span>}
+      {opcoes.map((m) => {
+        const marcada = selecionadas.includes(m.numero);
+        const st = statusMesa(m.numero);
+        const bloqueada = st.bloqueada && !marcada;
+        return (
+          <label
+            key={m.numero}
+            title={`Mesa ${m.numero} · ${m.lugares} lugares${m.juntavel ? ' · juntável' : ''}${st.sufixo}`}
+            className={`inline-flex cursor-pointer select-none items-center gap-1 rounded-full border ${chip} ${
+              marcada
+                ? 'border-amber-500 bg-amber-100 font-semibold text-amber-900'
+                : bloqueada
+                  ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400 line-through'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-amber-50'
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 accent-amber-600"
+              checked={marcada}
+              disabled={bloqueada}
+              onChange={(e) => alternar(m.numero, e.target.checked)}
+            />
+            {m.numero}
+            <span className="opacity-70">({m.lugares}p)</span>
+            {m.juntavel && <span className="text-[9px]">🔗</span>}
+          </label>
+        );
+      })}
+      {escondidas > 0 && (
+        <button
+          type="button"
+          onClick={() => setTodas(true)}
+          className={`rounded-full border border-dashed border-slate-300 text-slate-500 hover:bg-slate-100 ${chip}`}
+          title="Mostrar também as mesas que não estão marcadas como juntáveis na config"
+        >
+          + todas ({escondidas})
+        </button>
+      )}
+    </span>
+  );
 }
 
 // Nº de pessoas editável na recepção (grupo aumentou/diminuiu). Toda mudança
@@ -1292,7 +1362,8 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
   const [canal, setCanal] = useState('telefone');
   const [area, setArea] = useState('');
   const [mesa, setMesa] = useState('');
-  const [mesaJuntada, setMesaJuntada] = useState('');
+  // Mesas extras juntadas à principal (checkboxes — quantas precisar).
+  const [juntadas, setJuntadas] = useState<string[]>([]);
   const [observacao, setObs] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -1333,9 +1404,9 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
   const horaInvalida = !!(limite && /^\d{2}:\d{2}$/.test(hora) && hora > limite);
   const mesasDoEspaco = espacoSel?.mesas ?? [];
   const mesaSel = mesasDoEspaco.find((mm) => mm.numero === mesa);
-  const mesaJuntadaSel = mesasDoEspaco.find((mm) => mm.numero === mesaJuntada);
-  const capacidadeJunta = (mesaSel?.lugares ?? 0) + (mesaJuntadaSel?.lugares ?? 0);
-  const capacidadeBaixa = !!(mesaSel && pessoas > (mesaJuntadaSel ? capacidadeJunta : mesaSel.lugares));
+  const juntadasSel = juntadas.map((n) => mesasDoEspaco.find((mm) => mm.numero === n)).filter((x): x is Mesa => !!x);
+  const capacidadeJunta = (mesaSel?.lugares ?? 0) + juntadasSel.reduce((acc, mm) => acc + mm.lugares, 0);
+  const capacidadeBaixa = !!(mesaSel && pessoas > capacidadeJunta);
   // Ocupação só é conhecida pro dia que a página carregou (dataPadrao) — se o
   // usuário trocar a data da reserva no form, libera tudo (não temos o dado).
   const ocupacaoVale = dataR === dataPadrao;
@@ -1353,11 +1424,6 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
     if (setOcupadasConsumer.has(k)) return { sufixo: ' · ocupada agora', bloqueada: true };
     return { sufixo: '', bloqueada: false };
   }
-  // Mesas juntáveis do mesmo espaço, pra oferecer juntar quando a mesa
-  // escolhida não comporta o grupo — a equipe decide olhando o mapa se são
-  // fisicamente vizinhas (o sistema não sabe a planta do salão).
-  const opcoesJuntar = mesasDoEspaco.filter((mm) => mm.juntavel && mm.numero !== mesa);
-
   async function salvar() {
     setSalvando(true);
     setErro(null);
@@ -1365,7 +1431,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
       const r = await fetch('/api/reservas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, mesaJuntada: mesaJuntada || undefined, observacao, status: 'pendente' }),
+        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, mesasJuntadas: mesa ? juntadas : [], observacao, status: 'pendente' }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -1419,7 +1485,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
             value={mesa}
             onChange={(e) => {
               setMesa(e.target.value);
-              setMesaJuntada('');
+              setJuntadas([]);
             }}
             className={`${inp} ${capacidadeBaixa ? 'border-amber-400' : ''}`}
           >
@@ -1487,39 +1553,34 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
           {area} aceita reserva de mesa só até {limite} — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).
         </p>
       )}
-      {capacidadeBaixa && mesaSel && mesaSel.juntavel && opcoesJuntar.length > 0 && (
-        <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5">
-          <p className="text-xs text-amber-800">
-            A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas. Se
-            tiver outra mesa juntável do lado dela (confira no mapa 🗺️), pode juntar:
+      {mesaSel && mesasDoEspaco.length > 1 && (
+        <div className={`mt-2 rounded-lg border p-2.5 ${capacidadeBaixa ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}>
+          <p className={`text-xs ${capacidadeBaixa ? 'text-amber-800' : 'text-slate-600'}`}>
+            {capacidadeBaixa ? (
+              <>
+                A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas. Marque as
+                mesas do lado dela (confira no mapa 🗺️) pra juntar:
+              </>
+            ) : (
+              <>Grupo grande? Marque as mesas do lado da {mesaSel.numero} pra juntar numa reserva só:</>
+            )}
           </p>
-          <select
-            value={mesaJuntada}
-            onChange={(e) => setMesaJuntada(e.target.value)}
-            className={`${inp} mt-1.5 w-full`}
-          >
-            <option value="">Juntar com…</option>
-            {opcoesJuntar.map((mm) => {
-              const st = statusMesa(mm.numero);
-              return (
-                <option key={mm.numero} value={mm.numero} disabled={st.bloqueada}>
-                  Mesa {mm.numero} ({mm.lugares} lug){st.sufixo}
-                </option>
-              );
-            })}
-          </select>
-          {mesaJuntadaSel && (
-            <p className="mt-1.5 text-xs text-amber-700">
-              Mesa {mesaSel.numero} + {mesaJuntadaSel.numero} = {capacidadeJunta} lugares
-              {pessoas > capacidadeJunta ? ' — ainda não cabe, confira de novo.' : ' ✓'}
+          <div className="mt-1.5">
+            <JuntarMesas
+              mesas={mesasDoEspaco}
+              principal={mesa}
+              selecionadas={juntadas}
+              onChange={setJuntadas}
+              statusMesa={statusMesa}
+            />
+          </div>
+          {juntadasSel.length > 0 && (
+            <p className={`mt-1.5 text-xs ${pessoas > capacidadeJunta ? 'text-amber-700' : 'text-emerald-700'}`}>
+              Mesa {[mesaSel.numero, ...juntadasSel.map((mm) => mm.numero)].join(' + ')} = {capacidadeJunta} lugares
+              {pessoas > capacidadeJunta ? ' — ainda não cabe, marque mais uma.' : ' ✓'}
             </p>
           )}
         </div>
-      )}
-      {capacidadeBaixa && mesaSel && !mesaSel.juntavel && (
-        <p className="mt-2 text-xs text-amber-600">
-          A Mesa {mesaSel.numero} tem {mesaSel.lugares} lugares, mas a reserva é pra {pessoas} pessoas — confira a capacidade (essa mesa não é juntável).
-        </p>
       )}
       {erro && <p className="mt-2 text-xs text-rose-600">{erro}</p>}
       <button onClick={salvar} disabled={salvando || !clienteNome.trim() || horaInvalida} className="mt-3 w-full rounded-lg bg-slate-900 px-4 py-3 text-base font-semibold text-white active:bg-slate-700 hover:bg-slate-800 disabled:opacity-50 sm:w-auto sm:py-2 sm:text-sm">

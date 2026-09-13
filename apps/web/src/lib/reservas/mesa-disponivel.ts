@@ -13,6 +13,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
+import { parseJuntadas } from './mesas-juntadas';
 
 const STATUS_ATIVOS = ['pendente', 'confirmada', 'sentada'];
 
@@ -92,7 +93,7 @@ export async function mesasOcupadas(params: {
   const ocupadas = new Set<string>();
   for (const r of validas) {
     if (r.mesa) ocupadas.add(String(r.mesa).trim());
-    if (r.mesaJuntada) ocupadas.add(String(r.mesaJuntada).trim());
+    for (const m of parseJuntadas(r.mesaJuntada)) ocupadas.add(m);
   }
 
   if (data === hojeBr()) {
@@ -119,8 +120,8 @@ export async function mesaEstaLivre(params: {
   return !ocupadas.has(String(params.mesa).trim());
 }
 
-/** Checa se TODAS as mesas de um grupo (ex: mesa + mesaJuntada) estão livres —
- *  usado quando a reserva junta 2 mesas lateralmente. */
+/** Checa se TODAS as mesas de um grupo (mesa + mesas juntadas) estão livres —
+ *  usado quando a reserva junta mesas lateralmente. */
 export async function mesasEstaoLivres(params: {
   filialId: string;
   data: string;

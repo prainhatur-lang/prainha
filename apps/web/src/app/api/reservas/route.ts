@@ -5,7 +5,8 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { mesaEstaLivre, mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { mesasDaReserva, parseJuntadas, serializeJuntadas } from '@/lib/reservas/mesas-juntadas';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
 export const dynamic = 'force-dynamic';
@@ -41,8 +42,15 @@ export async function POST(request: Request) {
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
   const area = txt(b?.area, 100);
   const mesa = txt(b?.mesa, 20);
-  // Segunda mesa juntada lateralmente pra caber grupo maior que 1 mesa só.
-  const mesaJuntada = txt(b?.mesaJuntada, 20);
+  // Mesas extras juntadas lateralmente pra caber grupo maior que 1 mesa só —
+  // aceita lista (`mesasJuntadas: ['13','14']`) ou texto ("13,14").
+  const mesaJuntada = serializeJuntadas(
+    Array.isArray(b?.mesasJuntadas)
+      ? b.mesasJuntadas.filter((x: unknown): x is string => typeof x === 'string')
+      : parseJuntadas(typeof b?.mesaJuntada === 'string' ? b.mesaJuntada : null),
+    mesa,
+  );
+  const todasMesas = mesasDaReserva(mesa, mesaJuntada);
 
   // Config da filial (mesas do espaço + regras) — busca antes pra poder
   // escopar a checagem de ocupação do Consumer só às mesas desse espaço
@@ -62,12 +70,10 @@ export async function POST(request: Request) {
   // Mesa(s) já ocupada(s) por outra reserva ativa no mesmo espaço/data?
   // Bloqueia double-booking.
   if (mesa && area) {
-    const livre = mesaJuntada
-      ? await mesasEstaoLivres({ filialId, data, area, mesas: [mesa, mesaJuntada], mesasValidas })
-      : await mesaEstaLivre({ filialId, data, area, mesa, mesasValidas });
+    const livre = await mesasEstaoLivres({ filialId, data, area, mesas: todasMesas, mesasValidas });
     if (!livre) {
       return NextResponse.json(
-        { error: `Mesa ${mesa}${mesaJuntada ? `/${mesaJuntada}` : ''} já está ocupada em ${area} nessa data.` },
+        { error: `Mesa ${todasMesas.join('/')} já está ocupada em ${area} nessa data.` },
         { status: 409 },
       );
     }

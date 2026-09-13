@@ -12,6 +12,7 @@ import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { mesasOcupadasNoConsumer } from '@/lib/reservas/mesa-disponivel';
 import { ReservasClient, type ReservaItem, type FilialOpt } from './reservas-client';
+import { parseJuntadas } from '@/lib/reservas/mesas-juntadas';
 
 export const dynamic = 'force-dynamic';
 
@@ -116,7 +117,7 @@ export default async function ReservasPage(props: {
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
   // Mesas ocupadas no dia (chave `${filialId}:${mesa}`), pro mapa. Reserva
-  // com mesa juntada ocupa AS DUAS chaves (mesa + mesaJuntada).
+  // com mesas juntadas ocupa TODAS as chaves (mesa + cada juntada).
   const ativasComMesa = itens.filter(
     (i) => i.mesa && i.status !== 'cancelada' && i.status !== 'no_show',
   );
@@ -127,9 +128,9 @@ export default async function ReservasPage(props: {
     const info = { nome: i.clienteNome, hora: i.hora, pessoas: i.pessoas };
     ocupadas.push(`${i.filialId}:${i.mesa}`);
     reservasPorMesa[`${i.filialId}:${i.mesa}`] = info;
-    if (i.mesaJuntada) {
-      ocupadas.push(`${i.filialId}:${i.mesaJuntada}`);
-      reservasPorMesa[`${i.filialId}:${i.mesaJuntada}`] = info;
+    for (const mj of parseJuntadas(i.mesaJuntada)) {
+      ocupadas.push(`${i.filialId}:${mj}`);
+      reservasPorMesa[`${i.filialId}:${mj}`] = info;
     }
   }
 

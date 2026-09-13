@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { hojeBr } from '@/lib/datas';
+import { parseJuntadas } from '@/lib/reservas/mesas-juntadas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -110,7 +111,13 @@ export async function GET(request: Request) {
     .orderBy(asc(schema.reserva.hora))
     .limit(120);
 
-  return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas });
+  // mesa_juntada pode ser lista ("13,14") — o painel da loja concatena
+  // "mesa 12" + "+" + mesa_juntada, então já vai "13+14".
+  const reservasSaida = reservas.map((r) => ({
+    ...r,
+    mesa_juntada: parseJuntadas(r.mesa_juntada).join('+') || null,
+  }));
+  return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas: reservasSaida });
 }
 
 const ACOES_ESPERA = new Set(['chamar', 'sentou', 'desistiu']);

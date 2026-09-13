@@ -21,6 +21,7 @@ import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { queryPayment } from '@/lib/pagamento-online';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { textoMesas } from '@/lib/reservas/mesas-juntadas';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 import {
@@ -307,7 +308,7 @@ export async function cancelarReservaWhatsApp(p: {
   const estorno = await estornarReservaSePago({ ...alvo, data: String(alvo.data) }).catch(() => null);
   const linhaEstorno = estorno ? ` PAGAMENTO: ${estorno.rotulo}. Explique isso ao cliente com clareza.` : '';
 
-  const mesas = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
+  const mesas = alvo.mesaJuntada ? `mesas ${textoMesas(alvo.mesa, alvo.mesaJuntada, ' + ')}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
   return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada.${linhaEstorno} Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
 }
 
@@ -701,7 +702,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   }
 
   const mesaTxt = mesaJuntadaAlocada
-    ? ` (mesas ${mesaAlocada} + ${mesaJuntadaAlocada} juntadas pro grupo)`
+    ? ` (mesas ${textoMesas(mesaAlocada, mesaJuntadaAlocada, ' + ')} juntadas pro grupo)`
     : mesaAlocada
       ? ` (mesa ${mesaAlocada})`
       : '';
@@ -756,7 +757,7 @@ export async function remarcarReservaWhatsApp(p: {
     // erro. A resposta antiga ("confirme o que ele quer mudar") criava loop
     // infinito — a Nina re-perguntava, o cliente dizia SIM, e de novo
     // (caso Shaulla 25/08: 3 voltas do mesmo "certo?").
-    const mesaTxt = alvo.mesaJuntada ? `mesas ${alvo.mesa} + ${alvo.mesaJuntada}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
+    const mesaTxt = alvo.mesaJuntada ? `mesas ${textoMesas(alvo.mesa, alvo.mesaJuntada, ' + ')}` : alvo.mesa ? `mesa ${alvo.mesa}` : 'mesa';
     return `A RESERVA JÁ ESTÁ EXATAMENTE ASSIM: ${dataBr(String(alvo.data))} às ${horaAtual}, ${alvo.pessoas} pessoa(s) na ${alvo.area} (${mesaTxt}). O pedido do cliente já está atendido — responda como BOA NOTÍCIA ("sua reserva já está marcada pras ${horaAtual}, tá garantida!") e NÃO pergunte de novo o que ele quer mudar.`;
   }
 
@@ -827,7 +828,7 @@ export async function remarcarReservaWhatsApp(p: {
   }
 
   const mesaTxt = slot.mesaJuntada
-    ? ` (mesas ${slot.mesa} + ${slot.mesaJuntada} juntadas)`
+    ? ` (mesas ${textoMesas(slot.mesa, slot.mesaJuntada, ' + ')} juntadas)`
     : slot.mesa
       ? ` (mesa ${slot.mesa})`
       : '';
