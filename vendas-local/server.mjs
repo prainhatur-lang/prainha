@@ -7740,8 +7740,12 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
 
     // a) registro interno do app da LIO — o caminho de sempre
     if (nsu) {
+      // Zero à esquerda: a LIO manda "081743" e o pagamento guarda "81743".
+      // Igualdade crua reprovava 98 de 167 recebimentos do 5000004 (12/09/2026)
+      // e jogava tudo no extrato da Cielo. Compara sem os zeros dos dois lados.
       const [par] = await sql`SELECT id FROM venda_pagamento
-        WHERE status='ok' AND nsu IS NOT NULL AND regexp_replace(nsu, '\\D', '', 'g') = ${nsu}
+        WHERE status='ok' AND nsu IS NOT NULL
+          AND ltrim(regexp_replace(nsu, '\\D', '', 'g'), '0') = ${nsu.replace(/^0+/, '')}
           AND valor = ${valor} LIMIT 1`;
       if (par) continue;
     }
@@ -7812,7 +7816,11 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
  *  BANCO=proprio a query falhava e TODO caixa voltava reprovado com "FB: ...". */
 async function caixaPagamentosDoCaixa(cod) {
   if (nativo()) {
-    const r = await sql`SELECT forma_codigo, valor, nsu, quando::date AS dia
+    // `::text` de propósito: o postgres.js devolve DATE como Date em meia-noite
+    // UTC, e ymdDoBanco lê com getters locais (BRT) → todo pagamento caía no
+    // dia ANTERIOR. Medido 12/09/2026: 62 recebimentos de 12/09 lidos como
+    // 11/09 viraram "sem par" (o certo era "extrato atrasado").
+    const r = await sql`SELECT forma_codigo, valor, nsu, quando::date::text AS dia
       FROM pagamento_local WHERE caixa_codigo=${Number(cod)} AND cancelado_em IS NULL`;
     return { ok: true, rows: r.map((x) => ({ F: x.forma_codigo, V: x.valor, NSU: x.nsu, DIA: x.dia })) };
   }
