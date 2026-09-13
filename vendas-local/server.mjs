@@ -9821,7 +9821,14 @@ async function apiCaixaRelatorio(data) {
     const caixas = await sql`SELECT c.codigo, COALESCE((SELECT u.nome FROM usuario_local u WHERE lower(u.login)=lower(c.login)), c.login) quem,
         c.aberto_em, c.fechado_em, c.fundo, c.saldo_final, c.saldo_informado, COALESCE(c.obs,'') obs
       FROM caixa_local c
-      WHERE (c.aberto_em >= ${dia}::date AND c.aberto_em < (${dia}::date + 1)) OR (c.fechado_em IS NULL AND c.aberto_em < (${dia}::date + 1))
+      -- Caixa que esteve ABERTO em algum momento do dia (ou que recebeu nesse dia).
+      -- Antes só entrava quem abriu no dia ou ainda estava aberto: um caixa que
+      -- atravessou dias e fechou depois (o 5000004 abriu 10/09 e fechou 13/09
+      -- 04:09) sumia de 11 e 12/09, e a tela mostrava R$ 25 mil por forma com
+      -- um caixa só de R$ 4,7 mil — "aonde estão os outros caixas?".
+      WHERE (c.aberto_em < (${dia}::date + 1) AND (c.fechado_em IS NULL OR c.fechado_em >= ${dia}::date))
+         OR c.codigo IN (SELECT DISTINCT caixa_codigo FROM pagamento_local
+              WHERE cancelado_em IS NULL AND quando >= ${dia}::date AND quando < (${dia}::date + 1))
       ORDER BY c.codigo DESC`;
     const movs = await sql`SELECT caixa_codigo cx, quando dt, CASE WHEN tipo='suprimento' THEN valor ELSE 0 END e,
         CASE WHEN tipo='suprimento' THEN 0 ELSE valor END s, COALESCE(obs,'') obs
@@ -9853,7 +9860,9 @@ async function apiCaixaRelatorio(data) {
   const caixas = await qi(`SELECT c.CODIGO, TRIM(COALESCE(u.NOME, u.LOGIN)) QUEM, c.DATAABERTURA, c.DATAFECHAMENTO, c.SALDOINICIAL, c.SALDOFINAL, c.SALDOFINALINFORMADO,
       CAST(c.OBSERVACAO AS VARCHAR(120)) OBS
     FROM CAIXA c LEFT JOIN VWUSUARIOS u ON u.CODIGO=c.CODIGOUSUARIO
-    WHERE (c.DATAABERTURA >= ${ini} AND c.DATAABERTURA < ${fim}) OR (c.DATAFECHAMENTO IS NULL AND c.DATAABERTURA < ${fim}) ORDER BY c.CODIGO DESC`);
+    WHERE (c.DATAABERTURA < ${fim} AND (c.DATAFECHAMENTO IS NULL OR c.DATAFECHAMENTO >= ${ini}))
+       OR c.CODIGO IN (SELECT DISTINCT p.CODIGOCAIXA FROM PAGAMENTOS p WHERE p.DATADELETE IS NULL AND p.DATAPAGAMENTO >= ${ini} AND p.DATAPAGAMENTO < ${fim})
+    ORDER BY c.CODIGO DESC`);
   const movs = await qi(`SELECT o.CODIGOCAIXA CX, o.DATAOPERACAO DT, COALESCE(o.VALORENTRADA,0) E, COALESCE(o.VALORSAIDA,0) S, TRIM(COALESCE(o.OBSERVACAO,'')) OBS
     FROM CAIXAOPERACAO o WHERE o.DATADELETE IS NULL AND o.DATAOPERACAO >= ${ini} AND o.DATAOPERACAO < ${fim} ORDER BY o.CODIGO DESC`);
   const fmap = {};
