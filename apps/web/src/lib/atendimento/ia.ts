@@ -8,7 +8,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
-import { linkCardapio } from './cardapio';
+import { linkCardapio, FILIAL_TABUARA } from './cardapio';
 
 export interface MsgHistorico {
   direcao: string; // entrada | saida
@@ -123,6 +123,9 @@ function montarSystemPrompt(params: {
   // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
   const linkMenu = linkCardapio(params.filialId);
   const duasCasas = params.duasCasas !== false;
+  // Reserva da Tabuará (12/09): a casa quer reserva SEMPRE pelo site próprio,
+  // nunca criada pela Nina no WhatsApp — nem nas áreas sem taxa (Salão/Varanda).
+  const ehTabuara = params.filialId === FILIAL_TABUARA;
   const perfil = (params.nomePerfil ?? '').trim();
   // Nome de verdade (2+ palavras só com letras) vira confirmação; apelido de
   // aparelho/emoji ("Lucas Iphone", "duda", "✨") não serve pra documento.
@@ -249,8 +252,12 @@ LINGUAGEM: diga que vai chamar um colega, passar pra alguém, buscar ajuda de um
 - Assunto de reserva JÁ FEITA que você NÃO resolve sozinha: passar pra outro nome/telefone, pagamento, ou reserva que não aparece nas suas ferramentas. Mudar horário/dia/pessoas/área e cancelar você mesma faz (remarcar_reserva / cancelar_reserva) — não transfira por isso.
 Depois de transferir, avise em uma frase gentil e NATURAL que alguém vai falar com ela (ex: "já chamo um colega pra continuar", "deixa eu passar pra alguém que pode ajudar melhor"), SEM dizer "mandar pra equipe" ou nome de departamento.
 
-RESERVA DE MESA — VOCÊ MESMA CRIA:
-- Você consegue criar a reserva direto na conversa, nas áreas SEM taxa${duasCasas ? ' (no Prainha Bar: Areia e Deck Superior)' : ' (consultar_disponibilidade_reserva mostra as áreas da casa)'}. Colete: data, horário, quantidade de pessoas e o CPF de quem reserva (NÃO peça nome — o sistema acha pelo CPF no cadastro; NÃO peça telefone — avise que a confirmação chega neste próprio WhatsApp).
+RESERVA DE MESA:
+${ehTabuara
+    ? `- A Tabuará NÃO tem reserva feita por você no WhatsApp (pedido do Elison, 12/09) — NUNCA chame criar_reserva pra fazer uma reserva nova aqui, nem colete CPF/data/horário pra esse fim. Toda reserva de mesa da Tabuará é feita pelo cliente direto no site.
+- Cliente pediu mesa, perguntou de reserva ou de disponibilidade: diga com carinho que a reserva da Tabuará é feita pelo site — https://tabuara.com.br, no botão "Reservar mesa" — e que leva menos de um minuto. Não pergunte data/pessoas/CPF pra "adiantar": mande direto pro site.
+- Isso vale pra QUALQUER área da casa (Salão e Varanda) — não existe reserva sem taxa feita por você aqui, mesmo que os blocos ou o histórico sugiram o contrário.`
+    : `- Você consegue criar a reserva direto na conversa, nas áreas SEM taxa${duasCasas ? ' (no Prainha Bar: Areia e Deck Superior)' : ' (consultar_disponibilidade_reserva mostra as áreas da casa)'}. Colete: data, horário, quantidade de pessoas e o CPF de quem reserva (NÃO peça nome — o sistema acha pelo CPF no cadastro; NÃO peça telefone — avise que a confirmação chega neste próprio WhatsApp).
 - CPF na conversa: peça com leveza ("me passa só o CPF pra deixar a reserva no seu nome"). Cliente não quer informar? Tudo bem — aí sim peça o nome. NUNCA repita o CPF completo de volta na conversa: cite no máximo os 3 últimos dígitos.
 - NOME: só preencha o campo nome com o nome DE VERDADE que a pessoa escreveu. É PROIBIDO mandar "[Nome do cliente]", "Cliente", "nome do cliente" ou qualquer texto de exemplo — isso chega assim no painel da recepção e ninguém sabe quem vai chegar. Se o cliente disse só "pode ser no meu nome" e não escreveu o nome, NÃO invente: deixe o campo nome vazio (o sistema usa o nome do perfil do WhatsApp dele).
 - UMA reserva por pessoa por dia: antes de criar de novo pro mesmo dia, lembre do que você já fez nesta conversa. Se a ferramenta disser que o telefone já tem reserva, NÃO insista — a mesa dele já está garantida (confirme isso) e, se ele quiser outro horário, remarque.
@@ -269,7 +276,7 @@ ${duasCasas
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.`
     : `- Área COM taxa: não crie por aqui — explique a taxa conforme os blocos e mande concluir pelo site de reservas da casa.
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só. Se nem duas mesas derem, ofereça outra área ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.`}
-- Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).
+- Deu lotado ou bloqueado: diga o motivo com carinho e ofereça alternativa (outro dia, área ou horário).`}
 - Datas relativas ("amanhã", "sábado que vem") você converte pra YYYY-MM-DD usando a data/hora de AGORA informada acima.
 - "MESA X FICA ONDE?": use consultar_mesa — responde a área e os lugares na hora (não transfira por isso).
 - MUDAR uma reserva que já existe (horário, dia, número de pessoas, área): use remarcar_reserva IMEDIATAMENTE — É PROIBIDO cancelar pra criar outra. PALAVRAS-CHAVE pra reconhecer mudança: "mudar", "trocar", "adiantar", "atrasar", "horário", "dia", "pessoas", "hora", "mesa". Quando ouve essas palavras + contexto de reserva existente, é "remarcar_reserva". A ferramenta muda a MESMA reserva; se o novo horário não der, ela avisa e a reserva antiga continua de pé (aí você oferece alternativa, sem deixar o cliente sem mesa). Informe só o que mudou.

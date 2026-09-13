@@ -9,7 +9,7 @@ import { sql } from 'drizzle-orm';
 // Link do cardápio por CASA (08/09): a Tabuará tem cardápio próprio no
 // Menudino — mandar prainhabar.com/cardapio pro cliente dela é cardápio
 // errado. Filial sem link específico cai no do Prainha.
-const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
+export const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
 const LINK_CARDAPIO_PADRAO = 'https://www.prainhabar.com/cardapio';
 const LINK_CARDAPIO_POR_FILIAL: Record<string, string> = {
   [FILIAL_TABUARA]: 'https://tabuara.menudino.com.br',
