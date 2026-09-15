@@ -102,9 +102,23 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
   // trabalhou na semana (>=1 dia com horas) — quem faltou a semana toda não
   // recebe. Calcula diasComHoras 1x (as 3 cópias antigas recalculavam pro
   // bônus por dia — mesmo resultado, mas redundante).
+  //
+  // GERENTE sem ponto: usa os dias com movimento da loja (10% > 0) como
+  // fallback — mesma regra do pró-labore fixo_por_dia em calcular.ts.
+  // Gerente normalmente não bate ponto, e sem esse fallback o bônus fixo do
+  // cadastro era ignorado (Paulo sumiu da folha 07–13/09/2026 por isso).
+  const [folhaRow] = await db
+    .select({ dezPctPorDia: schema.folhaSemana.dezPctPorDia })
+    .from(schema.folhaSemana)
+    .where(eq(schema.folhaSemana.id, folhaSemanaId))
+    .limit(1);
+  const dezPctPorDia = (folhaRow?.dezPctPorDia as Record<string, number> | null) ?? {};
+  const diasLoja = Object.values(dezPctPorDia).filter((v) => Number(v) > 0).length;
+
   for (const p of pessoasRows) {
     const porDia = horasMap.get(p.fornecedorId) ?? {};
-    const diasComHoras = Object.values(porDia).filter((m) => m > 0).length;
+    const diasComPonto = Object.values(porDia).filter((m) => m > 0).length;
+    const diasComHoras = diasComPonto === 0 && p.papel === 'gerente' ? diasLoja : diasComPonto;
     if (diasComHoras === 0) continue;
 
     if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
