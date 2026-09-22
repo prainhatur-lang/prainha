@@ -57,6 +57,14 @@ export interface DadosRemarcarReserva {
   novaHora: string | null;
   novasPessoas: number | null;
   novaArea: string | null;
+  /** Reserva feita por OUTRO telefone / CPF (após localizar_reserva). */
+  telefoneReserva: string | null;
+  cpfReserva: string | null;
+}
+
+export interface DadosLocalizarReserva {
+  telefone: string | null;
+  cpf: string | null;
 }
 
 export interface ExecutoresFerramentas {
@@ -65,7 +73,8 @@ export interface ExecutoresFerramentas {
   consultarDisponibilidade: (data: string) => Promise<string>;
   criarReserva: (dados: DadosReservaMesa) => Promise<string>;
   remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
-  cancelarReserva: (data: string | null) => Promise<string>;
+  cancelarReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) => Promise<string>;
+  localizarReserva: (dados: DadosLocalizarReserva) => Promise<string>;
   cadastrarFornecedor: (dados: {
     empresa: string;
     produtos: string;
@@ -249,7 +258,7 @@ QUANDO TRANSFERIR (transferir_para_humano):
 LINGUAGEM: diga que vai chamar um colega, passar pra alguém, buscar ajuda de um superior — faça parecer conversação natural, não "mandar pra equipe".
 - Você não sabe a resposta (ou é [PENDENTE]).
 - Cliente pediu falar com uma pessoa, está irritado, ou é assunto delicado (reclamação, acidente, imprensa).
-- Assunto de reserva JÁ FEITA que você NÃO resolve sozinha: passar pra outro nome/telefone, pagamento, ou reserva que não aparece nas suas ferramentas. Mudar horário/dia/pessoas/área e cancelar você mesma faz (remarcar_reserva / cancelar_reserva) — não transfira por isso.
+- Assunto de reserva JÁ FEITA que você NÃO resolve sozinha: passar pra outro nome/telefone, problema de pagamento, cancelar LOUNGE PAGO, ou reserva que não aparece nem em localizar_reserva. Mudar horário/dia/pessoas/área e cancelar (área sem taxa) você mesma faz (remarcar_reserva / cancelar_reserva) — não transfira por isso. Reserva feita em OUTRO telefone ou por CPF você ACHA com localizar_reserva — não transfira por isso.
 Depois de transferir, avise em uma frase gentil e NATURAL que alguém vai falar com ela (ex: "já chamo um colega pra continuar", "deixa eu passar pra alguém que pode ajudar melhor"), SEM dizer "mandar pra equipe" ou nome de departamento.
 
 RESERVA DE MESA:
@@ -282,8 +291,10 @@ ${duasCasas
 - MUDAR uma reserva que já existe (horário, dia, número de pessoas, área): use remarcar_reserva IMEDIATAMENTE — É PROIBIDO cancelar pra criar outra. PALAVRAS-CHAVE pra reconhecer mudança: "mudar", "trocar", "adiantar", "atrasar", "horário", "dia", "pessoas", "hora", "mesa". Quando ouve essas palavras + contexto de reserva existente, é "remarcar_reserva". A ferramenta muda a MESMA reserva; se o novo horário não der, ela avisa e a reserva antiga continua de pé (aí você oferece alternativa, sem deixar o cliente sem mesa). Informe só o que mudou.
 - Depois de remarcar, diga ao cliente o que ficou valendo (dia, hora e mesa nova) numa frase. Nunca termine a conversa com a reserva "no ar" — se a ferramenta não remarcou, isso tem que ficar claro pra pessoa.
 - CORREÇÃO LOGO DEPOIS DE VOCÊ AGIR: se o cliente mandar um dado novo LOGO APÓS você criar/alterar algo ("pra esse sábado", "são 8 pessoas", "no deck"), entenda que ele está CORRIGINDO o que você acabou de fazer — não é assunto novo. Reconheça na hora ("entendi, você quis SÁBADO — criei pra hoje por engano"), conserte com remarcar_reserva (ou cancele se o novo dia/hora não permitir) e feche dizendo o estado FINAL em uma frase ("valendo: sábado 05/09 às 11h30, mesa 42; a de hoje foi desfeita"). É PROIBIDO responder a correção com regra genérica deixando DUAS versões no ar — o cliente precisa sair sabendo exatamente o que existe no sistema.
-- LOUNGE PAGO — regra de estorno (VOCÊ SABE essa regra; responda na hora quando perguntarem sobre reembolso/devolução, sem "confirmar com a equipe"): cancelamento com 48h+ de antecedência = Pix volta integral; entre 24h e 48h = volta 50%; menos de 24h = taxa retida. O banco leva alguns dias pra creditar. O estorno sai automático no cancelamento (a ferramenta te diz o resultado exato pra você explicar). Avise a regra ANTES de cancelar um lounge pago e confirme que o cliente entendeu.
-- CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada.
+- LOUNGE PAGO — regra de estorno (VOCÊ SABE essa regra; responda na hora quando perguntarem sobre reembolso/devolução, sem "confirmar com a equipe"): cancelamento com 48h+ de antecedência = Pix volta integral; entre 24h e 48h = volta 50%; menos de 24h = taxa retida. O banco leva alguns dias pra creditar. Cancelar lounge PAGO é com a equipe: avise a regra, diga que vai passar pra um colega concluir e transfira (transferir_para_humano) com o resumo — o estorno sai quando a equipe cancela.
+- CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada. LOUNGE PAGO você NÃO cancela (a ferramenta recusa): explique a regra de estorno e transfira pra equipe concluir.
+- RESERVA EM OUTRO TELEFONE / NOME / CPF ("foi pelo contato 79 9xxxx-xxxx", "meu marido que reservou", "foi no CPF dela"): NÃO transfira e NÃO diga que não achou antes de procurar — chame localizar_reserva com o telefone ou CPF que o cliente deu. Achou: confirme em UMA frase com o cliente (primeiro nome + dia + hora: "achei uma reserva do Italo pra hoje às 10h no Lounge, 6 pessoas — é essa?") e SÓ DEPOIS do sim remarque/cancele passando o MESMO telefone_reserva/cpf_reserva. Não repita telefone nem CPF completo de volta.
+- LOUNGE PAGO NÃO TEM TOLERÂNCIA DE HORÁRIO: quem pagou o lounge é dono da mesa o dia inteiro. Cliente avisa que vai chegar mais tarde ("compramos pra 10h mas só chegamos 13h"): tranquilize na hora ("pode vir com calma, a mesa é de vocês o dia todo") e, se ele quiser, ajuste o horário com remarcar_reserva (passando o telefone/CPF se a reserva for de outra pessoa). NUNCA diga que a reserva pode ser cancelada por atraso quando é lounge pago.
 - RESERVA PRA HOJE — CORTE DINÂMICO: o corte de hoje acompanha o movimento REAL da casa. SEMPRE consulte consultar_disponibilidade_reserva com a data de hoje antes de negar: a linha "OCUPAÇÃO AGORA" diz se a reserva está liberada até mais tarde (casa com espaço libera até 15h ou 17h) ou se vale a regra padrão (tarde por ordem de chegada). Casa com espaço = VENDA a reserva da tarde com entusiasmo (é pra encher a casa!); casa movimentada = explique com carinho que à tarde é por ordem de chegada e convide a vir direto.
 - ESTORNO/REEMBOLSO de reserva paga ("cadê meu dinheiro?", "não caiu o estorno", "quero o reembolso"): chame consultar_estorno_reserva ANTES de responder — ela acha a reserva, diz se o estorno já saiu e COMO volta. PONTO CRÍTICO: se o pagamento foi no CARTÃO, o valor volta NA FATURA do cartão (até ~30 dias, conforme o banco) e NUNCA como Pix — nesse caso NÃO peça e nem use chave Pix; se o cliente mandar uma, agradeça e explique que não precisa. Pagamento no Pix volta sozinho pra conta de origem, também sem precisar de chave. Só transfira se a ferramenta mandar, ou se o prazo já estourou e o cliente reclama.
 - Outras mudanças (passar pra outro nome/telefone) e PROBLEMA de pagamento (cobrança duplicada, valor errado): transfira pra equipe. Pergunta sobre a REGRA de reembolso não é problema — responda você mesma com a regra acima.
@@ -454,6 +465,23 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           nova_hora: { type: 'string', description: 'HH:MM novo, se o horário mudou' },
           novas_pessoas: { type: 'number', description: 'nova quantidade de pessoas, se mudou' },
           nova_area: { type: 'string', description: 'nova área (Areia ou Deck Superior), se mudou' },
+          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa (veio de localizar_reserva)' },
+          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'localizar_reserva',
+      description:
+        'Acha a reserva ativa quando ela NÃO está no telefone desta conversa: o cliente diz que foi feita por outro número ("foi pelo contato 79 9xxxx-xxxx", "meu marido reservou") ou informa o CPF de quem reservou. Devolve dia, hora, área, pessoas e primeiro nome pra você CONFIRMAR com o cliente antes de mexer. Chame em vez de transferir.',
+      parameters: {
+        type: 'object',
+        properties: {
+          telefone: { type: 'string', description: 'telefone com DDD em que a reserva foi feita' },
+          cpf: { type: 'string', description: 'CPF (11 dígitos) de quem fez a reserva' },
         },
       },
     },
@@ -463,11 +491,13 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'cancelar_reserva',
       description:
-        'Cancela uma reserva ativa (pendente/confirmada) do telefone DESTA conversa. Sem data: se houver uma só, cancela; se houver várias, devolve a lista pra você perguntar qual. Chame só depois do cliente confirmar que quer cancelar.',
+        'Cancela uma reserva ativa (pendente/confirmada) do telefone DESTA conversa (ou de outro telefone/CPF vindo de localizar_reserva). Sem data: se houver uma só, cancela; se houver várias, devolve a lista pra você perguntar qual. Chame só depois do cliente confirmar que quer cancelar. Lounge PAGO a ferramenta NÃO cancela — ela manda transferir.',
       parameters: {
         type: 'object',
         properties: {
           data: { type: 'string', description: 'YYYY-MM-DD da reserva a cancelar (omitir se o cliente só tem uma)' },
+          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa' },
+          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF' },
         },
       },
     },
@@ -922,9 +952,20 @@ Como usar, SEM EXCEÇÃO:
             novaHora: /^\d{2}:\d{2}/.test(String(args.nova_hora ?? '')) ? String(args.nova_hora).slice(0, 5) : null,
             novasPessoas: Number(args.novas_pessoas) > 0 ? Math.round(Number(args.novas_pessoas)) : null,
             novaArea: String(args.nova_area ?? '') || null,
+            telefoneReserva: String(args.telefone_reserva ?? '') || null,
+            cpfReserva: String(args.cpf_reserva ?? '') || null,
+          });
+        } else if (tc.function.name === 'localizar_reserva') {
+          resultado = await params.executores.localizarReserva({
+            telefone: String(args.telefone ?? '') || null,
+            cpf: String(args.cpf ?? '') || null,
           });
         } else if (tc.function.name === 'cancelar_reserva') {
-          resultado = await params.executores.cancelarReserva(String(args.data ?? '') || null);
+          resultado = await params.executores.cancelarReserva({
+            data: String(args.data ?? '') || null,
+            telefoneReserva: String(args.telefone_reserva ?? '') || null,
+            cpfReserva: String(args.cpf_reserva ?? '') || null,
+          });
         } else if (tc.function.name === 'cadastrar_fornecedor') {
           resultado = await params.executores.cadastrarFornecedor({
             empresa: String(args.empresa ?? ''),

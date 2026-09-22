@@ -232,9 +232,30 @@ export async function consultarMesa(filialId: string, numeroMesa: string): Promi
 /** Reservas ativas (pendente/confirmada, de hoje em diante) do MESMO telefone
  *  da conversa — a mesma garantia do botão "cancelar" do lembrete: só quem tem
  *  o zap da reserva mexe nela. Usada por cancelar e remarcar. */
-async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
-  const suf = telefone.replace(/\D/g, '').slice(-8);
-  if (suf.length < 8) return null;
+/** Identificador da reserva: o telefone da conversa (padrão) OU um telefone
+ *  / CPF que o cliente informou ("foi pelo contato 79 99858-5306", "no CPF
+ *  da minha esposa"). Caso Ingrid (13/09/2026): a reserva paga estava no
+ *  número do marido e a Nina só procurava pelo número da conversa. */
+export interface IdentReserva {
+  telefone?: string | null;
+  cpf?: string | null;
+}
+
+function identNormalizado(ident: IdentReserva): { cpf: string } | { suf: string } | null {
+  const cpf = (ident.cpf ?? '').replace(/\D/g, '');
+  if (cpf.length === 11) return { cpf };
+  const suf = (ident.telefone ?? '').replace(/\D/g, '').slice(-8);
+  if (suf.length === 8) return { suf };
+  return null;
+}
+
+async function reservasAtivas(filialId: string, ident: IdentReserva) {
+  const chave = identNormalizado(ident);
+  if (!chave) return null;
+  const filtroIdent =
+    'cpf' in chave
+      ? sql`regexp_replace(coalesce(${schema.reserva.clienteCpf}, ''), '\\D', '', 'g') = ${chave.cpf}`
+      : sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${chave.suf}`;
   return db
     .select({
       id: schema.reserva.id,
@@ -246,6 +267,7 @@ async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
       pessoas: schema.reserva.pessoas,
       status: schema.reserva.status,
       nome: schema.reserva.clienteNome,
+      telefone: schema.reserva.clienteTelefone,
       cancelToken: schema.reserva.cancelToken,
       pagamentoStatus: schema.reserva.pagamentoStatus,
       pagamentoId: schema.reserva.pagamentoId,
@@ -256,7 +278,7 @@ async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
     .where(
       and(
         eq(schema.reserva.filialId, filialId),
-        sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
+        filtroIdent,
         sql`${schema.reserva.status} IN ('pendente', 'confirmada')`,
         sql`${schema.reserva.data} >= current_date`,
       ),
@@ -265,17 +287,49 @@ async function reservasAtivasDoTelefone(filialId: string, telefone: string) {
     .limit(5);
 }
 
+function rotuloPago(r: { pagamentoStatus: string | null; pagamentoValor: string | null }): string {
+  return r.pagamentoStatus === 'pago' ? ` — LOUNGE PAGO (R$ ${Number(r.pagamentoValor ?? 0).toFixed(2)}, sem tolerância de horário, a mesa é do cliente o dia todo)` : '';
+}
+
+/** Localiza reserva ativa por OUTRO telefone ou por CPF (a reserva foi feita
+ *  por outra pessoa/número). Devolve dados suficientes pra Nina CONFIRMAR com
+ *  o cliente antes de mexer — sem expor telefone/CPF completo. */
+export async function localizarReservaWhatsApp(p: {
+  filialId: string;
+  telefoneConversa: string;
+  telefone?: string | null;
+  cpf?: string | null;
+}): Promise<string> {
+  const ident: IdentReserva = p.cpf || p.telefone ? { telefone: p.telefone, cpf: p.cpf } : { telefone: p.telefoneConversa };
+  if (!identNormalizado(ident)) return 'Identificador inválido: preciso de um telefone com DDD ou um CPF de 11 dígitos. Peça de novo ao cliente.';
+  const ativas = await reservasAtivas(p.filialId, ident);
+  if (!ativas || ativas.length === 0) {
+    return 'Nenhuma reserva ativa (de hoje em diante) nesse telefone/CPF. Confira o número com o cliente (DDD + 9 dígitos) ou peça o CPF de quem fez a reserva. Se ele garantir que existe e nada aparecer, transfira pra equipe.';
+  }
+  const linhas = ativas.map((r) => {
+    const mesas = r.mesaJuntada ? `mesas ${textoMesas(r.mesa, r.mesaJuntada, ' + ')}` : r.mesa ? `mesa ${r.mesa}` : 'mesa a definir';
+    const primeiro = (r.nome ?? 'cliente').split(' ')[0];
+    return `- ${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area} (${mesas}), ${r.pessoas} pessoa(s), em nome de ${primeiro}${rotuloPago(r)}`;
+  });
+  const comoUsar = p.cpf ? `cpf_reserva=${p.cpf}` : `telefone_reserva=${p.telefone ?? p.telefoneConversa}`;
+  return `ENCONTREI ${ativas.length} reserva(s):\n${linhas.join('\n')}\nCONFIRME com o cliente em UMA frase (primeiro nome + dia + hora) antes de qualquer mudança. Depois, pra alterar ou cancelar, chame remarcar_reserva / cancelar_reserva passando ${comoUsar} (e a data se houver mais de uma).`;
+}
+
 /** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO
- *  telefone da conversa. data desambigua se houver várias.
+ *  telefone da conversa — ou de outro telefone/CPF informado (telefoneReserva
+ *  / cpfReserva, depois de localizar_reserva). data desambigua se houver várias.
  *  ATENÇÃO: pra MUDAR horário/dia/pessoas use remarcarReservaWhatsApp — cancelar
  *  e criar de novo já deixou cliente sem mesa no meio do caminho (15/08). */
 export async function cancelarReservaWhatsApp(p: {
   filialId: string;
   telefone: string;
   data?: string | null;
+  telefoneReserva?: string | null;
+  cpfReserva?: string | null;
 }): Promise<string> {
-  const ativas = await reservasAtivasDoTelefone(p.filialId, p.telefone);
-  if (ativas === null) return 'Telefone da conversa inválido — transfira pra equipe.';
+  const ident: IdentReserva = p.cpfReserva || p.telefoneReserva ? { telefone: p.telefoneReserva, cpf: p.cpfReserva } : { telefone: p.telefone };
+  const ativas = await reservasAtivas(p.filialId, ident);
+  if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
 
   if (ativas.length === 0) {
     return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
@@ -290,6 +344,12 @@ export async function cancelarReservaWhatsApp(p: {
     alvo = daData[0];
   } else if (ativas.length > 1) {
     return `O cliente tem ${ativas.length} reservas ativas: ${ativas.map((r) => `${dataBr(String(r.data))} às ${r.hora} (${r.area}, ${r.pessoas} pessoas)`).join('; ')}. Pergunte QUAL cancelar e chame de novo com a data.`;
+  }
+
+  // Lounge PAGO não é derrubado pela Nina (pedido do Elison 22/09/2026):
+  // cancelar + estorno é decisão da equipe.
+  if (alvo.pagamentoStatus === 'pago') {
+    return `NÃO CANCELEI: essa é uma reserva PAGA (${alvo.area}, ${dataBr(String(alvo.data))} às ${String(alvo.hora).slice(0, 5)}, R$ ${Number(alvo.pagamentoValor ?? 0).toFixed(2)}). Cancelamento de lounge pago é feito pela equipe. Explique a regra de estorno (48h+ integral / 24-48h metade / menos de 24h retido), diga que vai passar pra um colega concluir e chame transferir_para_humano com o resumo. Se o cliente só quer MUDAR o horário ou o dia, use remarcar_reserva — isso você faz.`;
   }
 
   await db
@@ -728,9 +788,13 @@ export async function remarcarReservaWhatsApp(p: {
   novaHora?: string | null;
   novasPessoas?: number | null;
   novaArea?: string | null;
+  /** Reserva feita por OUTRO telefone / CPF (depois de localizar_reserva). */
+  telefoneReserva?: string | null;
+  cpfReserva?: string | null;
 }): Promise<string> {
-  const ativas = await reservasAtivasDoTelefone(p.filialId, p.telefone);
-  if (ativas === null) return 'Telefone da conversa inválido — transfira pra equipe.';
+  const ident: IdentReserva = p.cpfReserva || p.telefoneReserva ? { telefone: p.telefoneReserva, cpf: p.cpfReserva } : { telefone: p.telefone };
+  const ativas = await reservasAtivas(p.filialId, ident);
+  if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
   if (ativas.length === 0) {
     return 'Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
@@ -804,9 +868,10 @@ export async function remarcarReservaWhatsApp(p: {
 
   // Confirmação nova (mesmo cancelToken — o link de cancelar continua valendo).
   const nome = alvo.nome ?? 'Cliente';
+  const telDestino = alvo.telefone && alvo.telefone.replace(/\D/g, '').length >= 10 ? alvo.telefone : p.telefone;
   try {
     const [a, m, d] = data.split('-');
-    await enviarConfirmacaoReserva(p.telefone, {
+    await enviarConfirmacaoReserva(telDestino, {
       nome,
       data: `${d}/${m}/${a}`,
       hora,
@@ -815,7 +880,7 @@ export async function remarcarReservaWhatsApp(p: {
       linkCancelar: alvo.cancelToken ? `https://app.prainhabar.com/reservar/cancelar/${alvo.cancelToken}` : '',
     });
     if (data === hojeBr() && alvo.cancelToken && lembreteReservaConfigurado()) {
-      await enviarLembreteReserva(p.telefone, {
+      await enviarLembreteReserva(telDestino, {
         nome: nome.split(' ')[0] || 'tudo bem',
         data: `${d}/${m}/${a}`,
         hora,
@@ -832,7 +897,11 @@ export async function remarcarReservaWhatsApp(p: {
     : slot.mesa
       ? ` (mesa ${slot.mesa})`
       : '';
-  return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. Confirme ao cliente em uma frase e lembre que a mesa fica guardada por 15 minutos após o horário.`;
+  const fecho =
+    alvo.pagamentoStatus === 'pago'
+      ? 'Confirme ao cliente em uma frase; lounge pago NÃO tem tolerância — a mesa é dele o dia todo.'
+      : 'Confirme ao cliente em uma frase e lembre que a mesa fica guardada por 15 minutos após o horário.';
+  return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. ${fecho}`;
 }
 
 /** LISTA DE ESPERA pela Nina (pedido do Elison 06/09: "estamos recebendo por
