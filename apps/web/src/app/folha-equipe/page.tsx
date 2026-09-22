@@ -95,7 +95,7 @@ export default async function FolhaEquipePage() {
                       ⚙️ Configurar
                     </Link>
                     <Link
-                      href={`/folha-equipe/pessoas?filialId=${f.id}`}
+                      href={`/rh/funcionarios?filialId=${f.id}`}
                       className="rounded-md border border-slate-200 bg-white px-3 py-2 text-center text-xs font-medium text-slate-700 hover:bg-slate-50"
                     >
                       👥 Pessoas

@@ -313,7 +313,7 @@ export function CalculoFechar({
     if (
       !confirm(
         `Calcular diária a R$ ${taxa.toFixed(2)}/h pras pessoas com papel=diarista e horas > 0, e gerar contas a pagar de Diária?\n\n` +
-          'Use isso quando você fechou a folha sem ter mudado o papel pra "diarista" — só Comissão foi gerada, faltou a parte de R$/h × horas. Antes de clicar, garanta que as pessoas certas estão marcadas como diarista em /folha-equipe/pessoas.\n\n' +
+          'Use isso quando você fechou a folha sem ter mudado o papel pra "diarista" — só Comissão foi gerada, faltou a parte de R$/h × horas. Antes de clicar, garanta que as pessoas certas estão marcadas como diarista em /rh/funcionarios (Funcionários).\n\n' +
           'As contas novas vão pra contas a pagar com categoria Diária e descrição "Diária retroativa". Dá pra estornar depois.',
       )
     )
@@ -522,7 +522,7 @@ export function CalculoFechar({
                     {aberta && (
                       <td className="px-2 py-1.5 text-right">
                         <a
-                          href="/folha-equipe/pessoas"
+                          href="/rh/funcionarios"
                           className="text-xs text-slate-500 hover:underline"
                           title="Pra mudar/remover, edita o cadastro da pessoa"
                         >

@@ -61,7 +61,7 @@ const BLOCOS: Bloco[] = [
     cor: 'rose',
     tiles: [
       { icon: '📆', label: 'Folhas semanais', desc: 'Fechamentos por semana', href: '/folha-equipe/folhas', perm: 'folha_equipe.read' },
-      { icon: '🧑‍🍳', label: 'Pessoas', desc: 'Equipe cadastrada', href: '/folha-equipe/pessoas', perm: 'folha_equipe.read' },
+      { icon: '🧑‍🍳', label: 'Pessoas', desc: 'Equipe e acordo da folha', href: '/rh/funcionarios', perm: 'funcionario.read' },
     ],
   },
   {

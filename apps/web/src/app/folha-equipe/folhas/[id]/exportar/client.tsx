@@ -167,7 +167,7 @@ export function ExportarClient({ folhaId, filialNome, labelSemana, linhas }: Pro
             ⚠ {linhas.filter((l) => !l.bancoConta && !l.chavePix).length} pessoa(s)
             sem dados bancários cadastrados — completa em{' '}
             <Link
-              href="/folha-equipe/pessoas"
+              href="/rh/funcionarios"
               className="underline hover:no-underline"
             >
               Pessoas da folha

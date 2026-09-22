@@ -385,7 +385,7 @@ export default async function FolhaDetalhePage(props: {
               Pessoas e horas ({pessoas.length})
             </h2>
             <Link
-              href={`/folha-equipe/pessoas?filialId=${folha.filialId}`}
+              href={`/rh/funcionarios?filialId=${folha.filialId}`}
               className="text-xs text-blue-600 hover:underline"
             >
               Gerenciar pessoas →

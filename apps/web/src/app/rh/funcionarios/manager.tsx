@@ -1,8 +1,28 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
+import { normalizaBusca } from '@/lib/texto';
+
+interface Pagamento {
+  papel: string;
+  /** false = já esteve na folha desta loja, mas saiu (histórico preservado). */
+  ativo: boolean;
+  gerenteModelo: string | null;
+  gerenteValorFixoDia: string | null;
+  diaristaModelo: string;
+  diaristaTaxaHoraOverride: string | null;
+  diaristaValorFixoDia: string | null;
+  bonusFixoSemanal: string | null;
+  bonusPorDia: string | null;
+  chavePix: string | null;
+  bancoNome: string | null;
+  bancoAgencia: string | null;
+  bancoConta: string | null;
+  /** fornecedor tem código no Consumer (dá pra mandar write-back de nome/CPF) */
+  noConsumer: boolean;
+}
 
 interface Funcionario {
   id: string;
@@ -19,24 +39,19 @@ interface Funcionario {
   salarioBase: string | null;
   precisaRevisao: boolean;
   observacao: string | null;
+  /** Lotação principal (pode ser OUTRA loja — a pessoa aparece aqui por circular). */
+  filialPrincipalId: string;
+  filialPrincipalNome: string;
+  /** Fornecedor da pessoa NESTA filial (quem recebe aqui) — null até salvar o pagamento. */
+  fornecedorId: string | null;
   temFornecedor: boolean;
-  /** Já marcado como cliente (consome/faz fiado na casa). */
+  /** Já marcado como cliente (consome/faz fiado) NESTA filial. */
   temCliente: boolean;
-  /** Vínculo de pagamento da folha (fornecedor_folha + PIX do fornecedor). */
-  pagamento: {
-    papel: string;
-    gerenteModelo: string | null;
-    gerenteValorFixoDia: string | null;
-    diaristaModelo: string;
-    diaristaTaxaHoraOverride: string | null;
-    diaristaValorFixoDia: string | null;
-    bonusFixoSemanal: string | null;
-    bonusPorDia: string | null;
-    chavePix: string | null;
-    bancoNome: string | null;
-    bancoAgencia: string | null;
-    bancoConta: string | null;
-  } | null;
+  clienteNome: string | null;
+  /** Acordo da folha NESTA filial (fornecedor_folha + PIX do fornecedor daqui). */
+  pagamento: Pagamento | null;
+  /** Só leitura: papel ativo nas outras lojas (pra ver que é gerente lá e diarista aqui). */
+  acordosOutrasLojas: { filialNome: string; papel: string }[];
   temColaborador: boolean;
   temUsuarioOperacao: boolean;
   /** Filiais ADICIONAIS onde também bate ponto (quem circula entre lojas). */
@@ -44,12 +59,20 @@ interface Funcionario {
 }
 
 interface Props {
+  /** Filial escolhida no seletor — o acordo editado é o DESTA loja. */
   filialId: string;
+  filialNome: string;
   funcionarios: Funcionario[];
   cargos: string[];
-  /** Demais filiais do usuário, pra marcar "também trabalha em". */
-  outrasFiliais: { id: string; nome: string }[];
+  /** Todas as filiais do usuário (pra "também trabalha em" e pra nomear a lotação). */
+  filiais: { id: string; nome: string }[];
 }
+
+const PAPEL_LABEL: Record<string, string> = {
+  funcionario: '👤 Funcionário',
+  diarista: '⏰ Diarista',
+  gerente: '⭐ Gerente',
+};
 
 const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
 // Só sugere o texto (motivoDesligamento continua varchar livre) — não muda
@@ -74,14 +97,49 @@ function fmtData(iso: string | null): string {
   return `${d}/${m}/${y}`;
 }
 
-export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFiliais }: Props) {
+function fmtReais(v: string | null): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(2).replace('.', ',') : String(v ?? '');
+}
+
+/** Uma linha: "⭐ Gerente · R$83,33/dia · 🗓 R$20/dia" — o que a folha vai usar. */
+function resumoAcordo(pg: Pagamento): string {
+  const partes = [PAPEL_LABEL[pg.papel] ?? pg.papel];
+  if (pg.papel === 'gerente') {
+    partes.push(pg.gerenteModelo === 'fixo_por_dia' ? `R$${fmtReais(pg.gerenteValorFixoDia)}/dia` : '1pp do 10%');
+  }
+  if (pg.papel === 'diarista') {
+    if (pg.diaristaModelo === 'fixo_por_dia' && pg.diaristaValorFixoDia) partes.push(`R$${fmtReais(pg.diaristaValorFixoDia)}/dia`);
+    else if (pg.diaristaTaxaHoraOverride) partes.push(`R$${fmtReais(pg.diaristaTaxaHoraOverride)}/h`);
+    else partes.push('R$/h padrão');
+  }
+  if (pg.bonusPorDia && Number(pg.bonusPorDia) > 0) partes.push(`🗓 R$${fmtReais(pg.bonusPorDia)}/dia`);
+  if (pg.bonusFixoSemanal && Number(pg.bonusFixoSemanal) > 0) partes.push(`💰 R$${fmtReais(pg.bonusFixoSemanal)}/sem`);
+  return partes.join(' · ');
+}
+
+export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos, filiais }: Props) {
   const router = useRouter();
   const [criando, setCriando] = useState(false);
   const [editando, setEditando] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
+  // Busca: a filial tem ~60 pessoas e rolar a tabela inteira pra achar alguém
+  // (ex: o gerente que também trabalha na outra loja) é um saco.
+  const [busca, setBusca] = useState('');
 
-  const ativos = funcionarios.filter((f) => f.ativo);
-  const desligados = funcionarios.filter((f) => !f.ativo);
+  const termo = normalizaBusca(busca);
+  const termoDigitos = termo.replace(/\D/g, '');
+  const visiveis = termo
+    ? funcionarios.filter(
+        (f) =>
+          normalizaBusca(f.nome).includes(termo) ||
+          (termoDigitos.length > 0 && (f.cpf ?? '').includes(termoDigitos)),
+      )
+    : funcionarios;
+  const ativos = visiveis.filter((f) => f.ativo);
+  const desligados = visiveis.filter((f) => !f.ativo);
+  const naFolha = funcionarios.filter((f) => f.ativo && f.pagamento?.ativo).length;
+  const circulam = funcionarios.filter((f) => f.ativo && f.filialPrincipalId !== filialId).length;
 
   return (
     <div className="space-y-6">
@@ -98,35 +156,55 @@ export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFili
       )}
 
       <section className="rounded-xl border border-slate-200 bg-white">
-        <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-          <h2 className="text-base font-semibold text-slate-900">Ativos ({ativos.length})</h2>
-          <button
-            type="button"
-            onClick={() => setCriando(true)}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
-          >
-            ➕ Novo funcionário
-          </button>
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Ativos ({ativos.length})
+            </h2>
+            <p className="text-xs text-slate-500">
+              {naFolha} na folha semanal de {filialNome}
+              {circulam > 0 ? ` · ${circulam} com lotação em outra loja que também trabalha aqui` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="search"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="🔎 Buscar por nome ou CPF"
+              className="w-56 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setCriando(true)}
+              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              ➕ Novo funcionário
+            </button>
+          </div>
         </header>
 
         {criando && (
-          <FuncionarioForm
-            filialId={filialId}
-            cargos={cargos}
-            outrasFiliais={outrasFiliais}
-            onCancel={() => setCriando(false)}
-            onSaved={(texto) => {
-              setCriando(false);
-              setMsg({ tipo: 'ok', texto });
-              router.refresh();
-            }}
-            onError={(texto) => setMsg({ tipo: 'erro', texto })}
-          />
+          <div className="border-b border-slate-200 p-4">
+            <FuncionarioForm
+              filialId={filialId}
+              filialNome={filialNome}
+              cargos={cargos}
+              filiais={filiais}
+              onCancel={() => setCriando(false)}
+              onSaved={(texto) => {
+                setCriando(false);
+                setMsg({ tipo: 'ok', texto });
+                router.refresh();
+              }}
+              onError={(texto) => setMsg({ tipo: 'erro', texto })}
+            />
+          </div>
         )}
 
         {ativos.length === 0 && !criando ? (
           <p className="px-5 py-8 text-center text-sm text-slate-500">
-            Nenhum funcionário ativo ainda. Clique em &quot;Novo funcionário&quot;.
+            {termo ? 'Ninguém com esse nome/CPF.' : 'Nenhum funcionário ativo ainda. Clique em "Novo funcionário".'}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -136,8 +214,8 @@ export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFili
                   <th className="px-4 py-2 text-left">Nome</th>
                   <th className="px-4 py-2 text-left">CPF</th>
                   <th className="px-4 py-2 text-left">Cargo</th>
-                  <th className="px-4 py-2 text-left">Setor</th>
-                  <th className="px-4 py-2 text-left">Admissão</th>
+                  <th className="px-4 py-2 text-left">Folha em {filialNome}</th>
+                  <th className="px-4 py-2 text-left">Fiado</th>
                   <th className="px-4 py-2 text-left">Vínculos</th>
                   <th className="px-4 py-2" />
                 </tr>
@@ -147,8 +225,10 @@ export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFili
                   <FuncionarioRow
                     key={f.id}
                     f={f}
+                    filialId={filialId}
+                    filialNome={filialNome}
                     cargos={cargos}
-                    outrasFiliais={outrasFiliais}
+                    filiais={filiais}
                     editando={editando === f.id}
                     onEditar={() => setEditando(editando === f.id ? null : f.id)}
                     onSaved={(texto) => {
@@ -184,12 +264,15 @@ export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFili
   );
 }
 
-function VinculoBadges({ f }: { f: Funcionario }) {
+function VinculoBadges({ f, filialId }: { f: Funcionario; filialId: string }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {f.temFornecedor && (
-        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200">
-          Folha
+      {f.filialPrincipalId !== filialId && (
+        <span
+          className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 ring-1 ring-indigo-200"
+          title="Lotação principal em outra loja — aparece aqui porque também bate ponto aqui"
+        >
+          🏠 {f.filialPrincipalNome}
         </span>
       )}
       {f.temColaborador && (
@@ -221,31 +304,60 @@ function VinculoBadges({ f }: { f: Funcionario }) {
 
 function FuncionarioRow({
   f,
+  filialId,
+  filialNome,
   cargos,
-  outrasFiliais,
+  filiais,
   editando,
   onEditar,
   onSaved,
   onError,
 }: {
   f: Funcionario;
+  filialId: string;
+  filialNome: string;
   cargos: string[];
-  outrasFiliais: { id: string; nome: string }[];
+  filiais: { id: string; nome: string }[];
   editando: boolean;
   onEditar: () => void;
   onSaved: (texto: string) => void;
   onError: (texto: string) => void;
 }) {
+  const pg = f.pagamento;
   return (
     <>
       <tr className={`hover:bg-slate-50 ${f.precisaRevisao ? 'bg-amber-50/50' : ''}`}>
-        <td className="px-4 py-2 font-medium text-slate-900">{f.nome}</td>
+        <td className="px-4 py-2 font-medium text-slate-900">
+          {f.nome}
+          {f.setor && <span className="ml-1 text-[10px] font-normal text-slate-400">{f.setor}</span>}
+        </td>
         <td className="px-4 py-2 text-slate-600">{fmtCpf(f.cpf)}</td>
         <td className="px-4 py-2 text-slate-600">{f.cargo ?? '—'}</td>
-        <td className="px-4 py-2 text-slate-600">{f.setor ?? '—'}</td>
-        <td className="px-4 py-2 text-slate-600">{fmtData(f.dataAdmissao)}</td>
+        <td className="px-4 py-2 text-xs">
+          {pg && pg.ativo ? (
+            <span className="text-slate-700">{resumoAcordo(pg)}</span>
+          ) : pg ? (
+            <span className="text-slate-400" title="Já esteve na folha desta loja; hoje está fora">fora da folha</span>
+          ) : (
+            <span className="text-slate-400">—</span>
+          )}
+          {f.acordosOutrasLojas.length > 0 && (
+            <span className="block text-[10px] text-slate-400" title="Acordo nas outras lojas (edita lá)">
+              {f.acordosOutrasLojas.map((a) => `${a.filialNome}: ${PAPEL_LABEL[a.papel] ?? a.papel}`).join(' · ')}
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-2 text-xs">
+          {f.temCliente ? (
+            <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-emerald-700" title="Cliente vinculado — o fiado dele desconta na folha">
+              ✓ {f.clienteNome ?? 'vinculado'}
+            </span>
+          ) : (
+            <span className="text-slate-400">—</span>
+          )}
+        </td>
         <td className="px-4 py-2">
-          <VinculoBadges f={f} />
+          <VinculoBadges f={f} filialId={filialId} />
         </td>
         <td className="px-4 py-2 text-right">
           <button
@@ -261,10 +373,11 @@ function FuncionarioRow({
         <tr>
           <td colSpan={7} className="bg-slate-50 px-4 py-4">
             <FuncionarioForm
-              filialId=""
+              filialId={filialId}
+              filialNome={filialNome}
               funcionario={f}
               cargos={cargos}
-              outrasFiliais={outrasFiliais}
+              filiais={filiais}
               onCancel={onEditar}
               onSaved={onSaved}
               onError={onError}
@@ -278,22 +391,29 @@ function FuncionarioRow({
 
 function FuncionarioForm({
   filialId,
+  filialNome,
   funcionario,
   cargos,
-  outrasFiliais,
+  filiais,
   onCancel,
   onSaved,
   onError,
 }: {
   filialId: string;
+  filialNome: string;
   funcionario?: Funcionario;
   cargos: string[];
-  outrasFiliais: { id: string; nome: string }[];
+  filiais: { id: string; nome: string }[];
   onCancel: () => void;
   onSaved: (texto: string) => void;
   onError: (texto: string) => void;
 }) {
   const editar = !!funcionario;
+  // Lotação principal: no cadastro novo é a filial da tela; na edição pode ser
+  // outra loja (a pessoa circula). As "extras" são todas as outras filiais.
+  const filialPrincipalId = funcionario?.filialPrincipalId ?? filialId;
+  const outrasFiliais = filiais.filter((f) => f.id !== filialPrincipalId);
+  const [vinculandoCliente, setVinculandoCliente] = useState(false);
   const [nome, setNome] = useState(funcionario?.nome ?? '');
   const [cpf, setCpf] = useState(funcionario?.cpf ?? '');
   const [telefone, setTelefone] = useState(funcionario?.telefone ?? '');
@@ -363,9 +483,12 @@ function FuncionarioForm({
         onError(json.error ?? 'Erro ao salvar');
         return;
       }
-      // Pagamento (folha): cria/atualiza o vínculo — o backend cria o
-      // fornecedor sozinho se a pessoa ainda não tiver.
-      if (papel) {
+      // Pagamento (folha) DESTA loja: cria/atualiza o vínculo — o backend
+      // acha/cria o fornecedor da pessoa nesta filial (por CPF) sozinho.
+      // "fora da folha" com acordo existente = desativa o acordo daqui
+      // (histórico fica); sem acordo = não manda nada.
+      const saindoDaFolha = !papel && !!pg && pg.ativo;
+      if (papel || saindoDaFolha) {
         const idFunc = editar ? funcionario.id : json.funcionario?.id;
         if (idFunc) {
           const num = (t: string) => {
@@ -376,7 +499,9 @@ function FuncionarioForm({
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              papel,
+              filialId,
+              papel: papel || pg!.papel,
+              ativo: !!papel,
               gerenteModelo: papel === 'gerente' ? gerenteModelo : null,
               gerenteValorFixoDia:
                 papel === 'gerente' && gerenteModelo === 'fixo_por_dia' ? num(gerenteValorDia) : null,
@@ -554,8 +679,17 @@ function FuncionarioForm({
         </div>
 
         <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          📅 Folha semanal — diárias e rateio do 10%
+          📅 Folha semanal — acordo nesta loja ({filialNome})
         </p>
+        {editar && funcionario.acordosOutrasLojas.length > 0 && (
+          <p className="mt-1 text-[11px] text-slate-500">
+            Nas outras lojas:{' '}
+            {funcionario.acordosOutrasLojas
+              .map((a) => `${a.filialNome} = ${PAPEL_LABEL[a.papel] ?? a.papel}`)
+              .join(' · ')}
+            . Cada loja tem o seu acordo — pra mudar o de lá, troque a filial no menu.
+          </p>
+        )}
         <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <label className="text-xs text-slate-500">
             Como recebe
@@ -564,7 +698,9 @@ function FuncionarioForm({
               onChange={(e) => setPapel(e.target.value)}
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
             >
-              <option value="">— fora da folha semanal —</option>
+              <option value="">
+              {pg && pg.ativo ? '— sair da folha semanal desta loja —' : '— fora da folha semanal —'}
+            </option>
               <option value="funcionario">Funcionário (rateio do 10%)</option>
               <option value="diarista">Diarista / Freela</option>
               <option value="gerente">Gerente</option>
@@ -727,11 +863,35 @@ function FuncionarioForm({
             <b>Também é cliente</b> — consome na casa / faz fiado.
             <span className="block text-[11px] text-slate-500">
               {funcionario?.temCliente
-                ? 'Já cadastrado como cliente — o fiado dele aparece na folha e é descontado.'
+                ? `Vinculado a "${funcionario.clienteNome ?? 'cliente'}" — o fiado dele aparece na folha e é descontado.`
                 : 'Marque só se essa pessoa consome aqui. O cadastro é o mesmo — não duplica quem já é cliente.'}
             </span>
+            {editar && funcionario.fornecedorId && (
+              <button
+                type="button"
+                onClick={() => setVinculandoCliente(true)}
+                className="mt-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+              >
+                {funcionario.temCliente ? '🔗 Trocar / desvincular cliente' : '🔗 Vincular a um cliente que já existe no PDV'}
+              </button>
+            )}
           </span>
         </label>
+        {vinculandoCliente && editar && funcionario.fornecedorId && (
+          <VincularClienteModal
+            filialId={filialId}
+            fornecedorId={funcionario.fornecedorId}
+            nome={funcionario.nome}
+            cpf={funcionario.cpf}
+            clienteAtual={funcionario.temCliente ? funcionario.clienteNome ?? '(cliente)' : null}
+            onClose={() => setVinculandoCliente(false)}
+            onSaved={(texto) => {
+              setVinculandoCliente(false);
+              onSaved(texto);
+            }}
+            onError={onError}
+          />
+        )}
 
         {!papel && (
           <p className="mt-2 text-[11px] text-slate-500">
@@ -745,6 +905,9 @@ function FuncionarioForm({
         <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
           <p className="text-xs font-medium text-slate-600">
             🔁 Também bate ponto em outra loja (quem circula entre lojas)
+            <span className="ml-1 font-normal text-slate-400">
+              · lotação principal: {funcionario.filialPrincipalNome}
+            </span>
           </p>
           <div className="mt-2 flex flex-wrap gap-3">
             {outrasFiliais.map((f) => (
@@ -759,6 +922,10 @@ function FuncionarioForm({
               </label>
             ))}
           </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Marcando, a pessoa passa a aparecer no ponto e no RH da outra loja — e lá você define o acordo
+            da folha dela (pode ser diferente daqui). Precisa de CPF.
+          </p>
         </div>
       )}
 
@@ -834,6 +1001,202 @@ function FuncionarioForm({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// --------- Modal: vincular cliente (fiado) ---------
+// Portado de /folha-equipe/pessoas (tela descontinuada — tudo vive aqui agora).
+// Vincula o FORNECEDOR desta loja ao CLIENTE desta loja; o fiado do cliente
+// entra como desconto na folha semanal.
+interface ClienteSearchResult {
+  id: string;
+  nome: string | null;
+  cpf: string | null;
+  codigoExterno: number | null;
+}
+
+function VincularClienteModal({
+  filialId,
+  fornecedorId,
+  nome,
+  cpf,
+  clienteAtual,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  filialId: string;
+  fornecedorId: string;
+  nome: string;
+  cpf: string | null;
+  clienteAtual: string | null;
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const buscaInicial = cpf ? cpf : nome.split(' ').slice(0, 2).join(' ');
+  const [busca, setBusca] = useState(buscaInicial);
+  const [resultados, setResultados] = useState<ClienteSearchResult[]>([]);
+  const [buscando, setBuscando] = useState(false);
+  const [selecionado, setSelecionado] = useState<string | null>(null);
+
+  async function buscar(q: string) {
+    if (q.trim().length < 2) {
+      setResultados([]);
+      return;
+    }
+    setBuscando(true);
+    try {
+      const r = await fetch(
+        `/api/folha-equipe/pessoas/buscar-cliente?filialId=${filialId}&q=${encodeURIComponent(q)}`,
+      );
+      if (r.ok) setResultados(await r.json());
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  useEffect(() => {
+    buscar(buscaInicial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function patchCliente(clienteId: string | null, msgOk: string) {
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/cliente', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fornecedorId, clienteId }),
+      });
+      if (r.ok) onSaved(msgOk);
+      else onError(await r.text());
+    });
+  }
+
+  function criarCliente() {
+    startTransition(async () => {
+      const r = await fetch('/api/folha-equipe/pessoas/criar-cliente', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fornecedorId, nome, cpf }),
+      });
+      if (r.ok) onSaved(`Cliente criado e vinculado a ${nome} ✓`);
+      else onError(await r.text());
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
+        <header className="border-b border-slate-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-slate-900">Vincular cliente — {nome}</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Busque o cliente correspondente no PDV desta loja. CPF: {fmtCpf(cpf)}
+          </p>
+          {clienteAtual && (
+            <div className="mt-2 flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs">
+              <span className="text-emerald-800">
+                Atualmente vinculado a: <strong>{clienteAtual}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm(`Desvincular cliente de ${nome}?`)) patchCliente(null, 'Cliente desvinculado ✓');
+                }}
+                disabled={pending}
+                className="rounded border border-rose-300 bg-white px-2 py-0.5 text-rose-700 hover:bg-rose-50"
+              >
+                ✗ Desvincular
+              </button>
+            </div>
+          )}
+        </header>
+
+        <div className="flex-1 overflow-auto px-6 py-4">
+          <input
+            type="text"
+            placeholder="Nome ou CPF do cliente..."
+            value={busca}
+            onChange={(e) => {
+              setBusca(e.target.value);
+              buscar(e.target.value);
+            }}
+            autoFocus
+            className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm"
+          />
+
+          {buscando && <p className="text-xs text-slate-500">Buscando...</p>}
+
+          {!buscando && resultados.length === 0 && busca.length >= 2 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm">
+              <p className="mb-2 font-semibold text-amber-800">Nenhum cliente encontrado.</p>
+              <p className="text-xs text-amber-700">
+                Pode ser que o cliente exista no Consumer mas o agente ainda não tenha sincronizado.
+              </p>
+              <button
+                type="button"
+                onClick={criarCliente}
+                disabled={pending}
+                className="mt-3 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-slate-400"
+              >
+                ➕ Criar cliente &quot;{nome}&quot; com CPF {fmtCpf(cpf)} e vincular
+              </button>
+              <p className="mt-2 text-xs text-amber-700">
+                Nasce na nuvem e a loja recebe o comando pra criar no Consumer; quando o agente sincronizar, casa por CPF.
+              </p>
+            </div>
+          )}
+
+          {resultados.length > 0 && (
+            <ul className="divide-y divide-slate-100 rounded-md border border-slate-200">
+              {resultados.map((c) => {
+                const sel = selecionado === c.id;
+                const cpfMatch = !!c.cpf && c.cpf === cpf;
+                return (
+                  <li
+                    key={c.id}
+                    onClick={() => setSelecionado(c.id)}
+                    className={`flex cursor-pointer items-center gap-3 px-4 py-3 ${sel ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                  >
+                    <input type="radio" checked={sel} readOnly className="h-4 w-4" />
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-slate-900">{c.nome ?? '(sem nome)'}</div>
+                      <div className="text-xs text-slate-500">
+                        CPF {fmtCpf(c.cpf)}
+                        {c.codigoExterno != null && c.codigoExterno > 0 && ` · cód ${c.codigoExterno}`}
+                        {cpfMatch && <span className="ml-2 font-medium text-emerald-600">✓ CPF bate</span>}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-slate-200 px-6 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => selecionado && patchCliente(selecionado, 'Cliente vinculado ✓')}
+            disabled={pending || !selecionado}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-slate-400"
+          >
+            {pending ? 'Vinculando...' : 'Vincular'}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
