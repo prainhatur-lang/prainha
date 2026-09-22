@@ -486,6 +486,15 @@ export function CalculoFechar({
           const pessoasComBonus = pessoas.filter(
             (p) => p.bonusFixoSemanal != null && p.bonusFixoSemanal > 0,
           );
+          // Folha FECHADA: o bônus do cadastro só valeu se virou gratificação
+          // no snapshot (conta_pagar). Bônus definido no cadastro DEPOIS do
+          // fechamento aparece aqui só como aviso — não entrou no líquido.
+          // (caso Paulo/Tabuará 07–13/09/2026: a linha verde enganava.)
+          const bonusNoSnapshot = (fornecedorId: string) =>
+            aberta ||
+            (resultado?.lancamentos ?? []).some(
+              (l) => l.fornecedorId === fornecedorId && l.tipo === 'gratificacao' && l.valorBruto > 0,
+            );
           const totalLinhas = ajustes.length + pessoasComBonus.length;
           if (totalLinhas === 0) {
             return <p className="text-xs text-slate-500">Nenhum ajuste lançado.</p>;
@@ -504,19 +513,29 @@ export function CalculoFechar({
               </thead>
               <tbody>
                 {/* Bônus fixo do cadastro (read-only — vem do cadastro da pessoa) */}
-                {pessoasComBonus.map((p) => (
-                  <tr key={`bonus-${p.fornecedorId}`} className="border-t border-slate-100 bg-emerald-50/40">
+                {pessoasComBonus.map((p) => {
+                  const entrou = bonusNoSnapshot(p.fornecedorId);
+                  return (
+                  <tr
+                    key={`bonus-${p.fornecedorId}`}
+                    className={`border-t border-slate-100 ${entrou ? 'bg-emerald-50/40' : 'bg-red-50/60'}`}
+                  >
                     <td className="px-2 py-1.5">{p.nome}</td>
                     <td className="px-2 py-1.5">
-                      <span className="text-emerald-700">↑ acréscimo</span>
+                      <span className={entrou ? 'text-emerald-700' : 'text-red-600 line-through'}>↑ acréscimo</span>
                     </td>
-                    <td className="px-2 py-1.5 text-right font-mono">
+                    <td className={`px-2 py-1.5 text-right font-mono ${entrou ? '' : 'text-red-600 line-through'}`}>
                       {brl(Number(p.bonusFixoSemanal))}
                     </td>
                     <td className="px-2 py-1.5 text-xs text-slate-600">
                       Bônus fixo semanal
+                      {!entrou && (
+                        <span className="ml-1 font-medium text-red-600">
+                          — NÃO entrou neste fechamento (bônus definido no cadastro depois de fechar; lance como ajuste na folha seguinte)
+                        </span>
+                      )}
                     </td>
-                    <td className="px-2 py-1.5 text-xs text-emerald-700">
+                    <td className={`px-2 py-1.5 text-xs ${entrou ? 'text-emerald-700' : 'text-red-600'}`}>
                       💰 cadastro
                     </td>
                     {aberta && (
@@ -531,7 +550,8 @@ export function CalculoFechar({
                       </td>
                     )}
                   </tr>
-                ))}
+                  );
+                })}
                 {/* Ajustes manuais ou fiado_auto da folha */}
                 {ajustes.map((a) => {
                   const p = pessoas.find((x) => x.fornecedorId === a.fornecedorId);
