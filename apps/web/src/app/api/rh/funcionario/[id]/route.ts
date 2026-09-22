@@ -34,17 +34,10 @@ async function carregar(id: string, userId: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return { status: 400 as const, error: 'id invalido' };
   const [fn] = await db.select().from(schema.funcionario).where(eq(schema.funcionario.id, id)).limit(1);
   if (!fn) return { status: 404 as const, error: 'funcionario nao encontrado' };
-  // Acesso pela lotação principal OU por uma filial extra (o gerente da
-  // outra casa edita quem circula até lá).
-  const extras = await db
-    .select({ filialId: schema.funcionarioFilialExtra.filialId })
-    .from(schema.funcionarioFilialExtra)
-    .where(eq(schema.funcionarioFilialExtra.funcionarioId, id));
-  const filiaisDaPessoa = [fn.filialId, ...extras.map((e) => e.filialId)];
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
-    .where(and(eq(schema.usuarioFilial.usuarioId, userId), inArray(schema.usuarioFilial.filialId, filiaisDaPessoa)))
+    .where(and(eq(schema.usuarioFilial.usuarioId, userId), eq(schema.usuarioFilial.filialId, fn.filialId)))
     .limit(1);
   if (!link) return { status: 403 as const, error: 'sem acesso' };
   return { status: 200 as const, fn };
@@ -115,8 +108,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
             .insert(schema.funcionarioFilialExtra)
             .values(filiaisExtras.map((filialId) => ({ funcionarioId: id, filialId })));
           // Desmarcar não desativa o vínculo de folha da outra casa: pode
-          // haver histórico e ajuste lançado lá. Baixa manual: em /rh/funcionarios,
-          // na outra loja, "fora da folha semanal".
+          // haver histórico e ajuste lançado lá. Baixa manual em /folha-equipe/pessoas.
           vinculos = await garantirVinculoFolhaNasFiliais(tx, id, filiaisExtras);
         }
       }

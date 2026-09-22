@@ -109,35 +109,15 @@ export async function POST(request: Request) {
   if (batidas.length === 0) return NextResponse.json({ ok: true, recebidos: 0, ultimo_id: null });
 
   const { db, schema } = await import('@concilia/db');
-  const { and, eq, exists, inArray, or, sql } = await import('drizzle-orm');
+  const { and, eq, inArray, sql } = await import('drizzle-orm');
   const { projetarPontoEmFolhaHoras } = await import('@/lib/rh/projetar-horas');
 
   // Descarta batidas de funcionario_id que não pertence a esta filial — loga, não derruba o lote.
-  // "Pertence" = mesma regra do roster do GET: lotação principal AQUI ou vínculo
-  // extra (quem circula entre lojas bate ponto na outra casa e tem acordo lá).
   const idsUnicos = [...new Set(batidas.map((b) => b.funcionario_id))];
   const pertencem = await db
     .select({ id: schema.funcionario.id })
     .from(schema.funcionario)
-    .where(
-      and(
-        inArray(schema.funcionario.id, idsUnicos),
-        or(
-          eq(schema.funcionario.filialId, f),
-          exists(
-            db
-              .select({ n: schema.funcionarioFilialExtra.id })
-              .from(schema.funcionarioFilialExtra)
-              .where(
-                and(
-                  eq(schema.funcionarioFilialExtra.funcionarioId, schema.funcionario.id),
-                  eq(schema.funcionarioFilialExtra.filialId, f),
-                ),
-              ),
-          ),
-        ),
-      ),
-    );
+    .where(and(eq(schema.funcionario.filialId, f), inArray(schema.funcionario.id, idsUnicos)));
   const idsValidos = new Set(pertencem.map((p) => p.id));
 
   const validas = batidas.filter(
@@ -145,7 +125,7 @@ export async function POST(request: Request) {
   );
   const rejeitadas = batidas.length - validas.length;
   if (rejeitadas > 0) {
-    console.error(`[loja/ponto] ${rejeitadas} batida(s) descartada(s) — funcionario_id sem lotação (principal ou extra) na filial ${f}`);
+    console.error(`[loja/ponto] ${rejeitadas} batida(s) descartada(s) — funcionario_id fora da filial ${f}`);
   }
 
   if (validas.length > 0) {

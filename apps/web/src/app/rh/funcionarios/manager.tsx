@@ -1,28 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
-import { normalizaBusca } from '@/lib/texto';
-
-interface Pagamento {
-  papel: string;
-  /** false = já esteve na folha desta loja, mas saiu (histórico preservado). */
-  ativo: boolean;
-  gerenteModelo: string | null;
-  gerenteValorFixoDia: string | null;
-  diaristaModelo: string;
-  diaristaTaxaHoraOverride: string | null;
-  diaristaValorFixoDia: string | null;
-  bonusFixoSemanal: string | null;
-  bonusPorDia: string | null;
-  chavePix: string | null;
-  bancoNome: string | null;
-  bancoAgencia: string | null;
-  bancoConta: string | null;
-  /** fornecedor tem código no Consumer (dá pra mandar write-back de nome/CPF) */
-  noConsumer: boolean;
-}
 
 interface Funcionario {
   id: string;
@@ -39,19 +19,24 @@ interface Funcionario {
   salarioBase: string | null;
   precisaRevisao: boolean;
   observacao: string | null;
-  /** Lotação principal (pode ser OUTRA loja — a pessoa aparece aqui por circular). */
-  filialPrincipalId: string;
-  filialPrincipalNome: string;
-  /** Fornecedor da pessoa NESTA filial (quem recebe aqui) — null até salvar o pagamento. */
-  fornecedorId: string | null;
   temFornecedor: boolean;
-  /** Já marcado como cliente (consome/faz fiado) NESTA filial. */
+  /** Já marcado como cliente (consome/faz fiado na casa). */
   temCliente: boolean;
-  clienteNome: string | null;
-  /** Acordo da folha NESTA filial (fornecedor_folha + PIX do fornecedor daqui). */
-  pagamento: Pagamento | null;
-  /** Só leitura: papel ativo nas outras lojas (pra ver que é gerente lá e diarista aqui). */
-  acordosOutrasLojas: { filialNome: string; papel: string }[];
+  /** Vínculo de pagamento da folha (fornecedor_folha + PIX do fornecedor). */
+  pagamento: {
+    papel: string;
+    gerenteModelo: string | null;
+    gerenteValorFixoDia: string | null;
+    diaristaModelo: string;
+    diaristaTaxaHoraOverride: string | null;
+    diaristaValorFixoDia: string | null;
+    bonusFixoSemanal: string | null;
+    bonusPorDia: string | null;
+    chavePix: string | null;
+    bancoNome: string | null;
+    bancoAgencia: string | null;
+    bancoConta: string | null;
+  } | null;
   temColaborador: boolean;
   temUsuarioOperacao: boolean;
   /** Filiais ADICIONAIS onde também bate ponto (quem circula entre lojas). */
@@ -59,20 +44,12 @@ interface Funcionario {
 }
 
 interface Props {
-  /** Filial escolhida no seletor — o acordo editado é o DESTA loja. */
   filialId: string;
-  filialNome: string;
   funcionarios: Funcionario[];
   cargos: string[];
-  /** Todas as filiais do usuário (pra "também trabalha em" e pra nomear a lotação). */
-  filiais: { id: string; nome: string }[];
+  /** Demais filiais do usuário, pra marcar "também trabalha em". */
+  outrasFiliais: { id: string; nome: string }[];
 }
-
-const PAPEL_LABEL: Record<string, string> = {
-  funcionario: '👤 Funcionário',
-  diarista: '⏰ Diarista',
-  gerente: '⭐ Gerente',
-};
 
 const SETORES = ['SALAO', 'COZINHA', 'PRODUCAO', 'ADM', 'BAR', 'LIMPEZA', 'SEGURANCA', 'LOGISTICA'];
 // Só sugere o texto (motivoDesligamento continua varchar livre) — não muda
@@ -97,49 +74,14 @@ function fmtData(iso: string | null): string {
   return `${d}/${m}/${y}`;
 }
 
-function fmtReais(v: string | null): string {
-  const n = Number(v);
-  return Number.isFinite(n) ? n.toFixed(2).replace('.', ',') : String(v ?? '');
-}
-
-/** Uma linha: "⭐ Gerente · R$83,33/dia · 🗓 R$20/dia" — o que a folha vai usar. */
-function resumoAcordo(pg: Pagamento): string {
-  const partes = [PAPEL_LABEL[pg.papel] ?? pg.papel];
-  if (pg.papel === 'gerente') {
-    partes.push(pg.gerenteModelo === 'fixo_por_dia' ? `R$${fmtReais(pg.gerenteValorFixoDia)}/dia` : '1pp do 10%');
-  }
-  if (pg.papel === 'diarista') {
-    if (pg.diaristaModelo === 'fixo_por_dia' && pg.diaristaValorFixoDia) partes.push(`R$${fmtReais(pg.diaristaValorFixoDia)}/dia`);
-    else if (pg.diaristaTaxaHoraOverride) partes.push(`R$${fmtReais(pg.diaristaTaxaHoraOverride)}/h`);
-    else partes.push('R$/h padrão');
-  }
-  if (pg.bonusPorDia && Number(pg.bonusPorDia) > 0) partes.push(`🗓 R$${fmtReais(pg.bonusPorDia)}/dia`);
-  if (pg.bonusFixoSemanal && Number(pg.bonusFixoSemanal) > 0) partes.push(`💰 R$${fmtReais(pg.bonusFixoSemanal)}/sem`);
-  return partes.join(' · ');
-}
-
-export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos, filiais }: Props) {
+export function FuncionariosManager({ filialId, funcionarios, cargos, outrasFiliais }: Props) {
   const router = useRouter();
   const [criando, setCriando] = useState(false);
   const [editando, setEditando] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
-  // Busca: a filial tem ~60 pessoas e rolar a tabela inteira pra achar alguém
-  // (ex: o gerente que também trabalha na outra loja) é um saco.
-  const [busca, setBusca] = useState('');
 
-  const termo = normalizaBusca(busca);
-  const termoDigitos = termo.replace(/\D/g, '');
-  const visiveis = termo
-    ? funcionarios.filter(
-        (f) =>
-          normalizaBusca(f.nome).includes(termo) ||
-          (termoDigitos.length > 0 && (f.cpf ?? '').includes(termoDigitos)),
-      )
-    : funcionarios;
-  const ativos = visiveis.filter((f) => f.ativo);
-  const desligados = visiveis.filter((f) => !f.ativo);
-  const naFolha = funcionarios.filter((f) => f.ativo && f.pagamento?.ativo).length;
-  const circulam = funcionarios.filter((f) => f.ativo && f.filialPrincipalId !== filialId).length;
+  const ativos = funcionarios.filter((f) => f.ativo);
+  const desligados = funcionarios.filter((f) => !f.ativo);
 
   return (
     <div className="space-y-6">
@@ -156,55 +98,35 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
       )}
 
       <section className="rounded-xl border border-slate-200 bg-white">
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              Ativos ({ativos.length})
-            </h2>
-            <p className="text-xs text-slate-500">
-              {naFolha} na folha semanal de {filialNome}
-              {circulam > 0 ? ` · ${circulam} com lotação em outra loja que também trabalha aqui` : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="search"
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder="🔎 Buscar por nome ou CPF"
-              className="w-56 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => setCriando(true)}
-              className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              ➕ Novo funcionário
-            </button>
-          </div>
+        <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+          <h2 className="text-base font-semibold text-slate-900">Ativos ({ativos.length})</h2>
+          <button
+            type="button"
+            onClick={() => setCriando(true)}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            ➕ Novo funcionário
+          </button>
         </header>
 
         {criando && (
-          <div className="border-b border-slate-200 p-4">
-            <FuncionarioForm
-              filialId={filialId}
-              filialNome={filialNome}
-              cargos={cargos}
-              filiais={filiais}
-              onCancel={() => setCriando(false)}
-              onSaved={(texto) => {
-                setCriando(false);
-                setMsg({ tipo: 'ok', texto });
-                router.refresh();
-              }}
-              onError={(texto) => setMsg({ tipo: 'erro', texto })}
-            />
-          </div>
+          <FuncionarioForm
+            filialId={filialId}
+            cargos={cargos}
+            outrasFiliais={outrasFiliais}
+            onCancel={() => setCriando(false)}
+            onSaved={(texto) => {
+              setCriando(false);
+              setMsg({ tipo: 'ok', texto });
+              router.refresh();
+            }}
+            onError={(texto) => setMsg({ tipo: 'erro', texto })}
+          />
         )}
 
         {ativos.length === 0 && !criando ? (
           <p className="px-5 py-8 text-center text-sm text-slate-500">
-            {termo ? 'Ninguém com esse nome/CPF.' : 'Nenhum funcionário ativo ainda. Clique em "Novo funcionário".'}
+            Nenhum funcionário ativo ainda. Clique em &quot;Novo funcionário&quot;.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -214,8 +136,8 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
                   <th className="px-4 py-2 text-left">Nome</th>
                   <th className="px-4 py-2 text-left">CPF</th>
                   <th className="px-4 py-2 text-left">Cargo</th>
-                  <th className="px-4 py-2 text-left">Folha em {filialNome}</th>
-                  <th className="px-4 py-2 text-left">Fiado</th>
+                  <th className="px-4 py-2 text-left">Setor</th>
+                  <th className="px-4 py-2 text-left">Admissão</th>
                   <th className="px-4 py-2 text-left">Vínculos</th>
                   <th className="px-4 py-2" />
                 </tr>
@@ -225,10 +147,8 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
                   <FuncionarioRow
                     key={f.id}
                     f={f}
-                    filialId={filialId}
-                    filialNome={filialNome}
                     cargos={cargos}
-                    filiais={filiais}
+                    outrasFiliais={outrasFiliais}
                     editando={editando === f.id}
                     onEditar={() => setEditando(editando === f.id ? null : f.id)}
                     onSaved={(texto) => {
@@ -264,15 +184,12 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
   );
 }
 
-function VinculoBadges({ f, filialId }: { f: Funcionario; filialId: string }) {
+function VinculoBadges({ f }: { f: Funcionario }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {f.filialPrincipalId !== filialId && (
-        <span
-          className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 ring-1 ring-indigo-200"
-          title="Lotação principal em outra loja — aparece aqui porque também bate ponto aqui"
-        >
-          🏠 {f.filialPrincipalNome}
+      {f.temFornecedor && (
+        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200">
+          Folha
         </span>
       )}
       {f.temColaborador && (
@@ -304,60 +221,31 @@ function VinculoBadges({ f, filialId }: { f: Funcionario; filialId: string }) {
 
 function FuncionarioRow({
   f,
-  filialId,
-  filialNome,
   cargos,
-  filiais,
+  outrasFiliais,
   editando,
   onEditar,
   onSaved,
   onError,
 }: {
   f: Funcionario;
-  filialId: string;
-  filialNome: string;
   cargos: string[];
-  filiais: { id: string; nome: string }[];
+  outrasFiliais: { id: string; nome: string }[];
   editando: boolean;
   onEditar: () => void;
   onSaved: (texto: string) => void;
   onError: (texto: string) => void;
 }) {
-  const pg = f.pagamento;
   return (
     <>
       <tr className={`hover:bg-slate-50 ${f.precisaRevisao ? 'bg-amber-50/50' : ''}`}>
-        <td className="px-4 py-2 font-medium text-slate-900">
-          {f.nome}
-          {f.setor && <span className="ml-1 text-[10px] font-normal text-slate-400">{f.setor}</span>}
-        </td>
+        <td className="px-4 py-2 font-medium text-slate-900">{f.nome}</td>
         <td className="px-4 py-2 text-slate-600">{fmtCpf(f.cpf)}</td>
         <td className="px-4 py-2 text-slate-600">{f.cargo ?? '—'}</td>
-        <td className="px-4 py-2 text-xs">
-          {pg && pg.ativo ? (
-            <span className="text-slate-700">{resumoAcordo(pg)}</span>
-          ) : pg ? (
-            <span className="text-slate-400" title="Já esteve na folha desta loja; hoje está fora">fora da folha</span>
-          ) : (
-            <span className="text-slate-400">—</span>
-          )}
-          {f.acordosOutrasLojas.length > 0 && (
-            <span className="block text-[10px] text-slate-400" title="Acordo nas outras lojas (edita lá)">
-              {f.acordosOutrasLojas.map((a) => `${a.filialNome}: ${PAPEL_LABEL[a.papel] ?? a.papel}`).join(' · ')}
-            </span>
-          )}
-        </td>
-        <td className="px-4 py-2 text-xs">
-          {f.temCliente ? (
-            <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-emerald-700" title="Cliente vinculado — o fiado dele desconta na folha">
-              ✓ {f.clienteNome ?? 'vinculado'}
-            </span>
-          ) : (
-            <span className="text-slate-400">—</span>
-          )}
-        </td>
+        <td className="px-4 py-2 text-slate-600">{f.setor ?? '—'}</td>
+        <td className="px-4 py-2 text-slate-600">{fmtData(f.dataAdmissao)}</td>
         <td className="px-4 py-2">
-          <VinculoBadges f={f} filialId={filialId} />
+          <VinculoBadges f={f} />
         </td>
         <td className="px-4 py-2 text-right">
           <button
@@ -373,11 +261,10 @@ function FuncionarioRow({
         <tr>
           <td colSpan={7} className="bg-slate-50 px-4 py-4">
             <FuncionarioForm
-              filialId={filialId}
-              filialNome={filialNome}
+              filialId=""
               funcionario={f}
               cargos={cargos}
-              filiais={filiais}
+              outrasFiliais={outrasFiliais}
               onCancel={onEditar}
               onSaved={onSaved}
               onError={onError}

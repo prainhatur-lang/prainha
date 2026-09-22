@@ -7,7 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, exists, gte, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gte, lte, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIsoDate } from '@/lib/folha/semana';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
@@ -42,30 +42,10 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
   const semana = sp.inicio ? semanaContemDia(new Date(sp.inicio + 'T12:00:00')) : semanaAtual();
   const dias = diasDaSemana(semana.inicio);
 
-  // Mesmo roster que a loja recebe: lotação principal aqui OU vínculo extra
-  // (quem circula entre lojas bate ponto nesta casa também).
   const funcionarios = await db
     .select({ id: schema.funcionario.id, nome: schema.funcionario.nome })
     .from(schema.funcionario)
-    .where(
-      and(
-        eq(schema.funcionario.ativo, true),
-        or(
-          eq(schema.funcionario.filialId, filialSelecionada.id),
-          exists(
-            db
-              .select({ n: schema.funcionarioFilialExtra.id })
-              .from(schema.funcionarioFilialExtra)
-              .where(
-                and(
-                  eq(schema.funcionarioFilialExtra.funcionarioId, schema.funcionario.id),
-                  eq(schema.funcionarioFilialExtra.filialId, filialSelecionada.id),
-                ),
-              ),
-          ),
-        ),
-      ),
-    )
+    .where(and(eq(schema.funcionario.filialId, filialSelecionada.id), eq(schema.funcionario.ativo, true)))
     .orderBy(schema.funcionario.nome);
 
   const batidas = await db

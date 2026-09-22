@@ -49,12 +49,6 @@ export async function garantirPapeisDaPessoa(
      *  de cliente não é criado — quem cadastra decide. Um vínculo de cliente
      *  que já exista continua sendo respeitado. */
     tambemCliente?: boolean;
-    /** Filial onde garantir os papéis. Default = lotação principal. Numa
-     *  filial EXTRA (quem circula entre lojas) o fornecedor/cliente são os
-     *  daquela casa, casados por CPF — e `funcionario.fornecedor_id` (que é
-     *  o da lotação principal) NÃO é tocado. Exige CPF: sem chave forte,
-     *  cada chamada criaria outro fornecedor lá. */
-    filialId?: string;
   } = {},
 ): Promise<PapeisGarantidos | null> {
   const [func] = await db
@@ -74,14 +68,9 @@ export async function garantirPapeisDaPessoa(
   const cpf = soDigitos(func.cpf);
   const fone = soDigitos(func.telefone);
   const nome = func.nome.trim();
-  const filialId = opcoes.filialId ?? func.filialId;
-  const filialExtra = filialId !== func.filialId;
-  if (filialExtra && !cpf) {
-    throw new Error('Informe o CPF do funcionário pra configurar o pagamento em outra loja.');
-  }
 
   // ---------- 1) FORNECEDOR (quem recebe) ----------
-  let fornecedorId = filialExtra ? null : func.fornecedorId;
+  let fornecedorId = func.fornecedorId;
   let criouFornecedor = false;
   if (!fornecedorId) {
     // Já existe fornecedor dessa pessoa na filial? (CPF é a chave forte)
@@ -92,7 +81,7 @@ export async function garantirPapeisDaPessoa(
         .from(schema.fornecedor)
         .where(
           and(
-            eq(schema.fornecedor.filialId, filialId),
+            eq(schema.fornecedor.filialId, func.filialId),
             isNull(schema.fornecedor.dataDelete),
             sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '[^0-9]', '', 'g') = ${cpf}`,
           ),
@@ -105,7 +94,7 @@ export async function garantirPapeisDaPessoa(
       const [novo] = await db
         .insert(schema.fornecedor)
         .values({
-          filialId,
+          filialId: func.filialId,
           nome,
           cnpjOuCpf: cpf || null,
           fonePrincipal: fone || null,
@@ -114,12 +103,10 @@ export async function garantirPapeisDaPessoa(
       fornecedorId = novo!.id;
       criouFornecedor = true;
     }
-    if (!filialExtra) {
-      await db
-        .update(schema.funcionario)
-        .set({ fornecedorId, atualizadoEm: new Date() })
-        .where(eq(schema.funcionario.id, funcionarioId));
-    }
+    await db
+      .update(schema.funcionario)
+      .set({ fornecedorId, atualizadoEm: new Date() })
+      .where(eq(schema.funcionario.id, funcionarioId));
   }
 
   // ---------- 2) CLIENTE (quem consome / faz fiado) ----------
@@ -134,7 +121,7 @@ export async function garantirPapeisDaPessoa(
       .from(schema.cliente)
       .where(
         and(
-          eq(schema.cliente.filialId, filialId),
+          eq(schema.cliente.filialId, func.filialId),
           isNull(schema.cliente.dataDelete),
           sql`regexp_replace(coalesce(${schema.cliente.cpfOuCnpj}, ''), '[^0-9]', '', 'g') = ${cpf}`,
         ),
@@ -148,7 +135,7 @@ export async function garantirPapeisDaPessoa(
       .from(schema.cliente)
       .where(
         and(
-          eq(schema.cliente.filialId, filialId),
+          eq(schema.cliente.filialId, func.filialId),
           isNull(schema.cliente.dataDelete),
           sql`right(regexp_replace(coalesce(${schema.cliente.celular}, ${schema.cliente.telefone}, ''), '[^0-9]', '', 'g'), 8) = ${fone.slice(-8)}`,
         ),
@@ -176,13 +163,13 @@ export async function garantirPapeisDaPessoa(
     const [minRow] = await db
       .select({ min: sql<number>`min(${schema.cliente.codigoExterno})` })
       .from(schema.cliente)
-      .where(eq(schema.cliente.filialId, filialId));
+      .where(eq(schema.cliente.filialId, func.filialId));
     const codigoFake = Math.min(-1, (minRow?.min ?? 0) - 1);
 
     const [novo] = await db
       .insert(schema.cliente)
       .values({
-        filialId,
+        filialId: func.filialId,
         codigoExterno: codigoFake,
         nome,
         cpfOuCnpj: cpf || null,
@@ -208,7 +195,7 @@ export async function garantirPapeisDaPessoa(
     const [cmd] = await db
       .insert(schema.agenteComando)
       .values({
-        filialId,
+        filialId: func.filialId,
         tipo: 'criar_cliente',
         payload: {
           campos: {

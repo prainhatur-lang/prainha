@@ -2,15 +2,11 @@
 // direto do cadastro unificado do RH ("não estamos encontrando onde colocar
 // os dados do pagamento", dono 26/08/2026).
 //
-// Por baixo continua o modelo da folha (fornecedor + fornecedor_folha). Se o
-// funcionário ainda não tem fornecedor na filial, ESTA rota cria o fornecedor
-// (nascido na nuvem, codigo_externo NULL) e o vínculo da folha na hora.
-//
-// ACORDO É POR LOJA: fornecedor é por filial, então quem circula entre lojas
-// tem um fornecedor_folha em cada casa — e pode ser gerente fixo numa e
-// diarista na outra. `filialId` no body escolhe qual acordo está sendo
-// editado (default = lotação principal); a filial tem que ser a principal ou
-// uma das extras do funcionário.
+// Por baixo continua o modelo da folha (fornecedor + fornecedor_folha) — a
+// tela de Pessoas da folha segue funcionando igual. A novidade: se o
+// funcionário ainda não tem fornecedor vinculado, ESTA rota cria o fornecedor
+// (nascido na nuvem, codigo_externo NULL) e o vínculo da folha na hora — a
+// pessoa cadastrada no RH fica pagável sem passar por outra tela.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -23,8 +19,6 @@ import { garantirPapeisDaPessoa } from '@/lib/rh/pessoa-unica';
 export const dynamic = 'force-dynamic';
 
 const Body = z.object({
-  /** Filial do acordo (default = lotação principal do funcionário). */
-  filialId: z.string().uuid().optional(),
   papel: z.enum(['funcionario', 'diarista', 'gerente']),
   gerenteModelo: z.enum(['1pp_dos_10pct', 'fixo_por_dia']).nullable().optional(),
   gerenteValorFixoDia: z.number().positive().nullable().optional(),
@@ -33,8 +27,6 @@ const Body = z.object({
   diaristaValorFixoDia: z.number().positive().nullable().optional(),
   bonusFixoSemanal: z.number().positive().nullable().optional(),
   bonusPorDia: z.number().positive().nullable().optional(),
-  /** false = sai da folha semanal DESTA loja (mantém histórico/ajustes). */
-  ativo: z.boolean().optional(),
   /** marcar a pessoa também como cliente (consumo/fiado) — escolha de quem cadastra */
   tambemCliente: z.boolean().optional(),
   /** 'pix' | 'banco' — como essa pessoa recebe */
@@ -75,84 +67,62 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
     .limit(1);
   if (!func) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
 
-  const filialId = b.filialId ?? func.filialId;
-  if (filialId !== func.filialId) {
-    const [extra] = await db
-      .select({ id: schema.funcionarioFilialExtra.id })
-      .from(schema.funcionarioFilialExtra)
-      .where(
-        and(
-          eq(schema.funcionarioFilialExtra.funcionarioId, id),
-          eq(schema.funcionarioFilialExtra.filialId, filialId),
-        ),
-      )
-      .limit(1);
-    if (!extra) {
-      return NextResponse.json(
-        { error: 'o funcionário não trabalha nessa loja — marque "também bate ponto em" primeiro' },
-        { status: 400 },
-      );
-    }
-    if (!func.cpf) {
-      return NextResponse.json(
-        { error: 'informe o CPF do funcionário pra configurar o pagamento em outra loja' },
-        { status: 400 },
-      );
-    }
-  }
-
   const [acesso] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
     .where(
       and(
         eq(schema.usuarioFilial.usuarioId, user.id),
-        eq(schema.usuarioFilial.filialId, filialId),
+        eq(schema.usuarioFilial.filialId, func.filialId),
       ),
     )
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
 
-  // CADASTRO ÚNICO: garante fornecedor (recebe) + cliente (consome/fiado) NA
-  // FILIAL DO ACORDO e amarra os dois — uma pessoa, três papéis, por casa.
-  let papeis: Awaited<ReturnType<typeof garantirPapeisDaPessoa>>;
-  try {
-    papeis = await garantirPapeisDaPessoa(id, {
-      criadoPor: user.id,
-      enfileirarNaLoja: true,
-      tambemCliente: b.tambemCliente === true,
-      filialId,
-    });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
-  }
+  // CADASTRO ÚNICO: garante fornecedor (recebe) + cliente (consome/fiado) e
+  // amarra os dois no funcionário — uma pessoa, três papéis.
+  const papeis = await garantirPapeisDaPessoa(id, {
+    criadoPor: user.id,
+    enfileirarNaLoja: true,
+    tambemCliente: b.tambemCliente === true,
+  });
   if (!papeis) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
   const fornecedorId = papeis.fornecedorId;
-  const ativo = b.ativo ?? true;
-
-  const valores = {
-    papel: b.papel,
-    gerenteModelo: b.gerenteModelo ?? null,
-    gerenteValorFixoDia: b.gerenteValorFixoDia != null ? String(b.gerenteValorFixoDia) : null,
-    diaristaModelo: b.diaristaModelo ?? 'por_hora',
-    diaristaTaxaHoraOverride:
-      b.diaristaTaxaHoraOverride != null ? String(b.diaristaTaxaHoraOverride) : null,
-    diaristaValorFixoDia: b.diaristaValorFixoDia != null ? String(b.diaristaValorFixoDia) : null,
-    bonusFixoSemanal: b.bonusFixoSemanal != null ? String(b.bonusFixoSemanal) : null,
-    bonusPorDia: b.bonusPorDia != null ? String(b.bonusPorDia) : null,
-    ativo,
-  };
 
   await db
     .insert(schema.fornecedorFolha)
-    .values({ fornecedorId, ...valores })
+    .values({
+      fornecedorId,
+      papel: b.papel,
+      gerenteModelo: b.gerenteModelo ?? null,
+      gerenteValorFixoDia: b.gerenteValorFixoDia != null ? String(b.gerenteValorFixoDia) : null,
+      diaristaModelo: b.diaristaModelo ?? 'por_hora',
+      diaristaTaxaHoraOverride:
+        b.diaristaTaxaHoraOverride != null ? String(b.diaristaTaxaHoraOverride) : null,
+      diaristaValorFixoDia: b.diaristaValorFixoDia != null ? String(b.diaristaValorFixoDia) : null,
+      bonusFixoSemanal: b.bonusFixoSemanal != null ? String(b.bonusFixoSemanal) : null,
+      bonusPorDia: b.bonusPorDia != null ? String(b.bonusPorDia) : null,
+      ativo: true,
+    })
     .onConflictDoUpdate({
       target: schema.fornecedorFolha.fornecedorId,
-      set: { ...valores, atualizadoEm: new Date() },
+      set: {
+        papel: b.papel,
+        gerenteModelo: b.gerenteModelo ?? null,
+        gerenteValorFixoDia: b.gerenteValorFixoDia != null ? String(b.gerenteValorFixoDia) : null,
+        diaristaModelo: b.diaristaModelo ?? 'por_hora',
+        diaristaTaxaHoraOverride:
+          b.diaristaTaxaHoraOverride != null ? String(b.diaristaTaxaHoraOverride) : null,
+        diaristaValorFixoDia:
+          b.diaristaValorFixoDia != null ? String(b.diaristaValorFixoDia) : null,
+        bonusFixoSemanal: b.bonusFixoSemanal != null ? String(b.bonusFixoSemanal) : null,
+        bonusPorDia: b.bonusPorDia != null ? String(b.bonusPorDia) : null,
+        ativo: true,
+        atualizadoEm: new Date(),
+      },
     });
 
-  // Dados bancários/PIX moram no fornecedor (são da pessoa — mas o fornecedor
-  // é por filial, então cada casa guarda a própria cópia).
+  // Dados bancários/PIX moram no fornecedor (são da pessoa)
   await db
     .update(schema.fornecedor)
     .set(
@@ -176,7 +146,6 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
 
   return NextResponse.json({
     ok: true,
-    filialId,
     fornecedorId,
     clienteId: papeis.clienteId,
     criouCliente: papeis.criouCliente,
