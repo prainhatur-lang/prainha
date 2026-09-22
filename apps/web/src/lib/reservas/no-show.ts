@@ -3,7 +3,8 @@
 // (status vira 'no_show', que já é excluído da ocupação em mesa-disponivel.ts)
 // e o cliente recebe um aviso no WhatsApp.
 //
-// EXCEÇÃO: reserva PAGA (Lounge, pagamento_status = 'pago') NÃO tem tolerância
+// EXCEÇÃO: reserva PAGA (pagamento_status = 'pago') ou em ÁREA COM TAXA
+// (Lounge — inclui cortesia/criada no painel sem cobrança) NÃO tem tolerância
 // — o cliente comprou a mesa pro dia e ela fica dele até fechar a casa. Em
 // 13/09/2026 o cron derrubou um lounge pago às 10:20 (cliente avisou que
 // chegaria 13h), a mesa foi revendida pra outra reserva às 14h e o grupo
@@ -41,6 +42,8 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
       hora: schema.reserva.hora,
       cancelToken: schema.reserva.cancelToken,
       pagamentoStatus: schema.reserva.pagamentoStatus,
+      filialId: schema.reserva.filialId,
+      area: schema.reserva.area,
     })
     .from(schema.reserva)
     .where(
@@ -53,9 +56,25 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
   let marcados = 0;
   const falhas: string[] = [];
 
+  // Áreas com taxa por filial (ex: Lounges) — reserva nelas nunca vira
+  // no_show sozinha, mesmo sem pagamento (cortesia lançada pela equipe).
+  const filiais = [...new Set(candidatas.map((r) => r.filialId))];
+  const areasComTaxa = new Map<string, Set<string>>();
+  if (filiais.length) {
+    const cfgs = await db
+      .select({ id: schema.filial.id, reservaConfig: schema.filial.reservaConfig })
+      .from(schema.filial)
+      .where(inArray(schema.filial.id, filiais));
+    for (const f of cfgs) {
+      const nomes = (f.reservaConfig?.areas ?? []).filter((a) => a.taxaReserva).map((a) => a.nome.toLowerCase());
+      areasComTaxa.set(f.id, new Set(nomes));
+    }
+  }
+
   for (const r of candidatas) {
-    // Lounge pago: sem tolerância, a mesa é do cliente o dia inteiro.
+    // Lounge (pago ou cortesia): sem tolerância, a mesa é do cliente o dia inteiro.
     if (r.pagamentoStatus === 'pago') continue;
+    if (r.area && areasComTaxa.get(r.filialId)?.has(r.area.toLowerCase())) continue;
     const cortMs = new Date(`${r.data}T${r.hora}:00-03:00`).getTime() + TOLERANCIA_NO_SHOW_MIN * 60 * 1000;
     if (agora <= cortMs) continue;
 
