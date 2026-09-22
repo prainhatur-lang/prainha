@@ -492,10 +492,16 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           <p className="text-lg font-bold" style={serif}>{espaco}</p>
           <p className="mt-0.5 text-[var(--rsv-text)]">{data.split('-').reverse().join('/')} às {hora} · {pessoas} pessoa(s)</p>
         </div>
-        <p className="mt-4 rounded-xl border border-[var(--rsv-gold)]/40 bg-[var(--rsv-gold)]/12 px-3 py-2 text-xs font-medium text-[var(--rsv-strong)]">
-          ⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a
-          reserva é cancelada automaticamente.
-        </p>
+        {taxaValor == null ? (
+          <p className="mt-4 rounded-xl border border-[var(--rsv-gold)]/40 bg-[var(--rsv-gold)]/12 px-3 py-2 text-xs font-medium text-[var(--rsv-strong)]">
+            ⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a
+            reserva é cancelada automaticamente.
+          </p>
+        ) : (
+          <p className="mt-4 rounded-xl border border-[var(--rsv-gold)]/40 bg-[var(--rsv-gold)]/12 px-3 py-2 text-xs font-medium text-[var(--rsv-strong)]">
+            ✅ Espaço pago: sua mesa fica garantida pra você o dia todo, sem tolerância de horário.
+          </p>
+        )}
       </div>
     );
   }

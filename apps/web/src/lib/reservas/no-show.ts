@@ -1,7 +1,13 @@
 // Cancelamento automático de reserva por no-show: se o cliente não chegou
 // até TOLERANCIA_MIN depois do horário marcado, a mesa é liberada sozinha
 // (status vira 'no_show', que já é excluído da ocupação em mesa-disponivel.ts)
-// e o cliente recebe um aviso no WhatsApp. Compartilhado entre o cron
+// e o cliente recebe um aviso no WhatsApp.
+//
+// EXCEÇÃO: reserva PAGA (Lounge, pagamento_status = 'pago') NÃO tem tolerância
+// — o cliente comprou a mesa pro dia e ela fica dele até fechar a casa. Em
+// 13/09/2026 o cron derrubou um lounge pago às 10:20 (cliente avisou que
+// chegaria 13h), a mesa foi revendida pra outra reserva às 14h e o grupo
+// ficou sem lugar tendo pago R$ 250. Compartilhado entre o cron
 // (/api/cron/no-show-automatico) e qualquer chamada manual futura.
 
 import { db, schema } from '@concilia/db';
@@ -34,6 +40,7 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
       data: schema.reserva.data,
       hora: schema.reserva.hora,
       cancelToken: schema.reserva.cancelToken,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
     })
     .from(schema.reserva)
     .where(
@@ -47,6 +54,8 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
   const falhas: string[] = [];
 
   for (const r of candidatas) {
+    // Lounge pago: sem tolerância, a mesa é do cliente o dia inteiro.
+    if (r.pagamentoStatus === 'pago') continue;
     const cortMs = new Date(`${r.data}T${r.hora}:00-03:00`).getTime() + TOLERANCIA_NO_SHOW_MIN * 60 * 1000;
     if (agora <= cortMs) continue;
 
