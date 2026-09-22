@@ -6,7 +6,7 @@
 // outros recalculavam como `diasTrab`, mesmo resultado mas duplicado).
 
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gt, inArray, lt } from 'drizzle-orm';
 import type { ConfigFolha, PessoaInput } from './calcular';
 
 export type AjusteTipo = 'desconto' | 'acrescimo' | 'premiacao';
@@ -107,18 +107,30 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
   // fallback — mesma regra do pró-labore fixo_por_dia em calcular.ts.
   // Gerente normalmente não bate ponto, e sem esse fallback o bônus fixo do
   // cadastro era ignorado (Paulo sumiu da folha 07–13/09/2026 por isso).
+  //
+  // MAS gerente que BATE PONTO (tem horas em semana anterior desta filial)
+  // sem horas na semana = faltou/trabalhou em outra casa — não ganha o
+  // fallback (Cauã, chefe da Tabuará, passou 14–20/09/2026 na Prainha Bar e
+  // a Tabuará ia pagar 7 dias "da loja"). Só quem NUNCA bateu ponto na
+  // filial usa os dias com movimento.
   const [folhaRow] = await db
-    .select({ dezPctPorDia: schema.folhaSemana.dezPctPorDia })
+    .select({ dezPctPorDia: schema.folhaSemana.dezPctPorDia, dataInicio: schema.folhaSemana.dataInicio })
     .from(schema.folhaSemana)
     .where(eq(schema.folhaSemana.id, folhaSemanaId))
     .limit(1);
   const dezPctPorDia = (folhaRow?.dezPctPorDia as Record<string, number> | null) ?? {};
   const diasLoja = Object.values(dezPctPorDia).filter((v) => Number(v) > 0).length;
+  const gerentesBatemPonto = await gerentesComPontoAnterior(
+    filialId,
+    folhaRow?.dataInicio ?? null,
+    pessoasRows.filter((p) => p.papel === 'gerente').map((p) => p.fornecedorId),
+  );
 
   for (const p of pessoasRows) {
     const porDia = horasMap.get(p.fornecedorId) ?? {};
     const diasComPonto = Object.values(porDia).filter((m) => m > 0).length;
-    const diasComHoras = diasComPonto === 0 && p.papel === 'gerente' ? diasLoja : diasComPonto;
+    const usaDiasLoja = diasComPonto === 0 && p.papel === 'gerente' && !gerentesBatemPonto.has(p.fornecedorId);
+    const diasComHoras = usaDiasLoja ? diasLoja : diasComPonto;
     if (diasComHoras === 0) continue;
 
     if (p.bonusFixoSemanal != null && Number(p.bonusFixoSemanal) > 0) {
@@ -154,10 +166,35 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     papel: p.papel as 'funcionario' | 'diarista' | 'gerente',
     gerenteModelo: p.gerenteModelo,
     gerenteValorFixoDia: p.gerenteValorFixoDia ? Number(p.gerenteValorFixoDia) : null,
+    gerenteBatePonto: p.papel === 'gerente' && gerentesBatemPonto.has(p.fornecedorId),
     diaristaTaxaHoraOverride: p.diaristaTaxaHoraOverride ? Number(p.diaristaTaxaHoraOverride) : null,
     diaristaModelo: p.diaristaModelo ?? 'por_hora',
     diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
   }));
 
   return { config, cfg, pessoasRows, pessoas, horasMap, ajustesMap, perdasPorDia };
+}
+
+/** Gerentes (fornecedorIds) que já tiveram horas (>0) em alguma folha
+ *  ANTERIOR da mesma filial — ou seja, batem ponto. Pra esses, semana sem
+ *  horas é falta, não "gerente que não registra ponto". */
+async function gerentesComPontoAnterior(
+  filialId: string,
+  dataInicio: string | null,
+  gerenteIds: string[],
+): Promise<Set<string>> {
+  if (gerenteIds.length === 0 || !dataInicio) return new Set();
+  const rows = await db
+    .selectDistinct({ fornecedorId: schema.folhaHoras.fornecedorId })
+    .from(schema.folhaHoras)
+    .innerJoin(schema.folhaSemana, eq(schema.folhaSemana.id, schema.folhaHoras.folhaSemanaId))
+    .where(
+      and(
+        eq(schema.folhaSemana.filialId, filialId),
+        lt(schema.folhaSemana.dataInicio, dataInicio),
+        inArray(schema.folhaHoras.fornecedorId, gerenteIds),
+        gt(schema.folhaHoras.totalMin, 0),
+      ),
+    );
+  return new Set(rows.map((r) => r.fornecedorId));
 }

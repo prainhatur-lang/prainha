@@ -17,6 +17,10 @@ export interface PessoaInput {
   papel: 'funcionario' | 'diarista' | 'gerente';
   gerenteModelo: string | null; // '1pp_dos_10pct' | 'fixo_por_dia' | null
   gerenteValorFixoDia: number | null;
+  /** true = gerente registra ponto (teve horas em semana anterior da
+   *  filial). Sem horas na semana então é falta — NÃO cai no fallback de
+   *  "dias com movimento da loja". */
+  gerenteBatePonto?: boolean;
   diaristaTaxaHoraOverride: number | null;
   /** 'por_hora' (default) | 'fixo_por_dia' */
   diaristaModelo?: string | null;
@@ -345,15 +349,23 @@ export function calcularFolha(args: {
       // dele com horas>0 — assim falta desconta. Caso nao bata ponto, usa
       // os dias com movimento da loja (10pct>0) como fallback — gerentes
       // antigos que so apareciam pra abrir/fechar e nao registravam ponto.
+      // Gerente que costuma bater ponto (gerenteBatePonto) e nao tem horas
+      // na semana NAO ganha o fallback: faltou ou trabalhou em outra casa
+      // (Cauã/Tabuará 14–20/09/2026 estava na Prainha Bar).
       const porDiaGer = horasMap.get(g.fornecedorId) ?? {};
       const diasComPonto = Object.values(porDiaGer).filter((m) => m > 0).length;
       const diasLoja = Object.values(dezPctPorDia).filter((v) => v > 0).length;
-      const diasTrab = diasComPonto > 0 ? diasComPonto : diasLoja;
-      const origem = diasComPonto > 0 ? 'ponto' : 'loja';
+      const usaDiasLoja = diasComPonto === 0 && !g.gerenteBatePonto;
+      const diasTrab = usaDiasLoja ? diasLoja : diasComPonto;
+      const origem = usaDiasLoja ? 'loja' : 'ponto';
       valor = diasTrab * g.gerenteValorFixoDia;
       detalhe = `${diasTrab} × R$ ${g.gerenteValorFixoDia.toFixed(2)}/dia (${origem})`;
       if (diasTrab === 0) {
-        avisos.push(`${g.nome}: gerente fixo sem ponto e sem movimento na semana.`);
+        avisos.push(
+          g.gerenteBatePonto
+            ? `${g.nome}: gerente bate ponto e não teve horas na semana — sem pró-labore.`
+            : `${g.nome}: gerente fixo sem ponto e sem movimento na semana.`,
+        );
       }
     }
 
