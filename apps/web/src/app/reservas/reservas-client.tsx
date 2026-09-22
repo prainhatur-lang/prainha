@@ -653,6 +653,21 @@ function Linha({ r, hist, fiado, podeAtualizar, mostrarFilial, filiais, ocupadas
                 💳 taxa paga
               </span>
             )}
+            {r.pagamentoStatus === 'estornado_manual' && (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600" title="Taxa devolvida na mão (dinheiro/Pix manual) — NÃO estorna na Cielo">
+                💵 devolvido em dinheiro
+              </span>
+            )}
+            {(r.pagamentoStatus === 'estornado' || r.pagamentoStatus === 'estornado_50') && (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600" title="Estorno feito pela Cielo">
+                ↩ estornado{r.pagamentoStatus === 'estornado_50' ? ' 50%' : ''}
+              </span>
+            )}
+            {(r.pagamentoStatus ?? '').startsWith('estorno_falhou') && (
+              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700" title="A Cielo negou o estorno — o sistema tenta de novo todo dia; se devolver na mão, marque 'devolvido em dinheiro'">
+                ⚠️ estorno falhou
+              </span>
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500">
             {r.area && <span>{r.area}</span>}
@@ -689,7 +704,21 @@ function Linha({ r, hist, fiado, podeAtualizar, mostrarFilial, filiais, ocupadas
         <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:flex sm:flex-wrap">
           {r.status !== 'confirmada' && <Btn onClick={() => setStatus('confirmada')} disabled={salvando} cls="border-sky-300 text-sky-700 active:bg-sky-100 hover:bg-sky-50">Confirmar</Btn>}
           {r.status !== 'sentada' && <Btn onClick={clicarSentar} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50">Sentar</Btn>}
-          {r.status !== 'cancelada' && <Btn onClick={() => setStatus('cancelada')} disabled={salvando} cls="border-rose-300 text-rose-700 active:bg-rose-100 hover:bg-rose-50">Cancelar</Btn>}
+          {r.status !== 'cancelada' && <Btn onClick={() => setStatus('cancelada')} disabled={salvando} cls="border-rose-300 text-rose-700 active:bg-rose-100 hover:bg-rose-50" title={r.pagamentoStatus === 'pago' ? 'Cancela E estorna a taxa integral pela Cielo (Pix/cartão)' : undefined}>Cancelar</Btn>}
+          {r.status !== 'cancelada' && (r.pagamentoStatus === 'pago' || (r.pagamentoStatus ?? '').startsWith('estorno_falhou')) && (
+            <Btn
+              onClick={() => {
+                const v = r.pagamentoValor ? `R$ ${Number(r.pagamentoValor).toFixed(2).replace('.', ',')}` : 'a taxa';
+                if (!confirm(`Confirma que ${v} de ${r.clienteNome} já foi devolvido em DINHEIRO (fora da Cielo)?\n\nA reserva será cancelada e a Cielo NÃO vai estornar nada. Não dá pra desfazer.`)) return;
+                setStatus('cancelada', { devolvidoManual: true });
+              }}
+              disabled={salvando}
+              cls="border-slate-300 text-slate-700 active:bg-slate-100 hover:bg-slate-50"
+              title="Cancela SEM estornar na Cielo — use quando a taxa já foi devolvida na mão"
+            >
+              💵 Devolvido em dinheiro
+            </Btn>
+          )}
           {r.status !== 'no_show' && <Btn onClick={() => setStatus('no_show')} disabled={salvando} cls="border-amber-300 text-amber-700 active:bg-amber-100 hover:bg-amber-50">No-show</Btn>}
         </div>
       )}
@@ -1110,9 +1139,9 @@ function HistoricoInline({ reservaId }: { reservaId: string }) {
   );
 }
 
-function Btn({ children, onClick, disabled, cls }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string }) {
+function Btn({ children, onClick, disabled, cls, title }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; cls: string; title?: string }) {
   return (
-    <button onClick={onClick} disabled={disabled} className={`rounded-lg border px-3 py-2.5 text-sm font-medium disabled:opacity-50 sm:py-2 ${cls}`}>
+    <button onClick={onClick} disabled={disabled} title={title} className={`rounded-lg border px-3 py-2.5 text-sm font-medium disabled:opacity-50 sm:py-2 ${cls}`}>
       {children}
     </button>
   );

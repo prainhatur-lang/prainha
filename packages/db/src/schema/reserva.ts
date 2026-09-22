@@ -96,7 +96,9 @@ export const reserva = pgTable(
     bebidaConfirmada: boolean('bebida_confirmada'),
     /** Taxa de reserva obrigatória (ex: Lounge) via Cielo. Null = área sem
      *  taxa, não se aplica. 'aguardando' = reserva criada mas ainda não paga
-     *  (mesa fica reservada até expirar); 'pago'; 'reembolsado'; 'expirado'
+     *  (mesa fica reservada até expirar); 'pago'; 'reembolsado'; 'expirado';
+     *  'estornado' | 'estornado_50' | 'estorno_falhou*' (Cielo); 'estornado_manual'
+     *  (devolvido na mão, fora da Cielo — nunca estornar automático)
      *  (não pagou a tempo — libera a mesa). */
     pagamentoStatus: varchar('pagamento_status', { length: 20 }),
     /** Valor da taxa cobrada (R$), já calculado sáb/dom vs dia útil. */

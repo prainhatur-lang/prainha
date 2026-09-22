@@ -40,6 +40,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
     set.status = b.status;
   }
+  // Taxa devolvida FORA da Cielo (dinheiro/Pix manual no balcão) — marca o
+  // pagamento como 'estornado_manual' pra NUNCA mais estornar automático
+  // (cancelar, cron retry-estornos etc). Caso Italo/Ingrid 13→22/09/2026:
+  // devolveram em dinheiro e o Cancelar do painel ia devolver de novo.
+  const devolvidoManual = b?.devolvidoManual === true;
+  if (devolvidoManual) {
+    const semPerm = await negarSemPerm(user.id, 'reserva.delete');
+    if (semPerm) {
+      return NextResponse.json({ error: 'marcar devolução manual é restrito ao administrador' }, { status: 403 });
+    }
+    set.pagamentoStatus = 'estornado_manual';
+  }
   if (b?.mesa !== undefined) set.mesa = typeof b.mesa === 'string' && b.mesa.trim() ? b.mesa.trim().slice(0, 20) : null;
   // Mesas extras juntadas lateralmente (grupo maior que 1 mesa só) — lista
   // (`mesasJuntadas: ['13','14']`) ou texto ("13,14"). null/[] = desfaz a
@@ -133,6 +145,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
       .limit(1);
     if (!row) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+    if (devolvidoManual && row.pagamentoStatus !== 'pago' && !(row.pagamentoStatus ?? '').startsWith('estorno_falhou')) {
+      return NextResponse.json(
+        { error: `não há taxa a devolver nesta reserva (pagamento: ${row.pagamentoStatus ?? 'nenhum'})` },
+        { status: 400 },
+      );
+    }
     atual = row;
   }
 
@@ -279,13 +297,18 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         }
         mensagem = `Notamos que você não compareceu à sua reserva de ${dataBr} às ${atual.hora}. Se quiser remarcar, é só chamar a gente!`;
       } else if (set.status === 'cancelada') {
-        // Cancelamento pela CASA: estorno integral do Pix, sempre.
-        const estorno = await estornarReservaSePago(
-          { id, data: atual.data, hora: atual.hora, pagamentoStatus: atual.pagamentoStatus, pagamentoId: atual.pagamentoId, pagamentoValor: atual.pagamentoValor, filialId: atual.filialId },
-          true,
-        ).catch(() => null);
-        const linhaEstorno =
-          estorno && estorno.percentual === 100
+        // Cancelamento pela CASA: estorno integral do Pix, sempre — exceto
+        // quando a taxa já foi devolvida na mão (estornado_manual): aí a
+        // Cielo NÃO é chamada (senão devolve em dobro).
+        const estorno = devolvidoManual
+          ? null
+          : await estornarReservaSePago(
+              { id, data: atual.data, hora: atual.hora, pagamentoStatus: atual.pagamentoStatus, pagamentoId: atual.pagamentoId, pagamentoValor: atual.pagamentoValor, filialId: atual.filialId },
+              true,
+            ).catch(() => null);
+        const linhaEstorno = devolvidoManual
+          ? ` O valor pago (R$ ${Number(atual.pagamentoValor).toFixed(2)}) já foi devolvido pra você.`
+          : estorno && estorno.percentual === 100
             ? ` O valor pago (R$ ${Number(atual.pagamentoValor).toFixed(2)}) volta integral no seu Pix — o banco leva alguns dias pra creditar.`
             : '';
         mensagem = `Sua reserva de ${dataBr} às ${atual.hora} foi cancelada.${linhaEstorno} Se foi engano ou quiser remarcar, é só chamar a gente!`;
