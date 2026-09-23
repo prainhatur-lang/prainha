@@ -17432,6 +17432,8 @@ function telaEtq(el){
     '<div class="row" style="margin-top:6px"><button class="seg" onclick="etqCmd(&quot;calibrar&quot;)">📏 Calibrar papel</button>'+
       '<button class="seg" onclick="etqCmd(&quot;avancar&quot;)">⏭ Avançar 1 em branco</button></div>'+
     '<div id="eqcmd" class="mut" style="margin-top:6px"></div>'+
+    '<div class="mut" style="margin-top:10px">Saiu de cabeça pra baixo? Vire aqui.</div>'+
+    '<div class="row" style="margin-top:6px" id="eqinv"></div>'+
     '<div class="mut" id="eqbt" style="margin-top:10px"></div>'+
     '<a class="sair" onclick="etqEsquecer()">trocar de impressora Bluetooth</a></div>';
   var rr=document.getElementById('eqr');rr.value=ETQ.resp;
@@ -17458,6 +17460,7 @@ function etqPinta(){
   for(var k=0;k<ETQ_TAMS.length;k++){var t=ETQ_TAMS[k];h+='<button class="seg'+(c.w===t[0]&&c.h===t[1]?' on':'')+'" onclick="etqTam('+t[0]+','+t[1]+')">'+t[0]+'×'+t[1]+(t[0]<t[1]?' (estreita)':'')+'</button>'}
   e=document.getElementById('eqtam');if(e)e.innerHTML=h;
   e=document.getElementById('eqdx');if(e)e.textContent=c.dx?'+'+c.dx+' mm pra direita':'normal';
+  e=document.getElementById('eqinv');if(e)e.innerHTML='<button class="seg'+(c.inv?'':' on')+'" onclick="etqInv(0)">Normal</button><button class="seg'+(c.inv?' on':'')+'" onclick="etqInv(1)">Invertida (180°)</button>';
   var dn=[[3,'Fraco'],[6,'Médio'],[9,'Forte']];h='';
   for(var d=0;d<dn.length;d++)h+='<button class="seg'+(c.dens===dn[d][0]?' on':'')+'" onclick="etqDens('+dn[d][0]+')">'+dn[d][1]+'</button>';
   e=document.getElementById('eqdens');if(e)e.innerHTML=h;
@@ -17470,6 +17473,7 @@ function etqDias(n){ETQ.dias=n;ETQ.validade=etqMaisDias(n);etqPinta()}
 function etqCons(c){ETQ.cons=c;etqPinta()}
 function etqTam(w,h){etqCfgSalva('w',w);etqCfgSalva('h',h);etqPinta()}
 function etqDx(d){var c=etqCfg();etqCfgSalva('dx',Math.max(0,Math.min(20,c.dx+d)));etqPinta()}
+function etqInv(v){etqCfgSalva('inv',v?1:0);etqPinta()}
 function etqDens(n){etqCfgSalva('dens',n);etqPinta()}
 function etqLing(l){etqCfgSalva('ling',l);var el=document.getElementById('main');if(el)telaEtq(el)}
 function etqQtd(d){ETQ.qtd=Math.max(1,Math.min(200,(ETQ.qtd||1)+d));var q=document.getElementById('eqq');if(q)q.value=ETQ.qtd}
@@ -17492,8 +17496,10 @@ function etqEscolhe(i){
   etqPinta();
 }
 /* desenha a etiqueta: 8 pontos/mm. Cada linha encolhe até caber na largura. */
+/* rolo estreito (30 de largura × 50): a etiqueta é lida DEITADA (paisagem,
+   texto ao longo dos 50mm) — desenha em paisagem e gira 90° pro bitmap */
 function etqDesenha(){
-  var c=etqCfg(),a=etqArea(c),W=a.W,H=a.H,m=8;
+  var c=etqCfg(),a=etqArea(c),dt=c.w<c.h,W=dt?a.H:a.W,H=dt?a.W:a.H,m=8;
   var cv=document.createElement('canvas');cv.width=W;cv.height=H;
   var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='top';
   var agora=new Date(),hm=('0'+agora.getHours()).slice(-2)+':'+('0'+agora.getMinutes()).slice(-2);
@@ -17530,6 +17536,12 @@ function etqDesenha(){
   });
   return cv;
 }
+function etqGira(cv){
+  var c=etqCfg();if(!(c.w<c.h))return cv;
+  var o=document.createElement('canvas');o.width=cv.height;o.height=cv.width;
+  var g=o.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,o.width,o.height);
+  g.translate(o.width,0);g.rotate(Math.PI/2);g.drawImage(cv,0,0);return o;
+}
 function etqPrevia(){
   var p=document.getElementById('eqcv');if(!p)return;
   var cv=etqDesenha();p.width=cv.width;p.height=cv.height;p.getContext('2d').drawImage(cv,0,0);
@@ -17557,7 +17569,7 @@ function etqBytes(cv,qtd){
   // TSPL: no BITMAP modo 0, bit 0 = preto
   var t=etqBits(cv,false);
   return etqJunta([
-    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY '+(c.dens==null?6:c.dens)+NL+'SPEED 3'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP '+((c.w>=50?0:8)+c.dx*8)+',8,'+t.wb+','+t.h+',0,'),
+    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY '+(c.dens==null?6:c.dens)+NL+'SPEED 3'+NL+'DIRECTION '+(c.inv?0:1)+NL+'CLS'+NL+'BITMAP '+((c.w>=50?0:8)+c.dx*8)+',8,'+t.wb+','+t.h+',0,'),
     t.data,etqAscii(NL+'PRINT 1,'+qtd+NL)]);
 }
 var ETQ_SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
@@ -17614,7 +17626,7 @@ async function etqImprimir(via){
   if(!ETQ.resp){er.textContent='diga quem é o responsável';return}
   if(!ETQ.validade){er.textContent='escolha a validade';return}
   if(ETQ.validade<etqYmd(new Date())){er.textContent='essa validade já passou';return}
-  var cv=etqDesenha();
+  var cv=etqGira(etqDesenha());
   try{
     if(via==='bt'){
       if(!navigator.bluetooth){er.textContent='sem Bluetooth neste navegador — use o Chrome (Android) no endereço https, ou imprima pelo navegador';return}
