@@ -374,6 +374,15 @@ async function initSchema() {
   await addCol('comanda_item', 'codigo_pdv integer'); // liga o item ao catálogo (tempo extra por prato)
   await sql`CREATE TABLE IF NOT EXISTS sync_estado (id int PRIMARY KEY DEFAULT 1, ultimo_ok timestamptz, ultimo_erro text, comandas int, itens int)`;
   await sql`INSERT INTO sync_estado (id) VALUES (1) ON CONFLICT DO NOTHING`;
+  // --- ETIQUETA DE VALIDADE (produção) ---
+  // O caixa imprime na XD-210 (USB, via navegador). `etiqueta_insumo` lembra a
+  // validade padrão de cada insumo — a 2ª vez é só escolher e imprimir;
+  // `etiqueta_impressa` é o histórico (quem, quando, validade) pra rastrear.
+  await sql`CREATE TABLE IF NOT EXISTS etiqueta_insumo (chave text PRIMARY KEY, nome text NOT NULL,
+    dias integer, conservacao text, usos integer NOT NULL DEFAULT 0, ultimo_em timestamptz DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS etiqueta_impressa (id serial PRIMARY KEY, nome text NOT NULL,
+    manipulado_em timestamptz NOT NULL DEFAULT now(), validade date NOT NULL, qtd integer NOT NULL,
+    conservacao text, quem text, criado_em timestamptz NOT NULL DEFAULT now())`;
   // --- VENDA (Fase 1) ---
   // catálogo local (cache do Firebird; a busca do garçom lê daqui — funciona offline)
   // descricao/preparo do Consumer: 216 dos 2.041 produtos tem texto, e sao
@@ -9807,6 +9816,37 @@ async function apiCaixaFornecedores(qRaw) {
   if (!r.ok) return { ok: false, erro: r.err };
   return { ok: true, fornecedores: r.rows.map((x) => ({ codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC) })) };
 }
+/* ---- ETIQUETA DE VALIDADE ----
+   A impressão é no NAVEGADOR do caixa (a XD-210 é USB/Bluetooth, não fala
+   9100 como as térmicas). O servidor só guarda: sugestão de insumos (com a
+   validade usada da última vez) e o histórico do que foi etiquetado. */
+const etqChave = (n) => String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
+async function apiEtiquetaInsumos(qRaw) {
+  const q = etqChave(qRaw);
+  const rows = q
+    ? await sql`SELECT nome, dias, conservacao FROM etiqueta_insumo WHERE chave LIKE ${'%' + q + '%'}
+        ORDER BY usos DESC, nome LIMIT 30`
+    : await sql`SELECT nome, dias, conservacao FROM etiqueta_insumo ORDER BY ultimo_em DESC LIMIT 30`;
+  return { ok: true, insumos: rows.map((r) => ({ nome: r.nome, dias: r.dias == null ? null : Number(r.dias), conservacao: r.conservacao || null })) };
+}
+async function apiEtiquetaRegistrar(b, quem) {
+  const nome = String(b?.nome || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  const validade = String(b?.validade || '');
+  const qtd = Math.floor(Number(b?.qtd) || 0);
+  const dias = b?.dias == null || b.dias === '' ? null : Math.floor(Number(b.dias));
+  const cons = ['refrigerado', 'congelado', 'ambiente'].includes(b?.conservacao) ? b.conservacao : null;
+  if (!nome) return { ok: false, erro: 'diga qual é o insumo' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(validade)) return { ok: false, erro: 'validade inválida' };
+  if (!(qtd >= 1 && qtd <= 200)) return { ok: false, erro: 'quantidade de 1 a 200 etiquetas' };
+  const quemNome = quem?.nome || quem?.login || null;
+  await sql`INSERT INTO etiqueta_impressa (nome, validade, qtd, conservacao, quem)
+    VALUES (${nome}, ${validade}::date, ${qtd}, ${cons}, ${quemNome})`;
+  await sql`INSERT INTO etiqueta_insumo (chave, nome, dias, conservacao, usos, ultimo_em)
+    VALUES (${etqChave(nome)}, ${nome}, ${Number.isFinite(dias) ? dias : null}, ${cons}, 1, now())
+    ON CONFLICT (chave) DO UPDATE SET nome=excluded.nome, dias=COALESCE(excluded.dias, etiqueta_insumo.dias),
+      conservacao=excluded.conservacao, usos=etiqueta_insumo.usos+1, ultimo_em=now()`;
+  return { ok: true };
+}
 // Relatório/MOVIMENTO do caixa de um DIA (default hoje): totais por forma,
 // os caixas (por operador) COM a quebra por forma de cada um, e a gaveta.
 // `data` = 'YYYY-MM-DD' pra ver outros dias.
@@ -17415,6 +17455,7 @@ function render(){
       '<div id="hside"><div class="card"><div class="tit" style="margin-top:0">Nº da mesa</div>'+
       '<input id="nm" class="num" inputmode="numeric" placeholder="número" readonly onclick="kpAlvo(this)">'+kpHtml('nm')+
       '<button class="big" onclick="carregar()">Abrir</button><div id="aerr" class="err"></div>'+
+      '<button class="big g" style="margin-top:10px" onclick="irTela(\\'etq\\')">🏷 Etiqueta de validade</button>'+
       '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 cancelamentos</a></div></div></div>';
     FLASH=null;return}
   app.className='wrap';
@@ -17604,6 +17645,7 @@ function pintaMain(){
   if(TELA==='canc')return telaCancItem(el);
   if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
+  if(TELA==='etq')return telaEtq(el);
 }
 async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
@@ -18690,6 +18732,245 @@ async function salvaUsu(){
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
+/* ---- ETIQUETA DE VALIDADE (XD-210) ----
+   A etiqueta é desenhada num canvas a 8 pontos/mm (203 dpi) e sai por DOIS
+   caminhos com o MESMO desenho: Bluetooth direto do Chrome (tablet da cozinha,
+   celular — manda o bitmap em TSPL ou ESC/POS) ou o imprimir do navegador
+   (PC com a XD-210 no USB, pelo driver). Tamanho/linguagem ficam no aparelho. */
+var ETQ={nome:'',dias:3,validade:'',qtd:1,cons:'refrigerado',sug:[],bt:null,btCh:null};
+var ETQ_TAMS=[[48,50],[48,30],[30,50],[40,60],[40,30],[40,40],[30,20]];
+function etqCfg(){var c={w:48,h:50,gap:2,ling:'tspl',dens:6};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}
+  // rolo de 50mm: a XD-210 corta a borda (a moldura da validade sumia) -> imprime em 48
+  if(c.w===50)c.w=48;return c}
+function etqCfgSalva(k,v){var c=etqCfg();c[k]=v;try{localStorage.setItem('etq_cfg',JSON.stringify(c))}catch(e){}}
+function etqYmd(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
+function etqMaisDias(n){var d=new Date();d.setDate(d.getDate()+n);return etqYmd(d)}
+function etqBr(ymd){var p=String(ymd).split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:ymd}
+function telaEtq(el){
+  var c=etqCfg();
+  if(!ETQ.validade)ETQ.validade=etqMaisDias(ETQ.dias);
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">🏷 Etiqueta de validade</div>'+
+    '<div class="tit">Insumo</div>'+
+    '<input id="eqn" placeholder="ex: molho de tomate, frango desfiado…" autocomplete="off">'+
+    '<div id="eqsug" class="lst" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr));margin-top:6px"></div>'+
+    '<div class="tit">Validade</div>'+
+    '<div class="row" style="grid-template-columns:repeat(6,1fr)" id="eqdias"></div>'+
+    '<input id="eqv" type="date" style="margin-top:8px">'+
+    '<div class="mut" id="eqvtxt" style="margin-top:4px"></div>'+
+    '<div class="tit">Conservação</div>'+
+    '<div class="row" style="grid-template-columns:1fr 1fr 1fr" id="eqcons"></div>'+
+    '<div class="tit">Quantas etiquetas</div>'+
+    '<div class="row" style="grid-template-columns:64px 1fr 64px;align-items:center">'+
+      '<button class="seg" style="font-size:22px;font-weight:800" onclick="etqQtd(-1)">−</button>'+
+      '<input id="eqq" class="num" inputmode="numeric" value="'+ETQ.qtd+'">'+
+      '<button class="seg" style="font-size:22px;font-weight:800" onclick="etqQtd(1)">+</button></div>'+
+    '<div class="tit">Prévia</div>'+
+    '<div style="text-align:center;background:#f6f6f8;border-radius:12px;padding:10px"><canvas id="eqcv" style="max-width:100%;max-height:260px;border:1px solid #d4d4dc;background:#fff"></canvas></div>'+
+    '<button class="big o" onclick="etqImprimir(&quot;bt&quot;)">🖨 Imprimir (Bluetooth)</button>'+
+    '<button class="big g" onclick="etqImprimir(&quot;nav&quot;)">Imprimir pelo navegador (USB)</button>'+
+    '<div id="eqerr" class="err"></div><div id="eqok" class="mut" style="margin-top:6px"></div></div>'+
+    '<div class="card"><div class="tit" style="margin-top:0">⚙ Impressora deste aparelho</div>'+
+    '<div class="mut">Tamanho do rolo (largura × comprimento, mm)</div>'+
+    '<div class="row" style="grid-template-columns:repeat(3,1fr);margin-top:6px" id="eqtam"></div>'+
+    '<div class="mut" style="margin-top:10px">Linguagem (se sair em branco ou com lixo, troque)</div>'+
+    '<div class="row" style="margin-top:6px"><button class="seg'+(c.ling==='tspl'?' on':'')+'" onclick="etqLing(&quot;tspl&quot;)">TSPL</button>'+
+      '<button class="seg'+(c.ling==='escpos'?' on':'')+'" onclick="etqLing(&quot;escpos&quot;)">ESC/POS</button></div>'+
+    '<div class="mut" style="margin-top:10px">Calor da impressão (se a etiqueta grudar/travar, use Fraco)</div>'+
+    '<div class="row" style="grid-template-columns:1fr 1fr 1fr;margin-top:6px" id="eqdens"></div>'+
+    '<div class="mut" style="margin-top:10px">Trocou o rolo ou a etiqueta está travando? Calibre primeiro. Se até o avanço em branco travar, o problema é o papel, não a impressão.</div>'+
+    '<div class="row" style="margin-top:6px"><button class="seg" onclick="etqCmd(&quot;calibrar&quot;)">📏 Calibrar papel</button>'+
+      '<button class="seg" onclick="etqCmd(&quot;avancar&quot;)">⏭ Avançar 1 em branco</button></div>'+
+    '<div id="eqcmd" class="mut" style="margin-top:6px"></div>'+
+    '<div class="mut" id="eqbt" style="margin-top:10px"></div>'+
+    '<a class="sair" onclick="etqEsquecer()">trocar de impressora Bluetooth</a></div>';
+  var n=document.getElementById('eqn');n.value=ETQ.nome;
+  n.addEventListener('input',function(){ETQ.nome=n.value;etqBusca();etqPrevia()});
+  var v=document.getElementById('eqv');v.value=ETQ.validade;
+  v.addEventListener('change',function(){if(v.value){ETQ.validade=v.value;ETQ.dias=null;etqPinta()}});
+  var q=document.getElementById('eqq');
+  q.addEventListener('input',function(){ETQ.qtd=Math.max(1,Math.min(200,parseInt(q.value,10)||1))});
+  etqPinta();etqBusca();
+  document.getElementById('eqbt').textContent=navigator.bluetooth
+    ?(ETQ.bt?'Bluetooth: conectado em '+(ETQ.bt.name||'impressora'):'Bluetooth: na 1ª impressão o Chrome pede pra escolher a impressora.')
+    :'Este navegador não tem Bluetooth (use o Chrome no Android, em https) — aqui só pelo navegador/USB.';
+}
+function etqPinta(){
+  var ds=[1,2,3,5,7,30],h='';
+  for(var i=0;i<ds.length;i++)h+='<button class="seg'+(ETQ.dias===ds[i]?' on':'')+'" onclick="etqDias('+ds[i]+')">'+ds[i]+(ds[i]===1?' dia':' d')+'</button>';
+  var e=document.getElementById('eqdias');if(e)e.innerHTML=h;
+  var cs=[['refrigerado','❄ Refrigerado'],['congelado','🧊 Congelado'],['ambiente','🌡 Ambiente']];h='';
+  for(var j=0;j<cs.length;j++)h+='<button class="seg'+(ETQ.cons===cs[j][0]?' on':'')+'" onclick="etqCons(&quot;'+cs[j][0]+'&quot;)">'+cs[j][1]+'</button>';
+  e=document.getElementById('eqcons');if(e)e.innerHTML=h;
+  var c=etqCfg();h='';
+  for(var k=0;k<ETQ_TAMS.length;k++){var t=ETQ_TAMS[k];h+='<button class="seg'+(c.w===t[0]&&c.h===t[1]?' on':'')+'" onclick="etqTam('+t[0]+','+t[1]+')">'+t[0]+'×'+t[1]+'</button>'}
+  e=document.getElementById('eqtam');if(e)e.innerHTML=h;
+  var dn=[[3,'Fraco'],[6,'Médio'],[9,'Forte']];h='';
+  for(var d=0;d<dn.length;d++)h+='<button class="seg'+(c.dens===dn[d][0]?' on':'')+'" onclick="etqDens('+dn[d][0]+')">'+dn[d][1]+'</button>';
+  e=document.getElementById('eqdens');if(e)e.innerHTML=h;
+  var v=document.getElementById('eqv');if(v)v.value=ETQ.validade;
+  var dif=Math.round((new Date(ETQ.validade+'T12:00:00')-new Date(etqYmd(new Date())+'T12:00:00'))/864e5);
+  e=document.getElementById('eqvtxt');if(e)e.textContent='vence '+etqBr(ETQ.validade)+' ('+(dif===0?'hoje':dif===1?'amanhã':dif<0?'JÁ VENCIDO':'daqui a '+dif+' dias')+')';
+  etqPrevia();
+}
+function etqDias(n){ETQ.dias=n;ETQ.validade=etqMaisDias(n);etqPinta()}
+function etqCons(c){ETQ.cons=c;etqPinta()}
+function etqTam(w,h){etqCfgSalva('w',w);etqCfgSalva('h',h);etqPinta()}
+function etqDens(n){etqCfgSalva('dens',n);etqPinta()}
+function etqLing(l){etqCfgSalva('ling',l);var el=document.getElementById('main');if(el)telaEtq(el)}
+function etqQtd(d){ETQ.qtd=Math.max(1,Math.min(200,(ETQ.qtd||1)+d));var q=document.getElementById('eqq');if(q)q.value=ETQ.qtd}
+var _eqT=null;
+function etqBusca(){
+  clearTimeout(_eqT);
+  _eqT=setTimeout(async function(){
+    var r;try{r=await jget('/api/caixa/etiquetas/insumos?q='+encodeURIComponent(ETQ.nome.trim()))}catch(e){return}
+    var l=document.getElementById('eqsug');if(!l||!r||!r.ok)return;
+    ETQ.sug=r.insumos.filter(function(x){return x.nome.toLowerCase()!==ETQ.nome.trim().toLowerCase()}).slice(0,12);
+    l.innerHTML=ETQ.sug.map(function(x,i){
+      return '<button class="mchip" onclick="etqEscolhe('+i+')"><b style="white-space:normal">'+esc(x.nome)+'</b>'+(x.dias!=null?'<small>'+x.dias+(x.dias===1?' dia':' dias')+'</small>':'')+'</button>'}).join('');
+  },250);
+}
+function etqEscolhe(i){
+  var x=ETQ.sug[i];if(!x)return;
+  ETQ.nome=x.nome;if(x.dias!=null){ETQ.dias=x.dias;ETQ.validade=etqMaisDias(x.dias)}if(x.conservacao)ETQ.cons=x.conservacao;
+  var n=document.getElementById('eqn');if(n)n.value=x.nome;
+  var l=document.getElementById('eqsug');if(l)l.innerHTML='';
+  etqPinta();
+}
+/* desenha a etiqueta: 8 pontos/mm. Cada linha encolhe até caber na largura. */
+function etqDesenha(){
+  var c=etqCfg(),W=c.w*8,H=c.h*8,m=Math.round((c.h<40?2.5:1.5)*8);
+  var cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='top';
+  var agora=new Date(),hm=('0'+agora.getHours()).slice(-2)+':'+('0'+agora.getMinutes()).slice(-2);
+  var consTxt={refrigerado:'REFRIGERADO 0 a 5°C',congelado:'CONGELADO -18°C',ambiente:'TEMP. AMBIENTE'}[ETQ.cons]||'';
+  var nome=(ETQ.nome||'INSUMO').toUpperCase();
+  // quebra o nome em até 2 linhas pelo espaço do meio se for longo
+  var nl=[nome];if(nome.length>14&&nome.indexOf(' ')>0){var meio=nome.length/2,cut=-1;
+    for(var i=0;i<nome.length;i++)if(nome[i]===' '&&(cut<0||Math.abs(i-meio)<Math.abs(cut-meio)))cut=i;
+    nl=[nome.slice(0,cut),nome.slice(cut+1)]}
+  var linhas=[{t:'${LOJA_NOME}'.toUpperCase(),p:0.8,b:false}];
+  nl.forEach(function(x){linhas.push({t:x,p:1.6,b:true,nm:true})});
+  linhas.push({t:'MANIP: '+etqBr(etqYmd(agora)).slice(0,6)+etqYmd(agora).slice(2,4)+' '+hm,p:1,b:false});
+  linhas.push({t:'VAL: '+etqBr(ETQ.validade).slice(0,6)+ETQ.validade.slice(2,4),p:1.7,b:true,box:true});
+  if(consTxt)linhas.push({t:consTxt,p:0.9,b:true});
+  linhas.push({t:'RESP: '+String(NOME||'').toUpperCase(),p:0.9,b:false});
+  var soma=0;linhas.forEach(function(l){soma+=l.p});
+  var un=(H-2*m)/(soma*1.22),y=m,util=W-2*m;
+  linhas.forEach(function(l){
+    var fs=Math.floor(un*l.p);g.font=(l.b?'800 ':'500 ')+fs+'px Arial, Helvetica, sans-serif';
+    while(fs>8&&g.measureText(l.t).width>util-(l.box?8:0)){fs--;g.font=(l.b?'800 ':'500 ')+fs+'px Arial, Helvetica, sans-serif'}
+    l.fs=fs;
+  });
+  // as linhas do nome saem do MESMO tamanho (a menor das duas)
+  var fsNome=999;linhas.forEach(function(l){if(l.nm)fsNome=Math.min(fsNome,l.fs)});
+  linhas.forEach(function(l){
+    var fs=l.nm?fsNome:l.fs;g.font=(l.b?'800 ':'500 ')+fs+'px Arial, Helvetica, sans-serif';
+    var tw=g.measureText(l.t).width,x=Math.round((W-tw)/2),alt=Math.round(un*l.p*1.22);
+    var ty=y+Math.round((alt-fs)/2);
+    // validade só com MOLDURA: a faixa preta cheia esquentava a cabeça da
+    // XD-210 e a etiqueta grudava e travava a saída (teste 23/09)
+    if(l.box){g.lineWidth=4;g.strokeRect(m+2,y+2,util-4,alt-4);g.fillText(l.t,x,ty)}
+    else g.fillText(l.t,x,ty);
+    y+=alt;
+  });
+  return cv;
+}
+function etqPrevia(){
+  var p=document.getElementById('eqcv');if(!p)return;
+  var cv=etqDesenha();p.width=cv.width;p.height=cv.height;p.getContext('2d').drawImage(cv,0,0);
+}
+/* bitmap 1 bit/ponto, linha a linha, 8 pontos por byte (MSB à esquerda) */
+function etqBits(cv,pretoUm){
+  var W=cv.width,H=cv.height,wb=W/8,d=cv.getContext('2d').getImageData(0,0,W,H).data;
+  var out=new Uint8Array(wb*H);
+  for(var y=0;y<H;y++)for(var xb=0;xb<wb;xb++){var byte=0;
+    for(var b=0;b<8;b++){var i=(y*W+xb*8+b)*4,preto=(d[i]+d[i+1]+d[i+2])<384;
+      if(preto===pretoUm)byte|=(128>>b)}
+    out[y*wb+xb]=byte}
+  return {wb:wb,h:H,data:out};
+}
+function etqAscii(s){var a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&255;return a}
+function etqJunta(partes){var n=0;partes.forEach(function(p){n+=p.length});var o=new Uint8Array(n),k=0;partes.forEach(function(p){o.set(p,k);k+=p.length});return o}
+function etqBytes(cv,qtd){
+  var c=etqCfg(),NL=String.fromCharCode(13,10);
+  if(c.ling==='escpos'){
+    // ESC/POS raster (GS v 0): 1 = preto. Uma cópia por etiqueta + avanço pro gap.
+    var r=etqBits(cv,true),cab=new Uint8Array([29,118,48,0,r.wb&255,r.wb>>8,r.h&255,r.h>>8]),partes=[new Uint8Array([27,64])];
+    for(var i=0;i<qtd;i++){partes.push(cab,r.data,new Uint8Array([29,12]))}
+    return etqJunta(partes);
+  }
+  // TSPL: no BITMAP modo 0, bit 0 = preto
+  var t=etqBits(cv,false);
+  return etqJunta([
+    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY '+(c.dens==null?6:c.dens)+NL+'SPEED 3'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP 0,0,'+t.wb+','+t.h+',0,'),
+    t.data,etqAscii(NL+'PRINT 1,'+qtd+NL)]);
+}
+var ETQ_SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
+  '0000fee7-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb','0000ae00-0000-1000-8000-00805f9b34fb',
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455','e7810a71-73ae-499d-8c15-faa9aef0c3f2','0000fff0-0000-1000-8000-00805f9b34fb'];
+async function etqBtCanal(){
+  if(ETQ.btCh&&ETQ.bt&&ETQ.bt.gatt.connected)return ETQ.btCh;
+  var dev=ETQ.bt;
+  if(!dev&&navigator.bluetooth.getDevices){try{var ds=await navigator.bluetooth.getDevices();if(ds&&ds.length)dev=ds[0]}catch(e){}}
+  if(!dev)dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:ETQ_SERV});
+  ETQ.bt=dev;
+  var srv=await dev.gatt.connect(),ss=await srv.getPrimaryServices();
+  for(var i=0;i<ss.length;i++){var cs;try{cs=await ss[i].getCharacteristics()}catch(e){continue}
+    for(var j=0;j<cs.length;j++){var p=cs[j].properties;if(p.writeWithoutResponse||p.write){ETQ.btCh=cs[j];return cs[j]}}}
+  throw new Error('a impressora conectou mas não aceita dados (serviço desconhecido)');
+}
+async function etqBtEnvia(bytes){
+  var ch=await etqBtCanal(),pedaco=180;
+  for(var i=0;i<bytes.length;i+=pedaco){
+    var s=bytes.slice(i,i+pedaco);
+    try{if(ch.properties.writeWithoutResponse)await ch.writeValueWithoutResponse(s);else await ch.writeValue(s)}
+    catch(e){if(pedaco>20){pedaco=20;i-=180;continue}throw e}
+    if(ch.properties.writeWithoutResponse)await new Promise(function(r){setTimeout(r,12)});
+  }
+}
+/* calibrar (a impressora mede etiqueta+gap do rolo novo) e avançar em branco:
+   se até o avanço sem imprimir trava, o problema é o papel/calibração */
+async function etqCmd(o){
+  var c=etqCfg(),NL=String.fromCharCode(13,10),m=document.getElementById('eqcmd');
+  if(!navigator.bluetooth){if(m)m.textContent='só pelo Bluetooth';return}
+  var b=c.ling==='escpos'?new Uint8Array([27,64,29,12])
+    :etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+(o==='calibrar'?'GAPDETECT':'FORMFEED')+NL);
+  if(m)m.textContent='enviando…';
+  try{await etqBtEnvia(b);if(m)m.textContent=o==='calibrar'?'✓ calibrando — a impressora puxa 1 ou 2 etiquetas em branco':'✓ avançou'}
+  catch(e){ETQ.btCh=null;if(m)m.textContent='não foi: '+(e&&e.message||e)}
+}
+function etqEsquecer(){try{if(ETQ.bt&&ETQ.bt.gatt.connected)ETQ.bt.gatt.disconnect();if(ETQ.bt&&ETQ.bt.forget)ETQ.bt.forget()}catch(e){}ETQ.bt=null;ETQ.btCh=null;
+  var e=document.getElementById('eqbt');if(e)e.textContent='Bluetooth: na próxima impressão o Chrome pede a impressora.'}
+function etqNavegador(cv,qtd){
+  var c=etqCfg(),src=cv.toDataURL('image/png'),h='';
+  for(var i=0;i<qtd;i++)h+='<img src="'+src+'" style="display:block;width:'+c.w+'mm;height:'+c.h+'mm;page-break-after:always">';
+  var f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  document.body.appendChild(f);
+  var d=f.contentWindow.document;d.open();
+  d.write('<html><head><style>@page{size:'+c.w+'mm '+c.h+'mm;margin:0}html,body{margin:0;padding:0}</style></head><body>'+h+'</body></html>');d.close();
+  setTimeout(function(){f.contentWindow.focus();f.contentWindow.print();setTimeout(function(){f.remove()},60000)},300);
+}
+async function etqImprimir(via){
+  var er=document.getElementById('eqerr'),ok=document.getElementById('eqok');er.textContent='';ok.textContent='';
+  ETQ.nome=((document.getElementById('eqn')||{}).value||'').trim();
+  ETQ.qtd=Math.max(1,Math.min(200,parseInt((document.getElementById('eqq')||{}).value,10)||1));
+  if(!ETQ.nome){er.textContent='diga qual é o insumo';return}
+  if(!ETQ.validade){er.textContent='escolha a validade';return}
+  if(ETQ.validade<etqYmd(new Date())){er.textContent='essa validade já passou';return}
+  var cv=etqDesenha();
+  try{
+    if(via==='bt'){
+      if(!navigator.bluetooth){er.textContent='sem Bluetooth neste navegador — use o Chrome (Android) no endereço https, ou imprima pelo navegador';return}
+      ok.textContent='enviando pra impressora…';
+      await etqBtEnvia(etqBytes(cv,ETQ.qtd));
+      var b=document.getElementById('eqbt');if(b)b.textContent='Bluetooth: conectado em '+(ETQ.bt.name||'impressora');
+    } else etqNavegador(cv,ETQ.qtd);
+  }catch(e){ok.textContent='';er.textContent='não imprimiu: '+(e&&e.message||e);ETQ.btCh=null;return}
+  var r=await jpost('/api/caixa/etiquetas/registrar',{nome:ETQ.nome,validade:ETQ.validade,dias:ETQ.dias,qtd:ETQ.qtd,conservacao:ETQ.cons});
+  ok.textContent='✓ '+ETQ.qtd+(ETQ.qtd>1?' etiquetas':' etiqueta')+' de '+ETQ.nome+' (vence '+etqBr(ETQ.validade)+')'+(r&&r.ok?'':' — não registrou no histórico');
+  etqBusca();
+}
 function telaMov(el){
   MOVT='sangria';FORN=null;
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
@@ -21012,6 +21293,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/fiado') return res.end(JSON.stringify(await apiCaixaFiado(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
+      if (p === '/api/caixa/etiquetas/insumos') return res.end(JSON.stringify(await apiEtiquetaInsumos(u.searchParams.get('q') || '')));
+      if (req.method === 'POST' && p === '/api/caixa/etiquetas/registrar') return res.end(JSON.stringify(await apiEtiquetaRegistrar(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
       if (p === '/api/caixa/avisos-pagamento') return res.end(JSON.stringify(await apiCaixaAvisosPagamento(u.searchParams.get('desde'))));
