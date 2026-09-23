@@ -18738,8 +18738,8 @@ var MOVT='sangria',FORN=null;
    celular — manda o bitmap em TSPL ou ESC/POS) ou o imprimir do navegador
    (PC com a XD-210 no USB, pelo driver). Tamanho/linguagem ficam no aparelho. */
 var ETQ={nome:'',dias:3,validade:'',qtd:1,cons:'refrigerado',sug:[],bt:null,btCh:null};
-var ETQ_TAMS=[[50,50],[40,60],[40,30],[50,30],[40,40],[30,20]];
-function etqCfg(){var c={w:50,h:50,gap:2,ling:'tspl'};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}return c}
+var ETQ_TAMS=[[50,50],[50,30],[30,50],[40,60],[40,30],[40,40],[30,20]];
+function etqCfg(){var c={w:50,h:50,gap:2,ling:'tspl',dens:6};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}return c}
 function etqCfgSalva(k,v){var c=etqCfg();c[k]=v;try{localStorage.setItem('etq_cfg',JSON.stringify(c))}catch(e){}}
 function etqYmd(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
 function etqMaisDias(n){var d=new Date();d.setDate(d.getDate()+n);return etqYmd(d)}
@@ -18774,6 +18774,12 @@ function telaEtq(el){
     '<div class="mut" style="margin-top:10px">Linguagem (se sair em branco ou com lixo, troque)</div>'+
     '<div class="row" style="margin-top:6px"><button class="seg'+(c.ling==='tspl'?' on':'')+'" onclick="etqLing(&quot;tspl&quot;)">TSPL</button>'+
       '<button class="seg'+(c.ling==='escpos'?' on':'')+'" onclick="etqLing(&quot;escpos&quot;)">ESC/POS</button></div>'+
+    '<div class="mut" style="margin-top:10px">Calor da impressão (se a etiqueta grudar/travar, use Fraco)</div>'+
+    '<div class="row" style="grid-template-columns:1fr 1fr 1fr;margin-top:6px" id="eqdens"></div>'+
+    '<div class="mut" style="margin-top:10px">Trocou o rolo ou a etiqueta está travando? Calibre primeiro. Se até o avanço em branco travar, o problema é o papel, não a impressão.</div>'+
+    '<div class="row" style="margin-top:6px"><button class="seg" onclick="etqCmd(&quot;calibrar&quot;)">📏 Calibrar papel</button>'+
+      '<button class="seg" onclick="etqCmd(&quot;avancar&quot;)">⏭ Avançar 1 em branco</button></div>'+
+    '<div id="eqcmd" class="mut" style="margin-top:6px"></div>'+
     '<div class="mut" id="eqbt" style="margin-top:10px"></div>'+
     '<a class="sair" onclick="etqEsquecer()">trocar de impressora Bluetooth</a></div>';
   var n=document.getElementById('eqn');n.value=ETQ.nome;
@@ -18797,6 +18803,9 @@ function etqPinta(){
   var c=etqCfg();h='';
   for(var k=0;k<ETQ_TAMS.length;k++){var t=ETQ_TAMS[k];h+='<button class="seg'+(c.w===t[0]&&c.h===t[1]?' on':'')+'" onclick="etqTam('+t[0]+','+t[1]+')">'+t[0]+'×'+t[1]+'</button>'}
   e=document.getElementById('eqtam');if(e)e.innerHTML=h;
+  var dn=[[3,'Fraco'],[6,'Médio'],[9,'Forte']];h='';
+  for(var d=0;d<dn.length;d++)h+='<button class="seg'+(c.dens===dn[d][0]?' on':'')+'" onclick="etqDens('+dn[d][0]+')">'+dn[d][1]+'</button>';
+  e=document.getElementById('eqdens');if(e)e.innerHTML=h;
   var v=document.getElementById('eqv');if(v)v.value=ETQ.validade;
   var dif=Math.round((new Date(ETQ.validade+'T12:00:00')-new Date(etqYmd(new Date())+'T12:00:00'))/864e5);
   e=document.getElementById('eqvtxt');if(e)e.textContent='vence '+etqBr(ETQ.validade)+' ('+(dif===0?'hoje':dif===1?'amanhã':dif<0?'JÁ VENCIDO':'daqui a '+dif+' dias')+')';
@@ -18805,6 +18814,7 @@ function etqPinta(){
 function etqDias(n){ETQ.dias=n;ETQ.validade=etqMaisDias(n);etqPinta()}
 function etqCons(c){ETQ.cons=c;etqPinta()}
 function etqTam(w,h){etqCfgSalva('w',w);etqCfgSalva('h',h);etqPinta()}
+function etqDens(n){etqCfgSalva('dens',n);etqPinta()}
 function etqLing(l){etqCfgSalva('ling',l);var el=document.getElementById('main');if(el)telaEtq(el)}
 function etqQtd(d){ETQ.qtd=Math.max(1,Math.min(200,(ETQ.qtd||1)+d));var q=document.getElementById('eqq');if(q)q.value=ETQ.qtd}
 var _eqT=null;
@@ -18827,7 +18837,7 @@ function etqEscolhe(i){
 }
 /* desenha a etiqueta: 8 pontos/mm. Cada linha encolhe até caber na largura. */
 function etqDesenha(){
-  var c=etqCfg(),W=c.w*8,H=c.h*8,m=Math.round(1.5*8);
+  var c=etqCfg(),W=c.w*8,H=c.h*8,m=Math.round((c.h<40?2.5:1.5)*8);
   var cv=document.createElement('canvas');cv.width=W;cv.height=H;
   var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='top';
   var agora=new Date(),hm=('0'+agora.getHours()).slice(-2)+':'+('0'+agora.getMinutes()).slice(-2);
@@ -18891,7 +18901,7 @@ function etqBytes(cv,qtd){
   // TSPL: no BITMAP modo 0, bit 0 = preto
   var t=etqBits(cv,false);
   return etqJunta([
-    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY 6'+NL+'SPEED 3'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP 0,0,'+t.wb+','+t.h+',0,'),
+    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY '+(c.dens==null?6:c.dens)+NL+'SPEED 3'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP 0,0,'+t.wb+','+t.h+',0,'),
     t.data,etqAscii(NL+'PRINT 1,'+qtd+NL)]);
 }
 var ETQ_SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
@@ -18916,6 +18926,17 @@ async function etqBtEnvia(bytes){
     catch(e){if(pedaco>20){pedaco=20;i-=180;continue}throw e}
     if(ch.properties.writeWithoutResponse)await new Promise(function(r){setTimeout(r,12)});
   }
+}
+/* calibrar (a impressora mede etiqueta+gap do rolo novo) e avançar em branco:
+   se até o avanço sem imprimir trava, o problema é o papel/calibração */
+async function etqCmd(o){
+  var c=etqCfg(),NL=String.fromCharCode(13,10),m=document.getElementById('eqcmd');
+  if(!navigator.bluetooth){if(m)m.textContent='só pelo Bluetooth';return}
+  var b=c.ling==='escpos'?new Uint8Array([27,64,29,12])
+    :etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+(o==='calibrar'?'GAPDETECT':'FORMFEED')+NL);
+  if(m)m.textContent='enviando…';
+  try{await etqBtEnvia(b);if(m)m.textContent=o==='calibrar'?'✓ calibrando — a impressora puxa 1 ou 2 etiquetas em branco':'✓ avançou'}
+  catch(e){ETQ.btCh=null;if(m)m.textContent='não foi: '+(e&&e.message||e)}
 }
 function etqEsquecer(){try{if(ETQ.bt&&ETQ.bt.gatt.connected)ETQ.bt.gatt.disconnect();if(ETQ.bt&&ETQ.bt.forget)ETQ.bt.forget()}catch(e){}ETQ.bt=null;ETQ.btCh=null;
   var e=document.getElementById('eqbt');if(e)e.textContent='Bluetooth: na próxima impressão o Chrome pede a impressora.'}
