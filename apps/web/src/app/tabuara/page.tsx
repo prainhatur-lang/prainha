@@ -1,5 +1,6 @@
 import Image from 'next/image';
 import { headers } from 'next/headers';
+import Script from 'next/script';
 import { TabuaraGallery } from '@/components/tabuara-gallery';
 
 // Dinâmica de propósito: os links de reserva e delivery dependem do domínio
@@ -41,6 +42,24 @@ const MAPS_URL =
 const MAPS_EMBED =
   'https://www.google.com/maps?q=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju&output=embed';
 const TELEFONE = '(79) 3512-0567';
+
+// Selo Travelers' Choice 2026 do Tripadvisor. O widget deles injeta o HTML
+// final por cima do container (container.innerHTML) no window.onload — por
+// isso o miolo entra por dangerouslySetInnerHTML: assim o React nunca é dono
+// desses filhos e não briga com o script. Se o onload já tiver passado (nav
+// client-side), fica a marcação estática, que é visualmente a mesma coisa.
+// A arte é preta com fundo transparente, então precisa da placa clara — é o
+// mesmo que o CSS deles faz (#CDSWIDCOE tem background #fff, 148px).
+const TA_REVIEW_URL =
+  'https://www.tripadvisor.com.br/Restaurant_Review-g303638-d33110570-Reviews-Tabuara-Aracaju_State_of_Sergipe.html';
+const TA_WIDGET_JS =
+  'https://www.jscache.com/wejs?wtype=certificateOfExcellence&uniq=310&locationId=33110570&lang=pt&year=2026&display_version=2';
+const TA_WIDGET_HTML =
+  `<ul id="htWcxDCsY" class="TA_links Ej4WHO7dV8R"><li id="Dr5NTs7krw" class="rPLKLAlG7e">` +
+  `<a target="_blank" rel="noopener" href="${TA_REVIEW_URL}">` +
+  `<img src="https://static.tacdn.com/img2/travelers_choice/widgets/tchotel_2026_L.png"` +
+  ` alt="Tabuará no Tripadvisor — Travelers&#39; Choice 2026" class="widCOEImg" id="CDSWIDCOELOGO"` +
+  ` style="display:block;width:148px;height:auto" /></a></li></ul>`;
 
 const serif = { fontFamily: 'var(--font-serif-tab)' };
 
@@ -305,11 +324,22 @@ export default async function TabuaraPage() {
               <Instagram className="h-4 w-4" /> @tabuara.se
             </a>
           </div>
+          <div className="mt-10 flex justify-center">
+            <div className="rounded-sm bg-white p-2">
+              <div
+                id="TA_certificateOfExcellence310"
+                className="TA_certificateOfExcellence"
+                dangerouslySetInnerHTML={{ __html: TA_WIDGET_HTML }}
+              />
+            </div>
+          </div>
           <p className="mt-8 border-t border-white/5 pt-6 text-center text-xs text-[#6f6659]">
             © {new Date().getFullYear()} Tabuará. Todos os direitos reservados.
           </p>
         </div>
       </footer>
+
+      <Script src={TA_WIDGET_JS} strategy="afterInteractive" data-loadtrk />
     </main>
   );
 }
