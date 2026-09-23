@@ -115,6 +115,12 @@ export default async function OpPublicaPage(props: {
     .map((c) => c.nome)
     .filter((n): n is string => Boolean(n));
 
+  const [filial] = await db
+    .select({ nome: schema.filial.nome })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, op.filialId))
+    .limit(1);
+
   return (
     <main className="min-h-screen bg-slate-100">
       <CozinheiroOp
@@ -161,6 +167,7 @@ export default async function OpPublicaPage(props: {
           enviadaEm: f.enviadaEm ? f.enviadaEm.toISOString() : null,
         }))}
         sugestoesNomes={sugestoesNomes}
+        loja={filial?.nome ?? ''}
       />
     </main>
   );

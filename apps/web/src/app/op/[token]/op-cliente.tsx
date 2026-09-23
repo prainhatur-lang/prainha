@@ -4,6 +4,7 @@ import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { comprimirImagem, formatBytes } from '@/lib/comprimir-imagem';
 import { normalizaBusca } from '@/lib/texto';
+import { EtiquetasOp } from './etiquetas-op';
 
 interface Op {
   id: string;
@@ -77,6 +78,7 @@ export function CozinheiroOp({
   produtos,
   fotos,
   sugestoesNomes,
+  loja,
 }: {
   token: string;
   op: Op;
@@ -85,6 +87,7 @@ export function CozinheiroOp({
   produtos: ProdutoOpcao[];
   fotos: Foto[];
   sugestoesNomes: string[];
+  loja: string;
 }) {
   const editavel = op.status === 'RASCUNHO' && !op.marcadaProntaEm;
   const router = useRouter();
@@ -215,6 +218,23 @@ export function CozinheiroOp({
           )}
         </div>
       </div>
+
+      {/* depois de pronta: etiquetas de validade do que foi produzido */}
+      {(op.marcadaProntaEm || op.concluidaEm) && op.status !== 'CANCELADA' && (
+        <EtiquetasOp
+          loja={loja}
+          responsavel={op.marcadaProntaPor}
+          produtos={saidasProd
+            .filter((s) => s.produtoNome)
+            .map((s) => ({
+              id: s.id,
+              produtoId: s.produtoId,
+              nome: s.produtoNome!,
+              unidade: s.produtoUnidade,
+              quantidade: Number(s.quantidade),
+            }))}
+        />
+      )}
 
       {/* Fotos da entrada (material recebido) */}
       <FotosSection
