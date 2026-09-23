@@ -18738,8 +18738,8 @@ var MOVT='sangria',FORN=null;
    celular — manda o bitmap em TSPL ou ESC/POS) ou o imprimir do navegador
    (PC com a XD-210 no USB, pelo driver). Tamanho/linguagem ficam no aparelho. */
 var ETQ={nome:'',dias:3,validade:'',qtd:1,cons:'refrigerado',sug:[],bt:null,btCh:null};
-var ETQ_TAMS=[[40,60],[40,30],[50,30],[40,40],[30,20],[50,40]];
-function etqCfg(){var c={w:40,h:60,gap:2,ling:'tspl'};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}return c}
+var ETQ_TAMS=[[50,50],[40,60],[40,30],[50,30],[40,40],[30,20]];
+function etqCfg(){var c={w:50,h:50,gap:2,ling:'tspl'};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}return c}
 function etqCfgSalva(k,v){var c=etqCfg();c[k]=v;try{localStorage.setItem('etq_cfg',JSON.stringify(c))}catch(e){}}
 function etqYmd(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)}
 function etqMaisDias(n){var d=new Date();d.setDate(d.getDate()+n);return etqYmd(d)}
