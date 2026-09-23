@@ -18856,7 +18856,9 @@ function etqDesenha(){
     var fs=l.nm?fsNome:l.fs;g.font=(l.b?'800 ':'500 ')+fs+'px Arial, Helvetica, sans-serif';
     var tw=g.measureText(l.t).width,x=Math.round((W-tw)/2),alt=Math.round(un*l.p*1.22);
     var ty=y+Math.round((alt-fs)/2);
-    if(l.box){g.fillRect(m,y,util,alt);g.fillStyle='#fff';g.fillText(l.t,x,ty);g.fillStyle='#000'}
+    // validade só com MOLDURA: a faixa preta cheia esquentava a cabeça da
+    // XD-210 e a etiqueta grudava e travava a saída (teste 23/09)
+    if(l.box){g.lineWidth=4;g.strokeRect(m+2,y+2,util-4,alt-4);g.fillText(l.t,x,ty)}
     else g.fillText(l.t,x,ty);
     y+=alt;
   });
@@ -18889,7 +18891,7 @@ function etqBytes(cv,qtd){
   // TSPL: no BITMAP modo 0, bit 0 = preto
   var t=etqBits(cv,false);
   return etqJunta([
-    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP 0,0,'+t.wb+','+t.h+',0,'),
+    etqAscii('SIZE '+c.w+' mm,'+c.h+' mm'+NL+'GAP '+(c.gap||2)+' mm,0 mm'+NL+'DENSITY 6'+NL+'SPEED 3'+NL+'DIRECTION 1'+NL+'CLS'+NL+'BITMAP 0,0,'+t.wb+','+t.h+',0,'),
     t.data,etqAscii(NL+'PRINT 1,'+qtd+NL)]);
 }
 var ETQ_SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
