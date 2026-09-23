@@ -920,7 +920,7 @@ async function espelho() {
   // nunca fechou — havia pedido aberto de 2023). Os itens dessas mesas antigas
   // entram MARCADOS como entregues (ver ANTIGO abaixo) pra não cair na cozinha.
   if (!c.ok) throw new Error('FB comandas: ' + c.err);
-  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA, i.CODIGOCOLABORADOR COLAB, TRIM(COALESCE(col.NOME,'')) COLABNOME, CASE WHEN p.DATAABERTURA >= ${DESDE} THEN 0 ELSE 1 END ANTIGO
+  const it = await q(`SELECT i.CODIGO ITEM, i.CODIGOPAI PAI, i.CODIGOPEDIDO PED, i.CODIGOPRODUTODETALHE PDV, i.DATAHORACADASTRO CRIADO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT, i.CODIGOITEMPEDIDOTIPO TIPO, TRIM(i.DETALHES) DET, i.DATAHORAPRODUZIDO PROD, i.DATAHORAENTREGUE ENTR, pr.CODIGOCOZINHA AREA, i.CODIGOCOLABORADOR COLAB, TRIM(COALESCE(col.NOME,'')) COLABNOME, CASE WHEN p.DATAABERTURA >= ${DESDE} OR i.DATAHORACADASTRO >= ${DESDE} THEN 0 ELSE 1 END ANTIGO
     FROM ITENSPEDIDO i JOIN PEDIDOS p ON p.CODIGO=i.CODIGOPEDIDO
     LEFT JOIN PRODUTODETALHE pd ON pd.CODIGO=i.CODIGOPRODUTODETALHE
     LEFT JOIN PRODUTOS pr ON pr.CODIGO=pd.CODIGOPRODUTO
@@ -944,6 +944,9 @@ async function espelho() {
   // baixados dessas contas velhas cairiam no "a produzir" da cozinha. O garçom
   // ainda vê o item na mesa (como entregue); a cozinha não vê. Carimbo = a
   // própria criação do item (histórico), com fallback pros campos do Consumer.
+  // ANTIGO é o ITEM, não a mesa: item lançado HOJE numa mesa aberta há semanas
+  // tem que ir pra cozinha (23/09: catado na mesa 1 da Prainha Mar, aberta
+  // desde 03/09, nasceu "entregue" e não apareceu no KDS).
   const itens = it.rows.map((x) => {
     const antigo = Number(x.ANTIGO) === 1;
     const feito = x.CRIADO || x.PROD || x.ENTR || null;
