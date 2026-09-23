@@ -17375,13 +17375,14 @@ async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:{'content-t
    Mora no KDS (/etiqueta), não no caixa: quem etiqueta é a cozinha, sem login
    — o responsável é digitado e fica lembrado no aparelho. */
 var ETQ={resp:(function(){try{return localStorage.getItem('etq_resp')||''}catch(e){return ''}})(),nome:'',dias:3,validade:'',qtd:1,cons:'refrigerado',sug:[],bt:null,btCh:null};
-/* os 2 rolos da casa (largura × comprimento). Imprime 2mm a menos que a
+/* os 2 rolos da casa, [largura na cabeça, comprimento no avanço]. O "30x50"
+   é 50 de largura × 30 no avanço (paisagem): mandar SIZE 30,50 fazia 1 etiqueta
+   sair espalhada em 2 e em pé (teste 23/09). Imprime 2mm a menos que a
    etiqueta (1mm de cada lado): na borda a XD-210 cortava a moldura da validade */
-var ETQ_TAMS=[[50,50],[30,50]];
+var ETQ_TAMS=[[50,50],[50,30]];
 function etqCfg(){var c={w:50,h:50,gap:2,ling:'tspl',dens:6,dx:0};try{var x=JSON.parse(localStorage.getItem('etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}
-  // config antiga (48x50, 48x30, 40x..): encaixa num dos 2 rolos. O 30 de largura
-  // já saiu DEITADO no tablet porque estava marcado 48x30 (teste 23/09)
-  if(!ETQ_TAMS.some(function(t){return t[0]===c.w&&t[1]===c.h})){if(c.w<=30||c.h<=30){c.w=30;c.h=50}else{c.w=50;c.h=50}}
+  // config antiga (30x50, 48x50, 48x30, 40x..): encaixa num dos 2 rolos
+  if(!ETQ_TAMS.some(function(t){return t[0]===c.w&&t[1]===c.h})){if(c.w<=30||c.h<=30){c.w=50;c.h=30}else{c.w=50;c.h=50}}
   c.dx=Math.max(0,Math.min(20,parseInt(c.dx,10)||0));return c}
 /* área impressa em pontos (8/mm): etiqueta - 2mm, no máximo os 48mm da cabeça */
 function etqArea(c){return {W:Math.min(c.w-2,48)*8,H:(c.h-2)*8}}
@@ -17416,7 +17417,7 @@ function telaEtq(el){
     '<button class="big g" onclick="etqImprimir(&quot;nav&quot;)">Imprimir pelo navegador (USB)</button>'+
     '<div id="eqerr" class="err"></div><div id="eqok" class="mut" style="margin-top:6px"></div></div>'+
     '<div class="card"><div class="tit" style="margin-top:0">⚙ Impressora deste aparelho</div>'+
-    '<div class="mut">Tamanho do rolo (largura × comprimento, mm)</div>'+
+    '<div class="mut">Tamanho do rolo (mm)</div>'+
     '<div class="row" style="margin-top:6px" id="eqtam"></div>'+
     '<div class="mut" style="margin-top:10px">Posição (se sair torta pra um lado, empurre pra direita)</div>'+
     '<div class="row" style="grid-template-columns:64px 1fr 64px;align-items:center;margin-top:6px">'+
@@ -17457,7 +17458,7 @@ function etqPinta(){
   for(var j=0;j<cs.length;j++)h+='<button class="seg'+(ETQ.cons===cs[j][0]?' on':'')+'" onclick="etqCons(&quot;'+cs[j][0]+'&quot;)">'+cs[j][1]+'</button>';
   e=document.getElementById('eqcons');if(e)e.innerHTML=h;
   var c=etqCfg();h='';
-  for(var k=0;k<ETQ_TAMS.length;k++){var t=ETQ_TAMS[k];h+='<button class="seg'+(c.w===t[0]&&c.h===t[1]?' on':'')+'" onclick="etqTam('+t[0]+','+t[1]+')">'+t[0]+'×'+t[1]+(t[0]<t[1]?' (estreita)':'')+'</button>'}
+  for(var k=0;k<ETQ_TAMS.length;k++){var t=ETQ_TAMS[k];h+='<button class="seg'+(c.w===t[0]&&c.h===t[1]?' on':'')+'" onclick="etqTam('+t[0]+','+t[1]+')">'+Math.min(t[0],t[1])+'×'+Math.max(t[0],t[1])+'</button>'}
   e=document.getElementById('eqtam');if(e)e.innerHTML=h;
   e=document.getElementById('eqdx');if(e)e.textContent=c.dx?'+'+c.dx+' mm pra direita':'normal';
   e=document.getElementById('eqinv');if(e)e.innerHTML='<button class="seg'+(c.inv?'':' on')+'" onclick="etqInv(0)">Normal</button><button class="seg'+(c.inv?' on':'')+'" onclick="etqInv(1)">Invertida (180°)</button>';
@@ -17496,10 +17497,8 @@ function etqEscolhe(i){
   etqPinta();
 }
 /* desenha a etiqueta: 8 pontos/mm. Cada linha encolhe até caber na largura. */
-/* rolo estreito (30 de largura × 50): a etiqueta é lida DEITADA (paisagem,
-   texto ao longo dos 50mm) — desenha em paisagem e gira 90° pro bitmap */
 function etqDesenha(){
-  var c=etqCfg(),a=etqArea(c),dt=c.w<c.h,W=dt?a.H:a.W,H=dt?a.W:a.H,m=8;
+  var c=etqCfg(),a=etqArea(c),W=a.W,H=a.H,m=8;
   var cv=document.createElement('canvas');cv.width=W;cv.height=H;
   var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='top';
   var agora=new Date(),hm=('0'+agora.getHours()).slice(-2)+':'+('0'+agora.getMinutes()).slice(-2);
@@ -17535,12 +17534,6 @@ function etqDesenha(){
     y+=alt;
   });
   return cv;
-}
-function etqGira(cv){
-  var c=etqCfg();if(!(c.w<c.h))return cv;
-  var o=document.createElement('canvas');o.width=cv.height;o.height=cv.width;
-  var g=o.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,o.width,o.height);
-  g.translate(o.width,0);g.rotate(Math.PI/2);g.drawImage(cv,0,0);return o;
 }
 function etqPrevia(){
   var p=document.getElementById('eqcv');if(!p)return;
@@ -17626,7 +17619,7 @@ async function etqImprimir(via){
   if(!ETQ.resp){er.textContent='diga quem é o responsável';return}
   if(!ETQ.validade){er.textContent='escolha a validade';return}
   if(ETQ.validade<etqYmd(new Date())){er.textContent='essa validade já passou';return}
-  var cv=etqGira(etqDesenha());
+  var cv=etqDesenha();
   try{
     if(via==='bt'){
       if(!navigator.bluetooth){er.textContent='sem Bluetooth neste navegador — use o Chrome (Android) no endereço https, ou imprima pelo navegador';return}
