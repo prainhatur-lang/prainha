@@ -12106,6 +12106,46 @@ function comandaHTML(c,modo,idx){
 // cadastrado — a pessoa toca o próprio nome uma única vez na vida.
 var PF_MODELOS_OK=false, PF_ROSTOS=[], PF_SEM_ROSTO=[], PF_STREAM=null, PF_STREAM_PROPRIO=false, PF_LOOP=null;
 var PF_OCUPADO=false, PF_PROCESSANDO=false, PF_CADASTRANDO=null;
+var PF_PREP=null, PF_MOTOR='';
+function PF_OPTS(){ return new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5}); }
+function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t)e.textContent=t; }
+/* Carrega a lib + modelos UMA vez e aquece as redes (a 1a inferencia compila
+   shaders/aloca memoria e leva segundos). Roda em segundo plano logo que o KDS
+   abre, entao o toque no Ponto ja encontra tudo pronto.
+   Motor: WebGL (GPU, bem mais rapido que CPU). Se o WebView morrer no
+   aquecimento (suspeita de 23/09 no Fully), a marca pf_gl_teste sobrevive ao
+   recarregar e dai em diante ESTE aparelho usa CPU. */
+function pfPrepara(){
+  if (PF_PREP) return PF_PREP;
+  PF_PREP=(async function(){
+    try { await pfCarregaScript('/facelib/face-api.js'); }
+    catch(x) { throw new Error('não carregou o reconhecimento facial do servidor da loja (facelib) — tente de novo em 1 minuto'); }
+    var ls=null; try { ls=window.localStorage; } catch(x) {}
+    function lsGet(k){ try { return ls?ls.getItem(k):null; } catch(x) { return null; } }
+    function lsSet(k,v){ try { if(ls){ if(v==null)ls.removeItem(k); else ls.setItem(k,v); } } catch(x) {} }
+    if (lsGet('pf_gl_teste')==='1') { lsSet('pf_motor','cpu'); lsSet('pf_gl_teste',null); }
+    if (lsGet('pf_motor')==='cpu') { try { await faceapi.tf.setBackend('cpu'); } catch(x) {} }
+    await faceapi.tf.ready();
+    PF_MOTOR=faceapi.tf.getBackend();
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri('/facelib/models'),
+      faceapi.nets.faceLandmark68Net.loadFromUri('/facelib/models'),
+      faceapi.nets.faceRecognitionNet.loadFromUri('/facelib/models')]);
+    var gl=(PF_MOTOR==='webgl');
+    if (gl) lsSet('pf_gl_teste','1');
+    var c=document.createElement('canvas'); c.width=150; c.height=150;
+    var g=c.getContext('2d'); g.fillStyle='#888'; g.fillRect(0,0,150,150);
+    await faceapi.detectSingleFace(c, PF_OPTS());
+    await faceapi.nets.faceLandmark68Net.detectLandmarks(c);
+    await faceapi.nets.faceRecognitionNet.computeFaceDescriptor(c);
+    if (gl) lsSet('pf_gl_teste',null);
+    PF_MODELOS_OK=true;
+  })();
+  PF_PREP.catch(function(){ PF_PREP=null; });
+  return PF_PREP;
+}
+if (navigator.maxTouchPoints>0 && window.isSecureContext)
+  setTimeout(function(){ pfPrepara().catch(function(){}); }, 8000);
 function pfCarregaScript(src){
   return new Promise(function(resolve,reject){
     if (window.faceapi) { resolve(); return; }
@@ -12130,27 +12170,18 @@ async function abrirPontoFacial(){
     return;
   }
   try {
-    if (!PF_MODELOS_OK) {
-      try { await pfCarregaScript('/facelib/face-api.js'); }
-      catch(x) { throw new Error('não carregou o reconhecimento facial do servidor da loja (facelib) — tente de novo em 1 minuto'); }
-      // Tablet Android (Fully/WebView): a 1a passada das redes de landmark +
-      // reconhecimento no WebGL estourava a memoria da GPU e o WebView morria —
-      // o Fully recarregava o KDS sem mensagem nenhuma (23/09/2026, nenhuma
-      // batida nem rosto chegou no banco). CPU e mais lento (~1-2s) mas nao cai.
-      if (/Android/i.test(navigator.userAgent)) { try { await faceapi.tf.setBackend('cpu'); await faceapi.tf.ready(); } catch(x) {} }
-      await faceapi.nets.tinyFaceDetector.loadFromUri('/facelib/models');
-      await faceapi.nets.faceLandmark68Net.loadFromUri('/facelib/models');
-      await faceapi.nets.faceRecognitionNet.loadFromUri('/facelib/models');
-      PF_MODELOS_OK=true;
-    }
-    var d=await (await fetch('/api/ponto/pessoas',{cache:'no-store'})).json();
+    // roster em paralelo com a preparacao (que normalmente ja terminou em 2o plano)
+    var pRoster=fetch('/api/ponto/pessoas',{cache:'no-store'}).then(function(r){return r.json()});
+    if (!PF_MODELOS_OK) document.getElementById('pfSub').textContent='só demora assim na primeira vez';
+    await pfPrepara();
+    var d=await pRoster;
     var pessoas=d.pessoas||[];
     PF_ROSTOS=pessoas.filter(function(p){return p.face_descriptor}).map(function(p){
       return {funcionario_id:p.funcionario_id, nome:p.nome, descriptor:new Float32Array(p.face_descriptor)};
     });
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
-    document.getElementById('pfStatus').textContent='Aproxime o rosto da câmera';
-    document.getElementById('pfSub').textContent='';
+    pfSt('Olhe para a câmera');
+    document.getElementById('pfSub').textContent=(PF_MOTOR==='webgl'?'':'modo lento ('+PF_MOTOR+')');
     // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
     // stream da mesma camera falha em varios tablets Android (NotReadableError)
     // — entao o ponto reaproveita o que ja esta aberto e NAO o desliga ao fechar.
@@ -12163,7 +12194,7 @@ async function abrirPontoFacial(){
     // fica sem quadro, videoWidth=0 e o pfTick nunca reconhece ninguem.
     try { await video.play(); } catch(x) {}
     clearInterval(PF_LOOP);
-    PF_LOOP=setInterval(pfTick,700);
+    PF_LOOP=setInterval(pfTick,250);
   } catch(e) {
     var nome=e&&e.name;
     document.getElementById('pfStatus').textContent='Não consegui abrir a câmera';
@@ -12180,9 +12211,15 @@ async function pfTick(){
   if (!video||!video.videoWidth) return;
   PF_PROCESSANDO=true;
   try {
-    var det=await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
-      .withFaceLandmarks().withFaceDescriptor();
-    if (!det) return; // ninguém na frente — segue tentando, sem erro
+    // 1o so o detector (barato, 224px). As redes pesadas (landmarks +
+    // descritor) so rodam quando TEM rosto — e a tela avisa antes, pra
+    // ninguem achar que travou.
+    var achou=await faceapi.detectSingleFace(video, PF_OPTS());
+    if (!achou) { pfSt('Olhe para a câmera'); return; }
+    pfSt('Reconhecendo… fique parado');
+    await new Promise(function(r){ setTimeout(r,30); }); // deixa pintar o texto
+    var det=await faceapi.detectSingleFace(video, PF_OPTS()).withFaceLandmarks().withFaceDescriptor();
+    if (!det) { pfSt('Olhe para a câmera'); return; }
     if (!PF_ROSTOS.length) { pfMostraListaCadastro(det.descriptor); return; }
     var melhor=null;
     for (var i=0;i<PF_ROSTOS.length;i++){
@@ -12207,7 +12244,7 @@ async function pfBater(pessoa){
     document.getElementById('pfSub').textContent=pessoa.nome;
   } else {
     document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
-    if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,700); return; }
+    if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
   }
   setTimeout(fecharPontoFacial, 3000);
 }
