@@ -344,6 +344,13 @@ export function calcularFolha(args: {
       }
       valor = total;
       detalhe = `${config.ppGerente}pp dos 10% da semana`;
+      if (valor === 0 && config.ppGerente === 0) {
+        // Loja sem pp de gerente + gerente sem acordo definido = some da
+        // folha sem ninguém perceber (Cauã/Prainha Bar 14–20/09/2026).
+        avisos.push(
+          `${g.nome}: gerente ${g.gerenteModelo ? 'no modelo 1pp' : 'SEM acordo definido'} e a loja tem 0pp de gerente — sem pró-labore. Defina o acordo (fixo por dia) em /rh/funcionarios.`,
+        );
+      }
     } else if (g.gerenteModelo === 'fixo_por_dia' && g.gerenteValorFixoDia) {
       // Se o gerente BATE PONTO (tem folha_horas na semana), conta os dias
       // dele com horas>0 — assim falta desconta. Caso nao bata ponto, usa
