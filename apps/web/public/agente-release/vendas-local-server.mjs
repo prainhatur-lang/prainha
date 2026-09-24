@@ -8380,8 +8380,14 @@ async function apiPontoBaterFacial(body) {
     }
   }
 
-  const tipo = ultimaGeral && ultimaGeral.tipo === 'entrada' ? 'saida' : 'entrada';
+  // Entrada/saída pelas batidas do DIA OPERACIONAL (vira às PONTO_VIRADA_HORA,
+  // então turno que passa da meia-noite continua no mesmo dia). Antes olhava a
+  // última batida da vida: quem esqueceu a saída ontem "saía" ao chegar hoje.
   const dia = diaOperacionalDe(agora);
+  const ultimaHoje = (await sql`SELECT tipo FROM ponto_batida
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia}
+    ORDER BY quando DESC LIMIT 1`)[0];
+  const tipo = ultimaHoje && ultimaHoje.tipo === 'entrada' ? 'saida' : 'entrada';
   await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
     VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local})`;
 
@@ -11873,7 +11879,8 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfclose{position:absolute;top:18px;right:18px;background:rgba(255,255,255,.14);border:none;color:#fff;width:44px;height:44px;border-radius:50%;font-size:20px;cursor:pointer}
 .pflist{margin-top:14px;max-height:38vh;overflow:auto;width:min(88vw,460px);display:grid;gap:8px}
 .pflist button{background:#fff;color:#1b1b20;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
-.pfconfirm{font-size:27px;font-weight:800;text-align:center}
+.pfconfirm{font-size:27px;font-weight:800;text-align:center;border:3px solid currentColor;border-radius:16px;padding:14px 22px}
+.pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
 .pfconfirm.saida{color:#f59e0b}.pfconfirm.entrada{color:#22c55e}
 .pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:none;font-size:15px;margin-top:14px}
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
@@ -12232,21 +12239,28 @@ async function pfTick(){
 }
 async function pfBater(pessoa){
   clearInterval(PF_LOOP);
-  document.getElementById('pfStatus').textContent='Reconhecendo '+pessoa.nome+'…';
+  document.getElementById('pfStatus').textContent='Registrando o ponto de '+pessoa.nome+'…';
   var r;
   try {
     r=await (await fetch('/api/ponto/bater-facial',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({funcionario_id:pessoa.funcionario_id})})).json();
   } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
   if (r.ok) {
-    document.getElementById('pfStatus').innerHTML='<div class="pfconfirm '+r.tipo+'">'+
-      (r.tipo==='entrada'?'Entrada Registrada':'Saída Registrada')+'</div>';
-    document.getElementById('pfSub').textContent=pessoa.nome;
+    // A pessoa TEM que ver se foi entrada ou saída — grande, com cor e hora.
+    var ent=(r.tipo==='entrada');
+    var hora=new Date(r.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    var st=document.getElementById('pfStatus'); st.innerHTML='';
+    var cx=document.createElement('div'); cx.className='pfconfirm '+r.tipo;
+    cx.innerHTML='<div class="pfbig">'+(ent?'➡️ ENTRADA':'⬅️ SAÍDA')+'</div><div class="pfhora">registrada às '+hora+'</div>';
+    st.appendChild(cx);
+    var tot=r.total_min_hoje||0;
+    document.getElementById('pfSub').textContent=(ent?'Bom trabalho, ':'Até logo, ')+pessoa.nome+
+      (!ent&&tot?' — hoje: '+Math.floor(tot/60)+'h'+String(tot%60).padStart(2,'0'):'');
   } else {
     document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
     if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
   }
-  setTimeout(fecharPontoFacial, 3000);
+  setTimeout(fecharPontoFacial, 4500);
 }
 function pfMostraListaCadastro(descriptor){
   if (PF_CADASTRANDO) return; // já mostrando a lista — não repinta a cada tick
