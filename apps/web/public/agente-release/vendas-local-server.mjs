@@ -11850,6 +11850,26 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:none;font-size:15px;margin-top:14px}
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header id="hd"></header><div id="app"></div>
+<script>
+/* TELA CHEIA SEM INSTALAR: o "Instalar app" do Chrome so tira a barra de
+   endereco se o endereco http://IP:porta estiver liberado na flag
+   unsafely-treat-insecure-origin-as-secure — e isso falha direto no tablet.
+   A Fullscreen API funciona em http sem flag nenhuma: qualquer toque na tela
+   (que o cozinheiro ja da pra marcar pronto) coloca em tela cheia. Se sair
+   (botao voltar do Android), o proximo toque volta. So em aparelho de toque —
+   no PC o Esc ficaria brigando com o usuario. */
+(function(){
+  var el=document.documentElement;
+  var req=el.requestFullscreen||el.webkitRequestFullscreen;
+  if(!req||!(navigator.maxTouchPoints>0))return;
+  function jaApp(){return window.matchMedia('(display-mode: fullscreen)').matches||window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true}
+  function cheio(){return !!(document.fullscreenElement||document.webkitFullscreenElement)}
+  document.addEventListener('pointerup',function(){
+    if(jaApp()||cheio())return;
+    try{var r=req.call(el,{navigationUI:'hide'});if(r&&r.catch)r.catch(function(){})}catch(e){}
+  },true);
+})();
+</script>
 <div id="pfModal">
   <button class="pfclose" onclick="fecharPontoFacial()">✕</button>
   <video id="pfVideo" autoplay playsinline muted></video>
@@ -20160,6 +20180,9 @@ ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
     <button class="big" id="binst" onclick="instalar()" style="display:none">📲 Instalar em tela cheia</button>
     <button class="big g" onclick="atualizar()">🔄 Atualizar o sistema agora</button>
   </div>
+  <div class="card"><div class="tit">Jeito rápido (sem instalar nada)</div>
+    <div class="mut">No KDS (Produção/Entrega) basta <b>tocar em qualquer lugar da tela</b>: ele entra em tela cheia e a barra de endereço some. Se alguém apertar o voltar do Android e a barra voltar, o próximo toque esconde de novo. Pra abrir rápido, deixe um atalho do KDS na tela inicial (⋮ → Adicionar à tela inicial).</div>
+  </div>
   <div class="card"><div class="tit">1 · Liberar este endereço no Chrome</div>
     <div class="mut">É o que deixa o tablet instalar o app em tela cheia <b>e</b> usar a câmera. Uma vez por aparelho.</div>
     <div class="end"><span id="flagurl"></span><button onclick="copiar('flagurl',this)">copiar</button></div>
@@ -20252,7 +20275,7 @@ function copiar(id,btn){
   function manual(){var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy');ok()}catch(e){}a.remove()}
 }
 function ir(id){location.href=document.getElementById(id).textContent}
-document.getElementById('flagurl').textContent='http://'+location.hostname+':8790';
+document.getElementById('flagurl').textContent='http://'+location.hostname+(location.port?':'+location.port:'');
 document.getElementById('e1').textContent=base+'/caixa';
 document.getElementById('e2').textContent=base+'/';
 document.getElementById('e3').textContent=base+'/entrega';
