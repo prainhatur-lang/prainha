@@ -8507,7 +8507,11 @@ async function loopPontoNuvem() {
   pontoNuvemRodando = true;
   try {
     const desde = Number(await cfgGet('ponto_nuvem_ate', '0')) || 0;
-    const rows = await sql`SELECT id, funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local
+    // dia_operacional::text — como date o postgres.js devolve Date, o JSON vira
+    // "2026-09-23T03:00:00.000Z" e a nuvem recusava o lote inteiro ('corpo
+    // inválido', regex YYYY-MM-DD): nenhuma batida tinha chegado até 24/09/2026.
+    const rows = await sql`SELECT id, funcionario_id, quando, dia_operacional::text AS dia_operacional,
+      tipo, dispositivo, login_local
       FROM ponto_batida WHERE id > ${desde} ORDER BY id LIMIT 200`;
     if (!rows.length) return;
     const e = Math.floor(Date.now() / 1000) + 120;
