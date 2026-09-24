@@ -12076,7 +12076,7 @@ function comandaHTML(c,modo,idx){
 // só tenta de novo (o loop de detecção continua). Na primeira vez que
 // ninguém bate com o roster, mostra a lista de quem ainda não tem rosto
 // cadastrado — a pessoa toca o próprio nome uma única vez na vida.
-var PF_MODELOS_OK=false, PF_ROSTOS=[], PF_SEM_ROSTO=[], PF_STREAM=null, PF_LOOP=null;
+var PF_MODELOS_OK=false, PF_ROSTOS=[], PF_SEM_ROSTO=[], PF_STREAM=null, PF_STREAM_PROPRIO=false, PF_LOOP=null;
 var PF_OCUPADO=false, PF_PROCESSANDO=false, PF_CADASTRANDO=null;
 function pfCarregaScript(src){
   return new Promise(function(resolve,reject){
@@ -12091,6 +12091,16 @@ async function abrirPontoFacial(){
   document.getElementById('pfSub').textContent='';
   document.getElementById('pfExtra').innerHTML='';
   PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false;
+  // Em http://IP:8790 o navegador nem expoe navigator.mediaDevices — antes o
+  // erro saia como "Cannot read properties of undefined". Leva pro https.
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    document.getElementById('pfStatus').textContent='A câmera só abre no endereço seguro';
+    document.getElementById('pfSub').textContent=window.isSecureContext?'este navegador não dá acesso à câmera':
+      'toque abaixo; se o Chrome avisar, toque em Avançado e depois em Continuar';
+    if (!window.isSecureContext) document.getElementById('pfExtra').innerHTML=
+      '<button class="pfbusca" style="cursor:pointer;font-weight:700" onclick="location.href=urlSegura()">🔒 Abrir no endereço seguro</button>';
+    return;
+  }
   try {
     if (!PF_MODELOS_OK) {
       await pfCarregaScript('/facelib/face-api.js');
@@ -12107,14 +12117,24 @@ async function abrirPontoFacial(){
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
     document.getElementById('pfStatus').textContent='Aproxime o rosto da câmera';
     document.getElementById('pfSub').textContent='';
-    PF_STREAM=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
+    // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
+    // stream da mesma camera falha em varios tablets Android (NotReadableError)
+    // — entao o ponto reaproveita o que ja esta aberto e NAO o desliga ao fechar.
+    var reuso=CAM.pronta&&CAM.stream&&CAM.stream.getVideoTracks().some(function(t){return t.readyState==='live'});
+    PF_STREAM_PROPRIO=!reuso;
+    PF_STREAM=reuso?CAM.stream:await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
     var video=document.getElementById('pfVideo');
     video.srcObject=PF_STREAM;
     clearInterval(PF_LOOP);
     PF_LOOP=setInterval(pfTick,700);
   } catch(e) {
+    var nome=e&&e.name;
     document.getElementById('pfStatus').textContent='Não consegui abrir a câmera';
-    document.getElementById('pfSub').textContent=String((e&&e.message)||e);
+    document.getElementById('pfSub').textContent=
+      nome==='NotAllowedError'?'permissão da câmera negada — toque no cadeado da barra de endereço e permita a Câmera':
+      nome==='NotReadableError'?'a câmera está presa por outro app ou outra aba — feche e tente de novo':
+      nome==='NotFoundError'?'este aparelho não tem câmera frontal disponível':
+      String((e&&e.message)||e);
   }
 }
 async function pfTick(){
@@ -12191,7 +12211,9 @@ async function pfCadastrar(funcionarioId){
 }
 function fecharPontoFacial(){
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
-  if (PF_STREAM) { PF_STREAM.getTracks().forEach(function(t){t.stop();}); PF_STREAM=null; }
+  if (PF_STREAM && PF_STREAM_PROPRIO) PF_STREAM.getTracks().forEach(function(t){t.stop();});
+  PF_STREAM=null; PF_STREAM_PROPRIO=false;
+  var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
   document.getElementById('pfModal').classList.remove('on');
 }
 async function selecao(){
