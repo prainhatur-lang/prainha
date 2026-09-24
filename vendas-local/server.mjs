@@ -991,6 +991,9 @@ async function espelho() {
 
   await sql.begin(async (sql) => {
     if (areas.length) for (const a of areas) await sql`INSERT INTO area (codigo, nome) VALUES (${a.codigo}, ${a.nome}) ON CONFLICT (codigo) DO UPDATE SET nome=EXCLUDED.nome`;
+    // Praça apagada no Consumer some daqui também — senão fica no KDS pra
+    // sempre, vazia (23/09: Prainha Mar juntou DRINKS no BAR e COZ PRAINHA na PRINCIPAL).
+    if (areas.length) await sql`DELETE FROM area WHERE NOT (codigo = ANY(${areas.map((a) => a.codigo)}))`;
     for (const n of encerrados) {
       await sql`INSERT INTO mesa_estado (numero, conta_codigo, fechada_em) VALUES (${n}, NULL, now())
         ON CONFLICT (numero) DO UPDATE SET conta_codigo=NULL, fechada_em=now()`;
