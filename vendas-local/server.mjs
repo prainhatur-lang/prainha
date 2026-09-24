@@ -15,7 +15,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
-  readdirSync, rmSync, openSync } from 'node:fs';
+  readdirSync, rmSync, openSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
@@ -11752,6 +11752,31 @@ async function apiBaixas(limite, area) {
 }
 
 // ---- HTML (uma SPA; rota / = produção, /entrega = entrega) ----
+// A pasta facelib/ (face-api.js + modelos, ~8 MB) nunca foi junto no
+// auto-update — ele só troca o server.mjs. Loja que atualizou sozinha ficava
+// sem ela e o ponto do KDS morria em "Não consegui abrir a câmera" (o script
+// dava 404). Agora, faltando, baixa da nuvem uma vez e grava no disco.
+const _facelibBaixando = new Map();
+async function facelibArquivo(rel) {
+  const arq = path.join(process.cwd(), 'facelib', ...rel.split('/'));
+  if (existsSync(arq)) return arq;
+  if (!_facelibBaixando.has(rel)) {
+    _facelibBaixando.set(rel, (async () => {
+      try {
+        const r = await fetch(PAGAR_MESA_URL + '/agente-release/facelib/' + rel, { signal: AbortSignal.timeout(90000) });
+        if (!r.ok) { console.log('[facelib] ' + rel + ': HTTP ' + r.status); return null; }
+        const buf = Buffer.from(await r.arrayBuffer());
+        mkdirSync(path.dirname(arq), { recursive: true });
+        writeFileSync(arq + '.tmp', buf);
+        renameSync(arq + '.tmp', arq);
+        console.log('[facelib] baixado ' + rel + ' (' + buf.length + ' bytes)');
+        return arq;
+      } catch (e) { console.log('[facelib] falhei em baixar ' + rel + ': ' + e.message); return null; }
+      finally { _facelibBaixando.delete(rel); }
+    })());
+  }
+  return _facelibBaixando.get(rel);
+}
 const HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/app.webmanifest?t=kds"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — KDS</title><style>
 :root{--bg:#f2f2f5;--card:#ffffff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626;--deliv:#2563eb;--mesa:#c0850f;--roxo:#6d5bd0;--roxo2:#5a49bd}
@@ -12106,7 +12131,8 @@ async function abrirPontoFacial(){
   }
   try {
     if (!PF_MODELOS_OK) {
-      await pfCarregaScript('/facelib/face-api.js');
+      try { await pfCarregaScript('/facelib/face-api.js'); }
+      catch(x) { throw new Error('não carregou o reconhecimento facial do servidor da loja (facelib) — tente de novo em 1 minuto'); }
       await faceapi.nets.tinyFaceDetector.loadFromUri('/facelib/models');
       await faceapi.nets.faceLandmark68Net.loadFromUri('/facelib/models');
       await faceapi.nets.faceRecognitionNet.loadFromUri('/facelib/models');
@@ -12128,6 +12154,9 @@ async function abrirPontoFacial(){
     PF_STREAM=reuso?CAM.stream:await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
     var video=document.getElementById('pfVideo');
     video.srcObject=PF_STREAM;
+    // WebView (Fully Kiosk) nem sempre respeita o autoplay: sem play() o video
+    // fica sem quadro, videoWidth=0 e o pfTick nunca reconhece ninguem.
+    try { await video.play(); } catch(x) {}
     clearInterval(PF_LOOP);
     PF_LOOP=setInterval(pfTick,700);
   } catch(e) {
@@ -21287,16 +21316,16 @@ const server = http.createServer(async (req, res) => {
     if (p === '/ponto') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PONTO_HTML); }
     // Biblioteca + modelos do face-api.js — vendorizados (offline, nunca CDN).
     if (p === '/facelib/face-api.js') {
-      const arq = path.join(process.cwd(), 'facelib', 'face-api.js');
-      if (!existsSync(arq)) { res.writeHead(404); return res.end('não encontrado'); }
+      const arq = await facelibArquivo('face-api.js');
+      if (!arq) { res.writeHead(404); return res.end('não encontrado'); }
       res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=604800' });
       return createReadStream(arq).pipe(res);
     }
     if (p.startsWith('/facelib/models/')) {
       const nome = p.slice('/facelib/models/'.length);
       if (!/^[a-z0-9_.-]+$/i.test(nome)) { res.writeHead(400); return res.end('nome inválido'); }
-      const arq = path.join(process.cwd(), 'facelib', 'models', nome);
-      if (!existsSync(arq)) { res.writeHead(404); return res.end('não encontrado'); }
+      const arq = await facelibArquivo('models/' + nome);
+      if (!arq) { res.writeHead(404); return res.end('não encontrado'); }
       const ct = nome.endsWith('.json') ? 'application/json; charset=utf-8' : 'application/octet-stream';
       res.writeHead(200, { 'content-type': ct, 'cache-control': 'public, max-age=604800' });
       return createReadStream(arq).pipe(res);
