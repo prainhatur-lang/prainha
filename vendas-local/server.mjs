@@ -12133,6 +12133,11 @@ async function abrirPontoFacial(){
     if (!PF_MODELOS_OK) {
       try { await pfCarregaScript('/facelib/face-api.js'); }
       catch(x) { throw new Error('não carregou o reconhecimento facial do servidor da loja (facelib) — tente de novo em 1 minuto'); }
+      // Tablet Android (Fully/WebView): a 1a passada das redes de landmark +
+      // reconhecimento no WebGL estourava a memoria da GPU e o WebView morria —
+      // o Fully recarregava o KDS sem mensagem nenhuma (23/09/2026, nenhuma
+      // batida nem rosto chegou no banco). CPU e mais lento (~1-2s) mas nao cai.
+      if (/Android/i.test(navigator.userAgent)) { try { await faceapi.tf.setBackend('cpu'); await faceapi.tf.ready(); } catch(x) {} }
       await faceapi.nets.tinyFaceDetector.loadFromUri('/facelib/models');
       await faceapi.nets.faceLandmark68Net.loadFromUri('/facelib/models');
       await faceapi.nets.faceRecognitionNet.loadFromUri('/facelib/models');
@@ -12423,6 +12428,7 @@ setInterval(async function(){
   if(!v||!v.versao||v.versao===VERSAO_MINHA)return;
   if(typeof CART!=='undefined'&&CART&&CART.length)return;
   if(document.visibilityState!=='visible')return;
+  var pf=document.getElementById('pfModal'); if(pf&&pf.classList.contains('on'))return; // no meio do ponto
   location.reload();
 },60000);
 </script></body></html>`;
