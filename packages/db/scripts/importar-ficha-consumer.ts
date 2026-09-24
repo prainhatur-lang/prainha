@@ -16,8 +16,8 @@
 // Idempotente: reimportar atualiza a quantidade e não duplica. Só toca em
 // linhas origem='consumer' — receita cadastrada à mão aqui não é sobrescrita.
 //
-// Uso: pnpm --filter @concilia/db importar:ficha [-- --aplicar]
-//      (sem --aplicar só mostra o que faria)
+// Uso: pnpm --filter @concilia/db importar:ficha [-- --aplicar] [--filial=<uuid>]
+//      (sem --aplicar só mostra o que faria; --filial restringe a uma casa)
 
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
@@ -28,6 +28,7 @@ const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL nao definida');
 const sql = postgres(url, { prepare: false });
 const APLICAR = process.argv.includes('--aplicar');
+const FILIAL = process.argv.find((a) => a.startsWith('--filial='))?.slice('--filial='.length) ?? null;
 
 async function main() {
   const linhas = await sql<Array<{
@@ -52,6 +53,7 @@ async function main() {
       JOIN produto_variante vi ON vi.filial_id = f.filial_id AND vi.codigo_externo = f.codigo_ingrediente_externo
       JOIN produto ing        ON ing.id = vi.produto_id
      WHERE f.quantidade > 0
+       ${FILIAL ? sql`AND f.filial_id = ${FILIAL}` : sql``}
      GROUP BY f.filial_id, vp.produto_id, vp.id, vp.codigo_externo, vi.produto_id, ing.unidade_estoque`;
 
   const porFilial = new Map<string, number>();
