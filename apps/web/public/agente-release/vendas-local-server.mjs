@@ -11799,7 +11799,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .abtn.orfa{border-top-color:#e0651a}
 .abtn{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--roxo);border-radius:16px;padding:20px 18px;cursor:pointer;text-align:left;transition:.12s;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .abtn:hover{background:#fafafb;transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.1)}
-.abtn .an{font-size:20px;font-weight:700}.abtn .ap{margin-top:10px;font-size:13px;color:var(--mut)}
+.abtn .an{font-size:20px;font-weight:700;overflow-wrap:anywhere}.abtn .ap{margin-top:10px;font-size:13px;color:var(--mut)}
 .abtn .ap b{color:var(--roxo2);font-size:26px;display:block;line-height:1}
 /* grid de comandas */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;padding:18px 20px}
@@ -12271,7 +12271,7 @@ async function selecao(){
     // "Sem praça definida" entra em laranja: é anomalia de cadastro, não uma
     // praça de verdade. Sem ela o item ficava invisível e travava a mesa.
     return '<button class="abtn'+(a.orfa?' orfa':'')+'" onclick="irArea('+a.codigo+')"><div class="an">'+
-      (a.orfa?'⚠ ':'')+esc(a.nome)+'</div>'+
+      (a.orfa?'⚠ ':'')+escPraca(a.nome)+'</div>'+
       '<div class="ap"><b>'+a.a_produzir+'</b> a produzir · '+a.total+' no total'+
       (a.orfa?'<br>produto sem cozinha no Consumer':'')+'</div></button>';
   }).join('')+'</div></div>';
@@ -12284,7 +12284,7 @@ async function kds(){
   checaAtraso(d); // comanda estourou o prazo -> alarme grave e repetido
   var nCrit=(d.comandas||[]).filter(function(c){return c.critico}).length;
   document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecao()">◂ Áreas</button>'+
-    '<h1>'+esc(d.area.nome)+' · <b>Produção</b></h1>'+
+    '<h1>'+escPraca(d.area.nome)+' · <b>Produção</b></h1>'+
     '<span class="pill"><b>'+d.nItens+'</b> a produzir</span>'+
     (nCrit?'<span class="pill" style="background:#dc2626;color:#fff;border-color:#dc2626"><b>'+nCrit+'</b> estourou o prazo</span>':'')+
     '<span class="grow"></span>'+avisoCam()+somBtn()+
@@ -12369,6 +12369,9 @@ function faixaJunto(d){
 // do bar — uma tela só, com tudo junto, faz os dois runners disputarem a mesma
 // fila e nenhum saber o que é seu. Mesmo desenho da produção: escolhe a praça,
 // e o tablet daquela estação fica fixo nela (o ?area= sobrevive ao refresh).
+// "ENTRADAS/SOBREMESAS" é uma palavra só pro navegador: sem quebra depois da
+// barra, estourava a borda do card da praça (Prainha Mar, 23/09).
+function escPraca(n){return esc(n).split('/').join('/<wbr>')}
 function irSelecaoEntrega(){AREA=null;_vistos=null;history.replaceState(0,'','/entrega');setView(selecaoEntrega)}
 function irAreaEntrega(cod){AREA={cod:cod};_vistos=null;history.replaceState(0,'','/entrega?area='+cod);setView(entrega)}
 async function selecaoEntrega(){
@@ -12380,7 +12383,7 @@ async function selecaoEntrega(){
   if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
   app.innerHTML='<div class="sel"><h2>Escolha a sua estação de entrega</h2><div class="areas">'+d.areas.map(function(a){
     return '<button class="abtn'+(a.orfa?' orfa':'')+'" onclick="irAreaEntrega('+a.codigo+')"><div class="an">'+
-      (a.orfa?'⚠ ':'')+esc(a.nome)+'</div>'+
+      (a.orfa?'⚠ ':'')+escPraca(a.nome)+'</div>'+
       '<div class="ap"><b>'+(a.a_entregar||0)+'</b> pronto(s) pra levar</div></button>';
   }).join('')+'</div></div>';
 }
