@@ -34,6 +34,7 @@ class ProdutosActivity : AppCompatActivity() {
         val obs: String?,
         val respostas: List<Int>,
         val extras: Double,          // soma dos preços das respostas do wizard
+        val escolhas: List<String> = emptyList(), // nomes das respostas (com gelo, complementos…) pra revisão
     ) {
         val total: Double get() = (precoUnit + extras) * qtd
     }
@@ -211,7 +212,7 @@ class ProdutosActivity : AppCompatActivity() {
         Thread {
             val pergs = try { Api.perguntas(Session.servidor(this), codigoPdv) } catch (_: Exception) { emptyList() }
             val sugestoes = Api.observacoes(Session.servidor(this), codigoPdv)
-            runOnUiThread { responderPerguntas(codigoPdv, nome, preco, pergs, 0, emptyList(), 0.0, sugestoes) }
+            runOnUiThread { responderPerguntas(codigoPdv, nome, preco, pergs, 0, emptyList(), 0.0, sugestoes, emptyList()) }
         }.start()
     }
 
@@ -221,8 +222,10 @@ class ProdutosActivity : AppCompatActivity() {
         pergs: List<Api.Pergunta>, idx: Int,
         respostas: List<Int>, extras: Double,
         sugestoes: List<String>,
+        escolhas: List<String>,
     ) {
-        if (idx >= pergs.size) { dialogQtdObs(codigoPdv, nome, preco, respostas, extras, sugestoes); return }
+        if (idx >= pergs.size) { dialogQtdObs(codigoPdv, nome, preco, respostas, extras, sugestoes, escolhas); return }
+        fun rot(op: Api.Opcao) = op.nome + (if (op.preco > 0) " +" + Cupom.brl(op.preco) else "")
         val p = pergs[idx]
         val rotulos = p.opcoes.map { it.nome + (if (it.preco > 0) "  +" + Cupom.brl(it.preco) else "") }.toTypedArray()
 
@@ -232,10 +235,10 @@ class ProdutosActivity : AppCompatActivity() {
                 .setItems(rotulos) { _, pos ->
                     val op = p.opcoes[pos]
                     responderPerguntas(codigoPdv, nome, preco, pergs, idx + 1,
-                        respostas + op.codigo, extras + op.preco, sugestoes)
+                        respostas + op.codigo, extras + op.preco, sugestoes, escolhas + rot(op))
                 }
             if (p.min < 1) b.setNegativeButton("Pular") { _, _ ->
-                responderPerguntas(codigoPdv, nome, preco, pergs, idx + 1, respostas, extras, sugestoes)
+                responderPerguntas(codigoPdv, nome, preco, pergs, idx + 1, respostas, extras, sugestoes, escolhas)
             }
             b.setCancelable(false)
             b.show()
@@ -248,14 +251,14 @@ class ProdutosActivity : AppCompatActivity() {
                     val escolhidas = p.opcoes.filterIndexed { i, _ -> marcadas[i] }
                     if (escolhidas.size < p.min) {
                         Toast.makeText(this, "Escolha pelo menos ${p.min}", Toast.LENGTH_SHORT).show()
-                        responderPerguntas(codigoPdv, nome, preco, pergs, idx, respostas, extras, sugestoes)
+                        responderPerguntas(codigoPdv, nome, preco, pergs, idx, respostas, extras, sugestoes, escolhas)
                     } else if (p.max > 0 && escolhidas.size > p.max) {
                         Toast.makeText(this, "No máximo ${p.max}", Toast.LENGTH_SHORT).show()
-                        responderPerguntas(codigoPdv, nome, preco, pergs, idx, respostas, extras, sugestoes)
+                        responderPerguntas(codigoPdv, nome, preco, pergs, idx, respostas, extras, sugestoes, escolhas)
                     } else {
                         responderPerguntas(codigoPdv, nome, preco, pergs, idx + 1,
                             respostas + escolhidas.map { it.codigo },
-                            extras + escolhidas.sumOf { it.preco }, sugestoes)
+                            extras + escolhidas.sumOf { it.preco }, sugestoes, escolhas + escolhidas.map { rot(it) })
                     }
                 }
                 .setCancelable(false)
@@ -266,6 +269,7 @@ class ProdutosActivity : AppCompatActivity() {
     private fun dialogQtdObs(
         codigoPdv: Int, nome: String, preco: Double,
         respostas: List<Int>, extras: Double, sugestoes: List<String>,
+        escolhas: List<String> = emptyList(),
     ) {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
@@ -323,7 +327,7 @@ class ProdutosActivity : AppCompatActivity() {
                 carrinho.add(ItemCarrinho(
                     codigoPdv = codigoPdv, nome = nome, precoUnit = preco, qtd = qtd,
                     obs = obsIn.text.toString().trim().ifBlank { null },
-                    respostas = respostas, extras = extras,
+                    respostas = respostas, extras = extras, escolhas = escolhas,
                 ))
                 atualizarCarrinho()
             }
@@ -345,8 +349,12 @@ class ProdutosActivity : AppCompatActivity() {
     // envio de verdade pra cozinha.
     private fun revisarCarrinho() {
         if (carrinho.isEmpty()) return
+        // Item COMPLETO: opções/complementos escolhidos + observação — o garçom
+        // confere o pedido inteiro antes de mandar pra cozinha.
         val rotulos = carrinho.map {
-            "${it.qtd}x ${it.nome} · ${Cupom.brl(it.total)}" + (it.obs?.let { o -> "\n   $o" } ?: "")
+            "${it.qtd}x ${it.nome} · ${Cupom.brl(it.total)}" +
+                it.escolhas.joinToString("") { e -> "\n   • $e" } +
+                (it.obs?.let { o -> "\n   ✎ $o" } ?: "")
         }.toTypedArray()
         val total = carrinho.sumOf { it.total }
         AlertDialog.Builder(this)
