@@ -152,10 +152,12 @@ class LoginActivity : AppCompatActivity() {
     private fun descobrirServidores() {
         descobertaStatus.visibility = View.VISIBLE
         descobertaStatus.text = "🔎 Procurando o servidor da loja na rede…"
-        val extras = Session.SERVIDORES.map { it.second.removePrefix("http://").substringBefore(':') } +
+        val extras = listOfNotNull(Session.lan(this)?.substringBefore(':')) +
+            Session.SERVIDORES.map { it.second.removePrefix("http://").substringBefore(':') } +
             listOfNotNull(Session.servidor(this).takeIf { it.startsWith("http://") }
                 ?.removePrefix("http://")?.substringBefore(':'))
         Descoberta.procurar(
+            ctx = this,
             extras = extras.distinct(),
             onAchado = { s ->
                 runOnUiThread {

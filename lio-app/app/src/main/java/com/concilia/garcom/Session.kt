@@ -28,6 +28,7 @@ object Session {
     val SERVIDORES = listOf(
         Pair("Prainha Bar (10.0.0.252)", "http://10.0.0.252:8790"),
         Pair("Tabuará (192.168.10.60)", "http://192.168.10.60:8790"),
+        Pair("Prainha Mar (192.168.4.100)", "http://192.168.4.100:8790"),
     )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
