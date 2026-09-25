@@ -43,6 +43,16 @@ class LoginActivity : AppCompatActivity() {
     private val nuvem = mutableListOf<Api.FilialNuvem>()
     private var escolhaUsuario = false   // usuário mexeu no seletor — não sobrescrever
     private var ajustando = false        // setSelection programático em andamento
+    // Duas linhas de aviso independentes: a busca da nuvem e a varredura da rede
+    // rodam juntas — antes uma escrevia por cima da outra e o resultado do
+    // "Buscar" sumia sob "Nenhum servidor na rede".
+    private var stNuvem = ""
+    private var stRede = ""
+    private fun mostrarStatus() {
+        val t = listOf(stNuvem, stRede).filter { it.isNotBlank() }.joinToString("\n")
+        descobertaStatus.visibility = if (t.isBlank()) View.GONE else View.VISIBLE
+        descobertaStatus.text = t
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,7 +132,7 @@ class LoginActivity : AppCompatActivity() {
     private fun buscarFiliais(manual: Boolean) {
         val codigo = codigoEmpresaIn.text.toString().trim().lowercase()
         if (codigo.length < 3) { if (manual) mostrarErro("Digite o código da empresa (ex.: prainha)"); return }
-        if (manual) { descobertaStatus.visibility = View.VISIBLE; descobertaStatus.text = "☁️ Buscando filiais de \"$codigo\"…" }
+        if (manual) { stNuvem = "☁️ Buscando filiais de \"$codigo\"…"; mostrarStatus() }
         Thread {
             try {
                 val (empresa, lista) = Api.filiaisDaEmpresa(codigo)
@@ -134,15 +144,21 @@ class LoginActivity : AppCompatActivity() {
                     val salvo = Session.servidorSalvo(this)
                     val preferido = if (!escolhaUsuario && salvo == null && lista.isNotEmpty()) lista.first().url else null
                     montarOpcoes(selecionarBase = preferido ?: salvo ?: Session.servidor(this))
-                    descobertaStatus.visibility = View.VISIBLE
-                    descobertaStatus.text = if (lista.isEmpty()) "$empresa: nenhuma filial com túnel cadastrado"
-                        else "☁️ $empresa: " + lista.joinToString(" · ") { it.nome }
-                    if (manual) erro.visibility = View.GONE
+                    stNuvem = if (lista.isEmpty()) "$empresa: nenhuma filial com túnel cadastrado"
+                        else "☁️ $empresa: " + lista.joinToString(" · ") { it.nome } +
+                            (if (manual) " — escolha a filial na lista" else "")
+                    mostrarStatus()
+                    if (manual) {
+                        erro.visibility = View.GONE
+                        // Abre a lista na hora: as filiais entram no seletor, mas ele
+                        // continuava mostrando o "Último usado" e parecia que nada veio.
+                        if (lista.isNotEmpty()) servidorSp.post { servidorSp.performClick() }
+                    }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    if (manual) mostrarErro("Não achei a empresa \"$codigo\": " + (e.message ?: "sem resposta do Concilia"))
-                    else descobertaStatus.text = "Sem internet pra buscar as filiais — usando a última escolha"
+                    if (manual) { stNuvem = ""; mostrarStatus(); mostrarErro("Não achei a empresa \"$codigo\": " + (e.message ?: "sem resposta do Concilia")) }
+                    else { stNuvem = "Sem internet pra buscar as filiais — usando a última escolha"; mostrarStatus() }
                 }
             }
         }.start()
@@ -150,8 +166,8 @@ class LoginActivity : AppCompatActivity() {
 
     /** Varre a rede local e vai adicionando cada servidor achado no topo. */
     private fun descobrirServidores() {
-        descobertaStatus.visibility = View.VISIBLE
-        descobertaStatus.text = "🔎 Procurando o servidor da loja na rede…"
+        stRede = "🔎 Procurando o servidor da loja na rede…"
+        mostrarStatus()
         val extras = listOfNotNull(Session.lan(this)?.substringBefore(':')) +
             Session.SERVIDORES.map { it.second.removePrefix("http://").substringBefore(':') } +
             listOfNotNull(Session.servidor(this).takeIf { it.startsWith("http://") }
@@ -170,14 +186,16 @@ class LoginActivity : AppCompatActivity() {
                         val salvo = Session.servidorSalvo(this)
                         val preferido = if (!escolhaUsuario && salvo == null) s.base else null
                         montarOpcoes(selecionarBase = preferido ?: salvo)
-                        descobertaStatus.text = "✓ Na rede: " + descobertos.joinToString(" · ") { it.nome }
+                        stRede = "✓ Na rede: " + descobertos.joinToString(" · ") { it.nome }
+                        mostrarStatus()
                     }
                 }
             },
             onFim = {
                 runOnUiThread {
                     if (descobertos.isEmpty()) {
-                        descobertaStatus.text = "Nenhum servidor na rede — escolha manual abaixo"
+                        stRede = "Nenhum servidor na rede local"
+                        mostrarStatus()
                     }
                 }
             }
