@@ -13108,6 +13108,22 @@ function kpT(k){
   else e.value=(e.value||'')+k;
   if(e.id==='ncpf')olhaCpf(e.value,e); else e.dispatchEvent(new Event('input'));
 }
+/* TECLADO FÍSICO no teclado da casa: o campo é readonly (pro do Android não abrir),
+   e aí nem o teclado de verdade nem o acesso remoto digitavam — o PIN tinha que
+   ser clicado na tela, à vista de quem está no balcão. Dígito/⌫ vão pro campo alvo. */
+document.addEventListener('keydown',function(ev){
+  if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+  var a=document.activeElement,t=ev.target;
+  if(a&&a.readOnly&&a.id&&String(a.getAttribute('onclick')||'').indexOf('kpAlvo')>=0){if(KP_ALVO!==a.id)kpAlvo(a)}
+  else if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)&&!t.readOnly)return;
+  var e=KP_ALVO&&document.getElementById(KP_ALVO);if(!e||!e.readOnly)return;
+  var k=ev.key;
+  if(/^[0-9]$/.test(k))kpT(k);
+  else if(k==='Backspace')kpT('back');
+  else if(k==='Enter'&&a!==e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));}
+  else return;
+  ev.preventDefault();
+});
 function mascaraCpf(inp){
   var c=String(inp.value||'').replace(/\\D/g,'').slice(0,11);
   var t=c;
@@ -17873,6 +17889,23 @@ function kpT(k){
   e.value=v;
   e.dispatchEvent(new Event('input'));
 }
+/* TECLADO FÍSICO no teclado da casa: o campo é readonly (pro do Android não abrir),
+   e aí nem o teclado de verdade nem o acesso remoto digitavam — o PIN tinha que
+   ser clicado na tela, à vista de quem está no balcão. Dígito/⌫ vão pro campo alvo. */
+document.addEventListener('keydown',function(ev){
+  if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+  var a=document.activeElement,t=ev.target;
+  if(a&&a.readOnly&&a.id&&String(a.getAttribute('onclick')||'').indexOf('kpAlvo')>=0){if(KP_ALVO!==a.id)kpAlvo(a)}
+  else if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)&&!t.readOnly)return;
+  var e=KP_ALVO&&document.getElementById(KP_ALVO);if(!e||!e.readOnly)return;
+  var k=ev.key;
+  if(/^[0-9]$/.test(k))kpT(k);
+  else if(k==='Backspace')kpT('back');
+  else if(k===','||k==='.')kpT(',');
+  else if(k==='Enter'&&a!==e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));}
+  else return;
+  ev.preventDefault();
+});
 function setHdr(){var e=document.getElementById('hdr');if(e)e.innerHTML=NOME?('<span class="mut">'+esc(NOME)+'</span> · <a class="sair" onclick="sair()">sair</a>'):''}
 function sair(){try{localStorage.removeItem('caixa_tok');localStorage.removeItem('garcom_tok')}catch(e){}TOK=null;NOME=null;MESA=null;CONTA=null;TELA='login';setHdr();render()}
 /* ---- DOIS painéis ----
@@ -18101,7 +18134,8 @@ function telaLogin(el){
     '<div id="pn2box"></div>'+kpHtml('pn')+
     '<button class="big" onclick="entrar()">Entrar</button>'+
     '<div id="lerr" class="err"></div></div>';
-  var e=document.getElementById('lg');if(e)e.focus();
+  var e=document.getElementById('lg');if(e){e.focus();e.addEventListener('keydown',function(k){if(k.key==='Enter'){var x=document.getElementById('pn');if(x){x.focus();kpAlvo(x)}}})}
+  var q=document.getElementById('pn');if(q)q.addEventListener('keydown',function(k){if(k.key==='Enter')entrar()});
 }
 async function entrar(){
   var login=(document.getElementById('lg')||{}).value||'';
@@ -18112,7 +18146,7 @@ async function entrar(){
   if(r.primeira_vez&&!r.token){
     document.getElementById('pn2box').innerHTML='<div class="mut" style="margin-top:8px">Primeira vez — repita o PIN pra criar:</div>'+
       '<input id="pn2" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="repita o PIN" maxlength="8" style="margin-top:6px" readonly onclick="kpAlvo(this)">';
-    er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y)y.focus();return;
+    er.textContent=r.erro||'';var y=document.getElementById('pn2');if(y){y.focus();kpAlvo(y);y.addEventListener('keydown',function(k){if(k.key==='Enter')entrar()})}return;
   }
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
@@ -19788,6 +19822,22 @@ function kpHtml(alvo){KP=alvo;return '<div class="kp">'+['7','8','9','4','5','6'
 function kpT(k){var e=KP&&document.getElementById(KP);if(!e)return;
   e.value=(k==='back')?(e.value||'').slice(0,-1):(e.value||'')+k;
   e.dispatchEvent(new Event('input'))}
+/* TECLADO FÍSICO no teclado da casa: o campo é readonly (pro do Android não abrir),
+   e aí nem o teclado de verdade nem o acesso remoto digitavam — o PIN tinha que
+   ser clicado na tela, à vista de quem está no balcão. Dígito/⌫ vão pro campo alvo. */
+document.addEventListener('keydown',function(ev){
+  if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+  var a=document.activeElement,t=ev.target;
+  if(a&&a.readOnly&&a.id&&String(a.getAttribute('onclick')||'').indexOf('kpAlvo')>=0){if(KP!==a.id)kpAlvo(a)}
+  else if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable)&&!t.readOnly)return;
+  var e=KP&&document.getElementById(KP);if(!e||!e.readOnly)return;
+  var k=ev.key;
+  if(/^[0-9]$/.test(k))kpT(k);
+  else if(k==='Backspace')kpT('back');
+  else if(k==='Enter'&&a!==e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));}
+  else return;
+  ev.preventDefault();
+});
 function setHdr(){var e=document.getElementById('hdr');if(!e)return;
   e.innerHTML=NOME?((E&&E.agora?'<span class="mut">'+E.agora+' · </span>':'')+'<span class="mut">'+esc(NOME)+'</span>'+
     (GER?' · <a class="sair" onclick="irCfg()">⚙</a>':'')+' · <a class="sair" onclick="sair()">sair</a>'):''}
