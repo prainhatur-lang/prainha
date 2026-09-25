@@ -8083,17 +8083,75 @@ const PERFIS_LOCAIS = {
   caixa: { nome: 'Caixa (recebe, desconto, gaveta, fecha)', perms: [5, 10, 12, 22, 26, 30, 50, 53, 54] },
   garcom: { nome: 'Garçom (comanda mobile)', perms: [53, 54, 40, 41] },
 };
+/** rótulo curto do que a pessoa faz, a partir das permissões */
+function rotuloAcesso(pf) {
+  return pf.admin ? 'Administrador' : pf.excluir_pedido && pf.caixa ? 'Gerente' : pf.caixa ? 'Caixa'
+    : pf.comanda ? 'Garçom' : pf.pedidos ? 'Pedidos no caixa' : pf.entregas ? 'Entregador' : 'sem acesso ao app';
+}
+/** qual perfil nosso bate EXATAMENTE com as permissões (senão é personalizado) */
+function perfilDasPerms(perms) {
+  const a = [...new Set((perms || []).map(Number))].sort((x, y) => x - y).join(',');
+  for (const [k, v] of Object.entries(PERFIS_LOCAIS)) if ([...v.perms].sort((x, y) => x - y).join(',') === a) return k;
+  return null;
+}
 async function apiUsuariosLocais(quem) {
   if (!quem?.admin) return { ok: false, erro: 'só administrador' };
   const rows = await sql`SELECT login, nome, perms, admin, ativo, criado_em, criado_por
     FROM usuario_local ORDER BY login`;
-  return { ok: true, usuarios: rows, perfis: Object.entries(PERFIS_LOCAIS).map(([k, v]) => ({ id: k, nome: v.nome })) };
+  const pins = new Set((await sql`SELECT login FROM garcom_pin`).map((x) => x.login));
+  const usuarios = rows.map((u) => ({ ...u, tem_pin: pins.has(u.login), perfil: u.admin ? null : perfilDasPerms(u.perms),
+    acesso: rotuloAcesso(perfilDeCodigos(u.login, u.nome, !!u.admin, u.perms || [])) }));
+  // os do Consumer (só leitura aqui — permissão se dá no Consumer ou na Equipe do Concilia);
+  // daqui dá pra zerar o PIN de quem esqueceu
+  let consumer = [], consumerErro = null;
+  if (!nativo()) {
+    try {
+      const locais = new Set(rows.map((x) => x.login));
+      consumer = (await fbEquipeUsuarios())
+        .filter((x) => x.ativo && x.login && !locais.has(String(x.login).toLowerCase()) && !/^\*?exclu/i.test(x.nome || ''))
+        .map((x) => {
+          const l = String(x.login).trim().toLowerCase();
+          const pf = perfilDeCodigos(l, x.nome, /^administrador$/i.test(x.tipo || ''), x.permissoes);
+          return { login: l, nome: x.nome, acesso: rotuloAcesso(pf), tem_pin: pins.has(l) };
+        });
+    } catch (e) { consumerErro = e.message; }
+  }
+  return { ok: true, eu: quem.login, usuarios, consumer, consumer_erro: consumerErro, nativo: nativo(),
+    perfis: Object.entries(PERFIS_LOCAIS).map(([k, v]) => ({ id: k, nome: v.nome })) };
+}
+/** EXCLUIR usuário criado aqui. O histórico (pedidos, caixas) guarda o login
+ *  como texto, então não perde nada; o token dele cai na próxima requisição
+ *  (permsDoUsuario não acha mais). Admin e o próprio não se apagam. */
+async function apiUsuarioLocalExcluir(body, quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só administrador' };
+  const login = String(body.login || '').trim().toLowerCase();
+  if (login === quem.login) return { ok: false, erro: 'não dá pra excluir o próprio usuário' };
+  const u = (await sql`SELECT admin FROM usuario_local WHERE login=${login}`)[0];
+  if (!u) return { ok: false, erro: 'esse usuário não foi criado aqui (é do Consumer)' };
+  if (u.admin) return { ok: false, erro: 'administrador não se exclui por aqui — desative' };
+  await sql`DELETE FROM garcom_pin WHERE login=${login}`;
+  await sql`DELETE FROM usuario_local WHERE login=${login}`;
+  console.log(`[usuarios] ${quem.login} excluiu ${login}`);
+  return { ok: true, login };
+}
+/** ZERAR PIN (esqueceu / digitou outro no 1º acesso): apaga o PIN e a pessoa
+ *  cria um novo no próximo login, na maquininha ou no caixa. Vale pra
+ *  usuário daqui e do Consumer — o PIN é sempre nosso. */
+async function apiUsuarioZerarPin(body, quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só administrador' };
+  const login = String(body.login || '').trim().toLowerCase();
+  if (!login) return { ok: false, erro: 'informe o login' };
+  const r = await sql`DELETE FROM garcom_pin WHERE login=${login}`;
+  console.log(`[usuarios] ${quem.login} zerou o PIN de ${login}`);
+  return { ok: true, login, zerado: r.count > 0 };
 }
 async function apiUsuarioLocalSalvar(body, quem) {
   if (!quem?.admin) return { ok: false, erro: 'só administrador cria usuário' };
   const login = String(body.login || '').trim().toLowerCase().replace(/\s+/g, '');
   if (!/^[a-z0-9._-]{3,20}$/.test(login)) return { ok: false, erro: 'login: 3 a 20 letras/números, sem espaço' };
   const nome = String(body.nome || '').trim().slice(0, 60) || login;
+  // 'manter' = edição de quem tem permissões personalizadas (dadas pela Equipe do Concilia)
+  const manter = String(body.perfil || '') === 'manter';
   const perfil = PERFIS_LOCAIS[String(body.perfil || 'garcom')] || PERFIS_LOCAIS.garcom;
   const pin = String(body.pin || '').replace(/\D/g, '');
   // login que já existe no Consumer fica com o Consumer — dois cadastros com
@@ -8106,8 +8164,11 @@ async function apiUsuarioLocalSalvar(body, quem) {
   if (pin && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
   const salt = randomBytes(16).toString('hex');
   if (ja) {
-    await sql`UPDATE usuario_local SET nome=${nome}, perms=${perfil.perms}, ativo=${body.ativo !== false}
-      WHERE login=${login}`;
+    if (login === quem.login && body.ativo === false) return { ok: false, erro: 'não dá pra desativar o próprio usuário' };
+    if (manter) await sql`UPDATE usuario_local SET nome=${nome}, ativo=${body.ativo !== false} WHERE login=${login}`;
+    else await sql`UPDATE usuario_local SET nome=${nome}, perms=${perfil.perms}, ativo=${body.ativo !== false}
+      WHERE login=${login} AND NOT admin`;
+    if (!manter) await sql`UPDATE usuario_local SET nome=${nome}, ativo=${body.ativo !== false} WHERE login=${login} AND admin`;
     if (pin) await sql`UPDATE usuario_local SET pin_hash=${pinHash(pin, salt)}, salt=${salt} WHERE login=${login}`;
     // o PIN do garçom e o do caixa são o mesmo cadastro: mantém alinhado
     if (pin) await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
@@ -19167,40 +19228,104 @@ async function acaoFechaCx(){
 /* ---- USUÁRIOS DO SISTEMA (só admin) ----
    Login que existe só aqui, sem passar pelo cadastro do Consumer. Usa os
    MESMOS códigos de permissão do PDV, então a regra do caixa é uma só. */
+var USU=null,USU_ED=null;
 async function telaUsu(el){
   el.innerHTML='<div class="mut" style="padding:16px">carregando…</div>';
   var d;try{d=await jget('/api/caixa/usuarios')}catch(e){d=null}
   if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'não deu')+'</div>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
+  USU=d;
+  if(USU_ED!==null&&USU_ED!==''&&!(d.usuarios||[]).some(function(u){return u.login===USU_ED}))USU_ED=null;
+  if(USU_ED!==null)return usuForm(el);
+  var pin=function(u){return u.tem_pin?' · PIN ok':' · sem PIN ainda (cria no 1º acesso)'};
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
-    '<div class="card"><div class="tit" style="margin-top:0">👤 Usuários criados aqui</div>'+
-    '<div class="mut">Não mexem no cadastro do Consumer. Quem já é do PDV continua entrando com o login de lá.</div>';
-  h+=(d.usuarios||[]).map(function(u){
-    return '<div class="it"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span></span>'+
-      '<b class="'+(u.ativo?'quit':'saldo')+'">'+(u.ativo?'ativo':'desativado')+'</b></div>';
+    (FLASH?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(FLASH)+'</div>':'')+
+    '<button class="big" style="margin:0 0 10px" onclick="usuEditar(\\'\\')">＋ Novo usuário</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">👤 Usuários '+(d.nativo?'do sistema':'criados aqui')+'</div>'+
+    '<div class="mut">Toque pra editar, trocar o PIN, desativar ou excluir.</div>'+
+    '<input id="u_busca" placeholder="buscar por login ou nome…" style="margin-top:8px" oninput="usuFiltra(this.value)">';
+  var lst=(d.usuarios||[]).slice().sort(function(a,b){return (b.ativo?1:0)-(a.ativo?1:0)});
+  h+=lst.map(function(u){
+    return '<div class="it usu-l" data-q="'+esc((u.login+' '+(u.nome||'')).toLowerCase())+'" style="cursor:pointer;opacity:'+(u.ativo?1:.55)+'" onclick="usuEditar(\\''+esc(u.login)+'\\')">'+
+      '<span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span><br>'+
+      '<span class="mut" style="font-size:12.5px">'+esc(u.acesso)+pin(u)+'</span></span>'+
+      '<b class="'+(u.ativo?'quit':'saldo')+'">'+(u.ativo?'ativo':'desativado')+' ›</b></div>';
   }).join('')||'<div class="mut" style="margin-top:8px">nenhum ainda</div>';
-  h+='</div><div class="card"><div class="tit" style="margin-top:0">Novo usuário (ou trocar o PIN de um)</div>'+
-    '<input id="u_login" placeholder="login (sem espaço)" autocapitalize="none">'+
-    '<input id="u_nome" placeholder="nome da pessoa" style="margin-top:8px">'+
-    '<div class="mut" style="margin-top:10px">PIN (4 a 8 números)</div>'+
+  h+='</div>';
+  if(!d.nativo){
+    h+='<div class="card"><div class="tit" style="margin-top:0">🗂 Do Consumer</div>'+
+      '<div class="mut">Permissão desses se muda no Consumer (ou na Equipe do Concilia). Aqui dá pra zerar o PIN de quem esqueceu.</div>';
+    if(d.consumer_erro)h+='<div class="err">Consumer sem resposta: '+esc(d.consumer_erro)+'</div>';
+    h+=(d.consumer||[]).map(function(u){
+      return '<div class="it"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span><br>'+
+        '<span class="mut" style="font-size:12.5px">'+esc(u.acesso)+pin(u)+'</span></span>'+
+        (u.tem_pin?'<button class="seg" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">zerar PIN</button>':'')+'</div>';
+    }).join('')||(d.consumer_erro?'':'<div class="mut" style="margin-top:8px">nenhum</div>');
+    h+='</div>';
+  }
+  FLASH=null;el.innerHTML=h;
+}
+function usuFiltra(q){q=String(q||'').trim().toLowerCase();
+  document.querySelectorAll('.usu-l').forEach(function(e){e.style.display=(!q||e.getAttribute('data-q').indexOf(q)>=0)?'':'none'})}
+function usuEditar(l){USU_ED=l;telaUsu(document.getElementById('main'))}
+function usuForm(el){
+  var novo=USU_ED==='';
+  var u=novo?{login:'',nome:'',ativo:true,perfil:'garcom',tem_pin:false,admin:false}
+    :(USU.usuarios||[]).filter(function(x){return x.login===USU_ED})[0];
+  var eu=!novo&&u.login===USU.eu;
+  var ops=(USU.perfis||[]).map(function(p){return '<option value="'+p.id+'"'+(u.perfil===p.id?' selected':'')+'>'+esc(p.nome)+'</option>'}).join('');
+  if(!novo&&!u.perfil&&!u.admin)ops='<option value="manter" selected>Manter as permissões atuais ('+esc(u.acesso)+', personalizado)</option>'+ops;
+  var h='<button class="seg" style="margin-bottom:10px" onclick="usuEditar(null)">◂ usuários</button>'+
+    '<div class="card"><div class="tit" style="margin-top:0">'+(novo?'＋ Novo usuário':'✎ '+esc(u.login))+'</div>'+
+    (novo?'<input id="u_login" placeholder="login (sem espaço)" autocapitalize="none">'
+      :'<div class="mut">login <b>'+esc(u.login)+'</b>'+(u.criado_por?' · criado por '+esc(u.criado_por):'')+'</div>')+
+    '<input id="u_nome" placeholder="nome da pessoa" style="margin-top:8px" value="'+esc(u.nome||'')+'">'+
+    '<div class="mut" style="margin-top:10px">'+(novo?'PIN (4 a 8 números)':'PIN novo — deixe vazio pra manter o atual')+'</div>'+
     '<input id="u_pin" class="num" inputmode="numeric" maxlength="8" readonly onclick="kpAlvo(this)">'+kpHtml('u_pin')+
-    '<div class="mut" style="margin-top:10px">O que ele pode fazer</div>'+
-    '<select id="u_perfil" style="width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px">'+
-    (d.perfis||[]).map(function(p){return '<option value="'+p.id+'">'+esc(p.nome)+'</option>'}).join('')+'</select>'+
-    '<button class="big" onclick="salvaUsu()">Salvar usuário</button>'+
+    (u.admin?'<div class="mut" style="margin-top:10px">Administrador — acesso total.</div>'
+      :'<div class="mut" style="margin-top:10px">O que ele pode fazer</div>'+
+       '<select id="u_perfil" style="width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px">'+ops+'</select>')+
+    (novo||eu?'':'<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="u_ativo"'+(u.ativo?' checked':'')+' style="width:22px;height:22px"> ativo (pode entrar)</label>')+
+    '<button class="big" onclick="salvaUsu()">Salvar</button>'+
     '<div id="uerr" class="err"></div></div>';
+  if(!novo){
+    h+='<div class="card"><div class="tit" style="margin-top:0">Outras ações</div>'+
+      (u.tem_pin?'<button class="big g" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">Zerar PIN (cria outro no próximo acesso)</button>'
+        :'<div class="mut">Ainda sem PIN — cria no primeiro acesso.</div>')+
+      (eu||u.admin?'':'<button class="big" style="background:var(--red)" onclick="usuExcluir(\\''+esc(u.login)+'\\')">🗑 Excluir usuário</button>'+
+        '<div class="mut" style="margin-top:6px">O histórico (pedidos, caixas) continua com o nome dele. Se ele pode voltar, prefira desativar.</div>')+
+      '<div id="uerr2" class="err"></div></div>';
+  }
   el.innerHTML=h;
 }
 async function salvaUsu(){
   var er=document.getElementById('uerr');er.textContent='';
-  var b={login:(document.getElementById('u_login')||{}).value||'',
+  var novo=USU_ED==='';
+  var at=document.getElementById('u_ativo');
+  var b={login:novo?((document.getElementById('u_login')||{}).value||''):USU_ED,
     nome:(document.getElementById('u_nome')||{}).value||'',
     pin:(document.getElementById('u_pin')||{}).value||'',
-    perfil:(document.getElementById('u_perfil')||{}).value||'garcom'};
+    perfil:(document.getElementById('u_perfil')||{}).value||'manter',
+    ativo:at?at.checked:true};
   var r=await jpost('/api/caixa/usuarios',b);
   if(!r.ok){er.textContent=r.erro||'não deu';return}
   FLASH='✓ '+(r.criado?'Usuário '+r.login+' criado':'Usuário '+r.login+' atualizado');
+  USU_ED=null;telaUsu(document.getElementById('main'));
+}
+async function usuZerarPin(l){
+  if(!confirm('Zerar o PIN de '+l+'? No próximo acesso (maquininha ou caixa) ele cria um PIN novo.'))return;
+  var r=await jpost('/api/caixa/usuarios/zerar-pin',{login:l});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  FLASH='✓ PIN de '+l+' zerado — ele cria outro no próximo acesso';
   telaUsu(document.getElementById('main'));
+}
+async function usuExcluir(l){
+  if(!confirm('EXCLUIR o usuário '+l+'? Não tem volta (dá pra criar de novo depois).'))return;
+  var r=await jpost('/api/caixa/usuarios/excluir',{login:l});
+  var er=document.getElementById('uerr2');
+  if(!r.ok){if(er)er.textContent=r.erro||'não deu';return}
+  FLASH='✓ Usuário '+l+' excluído';
+  USU_ED=null;telaUsu(document.getElementById('main'));
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
 var MOVT='sangria',FORN=null;
@@ -21548,6 +21673,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(quem)));
       if (p === '/api/caixa/usuarios' && req.method !== 'POST') return res.end(JSON.stringify(await apiUsuariosLocais(quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios') return res.end(JSON.stringify(await apiUsuarioLocalSalvar(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/usuarios/excluir') return res.end(JSON.stringify(await apiUsuarioLocalExcluir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/usuarios/zerar-pin') return res.end(JSON.stringify(await apiUsuarioZerarPin(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
       if (p === '/api/caixa/fiado-busca') return res.end(JSON.stringify(await apiCaixaFiadoBusca(u.searchParams.get('q') || '')));
       if (req.method === 'POST' && p === '/api/caixa/fiado') return res.end(JSON.stringify(await apiCaixaFiado(await readBody(req), quem)));
