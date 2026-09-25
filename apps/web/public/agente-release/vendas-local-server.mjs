@@ -366,6 +366,7 @@ async function initSchema() {
   await addCol('marca', 'area_codigo integer');
   await addCol('marca', 'nome text');
   await addCol('marca', 'numero integer'); // nº da mesa/comanda no momento da baixa (a comanda fecha e some do espelho)
+  await addCol('marca', 'pai bigint'); // complemento (copo, gelo…): item-pai — o histórico mostra embaixo dele, não solto
   await sql`CREATE INDEX IF NOT EXISTS ix_marca_pronto ON marca(pronto_em)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_marca_entregue ON marca(entregue_em)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_ci_item ON comanda_item(item_codigo)`;
@@ -10008,15 +10009,30 @@ async function apiHistorico(areaCod, modo) {
   // areaCod null = tudo (só a compatibilidade antiga usa).
   const filtroArea =
     areaCod == null ? sql`TRUE` : areaCod === 0 ? sql`m.area_codigo IS NULL` : sql`m.area_codigo=${areaCod}`;
+  // Busca folgado (os complementos também são linhas) e agrupa: "Coca-Cola"
+  // com "copo" e "gelo" embaixo — antes cada complemento saía numa linha solta.
+  // Baixa antiga sem `pai` gravado: cai no comanda_item enquanto a conta existir.
   const rows = await sql`
     SELECT m.item_codigo, m.nome, COALESCE(m.numero, c.numero) AS numero,
-           m.pronto_em, m.entregue_em, m.criado_em, a.nome AS area_nome
+           m.pronto_em, m.entregue_em, m.criado_em, a.nome AS area_nome,
+           COALESCE(m.pai, (SELECT ci.codigo_pai FROM comanda_item ci
+                             WHERE ci.item_codigo = m.item_codigo AND ci.tipo = 2 LIMIT 1)) AS pai
       FROM marca m
       LEFT JOIN comanda c ON c.codigo = m.comanda_codigo
       LEFT JOIN area a ON a.codigo = m.area_codigo
      WHERE ${campo} IS NOT NULL AND ${filtroArea}
-     ORDER BY ${campo} DESC LIMIT 40`;
-  return { itens: rows.map((x) => ({ ...x, quando: entrega ? x.entregue_em : x.pronto_em })) };
+     ORDER BY ${campo} DESC LIMIT 160`;
+  const porCod = new Map(rows.map((x) => [String(x.item_codigo), x]));
+  const itens = [];
+  for (const x of rows) {
+    let pai = x.pai != null ? porCod.get(String(x.pai)) : null;
+    for (let n = 0; n < 5 && pai && pai.pai != null && porCod.has(String(pai.pai)); n++) pai = porCod.get(String(pai.pai)); // resposta de resposta
+    if (pai && pai !== x) { (pai.opcoes = pai.opcoes || []).push(x.nome); continue; }
+    itens.push(x);
+  }
+  // as opções vêm na ordem do lançamento (a busca é da mais nova pra mais velha)
+  for (const x of itens) if (x.opcoes) x.opcoes.reverse();
+  return { itens: itens.slice(0, 40).map(({ pai, ...x }) => ({ ...x, quando: entrega ? x.entregue_em : x.pronto_em })) };
 }
 
 // ---- TEMPO DE PREPARO por praça e por prato ----
@@ -10996,9 +11012,9 @@ async function alinharComplementosAbertos() {
   // Pai que JÁ saiu: o "Tudo pronto" da praça dele não levou o complemento que
   // estava em outro balde. Movido pra lá, ele reapareceria como cartão sozinho e
   // estourado — então sai com a mesma hora do pai.
-  const b = await sql`INSERT INTO marca (item_codigo, pronto_em, entregue_em, criado_em, comanda_codigo, area_codigo, nome, numero)
+  const b = await sql`INSERT INTO marca (item_codigo, pronto_em, entregue_em, criado_em, comanda_codigo, area_codigo, nome, numero, pai)
     SELECT f.item_codigo, COALESCE(p.produzido, mp.pronto_em), COALESCE(p.entregue, mp.entregue_em),
-           f.criado, f.comanda_codigo, f.area_codigo, f.nome, c.numero
+           f.criado, f.comanda_codigo, f.area_codigo, f.nome, c.numero, f.codigo_pai
       FROM comanda_item f
       JOIN comanda_item p ON p.item_codigo = f.codigo_pai
       JOIN comanda c ON c.codigo = f.comanda_codigo
@@ -11374,10 +11390,13 @@ async function marcar(body) {
   }
   for (const ic of codigos) {
     // snapshot do item (hora do lançamento, área, nome) -> registro durável do tempo de produção
-    const s = (await sql`SELECT ci.criado, ci.comanda_codigo, ci.area_codigo, ci.nome, c.numero FROM comanda_item ci LEFT JOIN comanda c ON c.codigo=ci.comanda_codigo WHERE ci.item_codigo=${ic} LIMIT 1`)[0] || {};
-    await sql`INSERT INTO marca (item_codigo, criado_em, comanda_codigo, area_codigo, nome, numero, ${sql(col)})
-              VALUES (${ic}, ${s.criado || null}, ${s.comanda_codigo || null}, ${s.area_codigo || null}, ${s.nome || null}, ${s.numero ?? null}, ${val})
+    const s = (await sql`SELECT ci.criado, ci.comanda_codigo, ci.area_codigo, ci.nome, c.numero,
+        CASE WHEN ci.tipo = 2 THEN ci.codigo_pai END AS pai
+      FROM comanda_item ci LEFT JOIN comanda c ON c.codigo=ci.comanda_codigo WHERE ci.item_codigo=${ic} LIMIT 1`)[0] || {};
+    await sql`INSERT INTO marca (item_codigo, criado_em, comanda_codigo, area_codigo, nome, numero, pai, ${sql(col)})
+              VALUES (${ic}, ${s.criado || null}, ${s.comanda_codigo || null}, ${s.area_codigo || null}, ${s.nome || null}, ${s.numero ?? null}, ${s.pai ?? null}, ${val})
               ON CONFLICT (item_codigo) DO UPDATE SET ${sql(col)}=${val},
+                pai=COALESCE(marca.pai, EXCLUDED.pai),
                 numero=COALESCE(marca.numero, EXCLUDED.numero),
                 criado_em=COALESCE(marca.criado_em, EXCLUDED.criado_em),
                 comanda_codigo=COALESCE(marca.comanda_codigo, EXCLUDED.comanda_codigo),
@@ -11916,6 +11935,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
   margin:0;padding:13px 15px 9px;border-bottom:1px solid var(--line);background:#fafafb;position:sticky;top:0}
 .hi{padding:9px 15px;border-bottom:1px solid #f3f3f6;font-size:13px}
 .hi .n{font-weight:600;line-height:1.28}
+.hi .op{font-size:12px;color:#555;line-height:1.3;margin:2px 0 0 6px}
 .hi .m{color:var(--mut);font-size:11.5px;margin-top:2px;display:flex;gap:8px;flex-wrap:wrap}
 .hi .m b{color:var(--gold2);font-weight:700}
 .hist .vaziinho{padding:22px 15px;color:var(--mut);font-size:13px}
@@ -12426,7 +12446,9 @@ async function histLateral(url){
   var its=d.itens||[];
   el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
     var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
-    return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div><div class="m">'+
+    return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div>'+
+      (i.opcoes&&i.opcoes.length?'<div class="op">'+i.opcoes.map(function(o){return '<div>↳ '+esc(o)+'</div>'}).join('')+'</div>':'')+
+      '<div class="m">'+
       '<b>'+(i.numero?(Number(i.numero)>=${COMANDA_DE}?'Comanda ':'Mesa ')+i.numero:'sem mesa')+'</b>'+
       '<span>'+t+'</span>'+(i.area_nome?'<span>'+esc(i.area_nome)+'</span>':'')+'</div></div>';
   }).join(''):'<div class="vaziinho">nada saiu ainda</div>');
