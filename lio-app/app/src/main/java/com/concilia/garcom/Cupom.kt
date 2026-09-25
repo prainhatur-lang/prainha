@@ -13,10 +13,14 @@ import java.util.TimeZone
 //   • FALTA em negrito + divisão por pessoas (o garçom escolhe por quantas)
 //   • avanço curto no fim (3 linhas, não 10)
 object Cupom {
-    private const val W = 32
+    // Corpo (itens/totais) em 24 colunas no tamanho 26 negrito: em 32 colunas
+    // tamanho 20 os números saíam miúdos demais pra ler (reclamação 25/09/2026).
+    // A largura em caracteres escala com o tamanho (32×20 ≈ 24×26 no papel).
+    private const val W = 24
+    private const val TAM = 26
     private const val NB = ' '   // espaço que a impressora não corta no fim da linha
     private val FINA = "-".repeat(W)
-    private val GROSSA = "=".repeat(W)
+    private val GROSSA = "=".repeat(32)   // impresso no tamanho 20 (32 colunas)
 
     fun brl(v: Double): String = "R$ " + String.format(Locale("pt", "BR"), "%,.2f", v)
 
@@ -25,10 +29,24 @@ object Cupom {
         if (kotlin.math.abs(v - Math.round(v)) < 0.001) Math.round(v).toString()
         else String.format(Locale("pt", "BR"), "%,.3f", v).trimEnd('0').trimEnd(',')
 
-    /** "Nome comprido....... 1.234,56" — colunas numa linha de largura fixa. */
+    /** "Nome ........ 1.234,56" — colunas numa linha de largura fixa. Nome que
+     *  não cabe ao lado do valor quebra: o texto vai inteiro nas linhas de cima
+     *  e o valor fica sozinho, à direita, na última. */
     private fun linha(esq: String, dir: String): String {
-        val e = if (esq.length > W - dir.length - 1) esq.take(W - dir.length - 1) else esq
-        return e + NB.toString().repeat(W - e.length - dir.length) + dir
+        if (esq.length <= W - dir.length - 1) return esq + NB.toString().repeat(W - esq.length - dir.length) + dir
+        val out = mutableListOf<String>()
+        var resto = esq
+        while (resto.length > W && out.size < 2) {
+            val corte = resto.lastIndexOf(' ', W).takeIf { it > 3 } ?: W
+            out.add(resto.substring(0, corte).trimEnd())
+            resto = "   " + resto.substring(corte).trimStart()
+        }
+        out.add(resto.take(W))
+        val ult = out.last()
+        return if (ult.length <= W - dir.length - 1) {
+            out[out.size - 1] = ult + NB.toString().repeat(W - ult.length - dir.length) + dir
+            out.joinToString("\n") { if (it.length < W) cheia(it) else it }
+        } else (out.map { cheia(it) } + (NB.toString().repeat(W - dir.length) + dir)).joinToString("\n")
     }
 
     /** Linha de texto corrido, completada até W (mantém o bloco alinhado no centro). */
@@ -123,7 +141,7 @@ object Cupom {
         if (itens != null) for (i in 0 until itens.length()) {
             itemLinhas(corpo, itens.optJSONObject(i) ?: continue)
         }
-        if (corpo.isNotEmpty()) blocos.add(Bloco(corpo.toString().trimEnd('\n'), tamanho = 20))
+        if (corpo.isNotEmpty()) blocos.add(Bloco(corpo.toString().trimEnd('\n'), negrito = true, tamanho = TAM))
 
         // Linha grossa antes dos totais.
         blocos.add(Bloco(GROSSA, negrito = true, tamanho = 20))
@@ -174,14 +192,14 @@ object Cupom {
         }
         val pagoGeral = j.optDouble("pago_geral", j.optDouble("pago", 0.0))
         if (pagoGeral > 0) totais.appendLine(linha("Pago", num(pagoGeral)))
-        blocos.add(Bloco(totais.toString().trimEnd('\n'), tamanho = 20))
+        blocos.add(Bloco(totais.toString().trimEnd('\n'), negrito = true, tamanho = TAM))
 
         // FALTA em destaque + divisão por pessoas.
         val faltaGeral = j.optDouble("falta_geral", j.optDouble("resta", 0.0))
-        blocos.add(Bloco("FALTA ${brl(faltaGeral)}", negrito = true, tamanho = 26))
+        blocos.add(Bloco("FALTA ${brl(faltaGeral)}", negrito = true, tamanho = 30))
         val nPessoas = pessoas ?: j.optInt("pessoas", 0)
         if (nPessoas > 1 && faltaGeral > 0.009) {
-            blocos.add(Bloco("Por pessoa ($nPessoas): ${brl(faltaGeral / nPessoas)}", tamanho = 20))
+            blocos.add(Bloco("Por pessoa ($nPessoas):\n${brl(faltaGeral / nPessoas)}", negrito = true, tamanho = TAM))
         }
 
         // FIADO: o saldo do cliente no papel que ele assina. Só vem do servidor
@@ -204,7 +222,7 @@ object Cupom {
                 cc.appendLine(linha("Limite", num(limite)))
                 cc.appendLine(linha("Disponível", num(fi.optDouble("disponivel", 0.0))))
             }
-            blocos.add(Bloco(cc.toString().trimEnd('\n'), tamanho = 20))
+            blocos.add(Bloco(cc.toString().trimEnd('\n'), negrito = true, tamanho = TAM))
             if (conta > 0.009) {
                 blocos.add(Bloco(
                     (if (depois >= 0) "FICA DEVENDO " else "FICA A FAVOR ") + brl(Math.abs(depois)),
@@ -215,7 +233,7 @@ object Cupom {
                 blocos.add(Bloco("*** PASSA DO LIMITE ***", negrito = true, tamanho = 20))
             }
             // é o papel da assinatura: tem que ter onde assinar
-            blocos.add(Bloco("\nAssinatura do cliente:\n\n" + "_".repeat(W), tamanho = 20))
+            blocos.add(Bloco("\nAssinatura do cliente:\n\n" + "_".repeat(32), tamanho = 20))
         }
 
         if (extras.isNotEmpty()) {
