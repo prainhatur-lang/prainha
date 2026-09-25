@@ -94,6 +94,12 @@ class LoginActivity : AppCompatActivity() {
         Session.SERVIDORES.forEach { (nome, base) ->
             if (opcoes.none { it.second == base }) opcoes.add(Pair(nome, base))
         }
+        // O endereço digitado à mão (ex.: https://mar.tailb22e0d.ts.net) vira uma
+        // opção fixa — antes ele sumia e tinha que ser digitado a cada abertura.
+        val salvo = Session.servidorSalvo(this)
+        if (salvo != null && opcoes.none { it.second == salvo }) {
+            opcoes.add(0, Pair("Último usado — " + salvo.removePrefix("https://").removePrefix("http://"), salvo))
+        }
         opcoes.add(Pair("Outro servidor…", ""))
 
         val labels = opcoes.map { it.first }
@@ -124,8 +130,10 @@ class LoginActivity : AppCompatActivity() {
                     Session.saveCodigoEmpresa(this, codigo)
                     nuvem.clear(); nuvem.addAll(lista)
                     // A 1ª filial da nuvem vira a escolha, a menos que a pessoa já tenha mexido.
-                    val preferido = if (!escolhaUsuario && lista.isNotEmpty()) lista.first().url else null
-                    montarOpcoes(selecionarBase = preferido ?: Session.servidor(this))
+                    // Quem já entrou antes volta pro MESMO servidor (a Mar não pode reabrir no Bar).
+                    val salvo = Session.servidorSalvo(this)
+                    val preferido = if (!escolhaUsuario && salvo == null && lista.isNotEmpty()) lista.first().url else null
+                    montarOpcoes(selecionarBase = preferido ?: salvo ?: Session.servidor(this))
                     descobertaStatus.visibility = View.VISIBLE
                     descobertaStatus.text = if (lista.isEmpty()) "$empresa: nenhuma filial com túnel cadastrado"
                         else "☁️ $empresa: " + lista.joinToString(" · ") { it.nome }
@@ -154,8 +162,12 @@ class LoginActivity : AppCompatActivity() {
                     if (descobertos.none { it.base == s.base }) {
                         descobertos.add(s)
                         // Pré-escolhe o primeiro achado, a menos que o usuário já tenha mexido.
-                        val preferido = if (!escolhaUsuario) s.base else null
-                        montarOpcoes(selecionarBase = preferido)
+                        // Só pré-escolhe o achado na rede se este aparelho nunca entrou — senão
+                        // mantém o salvo (dentro da loja o app já troca sozinho pro IP local,
+                        // Session.resolverBase).
+                        val salvo = Session.servidorSalvo(this)
+                        val preferido = if (!escolhaUsuario && salvo == null) s.base else null
+                        montarOpcoes(selecionarBase = preferido ?: salvo)
                         descobertaStatus.text = "✓ Na rede: " + descobertos.joinToString(" · ") { it.nome }
                     }
                 }
@@ -187,7 +199,7 @@ class LoginActivity : AppCompatActivity() {
                 return null
             }
         }
-        return url to "Servidor custom"
+        return url to url.removePrefix("https://").removePrefix("http://")
     }
 
     // ---- login ----

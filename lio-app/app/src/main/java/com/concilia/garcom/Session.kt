@@ -84,6 +84,10 @@ object Session {
     fun servidor(ctx: Context): String =
         baseAtiva ?: prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
 
+    /** Servidor do último login que deu certo (null = nunca entrou neste aparelho).
+     *  O login reabre com ELE escolhido — a descoberta e a lista da nuvem não passam por cima. */
+    fun servidorSalvo(ctx: Context): String? = prefs(ctx).getString(K_SERVIDOR, null)?.takeIf { it.isNotBlank() }
+
     /** O que o usuário configurou (Funnel/custom), ignorando o ativo. */
     fun servidorConfigurado(ctx: Context): String = prefs(ctx).getString(K_SERVIDOR, null) ?: BuildConfig.API_BASE
 
