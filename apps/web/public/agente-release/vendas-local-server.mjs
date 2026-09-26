@@ -678,6 +678,9 @@ async function initSchema() {
   // Permissão GERENTE (nossa, por loja): quem vê reclamação na comanda mobile.
   // Vale ISTO ou ser Administrador/ter Excluir-Pedido(28) no Consumer (ehGerente).
   await addCol('garcom_pin', 'gerente boolean NOT NULL DEFAULT false');
+  // Permissão CHEF: manda PRODUÇÃO pros cozinheiros pelo celular (/producao).
+  // Gerente também manda (ehChef).
+  await addCol('garcom_pin', 'producao boolean NOT NULL DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
   // Vínculo CAIXA ↔ MAQUININHA: o caixa aberto na maquininha fica preso ao
   // serial daquele terminal — o mesmo operador não recebe em outra maquininha
@@ -6504,6 +6507,17 @@ async function ehGerente(login) {
   catch { return false; }
 }
 
+// CHEF = pode mandar produção (/producao): marcado como chef em Gerentes OU gerente.
+async function ehChef(login) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return false;
+  try {
+    const local = (await sql`SELECT producao FROM garcom_pin WHERE login=${l}`)[0];
+    if (local && local.producao) return true;
+  } catch {}
+  return ehGerente(l);
+}
+
 // GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
 async function apiGarcomSessao(req, u) {
   const g = await garcomDaRequisicao(req, u);
@@ -6515,14 +6529,14 @@ async function apiGarcomSessao(req, u) {
 async function apiGerentesListar(req, u) {
   const g = await garcomDaRequisicao(req, u);
   if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente vê isto' };
-  const linhas = await sql`SELECT login, nome, gerente FROM garcom_pin ORDER BY COALESCE(nome, login)`;
+  const linhas = await sql`SELECT login, nome, gerente, producao FROM garcom_pin ORDER BY COALESCE(nome, login)`;
   const out = [];
   for (const l of linhas) {
     // quem já é gerente pelo Consumer (admin/28) vem travado — não dá pra tirar
     // aqui o que a loja definiu lá.
     let porConsumer = false;
     try { const p = await permsDoUsuario(l.login); porConsumer = !!(p.ok && (p.admin || p.excluir_pedido)); } catch {}
-    out.push({ login: l.login, nome: l.nome || l.login, gerente: !!l.gerente || porConsumer, por_consumer: porConsumer });
+    out.push({ login: l.login, nome: l.nome || l.login, gerente: !!l.gerente || porConsumer, por_consumer: porConsumer, producao: !!l.producao });
   }
   return { ok: true, gerentes: out, eu: g.login };
 }
@@ -6531,6 +6545,13 @@ async function apiGerenteSet(req, u, body) {
   if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente pode mexer nisso' };
   const login = String(body.login || '').trim().toLowerCase();
   if (!login) return { ok: false, erro: 'informe o login' };
+  // {login, producao} mexe só na marcação de CHEF; {login, gerente} na de gerente
+  if (body.producao !== undefined) {
+    const pv = !!body.producao;
+    const r = await sql`UPDATE garcom_pin SET producao=${pv}, atualizado_em=now() WHERE login=${login} RETURNING login`;
+    if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
+    return { ok: true, login, producao: pv };
+  }
   const val = !!body.gerente;
   const r = await sql`UPDATE garcom_pin SET gerente=${val}, atualizado_em=now() WHERE login=${login} RETURNING login`;
   if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
@@ -11968,8 +11989,26 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
 .pfconfirm.saida{color:#f59e0b}.pfconfirm.entrada{color:#22c55e}
 .pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:none;font-size:15px;margin-top:14px}
+.menubtn{font-size:20px;padding:5px 12px;font-weight:700}
+#menuCasa{display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25)}
+#menuCasa.on{display:block}
+#menuCasa .mc{position:absolute;top:62px;right:16px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px;min-width:250px;max-width:calc(100vw - 32px)}
+#menuCasa a,#menuCasa button{display:flex;align-items:center;gap:12px;width:100%;padding:13px 14px;border:0;background:none;border-radius:10px;font:inherit;font-size:16px;color:var(--ink);text-decoration:none;cursor:pointer;text-align:left}
+#menuCasa a:hover,#menuCasa button:hover{background:#f2f2f5}
+#menuCasa i{font-style:normal;font-size:20px;width:26px;text-align:center}
+#menuCasa small{display:block;color:var(--mut);font-size:12px}
+#menuCasa hr{border:0;border-top:1px solid var(--line);margin:4px 8px}
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <header id="hd"></header><div id="app"></div>
+<div id="menuCasa" onclick="if(event.target===this)this.classList.remove('on')"><div class="mc" onclick="document.getElementById('menuCasa').classList.remove('on')">
+<a href="/caixa"><i>🧰</i><span>Caixa</span></a>
+<a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
+<a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
+<a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
+<button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
+<a href="/gerente"><i>👔</i><span>Gerente</span></a>
+<hr><a href="/tablet"><i>⚙</i><span>Configurar<small>tela cheia / atualizar</small></span></a>
+</div></div>
 <script>
 /* TELA CHEIA SEM INSTALAR: o "Instalar app" do Chrome so tira a barra de
    endereco se o endereco http://IP:porta estiver liberado na flag
@@ -12389,18 +12428,16 @@ function fecharPontoFacial(){
   var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
   document.getElementById('pfModal').classList.remove('on');
 }
+function abreMenu(){var m=document.getElementById('menuCasa');m.querySelector('.mc').style.top=(document.getElementById('hd').getBoundingClientRect().bottom+6)+'px';m.classList.toggle('on')}
 async function selecao(){
   var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
   // menu da casa: a tela inicial é a porta de tudo — caixa entra aqui (quem
   // toca cai no PIN, então cozinha não entra por engano)
+  // o resto (caixa, produção, etiqueta, QR, ponto, gerente, configurar) mora no ☰
   document.getElementById('hd').innerHTML='<h1>${LOJA_HTML} · Produção</h1><span class="grow"></span>'+
-    '<a class="linkbtn" href="/caixa">🧰 Caixa</a>'+
-    '<a class="linkbtn" href="/gerente">👔 Gerente</a>'+
-    '<button class="linkbtn" onclick="abrirPontoFacial()">🕐 Ponto</button>'+
-    '<a class="linkbtn" href="/etiqueta">🏷 Etiqueta</a>'+
-    '<a class="linkbtn" href="/tablet" title="instalar em tela cheia / atualizar">⚙</a>'+
     (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas <span class="n">'+d.entrega_n+'</span> ▸</a>')+
-    '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
+    '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>'+
+    '<button class="linkbtn menubtn" onclick="abreMenu()" title="menu">☰</button>';
   var app=document.getElementById('app');
   if(!d.areas.length){app.innerHTML='<div class="vazio">nenhum item aberto</div>';return}
   app.innerHTML='<div class="sel"><h2>Escolha a sua área de produção</h2><div class="areas">'+d.areas.map(function(a){
@@ -13539,7 +13576,7 @@ var GERLIST=[];
 async function telaGerentes(){
   app('<button class="back" onclick="telaMesa()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">Gerentes</div>'+
-    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado).</div>'+
+    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado). <b>Chef</b> manda produção pros cozinheiros pelo celular (menu ☰ → Produção); gerente também manda.</div>'+
     '<div id="glist"><span class="mut">carregando…</span></div>');
   var d=await jget('/api/gerentes');
   var el=document.getElementById('glist');if(!el)return;
@@ -13549,9 +13586,17 @@ async function telaGerentes(){
   el.innerHTML=GERLIST.map(function(g,ix){
     return '<div class="ch gar" style="justify-content:space-between;align-items:center">'+
       '<span>'+(g.gerente?'✅ ':'▫️ ')+esc(g.nome)+' <small style="opacity:.6">'+esc(g.login)+(g.por_consumer?' · Consumer':'')+'</small></span>'+
+      '<span style="display:flex;gap:6px">'+
+      '<button class="ir" onclick="setChefIx('+ix+','+(g.producao?'false':'true')+')">'+(g.producao?'👨‍🍳 chef ✓':'chef?')+'</button>'+
       (g.por_consumer?'':'<button class="ir" onclick="setGerenteIx('+ix+','+(g.gerente?'false':'true')+')">'+(g.gerente?'tirar':'tornar')+'</button>')+
-      '</div>';
+      '</span></div>';
   }).join('');
+}
+async function setChefIx(ix,val){
+  var g=GERLIST[ix];if(!g)return;
+  var r=await jpost('/api/gerente',{login:g.login,producao:val});
+  if(!r.ok){alert(r.erro||'erro');return}
+  telaGerentes();
 }
 async function setGerenteIx(ix,val){
   var g=GERLIST[ix];if(!g)return;
@@ -20671,6 +20716,46 @@ async function salaoNuvemPost(body) {
     return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida da nuvem' };
   } catch (err) { return { ok: false, erro: 'nuvem: ' + err.message }; }
 }
+// ================= PRODUÇÃO pelo celular do CHEF (/producao) =================
+// O chef entra com o PIN da loja, escolhe o que produzir (template do Concilia
+// ou texto livre), a quantidade e o cozinheiro. A OP nasce no Concilia
+// (/api/loja/producao, assinado) com link /op/<token>, e o chef manda pelo
+// WhatsApp dele (wa.me). O cozinheiro marca PRONTO no link.
+async function chefDaRequisicao(req, u) {
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  if (!(await ehChef(v.login))) return null;
+  let nome = null;
+  try { nome = (await sql`SELECT nome FROM garcom_pin WHERE login=${v.login}`)[0]?.nome || null; } catch {}
+  return { login: v.login, nome: nome || v.login };
+}
+async function apiProducaoEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  if (!(await ehChef(login))) return { ok: false, erro: 'Este login não manda produção. Um gerente marca como "chef" em Gerentes (comanda do garçom).' };
+  const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
+  // chef marcado já tem PIN (a marcação é em cima do garcom_pin); gerente pelo
+  // Consumer sem PIN ainda cria aqui, igual ao /gerente
+  if (!atual) return apiGerenteEntrar(body);
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), login, nome: atual.nome || login };
+}
+async function producaoNuvem(metodo, body) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem chave da nuvem (FILIAL_ID/PAGAR_MESA_SECRET)' };
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const s = nfceAssina('producao', e);
+    const r = metodo === 'GET'
+      ? await fetch(`${PAGAR_MESA_URL}/api/loja/producao?f=${encodeURIComponent(FILIAL_ID)}&e=${e}&s=${s}`, { signal: AbortSignal.timeout(10000) })
+      : await fetch(`${PAGAR_MESA_URL}/api/loja/producao`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ f: FILIAL_ID, e, s, ...body }), signal: AbortSignal.timeout(15000) });
+    const j = await r.json().catch(() => null);
+    return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida do Concilia (HTTP ' + r.status + ')' };
+  } catch (err) { return { ok: false, erro: 'sem conexão com o Concilia: ' + err.message }; }
+}
 const gerLimComanda = () => (Number.isFinite(COMANDA_DE) ? COMANDA_DE : 1000000000);
 // MESAS: ocupadas = comanda aberta com número de mesa. O MAPA (quais mesas
 // existem em cada área) vem da reserva_config da nuvem; mesa aberta que não
@@ -21054,6 +21139,166 @@ async function loopBalancoNuvem() {
 }
 
 // ---- TELA /gerente: painel do gerente no celular ----
+// /producao — celular do CHEF: escolhe o que fazer, quanto e quem faz; manda
+// pelo WhatsApp. Fala só com /api/producao/* (a loja repassa ao Concilia).
+const PRODUCAO_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>${LOJA_NOME} — Produção</title><style>
+:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--red:#dc2626;--amber:#d97706;--wa:#25d366}
+*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
+h1{font-size:17px;margin:0;flex:1}h1 b{color:var(--gold2)}
+.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:6px 11px;font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
+.wrap{max-width:560px;margin:0 auto;padding:12px}
+h2{font-size:13px;color:var(--mut);font-weight:600;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:8px}
+.mut{color:var(--mut);font-size:13px;line-height:1.5}
+input,textarea,select{width:100%;font:inherit;font-size:16px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+input:focus,textarea:focus{outline:none;border-color:var(--gold2)}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.chip{font:inherit;font-size:14.5px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 13px;cursor:pointer}
+.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.chip.livre{border-style:dashed}
+.qtd{display:flex;align-items:center;gap:8px;margin-top:10px}
+.qtd input{width:120px;text-align:center;font-size:20px;font-weight:700}
+.qtd button{font:inherit;font-size:22px;width:46px;height:46px;border-radius:10px;border:1px solid var(--line);background:#fff;cursor:pointer}
+.big{width:100%;margin-top:14px;font:inherit;font-size:17px;font-weight:700;padding:15px;border:0;border-radius:12px;background:var(--wa);color:#fff;cursor:pointer}
+.big:disabled{opacity:.5}
+.big.go{background:var(--gold2)}
+.err{color:var(--red);font-size:13.5px;margin-top:8px;min-height:18px}
+.login{max-width:380px;margin:50px auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.login input{margin-top:8px}
+.op{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #f1f1f5}
+.op:first-child{border-top:0}.op .nm{flex:1;min-width:0}.op .nm small{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
+.tag{font-size:12px;border-radius:6px;padding:3px 8px;white-space:nowrap;background:#fef3c7;color:#92400e}
+.tag.ok{background:#dcfce7;color:#166534}.tag.fim{background:#e0e7ff;color:#3730a3}
+.ok-card{background:#ecfdf3;border:1px solid #bbf7d0;border-radius:14px;padding:14px;margin-top:10px}
+a.wa{display:block;text-align:center;text-decoration:none}
+</style></head><body>
+<header><a class="back" href="/">◂ Início</a><h1>👨‍🍳 <b>Produção</b></h1><span id="eu" class="mut"></span></header>
+<div class="wrap" id="app">carregando…</div>
+<script>
+var TOK=null;try{TOK=localStorage.getItem('producao_tok')||null}catch(e){}
+var D=null,SEL=null,LIVRE=false,COZ=null,FONE='',TIMER=null;
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
+async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
+async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
+function hm(iso){if(!iso)return '';var d=new Date(iso);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
+function num(v){return Number(v||0).toLocaleString('pt-BR',{maximumFractionDigits:3,useGrouping:false})}
+function $(id){return document.getElementById(id)}
+/* ---- login ---- */
+function telaLogin(msg){
+  $('eu').textContent='';
+  $('app').innerHTML='<div class="login"><div style="font-size:18px;font-weight:700">Entrar pra mandar produção</div>'+
+    '<div class="mut" style="margin-top:4px">Mesmo login e PIN do caixa/comanda. Precisa ser chef ou gerente.</div>'+
+    '<input id="lg" placeholder="login" autocapitalize="none" autocomplete="username">'+
+    '<input id="pn" type="password" inputmode="numeric" maxlength="8" placeholder="PIN" autocomplete="off">'+
+    '<div id="p2w" hidden><input id="pn2" type="password" inputmode="numeric" maxlength="8" placeholder="repita o PIN (primeira vez)" autocomplete="off"></div>'+
+    '<button class="big go" onclick="entrar()">Entrar</button><div class="err" id="lerr">'+esc(msg||'')+'</div></div>';
+  try{var u=localStorage.getItem('producao_login');if(u)$('lg').value=u}catch(e){}
+  $('pn').addEventListener('keydown',function(e){if(e.key==='Enter')entrar()});
+}
+async function entrar(){
+  var lg=$('lg').value.trim(),pn=$('pn').value,p2=($('pn2')||{}).value||'';
+  var r=await jpost('/api/producao/entrar',{login:lg,pin:pn,pin2:p2});
+  if(r.ok&&r.primeira_vez&&!r.token){$('p2w').hidden=false;$('lerr').textContent='Primeira vez de '+(r.nome||lg)+': repita o PIN pra criar.';$('pn2').focus();return}
+  if(!r.ok){$('lerr').textContent=r.erro||'não entrou';return}
+  TOK=r.token;try{localStorage.setItem('producao_tok',TOK);localStorage.setItem('producao_login',lg)}catch(e){}
+  iniciar();
+}
+function sair(){TOK=null;try{localStorage.removeItem('producao_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;telaLogin()}
+async function iniciar(){
+  var s=await jget('/api/producao/sessao');
+  if(!s.ok){telaLogin(TOK?'Sessão venceu — entre de novo.':'');return}
+  $('eu').innerHTML=esc(s.nome)+' · <a href="#" onclick="sair();return false" style="color:var(--gold2)">sair</a>';
+  $('app').innerHTML='<div class="mut">buscando no Concilia…</div>';
+  await carregar();
+  if(TIMER)clearInterval(TIMER);TIMER=setInterval(atualizaLista,20000);
+}
+async function carregar(){
+  var d=await jget('/api/producao/dados');
+  if(d.sem_sessao){telaLogin('Sessão venceu — entre de novo.');return}
+  if(!d.ok){$('app').innerHTML='<div class="card"><b>Não consegui falar com o Concilia.</b><div class="err">'+esc(d.erro||'')+'</div><button class="big go" onclick="carregar()">Tentar de novo</button></div>';return}
+  D=d;tela();
+}
+async function atualizaLista(){
+  try{var d=await jget('/api/producao/dados');if(d.ok){D.ops=d.ops;var el=$('lista');if(el)el.innerHTML=listaHtml()}}catch(e){}
+}
+/* ---- tela principal ---- */
+function tela(){
+  var t=D.templates||[];
+  var h='<h2>1. O que produzir?</h2><div class="card">';
+  if(t.length>6)h+='<input id="busca" placeholder="buscar…" oninput="filtra()">';
+  h+='<div class="chips" id="tpls">'+t.map(function(x,i){return '<button class="chip'+(SEL===i&&!LIVRE?' on':'')+'" data-n="'+esc(x.nome.toLowerCase())+'" onclick="escolhe('+i+')">'+esc(x.nome)+'</button>'}).join('')+
+    '<button class="chip livre'+(LIVRE?' on':'')+'" onclick="escolheLivre()">✏️ escrever</button></div>';
+  if(!t.length)h+='<div class="mut" style="margin-top:8px">Ainda não tem receitas de produção cadastradas no Concilia (Cadastros → Templates de produção). Dá pra escrever à mão.</div>';
+  h+='<div id="det"></div></div>';
+  h+='<h2>2. Quem faz?</h2><div class="card"><div class="chips" id="cozs">'+cozHtml()+'</div><div id="foneBox"></div></div>';
+  h+='<h2>3. Observação <span style="text-transform:none;font-weight:400">(opcional)</span></h2><div class="card"><textarea id="obs" rows="2" placeholder="ex: pra hoje até 17h, porcionar 200g"></textarea></div>';
+  h+='<button class="big" id="env" onclick="enviar()">📲 Mandar no WhatsApp</button><div class="err" id="eerr"></div><div id="res"></div>';
+  h+='<h2>Hoje</h2><div class="card" id="lista">'+listaHtml()+'</div>';
+  $('app').innerHTML=h;detalhe();foneBox();
+}
+function filtra(){var q=$('busca').value.trim().toLowerCase();document.querySelectorAll('#tpls .chip[data-n]').forEach(function(b){b.style.display=!q||b.getAttribute('data-n').indexOf(q)>=0?'':'none'})}
+function escolhe(i){SEL=i;LIVRE=false;marca('#tpls',i);detalhe()}
+function escolheLivre(){SEL=null;LIVRE=true;marca('#tpls',-1);detalhe();var x=$('livre');if(x)x.focus()}
+function marca(sel,i){document.querySelectorAll(sel+' .chip').forEach(function(b,j){b.classList.toggle('on',j===i||(i<0&&b.classList.contains('livre')))})}
+function detalhe(){
+  var el=$('det');if(!el)return;
+  if(LIVRE){el.innerHTML='<textarea id="livre" rows="2" style="margin-top:10px" placeholder="ex: 5 kg de vinagrete, 40 pastéis de camarão"></textarea>';return}
+  if(SEL==null){el.innerHTML='';return}
+  var t=D.templates[SEL];
+  el.innerHTML='<div class="mut" style="margin-top:12px">Quanto de <b>'+esc(t.produto||'insumo')+'</b>? (receita padrão: '+num(t.qtd)+' '+esc(t.unidade)+')</div>'+
+    '<div class="qtd"><button onclick="passo(-1)">−</button><input id="qtd" inputmode="decimal" value="'+num(t.qtd)+'"><button onclick="passo(1)">+</button><span class="mut">'+esc(t.unidade)+'</span></div>';
+}
+function lerQtd(){var v=Number(String(($('qtd')||{}).value||'').replace(',','.'));return isFinite(v)?v:0}
+function passo(d){var t=D.templates[SEL];var p=t.qtd>=5?1:(t.qtd>=1?0.5:0.1);var v=Math.max(0,Math.round((lerQtd()+d*p)*1000)/1000);$('qtd').value=num(v)}
+function cozHtml(){
+  var c=D.cozinheiros||[];
+  var h=c.map(function(x,i){return '<button class="chip'+(COZ&&COZ.nome===x.nome?' on':'')+'" onclick="escolheCoz('+i+')">'+esc(x.nome.split(' ').slice(0,2).join(' '))+(x.telefone?' 📱':'')+'</button>'}).join('');
+  if(!c.length)h+='<div class="mut">Ninguém do setor COZINHA no RH do Concilia. Escolha abaixo.</div>';
+  h+='<select id="outro" onchange="escolheOutro()" style="margin-top:8px"><option value="">outra pessoa…</option>'+(D.outros||[]).map(function(x,i){return '<option value="'+i+'">'+esc(x.nome)+'</option>'}).join('')+'</select>';
+  return h;
+}
+function escolheCoz(i){COZ=(D.cozinheiros||[])[i];FONE=COZ.telefone||'';$('cozs').innerHTML=cozHtml();foneBox()}
+function escolheOutro(){var v=$('outro').value;if(v==='')return;COZ=(D.outros||[])[Number(v)];FONE=COZ.telefone||'';$('cozs').innerHTML=cozHtml();$('outro').value=v;foneBox()}
+function foneBox(){
+  var el=$('foneBox');if(!el)return;
+  if(!COZ){el.innerHTML='';return}
+  if(COZ.telefone){el.innerHTML='<div class="mut" style="margin-top:8px">Vai pro WhatsApp de <b>'+esc(COZ.nome)+'</b>.</div>';return}
+  el.innerHTML='<div class="mut" style="margin-top:8px"><b>'+esc(COZ.nome)+'</b> está sem celular no RH. Digite (ou deixe vazio e escolha o contato no WhatsApp):</div><input id="fone" inputmode="tel" placeholder="(79) 9 9999-9999" style="margin-top:6px">';
+}
+async function enviar(){
+  var e=$('eerr');e.textContent='';
+  var body={observacao:($('obs').value||'').trim()||null,cozinheiro:COZ?COZ.nome:null,telefone:COZ&&COZ.telefone?COZ.telefone:(($('fone')||{}).value||'')};
+  if(LIVRE){body.texto=(($('livre')||{}).value||'').trim();if(!body.texto){e.textContent='Escreva o que é pra produzir.';return}}
+  else if(SEL!=null){body.templateId=D.templates[SEL].id;body.quantidade=lerQtd();if(!(body.quantidade>0)){e.textContent='Quantidade inválida.';return}}
+  else{e.textContent='Escolha o que produzir (ou ✏️ escrever).';return}
+  if(!COZ){e.textContent='Escolha quem vai fazer.';return}
+  var b=$('env');b.disabled=true;b.textContent='mandando…';
+  var r;try{r=await jpost('/api/producao/enviar',body)}catch(x){r={ok:false,erro:'sem rede'}}
+  b.disabled=false;b.textContent='📲 Mandar no WhatsApp';
+  if(!r.ok){e.textContent=r.erro||'não mandou';return}
+  $('res').innerHTML='<div class="ok-card"><b>✅ Ordem criada no Concilia.</b><div class="mut">Se o WhatsApp não abriu sozinho, toque aqui:</div>'+
+    '<a class="big wa" href="'+esc(r.whatsapp)+'" target="_blank" rel="noopener">📲 Abrir WhatsApp</a>'+
+    '<button class="big go" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="novo()">+ Mandar outra</button></div>';
+  D.ops=[{descricao:(LIVRE?body.texto:D.templates[SEL].nome),responsavel:COZ.nome,status:'RASCUNHO',criadoEm:new Date().toISOString(),prontaEm:null,link:r.link}].concat(D.ops||[]);
+  $('lista').innerHTML=listaHtml();
+  location.href=r.whatsapp;
+}
+function novo(){SEL=null;LIVRE=false;COZ=null;tela();window.scrollTo(0,0)}
+function listaHtml(){
+  var o=D&&D.ops||[];
+  if(!o.length)return '<div class="mut">Nenhuma produção mandada hoje.</div>';
+  return o.map(function(x){
+    var tg=x.status==='CONCLUIDA'?'<span class="tag fim">concluída</span>':(x.prontaEm?'<span class="tag ok">✅ pronta '+hm(x.prontaEm)+'</span>':'<span class="tag">⏳ fazendo</span>');
+    return '<div class="op"><div class="nm"><b>'+esc(x.descricao||'produção')+'</b><small>'+esc(x.responsavel||'—')+' · '+hm(x.criadoEm)+
+      (x.link?' · <a href="'+esc(x.link)+'" target="_blank" rel="noopener" style="color:var(--gold2)">ver</a>':'')+'</small></div>'+tg+'</div>';
+  }).join('');
+}
+iniciar();
+</script></body></html>`;
+
 const GERENTE_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${LOJA_NOME} — Gerente</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--red:#dc2626;--amber:#d97706;--blue:#2563eb}
@@ -21544,6 +21789,29 @@ const server = http.createServer(async (req, res) => {
     // ---- login do garçom (PIN) ----
     if (req.method === 'POST' && p === '/api/garcom/entrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomEntrar(body))); }
     if (p === '/api/garcom/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGarcomSessao(req, u))); }
+    // ---- PRODUÇÃO pelo celular do chef (/producao) ----
+    if (p === '/producao') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUCAO_HTML); }
+    if (p.startsWith('/api/producao/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method === 'POST' && p === '/api/producao/entrar') return res.end(JSON.stringify(await apiProducaoEntrar(await readBody(req))));
+      const ch = await chefDaRequisicao(req, u);
+      if (p === '/api/producao/sessao') return res.end(JSON.stringify(ch ? { ok: true, login: ch.login, nome: ch.nome } : { ok: false }));
+      if (!ch) return res.end(JSON.stringify({ ok: false, erro: 'Entre de novo.', sem_sessao: true }));
+      if (p === '/api/producao/dados') return res.end(JSON.stringify(await producaoNuvem('GET')));
+      if (req.method === 'POST' && p === '/api/producao/enviar') {
+        const b = await readBody(req);
+        return res.end(JSON.stringify(await producaoNuvem('POST', {
+          templateId: b.templateId || null,
+          quantidade: Number(b.quantidade) > 0 ? Number(b.quantidade) : null,
+          texto: b.texto ? String(b.texto).slice(0, 200) : null,
+          observacao: b.observacao ? String(b.observacao).slice(0, 1000) : null,
+          cozinheiro: b.cozinheiro ? String(b.cozinheiro).slice(0, 100) : null,
+          telefone: b.telefone ? String(b.telefone).slice(0, 20) : null,
+          chef: String(ch.nome || ch.login).slice(0, 100),
+        })));
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
+    }
     // ---- PAINEL DO GERENTE (/gerente): entrar, resumo ao vivo e ações ----
     if (p === '/gerente') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(GERENTE_HTML); }
     if (p.startsWith('/api/gerente/')) {
@@ -22103,7 +22371,7 @@ function conferirTelas() {
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
     '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML, '/ponto': PONTO_HTML,
-    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML };
+    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML, '/producao': PRODUCAO_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
