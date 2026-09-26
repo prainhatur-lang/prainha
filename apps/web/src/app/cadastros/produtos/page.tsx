@@ -11,6 +11,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { NovoInsumoButton } from './novo-insumo';
 import { EditarProdutoButton } from './editar-produto';
+import { ReativarProdutoButton } from './reativar-produto';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,8 +61,9 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
   const q = (sp.q ?? '').trim();
   const tipoFiltro = (sp.tipo ?? '').trim();
   const grupoFiltro = (sp.grupo ?? '').trim();
-  // Default: mostra só ativos. Precisa clicar 'Todos' explicitamente pra ver
-  // descontinuados/pausados.
+  // Default: tudo que não foi descontinuado — PAUSADOS aparecem, com selo e
+  // botão Reativar (26/09/2026: o dono não achava o produto pausado pra
+  // despausar). 'Só à venda' esconde os pausados.
   const statusFiltro = sp.status === undefined ? 'ativo' : sp.status.trim();
   const fichaFiltro = (sp.ficha ?? '').trim();
   const estoqueFiltro = (sp.estoque ?? '').trim();
@@ -87,7 +89,9 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       : statusFiltro === 'pausado'
         ? sql`${schema.produto.dataPausado} IS NOT NULL AND (${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
         : statusFiltro === 'ativo'
-          ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false) AND ${schema.produto.dataPausado} IS NULL`
+          ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
+          : statusFiltro === 'avenda'
+            ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false) AND ${schema.produto.dataPausado} IS NULL`
           : undefined, // 'todos' ou qualquer outro: sem filtro
     fichaFiltro === 'com'
       ? sql`EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
@@ -311,7 +315,8 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               Status
             </span>
             {[
-              { v: 'ativo', l: 'Ativos' },
+              { v: 'ativo', l: 'Ativos + pausados' },
+              { v: 'avenda', l: 'Só à venda' },
               { v: 'pausado', l: 'Pausados' },
               { v: 'descontinuado', l: 'Descontinuados' },
               { v: 'todos', l: 'Todos' },
@@ -460,7 +465,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               href={`/cadastros/produtos?filialId=${filialSelecionada.id}`}
               className="text-xs text-slate-500 hover:text-slate-700"
             >
-              Limpar filtros (volta pro default: Ativos)
+              Limpar filtros (volta pro default: Ativos + pausados)
             </Link>
           )}
         </form>
@@ -590,12 +595,13 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             Descontinuado
                           </span>
                         ) : p.dataPausado ? (
-                          <span
+                          <span className="whitespace-nowrap"><span
                             className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
                             title={`Pausado desde ${new Date(p.dataPausado).toLocaleDateString('pt-BR')}`}
                           >
                             Pausado
                           </span>
+                          <ReativarProdutoButton filialId={filialSelecionada.id} produtoId={p.id} /></span>
                         ) : (
                           <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
                             Ativo
