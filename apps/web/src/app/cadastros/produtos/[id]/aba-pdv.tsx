@@ -337,6 +337,12 @@ export function AbaPdv(p: Props) {
               <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} salvando={salvando} onSalvar={mandar}
                 catalogo={p.catalogo ?? []} />
             ))}
+            {/* uma lista só pra todas as opções (o catálogo tem ~1.700 tamanhos) */}
+            <datalist id="cat-opcao-pdv">
+              {(p.catalogo ?? []).map((c) => (
+                <option key={c.codigo} value={`${c.rotulo} (${c.codigo})`} />
+              ))}
+            </datalist>
           </div>
         )}
       </div>
@@ -521,7 +527,6 @@ function LinhaOpcao({
     const m = t.match(/\((\d+)\)\s*$/) ?? t.match(/^(\d+)$/);
     return m ? m[1]! : null; // null = texto que não casa com nenhum produto
   })();
-  const listaId = `cat-opc-${o.codigo}`;
 
   return (
     <li className="flex flex-wrap items-center gap-2">
@@ -539,21 +544,17 @@ function LinhaOpcao({
         aria-label={`Preço da opção ${o.codigo}`}
         className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-right font-mono text-sm"
       />
+      <span className="text-[11px] font-medium text-slate-500">lança produto:</span>
       <input
         value={prodTxt}
         onChange={(e) => setProdTxt(e.target.value)}
-        list={listaId}
-        placeholder="só observação — escolha o produto que lança"
+        list="cat-opcao-pdv"
+        placeholder="digite o nome (ex.: file kids) e escolha na lista"
         aria-label={`Produto que a opção ${o.codigo} lança`}
         className={`min-w-[240px] flex-1 rounded-lg border px-3 py-1.5 text-sm ${
           prodCodigo === null ? 'border-rose-400' : prodCodigo ? 'border-violet-300 bg-violet-50' : 'border-slate-200'
         }`}
       />
-      <datalist id={listaId}>
-        {catalogo.map((c) => (
-          <option key={c.codigo} value={`${c.rotulo} (${c.codigo})`} />
-        ))}
-      </datalist>
       {prodCodigo ? (
         <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-800">lança produto</span>
       ) : (
