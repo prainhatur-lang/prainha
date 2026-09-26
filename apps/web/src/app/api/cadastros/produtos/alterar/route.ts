@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { CAMPOS_PRODUTO, normalizaValor } from '@/lib/produto-campos';
 
 export const dynamic = 'force-dynamic';
@@ -95,7 +95,11 @@ export async function POST(request: Request) {
     : [undefined];
   const [opcaoAtual] = alvoCodigo
     ? await db
-        .select({ nome: schema.wizardOpcao.nome, preco: schema.wizardOpcao.precoPromo })
+        .select({
+          nome: schema.wizardOpcao.nome,
+          preco: schema.wizardOpcao.precoPromo,
+          produto: schema.wizardOpcao.codigoVarianteExterno,
+        })
         .from(schema.wizardOpcao)
         .where(and(
           eq(schema.wizardOpcao.filialId, prod.filialId),
@@ -131,6 +135,7 @@ export async function POST(request: Request) {
       pergunta_max: perguntaAtual?.max,
       opcao_nome: opcaoAtual?.nome,
       opcao_preco: opcaoAtual?.preco,
+      opcao_produto: opcaoAtual?.produto,
     };
     const x = mapa[campo];
     if (x == null) return null;
@@ -156,6 +161,21 @@ export async function POST(request: Request) {
     }
     const n = normalizaValor(campo, bruto);
     if (!n.ok) return NextResponse.json({ ok: false, erro: n.erro }, { status: 400 });
+    if (campo === 'opcao_produto' && n.valor != null) {
+      // código de PDV de outra casa (ou excluído) a loja recusaria — melhor avisar já
+      const [alvoVar] = await db
+        .select({ id: schema.produtoVariante.id })
+        .from(schema.produtoVariante)
+        .where(and(
+          eq(schema.produtoVariante.filialId, prod.filialId),
+          eq(schema.produtoVariante.codigoExterno, Number(n.valor)),
+          isNull(schema.produtoVariante.dataDelete),
+        ))
+        .limit(1);
+      if (!alvoVar) {
+        return NextResponse.json({ ok: false, erro: `produto ${n.valor} não existe nesta casa` }, { status: 400 });
+      }
+    }
     const valorAntes = antes(campo);
     if ((valorAntes ?? '') === (n.valor ?? '')) continue; // nada mudou
     linhas.push({

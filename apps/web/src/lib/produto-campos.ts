@@ -53,6 +53,13 @@ export const CAMPOS_PRODUTO: Record<string, CampoProduto> = {
     alvo: 'opcao', tipo: 'numero', label: 'Preço da opção',
     dica: 'PRECOPROMO: o que se cobra quando vai junto do prato (0 = cortesia)',
   },
+  // Opção que LANÇA PRODUTO: a resposta entra na conta como item-filho com
+  // este PRODUTODETALHE (baixa estoque, sai na praça dele). Vazio = a opção é
+  // só observação ("bem passada").
+  opcao_produto: {
+    alvo: 'opcao', tipo: 'inteiro', label: 'Produto que a opção lança',
+    dica: 'código de PDV do tamanho; vazio = só observação',
+  },
 };
 
 /** Normaliza o valor pro formato que viaja na fila (string ou null). */

@@ -9145,6 +9145,8 @@ const CAMPO_FB = {
   pergunta_max:       { tab: 'WIZARDPERGUNTAS', col: 'QTDRESPOSTASMAX',  tipo: 'int',   alvo: 'pergunta' },
   opcao_nome:         { tab: 'WIZARDOPCOES',    col: 'DESCRICAO',        tipo: 'texto', alvo: 'opcao' },
   opcao_preco:        { tab: 'WIZARDOPCOES',    col: 'PRECOPROMO',       tipo: 'num',   alvo: 'opcao' },
+  // opção que LANÇA PRODUTO (item-filho com este PRODUTODETALHE); NULL = observação
+  opcao_produto:      { tab: 'WIZARDOPCOES',    col: 'CODIGOPRODUTODETALHE', tipo: 'int', alvo: 'opcao' },
 };
 async function fbAlterarProduto({ produto, variante, campo, valor, alvo_codigo }) {
   const def = CAMPO_FB[campo];
@@ -9197,6 +9199,10 @@ async function fbAlterarProduto({ produto, variante, campo, valor, alvo_codigo }
   if (campo === 'categoria' && sqlVal !== 'NULL') {
     const e = await qi(`SELECT FIRST 1 CODIGO FROM ETIQUETAS WHERE CODIGO=${sqlVal} AND DATADELETE IS NULL`);
     if (!e.ok || !e.rows.length) return { ok: false, erro: 'categoria (etiqueta) não existe no PDV' };
+  }
+  if (campo === 'opcao_produto' && sqlVal !== 'NULL') {
+    const d = await qi(`SELECT FIRST 1 CODIGO FROM PRODUTODETALHE WHERE CODIGO=${sqlVal} AND DATADELETE IS NULL`);
+    if (!d.ok || !d.rows.length) return { ok: false, erro: 'produto (código de PDV) não existe ou foi excluído' };
   }
   const onde = wizard ? `CODIGO=${alvoCod}` : def.tab === 'PRODUTOS' ? `CODIGO=${prod}` : `CODIGO=${varc}`;
   const up = await qi(`UPDATE ${def.tab} SET ${def.col}=${sqlVal} WHERE ${onde}`);

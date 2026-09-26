@@ -93,6 +93,8 @@ interface Props {
   variantes: VariantePdv[];
   pendentes: PendentePdv[];
   perguntas: PerguntaPdv[];
+  /** Tamanhos da casa que uma opção de pergunta pode lançar como item. */
+  catalogo?: Array<{ codigo: number; rotulo: string }>;
   complementos: ComplementoPdv[];
   insumos: InsumoPdv[];
 }
@@ -115,6 +117,7 @@ const ROTULO: Record<string, string> = {
   pergunta_max: 'Respostas máximas',
   opcao_nome: 'Opção',
   opcao_preco: 'Preço da opção',
+  opcao_produto: 'Produto da opção',
 };
 
 /** O mesmo pedido clicado 3× vira uma linha só (×3) — a lista repetida confunde. */
@@ -331,7 +334,8 @@ export function AbaPdv(p: Props) {
         ) : (
           <div className="divide-y divide-slate-100">
             {p.perguntas.map((q) => (
-              <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} salvando={salvando} onSalvar={mandar} />
+              <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} salvando={salvando} onSalvar={mandar}
+                catalogo={p.catalogo ?? []} />
             ))}
           </div>
         )}
@@ -406,8 +410,10 @@ function BlocoPergunta({
   q,
   salvando,
   onSalvar,
+  catalogo,
 }: {
   q: PerguntaPdv;
+  catalogo: Array<{ codigo: number; rotulo: string }>;
   salvando: string | null;
   onSalvar: (
     campos: Record<string, unknown>,
@@ -477,7 +483,7 @@ function BlocoPergunta({
 
       <ul className="mt-3 space-y-2">
         {q.opcoes.map((o) => (
-          <LinhaOpcao key={o.codigo} o={o} salvando={salvando} onSalvar={onSalvar} />
+          <LinhaOpcao key={o.codigo} o={o} salvando={salvando} onSalvar={onSalvar} catalogo={catalogo} />
         ))}
         {q.opcoes.length === 0 && <li className="text-xs text-slate-400">sem opções cadastradas</li>}
       </ul>
@@ -489,8 +495,10 @@ function LinhaOpcao({
   o,
   salvando,
   onSalvar,
+  catalogo,
 }: {
   o: OpcaoPdv;
+  catalogo: Array<{ codigo: number; rotulo: string }>;
   salvando: string | null;
   onSalvar: (
     campos: Record<string, unknown>,
@@ -502,6 +510,18 @@ function LinhaOpcao({
   const [nome, setNome] = useState(o.nome ?? '');
   const [preco, setPreco] = useState(moeda(o.precoPromo));
   const tag = `opc-${o.codigo}`;
+  const rotuloDe = (cod: number | null) =>
+    cod == null ? '' : `${catalogo.find((c) => c.codigo === cod)?.rotulo ?? 'produto'} (${cod})`;
+  // Campo livre com sugestões: "File kids — Unico (2101)". Vale o número entre
+  // parênteses (ou só o número digitado); vazio = volta a ser observação.
+  const [prodTxt, setProdTxt] = useState(rotuloDe(o.lancaVariante));
+  const prodCodigo = (() => {
+    const t = prodTxt.trim();
+    if (!t) return '';
+    const m = t.match(/\((\d+)\)\s*$/) ?? t.match(/^(\d+)$/);
+    return m ? m[1]! : null; // null = texto que não casa com nenhum produto
+  })();
+  const listaId = `cat-opc-${o.codigo}`;
 
   return (
     <li className="flex flex-wrap items-center gap-2">
@@ -519,17 +539,38 @@ function LinhaOpcao({
         aria-label={`Preço da opção ${o.codigo}`}
         className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-right font-mono text-sm"
       />
-      {o.lancaVariante ? (
-        <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-800">
-          lança produto {o.lancaVariante}
-        </span>
+      <input
+        value={prodTxt}
+        onChange={(e) => setProdTxt(e.target.value)}
+        list={listaId}
+        placeholder="só observação — escolha o produto que lança"
+        aria-label={`Produto que a opção ${o.codigo} lança`}
+        className={`min-w-[240px] flex-1 rounded-lg border px-3 py-1.5 text-sm ${
+          prodCodigo === null ? 'border-rose-400' : prodCodigo ? 'border-violet-300 bg-violet-50' : 'border-slate-200'
+        }`}
+      />
+      <datalist id={listaId}>
+        {catalogo.map((c) => (
+          <option key={c.codigo} value={`${c.rotulo} (${c.codigo})`} />
+        ))}
+      </datalist>
+      {prodCodigo ? (
+        <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-800">lança produto</span>
       ) : (
         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">observação</span>
       )}
       <button
         type="button"
-        disabled={salvando !== null}
-        onClick={() => onSalvar({ opcao_nome: nome, opcao_preco: preco }, undefined, tag, o.codigo)}
+        disabled={salvando !== null || prodCodigo === null}
+        title={prodCodigo === null ? 'escolha um produto da lista (ou deixe vazio)' : undefined}
+        onClick={() =>
+          onSalvar(
+            { opcao_nome: nome, opcao_preco: preco, opcao_produto: prodCodigo ?? '' },
+            undefined,
+            tag,
+            o.codigo,
+          )
+        }
         className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
       >
         {salvando === tag ? '…' : 'Salvar'}

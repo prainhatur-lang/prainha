@@ -343,6 +343,29 @@ export default async function ProdutoDetalhePage(props: {
           .groupBy(schema.wizardProduto.codigoPergunta)
       : [];
 
+  // Catálogo de tamanhos da casa pro seletor "a opção lança o produto…"
+  // (Carne → File kids): a resposta entra na conta como item, não observação.
+  const catalogoOpcao =
+    aba === 'pdv' && opcoesPdv.length > 0
+      ? await db
+          .select({
+            codigo: schema.produtoVariante.codigoExterno,
+            nome: schema.produto.nome,
+            tamanho: schema.produtoTamanho.descricao,
+          })
+          .from(schema.produtoVariante)
+          .innerJoin(schema.produto, eq(schema.produto.id, schema.produtoVariante.produtoId))
+          .leftJoin(
+            schema.produtoTamanho,
+            eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId),
+          )
+          .where(and(
+            eq(schema.produtoVariante.filialId, produto.filialId),
+            isNull(schema.produtoVariante.dataDelete),
+          ))
+          .orderBy(asc(schema.produto.nome))
+      : [];
+
   // Complementos aceitos por cada tamanho (PRODUTODETALHECOMPLEMENTO).
   const compVar = aliasDrizzle(schema.produtoVariante, 'comp_var');
   const compProd = aliasDrizzle(schema.produto, 'comp_prod');
@@ -595,6 +618,10 @@ export default async function ProdutoDetalhePage(props: {
                     precoPromo: o.precoPromo,
                     lancaVariante: o.codigoVarianteExterno,
                   })),
+              }))}
+              catalogo={catalogoOpcao.map((c) => ({
+                codigo: c.codigo,
+                rotulo: `${c.nome ?? '?'}${c.tamanho ? ` — ${c.tamanho}` : ''}`,
               }))}
               insumos={insumosPdv.map((i) => ({
                 varianteCodigo: i.varianteCodigo,
