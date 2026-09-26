@@ -13,6 +13,7 @@ import { brl, int } from '@/lib/format';
 import { NovoInsumoButton } from './novo-insumo';
 import { EditarProdutoButton } from './editar-produto';
 import { ReativarProdutoButton } from './reativar-produto';
+import { FiltrosProdutos } from './filtros-produtos';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,11 +21,11 @@ interface SP {
   filialId?: string;
   q?: string;
   tipo?: string;
-  status?: string; // 'ativo' | 'descontinuado' | ''
-  ficha?: string; // 'com' | 'sem' | ''
-  estoque?: string; // 'baixo' | 'zerado' | ''
+  status?: string; // lista: 'avenda,pausado,descontinuado' | 'todos' (legado: 'ativo')
+  ficha?: string; // lista: 'com,sem'
+  estoque?: string; // lista: 'baixo,zerado'
   fornecedor?: string; // 'sem' | ''
-  grupo?: string; // codigo da etiqueta (grupo do cardápio)
+  grupo?: string; // lista de códigos da etiqueta (grupo do cardápio)
   page?: string;
 }
 
@@ -60,15 +61,28 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);
   const q = (sp.q ?? '').trim();
-  const tipoFiltro = (sp.tipo ?? '').trim();
-  const grupoFiltro = (sp.grupo ?? '').trim();
-  // Default: tudo que não foi descontinuado — PAUSADOS aparecem, com selo e
-  // botão Reativar (26/09/2026: o dono não achava o produto pausado pra
-  // despausar). 'Só à venda' esconde os pausados.
-  const statusFiltro = sp.status === undefined ? 'ativo' : sp.status.trim();
-  const fichaFiltro = (sp.ficha ?? '').trim();
-  const estoqueFiltro = (sp.estoque ?? '').trim();
-  const fornecedorFiltro = (sp.fornecedor ?? '').trim();
+  // Filtros são caixinhas (vários valores por linha, separados por vírgula
+  // na URL: ?tipo=VENDA_SIMPLES,COMBO&grupo=12,40). Nada marcado = sem filtro.
+  const lista = (v: string | undefined) =>
+    [...new Set((v ?? '').split(',').map((x) => x.trim()).filter(Boolean))].sort();
+  const tipos = lista(sp.tipo);
+  const grupos = lista(sp.grupo);
+  // Status: à venda / pausado / descontinuado. Default = à venda + pausados —
+  // PAUSADOS aparecem, com selo e botão Reativar (26/09/2026: o dono não
+  // achava o produto pausado pra despausar). Links antigos: 'ativo' e 'todos'.
+  const STATUS_DEFAULT = 'avenda,pausado';
+  const statusBruto = sp.status === undefined ? STATUS_DEFAULT : sp.status.trim();
+  const statusSet = lista(
+    statusBruto === 'ativo' ? STATUS_DEFAULT : statusBruto === 'todos' ? '' : statusBruto,
+  ).filter((x) => x === 'avenda' || x === 'pausado' || x === 'descontinuado');
+  const fichas = lista(sp.ficha).filter((x) => x === 'com' || x === 'sem');
+  const estoques = lista(sp.estoque).filter((x) => x === 'baixo' || x === 'zerado');
+  const tipoFiltro = tipos.join(',');
+  const grupoFiltro = grupos.join(',');
+  const statusFiltro = statusSet.join(',');
+  const fichaFiltro = fichas.join(',');
+  const estoqueFiltro = estoques.join(',');
+  const fornecedorFiltro = (sp.fornecedor ?? '').trim() === 'sem' ? 'sem' : '';
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
 
   if (!filialSelecionada) {
@@ -84,27 +98,38 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
 
   const where = and(
     eq(schema.produto.filialId, filialSelecionada.id),
-    tipoFiltro ? eq(schema.produto.tipo, tipoFiltro) : undefined,
-    statusFiltro === 'descontinuado'
-      ? eq(schema.produto.descontinuado, true)
-      : statusFiltro === 'pausado'
-        ? sql`${schema.produto.dataPausado} IS NOT NULL AND (${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
-        : statusFiltro === 'ativo'
-          ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false)`
-          : statusFiltro === 'avenda'
-            ? sql`(${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false) AND ${schema.produto.dataPausado} IS NULL`
-          : undefined, // 'todos' ou qualquer outro: sem filtro
-    fichaFiltro === 'com'
-      ? sql`EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
-      : fichaFiltro === 'sem'
-        ? sql`NOT EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
-        : undefined,
-    estoqueFiltro === 'zerado'
-      ? sql`COALESCE(${schema.produto.estoqueAtual}, 0) <= 0 AND ${schema.produto.controlaEstoque} = true`
-      : estoqueFiltro === 'baixo'
-        ? sql`COALESCE(${schema.produto.estoqueAtual}, 0) < COALESCE(${schema.produto.estoqueMinimo}, 0) AND ${schema.produto.controlaEstoque} = true AND COALESCE(${schema.produto.estoqueMinimo}, 0) > 0`
-        : undefined,
-    grupoFiltro ? eq(schema.produto.codigoEtiqueta, grupoFiltro) : undefined,
+    tipos.length ? inArray(schema.produto.tipo, tipos) : undefined,
+    // status: OR das caixinhas marcadas (as 3 ou nenhuma = sem filtro)
+    statusSet.length > 0 && statusSet.length < 3
+      ? sql`(${sql.join(
+          statusSet.map((st) =>
+            st === 'descontinuado'
+              ? sql`${schema.produto.descontinuado} = true`
+              : st === 'pausado'
+                ? sql`(${schema.produto.dataPausado} IS NOT NULL AND (${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false))`
+                : sql`(${schema.produto.dataPausado} IS NULL AND (${schema.produto.descontinuado} IS NULL OR ${schema.produto.descontinuado} = false))`,
+          ),
+          sql` OR `,
+        )})`
+      : undefined,
+    // com + sem ficha = qualquer
+    fichas.length === 1
+      ? fichas[0] === 'com'
+        ? sql`EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
+        : sql`NOT EXISTS (SELECT 1 FROM ${schema.fichaTecnica} WHERE ${schema.fichaTecnica.produtoId} = ${schema.produto.id})`
+      : undefined,
+    // zerado ⊂ abaixo do mínimo? não: zerado vale sem mínimo cadastrado — OR
+    estoques.length
+      ? sql`(${sql.join(
+          estoques.map((e) =>
+            e === 'zerado'
+              ? sql`(COALESCE(${schema.produto.estoqueAtual}, 0) <= 0 AND ${schema.produto.controlaEstoque} = true)`
+              : sql`(COALESCE(${schema.produto.estoqueAtual}, 0) < COALESCE(${schema.produto.estoqueMinimo}, 0) AND ${schema.produto.controlaEstoque} = true AND COALESCE(${schema.produto.estoqueMinimo}, 0) > 0)`,
+          ),
+          sql` OR `,
+        )})`
+      : undefined,
+    grupos.length ? inArray(schema.produto.codigoEtiqueta, grupos) : undefined,
     fornecedorFiltro === 'sem'
       ? sql`NOT EXISTS (SELECT 1 FROM ${schema.produtoFornecedor} WHERE ${schema.produtoFornecedor.produtoId} = ${schema.produto.id})`
       : undefined,
@@ -301,7 +326,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     if (nextQ) qs.set('q', nextQ);
     if (nextTipo) qs.set('tipo', nextTipo);
     // Sempre seta status na URL pra ficar explicito qual filtro esta ativo
-    if (nextStatus && nextStatus !== 'ativo') qs.set('status', nextStatus);
+    if (nextStatus !== STATUS_DEFAULT) qs.set('status', nextStatus || 'todos');
     const nextGrupo = override.grupo !== undefined ? override.grupo : grupoFiltro;
     if (nextGrupo) qs.set('grupo', nextGrupo);
     if (nextFicha) qs.set('ficha', nextFicha);
@@ -316,7 +341,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     !!q ||
     !!tipoFiltro ||
     !!grupoFiltro ||
-    (!!statusFiltro && statusFiltro !== 'ativo') ||
+    statusFiltro !== STATUS_DEFAULT ||
     !!fichaFiltro ||
     !!estoqueFiltro ||
     !!fornecedorFiltro;
@@ -381,162 +406,29 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
           </div>
         )}
 
-        <div className="mt-4 space-y-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          {/* Tipo */}
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Tipo
-            </span>
-            {TIPOS_FILTRO.map((t) => (
-              <Link
-                key={t.value}
-                href={hrefPreserva({ tipo: t.value, page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  tipoFiltro === t.value
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {t.label}
-              </Link>
-            ))}
-          </div>
-
-          {/* Status */}
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Status
-            </span>
-            {[
-              { v: 'ativo', l: 'Ativos + pausados' },
-              { v: 'avenda', l: 'Só à venda' },
-              { v: 'pausado', l: 'Pausados' },
-              { v: 'descontinuado', l: 'Descontinuados' },
-              { v: 'todos', l: 'Todos' },
-            ].map((o) => (
-              <Link
-                key={o.v}
-                href={hrefPreserva({ status: o.v, page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  statusFiltro === o.v
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {o.l}
-              </Link>
-            ))}
-          </div>
-
-          {/* Ficha técnica */}
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Receita
-            </span>
-            {[
-              { v: '', l: 'Qualquer' },
-              { v: 'com', l: 'Com ficha' },
-              { v: 'sem', l: 'Sem ficha' },
-            ].map((o) => (
-              <Link
-                key={o.v}
-                href={hrefPreserva({ ficha: o.v, page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  fichaFiltro === o.v
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {o.l}
-              </Link>
-            ))}
-          </div>
-
-          {/* Estoque */}
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Estoque
-            </span>
-            {[
-              { v: '', l: 'Todos' },
-              { v: 'baixo', l: '⚠ Abaixo do mínimo' },
-              { v: 'zerado', l: 'Zerado' },
-            ].map((o) => (
-              <Link
-                key={o.v}
-                href={hrefPreserva({ estoque: o.v, page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  estoqueFiltro === o.v
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {o.l}
-              </Link>
-            ))}
-          </div>
-
-          {/* Fornecedor */}
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-20 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Fornec.
-            </span>
-            {[
-              { v: '', l: 'Qualquer' },
-              { v: 'sem', l: 'Sem fornecedor mapeado' },
-            ].map((o) => (
-              <Link
-                key={o.v}
-                href={hrefPreserva({ fornecedor: o.v, page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  fornecedorFiltro === o.v
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {o.l}
-              </Link>
-            ))}
-          </div>
-
-          {/* Grupo do cardápio (PRODUTOETIQUETA). Só aparece quando a filial
-              tem grupos cadastrados — filial sem etiqueta não ganha linha vazia. */}
-          {gruposOrdenados.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="w-20 shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Grupo
-              </span>
-              <Link
-                href={hrefPreserva({ grupo: '', page: '0' })}
-                className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                  grupoFiltro === ''
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                Todos
-              </Link>
-              {gruposOrdenados.map((g) => (
-                <Link
-                  key={g.codigo}
-                  href={hrefPreserva({ grupo: String(g.codigo), page: '0' })}
-                  className={`rounded-md border px-2.5 py-0.5 text-[11px] ${
-                    grupoFiltro === String(g.codigo)
-                      ? 'border-slate-900 bg-slate-900 text-white'
-                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  {g.nome}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
+        <FiltrosProdutos
+          key={[tipoFiltro, statusFiltro, fichaFiltro, estoqueFiltro, fornecedorFiltro, grupoFiltro].join('|')}
+          filialId={filialSelecionada.id}
+          q={q}
+          tipos={TIPOS_FILTRO.filter((t) => t.value).map((t) => ({ v: t.value, l: t.label }))}
+          grupos={gruposOrdenados.map((g) => ({ v: String(g.codigo), l: g.nome ?? '' }))}
+          marcados={{
+            tipo: tipos,
+            status: statusSet,
+            ficha: fichas,
+            estoque: estoques,
+            fornecedor: fornecedorFiltro ? ['sem'] : [],
+            grupo: grupos,
+          }}
+        />
 
         <form method="GET" className="mt-3 flex items-center gap-2">
           <input type="hidden" name="filialId" value={filialSelecionada.id} />
           {tipoFiltro && <input type="hidden" name="tipo" value={tipoFiltro} />}
-          {statusFiltro && <input type="hidden" name="status" value={statusFiltro} />}
+          {statusFiltro !== STATUS_DEFAULT && (
+            <input type="hidden" name="status" value={statusFiltro || 'todos'} />
+          )}
+          {grupoFiltro && <input type="hidden" name="grupo" value={grupoFiltro} />}
           {fichaFiltro && <input type="hidden" name="ficha" value={fichaFiltro} />}
           {estoqueFiltro && <input type="hidden" name="estoque" value={estoqueFiltro} />}
           {fornecedorFiltro && <input type="hidden" name="fornecedor" value={fornecedorFiltro} />}
