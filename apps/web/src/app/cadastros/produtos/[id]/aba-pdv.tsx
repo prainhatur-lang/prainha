@@ -141,7 +141,6 @@ export function AbaPdv(p: Props) {
   const [descricao, setDescricao] = useState(p.descricao ?? '');
   const [custo, setCusto] = useState(moeda(p.precoCusto));
   const [estMin, setEstMin] = useState(p.estoqueMinimo ? String(Number(p.estoqueMinimo)) : '');
-  const [controla, setControla] = useState(!!p.estoqueControlado);
   const [descont, setDescont] = useState(!!p.descontinuado);
   const [etiqueta, setEtiqueta] = useState(p.codigoEtiqueta ?? '');
   const [salvando, setSalvando] = useState<string | null>(null);
@@ -258,10 +257,6 @@ export function AbaPdv(p: Props) {
           </div>
           <div className="flex items-end gap-4 pb-1">
             <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={controla} onChange={(e) => setControla(e.target.checked)} />
-              Controla estoque
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={descont} onChange={(e) => setDescont(e.target.checked)} />
               Descontinuado
             </label>
@@ -281,7 +276,6 @@ export function AbaPdv(p: Props) {
               descricao,
               preco_custo: custo,
               estoque_minimo: estMin,
-              estoque_controlado: controla,
               descontinuado: descont,
               categoria: etiqueta === '' ? null : etiqueta,
             })
