@@ -5288,7 +5288,10 @@ async function apiLioPagarSemTrava(body, garcom) {
   // Quitou pela maquininha = mesmo ato final do caixa (commit 625761e): fecha
   // o pedido do jeito que o Consumer fecha e libera a mesa/comanda na hora.
   if (r.ok && r.quitada) {
-    try { const f = await apiCaixaFechar(n, body.ped); r.fechada = !!f.ok; } catch { r.fechada = false; }
+    try {
+      const f = await apiCaixaFechar(n, body.ped); r.fechada = !!f.ok;
+      if (!f.ok) console.error(`[lio] mesa ${n} quitada mas NÃO fechou: ${f.erro || '?'}`);
+    } catch (e) { r.fechada = false; console.error(`[lio] mesa ${n} quitada mas NÃO fechou: ${e.message}`); }
     // entrega (número 0 + pedido explícito) recebida na porta
     if (n === 0 && Number(body.ped) > 0) await deliveryPagoNaPorta(Number(body.ped), garcom.login).catch((e) => console.error('[entrega] pago na porta:', e.message));
   }
@@ -9720,7 +9723,12 @@ async function apiCaixaReceberManual(body, quem) {
         ${d ? JSON.stringify(d) : null})`;
   } catch (e) { console.error('[manual] índice do comprovante:', e.message); }
   // quitou = fecha a conta, igual ao recebimento em dinheiro
-  if (r.quitada) { try { const fe = await apiCaixaFechar(numero, body.ped); r.fechada = !!fe.ok; } catch { r.fechada = false; } }
+  if (r.quitada) {
+    try {
+      const fe = await apiCaixaFechar(numero, body.ped); r.fechada = !!fe.ok;
+      if (!fe.ok) console.error(`[manual] conta ${numero} quitada mas NÃO fechou: ${fe.erro || '?'}`);
+    } catch (e) { r.fechada = false; console.error(`[manual] conta ${numero} quitada mas NÃO fechou: ${e.message}`); }
+  }
   return { ...r, forma: f.nome, comprovante: arquivo };
 }
 /** Fecha a conta lançando o que falta no fiado do cliente. */
@@ -14699,6 +14707,36 @@ async function loopPixSemBaixa() {
   } catch (e) { console.error('[pix-baixa] ' + e.message); }
   finally { setTimeout(loopPixSemBaixa, 30000); }
 }
+/** REDE DE SEGURANÇA DO "QUITOU = FECHA". Todo recebimento que quita a conta
+ *  já fecha na hora — mas se esse fechamento falha (e o erro era engolido),
+ *  a mesa fica na grade com "✓ PAGO" até alguém fechar na mão. Foi a mesa 3
+ *  da Prainha Mar em 25/09/2026: R$ 17,60 na LIO às 20:30 e a mesa aberta
+ *  até o dia seguinte. A cada minuto: conta quitada, sem pagamento nem item
+ *  novo há 2 min e que ninguém reabriu → fecha. Conta REABERTA pelo caixa
+ *  fica de fora: foi reaberta de propósito (estorno, correção). */
+async function loopFecharQuitadas() {
+  try {
+    if (nativo()) {
+      const cands = await sql`SELECT c.codigo, c.numero FROM comanda c
+        WHERE c.fechada_em IS NULL AND c.cancelada_em IS NULL AND c.numero > 0
+          AND COALESCE(c.valor_total,0) > 0
+          AND (SELECT COALESCE(SUM(p.valor),0) FROM pagamento_local p
+                WHERE p.pedido = c.codigo AND p.cancelado_em IS NULL) >= COALESCE(c.valor_total,0) - 0.009
+          AND NOT EXISTS (SELECT 1 FROM pagamento_local p WHERE p.pedido = c.codigo
+                AND p.quando > now() - interval '2 minutes')
+          AND NOT EXISTS (SELECT 1 FROM comanda_item i WHERE i.comanda_codigo = c.codigo
+                AND i.criado > now() - interval '2 minutes')
+          AND NOT EXISTS (SELECT 1 FROM conta_reabertura r WHERE r.pedido_fb = c.codigo)
+        LIMIT 10`;
+      for (const c of cands) {
+        const f = await apiCaixaFechar(Number(c.numero), Number(c.codigo)).catch((e) => ({ ok: false, erro: e.message }));
+        if (f.ok) console.log(`[fechar-quitadas] conta ${c.numero} (pedido ${c.codigo}) estava quitada e aberta — fechada`);
+        else console.error(`[fechar-quitadas] conta ${c.numero} (pedido ${c.codigo}) quitada mas NÃO fechou: ${f.erro || '?'}`);
+      }
+    }
+  } catch (e) { console.error('[fechar-quitadas] ' + e.message); }
+  finally { setTimeout(loopFecharQuitadas, 60000); }
+}
 /** Pix confirmados e ainda não lançados (a lista vermelha do caixa e o
  *  /api/pix/orfaos). Com `pedido`: só os que cabem NAQUELA conta — cobrança
  *  amarrada a outra conta não aparece na conta nova da mesma mesa. */
@@ -14765,6 +14803,8 @@ async function apiCaixaRetido(body, quem) {
     await sql`UPDATE venda_pagamento SET status='resolvido', resolvido_em=now(), resolvido_por=${quem?.login || null},
       conta_alvo=${ped} WHERE id=${id}`;
     console.error(`[pagar] retido #${id} (R$ ${Number(x.valor).toFixed(2)}) lançado na conta ${ped} por ${quem?.login || '?'}`);
+    // quitou = fecha, igual a todo recebimento (o retido era o único que não fechava)
+    if (r.quitada) { try { const fe = await apiCaixaFechar(numero, ped); r.fechada = !!fe.ok; } catch { r.fechada = false; } }
   }
   return r;
 }
@@ -22584,6 +22624,7 @@ async function main() {
   loopEspelho();
   loopPixPendente();
   loopPixSemBaixa();
+  setTimeout(loopFecharQuitadas, 30000);
   loopAutoUpdate();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
   // Desligado (o padrão), o loop apenas acorda e volta a dormir.
