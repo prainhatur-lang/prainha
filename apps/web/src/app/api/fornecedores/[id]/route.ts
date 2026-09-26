@@ -1,12 +1,15 @@
 // PATCH /api/fornecedores/[id]
 // Atualiza campos editaveis do fornecedor.
 // Body: { valorPedidoMinimo?, ativoCompras?, categoriaCompras? }
+// Cadastro único: o que é da EMPRESA (contato, categoria, mínimo, nome) vale
+// também nas linhas da mesma empresa nas outras casas.
 
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
+import { propagarParaIrmaos } from '@/lib/fornecedor-unico';
 
 export async function PATCH(
   req: Request,
@@ -90,5 +93,6 @@ export async function PATCH(
   if (result.length === 0) {
     return NextResponse.json({ error: 'fornecedor nao encontrado' }, { status: 404 });
   }
-  return NextResponse.json({ ok: true, fornecedor: result[0] });
+  const outrasCasas = await propagarParaIrmaos(id, updates);
+  return NextResponse.json({ ok: true, fornecedor: result[0], outrasCasas });
 }

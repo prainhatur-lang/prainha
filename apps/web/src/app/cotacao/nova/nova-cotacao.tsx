@@ -26,6 +26,8 @@ interface Fornecedor {
   cnpjOuCpf?: string | null;
   /** WhatsApp de destino — dois cadastros no mesmo número é a mesma pessoa. */
   fone?: string | null;
+  /** Veio de outra casa (cadastro único) — a linha desta casa nasce ao convocar. */
+  outraCasa?: string | null;
 }
 
 interface ItemSelecionado {
@@ -451,6 +453,14 @@ export function NovaCotacaoForm(props: {
                       className="h-3.5 w-3.5"
                     />
                     <span className="flex-1">{f.nome}</span>
+                    {f.outraCasa && (
+                      <span
+                        className="rounded bg-violet-100 px-1.5 py-0.5 text-[9px] font-medium text-violet-900"
+                        title={`Cadastrado na ${f.outraCasa}. Ao convocar, entra no cadastro desta casa também.`}
+                      >
+                        {f.outraCasa}
+                      </span>
+                    )}
                     {gemeoDe.has(f.id) && (
                       <span
                         className="rounded bg-rose-100 px-1.5 py-0.5 text-[9px] font-medium text-rose-800"

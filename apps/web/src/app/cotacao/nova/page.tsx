@@ -8,6 +8,7 @@ import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { and, asc, eq, isNotNull, isNull, not, ilike } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { NovaCotacaoForm } from './nova-cotacao';
+import { fornecedoresDeOutrasCasas } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,6 +114,9 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
     )
     .orderBy(asc(schema.fornecedor.categoriaCompras), asc(schema.fornecedor.nome));
 
+  // Cadastro único: fornecedor das outras casas também pode ser convocado.
+  const deOutras = await fornecedoresDeOutrasCasas(filial.id);
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -136,12 +140,24 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
               marcasAceitas: marcasPorProduto[p.id] ?? [],
               fornecedoresQueVendem: fornecedoresPorProduto[p.id] ?? [],
             }))}
-            fornecedores={fornecedores.map((f) => ({
-              ...f,
-              nome: f.nome ?? '(sem nome)',
-              categoria: f.categoria ?? 'Outros',
-              valorPedidoMinimo: f.valorPedidoMinimo,
-            }))}
+            fornecedores={[
+              ...fornecedores.map((f) => ({
+                ...f,
+                nome: f.nome ?? '(sem nome)',
+                categoria: f.categoria ?? 'Outros',
+                valorPedidoMinimo: f.valorPedidoMinimo,
+              })),
+              ...deOutras.map((f) => ({
+                id: f.id,
+                nome: f.nome ?? '(sem nome)',
+                categoria: f.categoria ?? 'Outros',
+                valorPedidoMinimo: f.valorPedidoMinimo,
+                cnpjOuCpf: f.cnpjOuCpf,
+                fone: f.fone,
+                geral: f.geral,
+                outraCasa: f.casa,
+              })),
+            ]}
           />
         )}
       </div>

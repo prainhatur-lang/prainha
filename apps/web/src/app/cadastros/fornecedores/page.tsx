@@ -12,6 +12,8 @@ import { brl, formatFone, int, maskCnpj, pareceFixo } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
 import { NovoFornecedor } from './novo-fornecedor';
 import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
+import { fornecedoresDeOutrasCasas, outrasCasasDe } from '@/lib/fornecedor-unico';
+import { TrazerFornecedor } from './trazer-fornecedor';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,6 +129,17 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
     vinculos.map((v) => [v.fornecedorId, Number(v.qtd)]),
   );
 
+  // Cadastro único: em que outras casas a mesma empresa está, e quem de
+  // compras das outras casas ainda não está nesta.
+  const tambemEm = await outrasCasasDe(fornecedores.map((f) => f.id));
+  const qNorm = q.toLowerCase();
+  const deOutras = (await fornecedoresDeOutrasCasas(filialSelecionada.id)).filter(
+    (f) =>
+      !q ||
+      (f.nome ?? '').toLowerCase().includes(qNorm) ||
+      (qDigits.length > 0 && (f.cnpjOuCpf ?? '').includes(qDigits)),
+  );
+
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
@@ -229,7 +242,18 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                   const aberto = abertasByFornecedor.get(f.id);
                   return (
                     <tr key={f.id} className="border-t border-slate-100">
-                      <td className="px-4 py-2 font-medium text-slate-900">{f.nome ?? '—'}</td>
+                      <td className="px-4 py-2 font-medium text-slate-900">
+                        {f.nome ?? '—'}
+                        {(tambemEm.get(f.id) ?? []).map((c) => (
+                          <span
+                            key={c}
+                            className="ml-1 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-normal text-violet-800"
+                            title="Mesma empresa (cadastro único): contato, categoria e pedido mínimo valem nas duas casas"
+                          >
+                            {c}
+                          </span>
+                        ))}
+                      </td>
                       <td className="px-4 py-2 text-xs text-slate-600">{f.razaoSocial ?? '—'}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">
                         {f.cnpjOuCpf ? (f.cnpjOuCpf.length === 14 ? maskCnpj(f.cnpjOuCpf) : f.cnpjOuCpf) : '—'}
@@ -322,6 +346,41 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
             </div>
           )}
         </div>
+
+        {deOutras.length > 0 && page === 0 && (
+          <div className="mt-8">
+            <h2 className="text-sm font-semibold text-slate-900">
+              Das outras casas ({deOutras.length})
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Fornecedores de compras cadastrados no Bar/Tabuará/Mar que ainda não estão na{' '}
+              {filialSelecionada.nome}. Já aparecem na Nova cotação; ao convocar (ou clicar em
+              “usar nesta casa”) o cadastro entra aqui também, ligado ao mesmo grupo.
+            </p>
+            <div className="mt-2 overflow-hidden rounded-xl border border-violet-200 bg-white shadow-sm">
+              <table className="w-full text-sm">
+                <tbody>
+                  {deOutras.map((f) => (
+                    <tr key={f.id} className="border-t border-slate-100 first:border-t-0">
+                      <td className="px-4 py-2 font-medium text-slate-900">{f.nome ?? '—'}</td>
+                      <td className="px-4 py-2 text-xs text-slate-600">{f.categoria ?? '—'}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-700">
+                        {f.cnpjOuCpf ? (f.cnpjOuCpf.length === 14 ? maskCnpj(f.cnpjOuCpf) : f.cnpjOuCpf) : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-xs text-slate-600">
+                        {f.fone ? `📱 ${formatFone(f.fone)}` : <span className="text-slate-400">sem WhatsApp</span>}
+                      </td>
+                      <td className="px-4 py-2 text-xs text-violet-800">{f.casa}</td>
+                      <td className="px-4 py-2 text-right">
+                        <TrazerFornecedor fornecedorId={f.id} filialId={filialSelecionada.id} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </section>
     </main>
   );

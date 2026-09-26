@@ -135,7 +135,8 @@
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
     "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",
     "migrate:balanco": "tsx scripts/migrate-balanco.ts",
-    "migrate:mesa-juntada-lista": "tsx scripts/migrate-mesa-juntada-lista.ts"
+    "migrate:mesa-juntada-lista": "tsx scripts/migrate-mesa-juntada-lista.ts",
+    "migrate:fornecedor-grupo": "tsx scripts/migrate-fornecedor-grupo.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, timestamp, varchar, integer, date, numeric, boolean, jsonb, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { filial } from './tenant';
+import { filial, organizacao } from './tenant';
 
 /** Plano de contas (espelha CATEGORIACONTAS do Consumer).
  *  Hierarquico via codigo_pai_externo.  */
@@ -23,6 +23,25 @@ export const categoriaConta = pgTable(
     uniqCodigo: unique('uq_cat_conta_filial_codigo').on(t.filialId, t.codigoExterno),
   }),
 );
+
+/** Cadastro ÚNICO do fornecedor no grupo (as 3 casas). Cada casa segue com a
+ *  sua linha em `fornecedor` (o Consumer de cada loja tem código próprio), mas
+ *  as linhas da mesma empresa apontam pro mesmo grupo: contato de compras,
+ *  categoria e pedido mínimo editados numa casa valem nas outras. */
+export const grupoEconomico = pgTable('grupo_economico', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizacaoId: uuid('organizacao_id').notNull().references(() => organizacao.id, { onDelete: 'cascade' }),
+  nome: varchar('nome', { length: 200 }).notNull(),
+  cnpjRaiz: varchar('cnpj_raiz', { length: 8 }),
+  fonePrincipal: varchar('fone_principal', { length: 50 }),
+  email: varchar('email', { length: 200 }),
+  valorPedidoMinimo: numeric('valor_pedido_minimo', { precision: 14, scale: 2 }),
+  observacao: text('observacao'),
+  criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uqNome: unique('uq_grupo_economico_nome').on(t.organizacaoId, t.nome),
+}));
 
 /** Fornecedor (espelha FORNECEDORES).
  *  codigoExterno NULL = criado na nuvem (manualmente ou auto-criado a partir
@@ -75,6 +94,9 @@ export const fornecedor = pgTable(
     bancoAgencia: varchar('banco_agencia', { length: 20 }),
     bancoConta: varchar('banco_conta', { length: 30 }),
     chavePix: varchar('chave_pix', { length: 100 }),
+    /** Mesma empresa nas outras casas (cadastro único). Ver grupoEconomico. */
+    grupoEconomicoId: uuid('grupo_economico_id').references(() => grupoEconomico.id, { onDelete: 'set null' }),
+    contatoTravado: boolean('contato_travado').notNull().default(false),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, max } from 'drizzle-orm';
+import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 interface Body {
   filialId: string;
@@ -39,6 +40,18 @@ export async function POST(req: Request) {
   if (!body.itens?.length) return NextResponse.json({ error: 'itens vazios' }, { status: 400 });
   if (!body.fornecedorIds?.length)
     return NextResponse.json({ error: 'fornecedores vazios' }, { status: 400 });
+
+  // Cadastro único: fornecedor de outra casa ganha a linha desta casa agora
+  // (cópia ou a irmã que já existia, reativada pra compras).
+  const fornecedorIds: string[] = [];
+  for (const fid of body.fornecedorIds) {
+    try {
+      const id = await garantirFornecedorNaFilial(fid, body.filialId);
+      if (!fornecedorIds.includes(id)) fornecedorIds.push(id);
+    } catch {
+      return NextResponse.json({ error: 'fornecedor invalido' }, { status: 400 });
+    }
+  }
 
   // Pega unidade dos produtos pra preencher cotacao_item.unidade + snapshot de marcas aceitas
   const produtoIds = body.itens.map((i) => i.produtoId);
@@ -119,7 +132,7 @@ export async function POST(req: Request) {
 
   // Insere convocacoes (1 por fornecedor) com token unico
   await db.insert(schema.cotacaoFornecedor).values(
-    body.fornecedorIds.map((fid) => ({
+    fornecedorIds.map((fid) => ({
       cotacaoId,
       fornecedorId: fid,
       tokenPublico: 'cot_' + randomBytes(32).toString('base64url'),

@@ -12,6 +12,7 @@ import { and, asc, eq, ilike, inArray, isNull, not, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { avisosDemanda } from '@/lib/compras/previsao';
+import { fornecedoresDeOutrasCasas } from '@/lib/fornecedor-unico';
 import { SugestaoClient, type LinhaSugestao, type FornecedorOpt } from './sugestao-client';
 
 export const dynamic = 'force-dynamic';
@@ -251,6 +252,16 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     categoria: f.categoria,
     valorPedidoMinimo: f.valorPedidoMinimo != null ? Number(f.valorPedidoMinimo) : null,
   }));
+  // Cadastro único: fornecedor das outras casas também pode ser convocado.
+  for (const f of await fornecedoresDeOutrasCasas(filial.id)) {
+    fornecedorOpts.push({
+      id: f.id,
+      nome: f.nome ?? '(sem nome)',
+      categoria: f.categoria,
+      valorPedidoMinimo: f.valorPedidoMinimo != null ? Number(f.valorPedidoMinimo) : null,
+      outraCasa: f.casa,
+    });
+  }
 
   // Quem vende cada produto sugerido (produto_fornecedor) — deixa a tela
   // ordenar/marcar sozinha quem realmente atende os itens da lista.
