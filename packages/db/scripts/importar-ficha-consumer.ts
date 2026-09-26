@@ -28,6 +28,12 @@ const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL nao definida');
 const sql = postgres(url, { prepare: false });
 const APLICAR = process.argv.includes('--aplicar');
+// 26/09/2026: as fichas do Consumer foram APAGADAS de propósito (CMV do zero,
+// receitas refeitas por tamanho no Concilia). Não reimportar sem o dono pedir.
+if (APLICAR && !process.argv.includes('--sei-que-apagaram')) {
+  console.error('BLOQUEADO: fichas do Consumer foram descartadas em 26/09/2026 (CMV do zero). Nao reimportar.');
+  process.exit(1);
+}
 const FILIAL = process.argv.find((a) => a.startsWith('--filial='))?.slice('--filial='.length) ?? null;
 
 async function main() {
