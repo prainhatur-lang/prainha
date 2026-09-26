@@ -67,7 +67,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, erro: 'id inválido' }, { status: 400 });
   }
   const { db, schema } = await import('@concilia/db');
-  const { and, eq } = await import('drizzle-orm');
+  const { and, eq, sql } = await import('drizzle-orm');
   const filialId = String(body.f);
   const [linha] = await db
     .select()
@@ -148,6 +148,21 @@ export async function POST(request: Request) {
             eq(schema.produtoVariante.filialId, filialId),
             eq(schema.produtoVariante.codigoExterno, linha.varianteCodigoExterno),
           ));
+      }
+      // A lista de Produtos filtra por produto.data_pausado, não pelo tamanho:
+      // sem isso o produto despausado seguia escondido (Fanta Lata, 26/09/2026).
+      // Produto pausado = todos os tamanhos vivos pausados.
+      if (linha.campo === 'pausado' && linha.produtoCodigoExterno != null) {
+        await db.execute(sql`
+          UPDATE produto p SET data_pausado = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM produto_variante v
+               WHERE v.filial_id = p.filial_id AND v.codigo_produto_externo = p.codigo_externo
+                 AND v.data_delete IS NULL AND v.data_pausado IS NULL
+            ) THEN NULL
+            ELSE COALESCE(p.data_pausado, now())
+          END
+          WHERE p.filial_id = ${filialId} AND p.codigo_externo = ${linha.produtoCodigoExterno}`);
       }
     }
   }
