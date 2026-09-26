@@ -404,6 +404,10 @@ export default async function ProdutoDetalhePage(props: {
           .limit(200)
       : [];
 
+  // Insumo não tem receita (a produção dele é pela OP/template): a aba mostra
+  // só onde ele é usado. Se por acaso tiver ficha antiga, ela continua visível.
+  const soUsadoEm = produto.tipo === 'INSUMO' && fichaRows.length === 0;
+
   const hrefAba = (a: 'ficha' | 'fornecedores' | 'saldo' | 'marcas' | 'pdv') => {
     const qs = a === 'ficha' ? '' : `?aba=${a}`;
     return `/cadastros/produtos/${id}${qs}`;
@@ -495,9 +499,9 @@ export default async function ProdutoDetalhePage(props: {
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              Ficha técnica
+              {soUsadoEm ? 'Usado em' : 'Ficha técnica'}
               <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
-                {fichaRows.length}
+                {soUsadoEm ? usadoEmRows.length : fichaRows.length}
               </span>
             </Link>
             <Link
@@ -631,6 +635,7 @@ export default async function ProdutoDetalhePage(props: {
             <AbaFicha
               produtoId={id}
               produtoTipo={produto.tipo}
+              soUsadoEm={soUsadoEm}
               linhas={fichaRows.map((r) => ({
                 id: r.id,
                 insumoId: r.insumoId,

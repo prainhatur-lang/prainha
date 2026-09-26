@@ -68,6 +68,7 @@ export function AbaFicha({
   tamanhos = [],
   usadoEm,
   insumosDisponiveis,
+  soUsadoEm = false,
 }: {
   produtoId: string;
   produtoTipo: string;
@@ -75,6 +76,7 @@ export function AbaFicha({
   tamanhos?: Tamanho[];
   usadoEm: UsadoEm[];
   insumosDisponiveis: InsumoOpcao[];
+  soUsadoEm?: boolean;
 }) {
   const router = useRouter();
   const [adicionar, setAdicionar] = useState<Grupo | null>(null);
@@ -248,13 +250,8 @@ export function AbaFicha({
 
   return (
     <div className="space-y-4">
-      {produtoTipo === 'INSUMO' && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          Este produto é um <strong>INSUMO</strong>. Normalmente só aparece nas fichas de
-          outros produtos. Veja a seção "Usado em" abaixo.
-        </div>
-      )}
-
+      {/* Insumo não tem receita: a aba vira só "Usado em". */}
+      {!soUsadoEm && (<>
       <div>
         <h2 className="text-sm font-semibold text-slate-900">Insumos consumidos</h2>
         <p className="mt-0.5 text-xs text-slate-500">
@@ -381,9 +378,16 @@ export function AbaFicha({
           </div>
         );
       })}
+      </>)}
+
+      {soUsadoEm && usadoEm.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-white px-4 py-6 text-center text-xs text-slate-500">
+          Este insumo ainda não está na ficha técnica de nenhum produto.
+        </p>
+      )}
 
       {usadoEm.length > 0 && (
-        <div className="mt-8">
+        <div className={soUsadoEm ? '' : 'mt-8'}>
           <h2 className="text-sm font-semibold text-slate-900">
             Usado em {usadoEm.length} {usadoEm.length === 1 ? 'produto' : 'produtos'}
           </h2>
