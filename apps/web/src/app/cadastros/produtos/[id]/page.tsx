@@ -12,6 +12,7 @@ import { AbaMarcas } from './aba-marcas';
 import { AbaPdv } from './aba-pdv';
 import { TrocarTipoButton } from './trocar-tipo';
 import { ControleEstoque } from './controle-estoque';
+import { converterQuantidade } from '@/app/api/ingest/pdv/baixa-estoque';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,8 +89,11 @@ export default async function ProdutoDetalhePage(props: {
       // quantidades diferentes pareceriam erro de cadastro
       unidade: schema.fichaTecnica.unidade,
       codigoVariante: schema.fichaTecnica.codigoVarianteExterno,
+      varianteId: schema.fichaTecnica.varianteId,
       origem: schema.fichaTecnica.origem,
       tamanho: schema.produtoTamanho.descricao,
+      insumoPrecoCusto: schema.produto.precoCusto,
+      insumoPesoKg: schema.produto.pesoUnitarioPadraoKg,
     })
     .from(schema.fichaTecnica)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.fichaTecnica.insumoId))
@@ -97,6 +101,34 @@ export default async function ProdutoDetalhePage(props: {
     .leftJoin(schema.produtoTamanho, eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId))
     .where(eq(schema.fichaTecnica.produtoId, id))
     .orderBy(asc(schema.produto.nome));
+
+  // Tamanhos do produto (PRODUTODETALHE): a ficha é montada POR TAMANHO —
+  // a baixa usa a receita do tamanho vendido e só cai na "base" (sem tamanho)
+  // quando o tamanho não tem receita própria.
+  const tamanhosFicha =
+    aba === 'ficha' && produto.codigoExterno != null
+      ? await db
+          .select({
+            varianteId: schema.produtoVariante.id,
+            codigo: schema.produtoVariante.codigoExterno,
+            tamanho: schema.produtoTamanho.descricao,
+            precoVenda: schema.produtoVariante.precoVenda,
+            pausado: schema.produtoVariante.dataPausado,
+          })
+          .from(schema.produtoVariante)
+          .leftJoin(
+            schema.produtoTamanho,
+            eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId),
+          )
+          .where(
+            and(
+              eq(schema.produtoVariante.filialId, produto.filialId),
+              eq(schema.produtoVariante.codigoProdutoExterno, produto.codigoExterno),
+              isNull(schema.produtoVariante.dataDelete),
+            ),
+          )
+          .orderBy(asc(schema.produtoVariante.codigoExterno))
+      : [];
 
   // Onde esse produto é usado como insumo (ficha reversa)
   const usadoEmRows = await db
@@ -609,6 +641,27 @@ export default async function ProdutoDetalhePage(props: {
                 quantidade: r.quantidade,
                 baixaEstoque: r.baixaEstoque,
                 observacao: r.observacao,
+                tamanho: r.tamanho,
+                codigoVariante: r.codigoVariante,
+                varianteId: r.varianteId,
+                unidade: r.unidade,
+                origem: r.origem,
+                // custo da linha = qtd convertida pra unidade de estoque × custo médio do insumo
+                custo:
+                  converterQuantidade(
+                    Number(r.quantidade),
+                    r.unidade,
+                    r.insumoUnidade,
+                    r.insumoPesoKg != null ? Number(r.insumoPesoKg) : null,
+                  ) * Number(r.insumoPrecoCusto ?? 0),
+                semCusto: r.insumoPrecoCusto == null || Number(r.insumoPrecoCusto) <= 0,
+              }))}
+              tamanhos={tamanhosFicha.map((t) => ({
+                varianteId: t.varianteId,
+                codigo: t.codigo,
+                tamanho: t.tamanho,
+                precoVenda: t.precoVenda != null ? Number(t.precoVenda) : null,
+                pausado: t.pausado != null,
               }))}
               usadoEm={usadoEmRows.map((r) => ({
                 id: r.id,

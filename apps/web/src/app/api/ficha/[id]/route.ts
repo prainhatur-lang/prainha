@@ -59,12 +59,13 @@ export async function PATCH(
     );
   }
 
-  const set: Record<string, unknown> = { atualizadoEm: new Date() };
+  // Editada aqui vira 'nuvem': a reimportação do Consumer só sobrescreve 'consumer'.
+  const set: Record<string, unknown> = { atualizadoEm: new Date(), origem: 'nuvem' };
   if (parsed.data.quantidade !== undefined) set.quantidade = parsed.data.quantidade.toFixed(4);
   if (parsed.data.baixaEstoque !== undefined) set.baixaEstoque = parsed.data.baixaEstoque;
   if (parsed.data.observacao !== undefined) set.observacao = parsed.data.observacao;
 
-  if (Object.keys(set).length === 1) {
+  if (Object.keys(set).length === 2) {
     return NextResponse.json({ error: 'nada pra atualizar' }, { status: 400 });
   }
 

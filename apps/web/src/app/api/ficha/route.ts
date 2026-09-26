@@ -1,11 +1,13 @@
 // POST /api/ficha
 // Adiciona uma linha de ficha técnica (produto composto -> insumo + quantidade).
+// Com `varianteId`, a linha vale só pra aquele TAMANHO (a venda do tamanho baixa
+// a receita dele; a receita sem tamanho fica de reserva).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,6 +18,8 @@ const Body = z.object({
   quantidade: z.number().positive(),
   baixaEstoque: z.boolean().optional(),
   observacao: z.string().max(500).optional(),
+  unidade: z.string().max(6).optional(),
+  varianteId: z.string().uuid().optional(),
 });
 
 export async function POST(req: Request) {
@@ -32,14 +36,18 @@ export async function POST(req: Request) {
     );
   }
 
-  const { produtoId, insumoId, quantidade, baixaEstoque, observacao } = parsed.data;
+  const { produtoId, insumoId, quantidade, baixaEstoque, observacao, unidade, varianteId } = parsed.data;
 
   if (produtoId === insumoId) {
     return NextResponse.json({ error: 'produto e insumo nao podem ser iguais' }, { status: 400 });
   }
 
   const prods = await db
-    .select({ id: schema.produto.id, filialId: schema.produto.filialId })
+    .select({
+      id: schema.produto.id,
+      filialId: schema.produto.filialId,
+      codigoExterno: schema.produto.codigoExterno,
+    })
     .from(schema.produto)
     .where(eq(schema.produto.id, produtoId));
   const [prod] = prods;
@@ -66,6 +74,30 @@ export async function POST(req: Request) {
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
+  // Tamanho tem que ser DESTE produto (o vínculo vem pelo código do Consumer).
+  let codigoVariante: number | null = null;
+  if (varianteId) {
+    const [v] = await db
+      .select({ codigo: schema.produtoVariante.codigoExterno })
+      .from(schema.produtoVariante)
+      .where(
+        and(
+          eq(schema.produtoVariante.id, varianteId),
+          eq(schema.produtoVariante.filialId, prod.filialId),
+          isNull(schema.produtoVariante.dataDelete),
+          prod.codigoExterno != null
+            ? or(
+                eq(schema.produtoVariante.produtoId, produtoId),
+                eq(schema.produtoVariante.codigoProdutoExterno, prod.codigoExterno),
+              )
+            : eq(schema.produtoVariante.produtoId, produtoId),
+        ),
+      )
+      .limit(1);
+    if (!v) return NextResponse.json({ error: 'tamanho nao pertence a este produto' }, { status: 400 });
+    codigoVariante = v.codigo;
+  }
+
   try {
     const [created] = await db
       .insert(schema.fichaTecnica)
@@ -76,14 +108,18 @@ export async function POST(req: Request) {
         quantidade: quantidade.toFixed(4),
         baixaEstoque: baixaEstoque ?? true,
         observacao: observacao ?? null,
+        unidade: unidade ?? null,
+        varianteId: varianteId ?? null,
+        codigoVarianteExterno: codigoVariante,
+        origem: 'nuvem',
       })
       .returning({ id: schema.fichaTecnica.id });
     return NextResponse.json({ id: created?.id }, { status: 201 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('uq_ficha_prod_insumo')) {
+    if (msg.includes('uq_ficha_prod_insumo') || msg.includes('uq_ficha_var_insumo')) {
       return NextResponse.json(
-        { error: 'esse insumo ja esta na ficha do produto' },
+        { error: varianteId ? 'esse insumo ja esta na receita deste tamanho' : 'esse insumo ja esta na ficha do produto' },
         { status: 409 },
       );
     }

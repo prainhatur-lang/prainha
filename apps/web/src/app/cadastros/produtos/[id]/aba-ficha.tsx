@@ -20,7 +20,32 @@ interface LinhaFicha {
   codigoVariante?: number | null;
   unidade?: string | null;
   origem?: string | null;
+  varianteId?: string | null;
+  /** Custo da linha (qtd convertida × custo médio do insumo), calculado no server. */
+  custo?: number;
+  semCusto?: boolean;
 }
+
+interface Tamanho {
+  varianteId: string;
+  codigo: number | null;
+  tamanho: string | null;
+  precoVenda: number | null;
+  pausado: boolean;
+}
+
+/** Um bloco da ficha: um tamanho, ou a receita "base" (sem tamanho). */
+interface Grupo {
+  chave: string;
+  varianteId: string | null;
+  titulo: string;
+  precoVenda: number | null;
+  pausado: boolean;
+  linhas: LinhaFicha[];
+  ehBase: boolean;
+}
+
+const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 interface UsadoEm {
   id: string;
@@ -40,26 +65,82 @@ export function AbaFicha({
   produtoId,
   produtoTipo,
   linhas,
+  tamanhos = [],
   usadoEm,
   insumosDisponiveis,
 }: {
   produtoId: string;
   produtoTipo: string;
   linhas: LinhaFicha[];
+  tamanhos?: Tamanho[];
   usadoEm: UsadoEm[];
   insumosDisponiveis: InsumoOpcao[];
 }) {
   const router = useRouter();
-  const [adicionar, setAdicionar] = useState(false);
+  const [adicionar, setAdicionar] = useState<Grupo | null>(null);
   const [busca, setBusca] = useState('');
   const [insumoId, setInsumoId] = useState('');
   const [quantidade, setQuantidade] = useState('');
   const [baixaEstoque, setBaixaEstoque] = useState(true);
   const [observacao, setObservacao] = useState('');
   const [pending, start] = useTransition();
+  const [copiando, setCopiando] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
-  const idsJaNaFicha = useMemo(() => new Set(linhas.map((l) => l.insumoId)), [linhas]);
+  // Monta os blocos: 1 por tamanho + a base (sem tamanho) quando existir ou
+  // quando o produto nem tem tamanho. Linha de tamanho que sumiu do PDV vai
+  // pra um bloco próprio pra não esconder receita.
+  const grupos = useMemo<Grupo[]>(() => {
+    const out: Grupo[] = [];
+    const usadas = new Set<string>();
+    for (const t of tamanhos) {
+      const ls = linhas.filter(
+        (l) => l.varianteId === t.varianteId || (l.varianteId == null && l.codigoVariante != null && l.codigoVariante === t.codigo),
+      );
+      ls.forEach((l) => usadas.add(l.id));
+      out.push({
+        chave: t.varianteId,
+        varianteId: t.varianteId,
+        titulo: t.tamanho || `Tamanho ${t.codigo ?? ''}`.trim(),
+        precoVenda: t.precoVenda,
+        pausado: t.pausado,
+        linhas: ls,
+        ehBase: false,
+      });
+    }
+    const base = linhas.filter((l) => !usadas.has(l.id) && l.varianteId == null && l.codigoVariante == null);
+    base.forEach((l) => usadas.add(l.id));
+    if (base.length > 0 || tamanhos.length === 0) {
+      out.push({
+        chave: 'base',
+        varianteId: null,
+        titulo: tamanhos.length ? 'Receita geral (sem tamanho)' : 'Receita',
+        precoVenda: tamanhos.length === 1 ? tamanhos[0]!.precoVenda : null,
+        pausado: false,
+        linhas: base,
+        ehBase: true,
+      });
+    }
+    const orfas = linhas.filter((l) => !usadas.has(l.id));
+    if (orfas.length > 0) {
+      out.push({
+        chave: 'orfas',
+        varianteId: '__orfas__',
+        titulo: 'Tamanho que não existe mais no PDV',
+        precoVenda: null,
+        pausado: true,
+        linhas: orfas,
+        ehBase: false,
+      });
+    }
+    return out;
+  }, [linhas, tamanhos]);
+  const temBase = grupos.some((g) => g.ehBase && g.linhas.length > 0);
+
+  const idsJaNaFicha = useMemo(
+    () => new Set((adicionar?.linhas ?? []).map((l) => l.insumoId)),
+    [adicionar],
+  );
   const opcoesFiltradas = useMemo(() => {
     const b = normalizaBusca(busca);
     return insumosDisponiveis
@@ -70,9 +151,19 @@ export function AbaFicha({
 
   const insumoEscolhido = insumosDisponiveis.find((i) => i.id === insumoId) ?? null;
 
+  async function postLinha(body: Record<string, unknown>) {
+    const r = await fetch('/api/ficha', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ produtoId, ...body }),
+    });
+    const d = await r.json().catch(() => ({}));
+    return r.ok ? null : ((d.error as string) ?? `HTTP ${r.status}`);
+  }
+
   async function criar(e: React.FormEvent) {
     e.preventDefault();
-    if (!insumoId) return;
+    if (!insumoId || !adicionar) return;
     const q = Number(quantidade.replace(',', '.'));
     if (!Number.isFinite(q) || q <= 0) {
       setErro('Quantidade inválida');
@@ -80,23 +171,18 @@ export function AbaFicha({
     }
     setErro(null);
     try {
-      const r = await fetch('/api/ficha', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          produtoId,
-          insumoId,
-          quantidade: q,
-          baixaEstoque,
-          observacao: observacao.trim() || undefined,
-        }),
+      const falha = await postLinha({
+        insumoId,
+        quantidade: q,
+        baixaEstoque,
+        observacao: observacao.trim() || undefined,
+        varianteId: adicionar.varianteId ?? undefined,
       });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        setErro(d.error ?? `HTTP ${r.status}`);
+      if (falha) {
+        setErro(falha);
         return;
       }
-      setAdicionar(false);
+      setAdicionar(null);
       setInsumoId('');
       setBusca('');
       setQuantidade('');
@@ -106,6 +192,33 @@ export function AbaFicha({
     } catch (err) {
       setErro((err as Error).message);
     }
+  }
+
+  /** Copia as linhas de outro bloco pra este (pula insumo que já está nele). */
+  async function copiar(destino: Grupo, origem: Grupo) {
+    const ja = new Set(destino.linhas.map((l) => l.insumoId));
+    const novas = origem.linhas.filter((l) => !ja.has(l.insumoId));
+    if (novas.length === 0) {
+      alert('Nada pra copiar — os insumos já estão neste tamanho.');
+      return;
+    }
+    if (!confirm(`Copiar ${novas.length} insumo(s) de "${origem.titulo}" para "${destino.titulo}"? Depois é só ajustar as quantidades.`)) return;
+    setCopiando(destino.chave);
+    const erros: string[] = [];
+    for (const l of novas) {
+      const falha = await postLinha({
+        insumoId: l.insumoId,
+        quantidade: Number(l.quantidade),
+        unidade: l.unidade ?? undefined,
+        baixaEstoque: l.baixaEstoque,
+        observacao: l.observacao ?? undefined,
+        varianteId: destino.varianteId ?? undefined,
+      });
+      if (falha) erros.push(`${l.insumoNome}: ${falha}`);
+    }
+    setCopiando(null);
+    if (erros.length) alert(`Algumas não copiaram:\n${erros.join('\n')}`);
+    start(() => router.refresh());
   }
 
   async function patch(id: string, body: Record<string, unknown>) {
@@ -122,8 +235,8 @@ export function AbaFicha({
     return true;
   }
 
-  async function remover(id: string, nome: string) {
-    if (!confirm(`Remover "${nome}" da ficha?`)) return;
+  async function remover(id: string, nome: string, onde: string) {
+    if (!confirm(`Remover "${nome}" da receita "${onde}"?`)) return;
     const r = await fetch(`/api/ficha/${id}`, { method: 'DELETE' });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
@@ -142,58 +255,132 @@ export function AbaFicha({
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900">Insumos consumidos</h2>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Quantidade consumida por 1 unidade deste produto (na unidade de estoque do
-            insumo). Linhas com <em>baixa</em> desligada não geram movimento de estoque.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setAdicionar(true)}
-          className="rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-        >
-          + Adicionar insumo
-        </button>
+      <div>
+        <h2 className="text-sm font-semibold text-slate-900">Insumos consumidos</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Quantidade consumida por 1 unidade vendida (na unidade de estoque do insumo). Linhas
+          com <em>baixa</em> desligada não geram movimento de estoque.
+          {tamanhos.length > 1 && (
+            <>
+              {' '}Cada <strong>tamanho</strong> tem a sua receita e o seu custo: a venda baixa a
+              receita do tamanho vendido
+              {temBase ? '; a receita geral só vale pro tamanho que não tiver a própria' : ''}.
+            </>
+          )}
+        </p>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-            <tr>
-              <th className="px-4 py-2">Insumo</th>
-              <th className="px-4 py-2 text-right">Quantidade</th>
-              <th className="px-4 py-2">Un.</th>
-              <th className="px-4 py-2">Baixa estoque</th>
-              <th className="px-4 py-2">Obs</th>
-              <th className="px-4 py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {linhas.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-xs text-slate-500">
-                  Nenhum insumo na ficha. Clique em "Adicionar insumo" pra começar.
-                </td>
-              </tr>
-            ) : (
-              linhas.map((l) => (
-                <LinhaFichaRow
-                  key={l.id}
-                  linha={l}
-                  onChange={async (patchBody) => {
-                    const ok = await patch(l.id, patchBody);
-                    if (ok) start(() => router.refresh());
-                  }}
-                  onRemove={() => remover(l.id, l.insumoNome)}
-                />
-              ))
+      {grupos.map((g) => {
+        const custo = g.linhas.reduce((s, l) => s + (l.custo ?? 0), 0);
+        const semCusto = g.linhas.filter((l) => l.semCusto).map((l) => l.insumoNome);
+        const cmv = g.precoVenda && g.precoVenda > 0 && custo > 0 ? (custo / g.precoVenda) * 100 : null;
+        const outros = grupos.filter((o) => o.chave !== g.chave && o.linhas.length > 0);
+        const vazioSemBase = !g.ehBase && g.linhas.length === 0 && g.varianteId !== '__orfas__';
+        return (
+          <div key={g.chave} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2.5">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="text-sm font-semibold text-slate-900">{g.titulo}</span>
+                {g.pausado && g.varianteId !== '__orfas__' && (
+                  <span className="rounded bg-slate-200 px-1 py-0.5 text-[10px] text-slate-600">pausado</span>
+                )}
+                {g.precoVenda != null && (
+                  <span className="text-xs text-slate-500">venda {brl(g.precoVenda)}</span>
+                )}
+                <span className="text-xs text-slate-700">
+                  custo <strong className="font-semibold">{brl(custo)}</strong>
+                </span>
+                {cmv != null && (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      cmv <= 30 ? 'bg-emerald-100 text-emerald-800' : cmv <= 40 ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                    }`}
+                    title="custo dos insumos ÷ preço de venda"
+                  >
+                    CMV {cmv.toFixed(1)}%
+                  </span>
+                )}
+              </div>
+              {g.varianteId !== '__orfas__' && (
+                <div className="flex items-center gap-2">
+                  {outros.length > 0 && (
+                    <select
+                      value=""
+                      disabled={copiando !== null || pending}
+                      onChange={(e) => {
+                        const o = outros.find((x) => x.chave === e.target.value);
+                        if (o) copiar(g, o);
+                      }}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                    >
+                      <option value="">{copiando === g.chave ? 'Copiando...' : '⧉ Copiar de...'}</option>
+                      {outros.map((o) => (
+                        <option key={o.chave} value={o.chave}>
+                          {o.titulo}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErro(null);
+                      setAdicionar(g);
+                    }}
+                    className="rounded-lg border border-slate-900 bg-slate-900 px-3 py-1 text-xs font-medium text-white hover:bg-slate-800"
+                  >
+                    + Adicionar insumo
+                  </button>
+                </div>
+              )}
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-left text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Insumo</th>
+                  <th className="px-4 py-2 text-right">Quantidade</th>
+                  <th className="px-4 py-2">Un.</th>
+                  <th className="px-4 py-2 text-right">Custo</th>
+                  <th className="px-4 py-2">Baixa estoque</th>
+                  <th className="px-4 py-2">Obs</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.linhas.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-4 text-center text-xs text-slate-500">
+                      {vazioSemBase
+                        ? temBase
+                          ? 'Sem receita própria — usa a receita geral.'
+                          : 'Sem receita: a venda deste tamanho não baixa nenhum insumo.'
+                        : 'Nenhum insumo na receita.'}
+                    </td>
+                  </tr>
+                ) : (
+                  g.linhas.map((l) => (
+                    <LinhaFichaRow
+                      key={l.id}
+                      linha={l}
+                      onChange={async (patchBody) => {
+                        const ok = await patch(l.id, patchBody);
+                        if (ok) start(() => router.refresh());
+                      }}
+                      onRemove={() => remover(l.id, l.insumoNome, g.titulo)}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+            {semCusto.length > 0 && (
+              <div className="border-t border-amber-100 bg-amber-50 px-4 py-1.5 text-[11px] text-amber-800">
+                Sem custo cadastrado (entra como R$ 0): {semCusto.join(', ')}. Dá entrada por nota ou
+                ajuste o custo em Saldo &amp; Custo do insumo.
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        );
+      })}
 
       {usadoEm.length > 0 && (
         <div className="mt-8">
@@ -236,14 +423,17 @@ export function AbaFicha({
       {adicionar && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-          onClick={() => setAdicionar(false)}
+          onClick={() => setAdicionar(null)}
         >
           <form
             onSubmit={criar}
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
           >
-            <h2 className="text-sm font-semibold text-slate-900">Adicionar insumo à ficha</h2>
+            <h2 className="text-sm font-semibold text-slate-900">
+              Adicionar insumo — <span className="text-indigo-700">{adicionar.titulo}</span>
+            </h2>
+
 
             <div>
               <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
@@ -352,7 +542,7 @@ export function AbaFicha({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setAdicionar(false)}
+                onClick={() => setAdicionar(null)}
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs hover:bg-slate-50"
               >
                 Cancelar
@@ -404,14 +594,6 @@ function LinhaFichaRow({
         >
           {linha.insumoNome}
         </Link>
-        {linha.codigoVariante != null && (
-          <span
-            className="ml-1.5 rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-medium text-indigo-800"
-            title="esta receita vale só para este tamanho"
-          >
-            {linha.tamanho || `tam ${linha.codigoVariante}`}
-          </span>
-        )}
         {linha.insumoTipo !== 'INSUMO' && (
           <span className="ml-1.5 rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500">
             {linha.insumoTipo === 'VENDA_SIMPLES' ? 'simples' : linha.insumoTipo}
@@ -455,6 +637,13 @@ function LinhaFichaRow({
           <span title={`convertido pra ${linha.insumoUnidade} na baixa`}>{linha.unidade} →{linha.insumoUnidade}</span>
         ) : (
           linha.insumoUnidade
+        )}
+      </td>
+      <td className="px-4 py-2 text-right font-mono text-xs text-slate-700">
+        {linha.semCusto ? (
+          <span className="text-amber-700" title="insumo sem custo cadastrado">—</span>
+        ) : (
+          brl(linha.custo ?? 0)
         )}
       </td>
       <td className="px-4 py-2">
