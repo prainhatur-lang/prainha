@@ -10,7 +10,11 @@
 // ⚠️ Preço de venda e pausa são POR TAMANHO (PRODUTODETALHE). A tabela de
 // baixo é a fonte da verdade do preço; o cabeçalho é só o produto.
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+/** O que uma linha de pergunta/opção manda no "Salvar" único (null = nada mudou). */
+type Envio = { tag: string; alvoCodigo: number; campos: Record<string, unknown>; invalido?: string };
+type Registrar = (tag: string, coletar: (() => Envio | null) | null) => void;
 
 export interface VariantePdv {
   codigo: number;
@@ -150,6 +154,41 @@ export function AbaPdv(p: Props) {
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
   const semPdv = p.codigoExterno == null;
+  // Cada pergunta/opção se registra aqui; o botão único junta só o que mudou.
+  const coletores = useRef(new Map<string, () => Envio | null>());
+  const registrar: Registrar = (tag, coletar) => {
+    if (coletar) coletores.current.set(tag, coletar);
+    else coletores.current.delete(tag);
+  };
+
+  async function salvarPerguntas() {
+    const envios = [...coletores.current.values()].map((f) => f()).filter((e): e is Envio => e != null);
+    if (envios.length === 0) return setMsg({ ok: true, texto: 'Nada mudou nas perguntas.' });
+    const ruim = envios.find((e) => e.invalido);
+    if (ruim) return setMsg({ ok: false, texto: ruim.invalido! });
+    setSalvando('perguntas');
+    setMsg(null);
+    let fila = 0;
+    const erros: string[] = [];
+    for (const e of envios) {
+      try {
+        const r = await fetch('/api/cadastros/produtos/alterar', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ produtoId: p.produtoId, alvoCodigo: e.alvoCodigo, campos: e.campos }),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) erros.push(j.erro || 'não deu pra salvar');
+        else fila += j.enfileirados ?? 0;
+      } catch {
+        erros.push('sem conexão');
+      }
+    }
+    setSalvando(null);
+    if (erros.length) setMsg({ ok: false, texto: `${erros.length} não salvou: ${erros.join(' · ')}` + (fila ? ` (${fila} foram pra fila)` : '') });
+    else setMsg({ ok: true, texto: fila ? `${fila} alteração(ões) na fila — a loja aplica em até 1 minuto.` : 'Nada mudou.' });
+    if (fila) setTimeout(() => router.refresh(), 3000);
+  }
 
   async function mandar(
     campos: Record<string, unknown>,
@@ -325,6 +364,7 @@ export function AbaPdv(p: Props) {
           <p className="mt-1 text-xs text-slate-500">
             O que o PDV pergunta ao lançar este item. A opção pode ser só observação
             (&quot;bem passada&quot;) ou lançar um produto junto, com preço de acompanhamento.
+            Mexa em quantas quiser e salve tudo de uma vez no botão.
           </p>
         </div>
         {p.perguntas.length === 0 ? (
@@ -334,7 +374,7 @@ export function AbaPdv(p: Props) {
         ) : (
           <div className="divide-y divide-slate-100">
             {p.perguntas.map((q) => (
-              <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} salvando={salvando} onSalvar={mandar}
+              <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} registrar={registrar}
                 catalogo={p.catalogo ?? []} />
             ))}
             {/* uma lista só pra todas as opções (o catálogo tem ~1.700 tamanhos) */}
@@ -343,6 +383,22 @@ export function AbaPdv(p: Props) {
                 <option key={c.codigo} value={`${c.rotulo} (${c.codigo})`} />
               ))}
             </datalist>
+          </div>
+        )}
+        {p.perguntas.length > 0 && (
+          <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3">
+            <button
+              type="button"
+              disabled={salvando !== null}
+              onClick={salvarPerguntas}
+              className="rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"
+            >
+              {salvando === 'perguntas' ? 'enviando…' : 'Salvar perguntas e opções'}
+            </button>
+            <span className="text-xs text-slate-500">manda só o que mudou (linhas em amarelo)</span>
+            {msg && salvando === null && (
+              <span className={`text-xs ${msg.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msg.texto}</span>
+            )}
           </div>
         )}
       </div>
@@ -414,24 +470,24 @@ export function AbaPdv(p: Props) {
 
 function BlocoPergunta({
   q,
-  salvando,
-  onSalvar,
+  registrar,
   catalogo,
 }: {
   q: PerguntaPdv;
   catalogo: Array<{ codigo: number; rotulo: string }>;
-  salvando: string | null;
-  onSalvar: (
-    campos: Record<string, unknown>,
-    varianteCodigo?: number,
-    tag?: string,
-    alvoCodigo?: number,
-  ) => Promise<void>;
+  registrar: Registrar;
 }) {
   const [texto, setTexto] = useState(q.texto ?? '');
   const [min, setMin] = useState(String(q.min ?? 0));
   const [max, setMax] = useState(String(q.max ?? 0));
   const tag = `perg-${q.varianteCodigo}-${q.codigo}`;
+  const sujo = texto !== (q.texto ?? '') || min !== String(q.min ?? 0) || max !== String(q.max ?? 0);
+  useEffect(() => {
+    registrar(tag, () =>
+      sujo ? { tag, alvoCodigo: q.codigo, campos: { pergunta_texto: texto, pergunta_min: min, pergunta_max: max } } : null,
+    );
+    return () => registrar(tag, null);
+  });
 
   return (
     <div className="px-5 py-4">
@@ -444,7 +500,7 @@ function BlocoPergunta({
             id={`${tag}-t`}
             value={texto}
             onChange={(e) => setTexto(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm ${sujo ? 'border-amber-400 bg-amber-50' : 'border-slate-300'}`}
             maxLength={200}
           />
         </div>
@@ -462,21 +518,6 @@ function BlocoPergunta({
           <input id={`${tag}-mx`} value={max} onChange={(e) => setMax(e.target.value)} inputMode="numeric"
             className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
         </div>
-        <button
-          type="button"
-          disabled={salvando !== null}
-          onClick={() =>
-            onSalvar(
-              { pergunta_texto: texto, pergunta_min: min, pergunta_max: max },
-              undefined,
-              tag,
-              q.codigo,
-            )
-          }
-          className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-        >
-          {salvando === tag ? '…' : 'Salvar pergunta'}
-        </button>
       </div>
       <p className="mt-1 text-[11px] text-slate-500">
         {Number(min) > 0 ? 'Obrigatória' : 'Opcional'} · {Number(max) > 0 ? `até ${max} resposta(s)` : 'sem limite'}
@@ -489,7 +530,7 @@ function BlocoPergunta({
 
       <ul className="mt-3 space-y-2">
         {q.opcoes.map((o) => (
-          <LinhaOpcao key={o.codigo} o={o} salvando={salvando} onSalvar={onSalvar} catalogo={catalogo} />
+          <LinhaOpcao key={o.codigo} o={o} registrar={registrar} catalogo={catalogo} />
         ))}
         {q.opcoes.length === 0 && <li className="text-xs text-slate-400">sem opções cadastradas</li>}
       </ul>
@@ -499,19 +540,12 @@ function BlocoPergunta({
 
 function LinhaOpcao({
   o,
-  salvando,
-  onSalvar,
+  registrar,
   catalogo,
 }: {
   o: OpcaoPdv;
   catalogo: Array<{ codigo: number; rotulo: string }>;
-  salvando: string | null;
-  onSalvar: (
-    campos: Record<string, unknown>,
-    varianteCodigo?: number,
-    tag?: string,
-    alvoCodigo?: number,
-  ) => Promise<void>;
+  registrar: Registrar;
 }) {
   const [nome, setNome] = useState(o.nome ?? '');
   const [preco, setPreco] = useState(moeda(o.precoPromo));
@@ -527,9 +561,24 @@ function LinhaOpcao({
     const m = t.match(/\((\d+)\)\s*$/) ?? t.match(/^(\d+)$/);
     return m ? m[1]! : null; // null = texto que não casa com nenhum produto
   })();
+  const sujo = nome !== (o.nome ?? '') || preco !== moeda(o.precoPromo) || prodTxt !== rotuloDe(o.lancaVariante);
+  useEffect(() => {
+    registrar(tag, () =>
+      !sujo
+        ? null
+        : {
+            tag,
+            alvoCodigo: o.codigo,
+            campos: { opcao_nome: nome, opcao_preco: preco, opcao_produto: prodCodigo ?? '' },
+            invalido:
+              prodCodigo === null ? `"${nome}": escolha o produto da lista (ou deixe o campo vazio)` : undefined,
+          },
+    );
+    return () => registrar(tag, null);
+  });
 
   return (
-    <li className="flex flex-wrap items-center gap-2">
+    <li className={`flex flex-wrap items-center gap-2 rounded-lg ${sujo ? 'bg-amber-50 ring-1 ring-amber-300' : ''}`}>
       <input
         value={nome}
         onChange={(e) => setNome(e.target.value)}
@@ -560,22 +609,6 @@ function LinhaOpcao({
       ) : (
         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">observação</span>
       )}
-      <button
-        type="button"
-        disabled={salvando !== null || prodCodigo === null}
-        title={prodCodigo === null ? 'escolha um produto da lista (ou deixe vazio)' : undefined}
-        onClick={() =>
-          onSalvar(
-            { opcao_nome: nome, opcao_preco: preco, opcao_produto: prodCodigo ?? '' },
-            undefined,
-            tag,
-            o.codigo,
-          )
-        }
-        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-      >
-        {salvando === tag ? '…' : 'Salvar'}
-      </button>
     </li>
   );
 }
