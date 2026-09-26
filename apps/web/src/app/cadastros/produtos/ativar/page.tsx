@@ -52,6 +52,7 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
       preco: schema.produto.precoVenda,
       etiqueta: schema.produto.codigoEtiqueta,
       descontinuado: schema.produto.descontinuado,
+      dataPausado: schema.produto.dataPausado,
     })
     .from(schema.produto)
     .where(
@@ -114,7 +115,10 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
     nome: p.nome ?? '(sem nome)',
     preco: p.preco != null ? Number(p.preco) : null,
     categoria: p.etiqueta ? (nomeEtiqueta.get(String(p.etiqueta)) ?? `Categoria ${p.etiqueta}`) : 'Sem categoria',
-    ativo: !p.descontinuado,
+    // Pausado também não sai no PDV — antes a tela mostrava ligado só por não
+    // estar descontinuado (Coca Zero Lata da Mar, pausada desde 07/2026).
+    ativo: !p.descontinuado && !p.dataPausado,
+    pausado: !p.descontinuado && !!p.dataPausado,
     naIrma: vendeNaIrma.has((p.nome ?? '').toLowerCase().trim()),
     jaVendeu: jaVendeu.has(p.id),
   }));

@@ -14,6 +14,8 @@ export interface ProdutoLinha {
   preco: number | null;
   categoria: string;
   ativo: boolean;
+  /** Desligado por PAUSA (não descontinuado) — ligar tira a pausa. */
+  pausado: boolean;
   /** Vende numa filial irmã — o atalho de decisão. */
   naIrma: boolean;
   /** Teve venda aqui nos últimos 90 dias. */
@@ -268,6 +270,11 @@ export function AtivarClient({ filialId, filialNome, linhas }: Props) {
                         {l.naIrma && !l.jaVendeu && (
                           <span className="rounded bg-slate-100 px-1 py-px text-slate-500">
                             outra loja vende
+                          </span>
+                        )}
+                        {l.pausado && !mudou && (
+                          <span className="rounded bg-rose-100 px-1 py-px font-medium text-rose-800">
+                            pausado
                           </span>
                         )}
                         {mudou && (
