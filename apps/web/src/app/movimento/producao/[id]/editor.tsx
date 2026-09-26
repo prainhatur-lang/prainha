@@ -216,7 +216,7 @@ export function EditorProducao({
       )
         return;
     } else {
-      if (!confirm('Concluir OP? Isso gera movimentos de estoque e não pode ser desfeito.')) return;
+      if (!confirm('Concluir OP? Isso gera os movimentos de estoque (dá pra estornar depois cancelando a OP).')) return;
     }
     setLoading('concluir');
     setMsg(null);
@@ -235,14 +235,29 @@ export function EditorProducao({
   }
 
   async function cancelar() {
-    if (!confirm('Cancelar esta OP? Não gera estoque e não pode ser reaberta.')) return;
+    const aviso =
+      op.status === 'CONCLUIDA'
+        ? 'Cancelar esta OP CONCLUÍDA?\n\nO estoque é estornado: a matéria-prima volta pro estoque ao mesmo custo e o que foi produzido sai (o custo médio é recalculado). Se o produzido já foi vendido, o saldo dele fica negativo.\n\nNão pode ser reaberta.'
+        : 'Cancelar esta OP? Não gera estoque e não pode ser reaberta.';
+    if (!confirm(aviso)) return;
     setLoading('cancelar');
     setMsg(null);
     try {
       const r = await fetch(`/api/ordem-producao/${op.id}/cancelar`, { method: 'POST' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
-      else start(() => router.refresh());
+      else {
+        if (d.estornou) {
+          const neg: string[] = d.negativos ?? [];
+          setMsg({
+            tipo: 'ok',
+            texto:
+              `✓ OP cancelada e estoque estornado (${(d.estornos ?? []).length} movimento(s)).` +
+              (neg.length ? ` Ficaram com saldo negativo: ${neg.join(', ')}.` : ''),
+          });
+        }
+        start(() => router.refresh());
+      }
     } finally {
       setLoading(null);
     }
@@ -348,6 +363,17 @@ export function EditorProducao({
           >
             🖨 Imprimir
           </button>
+          {op.status === 'CONCLUIDA' && (
+            <button
+              type="button"
+              onClick={cancelar}
+              disabled={loading !== null || pending}
+              className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+              title="Cancela a OP concluída e estorna o estoque (matéria-prima volta, produzido sai)"
+            >
+              {loading === 'cancelar' ? 'Estornando...' : '↩ Cancelar e estornar'}
+            </button>
+          )}
           {editavel && (
             <>
               <button

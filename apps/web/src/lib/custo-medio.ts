@@ -18,6 +18,10 @@
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** db ou uma transação aberta — pra OP concluir/estornar tudo-ou-nada. */
+export type ExecDb = typeof db | Tx;
+
 export interface ResultadoMpm {
   produtoId: string;
   saldoAnterior: number;
@@ -58,8 +62,10 @@ export async function aplicarMpmEntrada(opts: {
   produtoId: string;
   qtdEntrada: number;
   custoEntrada: number;
+  exec?: ExecDb;
 }): Promise<ResultadoMpm> {
-  const [prod] = await db
+  const exec = opts.exec ?? db;
+  const [prod] = await exec
     .select({
       id: schema.produto.id,
       estoqueAtual: schema.produto.estoqueAtual,
@@ -80,7 +86,7 @@ export async function aplicarMpmEntrada(opts: {
     custoEntrada: opts.custoEntrada,
   });
 
-  await db
+  await exec
     .update(schema.produto)
     .set({
       estoqueAtual: saldoNovo.toFixed(4),
@@ -104,8 +110,10 @@ export async function aplicarMpmEntrada(opts: {
 export async function aplicarSaida(opts: {
   produtoId: string;
   qtdSaida: number;
+  exec?: ExecDb;
 }): Promise<{ saldoNovo: number; custoUnitarioNoMomento: number }> {
-  const [prod] = await db
+  const exec = opts.exec ?? db;
+  const [prod] = await exec
     .select({
       estoqueAtual: schema.produto.estoqueAtual,
       precoCusto: schema.produto.precoCusto,
@@ -120,7 +128,7 @@ export async function aplicarSaida(opts: {
   const custoUnit = Number(prod.precoCusto ?? 0);
   const saldoNovo = saldoAtual - opts.qtdSaida;
 
-  await db
+  await exec
     .update(schema.produto)
     .set({
       estoqueAtual: sql`COALESCE(${schema.produto.estoqueAtual}, 0) - ${opts.qtdSaida.toFixed(4)}`,
@@ -128,6 +136,50 @@ export async function aplicarSaida(opts: {
     .where(eq(schema.produto.id, opts.produtoId));
 
   return { saldoNovo, custoUnitarioNoMomento: custoUnit };
+}
+
+/** Desfaz uma entrada que já passou pelo MPM (estorno de OP concluída):
+ *  tira a qtd do saldo e remove o valor dela da média.
+ *    novoCusto = (saldo × custo − qtd × custoEntrada) / (saldo − qtd)
+ *  Se o saldo que sobra for <= 0 (o produzido já foi vendido/consumido) ou
+ *  a conta der custo <= 0, mantém o custo atual — não dá pra "des-ponderar"
+ *  o que já saiu. */
+export async function desfazerMpmEntrada(opts: {
+  produtoId: string;
+  qtdEntrada: number;
+  custoEntrada: number;
+  exec?: ExecDb;
+}): Promise<{ saldoAnterior: number; saldoNovo: number; custoAnterior: number; custoNovo: number }> {
+  const exec = opts.exec ?? db;
+  const [prod] = await exec
+    .select({
+      estoqueAtual: schema.produto.estoqueAtual,
+      precoCusto: schema.produto.precoCusto,
+    })
+    .from(schema.produto)
+    .where(eq(schema.produto.id, opts.produtoId))
+    .limit(1);
+
+  if (!prod) throw new Error(`produto ${opts.produtoId} nao encontrado`);
+
+  const saldoAtual = Number(prod.estoqueAtual ?? 0);
+  const custoAtual = Number(prod.precoCusto ?? 0);
+  const saldoNovo = saldoAtual - opts.qtdEntrada;
+  let custoNovo = custoAtual;
+  if (saldoNovo > 0) {
+    const c = (saldoAtual * custoAtual - opts.qtdEntrada * opts.custoEntrada) / saldoNovo;
+    if (Number.isFinite(c) && c > 0) custoNovo = c;
+  }
+
+  await exec
+    .update(schema.produto)
+    .set({
+      estoqueAtual: saldoNovo.toFixed(4),
+      precoCusto: custoNovo.toFixed(4),
+    })
+    .where(eq(schema.produto.id, opts.produtoId));
+
+  return { saldoAnterior: saldoAtual, saldoNovo, custoAnterior: custoAtual, custoNovo };
 }
 
 /** Calcula o fator de rateio de frete/despesas/desconto para itens da NFe.
