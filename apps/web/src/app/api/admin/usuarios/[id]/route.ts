@@ -56,7 +56,7 @@ export async function PATCH(
         Authorization: `Bearer ${SERVICE_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ password: body.novaSenha }),
+      body: JSON.stringify({ password: body.novaSenha, user_metadata: { trocar_senha: true } }),
     });
     if (!r.ok) {
       const t = await r.text();

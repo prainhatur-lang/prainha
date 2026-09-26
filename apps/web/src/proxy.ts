@@ -144,6 +144,16 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+  // Senha provisória (criada/resetada pelo admin): só sai de /minha-conta
+  // depois de trocar. A flag some no updateUser da própria tela.
+  if (user?.user_metadata?.trocar_senha && !isPublicRoute && path !== '/minha-conta') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/minha-conta';
+    url.search = '';
+    url.searchParams.set('primeiro', '1');
+    return NextResponse.redirect(url);
+  }
+
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone();
     url.pathname = '/dashboard';

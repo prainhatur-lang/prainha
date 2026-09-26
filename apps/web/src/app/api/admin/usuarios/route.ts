@@ -48,7 +48,7 @@ async function getOrCreateAuthUser(email: string, senha: string): Promise<string
           Authorization: `Bearer ${SERVICE_KEY}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ password: senha, email_confirm: true }),
+        body: JSON.stringify({ password: senha, email_confirm: true, user_metadata: { trocar_senha: true } }),
       });
       if (!upd.ok) {
         const t = await upd.text();
@@ -64,7 +64,7 @@ async function getOrCreateAuthUser(email: string, senha: string): Promise<string
       Authorization: `Bearer ${SERVICE_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, password: senha, email_confirm: true }),
+    body: JSON.stringify({ email, password: senha, email_confirm: true, user_metadata: { trocar_senha: true } }),
   });
   if (!r.ok) {
     const body = await r.text();

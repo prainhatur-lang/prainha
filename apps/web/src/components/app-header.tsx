@@ -45,7 +45,14 @@ export function AppHeader({ userEmail }: Props) {
           <span className="truncate text-sm font-semibold text-slate-900 lg:hidden">concilia</span>
 
           <div className="ml-auto flex shrink-0 items-center gap-3 text-sm">
-            <span className="hidden text-slate-500 md:inline">{userEmail}</span>
+            <a
+              href="/minha-conta"
+              title="Minha conta / trocar senha"
+              className="text-slate-500 hover:text-slate-900 hover:underline"
+            >
+              <span className="hidden md:inline">{userEmail}</span>
+              <span className="md:hidden">Minha conta</span>
+            </a>
             <LogoutButton />
           </div>
         </div>
