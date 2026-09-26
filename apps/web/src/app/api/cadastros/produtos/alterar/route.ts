@@ -178,6 +178,12 @@ export async function POST(request: Request) {
     }
     const valorAntes = antes(campo);
     if ((valorAntes ?? '') === (n.valor ?? '')) continue; // nada mudou
+    // número: espelho guarda '0.00', normalizado vem '0.0000' — mesmo valor, não enfileira
+    if (
+      (def.tipo === 'numero' || def.tipo === 'inteiro') &&
+      valorAntes != null && valorAntes !== '' && n.valor != null &&
+      Number(valorAntes) === Number(n.valor)
+    ) continue;
     linhas.push({
       filialId: prod.filialId,
       produtoId: prod.id,
