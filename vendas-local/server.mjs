@@ -12257,9 +12257,11 @@ function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent
 /* Carrega a lib + modelos UMA vez e aquece as redes (a 1a inferencia compila
    shaders/aloca memoria e leva segundos). Roda em segundo plano logo que o KDS
    abre, entao o toque no Ponto ja encontra tudo pronto.
-   Motor: WebGL (GPU, bem mais rapido que CPU). Se o WebView morrer no
-   aquecimento (suspeita de 23/09 no Fully), a marca pf_gl_teste sobrevive ao
-   recarregar e dai em diante ESTE aparelho usa CPU. */
+   Motor: no tablet (toque) WASM com SIMD — varias vezes mais rapido que o
+   'cpu' (JS puro, que levava segundos por rosto) e sem o risco do WebGL, que
+   derrubava o WebView do Fully (23/09). No PC, WebGL (GPU). Se o WebGL morrer
+   no aquecimento, a marca pf_gl_teste sobrevive ao recarregar e dai em diante
+   ESTE aparelho usa WASM. 'cpu' so se o WASM nao subir. */
 function pfPrepara(){
   if (PF_PREP) return PF_PREP;
   PF_PREP=(async function(){
@@ -12268,8 +12270,20 @@ function pfPrepara(){
     var ls=null; try { ls=window.localStorage; } catch(x) {}
     function lsGet(k){ try { return ls?ls.getItem(k):null; } catch(x) { return null; } }
     function lsSet(k,v){ try { if(ls){ if(v==null)ls.removeItem(k); else ls.setItem(k,v); } } catch(x) {} }
-    if (lsGet('pf_gl_teste')==='1') { lsSet('pf_motor','cpu'); lsSet('pf_gl_teste',null); }
-    if (lsGet('pf_motor')==='cpu') { try { await faceapi.tf.setBackend('cpu'); } catch(x) {} }
+    if (lsGet('pf_gl_teste')==='1') { lsSet('pf_motor','wasm'); lsSet('pf_gl_teste',null); }
+    var motor=lsGet('pf_motor');
+    // 'cpu' gravado antes = aparelho onde o WebGL caiu: agora vai de WASM
+    if (motor==='cpu'||(!motor&&navigator.maxTouchPoints>0)) motor='wasm';
+    if (motor==='wasm') {
+      var wasmOk=false;
+      try {
+        // sem SharedArrayBuffer (pagina nao isolada) nao ha threads: so SIMD
+        try { faceapi.tf.env().set('WASM_HAS_MULTITHREAD_SUPPORT', false); } catch(x) {}
+        faceapi.tf.setWasmPaths('/facelib/');
+        wasmOk=await faceapi.tf.setBackend('wasm');
+      } catch(x) {}
+      if (!wasmOk) { try { await faceapi.tf.setBackend('cpu'); } catch(x) {} }
+    }
     await faceapi.tf.ready();
     PF_MOTOR=faceapi.tf.getBackend();
     await Promise.all([
@@ -12326,7 +12340,7 @@ async function abrirPontoFacial(){
     });
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
     pfSt('Olhe para a câmera');
-    document.getElementById('pfSub').textContent=(PF_MOTOR==='webgl'?'':'modo lento ('+PF_MOTOR+')');
+    document.getElementById('pfSub').textContent=(PF_MOTOR==='cpu'?'modo lento (cpu)':'');
     // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
     // stream da mesma camera falha em varios tablets Android (NotReadableError)
     // — entao o ponto reaproveita o que ja esta aberto e NAO o desliga ao fechar.
@@ -21894,6 +21908,13 @@ const server = http.createServer(async (req, res) => {
       const arq = await facelibArquivo('face-api.js');
       if (!arq) { res.writeHead(404); return res.end('não encontrado'); }
       res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=604800' });
+      return createReadStream(arq).pipe(res);
+    }
+    // Binarios do motor WASM do tfjs (4.22.0, mesma versao embutida no face-api.js).
+    if (p === '/facelib/tfjs-backend-wasm-simd.wasm' || p === '/facelib/tfjs-backend-wasm.wasm') {
+      const arq = await facelibArquivo(p.slice('/facelib/'.length));
+      if (!arq) { res.writeHead(404); return res.end('não encontrado'); }
+      res.writeHead(200, { 'content-type': 'application/wasm', 'cache-control': 'public, max-age=604800' });
       return createReadStream(arq).pipe(res);
     }
     if (p.startsWith('/facelib/models/')) {
