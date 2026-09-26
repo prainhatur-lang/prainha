@@ -5,7 +5,8 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { converterQuantidade } from '@/app/api/ingest/pdv/baixa-estoque';
 import { buscaIlike, palavrasBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
@@ -179,6 +180,98 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
         max: Number(f.max ?? 0),
         n: Number(f.n ?? 0),
       });
+    }
+  }
+
+  // PREÇO × CUSTO POR TAMANHO: produto com tamanhos tem um preço e um custo
+  // por tamanho (a ficha é por tamanho; sem receita própria o tamanho usa a
+  // receita geral). Revenda sem ficha usa o custo médio do próprio produto.
+  type LinhaPreco = { tam: string | null; venda: number; custo: number | null; incompleto: boolean };
+  const precoPorTamanho = new Map<string, LinhaPreco[]>();
+  const vendaPagina = produtos.filter((p) => p.tipo !== 'INSUMO');
+  if (vendaPagina.length > 0) {
+    const codigos = vendaPagina.map((p) => p.codigoExterno).filter((c): c is number => c != null);
+    const variantes = codigos.length
+      ? await db
+          .select({
+            id: schema.produtoVariante.id,
+            codigo: schema.produtoVariante.codigoExterno,
+            produto: schema.produtoVariante.codigoProdutoExterno,
+            tamanho: schema.produtoTamanho.descricao,
+            preco: schema.produtoVariante.precoVenda,
+            pausado: schema.produtoVariante.dataPausado,
+          })
+          .from(schema.produtoVariante)
+          .leftJoin(schema.produtoTamanho, eq(schema.produtoTamanho.id, schema.produtoVariante.produtoTamanhoId))
+          .where(
+            and(
+              eq(schema.produtoVariante.filialId, filialSelecionada.id),
+              inArray(schema.produtoVariante.codigoProdutoExterno, codigos),
+              isNull(schema.produtoVariante.dataDelete),
+            ),
+          )
+          .orderBy(asc(schema.produtoVariante.precoVenda))
+      : [];
+    const fichas = await db
+      .select({
+        produtoId: schema.fichaTecnica.produtoId,
+        varianteId: schema.fichaTecnica.varianteId,
+        codigoVariante: schema.fichaTecnica.codigoVarianteExterno,
+        quantidade: schema.fichaTecnica.quantidade,
+        unidade: schema.fichaTecnica.unidade,
+        insumoUnidade: schema.produto.unidadeEstoque,
+        insumoPeso: schema.produto.pesoUnitarioPadraoKg,
+        insumoCusto: schema.produto.precoCusto,
+      })
+      .from(schema.fichaTecnica)
+      .innerJoin(schema.produto, eq(schema.produto.id, schema.fichaTecnica.insumoId))
+      .where(inArray(schema.fichaTecnica.produtoId, vendaPagina.map((p) => p.id)));
+
+    for (const p of vendaPagina) {
+      const fs = fichas.filter((f) => f.produtoId === p.id);
+      const custoDe = (ls: typeof fs) => ({
+        custo: ls.reduce(
+          (a, f) =>
+            a +
+            converterQuantidade(
+              Number(f.quantidade),
+              f.unidade,
+              f.insumoUnidade,
+              f.insumoPeso != null ? Number(f.insumoPeso) : null,
+            ) *
+              Number(f.insumoCusto ?? 0),
+          0,
+        ),
+        incompleto: ls.some((f) => Number(f.insumoCusto ?? 0) <= 0),
+      });
+      const base = fs.filter((f) => f.varianteId == null && f.codigoVariante == null);
+      const custoProprio = Number(p.precoCusto ?? 0);
+      const semFicha = (): { custo: number | null; incompleto: boolean } =>
+        custoProprio > 0 ? { custo: custoProprio, incompleto: false } : { custo: null, incompleto: false };
+
+      const todas = variantes.filter((v) => v.produto != null && v.produto === p.codigoExterno);
+      const vivas = todas.filter((v) => v.pausado == null);
+      const vs = vivas.length ? vivas : todas;
+      const linhas: LinhaPreco[] = [];
+      if (vs.length <= 1) {
+        const v = vs[0];
+        const venda = Number(v?.preco ?? 0) > 0 ? Number(v!.preco) : Number(p.precoVenda ?? 0);
+        const proprias = v ? fs.filter((f) => f.varianteId === v.id || (f.varianteId == null && f.codigoVariante === v.codigo)) : [];
+        const c = fs.length === 0 ? semFicha() : custoDe(proprias.length ? proprias : base.length ? base : fs);
+        linhas.push({ tam: null, venda, custo: c.custo, incompleto: c.incompleto });
+      } else {
+        for (const v of vs) {
+          const proprias = fs.filter((f) => f.varianteId === v.id || (f.varianteId == null && f.codigoVariante === v.codigo));
+          const c = fs.length === 0 ? semFicha() : proprias.length || base.length ? custoDe(proprias.length ? proprias : base) : { custo: null, incompleto: false };
+          linhas.push({
+            tam: v.tamanho || `Tam ${v.codigo ?? ''}`,
+            venda: Number(v.preco ?? 0) > 0 ? Number(v.preco) : Number(p.precoVenda ?? 0),
+            custo: c.custo,
+            incompleto: c.incompleto,
+          });
+        }
+      }
+      precoPorTamanho.set(p.id, linhas);
     }
   }
 
@@ -540,45 +633,56 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                       <td className="px-4 py-2 text-xs text-slate-500">
                         {p.unidadeEstoque}
                       </td>
-                      <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
-                        {ehInsumo ? (
-                          <span className="text-slate-400">—</span>
-                        ) : venda > 0 ? (
-                          brl(venda)
-                        ) : faixa ? (
-                          faixa.min === faixa.max ? (
-                            brl(faixa.min)
-                          ) : (
-                            <span title={`${faixa.n} tamanhos, do menor ao maior preço`}>
-                              {brl(faixa.min)}
-                              <span className="text-slate-400"> – </span>
-                              {brl(faixa.max)}
-                            </span>
-                          )
-                        ) : (
-                          brl(0)
-                        )}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
-                        {custo > 0 ? brl(custo) : <span className="text-slate-400">—</span>}
-                      </td>
-                      <td className="px-4 py-2 text-right text-xs">
-                        {margem !== null ? (
-                          <span
-                            className={`font-mono ${
-                              margem >= 50
-                                ? 'text-emerald-700'
-                                : margem >= 20
-                                  ? 'text-amber-700'
-                                  : 'text-rose-700'
-                            }`}
-                          >
-                            {margem.toFixed(1)}%
-                          </span>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
+                      {ehInsumo ? (
+                        <>
+                          <td className="px-4 py-2 text-right text-slate-400">—</td>
+                          <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                            {custo > 0 ? brl(custo) : <span className="text-slate-400">—</span>}
+                          </td>
+                          <td className="px-4 py-2 text-right text-xs text-slate-400">—</td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
+                            {(precoPorTamanho.get(p.id) ?? []).map((l, i) => (
+                              <div key={i} className="whitespace-nowrap leading-5">
+                                {l.tam && <span className="mr-1.5 font-sans text-[10px] font-normal text-slate-500">{l.tam}</span>}
+                                {brl(l.venda)}
+                              </div>
+                            ))}
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                            {(precoPorTamanho.get(p.id) ?? []).map((l, i) => (
+                              <div key={i} className="whitespace-nowrap leading-5">
+                                {l.custo != null && l.custo > 0 ? (
+                                  <span title={l.incompleto ? 'Algum insumo da receita está sem custo — o valor está por baixo' : undefined}>
+                                    {brl(l.custo)}
+                                    {l.incompleto && <span className="ml-0.5 text-amber-600">*</span>}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">—</span>
+                                )}
+                              </div>
+                            ))}
+                          </td>
+                          <td className="px-4 py-2 text-right text-xs">
+                            {(precoPorTamanho.get(p.id) ?? []).map((l, i) => {
+                              const m = l.venda > 0 && l.custo != null && l.custo > 0 ? ((l.venda - l.custo) / l.venda) * 100 : null;
+                              return (
+                                <div key={i} className="whitespace-nowrap leading-5">
+                                  {m !== null ? (
+                                    <span className={`font-mono ${m >= 50 ? 'text-emerald-700' : m >= 20 ? 'text-amber-700' : 'text-rose-700'}`}>
+                                      {m.toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </td>
+                        </>
+                      )}
                       <td className="px-4 py-2 text-right font-mono text-xs">
                         {p.controlaEstoque ? (
                           <span className={abaixo ? 'text-rose-700 font-semibold' : 'text-slate-700'}>
