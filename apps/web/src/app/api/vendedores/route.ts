@@ -8,7 +8,8 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
+import { irmaosDoFornecedor } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -69,11 +70,13 @@ export async function POST(req: Request) {
           observacao: body.observacao?.trim() || null,
         })
         .returning({ id: schema.vendedor.id });
-      // Já nasce ligado ao fornecedor de onde veio, quando veio de um.
+      // Já nasce ligado ao fornecedor de onde veio, quando veio de um — e à
+      // mesma empresa nas outras casas (cadastro único).
       if (body.fornecedorId) {
+        const ids = await irmaosDoFornecedor(body.fornecedorId);
         await db
           .insert(schema.vendedorFornecedor)
-          .values({ vendedorId: v.id, fornecedorId: body.fornecedorId, principal: true })
+          .values(ids.map((fornecedorId) => ({ vendedorId: v.id, fornecedorId, principal: true })))
           .onConflictDoNothing();
       }
       return NextResponse.json({ ok: true, id: v.id });
@@ -104,9 +107,10 @@ export async function POST(req: Request) {
       if (!body.vendedorId || !body.fornecedorId) {
         return NextResponse.json({ error: 'vendedorId e fornecedorId obrigatórios' }, { status: 400 });
       }
+      const ids = await irmaosDoFornecedor(body.fornecedorId);
       await db
         .insert(schema.vendedorFornecedor)
-        .values({ vendedorId: body.vendedorId, fornecedorId: body.fornecedorId })
+        .values(ids.map((fornecedorId) => ({ vendedorId: body.vendedorId!, fornecedorId })))
         .onConflictDoNothing();
       return NextResponse.json({ ok: true });
     }
@@ -115,12 +119,13 @@ export async function POST(req: Request) {
       if (!body.vendedorId || !body.fornecedorId) {
         return NextResponse.json({ error: 'vendedorId e fornecedorId obrigatórios' }, { status: 400 });
       }
+      const ids = await irmaosDoFornecedor(body.fornecedorId);
       await db
         .delete(schema.vendedorFornecedor)
         .where(
           and(
             eq(schema.vendedorFornecedor.vendedorId, body.vendedorId),
-            eq(schema.vendedorFornecedor.fornecedorId, body.fornecedorId),
+            inArray(schema.vendedorFornecedor.fornecedorId, ids),
           ),
         );
       return NextResponse.json({ ok: true });
@@ -130,18 +135,19 @@ export async function POST(req: Request) {
       if (!body.vendedorId || !body.fornecedorId) {
         return NextResponse.json({ error: 'vendedorId e fornecedorId obrigatórios' }, { status: 400 });
       }
-      // Um principal por fornecedor: derruba os outros antes.
+      // Um principal por fornecedor: derruba os outros antes (nas 3 casas).
+      const ids = await irmaosDoFornecedor(body.fornecedorId);
       await db
         .update(schema.vendedorFornecedor)
         .set({ principal: false })
-        .where(eq(schema.vendedorFornecedor.fornecedorId, body.fornecedorId));
+        .where(inArray(schema.vendedorFornecedor.fornecedorId, ids));
       await db
         .update(schema.vendedorFornecedor)
         .set({ principal: true })
         .where(
           and(
             eq(schema.vendedorFornecedor.vendedorId, body.vendedorId),
-            eq(schema.vendedorFornecedor.fornecedorId, body.fornecedorId),
+            inArray(schema.vendedorFornecedor.fornecedorId, ids),
           ),
         );
       return NextResponse.json({ ok: true });
