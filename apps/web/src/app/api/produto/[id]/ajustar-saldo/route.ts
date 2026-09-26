@@ -1,5 +1,7 @@
 // POST /api/produto/[id]/ajustar-saldo
 // Body: { tipo: 'ENTRADA_AJUSTE'|'SAIDA_AJUSTE'|'PERDA', quantidade, custoUnitario?, motivo }
+//       { tipo: 'AJUSTE_CUSTO', custoUnitario, motivo } — define o custo médio
+//       sem mexer no saldo (movimento de qtd 0 com o custo novo, pro histórico).
 //
 // Cria um movimento_estoque de ajuste manual e atualiza o saldo do produto.
 // Entradas aplicam MPM (média ponderada). Saídas só decrementam saldo.
@@ -16,8 +18,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const Body = z.object({
-  tipo: z.enum(['ENTRADA_AJUSTE', 'SAIDA_AJUSTE', 'PERDA']),
-  quantidade: z.number().positive(),
+  tipo: z.enum(['ENTRADA_AJUSTE', 'SAIDA_AJUSTE', 'PERDA', 'AJUSTE_CUSTO']),
+  quantidade: z.number().min(0).default(0),
   custoUnitario: z.number().min(0).optional(),
   motivo: z.string().min(3).max(500),
 });
@@ -76,6 +78,38 @@ export async function POST(
     )
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+
+  if (tipo === 'AJUSTE_CUSTO') {
+    if (custoUnitario === undefined) {
+      return NextResponse.json({ error: 'informe o custo' }, { status: 400 });
+    }
+    const [mov] = await db
+      .insert(schema.movimentoEstoque)
+      .values({
+        filialId: prod.filialId,
+        produtoId: prod.id,
+        tipo: 'AJUSTE_CUSTO',
+        quantidade: '0',
+        precoUnitario: custoUnitario.toFixed(6),
+        valorTotal: '0',
+        dataHora: new Date(),
+        observacao: motivo.trim(),
+        criadoPor: user.id,
+      })
+      .returning({ id: schema.movimentoEstoque.id });
+    await db
+      .update(schema.produto)
+      .set({ precoCusto: custoUnitario.toFixed(4) })
+      .where(eq(schema.produto.id, prod.id));
+    return NextResponse.json({
+      movimentoId: mov?.id,
+      custoAnterior: Number(prod.precoCusto ?? 0),
+      custoNovo: custoUnitario,
+    });
+  }
+  if (quantidade <= 0) {
+    return NextResponse.json({ error: 'quantidade invalida' }, { status: 400 });
+  }
 
   const ehEntrada = tipo === 'ENTRADA_AJUSTE';
   const saldoAtual = Number(prod.estoqueAtual ?? 0);

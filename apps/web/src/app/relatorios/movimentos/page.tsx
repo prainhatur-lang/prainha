@@ -37,6 +37,7 @@ const TIPOS_FILTRO = [
   { v: 'ENTRADA_AJUSTE', l: 'Entrada (ajuste)' },
   { v: 'SAIDA_AJUSTE', l: 'Saída (ajuste)' },
   { v: 'PERDA', l: 'Perda' },
+  { v: 'AJUSTE_CUSTO', l: 'Custo definido' },
 ];
 
 const COR_TIPO: Record<string, string> = {
@@ -50,6 +51,7 @@ const COR_TIPO: Record<string, string> = {
   ENTRADA_AJUSTE: 'bg-violet-100 text-violet-800',
   SAIDA_AJUSTE: 'bg-violet-50 text-violet-700',
   PERDA: 'bg-rose-200 text-rose-900',
+  AJUSTE_CUSTO: 'bg-sky-50 text-sky-700',
 };
 
 export default async function MovimentosEstoquePage(props: {

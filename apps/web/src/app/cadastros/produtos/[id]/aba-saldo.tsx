@@ -23,6 +23,7 @@ const TIPO_LABEL: Record<string, { label: string; cls: string; ehEntrada: boolea
   ENTRADA_PRODUCAO: { label: 'Produção', cls: 'bg-emerald-50 text-emerald-700', ehEntrada: true },
   ENTRADA_DEVOLUCAO: { label: 'Devolução', cls: 'bg-sky-100 text-sky-800', ehEntrada: true },
   ENTRADA_AJUSTE: { label: 'Ajuste +', cls: 'bg-violet-100 text-violet-800', ehEntrada: true },
+  AJUSTE_CUSTO: { label: 'Custo definido', cls: 'bg-sky-100 text-sky-800', ehEntrada: false },
   SAIDA_VENDA: { label: 'Venda', cls: 'bg-rose-100 text-rose-800', ehEntrada: false },
   SAIDA_FICHA_TECNICA: { label: 'Ficha técn.', cls: 'bg-rose-50 text-rose-700', ehEntrada: false },
   SAIDA_PRODUCAO: { label: 'OP (consumo)', cls: 'bg-amber-50 text-amber-700', ehEntrada: false },
@@ -68,10 +69,12 @@ export function AbaSaldo({
       const saldoAnterior = saldoAcum;
       const custoAnterior = custoAcum;
 
-      if (ehEntrada) {
+      if (m.tipo === 'AJUSTE_CUSTO') {
+        custoAcum = preco; // custo digitado à mão, saldo não muda
+      } else if (ehEntrada) {
         // MPM
         const novoSaldo = saldoAcum + qtd;
-        if (saldoAcum <= 0 || novoSaldo <= 0) {
+        if (saldoAcum <= 0 || novoSaldo <= 0 || custoAcum <= 0) {
           custoAcum = preco;
         } else {
           custoAcum = (saldoAcum * custoAcum + qtd * preco) / novoSaldo;
@@ -310,9 +313,10 @@ function AjustarSaldoBtn({
 }) {
   const router = useRouter();
   const [aberto, setAberto] = useState(false);
-  const [tipo, setTipo] = useState<'ENTRADA_AJUSTE' | 'SAIDA_AJUSTE' | 'PERDA'>(
+  const [tipo, setTipo] = useState<'ENTRADA_AJUSTE' | 'SAIDA_AJUSTE' | 'PERDA' | 'AJUSTE_CUSTO'>(
     'ENTRADA_AJUSTE',
   );
+  const soCusto = tipo === 'AJUSTE_CUSTO';
   const [quantidade, setQuantidade] = useState('');
   const [custoUnit, setCustoUnit] = useState('');
   const [motivo, setMotivo] = useState('');
@@ -331,8 +335,8 @@ function AjustarSaldoBtn({
 
   async function enviar(e: React.FormEvent) {
     e.preventDefault();
-    const q = Number(quantidade.replace(',', '.'));
-    if (!Number.isFinite(q) || q <= 0) {
+    const q = soCusto ? 0 : Number(quantidade.replace(',', '.'));
+    if (!soCusto && (!Number.isFinite(q) || q <= 0)) {
       setErro('Quantidade inválida');
       return;
     }
@@ -342,7 +346,11 @@ function AjustarSaldoBtn({
     }
     const ehEntrada = tipo === 'ENTRADA_AJUSTE';
     let custo: number | undefined = undefined;
-    if (ehEntrada && custoUnit.trim()) {
+    if (soCusto && !custoUnit.trim()) {
+      setErro('Informe o custo');
+      return;
+    }
+    if ((ehEntrada || soCusto) && custoUnit.trim()) {
       const c = Number(custoUnit.replace(',', '.'));
       if (!Number.isFinite(c) || c < 0) {
         setErro('Custo inválido');
@@ -397,7 +405,7 @@ function AjustarSaldoBtn({
             className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
           >
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Ajustar saldo</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Ajustar saldo / custo</h2>
               <p className="mt-0.5 text-xs text-slate-500">
                 Movimento manual em <strong>{produtoNome}</strong>. Use pra inventário,
                 quebras, ou reconciliar saldo divergente. Custo médio (MPM) é
@@ -406,12 +414,13 @@ function AjustarSaldoBtn({
             </div>
 
             {/* Tipo */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {(
                 [
                   { v: 'ENTRADA_AJUSTE', l: '+ Entrada', desc: 'Aumenta saldo' },
                   { v: 'SAIDA_AJUSTE', l: '− Saída', desc: 'Inventário, quebra' },
                   { v: 'PERDA', l: '✕ Perda', desc: 'Vencimento, descarte' },
+                  { v: 'AJUSTE_CUSTO', l: 'R$ Custo', desc: 'Define o custo, saldo igual' },
                 ] as const
               ).map((o) => (
                 <button
@@ -433,6 +442,7 @@ function AjustarSaldoBtn({
             </div>
 
             <div className="flex gap-3">
+              {!soCusto && (
               <div className="flex-1">
                 <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
                   Quantidade ({unidadeEstoque}) *
@@ -447,13 +457,14 @@ function AjustarSaldoBtn({
                   className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                 />
               </div>
-              {tipo === 'ENTRADA_AJUSTE' && (
-                <div className="w-40">
+              )}
+              {(tipo === 'ENTRADA_AJUSTE' || soCusto) && (
+                <div className={soCusto ? 'flex-1' : 'w-40'}>
                   <label
                     className="block text-[11px] font-medium uppercase tracking-wide text-slate-500"
-                    title="Se vazio, usa o custo médio atual"
+                    title={soCusto ? 'Novo custo médio por unidade' : 'Se vazio, usa o custo médio atual'}
                   >
-                    Custo unit. (R$)
+                    {soCusto ? `Custo por ${unidadeEstoque} (R$) *` : 'Custo unit. (R$)'}
                   </label>
                   <input
                     type="text"
@@ -464,7 +475,7 @@ function AjustarSaldoBtn({
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                   />
                   <p className="mt-1 text-[10px] text-slate-400">
-                    vazio = usa atual
+                    {soCusto ? 'o saldo não muda; fica no histórico' : 'vazio = usa atual'}
                   </p>
                 </div>
               )}

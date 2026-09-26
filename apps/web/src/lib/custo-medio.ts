@@ -9,6 +9,9 @@
 //
 // Casos limite:
 //   - saldo atual <= 0  → novoCusto = custoEntrada (não tem o que ponderar)
+//   - custo atual <= 0  → novoCusto = custoEntrada (custo desconhecido — ex:
+//                         zerado pro CMV do zero em 26/09/2026; ponderar com 0
+//                         jogaria o custo pra baixo)
 //   - qtdEntrada <= 0   → novoCusto = custoAtual (entrada inválida)
 //   - novoSaldo <= 0    → mantém custoAtual (evita div/0)
 //
@@ -43,7 +46,7 @@ export function calcularMpm(opts: {
   const saldoNovo = saldoAtual + qtdEntrada;
 
   if (qtdEntrada <= 0) return { saldoNovo, custoNovo: custoAtual };
-  if (saldoAtual <= 0) return { saldoNovo, custoNovo: custoEntrada };
+  if (saldoAtual <= 0 || custoAtual <= 0) return { saldoNovo, custoNovo: custoEntrada };
   if (saldoNovo <= 0) return { saldoNovo, custoNovo: custoAtual };
 
   const custoNovo =
