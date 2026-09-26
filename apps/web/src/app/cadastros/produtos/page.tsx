@@ -6,7 +6,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
-import { buscaIlike } from '@/lib/texto';
+import { buscaIlike, palavrasBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { NovoInsumoButton } from './novo-insumo';
@@ -103,12 +103,15 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
     fornecedorFiltro === 'sem'
       ? sql`NOT EXISTS (SELECT 1 FROM ${schema.produtoFornecedor} WHERE ${schema.produtoFornecedor.produtoId} = ${schema.produto.id})`
       : undefined,
-    q
-      ? sql`(${buscaIlike(schema.produto.nome, q)} OR ${buscaIlike(
+    // Cada palavra tem que aparecer (em qualquer ordem): "coca lata zero"
+    // acha "Refrigerante Coca Lata Zero" e "Coca-cola Zero Lata".
+    ...palavrasBusca(q).map(
+      (w) =>
+        sql`(${buscaIlike(schema.produto.nome, w)} OR ${buscaIlike(
           schema.produto.descricao,
-          q,
-        )} OR ${buscaIlike(schema.produto.codigoPersonalizado, q)})`
-      : undefined,
+          w,
+        )} OR ${buscaIlike(schema.produto.codigoPersonalizado, w)})`,
+    ),
   );
 
   const [stats] = await db

@@ -13,6 +13,14 @@ export function normalizaBusca(s: string | null | undefined): string {
     .trim();
 }
 
+/** Quebra o texto digitado em palavras pra busca "todas as palavras, em
+ *  qualquer ordem". Ignora conectivos curtos ("de", "c/"). */
+export function palavrasBusca(q: string): string[] {
+  const ws = q.split(/[\s\-\/,]+/).map((w) => w.trim()).filter((w) => w.length >= 2);
+  const semConectivo = ws.filter((w) => !['de', 'da', 'do', 'com', 'sem'].includes(normalizaBusca(w)));
+  return semConectivo.length ? semConectivo : ws.length ? ws : q.trim() ? [q.trim()] : [];
+}
+
 /**
  * Versão SQL do mesmo comportamento: "coluna contém termo", ignorando caixa e
  * acentos. Ex.: buscaIlike(schema.produto.nome, 'acai') acha "Açaí Premium".
