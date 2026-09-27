@@ -14184,10 +14184,10 @@ async function apiMesaAvaliar(body) {
   await sql`UPDATE avaliacao_brinde SET pedido_fb=${r.pedido_fb ?? null} WHERE id=${reg.id}`;
   await apiChamadoCriar({ mesa: numero, tipo: 'garcom', origem: 'pedido-cliente',
     texto: `avaliou ${nota}★ e ganhou 1 ${op.nome} (cortesia)` }).catch(() => {});
-  let google = null;
-  // espera a nuvem no máx. 4s (só pelo link do Google); se demorar, a fila reenvia
-  try { google = (await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]))?.google_url || null; } catch {}
-  return { ok: true, brinde: op.nome, google_url: google };
+  let nv = null;
+  // espera a nuvem no máx. 4s (só pelos links do Google/Trip); se demorar, a fila reenvia
+  try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
+  return { ok: true, brinde: op.nome, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
 }
 // cópia pra nuvem (/avaliacoes do Concilia). Falhou? a fila tenta de novo.
 async function brindeParaNuvem(id) {
@@ -17095,12 +17095,13 @@ async function avEnviar(){
       '<div class="mut">'+esc(r.erro)+'</div></div><button class="b" onclick="inicio()">Voltar ao início</button>');
     return;
   }
-  // Google: convite OPCIONAL e so depois do drink garantido — o drink nunca
-  // depende de avaliar la (a politica do Google proibe avaliacao incentivada)
+  // Google/TripAdvisor: convite OPCIONAL e so depois do drink garantido — o
+  // drink nunca depende de avaliar la (os dois proibem avaliacao incentivada)
+  var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
     '<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div></div>'+
-    (r.google_url&&nota>=4?'<div class="aviso">Gostou? Se quiser, conte também no Google — ajuda muito a gente 💛'+
-      '<a class="b g" style="text-align:center;text-decoration:none;margin-top:12px" target="_blank" rel="noopener" href="'+esc(r.google_url)+'">Avaliar no Google</a></div>':'')+
+    ((r.google_url||r.trip_url)&&nota>=4?'<div class="aviso">Gostou? Se quiser, conte também no Google ou no TripAdvisor — ajuda muito a gente 💛'+
+      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
 }
 // ---- cadastro do cliente (tudo opcional) ----

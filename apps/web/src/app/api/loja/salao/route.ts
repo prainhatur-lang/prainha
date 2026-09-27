@@ -221,7 +221,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
   const { db, schema } = await import('@concilia/db');
   const { eq } = await import('drizzle-orm');
   const [fil] = await db
-    .select({ googleUrl: schema.filial.googleReviewUrl, corte: schema.filial.notaCorteGoogle })
+    .select({ googleUrl: schema.filial.googleReviewUrl, tripUrl: schema.filial.tripadvisorReviewUrl, corte: schema.filial.notaCorteGoogle })
     .from(schema.filial)
     .where(eq(schema.filial.id, f))
     .limit(1);
@@ -239,7 +239,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
       nome: txt(b.nome, 200),
       whatsapp: String(b.whatsapp || '').replace(/\D/g, '').slice(0, 30) || null,
       origem: mesa ? `mesa-${mesa} (QR)` : 'mesa (QR)',
-      foiPraGoogle: alta && !!fil.googleUrl,
+      foiPraGoogle: alta && !!(fil.googleUrl || fil.tripUrl),
       // nota alta nasce resolvida; baixa entra no painel pra equipe ligar
       status: alta ? 'resolvido' : 'novo',
       cpf,
@@ -261,5 +261,10 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
       .limit(1);
     id = ja?.id ?? null;
   }
-  return NextResponse.json({ ok: true, id, google_url: alta ? fil.googleUrl ?? null : null });
+  return NextResponse.json({
+    ok: true,
+    id,
+    google_url: alta ? fil.googleUrl ?? null : null,
+    trip_url: alta ? fil.tripUrl ?? null : null,
+  });
 }
