@@ -1,10 +1,16 @@
 // Regras do cartão fidelidade: nível, desconto, reservar/confirmar uso do código.
 //
-// Fluxo na loja (vendas-local → /api/fidelidade/loja):
-//   1. cliente digita o código na tela do Pix → `reservarUso` calcula o
-//      desconto e segura o código pra aquela mesa por RESERVA_MIN minutos;
-//   2. o Pix (já com o desconto) cai → `confirmarUso`: conta a visita do dia,
-//      troca o código e manda a Wallet atualizar o cartão;
+// Cada casa tem o seu programa ("Cliente VIP Prainha Bar"): cartão, visitas e
+// desconto só valem na casa do cartão.
+//
+// Fluxo:
+//   0. no celular do dono (confirmado por SMS), o cliente toca "Vou pagar
+//      agora" → `gerarCodigoUso`: código novo de 4 letras que vale
+//      CODIGO_MIN minutos. Cada toque gera outro (o anterior morre);
+//   1. digita o código na tela do Pix → `reservarUso` calcula o desconto e
+//      segura o código pra aquela mesa por RESERVA_MIN minutos;
+//   2. o Pix (já com o desconto) cai → `confirmarUso`: conta a visita do dia
+//      e mata o código;
 //   3. Pix abandonado → `liberarUso` (ou a reserva expira sozinha).
 
 import { db, schema } from '@concilia/db';
@@ -20,6 +26,8 @@ import {
 } from './codigo';
 
 export const RESERVA_MIN = 45;
+/** validade do código gerado no celular, até ser digitado na mesa */
+export const CODIGO_MIN = 10;
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
@@ -85,7 +93,8 @@ export function nomeCurto(nome: string): string {
 // ---------------------------------------------------------------- criação
 
 export interface NovoCartaoInput {
-  organizacaoId: string;
+  /** a casa do cartão (Cliente VIP <casa>) */
+  filialId: string;
   nome: string;
   telefone: string;
   cpf?: string | null;
@@ -106,11 +115,13 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
   if (!telefone) throw new Error('telefone inválido');
   const nome = inp.nome.trim().replace(/\s+/g, ' ').slice(0, 120);
   if (!nome) throw new Error('nome obrigatório');
+  const org = await orgDaFilial(inp.filialId);
+  if (!org) throw new Error('casa não encontrada');
 
   const [existe] = await db
     .select()
     .from(schema.fidelidadeCartao)
-    .where(and(eq(schema.fidelidadeCartao.organizacaoId, inp.organizacaoId), eq(schema.fidelidadeCartao.telefone, telefone)))
+    .where(and(eq(schema.fidelidadeCartao.filialId, inp.filialId), eq(schema.fidelidadeCartao.telefone, telefone)))
     .limit(1);
   if (existe) {
     if (inp.aderido && !existe.aderidoEm) {
@@ -130,7 +141,8 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
       const [c] = await db
         .insert(schema.fidelidadeCartao)
         .values({
-          organizacaoId: inp.organizacaoId,
+          organizacaoId: org,
+          filialId: inp.filialId,
           nome,
           telefone,
           cpf: inp.cpf?.replace(/\D/g, '').slice(0, 11) || null,
@@ -140,20 +152,20 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
           nivelMinimo: inp.nivelMinimo || null,
           nivelMinimoAte: inp.nivelMinimo ? inp.nivelMinimoAte || null : null,
           origem: inp.origem || 'convite',
-          filialOrigemId: inp.filialOrigemId || null,
+          filialOrigemId: inp.filialOrigemId || inp.filialId,
           origemDetalhe: inp.origemDetalhe || null,
           appleAuthToken: gerarAppleAuth(),
           cidade: inp.cidade?.slice(0, 100) || null,
           bairro: inp.bairro?.slice(0, 100) || null,
           aderidoEm: inp.aderido ? new Date() : null,
         })
-        .onConflictDoNothing({ target: [schema.fidelidadeCartao.organizacaoId, schema.fidelidadeCartao.telefone] })
+        .onConflictDoNothing({ target: [schema.fidelidadeCartao.filialId, schema.fidelidadeCartao.telefone] })
         .returning();
       if (c) return { cartao: c, novo: true };
       const [ja] = await db
         .select()
         .from(schema.fidelidadeCartao)
-        .where(and(eq(schema.fidelidadeCartao.organizacaoId, inp.organizacaoId), eq(schema.fidelidadeCartao.telefone, telefone)))
+        .where(and(eq(schema.fidelidadeCartao.filialId, inp.filialId), eq(schema.fidelidadeCartao.telefone, telefone)))
         .limit(1);
       if (ja) return { cartao: ja, novo: false };
     } catch (e) {
@@ -163,16 +175,58 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
   throw new Error('não consegui gerar um cartão único, tente de novo');
 }
 
-/** Troca o código do cartão (uso confirmado ou pedido do admin). */
-export async function trocarCodigo(cartaoId: string, organizacaoId: string): Promise<string> {
+/** Mata o código atual (uso confirmado, bloqueio, pedido do admin): troca
+ *  por um sorteado que não vale (sem validade). O próximo só nasce no
+ *  celular do dono. */
+export async function invalidarCodigo(cartaoId: string): Promise<void> {
+  for (let t = 0; t < 10; t++) {
+    try {
+      await db
+        .update(schema.fidelidadeCartao)
+        .set({ codigo: gerarCodigo(), codigoExpiraEm: null, codigoAparelho: null, passAtualizadoEm: new Date() })
+        .where(eq(schema.fidelidadeCartao.id, cartaoId));
+      return;
+    } catch (e) {
+      if (!/unique|duplicate/i.test(String((e as Error)?.message))) throw e;
+    }
+  }
+  throw new Error('não consegui trocar o código');
+}
+
+/** "Vou pagar agora": código novo que vale CODIGO_MIN minutos. Quem chama
+ *  já conferiu que o aparelho é do dono. Um código com reserva viva (Pix
+ *  gerado e ainda não pago) não é trocado — senão o Pix em andamento perde o
+ *  desconto. */
+export async function gerarCodigoUso(
+  cartaoId: string, aparelhoId: string,
+): Promise<{ codigo: string; expiraEm: Date; emUso: boolean }> {
+  const agora = new Date();
+  const [viva] = await db
+    .select({ id: schema.fidelidadeUso.id })
+    .from(schema.fidelidadeUso)
+    .where(and(
+      eq(schema.fidelidadeUso.cartaoId, cartaoId),
+      eq(schema.fidelidadeUso.status, 'reservado'),
+      gte(schema.fidelidadeUso.expiraEm, agora),
+    ))
+    .limit(1);
+  if (viva) {
+    const [c] = await db
+      .select({ codigo: schema.fidelidadeCartao.codigo, exp: schema.fidelidadeCartao.codigoExpiraEm })
+      .from(schema.fidelidadeCartao)
+      .where(eq(schema.fidelidadeCartao.id, cartaoId))
+      .limit(1);
+    if (c?.exp && c.exp > agora) return { codigo: c.codigo, expiraEm: c.exp, emUso: true };
+  }
+  const expiraEm = new Date(agora.getTime() + CODIGO_MIN * 60_000);
   for (let t = 0; t < 10; t++) {
     const codigo = gerarCodigo();
     try {
       await db
         .update(schema.fidelidadeCartao)
-        .set({ codigo, codigoGeradoEm: new Date(), passAtualizadoEm: new Date() })
-        .where(and(eq(schema.fidelidadeCartao.id, cartaoId), eq(schema.fidelidadeCartao.organizacaoId, organizacaoId)));
-      return codigo;
+        .set({ codigo, codigoGeradoEm: agora, codigoExpiraEm: expiraEm, codigoAparelho: aparelhoId.slice(0, 16) })
+        .where(eq(schema.fidelidadeCartao.id, cartaoId));
+      return { codigo, expiraEm, emUso: false };
     } catch (e) {
       if (!/unique|duplicate/i.test(String((e as Error)?.message))) throw e;
     }
@@ -184,18 +238,19 @@ export async function trocarCodigo(cartaoId: string, organizacaoId: string): Pro
 
 export type ErroUso =
   | 'programa_inativo' | 'codigo_invalido' | 'nao_encontrado' | 'bloqueado'
-  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido';
+  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido' | 'outra_casa';
 
 export const MSG_ERRO: Record<ErroUso, string> = {
-  programa_inativo: 'O cartão fidelidade está pausado no momento.',
+  programa_inativo: 'O Cliente VIP não está ativo nesta casa.',
   codigo_invalido: 'Código inválido — são 4 letras.',
-  nao_encontrado: 'Código não encontrado. Confira no seu cartão (ele muda a cada uso).',
+  nao_encontrado: 'Código não encontrado ou vencido. Abra o seu cartão e toque em "Vou pagar agora" pra gerar um novo (vale 10 minutos).',
   bloqueado: 'Este cartão está bloqueado. Fale com a gerência.',
   ja_usado_hoje: 'Este cartão já foi usado hoje. Volte amanhã!',
   em_uso: 'Este código já está sendo usado em outra conta agora.',
   consumo_minimo: 'O consumo ainda não atinge o mínimo pro desconto do cartão.',
   sem_desconto: 'Não há consumo pra aplicar o desconto.',
   nao_aderido: 'Cartão ainda não ativado: abra o link do convite e toque em "Quero meu cartão".',
+  outra_casa: 'Esse cartão é de outra casa. O Cliente VIP só vale na casa do cartão.',
 };
 
 export interface Simulacao {
@@ -222,21 +277,29 @@ export async function simularUso(
 ): Promise<{ ok: true; sim: Simulacao } | { ok: false; erro: ErroUso }> {
   const codigo = normalizarCodigo(codigoBruto);
   if (!codigo) return { ok: false, erro: 'codigo_invalido' };
-  const org = await orgDaFilial(filialId);
-  if (!org) return { ok: false, erro: 'nao_encontrado' };
-  const { ativo, config: cfg } = await carregarPrograma(org);
+  const { ativo, config: cfg } = await carregarPrograma(filialId);
   if (!ativo) return { ok: false, erro: 'programa_inativo' };
 
+  // só código VIVO (gerado no celular do dono há menos de CODIGO_MIN, ou
+  // segurado por um Pix em andamento)
+  const vivo = sql`${schema.fidelidadeCartao.codigoExpiraEm} > now()`;
   const [cartao] = await db
     .select()
     .from(schema.fidelidadeCartao)
-    .where(and(eq(schema.fidelidadeCartao.organizacaoId, org), eq(schema.fidelidadeCartao.codigo, codigo)))
+    .where(and(eq(schema.fidelidadeCartao.filialId, filialId), eq(schema.fidelidadeCartao.codigo, codigo), vivo))
     .limit(1);
-  if (!cartao) return { ok: false, erro: 'nao_encontrado' };
+  if (!cartao) {
+    const [outra] = await db
+      .select({ id: schema.fidelidadeCartao.id })
+      .from(schema.fidelidadeCartao)
+      .where(and(eq(schema.fidelidadeCartao.codigo, codigo), vivo))
+      .limit(1);
+    return { ok: false, erro: outra ? 'outra_casa' : 'nao_encontrado' };
+  }
   if (cartao.status !== 'ativo') return { ok: false, erro: 'bloqueado' };
   if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
 
-  // um uso por dia (em qualquer casa)
+  // um uso por dia
   const [hoje] = await db
     .select({ id: schema.fidelidadeUso.id })
     .from(schema.fidelidadeUso)
@@ -319,8 +382,14 @@ export async function reservarUso(
         valorBase: String(r2(consumo)),
         valorDesconto: String(sim.desconto),
         expiraEm: expira,
+        aparelho: sim.cartao.codigoAparelho,
       })
       .returning({ id: schema.fidelidadeUso.id });
+    // o código vive enquanto o Pix estiver aberto (mesmo depois dos 10 min)
+    await tx
+      .update(schema.fidelidadeCartao)
+      .set({ codigoExpiraEm: expira })
+      .where(eq(schema.fidelidadeCartao.id, sim.cartao.id));
     return u;
   });
   if (!r) return { ok: false, erro: 'em_uso' };
@@ -354,8 +423,6 @@ export async function confirmarUso(
   if (uso.status === 'confirmado') return { ok: true, jaConfirmado: true };
 
   const agora = new Date();
-  const org = await orgDaFilial(filialId);
-  if (!org) return { ok: false, erro: 'filial não encontrada' };
 
   const virou = await db
     .update(schema.fidelidadeUso)
@@ -380,7 +447,7 @@ export async function confirmarUso(
     .from(schema.fidelidadeCartao)
     .where(eq(schema.fidelidadeCartao.id, uso.cartaoId))
     .limit(1);
-  if (cartao && cartao.codigo === uso.codigo) await trocarCodigo(uso.cartaoId, org);
+  if (cartao && cartao.codigo === uso.codigo) await invalidarCodigo(uso.cartaoId);
   else await tocarPass(uso.cartaoId);
 
   await avisarWallet(uso.cartaoId);
@@ -426,8 +493,9 @@ export async function avisarWallet(cartaoId: string): Promise<void> {
 
 /** Tudo que a página do cartão e os passes precisam mostrar. */
 export async function dadosDoCartao(cartao: Cartao) {
-  const { config: cfg } = await carregarPrograma(cartao.organizacaoId);
+  const prog = await carregarPrograma(cartao.filialId);
+  const cfg = prog.config;
   const estado = await estadoCartao(cartao, cfg);
   const bonus = await bonusHoje(cfg);
-  return { cfg, estado, bonus };
+  return { cfg, estado, bonus, prog };
 }

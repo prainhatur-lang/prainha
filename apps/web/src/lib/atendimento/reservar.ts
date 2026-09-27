@@ -133,12 +133,12 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
   if (janela.bloqueado) return `Não dá pra reservar pra ${dataBr(data)}: ${janela.motivo}`;
 
   const linhas: string[] = [];
-  // Cartão Prainha com prioridade: vê as mesas acima do teto de cada área
+  // Cliente VIP com prioridade: vê as mesas acima do teto de cada área
   const membro = telefone ? await membroPorTelefone(filialId, telefone).catch(() => null) : null;
   const prioridade = !!membro?.prioridadeReserva;
   if (membro) {
     linhas.push(
-      `CLIENTE É MEMBRO DO CARTÃO PRAINHA (${membro.nivel})${prioridade ? ' — tem PRIORIDADE: as vagas abaixo já incluem as mesas reservadas pra membro' : ''}. Pode agradecer por ser membro.`,
+      `CLIENTE É CLIENTE VIP DA CASA (${membro.nivel})${prioridade ? ' — tem PRIORIDADE: as vagas abaixo já incluem as mesas reservadas pra membro' : ''}. Pode agradecer por ser Cliente VIP.`,
     );
   }
   // Consulta pra HOJE inclui a ocupação ao vivo e o corte dinâmico do dia
@@ -486,7 +486,7 @@ async function validarSlotEAlocarMesa(p: {
   pessoas: number;
   area: string;
   excluirReservaId?: string;
-  /** telefone do cliente — membro do Cartão Prainha com prioridade passa do teto */
+  /** telefone do cliente — membro do Cliente VIP com prioridade passa do teto */
   telefone?: string;
 }): Promise<string | SlotAlocado> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
@@ -572,7 +572,7 @@ async function validarSlotEAlocarMesa(p: {
       ? Math.floor((mesas.length * areaCfg.percentualReserva) / 100)
       : mesas.length;
   if (ocupadas.size >= limite - 1 && limite < mesas.length && p.telefone) {
-    // perto/no teto: membro do Cartão Prainha com prioridade usa a área inteira
+    // perto/no teto: membro do Cliente VIP com prioridade usa a área inteira
     const m = await membroPorTelefone(p.filialId, p.telefone).catch(() => null);
     if (m?.prioridadeReserva) limite = mesas.length;
   }

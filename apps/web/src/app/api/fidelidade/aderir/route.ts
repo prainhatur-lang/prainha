@@ -1,6 +1,7 @@
-// Adesão ao Cartão Prainha pelo link do convite (público; o token do cartão
-// é a autenticação). acao 'aderir' ativa o cartão, 'recusar' marca que não
-// quer (não recebe convite de novo).
+// "Não tenho interesse" no convite do Cliente VIP (público; o token do cartão
+// é a autenticação): marca que não quer (não recebe convite de novo).
+// Ativar NÃO é aqui — é confirmando o celular por SMS (/api/fidelidade/cartao),
+// senão quem recebesse o link encaminhado ativaria o cartão de outra pessoa.
 
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
@@ -18,15 +19,6 @@ export async function POST(req: Request) {
   if (b?.acao === 'recusar') {
     if (!c.aderidoEm) {
       await db.update(schema.fidelidadeCartao).set({ recusadoEm: new Date() }).where(eq(schema.fidelidadeCartao.id, c.id));
-    }
-    return Response.json({ ok: true });
-  }
-  if (b?.acao === 'aderir') {
-    if (!c.aderidoEm) {
-      await db
-        .update(schema.fidelidadeCartao)
-        .set({ aderidoEm: new Date(), recusadoEm: null })
-        .where(eq(schema.fidelidadeCartao.id, c.id));
     }
     return Response.json({ ok: true });
   }

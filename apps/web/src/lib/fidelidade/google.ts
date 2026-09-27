@@ -79,18 +79,19 @@ async function objeto(c: Cartao) {
     classId: classId(),
     state: v.bloqueado ? 'INACTIVE' : 'ACTIVE',
     hexBackgroundColor: v.cor,
-    logo: { sourceUri: { uri: `${baseUrl()}/fidelidade/logo-google.png` }, contentDescription: txt('Prainha') },
-    cardTitle: txt(`Prainha · ${v.nivel}`),
-    subheader: txt('Código pro Pix'),
-    header: txt(v.bloqueado ? '----' : v.codigo),
+    logo: { sourceUri: { uri: `${baseUrl()}/fidelidade/logo-google.png` }, contentDescription: txt(v.casa) },
+    cardTitle: txt(`${v.marca} · ${v.nivel}`),
+    // sem código no cartão da Wallet: ele nasce no celular do dono, na hora de pagar
+    subheader: txt('Desconto no Pix'),
+    header: txt(v.bloqueado ? 'Bloqueado' : v.textoDesconto),
     textModulesData: [
       { id: 'desconto', header: 'Desconto', body: v.textoDesconto },
       { id: 'visitas', header: `Visitas (${v.janelaDias} dias)`, body: String(v.visitas) },
       { id: 'proximo', header: 'Próximo nível', body: v.textoProximo },
-      { id: 'membro', header: 'Membro', body: `${v.nome} · nº ${v.numero}` },
+      { id: 'membro', header: 'Cliente VIP', body: `${v.nome} · nº ${v.numero}` },
       { id: 'regras', header: 'Como funciona', body: REGRAS_TEXTO(v) },
     ],
-    linksModuleData: { uris: [{ uri: v.link, description: 'Abrir o cartão', id: 'site' }] },
+    linksModuleData: { uris: [{ uri: v.link, description: 'Vou pagar agora (gerar código)', id: 'site' }] },
     heroImage: { sourceUri: { uri: `${baseUrl()}/fidelidade/sereia-branca.png` }, contentDescription: txt('Prainha') },
   };
 }

@@ -10,6 +10,8 @@ interface Props {
   filialId: string;
   filiais: Array<{ id: string; nome: string }>;
   ativo: boolean;
+  /** nome da casa (filial ativa) — cada casa tem o seu Cliente VIP */
+  casa: string;
   config: FidelidadeConfig;
   cartoes: CartaoLinha[];
   usos: UsoLinha[];
@@ -47,18 +49,18 @@ function nivelSugerido(cfg: FidelidadeConfig, visitasJanela: number) {
   return n;
 }
 
-function msgConvite(cfg: FidelidadeConfig, nome: string, nivelCodigo: string, link: string) {
+function msgConvite(cfg: FidelidadeConfig, casa: string, nome: string, nivelCodigo: string, link: string) {
   const n = cfg.niveis.find((x) => x.codigo === nivelCodigo) ?? cfg.niveis[0];
   const primeiro = nome.trim().split(/\s+/)[0] || '';
   const bonus = cfg.bonusDiaUtilPct ? ` (e ${n.pct + cfg.bonusDiaUtilPct}% de segunda a sexta)` : '';
   return (
-    `Oi, ${primeiro}! Aqui é do Prainha 🏖️\n\n` +
-    `Como você é de casa, separamos pra você o *Cartão Prainha ${n.nome}*:\n` +
+    `Oi, ${primeiro}! Aqui é do ${casa} 🏖️\n\n` +
+    `Como você é de casa, você agora é *Cliente VIP ${casa} ${n.nome}*:\n` +
     `• ${n.pct}% de desconto no consumo${bonus} pagando no Pix\n` +
     (n.prioridadeReserva ? `• prioridade nas reservas, mesmo com a casa cheia\n` : '') +
     (n.pctEspaco > 0 ? `• ${n.pctEspaco}% de desconto no aluguel de espaços pra eventos\n` : '') +
-    `• vale no Prainha Bar, Tabuará e Prainha Mar\n\n` +
-    `É só tocar no link e em "Quero meu cartão" pra ativar (e salvar na carteira do celular): ${link}`
+    `• cartão pessoal, no seu celular\n\n` +
+    `É só tocar no link e em "Quero meu cartão" — chega um código por SMS pra confirmar que é você — e salvar na carteira do celular: ${link}`
   );
 }
 
@@ -89,10 +91,10 @@ export function FidelidadeClient(p: Props) {
     <section className="mx-auto max-w-6xl px-4 py-6">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold">Cartão fidelidade</h1>
+          <h1 className="text-xl font-semibold">Cliente VIP {p.casa}</h1>
           <p className="text-sm text-slate-500">
-            Um cartão por pessoa, vale nas 3 casas, desconto só no Pix.{' '}
-            {!p.ativo && <b className="text-red-600">Programa DESLIGADO.</b>}
+            Programa só desta casa (cada casa tem o seu). Desconto só no Pix, com código gerado no celular do dono.{' '}
+            {!p.ativo && <b className="text-red-600">Programa DESLIGADO nesta casa.</b>}
           </p>
         </div>
         <div className="flex gap-2 text-xs">
@@ -232,7 +234,7 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
 
   function convidar(c: CartaoLinha) {
     const link = `${p.base}/cartao/${c.token}`;
-    const texto = msgConvite(p.config, c.nome, c.nivelCodigo, link);
+    const texto = msgConvite(p.config, p.casa, c.nome, c.nivelCodigo, link);
     window.open(`https://wa.me/55${c.telefone}?text=${encodeURIComponent(texto)}`, '_blank');
     if (p.podeCriar) p.api({ acao: 'convidado', cartaoId: c.id }).then(p.refresh).catch(() => {});
   }
@@ -404,16 +406,29 @@ function MaisAcoes(props: {
   return (
     <div className="mt-2 space-y-2 rounded border border-slate-200 bg-slate-50 p-2 text-left text-xs">
       <div className="text-slate-600">
-        Código atual: <b className="font-mono">{c.status === 'ativo' ? c.codigo : '----'}</b>
+        Celulares confirmados: <b>{c.aparelhos}</b> · Código em aberto:{' '}
+        <b className="font-mono">{c.status === 'ativo' && c.codigo ? c.codigo : 'nenhum'}</b>
       </div>
       <div className="flex flex-wrap gap-1">
         {props.podeCriar && c.status === 'ativo' && (
           <button
             disabled={props.ocupado}
-            onClick={() => props.acao({ acao: 'novo_codigo' }, 'Código trocado — a Wallet do cliente atualiza sozinha.')}
+            onClick={() => props.acao({ acao: 'novo_codigo' }, 'Código em aberto cancelado — o cliente gera outro no celular.')}
             className="rounded border border-slate-300 bg-white px-2 py-1"
           >
-            Gerar código novo
+            Cancelar código em aberto
+          </button>
+        )}
+        {props.podeConfigurar && c.aparelhos > 0 && (
+          <button
+            disabled={props.ocupado}
+            onClick={() => {
+              if (!confirm(`Desconectar os celulares de ${c.nome}? A pessoa vai confirmar de novo por SMS.`)) return;
+              props.acao({ acao: 'desconectar' }, 'Celulares desconectados — o cliente confirma de novo por SMS.');
+            }}
+            className="rounded border border-slate-300 bg-white px-2 py-1"
+          >
+            Desconectar celulares
           </button>
         )}
         {props.podeConfigurar && (
@@ -540,11 +555,11 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
         <h2 className="mb-1 font-medium">Quem já frequenta</h2>
         <p className="mb-2 text-sm text-slate-500">
           Comece pelos <b>clientes de Aracaju</b> (endereço no cadastro do PDV ou na reserva). O convite vai pelo
-          WhatsApp com o link do cartão: a pessoa vê os benefícios e toca em <b>“Quero meu cartão”</b> — só depois disso
-          o código vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
+          WhatsApp com o link do cartão: a pessoa vê os benefícios e toca em <b>“Quero meu cartão”</b> e confirma o celular com o código
+          do SMS — só depois disso o cartão vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
         </p>
         <p className="mb-3 text-sm text-slate-500">
-          Junta as 3 casas: dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o
+          Só desta casa: dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o
           histórico da Tagme — a mesma pessoa é casada pelo telefone. O nível sugerido vem das visitas nos últimos{' '}
           {cfg.janelaDias} dias; ele entra como <b>nível garantido</b> até a data que você escolher (depois disso vale
           o das visitas pelo cartão).

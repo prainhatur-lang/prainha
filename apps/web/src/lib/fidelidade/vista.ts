@@ -14,7 +14,10 @@ export interface VistaCartao {
   nome: string;
   nomeCurto: string;
   numero: string;
-  codigo: string;
+  /** "Prainha Bar" */
+  casa: string;
+  /** "Cliente VIP Prainha Bar" */
+  marca: string;
   bloqueado: boolean;
   nivel: string;
   nivelCodigo: string;
@@ -39,7 +42,7 @@ export interface VistaCartao {
 }
 
 export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
-  const { cfg, estado, bonus } = await dadosDoCartao(cartao);
+  const { cfg, estado, bonus, prog } = await dadosDoCartao(cartao);
   const pct = estado.nivel.pct;
   const textoDesconto = cfg.bonusDiaUtilPct
     ? `${pct}% · ${pct + cfg.bonusDiaUtilPct}% seg–sex`
@@ -51,7 +54,8 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
     nome: cartao.nome,
     nomeCurto: nomeCurto(cartao.nome),
     numero: formatarNumero(cartao.numero),
-    codigo: cartao.codigo,
+    casa: prog.casa,
+    marca: prog.marca,
     bloqueado: cartao.status !== 'ativo',
     nivel: estado.nivel.nome,
     nivelCodigo: estado.nivel.codigo,
@@ -79,12 +83,12 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
 
 export const REGRAS_TEXTO = (v: VistaCartao) =>
   [
-    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), digite o CÓDIGO do cartão. O desconto de ${v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
+    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 10 minutos: digite na tela do Pix. O desconto de ${v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
     v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
-    'O código é de uso único: depois de cada pagamento o cartão mostra um código novo.',
-    'Vale 1 uso por dia, em qualquer casa do grupo (Prainha Bar, Tabuará, Prainha Mar), só no Pix.',
-    v.prioridadeReserva ? 'Prioridade nas reservas: quando as mesas reserváveis da área acabam, membro ainda consegue reservar (se houver mesa livre).' : '',
-    v.pctEspaco ? `Aniversário, confraternização ou evento: ${v.pctEspaco}% de desconto no aluguel do espaço. Peça o orçamento pelo WhatsApp com o mesmo telefone do cartão.` : '',
+    'O cartão é pessoal: o código só é gerado no celular confirmado por SMS no seu número, muda a cada pagamento e não serve pra outra pessoa.',
+    `Vale 1 uso por dia, só no ${v.casa}, pagando no Pix. Cada casa do grupo tem o seu próprio Cliente VIP.`,
+    v.prioridadeReserva ? `Prioridade nas reservas do ${v.casa}: quando as mesas reserváveis da área acabam, você ainda consegue reservar (se houver mesa livre).` : '',
+    v.pctEspaco ? `Aniversário, confraternização ou evento no ${v.casa}: ${v.pctEspaco}% de desconto no aluguel do espaço. Peça o orçamento pelo WhatsApp com o mesmo telefone do cartão.` : '',
     `Seu nível sobe com as visitas dos últimos ${v.janelaDias} dias: ` +
       v.niveis.map((n) => `${n.nome} ${n.pct}% (${n.minVisitas}+)`).join(' · ') + '.',
   ].filter(Boolean).join('\n\n');

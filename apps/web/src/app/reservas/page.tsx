@@ -196,7 +196,7 @@ export default async function ReservasPage(props: {
     }
   }
 
-  // Cartão Prainha: marca quem é membro (a recepção sabe que tem prioridade)
+  // Cliente VIP: marca quem é membro (a recepção sabe que tem prioridade)
   const membrosTel = escopo.length > 0
     ? await membrosPorTelefones(escopo[0], itens.map((i) => i.clienteTelefone)).catch(() => new Set<string>())
     : new Set<string>();

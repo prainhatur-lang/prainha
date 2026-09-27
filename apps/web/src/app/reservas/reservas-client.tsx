@@ -149,7 +149,7 @@ export function ReservasClient({
   historico: Record<string, { visitas: number; ultima: string | null }>;
   /** Reservas de quem está devendo hoje (cadastro único) — id da reserva → saldo. */
   fiado: Record<string, { saldo: number; clienteId: string }>;
-  /** ids das reservas de membro do Cartão Prainha */
+  /** ids das reservas de membro do Cliente VIP */
   membros?: string[];
 }) {
   const router = useRouter();
@@ -601,9 +601,9 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, mostrarFilial, filiais, 
             {membro && (
               <span
                 className="rounded-full bg-[#0F3A5F] px-2 py-0.5 text-[10px] font-semibold text-white"
-                title="Membro do Cartão Prainha — tem prioridade na reserva"
+                title="Membro do Cliente VIP — tem prioridade na reserva"
               >
-                💳 Cartão Prainha
+                💳 Cliente VIP
               </span>
             )}
             {fiado && (

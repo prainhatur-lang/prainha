@@ -1,4 +1,5 @@
-// Painel /fidelidade: organização do usuário, lista de cartões e usos.
+// Painel /fidelidade: casa (filial) ativa do usuário, lista de cartões e usos.
+// Cada casa tem o seu Cliente VIP — tudo aqui é no escopo da filial.
 
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
@@ -9,8 +10,8 @@ import type { FidelidadeConfig } from './config';
 import { nivelPorCodigo, nivelPorVisitas } from './config';
 import { formatarNumero } from './codigo';
 
-/** Organização a partir da filial ativa do usuário (o cartão é do grupo). */
-export async function orgDoUsuario(userId: string, filialId?: string | null) {
+/** Filial ativa do usuário (respeita o seletor do menu) + a organização dela. */
+export async function casaDoUsuario(userId: string, filialId?: string | null) {
   const filiais = await filiaisDoUsuario(userId);
   const f = await escolherFilial(filiais, filialId ?? undefined);
   if (!f) return null;
@@ -32,7 +33,10 @@ export interface CartaoLinha {
   nome: string;
   telefone: string;
   numero: string;
-  codigo: string;
+  /** código de uso em aberto (gerado no celular do dono, vale 10 min) ou null */
+  codigo: string | null;
+  /** celulares confirmados por SMS (só eles geram código) */
+  aparelhos: number;
   token: string;
   status: string;
   nivel: string;
@@ -55,10 +59,12 @@ export interface CartaoLinha {
   criadoEm: string;
 }
 
-export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig): Promise<CartaoLinha[]> {
+export async function listarCartoes(filialId: string, cfg: FidelidadeConfig): Promise<CartaoLinha[]> {
   const desde = diasAtrasBr(cfg.janelaDias - 1);
   const rows = (await db.execute(sql`
-    SELECT c.id, c.nome, c.telefone, c.numero, c.codigo, c.token, c.status,
+    SELECT c.id, c.nome, c.telefone, c.numero, c.token, c.status,
+           CASE WHEN c.codigo_expira_em > now() THEN c.codigo END AS codigo,
+           jsonb_array_length(coalesce(c.aparelhos, '[]'::jsonb))::int AS aparelhos,
            c.nivel_minimo, c.nivel_minimo_ate::text AS nivel_minimo_ate,
            c.aberto_em IS NOT NULL AS aberto,
            c.google_salvo_em IS NOT NULL AS google,
@@ -70,10 +76,10 @@ export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig
            (SELECT count(*)::int FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS usos,
            (SELECT max(u.confirmado_em)::text FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS ultimo_uso
     FROM fidelidade_cartao c
-    WHERE c.organizacao_id = ${organizacaoId}
+    WHERE c.filial_id = ${filialId}::uuid
     ORDER BY c.criado_em DESC
   `)) as unknown as Array<{
-    id: string; nome: string; telefone: string; numero: string; codigo: string; token: string; status: string;
+    id: string; nome: string; telefone: string; numero: string; codigo: string | null; aparelhos: number; token: string; status: string;
     nivel_minimo: string | null; nivel_minimo_ate: string | null; aberto: boolean; google: boolean; apple: boolean;
     convidado_em: string | null; criado_em: string; aderido_em: string | null; recusado_em: string | null;
     convite_erro: string | null; cidade: string | null; visitas: number; usos: number; ultimo_uso: string | null;
@@ -94,6 +100,7 @@ export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig
       telefone: r.telefone,
       numero: formatarNumero(r.numero),
       codigo: r.codigo,
+      aparelhos: Number(r.aparelhos) || 0,
       token: r.token,
       status: r.status,
       nivel: nivel.nome,
@@ -130,7 +137,7 @@ export interface UsoLinha {
   status: string;
 }
 
-export async function usosRecentes(organizacaoId: string, limite = 200): Promise<UsoLinha[]> {
+export async function usosRecentes(filialId: string, limite = 200): Promise<UsoLinha[]> {
   const rows = (await db.execute(sql`
     SELECT u.id, u.reservado_em::text AS quando, f.nome AS casa, u.mesa, c.nome, u.nivel,
            (u.pct_nivel + u.pct_bonus)::float AS pct, u.valor_base::float AS base,
@@ -138,7 +145,7 @@ export async function usosRecentes(organizacaoId: string, limite = 200): Promise
     FROM fidelidade_uso u
     JOIN fidelidade_cartao c ON c.id = u.cartao_id
     JOIN filial f ON f.id = u.filial_id
-    WHERE c.organizacao_id = ${organizacaoId}
+    WHERE c.filial_id = ${filialId}::uuid
     ORDER BY u.reservado_em DESC
     LIMIT ${limite}
   `)) as unknown as Array<{

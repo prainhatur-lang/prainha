@@ -39,11 +39,11 @@ export interface Candidato {
 export type Regiao = 'aracaju' | 'grande' | 'todos';
 
 export async function candidatosConvite(
-  organizacaoId: string, janelaDias = 90, minimo = 2, regiao: Regiao = 'todos', limite = 6000,
+  filialId: string, janelaDias = 90, minimo = 2, regiao: Regiao = 'todos', limite = 6000,
 ): Promise<Candidato[]> {
   const filtraRegiao = regiao !== 'todos';
   const rows = (await db.execute(sql`
-    WITH filiais AS (SELECT id FROM filial WHERE organizacao_id = ${organizacaoId}),
+    WITH filiais AS (SELECT ${filialId}::uuid AS id),
     pdv AS (
       SELECT regexp_replace(coalesce(nullif(c.celular, ''), c.telefone), '\\D', '', 'g') AS fone,
              max(c.nome) AS nome, max(p.filial_id::text) AS filial_id,
@@ -139,7 +139,7 @@ export async function candidatosConvite(
         OR (${regiao}::text = 'grande' AND coalesce(e.grande, false)))
       AND NOT EXISTS (
         SELECT 1 FROM fidelidade_cartao fc
-        WHERE fc.organizacao_id = ${organizacaoId} AND right(fc.telefone, 8) = a.chave
+        WHERE fc.filial_id = ${filialId}::uuid AND right(fc.telefone, 8) = a.chave
       )
     ORDER BY visitas_janela DESC, visitas DESC, a.ultima DESC NULLS LAST
     LIMIT ${limite}

@@ -252,7 +252,7 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
   ];
 
   const rolha = rolhaDoEvento(totalFinal);
-  // Cliente do Cartão Prainha ganha desconto na taxa do espaço (a entrada
+  // Cliente VIP ganha desconto na taxa do espaço (a entrada
   // continua a taxa cheia — é o que segura a data; o desconto sai do restante).
   const descEspaco = await descontoEspacoMembro(p.filialId, p.telefone, TAXA_TERRACO, null).catch(() => null);
   const aceiteToken = randomBytes(32).toString('hex');

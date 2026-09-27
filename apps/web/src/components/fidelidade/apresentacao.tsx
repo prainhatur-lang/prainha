@@ -1,10 +1,10 @@
-// Apresentação do programa Cartão Prainha (estilo programa de milhas):
+// Apresentação do programa "Cliente VIP <casa>" (estilo programa de milhas):
 // categorias, benefícios por categoria, como funciona e dúvidas. Usada na
 // página pública /cartao-prainha e no convite (/cartao/[token] antes da adesão).
 
 import type { FidelidadeConfig } from '@/lib/fidelidade/config';
 
-export function ApresentacaoPrograma({ cfg, destaque }: { cfg: FidelidadeConfig; destaque?: string }) {
+export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeConfig; destaque?: string; casa: string }) {
   const b = cfg.bonusDiaUtilPct;
   const topo = cfg.niveis[cfg.niveis.length - 1];
   const temPrioridade = cfg.niveis.some((n) => n.prioridadeReserva);
@@ -32,8 +32,8 @@ export function ApresentacaoPrograma({ cfg, destaque }: { cfg: FidelidadeConfig;
           />
         )}
         <Beneficio
-          titulo="Nas 3 casas"
-          texto="Prainha Bar, Tabuará e Prainha Mar. Um cartão só, direto na Apple Wallet ou no Google Wallet do seu celular."
+          titulo="Cartão pessoal, no seu celular"
+          texto={`Direto na Apple Wallet ou no Google Wallet. O código de desconto só é gerado no seu celular, na hora de pagar — ninguém usa no seu lugar. Vale no ${casa}.`}
         />
       </section>
 
@@ -75,9 +75,9 @@ export function ApresentacaoPrograma({ cfg, destaque }: { cfg: FidelidadeConfig;
       <section className="rounded-2xl bg-white p-4 shadow-sm">
         <h2 className="text-base font-semibold">Como funciona</h2>
         <ol className="mt-3 space-y-3 text-sm">
-          <Passo n={1} texto="Ative o cartão pelo link e salve na Wallet do celular. Não tem app, não tem senha." />
-          <Passo n={2} texto="Na hora de pagar a conta no Pix (QR da mesa, garçom ou caixa), informe o código de 4 letras do cartão." />
-          <Passo n={3} texto="O desconto sai na hora. O código troca depois de cada uso e a Wallet atualiza sozinha." />
+          <Passo n={1} texto="Ative o cartão pelo link com o código que chega por SMS e salve na Wallet do celular. Não tem app, não tem senha." />
+          <Passo n={2} texto='Na hora de pagar a conta no Pix, abra o cartão e toque em "Vou pagar agora": aparece um código de 4 letras que vale 10 minutos.' />
+          <Passo n={3} texto="Digite o código na tela do Pix da mesa (ou fale pro caixa). O desconto sai na hora e o código não vale de novo." />
         </ol>
       </section>
 
@@ -89,8 +89,10 @@ export function ApresentacaoPrograma({ cfg, destaque }: { cfg: FidelidadeConfig;
           p="O desconto vale sobre tudo?"
           r={`Sobre o consumo. A taxa de serviço dos garçons continua sobre o valor cheio.${cfg.tetoDescontoReais ? ` Limite de R$ ${cfg.tetoDescontoReais.toFixed(2).replace('.', ',')} de desconto por conta.` : ''}`}
         />
-        <Faq p="Quantas vezes posso usar?" r="Uma vez por dia, em qualquer uma das 3 casas." />
-        <Faq p="Posso passar o cartão pra outra pessoa?" r="O cartão é pessoal, ligado ao seu telefone. Mas ele vale pra conta da mesa inteira que você pagar." />
+        <Faq p="Quantas vezes posso usar?" r={`Uma vez por dia, no ${casa}.`} />
+        <Faq p="Vale nas outras casas do grupo?" r={`Não. Cada casa tem o seu Cliente VIP, com categorias e visitas separadas. Este é o do ${casa}.`} />
+        <Faq p="Posso passar o cartão pra outra pessoa?" r="Não. O cartão é pessoal, ligado ao seu telefone: o código só é gerado no celular confirmado por SMS no seu número. Mas ele vale pra conta da mesa inteira que você pagar." />
+        <Faq p="Troquei de celular" r="Abra o link do cartão no celular novo e confirme com o código que chega por SMS no seu número." />
         <Faq p="O que conta como dia útil?" r="Segunda a sexta, fora feriados." />
         <Faq p="Como peço o desconto no espaço?" r="Peça o orçamento do seu evento pelo nosso WhatsApp usando o mesmo telefone do cartão — o desconto já vem aplicado." />
       </section>

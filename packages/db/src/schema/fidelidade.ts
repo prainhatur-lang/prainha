@@ -1,11 +1,16 @@
-// Cartão fidelidade Prainha (Apple Wallet / Google Wallet).
+// Cartão fidelidade — "Cliente VIP <casa>" (Apple Wallet / Google Wallet).
 //
-// Um cartão por PESSOA no grupo inteiro (organizacao) — as visitas nas 3 casas
-// somam. O nível sai das visitas dos últimos N dias (janela, padrão 90) e dá
+// Um programa POR CASA: Cliente VIP Prainha Bar, Tabuará e Prainha Mar são
+// coisas diferentes (regras, cartões, visitas e desconto só valem na casa do
+// cartão). O nível sai das visitas dos últimos N dias (janela, padrão 90) e dá
 // um % de desconto na conta paga no Pix; segunda a sexta fora de feriado soma
-// um bônus. Quem usa é o cliente: digita o CÓDIGO de 4 letras do cartão na
-// tela do Pix da mesa. O código é de uso único — a cada uso confirmado nasce
-// outro, e o cartão na Wallet é atualizado sozinho (push Apple / PATCH Google).
+// um bônus.
+//
+// Contra uso por terceiro: o cartão não tem código fixo. Na hora de pagar o
+// cliente abre o cartão no PRÓPRIO celular (confirmado por SMS/WhatsApp no
+// número do cartão) e toca "Vou pagar agora" — nasce um código de 4 letras
+// que vale 10 minutos e uma vez só. Link encaminhado abre o cartão, mas não
+// gera código sem o SMS do dono.
 
 import {
   pgTable, uuid, varchar, boolean, timestamp, integer, numeric, jsonb, date, text,
@@ -14,10 +19,11 @@ import {
 import { sql } from 'drizzle-orm';
 import { filial, organizacao } from './tenant';
 
-/** Regras do programa, uma linha por organização. `config` = FidelidadeConfig
- *  (apps/web/src/lib/fidelidade/config.ts); sem linha, vale o padrão. */
+/** Regras do programa, uma linha por CASA. `config` = FidelidadeConfig
+ *  (apps/web/src/lib/fidelidade/config.ts); casa sem linha = programa desligado. */
 export const fidelidadePrograma = pgTable('fidelidade_programa', {
-  organizacaoId: uuid('organizacao_id').primaryKey().references(() => organizacao.id, { onDelete: 'cascade' }),
+  filialId: uuid('filial_id').primaryKey().references(() => filial.id, { onDelete: 'cascade' }),
+  organizacaoId: uuid('organizacao_id').notNull().references(() => organizacao.id, { onDelete: 'cascade' }),
   ativo: boolean('ativo').notNull().default(true),
   config: jsonb('config').notNull(),
   atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
@@ -28,6 +34,8 @@ export const fidelidadeCartao = pgTable(
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     organizacaoId: uuid('organizacao_id').notNull().references(() => organizacao.id, { onDelete: 'cascade' }),
+    /** a casa do cartão — só vale aqui */
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     nome: varchar('nome', { length: 120 }).notNull(),
     /** só dígitos, com DDD (sem o 55) — a chave da pessoa */
     telefone: varchar('telefone', { length: 20 }).notNull(),
@@ -36,9 +44,20 @@ export const fidelidadeCartao = pgTable(
     numero: varchar('numero', { length: 12 }).notNull(),
     /** token do link público /cartao/<token> — é a "senha" do cartão */
     token: varchar('token', { length: 40 }).notNull(),
-    /** código de uso ÚNICO que o cliente digita no Pix (4 letras) */
+    /** código de uso ÚNICO que o cliente digita no Pix (4 letras). Só vale
+     *  até codigo_expira_em — gerado no celular do dono na hora de pagar. */
     codigo: varchar('codigo', { length: 4 }).notNull(),
     codigoGeradoEm: timestamp('codigo_gerado_em', { withTimezone: true }).notNull().defaultNow(),
+    codigoExpiraEm: timestamp('codigo_expira_em', { withTimezone: true }),
+    /** aparelho (id curto) que gerou o código atual */
+    codigoAparelho: varchar('codigo_aparelho', { length: 16 }),
+    /** celulares confirmados por SMS/WhatsApp: [{ id, h (sha256 do segredo do cookie), em, ua }] */
+    aparelhos: jsonb('aparelhos').$type<Array<{ id: string; h: string; em: string; ua?: string }>>().notNull().default(sql`'[]'::jsonb`),
+    /** confirmação pelo WhatsApp da Meta (quando não há Twilio) */
+    otpHash: varchar('otp_hash', { length: 64 }),
+    otpExpiraEm: timestamp('otp_expira_em', { withTimezone: true }),
+    otpTentativas: integer('otp_tentativas').notNull().default(0),
+    otpEnviadoEm: timestamp('otp_enviado_em', { withTimezone: true }),
     /** nível garantido (convite) até a data — vale o maior entre este e o das visitas */
     nivelMinimo: varchar('nivel_minimo', { length: 20 }),
     nivelMinimoAte: date('nivel_minimo_ate'),
@@ -69,12 +88,12 @@ export const fidelidadeCartao = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    uqTelefone: unique('uq_fidelidade_cartao_telefone').on(t.organizacaoId, t.telefone),
+    uqTelefone: unique('uq_fidelidade_cartao_filial_telefone').on(t.filialId, t.telefone),
     uqToken: unique('uq_fidelidade_cartao_token').on(t.token),
     uqNumero: unique('uq_fidelidade_cartao_numero').on(t.numero),
     // o mesmo código não pode valer pra dois cartões ativos ao mesmo tempo
-    uqCodigoAtivo: uniqueIndex('uq_fidelidade_cartao_codigo_ativo')
-      .on(t.organizacaoId, t.codigo)
+    uqCodigoAtivo: uniqueIndex('uq_fidelidade_cartao_filial_codigo')
+      .on(t.filialId, t.codigo)
       .where(sql`status = 'ativo'`),
   }),
 );
@@ -98,6 +117,8 @@ export const fidelidadeUso = pgTable(
     valorDesconto: numeric('valor_desconto', { precision: 12, scale: 2 }).notNull(),
     status: varchar('status', { length: 12 }).notNull().default('reservado'),
     txid: varchar('txid', { length: 64 }),
+    /** aparelho que gerou o código usado */
+    aparelho: varchar('aparelho', { length: 16 }),
     reservadoEm: timestamp('reservado_em', { withTimezone: true }).notNull().defaultNow(),
     expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
     confirmadoEm: timestamp('confirmado_em', { withTimezone: true }),
@@ -108,7 +129,7 @@ export const fidelidadeUso = pgTable(
   }),
 );
 
-/** Uma visita por pessoa por DIA (BRT), em qualquer casa. É o que conta pro nível. */
+/** Uma visita por cartão por DIA (BRT) — na casa do cartão. É o que conta pro nível. */
 export const fidelidadeVisita = pgTable(
   'fidelidade_visita',
   {

@@ -1,22 +1,25 @@
-// Cartão fidelidade do cliente — página pública (sem login); o token do link
-// é a senha do cartão. Mostra nível, código de uso único e os botões da
-// Apple Wallet / Google Wallet.
+// Cartão "Cliente VIP <casa>" — página pública (sem login). O token do link
+// abre o cartão (nível, benefícios, Wallet), mas o CÓDIGO de desconto só sai
+// no celular confirmado por SMS no número do cartão: link encaminhado pra
+// outra pessoa não gera desconto.
 
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
+import { cookies } from 'next/headers';
 import { vistaCartao } from '@/lib/fidelidade/vista';
 import { appleConfigurada } from '@/lib/fidelidade/apple';
 import { googleConfigurada } from '@/lib/fidelidade/google';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
-import { BotoesAdesao } from './adesao';
+import { BotoesAdesao, VouPagar } from './adesao';
+import { aparelhoConfirmado, nomeCookie, telefoneMascarado } from '@/lib/fidelidade/aparelho';
 
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
-  title: 'Cartão Prainha',
+  title: 'Cliente VIP',
   robots: { index: false, follow: false },
 };
 
@@ -29,11 +32,13 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
     await db.update(schema.fidelidadeCartao).set({ abertoEm: new Date() }).where(eq(schema.fidelidadeCartao.id, c.id));
   }
   const v = await vistaCartao(c);
+  const confirmado = !!aparelhoConfirmado(c, (await cookies()).get(nomeCookie(c))?.value);
+  const tel = telefoneMascarado(c.telefone);
 
   // Convite ainda não aceito: apresenta o programa e pede a adesão. O código
   // e a Wallet só aparecem depois do "Quero meu cartão".
   if (!c.aderidoEm && !v.bloqueado) {
-    const { config: cfg } = await carregarPrograma(c.organizacaoId);
+    const { config: cfg } = await carregarPrograma(c.filialId);
     const primeiro = c.nome.trim().split(/\s+/)[0] || '';
     return (
       <main className="min-h-screen bg-[#f4efe6] px-4 py-8 text-slate-900">
@@ -46,19 +51,18 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             <img src="/fidelidade/sereia-branca.png" alt="" className="absolute -right-6 -bottom-4 w-40 opacity-20" />
             <div className="text-xs uppercase tracking-widest opacity-80">Convite</div>
             <h1 className="mt-1 text-2xl font-bold leading-tight">
-              {primeiro ? `${primeiro}, ` : ''}seu Cartão Prainha {v.nivel} está pronto
+              {primeiro ? `${primeiro}, ` : ''}você agora é {v.marca} {v.nivel}
             </h1>
             <p className="mt-2 text-sm opacity-90">
-              Você é cliente da casa e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
+              Você é cliente do {v.casa} e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
               {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
             </p>
             {v.garantido && (
               <p className="mt-2 text-xs opacity-80">Categoria {v.nivel} garantida pra você pelo convite.</p>
             )}
           </div>
-          <BotoesAdesao token={token} recusado={!!c.recusadoEm} />
-          <ApresentacaoPrograma cfg={cfg} destaque={v.nivelCodigo} />
-          <BotoesAdesao token={token} recusado={!!c.recusadoEm} />
+          <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} />
+          <ApresentacaoPrograma cfg={cfg} destaque={v.nivelCodigo} casa={v.casa} />
         </div>
       </main>
     );
@@ -79,15 +83,18 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/fidelidade/sereia-branca.png" alt="" className="absolute -right-6 bottom-2 w-44 opacity-20" />
           <div className="flex items-start justify-between">
-            <div className="text-lg font-bold tracking-wide">Prainha</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest opacity-70">Cliente VIP</div>
+              <div className="text-lg font-bold tracking-wide">{v.casa}</div>
+            </div>
             <div className="text-right">
               <div className="text-[10px] uppercase tracking-widest opacity-70">Nível</div>
               <div className="text-lg font-semibold">{v.nivel}</div>
             </div>
           </div>
           <div className="mt-5">
-            <div className="text-[10px] uppercase tracking-widest opacity-70">Código pro Pix</div>
-            <div className="font-mono text-4xl font-bold tracking-[0.3em]">{v.bloqueado ? '----' : v.codigo}</div>
+            <div className="text-[10px] uppercase tracking-widest opacity-70">Desconto no Pix</div>
+            <div className="text-2xl font-bold">{v.bloqueado ? 'Bloqueado' : v.textoDesconto}</div>
           </div>
           <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between text-sm">
             <div>
@@ -101,16 +108,19 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
         {v.bloqueado ? (
           <p className="rounded-lg bg-red-100 p-3 text-sm text-red-800">Este cartão está bloqueado. Fale com a gerência.</p>
         ) : (
-          <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
-            <p>
-              Hoje seu desconto é de <b>{pctHoje}%</b> no consumo
-              {v.bonusHoje > 0 ? <> (inclui +{v.bonusHoje}% de dia de semana)</> : null}.
-              Na hora de pagar no <b>Pix</b>, digite o código <b className="font-mono">{v.codigo}</b>.
-            </p>
-            <p className="mt-2 text-xs text-slate-500">
-              O código muda depois de cada uso — a Wallet atualiza sozinha. 1 uso por dia, nas 3 casas.
-            </p>
-          </div>
+          <>
+            <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
+            <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
+              <p>
+                Hoje seu desconto é de <b>{pctHoje}%</b> no consumo
+                {v.bonusHoje > 0 ? <> (inclui +{v.bonusHoje}% de dia de semana)</> : null}, pagando no <b>Pix</b>.
+              </p>
+              <p className="mt-2 text-xs text-slate-500">
+                Na hora de pagar, toque em &quot;Vou pagar agora&quot; e digite o código na tela do Pix. Ele vale 10
+                minutos, uma vez só, e só é gerado no seu celular — o cartão é pessoal. 1 uso por dia, só no {v.casa}.
+              </p>
+            </div>
+          </>
         )}
 
         {!v.bloqueado && (v.prioridadeReserva || v.pctEspaco > 0) && (
@@ -171,7 +181,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
         </div>
 
         <p className="px-2 text-center text-xs text-slate-500">
-          Vale no Prainha Bar, Tabuará e Prainha Mar, pagando no Pix. O desconto é sobre o consumo; a taxa de serviço
+          Vale só no {v.casa}, pagando no Pix (cada casa do grupo tem o seu Cliente VIP). O desconto é sobre o consumo; a taxa de serviço
           continua sobre o valor cheio. Dias úteis = segunda a sexta, fora feriado.
         </p>
       </div>

@@ -118,9 +118,9 @@ export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
     passTypeIdentifier: c.passTypeId,
     teamIdentifier: c.teamId,
     serialNumber: cartao.id,
-    organizationName: 'Prainha',
-    description: 'Cartão Prainha — desconto no Pix',
-    logoText: 'Prainha',
+    organizationName: v.casa,
+    description: `${v.marca} — desconto no Pix`,
+    logoText: v.marca,
     foregroundColor: fg,
     labelColor: 'rgb(235,235,235)',
     backgroundColor: rgb(v.cor),
@@ -132,12 +132,13 @@ export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
       headerFields: [
         { key: 'nivel', label: 'NÍVEL', value: v.nivel, changeMessage: 'Seu cartão agora é %@!' },
       ],
+      // sem código no pass: ele nasce no celular do dono, na hora de pagar
       primaryFields: [
-        { key: 'codigo', label: 'CÓDIGO PRO PIX', value: v.bloqueado ? '----' : v.codigo, changeMessage: 'Código novo do cartão: %@' },
+        { key: 'desconto', label: 'DESCONTO NO PIX', value: v.bloqueado ? 'BLOQUEADO' : v.textoDesconto },
       ],
       secondaryFields: [
-        { key: 'nome', label: 'MEMBRO', value: v.nomeCurto },
-        { key: 'desconto', label: 'DESCONTO', value: v.textoDesconto, textAlignment: 'PKTextAlignmentRight' },
+        { key: 'nome', label: 'CLIENTE VIP', value: v.nomeCurto },
+        { key: 'pagar', label: 'NA HORA DE PAGAR', value: 'Toque ⓘ › Abrir o cartão', textAlignment: 'PKTextAlignmentRight' },
       ],
       auxiliaryFields: [
         { key: 'visitas', label: `VISITAS (${v.janelaDias} DIAS)`, value: v.visitas },
@@ -146,7 +147,7 @@ export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
       backFields: [
         { key: 'regras', label: 'Como funciona', value: REGRAS_TEXTO(v) },
         { key: 'numero', label: 'Número do cartão', value: v.numero },
-        { key: 'link', label: 'Seu cartão na web', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão</a>` },
+        { key: 'link', label: 'Gerar o código pra pagar', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão — Vou pagar agora</a>` },
       ],
     },
   };

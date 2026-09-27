@@ -177,9 +177,10 @@ export async function enviarLembreteReserva(
   return true;
 }
 
-/** Convite do Cartão Prainha (WHATSAPP_FIDELIDADE_TEMPLATE — categoria
+/** Convite do Cliente VIP (WHATSAPP_FIDELIDADE_TEMPLATE — categoria
  *  MARKETING; o de UTILIDADE a Meta reclassifica). Corpo: {{1}} primeiro nome,
- *  {{2}} categoria (Silver/Gold…), {{3}} % de desconto. Botões: [0] URL
+ *  {{2}} casa + categoria ("Prainha Bar Gold" — o texto do template diz
+ *  "Cliente VIP {{2}}"), {{3}} % de desconto. Botões: [0] URL
  *  dinâmica https://app.prainhabar.com/cartao/{{1}} (token do cartão) e
  *  [1] resposta rápida "Não tenho interesse" (payload fid_nao:<token>, o
  *  webhook marca recusado_em). */

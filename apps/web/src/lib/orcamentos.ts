@@ -61,7 +61,7 @@ export interface TotaisOrcamento {
   subtotalMenu: number | null;
   taxaEspaco: number | null;
   taxaExclusividade: number | null;
-  /** Desconto do Cartão Prainha no espaço (já abatido do total). */
+  /** Desconto do Cliente VIP no espaço (já abatido do total). */
   descontoEspaco: number | null;
   /** Soma do que estiver preenchido. Null = nada precificado (a combinar). */
   total: number | null;

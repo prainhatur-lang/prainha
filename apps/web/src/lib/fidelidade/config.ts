@@ -1,4 +1,5 @@
-// Regras do cartão fidelidade. Sem linha em fidelidade_programa, vale o PADRAO.
+// Regras do cartão fidelidade, POR CASA ("Cliente VIP Prainha Bar" etc.).
+// Casa sem linha em fidelidade_programa = programa desligado nela.
 
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
@@ -71,14 +72,39 @@ export function normalizarConfig(c: Partial<FidelidadeConfig> | null | undefined
   };
 }
 
-export async function carregarPrograma(organizacaoId: string): Promise<{ ativo: boolean; config: FidelidadeConfig }> {
+/** Nome da casa como o cliente conhece (o cadastro tem "Tabuara" sem acento). */
+export function nomeCasa(nomeFilial: string | null | undefined): string {
+  const n = String(nomeFilial ?? '').trim();
+  if (/^tabuar[aá]$/i.test(n)) return 'Tabuará';
+  return n || 'Prainha';
+}
+
+export interface Programa {
+  ativo: boolean;
+  config: FidelidadeConfig;
+  filialId: string;
+  organizacaoId: string | null;
+  /** "Prainha Bar" */
+  casa: string;
+  /** "Cliente VIP Prainha Bar" */
+  marca: string;
+}
+
+export async function carregarPrograma(filialId: string): Promise<Programa> {
+  const [f] = await db
+    .select({ nome: schema.filial.nome, org: schema.filial.organizacaoId })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const casa = nomeCasa(f?.nome);
+  const base = { filialId, organizacaoId: f?.org ?? null, casa, marca: `Cliente VIP ${casa}` };
   const [p] = await db
     .select()
     .from(schema.fidelidadePrograma)
-    .where(eq(schema.fidelidadePrograma.organizacaoId, organizacaoId))
+    .where(eq(schema.fidelidadePrograma.filialId, filialId))
     .limit(1);
-  if (!p) return { ativo: true, config: CONFIG_PADRAO };
-  return { ativo: p.ativo, config: normalizarConfig(p.config as Partial<FidelidadeConfig>) };
+  if (!p) return { ...base, ativo: false, config: CONFIG_PADRAO };
+  return { ...base, ativo: p.ativo, config: normalizarConfig(p.config as Partial<FidelidadeConfig>) };
 }
 
 export function nivelPorVisitas(cfg: FidelidadeConfig, visitas: number): NivelFidelidade {

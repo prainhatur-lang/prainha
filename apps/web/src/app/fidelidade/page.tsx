@@ -1,12 +1,12 @@
-// /fidelidade — cartão fidelidade Prainha (Apple/Google Wallet): cartões,
-// convite de quem já frequenta, usos e regras dos níveis.
+// /fidelidade — Cliente VIP da casa ativa (Apple/Google Wallet): cartões,
+// convite de quem já frequenta, usos e regras dos níveis. Um programa por casa.
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { AppHeader } from '@/components/app-header';
-import { orgDoUsuario, listarCartoes, usosRecentes } from '@/lib/fidelidade/admin';
+import { casaDoUsuario, listarCartoes, usosRecentes } from '@/lib/fidelidade/admin';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { appleConfigurada } from '@/lib/fidelidade/apple';
 import { googleConfigurada } from '@/lib/fidelidade/google';
@@ -27,7 +27,7 @@ export default async function FidelidadePage(props: { searchParams: Promise<{ fi
   ]);
 
   const sp = await props.searchParams;
-  const org = await orgDoUsuario(user.id, sp.filialId);
+  const org = await casaDoUsuario(user.id, sp.filialId);
   if (!org) {
     return (
       <main className="min-h-screen bg-slate-50">
@@ -39,10 +39,10 @@ export default async function FidelidadePage(props: { searchParams: Promise<{ fi
     );
   }
 
-  const programa = await carregarPrograma(org.organizacaoId);
+  const programa = await carregarPrograma(org.filialId);
   const [cartoes, usos] = await Promise.all([
-    listarCartoes(org.organizacaoId, programa.config),
-    usosRecentes(org.organizacaoId),
+    listarCartoes(org.filialId, programa.config),
+    usosRecentes(org.filialId),
   ]);
 
   return (
@@ -52,6 +52,7 @@ export default async function FidelidadePage(props: { searchParams: Promise<{ fi
         filialId={org.filialId}
         filiais={org.filiais}
         ativo={programa.ativo}
+        casa={programa.casa}
         config={programa.config}
         cartoes={cartoes}
         usos={usos}
