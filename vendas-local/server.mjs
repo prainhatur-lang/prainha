@@ -14186,15 +14186,17 @@ async function apiMesaAvaliar(body) {
   const [{ m: mes }] = await sql`SELECT to_char(now() AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM') AS m`;
   // ⚠️ A TRAVA É O INSERT: dois celulares com o mesmo CPF ao mesmo tempo —
   // um grava, o outro bate no UNIQUE. Nada de SELECT-antes-de-gravar.
-  // UM DRINK POR MESA (regra do dono, 27/09/2026): a mesa ganha um só por
-  // visita — "visita" = tudo depois do último fechamento desta mesa. O lock
-  // por mesa segura dois celulares da mesma mesa enviando juntos.
+  // UM DRINK POR MESA (regra do dono, 27/09/2026): todo mundo da mesa pode
+  // avaliar (cada CPF uma vez no mês), mas o drink vai só pro PRIMEIRO —
+  // "visita" = tudo depois do último fechamento desta mesa. O lock por mesa
+  // segura dois celulares da mesma mesa enviando juntos.
+  let mesaJaGanhou = false;
   const reg = await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(771001, ${numero})`;
     if (!semBrinde) {
       const [ja] = await tx`SELECT 1 FROM avaliacao_brinde b WHERE b.mesa=${numero} AND b.brinde_pdv IS NOT NULL
         AND b.criado_em > ${brindeDesdeFechou(tx, numero)} LIMIT 1`;
-      if (ja) return { mesa: true };
+      if (ja) { mesaJaGanhou = true; op = null; } // avalia do mesmo jeito, sem drink
     }
     const [r] = await tx`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
       VALUES (${cpf}, ${mes}, ${nota}, ${txt(body.comentario, 2000)}, ${txt(body.nome, 200)},
@@ -14202,14 +14204,12 @@ async function apiMesaAvaliar(body) {
       ON CONFLICT (cpf, mes) DO NOTHING RETURNING id`;
     return r || null;
   });
-  if (reg?.mesa) return { ok: false, ja_avaliou: true, mesa_ja_ganhou: true,
-    erro: 'Esta mesa já ganhou o drink da avaliação — é um por mesa. Obrigado por avaliar! 💛' };
   if (!reg) return { ok: false, ja_avaliou: true,
     erro: 'Este CPF já avaliou a casa este mês. Volte no mês que vem! 💛' };
-  if (semBrinde) {
+  if (!op) {
     let nv = null;
     try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-    return { ok: true, brinde: null, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+    return { ok: true, brinde: null, mesa_ja_ganhou: mesaJaGanhou, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
   }
   const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
     junto: false, _cliente: true, _brinde: true });
@@ -16998,11 +16998,12 @@ async function inicio(){
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
   // AVALIE E GANHE: so aparece se a casa tem o drink hoje e este celular
   // ainda nao avaliou no mes (quem manda de verdade e' o servidor, por CPF)
-  if(MESA&&BRINDE&&BRINDE.ativo&&!BRINDE.mesa_ja_ganhou&&!jaAvaliouAqui()){
+  if(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()){
     var com=BRINDE.opcoes.find(function(o){return o.com_alcool}), sem=BRINDE.opcoes.find(function(o){return !o.com_alcool});
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
     h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
-      '<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>'+
+      (BRINDE.mesa_ja_ganhou?'<div class="tx"><b>Avalie a gente ⭐</b><small>sua opinião vai direto pra gerência (o drink da mesa já saiu)</small></div>'
+        :'<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta, 1 por mesa</small></div>')+
       '<div class="seta">›</div></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
@@ -17036,7 +17037,7 @@ function passos(k){var h='<div class="passos">';for(var i=1;i<=3;i++)h+='<i'+(i<
 function telaAvaliar(){
   if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
   var h=passos(1)+'<h1>Como está sendo sua experiência?</h1>'+
-    '<div class="mut">Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹</div>'+
+    '<div class="mut">Sua opinião vai direto pra gerência.'+(BRINDE&&BRINDE.mesa_ja_ganhou?'':' No fim, você escolhe seu drink 🍹')+'</div>'+
     '<div class="estrelas">';
   for(var i=1;i<=5;i++)h+='<button'+(i<=AV.nota?' class="on"':'')+' onclick="avNota('+i+')">⭐</button>';
   h+='</div><div class="nlab" id="nlab">'+NOTAS[AV.nota]+'</div>'+
@@ -17058,7 +17059,7 @@ function avPasso2(){
   var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
   if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
   app(passos(2)+'<h1>Quem está avaliando?</h1>'+
-    '<div class="mut">Uma avaliação por pessoa a cada mês (e um drink por mesa) — o CPF serve só pra isso.</div>'+
+    '<div class="mut">Uma avaliação por pessoa a cada mês — o CPF serve só pra isso.</div>'+
     '<div class="tit2">CPF</div>'+
     '<input id="avcpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="avCpf(this)">'+
     '<div id="avquem" class="mut" style="margin-top:8px"></div>'+
@@ -17088,6 +17089,7 @@ function avPasso3(){
   var cpf=String(document.getElementById('avcpf').value||'').replace(/\\D/g,'');
   if(!cpfOk(cpf)){alert('Confira o CPF.');return}
   AV.cpf=cpf; AV.zap=document.getElementById('avzap').value||'';
+  if(BRINDE.mesa_ja_ganhou){avEnviar(true);return} // drink da mesa ja saiu: envia direto
   var com=BRINDE.opcoes.filter(function(o){return o.com_alcool}), sem=BRINDE.opcoes.filter(function(o){return !o.com_alcool});
   var card=function(tipo,l,em,tit){
     if(!l.length)return '';
@@ -17100,7 +17102,8 @@ function avPasso3(){
     '<div class="mut">Por nossa conta! Ele entra na sua mesa e o garçom já traz.</div>'+
     '<div class="drinks">'+card('com',com,'🍸','Com álcool')+card('sem',sem,'🥤','Sem álcool')+'</div>'+
     '<div id="sabores"></div>'+
-    '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:18px">Enviar avaliação e ganhar meu drink</button>'+
+    '<div class="mut" style="margin-top:10px">É 1 drink por mesa: vai pra quem enviar primeiro.</div>'+
+    '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:14px">Enviar avaliação e ganhar meu drink</button>'+
     '<button class="lnk" onclick="avEnviar(true)">Não quero drink, só enviar a avaliação</button>'+
     '<button class="lnk" onclick="avPasso2()">Voltar</button>';
   app(h);
@@ -17122,7 +17125,7 @@ function avSabor(c){AV.pdv=c;avTipo(AV.tipo)}
 async function avEnviar(semDrink){
   if(!semDrink&&!AV.pdv){alert(AV.tipo?'Escolha o sabor.':'Escolha o seu drink.');return}
   if(!(await sessaoOk()))return;
-  var bt=document.getElementById('avok'); bt.disabled=true; bt.textContent='Enviando…';
+  var bt=document.getElementById('avok')||{}; bt.disabled=true; bt.textContent='Enviando…';
   var r;
   try{ r=await post('/api/mesa/avaliar',{mesa:Number(MESA),sessao:SES&&SES.comanda,desde:SES&&SES.desde,
     nota:AV.nota,comentario:AV.comentario,cpf:AV.cpf,nome:AV.nome,whatsapp:AV.zap,brinde_pdv:semDrink?null:AV.pdv,sem_brinde:!!semDrink}); }
@@ -17142,7 +17145,8 @@ async function avEnviar(semDrink){
   var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
     (r.brinde?'<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div>'
-      :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
+      :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!'+
+        (r.mesa_ja_ganhou?'<br><br>O drink da avaliação é 1 por mesa e já saiu pra quem avaliou primeiro 🍹':'')+'</div>')+'</div>'+
     ((r.google_url||r.trip_url)&&nota>=4?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
       lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
