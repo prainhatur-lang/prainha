@@ -14118,8 +14118,8 @@ async function apiMesaPedir(body) {
 
 // ================= AVALIE E GANHE UM DRINK (QR da mesa) =================
 // Regra do dono (27/09/2026): quem avalia pelo QR ganha UM drink da casa —
-// com álcool (Prainha GT) ou sem (Soda Italiana). Um por pessoa (CPF) e o
-// mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
+// com álcool (Prainha GT) ou sem (Soda Italiana). Um por MESA (por visita),
+// e o mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
 // da mesa, a R$ 0, com a obs "Avaliação de Cliente".
 // Liga só no Prainha Bar; outra casa liga com BRINDE_AVALIACAO=on no start.bat
 // (e BRINDE_COM / BRINDE_SEM com o nome dos produtos, % = qualquer coisa).
@@ -14145,8 +14145,21 @@ async function brindeOpcoes() {
     nome: r.nome, com_alcool: !!r.com_alcool, tem_foto: !!r.tem_foto }))
     .sort((a, b) => Number(b.com_alcool) - Number(a.com_alcool) || a.nome.localeCompare(b.nome));
 }
-async function apiMesaBrinde() {
-  try { const opcoes = await brindeOpcoes(); return { ok: true, ativo: opcoes.length > 0, opcoes }; }
+// última vez que a mesa fechou: tudo depois disso é a MESMA visita
+const brindeDesdeFechou = (q, numero) => q`GREATEST(
+  COALESCE((SELECT fechada_em FROM mesa_estado WHERE numero=${numero}), '-infinity'::timestamptz),
+  COALESCE((SELECT max(fechada_em) FROM comanda WHERE numero=${numero}), '-infinity'::timestamptz))`;
+async function apiMesaBrinde(n) {
+  try {
+    const opcoes = await brindeOpcoes();
+    const numero = Number(n);
+    let mesa_ja_ganhou = false;
+    if (opcoes.length && numero >= 1 && numero <= NUMERO_MAX) {
+      mesa_ja_ganhou = (await sql`SELECT 1 FROM avaliacao_brinde WHERE mesa=${numero} AND brinde_pdv IS NOT NULL
+        AND criado_em > ${brindeDesdeFechou(sql, numero)} LIMIT 1`).length > 0;
+    }
+    return { ok: true, ativo: opcoes.length > 0, opcoes, mesa_ja_ganhou };
+  }
   catch (e) { return { ok: true, ativo: false, opcoes: [], erro: e.message }; }
 }
 async function apiMesaAvaliar(body) {
@@ -14159,20 +14172,45 @@ async function apiMesaAvaliar(body) {
   if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5)) return { ok: false, erro: 'Escolha de 1 a 5 estrelas.' };
   const cpf = soDig(body.cpf);
   if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido.' };
-  const opcoes = await brindeOpcoes();
-  if (!opcoes.length) return { ok: false, erro: 'O drink da avaliação não está disponível agora.' };
-  const op = opcoes.find((o) => o.codigo_pdv === Number(body.brinde_pdv));
-  if (!op) return { ok: false, erro: 'Escolha o seu drink.' };
+  // sem_brinde: o cliente dispensou o drink — avalia do mesmo jeito (conta
+  // pro limite do CPF no mês), mas não lança nada e não gasta o drink da mesa
+  const semBrinde = !!body.sem_brinde;
+  let op = null;
+  if (!semBrinde) {
+    const opcoes = await brindeOpcoes();
+    if (!opcoes.length) return { ok: false, erro: 'O drink da avaliação não está disponível agora.' };
+    op = opcoes.find((o) => o.codigo_pdv === Number(body.brinde_pdv));
+    if (!op) return { ok: false, erro: 'Escolha o seu drink.' };
+  }
   const txt = (v, n) => { const t = String(v || '').trim(); return t ? t.slice(0, n) : null; };
   const [{ m: mes }] = await sql`SELECT to_char(now() AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM') AS m`;
   // ⚠️ A TRAVA É O INSERT: dois celulares com o mesmo CPF ao mesmo tempo —
   // um grava, o outro bate no UNIQUE. Nada de SELECT-antes-de-gravar.
-  const [reg] = await sql`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
-    VALUES (${cpf}, ${mes}, ${nota}, ${txt(body.comentario, 2000)}, ${txt(body.nome, 200)},
-      ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}, ${op.codigo_pdv}, ${op.nome})
-    ON CONFLICT (cpf, mes) DO NOTHING RETURNING id`;
+  // UM DRINK POR MESA (regra do dono, 27/09/2026): a mesa ganha um só por
+  // visita — "visita" = tudo depois do último fechamento desta mesa. O lock
+  // por mesa segura dois celulares da mesma mesa enviando juntos.
+  const reg = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(771001, ${numero})`;
+    if (!semBrinde) {
+      const [ja] = await tx`SELECT 1 FROM avaliacao_brinde b WHERE b.mesa=${numero} AND b.brinde_pdv IS NOT NULL
+        AND b.criado_em > ${brindeDesdeFechou(tx, numero)} LIMIT 1`;
+      if (ja) return { mesa: true };
+    }
+    const [r] = await tx`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
+      VALUES (${cpf}, ${mes}, ${nota}, ${txt(body.comentario, 2000)}, ${txt(body.nome, 200)},
+        ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}, ${op?.codigo_pdv ?? null}, ${op?.nome ?? null})
+      ON CONFLICT (cpf, mes) DO NOTHING RETURNING id`;
+    return r || null;
+  });
+  if (reg?.mesa) return { ok: false, ja_avaliou: true, mesa_ja_ganhou: true,
+    erro: 'Esta mesa já ganhou o drink da avaliação — é um por mesa. Obrigado por avaliar! 💛' };
   if (!reg) return { ok: false, ja_avaliou: true,
-    erro: 'Este CPF já avaliou a casa este mês — o drink é um por pessoa. Volte no mês que vem! 💛' };
+    erro: 'Este CPF já avaliou a casa este mês. Volte no mês que vem! 💛' };
+  if (semBrinde) {
+    let nv = null;
+    try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
+    return { ok: true, brinde: null, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+  }
   const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
     junto: false, _cliente: true, _brinde: true });
   if (!r.ok) {
@@ -14204,7 +14242,7 @@ async function brindeParaNuvem(id) {
   return null;
 }
 async function loopBrindeNuvem() {
-  const pend = await sql`SELECT id FROM avaliacao_brinde WHERE nuvem_em IS NULL AND pedido_fb IS NOT NULL
+  const pend = await sql`SELECT id FROM avaliacao_brinde WHERE nuvem_em IS NULL AND (pedido_fb IS NOT NULL OR brinde_pdv IS NULL)
     ORDER BY id LIMIT 20`;
   for (const p of pend) await brindeParaNuvem(p.id).catch(() => {});
 }
@@ -16947,7 +16985,7 @@ async function inicio(){
   if(MESA&&!(await sessaoOk()))return;
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
-  if(n&&!BRINDE){ try{BRINDE=await (await fetch('/api/mesa/brinde',{cache:'no-store'})).json()}catch(e){BRINDE={ativo:false}} }
+  if(n&&!BRINDE){ try{BRINDE=await (await fetch('/api/mesa/brinde?n='+n,{cache:'no-store'})).json()}catch(e){BRINDE={ativo:false}} }
   var ident=EU&&EU.identificado&&EU.nome;
   var hr=new Date().getHours();
   var oi=hr<12?'Bom dia':(hr<18?'Boa tarde':'Boa noite');
@@ -16958,7 +16996,7 @@ async function inicio(){
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
   // AVALIE E GANHE: so aparece se a casa tem o drink hoje e este celular
   // ainda nao avaliou no mes (quem manda de verdade e' o servidor, por CPF)
-  if(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()){
+  if(MESA&&BRINDE&&BRINDE.ativo&&!BRINDE.mesa_ja_ganhou&&!jaAvaliouAqui()){
     var com=BRINDE.opcoes.find(function(o){return o.com_alcool}), sem=BRINDE.opcoes.find(function(o){return !o.com_alcool});
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
     h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
@@ -17018,7 +17056,7 @@ function avPasso2(){
   var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
   if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
   app(passos(2)+'<h1>Quem está avaliando?</h1>'+
-    '<div class="mut">É um drink por pessoa a cada mês — o CPF serve só pra isso.</div>'+
+    '<div class="mut">Uma avaliação por pessoa a cada mês (e um drink por mesa) — o CPF serve só pra isso.</div>'+
     '<div class="tit2">CPF</div>'+
     '<input id="avcpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="avCpf(this)">'+
     '<div id="avquem" class="mut" style="margin-top:8px"></div>'+
@@ -17061,6 +17099,7 @@ function avPasso3(){
     '<div class="drinks">'+card('com',com,'🍸','Com álcool')+card('sem',sem,'🥤','Sem álcool')+'</div>'+
     '<div id="sabores"></div>'+
     '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:18px">Enviar avaliação e ganhar meu drink</button>'+
+    '<button class="lnk" onclick="avEnviar(true)">Não quero drink, só enviar a avaliação</button>'+
     '<button class="lnk" onclick="avPasso2()">Voltar</button>';
   app(h);
   if(AV.tipo)avTipo(AV.tipo);
@@ -17078,18 +17117,19 @@ function avTipo(t){
   s.innerHTML=h+'</div>';
 }
 function avSabor(c){AV.pdv=c;avTipo(AV.tipo)}
-async function avEnviar(){
-  if(!AV.pdv){alert(AV.tipo?'Escolha o sabor.':'Escolha o seu drink.');return}
+async function avEnviar(semDrink){
+  if(!semDrink&&!AV.pdv){alert(AV.tipo?'Escolha o sabor.':'Escolha o seu drink.');return}
   if(!(await sessaoOk()))return;
   var bt=document.getElementById('avok'); bt.disabled=true; bt.textContent='Enviando…';
   var r;
   try{ r=await post('/api/mesa/avaliar',{mesa:Number(MESA),sessao:SES&&SES.comanda,desde:SES&&SES.desde,
-    nota:AV.nota,comentario:AV.comentario,cpf:AV.cpf,nome:AV.nome,whatsapp:AV.zap,brinde_pdv:AV.pdv}); }
+    nota:AV.nota,comentario:AV.comentario,cpf:AV.cpf,nome:AV.nome,whatsapp:AV.zap,brinde_pdv:semDrink?null:AV.pdv,sem_brinde:!!semDrink}); }
   catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
   if(r.reescanear){limpaSes();telaReescanear(r.erro||'Escaneie o QR da mesa pra continuar.');return}
   if(!r.ok&&!r.ja_avaliou){bt.disabled=false;bt.textContent='Enviar avaliação e ganhar meu drink';alert(r.erro||'Não deu certo. Chame o garçom.');return}
   try{localStorage.setItem('prainha_aval',mesAtual())}catch(e){}
   var nota=AV.nota; AV=null;
+  if(r.ok&&r.brinde&&BRINDE)BRINDE.mesa_ja_ganhou=true;
   if(r.ja_avaliou){
     app('<div class="festa"><div class="em">💛</div><h1>Obrigado de novo!</h1>'+
       '<div class="mut">'+esc(r.erro)+'</div></div><button class="b" onclick="inicio()">Voltar ao início</button>');
@@ -17099,7 +17139,8 @@ async function avEnviar(){
   // drink nunca depende de avaliar la (os dois proibem avaliacao incentivada)
   var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
-    '<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div></div>'+
+    (r.brinde?'<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div>'
+      :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
     ((r.google_url||r.trip_url)&&nota>=4?'<div class="aviso">Gostou? Se quiser, conte também no Google ou no TripAdvisor — ajuda muito a gente 💛'+
       lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
@@ -23063,7 +23104,7 @@ const server = http.createServer(async (req, res) => {
       const aq = u.searchParams.get('area');
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
-    if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
+    if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde(u.searchParams.get('n')))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
