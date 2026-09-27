@@ -5522,9 +5522,9 @@ function centralAssinou(u, escopo = 'caixa') {
 // A nuvem não alcança o Protect (IP da rede da loja, chave local), então ela
 // manda aqui host + chave dentro da chamada assinada e a loja fala com a
 // Integration API do Protect. Só IP de rede interna (a loja não vira proxy
-// pra fora) e só os 3 caminhos abaixo. Certificado do console é autoassinado.
+// pra fora) e só os caminhos de alarme (arm-profiles, nvrs). Certificado do console é autoassinado.
 const PROTECT_HOST_OK = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
-function protectReq(host, chave, method, path) {
+function protectReq(host, chave, method, path, corpo = {}) {
   return new Promise((resolve, reject) => {
     const r = https.request({
       hostname: host, port: 443, method, path: '/proxy/protect/integration/v1' + path,
@@ -5540,7 +5540,7 @@ function protectReq(host, chave, method, path) {
     });
     r.on('timeout', () => r.destroy(new Error('Protect não respondeu (timeout)')));
     r.on('error', reject);
-    if (method !== 'GET') r.write('{}');
+    if (method !== 'GET') r.write(JSON.stringify(corpo));
     r.end();
   });
 }
@@ -5555,12 +5555,31 @@ async function protectArmMode(host, chave) {
     breachEventCount: m.breachEventCount ?? null,
   };
 }
+// Perfil pra armar quando o Protect não tem nenhum selecionado: o único que
+// existir, ou o "Loja fechada" (nome) se houver mais de um.
+async function protectPerfilPadrao(host, chave) {
+  const lista = await protectReq(host, chave, 'GET', '/arm-profiles');
+  const perfis = Array.isArray(lista) ? lista : (lista?.data || []);
+  const p = perfis.length === 1 ? perfis[0] : perfis.find((x) => /fechad/i.test(String(x?.name || '')));
+  if (!p?.id) throw new Error(`nenhum perfil de alarme selecionado no Protect — escolha um no Alarm Manager (${perfis.map((x) => x?.name).join(', ') || 'sem perfis'})`);
+  return p.id;
+}
 async function apiAlarmeProtect(acao, b) {
   const host = String(b?.host || '');
   const chave = String(b?.chave || '');
   if (!PROTECT_HOST_OK.test(host)) return { ok: false, erro: 'host do Protect inválido (só IP da rede interna)' };
   if (!chave) return { ok: false, erro: 'sem chave do Protect' };
-  if (acao === 'ligar') await protectReq(host, chave, 'POST', '/arm-profiles/enable');
+  if (acao === 'ligar') {
+    try {
+      await protectReq(host, chave, 'POST', '/arm-profiles/enable');
+    } catch (e) {
+      // Protect sem perfil atual ("Arm profile is not set"): escolhe o perfil
+      // e tenta de novo — quem clicou em Ligar quer o alarme armado.
+      if (!/profile is not set/i.test(e.message)) throw e;
+      await protectReq(host, chave, 'PATCH', '/arm-profiles/settings', { armProfileId: await protectPerfilPadrao(host, chave) });
+      await protectReq(host, chave, 'POST', '/arm-profiles/enable');
+    }
+  }
   else if (acao === 'desligar') await protectReq(host, chave, 'POST', '/arm-profiles/disable');
   return { ok: true, armMode: await protectArmMode(host, chave) };
 }
