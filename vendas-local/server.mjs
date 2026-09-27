@@ -16513,11 +16513,12 @@ input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(-
 .b.ped{background:var(--gold2)}
 .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-top:12px}
 .card .lin{display:flex;justify-content:space-between;padding:4px 0;font-size:14.5px}
-.cats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0;max-height:264px;overflow-y:auto}
+.cats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
 .cat{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:12px 8px;font:inherit;font-size:13px;
   cursor:pointer;color:var(--ink);text-align:center;min-height:60px;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:3px;line-height:1.2}
 .cat span{font-size:11px;color:var(--mut)}
+.cat i{font-style:normal;font-size:30px;line-height:1.1}
 .cabg{display:flex;align-items:center;gap:10px;padding:10px 0;font-size:15px}
 .voltag{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
 .pr{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);
@@ -16639,6 +16640,14 @@ body{padding-bottom:120px}
   width:32px;height:32px;font:inherit;cursor:pointer;flex:none}
 /* foto do produto: miniatura na lista e a versão grande ao tocar */
 .pr .pfoto{width:52px;height:52px;object-fit:cover;border-radius:9px;flex:none;background:#eee;cursor:zoom-in}
+.pr.cp{cursor:default;align-items:flex-start}
+.pr.cp:active{background:#fff}
+.pr.cp .pn{flex:1;min-width:0}
+.pr.cp .pv{display:block;margin-top:5px}
+.pacts{display:flex;flex-direction:column;gap:6px;flex:none;align-self:center}
+.bped{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 16px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+.bmais{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;cursor:pointer}
+#lightbox .lbp{margin-top:16px;padding:12px 40px;font-size:16px}
 .pr .pn small.pdesc{display:block;color:var(--mut);font-size:11.5px;line-height:1.35;margin-top:2px;
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 #lightbox{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.88);display:none;
@@ -16931,11 +16940,36 @@ async function telaPedir(){
     g.innerHTML='<div class="aviso" style="grid-column:1/-1">Nenhum grupo disponível agora.</div>';
     renderCarrinho();return;
   }
-  g.innerHTML=CATS.map(function(c){
+  // O cliente não percebia que tinha mais grupos abaixo (a grade rolava
+  // sozinha numa caixa de 264px). Agora a página toda rola e o aviso diz quantos são.
+  g.innerHTML=(CATS.length>6?'<div class="mut" style="grid-column:1/-1;text-align:center;font-size:13px">'+
+    CATS.length+' grupos · role a tela pra ver todos ↓</div>':'')+CATS.map(function(c){
     return '<button class="cat" onclick=\\'abrirCat('+JSON.stringify(c.categoria).replace(/'/g,"&#39;")+')\\'>'+
-      esc(c.categoria)+'<span>'+c.disp+'</span></button>';
+      '<i>'+iconeGrupo(c.categoria)+'</i>'+esc(c.categoria)+'<span>'+c.disp+' itens</span></button>';
   }).join('');
   renderCarrinho();
+}
+// Figura do grupo pelo nome (o Consumer não tem ícone). Primeira regra que
+// casar ganha — "não alcoólica" antes de qualquer destilado.
+var ICONES=[['nao alcool','🥤'],['refri','🥤'],['agua','💧'],['suco','🧃'],['energ','⚡'],
+  ['cafe','☕'],['cha','🍵'],['cerveja','🍺'],['chop','🍺'],['espumante','🍾'],['champ','🍾'],
+  ['vinho','🍷'],['drink','🍹'],['coquetel','🍹'],['caipi','🍹'],['gin','🍸'],['vodka','🍸'],
+  ['martini','🍸'],['cachaca','🥃'],['whisk','🥃'],['conhaque','🥃'],['rum','🥃'],['tequila','🥃'],
+  ['dose','🥃'],['licor','🥃'],['sobremesa','🍨'],['doce','🍰'],['sorvete','🍦'],['acai','🍧'],
+  ['camar','🦐'],['frutos do mar','🦐'],['marisc','🦪'],['ostra','🦪'],['peixe','🐟'],['moqueca','🍲'],
+  ['caldo','🍲'],['sopa','🍲'],['carne','🥩'],['picanha','🥩'],['churras','🥩'],['parrilha','🔥'],['brasa','🔥'],['complement','➕'],['adicion','➕'],['servico','🛎️'],['terraco','🌅'],['grelh','🥩'],
+  ['frango','🍗'],['pizza','🍕'],['hamb','🍔'],['burger','🍔'],['sanduich','🥪'],['lanche','🥪'],
+  ['pastel','🥟'],['salada','🥗'],['massa','🍝'],['risot','🍚'],['acompanh','🍚'],['guarni','🍚'],
+  ['infantil','🧒'],['kids','🧒'],['crianca','🧒'],['petisc','🍟'],['porc','🍟'],['tira','🍟'],
+  ['entrada','🥖'],['fruta','🍉'],['tabac','💨'],['narg','💨'],['combo','🎉'],['promo','🎉']];
+function iconeGrupo(nome){
+  var n=String(nome||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  for(var i=0;i<ICONES.length;i++){
+    var k=ICONES[i][0];
+    // palavras curtas (cha, rum, gin) só valem como palavra inteira
+    if(k.length<=3?(' '+n+' ').indexOf(' '+k+' ')>=0:n.indexOf(k)>=0)return ICONES[i][1];
+  }
+  return '🍽️';
 }
 async function abrirCat(nome){
   var d=await (await fetch('/api/venda/categoria?cliente=1&c='+encodeURIComponent(nome),{cache:'no-store'})).json();
@@ -16954,36 +16988,35 @@ function buscarProd(v){
     listar(d.produtos,null);
   },300);
 }
+// Cardápio do cliente: a linha NÃO pede mais sozinha. Tocar na descrição
+// adicionava ao carrinho sem querer e a foto abria o detalhe — ninguém
+// entendia. Agora são dois botões: "Saiba mais" (foto + descrição) e "Pedir".
+var PSL=[];
+function pedirPs(i){var p=PSL[i];if(!p)return;fechaFoto();if(p.grupo)verVariantes(p.produto_codigo);else addCart(p)}
+function saibaMais(i){var p=PSL[i];if(p)fotoGrande(p.produto_codigo,p.nome,p.tem_foto,i)}
 function listar(ps,titulo){
+  PSL=ps||[];
   var h=titulo?'<div class="cabg"><button class="voltag" onclick="telaPedir()">◂ grupos</button><b>'+esc(titulo)+'</b></div>':'';
-  h+=(ps&&ps.length)?ps.map(function(p){
+  h+=(ps&&ps.length)?ps.map(function(p,i){
     var brl=function(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
     // miniatura: a foto é do PRODUTO, então grupo e item usam a mesma
-    var mini=p.tem_foto
-      ? '<img class="pfoto" src="/produto-foto/'+p.produto_codigo+'" loading="lazy" alt="" '+
-        'onclick="event.stopPropagation();fotoGrande('+p.produto_codigo+',\\''+esc(String(p.nome).replace(/'/g,''))+'\\')">'
-      : '';
+    var mini=p.tem_foto?'<img class="pfoto" src="/produto-foto/'+p.produto_codigo+'" loading="lazy" alt="" onclick="saibaMais('+i+')">':'';
+    var mais=(p.tem_foto||p.descricao)?'<button class="bmais" onclick="saibaMais('+i+')">Saiba mais</button>':'';
     // GRUPO: produto com várias variantes (Dose/Garrafa, ou a fruta do gin).
-    // Uma linha só; ao tocar, a tela pergunta qual — cada uma tem seu preço.
-    if(p.grupo){
-      var faixa=(p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max));
-      if(p.sem_estoque)return '<div class="pr off"><span class="pn">'+esc(p.nome)+
-        '<small>indisponível</small></span><span class="pv">'+faixa+'</span></div>';
-      return '<div class="pr" onclick="verVariantes('+p.produto_codigo+')">'+mini+
-        '<span class="pn">'+esc(p.nome)+'<small>'+p.disponiveis+' opções · toque pra escolher</small></span>'+
-        '<span class="pv">'+faixa+'</span></div>';
-    }
-    return '<div class="pr'+(p.sem_estoque?' off':'')+'"'+(p.sem_estoque?'':' onclick=\\'addCart('+JSON.stringify(p).replace(/'/g,"&#39;")+')\\'')+'>'+mini+
-      '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+
-      (p.descricao?'<small class="pdesc">'+esc(p.descricao)+'</small>':'')+
-      (p.sem_estoque?'<small>indisponível</small>':'')+'</span>'+
-      '<span class="pv">'+brl(p.preco)+'</span></div>';
+    // Uma linha só; "Pedir" pergunta qual — cada uma tem seu preço.
+    var preco=p.grupo?((p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max))):brl(p.preco);
+    var sub=p.sem_estoque?'<small>indisponível</small>'
+      :(p.grupo?'<small>'+p.disponiveis+' opções</small>':'')+(p.descricao?'<small class="pdesc">'+esc(p.descricao)+'</small>':'');
+    return '<div class="pr cp'+(p.sem_estoque?' off':'')+'">'+mini+
+      '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+sub+
+      '<span class="pv">'+preco+'</span></span>'+
+      '<span class="pacts">'+(p.sem_estoque?'':'<button class="bped" onclick="pedirPs('+i+')">Pedir</button>')+mais+'</span></div>';
   }).join(''):'<div class="mut" style="padding:14px 2px">nada encontrado</div>';
   document.getElementById('lst').innerHTML=h;
 }
 // Foto grande + a descrição do prato. Quem quer ver melhor toca na miniatura;
 // quem não quer não perde espaço na lista.
-async function fotoGrande(prod,nome){
+async function fotoGrande(prod,nome,temFoto,idx){
   var d=document.getElementById('lightbox');
   if(!d){d=document.createElement('div');d.id='lightbox';document.body.appendChild(d);
     d.onclick=function(){d.style.display='none'}}
@@ -16993,9 +17026,11 @@ async function fotoGrande(prod,nome){
     if(r.ok&&r.produtos.length&&r.produtos[0].descricao)desc=r.produtos[0].descricao;
   }catch(e){}
   d.style.display='flex';
-  d.innerHTML='<div class="lbox"><img src="/produto-foto/'+prod+'" alt="">'+
+  var pe=(idx!=null&&PSL[idx]&&!PSL[idx].sem_estoque);
+  d.innerHTML='<div class="lbox">'+(temFoto===false?'':'<img src="/produto-foto/'+prod+'" alt="">')+
     '<div class="lbt">'+esc(nome||'')+'</div>'+
     (desc?'<div class="lbd">'+esc(desc)+'</div>':'')+
+    (pe?'<button class="bped lbp" onclick="event.stopPropagation();pedirPs('+idx+')">Pedir</button>':'')+
     '<div class="lbf">toque em qualquer lugar pra fechar</div></div>'+
     '<button class="lbx" onclick="fechaFoto(event)" aria-label="fechar">✕</button>';
 }
