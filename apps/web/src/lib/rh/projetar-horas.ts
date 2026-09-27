@@ -7,7 +7,7 @@
 // 'manual' (correção humana, que a cláusula setWhere abaixo NUNCA sobrescreve).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, lte, isNull, sql } from 'drizzle-orm';
+import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import { calcularDia, type Batida } from './calcular-ponto';
 import { semanaContemDia } from '@/lib/folha/semana';
 
@@ -32,6 +32,7 @@ export async function projetarPontoEmFolhaHoras(
       quando: schema.pontoBatida.quando,
       diaOperacional: schema.pontoBatida.diaOperacional,
       tipo: schema.pontoBatida.tipo,
+      excluidaEm: schema.pontoBatida.excluidaEm,
     })
     .from(schema.pontoBatida)
     .where(
@@ -39,15 +40,16 @@ export async function projetarPontoEmFolhaHoras(
         eq(schema.pontoBatida.filialId, filialId),
         gte(schema.pontoBatida.diaOperacional, de),
         lte(schema.pontoBatida.diaOperacional, ate),
-        isNull(schema.pontoBatida.excluidaEm),
       ),
     );
 
+  // Excluídas entram só como chave do grupo: dia em que TODAS as batidas
+  // foram excluídas recalcula pra zero em vez de ficar com o total antigo.
   const grupos = new Map<string, Batida[]>(); // chave: `${funcionarioId}|${dia}`
   for (const b of batidas) {
     const chave = `${b.funcionarioId}|${b.diaOperacional}`;
     if (!grupos.has(chave)) grupos.set(chave, []);
-    grupos.get(chave)!.push({ quando: b.quando, tipo: b.tipo as 'entrada' | 'saida' });
+    if (!b.excluidaEm) grupos.get(chave)!.push({ quando: b.quando, tipo: b.tipo as 'entrada' | 'saida' });
   }
 
   const semVinculo = new Set<string>();

@@ -825,6 +825,11 @@ async function initSchema() {
   // (loopFaceSync); sync_pendente marca quem ainda não subiu.
   await addCol('ponto_funcionario', 'face_descriptor jsonb');
   await addCol('ponto_funcionario', 'face_sync_pendente boolean NOT NULL DEFAULT false');
+  // Batida anulada ("Não sou eu" no tablet, ou excluída pelo RH na nuvem) não
+  // conta pra nada local (entrada/saída, cooldown, horas). A linha fica — a fila
+  // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
+  await addCol('ponto_batida', 'anulada_em timestamptz');
+  await addCol('ponto_batida', 'anulada_sync_pendente boolean NOT NULL DEFAULT false');
 
   // ---- ESPAÇO KIDS ----
   // Quem entrega a criança é o RESPONSÁVEL, e o vínculo é o WhatsApp dele
@@ -8488,7 +8493,7 @@ async function apiPontoPessoas() {
   const hoje = diaOperacionalDe(new Date());
   const pessoas = await sql`SELECT funcionario_id, nome, setor, cargo, face_descriptor FROM ponto_funcionario WHERE ativo ORDER BY nome`;
   const batidas = await sql`SELECT funcionario_id, tipo, quando FROM ponto_batida
-    WHERE dia_operacional = ${hoje} ORDER BY funcionario_id, quando`;
+    WHERE dia_operacional = ${hoje} AND anulada_em IS NULL ORDER BY funcionario_id, quando`;
   const ultimaPorPessoa = new Map();
   for (const b of batidas) ultimaPorPessoa.set(b.funcionario_id, b); // a última sobrescreve (ordenado por quando)
   const out = pessoas.map((p) => {
@@ -8533,7 +8538,7 @@ async function apiPontoBaterFacial(body) {
 
   const agora = new Date();
   const ultimaGeral = (await sql`SELECT tipo, quando FROM ponto_batida WHERE funcionario_id=${funcionarioId}
-    ORDER BY quando DESC LIMIT 1`)[0];
+    AND anulada_em IS NULL ORDER BY quando DESC LIMIT 1`)[0];
   if (ultimaGeral) {
     const passou = agora.getTime() - new Date(ultimaGeral.quando).getTime();
     if (passou < PONTO_COOLDOWN_MS) {
@@ -8547,14 +8552,14 @@ async function apiPontoBaterFacial(body) {
   // última batida da vida: quem esqueceu a saída ontem "saía" ao chegar hoje.
   const dia = diaOperacionalDe(agora);
   const ultimaHoje = (await sql`SELECT tipo FROM ponto_batida
-    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia}
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL
     ORDER BY quando DESC LIMIT 1`)[0];
   const tipo = ultimaHoje && ultimaHoje.tipo === 'entrada' ? 'saida' : 'entrada';
-  await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
-    VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local})`;
+  const [nova] = await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
+    VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local}) RETURNING id`;
 
   const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
-    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL ORDER BY quando`;
   let totalMin = 0, entradaAberta = null;
   for (const b of batidasHoje) {
     if (b.tipo === 'entrada') entradaAberta = b.quando;
@@ -8563,7 +8568,46 @@ async function apiPontoBaterFacial(body) {
       entradaAberta = null;
     }
   }
-  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin };
+  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin, batida_id: Number(nova.id) };
+}
+// POST /api/ponto/anular {batida_id} — botão "Não sou eu" da tela de
+// confirmação do ponto facial (27/09/2026: a Mayara foi cadastrar o rosto e
+// o tablet bateu SAÍDA do Alexandre). Tablet não tem login, então só vale pra
+// batida FACIAL recém-feita (5 min); fora disso é correção do RH no /rh/ponto.
+async function apiPontoAnular(body) {
+  const id = Number(body.batida_id);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, erro: 'batida inválida' };
+  const r = await sql`UPDATE ponto_batida SET anulada_em=now(), anulada_sync_pendente=true
+    WHERE id=${id} AND anulada_em IS NULL AND dispositivo='reconhecimento_facial'
+      AND criado_em > now() - interval '5 minutes' RETURNING funcionario_id, tipo`;
+  if (!r.length) return { ok: false, erro: 'não dá mais pra desfazer esta batida aqui — peça pro gerente corrigir no Concilia' };
+  console.log(`[ponto] batida ${id} (${r[0].tipo} de ${r[0].funcionario_id}) anulada no tablet: "não sou eu"`);
+  return { ok: true };
+}
+// Leva as anulações pra nuvem (exclui a batida lá e recalcula as horas). Só
+// manda o que o cursor do push já subiu — o resto sobe no próprio push com
+// anulada=true, sem corrida entre os dois loops.
+let pontoAnularRodando = false;
+async function loopPontoAnular() {
+  if (pontoAnularRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  pontoAnularRodando = true;
+  try {
+    const ate = Number(await cfgGet('ponto_nuvem_ate', '0')) || 0;
+    const rows = await sql`SELECT id FROM ponto_batida WHERE anulada_sync_pendente AND id <= ${ate} ORDER BY id LIMIT 100`;
+    if (!rows.length) return;
+    const ids = rows.map((x) => Number(x.id));
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto/anular`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('ponto', e), ids }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) { console.error('[ponto] anular na nuvem recusou:', j?.erro || r.status); return; }
+    await sql`UPDATE ponto_batida SET anulada_sync_pendente=false WHERE id = ANY(${ids})`;
+    console.log(`[ponto] ${ids.length} anulação(ões) na nuvem`);
+  } catch (err) { console.error('[ponto] anular nuvem:', err.message); }
+  finally { pontoAnularRodando = false; }
 }
 // Sobe os descritores cadastrados localmente (raro — uma vez por pessoa na
 // vida) pra nuvem. Fila leve por flag, não por cursor: poucos registros.
@@ -8629,7 +8673,7 @@ async function apiPontoBater(body) {
   const agora = new Date();
   const dia = diaOperacionalDe(agora);
   const ultima = (await sql`SELECT tipo FROM ponto_batida WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia}
-    ORDER BY quando DESC LIMIT 1`)[0];
+    AND anulada_em IS NULL ORDER BY quando DESC LIMIT 1`)[0];
   if (ultima && ultima.tipo === tipo) {
     return { ok: false, erro: tipo === 'entrada'
       ? `${pessoa.nome} já está com entrada batida.`
@@ -8641,7 +8685,7 @@ async function apiPontoBater(body) {
     VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, ${dispositivo}, ${pessoa.login_local})`;
 
   const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
-    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL ORDER BY quando`;
   let totalMin = 0, entradaAberta = null;
   for (const b of batidasHoje) {
     if (b.tipo === 'entrada') entradaAberta = b.quando;
@@ -8657,7 +8701,7 @@ async function apiPontoMeuDia(funcionarioId) {
   if (!/^[0-9a-f-]{36}$/i.test(String(funcionarioId || ''))) return { ok: false, erro: 'funcionário inválido' };
   const dia = diaOperacionalDe(new Date());
   const batidas = await sql`SELECT tipo, quando FROM ponto_batida
-    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} ORDER BY quando`;
+    WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL ORDER BY quando`;
   return { ok: true, dia, batidas };
 }
 // Push: a própria tabela ponto_batida É a fila (cursor por id, igual
@@ -8673,7 +8717,7 @@ async function loopPontoNuvem() {
     // "2026-09-23T03:00:00.000Z" e a nuvem recusava o lote inteiro ('corpo
     // inválido', regex YYYY-MM-DD): nenhuma batida tinha chegado até 24/09/2026.
     const rows = await sql`SELECT id, funcionario_id, quando, dia_operacional::text AS dia_operacional,
-      tipo, dispositivo, login_local
+      tipo, dispositivo, login_local, anulada_em IS NOT NULL AS anulada
       FROM ponto_batida WHERE id > ${desde} ORDER BY id LIMIT 200`;
     if (!rows.length) return;
     const e = Math.floor(Date.now() / 1000) + 120;
@@ -8681,7 +8725,8 @@ async function loopPontoNuvem() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('ponto', e), batidas: rows.map((x) => ({
         id: Number(x.id), funcionario_id: x.funcionario_id, quando: x.quando,
-        dia_operacional: x.dia_operacional, tipo: x.tipo, dispositivo: x.dispositivo, login_local: x.login_local })) }),
+        dia_operacional: x.dia_operacional, tipo: x.tipo, dispositivo: x.dispositivo, login_local: x.login_local,
+        anulada: !!x.anulada })) }),
       signal: AbortSignal.timeout(20000),
     });
     const j = await r.json().catch(() => null);
@@ -8717,6 +8762,14 @@ async function loopPontoRoster() {
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
+    // Batida excluída pelo RH na nuvem (dias recentes) deixa de contar aqui
+    // também — senão a próxima batida facial sai com o tipo trocado.
+    for (const x of Array.isArray(j.excluidas) ? j.excluidas : []) {
+      if (!Number.isInteger(Number(x.id_local)) || !/^[0-9a-f-]{36}$/i.test(String(x.funcionario_id || ''))) continue;
+      const a = await sql`UPDATE ponto_batida SET anulada_em=now(), anulada_sync_pendente=false
+        WHERE id=${Number(x.id_local)} AND funcionario_id=${x.funcionario_id} AND anulada_em IS NULL RETURNING id`;
+      if (a.length) console.log(`[ponto] batida ${x.id_local} excluída na nuvem → anulada aqui`);
+    }
   } catch (err) { console.error('[ponto] roster:', err.message); }
   finally { pontoRosterRodando = false; }
 }
@@ -12408,6 +12461,15 @@ function comandaHTML(c,modo,idx){
 var PF_MODELOS_OK=false, PF_ROSTOS=[], PF_SEM_ROSTO=[], PF_STREAM=null, PF_STREAM_PROPRIO=false, PF_LOOP=null;
 var PF_OCUPADO=false, PF_PROCESSANDO=false, PF_CADASTRANDO=null;
 var PF_PREP=null, PF_MOTOR='';
+/* Regras de aceite (27/09/2026: a Mayara foi cadastrar o rosto e bateu SAÍDA
+   do Alexandre — antes 1 quadro só com distância < 0.5 decidia):
+   - distância < PF_LIMIAR E folga >= PF_FOLGA pro 2o mais parecido (senão é
+     ambíguo, não bate ninguém);
+   - PF_SEGUIDOS quadros seguidos concordando na MESMA pessoa;
+   - rosto grande e nítido (perto da câmera, detecção firme).
+   Cadastro guarda a MÉDIA dos últimos quadros, não 1 quadro solto. */
+var PF_LIMIAR=0.45, PF_FOLGA=0.07, PF_SEGUIDOS=3, PF_INCERTO_MAX=8;
+var PF_SEQ=null, PF_INCERTO=0, PF_AMOSTRAS=[], PF_FECHA_T=null;
 function PF_OPTS(){ return new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5}); }
 function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t)e.textContent=t; }
 /* Carrega a lib + modelos UMA vez e aquece as redes (a 1a inferencia compila
@@ -12474,6 +12536,7 @@ async function abrirPontoFacial(){
   document.getElementById('pfSub').textContent='';
   document.getElementById('pfExtra').innerHTML='';
   PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false;
+  PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[]; clearTimeout(PF_FECHA_T);
   // Em http://IP:8790 o navegador nem expoe navigator.mediaDevices — antes o
   // erro saia como "Cannot read properties of undefined". Leva pro https.
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -12520,6 +12583,12 @@ async function abrirPontoFacial(){
       String((e&&e.message)||e);
   }
 }
+function pfMedia(lista){
+  var m=new Float32Array(128);
+  for (var i=0;i<lista.length;i++) for (var k=0;k<128;k++) m[k]+=lista[i][k]/lista.length;
+  return m;
+}
+function pfAmostra(desc){ PF_AMOSTRAS.push(desc); if (PF_AMOSTRAS.length>5) PF_AMOSTRAS.shift(); }
 async function pfTick(){
   if (PF_OCUPADO||PF_PROCESSANDO||PF_CADASTRANDO) return;
   var video=document.getElementById('pfVideo');
@@ -12530,19 +12599,38 @@ async function pfTick(){
     // descritor) so rodam quando TEM rosto — e a tela avisa antes, pra
     // ninguem achar que travou.
     var achou=await faceapi.detectSingleFace(video, PF_OPTS());
-    if (!achou) { pfSt('Olhe para a câmera'); return; }
-    pfSt('Reconhecendo… fique parado');
+    if (!achou) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
+    if (achou.box.width < video.videoWidth*0.18) { pfSt('Chegue mais perto da câmera'); PF_SEQ=null; return; }
+    if (!PF_SEQ) pfSt('Reconhecendo… fique parado');
     await new Promise(function(r){ setTimeout(r,30); }); // deixa pintar o texto
     var det=await faceapi.detectSingleFace(video, PF_OPTS()).withFaceLandmarks().withFaceDescriptor();
-    if (!det) { pfSt('Olhe para a câmera'); return; }
-    if (!PF_ROSTOS.length) { pfMostraListaCadastro(det.descriptor); return; }
-    var melhor=null;
+    if (!det) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
+    if (det.detection.score < 0.7) { pfSt('Fique parado, de frente pra câmera'); PF_SEQ=null; return; }
+    pfAmostra(det.descriptor);
+    if (!PF_ROSTOS.length) {
+      if (PF_AMOSTRAS.length>=3) pfMostraListaCadastro(pfMedia(PF_AMOSTRAS));
+      return;
+    }
+    var melhor=null, segundo=null;
     for (var i=0;i<PF_ROSTOS.length;i++){
       var dist=faceapi.euclideanDistance(det.descriptor, PF_ROSTOS[i].descriptor);
-      if (!melhor||dist<melhor.dist) melhor={dist:dist, pessoa:PF_ROSTOS[i]};
+      if (!melhor||dist<melhor.dist) { segundo=melhor; melhor={dist:dist, pessoa:PF_ROSTOS[i]}; }
+      else if (!segundo||dist<segundo.dist) segundo={dist:dist, pessoa:PF_ROSTOS[i]};
     }
-    if (melhor && melhor.dist<0.5) { PF_OCUPADO=true; await pfBater(melhor.pessoa); PF_OCUPADO=false; }
-    else pfMostraListaCadastro(det.descriptor);
+    var folga=segundo?(segundo.dist-melhor.dist):1;
+    if (melhor.dist<PF_LIMIAR && folga>=PF_FOLGA) {
+      PF_INCERTO=0;
+      if (PF_SEQ && PF_SEQ.fid===melhor.pessoa.funcionario_id) PF_SEQ.n++;
+      else PF_SEQ={fid:melhor.pessoa.funcionario_id, n:1};
+      if (PF_SEQ.n>=PF_SEGUIDOS) { PF_SEQ=null; PF_OCUPADO=true; await pfBater(melhor.pessoa); PF_OCUPADO=false; }
+      else pfSt('Reconhecendo… fique parado');
+      return;
+    }
+    // não bateu com ninguém com segurança: insiste uns quadros (luz, ângulo)
+    // antes de oferecer o cadastro
+    PF_SEQ=null; PF_INCERTO++;
+    pfSt('Não tenho certeza… fique parado, de frente');
+    if (PF_INCERTO>=PF_INCERTO_MAX && PF_AMOSTRAS.length>=3) { PF_INCERTO=0; pfMostraListaCadastro(pfMedia(PF_AMOSTRAS)); }
   } finally { PF_PROCESSANDO=false; }
 }
 async function pfBater(pessoa){
@@ -12564,11 +12652,43 @@ async function pfBater(pessoa){
     var tot=r.total_min_hoje||0;
     document.getElementById('pfSub').textContent=(ent?'Bom trabalho, ':'Até logo, ')+pessoa.nome+
       (!ent&&tot?' — hoje: '+Math.floor(tot/60)+'h'+String(tot%60).padStart(2,'0'):'');
+    // Reconheceu errado? Desfaz na hora e vai pro cadastro do rosto certo.
+    if (r.batida_id) {
+      var primeiro=String(pessoa.nome||'').split(' ')[0];
+      document.getElementById('pfExtra').innerHTML=
+        '<button class="pfbusca" id="pfNaoSou" style="cursor:pointer;font-weight:700;background:#7f1d1d;color:#fff;border-color:#b91c1c">✋ Não sou '+esc(primeiro)+' — desfazer</button>';
+      document.getElementById('pfNaoSou').onclick=function(){ pfNaoSouEu(r.batida_id); };
+    }
   } else {
     document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
     if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
   }
-  setTimeout(fecharPontoFacial, 4500);
+  clearTimeout(PF_FECHA_T);
+  PF_FECHA_T=setTimeout(fecharPontoFacial, r.ok&&r.batida_id?8000:4500);
+}
+async function pfNaoSouEu(batidaId){
+  clearTimeout(PF_FECHA_T);
+  document.getElementById('pfExtra').innerHTML='';
+  document.getElementById('pfSub').textContent='';
+  document.getElementById('pfStatus').textContent='Desfazendo…';
+  var r;
+  try {
+    r=await (await fetch('/api/ponto/anular',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({batida_id:batidaId})})).json();
+  } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+  if (!r.ok) {
+    document.getElementById('pfStatus').textContent=r.erro||'Não consegui desfazer';
+    PF_FECHA_T=setTimeout(fecharPontoFacial, 6000);
+    return;
+  }
+  // O rosto cadastrado é do outro (e continua dele); quem está na frente da
+  // câmera provavelmente ainda não tem cadastro — abre a lista com a média
+  // dos quadros que acabaram de ser lidos.
+  var desc=PF_AMOSTRAS.length?pfMedia(PF_AMOSTRAS):null;
+  if (!desc) { document.getElementById('pfStatus').textContent='Desfeito. Olhe para a câmera de novo'; PF_LOOP=setInterval(pfTick,250); return; }
+  pfMostraListaCadastro(desc);
+  document.getElementById('pfStatus').textContent='Desfeito ✓ — nada foi registrado';
+  document.getElementById('pfSub').textContent='toque seu nome pra cadastrar seu rosto (se já tem cadastro, feche e tente de novo)';
 }
 function pfMostraListaCadastro(descriptor){
   if (PF_CADASTRANDO) return; // já mostrando a lista — não repinta a cada tick
@@ -12607,6 +12727,7 @@ async function pfCadastrar(funcionarioId){
 }
 function fecharPontoFacial(){
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
+  clearTimeout(PF_FECHA_T); PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[];
   if (PF_STREAM && PF_STREAM_PROPRIO) PF_STREAM.getTracks().forEach(function(t){t.stop();});
   PF_STREAM=null; PF_STREAM_PROPRIO=false;
   var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
@@ -22274,6 +22395,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/cadastrar-rosto') return res.end(JSON.stringify(await apiPontoCadastrarRosto(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/bater-facial') return res.end(JSON.stringify(await apiPontoBaterFacial(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ponto/anular') return res.end(JSON.stringify(await apiPontoAnular(await readBody(req))));
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
@@ -23027,6 +23149,8 @@ async function main() {
   setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopFaceSync().catch(() => {}), 35 * 1000);
   setInterval(() => loopFaceSync().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopPontoAnular().catch(() => {}), 50 * 1000);
+  setInterval(() => loopPontoAnular().catch(() => {}), 60 * 1000);
   setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);

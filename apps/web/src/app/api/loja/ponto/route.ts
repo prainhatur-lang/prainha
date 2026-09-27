@@ -34,7 +34,8 @@ export async function GET(request: Request) {
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
 
   const { db, schema } = await import('@concilia/db');
-  const { and, eq, or, exists } = await import('drizzle-orm');
+  const { and, eq, or, exists, gte, isNotNull } = await import('drizzle-orm');
+  const { diasAtrasBr } = await import('@/lib/datas');
 
   // Roster = lotação principal NESTA filial OU vínculo extra (quem circula
   // entre lojas — ex: segunda na Prainha Bar, terça na Prainha Mar). Um só
@@ -70,8 +71,24 @@ export async function GET(request: Request) {
       ),
     );
 
+  // Batidas vindas da loja que o RH excluiu no /rh/ponto (dias recentes): a
+  // loja anula a cópia local, senão a próxima batida facial sai com o tipo
+  // trocado (entrada no lugar de saída).
+  const excluidas = await db
+    .select({ idLocal: schema.pontoBatida.idLocal, funcionarioId: schema.pontoBatida.funcionarioId })
+    .from(schema.pontoBatida)
+    .where(
+      and(
+        eq(schema.pontoBatida.filialId, f),
+        isNotNull(schema.pontoBatida.idLocal),
+        isNotNull(schema.pontoBatida.excluidaEm),
+        gte(schema.pontoBatida.diaOperacional, diasAtrasBr(3)),
+      ),
+    );
+
   return NextResponse.json({
     ok: true,
+    excluidas: excluidas.map((x) => ({ id_local: Number(x.idLocal), funcionario_id: x.funcionarioId })),
     pessoas: pessoas.map((p) => ({
       funcionario_id: p.funcionarioId,
       face_descriptor: p.faceDescriptor,
@@ -92,6 +109,8 @@ const Batida = z.object({
   tipo: z.enum(['entrada', 'saida']),
   dispositivo: z.string().max(120).nullable().optional(),
   login_local: z.string().max(60).nullable().optional(),
+  /** "Não sou eu" no tablet antes de subir — chega já excluída. */
+  anulada: z.boolean().optional(),
 });
 const Body = z.object({
   f: z.string(),
@@ -162,6 +181,7 @@ export async function POST(request: Request) {
           idLocal: b.id,
           dispositivo: b.dispositivo ?? null,
           loginLocal: b.login_local ?? null,
+          excluidaEm: b.anulada ? new Date() : null,
         })),
       )
       .onConflictDoUpdate({
@@ -172,6 +192,7 @@ export async function POST(request: Request) {
           tipo: sql`excluded.tipo`,
           dispositivo: sql`excluded.dispositivo`,
           loginLocal: sql`excluded.login_local`,
+          excluidaEm: sql`COALESCE(${schema.pontoBatida.excluidaEm}, excluded.excluida_em)`,
         },
       });
 
