@@ -830,6 +830,10 @@ async function initSchema() {
   // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
   await addCol('ponto_batida', 'anulada_em timestamptz');
   await addCol('ponto_batida', 'anulada_sync_pendente boolean NOT NULL DEFAULT false');
+  // Batida INCLUÍDA pelo RH na nuvem (/rh/ponto) espelhada aqui: nuvem_id é o
+  // uuid de lá. Nunca sobe de volta no push (já existe na nuvem).
+  await addCol('ponto_batida', 'nuvem_id uuid');
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_ponto_batida_nuvem ON ponto_batida (nuvem_id)`;
 
   // ---- ESPAÇO KIDS ----
   // Quem entrega a criança é o RESPONSÁVEL, e o vínculo é o WhatsApp dele
@@ -8718,7 +8722,7 @@ async function loopPontoNuvem() {
     // inválido', regex YYYY-MM-DD): nenhuma batida tinha chegado até 24/09/2026.
     const rows = await sql`SELECT id, funcionario_id, quando, dia_operacional::text AS dia_operacional,
       tipo, dispositivo, login_local, anulada_em IS NOT NULL AS anulada
-      FROM ponto_batida WHERE id > ${desde} ORDER BY id LIMIT 200`;
+      FROM ponto_batida WHERE id > ${desde} AND nuvem_id IS NULL ORDER BY id LIMIT 200`;
     if (!rows.length) return;
     const e = Math.floor(Date.now() / 1000) + 120;
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto`, {
@@ -8762,13 +8766,41 @@ async function loopPontoRoster() {
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
-    // Batida excluída pelo RH na nuvem (dias recentes) deixa de contar aqui
-    // também — senão a próxima batida facial sai com o tipo trocado.
+    // Correções do RH no /rh/ponto (dias recentes) valem aqui também —
+    // senão a próxima batida facial sai com o tipo trocado.
+    const uuidOk = (v) => /^[0-9a-f-]{36}$/i.test(String(v || ''));
     for (const x of Array.isArray(j.excluidas) ? j.excluidas : []) {
-      if (!Number.isInteger(Number(x.id_local)) || !/^[0-9a-f-]{36}$/i.test(String(x.funcionario_id || ''))) continue;
-      const a = await sql`UPDATE ponto_batida SET anulada_em=now(), anulada_sync_pendente=false
-        WHERE id=${Number(x.id_local)} AND funcionario_id=${x.funcionario_id} AND anulada_em IS NULL RETURNING id`;
-      if (a.length) console.log(`[ponto] batida ${x.id_local} excluída na nuvem → anulada aqui`);
+      if (!uuidOk(x.funcionario_id)) continue;
+      let a = [];
+      if (Number.isInteger(x.id_local) && x.id_local > 0) {
+        a = await sql`UPDATE ponto_batida SET anulada_em=now(), anulada_sync_pendente=false
+          WHERE id=${x.id_local} AND funcionario_id=${x.funcionario_id} AND anulada_em IS NULL RETURNING id`;
+      } else if (uuidOk(x.nuvem_id)) {
+        a = await sql`UPDATE ponto_batida SET anulada_em=now(), anulada_sync_pendente=false
+          WHERE nuvem_id=${x.nuvem_id} AND anulada_em IS NULL RETURNING id`;
+      }
+      if (a.length) console.log(`[ponto] batida ${x.id_local || x.nuvem_id} excluída na nuvem → anulada aqui`);
+    }
+    for (const x of Array.isArray(j.corrigidas) ? j.corrigidas : []) {
+      if (!uuidOk(x.funcionario_id) || !uuidOk(x.nuvem_id) || !['entrada', 'saida'].includes(x.tipo)) continue;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(x.dia_operacional || '')) || Number.isNaN(new Date(x.quando).getTime())) continue;
+      const quando = new Date(x.quando);
+      if (Number.isInteger(x.id_local) && x.id_local > 0) {
+        // alteração de batida que nasceu aqui
+        const a = await sql`UPDATE ponto_batida SET quando=${quando}, tipo=${x.tipo}, dia_operacional=${x.dia_operacional}
+          WHERE id=${x.id_local} AND funcionario_id=${x.funcionario_id}
+            AND (quando <> ${quando} OR tipo <> ${x.tipo} OR dia_operacional <> ${x.dia_operacional}) RETURNING id`;
+        if (a.length) console.log(`[ponto] batida ${x.id_local} alterada na nuvem → ${x.tipo} ${quando.toISOString()}`);
+      } else {
+        // inclusão feita na nuvem
+        const a = await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, nuvem_id)
+          VALUES (${x.funcionario_id}, ${quando}, ${x.dia_operacional}, ${x.tipo}, 'correcao_rh', ${x.nuvem_id})
+          ON CONFLICT (nuvem_id) DO UPDATE SET quando=EXCLUDED.quando, tipo=EXCLUDED.tipo, dia_operacional=EXCLUDED.dia_operacional
+          WHERE ponto_batida.quando <> EXCLUDED.quando OR ponto_batida.tipo <> EXCLUDED.tipo
+            OR ponto_batida.dia_operacional <> EXCLUDED.dia_operacional
+          RETURNING id`;
+        if (a.length) console.log(`[ponto] batida incluída na nuvem (${x.tipo} ${quando.toISOString()}) → espelhada aqui`);
+      }
     }
   } catch (err) { console.error('[ponto] roster:', err.message); }
   finally { pontoRosterRodando = false; }

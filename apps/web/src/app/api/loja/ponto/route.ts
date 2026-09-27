@@ -71,24 +71,49 @@ export async function GET(request: Request) {
       ),
     );
 
-  // Batidas vindas da loja que o RH excluiu no /rh/ponto (dias recentes): a
-  // loja anula a cópia local, senão a próxima batida facial sai com o tipo
-  // trocado (entrada no lugar de saída).
-  const excluidas = await db
-    .select({ idLocal: schema.pontoBatida.idLocal, funcionarioId: schema.pontoBatida.funcionarioId })
+  // Correções do RH no /rh/ponto (dias recentes) descem pra loja, senão a
+  // próxima batida facial sai com o tipo trocado (entrada no lugar de saída):
+  //  - excluidas: batida da loja (id_local) ou incluída na nuvem (nuvem_id)
+  //    que o RH excluiu → a loja anula a cópia local;
+  //  - corrigidas: origem 'correcao' ativa — inclusão (sem id_local, a loja
+  //    grava com nuvem_id e NÃO sobe de volta) ou alteração de batida da loja
+  //    (com id_local, a loja atualiza hora/tipo).
+  const recentes = await db
+    .select({
+      id: schema.pontoBatida.id,
+      idLocal: schema.pontoBatida.idLocal,
+      funcionarioId: schema.pontoBatida.funcionarioId,
+      quando: schema.pontoBatida.quando,
+      diaOperacional: schema.pontoBatida.diaOperacional,
+      tipo: schema.pontoBatida.tipo,
+      excluidaEm: schema.pontoBatida.excluidaEm,
+    })
     .from(schema.pontoBatida)
     .where(
       and(
         eq(schema.pontoBatida.filialId, f),
-        isNotNull(schema.pontoBatida.idLocal),
-        isNotNull(schema.pontoBatida.excluidaEm),
         gte(schema.pontoBatida.diaOperacional, diasAtrasBr(3)),
+        or(isNotNull(schema.pontoBatida.excluidaEm), eq(schema.pontoBatida.origem, 'correcao')),
       ),
     );
+  const excluidas = recentes.filter((x) => x.excluidaEm);
+  const corrigidas = recentes.filter((x) => !x.excluidaEm);
 
   return NextResponse.json({
     ok: true,
-    excluidas: excluidas.map((x) => ({ id_local: Number(x.idLocal), funcionario_id: x.funcionarioId })),
+    excluidas: excluidas.map((x) => ({
+      id_local: x.idLocal == null ? null : Number(x.idLocal),
+      nuvem_id: x.idLocal == null ? x.id : null,
+      funcionario_id: x.funcionarioId,
+    })),
+    corrigidas: corrigidas.map((x) => ({
+      id_local: x.idLocal == null ? null : Number(x.idLocal),
+      nuvem_id: x.id,
+      funcionario_id: x.funcionarioId,
+      quando: x.quando.toISOString(),
+      dia_operacional: x.diaOperacional,
+      tipo: x.tipo,
+    })),
     pessoas: pessoas.map((p) => ({
       funcionario_id: p.funcionarioId,
       face_descriptor: p.faceDescriptor,
