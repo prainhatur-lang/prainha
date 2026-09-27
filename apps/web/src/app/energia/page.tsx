@@ -73,6 +73,7 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
           ativoAlteradoEm: g.ativoAlteradoEm?.toISOString() ?? null,
           ultimoDisparoEm: g.ultimoDisparoEm?.toISOString() ?? null,
           ultimoResultado: g.ultimoResultado,
+          protect: !!g.protectHost && !!g.protectApiKey,
         }))}
       />
     </main>

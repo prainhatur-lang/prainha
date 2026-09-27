@@ -52,6 +52,11 @@ export const alarmeGatilho = pgTable('alarme_gatilho', {
   /** quem armou/desarmou por último (email) e quando. */
   ativoAlteradoPor: varchar('ativo_alterado_por', { length: 200 }),
   ativoAlteradoEm: timestamp('ativo_alterado_em', { withTimezone: true }),
+  /** UniFi Protect da loja (IP na rede local, ex 192.168.5.1): com host+chave,
+   * ligar/desligar arma de verdade o alarme do Protect via servidor da loja. */
+  protectHost: varchar('protect_host', { length: 100 }),
+  /** chave da Integration API do Protect, cifrada (lib/segredo). Nunca volta pro navegador. */
+  protectApiKey: text('protect_api_key'),
   disparos: integer('disparos').notNull().default(0),
   ultimoDisparoEm: timestamp('ultimo_disparo_em', { withTimezone: true }),
   ultimoResultado: text('ultimo_resultado'),

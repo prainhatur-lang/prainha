@@ -21,6 +21,8 @@ interface Gatilho {
   disparos: number;
   ultimoDisparoEm: string | null;
   ultimoResultado: string | null;
+  protectHost: string | null;
+  protectChaveSalva: boolean;
 }
 
 interface Props {
@@ -33,7 +35,16 @@ const inputCls =
   'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-base text-slate-900 focus:border-sky-500 focus:outline-none sm:py-2 sm:text-sm';
 const lblCls = 'text-xs font-medium text-slate-600';
 
-const vazio = { nome: '', dispositivoIds: [] as string[], acao: 'ligar', desligarAposMin: '' };
+const vazio = {
+  nome: '',
+  dispositivoIds: [] as string[],
+  acao: 'ligar',
+  desligarAposMin: '',
+  protectHost: '',
+  // só vai pro servidor se o gerente digitar; a salva nunca volta pra tela
+  protectApiKey: '',
+  protectChaveSalva: false,
+};
 
 function fmt(d: string | null): string {
   if (!d) return 'nunca';
@@ -82,6 +93,10 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
         dispositivoIds: form.dispositivoIds,
         acao: form.acao,
         desligarAposMin: form.desligarAposMin ? Number(form.desligarAposMin) : null,
+        protectHost: form.protectHost,
+        ...(form.protectApiKey.trim() ? { protectApiKey: form.protectApiKey } : {}),
+        // IP apagado = volta pro modo sem Protect; a chave vai junto
+        ...(!form.protectHost.trim() && form.protectChaveSalva ? { protectApiKey: '' } : {}),
       };
       const r = await fetch(editandoId ? `/api/energia/gatilhos/${editandoId}` : '/api/energia/gatilhos', {
         method: editandoId ? 'PUT' : 'POST',
@@ -108,6 +123,9 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
       dispositivoIds: g.dispositivoIds,
       acao: g.acao,
       desligarAposMin: g.desligarAposMin ? String(g.desligarAposMin) : '',
+      protectHost: g.protectHost ?? '',
+      protectApiKey: '',
+      protectChaveSalva: g.protectChaveSalva,
     });
     setErro(null);
     setMsg(null);
@@ -143,7 +161,10 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
         URL do gatilho e o sistema liga os dispositivos marcados.
       </p>
 
-      <AlarmeArmar gatilhos={gatilhos} podeControlar />
+      <AlarmeArmar
+        gatilhos={gatilhos.map((g) => ({ ...g, protect: !!g.protectHost && g.protectChaveSalva }))}
+        podeControlar
+      />
 
       {msg ? <p className="mt-3 rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-800">{msg}</p> : null}
       {erro ? <p className="mt-3 rounded-md bg-rose-50 px-3 py-1.5 text-xs text-rose-700">{erro}</p> : null}
@@ -181,6 +202,37 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
               onChange={(e) => setForm((f) => ({ ...f, desligarAposMin: e.target.value.replace(/\D/g, '') }))}
             />
           </label>
+        </div>
+        <div className="mt-3 rounded-lg bg-slate-50 p-3">
+          <p className="text-xs font-semibold text-slate-700">UniFi Protect (opcional)</p>
+          <p className="text-xs text-slate-500">
+            Com IP e chave, o botão Ligar/Desligar alarme arma de verdade o alarme do Protect (pelo servidor da
+            loja). Desligado, o Protect não avisa nem chama o webhook — as câmeras continuam gravando. A chave
+            sai em Protect → Configurações → Integrações → API Key.
+          </p>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className={lblCls}>IP do Protect na rede da loja</span>
+              <input
+                className={inputCls}
+                placeholder="192.168.5.1"
+                inputMode="decimal"
+                value={form.protectHost}
+                onChange={(e) => setForm((f) => ({ ...f, protectHost: e.target.value.trim() }))}
+              />
+            </label>
+            <label>
+              <span className={lblCls}>API Key {form.protectChaveSalva ? '(salva — só preencha pra trocar)' : ''}</span>
+              <input
+                className={inputCls}
+                type="password"
+                autoComplete="off"
+                placeholder={form.protectChaveSalva ? '••••••••' : 'cole a chave'}
+                value={form.protectApiKey}
+                onChange={(e) => setForm((f) => ({ ...f, protectApiKey: e.target.value }))}
+              />
+            </label>
+          </div>
         </div>
         <p className={`${lblCls} mt-3`}>Dispositivos</p>
         {acionaveis.length === 0 ? (
@@ -239,7 +291,13 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
                 <div>
                   <p className="text-sm font-medium text-slate-900">
                     {g.nome}{' '}
-                    {!g.ativo ? <span className="text-xs font-normal text-slate-400">(desarmado)</span> : null}
+                    {!g.ativo ? <span className="text-xs font-normal text-slate-400">(desligado)</span> : null}
+                    {g.protectHost ? (
+                      <span className="ml-1 rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-normal text-sky-700">
+                        Protect {g.protectHost}
+                        {g.protectChaveSalva ? '' : ' · sem chave'}
+                      </span>
+                    ) : null}
                   </p>
                   <p className="text-xs text-slate-500">
                     {g.acao === 'desligar' ? 'Desliga' : 'Liga'}: {nomes || '—'}

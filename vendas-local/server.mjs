@@ -5517,6 +5517,53 @@ function centralAssinou(u, escopo = 'caixa') {
   const esperada = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, escopo, String(e)].join('|')).digest('hex');
   try { const a = Buffer.from(s), b = Buffer.from(esperada); return a.length === b.length && timingSafeEqual(a, b); } catch { return false; }
 }
+
+// ---- ALARME do UniFi Protect (pedido da nuvem, escopo 'alarme') ----------
+// A nuvem não alcança o Protect (IP da rede da loja, chave local), então ela
+// manda aqui host + chave dentro da chamada assinada e a loja fala com a
+// Integration API do Protect. Só IP de rede interna (a loja não vira proxy
+// pra fora) e só os 3 caminhos abaixo. Certificado do console é autoassinado.
+const PROTECT_HOST_OK = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
+function protectReq(host, chave, method, path) {
+  return new Promise((resolve, reject) => {
+    const r = https.request({
+      hostname: host, port: 443, method, path: '/proxy/protect/integration/v1' + path,
+      headers: { 'X-API-KEY': chave, accept: 'application/json', 'content-type': 'application/json' },
+      rejectUnauthorized: false, timeout: 10000,
+    }, (res) => {
+      let txt = '';
+      res.on('data', (c) => { txt += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error(`Protect ${res.statusCode}: ${txt.slice(0, 200)}`));
+        try { resolve(txt ? JSON.parse(txt) : null); } catch { resolve(null); }
+      });
+    });
+    r.on('timeout', () => r.destroy(new Error('Protect não respondeu (timeout)')));
+    r.on('error', reject);
+    if (method !== 'GET') r.write('{}');
+    r.end();
+  });
+}
+async function protectArmMode(host, chave) {
+  const nvrs = await protectReq(host, chave, 'GET', '/nvrs');
+  const nvr = Array.isArray(nvrs) ? nvrs[0] : nvrs;
+  const m = nvr?.armMode;
+  if (!m) throw new Error('Protect não devolveu armMode (versão sem Alarm Manager?)');
+  return {
+    status: String(m.status || 'disabled'), armProfileId: m.armProfileId ?? null, armedAt: m.armedAt ?? null,
+    willBeArmedAt: m.willBeArmedAt ?? null, breachDetectedAt: m.breachDetectedAt ?? null,
+    breachEventCount: m.breachEventCount ?? null,
+  };
+}
+async function apiAlarmeProtect(acao, b) {
+  const host = String(b?.host || '');
+  const chave = String(b?.chave || '');
+  if (!PROTECT_HOST_OK.test(host)) return { ok: false, erro: 'host do Protect inválido (só IP da rede interna)' };
+  if (!chave) return { ok: false, erro: 'sem chave do Protect' };
+  if (acao === 'ligar') await protectReq(host, chave, 'POST', '/arm-profiles/enable');
+  else if (acao === 'desligar') await protectReq(host, chave, 'POST', '/arm-profiles/disable');
+  return { ok: true, armMode: await protectArmMode(host, chave) };
+}
 async function clienteDoGrupo(cpf) {
   if (!grupoDisponivel()) return null;
   const h = hashCpfGrupo(cpf);
@@ -21939,6 +21986,22 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // ---- ALARME do UniFi Protect pelo CENTRAL — assinado (escopo 'alarme').
+    // POST /api/central/alarme/{status|ligar|desligar} {host, chave}
+    if (p.startsWith('/api/central/alarme/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method !== 'POST') return res.end(JSON.stringify({ ok: false, erro: 'use POST' }));
+      if (!centralAssinou(u, 'alarme')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      const acao = p.slice('/api/central/alarme/'.length);
+      if (!['status', 'ligar', 'desligar'].includes(acao)) return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+      try {
+        const r = await apiAlarmeProtect(acao, await readBody(req));
+        if (acao !== 'status' && r.ok) console.log(`[alarme] ${acao} → ${r.armMode.status}`);
+        return res.end(JSON.stringify(r));
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, erro: e.message }));
+      }
     }
     // ---- EQUIPE DO CONSUMER pelo CENTRAL (Concilia web) — assinado (escopo
     // 'equipe', separado do 'caixa' — uma vazou não abre a outra). Lista

@@ -77,6 +77,8 @@ export default async function ConfiguracoesEnergiaPage(props: {
             disparos: g.disparos,
             ultimoDisparoEm: g.ultimoDisparoEm?.toISOString() ?? null,
             ultimoResultado: g.ultimoResultado,
+            protectHost: g.protectHost,
+            protectChaveSalva: !!g.protectApiKey,
           }))}
         />
       </section>

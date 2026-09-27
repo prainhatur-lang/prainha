@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { dispararGatilho } from '@/lib/alarme-gatilho';
+import { protectConfigurado } from '@/lib/alarme-protect';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,7 +18,9 @@ async function handle(req: Request, token: string) {
     .from(schema.alarmeGatilho)
     .where(eq(schema.alarmeGatilho.token, token));
   if (!gatilho) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  if (!gatilho.ativo) {
+  // Com Protect configurado quem decide é ele (desarmado ele nem chama); o
+  // filtro por `ativo` fica só pro gatilho sem Protect.
+  if (!gatilho.ativo && !protectConfigurado(gatilho)) {
     // desarmado no painel: registra que o alarme chamou, mas não liga nada
     await db
       .update(schema.alarmeGatilho)
