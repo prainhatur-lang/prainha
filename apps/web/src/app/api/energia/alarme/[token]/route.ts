@@ -17,7 +17,14 @@ async function handle(req: Request, token: string) {
     .from(schema.alarmeGatilho)
     .where(eq(schema.alarmeGatilho.token, token));
   if (!gatilho) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  if (!gatilho.ativo) return NextResponse.json({ ok: false, motivo: 'gatilho desativado' });
+  if (!gatilho.ativo) {
+    // desarmado no painel: registra que o alarme chamou, mas não liga nada
+    await db
+      .update(schema.alarmeGatilho)
+      .set({ ultimoDisparoEm: new Date(), ultimoResultado: 'ignorado — estava desarmado' })
+      .where(eq(schema.alarmeGatilho.id, gatilho.id));
+    return NextResponse.json({ ok: false, motivo: 'desarmado' });
+  }
 
   let payload: unknown = null;
   if (req.method === 'POST') {

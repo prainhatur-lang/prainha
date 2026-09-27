@@ -72,6 +72,8 @@ export default async function ConfiguracoesEnergiaPage(props: {
             acao: g.acao,
             desligarAposMin: g.desligarAposMin,
             ativo: g.ativo,
+            ativoAlteradoPor: g.ativoAlteradoPor,
+            ativoAlteradoEm: g.ativoAlteradoEm?.toISOString() ?? null,
             disparos: g.disparos,
             ultimoDisparoEm: g.ultimoDisparoEm?.toISOString() ?? null,
             ultimoResultado: g.ultimoResultado,

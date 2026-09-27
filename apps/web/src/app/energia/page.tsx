@@ -49,6 +49,12 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
     .where(and(eq(schema.tuyaDispositivo.filialId, filial.id), eq(schema.tuyaDispositivo.ativo, true)))
     .orderBy(asc(schema.tuyaDispositivo.tipo), asc(schema.tuyaDispositivo.nome));
 
+  const gatilhos = await db
+    .select()
+    .from(schema.alarmeGatilho)
+    .where(eq(schema.alarmeGatilho.filialId, filial.id))
+    .orderBy(asc(schema.alarmeGatilho.criadoEm));
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -59,6 +65,15 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
         dispositivos={dispositivos}
         podeControlar={podeControlar}
         podeConfigurar={podeConfigurar}
+        gatilhos={gatilhos.map((g) => ({
+          id: g.id,
+          nome: g.nome,
+          ativo: g.ativo,
+          ativoAlteradoPor: g.ativoAlteradoPor,
+          ativoAlteradoEm: g.ativoAlteradoEm?.toISOString() ?? null,
+          ultimoDisparoEm: g.ultimoDisparoEm?.toISOString() ?? null,
+          ultimoResultado: g.ultimoResultado,
+        }))}
       />
     </main>
   );

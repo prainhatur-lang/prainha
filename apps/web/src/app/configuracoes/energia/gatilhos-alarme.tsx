@@ -6,6 +6,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { AlarmeArmar } from '@/app/energia/alarme-armar';
 
 interface Gatilho {
   id: string;
@@ -15,6 +16,8 @@ interface Gatilho {
   acao: string;
   desligarAposMin: number | null;
   ativo: boolean;
+  ativoAlteradoPor: string | null;
+  ativoAlteradoEm: string | null;
   disparos: number;
   ultimoDisparoEm: string | null;
   ultimoResultado: string | null;
@@ -110,14 +113,12 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
     setMsg(null);
   }
 
-  async function acao(g: Gatilho, tipo: 'testar' | 'excluir' | 'ativo') {
+  async function acao(g: Gatilho, tipo: 'testar' | 'excluir') {
     setErro(null);
     setMsg(null);
     if (tipo === 'excluir' && !confirm('Remover esse gatilho? A URL para de funcionar.')) return;
     const r = await fetch(`/api/energia/gatilhos/${g.id}`, {
-      method: tipo === 'testar' ? 'POST' : tipo === 'excluir' ? 'DELETE' : 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: tipo === 'ativo' ? JSON.stringify({ ativo: !g.ativo }) : undefined,
+      method: tipo === 'testar' ? 'POST' : 'DELETE',
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) setErro(data.error ?? 'erro');
@@ -141,6 +142,8 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
         Quando o alarme dispara (ex: UniFi Protect → Alarm Manager → ação <b>Webhook</b>), ele chama a
         URL do gatilho e o sistema liga os dispositivos marcados.
       </p>
+
+      <AlarmeArmar gatilhos={gatilhos} podeControlar />
 
       {msg ? <p className="mt-3 rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-800">{msg}</p> : null}
       {erro ? <p className="mt-3 rounded-md bg-rose-50 px-3 py-1.5 text-xs text-rose-700">{erro}</p> : null}
@@ -236,7 +239,7 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
                 <div>
                   <p className="text-sm font-medium text-slate-900">
                     {g.nome}{' '}
-                    {!g.ativo ? <span className="text-xs font-normal text-slate-400">(desativado)</span> : null}
+                    {!g.ativo ? <span className="text-xs font-normal text-slate-400">(desarmado)</span> : null}
                   </p>
                   <p className="text-xs text-slate-500">
                     {g.acao === 'desligar' ? 'Desliga' : 'Liga'}: {nomes || '—'}
@@ -250,9 +253,6 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
                 <div className="flex shrink-0 flex-wrap justify-end gap-1">
                   <button onClick={() => acao(g, 'testar')} className="rounded-md px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50">
                     Testar
-                  </button>
-                  <button onClick={() => acao(g, 'ativo')} className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100">
-                    {g.ativo ? 'Desativar' : 'Ativar'}
                   </button>
                   <button onClick={() => editar(g)} className="rounded-md px-2 py-1 text-xs text-sky-700 hover:bg-sky-50">
                     Editar

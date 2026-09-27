@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { AlarmeArmar, type GatilhoArmavel } from './alarme-armar';
 
 interface Dispositivo {
   id: string;
@@ -35,6 +36,7 @@ interface Props {
   dispositivos: Dispositivo[];
   podeControlar: boolean;
   podeConfigurar: boolean;
+  gatilhos: GatilhoArmavel[];
 }
 
 const TIPO_LABEL: Record<string, string> = {
@@ -64,6 +66,7 @@ export function EnergiaDashboardClient({
   dispositivos,
   podeControlar,
   podeConfigurar,
+  gatilhos,
 }: Props) {
   const [leituras, setLeituras] = useState<Record<string, Leitura>>({});
   const [carregando, setCarregando] = useState(true);
@@ -261,6 +264,8 @@ export function EnergiaDashboardClient({
           ))}
         </div>
       ) : null}
+
+      <AlarmeArmar gatilhos={gatilhos} podeControlar={podeControlar} />
 
       {erroGeral ? (
         <p className="mt-3 rounded-md bg-rose-50 px-3 py-1.5 text-xs text-rose-700">{erroGeral}</p>

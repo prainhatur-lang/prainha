@@ -47,7 +47,11 @@ export const alarmeGatilho = pgTable('alarme_gatilho', {
   /** ligar | desligar */
   acao: varchar('acao', { length: 10 }).notNull().default('ligar'),
   desligarAposMin: integer('desligar_apos_min'),
+  /** armado: false = webhook chega mas é ignorado (gerente desarma no painel). */
   ativo: boolean('ativo').notNull().default(true),
+  /** quem armou/desarmou por último (email) e quando. */
+  ativoAlteradoPor: varchar('ativo_alterado_por', { length: 200 }),
+  ativoAlteradoEm: timestamp('ativo_alterado_em', { withTimezone: true }),
   disparos: integer('disparos').notNull().default(0),
   ultimoDisparoEm: timestamp('ultimo_disparo_em', { withTimezone: true }),
   ultimoResultado: text('ultimo_resultado'),
