@@ -35,6 +35,10 @@
     {
       "path": "/api/cron/ifood-poll",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/alarme-desligar",
+      "schedule": "* * * * *"
     }
   ]
 }

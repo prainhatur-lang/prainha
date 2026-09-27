@@ -10,6 +10,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { EnergiaConfigClient } from './energia-config-client';
+import { GatilhosAlarme } from './gatilhos-alarme';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +45,12 @@ export default async function ConfiguracoesEnergiaPage(props: {
     .where(eq(schema.tuyaDispositivo.filialId, filial.id))
     .orderBy(asc(schema.tuyaDispositivo.tipo), asc(schema.tuyaDispositivo.nome));
 
+  const gatilhos = await db
+    .select()
+    .from(schema.alarmeGatilho)
+    .where(eq(schema.alarmeGatilho.filialId, filial.id))
+    .orderBy(asc(schema.alarmeGatilho.criadoEm));
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -53,6 +60,24 @@ export default async function ConfiguracoesEnergiaPage(props: {
         filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
         dispositivos={dispositivos}
       />
+      <section className="mx-auto max-w-3xl px-4 pb-10">
+        <GatilhosAlarme
+          filialId={filial.id}
+          dispositivos={dispositivos.map((d) => ({ id: d.id, nome: d.nome, tipo: d.tipo, ativo: d.ativo }))}
+          gatilhos={gatilhos.map((g) => ({
+            id: g.id,
+            nome: g.nome,
+            token: g.token,
+            dispositivoIds: g.dispositivoIds,
+            acao: g.acao,
+            desligarAposMin: g.desligarAposMin,
+            ativo: g.ativo,
+            disparos: g.disparos,
+            ultimoDisparoEm: g.ultimoDisparoEm?.toISOString() ?? null,
+            ultimoResultado: g.ultimoResultado,
+          }))}
+        />
+      </section>
     </main>
   );
 }
