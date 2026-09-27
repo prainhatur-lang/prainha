@@ -7,7 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, exists, gte, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, exists, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIsoDate } from '@/lib/folha/semana';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
@@ -45,7 +45,11 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
   // Mesmo roster que a loja recebe: lotação principal aqui OU vínculo extra
   // (quem circula entre lojas bate ponto nesta casa também).
   const funcionarios = await db
-    .select({ id: schema.funcionario.id, nome: schema.funcionario.nome })
+    .select({
+      id: schema.funcionario.id,
+      nome: schema.funcionario.nome,
+      temRosto: sql<boolean>`${schema.funcionario.faceDescriptor} IS NOT NULL`,
+    })
     .from(schema.funcionario)
     .where(
       and(

@@ -8704,14 +8704,16 @@ async function loopPontoRoster() {
     const j = await r.json().catch(() => null);
     if (!j?.ok || !Array.isArray(j.pessoas)) return;
     for (const p of j.pessoas) {
-      // COALESCE no face_descriptor: nunca deixa um pull da nuvem apagar um
-      // cadastro feito local há pouco e ainda não sincronizado (loopFaceSync).
+      // face_descriptor: a nuvem manda. Rosto nulo lá = apagado no /rh/ponto
+      // (cadastro errado) — só não apaga cadastro local ainda não sincronizado
+      // (face_sync_pendente, loopFaceSync sobe daqui a pouco).
       await sql`INSERT INTO ponto_funcionario (funcionario_id, nome, cpf, setor, cargo, login_local, ativo, face_descriptor, atualizado_em)
         VALUES (${p.funcionario_id}, ${p.nome}, ${p.cpf || null}, ${p.setor || null}, ${p.cargo || null}, ${p.login_local || null}, true,
           ${p.face_descriptor ? sql.json(p.face_descriptor) : null}, now())
         ON CONFLICT (funcionario_id) DO UPDATE SET nome=EXCLUDED.nome, cpf=EXCLUDED.cpf, setor=EXCLUDED.setor,
           cargo=EXCLUDED.cargo, login_local=EXCLUDED.login_local, ativo=true,
-          face_descriptor=COALESCE(EXCLUDED.face_descriptor, ponto_funcionario.face_descriptor), atualizado_em=now()`;
+          face_descriptor=CASE WHEN EXCLUDED.face_descriptor IS NULL AND ponto_funcionario.face_sync_pendente
+            THEN ponto_funcionario.face_descriptor ELSE EXCLUDED.face_descriptor END, atualizado_em=now()`;
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;

@@ -16,7 +16,7 @@ interface Celula {
 }
 interface Props {
   dias: { iso: string; label: string }[];
-  funcionarios: { id: string; nome: string }[];
+  funcionarios: { id: string; nome: string; temRosto: boolean }[];
   grade: Celula[];
 }
 
@@ -32,6 +32,24 @@ export function PontoManager({ dias, funcionarios, grade }: Props) {
   const router = useRouter();
   const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
   const byChave = new Map(grade.map((c) => [c.chave, c]));
+  const [apagando, setApagando] = useState<string | null>(null);
+
+  async function apagarRosto(funcionarioId: string, nome: string) {
+    if (!confirm(`Apagar o rosto cadastrado de ${nome}?\n\nA câmera do ponto deixa de reconhecer essa pessoa; na próxima vez ela escolhe o nome e cadastra de novo.`)) return;
+    setApagando(funcionarioId);
+    try {
+      const res = await fetch('/api/rh/ponto/apagar-rosto', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ funcionarioId }),
+      });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) alert(j?.error ?? 'Erro ao apagar o rosto');
+      else router.refresh();
+    } finally {
+      setApagando(null);
+    }
+  }
 
   if (funcionarios.length === 0) {
     return (
@@ -61,7 +79,20 @@ export function PontoManager({ dias, funcionarios, grade }: Props) {
               let totalSemana = 0;
               return (
                 <tr key={f.id} className="hover:bg-slate-50">
-                  <td className="sticky left-0 bg-white px-4 py-2 font-medium text-slate-900">{f.nome}</td>
+                  <td className="sticky left-0 bg-white px-4 py-2 font-medium text-slate-900">
+                    {f.nome}
+                    {f.temRosto && (
+                      <button
+                        type="button"
+                        onClick={() => apagarRosto(f.id, f.nome)}
+                        disabled={apagando === f.id}
+                        title="Apagar o rosto cadastrado no ponto facial — na próxima vez a câmera pede o nome de novo"
+                        className="ml-2 rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-normal text-slate-500 hover:border-red-300 hover:text-red-600 disabled:opacity-50"
+                      >
+                        {apagando === f.id ? 'apagando…' : '🙂 apagar rosto'}
+                      </button>
+                    )}
+                  </td>
                   {dias.map((d) => {
                     const cel = byChave.get(`${f.id}|${d.iso}`);
                     totalSemana += cel?.totalMin ?? 0;
