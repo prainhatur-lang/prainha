@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { dispararGatilho } from '@/lib/alarme-gatilho';
-import { protectConfigurado } from '@/lib/alarme-protect';
+import { armModeLigado, chamarProtect, protectConfigurado, sincronizarAtivo } from '@/lib/alarme-protect';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,17 +18,6 @@ async function handle(req: Request, token: string) {
     .from(schema.alarmeGatilho)
     .where(eq(schema.alarmeGatilho.token, token));
   if (!gatilho) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  // Com Protect configurado quem decide é ele (desarmado ele nem chama); o
-  // filtro por `ativo` fica só pro gatilho sem Protect.
-  if (!gatilho.ativo && !protectConfigurado(gatilho)) {
-    // desarmado no painel: registra que o alarme chamou, mas não liga nada
-    await db
-      .update(schema.alarmeGatilho)
-      .set({ ultimoDisparoEm: new Date(), ultimoResultado: 'ignorado — estava desarmado' })
-      .where(eq(schema.alarmeGatilho.id, gatilho.id));
-    return NextResponse.json({ ok: false, motivo: 'desarmado' });
-  }
-
   let payload: unknown = null;
   if (req.method === 'POST') {
     const texto = await req.text().catch(() => '');
@@ -38,6 +27,29 @@ async function handle(req: Request, token: string) {
       payload = { texto: texto.slice(0, 4000) };
     }
   }
+
+  // A automação do Protect fica em Programação "Sempre" (o "Quando Armado"
+  // não disparou com o perfil armado — 27/09), então quem filtra é aqui:
+  // desarmado no Concilia não liga nada. Se a coluna diz desarmado mas o
+  // Protect está armado (armaram pelo app do UniFi), vale o Protect. O teste
+  // do próprio Protect (eventId testEventId) passa sempre.
+  const teste = JSON.stringify(payload ?? '').includes('testEventId');
+  let armado = gatilho.ativo;
+  if (!armado && protectConfigurado(gatilho)) {
+    const r = await chamarProtect(gatilho, 'status');
+    if (r.ok) {
+      armado = armModeLigado(r.armMode);
+      await sincronizarAtivo(gatilho, r.armMode);
+    }
+  }
+  if (!armado && !teste) {
+    await db
+      .update(schema.alarmeGatilho)
+      .set({ ultimoDisparoEm: new Date(), ultimoResultado: 'ignorado — estava desarmado', ultimoPayload: payload })
+      .where(eq(schema.alarmeGatilho.id, gatilho.id));
+    return NextResponse.json({ ok: false, motivo: 'desarmado' });
+  }
+
   const resultado = await dispararGatilho(gatilho, payload);
   return NextResponse.json({ ok: true, resultado });
 }
