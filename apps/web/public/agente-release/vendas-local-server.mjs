@@ -14118,8 +14118,8 @@ async function apiMesaPedir(body) {
 
 // ================= AVALIE E GANHE UM DRINK (QR da mesa) =================
 // Regra do dono (27/09/2026): quem avalia pelo QR ganha UM drink da casa —
-// com álcool (Prainha GT) ou sem (Soda Italiana). Um por MESA (por visita),
-// e o mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
+// com álcool (Prainha GT) ou sem (Soda Italiana). Um por pessoa (CPF) — a
+// mesa pode ter vários — e o mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
 // da mesa, a R$ 0, com a obs "Avaliação de Cliente".
 // Liga só no Prainha Bar; outra casa liga com BRINDE_AVALIACAO=on no start.bat
 // (e BRINDE_COM / BRINDE_SEM com o nome dos produtos, % = qualquer coisa).
@@ -14145,21 +14145,8 @@ async function brindeOpcoes() {
     nome: r.nome, com_alcool: !!r.com_alcool, tem_foto: !!r.tem_foto }))
     .sort((a, b) => Number(b.com_alcool) - Number(a.com_alcool) || a.nome.localeCompare(b.nome));
 }
-// última vez que a mesa fechou: tudo depois disso é a MESMA visita
-const brindeDesdeFechou = (q, numero) => q`GREATEST(
-  COALESCE((SELECT fechada_em FROM mesa_estado WHERE numero=${numero}), '-infinity'::timestamptz),
-  COALESCE((SELECT max(fechada_em) FROM comanda WHERE numero=${numero}), '-infinity'::timestamptz))`;
-async function apiMesaBrinde(n) {
-  try {
-    const opcoes = await brindeOpcoes();
-    const numero = Number(n);
-    let mesa_ja_ganhou = false;
-    if (opcoes.length && numero >= 1 && numero <= NUMERO_MAX) {
-      mesa_ja_ganhou = (await sql`SELECT 1 FROM avaliacao_brinde WHERE mesa=${numero} AND brinde_pdv IS NOT NULL
-        AND criado_em > ${brindeDesdeFechou(sql, numero)} LIMIT 1`).length > 0;
-    }
-    return { ok: true, ativo: opcoes.length > 0, opcoes, mesa_ja_ganhou };
-  }
+async function apiMesaBrinde() {
+  try { const opcoes = await brindeOpcoes(); return { ok: true, ativo: opcoes.length > 0, opcoes }; }
   catch (e) { return { ok: true, ativo: false, opcoes: [], erro: e.message }; }
 }
 async function apiMesaAvaliar(body) {
@@ -14186,30 +14173,18 @@ async function apiMesaAvaliar(body) {
   const [{ m: mes }] = await sql`SELECT to_char(now() AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM') AS m`;
   // ⚠️ A TRAVA É O INSERT: dois celulares com o mesmo CPF ao mesmo tempo —
   // um grava, o outro bate no UNIQUE. Nada de SELECT-antes-de-gravar.
-  // UM DRINK POR MESA (regra do dono, 27/09/2026): todo mundo da mesa pode
-  // avaliar (cada CPF uma vez no mês), mas o drink vai só pro PRIMEIRO —
-  // "visita" = tudo depois do último fechamento desta mesa. O lock por mesa
-  // segura dois celulares da mesma mesa enviando juntos.
-  let mesaJaGanhou = false;
-  const reg = await sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(771001, ${numero})`;
-    if (!semBrinde) {
-      const [ja] = await tx`SELECT 1 FROM avaliacao_brinde b WHERE b.mesa=${numero} AND b.brinde_pdv IS NOT NULL
-        AND b.criado_em > ${brindeDesdeFechou(tx, numero)} LIMIT 1`;
-      if (ja) { mesaJaGanhou = true; op = null; } // avalia do mesmo jeito, sem drink
-    }
-    const [r] = await tx`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
+  // UM POR PESSOA, não por mesa (regra do dono, 27/09/2026): a mesa pode ter
+  // vários drinks, um de cada CPF que avaliou.
+  const [reg] = await sql`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
       VALUES (${cpf}, ${mes}, ${nota}, ${txt(body.comentario, 2000)}, ${txt(body.nome, 200)},
         ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}, ${op?.codigo_pdv ?? null}, ${op?.nome ?? null})
       ON CONFLICT (cpf, mes) DO NOTHING RETURNING id`;
-    return r || null;
-  });
   if (!reg) return { ok: false, ja_avaliou: true,
     erro: 'Este CPF já avaliou a casa este mês. Volte no mês que vem! 💛' };
   if (!op) {
     let nv = null;
     try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-    return { ok: true, brinde: null, mesa_ja_ganhou: mesaJaGanhou, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+    return { ok: true, brinde: null, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
   }
   const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
     junto: false, _cliente: true, _brinde: true });
@@ -16998,12 +16973,13 @@ async function inicio(){
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
   // AVALIE E GANHE: so aparece se a casa tem o drink hoje e este celular
   // ainda nao avaliou no mes (quem manda de verdade e' o servidor, por CPF)
-  if(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()){
+  if(MESA&&BRINDE&&BRINDE.ativo){
     var com=BRINDE.opcoes.find(function(o){return o.com_alcool}), sem=BRINDE.opcoes.find(function(o){return !o.com_alcool});
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
     h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
-      (BRINDE.mesa_ja_ganhou?'<div class="tx"><b>Avalie a gente ⭐</b><small>sua opinião vai direto pra gerência (o drink da mesa já saiu)</small></div>'
-        :'<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta, 1 por mesa</small></div>')+
+      // celular compartilhado: depois de avaliar, o card chama o proximo da mesa
+      (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar? ⭐</b><small>cada pessoa ganha o seu drink</small></div>'
+        :'<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>')+
       '<div class="seta">›</div></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
@@ -17035,9 +17011,9 @@ var AV=null;
 var NOTAS=['','Não gostei 😕','Podia ser melhor','Foi ok 🙂','Gostei muito! 😄','Perfeito! 🤩'];
 function passos(k){var h='<div class="passos">';for(var i=1;i<=3;i++)h+='<i'+(i<=k?' class="on"':'')+'></i>';return h+'</div>'}
 function telaAvaliar(){
-  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
+  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(!jaAvaliouAqui()&&EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
   var h=passos(1)+'<h1>Como está sendo sua experiência?</h1>'+
-    '<div class="mut">Sua opinião vai direto pra gerência.'+(BRINDE&&BRINDE.mesa_ja_ganhou?'':' No fim, você escolhe seu drink 🍹')+'</div>'+
+    '<div class="mut">Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹</div>'+
     '<div class="estrelas">';
   for(var i=1;i<=5;i++)h+='<button'+(i<=AV.nota?' class="on"':'')+' onclick="avNota('+i+')">⭐</button>';
   h+='</div><div class="nlab" id="nlab">'+NOTAS[AV.nota]+'</div>'+
@@ -17059,7 +17035,7 @@ function avPasso2(){
   var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
   if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
   app(passos(2)+'<h1>Quem está avaliando?</h1>'+
-    '<div class="mut">Uma avaliação por pessoa a cada mês — o CPF serve só pra isso.</div>'+
+    '<div class="mut">É um drink por pessoa a cada mês — o CPF serve só pra isso.</div>'+
     '<div class="tit2">CPF</div>'+
     '<input id="avcpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="avCpf(this)">'+
     '<div id="avquem" class="mut" style="margin-top:8px"></div>'+
@@ -17089,7 +17065,6 @@ function avPasso3(){
   var cpf=String(document.getElementById('avcpf').value||'').replace(/\\D/g,'');
   if(!cpfOk(cpf)){alert('Confira o CPF.');return}
   AV.cpf=cpf; AV.zap=document.getElementById('avzap').value||'';
-  if(BRINDE.mesa_ja_ganhou){avEnviar(true);return} // drink da mesa ja saiu: envia direto
   var com=BRINDE.opcoes.filter(function(o){return o.com_alcool}), sem=BRINDE.opcoes.filter(function(o){return !o.com_alcool});
   var card=function(tipo,l,em,tit){
     if(!l.length)return '';
@@ -17102,8 +17077,7 @@ function avPasso3(){
     '<div class="mut">Por nossa conta! Ele entra na sua mesa e o garçom já traz.</div>'+
     '<div class="drinks">'+card('com',com,'🍸','Com álcool')+card('sem',sem,'🥤','Sem álcool')+'</div>'+
     '<div id="sabores"></div>'+
-    '<div class="mut" style="margin-top:10px">É 1 drink por mesa: vai pra quem enviar primeiro.</div>'+
-    '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:14px">Enviar avaliação e ganhar meu drink</button>'+
+    '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:18px">Enviar avaliação e ganhar meu drink</button>'+
     '<button class="lnk" onclick="avEnviar(true)">Não quero drink, só enviar a avaliação</button>'+
     '<button class="lnk" onclick="avPasso2()">Voltar</button>';
   app(h);
@@ -17134,7 +17108,6 @@ async function avEnviar(semDrink){
   if(!r.ok&&!r.ja_avaliou){bt.disabled=false;bt.textContent='Enviar avaliação e ganhar meu drink';alert(r.erro||'Não deu certo. Chame o garçom.');return}
   try{localStorage.setItem('prainha_aval',mesAtual())}catch(e){}
   var nota=AV.nota; AV=null;
-  if(r.ok&&r.brinde&&BRINDE)BRINDE.mesa_ja_ganhou=true;
   if(r.ja_avaliou){
     app('<div class="festa"><div class="em">💛</div><h1>Obrigado de novo!</h1>'+
       '<div class="mut">'+esc(r.erro)+'</div></div><button class="b" onclick="inicio()">Voltar ao início</button>');
@@ -17145,8 +17118,7 @@ async function avEnviar(semDrink){
   var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
     (r.brinde?'<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div>'
-      :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!'+
-        (r.mesa_ja_ganhou?'<br><br>O drink da avaliação é 1 por mesa e já saiu pra quem avaliou primeiro 🍹':'')+'</div>')+'</div>'+
+      :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
     ((r.google_url||r.trip_url)&&nota>=4?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
       lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
@@ -23111,7 +23083,7 @@ const server = http.createServer(async (req, res) => {
       const aq = u.searchParams.get('area');
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
-    if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde(u.searchParams.get('n')))); }
+    if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
