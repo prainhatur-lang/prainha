@@ -155,8 +155,12 @@ export async function proxy(request: NextRequest) {
   }
 
   if (user && isAuthRoute) {
+    // Já logado: respeita o ?redirect= (link que passou pelo /login) em vez
+    // de sempre largar no dashboard. Só caminho interno ("/x", nunca "//host").
+    const destino = request.nextUrl.searchParams.get('redirect');
     const url = request.nextUrl.clone();
-    url.pathname = '/dashboard';
+    url.search = '';
+    url.pathname = destino && destino.startsWith('/') && !destino.startsWith('//') ? destino : '/dashboard';
     return NextResponse.redirect(url);
   }
 
