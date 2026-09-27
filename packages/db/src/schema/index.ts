@@ -42,3 +42,4 @@ export * from './ifood-nuvem';
 export * from './ifood-conciliacao';
 export * from './balanco';
 export * from './fidelidade';
+export * from './loja-saude';

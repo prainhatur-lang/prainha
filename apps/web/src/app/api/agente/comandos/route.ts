@@ -12,13 +12,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 export const maxDuration = 30;
 
 const LONG_POLL_TIMEOUT_MS = 25_000;
 const LONG_POLL_STEP_MS = 1_000;
+/** Sem sinal por mais que isso = o servidor da loja caiu (o long-poll volta a cada ~25 s). */
+const QUEDA_MIN_MS = 3 * 60_000;
 
 async function getFilialFromAuth(req: NextRequest) {
   const auth = req.headers.get('authorization');
@@ -36,11 +38,26 @@ export async function GET(req: NextRequest) {
   const filial = await getFilialFromAuth(req);
   if (!filial) return new NextResponse('token inválido', { status: 401 });
 
-  // Atualiza ultimo_ping (heartbeat)
-  await db
-    .update(schema.filial)
-    .set({ ultimoPing: new Date() })
-    .where(eq(schema.filial.id, filial.id));
+  // Atualiza ultimo_ping (heartbeat) e, se o sinal anterior é velho, anota a
+  // queda em loja_queda — é o histórico de quando o servidor da loja some.
+  const agora = new Date();
+  const [ant] = (await db.execute(sql`
+    WITH ant AS (SELECT ultimo_ping FROM filial WHERE id = ${filial.id} FOR UPDATE)
+    UPDATE filial SET ultimo_ping = ${agora.toISOString()}::timestamptz FROM ant
+    WHERE filial.id = ${filial.id}
+    RETURNING ant.ultimo_ping AS antes`)) as unknown as { antes: Date | string | null }[];
+  const antes = ant?.antes ? new Date(ant.antes) : null;
+  if (antes && agora.getTime() - antes.getTime() > QUEDA_MIN_MS) {
+    await db
+      .insert(schema.lojaQueda)
+      .values({
+        filialId: filial.id,
+        caiuEm: antes,
+        voltouEm: agora,
+        segundos: Math.round((agora.getTime() - antes.getTime()) / 1000),
+      })
+      .catch((e) => console.error('[comandos] loja_queda', e));
+  }
 
   const filialId = filial.id;
   async function buscarPendentes() {

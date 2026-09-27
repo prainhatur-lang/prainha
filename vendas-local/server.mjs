@@ -9088,6 +9088,76 @@ async function loopCancelNuvem() {
   } catch (err) { console.error('[cancel] nuvem:', err.message); }
   finally { cancelNuvemRodando = false; }
 }
+// ---- DIAGNÓSTICO DO WINDOWS → NUVEM: por que o servidor da loja desliga ----
+// Lê o log System (45 dias) só com os eventos que explicam queda: 41 Kernel-Power
+// (desligou sem aviso: falta de energia, botão, travou), 6008 (desligamento
+// inesperado), 1074 (alguém/algum programa mandou reiniciar — Windows Update),
+// 6005/6006 (subiu/desligou limpo), 42/107/1 (suspendeu/voltou), 27/32 e 4201/4202
+// (cabo/placa de rede caiu/voltou). Junto: boot, máquina e config de energia
+// (suspender/hibernar/desligar tela na tomada). Manda ~2 min após subir e a cada
+// 6 h; a nuvem guarda em loja_diagnostico. Assina [FILIAL_ID,'diag',e].
+const DIAG_PS = `
+$ErrorActionPreference='SilentlyContinue'
+[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$ids=41,42,107,1,1074,1076,6005,6006,6008,6013,27,32,4201,4202,10400,10402,109,7,51,153
+$ev=Get-WinEvent -FilterHashtable @{LogName='System';Id=$ids;StartTime=(Get-Date).AddDays(-45)} -MaxEvents 600 |
+  Where-Object { $_.Id -ne 1 -or $_.ProviderName -like '*Power*' } |
+  Where-Object { $_.Id -ne 7 -or $_.ProviderName -like '*disk*' } |
+  ForEach-Object {
+    $m=(($_.Message) -replace '\\s+',' ')
+    if ($m.Length -gt 350) { $m=$m.Substring(0,350) }
+    $d=$null
+    if ($_.Id -eq 41) { $d=(($_.Properties | Select-Object -First 6 | ForEach-Object { $_.Value }) -join ',') }
+    [pscustomobject]@{ t=$_.TimeCreated.ToUniversalTime().ToString('o'); id=$_.Id; p=$_.ProviderName; m=$m; d=$d }
+  }
+$os=Get-CimInstance Win32_OperatingSystem
+$cs=Get-CimInstance Win32_ComputerSystem
+function Pw($sub,$set){ $o=(powercfg /q SCHEME_CURRENT $sub $set) -join "\`n"; $h=[regex]::Matches($o,':\\s*0x([0-9a-fA-F]+)\\s*$','Multiline'); if($h.Count -ge 2){ @{ ac=[Convert]::ToInt64($h[$h.Count-2].Groups[1].Value,16); dc=[Convert]::ToInt64($h[$h.Count-1].Groups[1].Value,16) } } }
+$bat=@(Get-CimInstance Win32_Battery | ForEach-Object { @{ nome=$_.Name; carga=$_.EstimatedChargeRemaining; status=$_.BatteryStatus } })
+$nic=@(Get-NetAdapter | Where-Object { $_.Status -ne 'Not Present' } | ForEach-Object { @{ nome=$_.Name; desc=$_.InterfaceDescription; status=[string]$_.Status; vel=$_.LinkSpeed } })
+@{
+  boot=$os.LastBootUpTime.ToUniversalTime().ToString('o')
+  windows=$os.Caption + ' ' + $os.Version
+  maquina=$cs.Manufacturer + ' ' + $cs.Model
+  memoriaLivreMb=[int]($os.FreePhysicalMemory/1024)
+  energia=@{ suspender=(Pw 'SUB_SLEEP' 'STANDBYIDLE'); hibernar=(Pw 'SUB_SLEEP' 'HIBERNATEIDLE'); disco=(Pw 'SUB_DISK' 'DISKIDLE'); tela=(Pw 'SUB_VIDEO' 'VIDEOIDLE') }
+  baterias=$bat
+  rede=$nic
+  eventos=@($ev)
+} | ConvertTo-Json -Depth 5 -Compress
+`;
+function diagWindows() {
+  return new Promise((ok) => {
+    if (process.platform !== 'win32') return ok(null);
+    const enc = Buffer.from(DIAG_PS, 'utf16le').toString('base64');
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+      { timeout: 90000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out) => {
+        if (err && !out) { console.error('[diag] powershell:', err.message); return ok(null); }
+        try { ok(JSON.parse(String(out).replace(/^﻿/, '').trim())); }
+        catch (e) { console.error('[diag] json:', e.message, String(out).slice(0, 200)); ok(null); }
+      });
+  });
+}
+let diagNuvemRodando = false;
+async function loopDiagNuvem() {
+  if (diagNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  diagNuvemRodando = true;
+  try {
+    const d = await diagWindows();
+    if (!d) return;
+    d.vendasLocal = { subiuEm: new Date(Date.now() - process.uptime() * 1000).toISOString(), node: process.version };
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/diagnostico`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('diag', e), dados: d }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) console.error('[diag] nuvem recusou:', j?.erro || r.status);
+    else console.log(`[diag] ${(d.eventos || []).length} evento(s) do Windows na nuvem (boot ${d.boot})`);
+  } catch (err) { console.error('[diag] nuvem:', err.message); }
+  finally { diagNuvemRodando = false; }
+}
 // ---- MARCAS DO KDS → NUVEM: tempos de pronto/entregue no espelho do pedido ----
 // A tabela `marca` (pronto_em/entregue_em por item) só existe aqui. Sobe em
 // lotes de 300 por minuto, cursor pelo GREATEST dos dois timestamps. A nuvem
@@ -22907,6 +22977,9 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
+  // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois 6 em 6 h
+  setTimeout(() => loopDiagNuvem().catch(() => {}), 120 * 1000);
+  setInterval(() => loopDiagNuvem().catch(() => {}), 6 * 60 * 60 * 1000);
   // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
   setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
   setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);
