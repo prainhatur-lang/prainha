@@ -505,6 +505,16 @@ async function initSchema() {
   // pedido nenhum pra pousar — sem esta marca, o Pix da recreação pagaria a
   // conta da mesa e fecharia a comanda de quem ainda estava jantando.
   await addCol('pix_cobranca', 'origem text');
+  // CARTÃO FIDELIDADE: a cobrança nasce com o desconto já descontado. fid_uso
+  // é a reserva na nuvem; fid_aplicado_em = o desconto já entrou na conta
+  // (TOTALDESCONTO) — é a trava pra retentativa da baixa não descontar 2x;
+  // fid_confirmado_em = a nuvem já contou a visita e trocou o código.
+  await addCol('pix_cobranca', 'fid_uso text');
+  await addCol('pix_cobranca', 'fid_desconto numeric');
+  await addCol('pix_cobranca', 'fid_pct numeric');
+  await addCol('pix_cobranca', 'fid_nome text');
+  await addCol('pix_cobranca', 'fid_aplicado_em timestamptz');
+  await addCol('pix_cobranca', 'fid_confirmado_em timestamptz');
   // ⚠️ PIX CONFIRMADO NUNCA FICA SEM BAIXA (07/09/2026, mesas 45 e 23: a Cielo
   // aprovou R$ 390,50 e R$ 75,00, o Firebird falhou na hora de achar/gravar a
   // conta e o Pix virou "órfão" pra sempre — sem retentativa e sem aviso no
@@ -12972,7 +12982,7 @@ function moedaR(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFrac
 function rcbCalc(){
   var c=RCB.conta,itens=Number(c.total||0);
   var gorj=+(itens*RCB.gorj/100).toFixed(2);
-  var resta=Math.max(0,+((itens+gorj)-Number(c.pago||0)).toFixed(2));
+  var resta=Math.max(0,+((itens+gorj-Number(c.desconto||0)+Number(c.acrescimo||0))-Number(c.pago||0)).toFixed(2));
   var cobrar=(RCB.valor!=null)?Math.min(RCB.valor,resta):+(resta/RCB.partes).toFixed(2);
   return {itens:itens,gorj:gorj,resta:resta,cobrar:cobrar};
 }
@@ -13013,18 +13023,29 @@ function pintaReceber(){
     '<div class="tit" style="margin-top:10px">Ou digite o valor</div>'+
     '<input type="text" inputmode="decimal" placeholder="'+v.cobrar.toFixed(2).split('.').join(',')+'" oninput="rcbDigitou(this.value)">'+
     (pagos.length?'<div class="mut" style="margin-top:8px">já entrou: '+pagos.map(function(g){return esc(g.forma||'pagto')+' '+moedaR(g.valor)}).join(' · ')+'</div>':'')+
+    ((RCB.partes===1&&RCB.valor==null)
+      ? '<div class="tit" style="margin-top:10px">Cartão Prainha (opcional)</div>'+
+        '<input type="text" id="rcbfid" maxlength="4" autocapitalize="characters" autocomplete="off" placeholder="código de 4 letras" value="'+esc(RCB.fid||'')+'" style="text-transform:uppercase;letter-spacing:4px">'+
+        (RCB.fiderr?'<div style="color:#ff6b6b;margin-top:6px;font-weight:600">'+esc(RCB.fiderr)+'</div>':'')
+      : '')+
     '<button class="big" style="background:#17803d;margin-top:14px" onclick="rcbGerar()">Gerar o Pix</button>');
 }
 async function rcbGerar(){
   var n=(RCB.alvo==null)?MESA:RCB.alvo,v=rcbCalc();
+  var fe=document.getElementById('rcbfid');
+  RCB.fid=fe?String(fe.value||'').toUpperCase().replace(/[^A-Z]/g,''):'';
+  RCB.fiderr=null;
   app('<div class="mut" style="margin-top:16px">gerando o código Pix…</div>');
   var r=await jpost('/api/pix/cobrar',{mesa:n,gorjeta_pct:RCB.gorj,dividir_por:RCB.partes,
-    valor:(RCB.valor!=null?v.cobrar:undefined)});
+    valor:(RCB.valor!=null?v.cobrar:undefined),fidelidade:(RCB.fid||undefined)});
+  if(!r.ok&&r.fidelidade_erro){RCB.fiderr=r.erro;pintaReceber();return}
   if(!r.ok){alert(r.erro||'não consegui gerar o Pix');pintaReceber();return}
   RCB.cobrado=Number(r.valor||0);
+  var fd=r.fidelidade;
   app('<button class="back" onclick="rcbVoltarDoQr()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:10px">Pix de '+((RCB.alvo==null)?('mesa '+MESA):('comanda '+RCB.alvo))+'</div>'+
     '<div style="font-size:34px;font-weight:800;margin:6px 0 10px">'+moedaR(r.valor)+'</div>'+
+    (fd?'<div style="margin:-4px 0 10px;font-weight:700;color:#e8c46a">Cartão Prainha · '+esc(fd.nome)+' ('+esc(fd.nivel)+') · '+fd.pct+'% = − '+moedaR(fd.desconto)+'</div>':'')+
     (r.imagem?'<div style="background:#fff;border-radius:14px;padding:14px;display:inline-block"><img src="'+r.imagem+'" alt="QR Pix" style="display:block;width:min(70vw,300px)"></div>':'')+
     '<div class="mut" style="margin:10px 0 4px">O cliente aponta a câmera do app do banco. A confirmação aparece aqui sozinha.</div>'+
     '<div style="font-size:11px;word-break:break-all;background:rgba(255,255,255,.07);border-radius:10px;padding:10px;margin-top:6px" onclick="rcbSelec(this)">'+esc(r.copia_cola||'')+'</div>'+
@@ -14152,7 +14173,9 @@ function valorDaCobranca(conta, body) {
   const pct = body.gorjeta_pct == null
     ? padrao
     : Math.max(padrao, Math.min(30, Number(body.gorjeta_pct) || 0));
-  const comGorjeta = +(itens * (1 + pct / 100)).toFixed(2);
+  // desconto/acréscimo do pedido entram aqui (antes eram ignorados e a conta
+  // com desconto do caixa era cobrada cheia no Pix). Serviço segue sobre os itens.
+  const comGorjeta = +(itens * (1 + pct / 100) - Number(conta.desconto || 0) + Number(conta.acrescimo || 0)).toFixed(2);
   const restaTotal = Math.max(0, +(comGorjeta - Number(conta.pago || 0)).toFixed(2));
   if (restaTotal <= 0) return { erro: 'essa conta já está paga' };
   // divisão: paga 1/N do que falta
@@ -14210,12 +14233,135 @@ async function apiPixCobrar(body) {
   if (!conta.ok) return conta;
   const cob = valorDaCobranca(conta, body);
   if (cob.erro) return { ok: false, erro: cob.erro };
-  const valor = cob.valor;
+  let valor = cob.valor;
   // a CONTA que o cliente está vendo (espelho do Consumer) — o Pix fica amarrado a ela
   const cm = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(body.mesa)} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
+  let fid = null;
+  if (body.fidelidade != null && String(body.fidelidade).trim() !== '') {
+    const f = await fidReservarNaCobranca(conta, cob, body);
+    if (!f.ok) return { ok: false, erro: f.erro, fidelidade_erro: true };
+    fid = f;
+    valor = +(cob.restaTotal - f.desconto).toFixed(2);
+  }
   const r = await pixCriarCobranca({ valor, mesa: Number(body.mesa), pedido: cm ? Number(cm.codigo) : null });
-  if (!r.ok) return r;
-  return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
+  if (!r.ok) {
+    if (fid) fidNuvem('liberar', { uso_id: fid.uso_id }).catch(() => {});
+    return r;
+  }
+  if (fid) {
+    await sql`UPDATE pix_cobranca SET fid_uso=${fid.uso_id}, fid_desconto=${fid.desconto}, fid_pct=${fid.pct}, fid_nome=${fid.nome}
+      WHERE txid=${r.txid}`;
+  }
+  return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia),
+    fidelidade: fid ? { nome: fid.nome, nivel: fid.nivel, pct: fid.pct, pct_bonus: fid.pct_bonus, desconto: fid.desconto, sem_desconto: cob.restaTotal } : null };
+}
+
+// ---- CARTÃO FIDELIDADE (Cartão Prainha) ----
+// Quem guarda os cartões é a nuvem (/api/fidelidade/loja). Aqui só: pedir o
+// desconto pro código digitado, cobrar o Pix já com ele, pôr o desconto na
+// conta quando o Pix cai e avisar a nuvem (conta a visita e troca o código).
+// Regras: só Pix, só a conta INTEIRA (sem dividir/valor parcial), base = o
+// consumo (itens) — a taxa de serviço continua sobre o valor cheio.
+async function fidNuvem(acao, dados = {}, timeout = 10000) {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) throw new Error('loja sem FILIAL_ID/PAGAR_MESA_SECRET');
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'fidelidade', String(e)].join('|')).digest('hex');
+  const r = await fetch(`${PAGAR_MESA_URL}/api/fidelidade/loja`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ f: FILIAL_ID, e, s, acao, ...dados }),
+    signal: AbortSignal.timeout(timeout),
+  });
+  const txt = await r.text();
+  let j;
+  try { j = txt ? JSON.parse(txt) : {}; } catch { throw new Error('nuvem respondeu HTTP ' + r.status); }
+  if (r.status === 403 || r.status >= 500) throw new Error('nuvem: ' + (j.error || 'HTTP ' + r.status));
+  return j;
+}
+// ⚠️ CÓDIGO DE 4 LETRAS = ~280 mil combinações. Sem freio, alguém no Wi-Fi da
+// loja chuta códigos pela tela do Pix até achar o de outra pessoa. Freio:
+// 5 erros por conta a cada 15 min e 30 erros na casa inteira por hora.
+const FID_ERROS = []; // { t, mesa }
+function fidBloqueado(mesa) {
+  const agora = Date.now();
+  while (FID_ERROS.length && FID_ERROS[0].t < agora - 3600_000) FID_ERROS.shift();
+  if (FID_ERROS.length >= 30) return 'Muitas tentativas de código na casa agora. Peça ajuda ao garçom.';
+  const daMesa = FID_ERROS.filter((x) => x.mesa === mesa && x.t > agora - 15 * 60_000).length;
+  if (daMesa >= 5) return 'Muitas tentativas de código nesta conta. Aguarde uns minutos ou peça ajuda ao garçom.';
+  return null;
+}
+async function fidReservarNaCobranca(conta, cob, body) {
+  const mesa = Number(body.mesa);
+  const bloq = fidBloqueado(mesa);
+  if (bloq) return { ok: false, erro: bloq };
+  // conta inteira: dividir ou pagar uma parte não leva desconto (a base do %
+  // é a conta toda — metade da mesa não pode levar o desconto da mesa inteira)
+  if (cob.partes > 1 || (body.valor != null && cob.valor < cob.restaTotal - 0.01)) {
+    return { ok: false, erro: 'O Cartão Prainha vale pra pagar a conta inteira no Pix — sem dividir.' };
+  }
+  const codigo = String(body.fidelidade || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (codigo.length !== 4) return { ok: false, erro: 'O código do cartão tem 4 letras.' };
+  // base = consumo menos desconto que o caixa já deu (não empilha % em cima de cortesia)
+  const consumo = Math.max(0, +(Number(conta.total || 0) - Number(conta.desconto || 0)).toFixed(2));
+  let j;
+  try {
+    j = await fidNuvem('reservar', { codigo, consumo, mesa });
+  } catch (e) {
+    console.error('[fidelidade] reservar mesa ' + mesa + ':', e.message);
+    return { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora (sem internet?). Pague sem o cartão ou chame o garçom.' };
+  }
+  if (!j.ok) {
+    if (j.erro === 'nao_encontrado' || j.erro === 'codigo_invalido') FID_ERROS.push({ t: Date.now(), mesa });
+    return { ok: false, erro: j.mensagem || j.error || 'Código não aceito.' };
+  }
+  const desconto = +Number(j.desconto || 0).toFixed(2);
+  if (!(desconto > 0) || desconto >= cob.restaTotal) {
+    fidNuvem('liberar', { uso_id: j.uso_id }).catch(() => {});
+    return { ok: false, erro: 'O desconto do cartão não se aplica a esta conta.' };
+  }
+  console.log('[fidelidade] mesa ' + mesa + ': ' + j.nome + ' (' + j.nivel + ') ' + j.pct + '% = −R$ ' + desconto.toFixed(2) + ' sobre ' + consumo.toFixed(2));
+  return { ok: true, uso_id: String(j.uso_id), nome: String(j.nome || ''), nivel: String(j.nivel || ''),
+    pct: Number(j.pct) || 0, pct_bonus: Number(j.pct_bonus) || 0, desconto };
+}
+/** Põe o desconto do cartão na conta (TOTALDESCONTO), uma vez só. Chamada na
+ *  baixa do Pix, dentro da fila da mesa. A trava é o UPDATE de fid_aplicado_em:
+ *  se a gravação no pedido falhar, destrava pra próxima tentativa. */
+async function fidAplicarNaConta(txid, ped) {
+  const [c] = await sql`UPDATE pix_cobranca SET fid_aplicado_em=now()
+    WHERE txid=${txid} AND fid_uso IS NOT NULL AND fid_aplicado_em IS NULL AND COALESCE(fid_desconto,0) > 0
+    RETURNING fid_desconto, fid_nome, fid_pct`;
+  if (!c) return;
+  try {
+    const d = +Number(c.fid_desconto).toFixed(2);
+    const p = await pedTotais(ped);
+    if (!p) throw new Error('pedido ' + ped + ' não encontrado');
+    const novoDesc = +(p.desconto + d).toFixed(2);
+    const novoTot = +(p.total - d).toFixed(2);
+    const pct = p.itens > 0 ? +(novoDesc / p.itens * 100).toFixed(2) : 0;
+    if (!(await pedGravarTotais(ped, { desconto: novoDesc, pctDesconto: pct, total: novoTot }))) throw new Error('não gravou o desconto');
+    console.log('[fidelidade] ' + txid + ': desconto R$ ' + d.toFixed(2) + ' (' + c.fid_nome + ', ' + c.fid_pct + '%) na conta ' + ped);
+  } catch (e) {
+    await sql`UPDATE pix_cobranca SET fid_aplicado_em=NULL WHERE txid=${txid}`.catch(() => {});
+    throw e;
+  }
+}
+/** Pix com cartão pago → a nuvem conta a visita e troca o código. Idempotente. */
+async function fidConfirmar(txid) {
+  const [c] = await sql`SELECT fid_uso FROM pix_cobranca WHERE txid=${txid} AND fid_uso IS NOT NULL
+    AND pago_em IS NOT NULL AND fid_confirmado_em IS NULL`;
+  if (!c) return;
+  const j = await fidNuvem('confirmar', { uso_id: c.fid_uso, txid });
+  if (j.ok) await sql`UPDATE pix_cobranca SET fid_confirmado_em=now() WHERE txid=${txid}`;
+  else console.error('[fidelidade] confirmar ' + txid + ':', j.erro || j.error);
+}
+/** Fila: confirmação que não chegou na nuvem (sem internet) tenta de novo. */
+async function loopFidelidade() {
+  try {
+    const fila = await sql`SELECT txid FROM pix_cobranca WHERE fid_uso IS NOT NULL AND pago_em IS NOT NULL
+      AND fid_confirmado_em IS NULL AND pago_em > now() - interval '3 days' ORDER BY pago_em LIMIT 20`;
+    for (const x of fila) await fidConfirmar(String(x.txid)).catch((e) => console.error('[fidelidade] fila ' + x.txid + ':', e.message));
+  } catch (e) { console.error('[fidelidade] fila:', e.message); }
+  setTimeout(loopFidelidade, 60_000);
 }
 // ---- QR DE SAÍDA (catraca) ----
 // Depois de pagar, o cliente diz quantas pessoas saem com ele e recebe um QR.
@@ -14544,6 +14690,7 @@ async function apiPixConferir(txid) {
   // a cobrança já estava marcada como paga, ninguém tentava de novo e o
   // "órfão" só aparecia num JSON que ninguém abre. O cliente pagava, ia
   // embora, e a mesa seguia cobrando o valor inteiro.
+  if (cob.fid_uso) fidConfirmar(String(txid)).catch((e) => console.error('[fidelidade] confirmar ' + txid + ':', e.message));
   const b = await pixBaixarNaConta(String(txid)).catch((err) => ({ ok: false, erro: err.message }));
   if (!b.ok) console.error('[pix] ⚠️ ' + txid + ' CONFIRMADO (R$ ' + Number(cob.valor).toFixed(2) + ', mesa ' + cob.mesa +
     ') mas ainda SEM BAIXA: ' + b.erro + ' — a fila tenta de novo e o caixa vê em vermelho');
@@ -14661,6 +14808,10 @@ async function pixBaixarNaConta(txid, opts = {}) {
         if (s && s.ok && s.pago && s.nsu) { nsu = String(s.nsu); await sql`UPDATE pix_cobranca SET nsu=${nsu} WHERE txid=${txid}`; }
       }
       if (!nsu && cob.provedor !== 'cielo') nsu = cob.e2e || null;
+      // 1b. CARTÃO PRAINHA: o Pix foi cobrado com desconto — o desconto entra
+      //     na conta ANTES do pagamento, senão a conta fica aberta com a
+      //     diferença (e a trava de "pago em dobro" mede contra o total errado)
+      await fidAplicarNaConta(txid, ped);
       // 2. JÁ ESTÁ NESTA CONTA? (fail-closed: sem resposta, não grava)
       let pagFb = null;
       if (nativo()) {
@@ -16894,7 +17045,7 @@ var CONTA=null;
 function calcPagar(){
   var itens=CONTA.total||0;
   var gorj=+(itens*PGGORJ/100).toFixed(2);
-  var total=+(itens+gorj).toFixed(2);
+  var total=+(itens+gorj-Number(CONTA.desconto||0)+Number(CONTA.acrescimo||0)).toFixed(2);
   var resta=Math.max(0,+(total-(CONTA.pago||0)).toFixed(2));
   // A divisão é sempre sobre o que FALTA, não sobre o total: numa conta
   // rachada, quem paga depois já encontra o saldo menor. E quem quiser pagar
@@ -16955,7 +17106,10 @@ function pintaPagar(){
     '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · conta de R$ '+v.resta.toLocaleString('pt-BR',{minimumFractionDigits:2})+' dividida por '+PGPARTES:'total a pagar')+'</div>'+
     '<div class="card"><div class="lin"><span>Consumo</span><b>R$ '+v.itens.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
     (CONTA.pago>0?'<div class="lin"><span>já pago</span><b>− R$ '+Number(CONTA.pago).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>':'')+
-    '<div class="lin"><span>Serviço</span><b>R$ '+v.gorj.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div></div>'+
+    '<div class="lin"><span>Serviço</span><b>R$ '+v.gorj.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+    (CONTA.desconto>0?'<div class="lin"><span>Desconto</span><b>− R$ '+Number(CONTA.desconto).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>':'')+
+    (CONTA.acrescimo>0?'<div class="lin"><span>Acréscimo</span><b>R$ '+Number(CONTA.acrescimo).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>':'')+
+    '</div>'+
     // A taxa de serviço é opcional por lei, mas tirar não é decisão de tela:
     // passa pelo garçom. Aqui o cliente só escolhe o padrão da casa ou dar
     // mais — nunca menos.
@@ -17021,6 +17175,15 @@ function telaFormaPg(){
   var h='<h1>Como você quer pagar</h1><div class="mesa">'+quem+'</div>'+
     '<div class="valor">R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
     '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · dividido por '+PGPARTES:'total a pagar')+'</div>';
+  // CARTÃO PRAINHA: só no Pix e só na conta inteira (sem dividir)
+  if(st.pix.disponivel&&PGPARTES===1&&PGVALOR==null){
+    h+='<div class="card" style="text-align:left"><div class="tit2" style="margin-top:0">Tem o Cartão Prainha?</div>'+
+      '<div class="mut" style="font-size:13px;margin-bottom:8px">Digite o código de 4 letras do seu cartão (na Wallet do celular) e o desconto já sai no Pix.</div>'+
+      '<input id="fidcod" maxlength="4" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="ABCD" value="'+esc(FIDCOD||'')+'" '+
+        'style="width:100%;box-sizing:border-box;font-size:26px;font-weight:800;letter-spacing:10px;text-align:center;text-transform:uppercase;padding:10px;border-radius:12px;border:1px solid rgba(0,0,0,.2)">'+
+      (FIDERR?'<div class="aviso" style="margin-top:8px">'+esc(FIDERR)+'</div>':'')+
+      '</div>';
+  }
   h+= st.pix.disponivel
     ? '<button class="b pix" onclick="gerarPix('+alvo+')">Pix<small>o código aparece na tela · cai na hora</small></button>'
     : '<button class="b pix off" disabled>Pix<small>indisponível agora</small></button>';
@@ -17034,14 +17197,24 @@ function telaFormaPg(){
   h+='<button class="b g" onclick="pintaPagar()">Voltar</button>';
   app(h);
 }
+var FIDCOD='',FIDERR=null;
 async function gerarPix(n){
+  var fe=document.getElementById('fidcod');
+  FIDCOD=fe?String(fe.value||'').toUpperCase().replace(/[^A-Z]/g,''):'';
+  FIDERR=null;
   app('<h1>Pagar com Pix</h1><div class="mut">gerando o código…</div>');
   var r=await post('/api/pix/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES,
-    valor:(PGVALOR!=null?calcPagar().minha:undefined)});
+    valor:(PGVALOR!=null?calcPagar().minha:undefined),fidelidade:(FIDCOD||undefined)});
+  if(!r.ok&&r.fidelidade_erro){FIDERR=r.erro;telaFormaPg();return}
   if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui gerar')+'</div>'+
     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');return}
+  var fd=r.fidelidade;
   app('<h1>Pix gerado</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
+    (fd?'<div class="card" style="text-align:left"><div class="lin"><span>Olá, <b>'+esc(fd.nome)+'</b>! Cartão '+esc(fd.nivel)+'</span></div>'+
+      '<div class="lin"><span>Conta sem o cartão</span><b>R$ '+Number(fd.sem_desconto).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+      '<div class="lin"><span>Desconto '+fd.pct+'%'+(fd.pct_bonus>0?' (com +'+fd.pct_bonus+'% de dia de semana)':'')+'</span><b>− R$ '+Number(fd.desconto).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'+
+      '<div class="mut" style="font-size:12.5px;margin-top:6px">Depois do pagamento o seu cartão ganha um código novo.</div></div>':'')+
     (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR Code Pix">':'')+
     '<div class="mut" style="margin:10px 0 6px">Ou copie o código:</div>'+
     '<div class="copia" id="cp">'+esc(r.copia_cola||'')+'</div>'+
@@ -18685,7 +18858,8 @@ function pinta(el){
       h+='<div class="row" style="margin-top:6px">'+(PODE.desconto?'<button class="seg" onclick="irTela(\\'desc\\')">% Desconto</button>':'<button class="seg" disabled style="opacity:.5">Desconto (sem permissão)</button>')+
          (PODE.desconto?'<button class="seg" onclick="irTela(\\'acr\\')">+ Acréscimo</button>':'<button class="seg" disabled style="opacity:.5">Acréscimo (sem permissão)</button>')+'</div>';
       h+='<div class="row"><button class="big" style="margin-top:6px" onclick="irTela(\\'rec\\')">💵 Dinheiro</button>'+
-         '<button class="big" style="margin-top:6px;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button></div>';
+         '<button class="big" style="margin-top:6px;background:#0f8a3e" onclick="pixCaixa()">📲 Pix</button>'+
+         '<button class="seg" style="margin-top:6px;width:100%" onclick="pixCaixaFid()">📲 Pix com Cartão Prainha (desconto)</button></div>';
       // A maquininha às vezes recebe e NÃO baixa a comanda. Aqui o caixa
       // registra o que entrou, com a foto do comprovante — e pode ser parcial.
       h+='<button class="big" style="margin-top:6px;background:#0369a1" onclick="irTela(\\'manual\\')">🧾 Recebimento manual (com comprovante)</button>';
@@ -19008,16 +19182,22 @@ async function aplicaDesc(){
    tela oferece a nota. */
 var PIXT=null;
 function pixPara(){if(PIXT){clearInterval(PIXT);PIXT=null}}
+var FIDCX=false;
+function pixCaixaFid(){FIDCX=true;pixCaixa()}
 async function pixCaixa(){
+  var usaFid=FIDCX;FIDCX=false;
   TELA='pix';
   var el=document.getElementById('main');
   el.innerHTML='<div class="mut" style="padding:16px">gerando o código Pix…</div>';
-  var r=await jpost('/api/pix/cobrar',alvo({mesa:MESA,valor:CONTA.falta}));
+  var fcod=null;
+  if(usaFid){fcod=prompt('Código do Cartão Prainha (4 letras):')||'';fcod=fcod.toUpperCase().replace(/[^A-Z]/g,'');if(!fcod){irTela('conta');return}}
+  var r=await jpost('/api/pix/cobrar',alvo(fcod?{mesa:MESA,fidelidade:fcod}:{mesa:MESA,valor:CONTA.falta}));
   if(!r.ok){el.innerHTML='<div class="card"><div class="err">'+esc(r.erro||'não consegui gerar o Pix')+'</div>'+
     '<button class="big g" onclick="irTela(\\'conta\\')">Voltar</button></div>';return}
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="pixPara();irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card" style="text-align:center"><div class="tit" style="margin-top:0">Pix · '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+'</div>'+
     '<div style="font-size:32px;font-weight:800;margin:4px 0 10px">'+brl(r.valor)+'</div>'+
+    (r.fidelidade?'<div style="margin:-6px 0 10px;font-weight:700;color:#8a6d1a">Cartão Prainha · '+esc(r.fidelidade.nome)+' ('+esc(r.fidelidade.nivel)+') · '+r.fidelidade.pct+'% = − '+brl(r.fidelidade.desconto)+'</div>':'')+
     (r.imagem?'<img src="'+r.imagem+'" alt="QR Pix" style="width:min(60vw,260px);display:block;margin:0 auto">':'')+
     '<div class="mut" style="margin-top:10px">O cliente aponta a câmera do app do banco. A confirmação aparece aqui sozinha.</div>'+
     '<div style="font-size:11px;word-break:break-all;background:#f7f7fa;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">'+esc(r.copia_cola||'')+'</div>'+
@@ -22651,6 +22831,7 @@ async function main() {
   loopEspelho();
   loopPixPendente();
   loopPixSemBaixa();
+  setTimeout(loopFidelidade, 90_000);
   setTimeout(loopFecharQuitadas, 30000);
   loopAutoUpdate();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
