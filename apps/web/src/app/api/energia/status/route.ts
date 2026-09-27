@@ -38,7 +38,10 @@ export async function GET(req: Request) {
               : d.tipo === 'sensor_temperatura'
                 ? interpretarTemperatura(items)
                 : interpretarStatus(items, d.codigoSwitch);
-        return { id: d.id, ...leitura, online: true, erro: null as string | null };
+        // Datapoints liga/desliga que o aparelho aceita — pra acertar o
+        // "codigo_switch" do cadastro (switch_1, switch, switch_led...).
+        const codigosSwitch = items.filter((i) => typeof i.value === 'boolean').map((i) => i.code);
+        return { id: d.id, ...leitura, codigosSwitch, online: true, erro: null as string | null };
       } catch (e) {
         return {
           id: d.id,
