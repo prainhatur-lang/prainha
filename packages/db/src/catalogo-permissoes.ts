@@ -198,6 +198,11 @@ export const PERMISSOES: PermissaoDef[] = [
   // === Orcamentos de eventos/grupos ===
   ...crud('orcamento', 'orçamentos de eventos', []),
 
+  // === Cartão fidelidade (Wallet) — do grupo, não da filial ===
+  { codigo: 'fidelidade.read', modulo: 'fidelidade', acao: 'read', descricao: 'Ver cartões fidelidade', escopo: 'organizacao' },
+  { codigo: 'fidelidade.create', modulo: 'fidelidade', acao: 'create', descricao: 'Convidar cliente pro cartão fidelidade', escopo: 'organizacao' },
+  { codigo: 'fidelidade.configurar', modulo: 'fidelidade', acao: 'configurar', descricao: 'Configurar níveis do cartão fidelidade e bloquear cartão', escopo: 'organizacao' },
+
   // === Atendimento WhatsApp (Nina) ===
   {
     codigo: 'atendimento.read',

@@ -118,6 +118,9 @@ export async function proxy(request: NextRequest) {
   // cliente; estes são só pra funcionário).
   const isCanalPublico = path.startsWith('/canal/');
   const isClimaPublico = path.startsWith('/clima/');
+  // /cartao/[token] é o cartão fidelidade do cliente (link mandado no zap;
+  // o token é a senha do cartão, sem login). O painel é /fidelidade.
+  const isCartaoPublico = path.startsWith('/cartao/');
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||
@@ -135,7 +138,8 @@ export async function proxy(request: NextRequest) {
     isTrabalhePublico ||
     isTabuaraPublico ||
     isCanalPublico ||
-    isClimaPublico;
+    isClimaPublico ||
+    isCartaoPublico;
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

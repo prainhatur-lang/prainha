@@ -145,6 +145,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Conversas da Nina', href: '/atendimento', perm: 'atendimento.read' },
           { label: 'Avaliações', href: '/avaliacoes', perm: 'avaliacao.read' },
           { label: 'Cadastro de clientes', href: '/cadastros/clientes', perm: 'reserva.read' },
+          { label: 'Cartão fidelidade', href: '/fidelidade', perm: 'fidelidade.read' },
         ],
       },
       {
