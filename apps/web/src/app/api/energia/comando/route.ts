@@ -5,6 +5,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { ligarDesligar } from '@/lib/tuya';
+import { filiaisDoUsuario } from '@/lib/filiais';
 
 export async function POST(req: Request) {
   const guard = await exigirPermApi('tuya.control');
@@ -20,6 +21,10 @@ export async function POST(req: Request) {
     .from(schema.tuyaDispositivo)
     .where(eq(schema.tuyaDispositivo.id, dispositivoId));
   if (!dispositivo) return NextResponse.json({ error: 'dispositivo não encontrado' }, { status: 404 });
+  const filiais = await filiaisDoUsuario(guard.user.id);
+  if (!filiais.some((f) => f.id === dispositivo.filialId)) {
+    return NextResponse.json({ error: 'sem acesso a essa filial' }, { status: 403 });
+  }
 
   try {
     await ligarDesligar(dispositivo.tuyaDeviceId, dispositivo.codigoSwitch, ligar);

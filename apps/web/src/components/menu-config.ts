@@ -110,7 +110,7 @@ export const MENU_AREAS: MenuArea[] = [
       {
         label: 'Energia',
         links: [
-          { label: 'Painel de energia', href: '/energia', perm: 'tuya.read' },
+          { label: 'Quadro de comando', href: '/energia', perm: 'tuya.read' },
           {
             label: 'Dispositivos (Tuya)',
             href: '/configuracoes/energia',

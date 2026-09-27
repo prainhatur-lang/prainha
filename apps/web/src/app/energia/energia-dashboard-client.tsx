@@ -1,8 +1,9 @@
 'use client';
 
-// Painel de energia: consumo (entrada geral x saídas/circuitos) e controle
-// (liga/desliga) dos dispositivos Tuya da filial. Faz polling de
-// /api/energia/status a cada 15s — a Tuya não empurra dados pro navegador.
+// Quadro de comando da filial: alarme (com confirmação), luzes e disjuntores
+// em blocos grandes de liga/desliga com o estado real, sensores, e embaixo o
+// consumo (entrada geral x saídas). Faz polling de /api/energia/status a cada
+// 15s — a Tuya não empurra dados pro navegador.
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -52,6 +53,14 @@ const TIPO_LABEL: Record<string, string> = {
 };
 
 const TIPOS_SENSOR = new Set(['sensor_porta', 'sensor_presenca', 'sensor_temperatura']);
+
+const ICONE: Record<string, string> = {
+  luz: '💡',
+  saida: '⚡',
+  bomba: '💧',
+  motor: '⚙️',
+  outro: '🔌',
+};
 
 const POLL_MS = 15000;
 
@@ -119,11 +128,128 @@ export function EnergiaDashboardClient({
     }
   }
 
+  // "Ligar/Desligar todas" de um grupo: só manda comando pra quem está
+  // online e no estado contrário.
+  async function alternarGrupo(lista: Dispositivo[], ligar: boolean) {
+    const alvos = lista.filter((d) => {
+      const l = leituras[d.id];
+      return l?.online && l.ligado !== null && l.ligado !== ligar;
+    });
+    await Promise.all(alvos.map((d) => alternar(d, ligar)));
+  }
+
   const entradas = dispositivos.filter((d) => d.tipo === 'entrada');
   const outros = dispositivos.filter((d) => d.tipo !== 'entrada');
+  const luzes = dispositivos.filter((d) => d.tipo === 'luz');
+  const disjuntores = dispositivos.filter((d) => d.tipo !== 'entrada' && d.tipo !== 'luz' && !TIPOS_SENSOR.has(d.tipo));
+  const sensores = dispositivos.filter((d) => TIPOS_SENSOR.has(d.tipo));
 
   const consumoEntradaW = entradas.reduce((acc, d) => acc + (leituras[d.id]?.potenciaW ?? 0), 0);
   const consumoSaidasW = outros.reduce((acc, d) => acc + (leituras[d.id]?.potenciaW ?? 0), 0);
+
+  // Bloco do quadro de comando: o bloco inteiro é o interruptor.
+  function Tecla({ d }: { d: Dispositivo }) {
+    const l = leituras[d.id];
+    const ligado = l?.ligado ?? null;
+    const enviando = aguardando.has(d.id);
+    const offline = !!l && !l.online;
+    const clicavel = podeControlar && !offline && ligado !== null && !enviando;
+    const cor = offline
+      ? 'border-rose-200 bg-rose-50'
+      : ligado
+        ? 'border-emerald-500 bg-emerald-500 text-white'
+        : 'border-slate-200 bg-white';
+    return (
+      <li>
+        <button
+          type="button"
+          onClick={() => clicavel && alternar(d, !ligado)}
+          disabled={!clicavel}
+          title={offline ? (l?.erro ?? 'offline') : undefined}
+          className={`flex h-full w-full flex-col items-start rounded-2xl border-2 p-4 text-left shadow-sm transition active:scale-[0.98] disabled:cursor-default ${cor}`}
+        >
+          <div className="flex w-full items-start justify-between gap-2">
+            <span className="text-2xl" aria-hidden>
+              {ICONE[d.tipo] ?? '🔌'}
+            </span>
+            {/* chave estilo interruptor */}
+            <span
+              aria-hidden
+              className={`relative mt-1 inline-block h-6 w-11 shrink-0 rounded-full ${
+                ligado ? 'bg-white/40' : 'bg-slate-200'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full shadow transition-all ${
+                  ligado ? 'left-[22px] bg-white' : 'left-0.5 bg-white'
+                }`}
+              />
+            </span>
+          </div>
+          <p className={`mt-2 text-sm font-semibold leading-tight ${ligado && !offline ? 'text-white' : 'text-slate-900'}`}>
+            {d.nome}
+          </p>
+          <p
+            className={`mt-1 text-lg font-extrabold tracking-wide ${
+              offline ? 'text-rose-600' : ligado ? 'text-white' : 'text-slate-400'
+            }`}
+          >
+            {enviando
+              ? 'ENVIANDO...'
+              : offline
+                ? 'OFFLINE'
+                : ligado === true
+                  ? 'LIGADO'
+                  : ligado === false
+                    ? 'DESLIGADO'
+                    : carregando
+                      ? '...'
+                      : 'SEM LEITURA'}
+          </p>
+          {l?.potenciaW != null && !offline ? (
+            <p className={`text-xs ${ligado ? 'text-white/80' : 'text-slate-400'}`}>{fmtNum(l.potenciaW, 0)} W</p>
+          ) : null}
+        </button>
+      </li>
+    );
+  }
+
+  function Grupo({ titulo, lista, emMassa }: { titulo: string; lista: Dispositivo[]; emMassa?: string }) {
+    if (lista.length === 0) return null;
+    return (
+      <>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-slate-700">
+            {titulo}{' '}
+            <span className="font-normal text-slate-400">
+              · {lista.filter((d) => leituras[d.id]?.ligado).length} de {lista.length} ligados
+            </span>
+          </h2>
+          {emMassa && podeControlar && lista.length > 1 ? (
+            <div className="flex gap-2">
+              <button
+                onClick={() => alternarGrupo(lista, true)}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"
+              >
+                Ligar {emMassa}
+              </button>
+              <button
+                onClick={() => alternarGrupo(lista, false)}
+                className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-300"
+              >
+                Desligar {emMassa}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <ul className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {lista.map((d) => (
+            <Tecla key={d.id} d={d} />
+          ))}
+        </ul>
+      </>
+    );
+  }
 
   function Card({ d }: { d: Dispositivo }) {
     const l = leituras[d.id];
@@ -234,7 +360,7 @@ export function EnergiaDashboardClient({
     <section className="mx-auto max-w-5xl px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Painel de energia</h1>
+          <h1 className="text-xl font-bold text-slate-900">Quadro de comando</h1>
           <p className="text-sm text-slate-500">{filialNome} · {dispositivos.length} dispositivos</p>
         </div>
         {podeConfigurar ? (
@@ -271,22 +397,7 @@ export function EnergiaDashboardClient({
         <p className="mt-3 rounded-md bg-rose-50 px-3 py-1.5 text-xs text-rose-700">{erroGeral}</p>
       ) : null}
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 bg-white p-4">
-          <p className="text-xs uppercase tracking-wide text-slate-400">Entrada (medida)</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{fmtNum(consumoEntradaW, 0)} W</p>
-          <p className="text-xs text-slate-500">{entradas.length} ponto(s) de entrada geral</p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4">
-          <p className="text-xs uppercase tracking-wide text-slate-400">Saídas somadas</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{fmtNum(consumoSaidasW, 0)} W</p>
-          <p className="text-xs text-slate-500">{outros.length} luz/bomba/motor/circuito monitorado</p>
-        </div>
-      </div>
-
-      {carregando ? (
-        <p className="mt-6 text-sm text-slate-400">Carregando estado dos dispositivos...</p>
-      ) : dispositivos.length === 0 ? (
+      {dispositivos.length === 0 ? (
         <div className="mt-6 rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-sm text-slate-400">
           Nenhum dispositivo cadastrado.{' '}
           {podeConfigurar ? (
@@ -297,23 +408,40 @@ export function EnergiaDashboardClient({
         </div>
       ) : (
         <>
-          {entradas.length > 0 ? (
+          <Grupo titulo="Luzes" lista={luzes} emMassa="todas" />
+          <Grupo titulo="Disjuntores e equipamentos" lista={disjuntores} emMassa="todos" />
+
+          {sensores.length > 0 ? (
             <>
-              <h2 className="mt-6 text-sm font-semibold text-slate-700">Entrada</h2>
+              <h2 className="mt-6 text-sm font-semibold text-slate-700">Sensores</h2>
               <ul className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {entradas.map((d) => (
+                {sensores.map((d) => (
                   <Card key={d.id} d={d} />
                 ))}
               </ul>
             </>
           ) : null}
 
-          <h2 className="mt-6 text-sm font-semibold text-slate-700">Saídas e equipamentos</h2>
-          <ul className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {outros.map((d) => (
-              <Card key={d.id} d={d} />
-            ))}
-          </ul>
+          <h2 className="mt-8 text-sm font-semibold text-slate-700">Consumo</h2>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Entrada (medida)</p>
+              <p className="mt-1 text-2xl font-bold text-slate-900">{fmtNum(consumoEntradaW, 0)} W</p>
+              <p className="text-xs text-slate-500">{entradas.length} ponto(s) de entrada geral</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Saídas somadas</p>
+              <p className="mt-1 text-2xl font-bold text-slate-900">{fmtNum(consumoSaidasW, 0)} W</p>
+              <p className="text-xs text-slate-500">{outros.length} luz/bomba/motor/circuito monitorado</p>
+            </div>
+          </div>
+          {entradas.length > 0 ? (
+            <ul className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {entradas.map((d) => (
+                <Card key={d.id} d={d} />
+              ))}
+            </ul>
+          ) : null}
         </>
       )}
     </section>
