@@ -132,6 +132,7 @@ export async function POST(request: Request) {
   if (!body || !autoriza(String(body.f || ''), Number(body.e || 0), String(body.s || ''))) {
     return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
   }
+  if (body.tipo === 'avaliacao_nova') return avaliacaoNova(String(body.f), body as unknown as AvaliacaoNova);
   const id = String(body.id || '');
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ ok: false, erro: 'id inválido' }, { status: 400 });
@@ -198,4 +199,67 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: false, erro: 'tipo inválido' }, { status: 400 });
+}
+
+type AvaliacaoNova = {
+  cpf?: string; mes?: string; nota?: number; comentario?: string | null; nome?: string | null;
+  whatsapp?: string | null; mesa?: number | null; brinde?: string | null; criado_em?: string;
+};
+
+/** AVALIE E GANHE UM DRINK: a avaliação feita no QR da mesa (vendas-local)
+ *  chega aqui depois que o drink já entrou na conta. A trava de um-por-mês
+ *  é da loja; aqui o índice único (filial, cpf, mes_ref) só evita duplicar
+ *  quando a loja reenvia. Devolve o link do Google pra nota alta — convite
+ *  opcional, NUNCA condição pro drink (Google proíbe avaliação incentivada). */
+async function avaliacaoNova(f: string, b: AvaliacaoNova) {
+  const nota = Number(b.nota);
+  const cpf = String(b.cpf || '').replace(/\D/g, '');
+  const mes = String(b.mes || '');
+  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5) || cpf.length !== 11 || !/^\d{4}-\d{2}$/.test(mes)) {
+    return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
+  }
+  const { db, schema } = await import('@concilia/db');
+  const { eq } = await import('drizzle-orm');
+  const [fil] = await db
+    .select({ googleUrl: schema.filial.googleReviewUrl, corte: schema.filial.notaCorteGoogle })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, f))
+    .limit(1);
+  if (!fil) return NextResponse.json({ ok: false, erro: 'filial' }, { status: 404 });
+  const alta = nota >= (fil.corte ?? 4);
+  const txt = (v: unknown, n: number) => (String(v ?? '').trim() ? String(v).trim().slice(0, n) : null);
+  const mesa = Number(b.mesa) || null;
+  const criado = b.criado_em && !Number.isNaN(Date.parse(b.criado_em)) ? new Date(b.criado_em) : new Date();
+  const [nova] = await db
+    .insert(schema.avaliacao)
+    .values({
+      filialId: f,
+      nota,
+      comentario: txt(b.comentario, 2000),
+      nome: txt(b.nome, 200),
+      whatsapp: String(b.whatsapp || '').replace(/\D/g, '').slice(0, 30) || null,
+      origem: mesa ? `mesa-${mesa} (QR)` : 'mesa (QR)',
+      foiPraGoogle: alta && !!fil.googleUrl,
+      // nota alta nasce resolvida; baixa entra no painel pra equipe ligar
+      status: alta ? 'resolvido' : 'novo',
+      cpf,
+      mesRef: mes,
+      brinde: txt(b.brinde, 200),
+      mesa,
+      criadoEm: criado,
+    })
+    .onConflictDoNothing()
+    .returning({ id: schema.avaliacao.id });
+  let id = nova?.id ?? null;
+  if (!id) {
+    // reenvio: já está aqui — devolve o id pra loja parar de tentar
+    const { and } = await import('drizzle-orm');
+    const [ja] = await db
+      .select({ id: schema.avaliacao.id })
+      .from(schema.avaliacao)
+      .where(and(eq(schema.avaliacao.filialId, f), eq(schema.avaliacao.cpf, cpf), eq(schema.avaliacao.mesRef, mes)))
+      .limit(1);
+    id = ja?.id ?? null;
+  }
+  return NextResponse.json({ ok: true, id, google_url: alta ? fil.googleUrl ?? null : null });
 }

@@ -40,6 +40,13 @@ export const avaliacao = pgTable(
     observacaoInterna: text('observacao_interna'),
     /** Usuario que resolveu/atendeu (auth.users id). */
     resolvidoPor: uuid('resolvido_por'),
+    /** AVALIE E GANHE UM DRINK (QR da mesa, vendas-local): CPF de quem
+     *  avaliou, mês 'YYYY-MM' (BRT) e o drink que ganhou. Um por CPF por mês
+     *  — índice único parcial avaliacao_filial_cpf_mes_uq (migrate-avaliacao-brinde). */
+    cpf: varchar('cpf', { length: 11 }),
+    mesRef: varchar('mes_ref', { length: 7 }),
+    brinde: text('brinde'),
+    mesa: integer('mesa'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

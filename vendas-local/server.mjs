@@ -544,6 +544,13 @@ async function initSchema() {
     grupo text NOT NULL, numero integer, criado_em timestamptz DEFAULT now())`;
   await sql`CREATE INDEX IF NOT EXISTS ix_item_junto_grupo ON item_junto(grupo)`;
   await sql`CREATE TABLE IF NOT EXISTS observacao_sugerida (categoria text, texto text)`;
+  // AVALIE E GANHE UM DRINK: a trava "um por CPF por mês" mora aqui (UNIQUE,
+  // atômico). A nuvem recebe a cópia depois (nuvem_em) — sem internet a regra vale igual.
+  await sql`CREATE TABLE IF NOT EXISTS avaliacao_brinde (id bigserial PRIMARY KEY,
+    cpf varchar(11) NOT NULL, mes char(7) NOT NULL, nota integer NOT NULL, comentario text,
+    nome text, whatsapp text, mesa integer, brinde_pdv integer, brinde_nome text,
+    pedido_fb bigint, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid,
+    UNIQUE (cpf, mes))`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -4610,6 +4617,9 @@ async function apiVendaEnviar(body) {
     const qtd = Math.max(1, Math.min(99, Number(p.qtd) || 1));
     itens.push({ ...cat, preco: Number(cat.preco), qtd, obs: String(p.obs || '').trim() });
   }
+  // brinde da avaliação: a casa dá o drink — entra na conta a R$ 0 (a obs
+  // "Avaliação de Cliente" vai no item e sai na comanda impressa)
+  if (body._brinde) for (const it of itens) it.preco = 0;
   // QUEM LANÇOU vai em cada item. `_garcom` já vinha do middleware da rota e
   // NUNCA era usado — resultado: nenhum item lançado pelas nossas telas tinha
   // autor, e na hora de conferir a conta ninguém sabia de quem era. O pedido
@@ -14106,6 +14116,99 @@ async function apiMesaPedir(body) {
   return r;
 }
 
+// ================= AVALIE E GANHE UM DRINK (QR da mesa) =================
+// Regra do dono (27/09/2026): quem avalia pelo QR ganha UM drink da casa —
+// com álcool (Prainha GT) ou sem (Soda Italiana). Um por pessoa (CPF) e o
+// mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
+// da mesa, a R$ 0, com a obs "Avaliação de Cliente".
+// Liga só no Prainha Bar; outra casa liga com BRINDE_AVALIACAO=on no start.bat
+// (e BRINDE_COM / BRINDE_SEM com o nome dos produtos, % = qualquer coisa).
+const BRINDE_OBS = 'Avaliação de Cliente';
+function brindeAtivo() {
+  const v = String(process.env.BRINDE_AVALIACAO || '').toLowerCase();
+  if (v) return v === 'on';
+  return FILIAL_ID === '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9'; // 01 Prainha Bar
+}
+async function brindeOpcoes() {
+  if (!brindeAtivo()) return [];
+  const com = process.env.BRINDE_COM || 'Prainha GT';
+  const sem = process.env.BRINDE_SEM || 'Soda Italiana%';
+  // DISTINCT ON nome: o mesmo drink cadastrado 2x (ex.: cópia do Terraço) aparece uma vez só
+  const rows = await sql`SELECT DISTINCT ON (trim(nome)) codigo_pdv, produto_codigo, trim(nome) AS nome,
+      (trim(nome) ILIKE ${com}) AS com_alcool,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local
+    WHERE (trim(nome) ILIKE ${com} OR trim(nome) ILIKE ${sem}) AND sem_estoque IS NOT TRUE
+      AND categoria NOT IN (SELECT categoria FROM grupo_oculto)
+    ORDER BY trim(nome), cardapio_digital DESC NULLS LAST, codigo_pdv DESC`;
+  return rows.map((r) => ({ codigo_pdv: Number(r.codigo_pdv), produto_codigo: Number(r.produto_codigo),
+    nome: r.nome, com_alcool: !!r.com_alcool, tem_foto: !!r.tem_foto }))
+    .sort((a, b) => Number(b.com_alcool) - Number(a.com_alcool) || a.nome.localeCompare(b.nome));
+}
+async function apiMesaBrinde() {
+  try { const opcoes = await brindeOpcoes(); return { ok: true, ativo: opcoes.length > 0, opcoes }; }
+  catch (e) { return { ok: true, ativo: false, opcoes: [], erro: e.message }; }
+}
+async function apiMesaAvaliar(body) {
+  const numero = Number(body.mesa);
+  if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
+  // mesma trava do pedido: o drink vai pra conta de QUEM está na mesa agora
+  const ses = await apiMesaSessao(numero, body.sessao, body.desde);
+  if (!ses.ok) return { ok: false, erro: ses.aviso || 'sessão expirada', reescanear: true };
+  const nota = Number(body.nota);
+  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5)) return { ok: false, erro: 'Escolha de 1 a 5 estrelas.' };
+  const cpf = soDig(body.cpf);
+  if (!cpfValido(cpf)) return { ok: false, erro: 'CPF inválido.' };
+  const opcoes = await brindeOpcoes();
+  if (!opcoes.length) return { ok: false, erro: 'O drink da avaliação não está disponível agora.' };
+  const op = opcoes.find((o) => o.codigo_pdv === Number(body.brinde_pdv));
+  if (!op) return { ok: false, erro: 'Escolha o seu drink.' };
+  const txt = (v, n) => { const t = String(v || '').trim(); return t ? t.slice(0, n) : null; };
+  const [{ m: mes }] = await sql`SELECT to_char(now() AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM') AS m`;
+  // ⚠️ A TRAVA É O INSERT: dois celulares com o mesmo CPF ao mesmo tempo —
+  // um grava, o outro bate no UNIQUE. Nada de SELECT-antes-de-gravar.
+  const [reg] = await sql`INSERT INTO avaliacao_brinde (cpf, mes, nota, comentario, nome, whatsapp, mesa, brinde_pdv, brinde_nome)
+    VALUES (${cpf}, ${mes}, ${nota}, ${txt(body.comentario, 2000)}, ${txt(body.nome, 200)},
+      ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}, ${op.codigo_pdv}, ${op.nome})
+    ON CONFLICT (cpf, mes) DO NOTHING RETURNING id`;
+  if (!reg) return { ok: false, ja_avaliou: true,
+    erro: 'Este CPF já avaliou a casa este mês — o drink é um por pessoa. Volte no mês que vem! 💛' };
+  const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
+    junto: false, _cliente: true, _brinde: true });
+  if (!r.ok) {
+    // drink não entrou = avaliação não conta: a pessoa pode tentar de novo
+    await sql`DELETE FROM avaliacao_brinde WHERE id=${reg.id}`;
+    if (r.reescanear) return r;
+    return { ok: false, erro: r.erro || 'Não consegui lançar o drink. Chame o garçom.' };
+  }
+  await sql`UPDATE avaliacao_brinde SET pedido_fb=${r.pedido_fb ?? null} WHERE id=${reg.id}`;
+  await apiChamadoCriar({ mesa: numero, tipo: 'garcom', origem: 'pedido-cliente',
+    texto: `avaliou ${nota}★ e ganhou 1 ${op.nome} (cortesia)` }).catch(() => {});
+  let google = null;
+  // espera a nuvem no máx. 4s (só pelo link do Google); se demorar, a fila reenvia
+  try { google = (await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]))?.google_url || null; } catch {}
+  return { ok: true, brinde: op.nome, google_url: google };
+}
+// cópia pra nuvem (/avaliacoes do Concilia). Falhou? a fila tenta de novo.
+async function brindeParaNuvem(id) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  const [a] = await sql`SELECT * FROM avaliacao_brinde WHERE id=${id} AND nuvem_em IS NULL`;
+  if (!a) return null;
+  const j = await salaoNuvemPost({ tipo: 'avaliacao_nova', cpf: a.cpf, mes: a.mes, nota: a.nota,
+    comentario: a.comentario, nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa,
+    brinde: a.brinde_nome, criado_em: a.criado_em });
+  if (j && j.ok) {
+    await sql`UPDATE avaliacao_brinde SET nuvem_em=now(), nuvem_id=${j.id || null} WHERE id=${id}`;
+    return j;
+  }
+  return null;
+}
+async function loopBrindeNuvem() {
+  const pend = await sql`SELECT id FROM avaliacao_brinde WHERE nuvem_em IS NULL AND pedido_fb IS NOT NULL
+    ORDER BY id LIMIT 20`;
+  for (const p of pend) await brindeParaNuvem(p.id).catch(() => {});
+}
+
 // ---- QR CODES das mesas (pra imprimir e colar) ----
 // O QR aponta pro IP DESTA máquina na rede da loja: o cliente no Wi-Fi abre
 // /mesa?n=12 e tem conta, chamar garçom e Pix. Não depende de internet.
@@ -16696,6 +16799,61 @@ body{padding-bottom:120px}
   font-size:21px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
   -webkit-tap-highlight-color:transparent}
 #lightbox .lbx:active{background:rgba(255,255,255,.2)}
+/* ---- tela de entrada (QR): capa de praia + atalhos em blocos ---- */
+.hero{position:relative;overflow:hidden;border-radius:26px;padding:26px 22px 44px;color:#fff;
+  background:linear-gradient(165deg,#ffb347 0%,#ff7a2f 38%,#e0651a 58%,#1e7fb8 100%);box-shadow:0 10px 30px rgba(224,101,26,.25)}
+.hero:before{content:'';position:absolute;right:-30px;top:-30px;width:130px;height:130px;border-radius:50%;
+  background:radial-gradient(circle,#fff6c9 0%,rgba(255,230,140,.55) 45%,rgba(255,230,140,0) 70%)}
+.hero:after{content:'';position:absolute;left:-10%;right:-10%;bottom:-38px;height:70px;border-radius:50%;
+  background:rgba(255,255,255,.22);box-shadow:0 -14px 0 rgba(255,255,255,.12)}
+.hero .oi{position:relative;font-size:15px;opacity:.92}
+.hero h1{position:relative;color:#fff;font-size:28px;margin:2px 0 12px;letter-spacing:-.3px;line-height:1.15}
+.hero h1 b{color:#fff}
+.hero .chip{position:relative;display:inline-block;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.35);
+  border-radius:99px;padding:6px 14px;font-size:14px;font-weight:700;backdrop-filter:blur(4px)}
+.hero input{position:relative;border:0;margin-top:14px}
+.promo{display:flex;align-items:center;gap:14px;width:100%;margin-top:-22px;position:relative;z-index:2;
+  background:#fff;border:2px solid #ffc98f;border-radius:20px;padding:14px 14px;cursor:pointer;font:inherit;text-align:left;color:var(--ink);
+  box-shadow:0 8px 22px rgba(0,0,0,.08)}
+.promo:active{transform:scale(.99)}
+.promo .fts{display:flex;flex:none}
+.promo .fts span{width:52px;height:52px;border-radius:50%;border:3px solid #fff;background:#fff3e6 center/cover no-repeat;
+  display:flex;align-items:center;justify-content:center;font-size:26px;box-shadow:0 2px 6px rgba(0,0,0,.12)}
+.promo .fts span+span{margin-left:-16px}
+.promo .tx{flex:1;min-width:0}
+.promo .tx b{display:block;font-size:17px;line-height:1.2}
+.promo .tx small{display:block;color:var(--mut);font-size:13px;margin-top:3px;line-height:1.35}
+.promo .seta{font-size:22px;color:var(--gold2);font-weight:800}
+.b.ped{font-size:20px;padding:22px;margin-top:18px;background:linear-gradient(135deg,#ff8a3d,#e0651a);box-shadow:0 8px 20px rgba(224,101,26,.3)}
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
+.tile{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px 12px;font:inherit;font-size:15px;font-weight:700;
+  color:var(--ink);cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:6px;min-height:92px}
+.tile i{font-style:normal;font-size:28px;line-height:1}
+.tile small{font-weight:400;color:var(--mut);font-size:12.5px}
+.tile:active{background:#f6f6fa}
+.tile.pix{background:#eafaf0;border-color:#bfe9cf}
+.tile.gar{background:#fff4ea;border-color:#ffd6b3}
+.lnk{display:block;width:100%;background:none;border:0;font:inherit;font-size:14px;color:var(--mut);text-decoration:underline;
+  margin-top:14px;padding:8px;cursor:pointer}
+/* ---- avaliação ---- */
+.passos{display:flex;gap:6px;margin:4px 0 18px}.passos i{flex:1;height:5px;border-radius:9px;background:#e4e4ea}.passos i.on{background:var(--gold2)}
+.estrelas{display:flex;justify-content:space-between;gap:4px;margin:18px 0 6px}
+.estrelas button{flex:1;background:none;border:0;font-size:44px;line-height:1;cursor:pointer;padding:4px 0;filter:grayscale(1);opacity:.35;transition:transform .12s}
+.estrelas button.on{filter:none;opacity:1;transform:scale(1.08)}
+.nlab{text-align:center;font-weight:700;color:var(--gold2);min-height:22px}
+textarea{width:100%;font:inherit;font-size:16px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px;min-height:92px;resize:vertical}
+.drinks{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.drk{background:#fff;border:2px solid var(--line);border-radius:18px;padding:0 0 12px;overflow:hidden;cursor:pointer;font:inherit;color:var(--ink);text-align:center}
+.drk .im{height:118px;background:#fff3e6 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:52px}
+.drk b{display:block;font-size:15px;margin:10px 6px 2px}
+.drk small{color:var(--mut);font-size:12.5px}
+.drk.on{border-color:var(--gold2);box-shadow:0 0 0 3px rgba(224,101,26,.18)}
+.sab{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.sab button{background:#fff;border:2px solid var(--line);border-radius:14px;padding:13px;font:inherit;font-size:15.5px;text-align:left;cursor:pointer;color:var(--ink)}
+.sab button.on{border-color:var(--gold2);background:#fff7f0;font-weight:700}
+.festa{text-align:center;padding:26px 8px}
+.festa .em{font-size:64px}
+.festa h1{font-size:25px;margin:10px 0 8px}
 
 </style></head><body><div class="wrap" id="app"></div>
 <script>
@@ -16781,31 +16939,169 @@ function app(h){
 }
 window.addEventListener('popstate',function(){ NOINICIO=true; inicio(); });
 var EU=null, CART=[], CATS=null;
+var BRINDE=null; // {ativo, opcoes:[{codigo_pdv,produto_codigo,nome,com_alcool,tem_foto}]}
+function mesAtual(){ var d=new Date(Date.now()-3*3600*1000); return d.toISOString().slice(0,7); }
+function jaAvaliouAqui(){ try{return localStorage.getItem('prainha_aval')===mesAtual()}catch(e){return false} }
 async function inicio(){
   NOINICIO=true; // daqui, o proximo "voltar" do Android sai mesmo
   if(MESA&&!(await sessaoOk()))return;
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
-  var saud=(EU&&EU.identificado&&EU.nome)?('Olá, <b>'+esc(EU.nome)+'</b>'):'${LOJA_HTML}';
-  var h='<h1>'+saud+'</h1><div class="mesa">'+(MESA?'Mesa '+esc(MESA):'Seja bem-vindo')+'</div>'+
-    (MESA?'':'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">');
-  if(EU&&EU.identificado){
-    // O contador de visitas saiu: é inteligência da casa sobre a pessoa, não
-    // serviço pra ela — e ninguém pediu pra ser contado. O botão "O que eu
-    // sempre peço", logo abaixo, já entrega o histórico de um jeito útil.
-    // (o número continua indo pro garçom, que é quem ganha em saber)
-  } else {
-    h+='<button class="b g" onclick="telaCadastro()">Quer se identificar? <span style="font-weight:400">(opcional)</span></button>';
+  if(n&&!BRINDE){ try{BRINDE=await (await fetch('/api/mesa/brinde',{cache:'no-store'})).json()}catch(e){BRINDE={ativo:false}} }
+  var ident=EU&&EU.identificado&&EU.nome;
+  var hr=new Date().getHours();
+  var oi=hr<12?'Bom dia':(hr<18?'Boa tarde':'Boa noite');
+  // capa: saudacao + nome da casa + a mesa num selo
+  var h='<div class="hero"><div class="oi">'+oi+(ident?', <b>'+esc(EU.nome)+'</b>':'')+' 👋</div>'+
+    '<h1>${LOJA_HTML}</h1>'+
+    (MESA?'<span class="chip">📍 Mesa '+esc(MESA)+'</span>'
+         :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
+  // AVALIE E GANHE: so aparece se a casa tem o drink hoje e este celular
+  // ainda nao avaliou no mes (quem manda de verdade e' o servidor, por CPF)
+  if(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()){
+    var com=BRINDE.opcoes.find(function(o){return o.com_alcool}), sem=BRINDE.opcoes.find(function(o){return !o.com_alcool});
+    var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
+    h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
+      '<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>'+
+      '<div class="seta">›</div></button>';
   }
-  h+='<button class="b ped" onclick="telaPedir()">🍽 Fazer pedido</button>'+
-     '<button class="b g" onclick="verJaPedido()">📋 O que já pedi</button>'+
-     (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="b g" onclick="telaHistorico()">⭐ O que eu sempre peço</button>':'')+
-     '<button class="b ver" onclick="minhaConta()">🧾 Ver minha conta</button>'+
-     '<button class="b pix" onclick="telaPix()">💳 Pagar a conta</button>'+
-     '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
-     '<button class="b g" onclick="telaProblema()">Relatar um problema</button>'+
-     '<div class="mut" style="margin-top:22px">O garçom recebe seus pedidos e avisos na hora.</div>';
+  h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
+    '<div class="tiles">'+
+      '<button class="tile" onclick="verJaPedido()"><i>📋</i>O que já pedi<small>acompanhe seus pedidos</small></button>'+
+      '<button class="tile" onclick="minhaConta()"><i>🧾</i>Minha conta<small>veja o total</small></button>'+
+      '<button class="tile gar" onclick="chamar()"><i>🔔</i>Chamar garçom<small>ele vem na hora</small></button>'+
+      '<button class="tile pix" onclick="telaPix()"><i>💳</i>Pagar a conta<small>Pix ou cartão</small></button>'+
+      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>⭐</i>O de sempre<small>o que você mais pede</small></button>':'')+
+      (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
+    '</div>'+
+    '<button class="lnk" onclick="telaProblema()">Relatar um problema</button>';
   app(h);renderCarrinho();
+}
+function nomesBrinde(){
+  if(!BRINDE||!BRINDE.opcoes)return '';
+  var com=BRINDE.opcoes.filter(function(o){return o.com_alcool}), sem=BRINDE.opcoes.filter(function(o){return !o.com_alcool});
+  return [nomeComum(com),nomeComum(sem)].filter(Boolean).join(' ou ');
+}
+// "Soda Italiana Frutas Vermelhas" + "Soda Italiana Gengibre" -> "Soda Italiana"
+function nomeComum(l){ if(!l.length)return ''; if(l.length===1)return l[0].nome;
+  var p=l[0].nome.split(' '), k=p.length;
+  l.forEach(function(o){var q=o.nome.split(' '),i=0;while(i<k&&q[i]===p[i])i++;k=i});
+  return k?p.slice(0,k).join(' '):''; }
+// ---- AVALIE E GANHE UM DRINK ----
+// 1) estrelas + comentario  2) CPF (um drink por pessoa por mes)  3) escolhe o drink
+// O drink entra sozinho na conta da mesa, a R$ 0, com a obs "Avaliação de Cliente".
+var AV=null;
+var NOTAS=['','Não gostei 😕','Podia ser melhor','Foi ok 🙂','Gostei muito! 😄','Perfeito! 🤩'];
+function passos(k){var h='<div class="passos">';for(var i=1;i<=3;i++)h+='<i'+(i<=k?' class="on"':'')+'></i>';return h+'</div>'}
+function telaAvaliar(){
+  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
+  var h=passos(1)+'<h1>Como está sendo sua experiência?</h1>'+
+    '<div class="mut">Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹</div>'+
+    '<div class="estrelas">';
+  for(var i=1;i<=5;i++)h+='<button'+(i<=AV.nota?' class="on"':'')+' onclick="avNota('+i+')">⭐</button>';
+  h+='</div><div class="nlab" id="nlab">'+NOTAS[AV.nota]+'</div>'+
+    '<textarea id="avc" maxlength="2000" placeholder="Quer contar mais? Comida, atendimento, ambiente… (opcional)"></textarea>'+
+    '<button class="b" id="av1" onclick="avPasso2()"'+(AV.nota?'':' style="opacity:.45"')+'>Continuar</button>'+
+    '<button class="lnk" onclick="inicio()">Voltar</button>';
+  app(h);
+  document.getElementById('avc').value=AV.comentario;
+}
+function avNota(n){
+  AV.comentario=(document.getElementById('avc')||{}).value||AV.comentario;
+  AV.nota=n;
+  var bs=document.querySelectorAll('.estrelas button');
+  for(var i=0;i<bs.length;i++)bs[i].className=i<n?'on':'';
+  document.getElementById('nlab').textContent=NOTAS[n];
+  document.getElementById('av1').style.opacity='';
+}
+function avPasso2(){
+  var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
+  if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
+  app(passos(2)+'<h1>Quem está avaliando?</h1>'+
+    '<div class="mut">É um drink por pessoa a cada mês — o CPF serve só pra isso.</div>'+
+    '<div class="tit2">CPF</div>'+
+    '<input id="avcpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00" oninput="avCpf(this)">'+
+    '<div id="avquem" class="mut" style="margin-top:8px"></div>'+
+    '<div class="tit2">WhatsApp <span class="mut">(opcional)</span></div>'+
+    '<input id="avzap" inputmode="tel" maxlength="16" placeholder="(79) 9 0000-0000">'+
+    '<button class="b" onclick="avPasso3()">Continuar</button>'+
+    '<button class="lnk" onclick="telaAvaliar()">Voltar</button>');
+  var el=document.getElementById('avcpf'); el.value=AV.cpf; if(AV.cpf)avCpf(el); else el.focus();
+  document.getElementById('avzap').value=AV.zap;
+}
+var avDeb=null;
+function avCpf(inp){
+  var d=mascaraCpf(inp), q=document.getElementById('avquem');
+  clearTimeout(avDeb); q.style.color='';
+  if(d.length<11){q.textContent='';return}
+  if(!cpfOk(d)){q.style.color='#c0392b';q.textContent='Esse CPF não confere. Dê uma olhada nos números.';return}
+  q.textContent='conferindo…';
+  avDeb=setTimeout(async function(){
+    try{
+      var r=await (await fetch('/api/venda/identificar?cpf='+d,{cache:'no-store'})).json();
+      if(r&&r.nome){AV.nome=r.nome;q.innerHTML='Olá, <b style="color:#0f8a3e">'+esc(r.nome_curto||r.nome)+'</b>! 👋'}
+      else q.textContent='';
+    }catch(e){q.textContent=''}
+  },350);
+}
+function avPasso3(){
+  var cpf=String(document.getElementById('avcpf').value||'').replace(/\\D/g,'');
+  if(!cpfOk(cpf)){alert('Confira o CPF.');return}
+  AV.cpf=cpf; AV.zap=document.getElementById('avzap').value||'';
+  var com=BRINDE.opcoes.filter(function(o){return o.com_alcool}), sem=BRINDE.opcoes.filter(function(o){return !o.com_alcool});
+  var card=function(tipo,l,em,tit){
+    if(!l.length)return '';
+    var f=l.find(function(o){return o.tem_foto});
+    return '<button class="drk'+(AV.tipo===tipo?' on':'')+'" onclick="avTipo(\\''+tipo+'\\')"><div class="im"'+
+      (f?' style="background-image:url(/produto-foto/'+f.produto_codigo+')"':'')+'>'+(f?'':em)+'</div>'+
+      '<b>'+esc(nomeComum(l)||tit)+'</b><small>'+(tipo==='com'?'com álcool':'sem álcool')+'</small></button>';
+  };
+  var h=passos(3)+'<h1>Escolha seu drink 🍹</h1>'+
+    '<div class="mut">Por nossa conta! Ele entra na sua mesa e o garçom já traz.</div>'+
+    '<div class="drinks">'+card('com',com,'🍸','Com álcool')+card('sem',sem,'🥤','Sem álcool')+'</div>'+
+    '<div id="sabores"></div>'+
+    '<button class="b pix" id="avok" onclick="avEnviar()" style="margin-top:18px">Enviar avaliação e ganhar meu drink</button>'+
+    '<button class="lnk" onclick="avPasso2()">Voltar</button>';
+  app(h);
+  if(AV.tipo)avTipo(AV.tipo);
+}
+function avTipo(t){
+  AV.tipo=t;
+  var l=BRINDE.opcoes.filter(function(o){return t==='com'?o.com_alcool:!o.com_alcool});
+  if(!l.find(function(o){return o.codigo_pdv===AV.pdv}))AV.pdv=l.length===1?l[0].codigo_pdv:null;
+  var cs=document.querySelectorAll('.drk');
+  for(var i=0;i<cs.length;i++)cs[i].className='drk'+((cs[i].getAttribute('onclick')||'').indexOf("'"+t+"'")>=0?' on':'');
+  var s=document.getElementById('sabores');
+  if(l.length<2){s.innerHTML='';return}
+  var h='<div class="tit2">Qual sabor?</div><div class="sab">';
+  l.forEach(function(o){h+='<button class="'+(o.codigo_pdv===AV.pdv?'on':'')+'" onclick="avSabor('+o.codigo_pdv+')">'+esc(o.nome)+'</button>'});
+  s.innerHTML=h+'</div>';
+}
+function avSabor(c){AV.pdv=c;avTipo(AV.tipo)}
+async function avEnviar(){
+  if(!AV.pdv){alert(AV.tipo?'Escolha o sabor.':'Escolha o seu drink.');return}
+  if(!(await sessaoOk()))return;
+  var bt=document.getElementById('avok'); bt.disabled=true; bt.textContent='Enviando…';
+  var r;
+  try{ r=await post('/api/mesa/avaliar',{mesa:Number(MESA),sessao:SES&&SES.comanda,desde:SES&&SES.desde,
+    nota:AV.nota,comentario:AV.comentario,cpf:AV.cpf,nome:AV.nome,whatsapp:AV.zap,brinde_pdv:AV.pdv}); }
+  catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
+  if(r.reescanear){limpaSes();telaReescanear(r.erro||'Escaneie o QR da mesa pra continuar.');return}
+  if(!r.ok&&!r.ja_avaliou){bt.disabled=false;bt.textContent='Enviar avaliação e ganhar meu drink';alert(r.erro||'Não deu certo. Chame o garçom.');return}
+  try{localStorage.setItem('prainha_aval',mesAtual())}catch(e){}
+  var nota=AV.nota; AV=null;
+  if(r.ja_avaliou){
+    app('<div class="festa"><div class="em">💛</div><h1>Obrigado de novo!</h1>'+
+      '<div class="mut">'+esc(r.erro)+'</div></div><button class="b" onclick="inicio()">Voltar ao início</button>');
+    return;
+  }
+  // Google: convite OPCIONAL e so depois do drink garantido — o drink nunca
+  // depende de avaliar la (a politica do Google proibe avaliacao incentivada)
+  app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
+    '<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div></div>'+
+    (r.google_url&&nota>=4?'<div class="aviso">Gostou? Se quiser, conte também no Google — ajuda muito a gente 💛'+
+      '<a class="b g" style="text-align:center;text-decoration:none;margin-top:12px" target="_blank" rel="noopener" href="'+esc(r.google_url)+'">Avaliar no Google</a></div>':'')+
+    '<button class="b" onclick="inicio()">Voltar ao início</button>');
 }
 // ---- cadastro do cliente (tudo opcional) ----
 // telaCadastro({alvo, depois, motivo, exigeDoc})
@@ -22766,6 +23062,8 @@ const server = http.createServer(async (req, res) => {
       const aq = u.searchParams.get('area');
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
+    if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
+    if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
@@ -23201,6 +23499,7 @@ async function main() {
   // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
   setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
   setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);
+  setInterval(() => loopBrindeNuvem().catch(() => {}), 2 * 60 * 1000);
   setTimeout(() => loopPontoNuvem().catch(() => {}), 45 * 1000);
   setInterval(() => loopPontoNuvem().catch(() => {}), 60 * 1000);
   // sync nativo → nuvem (só roda de verdade se nativo() e AGENTE_TOKEN setado)
