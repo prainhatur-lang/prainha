@@ -9093,23 +9093,30 @@ async function loopCancelNuvem() {
 // (desligou sem aviso: falta de energia, botão, travou), 6008 (desligamento
 // inesperado), 1074 (alguém/algum programa mandou reiniciar — Windows Update),
 // 6005/6006 (subiu/desligou limpo), 42/107/1 (suspendeu/voltou), 27/32 e 4201/4202
-// (cabo/placa de rede caiu/voltou). Junto: boot, máquina e config de energia
-// (suspender/hibernar/desligar tela na tomada). Manda ~2 min após subir e a cada
-// 6 h; a nuvem guarda em loja_diagnostico. Assina [FILIAL_ID,'diag',e].
+// (cabo/placa de rede caiu/voltou), WHEA-Logger (erro de hardware corrigido — foi
+// assim que achamos o pente de memória da Mar em 27/09) e 1001 (tela azul). Junto: boot, máquina e config de energia
+// (suspender/hibernar/desligar tela na tomada) e pentes de memória. Manda ~2 min
+// após subir e de hora em hora; a nuvem guarda em loja_diagnostico. Assina [FILIAL_ID,'diag',e].
 const DIAG_PS = `
 $ErrorActionPreference='SilentlyContinue'
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
 $ids=41,42,107,1,1074,1076,6005,6006,6008,6013,27,32,4201,4202,10400,10402,109,7,51,153
-$ev=Get-WinEvent -FilterHashtable @{LogName='System';Id=$ids;StartTime=(Get-Date).AddDays(-45)} -MaxEvents 600 |
+function Ev($e){
+  $m=(($e.Message) -replace '\\s+',' ')
+  if ($m.Length -gt 350) { $m=$m.Substring(0,350) }
+  $d=$null
+  if ($e.Id -eq 41 -or $e.ProviderName -like '*WHEA*') {
+    $x=[xml]$e.ToXml()
+    $d=(($x.Event.EventData.Data | Where-Object { $_.Name -in 'BugcheckCode','PowerButtonTimestamp','ErrorSource','ApicId','MCABank','MciAddr','Channel','ErrorType' } | ForEach-Object { $_.Name + '=' + $_.'#text' }) -join ' ')
+  }
+  [pscustomobject]@{ t=$e.TimeCreated.ToUniversalTime().ToString('o'); id=$e.Id; p=$e.ProviderName; m=$m; d=$d }
+}
+$ev=@(Get-WinEvent -FilterHashtable @{LogName='System';Id=$ids;StartTime=(Get-Date).AddDays(-45)} -MaxEvents 600 |
   Where-Object { $_.Id -ne 1 -or $_.ProviderName -like '*Power*' } |
   Where-Object { $_.Id -ne 7 -or $_.ProviderName -like '*disk*' } |
-  ForEach-Object {
-    $m=(($_.Message) -replace '\\s+',' ')
-    if ($m.Length -gt 350) { $m=$m.Substring(0,350) }
-    $d=$null
-    if ($_.Id -eq 41) { $d=(($_.Properties | Select-Object -First 6 | ForEach-Object { $_.Value }) -join ',') }
-    [pscustomobject]@{ t=$_.TimeCreated.ToUniversalTime().ToString('o'); id=$_.Id; p=$_.ProviderName; m=$m; d=$d }
-  }
+  ForEach-Object { Ev $_ })
+$whea=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WHEA-Logger';StartTime=(Get-Date).AddDays(-45)} -MaxEvents 400 | ForEach-Object { Ev $_ })
+$bug=@(Get-WinEvent -FilterHashtable @{LogName='System';Id=1001;StartTime=(Get-Date).AddDays(-45)} -MaxEvents 50 | Where-Object { $_.ProviderName -like '*WER*' -or $_.Message -like '*bugcheck*' } | ForEach-Object { Ev $_ })
 $os=Get-CimInstance Win32_OperatingSystem
 $cs=Get-CimInstance Win32_ComputerSystem
 function Pw($sub,$set){ $o=(powercfg /q SCHEME_CURRENT $sub $set) -join "\`n"; $h=[regex]::Matches($o,':\\s*0x([0-9a-fA-F]+)\\s*$','Multiline'); if($h.Count -ge 2){ @{ ac=[Convert]::ToInt64($h[$h.Count-2].Groups[1].Value,16); dc=[Convert]::ToInt64($h[$h.Count-1].Groups[1].Value,16) } } }
@@ -9123,7 +9130,8 @@ $nic=@(Get-NetAdapter | Where-Object { $_.Status -ne 'Not Present' } | ForEach-O
   energia=@{ suspender=(Pw 'SUB_SLEEP' 'STANDBYIDLE'); hibernar=(Pw 'SUB_SLEEP' 'HIBERNATEIDLE'); disco=(Pw 'SUB_DISK' 'DISKIDLE'); tela=(Pw 'SUB_VIDEO' 'VIDEOIDLE') }
   baterias=$bat
   rede=$nic
-  eventos=@($ev)
+  eventos=@($ev + $whea + $bug)
+  memoria=@(Get-CimInstance Win32_PhysicalMemory | ForEach-Object { @{ slot=$_.DeviceLocator; banco=$_.BankLabel; gb=[int]($_.Capacity/1GB); peca=$_.PartNumber; serie=$_.SerialNumber } })
 } | ConvertTo-Json -Depth 5 -Compress
 `;
 function diagWindows() {
@@ -22977,9 +22985,9 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
-  // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois 6 em 6 h
+  // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois de hora em hora
   setTimeout(() => loopDiagNuvem().catch(() => {}), 120 * 1000);
-  setInterval(() => loopDiagNuvem().catch(() => {}), 6 * 60 * 60 * 1000);
+  setInterval(() => loopDiagNuvem().catch(() => {}), 60 * 60 * 1000);
   // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
   setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
   setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);
