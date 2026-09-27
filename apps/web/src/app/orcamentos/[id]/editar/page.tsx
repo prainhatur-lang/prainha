@@ -61,6 +61,7 @@ export default async function EditarOrcamentoPage(props: {
     observacoes: o.observacoes ?? '',
     condicoes: o.condicoes ?? '',
     validoAte: o.validoAte ?? '',
+    descontoEspacoMotivo: o.descontoEspacoMotivo ?? '',
   };
 
   return (

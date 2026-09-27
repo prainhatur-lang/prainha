@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { membroPorTelefone } from '@/lib/fidelidade/membro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,6 +31,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   if (digitos.length < 10) return NextResponse.json({ found: false });
   // Casa pelo final do número (DDD + número), ignorando DDI/55 e formatação.
   const local = digitos.slice(-11);
+  // Cartão Prainha: o formulário mostra o selo e passa o telefone pra
+  // disponibilidade (membro com prioridade enxerga as mesas acima do teto).
+  const m = await membroPorTelefone(filial.id, digitos).catch(() => null);
+  const membro = m ? { nivel: m.nivel, cor: m.cor, prioridade: m.prioridadeReserva } : null;
 
   // 1) Histórico de reservas — o nome mais recente que a própria pessoa deu
   // numa reserva anterior. Mais confiável que o cadastro do Consumer porque é
@@ -72,7 +77,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
         .limit(1)
     ).map((c) => ({ nome: c.nome, area: null as string | null, pessoas: null as number | null }))[0];
 
-  if (!r?.nome) return NextResponse.json({ found: false });
+  if (!r?.nome) return NextResponse.json(m ? { found: true, nome: m.nome, membro } : { found: false });
 
   // Preferências mais recentes não-vazias desse cliente (segue o telefone).
   const [pref] = await db
@@ -112,5 +117,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     pessoas: r.pessoas ?? null,
     preferencias: pref?.preferencias ?? null,
     precisaCpf,
+    membro,
   });
 }

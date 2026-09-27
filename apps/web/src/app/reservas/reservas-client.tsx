@@ -132,6 +132,7 @@ export function ReservasClient({
   reservasPorMesa,
   historico,
   fiado,
+  membros = [],
 }: {
   data: string;
   filiais: FilialOpt[];
@@ -148,8 +149,11 @@ export function ReservasClient({
   historico: Record<string, { visitas: number; ultima: string | null }>;
   /** Reservas de quem está devendo hoje (cadastro único) — id da reserva → saldo. */
   fiado: Record<string, { saldo: number; clienteId: string }>;
+  /** ids das reservas de membro do Cartão Prainha */
+  membros?: string[];
 }) {
   const router = useRouter();
+  const membroSet = new Set(membros);
   const [novaAberta, setNovaAberta] = useState(false);
   const [configAberta, setConfigAberta] = useState(false);
   const [mapaAberto, setMapaAberto] = useState(false);
@@ -535,14 +539,14 @@ export function ReservasClient({
             Nenhuma reserva bate com esse filtro.
           </p>
         ) : (
-          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} fiado={fiado[r.id]} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
+          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} fiado={fiado[r.id]} membro={membroSet.has(r.id)} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, hist, fiado, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; fiado?: { saldo: number; clienteId: string }; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
+function Linha({ r, hist, fiado, membro, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; fiado?: { saldo: number; clienteId: string }; membro?: boolean; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const [confirmandoBebida, setConfirmandoBebida] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
@@ -594,6 +598,14 @@ function Linha({ r, hist, fiado, podeAtualizar, mostrarFilial, filiais, ocupadas
             ) : (
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">✨ novo cliente</span>
             ))}
+            {membro && (
+              <span
+                className="rounded-full bg-[#0F3A5F] px-2 py-0.5 text-[10px] font-semibold text-white"
+                title="Membro do Cartão Prainha — tem prioridade na reserva"
+              >
+                💳 Cartão Prainha
+              </span>
+            )}
             {fiado && (
               <a
                 href={`/financeiro/receber/${fiado.clienteId}`}

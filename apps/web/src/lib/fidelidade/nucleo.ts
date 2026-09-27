@@ -94,6 +94,10 @@ export interface NovoCartaoInput {
   origem?: string;
   filialOrigemId?: string | null;
   origemDetalhe?: string | null;
+  cidade?: string | null;
+  bairro?: string | null;
+  /** o cliente pediu o cartão (balcão/manual) — já nasce aderido */
+  aderido?: boolean;
 }
 
 /** Cria o cartão (ou devolve o que já existe pro telefone). */
@@ -108,7 +112,17 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
     .from(schema.fidelidadeCartao)
     .where(and(eq(schema.fidelidadeCartao.organizacaoId, inp.organizacaoId), eq(schema.fidelidadeCartao.telefone, telefone)))
     .limit(1);
-  if (existe) return { cartao: existe, novo: false };
+  if (existe) {
+    if (inp.aderido && !existe.aderidoEm) {
+      const [c] = await db
+        .update(schema.fidelidadeCartao)
+        .set({ aderidoEm: new Date(), recusadoEm: null })
+        .where(eq(schema.fidelidadeCartao.id, existe.id))
+        .returning();
+      return { cartao: c ?? existe, novo: false };
+    }
+    return { cartao: existe, novo: false };
+  }
 
   // colisão de código/número/token é rara; tenta de novo com outros
   for (let t = 0; t < 8; t++) {
@@ -129,6 +143,9 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
           filialOrigemId: inp.filialOrigemId || null,
           origemDetalhe: inp.origemDetalhe || null,
           appleAuthToken: gerarAppleAuth(),
+          cidade: inp.cidade?.slice(0, 100) || null,
+          bairro: inp.bairro?.slice(0, 100) || null,
+          aderidoEm: inp.aderido ? new Date() : null,
         })
         .onConflictDoNothing({ target: [schema.fidelidadeCartao.organizacaoId, schema.fidelidadeCartao.telefone] })
         .returning();
@@ -167,7 +184,7 @@ export async function trocarCodigo(cartaoId: string, organizacaoId: string): Pro
 
 export type ErroUso =
   | 'programa_inativo' | 'codigo_invalido' | 'nao_encontrado' | 'bloqueado'
-  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto';
+  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido';
 
 export const MSG_ERRO: Record<ErroUso, string> = {
   programa_inativo: 'O cartão fidelidade está pausado no momento.',
@@ -178,6 +195,7 @@ export const MSG_ERRO: Record<ErroUso, string> = {
   em_uso: 'Este código já está sendo usado em outra conta agora.',
   consumo_minimo: 'O consumo ainda não atinge o mínimo pro desconto do cartão.',
   sem_desconto: 'Não há consumo pra aplicar o desconto.',
+  nao_aderido: 'Cartão ainda não ativado: abra o link do convite e toque em "Quero meu cartão".',
 };
 
 export interface Simulacao {
@@ -216,6 +234,7 @@ export async function simularUso(
     .limit(1);
   if (!cartao) return { ok: false, erro: 'nao_encontrado' };
   if (cartao.status !== 'ativo') return { ok: false, erro: 'bloqueado' };
+  if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
 
   // um uso por dia (em qualquer casa)
   const [hoje] = await db

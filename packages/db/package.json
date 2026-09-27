@@ -136,6 +136,7 @@
     "migrate:alarme-armado": "tsx scripts/migrate-alarme-armado.ts",
     "migrate:alarme-protect": "tsx scripts/migrate-alarme-protect.ts",
     "migrate:fidelidade": "tsx scripts/migrate-fidelidade.ts",
+    "migrate:fidelidade-convite": "tsx scripts/migrate-fidelidade-convite.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
     "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",
     "migrate:balanco": "tsx scripts/migrate-balanco.ts",

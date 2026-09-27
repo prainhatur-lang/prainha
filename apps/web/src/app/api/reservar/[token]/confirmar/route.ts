@@ -12,6 +12,7 @@ import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { createPixPayment } from '@/lib/pagamento-online';
 import { randomBytes } from 'node:crypto';
+import { membroPorTelefone } from '@/lib/fidelidade/membro';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 
 export const dynamic = 'force-dynamic';
@@ -176,7 +177,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       typeof areaCfg.percentualReserva === 'number'
         ? Math.floor((mesasDoEspaco.length * areaCfg.percentualReserva) / 100)
         : mesasDoEspaco.length;
-    if (ocupadas.size >= limiteMesas) {
+    // Cartão Prainha com prioridade: passa por cima do teto (percentualReserva)
+    // — só não passa da capacidade física (o "sem mesa livre" abaixo).
+    const membro = ocupadas.size >= limiteMesas && ocupadas.size < mesasDoEspaco.length
+      ? await membroPorTelefone(filial.id, telefone).catch(() => null)
+      : null;
+    if (ocupadas.size >= limiteMesas && !membro?.prioridadeReserva) {
       return NextResponse.json(
         { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
         { status: 409 },

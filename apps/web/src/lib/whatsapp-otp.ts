@@ -177,6 +177,56 @@ export async function enviarLembreteReserva(
   return true;
 }
 
+/** Convite do Cartão Prainha (WHATSAPP_FIDELIDADE_TEMPLATE — categoria
+ *  MARKETING; o de UTILIDADE a Meta reclassifica). Corpo: {{1}} primeiro nome,
+ *  {{2}} categoria (Silver/Gold…), {{3}} % de desconto. Botões: [0] URL
+ *  dinâmica https://app.prainhabar.com/cartao/{{1}} (token do cartão) e
+ *  [1] resposta rápida "Não tenho interesse" (payload fid_nao:<token>, o
+ *  webhook marca recusado_em). */
+export function conviteFidelidadeConfigurado(): boolean {
+  return !!(
+    (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) &&
+    process.env.WHATSAPP_PHONE_ID &&
+    process.env.WHATSAPP_FIDELIDADE_TEMPLATE
+  );
+}
+
+export async function enviarConviteFidelidade(
+  telefone: string,
+  vars: { nome: string; nivel: string; pct: number; token: string },
+): Promise<boolean> {
+  if (!conviteFidelidadeConfigurado()) return false;
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
+  const lang = process.env.WHATSAPP_FIDELIDADE_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: process.env.WHATSAPP_FIDELIDADE_TEMPLATE!,
+        language: { code: lang },
+        components: [
+          {
+            type: 'body',
+            parameters: [vars.nome, vars.nivel, `${vars.pct}%`].map((t) => ({ type: 'text', text: String(t) })),
+          },
+          { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: vars.token }] },
+          { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `fid_nao:${vars.token}` }] },
+        ],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  return true;
+}
+
 /** Envia um texto livre (so funciona dentro da janela de 24h apos o cliente
  *  mandar mensagem — ex.: logo apos ele tocar num botao). Best-effort. */
 export async function enviarTextoWhatsApp(telefone: string, texto: string): Promise<boolean> {

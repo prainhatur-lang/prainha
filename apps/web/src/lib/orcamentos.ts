@@ -61,6 +61,8 @@ export interface TotaisOrcamento {
   subtotalMenu: number | null;
   taxaEspaco: number | null;
   taxaExclusividade: number | null;
+  /** Desconto do Cartão Prainha no espaço (já abatido do total). */
+  descontoEspaco: number | null;
   /** Soma do que estiver preenchido. Null = nada precificado (a combinar). */
   total: number | null;
 }
@@ -70,16 +72,22 @@ export function calcularTotais(o: {
   valorPessoa: number | null;
   taxaEspaco: number | null;
   taxaExclusividade: number | null;
+  descontoEspaco?: number | null;
 }): TotaisOrcamento {
   const subtotalMenu = o.valorPessoa != null ? o.valorPessoa * o.pessoas : null;
   const parcelas = [subtotalMenu, o.taxaEspaco, o.taxaExclusividade].filter(
     (v): v is number => v != null,
   );
+  const desconto = o.descontoEspaco && o.descontoEspaco > 0 ? o.descontoEspaco : null;
   return {
     subtotalMenu,
     taxaEspaco: o.taxaEspaco,
     taxaExclusividade: o.taxaExclusividade,
-    total: parcelas.length > 0 ? parcelas.reduce((s, v) => s + v, 0) : null,
+    descontoEspaco: desconto,
+    total:
+      parcelas.length > 0
+        ? Math.max(parcelas.reduce((s, v) => s + v, 0) - (desconto ?? 0), 0)
+        : null,
   };
 }
 

@@ -38,6 +38,8 @@ export interface OrcamentoInicial {
   observacoes: string;
   condicoes: string;
   validoAte: string;
+  /** Desconto do Cartão Prainha já gravado (edição) — calculado no servidor. */
+  descontoEspacoMotivo?: string;
 }
 
 interface Props {
@@ -671,6 +673,13 @@ export function FormOrcamento({ locais, inicial }: Props) {
                 <dt className="text-slate-500">Exclusividade</dt>
                 <dd className="font-mono">{brl(totais.taxaExclusividade)}</dd>
               </div>
+            )}
+            {(cobrarEspaco || cobrarExclusividade) && (
+              <p className="text-xs text-emerald-700">
+                {inicial.descontoEspacoMotivo
+                  ? `Desconto no espaço: ${inicial.descontoEspacoMotivo} — recalculado ao salvar.`
+                  : 'Se o telefone do cliente for do Cartão Prainha, o desconto no espaço entra sozinho ao salvar.'}
+              </p>
             )}
             <div className="flex justify-between gap-2 border-t border-slate-200 pt-2 text-base font-bold text-slate-900">
               <dt>Total</dt>

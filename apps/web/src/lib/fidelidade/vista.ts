@@ -30,7 +30,11 @@ export interface VistaCartao {
   faltam: number;
   textoDesconto: string;
   textoProximo: string;
-  niveis: Array<{ nome: string; minVisitas: number; pct: number; cor: string }>;
+  niveis: Array<{ nome: string; minVisitas: number; pct: number; cor: string; pctEspaco: number; prioridadeReserva: boolean }>;
+  /** % no aluguel de espaço do nível atual */
+  pctEspaco: number;
+  prioridadeReserva: boolean;
+  aderido: boolean;
   link: string;
 }
 
@@ -62,7 +66,13 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
     faltam: estado.faltam,
     textoDesconto,
     textoProximo,
-    niveis: cfg.niveis.map((n) => ({ nome: n.nome, minVisitas: n.minVisitas, pct: n.pct, cor: n.cor })),
+    niveis: cfg.niveis.map((n) => ({
+      nome: n.nome, minVisitas: n.minVisitas, pct: n.pct, cor: n.cor,
+      pctEspaco: n.pctEspaco, prioridadeReserva: n.prioridadeReserva,
+    })),
+    pctEspaco: estado.nivel.pctEspaco,
+    prioridadeReserva: estado.nivel.prioridadeReserva,
+    aderido: !!cartao.aderidoEm,
     link: `${baseUrl()}/cartao/${cartao.token}`,
   };
 }
@@ -73,6 +83,8 @@ export const REGRAS_TEXTO = (v: VistaCartao) =>
     v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
     'O código é de uso único: depois de cada pagamento o cartão mostra um código novo.',
     'Vale 1 uso por dia, em qualquer casa do grupo (Prainha Bar, Tabuará, Prainha Mar), só no Pix.',
+    v.prioridadeReserva ? 'Prioridade nas reservas: quando as mesas reserváveis da área acabam, membro ainda consegue reservar (se houver mesa livre).' : '',
+    v.pctEspaco ? `Aniversário, confraternização ou evento: ${v.pctEspaco}% de desconto no aluguel do espaço. Peça o orçamento pelo WhatsApp com o mesmo telefone do cartão.` : '',
     `Seu nível sobe com as visitas dos últimos ${v.janelaDias} dias: ` +
       v.niveis.map((n) => `${n.nome} ${n.pct}% (${n.minVisitas}+)`).join(' · ') + '.',
   ].filter(Boolean).join('\n\n');

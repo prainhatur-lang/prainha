@@ -16,6 +16,8 @@ interface Props {
   base: string;
   apple: boolean;
   google: boolean;
+  /** template MARKETING do convite configurado (WHATSAPP_FIDELIDADE_TEMPLATE) */
+  zapTemplate: boolean;
   podeCriar: boolean;
   podeConfigurar: boolean;
 }
@@ -31,6 +33,8 @@ const dataHoraBr = (s: string) =>
 const foneBr = (t: string) =>
   t.length === 11 ? `(${t.slice(0, 2)}) ${t.slice(2, 7)}-${t.slice(7)}` : t.length === 10 ? `(${t.slice(0, 2)}) ${t.slice(2, 6)}-${t.slice(6)}` : t;
 /** telefone da base → só dígitos com DDD (sem 55) */
+const diasAtras = (n: number) =>
+  new Date(Date.now() - n * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
 const soFone = (t: string) => {
   let d = t.replace(/\D/g, '');
   if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
@@ -49,10 +53,12 @@ function msgConvite(cfg: FidelidadeConfig, nome: string, nivelCodigo: string, li
   const bonus = cfg.bonusDiaUtilPct ? ` (e ${n.pct + cfg.bonusDiaUtilPct}% de segunda a sexta)` : '';
   return (
     `Oi, ${primeiro}! Aqui é do Prainha 🏖️\n\n` +
-    `Como você é de casa, ganhou o *Cartão Prainha ${n.nome}*: ${n.pct}% de desconto no consumo${bonus} ` +
-    `pagando no Pix, no Prainha Bar, Tabuará e Prainha Mar.\n\n` +
-    `Salve na carteira do celular (Apple ou Google Wallet): ${link}\n\n` +
-    `Na hora de pagar, é só digitar o código de 4 letras do cartão na tela do Pix.`
+    `Como você é de casa, separamos pra você o *Cartão Prainha ${n.nome}*:\n` +
+    `• ${n.pct}% de desconto no consumo${bonus} pagando no Pix\n` +
+    (n.prioridadeReserva ? `• prioridade nas reservas, mesmo com a casa cheia\n` : '') +
+    (n.pctEspaco > 0 ? `• ${n.pctEspaco}% de desconto no aluguel de espaços pra eventos\n` : '') +
+    `• vale no Prainha Bar, Tabuará e Prainha Mar\n\n` +
+    `É só tocar no link e em "Quero meu cartão" pra ativar (e salvar na carteira do celular): ${link}`
   );
 }
 
@@ -130,6 +136,37 @@ export function FidelidadeClient(p: Props) {
 
 type Api = (b: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
+/** Manda o convite pelo template da Meta em lotes de 50 (o servidor segura o
+ *  limite diário e para no primeiro erro de template/token). */
+async function enviarConvitesLote(api: Api, ids: string[]): Promise<string> {
+  let enviados = 0;
+  let pulados = 0;
+  let restante: number | null = null;
+  const falhas: string[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    let j: { enviados: number; pulados: number; falhas: Array<{ nome: string; erro: string }>; restanteHoje: number };
+    try {
+      j = (await api({ acao: 'enviar_convites', cartaoIds: ids.slice(i, i + 50) })) as typeof j;
+    } catch (e) {
+      falhas.push((e as Error).message);
+      break;
+    }
+    enviados += j.enviados;
+    pulados += j.pulados;
+    restante = j.restanteHoje;
+    falhas.push(...j.falhas.map((f) => `${f.nome}: ${f.erro}`));
+    if (j.restanteHoje <= 0) break;
+  }
+  return (
+    `${enviados} convite(s) enviado(s) pelo WhatsApp.` +
+    (pulados ? ` ${pulados} pulado(s) (fixo, já aderiu, recusou ou bloqueado).` : '') +
+    (restante != null ? ` Restam ${restante} envios hoje.` : '') +
+    (falhas.length ? `\n${falhas.length} falha(s): ${falhas.slice(0, 5).join('; ')}` : '')
+  );
+}
+
+const ehCelularTel = (t: string) => /^\d{2}9\d{8}$/.test(t);
+
 // ------------------------------------------------------------------ cartões
 
 function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () => void }) {
@@ -137,16 +174,42 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
   const [nivel, setNivel] = useState('');
   const [ocupado, setOcupado] = useState<string | null>(null);
   const [aberto, setAberto] = useState<string | null>(null);
+  const [situacao, setSituacao] = useState<'' | 'pendente' | 'convidado' | 'aderiu' | 'recusou'>('');
+  const [enviando, setEnviando] = useState(false);
+
+  const sit = (c: CartaoLinha) =>
+    c.aderidoEm ? 'aderiu' : c.recusadoEm ? 'recusou' : c.convidadoEm ? 'convidado' : 'pendente';
+  const pendentes = useMemo(
+    () => p.cartoes.filter((c) => c.status === 'ativo' && sit(c) === 'pendente' && ehCelularTel(c.telefone)),
+    [p.cartoes],
+  );
+  const contagem = useMemo(() => {
+    const m = { pendente: 0, convidado: 0, aderiu: 0, recusou: 0 } as Record<string, number>;
+    for (const c of p.cartoes) m[sit(c)]++;
+    return m;
+  }, [p.cartoes]);
+
+  async function enviarPendentes() {
+    if (!confirm(`Mandar o convite pelo WhatsApp pra ${pendentes.length} pessoa(s) ainda não convidada(s)?`)) return;
+    setEnviando(true);
+    try {
+      p.setMsg(await enviarConvitesLote(p.api, pendentes.map((c) => c.id)));
+      p.refresh();
+    } finally {
+      setEnviando(false);
+    }
+  }
 
   const lista = useMemo(() => {
     const q = busca.trim().toLowerCase();
     const qd = q.replace(/\D/g, '');
     return p.cartoes.filter((c) => {
       if (nivel && c.nivelCodigo !== nivel) return false;
+      if (situacao && sit(c) !== situacao) return false;
       if (!q) return true;
       return c.nome.toLowerCase().includes(q) || (qd.length >= 3 && (c.telefone.includes(qd) || c.numero.replace(/\D/g, '').includes(qd)));
     });
-  }, [p.cartoes, busca, nivel]);
+  }, [p.cartoes, busca, nivel, situacao]);
 
   const porNivel = useMemo(() => {
     const m = new Map<string, number>();
@@ -194,6 +257,38 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
           className="ml-auto w-64 rounded border border-slate-300 px-2 py-1 text-sm"
         />
       </div>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        {(
+          [
+            ['pendente', 'Não convidados'],
+            ['convidado', 'Convidados'],
+            ['aderiu', 'Aderiram'],
+            ['recusou', 'Não quiseram'],
+          ] as const
+        ).map(([k, l]) => (
+          <button
+            key={k}
+            onClick={() => setSituacao(situacao === k ? '' : k)}
+            className={`rounded-full border px-3 py-1 ${situacao === k ? 'border-slate-800 bg-slate-800 text-white' : 'border-slate-300'}`}
+          >
+            {l} · {contagem[k] || 0}
+          </button>
+        ))}
+        {p.podeCriar && p.zapTemplate && pendentes.length > 0 && (
+          <button
+            onClick={enviarPendentes}
+            disabled={enviando}
+            className="ml-auto rounded bg-emerald-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            {enviando ? 'Enviando…' : `Enviar convite a ${pendentes.length} não convidado(s)`}
+          </button>
+        )}
+        {p.podeCriar && !p.zapTemplate && (
+          <span className="ml-auto text-amber-700">
+            Envio automático desligado (falta o template WHATSAPP_FIDELIDADE_TEMPLATE) — use o botão WhatsApp de cada cartão.
+          </span>
+        )}
+      </div>
 
       {!p.cartoes.length ? (
         <p className="rounded bg-white p-6 text-sm text-slate-500 shadow-sm">
@@ -219,6 +314,7 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
                     <div className="font-medium">{c.nome}</div>
                     <div className="text-xs text-slate-500">
                       {foneBr(c.telefone)} · nº {c.numero}
+                      {c.cidade ? ` · ${c.cidade}` : ''}
                     </div>
                   </td>
                   <td className="px-3 py-2">
@@ -235,8 +331,14 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
                   <td className="px-3 py-2 text-xs">
                     {c.status !== 'ativo' ? (
                       <span className="text-red-600">bloqueado</span>
+                    ) : c.recusadoEm && !c.aderidoEm ? (
+                      <span className="text-slate-400">não quis ({dataBr(c.recusadoEm)})</span>
                     ) : c.wallet ? (
                       <span className="text-emerald-700">na {c.wallet}</span>
+                    ) : c.aderidoEm ? (
+                      <span className="text-emerald-700">aderiu {dataBr(c.aderidoEm)}</span>
+                    ) : c.conviteErro ? (
+                      <span className="text-red-600" title={c.conviteErro}>convite falhou</span>
                     ) : c.aberto ? (
                       <span className="text-slate-700">abriu o link</span>
                     ) : c.convidadoEm ? (
@@ -366,7 +468,9 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
   const cfg = p.config;
   const [linhas, setLinhas] = useState<Linha[] | null>(null);
   const [carregando, setCarregando] = useState(false);
-  const [minimo, setMinimo] = useState(2);
+  const [regiao, setRegiao] = useState<'aracaju' | 'grande' | 'todos'>('aracaju');
+  const [minimo, setMinimo] = useState(1);
+  const [enviarJunto, setEnviarJunto] = useState(p.zapTemplate);
   const [ate, setAte] = useState('');
   const [criando, setCriando] = useState(false);
   const [filtro, setFiltro] = useState('');
@@ -378,7 +482,7 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
   async function carregar() {
     setCarregando(true);
     try {
-      const j = (await p.api({ acao: 'candidatos', minimo })) as { candidatos: Candidato[] };
+      const j = (await p.api({ acao: 'candidatos', minimo, regiao })) as { candidatos: Candidato[] };
       setLinhas(j.candidatos.map((c) => ({ ...c, sel: false, nivel: nivelSugerido(cfg, c.visitasJanela).codigo })));
     } catch (e) {
       p.setMsg(`Erro: ${(e as Error).message}`);
@@ -402,21 +506,26 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
     setCriando(true);
     try {
       let criados = 0;
+      const ids: string[] = [];
       const falhas: string[] = [];
       // lotes de 100 (cada cartão é um insert com checagem de colisão)
       for (let i = 0; i < pessoas.length; i += 100) {
         const j = (await p.api({ acao: 'criar', pessoas: pessoas.slice(i, i + 100) })) as {
-          criados: Array<{ novo: boolean }>;
+          criados: Array<{ id: string; novo: boolean }>;
           falhas: Array<{ nome: string; erro: string }>;
         };
         criados += j.criados.filter((x) => x.novo).length;
+        ids.push(...j.criados.map((x) => x.id));
         falhas.push(...j.falhas.map((f) => `${f.nome}: ${f.erro}`));
       }
-      p.setMsg(
+      const resumo =
         `${criados} cartão(ões) criado(s).` +
-          (falhas.length ? `\n${falhas.length} falha(s): ${falhas.slice(0, 5).join('; ')}` : '') +
-          '\nAgora mande o convite pelo botão WhatsApp de cada cartão.',
-      );
+        (falhas.length ? `\n${falhas.length} falha(s): ${falhas.slice(0, 5).join('; ')}` : '');
+      if (enviarJunto && p.zapTemplate && ids.length && !pessoas.some((x) => x.manual)) {
+        p.setMsg(`${resumo}\n${await enviarConvitesLote(p.api, ids)}`);
+      } else {
+        p.setMsg(`${resumo}\nAgora mande o convite pelo botão WhatsApp de cada cartão.`);
+      }
       p.depois();
     } catch (e) {
       p.setMsg(`Erro: ${(e as Error).message}`);
@@ -429,6 +538,11 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
     <div className="space-y-4">
       <div className="rounded bg-white p-4 shadow-sm">
         <h2 className="mb-1 font-medium">Quem já frequenta</h2>
+        <p className="mb-2 text-sm text-slate-500">
+          Comece pelos <b>clientes de Aracaju</b> (endereço no cadastro do PDV ou na reserva). O convite vai pelo
+          WhatsApp com o link do cartão: a pessoa vê os benefícios e toca em <b>“Quero meu cartão”</b> — só depois disso
+          o código vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
+        </p>
         <p className="mb-3 text-sm text-slate-500">
           Junta as 3 casas: dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o
           histórico da Tagme — a mesma pessoa é casada pelo telefone. O nível sugerido vem das visitas nos últimos{' '}
@@ -437,12 +551,28 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
         </p>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label>
+            Região{' '}
+            <select
+              value={regiao}
+              onChange={(e) => {
+                const r = e.target.value as typeof regiao;
+                setRegiao(r);
+                if (r === 'todos') setMinimo((m) => Math.max(2, m));
+              }}
+              className="rounded border border-slate-300 px-2 py-1"
+            >
+              <option value="aracaju">Aracaju</option>
+              <option value="grande">Grande Aracaju (+ Socorro, Barra, S. Cristóvão)</option>
+              <option value="todos">Todos (sem filtro de endereço)</option>
+            </select>
+          </label>
+          <label>
             Mínimo de visitas{' '}
             <input
               type="number"
-              min={2}
+              min={regiao === 'todos' ? 2 : 0}
               value={minimo}
-              onChange={(e) => setMinimo(Math.max(2, Number(e.target.value) || 2))}
+              onChange={(e) => setMinimo(Math.max(regiao === 'todos' ? 2 : 0, Number(e.target.value) || 0))}
               className="w-16 rounded border border-slate-300 px-2 py-1"
             />
           </label>
@@ -455,7 +585,22 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
       {linhas && (
         <div className="rounded bg-white p-4 shadow-sm">
           <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-slate-600">{linhas.length} pessoas sem cartão.</span>
+            <span className="text-slate-600">
+              {linhas.length} pessoas sem cartão ({linhas.filter((l) => l.celular).length} com celular).
+            </span>
+            <button
+              onClick={() => marcar((l) => l.celular)}
+              className="rounded border border-slate-300 px-2 py-0.5 text-xs"
+            >
+              Só celular
+            </button>
+            <button
+              onClick={() => marcar((l) => l.celular && !!l.ultima && l.ultima >= diasAtras(90))}
+              className="rounded border border-slate-300 px-2 py-0.5 text-xs"
+              title="Comece por quem veio recentemente — protege a qualidade do número no WhatsApp"
+            >
+              Vieram em 90 dias
+            </button>
             <span className="text-slate-400">Selecionar:</span>
             {cfg.niveis.slice(1).map((n) => (
               <button
@@ -481,6 +626,8 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                 <tr>
                   <th className="px-2 py-2"></th>
                   <th className="px-2 py-2">Cliente</th>
+                  <th className="px-2 py-2">Bairro / cidade</th>
+                  <th className="px-2 py-2">Última</th>
                   <th className="px-2 py-2 text-right" title="dias distintos com pedido no PDV (12 meses)">PDV</th>
                   <th className="px-2 py-2 text-right" title="reservas que sentaram (12 meses)">Reservas</th>
                   <th className="px-2 py-2 text-right" title="reservas no histórico da Tagme">Tagme</th>
@@ -502,8 +649,15 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                     </td>
                     <td className="px-2 py-1">
                       <div>{l.nome}</div>
-                      <div className="text-xs text-slate-500">{foneBr(soFone(l.telefone))}</div>
+                      <div className="text-xs text-slate-500">
+                        {foneBr(soFone(l.telefone))}
+                        {!l.celular && <span className="ml-1 text-amber-700" title="fixo — não recebe WhatsApp">fixo</span>}
+                      </div>
                     </td>
+                    <td className="px-2 py-1 text-xs text-slate-600">
+                      {[l.bairro, l.cidade].filter(Boolean).join(' · ')}
+                    </td>
+                    <td className="px-2 py-1 text-xs text-slate-600">{dataBr(l.ultima)}</td>
                     <td className="px-2 py-1 text-right">{l.pdvDias || ''}</td>
                     <td className="px-2 py-1 text-right">{l.reservas || ''}</td>
                     <td className="px-2 py-1 text-right">{l.tagme || ''}</td>
@@ -533,6 +687,12 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
               <input type="date" value={ate} onChange={(e) => setAte(e.target.value)} className="rounded border border-slate-300 px-2 py-1" />
             </label>
             <span className="text-xs text-slate-500">{ate ? '' : '(sem data = garantido pra sempre)'}</span>
+            {p.zapTemplate && (
+              <label className="flex items-center gap-1">
+                <input type="checkbox" checked={enviarJunto} onChange={(e) => setEnviarJunto(e.target.checked)} />
+                já mandar o convite no WhatsApp
+              </label>
+            )}
             <button
               disabled={!selecionados.length || criando}
               onClick={() => {
@@ -544,13 +704,17 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                     nivelMinimo: l.nivel,
                     nivelMinimoAte: ate || null,
                     filialId: l.filialId,
+                    cidade: l.cidade,
+                    bairro: l.bairro,
                     origemDetalhe: `pdv ${l.pdvDias} · reservas ${l.reservas} · tagme ${l.tagme} · ${cfg.janelaDias}d ${l.visitasJanela}`,
                   })),
                 );
               }}
               className="ml-auto rounded bg-emerald-600 px-4 py-1.5 text-white disabled:opacity-40"
             >
-              {criando ? 'Criando…' : `Criar ${selecionados.length} cartão(ões)`}
+              {criando
+                ? 'Criando…'
+                : `Criar ${selecionados.length} cartão(ões)${enviarJunto && p.zapTemplate ? ' e convidar' : ''}`}
             </button>
           </div>
         </div>
@@ -636,11 +800,14 @@ function Regras(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () 
   const [salvando, setSalvando] = useState(false);
   const pode = p.podeConfigurar;
 
-  function nivel(i: number, campo: 'nome' | 'minVisitas' | 'pct' | 'cor', v: string) {
+  function nivel(i: number, campo: 'nome' | 'minVisitas' | 'pct' | 'pctEspaco' | 'cor', v: string) {
     setCfg((c) => ({
       ...c,
       niveis: c.niveis.map((n, j) => (j === i ? { ...n, [campo]: campo === 'nome' || campo === 'cor' ? v : Number(v) } : n)),
     }));
+  }
+  function prioridade(i: number, v: boolean) {
+    setCfg((c) => ({ ...c, niveis: c.niveis.map((n, j) => (j === i ? { ...n, prioridadeReserva: v } : n)) }));
   }
 
   async function salvar() {
@@ -669,6 +836,8 @@ function Regras(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () 
             <th className="py-1">Nível</th>
             <th className="py-1">Visitas em {cfg.janelaDias} dias</th>
             <th className="py-1">Desconto %</th>
+            <th className="py-1" title="desconto na taxa do espaço + exclusividade dos orçamentos de evento">Espaço %</th>
+            <th className="py-1" title="passa do teto de mesas da reserva online (até lotar)">Prioridade</th>
             <th className="py-1">Cor</th>
           </tr>
         </thead>
@@ -691,6 +860,12 @@ function Regras(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () 
               </td>
               <td className="py-1 pr-2">
                 <input type="number" min={0} max={50} step={0.5} value={n.pct} disabled={!pode} onChange={(e) => nivel(i, 'pct', e.target.value)} className="w-20 rounded border border-slate-300 px-2 py-1" />
+              </td>
+              <td className="py-1 pr-2">
+                <input type="number" min={0} max={50} step={0.5} value={n.pctEspaco} disabled={!pode} onChange={(e) => nivel(i, 'pctEspaco', e.target.value)} className="w-20 rounded border border-slate-300 px-2 py-1" />
+              </td>
+              <td className="py-1 pr-2 text-center">
+                <input type="checkbox" checked={n.prioridadeReserva} disabled={!pode} onChange={(e) => prioridade(i, e.target.checked)} />
               </td>
               <td className="py-1">
                 <input type="color" value={n.cor} disabled={!pode} onChange={(e) => nivel(i, 'cor', e.target.value)} />
@@ -727,7 +902,9 @@ function Regras(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () 
       </div>
       <p className="text-xs text-slate-500">
         Desconto sobre o consumo (a taxa de serviço segue sobre o valor cheio), só no Pix, 1 uso por dia por cartão.
-        Cada Pix pago com o código conta 1 visita e troca o código.
+        Cada Pix pago com o código conta 1 visita e troca o código. Espaço % = desconto no aluguel do espaço dos
+        orçamentos de evento (entra sozinho pelo telefone do cliente). Prioridade = a reserva online passa do teto de
+        mesas da área (até lotar de verdade).
       </p>
       {pode && (
         <button onClick={salvar} disabled={salvando} className="rounded bg-slate-800 px-4 py-1.5 text-sm text-white">

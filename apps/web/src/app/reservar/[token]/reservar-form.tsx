@@ -192,11 +192,16 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // Reconhece cliente recorrente: ao digitar o WhatsApp, busca o nome de
   // reservas anteriores e autopreenche (sem sobrescrever se já digitou).
   const nomeAutoRef = useRef(false); // só autopreenche 1x e se o nome estava vazio
+  // Cartão Prainha: selo no formulário; com prioridade, a disponibilidade vem
+  // sem o teto de mesas da área (o /confirmar confere de novo no servidor).
+  const [membro, setMembro] = useState<{ nivel: string; cor: string; prioridade: boolean } | null>(null);
+  const telPrioridade = membro?.prioridade ? whatsapp.replace(/\D/g, '') : '';
   useEffect(() => {
     const dig = whatsapp.replace(/\D/g, '');
     if (dig.length < 10) {
       setVoltou(null);
       setPrecisaCpf(false);
+      setMembro(null);
       return;
     }
     let cancelado = false;
@@ -204,7 +209,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
       try {
         const r = await fetch(`/api/reservar/${token}/cliente?tel=${encodeURIComponent(whatsapp)}`);
         const d = await r.json().catch(() => ({}));
-        if (cancelado || !d?.found) return;
+        if (cancelado) return;
+        setMembro(d?.membro ?? null);
+        if (!d?.found) return;
         const primeiro = String(d.nome).trim().split(' ')[0];
         setVoltou(primeiro);
         if (!nome.trim() && !nomeAutoRef.current) {
@@ -307,7 +314,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     let cancel = false;
     (async () => {
       try {
-        const r = await fetch(`/api/reservar/${token}/disponibilidade?data=${data}`);
+        const r = await fetch(
+          `/api/reservar/${token}/disponibilidade?data=${data}${telPrioridade ? `&tel=${telPrioridade}` : ''}`,
+        );
         const d = await r.json().catch(() => ({}));
         if (cancel) return;
         setDiaFechado(!!d?.fechado);
@@ -324,7 +333,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     return () => {
       cancel = true;
     };
-  }, [data, token]);
+  }, [data, token, telPrioridade]);
   const espacoSelLotado = !!dispon[espaco] && dispon[espaco].livres === 0;
   const semHorarios = horariosDisponiveis.length === 0;
 
@@ -762,6 +771,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
           {voltou && (
             <p className="mt-1.5 rounded-lg bg-[var(--rsv-welcome-bg)] px-2.5 py-1.5 text-xs text-[var(--rsv-strong)]">
               👋 Que bom te ver de novo, <b>{voltou}</b>! Já preenchemos seu nome.
+            </p>
+          )}
+          {membro && (
+            <p
+              className="mt-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-white"
+              style={{ background: membro.cor }}
+            >
+              Cartão Prainha {membro.nivel}
+              {membro.prioridade ? ' · você tem prioridade na reserva' : ''}
             </p>
           )}
         </div>

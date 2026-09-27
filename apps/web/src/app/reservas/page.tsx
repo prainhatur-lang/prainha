@@ -12,6 +12,7 @@ import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { mesasOcupadasNoConsumer } from '@/lib/reservas/mesa-disponivel';
 import { ReservasClient, type ReservaItem, type FilialOpt } from './reservas-client';
+import { membrosPorTelefones } from '@/lib/fidelidade/membro';
 import { parseJuntadas } from '@/lib/reservas/mesas-juntadas';
 
 export const dynamic = 'force-dynamic';
@@ -195,6 +196,14 @@ export default async function ReservasPage(props: {
     }
   }
 
+  // Cartão Prainha: marca quem é membro (a recepção sabe que tem prioridade)
+  const membrosTel = escopo.length > 0
+    ? await membrosPorTelefones(escopo[0], itens.map((i) => i.clienteTelefone)).catch(() => new Set<string>())
+    : new Set<string>();
+  const membros = itens
+    .filter((i) => membrosTel.has((i.clienteTelefone ?? '').replace(/\D/g, '').slice(-8)))
+    .map((i) => i.id);
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -214,6 +223,7 @@ export default async function ReservasPage(props: {
           reservasPorMesa={reservasPorMesa}
           historico={historico}
           fiado={fiado}
+          membros={membros}
         />
       </section>
     </main>

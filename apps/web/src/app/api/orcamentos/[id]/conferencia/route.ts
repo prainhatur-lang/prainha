@@ -32,12 +32,14 @@ function totalCobrado(o: {
   valorPessoa: string | null;
   taxaEspaco: string | null;
   taxaExclusividade: string | null;
+  descontoEspaco: string | null;
 }): number | null {
   if (o.valorPessoa == null) return null;
   return (
     o.pessoas * Number(o.valorPessoa) +
     Number(o.taxaEspaco ?? 0) +
-    Number(o.taxaExclusividade ?? 0)
+    Number(o.taxaExclusividade ?? 0) -
+    Number(o.descontoEspaco ?? 0)
   );
 }
 

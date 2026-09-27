@@ -7,6 +7,7 @@ import { eq, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { sanitizarPratos } from '@/lib/orcamentos';
+import { descontoEspacoMembro } from '@/lib/fidelidade/membro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -105,6 +106,35 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   }
 
   await db.update(schema.orcamentoEvento).set(set).where(eq(schema.orcamentoEvento.id, id));
+
+  // Recalcula o desconto do Cartão Prainha quando muda telefone, taxas ou filial.
+  if (['clienteTelefone', 'taxaEspaco', 'taxaExclusividade', 'filialId'].some((k) => k in set)) {
+    const [o] = await db
+      .select({
+        filialId: schema.orcamentoEvento.filialId,
+        clienteTelefone: schema.orcamentoEvento.clienteTelefone,
+        taxaEspaco: schema.orcamentoEvento.taxaEspaco,
+        taxaExclusividade: schema.orcamentoEvento.taxaExclusividade,
+      })
+      .from(schema.orcamentoEvento)
+      .where(eq(schema.orcamentoEvento.id, id))
+      .limit(1);
+    if (o) {
+      const desc = await descontoEspacoMembro(
+        o.filialId,
+        o.clienteTelefone,
+        o.taxaEspaco != null ? Number(o.taxaEspaco) : null,
+        o.taxaExclusividade != null ? Number(o.taxaExclusividade) : null,
+      ).catch(() => null);
+      await db
+        .update(schema.orcamentoEvento)
+        .set({
+          descontoEspaco: desc ? desc.desconto.toFixed(2) : null,
+          descontoEspacoMotivo: desc?.motivo ?? null,
+        })
+        .where(eq(schema.orcamentoEvento.id, id));
+    }
+  }
   return NextResponse.json({ ok: true });
 }
 

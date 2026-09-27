@@ -292,6 +292,19 @@ async function tratarPayload(payload: string, from: string | null) {
     return;
   }
 
+  // --- Cartão Prainha: "Não tenho interesse" no convite. token = cartão.token ---
+  if (acao === 'fid_nao') {
+    const upd = await db
+      .update(schema.fidelidadeCartao)
+      .set({ recusadoEm: sql`now()` })
+      .where(and(eq(schema.fidelidadeCartao.token, token), sql`${schema.fidelidadeCartao.aderidoEm} IS NULL`))
+      .returning({ id: schema.fidelidadeCartao.id });
+    if (upd.length && from) {
+      await enviarTextoWhatsApp(from, 'Tudo bem, não vamos mais te mandar o convite. Obrigado e até a próxima! 🌅').catch(() => {});
+    }
+    return;
+  }
+
   if (acao !== 'confirmar' && acao !== 'cancelar') return;
 
   // Pre-select pra auditoria saber o status ANTERIOR (o update sobrescreve).

@@ -120,7 +120,7 @@ export async function proxy(request: NextRequest) {
   const isClimaPublico = path.startsWith('/clima/');
   // /cartao/[token] é o cartão fidelidade do cliente (link mandado no zap;
   // o token é a senha do cartão, sem login). O painel é /fidelidade.
-  const isCartaoPublico = path.startsWith('/cartao/');
+  const isCartaoPublico = path.startsWith('/cartao/') || path === '/cartao-prainha';
   const isPublicRoute =
     path === '/' ||
     isAuthRoute ||

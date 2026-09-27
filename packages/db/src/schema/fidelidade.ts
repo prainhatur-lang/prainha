@@ -56,6 +56,16 @@ export const fidelidadeCartao = pgTable(
     googleSalvoEm: timestamp('google_salvo_em', { withTimezone: true }),
     abertoEm: timestamp('aberto_em', { withTimezone: true }),
     convidadoEm: timestamp('convidado_em', { withTimezone: true }),
+    /** o cliente aceitou o convite (botão "Quero meu cartão" no link). Sem
+     *  adesão o código não vale na loja nem os benefícios (reserva/espaço). */
+    aderidoEm: timestamp('aderido_em', { withTimezone: true }),
+    /** respondeu "não tenho interesse" — não recebe convite de novo */
+    recusadoEm: timestamp('recusado_em', { withTimezone: true }),
+    /** erro do último envio do convite pelo WhatsApp (template da Meta) */
+    conviteErro: text('convite_erro'),
+    /** cidade/bairro do cadastro na hora do convite (campanha por região) */
+    cidade: varchar('cidade', { length: 100 }),
+    bairro: varchar('bairro', { length: 100 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

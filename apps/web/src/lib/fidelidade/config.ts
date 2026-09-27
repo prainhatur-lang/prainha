@@ -12,6 +12,10 @@ export interface NivelFidelidade {
   pct: number;
   /** cor de fundo do cartão */
   cor: string;
+  /** % de desconto no aluguel do espaço (orçamento de evento) */
+  pctEspaco: number;
+  /** reserva passa na frente do teto de mesas da área (prioridade) */
+  prioridadeReserva: boolean;
 }
 
 export interface FidelidadeConfig {
@@ -28,11 +32,11 @@ export interface FidelidadeConfig {
 
 export const CONFIG_PADRAO: FidelidadeConfig = {
   niveis: [
-    { codigo: 'silver', nome: 'Silver', minVisitas: 0, pct: 5, cor: '#6E7780' },
-    { codigo: 'gold', nome: 'Gold', minVisitas: 3, pct: 7, cor: '#A8812A' },
-    { codigo: 'platinum', nome: 'Platinum', minVisitas: 5, pct: 10, cor: '#4E6272' },
-    { codigo: 'black', nome: 'Black', minVisitas: 8, pct: 15, cor: '#141414' },
-    { codigo: 'diamante', nome: 'Diamante', minVisitas: 12, pct: 20, cor: '#0F3A5F' },
+    { codigo: 'silver', nome: 'Silver', minVisitas: 0, pct: 5, pctEspaco: 5, prioridadeReserva: true, cor: '#6E7780' },
+    { codigo: 'gold', nome: 'Gold', minVisitas: 3, pct: 7, pctEspaco: 7, prioridadeReserva: true, cor: '#A8812A' },
+    { codigo: 'platinum', nome: 'Platinum', minVisitas: 5, pct: 10, pctEspaco: 10, prioridadeReserva: true, cor: '#4E6272' },
+    { codigo: 'black', nome: 'Black', minVisitas: 8, pct: 15, pctEspaco: 15, prioridadeReserva: true, cor: '#141414' },
+    { codigo: 'diamante', nome: 'Diamante', minVisitas: 12, pct: 20, pctEspaco: 20, prioridadeReserva: true, cor: '#0F3A5F' },
   ],
   bonusDiaUtilPct: 5,
   janelaDias: 90,
@@ -51,6 +55,9 @@ export function normalizarConfig(c: Partial<FidelidadeConfig> | null | undefined
       minVisitas: Math.max(0, Math.floor(Number(n.minVisitas) || 0)),
       pct: Math.max(0, Math.min(50, Number(n.pct) || 0)),
       cor: /^#[0-9a-fA-F]{6}$/.test(String(n.cor)) ? String(n.cor) : '#333333',
+      // configs salvas antes desses campos: espaço = % do consumo, prioridade ligada
+      pctEspaco: Math.max(0, Math.min(50, n.pctEspaco == null ? Number(n.pct) || 0 : Number(n.pctEspaco) || 0)),
+      prioridadeReserva: n.prioridadeReserva == null ? true : !!n.prioridadeReserva,
     }))
     .sort((a, b) => a.minVisitas - b.minVisitas);
   niveis[0].minVisitas = 0;

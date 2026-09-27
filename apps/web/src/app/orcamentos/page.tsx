@@ -53,6 +53,7 @@ export default async function OrcamentosPage(props: {
             valorPessoa: schema.orcamentoEvento.valorPessoa,
             taxaEspaco: schema.orcamentoEvento.taxaEspaco,
             taxaExclusividade: schema.orcamentoEvento.taxaExclusividade,
+            descontoEspaco: schema.orcamentoEvento.descontoEspaco,
             status: schema.orcamentoEvento.status,
           })
           .from(schema.orcamentoEvento)
@@ -147,6 +148,7 @@ export default async function OrcamentosPage(props: {
                     valorPessoa: num(o.valorPessoa),
                     taxaEspaco: num(o.taxaEspaco),
                     taxaExclusividade: num(o.taxaExclusividade),
+                    descontoEspaco: num(o.descontoEspaco),
                   });
                   const st =
                     STATUS_ORCAMENTO[(o.status as StatusOrcamento) ?? 'aberto'] ??

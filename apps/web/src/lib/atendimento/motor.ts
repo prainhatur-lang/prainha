@@ -511,7 +511,7 @@ export async function processarEntrada(params: {
         });
         return 'Lead registrado. Confirme ao cliente que a equipe vai entrar em contato pra fechar os detalhes.';
       },
-      consultarDisponibilidade: (data: string) => consultarDisponibilidade(entrada.filialId, data),
+      consultarDisponibilidade: (data: string) => consultarDisponibilidade(entrada.filialId, data, entrada.telefone),
       criarReserva: (dados: import('./ia').DadosReservaMesa) =>
         criarReservaWhatsApp({
           filialId: entrada.filialId,

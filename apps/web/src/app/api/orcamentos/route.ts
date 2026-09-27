@@ -6,6 +6,7 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { sanitizarPratos } from '@/lib/orcamentos';
+import { descontoEspacoMembro } from '@/lib/fidelidade/membro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -50,13 +51,24 @@ export async function POST(request: Request) {
       ? b.validoAte
       : null;
 
+  const taxaEspaco = dinheiro(b?.taxaEspaco);
+  const taxaExclusividade = dinheiro(b?.taxaExclusividade);
+  const clienteTelefone = txt(b?.clienteTelefone, 30);
+  // Membro do Cartão Prainha ganha desconto no espaço — o servidor decide.
+  const desc = await descontoEspacoMembro(
+    filialId,
+    clienteTelefone,
+    taxaEspaco != null ? Number(taxaEspaco) : null,
+    taxaExclusividade != null ? Number(taxaExclusividade) : null,
+  ).catch(() => null);
+
   const [novo] = await db
     .insert(schema.orcamentoEvento)
     .values({
       filialId,
       local: txt(b?.local, 100),
       clienteNome,
-      clienteTelefone: txt(b?.clienteTelefone, 30),
+      clienteTelefone,
       dataEvento,
       hora,
       pessoas,
@@ -64,8 +76,10 @@ export async function POST(request: Request) {
       pratos: sanitizarPratos(b?.pratos),
       sobremesaIncluida: b?.sobremesaIncluida === true,
       sobremesaDescricao: txt(b?.sobremesaDescricao, 500),
-      taxaEspaco: dinheiro(b?.taxaEspaco),
-      taxaExclusividade: dinheiro(b?.taxaExclusividade),
+      taxaEspaco,
+      taxaExclusividade,
+      descontoEspaco: desc ? desc.desconto.toFixed(2) : null,
+      descontoEspacoMotivo: desc?.motivo ?? null,
       observacoes: txt(b?.observacoes, 4000),
       condicoes: txt(b?.condicoes, 4000),
       validoAte,

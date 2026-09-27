@@ -10,6 +10,7 @@ import { orgDoUsuario, listarCartoes, usosRecentes } from '@/lib/fidelidade/admi
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { appleConfigurada } from '@/lib/fidelidade/apple';
 import { googleConfigurada } from '@/lib/fidelidade/google';
+import { conviteFidelidadeConfigurado } from '@/lib/whatsapp-otp';
 import { baseUrl } from '@/lib/fidelidade/vista';
 import { FidelidadeClient } from './fidelidade-client';
 
@@ -57,6 +58,7 @@ export default async function FidelidadePage(props: { searchParams: Promise<{ fi
         base={baseUrl()}
         apple={appleConfigurada()}
         google={googleConfigurada()}
+        zapTemplate={conviteFidelidadeConfigurado()}
         podeCriar={podeCriar}
         podeConfigurar={podeConfigurar}
       />

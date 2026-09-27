@@ -1,7 +1,8 @@
 // GET /api/reservar/[token]/disponibilidade?data=YYYY-MM-DD
 // Público. Retorna, por espaço, quantas MESAS estão livres naquele dia
 // (a mesa é a unidade: reservada = fora do estoque). Pro link mostrar a
-// disponibilidade antes do cliente escolher.
+// disponibilidade antes do cliente escolher. &tel= opcional: membro do
+// Cartão Prainha com prioridade vê as mesas acima do teto (percentualReserva).
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
@@ -10,6 +11,7 @@ import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendim
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
+import { membroPorTelefone } from '@/lib/fidelidade/membro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -67,11 +69,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   // Ocupação por área: reserva ativa + ocupação real no Consumer (se hoje) —
   // mesma fonte usada pra alocar mesa de verdade no /confirmar, evita a
   // disponibilidade mostrada divergir do que realmente é aceito.
+  const tel = new URL(request.url).searchParams.get('tel');
+  const prioridade = tel ? !!(await membroPorTelefone(filial.id, tel).catch(() => null))?.prioridadeReserva : false;
   const out = await Promise.all(
     areas.map(async (a) => {
       const total = a.mesas!.length;
       const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome, mesasValidas: a.mesas!.map((m) => String(m.numero)) })).size;
-      const limite = typeof a.percentualReserva === 'number' ? Math.floor((total * a.percentualReserva) / 100) : total;
+      const limite = typeof a.percentualReserva === 'number' && !prioridade ? Math.floor((total * a.percentualReserva) / 100) : total;
       return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas) };
     }),
   );

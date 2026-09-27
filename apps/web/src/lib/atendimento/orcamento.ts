@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { buscarItensCardapio, type ItemCardapio } from './cardapio';
 import { eventoQueSeguraData, datasFechadasPorEntrada } from '@/lib/orcamentos-server';
+import { descontoEspacoMembro } from '@/lib/fidelidade/membro';
 
 // Fatores da regra "média" (mudar aqui recalibra a Nina; futuro: painel).
 const PRECO_MINIMO_OPCAO = 5; // abaixo disso é placeholder de PDV, não prato
@@ -251,6 +252,9 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
   ];
 
   const rolha = rolhaDoEvento(totalFinal);
+  // Cliente do Cartão Prainha ganha desconto na taxa do espaço (a entrada
+  // continua a taxa cheia — é o que segura a data; o desconto sai do restante).
+  const descEspaco = await descontoEspacoMembro(p.filialId, p.telefone, TAXA_TERRACO, null).catch(() => null);
   const aceiteToken = randomBytes(32).toString('hex');
   await db.insert(schema.orcamentoEvento).values({
     filialId: p.filialId,
@@ -265,6 +269,8 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     sobremesaIncluida: !!sobremesa,
     sobremesaDescricao: sobremesa ? sobremesa.nome : null,
     taxaEspaco: TAXA_TERRACO.toFixed(2),
+    descontoEspaco: descEspaco ? descEspaco.desconto.toFixed(2) : null,
+    descontoEspacoMotivo: descEspaco?.motivo ?? null,
     // ENTRADA = a taxa do espaço (Elison, 16/08): é o que segura a data, é
     // valor redondo e não cresce com o tamanho do evento. Pagou = data
     // fechada (eventoQueSeguraData barra qualquer outro no mesmo dia).
@@ -302,6 +308,9 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
       ? `Taxa de rolha: R$ ${rolha},00 por garrafa de vinho que o cliente trouxer — diga SÓ esse valor, nunca as faixas. `
       : `Rolha por CORTESIA nesse evento: ofereça como gentileza da casa ("a rolha fica por nossa conta"), sem dizer por que nem citar valor de corte. `) +
     `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) reserva a data: enquanto não pagar, o dia segue livre pra outro cliente — diga isso com naturalidade, sem pressão, e o Pix sai na própria página do link. ` +
+    (descEspaco
+      ? `O cliente é ${descEspaco.motivo}: ganhou ${rs(descEspaco.desconto)} de desconto no aluguel do espaço, já abatido no total do documento (total com desconto ${rs(totalFinal - descEspaco.desconto)}) — conte isso a ele como benefício do cartão. `
+      : '') +
     `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
 }

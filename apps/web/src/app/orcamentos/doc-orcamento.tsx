@@ -26,6 +26,7 @@ export function DocOrcamento({ o, filialNome, filialCnpj, linkAceite }: Props) {
     valorPessoa,
     taxaEspaco: num(o.taxaEspaco),
     taxaExclusividade: num(o.taxaExclusividade),
+    descontoEspaco: num(o.descontoEspaco),
   });
   const pratos = o.pratos ?? [];
   const diaSemana = diaSemanaBr(o.dataEvento);
@@ -210,6 +211,16 @@ export function DocOrcamento({ o, filialNome, filialCnpj, linkAceite }: Props) {
                   </td>
                   <td className="py-2 text-right font-mono text-slate-900">
                     {brl(totais.taxaExclusividade)}
+                  </td>
+                </tr>
+              )}
+              {totais.descontoEspaco != null && (
+                <tr className="border-b border-slate-100">
+                  <td className="py-2 text-emerald-700">
+                    Desconto no espaço — {o.descontoEspacoMotivo || 'Cartão Prainha'}
+                  </td>
+                  <td className="py-2 text-right font-mono text-emerald-700">
+                    − {brl(totais.descontoEspaco)}
                   </td>
                 </tr>
               )}

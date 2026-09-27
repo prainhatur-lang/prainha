@@ -9,6 +9,9 @@ import { eq } from 'drizzle-orm';
 import { vistaCartao } from '@/lib/fidelidade/vista';
 import { appleConfigurada } from '@/lib/fidelidade/apple';
 import { googleConfigurada } from '@/lib/fidelidade/google';
+import { carregarPrograma } from '@/lib/fidelidade/config';
+import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
+import { BotoesAdesao } from './adesao';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +29,41 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
     await db.update(schema.fidelidadeCartao).set({ abertoEm: new Date() }).where(eq(schema.fidelidadeCartao.id, c.id));
   }
   const v = await vistaCartao(c);
+
+  // Convite ainda não aceito: apresenta o programa e pede a adesão. O código
+  // e a Wallet só aparecem depois do "Quero meu cartão".
+  if (!c.aderidoEm && !v.bloqueado) {
+    const { config: cfg } = await carregarPrograma(c.organizacaoId);
+    const primeiro = c.nome.trim().split(/\s+/)[0] || '';
+    return (
+      <main className="min-h-screen bg-[#f4efe6] px-4 py-8 text-slate-900">
+        <div className="mx-auto w-full max-w-sm space-y-5">
+          <div
+            className="relative overflow-hidden rounded-2xl p-5 text-white shadow-xl"
+            style={{ background: `linear-gradient(135deg, ${v.cor} 0%, ${v.cor}dd 60%, #00000055 140%)` }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/fidelidade/sereia-branca.png" alt="" className="absolute -right-6 -bottom-4 w-40 opacity-20" />
+            <div className="text-xs uppercase tracking-widest opacity-80">Convite</div>
+            <h1 className="mt-1 text-2xl font-bold leading-tight">
+              {primeiro ? `${primeiro}, ` : ''}seu Cartão Prainha {v.nivel} está pronto
+            </h1>
+            <p className="mt-2 text-sm opacity-90">
+              Você é cliente da casa e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
+              {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
+            </p>
+            {v.garantido && (
+              <p className="mt-2 text-xs opacity-80">Categoria {v.nivel} garantida pra você pelo convite.</p>
+            )}
+          </div>
+          <BotoesAdesao token={token} recusado={!!c.recusadoEm} />
+          <ApresentacaoPrograma cfg={cfg} destaque={v.nivelCodigo} />
+          <BotoesAdesao token={token} recusado={!!c.recusadoEm} />
+        </div>
+      </main>
+    );
+  }
+
   const pctHoje = v.pct + v.bonusHoje;
   const progresso = v.proximo
     ? Math.min(100, Math.round((v.visitas / (v.visitas + v.faltam || 1)) * 100))
@@ -72,6 +110,17 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             <p className="mt-2 text-xs text-slate-500">
               O código muda depois de cada uso — a Wallet atualiza sozinha. 1 uso por dia, nas 3 casas.
             </p>
+          </div>
+        )}
+
+        {!v.bloqueado && (v.prioridadeReserva || v.pctEspaco > 0) && (
+          <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
+            <div className="font-medium">Seus benefícios {v.nivel}</div>
+            <ul className="mt-2 space-y-1 text-slate-600">
+              {v.prioridadeReserva && <li>✓ Prioridade nas reservas (reserve com este telefone)</li>}
+              {v.pctEspaco > 0 && <li>✓ {v.pctEspaco}% de desconto no aluguel de espaço pra eventos</li>}
+            </ul>
+            <a href="/cartao-prainha" className="mt-2 inline-block text-xs text-[#0F3A5F] underline">Ver o programa completo</a>
           </div>
         )}
 

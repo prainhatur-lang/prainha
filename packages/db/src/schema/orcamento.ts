@@ -81,6 +81,11 @@ export const orcamentoEvento = pgTable(
     taxaEspaco: numeric('taxa_espaco', { precision: 10, scale: 2 }),
     /** Exclusividade do ambiente — fechado só pro grupo (R$). Null = sem. */
     taxaExclusividade: numeric('taxa_exclusividade', { precision: 10, scale: 2 }),
+    /** Desconto no aluguel do espaço (espaço + exclusividade) pelo Cartão
+     *  Prainha do cliente — calculado no servidor pelo telefone (R$). */
+    descontoEspaco: numeric('desconto_espaco', { precision: 10, scale: 2 }),
+    /** ex: "Cartão Prainha Gold · 7%" */
+    descontoEspacoMotivo: varchar('desconto_espaco_motivo', { length: 120 }),
     observacoes: text('observacoes'),
     /** Condições comerciais impressas no documento (sinal, pagamento etc). */
     condicoes: text('condicoes'),

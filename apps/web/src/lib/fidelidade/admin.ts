@@ -47,6 +47,11 @@ export interface CartaoLinha {
   aberto: boolean;
   wallet: string | null;
   convidadoEm: string | null;
+  /** tocou "Quero meu cartão" (ou cadastro manual) — só aí o código vale */
+  aderidoEm: string | null;
+  recusadoEm: string | null;
+  conviteErro: string | null;
+  cidade: string | null;
   criadoEm: string;
 }
 
@@ -59,6 +64,8 @@ export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig
            c.google_salvo_em IS NOT NULL AS google,
            EXISTS (SELECT 1 FROM fidelidade_apple_registro a WHERE a.cartao_id = c.id) AS apple,
            c.convidado_em::text AS convidado_em, c.criado_em::text AS criado_em,
+           c.aderido_em::text AS aderido_em, c.recusado_em::text AS recusado_em,
+           c.convite_erro, c.cidade,
            (SELECT count(*)::int FROM fidelidade_visita v WHERE v.cartao_id = c.id AND v.data >= ${desde}::date) AS visitas,
            (SELECT count(*)::int FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS usos,
            (SELECT max(u.confirmado_em)::text FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS ultimo_uso
@@ -68,7 +75,8 @@ export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig
   `)) as unknown as Array<{
     id: string; nome: string; telefone: string; numero: string; codigo: string; token: string; status: string;
     nivel_minimo: string | null; nivel_minimo_ate: string | null; aberto: boolean; google: boolean; apple: boolean;
-    convidado_em: string | null; criado_em: string; visitas: number; usos: number; ultimo_uso: string | null;
+    convidado_em: string | null; criado_em: string; aderido_em: string | null; recusado_em: string | null;
+    convite_erro: string | null; cidade: string | null; visitas: number; usos: number; ultimo_uso: string | null;
   }>;
   const hoje = hojeBr();
   return rows.map((r) => {
@@ -100,6 +108,10 @@ export async function listarCartoes(organizacaoId: string, cfg: FidelidadeConfig
       aberto: !!r.aberto,
       wallet: r.apple && r.google ? 'Apple + Google' : r.apple ? 'Apple' : r.google ? 'Google' : null,
       convidadoEm: r.convidado_em,
+      aderidoEm: r.aderido_em,
+      recusadoEm: r.recusado_em,
+      conviteErro: r.convite_erro,
+      cidade: r.cidade,
       criadoEm: r.criado_em,
     };
   });

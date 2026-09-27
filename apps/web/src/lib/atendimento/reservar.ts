@@ -24,6 +24,7 @@ import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
+import { membroPorTelefone } from '@/lib/fidelidade/membro';
 import {
   enviarConfirmacaoReserva,
   enviarAvisoTolerancia,
@@ -113,7 +114,7 @@ function cpfValido(cpf: string): boolean {
 }
 
 /** Resumo de vagas por área numa data — texto pro modelo falar com o cliente. */
-export async function consultarDisponibilidade(filialId: string, data: string): Promise<string> {
+export async function consultarDisponibilidade(filialId: string, data: string, telefone?: string): Promise<string> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return 'Data inválida — use o formato YYYY-MM-DD.';
   if (data < hojeBr()) return 'Essa data já passou — peça uma data futura ao cliente.';
 
@@ -132,6 +133,14 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
   if (janela.bloqueado) return `Não dá pra reservar pra ${dataBr(data)}: ${janela.motivo}`;
 
   const linhas: string[] = [];
+  // Cartão Prainha com prioridade: vê as mesas acima do teto de cada área
+  const membro = telefone ? await membroPorTelefone(filialId, telefone).catch(() => null) : null;
+  const prioridade = !!membro?.prioridadeReserva;
+  if (membro) {
+    linhas.push(
+      `CLIENTE É MEMBRO DO CARTÃO PRAINHA (${membro.nivel})${prioridade ? ' — tem PRIORIDADE: as vagas abaixo já incluem as mesas reservadas pra membro' : ''}. Pode agradecer por ser membro.`,
+    );
+  }
   // Consulta pra HOJE inclui a ocupação ao vivo e o corte dinâmico do dia
   if (data === hojeBr()) {
     const oc = await medirOcupacaoHoje(filialId, cfg);
@@ -149,7 +158,7 @@ export async function consultarDisponibilidade(filialId: string, data: string): 
         mesasValidas: mesas.map((m) => String(m.numero)),
       });
       const limite =
-        typeof area.percentualReserva === 'number'
+        typeof area.percentualReserva === 'number' && !prioridade
           ? Math.floor((mesas.length * area.percentualReserva) / 100)
           : mesas.length;
       const disponiveis = Math.max(0, limite - ocupadas.size);
@@ -477,6 +486,8 @@ async function validarSlotEAlocarMesa(p: {
   pessoas: number;
   area: string;
   excluirReservaId?: string;
+  /** telefone do cliente — membro do Cartão Prainha com prioridade passa do teto */
+  telefone?: string;
 }): Promise<string | SlotAlocado> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
   if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
@@ -556,10 +567,15 @@ async function validarSlotEAlocarMesa(p: {
     mesasValidas: mesas.map((m) => String(m.numero)),
     excluirReservaId: p.excluirReservaId,
   });
-  const limite =
+  let limite =
     typeof areaCfg.percentualReserva === 'number'
       ? Math.floor((mesas.length * areaCfg.percentualReserva) / 100)
       : mesas.length;
+  if (ocupadas.size >= limite - 1 && limite < mesas.length && p.telefone) {
+    // perto/no teto: membro do Cartão Prainha com prioridade usa a área inteira
+    const m = await membroPorTelefone(p.filialId, p.telefone).catch(() => null);
+    if (m?.prioridadeReserva) limite = mesas.length;
+  }
   if (ocupadas.size >= limite) {
     return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
   }
@@ -686,6 +702,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     hora: p.hora,
     pessoas,
     area: p.area,
+    telefone: p.telefone,
   });
   if (typeof slot === 'string') return slot;
   const { areaCfg, mesa: mesaAlocada, mesaJuntada: mesaJuntadaAlocada } = slot;
@@ -841,6 +858,7 @@ export async function remarcarReservaWhatsApp(p: {
     pessoas,
     area,
     excluirReservaId: alvo.id,
+    telefone: p.telefone,
   });
   if (typeof slot === 'string') {
     // Nada foi alterado — a reserva antiga continua valendo.
