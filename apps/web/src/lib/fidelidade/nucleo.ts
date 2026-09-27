@@ -4,7 +4,7 @@
 // desconto só valem na casa do cartão.
 //
 // Fluxo:
-//   0. no celular do dono (confirmado por SMS), o cliente toca "Vou pagar
+//   0. no celular do dono (confirmado pelo WhatsApp), o cliente toca "Vou pagar
 //      agora" → `gerarCodigoUso`: código novo de 4 letras que vale
 //      CODIGO_MIN minutos. Cada toque gera outro (o anterior morre);
 //   1. digita o código na tela do Pix → `reservarUso` calcula o desconto e
@@ -27,7 +27,7 @@ import {
 
 export const RESERVA_MIN = 45;
 /** validade do código gerado no celular, até ser digitado na mesa */
-export const CODIGO_MIN = 10;
+export const CODIGO_MIN = 1;
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
@@ -243,7 +243,7 @@ export type ErroUso =
 export const MSG_ERRO: Record<ErroUso, string> = {
   programa_inativo: 'O Cliente VIP não está ativo nesta casa.',
   codigo_invalido: 'Código inválido — são 4 letras.',
-  nao_encontrado: 'Código não encontrado ou vencido. Abra o seu cartão e toque em "Vou pagar agora" pra gerar um novo (vale 10 minutos).',
+  nao_encontrado: 'Código não encontrado ou vencido. Abra o seu cartão e toque em "Vou pagar agora" pra gerar um novo (vale 1 minuto).',
   bloqueado: 'Este cartão está bloqueado. Fale com a gerência.',
   ja_usado_hoje: 'Este cartão já foi usado hoje. Volte amanhã!',
   em_uso: 'Este código já está sendo usado em outra conta agora.',
@@ -385,7 +385,7 @@ export async function reservarUso(
         aparelho: sim.cartao.codigoAparelho,
       })
       .returning({ id: schema.fidelidadeUso.id });
-    // o código vive enquanto o Pix estiver aberto (mesmo depois dos 10 min)
+    // o código vive enquanto o Pix estiver aberto (mesmo depois do 1 min)
     await tx
       .update(schema.fidelidadeCartao)
       .set({ codigoExpiraEm: expira })

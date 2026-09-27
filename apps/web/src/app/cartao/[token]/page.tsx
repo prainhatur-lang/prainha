@@ -1,6 +1,6 @@
 // Cartão "Cliente VIP <casa>" — página pública (sem login). O token do link
 // abre o cartão (nível, benefícios, Wallet), mas o CÓDIGO de desconto só sai
-// no celular confirmado por SMS no número do cartão: link encaminhado pra
+// no celular confirmado pelo WhatsApp do número do cartão: link encaminhado pra
 // outra pessoa não gera desconto.
 
 import type { Metadata } from 'next';

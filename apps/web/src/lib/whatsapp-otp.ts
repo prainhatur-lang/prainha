@@ -24,8 +24,10 @@ export function whatsappConfigurado(): boolean {
 }
 
 /** Envia o codigo OTP. telefone deve vir so com digitos + DDI (ex: 5579999998888). */
-export async function enviarOtpWhatsApp(telefone: string, codigo: string): Promise<ResultadoOtp> {
-  if (otpEmModoTeste() || !whatsappConfigurado()) {
+export async function enviarOtpWhatsApp(
+  telefone: string, codigo: string, opts: { ignorarModoTeste?: boolean } = {},
+): Promise<ResultadoOtp> {
+  if ((!opts.ignorarModoTeste && otpEmModoTeste()) || !whatsappConfigurado()) {
     // Sem Meta configurada (ou modo teste): nao envia, sinaliza pra API mostrar o codigo.
     return { enviado: false, modoTeste: true };
   }

@@ -1,6 +1,6 @@
 // "Não tenho interesse" no convite do Cliente VIP (público; o token do cartão
 // é a autenticação): marca que não quer (não recebe convite de novo).
-// Ativar NÃO é aqui — é confirmando o celular por SMS (/api/fidelidade/cartao),
+// Ativar NÃO é aqui — é confirmando o celular pelo WhatsApp (/api/fidelidade/cartao),
 // senão quem recebesse o link encaminhado ativaria o cartão de outra pessoa.
 
 import { db, schema } from '@concilia/db';

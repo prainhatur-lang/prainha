@@ -160,7 +160,7 @@ export async function POST(request: Request) {
           cidade: typeof p.cidade === 'string' ? p.cidade : null,
           bairro: typeof p.bairro === 'string' ? p.bairro : null,
           // mesmo no cadastro manual o cliente ativa confirmando o celular
-          // por SMS — senão o cartão valeria sem a trava do aparelho
+          // pelo WhatsApp — senão o cartão valeria sem a trava do aparelho
           aderido: false,
         });
         criados.push({ id: cartao.id, nome: cartao.nome, telefone: cartao.telefone, token: cartao.token, novo });
@@ -196,7 +196,7 @@ export async function POST(request: Request) {
 
   if (acao === 'desconectar') {
     // perdeu/trocou de celular: todos os aparelhos saem e o código em aberto
-    // cai; o dono confirma de novo por SMS
+    // cai; o dono confirma de novo pelo WhatsApp
     await db.update(schema.fidelidadeCartao).set({ aparelhos: [] }).where(eq(schema.fidelidadeCartao.id, c.id));
     await invalidarCodigo(c.id);
     return NextResponse.json({ ok: true });

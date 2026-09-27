@@ -60,7 +60,7 @@ function msgConvite(cfg: FidelidadeConfig, casa: string, nome: string, nivelCodi
     (n.prioridadeReserva ? `• prioridade nas reservas, mesmo com a casa cheia\n` : '') +
     (n.pctEspaco > 0 ? `• ${n.pctEspaco}% de desconto no aluguel de espaços pra eventos\n` : '') +
     `• cartão pessoal, no seu celular\n\n` +
-    `É só tocar no link e em "Quero meu cartão" — chega um código por SMS pra confirmar que é você — e salvar na carteira do celular: ${link}`
+    `É só tocar no link e em "Quero meu cartão" — chega um código no WhatsApp pra confirmar que é você — e salvar na carteira do celular: ${link}`
   );
 }
 
@@ -423,8 +423,8 @@ function MaisAcoes(props: {
           <button
             disabled={props.ocupado}
             onClick={() => {
-              if (!confirm(`Desconectar os celulares de ${c.nome}? A pessoa vai confirmar de novo por SMS.`)) return;
-              props.acao({ acao: 'desconectar' }, 'Celulares desconectados — o cliente confirma de novo por SMS.');
+              if (!confirm(`Desconectar os celulares de ${c.nome}? A pessoa vai confirmar de novo pelo WhatsApp.`)) return;
+              props.acao({ acao: 'desconectar' }, 'Celulares desconectados — o cliente confirma de novo pelo WhatsApp.');
             }}
             className="rounded border border-slate-300 bg-white px-2 py-1"
           >
@@ -556,7 +556,7 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
         <p className="mb-2 text-sm text-slate-500">
           Comece pelos <b>clientes de Aracaju</b> (endereço no cadastro do PDV ou na reserva). O convite vai pelo
           WhatsApp com o link do cartão: a pessoa vê os benefícios e toca em <b>“Quero meu cartão”</b> e confirma o celular com o código
-          do SMS — só depois disso o cartão vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
+          do WhatsApp — só depois disso o cartão vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
         </p>
         <p className="mb-3 text-sm text-slate-500">
           Só desta casa: dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o

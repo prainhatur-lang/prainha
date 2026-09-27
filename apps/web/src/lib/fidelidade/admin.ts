@@ -33,9 +33,9 @@ export interface CartaoLinha {
   nome: string;
   telefone: string;
   numero: string;
-  /** código de uso em aberto (gerado no celular do dono, vale 10 min) ou null */
+  /** código de uso em aberto (gerado no celular do dono, vale 1 min) ou null */
   codigo: string | null;
-  /** celulares confirmados por SMS (só eles geram código) */
+  /** celulares confirmados pelo WhatsApp (só eles geram código) */
   aparelhos: number;
   token: string;
   status: string;

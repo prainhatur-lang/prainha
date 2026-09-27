@@ -83,9 +83,9 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
 
 export const REGRAS_TEXTO = (v: VistaCartao) =>
   [
-    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 10 minutos: digite na tela do Pix. O desconto de ${v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
+    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 1 minuto: digite na tela do Pix. O desconto de ${v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
     v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
-    'O cartão é pessoal: o código só é gerado no celular confirmado por SMS no seu número, muda a cada pagamento e não serve pra outra pessoa.',
+    'O cartão é pessoal: o código só é gerado no celular confirmado pelo WhatsApp do seu número, muda a cada pagamento e não serve pra outra pessoa.',
     `Vale 1 uso por dia, só no ${v.casa}, pagando no Pix. Cada casa do grupo tem o seu próprio Cliente VIP.`,
     v.prioridadeReserva ? `Prioridade nas reservas do ${v.casa}: quando as mesas reserváveis da área acabam, você ainda consegue reservar (se houver mesa livre).` : '',
     v.pctEspaco ? `Aniversário, confraternização ou evento no ${v.casa}: ${v.pctEspaco}% de desconto no aluguel do espaço. Peça o orçamento pelo WhatsApp com o mesmo telefone do cartão.` : '',

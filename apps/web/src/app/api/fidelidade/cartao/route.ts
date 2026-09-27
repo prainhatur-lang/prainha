@@ -2,9 +2,10 @@
 // aparelho confirmado).
 //
 // POST { token, acao }
-//   'enviar_sms'            → manda o código de confirmação pro telefone do cartão
+//   'enviar_sms'            → manda o código de confirmação pro WhatsApp do cartão
+//                             (Meta; SMS pelo Twilio só se a Meta falhar)
 //   'confirmar' { codigo }  → confere; certo = aparelho liberado (cookie) e cartão ativado
-//   'gerar_codigo'          → "Vou pagar agora": código de 4 letras, vale 10 min.
+//   'gerar_codigo'          → "Vou pagar agora": código de 4 letras, vale 1 min.
 //                             Só de aparelho confirmado — link encaminhado não gera.
 
 import { NextResponse } from 'next/server';
@@ -31,8 +32,8 @@ export async function POST(req: Request) {
 
   try {
     if (b?.acao === 'enviar_sms') {
-      await enviarConfirmacao(c);
-      return NextResponse.json({ ok: true });
+      const canal = await enviarConfirmacao(c);
+      return NextResponse.json({ ok: true, canal });
     }
     if (b?.acao === 'confirmar') {
       const r = await confirmarAparelho(c, b.codigo, req.headers.get('user-agent'));
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
     }
     if (b?.acao === 'gerar_codigo') {
       const aparelho = aparelhoConfirmado(c, jar.get(nomeCookie(c))?.value);
-      if (!aparelho) return NextResponse.json({ erro: 'Confirme o seu celular antes (código por SMS).', confirmar: true }, { status: 403 });
+      if (!aparelho) return NextResponse.json({ erro: 'Confirme o seu celular antes (código no WhatsApp).', confirmar: true }, { status: 403 });
       if (!c.aderidoEm) return NextResponse.json({ erro: 'Ative o cartão primeiro.' }, { status: 409 });
       const prog = await carregarPrograma(c.filialId);
       if (!prog.ativo) return NextResponse.json({ erro: `O ${prog.marca} está pausado no momento.` }, { status: 409 });

@@ -2,8 +2,8 @@
 //
 // O link /cartao/<token> pode ser encaminhado — por isso ele sozinho não gera
 // código. O aparelho precisa ser confirmado uma vez com o código de 6 dígitos
-// que vai por SMS/WhatsApp pro TELEFONE DO CARTÃO (Twilio Verify; sem Twilio,
-// template de OTP da Meta). Confirmado, o navegador guarda um cookie httpOnly
+// que vai pelo WHATSAPP do TELEFONE DO CARTÃO (template de OTP da Meta,
+// WHATSAPP_OTP_TEMPLATE). Twilio Verify (SMS) só se a Meta falhar. Confirmado, o navegador guarda um cookie httpOnly
 // (segredo aleatório; no banco só o sha256) e passa a poder tocar "Vou pagar
 // agora". Até MAX_APARELHOS por cartão (celular novo derruba o mais antigo).
 
@@ -11,7 +11,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { twilioCheck, twilioConfigurado, twilioStart } from '@/lib/twilio-verify';
-import { enviarOtpWhatsApp, otpEmModoTeste, whatsappConfigurado } from '@/lib/whatsapp-otp';
+import { enviarOtpWhatsApp, whatsappConfigurado } from '@/lib/whatsapp-otp';
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
@@ -49,8 +49,9 @@ export function telefoneMascarado(tel: string): string {
 
 const e164 = (tel: string) => '55' + tel.replace(/\D/g, '');
 
-/** Manda o código de confirmação pro telefone do cartão. */
-export async function enviarConfirmacao(cartao: Cartao): Promise<void> {
+/** Manda o código de confirmação pro WhatsApp do cartão (Meta); se a Meta
+ *  falhar, SMS pelo Twilio. Devolve o canal usado. */
+export async function enviarConfirmacao(cartao: Cartao): Promise<'whatsapp' | 'sms'> {
   if (cartao.otpEnviadoEm && Date.now() - cartao.otpEnviadoEm.getTime() < REENVIO_SEG * 1000) {
     throw new Error('Código já enviado. Aguarde alguns segundos pra pedir outro.');
   }
@@ -58,18 +59,30 @@ export async function enviarConfirmacao(cartao: Cartao): Promise<void> {
     .update(schema.fidelidadeCartao)
     .set({ otpEnviadoEm: new Date() })
     .where(eq(schema.fidelidadeCartao.id, cartao.id));
+  // nunca mostra o código na tela: sem canal de envio, não tem confirmação
+  let falhaMeta: unknown = null;
+  if (whatsappConfigurado()) {
+    const codigo = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    await db
+      .update(schema.fidelidadeCartao)
+      .set({ otpHash: sha(`${cartao.id}:${codigo}`), otpExpiraEm: new Date(Date.now() + OTP_MIN * 60_000), otpTentativas: 0 })
+      .where(eq(schema.fidelidadeCartao.id, cartao.id));
+    try {
+      // o modo teste do OTP da reserva não vale aqui: o cartão sempre envia
+      const r = await enviarOtpWhatsApp(e164(cartao.telefone), codigo, { ignorarModoTeste: true });
+      if (r.enviado) return 'whatsapp';
+    } catch (e) {
+      falhaMeta = e;
+    }
+    // não saiu pela Meta: o hash não vale (a conferência cai no Twilio)
+    await db.update(schema.fidelidadeCartao).set({ otpHash: null, otpExpiraEm: null }).where(eq(schema.fidelidadeCartao.id, cartao.id));
+  }
   if (twilioConfigurado()) {
     await twilioStart(e164(cartao.telefone));
-    return;
+    return 'sms';
   }
-  // nunca mostra o código na tela: sem canal de envio, não tem confirmação
-  if (otpEmModoTeste() || !whatsappConfigurado()) throw new Error('Envio de SMS indisponível no momento. Fale com a gerência.');
-  const codigo = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  await db
-    .update(schema.fidelidadeCartao)
-    .set({ otpHash: sha(`${cartao.id}:${codigo}`), otpExpiraEm: new Date(Date.now() + OTP_MIN * 60_000), otpTentativas: 0 })
-    .where(eq(schema.fidelidadeCartao.id, cartao.id));
-  await enviarOtpWhatsApp(e164(cartao.telefone), codigo);
+  if (falhaMeta) console.error('[fidelidade] OTP Meta falhou', falhaMeta);
+  throw new Error('Envio do código pelo WhatsApp indisponível no momento. Fale com a gerência.');
 }
 
 /** Confere o código; certo → registra o aparelho e devolve o valor do cookie. */
@@ -77,10 +90,11 @@ export async function confirmarAparelho(
   cartao: Cartao, codigoBruto: unknown, userAgent: string | null,
 ): Promise<{ ok: true; cookie: string; aparelhoId: string } | { ok: false; erro: string }> {
   const codigo = String(codigoBruto ?? '').replace(/\D/g, '');
-  if (codigo.length < 4 || codigo.length > 8) return { ok: false, erro: 'Digite o código que chegou por SMS.' };
+  if (codigo.length < 4 || codigo.length > 8) return { ok: false, erro: 'Digite o código que chegou no seu WhatsApp.' };
 
   let certo = false;
-  if (twilioConfigurado()) {
+  // tem hash = o código saiu pela Meta; sem hash = saiu pelo Twilio (SMS)
+  if (!cartao.otpHash && twilioConfigurado()) {
     certo = await twilioCheck(e164(cartao.telefone), codigo);
   } else {
     if (!cartao.otpHash || !cartao.otpExpiraEm || cartao.otpExpiraEm < new Date()) {
@@ -93,7 +107,7 @@ export async function confirmarAparelho(
       .where(eq(schema.fidelidadeCartao.id, cartao.id));
     certo = sha(`${cartao.id}:${codigo}`) === cartao.otpHash;
   }
-  if (!certo) return { ok: false, erro: 'Código errado. Confira o SMS e tente de novo.' };
+  if (!certo) return { ok: false, erro: 'Código errado. Confira a mensagem e tente de novo.' };
 
   const aparelhoId = randomBytes(6).toString('hex');
   const segredo = randomBytes(24).toString('base64url');

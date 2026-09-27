@@ -14,13 +14,14 @@ async function acao(token: string, acao: string, extra: Record<string, unknown> 
   return j;
 }
 
-/** Confirma que o celular é do dono: SMS no telefone do cartão. Certo → o
+/** Confirma que o celular é do dono: código no WhatsApp do telefone do cartão. Certo → o
  *  navegador fica liberado (cookie) e a página recarrega. */
 export function ConfirmarCelular({
   token, telefone, rotulo, onCancelar,
 }: { token: string; telefone: string; rotulo: string; onCancelar?: () => void }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<'inicio' | 'codigo'>('inicio');
+  const [canal, setCanal] = useState<'whatsapp' | 'sms'>('whatsapp');
   const [codigo, setCodigo] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState('');
@@ -29,7 +30,8 @@ export function ConfirmarCelular({
     setOcupado(true);
     setErro('');
     try {
-      await acao(token, 'enviar_sms');
+      const j = await acao(token, 'enviar_sms');
+      setCanal(j.canal === 'sms' ? 'sms' : 'whatsapp');
       setEtapa('codigo');
     } catch (e) {
       setErro((e as Error).message);
@@ -60,7 +62,7 @@ export function ConfirmarCelular({
           {ocupado ? 'Enviando…' : rotulo}
         </button>
         <p className="text-center text-xs text-slate-500">
-          Vamos mandar um código por SMS pro {telefone} pra confirmar que é você.
+          Vamos mandar um código no WhatsApp do {telefone} pra confirmar que é você.
         </p>
         {onCancelar && (
           <button onClick={onCancelar} className="w-full py-1 text-sm text-slate-500">Voltar</button>
@@ -71,7 +73,9 @@ export function ConfirmarCelular({
   }
   return (
     <div className="space-y-3 rounded-2xl bg-white p-4 shadow-sm">
-      <p className="text-sm">Digite o código que chegou por SMS no <b>{telefone}</b>:</p>
+      <p className="text-sm">
+        Digite o código que chegou {canal === 'sms' ? 'por SMS' : 'no WhatsApp'} do <b>{telefone}</b>:
+      </p>
       <input
         inputMode="numeric"
         autoComplete="one-time-code"
@@ -151,9 +155,9 @@ function mmss(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** "Vou pagar agora": gera o código de 4 letras (vale 10 min) — só no
+/** "Vou pagar agora": gera o código de 4 letras (vale 1 min) — só no
  *  celular confirmado. Link encaminhado pra outra pessoa cai na confirmação
- *  por SMS no número do dono. */
+ *  no WhatsApp do número do dono. */
 export function VouPagar({
   token, confirmado, telefone, pctHoje,
 }: { token: string; confirmado: boolean; telefone: string; pctHoje: number }) {
@@ -222,7 +226,7 @@ export function VouPagar({
         {ocupado ? 'Gerando…' : cod ? 'Código vencido — gerar outro' : 'Vou pagar agora'}
       </button>
       <p className="text-center text-xs text-slate-500">
-        Toque só na hora de pagar: o código vale 10 minutos e uma vez só.
+        Toque só na hora de pagar: o código vale 1 minuto e uma vez só.
       </p>
       {erro && <p className="text-center text-sm text-red-700">{erro}</p>}
     </div>

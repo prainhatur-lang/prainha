@@ -75,8 +75,8 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
       <section className="rounded-2xl bg-white p-4 shadow-sm">
         <h2 className="text-base font-semibold">Como funciona</h2>
         <ol className="mt-3 space-y-3 text-sm">
-          <Passo n={1} texto="Ative o cartão pelo link com o código que chega por SMS e salve na Wallet do celular. Não tem app, não tem senha." />
-          <Passo n={2} texto='Na hora de pagar a conta no Pix, abra o cartão e toque em "Vou pagar agora": aparece um código de 4 letras que vale 10 minutos.' />
+          <Passo n={1} texto="Ative o cartão pelo link com o código que chega no seu WhatsApp e salve na Wallet do celular. Não tem app, não tem senha." />
+          <Passo n={2} texto='Na hora de pagar a conta no Pix, abra o cartão e toque em "Vou pagar agora": aparece um código de 4 letras que vale 1 minuto.' />
           <Passo n={3} texto="Digite o código na tela do Pix da mesa (ou fale pro caixa). O desconto sai na hora e o código não vale de novo." />
         </ol>
       </section>
@@ -91,8 +91,8 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
         />
         <Faq p="Quantas vezes posso usar?" r={`Uma vez por dia, no ${casa}.`} />
         <Faq p="Vale nas outras casas do grupo?" r={`Não. Cada casa tem o seu Cliente VIP, com categorias e visitas separadas. Este é o do ${casa}.`} />
-        <Faq p="Posso passar o cartão pra outra pessoa?" r="Não. O cartão é pessoal, ligado ao seu telefone: o código só é gerado no celular confirmado por SMS no seu número. Mas ele vale pra conta da mesa inteira que você pagar." />
-        <Faq p="Troquei de celular" r="Abra o link do cartão no celular novo e confirme com o código que chega por SMS no seu número." />
+        <Faq p="Posso passar o cartão pra outra pessoa?" r="Não. O cartão é pessoal, ligado ao seu telefone: o código só é gerado no celular confirmado pelo WhatsApp do seu número. Mas ele vale pra conta da mesa inteira que você pagar." />
+        <Faq p="Troquei de celular" r="Abra o link do cartão no celular novo e confirme com o código que chega no WhatsApp do seu número." />
         <Faq p="O que conta como dia útil?" r="Segunda a sexta, fora feriados." />
         <Faq p="Como peço o desconto no espaço?" r="Peça o orçamento do seu evento pelo nosso WhatsApp usando o mesmo telefone do cartão — o desconto já vem aplicado." />
       </section>
