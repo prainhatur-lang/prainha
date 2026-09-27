@@ -16890,6 +16890,8 @@ textarea{width:100%;font:inherit;font-size:16px;padding:14px;border:1px solid va
 .sab button{background:#fff;border:2px solid var(--line);border-radius:14px;padding:13px;font:inherit;font-size:15.5px;text-align:left;cursor:pointer;color:var(--ink)}
 .sab button.on{border-color:var(--gold2);background:#fff7f0;font-weight:700}
 .festa{text-align:center;padding:26px 8px}
+.convite{margin-top:18px;padding:18px 16px;border-radius:18px;text-align:center;background:linear-gradient(135deg,#fff4e0,#ffe3ec);border:1px solid #f5c7a0}
+.convite .em{font-size:34px}.convite b{display:block;font-size:19px;margin:6px 0 6px;color:var(--ink)}.convite .tx{font-size:15px;line-height:1.4;color:#5a4a3a}
 .festa .em{font-size:64px}
 .festa h1{font-size:25px;margin:10px 0 8px}
 
@@ -17141,7 +17143,8 @@ async function avEnviar(semDrink){
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
     (r.brinde?'<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div>'
       :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
-    ((r.google_url||r.trip_url)&&nota>=4?'<div class="aviso">Gostou? Se quiser, conte também no Google ou no TripAdvisor — ajuda muito a gente 💛'+
+    ((r.google_url||r.trip_url)&&nota>=4?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
+      '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
       lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
 }
