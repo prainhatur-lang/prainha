@@ -12,6 +12,7 @@ import { AbaMarcas } from './aba-marcas';
 import { AbaPdv } from './aba-pdv';
 import { TrocarTipoButton } from './trocar-tipo';
 import { ControleEstoque } from './controle-estoque';
+import { ConverterUnidadeButton } from './converter-unidade';
 import { converterQuantidade } from '@/app/api/ingest/pdv/baixa-estoque';
 
 export const dynamic = 'force-dynamic';
@@ -94,6 +95,7 @@ export default async function ProdutoDetalhePage(props: {
       tamanho: schema.produtoTamanho.descricao,
       insumoPrecoCusto: schema.produto.precoCusto,
       insumoPesoKg: schema.produto.pesoUnitarioPadraoKg,
+      insumoVolumeMl: schema.produto.volumeUnitarioMl,
     })
     .from(schema.fichaTecnica)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.fichaTecnica.insumoId))
@@ -487,7 +489,19 @@ export default async function ProdutoDetalhePage(props: {
               />
               <span className="text-slate-500">
                 Unidade: <span className="font-mono">{produto.unidadeEstoque}</span>
+                {produto.unidadeEstoque === 'ml' && produto.volumeUnitarioMl && (
+                  <span className="text-slate-400"> · embalagem = {Number(produto.volumeUnitarioMl)} ml</span>
+                )}
               </span>
+              {produto.tipo === 'INSUMO' && (
+                <ConverterUnidadeButton
+                  produtoId={id}
+                  unidadeAtual={produto.unidadeEstoque}
+                  volumeMl={produto.volumeUnitarioMl ? Number(produto.volumeUnitarioMl) : null}
+                  saldo={Number(produto.estoqueAtual ?? 0)}
+                  custo={Number(produto.precoCusto ?? 0)}
+                />
+              )}
               {produto.codigoPersonalizado && (
                 <span className="text-slate-500">
                   Código: <span className="font-mono">{produto.codigoPersonalizado}</span>
@@ -644,6 +658,7 @@ export default async function ProdutoDetalhePage(props: {
               unidadeEstoque={produto.unidadeEstoque}
               estoqueAtual={produto.estoqueAtual}
               estoqueMinimo={produto.estoqueMinimo}
+              volumeMl={produto.volumeUnitarioMl ? Number(produto.volumeUnitarioMl) : null}
               precoCusto={produto.precoCusto}
               movimentos={movimentos.map((m) => ({
                 id: m.id,
@@ -685,6 +700,7 @@ export default async function ProdutoDetalhePage(props: {
                     r.unidade,
                     r.insumoUnidade,
                     r.insumoPesoKg != null ? Number(r.insumoPesoKg) : null,
+                    r.insumoVolumeMl != null ? Number(r.insumoVolumeMl) : null,
                   ) * Number(r.insumoPrecoCusto ?? 0),
                 semCusto: r.insumoPrecoCusto == null || Number(r.insumoPrecoCusto) <= 0,
               }))}

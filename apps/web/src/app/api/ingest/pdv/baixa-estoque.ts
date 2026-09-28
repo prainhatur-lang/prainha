@@ -37,6 +37,7 @@ export function converterQuantidade(
   de: string | null,
   para: string | null,
   pesoUnitarioKg: number | null,
+  volumeUnitarioMl: number | null = null,
 ): number {
   if (!de || !para) return qtd;
   const d = de.toLowerCase().trim();
@@ -47,6 +48,11 @@ export function converterQuantidade(
   if (pesoUnitarioKg && pesoUnitarioKg > 0) {
     if (d === 'un' && MASSA[p]) return (qtd * pesoUnitarioKg * 1000) / MASSA[p];
     if (MASSA[d] && p === 'un') return (qtd * MASSA[d]) / (pesoUnitarioKg * 1000);
+  }
+  // Garrafa ↔ ml: "1 un" de um insumo em ml = a garrafa inteira.
+  if (volumeUnitarioMl && volumeUnitarioMl > 0) {
+    if (d === 'un' && VOLUME[p]) return (qtd * volumeUnitarioMl) / VOLUME[p];
+    if (VOLUME[d] && p === 'un') return (qtd * VOLUME[d]) / volumeUnitarioMl;
   }
   return qtd;
 }
@@ -154,6 +160,7 @@ export async function processarBaixaEstoque(
         insumoPrecoCusto: insumo.precoCusto,
         insumoUnidade: insumo.unidadeEstoque,
         insumoPesoKg: insumo.pesoUnitarioPadraoKg,
+        insumoVolumeMl: insumo.volumeUnitarioMl,
       })
       .from(schema.fichaTecnica)
       .innerJoin(insumo, eq(insumo.id, schema.fichaTecnica.insumoId))
@@ -172,6 +179,7 @@ export async function processarBaixaEstoque(
         const qtdConsumida = qtdItem * converterQuantidade(
           Number(f.quantidade), f.unidade, f.insumoUnidade,
           f.insumoPesoKg != null ? Number(f.insumoPesoKg) : null,
+          f.insumoVolumeMl != null ? Number(f.insumoVolumeMl) : null,
         );
         const precoUnit = f.insumoPrecoCusto ? Number(f.insumoPrecoCusto) : 0;
         const valor = qtdConsumida * precoUnit;

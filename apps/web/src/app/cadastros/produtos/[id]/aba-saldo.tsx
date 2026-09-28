@@ -38,6 +38,7 @@ export function AbaSaldo({
   unidadeEstoque,
   estoqueAtual,
   estoqueMinimo,
+  volumeMl = null,
   precoCusto,
   movimentos,
 }: {
@@ -46,6 +47,8 @@ export function AbaSaldo({
   unidadeEstoque: string;
   estoqueAtual: string | null;
   estoqueMinimo: string | null;
+  /** ml por embalagem — mostra o saldo em ml também em garrafas. */
+  volumeMl?: number | null;
   precoCusto: string | null;
   movimentos: Movimento[];
 }) {
@@ -134,6 +137,11 @@ export function AbaSaldo({
             {saldoAtual.toLocaleString('pt-BR', { maximumFractionDigits: 3 })}{' '}
             <span className="text-sm font-normal text-slate-500">{unidadeEstoque}</span>
           </p>
+          {unidadeEstoque === 'ml' && volumeMl ? (
+            <p className="text-[11px] text-slate-600">
+              = {(saldoAtual / volumeMl).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} embalagens de {volumeMl} ml
+            </p>
+          ) : null}
           {minimo > 0 && (
             <p className="mt-0.5 text-[10px] text-slate-500">
               mínimo: {minimo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })}

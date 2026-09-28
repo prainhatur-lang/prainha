@@ -30,6 +30,8 @@ interface ProdutoOpcao {
   nome: string;
   tipo: string;
   unidade: string;
+  /** ml por embalagem (garrafa de 1L = 1000) — fator quando a NF não diz o volume. */
+  volumeMl?: number | null;
   codigo: string | null;
 }
 
@@ -50,11 +52,17 @@ interface ProdutoOpcao {
 function sugerirFator(
   descricao: string | null,
   produtoUnidade: string | null,
+  volumeMl: number | null = null,
 ): { fator: number; explicacao: string | null } {
-  if (!descricao) return { fator: 1, explicacao: null };
+  const u0 = (produtoUnidade ?? '').toLowerCase();
+  // Insumo em ml com volume cadastrado: "CAMPARI" (sem litragem na NF) = 1 garrafa.
+  const peloCadastro = volumeMl && volumeMl > 0 && (u0 === 'ml' || u0 === 'l')
+    ? { fator: u0 === 'ml' ? volumeMl : volumeMl / 1000, explicacao: `1 embalagem = ${volumeMl}ml (cadastro)` }
+    : null;
+  if (!descricao) return peloCadastro ?? { fator: 1, explicacao: null };
   // Regex tolerante: numero (vírgula ou ponto) + unidade (L|ML|KG|G), com ou sem espaço.
   const m = descricao.toUpperCase().match(/(\d+(?:[.,]\d+)?)\s*(KG|ML|L|G)\b/);
-  if (!m) return { fator: 1, explicacao: null };
+  if (!m) return peloCadastro ?? { fator: 1, explicacao: null };
 
   const num = Number(m[1].replace(',', '.'));
   if (!Number.isFinite(num) || num <= 0) return { fator: 1, explicacao: null };
@@ -75,7 +83,7 @@ function sugerirFator(
   if (un === 'G' && u === 'kg') return { fator: num / 1000, explicacao: `${num}g = ${(num / 1000).toFixed(3)}kg` };
 
   // Unidade interna eh 'un': nao da pra converter automatico.
-  return { fator: 1, explicacao: null };
+  return peloCadastro ?? { fator: 1, explicacao: null };
 }
 
 export function ItemRow({
@@ -379,7 +387,7 @@ function ModalVincular({
 
   function escolherProduto(p: ProdutoOpcao) {
     setProdutoSelecionado(p);
-    const sug = sugerirFator(item.descricao, p.unidade);
+    const sug = sugerirFator(item.descricao, p.unidade, p.volumeMl ?? null);
     setFatorTexto(String(sug.fator));
   }
 
@@ -674,7 +682,7 @@ function ConfirmarFator({
   onConfirmar: () => void;
   pending: boolean;
 }) {
-  const sug = sugerirFator(descricao, produto.unidade);
+  const sug = sugerirFator(descricao, produto.unidade, produto.volumeMl ?? null);
 
   return (
     <div className="space-y-4">

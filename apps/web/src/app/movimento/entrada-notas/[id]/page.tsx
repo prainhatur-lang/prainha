@@ -100,6 +100,7 @@ export default async function NotaDetalhePage(props: {
       nome: schema.produto.nome,
       tipo: schema.produto.tipo,
       unidade: schema.produto.unidadeEstoque,
+      volumeMl: schema.produto.volumeUnitarioMl,
       codigoPersonalizado: schema.produto.codigoPersonalizado,
     })
     .from(schema.produto)
@@ -607,6 +608,7 @@ export default async function NotaDetalhePage(props: {
                       nome: p.nome ?? '(sem nome)',
                       tipo: p.tipo,
                       unidade: p.unidade,
+                      volumeMl: p.volumeMl != null ? Number(p.volumeMl) : null,
                       codigo: p.codigoPersonalizado,
                     }))}
                     filialId={nota.filialId}

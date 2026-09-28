@@ -246,6 +246,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
         unidade: schema.fichaTecnica.unidade,
         insumoUnidade: schema.produto.unidadeEstoque,
         insumoPeso: schema.produto.pesoUnitarioPadraoKg,
+        insumoVolume: schema.produto.volumeUnitarioMl,
         insumoCusto: schema.produto.precoCusto,
       })
       .from(schema.fichaTecnica)
@@ -263,6 +264,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               f.unidade,
               f.insumoUnidade,
               f.insumoPeso != null ? Number(f.insumoPeso) : null,
+              f.insumoVolume != null ? Number(f.insumoVolume) : null,
             ) *
               Number(f.insumoCusto ?? 0),
           0,
