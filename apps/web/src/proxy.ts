@@ -25,8 +25,16 @@ const TABUARA_REWRITES: Record<string, string> = {
   '/reserva': `/reservar/${TABUARA_RESERVA_TOKEN}`,
   '/delivery': '/delivery/tabuara',
 };
-// Domínio próprio da Prainha Mar e Grill (filial 03): por enquanto só a landing.
+// Domínio próprio da Prainha Mar e Grill (filial 03): landing + reserva, no
+// mesmo esquema da Tabuará.
 const PRAINHAMAR_HOSTS = new Set(['prainhamar.com.br', 'www.prainhamar.com.br']);
+// avaliacaoToken da filial Prainha Mar (público, vai na URL mesmo).
+const PRAINHAMAR_RESERVA_TOKEN =
+  'f631c264ae946fc54b3f52c0cb63fc2f0b8f2d94b92c02fc7c6162fa5a8900d3';
+const PRAINHAMAR_REWRITES: Record<string, string> = {
+  '/': '/prainhamar',
+  '/reserva': `/reservar/${PRAINHAMAR_RESERVA_TOKEN}`,
+};
 
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
@@ -48,10 +56,13 @@ export async function proxy(request: NextRequest) {
       return NextResponse.rewrite(url);
     }
   }
-  if (PRAINHAMAR_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
-    const url = request.nextUrl.clone();
-    url.pathname = '/prainhamar';
-    return NextResponse.rewrite(url);
+  if (PRAINHAMAR_HOSTS.has(hostname)) {
+    const destino = PRAINHAMAR_REWRITES[request.nextUrl.pathname];
+    if (destino) {
+      const url = request.nextUrl.clone();
+      url.pathname = destino;
+      return NextResponse.rewrite(url);
+    }
   }
 
   let response = NextResponse.next({ request });

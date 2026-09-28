@@ -140,10 +140,68 @@ const TABUARA: TemaReserva = {
   },
 };
 
+const MAR: TemaReserva = {
+  fonte: 'playfair',
+  marca: 'Prainha Mar & Grill',
+  titulo: 'Sua mesa pra frutos do mar e brasa.',
+  subtitulo:
+    'Moquecas pra dividir, carnes na brasa e drinks da casa, no Shopping Praia Sul. Reserve em 1 minuto e a gente guarda seu lugar.',
+  bullets: ['🦐 Frutos do mar e moquecas', '🔥 Carnes na brasa', '📍 Shopping Praia Sul, loja 198'],
+  convite: 'frutos do mar e brasa 🦐',
+  emoji: '🦐',
+  vars: {
+    '--rsv-bg':
+      'linear-gradient(180deg,#0f2138 0%,#1E3A5F 34%,#2c4d73 58%,#b8661f 86%,#DD6A10 100%)',
+    '--rsv-glow':
+      'radial-gradient(circle, rgba(245,239,227,0.35) 0%, rgba(221,106,16,0.14) 40%, transparent 66%)',
+    '--rsv-vignette':
+      'radial-gradient(120% 90% at 50% 30%, transparent 45%, rgba(15,33,56,0.5) 100%)',
+    '--rsv-brand': '#F5EFE3',
+    '--rsv-brand-dot': '#DD6A10',
+    '--rsv-on-bg': '#F5EFE3',
+    '--rsv-card-bg': '#FBF7EE',
+    '--rsv-card-border': '#e6dccb',
+    '--rsv-card-shadow': '0 28px 70px -30px rgba(15,33,56,0.8)',
+    '--rsv-ink': '#1E3A5F',
+    '--rsv-text': '#4A5568',
+    '--rsv-muted': '#7d8898',
+    '--rsv-accent': '#DD6A10',
+    '--rsv-accent-hover': '#c55d0c',
+    '--rsv-accent-ink': '#ffffff',
+    '--rsv-accent-shadow': '0 14px 30px -12px rgba(221,106,16,0.8)',
+    '--rsv-strong': '#1E3A5F',
+    '--rsv-gold': '#DD6A10',
+    '--rsv-surface': '#F5EFE3',
+    '--rsv-field-bg': '#ffffff',
+    '--rsv-field-border': '#d9ccb6',
+    '--rsv-placeholder': '#a9a192',
+    '--rsv-note': '#b8661f',
+    '--rsv-danger': '#b3411c',
+    '--rsv-danger-bg': '#fdecec',
+    '--rsv-welcome-bg': '#fdf1e4',
+    // mapa de mesas
+    '--rsv-mesa-line': '#e3dac9',
+    '--rsv-mesa-panel': '#fdfaf4',
+    '--rsv-mesa-livre': '#ffffff',
+    '--rsv-mesa-livre-ink': '#1E3A5F',
+    '--rsv-mesa-off': '#f0ebe1',
+    '--rsv-mesa-off-ink': '#aaa290',
+    '--rsv-mesa-ocupada': '#f7ecea',
+    '--rsv-mesa-ocupada-line': '#e8d5d0',
+    '--rsv-mesa-ocupada-ink': '#c79a94',
+    '--rsv-mesa-sel': '#DD6A10',
+    '--rsv-mesa-sel-ink': '#ffffff',
+    '--rsv-mesa-dim-ink': '#bdb5a5',
+    '--rsv-agua': '#eef3f9',
+    '--rsv-agua-ink': '#6f8fb3',
+    '--rsv-agua-line': '#dbe5ef',
+  },
+};
+
 /**
  * Escolhe o tema pelo nome da filial (o nome vem do cadastro; "Tabuará",
- * "Tabuara", "TABUARÁ" caem todos no mesmo). Qualquer outra casa fica no
- * Prainha, que é o visual que já estava no ar.
+ * "Tabuara", "TABUARÁ" caem todos no mesmo). A Prainha Mar usa o azul e o
+ * laranja do site dela; qualquer outra casa fica no Prainha (visual original).
  */
 export function temaDaFilial(nomeFilial: string): TemaReserva {
   const n = nomeFilial
@@ -151,5 +209,7 @@ export function temaDaFilial(nomeFilial: string): TemaReserva {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
   if (n.includes('tabuara')) return TABUARA;
+  // "Prainha Mar", "Prainha Mar e Grill" — antes do fallback, que é o Prainha Bar.
+  if (/\bmar\b/.test(n)) return MAR;
   return PRAINHA;
 }

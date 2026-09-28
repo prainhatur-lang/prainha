@@ -1,10 +1,11 @@
 import Image from 'next/image';
+import { headers } from 'next/headers';
 import { BAR, COZINHA, type SecaoCardapio } from './cardapio';
 
 // Site público da Prainha Mar e Grill (filial 03), servido em prainhamar.com.br
-// pelo rewrite do proxy.ts (PRAINHAMAR_HOSTS). Estático: não tem query nem
-// link que dependa do host — reserva é pelo WhatsApp (a filial 03 ainda não
-// tem reserva online) e delivery não está ativo.
+// pelo rewrite do proxy.ts (PRAINHAMAR_HOSTS). A reserva é online, igual à do
+// Prainha Bar (mesas 1 a 70); WhatsApp fica como alternativa. Delivery não
+// está ativo.
 
 type IconProps = { className?: string };
 const S = (props: IconProps & { children: React.ReactNode }) => (
@@ -26,6 +27,17 @@ const ENDERECO = 'Shopping Praia Sul, loja 198 · Rod. dos Náufragos, 4880 · A
 const MAPS_BUSCA = encodeURIComponent('Shopping Praia Sul, Aracaju - SE');
 const MAPS_URL = `https://www.google.com/maps/search/?api=1&query=${MAPS_BUSCA}`;
 const MAPS_EMBED = `https://www.google.com/maps?q=${MAPS_BUSCA}&z=16&output=embed`;
+
+// Reserva é da CASA: abre na mesma aba e no mesmo domínio. Em prainhamar.com.br
+// o proxy serve /reserva (PRAINHAMAR_REWRITES); em outro host (app.prainhabar.com/
+// prainhamar) vale o caminho de verdade.
+const PRAINHAMAR_HOSTS = new Set(['prainhamar.com.br', 'www.prainhamar.com.br']);
+const RESERVA_TOKEN = 'f631c264ae946fc54b3f52c0cb63fc2f0b8f2d94b92c02fc7c6162fa5a8900d3';
+
+async function linkReserva(): Promise<string> {
+  const host = ((await headers()).get('host') ?? '').split(':')[0];
+  return PRAINHAMAR_HOSTS.has(host) ? '/reserva' : `/reservar/${RESERVA_TOKEN}`;
+}
 
 const display = { fontFamily: 'var(--font-display-mar)' };
 const texto = { fontFamily: 'var(--font-texto-mar)' };
@@ -81,7 +93,8 @@ function Secao({ secao }: { secao: SecaoCardapio }) {
   );
 }
 
-export default function PrainhaMarPage() {
+export default async function PrainhaMarPage() {
+  const reservaUrl = await linkReserva();
   return (
     <main className="min-h-screen bg-[#FBF7EE] text-[#4A5568] antialiased" style={texto}>
       {/* Header */}
@@ -97,9 +110,7 @@ export default function PrainhaMarPage() {
             <a href="#cardapio" className="hidden text-[#1E3A5F] hover:text-[#DD6A10] sm:inline">Cardápio</a>
             <a href="#visite" className="hidden text-[#1E3A5F] hover:text-[#DD6A10] sm:inline">Como chegar</a>
             <a
-              href={WHATSAPP_URL}
-              target="_blank"
-              rel="noopener"
+              href={reservaUrl}
               className="rounded-full bg-[#DD6A10] px-4 py-2 font-medium text-white transition hover:bg-[#c55d0c]"
             >
               Reservar
@@ -124,12 +135,10 @@ export default function PrainhaMarPage() {
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <a
-                href={WHATSAPP_URL}
-                target="_blank"
-                rel="noopener"
+                href={reservaUrl}
                 className="inline-flex items-center gap-2 rounded-full bg-[#1E3A5F] px-6 py-3 text-lg font-medium text-white transition hover:bg-[#162c49]"
               >
-                <Chat className="h-5 w-5" /> Reservar pelo WhatsApp
+                Reservar mesa <ArrowRight className="h-5 w-5" />
               </a>
               <a
                 href="#cardapio"
@@ -207,16 +216,24 @@ export default function PrainhaMarPage() {
             Guarde sua <span className="italic text-[#F0A35E]">mesa</span>
           </h2>
           <p className="max-w-xl text-lg text-[#F5EFE3]/85">
-            Chame no WhatsApp com o dia, o horário e quantas pessoas — a gente confirma por lá.
+            Escolha o dia, o horário e a mesa em 1 minuto — ou chame no WhatsApp que a gente reserva por você.
           </p>
-          <a
-            href={WHATSAPP_URL}
-            target="_blank"
-            rel="noopener"
-            className="inline-flex items-center gap-2 rounded-full bg-[#DD6A10] px-7 py-3.5 text-lg font-medium text-white transition hover:bg-[#c55d0c]"
-          >
-            <Chat className="h-5 w-5" /> Reservar pelo WhatsApp
-          </a>
+          <div className="flex flex-wrap justify-center gap-3">
+            <a
+              href={reservaUrl}
+              className="inline-flex items-center gap-2 rounded-full bg-[#DD6A10] px-7 py-3.5 text-lg font-medium text-white transition hover:bg-[#c55d0c]"
+            >
+              Reservar mesa <ArrowRight className="h-5 w-5" />
+            </a>
+            <a
+              href={WHATSAPP_URL}
+              target="_blank"
+              rel="noopener"
+              className="inline-flex items-center gap-2 rounded-full border border-[#F5EFE3]/40 px-7 py-3.5 text-lg font-medium text-[#F5EFE3] transition hover:border-[#F0A35E] hover:text-[#F0A35E]"
+            >
+              <Chat className="h-5 w-5" /> WhatsApp
+            </a>
+          </div>
         </div>
       </section>
 

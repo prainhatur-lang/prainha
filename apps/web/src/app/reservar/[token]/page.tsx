@@ -49,7 +49,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
   // Aberta pelo domínio próprio da casa? Então a reserva é uma seção do site,
   // e não uma página solta em outro endereço: mostra o caminho de volta.
   const host = ((await headers()).get('host') ?? '').split(':')[0];
-  const siteUrl = /^(www\.)?tabuara\.com\.br$/.test(host) ? '/' : null;
+  const siteUrl = /^(www\.)?(tabuara|prainhamar)\.com\.br$/.test(host) ? '/' : null;
 
   return (
     <main

@@ -146,7 +146,8 @@
     "migrate:balanco": "tsx scripts/migrate-balanco.ts",
     "migrate:mesa-juntada-lista": "tsx scripts/migrate-mesa-juntada-lista.ts",
     "migrate:fornecedor-grupo": "tsx scripts/migrate-fornecedor-grupo.ts",
-    "migrate:volume-unitario": "tsx scripts/migrate-volume-unitario.ts"
+    "migrate:volume-unitario": "tsx scripts/migrate-volume-unitario.ts",
+    "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
