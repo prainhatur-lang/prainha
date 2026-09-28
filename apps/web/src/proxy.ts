@@ -57,6 +57,13 @@ export async function proxy(request: NextRequest) {
     }
   }
   if (PRAINHAMAR_HOSTS.has(hostname)) {
+    // QR do cardápio impresso da casa aponta pra /cardapio: cai direto na seção.
+    if (request.nextUrl.pathname === '/cardapio') {
+      const url = request.nextUrl.clone();
+      url.pathname = '/';
+      url.hash = 'cardapio';
+      return NextResponse.redirect(url);
+    }
     const destino = PRAINHAMAR_REWRITES[request.nextUrl.pathname];
     if (destino) {
       const url = request.nextUrl.clone();
