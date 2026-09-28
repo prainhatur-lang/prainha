@@ -11,7 +11,11 @@
 //  - movimento_estoque: qtd × fator, preço unit ÷ fator (valor não muda) —
 //    o histórico continua batendo com o saldo.
 //  - ficha_tecnica que usa o insumo: linha na unidade antiga (ou sem unidade)
-//    vira ml (0,06 un → 60 ml). Linha já em outra unidade fica como está.
+//    vira ml. As fichas vieram do Consumer, que anotava a dose em LITRO
+//    (0,06 = 60 ml em qualquer garrafa; 0,75 numa de 750 = garrafa inteira),
+//    então un→ml lê a quantidade como litro, e 1 (ou ~o volume) = a garrafa.
+//    fichaEm='embalagem' multiplica pelo fator (0,5 garrafa = 375 ml).
+//    Linha já em outra unidade fica como está.
 //  - produto_fornecedor: fator × fator; preço por unidade ÷ fator.
 //  - produto_embalagem: qtd × fator.
 //  - OP / template de OP: quantidades × fator.
@@ -31,6 +35,8 @@ const Body = z.object({
   fator: z.number().positive().max(1_000_000),
   /** Nome da embalagem antiga ("garrafa", "galão", "peça"). */
   embalagem: z.string().trim().min(1).max(40).optional(),
+  /** Como ler a ficha em un: 'litro' (padrão do Consumer) ou fração da embalagem. */
+  fichaEm: z.enum(['litro', 'embalagem']).default('litro'),
 });
 
 export async function POST(
@@ -75,6 +81,12 @@ export async function POST(
   if (de === para) return NextResponse.json({ error: `já está em ${para}` }, { status: 400 });
   const f = fator.toString();
   const embalagem = parsed.data.embalagem ?? (de === 'un' ? 'garrafa' : de);
+  const q = schema.fichaTecnica.quantidade;
+  const novaQtdFicha =
+    de === 'un' && para === 'ml' && parsed.data.fichaEm === 'litro'
+      ? sql`CASE WHEN ${q} = 1 OR (${q} >= 0.5 AND abs(${q} * 1000 - ${f}::numeric) <= ${f}::numeric * 0.1)
+              THEN ${f}::numeric ELSE ${q} * 1000 END`
+      : sql`${q} * ${f}::numeric`;
 
   await db.transaction(async (tx) => {
     await tx
@@ -100,7 +112,7 @@ export async function POST(
     await tx
       .update(schema.fichaTecnica)
       .set({
-        quantidade: sql`${schema.fichaTecnica.quantidade} * ${f}::numeric`,
+        quantidade: novaQtdFicha,
         unidade: para,
       })
       .where(

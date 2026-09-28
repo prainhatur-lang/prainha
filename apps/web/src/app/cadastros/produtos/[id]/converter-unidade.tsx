@@ -100,7 +100,8 @@ export function ConverterUnidadeButton({
                 <br />
                 Custo: R$ {fmt(custo)} por un → <strong>R$ {fmt(custo / f, 4)} por ml</strong>
                 <br />
-                Fichas em un viram ml (0,06 un → {fmt(0.06 * f, 0)} ml). Histórico, mínimo,
+                Fichas: dose do Consumer é em litro (0,06 → 60 ml); 1 ou {fmt(f / 1000, 3)} →{' '}
+                {fmt(f, 0)} ml (a {embalagem || 'garrafa'} inteira). Histórico, mínimo,
                 fornecedores e embalagens também.
               </div>
             )}
