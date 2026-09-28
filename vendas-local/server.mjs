@@ -21616,6 +21616,19 @@ async function salaoNuvemPost(body) {
     return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida da nuvem' };
   } catch (err) { return { ok: false, erro: 'nuvem: ' + err.message }; }
 }
+// Iluminação (Tuya) e alarme (UniFi Protect) no painel do gerente: a Tuya só
+// é alcançável pela nuvem e a chave do Protect mora cifrada lá, então a loja
+// repassa assinado (escopo 'energia') com o nome do gerente logado.
+async function energiaNuvem(body) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem chave da nuvem' };
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/energia`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('energia', e), ...body }), signal: AbortSignal.timeout(25000) });
+    const j = await r.json().catch(() => null);
+    return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida da nuvem (' + r.status + ')' };
+  } catch (err) { return { ok: false, erro: 'nuvem: ' + err.message }; }
+}
 // ================= PRODUÇÃO pelo celular do CHEF (/producao) =================
 // O chef entra com o PIN da loja, escolhe o que produzir (template do Concilia
 // ou texto livre), a quantidade e o cozinheiro. A OP nasce no Concilia
@@ -22252,6 +22265,13 @@ button.b:disabled{opacity:.5}
 .chips a b{color:var(--red)}
 .livres{font-size:12px;color:var(--mut);margin-top:6px;line-height:1.6}
 .livres span{display:inline-block;background:#dcfce7;color:#166534;border-radius:5px;padding:0 5px;margin:0 3px 2px 0}
+.tec{width:100%;height:100%;text-align:left;font:inherit;border:2px solid var(--line);background:#fff;color:var(--ink);border-radius:14px;padding:12px;cursor:pointer}
+.tec b{display:block;font-size:14px;line-height:1.2}.tec span{display:block;font-size:16px;font-weight:800;margin-top:4px;color:var(--mut)}
+.tec.on{background:var(--green);border-color:var(--green);color:#fff}.tec.on span{color:#fff}.tec.off{border-color:#fecaca;background:#fef2f2}.tec.off span{color:var(--red)}.tec:disabled{cursor:default}
+.alm{border-radius:14px;padding:14px;color:#fff;margin-bottom:8px}.alm.arm{background:var(--red)}.alm.des{background:var(--green)}
+.alm .t1{font-size:22px;font-weight:800}.alm small{display:block;opacity:.9;font-size:12.5px;margin-top:3px}
+.alm button{width:100%;margin-top:10px;font:inherit;font-size:17px;font-weight:700;padding:13px;border:0;border-radius:11px;background:#fff;cursor:pointer}
+.alm.arm button{color:var(--green)}.alm.des button{color:var(--red)}.alm button:disabled{opacity:.6}
 textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:8px;margin-top:6px}
 /* CELULAR: o gerente usa isto andando pelo salão — cabeçalho enxuto, atalhos
    das seções grudados no topo, botões grandes e as ações descem pra linha de
@@ -22276,7 +22296,7 @@ textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);bor
 <div class="wrap" id="app">carregando…</div>
 <script>
 var TOK=null;try{TOK=localStorage.getItem('gerente_tok')||null}catch(e){}
-var EU=null,D=null,TICK=0,SOM=true,ULT={lib:null,rec:null,aval:null},PRIM=false,ABERTO={},TIMER=null,PAUSA=false;
+var E=null,ENV={},ETIMER=null,EU=null,D=null,TICK=0,SOM=true,ULT={lib:null,rec:null,aval:null},PRIM=false,ABERTO={},TIMER=null,PAUSA=false;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -22306,13 +22326,14 @@ async function entrar(){
   TOK=r.token;EU={login:r.login,nome:r.nome};try{localStorage.setItem('gerente_tok',TOK);localStorage.setItem('gerente_login',lg)}catch(e){}
   beep(1);PRIM=true;iniciar();
 }
-function sair(){TOK=null;EU=null;try{localStorage.removeItem('gerente_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;telaLogin()}
+function sair(){TOK=null;EU=null;try{localStorage.removeItem('gerente_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;if(ETIMER)clearInterval(ETIMER);ETIMER=null;E=null;telaLogin()}
 /* ---- ciclo ---- */
 async function iniciar(){
   var s=await jget('/api/gerente/sessao');
   if(!s.ok){telaLogin(TOK?'Sessão venceu — entre de novo.':'');return}
   EU={login:s.login,nome:s.nome};
   await tick();if(TIMER)clearInterval(TIMER);TIMER=setInterval(tick,5000);
+  tickEnergia();if(ETIMER)clearInterval(ETIMER);ETIMER=setInterval(tickEnergia,20000);
 }
 async function tick(){
   if(PAUSA)return;
@@ -22339,9 +22360,9 @@ function pintar(){
     '<a href="#atrasos">⏱ Atrasos '+(a.total_atrasadas?'<b>'+a.total_atrasadas+'</b>':'0')+'</a>'+
     '<a href="#recl">💬 Reclamações '+((R.abertas.length+R.avaliacoes_ruins)?'<b>'+(R.abertas.length+R.avaliacoes_ruins)+'</b>':'0')+'</a>'+
     '<a href="#espera">📋 Espera '+(d.espera.length||0)+'</a>'+
-    '<a href="#fluxo">📈 Fluxo</a><a href="#setor">🍳 Setores</a><a href="#hist">🧾 Histórico</a></div>';
+    '<a href="#fluxo">📈 Fluxo</a><a href="#setor">🍳 Setores</a><a href="#hist">🧾 Histórico</a>'+(E&&E.ok&&(E.dispositivos.length||E.alarmes.length)?'<a href="#energia">💡 Luzes e alarme</a>':'')+'</div>';
   if(nav!==ULT_NAV){ULT_NAV=nav;document.getElementById('nav').innerHTML=nav}
-  h+=secLib(L)+secMesas(m)+secAtrasos(a)+secRecl(R)+secEspera(d.espera,d.reservas)+secFluxo(f)+secSetores(d.setores)+secHist(L);
+  h+=secLib(L)+secMesas(m)+secAtrasos(a)+secRecl(R)+secEspera(d.espera,d.reservas)+secFluxo(f)+secSetores(d.setores)+secHist(L)+secEnergia();
   if(!d.nuvem.ok)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem indisponível'+(d.nuvem.sem_chave?' (loja sem FILIAL_ID/PAGAR_MESA_SECRET no start.bat)':'')+': mapa de mesas, lista de espera e avaliações ficam de fora'+(d.nuvem.erro?' — '+esc(d.nuvem.erro):'')+'.</div>';
   else if(d.nuvem.velho)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem sem resposta agora — mostrando o último dado recebido.</div>';
   if(h===ULT_HTML)return;ULT_HTML=h;
@@ -22510,8 +22531,75 @@ function secHist(L){
   if(itens.length>15)h+='<div class="l"><button class="b" style="flex:1" onclick="toggle(\\'hist\\')">'+(ABERTO.hist?'mostrar menos':'ver todos ('+itens.length+')')+'</button></div>';
   return h+'</div>';
 }
+/* ---- iluminação e alarme (Tuya + UniFi Protect, pela nuvem) ---- */
+async function tickEnergia(){
+  if(PAUSA||!TOK)return;
+  var r;try{r=await jget('/api/gerente/energia')}catch(e){return}
+  if(r&&r.sem_sessao)return;
+  if(r&&r.ok){E=r}else if(E){E.erro=(r&&r.erro)||'sem resposta'}else{E={ok:false,erro:(r&&r.erro)||'sem resposta',dispositivos:[],alarmes:[]}}
+  pintar();
+}
+function secEnergia(){
+  if(!E)return '';
+  if(!E.ok)return '<h2 id="energia">💡 Luzes e alarme</h2><div class="card"><div class="l mut">Não consegui falar com a nuvem agora: '+esc(E.erro||'')+'</div></div>';
+  if(!E.dispositivos.length&&!E.alarmes.length)return '';
+  var h='<h2 id="energia">💡 Luzes e alarme</h2>';
+  if(E.erro)h+='<div class="mut" style="margin-bottom:6px">⚠️ última atualização falhou: '+esc(E.erro)+'</div>';
+  E.alarmes.forEach(function(a,i){
+    var env=ENV['a'+a.id];
+    h+='<div class="alm '+(a.armado?'arm':'des')+'"><div style="opacity:.85;font-size:12px;text-transform:uppercase">'+esc(a.nome)+'</div>'+
+      '<div class="t1">'+(a.armado?'🔒 '+(a.status==='arming'?'LIGANDO ALARME…':'ALARME LIGADO'):'🔓 ALARME DESLIGADO')+'</div>'+
+      (a.alteradoEm?'<small>'+(a.armado?'Ligado':'Desligado')+' por '+esc(String(a.alteradoPor||'').split('@')[0])+' às '+hm(a.alteradoEm)+' de '+new Date(a.alteradoEm).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+'</small>':'')+
+      (a.protect?'<small>'+(a.erro?'⚠️ Protect não confirmou: '+esc(a.erro):'✓ confirmado no UniFi Protect')+'</small>':'')+
+      '<button onclick="alarme('+i+')"'+(env?' disabled':'')+'>'+(env?'Enviando…':(a.armado?'🔓 Desligar alarme':'🔒 Ligar alarme'))+'</button></div>';
+  });
+  var grupos=[['luz','💡 Iluminação'],['disjuntor','⚡ Disjuntores']];
+  grupos.forEach(function(gr){
+    var idx=[];E.dispositivos.forEach(function(d,i){if(d.grupo===gr[0])idx.push(i)});
+    if(!idx.length)return;
+    var lig=idx.filter(function(i){return E.dispositivos[i].ligado}).length;
+    h+='<div class="row" style="align-items:center;margin:12px 0 6px"><b style="flex:1;font-size:14px">'+gr[1]+' <span class="mut">· '+lig+' de '+idx.length+' ligados</span></b>'+
+      (idx.length>1?'<button class="b ok" onclick="grupo(\\''+gr[0]+'\\',true)">Ligar todas</button><button class="b" onclick="grupo(\\''+gr[0]+'\\',false)">Desligar todas</button>':'')+'</div><div class="grid">';
+    idx.forEach(function(i){
+      var d=E.dispositivos[i],env=ENV['d'+d.id];
+      var cls=!d.online?'off':(d.ligado?'on':'');
+      var txt=env?'ENVIANDO…':(!d.online?'OFFLINE':(d.ligado===true?'LIGADO':(d.ligado===false?'DESLIGADO':'SEM LEITURA')));
+      h+='<button class="tec '+cls+'" onclick="tecla('+i+')"'+((env||!d.online||d.ligado==null)?' disabled':'')+'><b>'+esc(d.nome)+'</b><span>'+txt+'</span>'+
+        (d.online&&d.potenciaW!=null?'<small style="opacity:.8">'+Math.round(d.potenciaW)+' W</small>':'')+'</button>';
+    });
+    h+='</div>';
+  });
+  return h;
+}
+async function mandaTecla(d,ligar){
+  ENV['d'+d.id]=1;pintar();
+  var r;try{r=await jpost('/api/gerente/energia/comando',{id:d.id,ligar:ligar})}catch(e){r={ok:false,erro:'sem conexão'}}
+  delete ENV['d'+d.id];
+  if(r.ok){d.ligado=ligar}else{alert(d.nome+': '+(r.erro||'não deu'))}
+  pintar();
+}
+async function tecla(i){var d=E&&E.dispositivos[i];if(!d||d.ligado==null)return;await mandaTecla(d,!d.ligado);setTimeout(tickEnergia,2500)}
+async function grupo(g,ligar){
+  if(!E)return;
+  var alvos=E.dispositivos.filter(function(d){return d.grupo===g&&d.online&&d.ligado!=null&&d.ligado!==ligar});
+  await Promise.all(alvos.map(function(d){return mandaTecla(d,ligar)}));
+  setTimeout(tickEnergia,2500);
+}
+async function alarme(i){
+  var a=E&&E.alarmes[i];if(!a)return;
+  var armar=!a.armado;
+  var msg=armar?'LIGAR o alarme ('+a.nome+')?\\n\\nCom o alarme ligado, qualquer pessoa nas câmeras avisa no celular e liga os disjuntores do alarme. Confira se não ficou ninguém na loja.'
+    :'DESLIGAR o alarme ('+a.nome+')?\\n\\nPessoas nas câmeras deixam de avisar e não ligam nenhum disjuntor. As câmeras continuam gravando.';
+  if(!confirm(msg))return;
+  ENV['a'+a.id]=1;pintar();
+  var r;try{r=await jpost('/api/gerente/energia/alarme',{id:a.id,armado:armar})}catch(e){r={ok:false,erro:'sem conexão'}}
+  delete ENV['a'+a.id];
+  if(r.ok){a.armado=!!r.armado;a.alteradoPor=EU?(EU.nome||EU.login)+' (loja)':a.alteradoPor;a.alteradoEm=new Date().toISOString();a.status=null;if(r.avisoErro)alert('Alarme '+(r.armado?'ligado':'desligado')+', mas o aviso no celular falhou: '+r.avisoErro)}
+  else alert('Alarme: '+(r.erro||'não deu'));
+  pintar();setTimeout(tickEnergia,3000);
+}
 async function visto(id,btn){if(btn)btn.disabled=true;await jpost('/api/gerente/cancelado-visto',{id:id});tick()}
-document.addEventListener('visibilitychange',function(){PAUSA=document.hidden;if(!PAUSA&&TOK)tick()});
+document.addEventListener('visibilitychange',function(){PAUSA=document.hidden;if(!PAUSA&&TOK){tick();tickEnergia()}});
 if(TOK)iniciar();else telaLogin();
 </script></body></html>`;
 
@@ -22762,6 +22850,9 @@ const server = http.createServer(async (req, res) => {
       const b = req.method === 'POST' ? await readBody(req) : {};
       const quemG = (g.nome || g.login);
       if (p === '/api/gerente/liberacao') return res.end(JSON.stringify(await apiGerenteLiberacao(b, g)));
+      if (p === '/api/gerente/energia') return res.end(JSON.stringify(await energiaNuvem({ acao: 'status' })));
+      if (p === '/api/gerente/energia/comando') return res.end(JSON.stringify(await energiaNuvem({ acao: 'comando', dispositivoId: String(b.id || ''), ligar: !!b.ligar, por: String(quemG).slice(0, 60) })));
+      if (p === '/api/gerente/energia/alarme') return res.end(JSON.stringify(await energiaNuvem({ acao: 'alarme', gatilhoId: String(b.id || ''), armado: !!b.armado, por: String(quemG).slice(0, 60) })));
       if (p === '/api/gerente/chamado-atender') return res.end(JSON.stringify(await apiChamadoAtender({ id: b.id, por: quemG })));
       if (p === '/api/gerente/espera') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'espera', id: String(b.id || ''), acao: String(b.acao || ''), por: quemG + ' (loja)' })));
       if (p === '/api/gerente/avaliacao') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'avaliacao', id: String(b.id || ''), status: String(b.status || ''), por: quemG + ' (loja)' })));
