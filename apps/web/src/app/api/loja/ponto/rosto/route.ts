@@ -40,12 +40,33 @@ export async function POST(request: Request) {
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
 
   const { db, schema } = await import('@concilia/db');
-  const { and, eq } = await import('drizzle-orm');
+  const { and, eq, or, exists } = await import('drizzle-orm');
 
+  // Mesma regra do roster: lotação principal AQUI ou vínculo extra (ex: Cauã,
+  // chef da Tabuará com extra na Prainha Mar — antes o rosto cadastrado na
+  // casa extra ficava preso na loja, recusado aqui pra sempre).
   const [func] = await db
     .select({ id: schema.funcionario.id })
     .from(schema.funcionario)
-    .where(and(eq(schema.funcionario.id, funcionario_id), eq(schema.funcionario.filialId, f)))
+    .where(
+      and(
+        eq(schema.funcionario.id, funcionario_id),
+        or(
+          eq(schema.funcionario.filialId, f),
+          exists(
+            db
+              .select({ n: schema.funcionarioFilialExtra.id })
+              .from(schema.funcionarioFilialExtra)
+              .where(
+                and(
+                  eq(schema.funcionarioFilialExtra.funcionarioId, schema.funcionario.id),
+                  eq(schema.funcionarioFilialExtra.filialId, f),
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
     .limit(1);
   if (!func) return NextResponse.json({ ok: false, erro: 'funcionário não pertence a esta filial' }, { status: 404 });
 

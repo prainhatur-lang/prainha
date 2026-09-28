@@ -23564,7 +23564,8 @@ async function main() {
   // fila agente_comando da nuvem (só em modo próprio: sem Consumer não há agente-local)
   setTimeout(() => loopComandosNuvem().catch(() => {}), 30 * 1000);
   loopPontoRoster().catch(() => {});
-  setInterval(() => loopPontoRoster().catch(() => {}), 10 * 60 * 1000);
+  // 3 min: gente nova/vinculada no Concilia aparece rápido pra cadastrar o rosto
+  setInterval(() => loopPontoRoster().catch(() => {}), 3 * 60 * 1000);
   setTimeout(() => loopFaceSync().catch(() => {}), 35 * 1000);
   setInterval(() => loopFaceSync().catch(() => {}), 60 * 1000);
   setTimeout(() => loopPontoAnular().catch(() => {}), 50 * 1000);
