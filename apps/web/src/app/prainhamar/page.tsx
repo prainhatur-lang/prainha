@@ -44,9 +44,9 @@ const texto = { fontFamily: 'var(--font-texto-mar)' };
 
 const DESTAQUES = [
   { nome: 'Moqueca de camarão VG', preco: 230, desc: 'Camarão VG de Santa Catarina, na panela, pra dividir' },
-  { nome: 'Dueto do mar', preco: 94, desc: 'Filé alto de robalo e camarão grelhados no azeite extra virgem' },
+  { nome: 'Dueto do mar', preco: 94, desc: 'Filé alto de robalo e camarão grelhados no azeite extravirgem' },
   { nome: 'Picanha CaraPreta 250 g', preco: 179, desc: 'Na brasa, com farofa amanteigada, cebola caramelizada e vinagrete' },
-  { nome: 'Camarão Paris no panko', preco: 138, desc: 'Camarão VG crocante com molho dijon de creme fresco e cogumelo paris' },
+  { nome: 'Camarão Paris no panko', preco: 138, desc: 'Camarão VG crocante com molho dijon de creme fresco e cogumelo-paris' },
 ];
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });

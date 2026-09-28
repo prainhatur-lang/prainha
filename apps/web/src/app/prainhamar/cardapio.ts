@@ -18,24 +18,24 @@ export const COZINHA: SecaoCardapio[] = [
   {
     titulo: 'Petiscos',
     itens: [
-      { nome: 'Batata frita', preco: 28, desc: 'Douradas, crocantes e cheias de sabor' },
-      { nome: 'Mix de mini pastéis', preco: 41, desc: 'Queijo derretido, filé, camarão e aratu' },
+      { nome: 'Batata frita', preco: 28, desc: 'Dourada, crocante e cheia de sabor' },
+      { nome: 'Mix de minipastéis', preco: 41, desc: 'Queijo derretido, filé, camarão e aratu' },
       { nome: 'Porção de pastel de camarão', preco: 50, desc: 'Massa fininha e crocante, recheio generoso de camarão' },
-      { nome: 'Isca de frango', preco: 59, desc: 'Empanada em farinha especial, com molho gorgonzola, rosé ou limão siciliano' },
-      { nome: 'Isca de robalo', preco: 69, desc: 'Empanada em farinha especial, com molho gorgonzola, rosé ou limão siciliano' },
-      { nome: 'Filé ao molho exclusivo com torradas', preco: 72, desc: 'Cubos de filé ao molho de shitake, shimeji e creme de leite. Torradas feitas na hora' },
-      { nome: 'Burrata, prosciutto, confit de tomate cereja e azeite trufado', preco: 78, desc: 'Burrata italiana sobre tomate cereja confit, prosciutto, pesto e azeite trufado' },
+      { nome: 'Isca de frango', preco: 59, desc: 'Empanada em farinha especial, com molho de gorgonzola, rosé ou limão-siciliano' },
+      { nome: 'Isca de robalo', preco: 69, desc: 'Empanada em farinha especial, com molho de gorgonzola, rosé ou limão-siciliano' },
+      { nome: 'Filé ao molho exclusivo com torradas', preco: 72, desc: 'Cubos de filé ao molho de shiitake, shimeji e creme de leite. Torradas feitas na hora' },
+      { nome: 'Burrata, prosciutto, tomate-cereja confit e azeite trufado', preco: 78, desc: 'Burrata italiana sobre tomate-cereja confit, prosciutto, pesto e azeite trufado' },
       { nome: 'Catado de caranguejo', preco: 38, desc: 'Refogado e crocante na farinha panko' },
       { nome: 'Catado de aratu', preco: 49, desc: 'Refogado e crocante na farinha panko' },
-      { nome: 'Camarão Paris no panko e molho especial dijon', preco: 138, desc: 'Camarão VG crocante em panko, molho dijon de creme fresco e cogumelo paris' },
+      { nome: 'Camarão paris no panko com molho dijon especial', preco: 138, desc: 'Camarão VG crocante em panko, molho dijon de creme fresco e cogumelo-paris' },
     ],
   },
   {
     titulo: 'Do Mar',
     itens: [
       { nome: 'Robalo grelhado no azeite com legumes', preco: 89, desc: 'Leve e saudável, com legumes grelhados no azeite de oliva' },
-      { nome: 'Dueto do mar', preco: 94, desc: 'Filé alto de robalo e camarão zero de Santa Catarina grelhados no azeite extra virgem' },
-      { nome: 'Risoto de camarão', preco: 99, desc: 'Ultra cremoso, com camarões suculentos' },
+      { nome: 'Dueto do mar', preco: 94, desc: 'Filé alto de robalo e camarão zero de Santa Catarina grelhados no azeite extravirgem' },
+      { nome: 'Risoto de camarão', preco: 99, desc: 'Ultracremoso, com camarões suculentos' },
     ],
   },
   {
@@ -58,10 +58,10 @@ export const COZINHA: SecaoCardapio[] = [
   {
     titulo: 'Da Terra',
     itens: [
-      { nome: 'Carne do sol de filé', preco: 79, desc: 'Iguaria nordestina no filé mignon, com farofa de farinha fina e vinagrete' },
-      { nome: 'Filé à parmigiano', preco: 79, desc: 'Lâmina de filé empanada e crocante, pomodoro fresco e queijo gratinado' },
-      { nome: 'Filé Matapoã com purê leve', preco: 78, desc: 'Molho do próprio fundo de carne, tomate confit e purê leve' },
-      { nome: 'Filé Shi-Shi com massa especial', preco: 83, desc: 'Molho exclusivo de shitake e shimeji ao creme e especiarias' },
+      { nome: 'Carne de sol de filé', preco: 79, desc: 'Iguaria nordestina feita com filé-mignon, com farofa de farinha fina e vinagrete' },
+      { nome: 'Filé à parmegiana', preco: 79, desc: 'Lâmina de filé empanada e crocante, pomodoro fresco e queijo gratinado' },
+      { nome: 'Filé Matapoã com purê leve', preco: 78, desc: 'Molho feito com o fundo da própria carne, tomate confit e purê leve' },
+      { nome: 'Filé Shi-Shi com massa especial', preco: 83, desc: 'Molho exclusivo de shiitake e shimeji, com creme e especiarias' },
     ],
   },
   {
@@ -73,16 +73,16 @@ export const COZINHA: SecaoCardapio[] = [
   },
   {
     titulo: 'Kids',
-    itens: [{ nome: 'Prato Kids', preco: 54, desc: 'Carne ou frango grelhado com duas opções de guarnição à escolha' }],
+    itens: [{ nome: 'Prato Kids', preco: 54, desc: 'Carne ou frango grelhados, com duas guarnições à escolha' }],
   },
   {
     titulo: 'Sobremesas',
     itens: [
       { nome: 'Petit gâteau de chocolate com sorvete de creme', preco: 28 },
-      { nome: 'Banana flambada no licor com sorvete', preco: 28 },
+      { nome: 'Banana flambada no Licor 43 com sorvete', preco: 28 },
       { nome: 'Folhado de creme com geleia de morango', preco: 28 },
       { nome: 'Suspiro de Aracaju', preco: 22 },
-      { nome: 'Mini pudim', preco: 19 },
+      { nome: 'Minipudim', preco: 19 },
     ],
   },
 ];
