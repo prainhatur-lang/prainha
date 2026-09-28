@@ -3,9 +3,9 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
-import { brl, maskCnpj } from '@/lib/format';
+import { brl, formatDate, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
 import { BotoesCabecalho } from './botoes-cabecalho';
 import { VincularFornecedorBtn } from './vincular-fornecedor';
@@ -125,6 +125,21 @@ export default async function NotaDetalhePage(props: {
     .from(schema.notaCompraDuplicata)
     .where(eq(schema.notaCompraDuplicata.notaCompraId, id))
     .orderBy(asc(schema.notaCompraDuplicata.dataVencimento));
+
+  // Contas a pagar que o lançamento gerou (1 por duplicata / boleto).
+  const contasPagar = await db
+    .select({
+      id: schema.contaPagar.id,
+      parcela: schema.contaPagar.parcela,
+      totalParcelas: schema.contaPagar.totalParcelas,
+      dataVencimento: sql<string>`${schema.contaPagar.dataVencimento}::text`,
+      dataPagamento: sql<string | null>`${schema.contaPagar.dataPagamento}::text`,
+      valor: schema.contaPagar.valor,
+      boleto: schema.contaPagar.boletoStoragePath,
+    })
+    .from(schema.contaPagar)
+    .where(and(eq(schema.contaPagar.notaCompraId, id), isNull(schema.contaPagar.dataDelete)))
+    .orderBy(asc(schema.contaPagar.dataVencimento));
 
   // Fornecedores da filial (pra vincular caso a nota nao tenha)
   const fornecedoresDaFilial = nota.fornecedorId
@@ -378,6 +393,48 @@ export default async function NotaDetalhePage(props: {
                 className="rounded-md border border-emerald-400 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50"
               >
                 Ver pedido
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Card: contas a pagar geradas por esta NF */}
+        {contasPagar.length > 0 && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-slate-900">
+                  💳 Contas a pagar desta nota
+                </p>
+                <div className="mt-2 space-y-1">
+                  {contasPagar.map((c) => (
+                    <div key={c.id} className="flex flex-wrap items-center gap-x-3 text-xs text-slate-700">
+                      <span>
+                        {c.totalParcelas && c.totalParcelas > 1
+                          ? `Parcela ${c.parcela}/${c.totalParcelas}`
+                          : 'Parcela única'}
+                      </span>
+                      <span>vence {formatDate(c.dataVencimento)}</span>
+                      <span className="font-mono font-medium">{brl(Number(c.valor))}</span>
+                      {c.dataPagamento ? (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800">
+                          pago {formatDate(c.dataPagamento)}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800">
+                          em aberto
+                        </span>
+                      )}
+                      {!c.boleto && <span className="text-[10px] text-slate-400">sem boleto anexado</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <Link
+                href={`/financeiro?filialId=${nota.filialId}&origem=NFE&tipoData=vencimento&dataIni=${contasPagar[0].dataVencimento}&dataFim=${contasPagar[contasPagar.length - 1].dataVencimento}`}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Ver no financeiro
               </Link>
             </div>
           </div>
