@@ -13,6 +13,7 @@ import { AbaPdv } from './aba-pdv';
 import { TrocarTipoButton } from './trocar-tipo';
 import { ControleEstoque } from './controle-estoque';
 import { ConverterUnidadeButton } from './converter-unidade';
+import { ReceitaInsumo } from './receita-insumo';
 import { converterQuantidade } from '@/app/api/ingest/pdv/baixa-estoque';
 
 export const dynamic = 'force-dynamic';
@@ -162,6 +163,45 @@ export default async function ProdutoDetalhePage(props: {
     )
     .orderBy(asc(schema.produto.nome))
     .limit(5000); // o Bar já tem ~990 — com 1000 o "Molho…" sumia da busca
+
+  // Receita do insumo feito de insumos: o template de produção que tem este
+  // produto como saída (o mais usado, se houver mais de um).
+  const ehInsumo = produto.tipo === 'INSUMO';
+  const [receitaTpl] =
+    aba === 'ficha' && ehInsumo
+      ? await db
+          .select({
+            templateId: schema.templateOp.id,
+            rendimento: schema.templateOpSaida.quantidadePadrao,
+          })
+          .from(schema.templateOpSaida)
+          .innerJoin(schema.templateOp, eq(schema.templateOp.id, schema.templateOpSaida.templateId))
+          .where(
+            and(
+              eq(schema.templateOpSaida.produtoId, id),
+              eq(schema.templateOpSaida.tipo, 'PRODUTO'),
+              eq(schema.templateOp.filialId, produto.filialId),
+              eq(schema.templateOp.ativo, true),
+            ),
+          )
+          .orderBy(desc(schema.templateOp.vezesUsado))
+          .limit(1)
+      : [];
+  const receitaItens = receitaTpl
+    ? await db
+        .select({
+          produtoId: schema.templateOpEntrada.produtoId,
+          quantidade: schema.templateOpEntrada.quantidadePadrao,
+          nome: schema.produto.nome,
+          unidade: schema.produto.unidadeEstoque,
+          estoque: schema.produto.estoqueAtual,
+          custo: schema.produto.precoCusto,
+        })
+        .from(schema.templateOpEntrada)
+        .innerJoin(schema.produto, eq(schema.produto.id, schema.templateOpEntrada.produtoId))
+        .where(eq(schema.templateOpEntrada.templateId, receitaTpl.templateId))
+        .orderBy(asc(schema.produto.nome))
+    : [];
 
   // Fornecedores mapeados
   const fornecedoresRows = await db
@@ -536,7 +576,7 @@ export default async function ProdutoDetalhePage(props: {
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              {soUsadoEm ? 'Usado em' : 'Ficha técnica'}
+              {ehInsumo ? 'Receita e uso' : soUsadoEm ? 'Usado em' : 'Ficha técnica'}
               <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
                 {soUsadoEm ? usadoEmRows.length : fichaRows.length}
               </span>
@@ -674,6 +714,45 @@ export default async function ProdutoDetalhePage(props: {
               }))}
             />
           ) : aba === 'ficha' ? (
+            <>
+            {ehInsumo && (
+              <ReceitaInsumo
+                produtoId={id}
+                produtoNome={produto.nome ?? 'este insumo'}
+                unidade={produto.unidadeEstoque}
+                controla={produto.controlaEstoque}
+                estoqueAtual={Number(produto.estoqueAtual ?? 0)}
+                templateId={receitaTpl?.templateId ?? null}
+                rendimento={receitaTpl ? Number(receitaTpl.rendimento) : null}
+                itens={receitaItens.map((r) => ({
+                  produtoId: r.produtoId,
+                  nome: r.nome ?? '(sem nome)',
+                  unidade: r.unidade,
+                  quantidade: Number(r.quantidade),
+                  estoque: Number(r.estoque ?? 0),
+                  custo: Number(r.custo ?? 0),
+                }))}
+                sugestaoFicha={fichaRows
+                  .filter((r) => r.varianteId == null && r.codigoVariante == null)
+                  .map((r) => ({
+                    produtoId: r.insumoId,
+                    nome: r.insumoNome ?? '(sem nome)',
+                    unidade: r.insumoUnidade,
+                    quantidade: converterQuantidade(
+                      Number(r.quantidade),
+                      r.unidade,
+                      r.insumoUnidade,
+                      r.insumoPesoKg != null ? Number(r.insumoPesoKg) : null,
+                      r.insumoVolumeMl != null ? Number(r.insumoVolumeMl) : null,
+                    ),
+                    estoque: 0,
+                    custo: Number(r.insumoPrecoCusto ?? 0),
+                  }))}
+                opcoes={insumosDisponiveis
+                  .filter((i) => i.id !== id)
+                  .map((i) => ({ id: i.id, nome: i.nome ?? '(sem nome)', unidade: i.unidade }))}
+              />
+            )}
             <AbaFicha
               produtoId={id}
               produtoTipo={produto.tipo}
@@ -726,6 +805,7 @@ export default async function ProdutoDetalhePage(props: {
                   unidade: i.unidade,
                 }))}
             />
+            </>
           ) : aba === 'marcas' ? (
             <AbaMarcas
               produtoId={id}
