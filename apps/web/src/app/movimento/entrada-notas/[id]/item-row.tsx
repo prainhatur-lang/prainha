@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
 import { normalizaBusca } from '@/lib/texto';
+import { BotaoConfirmarConversao, ConversaoEmbalagem, resumoEntrada, textoConversao } from '@/components/conversao-embalagem';
 
 interface Item {
   id: string;
@@ -183,6 +184,7 @@ export function ItemRow({
                 qtdNota={qtd}
                 produtoUnidade={item.produtoUnidade ?? ''}
                 unidadeNota={item.unidade ?? ''}
+                produtoNome={item.produtoNome ?? ''}
                 editando={editandoFator}
                 setEditando={setEditandoFator}
                 onSalvo={() => start(() => router.refresh())}
@@ -191,8 +193,8 @@ export function ItemRow({
             {/* Quando ja lancou, so mostra o fator usado (read-only) */}
             {item.lancado && fatorDiferenteDeUm && (
               <span className="text-[10px] text-slate-500">
-                fator ×{fatorAtual} → {(qtd * fatorAtual).toLocaleString('pt-BR')}{' '}
-                {item.produtoUnidade}
+                {textoConversao(item.unidade || 'UN', fatorAtual, item.produtoUnidade ?? '')} → entrou{' '}
+                {(qtd * fatorAtual).toLocaleString('pt-BR')} {item.produtoUnidade}
               </span>
             )}
           </div>
@@ -229,6 +231,7 @@ function FatorInline({
   qtdNota,
   produtoUnidade,
   unidadeNota,
+  produtoNome,
   editando,
   setEditando,
   onSalvo,
@@ -238,27 +241,25 @@ function FatorInline({
   qtdNota: number;
   produtoUnidade: string;
   unidadeNota: string;
+  produtoNome: string;
   editando: boolean;
   setEditando: (v: boolean) => void;
   onSalvo: () => void;
 }) {
-  const [valor, setValor] = useState(String(fatorAtual));
+  const [fator, setFator] = useState<number | null>(fatorAtual);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const medida = ['ml', 'l', 'g', 'kg'].includes(produtoUnidade.toLowerCase());
 
   async function salvar() {
-    const num = Number(valor.replace(',', '.'));
-    if (!Number.isFinite(num) || num <= 0) {
-      setErro('fator inválido');
-      return;
-    }
+    if (!fator || fator <= 0) return;
     setSalvando(true);
     setErro(null);
     try {
       const r = await fetch(`/api/produto-fornecedor/${produtoFornecedorId}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fatorConversao: num }),
+        body: JSON.stringify({ fatorConversao: fator }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -280,69 +281,65 @@ function FatorInline({
   if (!editando) {
     return (
       <div className="flex items-center gap-2 text-[10px] text-slate-500">
-        {fatorDiferente ? (
+        {fatorDiferente || !medida ? (
           <span>
-            fator <span className="font-mono font-medium text-slate-700">×{fatorAtual}</span>
-            {' → '}
+            {textoConversao(unidadeNota || 'UN', fatorAtual, produtoUnidade)}
+            {' → vão entrar '}
             <span className="font-mono font-medium text-slate-700">
               {qtdInterna.toLocaleString('pt-BR')} {produtoUnidade}
             </span>
           </span>
         ) : (
-          <span className="text-slate-400">
-            fator ×1 (sem conversão entre {unidadeNota || '?'} e {produtoUnidade || '?'})
+          // Estoque em ml/g e 1 garrafa = 1 ml: quase sempre é o tamanho que faltou.
+          <span className="font-medium text-amber-700">
+            ⚠ falta dizer quantos {produtoUnidade} tem cada {unidadeNota || 'UN'}
           </span>
         )}
         <button
           type="button"
           onClick={() => {
-            setValor(String(fatorAtual));
+            setFator(fatorDiferente ? fatorAtual : null);
             setEditando(true);
           }}
           className="text-slate-500 hover:text-slate-800 hover:underline"
         >
-          editar
+          {fatorDiferente || !medida ? 'corrigir' : 'responder'}
         </button>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-slate-500">fator ×</span>
-        <input
-          type="text"
-          inputMode="decimal"
-          value={valor}
-          onChange={(e) => setValor(e.target.value)}
-          className="w-20 rounded border border-slate-300 px-1.5 py-0.5 font-mono text-xs"
-          autoFocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') salvar();
-            if (e.key === 'Escape') setEditando(false);
-          }}
-        />
-        <button
-          type="button"
-          disabled={salvando}
-          onClick={salvar}
-          className="rounded bg-slate-900 px-2 py-0.5 text-[10px] text-white hover:bg-slate-800 disabled:opacity-50"
-        >
-          {salvando ? '...' : 'salvar'}
-        </button>
+    <div className="mt-1 w-80 max-w-full space-y-2 rounded-md border border-slate-200 bg-white p-2">
+      <ConversaoEmbalagem
+        unidadeCompra={unidadeNota || 'UN'}
+        unidadeEstoque={produtoUnidade}
+        fatorInicial={fatorDiferente ? fatorAtual : null}
+        qtdCompra={qtdNota}
+        onChange={setFator}
+      />
+      {erro && <span className="text-[10px] text-rose-600">{erro}</span>}
+      <div className="flex gap-2">
         <button
           type="button"
           onClick={() => setEditando(false)}
-          className="text-[10px] text-slate-500 hover:underline"
+          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] hover:bg-slate-50"
         >
           cancelar
         </button>
+        <BotaoConfirmarConversao
+          rotulo="Salvar"
+          pending={salvando}
+          onConfirmar={salvar}
+          resumo={resumoEntrada({
+            qtdCompra: qtdNota,
+            unidadeCompra: unidadeNota,
+            fator,
+            unidadeEstoque: produtoUnidade,
+            produto: produtoNome || 'este insumo',
+          })}
+        />
       </div>
-      {erro && <span className="text-[10px] text-rose-600">{erro}</span>}
-      <span className="text-[9px] text-slate-400">
-        {qtdNota} {unidadeNota} × {valor || '?'} = qtd no estoque ({produtoUnidade})
-      </span>
     </div>
   );
 }
@@ -372,6 +369,7 @@ function ModalVincular({
   // Produto selecionado pra ver/editar fator antes de vincular.
   const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoOpcao | null>(null);
   const [fatorTexto, setFatorTexto] = useState<string>('1');
+  const [fatorNovo, setFatorNovo] = useState<number | null>(null);
 
   const opcoes = useMemo(() => {
     const b = normalizaBusca(busca);
@@ -388,7 +386,10 @@ function ModalVincular({
   function escolherProduto(p: ProdutoOpcao) {
     setProdutoSelecionado(p);
     const sug = sugerirFator(item.descricao, p.unidade, p.volumeMl ?? null);
-    setFatorTexto(String(sug.fator));
+    // Insumo em ml/g sem tamanho detectado: começa vazio e obriga a responder
+    // "a garrafa tem quantos ml?" (fator 1 = 1 garrafa virando 1 ml).
+    const medida = ['ml', 'l', 'g', 'kg'].includes((p.unidade ?? '').toLowerCase());
+    setFatorTexto(medida && sug.fator === 1 ? '' : String(sug.fator));
   }
 
   async function confirmarVinculo() {
@@ -400,9 +401,8 @@ function ModalVincular({
     });
   }
 
-  async function criarEVincular(e: React.FormEvent) {
-    e.preventDefault();
-    if (!nomeInsumo.trim()) return;
+  async function criarEVincular() {
+    if (!nomeInsumo.trim() || !fatorNovo) return;
     setErroCriar(null);
     try {
       const r = await fetch('/api/produtos/insumo', {
@@ -420,9 +420,8 @@ function ModalVincular({
         return;
       }
       if (d.id) {
-        // Sugere fator pelo insumo recém-criado e a descrição da NFe.
-        const sug = sugerirFator(item.descricao, unidadeInsumo);
-        await onVincular(d.id, sug.fator);
+        // Fator respondido na tela ("a garrafa tem quantos ml?") e conferido.
+        await onVincular(d.id, fatorNovo);
       }
     } catch (err) {
       setErroCriar((err as Error).message);
@@ -560,7 +559,7 @@ function ModalVincular({
               )}
             </>
           ) : (
-            <form onSubmit={criarEVincular} className="space-y-3">
+            <form onSubmit={(e) => e.preventDefault()} className="space-y-3">
               <div>
                 <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
                   Nome do insumo *
@@ -590,23 +589,25 @@ function ModalVincular({
                   <option value="l">l</option>
                 </select>
               </div>
-              {/* Previa do fator pra unidade escolhida */}
               {(() => {
                 const sug = sugerirFator(item.descricao, unidadeInsumo);
-                if (sug.fator !== 1 && sug.explicacao) {
-                  return (
-                    <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900">
-                      <strong>Fator detectado:</strong> ×{sug.fator} ({sug.explicacao}).<br />
-                      Cada {item.unidade || 'UN'} da NFe vai virar {sug.fator}{' '}
-                      {unidadeInsumo} no estoque.
-                    </div>
-                  );
-                }
+                const detectado = sug.fator !== 1 && sug.explicacao ? sug : null;
                 return (
-                  <p className="text-[10px] text-slate-500">
-                    Fator de conversão será 1 por padrão (1 {item.unidade || 'UN'} da
-                    NFe = 1 {unidadeInsumo} no estoque). Editável depois.
-                  </p>
+                  <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                    {detectado && (
+                      <p className="mb-2 text-[10px] text-emerald-700">
+                        ✓ Lido na descrição da nota: {detectado.explicacao}. Confira no rótulo.
+                      </p>
+                    )}
+                    <ConversaoEmbalagem
+                      key={unidadeInsumo}
+                      unidadeCompra={item.unidade || 'UN'}
+                      unidadeEstoque={unidadeInsumo}
+                      fatorInicial={detectado || unidadeInsumo === 'un' ? sug.fator : null}
+                      qtdCompra={Number(item.quantidade ?? 0)}
+                      onChange={setFatorNovo}
+                    />
+                  </div>
                 );
               })()}
               <p className="text-[10px] text-slate-500">
@@ -619,13 +620,24 @@ function ModalVincular({
                   {erroCriar}
                 </div>
               )}
-              <button
-                type="submit"
-                disabled={pending || !nomeInsumo.trim()}
-                className="w-full rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-              >
-                {pending ? 'Criando...' : 'Criar insumo + vincular'}
-              </button>
+              <div className="flex">
+                <BotaoConfirmarConversao
+                  rotulo="Criar insumo + vincular"
+                  pending={pending}
+                  onConfirmar={() => start(criarEVincular)}
+                  resumo={
+                    nomeInsumo.trim()
+                      ? resumoEntrada({
+                          qtdCompra: Number(item.quantidade ?? 0),
+                          unidadeCompra: item.unidade,
+                          fator: fatorNovo,
+                          unidadeEstoque: unidadeInsumo,
+                          produto: nomeInsumo.trim(),
+                        })
+                      : null
+                  }
+                />
+              </div>
             </form>
           )}
 
@@ -697,63 +709,18 @@ function ConfirmarFator({
       </div>
 
       <div>
-        <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-          Fator de conversão
-        </label>
-        <p className="mt-0.5 text-[10px] text-slate-500">
-          Quantos <span className="font-semibold">{produto.unidade}</span> entram em 1{' '}
-          <span className="font-semibold">{unidadeNota || 'UN'}</span> da NFe?
-        </p>
-        <div className="mt-2 flex items-center gap-2">
-          <span className="font-mono text-sm text-slate-500">×</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={fatorTexto}
-            onChange={(e) => setFatorTexto(e.target.value)}
-            className="w-32 rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-sm"
-            autoFocus
-          />
-          {sug.fator !== 1 && Number(fatorTexto.replace(',', '.')) !== sug.fator && (
-            <button
-              type="button"
-              onClick={() => setFatorTexto(String(sug.fator))}
-              className="text-[10px] text-sky-700 hover:underline"
-              title="Aplica a sugestão automática extraída da descrição"
-            >
-              usar sugestão ×{sug.fator}
-            </button>
-          )}
-        </div>
-        {sug.explicacao && (
-          <p className="mt-1 text-[10px] text-emerald-700">
-            ✓ Detectado na descrição: {sug.explicacao}
+        {sug.explicacao && sug.fator !== 1 && (
+          <p className="mb-2 text-[10px] text-emerald-700">
+            ✓ Lido na descrição da nota: {sug.explicacao}. Confira no rótulo.
           </p>
         )}
-      </div>
-
-      <div
-        className={`rounded-lg border p-3 ${
-          fatorValido
-            ? 'border-emerald-200 bg-emerald-50'
-            : 'border-rose-200 bg-rose-50'
-        }`}
-      >
-        <p className="text-[10px] font-medium uppercase tracking-wide text-slate-700">
-          Vai entrar no estoque
-        </p>
-        {fatorValido ? (
-          <p className="mt-1 font-mono text-sm">
-            <span className="text-slate-500">{qtdNota} {unidadeNota || 'UN'} ×{' '}</span>
-            <span className="font-semibold text-slate-900">{fatorTexto}</span>{' '}
-            <span className="text-slate-500">=</span>{' '}
-            <span className="font-bold text-emerald-900">
-              {qtdInterna.toLocaleString('pt-BR')} {produto.unidade}
-            </span>
-          </p>
-        ) : (
-          <p className="mt-1 text-xs text-rose-800">Fator inválido (precisa ser positivo).</p>
-        )}
+        <ConversaoEmbalagem
+          unidadeCompra={unidadeNota || 'UN'}
+          unidadeEstoque={produto.unidade}
+          fatorInicial={Number(fatorTexto.replace(',', '.')) || null}
+          qtdCompra={qtdNota}
+          onChange={(f) => setFatorTexto(f == null ? '' : String(f))}
+        />
       </div>
 
       <div className="flex gap-2">
@@ -765,14 +732,22 @@ function ConfirmarFator({
         >
           ← Voltar
         </button>
-        <button
-          type="button"
-          onClick={onConfirmar}
-          disabled={pending || !fatorValido}
-          className="flex-1 rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-        >
-          {pending ? 'Vinculando...' : 'Vincular com este fator'}
-        </button>
+        <BotaoConfirmarConversao
+          rotulo="Continuar"
+          pending={pending}
+          onConfirmar={onConfirmar}
+          resumo={
+            fatorValido
+              ? resumoEntrada({
+                  qtdCompra: qtdNota,
+                  unidadeCompra: unidadeNota,
+                  fator: qtdInterna / (qtdNota || 1) || Number(fatorTexto.replace(',', '.')),
+                  unidadeEstoque: produto.unidade,
+                  produto: produto.nome,
+                })
+              : null
+          }
+        />
       </div>
     </div>
   );

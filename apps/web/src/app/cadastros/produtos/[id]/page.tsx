@@ -740,6 +740,7 @@ export default async function ProdutoDetalhePage(props: {
           ) : (
             <AbaFornecedores
               produtoId={id}
+              produtoNome={produto.nome ?? 'este produto'}
               produtoUnidade={produto.unidadeEstoque}
               linhas={fornecedoresRows.map((r) => ({
                 id: r.id,

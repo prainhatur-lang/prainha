@@ -2,6 +2,15 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { BotaoConfirmarConversao } from '@/components/conversao-embalagem';
+
+const TAMANHOS = [
+  { rotulo: '350 ml', valor: 350 },
+  { rotulo: '500 ml (meio litro)', valor: 500 },
+  { rotulo: '750 ml', valor: 750 },
+  { rotulo: '1 litro', valor: 1000 },
+  { rotulo: '5 litros', valor: 5000 },
+];
 
 /** "Unidade: un [converter p/ ml]" — garrafa entra na compra, estoque e ficha
  *  andam em ml. Converte saldo, custo, histórico e fichas de uma vez. */
@@ -22,6 +31,7 @@ export function ConverterUnidadeButton({
   const [pending, start] = useTransition();
   const [aberto, setAberto] = useState(false);
   const [fator, setFator] = useState(volumeMl ? String(volumeMl) : '');
+  const [enviando, setEnviando] = useState(false);
   const [embalagem, setEmbalagem] = useState('garrafa');
   const [erro, setErro] = useState<string | null>(null);
 
@@ -33,12 +43,14 @@ export function ConverterUnidadeButton({
 
   async function converter() {
     setErro(null);
+    setEnviando(true);
     const r = await fetch(`/api/produtos/${produtoId}/converter-unidade`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ para: 'ml', fator: f, embalagem: embalagem.trim() || 'garrafa' }),
     });
     const d = await r.json().catch(() => ({}));
+    setEnviando(false);
     if (!r.ok) {
       setErro(d.error ?? `HTTP ${r.status}`);
       return;
@@ -72,27 +84,49 @@ export function ConverterUnidadeButton({
               A compra continua entrando por {embalagem || 'garrafa'} e cada uma gera os ml abaixo.
               A ficha passa a pedir a dose em ml.
             </p>
-            <div className="flex gap-3">
-              <label className="flex-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Embalagem
-                <input
-                  value={embalagem}
-                  onChange={(e) => setEmbalagem(e.target.value)}
-                  placeholder="garrafa, galão, peça"
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm normal-case"
-                />
-              </label>
-              <label className="flex-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                ml por {embalagem || 'garrafa'}
+            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Como vem na compra
+              <input
+                value={embalagem}
+                onChange={(e) => setEmbalagem(e.target.value)}
+                placeholder="garrafa, galão, lata"
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm normal-case"
+              />
+            </label>
+            <div>
+              <p className="text-sm font-medium text-slate-900">
+                1 {embalagem || 'garrafa'} tem quantos ml?
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {TAMANHOS.map((t) => (
+                  <button
+                    key={t.valor}
+                    type="button"
+                    onClick={() => setFator(String(t.valor))}
+                    className={`rounded-full border px-2.5 py-1 text-xs ${
+                      f === t.valor
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {t.rotulo}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
                 <input
                   value={fator}
                   onChange={(e) => setFator(e.target.value)}
                   inputMode="decimal"
-                  placeholder="1000"
+                  placeholder="outro tamanho"
                   autoFocus
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                  className="w-32 rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                 />
-              </label>
+                <span className="text-sm text-slate-600">ml</span>
+              </div>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Olhe no rótulo. 1 litro = 1000 ml · meio litro = 500 ml.
+              </p>
             </div>
             {ok && (
               <div className="rounded bg-slate-50 p-2 text-[11px] text-slate-700">
@@ -114,14 +148,16 @@ export function ConverterUnidadeButton({
               >
                 Cancelar
               </button>
-              <button
-                type="button"
-                disabled={!ok || pending}
-                onClick={converter}
-                className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-              >
-                {pending ? 'Convertendo...' : 'Converter'}
-              </button>
+              <BotaoConfirmarConversao
+                rotulo="Converter"
+                pending={pending || enviando}
+                onConfirmar={converter}
+                resumo={
+                  ok
+                    ? `Cada ${embalagem || 'garrafa'} vai entrar como ${fmt(f, 0)} ml. O saldo de ${fmt(saldo, 3)} un vira ${fmt(saldo * f, 0)} ml no estoque.`
+                    : null
+                }
+              />
             </div>
           </div>
         </div>

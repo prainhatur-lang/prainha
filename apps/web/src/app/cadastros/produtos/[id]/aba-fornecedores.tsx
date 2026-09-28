@@ -4,6 +4,12 @@ import { useState, useTransition, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
 import { normalizaBusca } from '@/lib/texto';
+import {
+  BotaoConfirmarConversao,
+  ConversaoEmbalagem,
+  resumoEntrada,
+  textoConversao,
+} from '@/components/conversao-embalagem';
 
 interface LinhaForn {
   id: string;
@@ -28,11 +34,13 @@ interface FornOpcao {
 
 export function AbaFornecedores({
   produtoId,
+  produtoNome,
   produtoUnidade,
   linhas,
   fornecedoresDisponiveis,
 }: {
   produtoId: string;
+  produtoNome: string;
   produtoUnidade: string;
   linhas: LinhaForn[];
   fornecedoresDisponiveis: FornOpcao[];
@@ -59,8 +67,8 @@ export function AbaFornecedores({
         <div>
           <h2 className="text-sm font-semibold text-slate-900">Fornecedores mapeados</h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            Como cada fornecedor identifica este produto (código, EAN) e o fator de
-            conversão pra chegar na unidade interna ({produtoUnidade}).
+            Como cada fornecedor identifica este produto (código, EAN) e quanto
+            entra no estoque ({produtoUnidade}) por unidade comprada.
           </p>
         </div>
         <button
@@ -80,7 +88,7 @@ export function AbaFornecedores({
               <th className="px-4 py-2">Código forn.</th>
               <th className="px-4 py-2">EAN</th>
               <th className="px-4 py-2">Unid. forn.</th>
-              <th className="px-4 py-2 text-right">Fator</th>
+              <th className="px-4 py-2 text-right">Entra no estoque</th>
               <th className="px-4 py-2 text-right">Últ. custo</th>
               <th className="px-4 py-2"></th>
             </tr>
@@ -118,8 +126,8 @@ export function AbaFornecedores({
                     <td className="px-4 py-2 font-mono text-xs text-slate-700">
                       {l.unidadeFornecedor || <span className="text-slate-300">—</span>}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-xs text-slate-700">
-                      {fator}
+                    <td className="px-4 py-2 text-right text-xs text-slate-700">
+                      {textoConversao(l.unidadeFornecedor || 'UN', fator, produtoUnidade)}
                     </td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-slate-700">
                       {custo !== null ? (
@@ -155,6 +163,7 @@ export function AbaFornecedores({
       {adicionar && (
         <ModalForn
           produtoId={produtoId}
+          produtoNome={produtoNome}
           produtoUnidade={produtoUnidade}
           fornecedoresDisponiveis={fornecedoresDisponiveis.filter(
             (f) => !linhas.some((l) => l.fornecedorId === f.id),
@@ -170,6 +179,7 @@ export function AbaFornecedores({
       {editando && (
         <ModalFornEdit
           linha={editando}
+          produtoNome={produtoNome}
           produtoUnidade={produtoUnidade}
           onFechar={() => setEditando(null)}
           onOk={() => {
@@ -184,12 +194,14 @@ export function AbaFornecedores({
 
 function ModalForn({
   produtoId,
+  produtoNome,
   produtoUnidade,
   fornecedoresDisponiveis,
   onFechar,
   onOk,
 }: {
   produtoId: string;
+  produtoNome: string;
   produtoUnidade: string;
   fornecedoresDisponiveis: FornOpcao[];
   onFechar: () => void;
@@ -201,7 +213,7 @@ function ModalForn({
   const [ean, setEan] = useState('');
   const [unidadeForn, setUnidadeForn] = useState('');
   const [descricao, setDescricao] = useState('');
-  const [fator, setFator] = useState('1');
+  const [fator, setFator] = useState<number | null>(null);
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -214,14 +226,9 @@ function ModalForn({
 
   const escolhido = fornecedoresDisponiveis.find((f) => f.id === fornecedorId);
 
-  async function enviar(e: React.FormEvent) {
-    e.preventDefault();
-    if (!fornecedorId) return;
-    const f = Number(fator.replace(',', '.'));
-    if (!Number.isFinite(f) || f <= 0) {
-      setErro('Fator de conversão inválido');
-      return;
-    }
+  async function enviar() {
+    if (!fornecedorId || !fator) return;
+    const f = fator;
     setErro(null);
     const r = await fetch('/api/produto-fornecedor', {
       method: 'POST',
@@ -250,7 +257,7 @@ function ModalForn({
       onClick={onFechar}
     >
       <form
-        onSubmit={enviar}
+        onSubmit={(e) => e.preventDefault()}
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
       >
@@ -361,26 +368,17 @@ function ModalForn({
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono uppercase"
             />
           </div>
-          <div className="flex-1">
-            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Fator × {produtoUnidade} *
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={fator}
-              onChange={(e) => setFator(e.target.value)}
-              placeholder="Ex: 1000 (1L → 1000ml), 12 (fd 12un)"
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              required
-            />
-          </div>
         </div>
 
-        <p className="text-[10px] text-slate-500">
-          <strong>Fator:</strong> quantas unidades internas ({produtoUnidade}) equivalem
-          a 1 unidade do fornecedor. Ex: compra 1 garrafa 1L → fator 1000 se produto é ml.
-        </p>
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+          <ConversaoEmbalagem
+            key={unidadeForn || 'UN'}
+            unidadeCompra={unidadeForn.trim().toUpperCase() || 'UN'}
+            unidadeEstoque={produtoUnidade}
+            fatorInicial={produtoUnidade.toLowerCase() === 'un' ? 1 : null}
+            onChange={setFator}
+          />
+        </div>
 
         {erro && (
           <div className="rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-800">{erro}</div>
@@ -394,13 +392,21 @@ function ModalForn({
           >
             Cancelar
           </button>
-          <button
-            type="submit"
-            disabled={pending || !fornecedorId}
-            className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-          >
-            {pending ? 'Salvando...' : 'Adicionar'}
-          </button>
+          <BotaoConfirmarConversao
+            rotulo="Adicionar"
+            pending={pending}
+            onConfirmar={enviar}
+            resumo={
+              fornecedorId
+                ? resumoEntrada({
+                    unidadeCompra: unidadeForn.trim().toUpperCase() || 'UN',
+                    fator,
+                    unidadeEstoque: produtoUnidade,
+                    produto: produtoNome,
+                  })
+                : null
+            }
+          />
         </div>
       </form>
     </div>
@@ -409,11 +415,13 @@ function ModalForn({
 
 function ModalFornEdit({
   linha,
+  produtoNome,
   produtoUnidade,
   onFechar,
   onOk,
 }: {
   linha: LinhaForn;
+  produtoNome: string;
   produtoUnidade: string;
   onFechar: () => void;
   onOk: () => void;
@@ -422,17 +430,13 @@ function ModalFornEdit({
   const [ean, setEan] = useState(linha.ean ?? '');
   const [unidadeForn, setUnidadeForn] = useState(linha.unidadeFornecedor ?? '');
   const [descricao, setDescricao] = useState(linha.descricaoFornecedor ?? '');
-  const [fator, setFator] = useState(String(Number(linha.fatorConversao)));
+  const [fator, setFator] = useState<number | null>(Number(linha.fatorConversao) || null);
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
-  async function enviar(e: React.FormEvent) {
-    e.preventDefault();
-    const f = Number(fator.replace(',', '.'));
-    if (!Number.isFinite(f) || f <= 0) {
-      setErro('Fator de conversão inválido');
-      return;
-    }
+  async function enviar() {
+    if (!fator) return;
+    const f = fator;
     setErro(null);
     const body: Record<string, unknown> = {
       codigoFornecedor: codigo.trim() || null,
@@ -460,7 +464,7 @@ function ModalFornEdit({
       onClick={onFechar}
     >
       <form
-        onSubmit={enviar}
+        onSubmit={(e) => e.preventDefault()}
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
       >
@@ -522,19 +526,15 @@ function ModalFornEdit({
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono uppercase"
             />
           </div>
-          <div className="flex-1">
-            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Fator × {produtoUnidade} *
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={fator}
-              onChange={(e) => setFator(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              required
-            />
-          </div>
+        </div>
+
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+          <ConversaoEmbalagem
+            unidadeCompra={unidadeForn.trim().toUpperCase() || 'UN'}
+            unidadeEstoque={produtoUnidade}
+            fatorInicial={Number(linha.fatorConversao) || null}
+            onChange={setFator}
+          />
         </div>
 
         {erro && (
@@ -549,13 +549,17 @@ function ModalFornEdit({
           >
             Cancelar
           </button>
-          <button
-            type="submit"
-            disabled={pending}
-            className="rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-          >
-            {pending ? 'Salvando...' : 'Salvar'}
-          </button>
+          <BotaoConfirmarConversao
+            rotulo="Salvar"
+            pending={pending}
+            onConfirmar={enviar}
+            resumo={resumoEntrada({
+              unidadeCompra: unidadeForn.trim().toUpperCase() || 'UN',
+              fator,
+              unidadeEstoque: produtoUnidade,
+              produto: produtoNome,
+            })}
+          />
         </div>
       </form>
     </div>
