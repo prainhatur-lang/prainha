@@ -109,14 +109,17 @@ export function NovaCotacaoForm(props: {
   const [filtro, setFiltro] = useState('');
   const [filtroForn, setFiltroForn] = useState('');
   const [categoriaFornFiltro, setCategoriaFornFiltro] = useState('');
+  const [verTodosForn, setVerTodosForn] = useState(false);
+  const [soMarcados, setSoMarcados] = useState(false);
 
   const produtosFiltrados = useMemo(() => {
-    if (!filtro.trim()) return props.produtos;
+    const base = soMarcados ? props.produtos.filter((p) => itens[p.id]) : props.produtos;
+    if (!filtro.trim()) return base;
     const q = normalizaBusca(filtro);
-    return props.produtos.filter(
+    return base.filter(
       (p) => normalizaBusca(p.nome).includes(q) || normalizaBusca(p.categoria).includes(q),
     );
-  }, [filtro, props.produtos]);
+  }, [filtro, props.produtos, soMarcados, itens]);
 
   // Separa em 2 grandes grupos: Insumos (matéria-prima da cozinha) e
   // Produtos de revenda (bebidas latas/garrafas). Dentro de cada grupo,
@@ -208,6 +211,29 @@ export function NovaCotacaoForm(props: {
         return a.nome.localeCompare(b.nome);
       });
   }, [props.fornecedores, filtroForn, categoriaFornFiltro, supplyPorFornecedor, totalItensSelecionados]);
+
+  /** A lista inteira (dezenas de fornecedores) confundia na hora de revisar.
+   *  Com itens marcados, mostra só quem importa: os já marcados, quem vende
+   *  algum item e os gerais. O resto fica atrás de "mostrar todos". */
+  const temVinculo = [...supplyPorFornecedor.values()].some((v) => v > 0);
+  const enxugar = !verTodosForn && !filtroForn.trim() && !categoriaFornFiltro && temVinculo;
+  const fornecedoresVisiveis = enxugar
+    ? fornecedoresFiltrados.filter(
+        (f) =>
+          fornecedoresSelecionados.has(f.id) ||
+          (supplyPorFornecedor.get(f.id) ?? 0) > 0 ||
+          f.geral,
+      )
+    : fornecedoresFiltrados;
+  const escondidos = fornecedoresFiltrados.length - fornecedoresVisiveis.length;
+
+  const marcadosLista = useMemo(
+    () =>
+      props.fornecedores
+        .filter((f) => fornecedoresSelecionados.has(f.id))
+        .sort((a, b) => a.nome.localeCompare(b.nome)),
+    [props.fornecedores, fornecedoresSelecionados],
+  );
 
   /** Regra do dono: item que ninguém sabe quem vende vai pros GERAIS. Sem
    *  isso, produto sem vínculo era cotado com quem não trabalha com ele — foi
@@ -310,7 +336,22 @@ export function NovaCotacaoForm(props: {
       <section className="rounded-xl border border-slate-200 bg-white p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-900">Itens da cotação</h2>
-          <span className="text-xs text-slate-500">{itensCount} selecionados</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-slate-700">{itensCount} marcados</span>
+            {(itensCount > 0 || soMarcados) && (
+              <button
+                type="button"
+                onClick={() => setSoMarcados((v) => !v)}
+                className={`rounded-md border px-2 py-0.5 text-[11px] font-medium ${
+                  soMarcados
+                    ? 'border-emerald-400 bg-emerald-100 text-emerald-900'
+                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {soMarcados ? '← ver todos os produtos' : 'revisar só os marcados'}
+              </button>
+            )}
+          </div>
         </div>
         <input
           type="search"
@@ -384,9 +425,68 @@ export function NovaCotacaoForm(props: {
               >
                 + os gerais
               </button>
-              {fornecedoresSelecionados.size}/{props.fornecedores.length} selecionados
             </span>
           </div>
+        </div>
+
+        {/* Revisão: quem vai receber o link, sem caçar na lista */}
+        <div
+          className={`mb-3 rounded-lg border px-3 py-2 ${
+            marcadosLista.length > 0
+              ? 'border-emerald-300 bg-emerald-50'
+              : 'border-dashed border-slate-300 bg-slate-50'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`text-sm font-semibold ${
+                marcadosLista.length > 0 ? 'text-emerald-900' : 'text-slate-500'
+              }`}
+            >
+              {marcadosLista.length === 0
+                ? 'Nenhum fornecedor marcado ainda'
+                : `${marcadosLista.length} fornecedor${marcadosLista.length > 1 ? 'es' : ''} vão receber a cotação`}
+            </span>
+            {marcadosLista.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setFornecedoresSelecionados(new Set())}
+                className="text-[11px] text-slate-500 underline hover:text-rose-700"
+              >
+                desmarcar todos
+              </button>
+            )}
+          </div>
+          {marcadosLista.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {marcadosLista.map((f) => {
+                const supply = supplyPorFornecedor.get(f.id) ?? 0;
+                return (
+                  <span
+                    key={f.id}
+                    className={`inline-flex items-center gap-1 rounded-full border bg-white py-0.5 pl-2.5 pr-1 text-xs ${
+                      gemeoDe.has(f.id) ? 'border-rose-300 text-rose-900' : 'border-emerald-300 text-emerald-900'
+                    }`}
+                  >
+                    {f.nome}
+                    {totalItensSelecionados > 0 && supply > 0 && (
+                      <span className="text-[10px] text-sky-700">
+                        {supply}/{totalItensSelecionados}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => toggleFornecedor(f.id)}
+                      className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-slate-400 hover:bg-rose-100 hover:text-rose-700"
+                      title="Tirar da cotação"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
         {dupSelecionados.length > 0 && (
           <div className="mb-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] text-rose-900">
@@ -431,7 +531,7 @@ export function NovaCotacaoForm(props: {
               </select>
             </div>
             <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
-              {fornecedoresFiltrados.map((f) => {
+              {fornecedoresVisiveis.map((f) => {
                 const minimo = f.valorPedidoMinimo ? Number(f.valorPedidoMinimo) : null;
                 const supply = supplyPorFornecedor.get(f.id) ?? 0;
                 const naoVende = totalItensSelecionados > 0 && supply === 0;
@@ -501,6 +601,24 @@ export function NovaCotacaoForm(props: {
                 <p className="col-span-full p-2 text-xs text-slate-400">
                   Nenhum fornecedor com esse filtro.
                 </p>
+              )}
+              {escondidos > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setVerTodosForn(true)}
+                  className="col-span-full rounded-md border border-dashed border-slate-300 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
+                >
+                  + mostrar os outros {escondidos} (não vendem nenhum item marcado)
+                </button>
+              )}
+              {verTodosForn && temVinculo && (
+                <button
+                  type="button"
+                  onClick={() => setVerTodosForn(false)}
+                  className="col-span-full py-1 text-xs text-slate-400 hover:text-slate-600"
+                >
+                  mostrar só os que vendem os itens
+                </button>
               )}
             </div>
           </>
