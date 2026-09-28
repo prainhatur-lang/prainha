@@ -25,6 +25,8 @@ const TABUARA_REWRITES: Record<string, string> = {
   '/reserva': `/reservar/${TABUARA_RESERVA_TOKEN}`,
   '/delivery': '/delivery/tabuara',
 };
+// Domínio próprio da Prainha Mar e Grill (filial 03): por enquanto só a landing.
+const PRAINHAMAR_HOSTS = new Set(['prainhamar.com.br', 'www.prainhamar.com.br']);
 
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
@@ -45,6 +47,11 @@ export async function proxy(request: NextRequest) {
       url.pathname = destino;
       return NextResponse.rewrite(url);
     }
+  }
+  if (PRAINHAMAR_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/prainhamar';
+    return NextResponse.rewrite(url);
   }
 
   let response = NextResponse.next({ request });
@@ -112,6 +119,7 @@ export async function proxy(request: NextRequest) {
   const isTrabalhePublico = path === '/trabalhe';
   // /tabuara é a página pública de apresentação da filial Tabuará (sem login).
   const isTabuaraPublico = path === '/tabuara' || path.startsWith('/tabuara/');
+  const isPrainhaMarPublico = path === '/prainhamar' || path.startsWith('/prainhamar/');
   // /canal/[token] (ouvidoria) e /clima/[token] (eNPS) são páginas públicas
   // anônimas — sem login (o token identifica a filial). NUNCA compartilham
   // token com /avaliar/ (aquele está em QR de mesa, visível a qualquer
@@ -137,6 +145,7 @@ export async function proxy(request: NextRequest) {
     isDeliveryPublico ||
     isTrabalhePublico ||
     isTabuaraPublico ||
+    isPrainhaMarPublico ||
     isCanalPublico ||
     isClimaPublico ||
     isCartaoPublico;
