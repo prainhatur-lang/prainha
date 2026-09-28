@@ -57,6 +57,11 @@ export const alarmeGatilho = pgTable('alarme_gatilho', {
   protectHost: varchar('protect_host', { length: 100 }),
   /** chave da Integration API do Protect, cifrada (lib/segredo). Nunca volta pro navegador. */
   protectApiKey: text('protect_api_key'),
+  /** "ID de acionamento" de alarmes do Protect com gatilho Webhook + ação
+   * Notificar: a loja chama ao ligar/desligar pelo Concilia, e o celular
+   * recebe o aviso pelo app do Protect (o Protect não avisa armar/desarmar). */
+  protectAvisoLigado: varchar('protect_aviso_ligado', { length: 64 }),
+  protectAvisoDesligado: varchar('protect_aviso_desligado', { length: 64 }),
   disparos: integer('disparos').notNull().default(0),
   ultimoDisparoEm: timestamp('ultimo_disparo_em', { withTimezone: true }),
   ultimoResultado: text('ultimo_resultado'),

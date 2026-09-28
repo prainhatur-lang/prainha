@@ -5541,7 +5541,7 @@ function centralAssinou(u, escopo = 'caixa') {
 // A nuvem não alcança o Protect (IP da rede da loja, chave local), então ela
 // manda aqui host + chave dentro da chamada assinada e a loja fala com a
 // Integration API do Protect. Só IP de rede interna (a loja não vira proxy
-// pra fora) e só os caminhos de alarme (arm-profiles, nvrs). Certificado do console é autoassinado.
+// pra fora) e só os caminhos de alarme (arm-profiles, nvrs, alarm-manager/webhook). Certificado do console é autoassinado.
 const PROTECT_HOST_OK = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
 function protectReq(host, chave, method, path, corpo = {}) {
   return new Promise((resolve, reject) => {
@@ -5600,7 +5600,16 @@ async function apiAlarmeProtect(acao, b) {
     }
   }
   else if (acao === 'desligar') await protectReq(host, chave, 'POST', '/arm-profiles/disable');
-  return { ok: true, armMode: await protectArmMode(host, chave) };
+  // Aviso no celular: o Protect não notifica armar/desarmar, então a nuvem
+  // manda o "ID de acionamento" de um alarme com gatilho Webhook + Notificar
+  // e a loja aciona ele. Falha no aviso não desfaz o ligar/desligar.
+  let avisoErro;
+  const aviso = String(b?.aviso || '');
+  if (acao !== 'status' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(aviso)) {
+    try { await protectReq(host, chave, 'POST', '/alarm-manager/webhook/' + aviso); }
+    catch (e) { avisoErro = e.message; console.log(`[alarme] aviso ${acao} falhou: ${e.message}`); }
+  }
+  return { ok: true, armMode: await protectArmMode(host, chave), ...(avisoErro ? { avisoErro } : {}) };
 }
 async function clienteDoGrupo(cpf) {
   if (!grupoDisponivel()) return null;

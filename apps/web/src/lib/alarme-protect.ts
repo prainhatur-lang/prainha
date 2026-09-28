@@ -23,7 +23,7 @@ export interface ArmMode {
   breachEventCount: number | null;
 }
 
-export type RespostaProtect = { ok: true; armMode: ArmMode } | { ok: false; erro: string };
+export type RespostaProtect = { ok: true; armMode: ArmMode; avisoErro?: string } | { ok: false; erro: string };
 
 export function protectConfigurado(g: Gatilho): boolean {
   return !!g.protectHost && !!g.protectApiKey;
@@ -52,7 +52,12 @@ export async function chamarProtect(g: Gatilho, acao: 'status' | 'ligar' | 'desl
     const r = await fetch(`${base}/api/central/alarme/${acao}?e=${e}&s=${s}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ host: g.protectHost, chave }),
+      // aviso = alarme-webhook do Protect que notifica o celular (ligou/desligou)
+      body: JSON.stringify({
+        host: g.protectHost,
+        chave,
+        aviso: acao === 'ligar' ? g.protectAvisoLigado : acao === 'desligar' ? g.protectAvisoDesligado : null,
+      }),
       cache: 'no-store',
       signal: AbortSignal.timeout(20000),
     });
@@ -78,6 +83,11 @@ export async function sincronizarAtivo(g: Gatilho, m: ArmMode): Promise<void> {
 export function gatilhoPublico(g: Gatilho) {
   const { protectApiKey, ...resto } = g;
   return { ...resto, protectChaveSalva: !!protectApiKey };
+}
+
+/** "ID de acionamento" do alarme-webhook do Protect (uuid). '' limpa. */
+export function idAvisoValido(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
 /** Host do Protect tem que ser IP da rede interna — o servidor da loja recusa o resto. */

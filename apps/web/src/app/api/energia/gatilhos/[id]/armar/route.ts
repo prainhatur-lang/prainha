@@ -47,10 +47,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (erro) return erro;
 
   let armMode = null;
+  let avisoErro: string | undefined;
   if (protectConfigurado(gatilho)) {
     const r = await chamarProtect(gatilho, armado ? 'ligar' : 'desligar');
     if (!r.ok) return NextResponse.json({ error: `Protect: ${r.erro}` }, { status: 502 });
     armMode = r.armMode;
+    avisoErro = r.avisoErro;
   }
 
   const agora = new Date();
@@ -70,5 +72,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     armMode,
     alteradoPor: atualizado.ativoAlteradoPor,
     alteradoEm: atualizado.ativoAlteradoEm?.toISOString() ?? null,
+    ...(avisoErro ? { avisoErro } : {}),
   });
 }

@@ -23,6 +23,8 @@ interface Gatilho {
   ultimoResultado: string | null;
   protectHost: string | null;
   protectChaveSalva: boolean;
+  protectAvisoLigado: string | null;
+  protectAvisoDesligado: string | null;
 }
 
 interface Props {
@@ -44,6 +46,8 @@ const vazio = {
   // só vai pro servidor se o gerente digitar; a salva nunca volta pra tela
   protectApiKey: '',
   protectChaveSalva: false,
+  protectAvisoLigado: '',
+  protectAvisoDesligado: '',
 };
 
 function fmt(d: string | null): string {
@@ -94,6 +98,8 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
         acao: form.acao,
         desligarAposMin: form.desligarAposMin ? Number(form.desligarAposMin) : null,
         protectHost: form.protectHost,
+        protectAvisoLigado: form.protectAvisoLigado,
+        protectAvisoDesligado: form.protectAvisoDesligado,
         ...(form.protectApiKey.trim() ? { protectApiKey: form.protectApiKey } : {}),
         // IP apagado = volta pro modo sem Protect; a chave vai junto
         ...(!form.protectHost.trim() && form.protectChaveSalva ? { protectApiKey: '' } : {}),
@@ -126,6 +132,8 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
       protectHost: g.protectHost ?? '',
       protectApiKey: '',
       protectChaveSalva: g.protectChaveSalva,
+      protectAvisoLigado: g.protectAvisoLigado ?? '',
+      protectAvisoDesligado: g.protectAvisoDesligado ?? '',
     });
     setErro(null);
     setMsg(null);
@@ -230,6 +238,32 @@ export function GatilhosAlarme({ filialId, dispositivos, gatilhos }: Props) {
                 placeholder={form.protectChaveSalva ? '••••••••' : 'cole a chave'}
                 value={form.protectApiKey}
                 onChange={(e) => setForm((f) => ({ ...f, protectApiKey: e.target.value }))}
+              />
+            </label>
+          </div>
+          <p className="mt-3 text-xs font-semibold text-slate-700">Aviso no celular ao ligar/desligar (opcional)</p>
+          <p className="text-xs text-slate-500">
+            No Protect, crie um alarme com gatilho <b>Webhook</b>, Programação <b>Sempre</b> e ação <b>Notificar</b>{' '}
+            (ex: &quot;Alarme LIGADO&quot;), e outro igual pro desligado. Cole aqui o &quot;ID de acionamento&quot;
+            de cada um.
+          </p>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <label>
+              <span className={lblCls}>ID do aviso &quot;alarme ligado&quot;</span>
+              <input
+                className={`${inputCls} font-mono`}
+                placeholder="f80efe5e-8f69-…"
+                value={form.protectAvisoLigado}
+                onChange={(e) => setForm((f) => ({ ...f, protectAvisoLigado: e.target.value.trim() }))}
+              />
+            </label>
+            <label>
+              <span className={lblCls}>ID do aviso &quot;alarme desligado&quot;</span>
+              <input
+                className={`${inputCls} font-mono`}
+                placeholder="f80efe5e-8f69-…"
+                value={form.protectAvisoDesligado}
+                onChange={(e) => setForm((f) => ({ ...f, protectAvisoDesligado: e.target.value.trim() }))}
               />
             </label>
           </div>

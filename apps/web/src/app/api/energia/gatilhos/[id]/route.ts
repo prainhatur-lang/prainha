@@ -5,7 +5,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { dispararGatilho } from '@/lib/alarme-gatilho';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { cifrar, segredoConfigurado } from '@/lib/segredo';
-import { gatilhoPublico, hostProtectValido } from '@/lib/alarme-protect';
+import { gatilhoPublico, hostProtectValido, idAvisoValido } from '@/lib/alarme-protect';
 
 async function temAcesso(userId: string, id: string): Promise<NextResponse | null> {
   const [g] = await db
@@ -27,7 +27,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   const negado = await temAcesso(guard.user.id, id);
   if (negado) return negado;
 
-  const { nome, dispositivoIds, acao, desligarAposMin, ativo, protectHost, protectApiKey } = (await req.json()) as {
+  const { nome, dispositivoIds, acao, desligarAposMin, ativo, protectHost, protectApiKey, protectAvisoLigado, protectAvisoDesligado } = (await req.json()) as {
     nome?: string;
     dispositivoIds?: string[];
     acao?: string;
@@ -37,6 +37,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     protectHost?: string;
     /** só vem quando o gerente digita uma chave nova; '' apaga */
     protectApiKey?: string;
+    /** '' limpa */
+    protectAvisoLigado?: string;
+    protectAvisoDesligado?: string;
   };
   if (acao !== undefined && acao !== 'ligar' && acao !== 'desligar') {
     return NextResponse.json({ error: 'acao inválida' }, { status: 400 });
@@ -46,6 +49,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json({ error: 'IP do Protect tem que ser da rede interna (ex: 192.168.5.1)' }, { status: 400 });
   }
   const chave = protectApiKey?.trim();
+  const avisoLig = protectAvisoLigado?.trim();
+  const avisoDes = protectAvisoDesligado?.trim();
+  if ((avisoLig && !idAvisoValido(avisoLig)) || (avisoDes && !idAvisoValido(avisoDes))) {
+    return NextResponse.json({ error: 'ID de acionamento inválido — copie do alarme do Protect (formato xxxxxxxx-xxxx-…)' }, { status: 400 });
+  }
   if (chave && !segredoConfigurado()) {
     return NextResponse.json({ error: 'CREDENCIAL_SECRET não configurada — não dá pra guardar a chave' }, { status: 500 });
   }
@@ -62,6 +70,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       ...(ativo !== undefined ? { ativo } : {}),
       ...(host !== undefined ? { protectHost: host || null } : {}),
       ...(chave !== undefined ? { protectApiKey: chave ? cifrar(chave) : null } : {}),
+      ...(avisoLig !== undefined ? { protectAvisoLigado: avisoLig || null } : {}),
+      ...(avisoDes !== undefined ? { protectAvisoDesligado: avisoDes || null } : {}),
       atualizadoEm: new Date(),
     })
     .where(eq(schema.alarmeGatilho.id, id))
