@@ -161,7 +161,7 @@ export default async function ProdutoDetalhePage(props: {
       ),
     )
     .orderBy(asc(schema.produto.nome))
-    .limit(1000);
+    .limit(5000); // o Bar já tem ~990 — com 1000 o "Molho…" sumia da busca
 
   // Fornecedores mapeados
   const fornecedoresRows = await db
