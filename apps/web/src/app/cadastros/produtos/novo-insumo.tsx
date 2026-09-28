@@ -4,6 +4,20 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 const UNIDADES = ['un', 'ml', 'g', 'kg', 'l'] as const;
+// Mesmas de /cadastros/produtos/categorizar — é o que põe o item na cotação.
+const CATEGORIAS = [
+  'Confeitaria',
+  'Estoque seco',
+  'Hortifruti',
+  'Limpeza',
+  'Proteína',
+  'Refrigeração',
+  'Utensílios',
+  'Bebidas - Refrigerantes',
+  'Bebidas - Cervejas',
+  'Bebidas - Destilados',
+  'Bebidas - Vinhos',
+];
 
 export function NovoInsumoButton({ filialId }: { filialId: string }) {
   const router = useRouter();
@@ -11,6 +25,7 @@ export function NovoInsumoButton({ filialId }: { filialId: string }) {
   const [nome, setNome] = useState('');
   const [unidade, setUnidade] = useState<(typeof UNIDADES)[number]>('un');
   const [estoqueMinimo, setEstoqueMinimo] = useState('');
+  const [categoria, setCategoria] = useState('');
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -19,6 +34,7 @@ export function NovoInsumoButton({ filialId }: { filialId: string }) {
     setNome('');
     setUnidade('un');
     setEstoqueMinimo('');
+    setCategoria('');
     setErro(null);
   }
 
@@ -30,6 +46,7 @@ export function NovoInsumoButton({ filialId }: { filialId: string }) {
       filialId,
       nome: nome.trim(),
       unidadeEstoque: unidade,
+      categoriaCompras: categoria || null,
     };
     const min = estoqueMinimo.trim();
     if (min) {
@@ -133,6 +150,27 @@ export function NovoInsumoButton({ filialId }: { filialId: string }) {
                   className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Categoria de compras
+              </label>
+              <select
+                value={categoria}
+                onChange={(e) => setCategoria(e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+              >
+                <option value="">— não entra na cotação —</option>
+                {CATEGORIAS.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Com categoria, o insumo aparece pra cotar com os fornecedores.
+              </p>
             </div>
 
             {erro && (

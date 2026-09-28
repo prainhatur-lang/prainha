@@ -19,6 +19,7 @@ const Body = z.object({
   nome: z.string().min(1).max(200).trim(),
   unidadeEstoque: z.enum(UNIDADES),
   estoqueMinimo: z.number().min(0).optional(),
+  categoriaCompras: z.string().max(60).nullish(),
 });
 
 export async function POST(req: Request) {
@@ -37,7 +38,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const { filialId, nome, unidadeEstoque, estoqueMinimo } = parsed.data;
+  const { filialId, nome, unidadeEstoque, estoqueMinimo, categoriaCompras } = parsed.data;
 
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
@@ -63,6 +64,7 @@ export async function POST(req: Request) {
       estoqueControlado: true,
       estoqueMinimo: estoqueMinimo !== undefined ? estoqueMinimo.toFixed(3) : null,
       codigoExterno: null,
+      categoriaCompras: categoriaCompras || null,
     })
     .returning({ id: schema.produto.id });
 
