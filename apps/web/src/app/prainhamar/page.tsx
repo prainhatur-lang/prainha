@@ -22,9 +22,10 @@ const WHATSAPP_URL =
   'https://wa.me/5579996749949?text=' + encodeURIComponent('Olá! Quero reservar uma mesa na Prainha Mar e Grill.');
 const TELEFONE = '(79) 99600-7289';
 const TELEFONE_URL = 'tel:+5579996007289';
-const ENDERECO = 'Rodovia dos Náufragos · Aracaju, SE';
-const MAPS_URL = 'https://www.google.com/maps/search/?api=1&query=-11.018807,-37.084294';
-const MAPS_EMBED = 'https://www.google.com/maps?q=-11.018807,-37.084294&z=16&output=embed';
+const ENDERECO = 'Shopping Praia Sul, loja 198 · Rod. dos Náufragos, 4880 · Aruana, Aracaju - SE';
+const MAPS_BUSCA = encodeURIComponent('Shopping Praia Sul, Aracaju - SE');
+const MAPS_URL = `https://www.google.com/maps/search/?api=1&query=${MAPS_BUSCA}`;
+const MAPS_EMBED = `https://www.google.com/maps?q=${MAPS_BUSCA}&z=16&output=embed`;
 
 const display = { fontFamily: 'var(--font-display-mar)' };
 const texto = { fontFamily: 'var(--font-texto-mar)' };

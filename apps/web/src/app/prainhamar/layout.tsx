@@ -16,7 +16,7 @@ const texto = EB_Garamond({
 
 const TITULO = 'Prainha Mar e Grill — Frutos do mar e brasa · Aracaju';
 const DESCRICAO =
-  'Na Rodovia dos Náufragos, em Aracaju, a Prainha Mar e Grill serve frutos do mar, moquecas, carnes na brasa e drinks autorais. Veja o cardápio e reserve pelo WhatsApp.';
+  'No Shopping Praia Sul (loja 198), em Aracaju, a Prainha Mar e Grill serve frutos do mar, moquecas, carnes na brasa e drinks autorais. Veja o cardápio e reserve pelo WhatsApp.';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://prainhamar.com.br'),
