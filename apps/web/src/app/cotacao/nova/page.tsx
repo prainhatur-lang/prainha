@@ -126,9 +126,14 @@ export default async function NovaCotacaoPage(props: { searchParams: Promise<SP>
 
         {produtos.length === 0 ? (
           <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-6 text-sm text-amber-800">
-            Nenhum produto desta filial está marcado pra entrar no fluxo de cotação. Rode o seed de
-            compras (<code>pnpm --filter @concilia/db seed:compras</code>) ou cadastre produtos com
-            categoria de compras.
+            Nenhum produto desta filial está marcado pra entrar no fluxo de cotação.{' '}
+            <a
+              href={`/cadastros/produtos/categorizar?filialId=${filial.id}`}
+              className="font-medium underline"
+            >
+              Dê uma categoria de compras aos produtos
+            </a>{' '}
+            (Proteína, Hortifruti, Bebidas…) e eles aparecem aqui.
           </div>
         ) : (
           <NovaCotacaoForm
