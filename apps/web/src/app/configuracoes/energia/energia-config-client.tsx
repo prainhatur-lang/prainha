@@ -33,11 +33,32 @@ const TIPOS: Array<{ valor: string; label: string }> = [
   { valor: 'outro', label: 'Outro' },
 ];
 
+// Ordem de preferência pra sugerir o liga/desliga principal; o resto (teste de
+// fuga, pré-pago, trava infantil…) vai pro fim da lista.
+function ordemDp(code: string): number {
+  if (code === 'switch') return 0;
+  if (code === 'switch_1') return 1;
+  if (/^switch_\d+$/.test(code)) return 2;
+  if (code === 'switch_led' || code === 'switch_led_1') return 3;
+  return 10;
+}
+
+function descricaoDp(code: string): string {
+  if (code === 'switch' || code === 'switch_1') return 'liga/desliga principal';
+  const m = code.match(/^switch_(\d+)$/);
+  if (m) return `canal ${m[1]}`;
+  if (code.startsWith('switch_led')) return 'luz';
+  if (code === 'switch_prepayment') return 'modo pré-pago — não usar';
+  if (code.includes('leakagecurr_test') || code.includes('test')) return 'teste — não usar';
+  if (code.includes('child_lock')) return 'trava infantil — não usar';
+  return 'outro';
+}
+
 const inputCls =
   'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-base text-slate-900 focus:border-sky-500 focus:outline-none sm:py-2 sm:text-sm';
 const lblCls = 'text-xs font-medium text-slate-600';
 
-const vazio = { nome: '', tipo: 'outro', tuyaDeviceId: '', codigoSwitch: 'switch_1' };
+const vazio = { nome: '', tipo: 'outro', tuyaDeviceId: '', codigoSwitch: '' };
 
 export function EnergiaConfigClient({ filialId, filialNome, filiais, dispositivos }: Props) {
   const router = useRouter();
@@ -47,6 +68,35 @@ export function EnergiaConfigClient({ filialId, filialNome, filiais, dispositivo
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [dps, setDps] = useState<{
+    deviceId: string;
+    carregando: boolean;
+    erro: string | null;
+    nome?: string;
+    online?: boolean;
+    opcoes: Array<{ code: string; ligado: boolean }>;
+  } | null>(null);
+
+  async function buscarDatapoints(deviceId: string) {
+    const id = deviceId.trim();
+    if (id.length < 10 || dps?.deviceId === id) return;
+    setDps({ deviceId: id, carregando: true, erro: null, opcoes: [] });
+    try {
+      const r = await fetch(`/api/energia/datapoints?deviceId=${encodeURIComponent(id)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? 'erro ao ler o dispositivo');
+      const opcoes = data.opcoes as Array<{ code: string; ligado: boolean }>;
+      setDps({ deviceId: id, carregando: false, erro: null, nome: data.nome, online: data.online, opcoes });
+      // já marca o provável: o atual se existir no aparelho, senão o 1º da lista preferida
+      setForm((f) => {
+        if (opcoes.some((o) => o.code === f.codigoSwitch)) return f;
+        const melhor = opcoes.slice().sort((a, b) => ordemDp(a.code) - ordemDp(b.code))[0];
+        return melhor ? { ...f, codigoSwitch: melhor.code } : f;
+      });
+    } catch (e) {
+      setDps({ deviceId: id, carregando: false, erro: (e as Error).message, opcoes: [] });
+    }
+  }
 
   function refresh() {
     start(() => router.refresh());
@@ -173,22 +223,63 @@ export function EnergiaConfigClient({ filialId, filialNome, filiais, dispositivo
               placeholder="ex: bfa1b2c3d4e5f6g7h8i9"
               value={form.tuyaDeviceId}
               onChange={(e) => setForm((f) => ({ ...f, tuyaDeviceId: e.target.value }))}
+              onBlur={(e) => buscarDatapoints(e.target.value)}
             />
           </label>
-          <label>
+          <div>
             <span className={lblCls}>Datapoint de liga/desliga</span>
-            <input
-              className={inputCls}
-              placeholder="switch_1"
-              value={form.codigoSwitch}
-              onChange={(e) => setForm((f) => ({ ...f, codigoSwitch: e.target.value }))}
-            />
-          </label>
+            {!dps || dps.deviceId !== form.tuyaDeviceId.trim() ? (
+              <button
+                type="button"
+                onClick={() => buscarDatapoints(form.tuyaDeviceId)}
+                disabled={form.tuyaDeviceId.trim().length < 10}
+                className="mt-1 w-full rounded-lg border border-dashed border-slate-300 px-3 py-2.5 text-left text-sm text-slate-500 hover:border-sky-400 hover:text-sky-700 disabled:opacity-50 sm:py-2"
+              >
+                {form.codigoSwitch ? `${form.codigoSwitch} · ` : ''}buscar opções do dispositivo
+              </button>
+            ) : dps.carregando ? (
+              <p className="mt-1 px-1 py-2.5 text-sm text-slate-500">Lendo o dispositivo na Tuya…</p>
+            ) : dps.erro ? (
+              <p className="mt-1 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{dps.erro}</p>
+            ) : dps.opcoes.length === 0 ? (
+              <p className="mt-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Esse dispositivo não tem liga/desliga (é sensor?).
+              </p>
+            ) : (
+              <div className="mt-1 space-y-1">
+                <p className="text-[11px] text-slate-500">
+                  {dps.nome} · {dps.online ? 'online' : 'offline'}
+                </p>
+                {dps.opcoes
+                  .slice()
+                  .sort((a, b) => ordemDp(a.code) - ordemDp(b.code))
+                  .map((o) => (
+                    <label
+                      key={o.code}
+                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                        form.codigoSwitch === o.code ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="codigoSwitch"
+                        checked={form.codigoSwitch === o.code}
+                        onChange={() => setForm((f) => ({ ...f, codigoSwitch: o.code }))}
+                      />
+                      <span className="font-mono text-slate-900">{o.code}</span>
+                      <span className="text-xs text-slate-500">
+                        {descricaoDp(o.code)} · agora {o.ligado ? 'ligado' : 'desligado'}
+                      </span>
+                    </label>
+                  ))}
+              </div>
+            )}
+          </div>
         </div>
         <p className="mt-2 text-xs text-slate-400">
           O Device ID fica no app Tuya Smart/Smart Life: abra o dispositivo → ⚙️ → Informações do
-          dispositivo → &quot;ID do dispositivo&quot;. O datapoint padrão é switch_1 (deixe assim se
-          não souber).
+          dispositivo → &quot;ID virtual&quot;. Ao sair do campo o sistema lê o aparelho e mostra os
+          liga/desliga que ele tem — escolha um (disjuntor: <span className="font-mono">switch</span>).
         </p>
         <div className="mt-3 flex gap-2">
           <button
