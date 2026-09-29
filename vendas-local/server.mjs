@@ -14313,10 +14313,18 @@ async function brindeAtivo() {
   if (v) return v === 'on';
   return true;
 }
+/** Quais drinks a casa está dando. Escolhidos no painel do gerente; na falta,
+ *  o start.bat; na falta dos dois, o padrão da casa. '%' = qualquer coisa, então
+ *  'Soda Italiana%' pega todos os sabores. */
+async function brindeNomes() {
+  return {
+    com: (await cfgGet('brinde_com', '')) || process.env.BRINDE_COM || (FILIAL_ID === FILIAL_TABUARA ? 'Caipirinha' : 'Prainha GT'),
+    sem: (await cfgGet('brinde_sem', '')) || process.env.BRINDE_SEM || 'Soda Italiana%',
+  };
+}
 async function brindeOpcoes() {
   if (!(await brindeAtivo())) return [];
-  const com = process.env.BRINDE_COM || (FILIAL_ID === FILIAL_TABUARA ? 'Caipirinha' : 'Prainha GT');
-  const sem = process.env.BRINDE_SEM || 'Soda Italiana%';
+  const { com, sem } = await brindeNomes();
   // DISTINCT ON nome: o mesmo drink cadastrado 2x (ex.: cópia do Terraço) aparece uma vez só
   const rows = await sql`SELECT DISTINCT ON (trim(nome)) codigo_pdv, produto_codigo, trim(nome) AS nome,
       (trim(nome) ILIKE ${com}) AS com_alcool,
@@ -14336,16 +14344,30 @@ async function apiMesaBrinde() {
 /** Painel do gerente: estado do brinde + quais drinks a casa está dando. */
 async function apiGerenteBrinde() {
   const ligado = await brindeAtivo();
-  const com = process.env.BRINDE_COM || (FILIAL_ID === FILIAL_TABUARA ? 'Caipirinha' : 'Prainha GT');
-  const sem = process.env.BRINDE_SEM || 'Soda Italiana%';
+  const { com, sem } = await brindeNomes();
   let opcoes = [];
   try { opcoes = await brindeOpcoes(); } catch {}
   return { ok: true, ligado, com, sem, opcoes, achou: opcoes.length };
 }
 async function apiGerenteBrindeSet(body) {
-  const lig = !!body.ligado;
-  await cfgSet('brinde_avaliacao', lig ? 'on' : 'off');
+  if (body.ligado !== undefined) await cfgSet('brinde_avaliacao', body.ligado ? 'on' : 'off');
+  // nome vazio = volta pro padrão da casa (apaga a escolha em vez de gravar '')
+  for (const [campo, chave] of [['com', 'brinde_com'], ['sem', 'brinde_sem']]) {
+    if (typeof body[campo] !== 'string') continue;
+    const t = body[campo].trim().slice(0, 80);
+    if (t) await cfgSet(chave, t);
+    else await sql`DELETE FROM app_config WHERE chave=${chave}`;
+  }
   return { ok: true, ...(await apiGerenteBrinde()) };
+}
+/** Busca no cardápio da casa pra escolher o drink sem digitar o nome na mão. */
+async function apiGerenteBrindeProdutos(termo) {
+  const t = '%' + semAcento(String(termo || '').trim()) + '%';
+  const rows = await sql`SELECT DISTINCT ON (trim(nome)) trim(nome) AS nome, categoria, sem_estoque
+    FROM produto_local WHERE nome_busca LIKE ${t}
+      AND categoria NOT IN (SELECT categoria FROM grupo_oculto)
+    ORDER BY trim(nome) LIMIT 40`;
+  return { ok: true, produtos: rows.map((r) => ({ nome: r.nome, categoria: r.categoria, sem_estoque: !!r.sem_estoque })) };
 }
 async function apiMesaAvaliar(body) {
   const numero = Number(body.mesa);
@@ -23548,6 +23570,9 @@ button.b:disabled{opacity:.5}
 .tec{width:100%;height:100%;text-align:left;font:inherit;border:2px solid var(--line);background:#fff;color:var(--ink);border-radius:14px;padding:12px;cursor:pointer}
 .tec b{display:block;font-size:14px;line-height:1.2}.tec span{display:block;font-size:16px;font-weight:800;margin-top:4px;color:var(--mut)}
 .tec.on{background:var(--green);border-color:var(--green);color:#fff}.tec.on span{color:#fff}.tec.off{border-color:#fecaca;background:#fef2f2}.tec.off span{color:var(--red)}.tec:disabled{cursor:default}
+.l input{font:inherit;font-size:15px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink)}
+.l input:focus{outline:none;border-color:var(--gold2)}
+.brp{border-width:1px;padding:9px 10px;border-radius:10px}.brp b{font-size:14px}.brp span{font-size:12.5px;font-weight:600;margin-top:2px}
 .alm{border-radius:14px;padding:14px;color:#fff;margin-bottom:8px}.alm.arm{background:var(--red)}.alm.des{background:var(--green)}
 .alm .t1{font-size:22px;font-weight:800}.alm small{display:block;opacity:.9;font-size:12.5px;margin-top:3px}
 .alm button{width:100%;margin-top:10px;font:inherit;font-size:17px;font-weight:700;padding:13px;border:0;border-radius:11px;background:#fff;cursor:pointer}
@@ -23577,7 +23602,7 @@ textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);bor
 <script>
 var TOK=null;try{TOK=localStorage.getItem('gerente_tok')||null}catch(e){}
 var E=null,ENV={},ETIMER=null,EU=null,D=null,TICK=0,SOM=true,ULT={lib:null,rec:null,aval:null},PRIM=false,ABERTO={},TIMER=null,PAUSA=false;
-var BR=null,BRENV=false; // brinde da avaliação (liga/desliga aqui mesmo)
+var BR=null,BRENV=false,BREDIT=false,BRLISTA={}; // brinde da avaliação (liga, desliga e escolhe o drink aqui mesmo)
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -23828,13 +23853,63 @@ function secBrinde(){
       : 'O QR da mesa continua aceitando avaliação, só não oferece drink.')+'</small></div>'+
     '<button class="b '+(BR.ligado?'':'ok')+'" onclick="mudaBrinde('+(BR.ligado?'false':'true')+')"'+(BRENV?' disabled':'')+'>'+
     (BRENV?'Salvando…':(BR.ligado?'Desligar':'Ligar'))+'</button></div>';
-  if(BR.ligado){
-    h+=BR.opcoes.length
-      ? '<div class="l"><div class="nm"><small>Drinks de hoje: '+esc(BR.opcoes.map(function(o){return o.nome}).join(', '))+'</small></div></div>'
-      : '<div class="l"><div class="nm"><small>⚠️ Está ligado, mas nenhum produto bate com <b>'+esc(BR.com)+'</b> nem com <b>'+esc(BR.sem)+'</b> no cardápio desta casa — então o convite não aparece no QR. Cadastre o drink no PDV (ou avise pra trocar o nome).</small></div></div>'
-      ;
-  }
+  if(!BR.ligado)return h+'</div>';
+  if(BREDIT)return h+brEditor()+'</div>';
+  var achou=function(alc){return BR.opcoes.filter(function(o){return !!o.com_alcool===alc}).map(function(o){return o.nome})};
+  var linha=function(rot,padrao,nomes){
+    return '<div class="l"><div class="nm"><b>'+rot+'</b><small>'+
+      (nomes.length?esc(nomes.join(', ')):'⚠️ nada no cardápio bate com <b>'+esc(padrao)+'</b>')+
+      '</small></div></div>';
+  };
+  h+=linha('🍸 Com álcool',BR.com,achou(true));
+  h+=linha('🥤 Sem álcool',BR.sem,achou(false));
+  h+='<div class="l"><div class="nm"><small>'+(BR.opcoes.length
+    ? 'É isto que a mesa vê no QR.'
+    : '⚠️ Sem nenhum drink que case, o convite NÃO aparece no QR.')+'</small></div>'+
+    '<button class="b" onclick="brAbrir()">Trocar drinks</button></div>';
   return h+'</div>';
+}
+/* Trocar o drink: enquanto edita, o painel para de se repintar sozinho —
+   senão o refresh de 5s apagaria o que está sendo digitado. */
+function brAbrir(){BREDIT=true;BRLISTA={};PAUSA=true;ULT_HTML='';pintar()}
+function brFechar(){BREDIT=false;BRLISTA={};PAUSA=document.hidden;ULT_HTML='';pintar();if(!PAUSA)tick()}
+function brEditor(){
+  var campo=function(k,rot,dica,val){
+    var lst=BRLISTA[k];
+    return '<div class="l"><div class="nm"><b>'+rot+'</b><small>'+dica+'</small>'+
+      '<div class="row" style="margin-top:6px;gap:6px"><input id="br'+k+'" value="'+esc(val)+'" maxlength="80" style="flex:1;min-width:0">'+
+      '<button class="b" onclick="brBusca(\''+k+'\')">🔎 Buscar</button></div>'+
+      (lst?('<div class="grid" style="margin-top:6px">'+(lst.length
+        ? lst.map(function(pr){return '<button class="tec brp" onclick="brPega(\''+k+'\',this.dataset.n)" data-n="'+esc(pr.nome)+'"><b>'+esc(pr.nome)+'</b><span>'+esc(pr.categoria||'')+(pr.sem_estoque?' · SEM ESTOQUE':'')+'</span></button>'}).join('')
+        : '<div class="mut">Nada com esse nome no cardápio desta casa.</div>')+'</div>'):'')+
+      '</div></div>';
+  };
+  return campo('com','🍸 Com álcool','Nome do drink no cardápio desta casa.',BR.com)+
+    campo('sem','🥤 Sem álcool','Termine com % pra valer todos os sabores (ex.: Soda Italiana%).',BR.sem)+
+    '<div class="l"><div class="nm"><small>Deixe em branco pra voltar ao padrão da casa.</small></div>'+
+    '<button class="b" onclick="brFechar()">Cancelar</button>'+
+    '<button class="b ok" onclick="brSalvar()"'+(BRENV?' disabled':'')+'>'+(BRENV?'Salvando…':'Salvar')+'</button></div>';
+}
+async function brBusca(k){
+  var el=document.getElementById('br'+k); if(!el)return;
+  var q=String(el.value||'').replace(/%/g,'').trim();
+  BRLISTA[k]=[];ULT_HTML='';pintar();
+  var r;try{r=await jget('/api/gerente/brinde/produtos?q='+encodeURIComponent(q))}catch(e){r=null}
+  BRLISTA[k]=(r&&r.produtos)||[];ULT_HTML='';pintar();
+}
+function brPega(k,nome){
+  var el=document.getElementById('br'+k); if(el)el.value=nome;
+  BR[k]=nome;BRLISTA[k]=null;ULT_HTML='';pintar();
+}
+async function brSalvar(){
+  var c=document.getElementById('brcom'),z=document.getElementById('brsem');
+  var com=c?c.value:BR.com, sem=z?z.value:BR.sem;
+  BRENV=true;ULT_HTML='';pintar();
+  var r;try{r=await jpost('/api/gerente/brinde',{com:com,sem:sem})}catch(e){r={ok:false,erro:'sem conexão'}}
+  BRENV=false;
+  if(r&&r.ok){BR=r;brFechar();
+    if(!r.opcoes.length)alert('Salvei, mas nenhum produto do cardápio bate com esses nomes — o convite não vai aparecer no QR.');
+  }else{alert('Não deu pra salvar: '+((r&&r.erro)||'sem resposta'));ULT_HTML='';pintar()}
 }
 async function mudaBrinde(lig){
   BRENV=true;ULT_HTML='';pintar();
@@ -24166,6 +24241,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/gerente/energia/comando') return res.end(JSON.stringify(await energiaNuvem({ acao: 'comando', dispositivoId: String(b.id || ''), ligar: !!b.ligar, por: String(quemG).slice(0, 60) })));
       if (p === '/api/gerente/energia/alarme') return res.end(JSON.stringify(await energiaNuvem({ acao: 'alarme', gatilhoId: String(b.id || ''), armado: !!b.armado, por: String(quemG).slice(0, 60) })));
       if (p === '/api/gerente/brinde') return res.end(JSON.stringify(req.method === 'POST' ? await apiGerenteBrindeSet(b) : await apiGerenteBrinde()));
+      if (p === '/api/gerente/brinde/produtos') return res.end(JSON.stringify(await apiGerenteBrindeProdutos(u.searchParams.get('q') || '')));
       if (p === '/api/gerente/chamado-atender') return res.end(JSON.stringify(await apiChamadoAtender({ id: b.id, por: quemG })));
       if (p === '/api/gerente/espera') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'espera', id: String(b.id || ''), acao: String(b.acao || ''), por: quemG + ' (loja)' })));
       if (p === '/api/gerente/avaliacao') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'avaliacao', id: String(b.id || ''), status: String(b.status || ''), por: quemG + ' (loja)' })));
