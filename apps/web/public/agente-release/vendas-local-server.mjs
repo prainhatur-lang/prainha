@@ -14334,8 +14334,16 @@ async function apiQrcodes(de, ate) {
   const ini = Math.max(1, Number(de) || 1);
   const fim = Math.min(MESA_MAX, Number(ate) || 30);
   const mesas = [];
-  for (let n = ini; n <= fim; n++) mesas.push({ numero: n, url: `${base}/mesa?n=${n}`, svg: qrSvg(`${base}/mesa?n=${n}`) });
-  return { base, de: ini, ate: fim, mesas };
+  for (let n = ini; n <= fim; n++) mesas.push({ numero: n, url: `${base}/mesa?n=${n}`, svg: qrSvg(`${base}/mesa?n=${n}`), mat: qrMatriz(`${base}/mesa?n=${n}`) });
+  return { base, de: ini, ate: fim, max: MESA_MAX, mesas };
+}
+/** Módulos do QR em linhas de '0'/'1' — a etiqueta 50x30 desenha o QR no
+ *  canvas com módulo de pixel INTEIRO (o SVG escalado borra na térmica). */
+function qrMatriz(texto) {
+  const m = new QRCode({ content: texto, padding: 0, ecl: 'M' }).qrcode.modules; // [x][y]
+  const n = m.length, linhas = [];
+  for (let y = 0; y < n; y++) { let l = ''; for (let x = 0; x < n; x++) l += m[x][y] ? '1' : '0'; linhas.push(l); }
+  return linhas;
 }
 const COMPROVANTE_HTML = `<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -14437,7 +14445,8 @@ const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf
 .barra b{font-size:15px;margin-right:auto}
 input{width:74px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:9px;text-align:center}
 button{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
-button.g{background:#5b5b66}
+button.g{background:#5b5b66}button.seg{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:600}button.seg.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+button:disabled{opacity:.5}
 .grade{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:18px}
 .cd{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 10px;text-align:center;page-break-inside:avoid;break-inside:avoid}
 .cd .casa{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
@@ -14445,28 +14454,151 @@ button.g{background:#5b5b66}
 .cd svg{width:100%;height:auto;max-width:160px}
 .cd .cha{font-size:11.5px;color:var(--mut);margin-top:8px;line-height:1.35}
 .aviso{padding:0 18px;color:var(--mut);font-size:13px}
-@media print{body{background:#fff}.barra,.aviso{display:none}.grade{grid-template-columns:repeat(3,1fr);padding:0;gap:8px}.cd{border-color:#bbb}}
+.etq{background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:none;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+.etq .st{flex-basis:100%;font-size:14px}.etq .st.err{color:#b91c1c}.etq .st.ok{color:#15803d;font-weight:600}
+.gl{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;padding:18px}
+.gl figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
+.gl canvas{width:100%;height:auto;image-rendering:pixelated;border:1px dashed #c9c9d1;border-radius:4px}
+.gl figcaption{font-size:12px;color:var(--mut);margin-top:4px}
+@media print{body{background:#fff}.barra,.aviso,.etq{display:none!important}.grade{grid-template-columns:repeat(3,1fr);padding:0;gap:8px}.cd{border-color:#bbb}}
 </style></head><body>
 <div class="barra"><b>QR das mesas</b>
   <span class="aviso" style="padding:0">mesa</span>
   <input id="de" type="number" value="1" min="1"> <span>até</span> <input id="ate" type="number" value="30" min="1">
   <button onclick="carregar()">Gerar</button>
-  <button class="g" onclick="window.print()">🖨 Imprimir</button>
+  <button class="seg on" id="mA4" onclick="modo('a4')">Folha A4</button>
+  <button class="seg" id="mEt" onclick="modo('etq')">Etiqueta 50×30</button>
+  <button class="g" id="bA4" onclick="window.print()">🖨 Imprimir</button>
   <a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<div class="etq" id="etqBar">
+  <button onclick="imprimirBt()" id="bImp">🖨 Imprimir no Bluetooth</button>
+  <button class="g" onclick="imprimirNav()">Imprimir pelo navegador</button>
+  <button class="g" onclick="PARAR=true" id="bPar" style="display:none">Parar</button>
+  <span>cópias por mesa</span><input id="cop" type="number" value="1" min="1" max="5" style="width:56px">
+  <span>densidade</span><button class="seg" onclick="cfg('dens',-1)">−</button><b id="vDens"></b><button class="seg" onclick="cfg('dens',1)">+</button>
+  <span>ajuste →</span><button class="seg" onclick="cfg('dx',-1)">−</button><b id="vDx"></b><button class="seg" onclick="cfg('dx',1)">+</button>
+  <button class="seg" id="bInv" onclick="cfg('inv',0)">Invertida 180°</button>
+  <button class="seg" onclick="calibrar()">Calibrar papel</button>
+  <div class="st" id="st">Rolo 50×30 (50 de largura, 30 no avanço). Bluetooth: Chrome do Android, no endereço https da loja. Imprima 1 mesa de teste antes de soltar todas.</div>
+</div>
 <div class="aviso" id="info"></div>
 <div class="grade" id="app">gerando…</div>
 <script>
+var LOJA='${LOJA_NOME}',MESAS=[],MODO='a4',PARAR=false,BT=null,BTCH=null;
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function C(){var c={dens:6,dx:0,inv:0};try{var x=JSON.parse(localStorage.getItem('qr_etq_cfg')||'null');if(x)for(var k in x)c[k]=x[k]}catch(e){}return c}
+function cfg(k,d){var c=C();if(k==='inv')c.inv=c.inv?0:1;else if(k==='dens')c.dens=Math.max(1,Math.min(12,c.dens+d));else c.dx=Math.max(0,Math.min(16,c.dx+d));
+  try{localStorage.setItem('qr_etq_cfg',JSON.stringify(c))}catch(e){}pintaCfg()}
+function pintaCfg(){var c=C();document.getElementById('vDens').textContent=c.dens;document.getElementById('vDx').textContent=c.dx+' mm';
+  document.getElementById('bInv').className='seg'+(c.inv?' on':'')}
+function modo(m){MODO=m;document.getElementById('mA4').className='seg'+(m==='a4'?' on':'');document.getElementById('mEt').className='seg'+(m==='etq'?' on':'');
+  document.getElementById('etqBar').style.display=m==='etq'?'flex':'none';document.getElementById('bA4').style.display=m==='etq'?'none':'';try{localStorage.setItem('qr_modo',m)}catch(e){}pinta()}
 async function carregar(){
   var de=document.getElementById('de').value,ate=document.getElementById('ate').value;
   var d=await (await fetch('/api/qrcodes?de='+de+'&ate='+ate,{cache:'no-store'})).json();
+  MESAS=d.mesas||[];
   document.getElementById('info').innerHTML='Aponta para <b>'+esc(d.base)+'</b> — o celular precisa estar no Wi-Fi da casa. '+
     'Se o IP da máquina mudar, os QR param de funcionar: fixe o IP ou use a variável URL_PUBLICA.';
-  document.getElementById('app').innerHTML=d.mesas.map(function(m){
-    return '<div class="cd"><div class="casa">${LOJA_NOME}</div><div class="n">'+m.numero+'</div>'+
-      m.svg+'<div class="cha">Aponte a câmera<br>conta · chamar garçom · Pix</div></div>';
-  }).join('');
+  pinta();
 }
+function pinta(){
+  var app=document.getElementById('app');
+  if(MODO==='a4'){app.className='grade';
+    app.innerHTML=MESAS.map(function(m){
+      return '<div class="cd"><div class="casa">'+esc(LOJA)+'</div><div class="n">'+m.numero+'</div>'+
+        m.svg+'<div class="cha">Aponte a câmera<br>conta · chamar garçom · Pix</div></div>';
+    }).join('');return}
+  app.className='gl';app.innerHTML='';
+  MESAS.forEach(function(m){var f=document.createElement('figure'),cv=desenha(m);f.appendChild(cv);
+    var fc=document.createElement('figcaption');fc.textContent='Mesa '+m.numero;f.appendChild(fc);app.appendChild(f)});
+}
+/* ---- ETIQUETA 50x30 (XD-210 / PT-260) ----
+   Mesmo esquema da etiqueta de validade do KDS: 8 pontos/mm, área = etiqueta − 2mm
+   (48×28mm = 384×224 pontos), paisagem sem girar, TSPL BITMAP modo 0.
+   O QR vai com módulo de pixel inteiro (nada de SVG escalado: borra e o celular erra). */
+var W=384,H=224;
+function cabe(g,t,peso,max,larg){var fs=max;g.font=peso+' '+fs+'px Arial, Helvetica, sans-serif';
+  while(fs>8&&g.measureText(t).width>larg){fs--;g.font=peso+' '+fs+'px Arial, Helvetica, sans-serif'}return fs}
+function desenha(m){
+  var cv=document.createElement('canvas');cv.width=W;cv.height=H;var g=cv.getContext('2d');
+  g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='alphabetic';
+  var n=m.mat.length,mod=Math.floor((H-12)/n),q=n*mod,qx=8,qy=Math.round((H-q)/2);
+  for(var y=0;y<n;y++)for(var x=0;x<n;x++)if(m.mat[y].charAt(x)==='1')g.fillRect(qx+x*mod,qy+y*mod,mod,mod);
+  var x0=qx+q+14,lg=W-x0-6,cx=x0+lg/2;g.textAlign='center';
+  // nome da casa em até 2 linhas: "PRAINHA" / "MAR E GRILL"
+  var nome=LOJA.toUpperCase(),ls=[nome],cut=nome.indexOf(' ');
+  if(nome.length>12&&cut>0)ls=[nome.slice(0,cut),nome.slice(cut+1)];
+  var fsN=99;ls.forEach(function(l){fsN=Math.min(fsN,cabe(g,l,'700',19,lg))});
+  g.font='700 '+fsN+'px Arial, Helvetica, sans-serif';var y=6+fsN;
+  ls.forEach(function(l){g.fillText(l,cx,y);y+=fsN+2});
+  g.fillRect(x0+lg*0.2,y+1,lg*0.6,2);y+=6;
+  var fsM=cabe(g,'MESA','800',22,lg);g.fillText('MESA',cx,y+fsM);y+=fsM;
+  var num=String(m.numero),baixo=44,fsX=cabe(g,num,'900',H-baixo-y-4,lg);
+  g.fillText(num,cx,y+4+fsX*0.92);
+  var f1=cabe(g,'Aponte a câmera','700',16,lg);g.fillText('Aponte a câmera',cx,H-baixo+18);
+  cabe(g,'cardápio · pedir · conta','500',14,lg);g.fillText('cardápio · pedir · conta',cx,H-baixo+38);
+  return cv;
+}
+function bits(cv){var d=cv.getContext('2d').getImageData(0,0,W,H).data,wb=W/8,o=new Uint8Array(wb*H);
+  for(var y=0;y<H;y++)for(var xb=0;xb<wb;xb++){var by=0;for(var b=0;b<8;b++){var i=(y*W+xb*8+b)*4;
+    if((d[i]+d[i+1]+d[i+2])>=384)by|=(128>>b)}o[y*wb+xb]=by}return o} // TSPL modo 0: bit 1 = branco
+function asc(s){var a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&255;return a}
+function junta(ps){var n=0;ps.forEach(function(p){n+=p.length});var o=new Uint8Array(n),k=0;ps.forEach(function(p){o.set(p,k);k+=p.length});return o}
+var NL=String.fromCharCode(13,10);
+function cab(){var c=C();return 'SIZE 50 mm,30 mm'+NL+'GAP 2 mm,0 mm'+NL+'DENSITY '+c.dens+NL+'SPEED 3'+NL+'DIRECTION '+(c.inv?0:1)+NL}
+function tspl(cv,cop){var c=C();return junta([asc(cab()+'CLS'+NL+'BITMAP '+(c.dx*8)+',8,'+(W/8)+','+H+',0,'),bits(cv),asc(NL+'PRINT 1,'+cop+NL)])}
+var SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
+  '0000fee7-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb','0000ae00-0000-1000-8000-00805f9b34fb',
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455','e7810a71-73ae-499d-8c15-faa9aef0c3f2','0000fff0-0000-1000-8000-00805f9b34fb'];
+async function canal(){
+  if(BTCH&&BT&&BT.gatt.connected)return BTCH;
+  var dev=BT;
+  if(!dev&&navigator.bluetooth.getDevices){try{var ds=await navigator.bluetooth.getDevices();if(ds&&ds.length)dev=ds[0]}catch(e){}}
+  if(!dev)dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERV});
+  BT=dev;var srv=await dev.gatt.connect(),ss=await srv.getPrimaryServices();
+  for(var i=0;i<ss.length;i++){var cs;try{cs=await ss[i].getCharacteristics()}catch(e){continue}
+    for(var j=0;j<cs.length;j++){var p=cs[j].properties;if(p.writeWithoutResponse||p.write){BTCH=cs[j];return cs[j]}}}
+  throw new Error('a impressora conectou mas não aceita dados');
+}
+async function envia(bytes){var ch=await canal(),pd=180;
+  for(var i=0;i<bytes.length;i+=pd){var s=bytes.slice(i,i+pd);
+    try{if(ch.properties.writeWithoutResponse)await ch.writeValueWithoutResponse(s);else await ch.writeValue(s)}
+    catch(e){if(pd>20){pd=20;i-=180;continue}throw e}
+    if(ch.properties.writeWithoutResponse)await new Promise(function(r){setTimeout(r,12)})}}
+function st(t,cl){var e=document.getElementById('st');e.textContent=t;e.className='st'+(cl?' '+cl:'')}
+async function imprimirBt(){
+  if(!navigator.bluetooth){st('sem Bluetooth neste navegador — use o Chrome do Android no endereço https da loja, ou "Imprimir pelo navegador"','err');return}
+  if(!MESAS.length){st('gere as mesas primeiro','err');return}
+  var cop=Math.max(1,Math.min(5,parseInt(document.getElementById('cop').value,10)||1));
+  PARAR=false;document.getElementById('bImp').disabled=true;document.getElementById('bPar').style.display='';
+  var feitas=0;
+  try{for(var i=0;i<MESAS.length;i++){
+    if(PARAR){st('parado depois da mesa '+MESAS[i-1].numero+' ('+feitas+' de '+MESAS.length+')','err');return}
+    st('imprimindo mesa '+MESAS[i].numero+' — '+(i+1)+' de '+MESAS.length+'…');
+    await envia(tspl(desenha(MESAS[i]),cop));feitas++;
+    // respiro pra impressora puxar a etiqueta antes da próxima (o buffer dela é pequeno)
+    await new Promise(function(r){setTimeout(r,700*cop)});
+  }
+  st('✓ '+feitas+(feitas>1?' mesas impressas':' mesa impressa')+' ('+(BT&&BT.name||'impressora')+')','ok');
+  }catch(e){BTCH=null;st('parou na mesa '+(MESAS[feitas]||{}).numero+': '+(e&&e.message||e)+' — ajuste o "de" pra '+(MESAS[feitas]||{}).numero+' e continue','err')}
+  finally{document.getElementById('bImp').disabled=false;document.getElementById('bPar').style.display='none'}
+}
+async function calibrar(){
+  if(!navigator.bluetooth){st('só pelo Bluetooth','err');return}
+  try{await envia(asc(cab()+'GAPDETECT'+NL));st('✓ calibrando — a impressora puxa 1 ou 2 etiquetas em branco','ok')}
+  catch(e){BTCH=null;st('não foi: '+(e&&e.message||e),'err')}
+}
+function imprimirNav(){
+  var c=C(),cop=Math.max(1,Math.min(5,parseInt(document.getElementById('cop').value,10)||1)),h='';
+  MESAS.forEach(function(m){var src=desenha(m).toDataURL('image/png');
+    for(var i=0;i<cop;i++)h+='<img src="'+src+'" style="display:block;width:48mm;height:28mm;margin:1mm 0 0 '+(1+c.dx)+'mm;page-break-after:always">'});
+  var f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  document.body.appendChild(f);var d=f.contentWindow.document;d.open();
+  d.write('<html><head><style>@page{size:50mm 30mm;margin:0}html,body{margin:0;padding:0}</style></head><body>'+h+'</body></html>');d.close();
+  setTimeout(function(){f.contentWindow.focus();f.contentWindow.print();setTimeout(function(){f.remove()},60000)},300);
+}
+pintaCfg();
+try{if(localStorage.getItem('qr_modo')==='etq')modo('etq')}catch(e){}
 carregar();
 </script></body></html>`;
 
