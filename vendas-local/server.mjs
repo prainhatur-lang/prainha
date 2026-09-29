@@ -12833,11 +12833,37 @@ async function kds(){
 }
 // Sempre o mesmo formato: item · mesa · hora. É por isso que a marca guarda
 // o número — a comanda fecha e some do espelho, o histórico não pode perder.
+// RESERVAS DE HOJE no topo da lateral: quem ainda vai chegar, em ordem de
+// hora. Chegando em até 30 min fica em destaque; as já sentadas viram só um
+// contador (a comanda delas já aparece na fila).
+function reservasHTML(r){
+  if(!r||!r.ok||!r.reservas)return '';
+  var agora=new Date(),minAgora=agora.getHours()*60+agora.getMinutes();
+  var vem=r.reservas.filter(function(x){return x.status!=='sentada'});
+  var sent=r.reservas.length-vem.length;
+  var pesVem=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
+  var h='<h3>📅 Reservas hoje'+(vem.length?' · '+vem.length+' ('+pesVem+' pes.)':'')+'</h3>';
+  if(!vem.length)return h+'<div class="vaziinho">'+(sent?sent+' já sentada(s) — nenhuma por chegar':'nenhuma reserva por chegar')+'</div>';
+  h+=vem.map(function(x){
+    var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0),falta=min-minAgora;
+    var perto=falta<=30;
+    var quando=falta<0?'atrasada '+(-falta)+'min':(falta<=90?'em '+falta+'min':'');
+    var onde=(x.area||'')+(x.mesa?' · mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:''):'');
+    return '<div class="hi"'+(perto?' style="background:#fff4e0"':'')+'><div class="n">'+
+      '<b style="color:var(--gold2)">'+esc(x.hora)+'</b> · '+(Number(x.pessoas)||'?')+' pes. — '+esc(x.nome||'')+'</div>'+
+      '<div class="m">'+(onde?'<span>'+esc(onde)+'</span>':'')+(quando?'<b>'+quando+'</b>':'')+
+      (x.status==='pendente'?'<span>não confirmada</span>':'')+'</div></div>';
+  }).join('');
+  if(sent)h+='<div class="vaziinho" style="padding:8px 15px">+ '+sent+' já sentada(s)</div>';
+  return h;
+}
 async function histLateral(url){
   var el=document.getElementById('hist');if(!el)return;
+  var rp=fetch('/api/kds/reservas',{cache:'no-store'}).then(function(x){return x.json()}).catch(function(){return null});
   var d;try{d=await (await fetch(url,{cache:'no-store'})).json()}catch(e){return}
+  var rv=await rp;
   var its=d.itens||[];
-  el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
+  el.innerHTML=reservasHTML(rv)+'<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
     var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
     return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div>'+
       (i.opcoes&&i.opcoes.length?'<div class="op">'+i.opcoes.map(function(o){return '<div>↳ '+esc(o)+'</div>'}).join('')+'</div>':'')+
@@ -23294,6 +23320,18 @@ const server = http.createServer(async (req, res) => {
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
+    // Reservas de hoje no KDS: a cozinha/bar se prepara pra leva que vem
+    // (mesa grande às 20h = adiantar mise en place). Sem telefone — só o que
+    // a praça precisa. Vem do mesmo cache de 10s do painel do gerente.
+    if (p === '/api/kds/reservas') {
+      const n = await salaoDaNuvem();
+      const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
+        hora: String(r.hora || '').slice(0, 5), nome: r.nome, pessoas: r.pessoas, area: r.area,
+        mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status,
+      }));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), reservas }));
+    }
     if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiKds(Number(u.searchParams.get('area') || 0)))); }
     // ?area ausente = todas as praças (compatibilidade). Cuidado: Number('')
     // e Number(null) dão 0, que aqui significa "sem praça definida" — por isso
