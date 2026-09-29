@@ -116,13 +116,25 @@ async function rotularComandas(comandas) {
   if (!COMANDA_ATIVA) return comandas; // loja só com mesa: não há o que rotular
   const nums = comandas.filter((c) => c.numero >= COMANDA_DE && c.numero <= NUMERO_MAX).map((c) => c.numero);
   if (!nums.length) return comandas;
-  const vinc = await sql`SELECT comanda, mesa FROM mesa_comanda WHERE comanda = ANY(${nums}) AND fechada_em IS NULL`;
-  const mapa = new Map(vinc.map((v) => [Number(v.comanda), Number(v.mesa)]));
+  // Sem filtrar o vínculo fechado: a comanda que JÁ PAGOU e ainda espera o
+  // pedido continua no KDS (ver contaNoKds), e quem entrega precisa da mesa.
+  // O vínculo é um só por número (PK comanda): vale pra comanda fechada se
+  // abriu antes dela fechar e fechou junto com ela (ou segue aberto).
+  const vinc = await sql`SELECT comanda, mesa, aberta_em, fechada_em FROM mesa_comanda WHERE comanda = ANY(${nums})`;
+  const mapa = new Map(vinc.map((v) => [Number(v.comanda), v]));
   for (const c of comandas) {
     if (c.numero >= COMANDA_DE && c.numero <= NUMERO_MAX) {
-      const mesa = mapa.get(c.numero);
+      const v = mapa.get(c.numero);
+      let mesa = null;
+      if (v && !c.fechada_em) mesa = v.fechada_em ? null : Number(v.mesa);
+      else if (v) {
+        const fc = new Date(c.fechada_em).getTime();
+        const abriu = v.aberta_em ? new Date(v.aberta_em).getTime() : 0;
+        const fechou = v.fechada_em ? new Date(v.fechada_em).getTime() : null;
+        if (abriu <= fc && (fechou == null || fechou >= fc - 120000)) mesa = Number(v.mesa);
+      }
       c.rotulo = 'Comanda ' + c.numero + (mesa ? ' · Mesa ' + mesa : '');
-      c.mesa_local = mesa ?? null;
+      c.mesa_local = mesa;
     }
   }
   return comandas;
@@ -491,6 +503,10 @@ async function initSchema() {
   // chamado chegava como texto solto e a equipe nao sabia se corria pra
   // cozinha ou pro salao.
   await addCol('chamado', 'assunto text');
+  // ITENS que o cliente marcou na reclamação (comanda_item.item_codigo). Com
+  // eles o KDS sabe se o que ele reclamou ainda está na produção ou já está
+  // pronto parado no passe — ver situacaoReclamacoes (Prainha Mar, 29/09).
+  await addCol('chamado', 'itens bigint[]');
   // TEMPO DE PREPARO: cada praça tem o seu (bebida sai em 5min, carne em 25).
   // Prato demorado soma minutos EXTRA por cima do tempo da praça dele.
   await sql`CREATE TABLE IF NOT EXISTS pix_cobranca (txid text PRIMARY KEY, mesa integer, valor numeric,
@@ -10845,10 +10861,10 @@ async function apiChamadoCriar(body) {
     const lista = as.map((x) => Number(x.area_codigo)).filter(Boolean);
     if (lista.length) areas = lista;
   }
-  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto, areas)
+  const [r] = await sql`INSERT INTO chamado (mesa, tipo, origem, nota, texto, assunto, areas, itens)
     VALUES (${mesa}, ${tipo}, ${origem},
             ${body.nota == null ? null : Number(body.nota)}, ${String(body.texto || '').slice(0, 500) || null},
-            ${assunto}, ${areas})
+            ${assunto}, ${areas}, ${cods.length ? cods : null})
     RETURNING id`;
   return { ok: true, id: Number(r.id) };
 }
@@ -10858,7 +10874,7 @@ async function apiChamados(areaCod = null) {
   const filtro = areaCod == null || !(areaCod > 0)
     ? sql`TRUE`
     : sql`(areas IS NULL OR array_length(areas, 1) IS NULL OR ${areaCod} = ANY(areas))`;
-  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, areas, criado_em FROM chamado
+  const rows = await sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, areas, itens, criado_em FROM chamado
     WHERE atendido_em IS NULL AND ${filtro} ORDER BY criado_em`;
   const agora = Date.now();
   const comIdade = rows.map((x) => ({ ...x, ha_min: Math.max(0, Math.floor((agora - new Date(x.criado_em).getTime()) / 60000)) }));
@@ -10882,6 +10898,73 @@ async function mesasComReclamacao(areaCod = null) {
   const r = await sql`SELECT DISTINCT mesa FROM chamado
     WHERE tipo='reclamacao' AND atendido_em IS NULL AND mesa IS NOT NULL AND ${filtro}`;
   return new Set(r.map((x) => Number(x.mesa)));
+}
+/** Marca as comandas da mesa que reclamou e sobe elas pro topo (o resto
+ *  mantém a ordem). Comanda individual (300+) conta pela mesa onde está —
+ *  por isso roda depois do rotularComandas. */
+async function marcarReclamou(comandas, areaCod) {
+  const reclamou = await mesasComReclamacao(areaCod);
+  for (const c of comandas) {
+    c.reclamou = reclamou.has(Number(c.numero)) || (c.mesa_local != null && reclamou.has(Number(c.mesa_local)));
+  }
+  comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
+}
+/** Onde está, NESTA praça, o que a reclamação cobra: ainda na produção ou
+ *  PARADO NO PASSE (pronto, ninguém levou). "Adiante o que for dessa mesa"
+ *  não serve quando o prato já está pronto esperando alguém levar — mesa 20
+ *  da Prainha Mar, 29/09/2026. Com os itens que o cliente marcou
+ *  (chamado.itens) casa item a item; sem eles, pela mesa. */
+async function situacaoReclamacoes(reclamacoes, areaCod) {
+  const alvo = (reclamacoes || []).filter((r) => r.mesa != null);
+  if (!alvo.length) return reclamacoes;
+  const temPasse = await kdsTem('entrega');
+  const filtroArea =
+    areaCod == null ? sql`TRUE`
+      : areaCod === 0 ? sql`(ci.area_codigo IS NULL OR ci.area_codigo = ANY(${await pracasOcultas()}))`
+      : sql`ci.area_codigo=${areaCod}`;
+  const rows = await sql`
+    SELECT ci.item_codigo, ci.comanda_codigo, c.numero, c.fechada_em AS comanda_fechada_em,
+           COALESCE(ci.produzido, m.pronto_em) AS pronto_em
+      FROM comanda_item ci
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
+     WHERE ci.cancelado_em IS NULL AND ci.tipo IS DISTINCT FROM 2 AND ${contaNoKds()}
+       AND COALESCE(ci.entregue, m.entregue_em) IS NULL
+       AND ${temPasse ? sql`TRUE` : sql`COALESCE(ci.produzido, m.pronto_em) IS NULL`}
+       AND ${filtroArea}`;
+  const porC = new Map();
+  for (const x of rows) {
+    if (!porC.has(x.comanda_codigo)) porC.set(x.comanda_codigo, { numero: Number(x.numero), fechada_em: x.comanda_fechada_em, itens: [] });
+    porC.get(x.comanda_codigo).itens.push(x);
+  }
+  const comandas = [...porC.values()];
+  await rotularComandas(comandas);
+  const agora = Date.now();
+  for (const r of alvo) {
+    const mesa = Number(r.mesa);
+    const marcados = Array.isArray(r.itens) && r.itens.length ? new Set(r.itens.map(Number)) : null;
+    let producao = 0, passe = 0, passeMin = 0;
+    for (const c of comandas) {
+      if (!marcados && c.numero !== mesa && c.mesa_local !== mesa) continue;
+      for (const i of c.itens) {
+        if (marcados && !marcados.has(Number(i.item_codigo))) continue;
+        if (!i.pronto_em) { producao++; continue; }
+        passe++;
+        passeMin = Math.max(passeMin, Math.floor((agora - new Date(i.pronto_em).getTime()) / 60000));
+      }
+    }
+    r.producao = producao; r.passe = passe; r.passe_min = passe ? passeMin : null;
+  }
+  return reclamacoes;
+}
+/** Destaca no cartão do KDS os itens que o cliente marcou na reclamação. */
+function marcarItensReclamados(comandas, reclamacoes) {
+  const cods = new Set();
+  for (const r of reclamacoes || []) for (const x of r.itens || []) cods.add(Number(x));
+  if (!cods.size) return;
+  for (const c of comandas) for (const i of c.itens || []) {
+    if (i.item_codigo != null && cods.has(Number(i.item_codigo))) i.reclamado = true;
+  }
 }
 /** Mesas com CHAMADO de garçom aberto (o BOTÃO da mesa, não o aviso automático
  *  "pediu pelo celular"). A maquininha NÃO tem tela de chamado — em vez de
@@ -11721,6 +11804,18 @@ async function pracasOcultas() {
   return rows.filter((a) => nomes.has(semAcento(a.nome))).map((a) => Number(a.codigo));
 }
 
+// ⚠️ PAGOU E AINDA NÃO RECEBEU (Prainha Mar, 29/09/2026): a comanda 300 pediu
+// uma água de coco às 18:37, pagou no cartão às 18:40 e a conta fechou sozinha
+// 0,4s depois — o item sumiu do KDS antes de alguém fazer. Conta fechada
+// continua na produção e no passe com o que foi pedido perto do fechamento
+// (até 30 min antes), por até 1 hora. Transferida (esvaziada) não: os itens
+// foram pra outra conta. No espelho (Tabuará) só existe conta aberta — lá
+// nada muda. Condição sobre `c` (comanda) e `ci` (comanda_item).
+function contaNoKds() {
+  return sql`(c.cancelada_em IS NULL AND (c.fechada_em IS NULL OR (c.esvaziada_em IS NULL
+    AND c.fechada_em > now() - interval '60 minutes' AND ci.criado >= c.fechada_em - interval '30 minutes')))`;
+}
+
 async function apiAreas() {
   const ocultas = await pracasOcultas();
   const rows = await sql`
@@ -11733,7 +11828,7 @@ async function apiAreas() {
         AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
     FROM area a
     LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo AND ci.cancelado_em IS NULL
-      AND EXISTS (SELECT 1 FROM comanda c WHERE c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL)
+      AND EXISTS (SELECT 1 FROM comanda c WHERE c.codigo = ci.comanda_codigo AND ${contaNoKds()})
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE a.codigo <> ALL(${ocultas})
     GROUP BY a.codigo, a.nome
@@ -11751,7 +11846,7 @@ async function apiAreas() {
              AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
              AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
       FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-     JOIN comanda c ON c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+     JOIN comanda c ON c.codigo = ci.comanda_codigo AND ${contaNoKds()}
      WHERE ci.cancelado_em IS NULL AND (ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`)[0];
   if (Number(semArea?.total ?? 0) > 0) {
     rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
@@ -11760,7 +11855,7 @@ async function apiAreas() {
   }
   const ent = (await sql`
     SELECT COUNT(*) AS n FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
-    JOIN comanda c ON c.codigo = ci.comanda_codigo AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+    JOIN comanda c ON c.codigo = ci.comanda_codigo AND ${contaNoKds()}
     WHERE ci.cancelado_em IS NULL AND ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
   const est = (await sql`SELECT * FROM sync_estado WHERE id=1`)[0] || null;
   return { areas: rows, entrega_n: Number(ent?.n ?? 0), online: ultimoStatus.ok, sync: est,
@@ -11788,12 +11883,13 @@ async function apiKds(areaCod) {
     : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
-           c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas
+           c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas,
+           c.fechada_em AS comanda_fechada_em, c.valor_total AS comanda_total, c.subtotal_pago AS comanda_pago
     FROM comanda_item ci
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ${cond} AND COALESCE(ci.produzido, m.pronto_em) IS NULL
-      AND ci.cancelado_em IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+      AND ci.cancelado_em IS NULL AND ${contaNoKds()}
     ORDER BY ci.criado NULLS LAST, ci.id`;
   const r = agrupar(itens, 'chegada');
   await rotularComandas(r.comandas);
@@ -11838,11 +11934,11 @@ async function apiKds(areaCod) {
      WHERE ${cond} AND ci.tipo IS DISTINCT FROM 2`;
 
   // Mesa que reclamou passa na frente: sobe pro topo da fila e vem marcada.
-  const reclamou = await mesasComReclamacao(areaCod);
-  for (const c of r.comandas) c.reclamou = reclamou.has(Number(c.numero));
-  r.comandas.sort((a, b) => (b.reclamou ? 1 : 0) - (a.reclamou ? 1 : 0));
+  await marcarReclamou(r.comandas, areaCod);
 
   const ch = await apiChamados(areaCod);
+  await situacaoReclamacoes(ch.reclamacoes, areaCod);
+  marcarItensReclamados(r.comandas, ch.reclamacoes);
   const espItens = new Set(esperando.map((x) => Number(x.item_codigo)));
   const parItens = new Map(pareados.map((x) => [Number(x.item_codigo), x.grupo]));
   for (const c of r.comandas) for (const i of c.itens || []) {
@@ -11884,12 +11980,13 @@ async function apiEntrega(areaCod = null) {
       : sql`ci.area_codigo=${areaCod}`;
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
-           c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas, a.nome AS area_nome
+           c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas, a.nome AS area_nome,
+           c.fechada_em AS comanda_fechada_em, c.valor_total AS comanda_total, c.subtotal_pago AS comanda_pago
     FROM comanda_item ci
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     LEFT JOIN area a ON a.codigo = ci.area_codigo
-    WHERE ci.cancelado_em IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+    WHERE ci.cancelado_em IS NULL AND ${contaNoKds()}
       AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
       AND COALESCE(ci.entregue, m.entregue_em) IS NULL
       AND ${filtroArea}
@@ -11933,7 +12030,15 @@ async function apiEntrega(areaCod = null) {
       AND visto_em IS NULL
       AND (area_codigo IS NULL OR ${areaCod == null || !(areaCod > 0) ? sql`TRUE` : sql`area_codigo=${areaCod}`})
     ORDER BY quando DESC LIMIT 6`;
-  return { ...r, cancelados, online: ultimoStatus.ok };
+  // RECLAMAÇÃO TAMBÉM NO PASSE (Prainha Mar, 29/09/2026): a batata da mesa 20
+  // ficou pronta 16s depois do pedido e parou no passe; o cliente reclamou de
+  // demora e o aviso só aparecia na tela de PRODUÇÃO da praça — que não tinha
+  // mais nada daquela mesa. Quem tinha o prato na mão (o passe) não via.
+  await marcarReclamou(r.comandas, areaCod);
+  const ch = await apiChamados(areaCod);
+  await situacaoReclamacoes(ch.reclamacoes, areaCod);
+  marcarItensReclamados(r.comandas, ch.reclamacoes);
+  return { ...r, reclamacoes: ch.reclamacoes, cancelados, online: ultimoStatus.ok };
 }
 
 /** Quebra os itens de uma comanda em RODADAS de lançamento.
@@ -11968,7 +12073,16 @@ function agrupar(itens, ordem) {
   for (const i of itens) {
     const rod = rodadaDe.get(i.id ?? i.item_codigo) || 0;
     const chave = i.comanda_codigo + ':' + rod;
-    if (!porC.has(chave)) porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null, itens: [] });
+    if (!porC.has(chave)) {
+      // conta que já fechou (ver contaNoKds): a tela avisa "já pagou" — o
+      // cliente está esperando e o garçom não tem mais a conta na mão
+      const fechou = i.comanda_fechada_em ? new Date(i.comanda_fechada_em).getTime() : null;
+      porC.set(chave, { codigo: i.comanda_codigo, rodada: rod, numero: i.numero, origem: i.origem, nome: i.comanda_nome, qtd_pessoas: i.qtd_pessoas, chegada: null, pronta_desde: null,
+        fechada_em: i.comanda_fechada_em ?? null,
+        fechada_min: fechou == null ? null : Math.max(0, Math.floor((Date.now() - fechou) / 60000)),
+        paga: fechou != null && Number(i.comanda_pago || 0) + 0.01 >= Number(i.comanda_total || 0),
+        itens: [] });
+    }
     const c = porC.get(chave);
     // ⚠️ RESPOSTA DE PERGUNTA É OBSERVAÇÃO, NÃO ITEM. "Ao ponto", "com gelo",
     // "1 copo" chegam como filho (tipo 2) e o KDS listava cada um como linha
@@ -12583,6 +12697,13 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .alerta .sub{font-size:13.5px;font-weight:500;opacity:.92;width:100%}
 .c.reclamou{border:2px solid var(--red);border-top:4px solid var(--red);box-shadow:0 0 0 3px rgba(220,38,38,.13)}
 .flag{background:var(--red);color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;padding:2px 8px;border-radius:6px;margin-left:6px}
+/* conta que já fechou (pagou) e ainda tem item aqui: o cliente está esperando */
+.flagp{background:#0f766e;color:#fff;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:6px;margin-left:6px}
+/* item que o cliente marcou na reclamação */
+.it.reclamado{background:rgba(220,38,38,.08);border-radius:8px}
+.it .tag.rec{color:#b91c1c;background:#fef2f2;border-color:#fca5a5;font-weight:700}
+/* linha própria: colado no nome (nowrap, sem espaço) empurrava o botão pra fora do card */
+.it .recl{margin-top:3px}.it .recl .tag{margin-left:0}
 /* "sai junto": a outra praça já terminou e este item ainda está pendente */
 .junto{background:#fff4e0;border-bottom:1px solid #f0d08a;color:#8a4b06;padding:11px 20px;font-size:14.5px;font-weight:600}
 .junto b{color:#6b3a04}
@@ -12834,8 +12955,9 @@ function comandaHTML(c,modo,idx){
     if(i.esperando_par) par='<div class="parpronto">⏱ O PAR JÁ ESTÁ PRONTO no '+esc(i.esperando_par.praca)+
       (i.esperando_par.item?' ('+esc(i.esperando_par.item)+')':'')+' — este item está segurando</div>';
     else if(i.pareado) par='<div class="parmarca">⇄ sai junto com outra praça</div>';
-    return '<div class="it'+(i.esperando_par?' segurando':'')+'"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
-      '<span class="n">'+esc(i.nome)+tag+pt+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span>'+btn+'</div>';
+    var rec=i.reclamado?'<div class="recl"><span class="tag rec">⚠ cliente reclamou</span></div>':'';
+    return '<div class="it'+(i.esperando_par?' segurando':'')+(i.reclamado?' reclamado':'')+'"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
+      '<span class="n">'+esc(i.nome)+tag+pt+rec+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span>'+btn+'</div>';
   }).join('');
   var badge=c.tipo==='delivery'?'<span class="badge">delivery</span>':'';
   if(modo==='entrega'){
@@ -12847,7 +12969,10 @@ function comandaHTML(c,modo,idx){
   }
   else if(c.critico) badge+='<span class="flag">⏰ estourou '+(c.prazo_min?'· prazo '+c.prazo_min+'min':'')+'</span>';
   else if(c.atrasado) badge+='<span class="badge late">atrasado'+(c.prazo_min?' · '+c.prazo_min+'min':'')+'</span>';
-  if(c.reclamou) badge+='<span class="flag">⚠ reclamou · adiantar</span>';
+  if(c.reclamou) badge+='<span class="flag">⚠ reclamou · '+(modo==='entrega'?'levar já':'adiantar')+'</span>';
+  // conta fechada (pagou no cartão/Pix e fechou sozinha) com item ainda aqui:
+  // o garçom não tem mais a conta na mão — só o KDS lembra que falta entregar
+  if(c.fechada_em) badge+='<span class="flagp">'+(c.paga?'💳 já pagou':'conta fechada')+(c.fechada_min>0?' · há '+c.fechada_min+'min':'')+'</span>';
   if(esperandoNesta(c.numero)) badge+='<span class="flagj">sai junto</span>';
   // entrega mostra OS DOIS tempos: idade do pedido (lançamento) e espera no passe
   var tchip='';
@@ -13218,6 +13343,7 @@ async function kds(){
   ESPERANDO=d.esperando||[];
   checaNovos(d); // pedido novo na área -> apita
   checaAtraso(d); // comanda estourou o prazo -> alarme grave e repetido
+  checaReclamacao(d); // cliente reclamou -> alarme grave uma vez
   var nCrit=(d.comandas||[]).filter(function(c){return c.critico}).length;
   document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecao()">◂ Áreas</button>'+
     '<h1>'+escPraca(d.area.nome)+' · <b>Produção</b></h1>'+
@@ -13230,7 +13356,7 @@ async function kds(){
     (d.tem_entrega===false?'':'<a class="linkbtn go" href="/entrega">Entregas ▸</a>')+
     '<span class="pill"><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'ao vivo':'offline')+'</span>';
   var app=document.getElementById('app');
-  var topo=faixaCancelado(d,'NÃO produzir — tirar da fila')+faixaReclamacao(d)+faixaJunto(d);
+  var topo=faixaCancelado(d,'NÃO produzir — tirar da fila')+faixaReclamacao(d,'producao')+faixaJunto(d);
   var corpo=d.comandas.length
     ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'producao',ix)}).join('')+'</div>'
     : '<div class="vazio">tudo produzido nesta área ✅</div>';
@@ -13257,17 +13383,46 @@ var ESPERANDO=[];
 function esperandoNesta(numero){return ESPERANDO.some(function(e){return Number(e.numero)===Number(numero)})}
 // (a marca fina agora e' por ITEM — ver i.esperando_par em comandaHTML)
 // Reclamações em SEQUÊNCIA, da mais antiga pra mais nova — "mesa 1, mesa 8, mesa 10".
-function faixaReclamacao(d){
+// Aparece na PRODUÇÃO e nas ENTREGAS da praça (modo 'producao' | 'entrega').
+function faixaReclamacao(d,modo){
   var rs=d.reclamacoes||[];if(!rs.length)return '';
   // ⚠️ ANTES ERA SÓ LEITURA: o KDS mostrava a reclamação e não tinha como
   // liberar — só o garçom conseguia, na tela dele. Agora cada uma tem o seu
   // "✓ resolvido" aqui também.
   return rs.map(function(r){
-    return '<div class="alerta">⚠️ '+(r.mesa?'MESA '+r.mesa:'SEM MESA')+(r.ha_min>0?' · há '+r.ha_min+'min':'')+
-      '<span class="sub">'+(r.texto?esc(r.texto):'Cliente reclamou')+' — adiante o que for dessa mesa.</span>'+
+    var onde=r.mesa?((Number(r.mesa)>=${COMANDA_DE}?'COMANDA ':'MESA ')+r.mesa):'SEM MESA';
+    return '<div class="alerta">⚠️ '+onde+(r.ha_min>0?' · há '+r.ha_min+'min':'')+
+      '<span class="sub">'+(r.texto?esc(r.texto):'Cliente reclamou')+' — '+recAcao(r,modo)+'</span>'+
       '<button class="b" style="margin-top:8px;background:#fff;color:#7f1d1d;font-weight:800" '+
       'onclick="recResolvido('+r.id+')">✓ resolvido</button></div>';
   }).join('');
+}
+// O que fazer depende de ONDE está o que o cliente cobra (o servidor conta o
+// que falta nesta praça: r.producao / r.passe). "Adiante" pra cozinha que já
+// fez não resolve nada — a batata da mesa 20 (Prainha Mar, 29/09) ficou pronta
+// em 16s e esperou uma hora no passe enquanto a faixa pedia pra adiantar.
+function recAcao(r,modo){
+  if(r.producao==null)return 'adiante o que for dessa mesa.';
+  var pm=r.passe_min>0?' há '+r.passe_min+' min':'';
+  if(modo==='entrega'){
+    if(r.passe>0)return 'está PRONTO no passe'+pm+' — leve agora.';
+    if(r.producao>0)return 'ainda está na produção — cobre a praça.';
+    return 'nada dessa mesa no passe agora — confira com o garçom.';
+  }
+  if(r.producao>0)return 'adiante o que for dessa mesa'+(r.passe>0?' ('+r.passe+' já pronto no passe)':'')+'.';
+  if(r.passe>0)return 'já está pronto, PARADO NO PASSE'+pm+' — chame quem entrega.';
+  return 'nada dessa mesa pendente aqui — confira com o garçom e dê ✓ resolvido.';
+}
+// Reclamação NOVA toca o alarme grave: a faixa vermelha sozinha passa batido
+// com a tela rolada ou ninguém olhando. Troca de praça não conta como nova.
+var _recs=null,_recsDe=null;
+function checaReclamacao(d){
+  var de=AREA?AREA.cod:null;
+  var ids=new Set((d.reclamacoes||[]).map(function(r){return r.id}));
+  var nova=false;
+  if(_recs!==null&&_recsDe===de)ids.forEach(function(k){if(!_recs.has(k))nova=true});
+  _recs=ids;_recsDe=de;
+  if(nova)alarmar();
 }
 async function recResolvido(id){
   try{await fetch('/api/chamado/atender',{method:'POST',headers:{'content-type':'application/json'},
@@ -13329,6 +13484,7 @@ async function entrega(){
   ligaCamera();   // idem: quem entregou fica registrado
   var d=await (await fetch('/api/entrega?area='+AREA.cod,{cache:'no-store'})).json();
   checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
+  checaReclamacao(d);
   var nome=(d.comandas[0]&&d.comandas[0].itens[0]&&d.comandas[0].itens[0].area_nome)||AREANOME[AREA.cod]||'';
   document.getElementById('hd').innerHTML='<button class="back" onclick="irSelecaoEntrega()">◂ Estações</button>'+
     '<h1>🛎️ '+(nome?esc(nome)+' · ':'')+'<b>Entregas</b></h1>'+
@@ -13338,7 +13494,7 @@ async function entrega(){
   var corpo=d.comandas.length
     ? '<div class="grid">'+d.comandas.map(function(c,ix){return comandaHTML(c,'entrega',ix)}).join('')+'</div>'
     : '<div class="vazio">nada aguardando entrega aqui ✅</div>';
-  corpo=faixaCancelado(d,'NÃO levar — retirar do passe')+corpo;
+  corpo=faixaCancelado(d,'NÃO levar — retirar do passe')+faixaReclamacao(d,'entrega')+corpo;
   app.innerHTML='<div class="pal"><div class="main">'+corpo+'</div>'+
     '<aside class="hist" id="hist"><h3>Últimos que saíram</h3><div class="vaziinho">carregando…</div></aside></div>';
   histLateral('/api/historico?modo=entrega&area='+AREA.cod);
@@ -18008,7 +18164,7 @@ h1{font-size:22px;margin:0 0 2px}h1 b{color:var(--gold2)}
 .ok .t{font-size:19px;font-weight:800;color:#0f8a3e}
 .mut{color:var(--mut);font-size:14px;line-height:1.5}
 input{width:100%;font:inherit;font-size:17px;padding:14px;border:1px solid var(--line);border-radius:12px;margin-top:10px}
-.b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}.b.cart{background:#2563eb}
+.b.ver{background:#5b5b66}.b.pix{background:#0f8a3e}
 .b.zap{background:#25d366}
 /* forma de pagamento: legenda embaixo do nome, e o apagado pra forma que
    ainda não está liberada — some do caminho sem sumir da tela, pra pessoa
@@ -18243,7 +18399,8 @@ body{padding-bottom:120px}
 .tile.gar{background:#fff4ea;border-color:#ffd6b3}
 .tile.prob{background:#fdf1ef;border-color:#f3c2bb}
 .tile.prob small{color:#b0463a}
-.tile.av{background:#fffaea;border-color:#f6dc8c}
+/* número ímpar de blocos: o último ocupa a linha inteira em vez de ficar sozinho num canto */
+.tiles .tile:last-child:nth-child(odd){grid-column:1/-1}
 .lnk{display:block;width:100%;background:none;border:0;font:inherit;font-size:14px;color:var(--mut);text-decoration:underline;
   margin-top:14px;padding:8px;cursor:pointer}
 /* ---- avaliação ---- */
@@ -18369,8 +18526,10 @@ async function inicio(){
     '<h1>${LOJA_HTML}</h1>'+
     (MESA?'<span class="chip">📍 Mesa '+esc(MESA)+'</span>'
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
-  // AVALIE E GANHE: so aparece se a casa tem o drink hoje e este celular
-  // ainda nao avaliou no mes (quem manda de verdade e' o servidor, por CPF)
+  // AVALIAR MORA SÓ AQUI, NO CARD DO TOPO (29/09): o bloco "Avaliar" lá
+  // embaixo repetia o card e saiu. Por isso o card aparece sempre — com o
+  // drink quando a casa tem o brinde hoje (quem manda de verdade e' o
+  // servidor, por CPF), e sem ele quando não tem.
   if(MESA&&BRINDE&&BRINDE.ativo){
     var com=BRINDE.opcoes.find(function(o){return o.com_alcool}), sem=BRINDE.opcoes.find(function(o){return !o.com_alcool});
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
@@ -18378,6 +18537,10 @@ async function inicio(){
       // celular compartilhado: depois de avaliar, o card chama o proximo da mesa
       (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar?</b><small>cada pessoa ganha o seu drink</small></div>'
         :'<div class="tx"><b>Avalie e ganhe um drink</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>')+
+      '<div class="cta"><span class="est"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></span>Avaliar agora<span class="seta">›</span></div></button>';
+  } else {
+    h+='<button class="promo" onclick="telaAvaliar()"><div class="fts"><span>⭐</span></div>'+
+      '<div class="tx"><b>Como está sendo sua experiência?</b><small>elogio, reclamação ou sugestão — vai direto pra gerência</small></div>'+
       '<div class="cta"><span class="est"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></span>Avaliar agora<span class="seta">›</span></div></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
@@ -18389,8 +18552,8 @@ async function inicio(){
       // virado um link cinza no rodape e ninguem achava. Vai pro KDS (a mesa
       // passa na frente, so na praca do item) e pro celular do gerente.
       '<button class="tile prob" onclick="telaProblema()"><i>⚠️</i>Problema no pedido<small>demorou, faltou, veio errado</small></button>'+
-      '<button class="tile pix" onclick="telaPix()"><i>💳</i>Pagar a conta<small>Pix ou cartão</small></button>'+
-      '<button class="tile'+(temDrink()?' av':'')+'" onclick="telaAvaliar()"><i>⭐</i>Avaliar<small>'+(temDrink()?'ganhe um drink 🍹':'elogio, reclamação ou sugestão')+'</small></button>'+
+      // pagar pela tela é só Pix (29/09) — sem falar de cartão (nem o ícone)
+      '<button class="tile pix" onclick="telaPix()"><i>💠</i>Pagar a conta<small>pelo Pix, sem esperar</small></button>'+
       (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>🔁</i>O de sempre<small>o que você mais pede</small></button>':'')+
       (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
     '</div>';
@@ -19335,26 +19498,26 @@ function pintaPagar(){
 function verContaAlvo(){var a=alvoPg();if(a===null)return;location.href='/conta/ver?n='+a}
 function setGorj(p){PGGORJ=p;pintaPagar()}
 function setPartes(k){PGPARTES=k;PGVALOR=null;pintaPagar()}
-// Um botão só — "Pagar a conta". A escolha da forma vem depois, numa tela
-// própria: lá cabe explicar por que o cartão está apagado, o que no meio dos
-// valores viraria ruído.
+// Um botão só — "Pagar a conta". PELA TELA É SÓ PIX (29/09/2026): o cartão
+// saiu e a tela não fala dele — nem "não aceitamos", nem botão apagado; quem
+// quer cartão paga com o garçom, como sempre. A tela seguinte confirma o valor
+// e pede o Cartão Prainha antes de gerar o código.
 var PGSTATUS=null;
 async function botoesPagar(valor){
   if(!PGSTATUS){
     var st=await (await fetch('/api/pix/status',{cache:'no-store'})).json();
-    var ct=await (await fetch('/api/cartao/status',{cache:'no-store'})).json();
-    PGSTATUS={pix:st,cartao:ct};
+    PGSTATUS={pix:st};
   }
   var el=document.getElementById('pgbtns');if(!el)return;
-  el.innerHTML=(PGSTATUS.pix.disponivel||PGSTATUS.cartao.disponivel)
+  el.innerHTML=PGSTATUS.pix.disponivel
     ? '<button class="b pix" onclick="telaFormaPg()">Pagar a conta</button>'
     : '<div class="aviso">Pagamento pela tela ainda não está ligado. <b>Chame o garçom.</b></div>'+
       '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>';
 }
 function telaFormaPg(){
-  var v=calcPagar(), alvo=alvoPg(), st=PGSTATUS||{pix:{},cartao:{}};
+  var v=calcPagar(), alvo=alvoPg(), st=PGSTATUS||{pix:{}};
   var quem=(PGALVO==null)?('Mesa '+mesaAtual()):('Comanda '+PGALVO+(CONTA.nome?' · '+esc(CONTA.nome):''));
-  var h='<h1>Como você quer pagar</h1><div class="mesa">'+quem+'</div>'+
+  var h='<h1>Pagar com Pix</h1><div class="mesa">'+quem+'</div>'+
     '<div class="valor">R$ '+v.minha.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
     '<div class="mut" style="margin:4px 0 16px">'+(PGPARTES>1?'sua parte · dividido por '+PGPARTES:'total a pagar')+'</div>';
   // CARTÃO PRAINHA: só no Pix e só na conta inteira (sem dividir)
@@ -19367,15 +19530,8 @@ function telaFormaPg(){
       '</div>';
   }
   h+= st.pix.disponivel
-    ? '<button class="b pix" onclick="gerarPix('+alvo+')">Pix<small>o código aparece na tela · cai na hora</small></button>'
+    ? '<button class="b pix" onclick="gerarPix('+alvo+')">Gerar o Pix<small>o código aparece na tela · cai na hora</small></button>'
     : '<button class="b pix off" disabled>Pix<small>indisponível agora</small></button>';
-  // Cartão apagado enquanto a Cielo não libera. Fica visível de propósito: a
-  // pessoa vê que existe e não fica procurando onde clicar.
-  h+= st.cartao.disponivel
-    ? '<button class="b cart" onclick="gerarCartao('+alvo+')">Cartão<small>crédito ou débito</small></button>'
-    : '<button class="b cart off" disabled>Cartão<small>'+
-      (st.cartao.motivo==='em breve'?'em breve — ainda não liberado':'não disponível aqui')+
-      '</small></button>';
   h+='<button class="b g" onclick="pintaPagar()">Voltar</button>';
   app(h);
 }
@@ -19657,38 +19813,6 @@ function vigiarSaida(token){
   };
   pinta();
   saidaTmr=setInterval(pinta,4000);
-}
-// Cartão NÃO é digitado aqui: esta página é HTTP na rede da casa. O cliente vai
-// pro app em HTTPS, e a gente só espera a confirmação.
-async function gerarCartao(n){
-  app('<h1>Pagar com cartão</h1><div class="mut">preparando…</div>');
-  var r=await post('/api/cartao/cobrar',{mesa:n,gorjeta_pct:PGGORJ,dividir_por:PGPARTES});
-  if(!r.ok){app('<div class="aviso">'+esc(r.erro||'não consegui')+'</div>'+
-    '<button class="b" onclick="chamar()">🔔 Chamar o garçom</button>'+
-    '<button class="b g" onclick="inicio()">Voltar</button>');return}
-  app('<h1>Pagar com cartão</h1><div class="valor">R$ '+Number(r.valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'+
-    '<div class="mut" style="margin:8px 0 4px">Toque no botão para abrir a página segura de pagamento.</div>'+
-    '<a class="b cart" style="display:block;text-align:center;text-decoration:none" href="'+esc(r.url)+'" target="_blank" rel="noopener">Abrir pagamento seguro</a>'+
-    '<div class="mut" style="margin:14px 0 6px">Ou aponte a câmera de outro celular:</div>'+
-    (r.imagem?'<img class="qr" src="'+r.imagem+'" alt="QR do pagamento">':'')+
-    '<div id="pgst" class="mut">aguardando o pagamento…</div>'+
-    '<button class="b g" onclick="pararCartao()">Voltar</button>');
-  vigiarCartao(r.ref);
-}
-var cartTmr=null;
-function pararCartao(){clearInterval(cartTmr);cartTmr=null;inicio()}
-function vigiarCartao(ref){
-  clearInterval(cartTmr);
-  var t=0;
-  cartTmr=setInterval(async function(){
-    if(++t>120){clearInterval(cartTmr);return}
-    var s;try{s=await (await fetch('/api/cartao/conferir?ref='+encodeURIComponent(ref),{cache:'no-store'})).json()}catch(e){return}
-    var el=document.getElementById('pgst');
-    if(s.ok&&s.pago){
-      clearInterval(cartTmr);cartTmr=null;
-      aposPagar('cartao');
-    } else if(el&&s.erro_cielo){ el.innerHTML='<span style="color:#b45309">'+esc(s.erro_cielo)+' — tente outro cartão</span>' }
-  },5000);
 }
 // COPIAR O CÓDIGO PIX
 //
@@ -23329,7 +23453,7 @@ async function gerenteAtrasos() {
       LEFT JOIN area a ON a.codigo = ci.area_codigo
       LEFT JOIN praca_config pc ON pc.area_codigo = ci.area_codigo
       LEFT JOIN produto_tempo pt ON pt.codigo_pdv = ci.codigo_pdv
-     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
+     WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL AND ${contaNoKds()} AND ci.cancelado_em IS NULL
        AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
      GROUP BY ci.area_codigo, a.nome, c.numero, pc.minutos`;
   const passe = await sql`
@@ -23340,7 +23464,7 @@ async function gerenteAtrasos() {
       JOIN comanda c ON c.codigo = ci.comanda_codigo
       LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
      WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
-       AND COALESCE(ci.entregue, m.entregue_em) IS NULL AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
+       AND COALESCE(ci.entregue, m.entregue_em) IS NULL AND ${contaNoKds()} AND ci.cancelado_em IS NULL
        AND (ci.area_codigo IS NULL OR ci.area_codigo <> ALL(${ocultas}))
      GROUP BY ci.area_codigo`;
   const agora = Date.now();
