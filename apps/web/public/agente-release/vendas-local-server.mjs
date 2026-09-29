@@ -17699,7 +17699,7 @@ body{padding-bottom:120px}
 .hero .chip{position:relative;display:inline-block;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.35);
   border-radius:99px;padding:6px 14px;font-size:14px;font-weight:700;backdrop-filter:blur(4px)}
 .hero input{position:relative;border:0;margin-top:14px}
-.promo{display:flex;align-items:center;gap:14px;width:100%;margin-top:-22px;position:relative;z-index:2;
+.promo{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;width:100%;margin-top:-22px;position:relative;z-index:2;
   background:#fff;border:2px solid #ffc98f;border-radius:20px;padding:14px 14px;cursor:pointer;font:inherit;text-align:left;color:var(--ink);
   box-shadow:0 8px 22px rgba(0,0,0,.08)}
 .promo:active{transform:scale(.99)}
@@ -17710,7 +17710,22 @@ body{padding-bottom:120px}
 .promo .tx{flex:1;min-width:0}
 .promo .tx b{display:block;font-size:17px;line-height:1.2}
 .promo .tx small{display:block;color:var(--mut);font-size:13px;margin-top:3px;line-height:1.35}
-.promo .seta{font-size:22px;color:var(--gold2);font-weight:800}
+/* a faixa de baixo diz "avaliar" antes de qualquer texto: sem ela o card
+   passava por propaganda de drink e ninguem percebia que era pra avaliar.
+   Card e estrelas chamam atencao 3x ao abrir e param. */
+.promo .cta{flex:0 0 100%;display:flex;align-items:center;gap:10px;background:#fff4e8;border:1.5px solid #ffd6b3;
+  border-radius:14px;padding:7px 7px 7px 12px;font-size:15.5px;font-weight:800;color:#c4520f}
+.promo .seta{margin-left:auto;flex:none;width:30px;height:30px;border-radius:50%;background:var(--gold2);color:#fff;
+  font-size:21px;font-weight:800;display:flex;align-items:center;justify-content:center;padding-bottom:2px}
+.promo .est{display:flex;gap:2px;color:#f5b301;font-size:18px;line-height:1}
+.promo .est i{font-style:normal;display:inline-block;animation:estrela 2.4s ease-in-out .5s 3}
+.promo .est i:nth-child(2){animation-delay:.6s}.promo .est i:nth-child(3){animation-delay:.7s}
+.promo .est i:nth-child(4){animation-delay:.8s}.promo .est i:nth-child(5){animation-delay:.9s}
+@keyframes estrela{0%,24%,100%{transform:none}12%{transform:translateY(-3px) scale(1.3)}}
+.promo{animation:chama 2.4s ease-out .5s 3}
+@keyframes chama{0%{box-shadow:0 8px 22px rgba(0,0,0,.08),0 0 0 0 rgba(255,138,61,.55)}
+  60%,100%{box-shadow:0 8px 22px rgba(0,0,0,.08),0 0 0 12px rgba(255,138,61,0)}}
+@media (prefers-reduced-motion:reduce){.promo,.promo .est i{animation:none}}
 .b.ped{font-size:20px;padding:22px;margin-top:18px;background:linear-gradient(135deg,#ff8a3d,#e0651a);box-shadow:0 8px 20px rgba(224,101,26,.3)}
 .tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
 .tile{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px 12px;font:inherit;font-size:15px;font-weight:700;
@@ -17720,6 +17735,9 @@ body{padding-bottom:120px}
 .tile:active{background:#f6f6fa}
 .tile.pix{background:#eafaf0;border-color:#bfe9cf}
 .tile.gar{background:#fff4ea;border-color:#ffd6b3}
+.tile.prob{background:#fdf1ef;border-color:#f3c2bb}
+.tile.prob small{color:#b0463a}
+.tile.av{background:#fffaea;border-color:#f6dc8c}
 .lnk{display:block;width:100%;background:none;border:0;font:inherit;font-size:14px;color:var(--mut);text-decoration:underline;
   margin-top:14px;padding:8px;cursor:pointer}
 /* ---- avaliação ---- */
@@ -17852,21 +17870,24 @@ async function inicio(){
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
     h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
       // celular compartilhado: depois de avaliar, o card chama o proximo da mesa
-      (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar? ⭐</b><small>cada pessoa ganha o seu drink</small></div>'
-        :'<div class="tx"><b>Avalie e ganhe um drink ⭐</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>')+
-      '<div class="seta">›</div></button>';
+      (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar?</b><small>cada pessoa ganha o seu drink</small></div>'
+        :'<div class="tx"><b>Avalie e ganhe um drink</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>')+
+      '<div class="cta"><span class="est"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></span>Avaliar agora<span class="seta">›</span></div></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
     '<div class="tiles">'+
       '<button class="tile" onclick="verJaPedido()"><i>📋</i>O que já pedi<small>acompanhe seus pedidos</small></button>'+
       '<button class="tile" onclick="minhaConta()"><i>🧾</i>Minha conta<small>veja o total</small></button>'+
       '<button class="tile gar" onclick="chamar()"><i>🔔</i>Chamar garçom<small>ele vem na hora</small></button>'+
+      // RECLAMACAO A VISTA, do lado do garcom: na capa nova (27/09) ela tinha
+      // virado um link cinza no rodape e ninguem achava. Vai pro KDS (a mesa
+      // passa na frente, so na praca do item) e pro celular do gerente.
+      '<button class="tile prob" onclick="telaProblema()"><i>⚠️</i>Problema no pedido<small>demorou, faltou, veio errado</small></button>'+
       '<button class="tile pix" onclick="telaPix()"><i>💳</i>Pagar a conta<small>Pix ou cartão</small></button>'+
-      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>⭐</i>O de sempre<small>o que você mais pede</small></button>':'')+
-      '<button class="tile" onclick="telaAvaliar()"><i>⭐</i>Avaliar<small>elogio, reclamação ou sugestão</small></button>'+
+      '<button class="tile'+(temDrink()?' av':'')+'" onclick="telaAvaliar()"><i>⭐</i>Avaliar<small>'+(temDrink()?'ganhe um drink 🍹':'elogio, reclamação ou sugestão')+'</small></button>'+
+      (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>🔁</i>O de sempre<small>o que você mais pede</small></button>':'')+
       (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
-    '</div>'+
-    '<button class="lnk" onclick="telaProblema()">Relatar um problema agora</button>';
+    '</div>';
   app(h);renderCarrinho();
 }
 function nomesBrinde(){
@@ -18608,6 +18629,8 @@ async function pintaJa(n){
       }).join('');
     }).join(''):'<div class="mut">nada pedido ainda</div>')+'</div>'+
     '<button class="b ped" onclick="pararJa();telaPedir()">Pedir mais</button>'+
+    // e' aqui que o cliente olha quando o prato atrasa: a reclamacao sai daqui
+    (its.length?'<button class="b op" onclick="pararJa();telaProblema()">⚠️ Demorando ou veio errado?<small>avise a cozinha e o gerente na hora</small></button>':'')+
     '<button class="b g" onclick="pararJa();inicio()">Voltar</button>');
   if(mudou&&navigator.vibrate)try{navigator.vibrate(120)}catch(e){}
 }

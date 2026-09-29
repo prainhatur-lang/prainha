@@ -17699,7 +17699,7 @@ body{padding-bottom:120px}
 .hero .chip{position:relative;display:inline-block;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.35);
   border-radius:99px;padding:6px 14px;font-size:14px;font-weight:700;backdrop-filter:blur(4px)}
 .hero input{position:relative;border:0;margin-top:14px}
-.promo{display:flex;align-items:center;gap:14px;width:100%;margin-top:-22px;position:relative;z-index:2;
+.promo{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;width:100%;margin-top:-22px;position:relative;z-index:2;
   background:#fff;border:2px solid #ffc98f;border-radius:20px;padding:14px 14px;cursor:pointer;font:inherit;text-align:left;color:var(--ink);
   box-shadow:0 8px 22px rgba(0,0,0,.08)}
 .promo:active{transform:scale(.99)}
@@ -17710,12 +17710,14 @@ body{padding-bottom:120px}
 .promo .tx{flex:1;min-width:0}
 .promo .tx b{display:block;font-size:17px;line-height:1.2}
 .promo .tx small{display:block;color:var(--mut);font-size:13px;margin-top:3px;line-height:1.35}
-.promo .seta{flex:none;width:36px;height:36px;border-radius:50%;background:var(--gold2);color:#fff;font-size:24px;font-weight:800;
-  display:flex;align-items:center;justify-content:center;padding-bottom:2px;box-shadow:0 4px 10px rgba(224,101,26,.35)}
-/* as estrelas dizem "avaliar" antes de qualquer texto: sem elas o card
+/* a faixa de baixo diz "avaliar" antes de qualquer texto: sem ela o card
    passava por propaganda de drink e ninguem percebia que era pra avaliar.
    Card e estrelas chamam atencao 3x ao abrir e param. */
-.promo .est{display:flex;gap:3px;margin-top:7px;color:#f5b301;font-size:19px;line-height:1}
+.promo .cta{flex:0 0 100%;display:flex;align-items:center;gap:10px;background:#fff4e8;border:1.5px solid #ffd6b3;
+  border-radius:14px;padding:7px 7px 7px 12px;font-size:15.5px;font-weight:800;color:#c4520f}
+.promo .seta{margin-left:auto;flex:none;width:30px;height:30px;border-radius:50%;background:var(--gold2);color:#fff;
+  font-size:21px;font-weight:800;display:flex;align-items:center;justify-content:center;padding-bottom:2px}
+.promo .est{display:flex;gap:2px;color:#f5b301;font-size:18px;line-height:1}
 .promo .est i{font-style:normal;display:inline-block;animation:estrela 2.4s ease-in-out .5s 3}
 .promo .est i:nth-child(2){animation-delay:.6s}.promo .est i:nth-child(3){animation-delay:.7s}
 .promo .est i:nth-child(4){animation-delay:.8s}.promo .est i:nth-child(5){animation-delay:.9s}
@@ -17868,10 +17870,9 @@ async function inicio(){
     var bola=function(o,em){return '<span'+(o&&o.tem_foto?' style="background-image:url(/produto-foto/'+o.produto_codigo+')"':'')+'>'+(o&&o.tem_foto?'':em)+'</span>'};
     h+='<button class="promo" onclick="telaAvaliar()"><div class="fts">'+bola(com,'🍸')+bola(sem,'🥤')+'</div>'+
       // celular compartilhado: depois de avaliar, o card chama o proximo da mesa
-      (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar?</b><small>cada pessoa ganha o seu drink</small>'
-        :'<div class="tx"><b>Avalie e ganhe um drink</b><small>'+esc(nomesBrinde())+' — por nossa conta</small>')+
-      '<span class="est"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></span></div>'+
-      '<div class="seta">›</div></button>';
+      (jaAvaliouAqui()?'<div class="tx"><b>Mais alguém da mesa quer avaliar?</b><small>cada pessoa ganha o seu drink</small></div>'
+        :'<div class="tx"><b>Avalie e ganhe um drink</b><small>'+esc(nomesBrinde())+' — por nossa conta</small></div>')+
+      '<div class="cta"><span class="est"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></span>Avaliar agora<span class="seta">›</span></div></button>';
   }
   h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio e pedir</button>'+
     '<div class="tiles">'+
