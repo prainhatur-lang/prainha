@@ -80,6 +80,7 @@ class ContaActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        Session.revalidar(this) // confere local × internet (se a última checagem é velha)
         carregar()
     }
 
@@ -1540,7 +1541,8 @@ class ContaActivity : AppCompatActivity() {
     /** Sem impressora (celular / térmica falhou): o passe vai pro WhatsApp —
      *  a página /passe?t= vira o QR da catraca na tela do cliente. */
     private fun fallbackPasse(token: String, pessoas: Int, fecharDepois: Boolean) {
-        val url = Session.servidor(this) + "/passe?t=" + token
+        // Túnel (https), não o IP da loja: o link abre no 4G do cliente.
+        val url = Session.servidorPublico(this) + "/passe?t=" + token
         AlertDialog.Builder(this)
             .setTitle("Passe gerado — sem impressora aqui")
             .setMessage("Vale $pessoas pessoa(s). Mande o link pro WhatsApp do cliente: " +

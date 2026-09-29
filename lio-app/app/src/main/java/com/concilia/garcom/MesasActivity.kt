@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
@@ -48,8 +49,8 @@ class MesasActivity : AppCompatActivity() {
         numeroIn = findViewById(R.id.numero)
 
         findViewById<TextView>(R.id.lojaNome).text = Session.loja(this)
-        findViewById<TextView>(R.id.garcomNome).text =
-            (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME
+        mostrarRota()
+        findViewById<TextView>(R.id.garcomNome).setOnClickListener { dialogRota() }
         findViewById<Button>(R.id.sair).setOnClickListener { logout() }
         findViewById<Button>(R.id.fechamentoDia).setOnClickListener { dialogFechamento() }
         // 🛵 só pra quem tem "Pedidos Delivery" no Consumer (ou admin)
@@ -66,6 +67,8 @@ class MesasActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        Session.revalidar(this) // voltou pra tela: confere local × internet (se a última checagem é velha)
+        mostrarRota()
         carregar()
         handler.postDelayed(refreshRunnable, 15000)
         atualizarPendentes()
@@ -100,6 +103,7 @@ class MesasActivity : AppCompatActivity() {
             try {
                 val (mesas, comandas) = Api.abertas(Session.servidor(this))
                 runOnUiThread {
+                    mostrarRota()
                     abertas = mesas + comandas
                     adapter.itens = abertas
                     adapter.notifyDataSetChanged()
@@ -107,12 +111,67 @@ class MesasActivity : AppCompatActivity() {
                     if (abertas.isEmpty()) vazio.text = "Nenhuma mesa aberta — digite o número pra começar"
                 }
             } catch (e: Exception) {
+                Session.revalidar(this) // o caminho em uso falhou: reconfere (se a última checagem é velha)
                 runOnUiThread {
+                    mostrarRota()
                     if (abertas.isEmpty()) {
                         vazio.visibility = View.VISIBLE
                         vazio.text = Api.msgErroRede(e, Session.servidor(this@MesasActivity))
                     }
                 }
+            }
+        }.start()
+    }
+
+    // ---- por onde o app fala com o servidor (rede local × internet) ----
+
+    /** Cabeçalho: "nome · v1.10.25 · ⚡ rede local" (ou ☁️ internet = túnel). */
+    private fun mostrarRota() {
+        findViewById<TextView>(R.id.garcomNome).text =
+            (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME +
+                " · " + Session.rotaCurta(this)
+    }
+
+    /** Toque no nome: mostra por onde está indo e por quê; "Checar agora"
+     *  refaz a escolha e mede o tempo de resposta da loja e da internet. */
+    private fun dialogRota(medicao: String? = null) {
+        val lan = Session.lanConhecida(this)
+        val ha = Session.rotaChecadaHa()
+        val txt = buildString {
+            append("Agora: ").append(Session.rotaCurta(this@MesasActivity)).append('\n')
+            append(Session.servidor(this@MesasActivity)).append("\n\n")
+            append("Por quê: ").append(Session.motivoRota).append('\n')
+            append("Configurado no login: ").append(Session.servidorConfigurado(this@MesasActivity)).append('\n')
+            append("IP local da loja: ").append(lan ?: "desconhecido").append('\n')
+            append("Wi-Fi: ").append(if (Descoberta.redeLocal(this@MesasActivity) != null) "ligado" else "desligado").append('\n')
+            append("Checado: ").append(if (ha < 0) "ainda não" else "há ${ha}s")
+            if (medicao != null) append("\n\n").append(medicao)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Conexão com o servidor")
+            .setMessage(txt)
+            .setPositiveButton("Fechar", null)
+            .setNeutralButton("Checar agora") { _, _ -> checarRota() }
+            .show()
+    }
+
+    private fun checarRota() {
+        val espera = AlertDialog.Builder(this).setMessage("📶 Checando a conexão…").setCancelable(false).create()
+        espera.show()
+        Thread {
+            val t0 = SystemClock.elapsedRealtime()
+            try { Session.resolverBase(this) } catch (_: Exception) {}
+            val escolha = SystemClock.elapsedRealtime() - t0
+            val cfg = Session.servidorConfigurado(this)
+            val lan = Session.lanConhecida(this)
+            val linhas = mutableListOf<String>()
+            if (lan != null) linhas.add("• Loja ($lan): " + Api.tempoResposta("http://$lan"))
+            if (cfg.startsWith("https://")) linhas.add("• Internet (${cfg.removePrefix("https://")}): " + Api.tempoResposta(cfg))
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                espera.dismiss()
+                mostrarRota()
+                dialogRota("Tempo de resposta:\n" + linhas.joinToString("\n") + "\n(escolha feita em $escolha ms)")
             }
         }.start()
     }

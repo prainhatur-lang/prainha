@@ -56,6 +56,7 @@ class EntregasActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        Session.revalidar(this) // saiu/voltou da rua: confere local × internet
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }

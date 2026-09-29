@@ -137,8 +137,16 @@ android {
         // 1.10.24: a busca pelo CÓDIGO DA EMPRESA fala com o Concilia na nuvem
         // (CONCILIA_BASE), não com o API_BASE — que aponta pro IP da loja e
         // fazia o "Buscar" morrer em timeout no 10.0.0.252 fora da rede do Bar.
-        versionCode = 48
-        versionName = "1.10.24"
+        // 1.10.25: dentro da loja vai DIRETO no servidor local de novo (~10 ms)
+        // em vez do túnel (~1 s por chamada). A escolha local × túnel roda logo
+        // depois do login (antes só no próximo arranque — logado pela lista da
+        // nuvem, a sessão inteira ia pela internet), quando o Wi-Fi entra/sai e
+        // ao voltar pra tela; as chamadas pro IP da loja saem PELO Wi-Fi mesmo
+        // com 4G ligado (Wi-Fi sem internet validada virava rota pelo chip);
+        // o IP local fica amarrado ao servidor que o informou. Cabeçalho das
+        // mesas mostra "⚡ rede local"/"☁️ internet" e o toque no nome mede.
+        versionCode = 49
+        versionName = "1.10.25"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

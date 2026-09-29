@@ -16,6 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Api.usarContexto(this)
         if (!Session.isLoggedIn(this)) { irPara(LoginActivity::class.java); return }
         Thread {
             try { Session.resolverBase(this) } catch (_: Exception) {}

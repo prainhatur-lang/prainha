@@ -57,6 +57,7 @@ class LoginActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_login)
+        Api.usarContexto(this)
 
         servidorSp = findViewById(R.id.servidor)
         servidorCustom = findViewById(R.id.servidorCustom)
@@ -236,19 +237,25 @@ class LoginActivity : AppCompatActivity() {
         Thread {
             try {
                 val r = Api.entrar(base, login, pin, pin2)
+                val ok = r.optBoolean("ok") && !r.optStringOrNull("token").isNullOrBlank()
+                if (ok) {
+                    Session.saveServidor(this, base, lojaLabel)
+                    Session.save(this, r.optString("token"), login, r.optStringOrNull("nome"), false, r.optBoolean("entregas"))
+                    // Config da loja (nome real, limites de mesa/comanda e o IP
+                    // local) e, com ela, a escolha local × túnel ANTES de abrir as
+                    // mesas. Antes a config vinha depois e a escolha só no próximo
+                    // arranque: logado pelo túnel, a sessão toda ia pela internet
+                    // (~1 s por chamada) mesmo com o servidor ao lado.
+                    val c = Api.config(base)
+                    if (c != null) {
+                        Session.saveConfig(this, c, de = base)
+                        Session.saveServidor(this, base, c.loja)
+                    }
+                    try { Session.resolverBase(this) } catch (_: Exception) {}
+                }
                 runOnUiThread {
                     when {
-                        r.optBoolean("ok") && !r.optStringOrNull("token").isNullOrBlank() -> {
-                            Session.saveServidor(this, base, lojaLabel)
-                            Session.save(this, r.optString("token"), login, r.optStringOrNull("nome"), false, r.optBoolean("entregas"))
-                            // Config da loja (nome real + limites de mesa/comanda).
-                            Thread {
-                                val c = Api.config(base)
-                                if (c != null) {
-                                    Session.saveConfig(this, c)
-                                    Session.saveServidor(this, base, c.loja)
-                                }
-                            }.start()
+                        ok -> {
                             startActivity(Intent(this, MesasActivity::class.java))
                             finish()
                         }

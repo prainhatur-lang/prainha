@@ -1,5 +1,7 @@
 package com.concilia.garcom
 
+import android.content.Context
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -23,6 +25,14 @@ import javax.net.ssl.SSLException
 object Api {
 
     private const val TIMEOUT = 15000
+
+    // Contexto do app, pra amarrar as chamadas ao IP LOCAL da loja no Wi-Fi.
+    // Wi-Fi sem internet validada (hotspot do UniFi antes de autorizar, rede
+    // da loja sem saída) + chip de dados = o Android usa o 4G como rede padrão,
+    // e um socket solto pra 192.168.x sai pelo 4G e morre. Aí a maquininha na
+    // loja ia pelo túnel (~1 s por chamada) em vez do servidor ao lado (~10 ms).
+    @Volatile private var appCtx: Context? = null
+    fun usarContexto(ctx: Context) { if (appCtx == null) appCtx = ctx.applicationContext }
 
     /** 401 nas rotas do garçom = token venceu (16h) → volta pro login. */
     class SemSessao : IOException("Sessão expirada — entre de novo")
@@ -148,7 +158,12 @@ object Api {
         readTimeoutMs: Int = TIMEOUT,
         connectTimeoutMs: Int = TIMEOUT,
     ): Pair<Int, String> {
-        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        val url = URL(urlStr)
+        // http:// só existe pra IP privado da loja (trava do cleartext): vai pelo
+        // Wi-Fi/cabo mesmo que o padrão do aparelho seja o 4G. O túnel (https)
+        // segue a rede padrão.
+        val rede = if (url.protocol == "http" && Descoberta.ipPrivado(url.host)) appCtx?.let { Descoberta.redeLocal(it) } else null
+        val conn = (rede?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
         try {
             conn.requestMethod = method
             conn.connectTimeout = connectTimeoutMs
@@ -221,10 +236,16 @@ object Api {
 
     /** Servidor respondendo AGORA? Checagem RÁPIDA (timeouts curtos) pra decidir
      *  no arranque se usa o LOCAL da loja ou o Funnel. Nunca lança. */
-    fun vivo(base: String): Boolean = try {
-        val (code, _) = http("GET", "$base/api/versao", readTimeoutMs = 1500, connectTimeoutMs = 1500)
+    fun vivo(base: String, timeoutMs: Int = 1500): Boolean = try {
+        val (code, _) = http("GET", "$base/api/versao", readTimeoutMs = timeoutMs, connectTimeoutMs = timeoutMs)
         code in 200..299
     } catch (_: Exception) { false }
+
+    /** Diagnóstico (toque no nome, nas mesas): quanto `base` leva pra responder. */
+    fun tempoResposta(base: String): String {
+        val t0 = SystemClock.elapsedRealtime()
+        return if (vivo(base, 5000)) "${SystemClock.elapsedRealtime() - t0} ms" else "não respondeu"
+    }
 
     /**
      * Config da loja (GET /api/config — rota criada junto com este app).
