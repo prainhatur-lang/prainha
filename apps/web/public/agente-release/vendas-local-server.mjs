@@ -6720,9 +6720,12 @@ async function garcomDaRequisicao(req, u) {
     const pode = await garcomPodeEntrar(v.login);
     if (pode.ok) return { login: v.login, nome: pode.nome };
     // o CAIXA também vende ("abre mesa e lança como na maquininha"): quem tem
-    // PedidosCaixa (5) no Consumer entra na venda mesmo sem a Comanda Mobile
+    // PedidosCaixa (5) no Consumer entra na venda mesmo sem a Comanda Mobile.
+    // ⚠️ + p.comanda: usuário NOSSO (usuario_local) com o check Garçom não está
+    // no mapa do Consumer — sem isso o login passava (apiGarcomEntrar aceita
+    // comanda) e todo lançamento voltava "Faça login" (vicente na Mar, 29/09)
     const p = await permsDoUsuario(v.login);
-    if (p.ok && (p.pedidos || p.entregas)) return { login: v.login, nome: p.nome };
+    if (p.ok && (p.pedidos || p.comanda || p.entregas)) return { login: v.login, nome: p.nome };
     return null;
   }
   catch { return { login: v.login, nome: null }; } // Firebird fora: não desloga quem já entrou
