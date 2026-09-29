@@ -615,6 +615,12 @@ async function initSchema() {
   await addCol('usuario_local', 'codigo integer');
   await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS seq_usuario START ${SEQ_INICIO} MINVALUE ${SEQ_INICIO}`);
   await sql`UPDATE usuario_local SET codigo = nextval('seq_usuario') WHERE codigo IS NULL`;
+  // ACESSOS POR TELA (Caixa → Usuários, os checks): Produção, Etiqueta, QR das
+  // mesas, Reservas e Ponto não têm código no Consumer. Tabela própria, e não
+  // coluna no garcom_pin, porque o "zerar PIN" apaga a linha do garcom_pin —
+  // e vale também pro login do Consumer (Prainha Mar).
+  await sql`CREATE TABLE IF NOT EXISTS usuario_acesso (login text PRIMARY KEY,
+    acessos text[] NOT NULL DEFAULT '{}', atualizado_em timestamptz DEFAULT now(), atualizado_por text)`;
   // TIRAR OS 10%: é dinheiro do garçom saindo — quem tirou e de qual mesa
   // fica registrado, senão vira boca a boca no fim do mês.
   await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
@@ -6743,6 +6749,7 @@ async function ehChef(login) {
     const local = (await sql`SELECT producao FROM garcom_pin WHERE login=${l}`)[0];
     if (local && local.producao) return true;
   } catch {}
+  if (await acessoMarcado(l, 'producao')) return true;
   return ehGerente(l);
 }
 
@@ -6756,7 +6763,132 @@ async function ehRecepcao(login) {
     const local = (await sql`SELECT recepcao FROM garcom_pin WHERE login=${l}`)[0];
     if (local && local.recepcao) return true;
   } catch {}
+  if (await acessoMarcado(l, 'reservas')) return true;
   return ehGerente(l);
+}
+
+// ---- ACESSO POR TELA (os checks de Caixa → Usuários) ----
+// Produção e Reservas já tinham porta (ehChef/ehRecepcao, acima). Etiqueta,
+// QR das mesas e o CADASTRO DE ROSTO do ponto eram abertos no tablet da
+// cozinha; a porta deles só FECHA quando alguém da casa ganha o check daquela
+// tela — até lá segue aberta como sempre, pra atualização não travar a
+// cozinha no meio do serviço. Bater o ponto nunca pede login.
+// Gerente não entra aqui: marcar alguém gerente não fecha porta nenhuma.
+const ACESSOS_TELA = ['producao', 'etiqueta', 'qrcode', 'reservas', 'ponto'];
+const ACESSO_NOME = { producao: 'Produção', etiqueta: 'Etiqueta', qrcode: 'QR Codes das mesas', reservas: 'Reservas', ponto: 'Ponto (cadastro de rosto)' };
+/** o check existe e a pessoa não está desativada aqui */
+async function acessoMarcado(login, a) {
+  try {
+    return (await sql`SELECT 1 FROM usuario_acesso ua WHERE ua.login=${login} AND ${a}=ANY(ua.acessos)
+      AND NOT EXISTS (SELECT 1 FROM usuario_local ul WHERE ul.login=ua.login AND NOT ul.ativo)`).length > 0;
+  } catch { return false; }
+}
+async function temAcessoTela(login, a) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return false;
+  if (a === 'producao') return ehChef(l);
+  if (a === 'reservas') return ehRecepcao(l);
+  return (await acessoMarcado(l, a)) || ehGerente(l);
+}
+/** porta fechada = alguém (ativo) tem o check dessa tela */
+async function portaFechada(a) {
+  try {
+    return (await sql`SELECT 1 FROM usuario_acesso ua WHERE ${a}=ANY(ua.acessos)
+      AND NOT EXISTS (SELECT 1 FROM usuario_local ul WHERE ul.login=ua.login AND NOT ul.ativo) LIMIT 1`).length > 0;
+  } catch { return false; }
+}
+/** {aberto:true} = tela ainda sem porta; {login,nome} = entrou; null = barrar */
+async function acessoDaRequisicao(req, u, a) {
+  if (!(await portaFechada(a))) return { aberto: true, login: null, nome: null };
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v || !(await temAcessoTela(v.login, a))) return null;
+  let nome = null;
+  try { nome = (await sql`SELECT nome FROM garcom_pin WHERE login=${v.login}`)[0]?.nome || null; } catch {}
+  return { login: v.login, nome: nome || v.login };
+}
+/** Login das telas do ☰ que eram abertas (Etiqueta, QR). Vai no <head>: troca
+ *  o fetch pra mandar o token em /api/* e, se a porta estiver fechada (alguém
+ *  tem o check da tela) e ninguém entrou, cobre a página com login + PIN. */
+function portaAcessoJs(area, titulo) {
+  const inp = 'display:block;width:100%;box-sizing:border-box;font:inherit;font-size:18px;padding:12px;margin-top:8px;border:2px solid #ddd;border-radius:12px';
+  return `<script>
+(function(){
+var A=${JSON.stringify(area)},T=${JSON.stringify(titulo)},K='acesso_'+A,TOK='',PEDIU=false;
+try{TOK=localStorage.getItem(K)||''}catch(e){}
+var f0=window.fetch.bind(window);
+function api(u){return typeof u==='string'&&u.indexOf('/api/')===0&&u.indexOf('/api/acesso/')!==0}
+window.fetch=function(u,o){
+  if(TOK&&api(u)){o=Object.assign({},o||{});var h=new Headers(o.headers||{});h.set('x-garcom',TOK);o.headers=h}
+  return f0(u,o).then(function(r){if(r.status===401&&api(u))quando(pede);return r});
+};
+function quando(fn){if(document.body)fn();else document.addEventListener('DOMContentLoaded',fn)}
+function $(i){return document.getElementById(i)}
+function pede(){
+  if(PEDIU)return;PEDIU=true;
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.94);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,sans-serif';
+  ov.innerHTML='<div style="background:#fff;color:#111;border-radius:16px;padding:22px;width:100%;max-width:360px">'+
+    '<div style="font-size:20px;font-weight:800" id="pA_t"></div>'+
+    '<div style="color:#666;margin:6px 0 8px;font-size:14px">Entre com seu login e o PIN da loja.</div>'+
+    '<input id="pA_l" placeholder="login" autocapitalize="none" autocomplete="off" style="${inp}">'+
+    '<input id="pA_p" placeholder="PIN" type="password" inputmode="numeric" maxlength="8" style="${inp}">'+
+    '<input id="pA_p2" placeholder="repita o PIN" type="password" inputmode="numeric" maxlength="8" style="${inp};display:none">'+
+    '<button id="pA_b" style="display:block;width:100%;margin-top:12px;padding:14px;font:inherit;font-size:18px;font-weight:800;border:0;border-radius:12px;background:#111;color:#fff">Entrar</button>'+
+    '<a href="/" style="display:block;text-align:center;margin-top:12px;color:#666">voltar</a>'+
+    '<div id="pA_e" style="color:#b91c1c;margin-top:10px;font-size:14px"></div></div>';
+  document.body.appendChild(ov);
+  $('pA_t').textContent='🔒 '+T;
+  var go=async function(){
+    var b={a:A,login:$('pA_l').value.trim(),pin:$('pA_p').value,pin2:$('pA_p2').value};
+    var r;try{r=await (await f0('/api/acesso/entrar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}catch(e){r={ok:false,erro:'sem conexão com o servidor da loja'}}
+    if(r.ok&&r.token){try{localStorage.setItem(K,r.token)}catch(e){}location.reload();return}
+    if(r.primeira_vez){$('pA_p2').style.display='block';$('pA_e').textContent=r.erro||'Primeiro acesso: repita o PIN pra criar';return}
+    $('pA_e').textContent=r.erro||'não deu';
+  };
+  $('pA_b').onclick=go;
+  ov.addEventListener('keydown',function(e){if(e.key==='Enter')go()});
+  setTimeout(function(){$('pA_l').focus()},50);
+}
+f0('/api/acesso/sessao?a='+A,{headers:TOK?{'x-garcom':TOK}:{},cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+  if(d.ok&&d.aberto)return;
+  if(!d.ok){try{localStorage.removeItem(K)}catch(e){}TOK='';quando(pede);return}
+  quando(function(){
+    var b=document.createElement('button');
+    b.style.cssText='position:fixed;right:10px;bottom:10px;z-index:9000;border:1px solid #ccc;background:#fff;color:#333;border-radius:999px;padding:6px 12px;font:13px system-ui;opacity:.9';
+    b.textContent='👤 '+(d.nome||d.login)+' · sair';
+    b.onclick=function(){try{localStorage.removeItem(K)}catch(e){}location.reload()};
+    document.body.appendChild(b);
+  });
+}).catch(function(){});
+})();
+</script>`;
+}
+// POST /api/acesso/entrar {a, login, pin} — mesma régua do /reservas
+async function apiAcessoEntrar(body) {
+  const a = String(body.a || '');
+  if (!ACESSOS_TELA.includes(a)) return { ok: false, erro: 'tela desconhecida' };
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  if (!(await temAcessoTela(login, a))) return { ok: false, erro: `Este login não tem acesso a ${ACESSO_NOME[a]}. O administrador marca em Caixa → Usuários.` };
+  const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
+  if (!atual) {
+    // PIN zerado (ou nunca criado): cria aqui, digitando duas vezes — quem só
+    // tem Etiqueta/QR/Ponto não entra no caixa nem na comanda pra criar lá
+    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
+    let nome = login;
+    try { const p = await permsDoUsuario(login); if (p.ok && p.nome) nome = p.nome; } catch {}
+    if (!pin2) return { ok: true, primeira_vez: true, nome };
+    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
+    const salt = randomBytes(16).toString('hex');
+    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
+      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    return { ok: true, token: garcomGeraToken(login), login, nome, criado: true };
+  }
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), login, nome: atual.nome || login };
 }
 
 // GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
@@ -6770,7 +6902,10 @@ async function apiGarcomSessao(req, u) {
 async function apiGerentesListar(req, u) {
   const g = await garcomDaRequisicao(req, u);
   if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente vê isto' };
-  const linhas = await sql`SELECT login, nome, gerente, producao, recepcao FROM garcom_pin ORDER BY COALESCE(nome, login)`;
+  const linhas = await sql`SELECT gp.login, gp.nome, gp.gerente,
+      gp.producao OR COALESCE('producao'=ANY(ua.acessos), false) producao,
+      gp.recepcao OR COALESCE('reservas'=ANY(ua.acessos), false) recepcao
+    FROM garcom_pin gp LEFT JOIN usuario_acesso ua ON ua.login=gp.login ORDER BY COALESCE(gp.nome, gp.login)`;
   const out = [];
   for (const l of linhas) {
     // quem já é gerente pelo Consumer (admin/28) vem travado — não dá pra tirar
@@ -6791,12 +6926,15 @@ async function apiGerenteSet(req, u, body) {
   if (body.recepcao !== undefined) {
     const rv = !!body.recepcao;
     const r = await sql`UPDATE garcom_pin SET recepcao=${rv}, atualizado_em=now() WHERE login=${login} RETURNING login`;
+    // o check de Caixa → Usuários também abre: desmarcar aqui tem que tirar os dois
+    if (!rv) await sql`UPDATE usuario_acesso SET acessos=array_remove(acessos, 'reservas'), atualizado_em=now() WHERE login=${login}`;
     if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
     return { ok: true, login, recepcao: rv };
   }
   if (body.producao !== undefined) {
     const pv = !!body.producao;
     const r = await sql`UPDATE garcom_pin SET producao=${pv}, atualizado_em=now() WHERE login=${login} RETURNING login`;
+    if (!pv) await sql`UPDATE usuario_acesso SET acessos=array_remove(acessos, 'producao'), atualizado_em=now() WHERE login=${login}`;
     if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
     return { ok: true, login, producao: pv };
   }
@@ -8364,13 +8502,67 @@ function perfilDasPerms(perms) {
   for (const [k, v] of Object.entries(PERFIS_LOCAIS)) if ([...v.perms].sort((x, y) => x - y).join(',') === a) return k;
   return null;
 }
+// OS CHECKS da tela de usuário: Caixa / Garçom / Gerente viram os códigos dos
+// perfis acima (somados); Produção, Etiqueta, QR, Reservas e Ponto são telas
+// (usuario_acesso). Gerente já inclui tudo.
+const ACESSOS_BASE = ['caixa', 'garcom', 'gerente'];
+// Caixa aqui é SÓ o caixa (sem a comanda 53/54 do perfil antigo): quem também
+// anda com a comanda ganha o check de Garçom — senão marcar só Caixa voltava
+// com Garçom marcado na próxima edição.
+const PERMS_CHECK = { caixa: [5, 10, 12, 22, 26, 30, 50], garcom: PERFIS_LOCAIS.garcom.perms };
+function permsDosChecks(base) {
+  if (base.includes('gerente')) return [...PERFIS_LOCAIS.gerente.perms];
+  const s = new Set();
+  for (const k of ['caixa', 'garcom']) if (base.includes(k)) PERMS_CHECK[k].forEach((p) => s.add(p));
+  return [...s].sort((x, y) => x - y);
+}
+/** o que a pessoa JÁ consegue fazer (pela régua de cada tela), não o perfil exato:
+ *  28 = autoriza cancelamento (ehGerente), 10 = caixa, 53 = comanda mobile */
+function checksDasPerms(perms) {
+  const p = new Set((perms || []).map(Number));
+  if (p.has(28)) return ['gerente'];
+  return [p.has(10) && 'caixa', p.has(53) && 'garcom'].filter(Boolean);
+}
+const mesmasPerms = (x, y) => [...new Set((x || []).map(Number))].sort((a, b) => a - b).join(',')
+  === [...new Set((y || []).map(Number))].sort((a, b) => a - b).join(',');
+/** telas marcadas por login: usuario_acesso + as marcações antigas de Gerentes (garcom_pin) */
+async function telasPorLogin() {
+  const m = new Map();
+  const add = (l, a) => { if (!m.has(l)) m.set(l, new Set()); m.get(l).add(a); };
+  for (const r of await sql`SELECT login, acessos FROM usuario_acesso`) for (const a of r.acessos || []) if (ACESSOS_TELA.includes(a)) add(r.login, a);
+  for (const r of await sql`SELECT login, producao, recepcao FROM garcom_pin WHERE producao OR recepcao`) {
+    if (r.producao) add(r.login, 'producao');
+    if (r.recepcao) add(r.login, 'reservas');
+  }
+  return m;
+}
+/** grava as telas de um login e alinha as marcações antigas do garcom_pin (senão desmarcar aqui não tirava) */
+async function gravaTelas(login, telas, quem) {
+  await sql`INSERT INTO usuario_acesso (login, acessos, atualizado_por) VALUES (${login}, ${telas}, ${quem})
+    ON CONFLICT (login) DO UPDATE SET acessos=EXCLUDED.acessos, atualizado_em=now(), atualizado_por=EXCLUDED.atualizado_por`;
+  await sql`UPDATE garcom_pin SET producao=${telas.includes('producao')}, recepcao=${telas.includes('reservas')}, atualizado_em=now()
+    WHERE login=${login}`;
+}
+function rotuloChecks(checks) {
+  const nomes = { caixa: 'Caixa', garcom: 'Garçom', gerente: 'Gerente', ...ACESSO_NOME, ponto: 'Ponto', qrcode: 'QR' };
+  return checks.map((c) => nomes[c] || c).join(' · ');
+}
 async function apiUsuariosLocais(quem) {
   if (!quem?.admin) return { ok: false, erro: 'só administrador' };
   const rows = await sql`SELECT login, nome, perms, admin, ativo, criado_em, criado_por
     FROM usuario_local ORDER BY login`;
   const pins = new Set((await sql`SELECT login FROM garcom_pin`).map((x) => x.login));
-  const usuarios = rows.map((u) => ({ ...u, tem_pin: pins.has(u.login), perfil: u.admin ? null : perfilDasPerms(u.perms),
-    acesso: rotuloAcesso(perfilDeCodigos(u.login, u.nome, !!u.admin, u.perms || [])) }));
+  const gerPin = new Set((await sql`SELECT login FROM garcom_pin WHERE gerente`).map((x) => x.login));
+  const telas = await telasPorLogin();
+  const usuarios = rows.map((u) => {
+    let base = checksDasPerms(u.perms);
+    if (gerPin.has(u.login) && !base.includes('gerente')) base = ['gerente'];
+    const tl = [...(telas.get(u.login) || [])];
+    const personalizado = !u.admin && !mesmasPerms(u.perms, permsDosChecks(checksDasPerms(u.perms)));
+    return { ...u, tem_pin: pins.has(u.login), acessos: [...base, ...tl], personalizado,
+      acesso: u.admin ? 'Administrador' : (rotuloChecks(base.includes('gerente') ? base : [...base, ...tl])
+        || rotuloAcesso(perfilDeCodigos(u.login, u.nome, !!u.admin, u.perms || []))) };
+  });
   // os do Consumer (só leitura aqui — permissão se dá no Consumer ou na Equipe do Concilia);
   // daqui dá pra zerar o PIN de quem esqueceu
   let consumer = [], consumerErro = null;
@@ -8382,12 +8574,14 @@ async function apiUsuariosLocais(quem) {
         .map((x) => {
           const l = String(x.login).trim().toLowerCase();
           const pf = perfilDeCodigos(l, x.nome, /^administrador$/i.test(x.tipo || ''), x.permissoes);
-          return { login: l, nome: x.nome, acesso: rotuloAcesso(pf), tem_pin: pins.has(l) };
+          const tl = [...(telas.get(l) || [])];
+          return { login: l, nome: x.nome, acesso: rotuloAcesso(pf) + (tl.length ? ' · ' + rotuloChecks(tl) : ''),
+            tem_pin: pins.has(l), consumer: true, gerente: !!(pf.admin || pf.excluir_pedido), acessos: tl };
         });
     } catch (e) { consumerErro = e.message; }
   }
   return { ok: true, eu: quem.login, usuarios, consumer, consumer_erro: consumerErro, nativo: nativo(),
-    perfis: Object.entries(PERFIS_LOCAIS).map(([k, v]) => ({ id: k, nome: v.nome })) };
+    telas_fechadas: (await sql`SELECT DISTINCT unnest(acessos) a FROM usuario_acesso`).map((x) => x.a) };
 }
 /** EXCLUIR usuário criado aqui. O histórico (pedidos, caixas) guarda o login
  *  como texto, então não perde nada; o token dele cai na próxima requisição
@@ -8420,10 +8614,18 @@ async function apiUsuarioLocalSalvar(body, quem) {
   const login = String(body.login || '').trim().toLowerCase().replace(/\s+/g, '');
   if (!/^[a-z0-9._-]{3,20}$/.test(login)) return { ok: false, erro: 'login: 3 a 20 letras/números, sem espaço' };
   const nome = String(body.nome || '').trim().slice(0, 60) || login;
-  // 'manter' = edição de quem tem permissões personalizadas (dadas pela Equipe do Concilia)
-  const manter = String(body.perfil || '') === 'manter';
-  const perfil = PERFIS_LOCAIS[String(body.perfil || 'garcom')] || PERFIS_LOCAIS.garcom;
+  // os checks: Caixa/Garçom/Gerente viram códigos; o resto é tela (usuario_acesso)
+  const acessos = [...new Set((Array.isArray(body.acessos) ? body.acessos : []).map(String))];
+  const base = acessos.filter((a) => ACESSOS_BASE.includes(a));
+  // gerente já entra em tudo; guardar as telas dele fecharia a porta delas à toa
+  const telas = base.includes('gerente') ? [] : acessos.filter((a) => ACESSOS_TELA.includes(a));
+  // manter_perms = quem tem permissões personalizadas (dadas pela Equipe do
+  // Concilia) e não mexeu em Caixa/Garçom/Gerente
+  const manter = body.manter_perms === true;
+  const perfil = { perms: permsDosChecks(base) };
   const pin = String(body.pin || '').replace(/\D/g, '');
+  const ehAdm = !!(await sql`SELECT admin FROM usuario_local WHERE login=${login}`)[0]?.admin;
+  if (!ehAdm && !manter && !base.length && !telas.length) return { ok: false, erro: 'marque pelo menos um acesso' };
   // login que já existe no Consumer fica com o Consumer — dois cadastros com
   // o mesmo nome é confusão garantida na hora de apurar quem fez o quê
   let doPdv = null;
@@ -8443,13 +8645,33 @@ async function apiUsuarioLocalSalvar(body, quem) {
     // o PIN do garçom e o do caixa são o mesmo cadastro: mantém alinhado
     if (pin) await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
       ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
+    if (!ehAdm) {
+      await gravaTelas(login, telas, quem.login);
+      // tirou o Gerente: a marcação antiga de Gerentes (comanda) também sai
+      if (!manter) await sql`UPDATE garcom_pin SET gerente=${base.includes('gerente')} WHERE login=${login}`;
+    }
+    console.log(`[usuarios] ${quem.login} alterou ${login}: ${acessos.join(',')}`);
     return { ok: true, atualizado: true, login };
   }
   await sql`INSERT INTO usuario_local (login, nome, pin_hash, salt, perms, admin, criado_por)
     VALUES (${login}, ${nome}, ${pinHash(pin, salt)}, ${salt}, ${perfil.perms}, ${false}, ${quem.login})`;
   await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome) VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${nome})
     ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt, nome=EXCLUDED.nome, atualizado_em=now()`;
-  return { ok: true, criado: true, login, perfil: perfil.nome };
+  await gravaTelas(login, telas, quem.login);
+  console.log(`[usuarios] ${quem.login} criou ${login}: ${acessos.join(',')}`);
+  return { ok: true, criado: true, login };
+}
+/** Login do CONSUMER (Prainha Mar): caixa/garçom/gerente continuam no
+ *  Consumer; aqui só se marcam as telas (Produção, Etiqueta, QR, Reservas, Ponto). */
+async function apiUsuarioAcessosSalvar(body, quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só administrador' };
+  const login = String(body.login || '').trim().toLowerCase();
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if ((await sql`SELECT 1 FROM usuario_local WHERE login=${login}`).length) return { ok: false, erro: 'esse é usuário daqui — edite pela ficha dele' };
+  const telas = [...new Set((Array.isArray(body.acessos) ? body.acessos : []).map(String))].filter((a) => ACESSOS_TELA.includes(a));
+  await gravaTelas(login, telas, quem.login);
+  console.log(`[usuarios] ${quem.login} acessos de ${login} (Consumer): ${telas.join(',')}`);
+  return { ok: true, atualizado: true, login };
 }
 /** TRANSFERIR ITENS ESCOLHIDOS pra outra mesa. O "Transferir" que já existia
  *  leva a mesa INTEIRA; aqui o caixa marca o que vai (a cerveja que era da
@@ -12915,11 +13137,38 @@ async function pfCadastrar(funcionarioId){
   document.getElementById('pfStatus').textContent='Cadastrando seu rosto…';
   document.getElementById('pfSub').textContent='';
   try {
-    await fetch('/api/ponto/cadastrar-rosto',{method:'POST',headers:{'content-type':'application/json'},
+    var tk=''; try { tk=localStorage.getItem('acesso_ponto')||''; } catch(x) {}
+    var rc=await fetch('/api/ponto/cadastrar-rosto',{method:'POST',headers:{'content-type':'application/json','x-garcom':tk},
       body:JSON.stringify({funcionario_id:funcionarioId, descriptor:Array.from(descriptor)})});
+    // Porta do Ponto fechada (alguém tem o check "Ponto" em Caixa → Usuários):
+    // rosto novo só com quem libera — senão qualquer um cadastra a cara no nome do outro
+    if (rc.status===401) { pfPedeLiberacao(funcionarioId, pessoa); return; }
+    // liberação vale pra UM cadastro — tablet da cozinha não fica liberado 16h
+    try { localStorage.removeItem('acesso_ponto'); } catch(x) {}
   } catch(e) {}
   PF_CADASTRANDO=null;
   await pfBater(pessoa||{funcionario_id:funcionarioId, nome:'você'});
+}
+function pfPedeLiberacao(funcionarioId, pessoa){
+  clearTimeout(PF_FECHA_T);
+  document.getElementById('pfStatus').textContent='Cadastro de rosto precisa de liberação';
+  document.getElementById('pfSub').textContent='quem tem acesso ao Ponto entra com login e PIN'+(pessoa?' pra cadastrar '+pessoa.nome:'');
+  document.getElementById('pfExtra').innerHTML=
+    '<input class="pfbusca" id="pfLibL" placeholder="login" autocapitalize="none" autocomplete="off">'+
+    '<input class="pfbusca" id="pfLibP" placeholder="PIN" type="password" inputmode="numeric" maxlength="8">'+
+    '<input class="pfbusca" id="pfLibP2" placeholder="repita o PIN" type="password" inputmode="numeric" maxlength="8" style="display:none">'+
+    '<button class="pfbusca" id="pfLibB" style="cursor:pointer;font-weight:700">Liberar cadastro</button>'+
+    '<div id="pfLibE" style="color:#fca5a5;margin-top:6px"></div>';
+  document.getElementById('pfLibB').onclick=async function(){
+    var b={a:'ponto',login:document.getElementById('pfLibL').value.trim(),pin:document.getElementById('pfLibP').value,pin2:document.getElementById('pfLibP2').value};
+    var r;
+    try { r=await (await fetch('/api/acesso/entrar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json(); }
+    catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+    if (r.ok&&r.token) { try { localStorage.setItem('acesso_ponto', r.token); } catch(x) {} pfCadastrar(funcionarioId); return; }
+    if (r.primeira_vez) document.getElementById('pfLibP2').style.display='block';
+    document.getElementById('pfLibE').textContent=r.erro||(r.primeira_vez?'primeiro acesso: repita o PIN':'não deu');
+  };
+  setTimeout(function(){ var i=document.getElementById('pfLibL'); if(i) i.focus(); },50);
 }
 function fecharPontoFacial(){
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
@@ -14697,7 +14946,7 @@ async function mandar(){
 }
 </script></body></html>`;
 
-const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const QRCODES_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">${portaAcessoJs('qrcode', 'QR Codes das mesas')}<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QR das mesas — ${LOJA_NOME}</title><style>
 :root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
 *{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
@@ -15405,7 +15654,7 @@ async function apiRecepcaoEntrar(body) {
   const pin = String(body.pin || '').replace(/\D/g, '');
   if (!login) return { ok: false, erro: 'informe o login' };
   if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
-  if (!(await ehRecepcao(login))) return { ok: false, erro: 'Este login não abre as reservas. Um gerente marca como "recepção" em Gerentes (comanda do garçom).' };
+  if (!(await ehRecepcao(login))) return { ok: false, erro: 'Este login não abre as reservas. O administrador marca "Reservas" em Caixa → Usuários (ou um gerente em Gerentes, na comanda).' };
   const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
   // quem foi marcado como recepção já tem PIN (a marcação é em cima do
   // garcom_pin); gerente pelo Consumer ainda sem PIN cria aqui, igual /gerente
@@ -19783,7 +20032,7 @@ telaNumero();
 </script></body></html>`;
 
 // ---- /caixa — tela restrita (Bloco 1): login, abrir mesa, desconto/acréscimo, receber dinheiro ----
-const ETIQUETA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+const ETIQUETA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">${portaAcessoJs('etiqueta', 'Etiqueta')}<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>${LOJA_NOME} — Etiqueta</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--green2:#0f8a3e;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;padding-bottom:40px}
@@ -21504,7 +21753,7 @@ async function telaUsu(el){
   if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'não deu')+'</div>'+
     '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
   USU=d;
-  if(USU_ED!==null&&USU_ED!==''&&!(d.usuarios||[]).some(function(u){return u.login===USU_ED}))USU_ED=null;
+  if(USU_ED!==null&&USU_ED!==''&&!(d.usuarios||[]).concat(d.consumer||[]).some(function(u){return u.login===USU_ED}))USU_ED=null;
   if(USU_ED!==null)return usuForm(el);
   var pin=function(u){return u.tem_pin?' · PIN ok':' · sem PIN ainda (cria no 1º acesso)'};
   var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
@@ -21523,12 +21772,11 @@ async function telaUsu(el){
   h+='</div>';
   if(!d.nativo){
     h+='<div class="card"><div class="tit" style="margin-top:0">🗂 Do Consumer</div>'+
-      '<div class="mut">Permissão desses se muda no Consumer (ou na Equipe do Concilia). Aqui dá pra zerar o PIN de quem esqueceu.</div>';
+      '<div class="mut">Caixa, garçom e gerente desses se mudam no Consumer (ou na Equipe do Concilia). Toque pra marcar Produção, Etiqueta, QR, Reservas e Ponto, ou zerar o PIN.</div>';
     if(d.consumer_erro)h+='<div class="err">Consumer sem resposta: '+esc(d.consumer_erro)+'</div>';
     h+=(d.consumer||[]).map(function(u){
-      return '<div class="it"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span><br>'+
-        '<span class="mut" style="font-size:12.5px">'+esc(u.acesso)+pin(u)+'</span></span>'+
-        (u.tem_pin?'<button class="seg" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">zerar PIN</button>':'')+'</div>';
+      return '<div class="it" style="cursor:pointer" onclick="usuEditar(\\''+esc(u.login)+'\\')"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span><br>'+
+        '<span class="mut" style="font-size:12.5px">'+esc(u.acesso)+pin(u)+'</span></span><b class="quit">›</b></div>';
     }).join('')||(d.consumer_erro?'':'<div class="mut" style="margin-top:8px">nenhum</div>');
     h+='</div>';
   }
@@ -21537,13 +21785,52 @@ async function telaUsu(el){
 function usuFiltra(q){q=String(q||'').trim().toLowerCase();
   document.querySelectorAll('.usu-l').forEach(function(e){e.style.display=(!q||e.getAttribute('data-q').indexOf(q)>=0)?'':'none'})}
 function usuEditar(l){USU_ED=l;telaUsu(document.getElementById('main'))}
+/* os checks de acesso: Caixa/Garçom/Gerente viram as permissões do PDV; o
+   resto são as telas do ☰ do KDS. Gerente entra em tudo (trava os outros). */
+var ACS=[['caixa','🧰','Caixa','recebe, desconto, gaveta, fecha o caixa'],['garcom','📱','Garçom','comanda no celular'],
+  ['producao','👨‍🍳','Produção','chef manda fazer pros cozinheiros'],['etiqueta','🏷','Etiqueta','etiqueta de validade na cozinha'],
+  ['qrcode','🔳','QR Codes das mesas','imprimir os QR das mesas'],['reservas','📅','Reservas','recepção e lista de espera'],
+  ['ponto','🕐','Ponto','libera o cadastro de rosto (bater o ponto é livre)'],['gerente','👔','Gerente','autoriza cancelamento, fiado — entra em tudo']];
+var TELAS_PORTA={etiqueta:1,qrcode:1,ponto:1};
+function acsHtml(u){
+  var tem={};(u.acessos||[]).forEach(function(a){tem[a]=1});
+  if(u.consumer&&u.gerente)tem.gerente=1;
+  var fech={};(USU.telas_fechadas||[]).forEach(function(a){fech[a]=1});
+  return ACS.map(function(a){
+    var trava=u.consumer&&(a[0]==='caixa'||a[0]==='garcom'||a[0]==='gerente');
+    var aviso=TELAS_PORTA[a[0]]&&!fech[a[0]]?' <span style="color:var(--orange,#c2410c)">· hoje aberta a todos; marcar alguém passa a pedir login</span>':'';
+    return '<label style="display:flex;gap:12px;align-items:center;padding:10px 2px;border-bottom:1px solid var(--line);opacity:'+(trava?.6:1)+'">'+
+      '<input type="checkbox" class="u_ac" value="'+a[0]+'"'+(tem[a[0]]?' checked':'')+(trava?' disabled data-trava="1"':'')+
+      ' onchange="acsGer()" style="width:24px;height:24px;flex:none">'+
+      '<span><span style="font-size:18px">'+a[1]+'</span> <b>'+esc(a[2])+'</b><br><span class="mut" style="font-size:12.5px">'+esc(a[3])+aviso+'</span></span></label>';
+  }).join('');
+}
+function acsGer(){
+  var g=document.querySelector('.u_ac[value=gerente]'),on=!!(g&&g.checked);
+  document.querySelectorAll('.u_ac').forEach(function(c){
+    if(c.value==='gerente'||c.getAttribute('data-trava'))return;
+    if(on&&!c.disabled){c.setAttribute('data-antes',c.checked?'1':'');c.checked=true;c.disabled=true}
+    else if(!on&&c.disabled){c.disabled=false;c.checked=c.getAttribute('data-antes')==='1'}
+  });
+}
+function acsMarcados(){var o=[];document.querySelectorAll('.u_ac').forEach(function(c){if(c.checked&&!c.disabled)o.push(c.value)});
+  var g=document.querySelector('.u_ac[value=gerente]');if(g&&g.checked&&!g.disabled)o=['gerente'];return o}
 function usuForm(el){
   var novo=USU_ED==='';
-  var u=novo?{login:'',nome:'',ativo:true,perfil:'garcom',tem_pin:false,admin:false}
-    :(USU.usuarios||[]).filter(function(x){return x.login===USU_ED})[0];
+  var u=novo?{login:'',nome:'',ativo:true,acessos:['garcom'],tem_pin:false,admin:false}
+    :(USU.usuarios||[]).concat(USU.consumer||[]).filter(function(x){return x.login===USU_ED})[0];
   var eu=!novo&&u.login===USU.eu;
-  var ops=(USU.perfis||[]).map(function(p){return '<option value="'+p.id+'"'+(u.perfil===p.id?' selected':'')+'>'+esc(p.nome)+'</option>'}).join('');
-  if(!novo&&!u.perfil&&!u.admin)ops='<option value="manter" selected>Manter as permissões atuais ('+esc(u.acesso)+', personalizado)</option>'+ops;
+  if(u.consumer){
+    el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="usuEditar(null)">◂ usuários</button>'+
+      '<div class="card"><div class="tit" style="margin-top:0">✎ '+esc(u.login)+' <span class="mut">(Consumer)</span></div>'+
+      '<div class="mut">'+esc(u.nome||'')+'</div>'+
+      '<div class="mut" style="margin-top:10px">Acessos — Caixa, Garçom e Gerente vêm do Consumer'+(u.gerente?' (é gerente: entra em tudo)':'')+'</div>'+
+      acsHtml(u)+'<button class="big" onclick="salvaUsuC()">Salvar</button><div id="uerr" class="err"></div></div>'+
+      '<div class="card"><div class="tit" style="margin-top:0">Outras ações</div>'+
+      (u.tem_pin?'<button class="big g" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">Zerar PIN (cria outro no próximo acesso)</button>'
+        :'<div class="mut">Ainda sem PIN — cria no primeiro acesso.</div>')+'</div>';
+    acsGer();return;
+  }
   var h='<button class="seg" style="margin-bottom:10px" onclick="usuEditar(null)">◂ usuários</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">'+(novo?'＋ Novo usuário':'✎ '+esc(u.login))+'</div>'+
     (novo?'<input id="u_login" placeholder="login (sem espaço)" autocapitalize="none">'
@@ -21552,11 +21839,14 @@ function usuForm(el){
     '<div class="mut" style="margin-top:10px">'+(novo?'PIN (4 a 8 números)':'PIN novo — deixe vazio pra manter o atual')+'</div>'+
     '<input id="u_pin" class="num" inputmode="numeric" maxlength="8" readonly onclick="kpAlvo(this)">'+kpHtml('u_pin')+
     (u.admin?'<div class="mut" style="margin-top:10px">Administrador — acesso total.</div>'
-      :'<div class="mut" style="margin-top:10px">O que ele pode fazer</div>'+
-       '<select id="u_perfil" style="width:100%;font:inherit;padding:12px;border:2px solid var(--line);border-radius:12px">'+ops+'</select>')+
+      :'<div class="mut" style="margin-top:10px">Acessos — marque o que ele pode abrir</div>'+
+       (u.personalizado?'<div class="mut" style="font-size:12.5px;color:var(--orange,#c2410c)">Tem permissões personalizadas (da Equipe do Concilia). Mexer em Caixa, Garçom ou Gerente troca pelas padrão.</div>':'')+
+       acsHtml(u))+
     (novo||eu?'':'<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="u_ativo"'+(u.ativo?' checked':'')+' style="width:22px;height:22px"> ativo (pode entrar)</label>')+
     '<button class="big" onclick="salvaUsu()">Salvar</button>'+
     '<div id="uerr" class="err"></div></div>';
+  USU_BASE0=novo?null:(u.acessos||[]).filter(function(a){return a==='caixa'||a==='garcom'||a==='gerente'}).sort().join(',');
+  USU_PERS=!!u.personalizado;
   if(!novo){
     h+='<div class="card"><div class="tit" style="margin-top:0">Outras ações</div>'+
       (u.tem_pin?'<button class="big g" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">Zerar PIN (cria outro no próximo acesso)</button>'
@@ -21565,7 +21855,15 @@ function usuForm(el){
         '<div class="mut" style="margin-top:6px">O histórico (pedidos, caixas) continua com o nome dele. Se ele pode voltar, prefira desativar.</div>')+
       '<div id="uerr2" class="err"></div></div>';
   }
-  el.innerHTML=h;
+  el.innerHTML=h;acsGer();
+}
+var USU_BASE0=null,USU_PERS=false;
+async function salvaUsuC(){
+  var er=document.getElementById('uerr');er.textContent='';
+  var r=await jpost('/api/caixa/usuarios/acessos',{login:USU_ED,acessos:acsMarcados()});
+  if(!r.ok){er.textContent=r.erro||'não deu';return}
+  FLASH='✓ Acessos de '+r.login+' atualizados';
+  USU_ED=null;telaUsu(document.getElementById('main'));
 }
 async function salvaUsu(){
   var er=document.getElementById('uerr');er.textContent='';
@@ -21574,8 +21872,10 @@ async function salvaUsu(){
   var b={login:novo?((document.getElementById('u_login')||{}).value||''):USU_ED,
     nome:(document.getElementById('u_nome')||{}).value||'',
     pin:(document.getElementById('u_pin')||{}).value||'',
-    perfil:(document.getElementById('u_perfil')||{}).value||'manter',
+    acessos:acsMarcados(),
     ativo:at?at.checked:true};
+  var base=b.acessos.filter(function(a){return a==='caixa'||a==='garcom'||a==='gerente'}).sort().join(',');
+  if(USU_PERS&&base===USU_BASE0)b.manter_perms=true;
   var r=await jpost('/api/caixa/usuarios',b);
   if(!r.ok){er.textContent=r.erro||'não deu';return}
   FLASH='✓ '+(r.criado?'Usuário '+r.login+' criado':'Usuário '+r.login+' atualizado');
@@ -22950,7 +23250,7 @@ async function apiProducaoEntrar(body) {
   const pin = String(body.pin || '').replace(/\D/g, '');
   if (!login) return { ok: false, erro: 'informe o login' };
   if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
-  if (!(await ehChef(login))) return { ok: false, erro: 'Este login não manda produção. Um gerente marca como "chef" em Gerentes (comanda do garçom).' };
+  if (!(await ehChef(login))) return { ok: false, erro: 'Este login não manda produção. O administrador marca "Produção" em Caixa → Usuários (ou um gerente marca "chef" em Gerentes, na comanda).' };
   const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
   // chef marcado já tem PIN (a marcação é em cima do garcom_pin); gerente pelo
   // Consumer sem PIN ainda cria aqui, igual ao /gerente
@@ -24181,6 +24481,26 @@ const server = http.createServer(async (req, res) => {
     if (p === '/tablet') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TABLET_HTML); }
     // etiqueta de validade: tela da cozinha (botão no KDS), sem login como o KDS
     if (p === '/etiqueta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(ETIQUETA_HTML); }
+    // PORTA DAS TELAS DO ☰ (Etiqueta, QR, cadastro de rosto): só fecha quando
+    // alguém ganha o check da tela em Caixa → Usuários (acessoDaRequisicao)
+    if (req.method === 'POST' && p === '/api/acesso/entrar') {
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiAcessoEntrar(body)));
+    }
+    if (p === '/api/acesso/sessao') {
+      const a = String(u.searchParams.get('a') || '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!ACESSOS_TELA.includes(a)) return res.end(JSON.stringify({ ok: false, erro: 'tela desconhecida' }));
+      const q = await acessoDaRequisicao(req, u, a);
+      return res.end(JSON.stringify(q ? { ok: true, aberto: !!q.aberto, login: q.login, nome: q.nome } : { ok: false }));
+    }
+    const PORTA = p.startsWith('/api/etiquetas/') ? 'etiqueta' : p === '/api/qrcodes' ? 'qrcode'
+      : p === '/api/ponto/cadastrar-rosto' ? 'ponto' : null;
+    if (PORTA && !(await acessoDaRequisicao(req, u, PORTA))) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, erro: `Entre com seu login pra usar ${ACESSO_NOME[PORTA]}.`, sem_sessao: true, area: PORTA }));
+    }
     if (p === '/api/etiquetas/insumos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEtiquetaInsumos(u.searchParams.get('q') || ''))); }
     if (req.method === 'POST' && p === '/api/etiquetas/registrar') {
       const b = await readBody(req);
@@ -24390,6 +24710,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/caixa/usuarios' && req.method !== 'POST') return res.end(JSON.stringify(await apiUsuariosLocais(quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios') return res.end(JSON.stringify(await apiUsuarioLocalSalvar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios/excluir') return res.end(JSON.stringify(await apiUsuarioLocalExcluir(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/usuarios/acessos') return res.end(JSON.stringify(await apiUsuarioAcessosSalvar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/usuarios/zerar-pin') return res.end(JSON.stringify(await apiUsuarioZerarPin(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/transferir-itens') return res.end(JSON.stringify(await apiCaixaTransferirItens(await readBody(req), quem)));
       if (p === '/api/caixa/fiado-busca') return res.end(JSON.stringify(await apiCaixaFiadoBusca(u.searchParams.get('q') || '')));
