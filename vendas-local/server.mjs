@@ -14259,17 +14259,30 @@ async function apiMesaPedir(body) {
 // com álcool (Prainha GT) ou sem (Soda Italiana). Um por pessoa (CPF) — a
 // mesa pode ter vários — e o mesmo CPF não avalia de novo no mesmo mês. O drink entra sozinho na conta
 // da mesa, a R$ 0, com a obs "Avaliação de Cliente".
-// Liga só no Prainha Bar; outra casa liga com BRINDE_AVALIACAO=on no start.bat
-// (e BRINDE_COM / BRINDE_SEM com o nome dos produtos, % = qualquer coisa).
+// 29/09/2026 (pedido do dono): vale nas TRÊS casas — quem avaliar ganha o
+// brinde no Prainha Bar, na Tabuará e na Prainha Mar. A casa desliga com
+// BRINDE_AVALIACAO=off no start.bat (e BRINDE_COM / BRINDE_SEM trocam o nome
+// dos produtos, % = qualquer coisa).
+// O drink com álcool é o Prainha GT, que a Tabuará não tem no cardápio — lá o
+// brinde alcoólico é a Caipirinha. Sem produto que case, a casa simplesmente
+// não mostra o convite (apiMesaBrinde devolve ativo:false quando não acha).
+// LIGA E DESLIGA NO PAINEL DO GERENTE (☰ → Gerente → Brinde da avaliação).
+// A chave mora no app_config da própria loja: funciona sem internet e vale na
+// hora, sem mexer no start.bat nem esperar release. Quem manda é, nesta ordem:
+// o botão do gerente (app_config), depois BRINDE_AVALIACAO do start.bat, e na
+// falta dos dois fica ligado.
 const BRINDE_OBS = 'Avaliação de Cliente';
-function brindeAtivo() {
+const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7'; // 02 Tabuará
+async function brindeAtivo() {
+  const c = String((await cfgGet('brinde_avaliacao', '')) || '').trim().toLowerCase();
+  if (c) return c === 'on' || c === '1';
   const v = String(process.env.BRINDE_AVALIACAO || '').toLowerCase();
   if (v) return v === 'on';
-  return FILIAL_ID === '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9'; // 01 Prainha Bar
+  return true;
 }
 async function brindeOpcoes() {
-  if (!brindeAtivo()) return [];
-  const com = process.env.BRINDE_COM || 'Prainha GT';
+  if (!(await brindeAtivo())) return [];
+  const com = process.env.BRINDE_COM || (FILIAL_ID === FILIAL_TABUARA ? 'Caipirinha' : 'Prainha GT');
   const sem = process.env.BRINDE_SEM || 'Soda Italiana%';
   // DISTINCT ON nome: o mesmo drink cadastrado 2x (ex.: cópia do Terraço) aparece uma vez só
   const rows = await sql`SELECT DISTINCT ON (trim(nome)) codigo_pdv, produto_codigo, trim(nome) AS nome,
@@ -14286,6 +14299,20 @@ async function brindeOpcoes() {
 async function apiMesaBrinde() {
   try { const opcoes = await brindeOpcoes(); return { ok: true, ativo: opcoes.length > 0, opcoes }; }
   catch (e) { return { ok: true, ativo: false, opcoes: [], erro: e.message }; }
+}
+/** Painel do gerente: estado do brinde + quais drinks a casa está dando. */
+async function apiGerenteBrinde() {
+  const ligado = await brindeAtivo();
+  const com = process.env.BRINDE_COM || (FILIAL_ID === FILIAL_TABUARA ? 'Caipirinha' : 'Prainha GT');
+  const sem = process.env.BRINDE_SEM || 'Soda Italiana%';
+  let opcoes = [];
+  try { opcoes = await brindeOpcoes(); } catch {}
+  return { ok: true, ligado, com, sem, opcoes, achou: opcoes.length };
+}
+async function apiGerenteBrindeSet(body) {
+  const lig = !!body.ligado;
+  await cfgSet('brinde_avaliacao', lig ? 'on' : 'off');
+  return { ok: true, ...(await apiGerenteBrinde()) };
 }
 async function apiMesaAvaliar(body) {
   const numero = Number(body.mesa);
@@ -14353,14 +14380,20 @@ async function apiMesaAvaliacaoLivre(body) {
   if (numero != null && !(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
   const assunto = ASSUNTOS[String(body.assunto || '')] ? String(body.assunto) : null;
   const txt = (v, n) => { const t = String(v || '').trim(); return t ? t.slice(0, n) : null; };
-  const comentario = txt(body.comentario, 2000);
+  // QUAL FOI O PRATO. A tela das estrelas voltou a ler a mesa e listar o que
+  // está na produção (como a reclamação sempre fez), então aqui chegam os
+  // códigos do que a pessoa marcou. Sem isto o gerente recebia "3★ — DEMORA"
+  // sem saber de QUE item, e a praça dona do prato nem era avisada (29/09/2026).
+  const itens = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean).slice(0, 30) : [];
+  const itensTxt = txt(body.itens_txt, 500);
+  const comentario = txt([itensTxt, txt(body.comentario, 2000)].filter(Boolean).join(' — '), 2500);
   const [reg] = await sql`INSERT INTO avaliacao_livre (nota, assunto, comentario, nome, whatsapp, mesa)
     VALUES (${nota}, ${assunto}, ${comentario}, ${txt(body.nome, 200)},
             ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}) RETURNING id`;
   // nota baixa = a equipe tem que saber AGORA, não quando alguém abrir o painel
   if (nota <= 3) {
     await apiChamadoCriar({ mesa: numero, tipo: 'reclamacao', origem: 'avaliacao-qr', nota,
-      assunto: assunto || 'outro',
+      assunto: assunto || 'outro', itens,
       texto: nota + '★' + (assunto ? ' — ' + ASSUNTOS[assunto] : '') + (comentario ? ' — ' + comentario : '') }).catch(() => {});
   }
   let nv = null;
@@ -18103,12 +18136,58 @@ function avSeguir(){
 // reclamação (e ela vira nota no Google).
 var AVASS=[['demora','⏱ Demorou'],['errado','🍽 Veio errado'],['frio','🌡 Veio frio'],
   ['faltou','➖ Faltou algo'],['salao','🧹 Mesa / louça / limpeza'],['outro','💬 Outro']];
+// QUANDO O PROBLEMA É UM PRATO, A TELA TEM QUE LER A MESA. A reclamação
+// "Problema no pedido" sempre fez isso — lista o que está na produção e a
+// pessoa aponta o que não chegou, e aí a mesa passa na frente na praça dona
+// do item. A tela das estrelas tinha perdido: chegava no gerente um
+// "3★ — DEMORA" sem dizer de QUE item (29/09/2026).
+var AVITENS=null, AVSEL={}, AVASSITEM={demora:1,errado:1,frio:1,faltou:1};
+async function avCarregaItens(){
+  if(AVITENS)return AVITENS;
+  AVITENS=[];
+  var n=MESA?Number(MESA):null; if(!n)return AVITENS;
+  var d;try{d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json()}catch(e){d=null}
+  ((d&&d.grupos)||[]).forEach(function(g){ (g.itens||[]).forEach(function(i){
+    AVITENS.push({cod:i.item_codigo,nome:i.nome,qtd:i.quantidade,estado:i.estado,min:i.espera_min,
+      onde:(g.numero&&Number(g.numero)!==n)?('comanda '+g.numero):null}); }); });
+  return AVITENS;
+}
+function avMarcaIt(k){
+  AVSEL[k]=!AVSEL[k];
+  var el=document.getElementById('avit'+k); if(el)el.className='it'+(AVSEL[k]?' on':'');
+}
+function avItensMarcados(){
+  return Object.keys(AVSEL).filter(function(k){return AVSEL[k]}).map(function(k){return AVITENS[k]}).filter(Boolean);
+}
+function avItemTxt(i){ return (i.qtd>1?i.qtd+'x ':'')+i.nome+(i.min!=null?' ('+i.min+'min)':'') }
 function avBaixa(){
   var chip=function(a){return '<button class="seg'+(AV.assunto===a[0]?' on':'')+'" onclick="avAss(\\''+a[0]+'\\')">'+a[1]+'</button>'};
+  // lista do que a mesa pediu — só quando o assunto é comida/bebida.
+  // A tela nunca espera a rede: pinta na hora e, quando os itens chegam, ela
+  // se repinta sozinha (o toque no assunto não pode travar).
+  var lista='', precisa=MESA&&AV.assunto&&AVASSITEM[AV.assunto];
+  if(precisa&&AVITENS===null)avCarregaItens().then(function(){
+    // só repinta se a pessoa ainda está nesta tela — e guarda o que ela já digitou
+    if(AV&&document.getElementById('avlivre')){avGuardaCampos();avBaixa()}
+  });
+  if(precisa){
+    var its=AVITENS||[];
+    if(its.length){
+      lista='<div class="tit2">Qual foi?</div>'+
+        '<div class="mut" style="margin:-6px 0 8px">Toque no que teve problema. Pode marcar mais de um.</div>'+
+        '<div class="itens">'+its.map(function(i,k){
+          var sub=(i.estado==='entregue'?'já entregue':i.estado==='pronto'?'pronto, saindo':'em produção')+
+            (i.min!=null?' · há '+i.min+'min':'')+(i.onde?' · '+i.onde:'');
+          return '<button class="it'+(AVSEL[k]?' on':'')+'" id="avit'+k+'" onclick="avMarcaIt('+k+')">'+
+            '<b>'+(i.qtd>1?i.qtd+'x ':'')+esc(i.nome)+'</b><span>'+sub+'</span></button>';
+        }).join('')+'</div>';
+    }
+  }
   app('<h1>Poxa, sentimos muito 😔</h1>'+
     '<div class="mut">Conta pra gente o que houve — vai direto pro gerente, agora.</div>'+
     '<div class="tit2">O que foi?</div>'+
     '<div class="segs assuntos">'+AVASS.map(chip).join('')+'</div>'+
+    lista+
     '<textarea id="avc2" maxlength="2000" placeholder="O que aconteceu? (quanto mais detalhe, melhor a gente resolve)"></textarea>'+
     '<div class="tit2">Seu nome <span class="mut">(opcional)</span></div>'+
     '<input id="avn" maxlength="60" placeholder="como te chamar">'+
@@ -18121,10 +18200,14 @@ function avBaixa(){
   document.getElementById('avn').value=AV.nome||'';
   document.getElementById('avz').value=AV.zap||'';
 }
-function avAss(k){
+function avGuardaCampos(){
   var t=document.getElementById('avc2'); if(t)AV.comentario=t.value;
   var n=document.getElementById('avn'); if(n)AV.nome=n.value;
   var z=document.getElementById('avz'); if(z)AV.zap=z.value;
+}
+function avAss(k){
+  avGuardaCampos();
+  if(AV.assunto!==k)AVSEL={}; // outro assunto, outra lista
   AV.assunto=(AV.assunto===k?null:k); avBaixa();
 }
 // Envio SEM CPF e SEM drink: serve pra nota alta (só o convite do Google) e
@@ -18140,12 +18223,14 @@ async function avEnviarLivre(){
   }
   var bt=document.getElementById('avlivre')||document.getElementById('av1')||{};
   bt.disabled=true; bt.textContent='Enviando…';
+  var marc=avItensMarcados();
   var r;
   try{ r=await post('/api/mesa/avaliacao',{mesa:MESA?Number(MESA):null,nota:AV.nota,
-    assunto:AV.assunto,comentario:AV.comentario,nome:AV.nome,whatsapp:AV.zap}); }
+    assunto:AV.assunto,comentario:AV.comentario,nome:AV.nome,whatsapp:AV.zap,
+    itens:marc.map(function(i){return i.cod}),itens_txt:marc.map(avItemTxt).join(', ')}); }
   catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
   if(!r.ok){bt.disabled=false;bt.textContent='Enviar';alert(r.erro||'Não deu certo. Chame o garçom.');return}
-  var nota=AV.nota; AV=null;
+  var nota=AV.nota; AV=null; AVSEL={}; AVITENS=null;
   var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
   if(nota<=3){
     app('<div class="ok"><div class="t">✓ Recebemos</div>'+
@@ -23427,6 +23512,7 @@ textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);bor
 <script>
 var TOK=null;try{TOK=localStorage.getItem('gerente_tok')||null}catch(e){}
 var E=null,ENV={},ETIMER=null,EU=null,D=null,TICK=0,SOM=true,ULT={lib:null,rec:null,aval:null},PRIM=false,ABERTO={},TIMER=null,PAUSA=false;
+var BR=null,BRENV=false; // brinde da avaliação (liga/desliga aqui mesmo)
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
@@ -23464,6 +23550,7 @@ async function iniciar(){
   EU={login:s.login,nome:s.nome};
   await tick();if(TIMER)clearInterval(TIMER);TIMER=setInterval(tick,5000);
   tickEnergia();if(ETIMER)clearInterval(ETIMER);ETIMER=setInterval(tickEnergia,20000);
+  carregaBrinde();
 }
 async function tick(){
   if(PAUSA)return;
@@ -23490,9 +23577,9 @@ function pintar(){
     '<a href="#atrasos">⏱ Atrasos '+(a.total_atrasadas?'<b>'+a.total_atrasadas+'</b>':'0')+'</a>'+
     '<a href="#recl">💬 Reclamações '+((R.abertas.length+R.avaliacoes_ruins)?'<b>'+(R.abertas.length+R.avaliacoes_ruins)+'</b>':'0')+'</a>'+
     '<a href="#espera">📋 Espera '+(d.espera.length||0)+'</a>'+
-    '<a href="#fluxo">📈 Fluxo</a><a href="#setor">🍳 Setores</a><a href="#hist">🧾 Histórico</a>'+(E&&E.ok&&(E.dispositivos.length||E.alarmes.length)?'<a href="#energia">💡 Luzes e alarme</a>':'')+'</div>';
+    '<a href="#fluxo">📈 Fluxo</a><a href="#setor">🍳 Setores</a><a href="#hist">🧾 Histórico</a>'+(E&&E.ok&&(E.dispositivos.length||E.alarmes.length)?'<a href="#energia">💡 Luzes e alarme</a>':'')+'<a href="#brinde">🍹 Brinde</a></div>';
   if(nav!==ULT_NAV){ULT_NAV=nav;document.getElementById('nav').innerHTML=nav}
-  h+=secLib(L)+secMesas(m)+secAtrasos(a)+secRecl(R)+secEspera(d.espera,d.reservas)+secFluxo(f)+secSetores(d.setores)+secHist(L)+secEnergia();
+  h+=secLib(L)+secMesas(m)+secAtrasos(a)+secRecl(R)+secEspera(d.espera,d.reservas)+secFluxo(f)+secSetores(d.setores)+secHist(L)+secEnergia()+secBrinde();
   if(!d.nuvem.ok)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem indisponível'+(d.nuvem.sem_chave?' (loja sem FILIAL_ID/PAGAR_MESA_SECRET no start.bat)':'')+': mapa de mesas, lista de espera e avaliações ficam de fora'+(d.nuvem.erro?' — '+esc(d.nuvem.erro):'')+'.</div>';
   else if(d.nuvem.velho)h+='<div class="mut" style="margin-top:14px">☁️ Nuvem sem resposta agora — mostrando o último dado recebido.</div>';
   if(h===ULT_HTML)return;ULT_HTML=h;
@@ -23660,6 +23747,36 @@ function secHist(L){
   itens.slice(0,lim).forEach(function(i){h+='<div class="l"><span class="mut" style="min-width:42px">'+hm(i.q)+'</span><div class="nm">'+i.h+'</div>'+i.b+'</div>'});
   if(itens.length>15)h+='<div class="l"><button class="b" style="flex:1" onclick="toggle(\\'hist\\')">'+(ABERTO.hist?'mostrar menos':'ver todos ('+itens.length+')')+'</button></div>';
   return h+'</div>';
+}
+/* ---- brinde da avaliação: liga e desliga aqui, sem mexer no start.bat ---- */
+async function carregaBrinde(){
+  var r;try{r=await jget('/api/gerente/brinde')}catch(e){return}
+  if(r&&r.sem_sessao)return;
+  if(r&&r.ok){BR=r;ULT_HTML='';pintar()}
+}
+function secBrinde(){
+  if(!BR)return '';
+  var h='<h2 id="brinde">🍹 Brinde da avaliação</h2><div class="card">';
+  h+='<div class="l"><div class="nm"><b>'+(BR.ligado?'Ligado':'Desligado')+'</b>'+
+    '<small>'+(BR.ligado
+      ? 'Quem avalia pelo QR da mesa ganha um drink — um por pessoa (CPF) por mês, lançado a R$ 0 na conta.'
+      : 'O QR da mesa continua aceitando avaliação, só não oferece drink.')+'</small></div>'+
+    '<button class="b '+(BR.ligado?'':'ok')+'" onclick="mudaBrinde('+(BR.ligado?'false':'true')+')"'+(BRENV?' disabled':'')+'>'+
+    (BRENV?'Salvando…':(BR.ligado?'Desligar':'Ligar'))+'</button></div>';
+  if(BR.ligado){
+    h+=BR.opcoes.length
+      ? '<div class="l"><div class="nm"><small>Drinks de hoje: '+esc(BR.opcoes.map(function(o){return o.nome}).join(', '))+'</small></div></div>'
+      : '<div class="l"><div class="nm"><small>⚠️ Está ligado, mas nenhum produto bate com <b>'+esc(BR.com)+'</b> nem com <b>'+esc(BR.sem)+'</b> no cardápio desta casa — então o convite não aparece no QR. Cadastre o drink no PDV (ou avise pra trocar o nome).</small></div></div>'
+      ;
+  }
+  return h+'</div>';
+}
+async function mudaBrinde(lig){
+  BRENV=true;ULT_HTML='';pintar();
+  var r;try{r=await jpost('/api/gerente/brinde',{ligado:lig})}catch(e){r={ok:false,erro:'sem conexão'}}
+  BRENV=false;
+  if(r&&r.ok){BR=r}else{alert('Não deu pra salvar: '+((r&&r.erro)||'sem resposta'))}
+  ULT_HTML='';pintar();
 }
 /* ---- iluminação e alarme (Tuya + UniFi Protect, pela nuvem) ---- */
 async function tickEnergia(){
@@ -23983,6 +24100,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/gerente/energia') return res.end(JSON.stringify(await energiaNuvem({ acao: 'status' })));
       if (p === '/api/gerente/energia/comando') return res.end(JSON.stringify(await energiaNuvem({ acao: 'comando', dispositivoId: String(b.id || ''), ligar: !!b.ligar, por: String(quemG).slice(0, 60) })));
       if (p === '/api/gerente/energia/alarme') return res.end(JSON.stringify(await energiaNuvem({ acao: 'alarme', gatilhoId: String(b.id || ''), armado: !!b.armado, por: String(quemG).slice(0, 60) })));
+      if (p === '/api/gerente/brinde') return res.end(JSON.stringify(req.method === 'POST' ? await apiGerenteBrindeSet(b) : await apiGerenteBrinde()));
       if (p === '/api/gerente/chamado-atender') return res.end(JSON.stringify(await apiChamadoAtender({ id: b.id, por: quemG })));
       if (p === '/api/gerente/espera') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'espera', id: String(b.id || ''), acao: String(b.acao || ''), por: quemG + ' (loja)' })));
       if (p === '/api/gerente/avaliacao') return res.end(JSON.stringify(await salaoNuvemPost({ tipo: 'avaliacao', id: String(b.id || ''), status: String(b.status || ''), por: quemG + ' (loja)' })));
