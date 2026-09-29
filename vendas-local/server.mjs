@@ -559,6 +559,16 @@ async function initSchema() {
     nota integer NOT NULL, assunto text, comentario text, nome text, whatsapp text,
     mesa integer, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_avaliacao_livre_fila ON avaliacao_livre (nuvem_em, id)`;
+  // LISTA DE ESPERA da recepção (aba da tela /reservas). Fila de quem chegou
+  // SEM reserva e está aguardando mesa. Mora só aqui na loja de propósito: é
+  // uma fila de porta, que muda a cada minuto e tem que funcionar com a
+  // internet caída — a nuvem não tem nada a ver com isso. A tela só olha as
+  // últimas 18h, então a fila de ontem some sozinha.
+  await sql`CREATE TABLE IF NOT EXISTS espera (id bigserial PRIMARY KEY,
+    nome text NOT NULL, pessoas integer NOT NULL DEFAULT 2, telefone text, obs text,
+    criado_em timestamptz DEFAULT now(), chamado_em timestamptz, sentou_em timestamptz,
+    saiu_em timestamptz, mesa integer)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_espera_fila ON espera (criado_em)`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -15202,6 +15212,42 @@ async function apiSaidaConsultar(token) {
 // Quem pagou a conta manda este link no zap pra quem vai embora antes. A pessoa
 // abre, mostra o QR na catraca e passa. E' o MESMO codigo da mesa: cada leitura
 // consome uma passagem, entao mandar pra tres pessoas nao cria tres passes.
+// ================= LISTA DE ESPERA DA RECEPÇÃO (aba do /reservas) =================
+// Fila de quem chegou sem reserva. A ordem é a de chegada, ponto — nada de
+// reordenar na mão, senão vira briga na porta. "Chamar" só carimba a hora
+// (e abre o zap da pessoa, se tiver), pra dar pra ver na tela quem já foi
+// chamado e há quanto tempo — é isso que evita a mesa ficar vazia esperando
+// alguém que já foi embora.
+async function apiEsperaLista() {
+  const espera = await sql`SELECT id, nome, pessoas, telefone, obs, mesa,
+      criado_em, chamado_em, sentou_em, saiu_em
+    FROM espera WHERE criado_em > now() - interval '18 hours' ORDER BY criado_em`;
+  return { ok: true, espera };
+}
+async function apiEsperaNovo(body) {
+  const nome = String(body.nome || '').trim().slice(0, 60);
+  if (!nome) return { ok: false, erro: 'diga o nome de quem está esperando' };
+  const pessoas = Math.max(1, Math.min(60, Number(body.pessoas) || 2));
+  const telefone = soDig(body.telefone).slice(0, 13) || null;
+  const obs = String(body.obs || '').trim().slice(0, 140) || null;
+  const [r] = await sql`INSERT INTO espera (nome, pessoas, telefone, obs)
+    VALUES (${nome}, ${pessoas}, ${telefone}, ${obs}) RETURNING id`;
+  return { ok: true, id: Number(r.id) };
+}
+async function apiEsperaAcao(body) {
+  const id = Number(body.id) || 0;
+  if (!id) return { ok: false, erro: 'sem id' };
+  const acao = String(body.acao || '');
+  if (acao === 'chamar') await sql`UPDATE espera SET chamado_em=now() WHERE id=${id}`;
+  else if (acao === 'sentou') {
+    const mesa = Number(body.mesa) > 0 ? Number(body.mesa) : null;
+    await sql`UPDATE espera SET sentou_em=now(), saiu_em=NULL, mesa=${mesa} WHERE id=${id}`;
+  } else if (acao === 'desistiu') await sql`UPDATE espera SET saiu_em=now(), sentou_em=NULL WHERE id=${id}`;
+  else if (acao === 'voltar') await sql`UPDATE espera SET sentou_em=NULL, saiu_em=NULL, chamado_em=NULL WHERE id=${id}`;
+  else return { ok: false, erro: 'ação desconhecida' };
+  return { ok: true };
+}
+
 // ================= RESERVAS DO DIA NA RECEPÇÃO (/reservas) =================
 // Antes isto morava na lateral do KDS, mas ali só atrapalhava: o KDS é dos
 // pratos que saem. Quem precisa da lista é a RECEPÇÃO — o cliente chega
@@ -15239,17 +15285,37 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .obs div+div{margin-top:4px}
 .vazio{padding:46px 16px;text-align:center;color:var(--mut)}
 .erro{margin:14px;padding:11px 14px;border-radius:10px;background:#fff1f1;color:#b91c1c;font-size:14px}
+.barra.sub{top:52px;z-index:4}
+.novo{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.novo input{font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.novo input#en{flex:2 1 190px;min-width:140px}
+.novo input#ep{width:82px}
+.novo input#et{flex:1 1 150px;min-width:130px}
+.novo input#eo{flex:2 1 190px;min-width:140px}
+.btns{margin-top:10px;display:flex;gap:7px;flex-wrap:wrap}
+.btns button{padding:8px 12px;font-size:13.5px}
+.btns .mn{width:76px;font:inherit;font-size:13.5px;padding:8px 9px;border:1px solid var(--line);border-radius:9px}
+.rs .h.pos{font-size:21px;color:#5b5b66}
 </style></head><body>
-<div class="barra"><b>📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<div class="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<button class="seg on" id="t_res" onclick="aba('res')">📅 Reservas</button>
+<button class="seg" id="t_esp" onclick="aba('esp')">⏳ Lista de espera</button>
+<button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
+<a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<div class="barra sub" id="subres">
 <input id="q" placeholder="nome, telefone ou mesa" oninput="pinta()" autocomplete="off">
 <button class="seg on" id="f_vem" onclick="filtro(1)">Por chegar</button>
 <button class="seg" id="f_sentada" onclick="filtro(2)">Sentadas</button>
-<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button>
-<button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
-<a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button></div>
+<div class="novo" id="novo" style="display:none">
+<input id="en" placeholder="nome de quem chegou" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
+<input id="ep" type="number" min="1" value="2" title="quantas pessoas" onkeydown="if(event.key==='Enter')esperaNovo()">
+<input id="et" placeholder="whatsapp (opcional)" inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
+<input id="eo" placeholder="observação (ex.: quer o deck)" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
+<button onclick="esperaNovo()">+ Colocar na fila</button></div>
 <div id="app" class="vazio">carregando…</div>
 <script>
-var R=[],F='vem',AVISO='';
+var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',LOJA='${LOJA_NOME}';
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function dig(s){return String(s==null?'':s).replace(/[^0-9]/g,'')}
 function chave(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')}
@@ -15287,7 +15353,73 @@ function cartao(x){
   if(ex)h+='<div class="obs">'+ex+'</div>';
   return h+'</div>';
 }
-function pinta(){
+function pinta(){ return ABA==='esp'?pintaEsp():pintaRes() }
+function aba(k){
+  ABA=k;
+  document.getElementById('t_res').className='seg'+(k==='res'?' on':'');
+  document.getElementById('t_esp').className='seg'+(k==='esp'?' on':'');
+  document.getElementById('tit').textContent=k==='esp'?'⏳ Lista de espera':'📅 Reservas de hoje';
+  document.getElementById('subres').style.display=k==='esp'?'none':'';
+  document.getElementById('novo').style.display=k==='esp'?'':'none';
+  pinta();
+  if(k==='esp')document.getElementById('en').focus();
+}
+async function post(u,b){
+  try{var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return await r.json()}
+  catch(e){return {ok:false,erro:'sem resposta do servidor da loja'}}
+}
+function mins(t){ if(!t)return 0; var d=new Date(t); return Math.max(0,Math.round((Date.now()-d.getTime())/60000)) }
+function naFila(x){ return !x.sentou_em&&!x.saiu_em }
+function cartaoEsp(x,pos){
+  var esp=mins(x.criado_em),ch=x.chamado_em?mins(x.chamado_em):null,fim=!naFila(x);
+  var cls=fim?'sent':(ch!=null?'perto':(esp>=30?'atras':''));
+  var h='<div class="rs '+cls+'"><div class="top">'+
+    (fim?'':'<span class="h pos">'+pos+'º</span>')+
+    '<span class="pes">'+(Number(x.pessoas)||'?')+' pessoas</span>'+
+    (fim?(x.sentou_em?'<span class="tag green">sentou'+(x.mesa?' na mesa '+x.mesa:'')+'</span>'
+                     :'<span class="tag red">saiu da fila</span>')
+        :'<span class="tag '+(esp>=30?'red':'amb')+'">esperando '+esp+' min</span>')+
+    (ch!=null&&!fim?'<span class="tag blue">chamado há '+ch+' min</span>':'')+'</div>'+
+    '<div class="nm">'+esc(x.nome||'(sem nome)')+'</div>';
+  if(dig(x.telefone))h+='<div class="li">'+fone(x.telefone)+'</div>';
+  if(x.obs)h+='<div class="obs">'+esc(x.obs)+'</div>';
+  h+= fim
+    ? '<div class="btns"><button class="seg" data-id="'+x.id+'" data-a="voltar">&#8617; voltar pra fila</button></div>'
+    : '<div class="btns"><button data-id="'+x.id+'" data-a="chamar">&#128227; '+(ch!=null?'Chamar de novo':'Chamar')+'</button>'+
+      '<input class="mn" id="mn'+x.id+'" type="number" min="1" inputmode="numeric" placeholder="mesa">'+
+      '<button class="seg" data-id="'+x.id+'" data-a="sentou">&#10003; Sentou</button>'+
+      '<button class="seg" data-id="'+x.id+'" data-a="desistiu">&#10005; Desistiu</button></div>';
+  return h+'</div>';
+}
+function pintaEsp(){
+  var fila=E.filter(naFila),fora=E.filter(function(x){return !naFila(x)});
+  var pes=fila.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
+  var sent=E.filter(function(x){return x.sentou_em});
+  var med=sent.length?Math.round(sent.reduce(function(a,x){
+    return a+(new Date(x.sentou_em).getTime()-new Date(x.criado_em).getTime())/60000},0)/sent.length):0;
+  document.getElementById('cnt').textContent=(fila.length?fila.length+' na fila ('+pes+' pessoas)':'fila vazia')+
+    (med?' · espera média hoje '+med+' min':'');
+  document.getElementById('t_esp').textContent='⏳ Lista de espera'+(fila.length?' ('+fila.length+')':'');
+  var foco=document.activeElement;
+  if(foco&&foco.className==='mn')return; // digitando a mesa: não puxa o tapete
+  var app=document.getElementById('app');app.className='';
+  var topo=EAV?'<div class="erro">'+esc(EAV)+'</div>':'';
+  if(!E.length){app.innerHTML=topo+'<div class="vazio">ninguém esperando — bota o primeiro nome aí em cima</div>';return}
+  app.innerHTML=topo+'<div class="wrap">'+
+    fila.map(function(x,i){return cartaoEsp(x,i+1)}).join('')+
+    fora.map(function(x){return cartaoEsp(x,0)}).join('')+'</div>';
+}
+async function esperaNovo(){
+  var en=document.getElementById('en'),n=en.value.trim();
+  if(!n){en.focus();return}
+  var r=await post('/api/espera/novo',{nome:n,pessoas:Number(document.getElementById('ep').value)||2,
+    telefone:document.getElementById('et').value,obs:document.getElementById('eo').value});
+  if(!r.ok){alert(r.erro||'não deu pra colocar na fila');return}
+  en.value='';document.getElementById('et').value='';document.getElementById('eo').value='';
+  document.getElementById('ep').value='2';en.focus();
+  carregarEsp();
+}
+function pintaRes(){
   var q=chave(document.getElementById('q').value.trim()),qd=dig(document.getElementById('q').value);
   var L=R.filter(function(x){
     if(F==='vem'&&x.status==='sentada')return false;
@@ -15305,7 +15437,36 @@ function pinta(){
   app.className='';
   app.innerHTML=topo+'<div class="wrap">'+L.map(cartao).join('')+'</div>';
 }
-async function carregar(){
+async function carregar(){ await Promise.all([carregarRes(),carregarEsp()]) }
+async function carregarEsp(){
+  var d;try{d=await (await fetch('/api/espera',{cache:'no-store'})).json()}
+  catch(e){EAV='sem resposta do servidor da loja';return pinta()}
+  E=(d&&d.espera)||[];EAV=d&&d.ok?'':('a fila não carregou: '+((d&&d.erro)||'sem resposta'));
+  var nf=E.filter(naFila).length;
+  document.getElementById('t_esp').textContent='⏳ Lista de espera'+(nf?' ('+nf+')':'');
+  pinta();
+}
+document.getElementById('app').addEventListener('click',async function(ev){
+  var b=ev.target.closest&&ev.target.closest('button[data-a]');
+  if(!b)return;
+  var id=Number(b.getAttribute('data-id')),a=b.getAttribute('data-a'),corpo={id:id,acao:a};
+  var x=E.filter(function(y){return Number(y.id)===id})[0];
+  if(a==='sentou'){var mi=document.getElementById('mn'+id);corpo.mesa=mi?(Number(dig(mi.value))||null):null}
+  if(a==='desistiu'&&!b.getAttribute('data-ok')){
+    b.setAttribute('data-ok','1');b.textContent='Confirmar?';
+    setTimeout(function(){if(b.isConnected){b.removeAttribute('data-ok');b.innerHTML='&#10005; Desistiu'}},4000);
+    return;
+  }
+  b.disabled=true;
+  var r=await post('/api/espera/acao',corpo);
+  if(!r.ok){alert(r.erro||'não deu');b.disabled=false;return}
+  if(a==='chamar'&&x&&dig(x.telefone)){
+    var z=dig(x.telefone);z=z.length>11?z:'55'+z;
+    window.open('https://wa.me/'+z+'?text='+encodeURIComponent('Oi '+(x.nome||'')+'! Sua mesa no '+LOJA+' está pronta. Pode vir até a recepção 🎉'),'_blank');
+  }
+  carregarEsp();
+});
+async function carregarRes(){
   var d;try{d=await (await fetch('/api/reservas',{cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
   R=(d&&d.reservas)||[];
   AVISO=d&&d.ok?(d.velho?'mostrando a última lista que deu pra baixar (o Concilia não respondeu agora)':''):('não deu pra falar com o Concilia: '+((d&&d.erro)||'sem resposta'));
@@ -23740,6 +23901,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
+    if (p === '/api/espera') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaLista())); }
+    if (req.method === 'POST' && p === '/api/espera/novo') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaNovo(body))); }
+    if (req.method === 'POST' && p === '/api/espera/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaAcao(body))); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
     // uma vez só. Fica na LAN da loja, não na internet.
