@@ -708,6 +708,9 @@ async function initSchema() {
   // Permissão CHEF: manda PRODUÇÃO pros cozinheiros pelo celular (/producao).
   // Gerente também manda (ehChef).
   await addCol('garcom_pin', 'producao boolean NOT NULL DEFAULT false');
+  // Permissao RECEPCAO: abre a tela de reservas/lista de espera (/reservas).
+  // Gerente tambem abre (ehRecepcao).
+  await addCol('garcom_pin', 'recepcao boolean NOT NULL DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS app_config (chave text PRIMARY KEY, valor text NOT NULL)`;
   // Vínculo CAIXA ↔ MAQUININHA: o caixa aberto na maquininha fica preso ao
   // serial daquele terminal — o mesmo operador não recebe em outra maquininha
@@ -6710,6 +6713,19 @@ async function ehChef(login) {
   return ehGerente(l);
 }
 
+// RECEPCAO = pode mexer nas RESERVAS e na LISTA DE ESPERA (/reservas): marcada
+// em Gerentes OU gerente. A tela mexe em reserva de cliente (mesa, sentou,
+// no-show) e manda WhatsApp — nao pode ficar aberta pra quem pegar o tablet.
+async function ehRecepcao(login) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return false;
+  try {
+    const local = (await sql`SELECT recepcao FROM garcom_pin WHERE login=${l}`)[0];
+    if (local && local.recepcao) return true;
+  } catch {}
+  return ehGerente(l);
+}
+
 // GET /api/garcom/sessao — o celular pergunta "ainda estou logado?"
 async function apiGarcomSessao(req, u) {
   const g = await garcomDaRequisicao(req, u);
@@ -6721,14 +6737,14 @@ async function apiGarcomSessao(req, u) {
 async function apiGerentesListar(req, u) {
   const g = await garcomDaRequisicao(req, u);
   if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente vê isto' };
-  const linhas = await sql`SELECT login, nome, gerente, producao FROM garcom_pin ORDER BY COALESCE(nome, login)`;
+  const linhas = await sql`SELECT login, nome, gerente, producao, recepcao FROM garcom_pin ORDER BY COALESCE(nome, login)`;
   const out = [];
   for (const l of linhas) {
     // quem já é gerente pelo Consumer (admin/28) vem travado — não dá pra tirar
     // aqui o que a loja definiu lá.
     let porConsumer = false;
     try { const p = await permsDoUsuario(l.login); porConsumer = !!(p.ok && (p.admin || p.excluir_pedido)); } catch {}
-    out.push({ login: l.login, nome: l.nome || l.login, gerente: !!l.gerente || porConsumer, por_consumer: porConsumer, producao: !!l.producao });
+    out.push({ login: l.login, nome: l.nome || l.login, gerente: !!l.gerente || porConsumer, por_consumer: porConsumer, producao: !!l.producao, recepcao: !!l.recepcao });
   }
   return { ok: true, gerentes: out, eu: g.login };
 }
@@ -6737,7 +6753,14 @@ async function apiGerenteSet(req, u, body) {
   if (!g || !(await ehGerente(g.login))) return { ok: false, erro: 'só gerente pode mexer nisso' };
   const login = String(body.login || '').trim().toLowerCase();
   if (!login) return { ok: false, erro: 'informe o login' };
-  // {login, producao} mexe só na marcação de CHEF; {login, gerente} na de gerente
+  // {login, producao} mexe só na marcação de CHEF; {login, recepcao} na da
+  // RECEPÇÃO (reservas); {login, gerente} na de gerente
+  if (body.recepcao !== undefined) {
+    const rv = !!body.recepcao;
+    const r = await sql`UPDATE garcom_pin SET recepcao=${rv}, atualizado_em=now() WHERE login=${login} RETURNING login`;
+    if (!r.length) return { ok: false, erro: 'esse login ainda não tem PIN aqui — ele precisa entrar 1x primeiro' };
+    return { ok: true, login, recepcao: rv };
+  }
   if (body.producao !== undefined) {
     const pv = !!body.producao;
     const r = await sql`UPDATE garcom_pin SET producao=${pv}, atualizado_em=now() WHERE login=${login} RETURNING login`;
@@ -12351,7 +12374,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .menubtn{font-size:20px;padding:5px 12px;font-weight:700}
 #menuCasa{display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25)}
 #menuCasa.on{display:block}
-#menuCasa .mc{position:absolute;top:62px;right:16px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px;min-width:250px;max-width:calc(100vw - 32px)}
+#menuCasa .mc{position:absolute;top:62px;right:16px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px;min-width:250px;max-width:calc(100vw - 32px);max-height:calc(100vh - 78px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 #menuCasa a,#menuCasa button{display:flex;align-items:center;gap:12px;width:100%;padding:13px 14px;border:0;background:none;border-radius:10px;font:inherit;font-size:16px;color:var(--ink);text-decoration:none;cursor:pointer;text-align:left}
 #menuCasa a:hover,#menuCasa button:hover{background:#f2f2f5}
 #menuCasa i{font-style:normal;font-size:20px;width:26px;text-align:center}
@@ -12367,7 +12390,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
 <a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
 <a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
-<a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — recepção</small></span></a>
+<a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — pede login da recepção</small></span></a>
 <button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
 <a href="/gerente"><i>👔</i><span>Gerente</span></a>
 <hr><a href="/tablet"><i>⚙</i><span>Configurar<small>tela cheia / atualizar</small></span></a>
@@ -12873,7 +12896,17 @@ function fecharPontoFacial(){
   var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
   document.getElementById('pfModal').classList.remove('on');
 }
-function abreMenu(){var m=document.getElementById('menuCasa');m.querySelector('.mc').style.top=(document.getElementById('hd').getBoundingClientRect().bottom+6)+'px';m.classList.toggle('on')}
+// Tablet deitado e baixo: o menu passava da borda e o Gerente/Configurar
+// ficavam inalcancaveis (nao rolava). Agora ele so vai ate onde a tela vai
+// e rola por dentro.
+function abreMenu(){
+  var m=document.getElementById('menuCasa'),c=m.querySelector('.mc'),
+      t=document.getElementById('hd').getBoundingClientRect().bottom+6;
+  c.style.top=t+'px';
+  c.style.maxHeight=Math.max(160,window.innerHeight-t-12)+'px';
+  c.scrollTop=0;
+  m.classList.toggle('on');
+}
 async function selecao(){
   var d=await (await fetch('/api/areas',{cache:'no-store'})).json();
   // menu da casa: a tela inicial é a porta de tudo — caixa entra aqui (quem
@@ -14032,7 +14065,7 @@ var GERLIST=[];
 async function telaGerentes(){
   app('<button class="back" onclick="telaMesa()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">Gerentes</div>'+
-    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado). <b>Chef</b> manda produção pros cozinheiros pelo celular (menu ☰ → Produção); gerente também manda.</div>'+
+    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado). <b>Chef</b> manda produção pros cozinheiros pelo celular (menu ☰ → Produção); <b>recepção</b> abre as reservas e a lista de espera (menu ☰ → Reservas); gerente também faz os dois.</div>'+
     '<div id="glist"><span class="mut">carregando…</span></div>');
   var d=await jget('/api/gerentes');
   var el=document.getElementById('glist');if(!el)return;
@@ -14044,6 +14077,7 @@ async function telaGerentes(){
       '<span>'+(g.gerente?'✅ ':'▫️ ')+esc(g.nome)+' <small style="opacity:.6">'+esc(g.login)+(g.por_consumer?' · Consumer':'')+'</small></span>'+
       '<span style="display:flex;gap:6px">'+
       '<button class="ir" onclick="setChefIx('+ix+','+(g.producao?'false':'true')+')">'+(g.producao?'👨‍🍳 chef ✓':'chef?')+'</button>'+
+      '<button class="ir" onclick="setRecepIx('+ix+','+(g.recepcao?'false':'true')+')">'+(g.recepcao?'📅 recepção ✓':'recepção?')+'</button>'+
       (g.por_consumer?'':'<button class="ir" onclick="setGerenteIx('+ix+','+(g.gerente?'false':'true')+')">'+(g.gerente?'tirar':'tornar')+'</button>')+
       '</span></div>';
   }).join('');
@@ -14051,6 +14085,12 @@ async function telaGerentes(){
 async function setChefIx(ix,val){
   var g=GERLIST[ix];if(!g)return;
   var r=await jpost('/api/gerente',{login:g.login,producao:val});
+  if(!r.ok){alert(r.erro||'erro');return}
+  telaGerentes();
+}
+async function setRecepIx(ix,val){
+  var g=GERLIST[ix];if(!g)return;
+  var r=await jpost('/api/gerente',{login:g.login,recepcao:val});
   if(!r.ok){alert(r.erro||'erro');return}
   telaGerentes();
 }
@@ -15243,7 +15283,7 @@ async function apiEsperaAcao(body) {
 // Vai tudo pra nuvem: a reserva é de lá (mapa de mesas, estorno, auditoria,
 // aviso no zap do cliente). Cancelar NÃO está aqui de propósito — cancelar
 // devolve o dinheiro e é ato de administrador, só no Concilia com login.
-async function apiReservaAcao(body) {
+async function apiReservaAcao(body, quem) {
   const id = String(body.id || '');
   if (!/^[0-9a-f-]{36}$/i.test(id)) return { ok: false, erro: 'sem id da reserva' };
   const acao = String(body.acao || '');
@@ -15254,9 +15294,36 @@ async function apiReservaAcao(body) {
   return salaoNuvemPost({
     tipo: 'reserva', id, acao,
     mesa: String(body.mesa || ''), hora: String(body.hora || ''),
-    pessoas: Number(body.pessoas) || 0, por: 'recepção (loja)',
+    pessoas: Number(body.pessoas) || 0, por: quem ? 'recepção (loja): ' + quem : 'recepção (loja)',
     ...(juntadas ? { juntadas } : {}),
   });
+}
+
+// ---- QUEM ENTRA NA RECEPÇÃO (/reservas) ----
+// Mesma régua do /gerente e do /producao: login + PIN da loja (garcom_pin),
+// primeira vez cria com pin2. A tela mexe em reserva de cliente e dispara
+// WhatsApp — não pode ficar aberta pra quem pegar o tablet da recepção.
+async function recepcaoDaRequisicao(req, u) {
+  const tok = (req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '').toString();
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  if (!(await ehRecepcao(v.login))) return null;
+  let nome = null;
+  try { nome = (await sql`SELECT nome FROM garcom_pin WHERE login=${v.login}`)[0]?.nome || null; } catch {}
+  return { login: v.login, nome: nome || v.login };
+}
+async function apiRecepcaoEntrar(body) {
+  const login = String(body.login || '').trim().toLowerCase();
+  const pin = String(body.pin || '').replace(/\D/g, '');
+  if (!login) return { ok: false, erro: 'informe o login' };
+  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
+  if (!(await ehRecepcao(login))) return { ok: false, erro: 'Este login não abre as reservas. Um gerente marca como "recepção" em Gerentes (comanda do garçom).' };
+  const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
+  // quem foi marcado como recepção já tem PIN (a marcação é em cima do
+  // garcom_pin); gerente pelo Consumer ainda sem PIN cria aqui, igual /gerente
+  if (!atual) return apiGerenteEntrar(body);
+  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  return { ok: true, token: garcomGeraToken(login), login, nome: atual.nome || login };
 }
 
 // ================= RESERVAS DO DIA NA RECEPÇÃO (/reservas) =================
@@ -15285,6 +15352,16 @@ button.g{background:#5b5b66}
 .rs.perto{border-left-color:var(--gold2);background:#fff9f3}
 .rs.atras{border-left-color:#b91c1c;background:#fff2f2}
 .rs.sent{opacity:.6}
+.login{max-width:400px;margin:40px auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.login .lt{font-size:19px;font-weight:800}
+.login .lm{color:var(--mut);font-size:13.5px;margin-top:6px;line-height:1.45}
+.login input{width:100%;font:inherit;font-size:16px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;margin-top:9px}
+.login button{width:100%;margin-top:11px;padding:12px;font-size:16px}
+.login .err{color:#b91c1c;font-size:13.5px;min-height:18px;margin-top:8px}
+.login .lv{text-align:center;margin-top:8px}
+.login .lv a{color:var(--mut);font-size:13px;text-decoration:none}
+.eu{color:var(--mut);font-size:13px;white-space:nowrap}
+.eu a{color:var(--gold2);text-decoration:none}
 .rs .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .rs .h{font-size:25px;font-weight:800;line-height:1;color:var(--gold2)}
 .rs .pes{font-size:15px;font-weight:700}
@@ -15328,7 +15405,8 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .btns .sv{background:#15803d}
 .jt .naosalvo{color:#b45309;font-weight:700}
 </style></head><body>
-<div class="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<div class="barra" id="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<span class="eu" id="eu"></span>
 <button class="seg on" id="t_res" onclick="aba('res')">📅 Reservas</button>
 <button class="seg" id="t_esp" onclick="aba('esp')">⏳ Lista de espera</button>
 <button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
@@ -15348,7 +15426,14 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <div id="app" class="vazio">carregando…</div>
 <script>
 var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',AREAS=[],LOJA='${LOJA_NOME}';
-var JUNT={},ABRE={},MEXEU=0;
+var JUNT={},ABRE={},MEXEU=0,TMR=null;
+// Sessao da RECEPCAO: esta tela mexe na reserva do cliente (mesa, sentou, nao
+// veio) e dispara WhatsApp. O tablet fica no balcao — sem login, qualquer um
+// que passasse podia mexer. Mesmo PIN do caixa/comanda; quem entra e quem esta
+// marcado como "recepcao" em Gerentes, ou gerente.
+var TOK=null;try{TOK=localStorage.getItem('recepcao_tok')||null}catch(e){}
+function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
+function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function dig(s){return String(s==null?'':s).replace(/[^0-9]/g,'')}
 function chave(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')}
@@ -15526,7 +15611,10 @@ function aba(k){
   if(k==='esp')document.getElementById('en').focus();
 }
 async function post(u,b){
-  try{var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return await r.json()}
+  try{var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b)});
+    var j=await r.json();
+    if(j&&j.sem_sessao&&u.indexOf('/api/recepcao/')<0)telaLogin('Sua sessão venceu — entre de novo.');
+    return j}
   catch(e){return {ok:false,erro:'sem resposta do servidor da loja'}}
 }
 // Enquanto a recepção está escolhendo mesa (select aberto, chip de junção
@@ -15677,8 +15765,9 @@ function pintaRes(){
 }
 async function carregar(){ await Promise.all([carregarRes(),carregarEsp()]) }
 async function carregarEsp(){
-  var d;try{d=await (await fetch('/api/espera',{cache:'no-store'})).json()}
+  var d;try{d=await (await fetch('/api/espera',{headers:hdrs(),cache:'no-store'})).json()}
   catch(e){EAV='sem resposta do servidor da loja';return pinta()}
+  if(d&&d.sem_sessao)return telaLogin('Sua sessão venceu — entre de novo.');
   E=(d&&d.espera)||[];EAV=d&&d.ok?'':('a fila não carregou: '+((d&&d.erro)||'sem resposta'));
   setAreas((d&&d.areas)||[]);
   var nf=E.filter(naFila).length;
@@ -15766,7 +15855,8 @@ document.getElementById('app').addEventListener('click',async function(ev){
   carregarEsp();
 });
 async function carregarRes(){
-  var d;try{d=await (await fetch('/api/reservas',{cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  var d;try{d=await (await fetch('/api/reservas',{headers:hdrs(),cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  if(d&&d.sem_sessao)return telaLogin('Sua sessão venceu — entre de novo.');
   R=(d&&d.reservas)||[];
   setAreas((d&&d.areas)||AREAS);
   // junção em memória só vale enquanto a recepção está mexendo; fora disso
@@ -15775,8 +15865,48 @@ async function carregarRes(){
   AVISO=d&&d.ok?(d.velho?'mostrando a última lista que deu pra baixar (o Concilia não respondeu agora)':''):('não deu pra falar com o Concilia: '+((d&&d.erro)||'sem resposta'));
   pinta();
 }
-carregar();setInterval(carregar,30000);
-document.addEventListener('visibilitychange',function(){if(!document.hidden)carregar()});
+/* ---- porta de entrada ---- */
+function telaLogin(msg){
+  if(TMR){clearInterval(TMR);TMR=null}
+  $('barra').style.display='none';$('subres').style.display='none';$('novo').style.display='none';
+  $('eu').innerHTML='';
+  var el=$('app');el.className='';
+  el.innerHTML='<div class="login"><div class="lt">&#128197; Reservas &amp; lista de espera</div>'+
+    '<div class="lm">Esta tela mexe na reserva do cliente e manda WhatsApp. Entre com o mesmo login e PIN do caixa/comanda — precisa estar marcado como <b>recepção</b> em Gerentes, ou ser gerente.</div>'+
+    '<input id="lg" placeholder="login" autocapitalize="none" autocomplete="username">'+
+    '<input id="pn" type="password" inputmode="numeric" maxlength="8" placeholder="PIN" autocomplete="off">'+
+    '<div id="p2w" hidden><input id="pn2" type="password" inputmode="numeric" maxlength="8" placeholder="repita o PIN (primeira vez)" autocomplete="off"></div>'+
+    '<button onclick="entrar()">Entrar</button>'+
+    '<div class="err" id="lerr">'+esc(msg||'')+'</div>'+
+    '<div class="lv"><a href="/">&#9776; voltar ao início</a></div></div>';
+  try{var u=localStorage.getItem('recepcao_login');if(u)$('lg').value=u}catch(e){}
+  $('pn').addEventListener('keydown',function(e){if(e.key==='Enter')entrar()});
+}
+async function entrar(){
+  var lg=$('lg').value.trim(),pn=$('pn').value,p2=($('pn2')||{}).value||'';
+  var r=await post('/api/recepcao/entrar',{login:lg,pin:pn,pin2:p2});
+  if(r.ok&&r.primeira_vez&&!r.token){$('p2w').hidden=false;
+    $('lerr').textContent='Primeira vez de '+(r.nome||lg)+': repita o PIN pra criar.';$('pn2').focus();return}
+  if(!r.ok){$('lerr').textContent=r.erro||'não entrou';return}
+  TOK=r.token;try{localStorage.setItem('recepcao_tok',TOK);localStorage.setItem('recepcao_login',lg)}catch(e){}
+  iniciar();
+}
+function sair(){
+  TOK=null;try{localStorage.removeItem('recepcao_tok')}catch(e){}
+  R=[];E=[];JUNT={};ABRE={};MEXEU=0;telaLogin('');
+}
+async function iniciar(){
+  var s;try{s=await (await fetch('/api/recepcao/sessao',{headers:hdrs(),cache:'no-store'})).json()}catch(e){s={ok:false}}
+  if(!s||!s.ok){telaLogin(TOK?'Sua sessão venceu — entre de novo.':'');return}
+  $('barra').style.display='';
+  $('eu').innerHTML=esc(s.nome||s.login)+' · <a href="#" onclick="sair();return false">sair</a>';
+  $('app').className='vazio';$('app').textContent='carregando…';
+  aba(ABA);
+  await carregar();
+  if(!TMR)TMR=setInterval(function(){if(TOK)carregar()},30000);
+}
+iniciar();
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&TOK)carregar()});
 </script></body></html>`;
 const PASSE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -24167,6 +24297,30 @@ const server = http.createServer(async (req, res) => {
     // Quem recebe o cliente precisa achar a reserva pelo nome/telefone, ver a
     // mesa e o pedido especial; por isso aqui vai TUDO (inclusive telefone),
     // ao contrário do que ia pro KDS. Vem do mesmo cache de 10s do gerente.
+    // ---- PORTA DA RECEPÇÃO ----
+    // Reservas e lista de espera são de quem tem permissão: a tela mexe em
+    // reserva de cliente (mesa, sentou, não veio) e dispara WhatsApp. Tablet
+    // aberto na recepção não pode entregar isso a quem passar por perto.
+    // Mesma régua do /gerente e do /producao (login + PIN da loja).
+    if (req.method === 'POST' && p === '/api/recepcao/entrar') {
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiRecepcaoEntrar(body)));
+    }
+    if (p === '/api/recepcao/sessao') {
+      const q = await recepcaoDaRequisicao(req, u);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(q ? { ok: true, login: q.login, nome: q.nome } : { ok: false }));
+    }
+    let RECEP = null;
+    if (p === '/api/reservas' || p === '/api/reservas/acao' || p === '/api/espera'
+      || p === '/api/espera/novo' || p === '/api/espera/acao') {
+      RECEP = await recepcaoDaRequisicao(req, u);
+      if (!RECEP) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre com seu login pra ver as reservas.', sem_sessao: true }));
+      }
+    }
     if (p === '/api/reservas') {
       const n = await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
@@ -24232,7 +24386,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
     if (p === '/api/espera') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaLista())); }
     if (req.method === 'POST' && p === '/api/espera/novo') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaNovo(body))); }
-    if (req.method === 'POST' && p === '/api/reservas/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaAcao(body))); }
+    if (req.method === 'POST' && p === '/api/reservas/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaAcao(body, RECEP && (RECEP.nome || RECEP.login)))); }
     if (req.method === 'POST' && p === '/api/espera/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaAcao(body))); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
