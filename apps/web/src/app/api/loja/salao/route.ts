@@ -11,7 +11,7 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { hojeBr } from '@/lib/datas';
-import { parseJuntadas } from '@/lib/reservas/mesas-juntadas';
+import { mesasDaReserva, parseJuntadas } from '@/lib/reservas/mesas-juntadas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,12 +49,6 @@ export async function GET(request: Request) {
     .from(schema.filial)
     .where(eq(schema.filial.id, f))
     .limit(1);
-  const areas = (fil?.reservaConfig?.areas ?? [])
-    .filter((a) => a.ativo !== false)
-    .map((a) => ({
-      nome: a.nome,
-      mesas: (a.mesas ?? []).map((m) => ({ numero: String(m.numero).trim(), lugares: Number(m.lugares) || 0 })),
-    }));
 
   const espera = await db
     .select({
@@ -143,6 +137,44 @@ export async function GET(request: Request) {
     ...r,
     mesa_juntada: parseJuntadas(r.mesa_juntada).join('+') || null,
   }));
+
+  // MAPA DE MESAS COM OCUPAÇÃO — é o que faz a recepção da loja só conseguir
+  // oferecer mesa que existe, que cabe a turma e que está livre. Mesmas duas
+  // travas do painel: mesa presa por reserva ativa de HOJE (pendente,
+  // confirmada, sentada) e mesa com comanda aberta agora no Consumer
+  // (walk-in, sujeito ao atraso do CDC). A checagem final continua sendo o
+  // POST daqui (409) — isto é o que a tela mostra.
+  const { mesasOcupadasNoConsumer } = await import('@/lib/reservas/mesa-disponivel');
+  const noConsumer = await mesasOcupadasNoConsumer(f);
+  const presas = new Map<string, { nome: string; hora: string; pessoas: number }>();
+  for (const r of reservas) {
+    if (r.status !== 'pendente' && r.status !== 'confirmada' && r.status !== 'sentada') continue;
+    for (const m of mesasDaReserva(r.mesa, r.mesa_juntada)) {
+      presas.set(`${r.area ?? ''}|${m}`, {
+        nome: r.nome ?? '',
+        hora: String(r.hora ?? '').slice(0, 5),
+        pessoas: Number(r.pessoas) || 0,
+      });
+    }
+  }
+  const areas = (fil?.reservaConfig?.areas ?? [])
+    .filter((a) => a.ativo !== false)
+    .map((a) => ({
+      nome: a.nome,
+      mesas: (a.mesas ?? []).map((m) => {
+        const numero = String(m.numero).trim();
+        const reservada = presas.get(`${a.nome}|${numero}`) ?? null;
+        return {
+          numero,
+          lugares: Number(m.lugares) || 0,
+          juntavel: m.juntavel === true,
+          // quem está na mesa (pra tela dizer "reservada 20:30 · Ana")
+          reservada,
+          // comanda aberta sem reserva = cliente sentou por fora
+          ocupada: noConsumer.has(numero),
+        };
+      }),
+    }));
   return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas: reservasSaida });
 }
 
@@ -159,7 +191,7 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as
     | {
         f?: string; e?: number; s?: string; tipo?: string; id?: string; acao?: string; status?: string; por?: string;
-        mesa?: string; hora?: string; pessoas?: number;
+        mesa?: string; hora?: string; pessoas?: number; juntadas?: string[];
       }
     | null;
   if (!body || !autoriza(String(body.f || ''), Number(body.e || 0), String(body.s || ''))) {
@@ -206,7 +238,7 @@ export async function POST(request: Request) {
     } else if (acao === 'sentou') {
       // Onde sentou vai pra observação — lista_espera não tem coluna de mesa e
       // não vale uma migration só por isso; assim aparece igual no /lista-espera.
-      const mesa = String(body.mesa || '').replace(/\D/g, '').slice(0, 6);
+      const mesa = String(body.mesa || '').trim().replace(/[^0-9A-Za-z .-]/g, '').slice(0, 20);
       await db
         .update(schema.listaEspera)
         .set({
@@ -305,12 +337,15 @@ export async function POST(request: Request) {
       const mesaFinal = mesaPedida ?? r.mesa;
       if (!mesaFinal) return NextResponse.json({ ok: false, erro: 'diga em qual mesa' }, { status: 400 });
       const trocou = mesaPedida !== null && mesaPedida !== r.mesa;
-      // Mesa nova = as juntadas antigas não valem mais (eram vizinhas da outra).
-      const juntadasFinal = trocou ? null : r.mesaJuntada;
-      if (trocou) {
-        set.mesa = mesaFinal;
-        set.mesaJuntada = null;
-      }
+      // Mesa nova = as juntadas antigas não valem mais (eram vizinhas da outra),
+      // a não ser que a recepção tenha mandado a junção nova junto.
+      const { serializeJuntadas } = await import('@/lib/reservas/mesas-juntadas');
+      const juntou = Array.isArray(body.juntadas)
+        ? serializeJuntadas(body.juntadas.map((m) => String(m)), mesaFinal)
+        : null;
+      const juntadasFinal = Array.isArray(body.juntadas) ? juntou : trocou ? null : r.mesaJuntada;
+      if (trocou) set.mesa = mesaFinal;
+      if (trocou || Array.isArray(body.juntadas)) set.mesaJuntada = juntadasFinal;
       if (r.area) {
         const { mesasEstaoLivres } = await import('@/lib/reservas/mesa-disponivel');
         const { mesasDaReserva } = await import('@/lib/reservas/mesas-juntadas');
