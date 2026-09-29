@@ -14,9 +14,8 @@ const FILIAL_PRAINHA_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
 const LINK_CARDAPIO_PADRAO = 'https://www.prainhabar.com/cardapio';
 const LINK_CARDAPIO_POR_FILIAL: Record<string, string> = {
   [FILIAL_TABUARA]: 'https://tabuara.menudino.com.br',
-  // Site da casa (28/09). Trocar pra prainhamar.com.br/#cardapio quando o DNS
-  // do domínio estiver apontado pra Vercel.
-  [FILIAL_PRAINHA_MAR]: 'https://app.prainhabar.com/prainhamar#cardapio',
+  // Site da casa (28/09), servido pelo proxy (PRAINHAMAR_HOSTS).
+  [FILIAL_PRAINHA_MAR]: 'https://prainhamar.com.br/#cardapio',
 };
 
 /** Cardápio online da casa — usado nas respostas da IA e no prompt. */
