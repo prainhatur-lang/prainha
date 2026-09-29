@@ -4,7 +4,8 @@
 // lib/folha/calcular.ts (motor de comissão) NÃO é tocado — só passa a
 // receber linhas de folha_horas com uma origem a mais ('ponto_proprio'),
 // convivendo com 'espelho' (upload manual, ainda ativo na transição) e
-// 'manual' (correção humana, que a cláusula setWhere abaixo NUNCA sobrescreve).
+// 'manual' (correção humana) — a cláusula setWhere abaixo só reescreve linha
+// 'ponto_proprio', nunca 'manual' nem 'espelho'.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
@@ -94,8 +95,9 @@ export async function projetarPontoEmFolhaHoras(
       .onConflictDoUpdate({
         target: [schema.folhaHoras.folhaSemanaId, schema.folhaHoras.fornecedorId, schema.folhaHoras.dia],
         set: { totalMin: sql`excluded.total_min`, origem: sql`excluded.origem` },
-        // Correção humana NUNCA é sobrescrita pelo robô.
-        setWhere: sql`${schema.folhaHoras.origem} <> 'manual'`,
+        // Só reescreve o que o próprio robô gravou: correção humana ('manual')
+        // e espelho da Stelanto subido pra essa folha ('espelho') ficam.
+        setWhere: sql`${schema.folhaHoras.origem} = 'ponto_proprio'`,
       });
     linhasFolha++;
   }

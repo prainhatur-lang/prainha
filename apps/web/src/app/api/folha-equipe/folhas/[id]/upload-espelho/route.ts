@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { fuzzyMatchPessoa, parseEspelho } from '@/lib/folha/parse-espelho';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -120,8 +120,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           totalMin: min,
           origem: 'espelho',
         }));
+      // Upsert: o ponto facial pode já ter gravado o mesmo dia (origem
+      // 'ponto_proprio', muitas vezes 0 min de batida sem saída). Insert puro
+      // batia na uq_folha_horas_pessoa_dia e derrubava o upload inteiro
+      // (semana 21–27/09/2026). Espelho vence o ponto próprio; correção
+      // 'manual' continua intocável.
       if (rows.length > 0) {
-        await db.insert(schema.folhaHoras).values(rows);
+        await db
+          .insert(schema.folhaHoras)
+          .values(rows)
+          .onConflictDoUpdate({
+            target: [schema.folhaHoras.folhaSemanaId, schema.folhaHoras.fornecedorId, schema.folhaHoras.dia],
+            set: { totalMin: sql`excluded.total_min`, origem: sql`excluded.origem` },
+            setWhere: sql`${schema.folhaHoras.origem} <> 'manual'`,
+          });
       }
     }
   }
