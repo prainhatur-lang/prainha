@@ -39,9 +39,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
   }
   const { db, schema } = await import('@concilia/db');
-  const { and, eq, inArray, gte, desc, asc } = await import('drizzle-orm');
+  const { and, eq, inArray, gte, desc, asc, or } = await import('drizzle-orm');
   const hoje = hojeBr();
   const desde24h = new Date(Date.now() - 24 * 3600 * 1000);
+  const desde12h = new Date(Date.now() - 12 * 3600 * 1000);
 
   const [fil] = await db
     .select({ reservaConfig: schema.filial.reservaConfig })
@@ -66,9 +67,23 @@ export async function GET(request: Request) {
       observacao: schema.listaEspera.observacao,
       criado_em: schema.listaEspera.criadoEm,
       chamado_em: schema.listaEspera.chamadoEm,
+      sentado_em: schema.listaEspera.sentadoEm,
     })
     .from(schema.listaEspera)
-    .where(and(eq(schema.listaEspera.filialId, f), inArray(schema.listaEspera.status, ['aguardando', 'chamado'])))
+    // Fila viva + o que saiu dela nas últimas 12h: a recepção precisa ver o
+    // que acabou de marcar (e poder desfazer um "sentou" clicado por engano).
+    .where(
+      and(
+        eq(schema.listaEspera.filialId, f),
+        or(
+          inArray(schema.listaEspera.status, ['aguardando', 'chamado']),
+          and(
+            inArray(schema.listaEspera.status, ['sentado', 'desistiu']),
+            gte(schema.listaEspera.atualizadoEm, desde12h),
+          ),
+        ),
+      ),
+    )
     .orderBy(asc(schema.listaEspera.criadoEm))
     .limit(60);
 
@@ -114,7 +129,9 @@ export async function GET(request: Request) {
       and(
         eq(schema.reserva.filialId, f),
         eq(schema.reserva.data, hoje),
-        inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada']),
+        // no_show entra pra recepção poder DESFAZER um toque errado — o cartão
+        // continua na tela do dia marcado em vermelho.
+        inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada', 'no_show']),
       ),
     )
     .orderBy(asc(schema.reserva.hora))
@@ -129,19 +146,27 @@ export async function GET(request: Request) {
   return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas: reservasSaida });
 }
 
-const ACOES_ESPERA = new Set(['chamar', 'sentou', 'desistiu']);
+const ACOES_ESPERA = new Set(['chamar', 'sentou', 'desistiu', 'voltar']);
+// O que a RECEPÇÃO pode fazer numa reserva pela loja. Cancelar NÃO está aqui
+// de propósito: cancelar dispara estorno integral e é ato de administrador
+// (regra do Elison, 16/08) — continua só no painel, com login.
+const ACOES_RESERVA = new Set(['sentar', 'confirmar', 'no_show', 'hora', 'mesa', 'pessoas']);
 const STATUS_AVAL = new Set(['em_contato', 'resolvido']);
 
 /** POST — ação do gerente na loja: lista de espera (chamar/sentou/desistiu)
  *  ou marcar avaliação como em contato/resolvida. */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as
-    | { f?: string; e?: number; s?: string; tipo?: string; id?: string; acao?: string; status?: string; por?: string }
+    | {
+        f?: string; e?: number; s?: string; tipo?: string; id?: string; acao?: string; status?: string; por?: string;
+        mesa?: string; hora?: string; pessoas?: number;
+      }
     | null;
   if (!body || !autoriza(String(body.f || ''), Number(body.e || 0), String(body.s || ''))) {
     return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
   }
   if (body.tipo === 'avaliacao_nova') return avaliacaoNova(String(body.f), body as unknown as AvaliacaoNova);
+  if (body.tipo === 'espera_nova') return esperaNova(String(body.f), body as unknown as EsperaNova);
   const id = String(body.id || '');
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ ok: false, erro: 'id inválido' }, { status: 400 });
@@ -179,9 +204,22 @@ export async function POST(request: Request) {
         }
       } else zap = 'sem telefone';
     } else if (acao === 'sentou') {
+      // Onde sentou vai pra observação — lista_espera não tem coluna de mesa e
+      // não vale uma migration só por isso; assim aparece igual no /lista-espera.
+      const mesa = String(body.mesa || '').replace(/\D/g, '').slice(0, 6);
       await db
         .update(schema.listaEspera)
-        .set({ status: 'sentado', sentadoEm: sql`now()`, atualizadoEm: sql`now()` })
+        .set({
+          status: 'sentado',
+          sentadoEm: sql`now()`,
+          atualizadoEm: sql`now()`,
+          ...(mesa ? { observacao: sql`coalesce(${schema.listaEspera.observacao} || ' · ', '') || ${'sentou na mesa ' + mesa}` } : {}),
+        })
+        .where(eq(schema.listaEspera.id, id));
+    } else if (acao === 'voltar') {
+      await db
+        .update(schema.listaEspera)
+        .set({ status: 'aguardando', chamadoEm: null, sentadoEm: null, atualizadoEm: sql`now()` })
         .where(eq(schema.listaEspera.id, id));
     } else {
       await db
@@ -190,6 +228,132 @@ export async function POST(request: Request) {
         .where(eq(schema.listaEspera.id, id));
     }
     return NextResponse.json({ ok: true, zap });
+  }
+
+  // RESERVA: a recepção administra de verdade pelo salão (sentar, confirmar,
+  // não-compareceu, mudar horário/mesa/pessoas). A rota /api/reservas/[id] é
+  // presa a login de usuário, então as mesmas regras vivem aqui: conflito de
+  // mesa, auditoria em reserva_alteracao e aviso no WhatsApp do cliente.
+  if (body.tipo === 'reserva') {
+    const acao = String(body.acao || '');
+    if (!ACOES_RESERVA.has(acao)) return NextResponse.json({ ok: false, erro: 'ação inválida' }, { status: 400 });
+    const [r] = await db
+      .select({
+        filialId: schema.reserva.filialId,
+        data: schema.reserva.data,
+        hora: schema.reserva.hora,
+        area: schema.reserva.area,
+        mesa: schema.reserva.mesa,
+        mesaJuntada: schema.reserva.mesaJuntada,
+        status: schema.reserva.status,
+        pessoas: schema.reserva.pessoas,
+        nome: schema.reserva.clienteNome,
+        telefone: schema.reserva.clienteTelefone,
+      })
+      .from(schema.reserva)
+      .where(and(eq(schema.reserva.id, id), eq(schema.reserva.filialId, f)))
+      .limit(1);
+    if (!r) return NextResponse.json({ ok: false, erro: 'reserva não encontrada' }, { status: 404 });
+    if (r.status === 'cancelada') {
+      return NextResponse.json({ ok: false, erro: 'reserva cancelada — fale com o escritório' }, { status: 400 });
+    }
+
+    const set: Record<string, unknown> = { atualizadoEm: sql`now()` };
+    const mesaPedida = String(body.mesa ?? '').trim().slice(0, 20) || null;
+    const [ano, mes, dia] = String(r.data).split('-');
+    const dataBr = `${dia}/${mes}/${ano}`;
+    let mensagem: string | null = null;
+
+    if (acao === 'confirmar') {
+      set.status = 'confirmada';
+    } else if (acao === 'pessoas') {
+      const n = Number(body.pessoas);
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        return NextResponse.json({ ok: false, erro: 'nº de pessoas inválido' }, { status: 400 });
+      }
+      set.pessoas = n;
+    } else if (acao === 'hora') {
+      const hora = String(body.hora || '');
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) {
+        return NextResponse.json({ ok: false, erro: 'horário inválido (HH:MM)' }, { status: 400 });
+      }
+      set.hora = hora;
+      mensagem = `Sua reserva de ${dataBr} mudou de horário: agora é às ${hora}. Te esperamos!`;
+    } else if (acao === 'no_show') {
+      set.status = 'no_show';
+      // Fecha a comanda aberta na mesa pra liberar o mapa (mesmo tratamento do
+      // painel: `pedido.numero` é integer e a mesa pode ser texto tipo "12A").
+      const numeroMesa = Number((r.mesa ?? '').replace(/\D/g, ''));
+      if (r.mesa && Number.isFinite(numeroMesa) && numeroMesa > 0) {
+        const { isNull } = await import('drizzle-orm');
+        await db
+          .update(schema.pedido)
+          .set({ dataFechamento: sql`now()` })
+          .where(
+            and(
+              eq(schema.pedido.filialId, r.filialId),
+              eq(schema.pedido.numero, numeroMesa),
+              isNull(schema.pedido.dataFechamento),
+            ),
+          )
+          .catch(() => null);
+      }
+      mensagem = `Notamos que você não compareceu à sua reserva de ${dataBr} às ${r.hora}. Se quiser remarcar, é só chamar a gente!`;
+    } else {
+      // sentar | mesa
+      if (acao === 'mesa' && !mesaPedida) return NextResponse.json({ ok: false, erro: 'diga a mesa' }, { status: 400 });
+      const mesaFinal = mesaPedida ?? r.mesa;
+      if (!mesaFinal) return NextResponse.json({ ok: false, erro: 'diga em qual mesa' }, { status: 400 });
+      const trocou = mesaPedida !== null && mesaPedida !== r.mesa;
+      // Mesa nova = as juntadas antigas não valem mais (eram vizinhas da outra).
+      const juntadasFinal = trocou ? null : r.mesaJuntada;
+      if (trocou) {
+        set.mesa = mesaFinal;
+        set.mesaJuntada = null;
+      }
+      if (r.area) {
+        const { mesasEstaoLivres } = await import('@/lib/reservas/mesa-disponivel');
+        const { mesasDaReserva } = await import('@/lib/reservas/mesas-juntadas');
+        const [filR] = await db
+          .select({ reservaConfig: schema.filial.reservaConfig })
+          .from(schema.filial)
+          .where(eq(schema.filial.id, f))
+          .limit(1);
+        const mesasValidas = (filR?.reservaConfig?.areas ?? [])
+          .find((a) => a.nome === r.area)
+          ?.mesas?.map((m) => String(m.numero).trim());
+        const livre = await mesasEstaoLivres({
+          filialId: f,
+          data: String(r.data),
+          area: r.area,
+          mesas: mesasDaReserva(mesaFinal, juntadasFinal),
+          excluirReservaId: id,
+          mesasValidas,
+        });
+        if (!livre) {
+          return NextResponse.json({ ok: false, erro: `Mesa ${mesaFinal} não está livre — escolha outra.` }, { status: 409 });
+        }
+      }
+      if (acao === 'sentar') set.status = 'sentada';
+      else if (trocou) mensagem = `Sua mesa pra reserva de ${dataBr} às ${r.hora} agora é a mesa ${mesaFinal}.`;
+    }
+
+    await db.update(schema.reserva).set(set).where(and(eq(schema.reserva.id, id), eq(schema.reserva.filialId, f)));
+    try {
+      const { registrarAlteracoesReserva } = await import('@/lib/reservas/alteracoes');
+      await registrarAlteracoesReserva(id, r, set, { tipo: 'equipe', nome: por });
+    } catch {
+      /* auditoria é best-effort */
+    }
+    if (mensagem && r.telefone) {
+      try {
+        const { enviarAtualizacaoReserva } = await import('@/lib/whatsapp-otp');
+        await enviarAtualizacaoReserva(r.telefone, { nome: (r.nome || '').split(' ')[0] || 'tudo bem', mensagem });
+      } catch {
+        /* o aviso no zap nunca derruba a ação da recepção */
+      }
+    }
+    return NextResponse.json({ ok: true });
   }
 
   if (body.tipo === 'avaliacao') {
@@ -280,4 +444,30 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
     google_url: alta ? fil.googleUrl ?? null : null,
     trip_url: alta ? fil.tripUrl ?? null : null,
   });
+}
+
+type EsperaNova = { nome?: string; pessoas?: number; telefone?: string | null; area?: string | null; observacao?: string | null };
+
+/** Recepção colocou alguém na FILA pela tela da loja. É a MESMA lista_espera
+ *  do /lista-espera na nuvem de propósito: uma fila só, vista pelo salão e
+ *  pelo escritório, e o "chamar" manda o template de verdade do WhatsApp. */
+async function esperaNova(f: string, b: EsperaNova) {
+  const nome = String(b.nome || '').trim().slice(0, 200);
+  if (!nome) return NextResponse.json({ ok: false, erro: 'diga o nome' }, { status: 400 });
+  const pessoas = Math.max(1, Math.min(500, Math.round(Number(b.pessoas) || 1)));
+  const txt = (v: unknown, n: number) => (String(v ?? '').trim() ? String(v).trim().slice(0, n) : null);
+  const { db, schema } = await import('@concilia/db');
+  const [nova] = await db
+    .insert(schema.listaEspera)
+    .values({
+      filialId: f,
+      nome,
+      pessoas,
+      telefone: String(b.telefone || '').replace(/\D/g, '').slice(0, 30) || null,
+      area: txt(b.area, 100),
+      observacao: txt(b.observacao, 500),
+      status: 'aguardando',
+    })
+    .returning({ id: schema.listaEspera.id });
+  return NextResponse.json({ ok: true, id: nova?.id ?? null });
 }

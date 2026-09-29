@@ -559,16 +559,8 @@ async function initSchema() {
     nota integer NOT NULL, assunto text, comentario text, nome text, whatsapp text,
     mesa integer, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_avaliacao_livre_fila ON avaliacao_livre (nuvem_em, id)`;
-  // LISTA DE ESPERA da recepção (aba da tela /reservas). Fila de quem chegou
-  // SEM reserva e está aguardando mesa. Mora só aqui na loja de propósito: é
-  // uma fila de porta, que muda a cada minuto e tem que funcionar com a
-  // internet caída — a nuvem não tem nada a ver com isso. A tela só olha as
-  // últimas 18h, então a fila de ontem some sozinha.
-  await sql`CREATE TABLE IF NOT EXISTS espera (id bigserial PRIMARY KEY,
-    nome text NOT NULL, pessoas integer NOT NULL DEFAULT 2, telefone text, obs text,
-    criado_em timestamptz DEFAULT now(), chamado_em timestamptz, sentou_em timestamptz,
-    saiu_em timestamptz, mesa integer)`;
-  await sql`CREATE INDEX IF NOT EXISTS ix_espera_fila ON espera (criado_em)`;
+  // (A lista de espera da recepção mora na NUVEM — tabela lista_espera, a
+  //  mesma do /lista-espera do Concilia. Uma fila só pra casa inteira.)
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -15219,33 +15211,44 @@ async function apiSaidaConsultar(token) {
 // chamado e há quanto tempo — é isso que evita a mesa ficar vazia esperando
 // alguém que já foi embora.
 async function apiEsperaLista() {
-  const espera = await sql`SELECT id, nome, pessoas, telefone, obs, mesa,
-      criado_em, chamado_em, sentou_em, saiu_em
-    FROM espera WHERE criado_em > now() - interval '18 hours' ORDER BY criado_em`;
-  return { ok: true, espera };
+  const n = await salaoDaNuvem(true);
+  if (!n || !n.ok) return { ok: false, erro: (n && n.erro) || 'sem resposta do Concilia', espera: [] };
+  // as áreas vêm do mapa de mesas da nuvem: é a lista que a recepção marca
+  // ("onde quer ficar") na hora de botar alguém na fila.
+  return { ok: true, velho: !!n.velho, espera: n.espera || [], areas: (n.areas || []).map((a) => a.nome).filter(Boolean) };
 }
 async function apiEsperaNovo(body) {
   const nome = String(body.nome || '').trim().slice(0, 60);
   if (!nome) return { ok: false, erro: 'diga o nome de quem está esperando' };
-  const pessoas = Math.max(1, Math.min(60, Number(body.pessoas) || 2));
-  const telefone = soDig(body.telefone).slice(0, 13) || null;
-  const obs = String(body.obs || '').trim().slice(0, 140) || null;
-  const [r] = await sql`INSERT INTO espera (nome, pessoas, telefone, obs)
-    VALUES (${nome}, ${pessoas}, ${telefone}, ${obs}) RETURNING id`;
-  return { ok: true, id: Number(r.id) };
+  return salaoNuvemPost({
+    tipo: 'espera_nova', nome,
+    pessoas: Math.max(1, Math.min(60, Number(body.pessoas) || 2)),
+    telefone: soDig(body.telefone).slice(0, 13),
+    area: String(body.area || '').trim().slice(0, 100),
+    observacao: String(body.obs || '').trim().slice(0, 140),
+  });
 }
 async function apiEsperaAcao(body) {
-  const id = Number(body.id) || 0;
+  const id = String(body.id || '');
   if (!id) return { ok: false, erro: 'sem id' };
   const acao = String(body.acao || '');
-  if (acao === 'chamar') await sql`UPDATE espera SET chamado_em=now() WHERE id=${id}`;
-  else if (acao === 'sentou') {
-    const mesa = Number(body.mesa) > 0 ? Number(body.mesa) : null;
-    await sql`UPDATE espera SET sentou_em=now(), saiu_em=NULL, mesa=${mesa} WHERE id=${id}`;
-  } else if (acao === 'desistiu') await sql`UPDATE espera SET saiu_em=now(), sentou_em=NULL WHERE id=${id}`;
-  else if (acao === 'voltar') await sql`UPDATE espera SET sentou_em=NULL, saiu_em=NULL, chamado_em=NULL WHERE id=${id}`;
-  else return { ok: false, erro: 'ação desconhecida' };
-  return { ok: true };
+  if (!['chamar', 'sentou', 'desistiu', 'voltar'].includes(acao)) return { ok: false, erro: 'ação desconhecida' };
+  return salaoNuvemPost({ tipo: 'espera', id, acao, mesa: String(body.mesa || ''), por: 'recepção (loja)' });
+}
+// ---- ações da RECEPÇÃO na reserva (sentar, não veio, mudar hora/mesa) ----
+// Vai tudo pra nuvem: a reserva é de lá (mapa de mesas, estorno, auditoria,
+// aviso no zap do cliente). Cancelar NÃO está aqui de propósito — cancelar
+// devolve o dinheiro e é ato de administrador, só no Concilia com login.
+async function apiReservaAcao(body) {
+  const id = String(body.id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return { ok: false, erro: 'sem id da reserva' };
+  const acao = String(body.acao || '');
+  if (!['sentar', 'confirmar', 'no_show', 'hora', 'mesa', 'pessoas'].includes(acao)) return { ok: false, erro: 'ação desconhecida' };
+  return salaoNuvemPost({
+    tipo: 'reserva', id, acao,
+    mesa: String(body.mesa || ''), hora: String(body.hora || ''),
+    pessoas: Number(body.pessoas) || 0, por: 'recepção (loja)',
+  });
 }
 
 // ================= RESERVAS DO DIA NA RECEPÇÃO (/reservas) =================
@@ -15253,8 +15256,10 @@ async function apiEsperaAcao(body) {
 // pratos que saem. Quem precisa da lista é a RECEPÇÃO — o cliente chega
 // dizendo um nome e ela tem que achar a reserva, ver a mesa guardada, o
 // pedido especial e se a reserva foi paga. Por isso a tela é de busca (nome,
-// telefone ou mesa), não de "fila". Só leitura: quem muda o status da reserva
-// é o Concilia (sentar aloca mesa e solta a bebida do lounge).
+// telefone ou mesa), não de "fila". E ela ADMINISTRA: sentar, confirmar,
+// marcar que não veio, mudar mesa ou horário — tudo vai assinado pra nuvem,
+// que é dona da reserva (mapa de mesas, auditoria, aviso no zap do cliente).
+// Cancelar fica de fora: devolve dinheiro, é ato de administrador.
 const RESERVAS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Reservas de hoje — ${LOJA_NOME}</title><style>
 :root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
@@ -15295,6 +15300,14 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .btns{margin-top:10px;display:flex;gap:7px;flex-wrap:wrap}
 .btns button{padding:8px 12px;font-size:13.5px}
 .btns .mn{width:76px;font:inherit;font-size:13.5px;padding:8px 9px;border:1px solid var(--line);border-radius:9px}
+.btns .hr{width:112px}
+.areas{display:flex;gap:7px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
+.areas .rot{font-size:13.5px;color:var(--mut);font-weight:700}
+.areas label{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:#fff;border-radius:999px;
+  padding:7px 13px;font-size:14.5px;cursor:pointer;user-select:none}
+.areas label.on{border-color:var(--gold2);background:#fff4ea;font-weight:700}
+.areas input{width:18px;height:18px;accent-color:var(--gold2)}
+.rs.fora{opacity:.55;border-left-color:#b91c1c}
 .rs .h.pos{font-size:21px;color:#5b5b66}
 </style></head><body>
 <div class="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
@@ -15311,11 +15324,12 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <input id="en" placeholder="nome de quem chegou" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <input id="ep" type="number" min="1" value="2" title="quantas pessoas" onkeydown="if(event.key==='Enter')esperaNovo()">
 <input id="et" placeholder="whatsapp (opcional)" inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
-<input id="eo" placeholder="observação (ex.: quer o deck)" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
-<button onclick="esperaNovo()">+ Colocar na fila</button></div>
+<input id="eo" placeholder="observação (ex.: aniversário)" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
+<button onclick="esperaNovo()">+ Colocar na fila</button>
+<div class="areas" id="eareas"></div></div>
 <div id="app" class="vazio">carregando…</div>
 <script>
-var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',LOJA='${LOJA_NOME}';
+var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',AREAS=[],LOJA='${LOJA_NOME}';
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function dig(s){return String(s==null?'':s).replace(/[^0-9]/g,'')}
 function chave(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')}
@@ -15332,11 +15346,12 @@ function fone(t){
 function cartao(x){
   var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0);
   var ag=new Date(),falta=min-(ag.getHours()*60+ag.getMinutes());
-  var sentada=x.status==='sentada';
-  var cls=sentada?'sent':(falta<-10?'atras':(falta<=30?'perto':''));
-  var quando=sentada?'':(falta<0?'atrasada '+(-falta)+' min':(falta<=120?'em '+falta+' min':''));
-  var st=sentada?'<span class="tag green">sentada</span>'
-    :(x.status==='confirmada'?'<span class="tag blue">confirmada</span>':'<span class="tag amb">não confirmada</span>');
+  var sentada=x.status==='sentada',faltou=x.status==='no_show';
+  var cls=faltou?'fora':(sentada?'sent':(falta<-10?'atras':(falta<=30?'perto':'')));
+  var quando=sentada||faltou?'':(falta<0?'atrasada '+(-falta)+' min':(falta<=120?'em '+falta+' min':''));
+  var st=faltou?'<span class="tag red">não veio</span>'
+    :(sentada?'<span class="tag green">sentada</span>'
+    :(x.status==='confirmada'?'<span class="tag blue">confirmada</span>':'<span class="tag amb">não confirmada</span>'));
   var onde=x.mesa?('mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:'')):'';
   var h='<div class="rs '+cls+'"><div class="top"><span class="h">'+esc(x.hora||'--:--')+'</span>'+
     '<span class="pes">'+(Number(x.pessoas)||'?')+' pessoas</span>'+st+
@@ -15351,7 +15366,28 @@ function cartao(x){
   if(x.observacao)ex+='<div>&#128221; '+esc(x.observacao)+'</div>';
   if(x.preferencias)ex+='<div>&#11088; gosta de: '+esc(x.preferencias)+'</div>';
   if(ex)h+='<div class="obs">'+ex+'</div>';
-  return h+'</div>';
+  return h+botoesRes(x)+'</div>';
+}
+// A recepção ADMINISTRA a reserva daqui. A mesa fica num campo aberto (e já
+// vem preenchida com a que estava guardada) porque na hora que o cliente
+// chega é comum a mesa mudar — quem sentar com a mesa trocada manda as duas
+// coisas de uma vez. "Não veio" pede dois toques: é o que solta a mesa pro
+// salão e avisa o cliente.
+function botoesRes(x){
+  if(!x.id)return '';
+  if(x.status==='no_show')
+    return '<div class="btns"><button class="seg" data-r="'+x.id+'" data-a="confirmar">&#8617; desfazer (ele chegou)</button></div>';
+  var b='<div class="btns"><input class="mn" id="rm'+x.id+'" value="'+esc(x.mesa||'')+'" placeholder="mesa" autocomplete="off">';
+  if(x.status==='sentada')
+    b+='<button class="seg" data-r="'+x.id+'" data-a="mesa">Trocar mesa</button>'+
+       '<button class="seg" data-r="'+x.id+'" data-a="confirmar">&#8617; desfazer</button>';
+  else
+    b+='<button data-r="'+x.id+'" data-a="sentar">&#10003; Sentou</button>'+
+       (x.status==='pendente'?'<button class="seg" data-r="'+x.id+'" data-a="confirmar">Confirmar</button>':'')+
+       '<button class="seg" data-r="'+x.id+'" data-a="no_show">&#10005; Não veio</button>'+
+       '<input class="mn hr" id="rh'+x.id+'" type="time" value="'+esc(x.hora||'')+'">'+
+       '<button class="seg" data-r="'+x.id+'" data-a="hora">&#128337; Mudar hora</button>';
+  return b+'</div>';
 }
 function pinta(){ return ABA==='esp'?pintaEsp():pintaRes() }
 function aba(k){
@@ -15368,21 +15404,23 @@ async function post(u,b){
   try{var r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return await r.json()}
   catch(e){return {ok:false,erro:'sem resposta do servidor da loja'}}
 }
+function digitando(){ var e=document.activeElement; return !!(e&&e.classList&&e.classList.contains('mn')) }
 function mins(t){ if(!t)return 0; var d=new Date(t); return Math.max(0,Math.round((Date.now()-d.getTime())/60000)) }
-function naFila(x){ return !x.sentou_em&&!x.saiu_em }
+function naFila(x){ return x.status==='aguardando'||x.status==='chamado' }
 function cartaoEsp(x,pos){
   var esp=mins(x.criado_em),ch=x.chamado_em?mins(x.chamado_em):null,fim=!naFila(x);
   var cls=fim?'sent':(ch!=null?'perto':(esp>=30?'atras':''));
   var h='<div class="rs '+cls+'"><div class="top">'+
     (fim?'':'<span class="h pos">'+pos+'º</span>')+
     '<span class="pes">'+(Number(x.pessoas)||'?')+' pessoas</span>'+
-    (fim?(x.sentou_em?'<span class="tag green">sentou'+(x.mesa?' na mesa '+x.mesa:'')+'</span>'
+    (fim?(x.status==='sentado'?'<span class="tag green">sentou</span>'
                      :'<span class="tag red">saiu da fila</span>')
         :'<span class="tag '+(esp>=30?'red':'amb')+'">esperando '+esp+' min</span>')+
     (ch!=null&&!fim?'<span class="tag blue">chamado há '+ch+' min</span>':'')+'</div>'+
-    '<div class="nm">'+esc(x.nome||'(sem nome)')+'</div>';
+    '<div class="nm">'+esc(x.nome||'(sem nome)')+'</div>'+
+    '<div class="li"><b>'+(x.area?esc(x.area):'qualquer lugar')+'</b></div>';
   if(dig(x.telefone))h+='<div class="li">'+fone(x.telefone)+'</div>';
-  if(x.obs)h+='<div class="obs">'+esc(x.obs)+'</div>';
+  if(x.observacao)h+='<div class="obs">'+esc(x.observacao)+'</div>';
   h+= fim
     ? '<div class="btns"><button class="seg" data-id="'+x.id+'" data-a="voltar">&#8617; voltar pra fila</button></div>'
     : '<div class="btns"><button data-id="'+x.id+'" data-a="chamar">&#128227; '+(ch!=null?'Chamar de novo':'Chamar')+'</button>'+
@@ -15394,14 +15432,13 @@ function cartaoEsp(x,pos){
 function pintaEsp(){
   var fila=E.filter(naFila),fora=E.filter(function(x){return !naFila(x)});
   var pes=fila.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
-  var sent=E.filter(function(x){return x.sentou_em});
+  var sent=E.filter(function(x){return x.sentado_em});
   var med=sent.length?Math.round(sent.reduce(function(a,x){
-    return a+(new Date(x.sentou_em).getTime()-new Date(x.criado_em).getTime())/60000},0)/sent.length):0;
+    return a+(new Date(x.sentado_em).getTime()-new Date(x.criado_em).getTime())/60000},0)/sent.length):0;
   document.getElementById('cnt').textContent=(fila.length?fila.length+' na fila ('+pes+' pessoas)':'fila vazia')+
     (med?' · espera média hoje '+med+' min':'');
   document.getElementById('t_esp').textContent='⏳ Lista de espera'+(fila.length?' ('+fila.length+')':'');
-  var foco=document.activeElement;
-  if(foco&&foco.className==='mn')return; // digitando a mesa: não puxa o tapete
+  if(digitando())return; // digitando a mesa: não puxa o tapete
   var app=document.getElementById('app');app.className='';
   var topo=EAV?'<div class="erro">'+esc(EAV)+'</div>':'';
   if(!E.length){app.innerHTML=topo+'<div class="vazio">ninguém esperando — bota o primeiro nome aí em cima</div>';return}
@@ -15409,28 +15446,64 @@ function pintaEsp(){
     fila.map(function(x,i){return cartaoEsp(x,i+1)}).join('')+
     fora.map(function(x){return cartaoEsp(x,0)}).join('')+'</div>';
 }
+// ONDE A PESSOA QUER FICAR — pergunta obrigatória. Quem chega quase sempre
+// tem preferência (deck, varanda, salão) e é isso que decide qual mesa que
+// vagar serve pra ela. Dá pra marcar mais de uma ("o que vagar primeiro") ou
+// "qualquer lugar" — o que não dá é deixar em branco e descobrir depois.
+function pintaAreas(){
+  var c=document.getElementById('eareas');
+  var m={};[].forEach.call(c.querySelectorAll('.ar'),function(i){m[i.value]=i.checked});
+  c.innerHTML='<span class="rot">onde quer ficar?</span>'+
+    ['']. concat(AREAS).map(function(a){
+      return '<label class="chip'+(m[a]?' on':'')+'"><input type="checkbox" class="ar" value="'+esc(a)+'"'+(m[a]?' checked':'')+'>'+
+        (a?esc(a):'qualquer lugar')+'</label>';
+    }).join('');
+}
+function areaEscolhida(){
+  var m=[].filter.call(document.querySelectorAll('#eareas .ar'),function(i){return i.checked});
+  if(!m.length)return null;                       // ninguém marcou = falta responder
+  if(m.some(function(i){return !i.value}))return '';  // qualquer lugar
+  return m.map(function(i){return i.value}).join(', ');
+}
+document.getElementById('eareas').addEventListener('change',function(ev){
+  var t=ev.target;if(!t.classList||!t.classList.contains('ar'))return;
+  var todos=document.querySelectorAll('#eareas .ar');
+  // "qualquer lugar" e área específica se excluem: marcar um limpa o outro
+  if(!t.value){ if(t.checked)[].forEach.call(todos,function(i){if(i!==t)i.checked=false}) }
+  else if(t.checked)todos[0].checked=false;
+  [].forEach.call(todos,function(i){i.parentNode.className='chip'+(i.checked?' on':'')});
+});
 async function esperaNovo(){
   var en=document.getElementById('en'),n=en.value.trim();
   if(!n){en.focus();return}
+  var area=areaEscolhida();
+  if(area===null){alert('Marque onde a pessoa quer ficar (ou "qualquer lugar").');return}
   var r=await post('/api/espera/novo',{nome:n,pessoas:Number(document.getElementById('ep').value)||2,
-    telefone:document.getElementById('et').value,obs:document.getElementById('eo').value});
+    telefone:document.getElementById('et').value,area:area,obs:document.getElementById('eo').value});
   if(!r.ok){alert(r.erro||'não deu pra colocar na fila');return}
   en.value='';document.getElementById('et').value='';document.getElementById('eo').value='';
-  document.getElementById('ep').value='2';en.focus();
+  document.getElementById('ep').value='2';
+  [].forEach.call(document.querySelectorAll('#eareas .ar'),function(i){i.checked=false;i.parentNode.className='chip'});
+  en.focus();
   carregarEsp();
 }
 function pintaRes(){
   var q=chave(document.getElementById('q').value.trim()),qd=dig(document.getElementById('q').value);
   var L=R.filter(function(x){
-    if(F==='vem'&&x.status==='sentada')return false;
+    if(F==='vem'&&(x.status==='sentada'||x.status==='no_show'))return false;
     if(F==='sentada'&&x.status!=='sentada')return false;
     if(!q)return true;
     if(qd&&dig(x.telefone).indexOf(qd)>=0)return true;
     return chave(x.nome).indexOf(q)>=0||chave(x.mesa).indexOf(q)>=0||chave(x.area).indexOf(q)>=0;
   });
-  var vem=R.filter(function(x){return x.status!=='sentada'});
+  var vem=R.filter(function(x){return x.status!=='sentada'&&x.status!=='no_show'});
   var pes=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
-  document.getElementById('cnt').textContent=R.length?(vem.length+' por chegar ('+pes+' pessoas) · '+(R.length-vem.length)+' sentada(s)'):'nenhuma reserva hoje';
+  var nsent=R.filter(function(x){return x.status==='sentada'}).length;
+  var nfalt=R.filter(function(x){return x.status==='no_show'}).length;
+  document.getElementById('cnt').textContent=R.length
+    ?(vem.length+' por chegar ('+pes+' pessoas) · '+nsent+' sentada(s)'+(nfalt?' · '+nfalt+' não veio':''))
+    :'nenhuma reserva hoje';
+  if(digitando())return; // digitando mesa/horário: não repinta por baixo
   var app=document.getElementById('app');
   var topo=AVISO?'<div class="erro">'+esc(AVISO)+'</div>':'';
   if(!L.length){app.className='';app.innerHTML=topo+'<div class="vazio">'+(R.length?'nada com esse filtro':'nenhuma reserva pra hoje')+'</div>';return}
@@ -15442,16 +15515,37 @@ async function carregarEsp(){
   var d;try{d=await (await fetch('/api/espera',{cache:'no-store'})).json()}
   catch(e){EAV='sem resposta do servidor da loja';return pinta()}
   E=(d&&d.espera)||[];EAV=d&&d.ok?'':('a fila não carregou: '+((d&&d.erro)||'sem resposta'));
+  var novas=((d&&d.areas)||[]).join('|');
+  if(novas!==AREAS.join('|')){AREAS=((d&&d.areas)||[]);pintaAreas()}
   var nf=E.filter(naFila).length;
   document.getElementById('t_esp').textContent='⏳ Lista de espera'+(nf?' ('+nf+')':'');
   pinta();
 }
+async function acaoReserva(b,id,a){
+  var corpo={id:id,acao:a};
+  if(a==='sentar'||a==='mesa'){var mi=document.getElementById('rm'+id);corpo.mesa=mi?mi.value.trim():''}
+  if(a==='hora'){
+    var hi=document.getElementById('rh'+id);corpo.hora=hi?hi.value:'';
+    if(!/^[0-9]{2}:[0-9]{2}$/.test(corpo.hora)){alert('escolha o horário novo ali do lado');return}
+  }
+  if(a==='no_show'&&!b.getAttribute('data-ok')){
+    b.setAttribute('data-ok','1');b.textContent='Confirmar que não veio?';
+    setTimeout(function(){if(b.isConnected){b.removeAttribute('data-ok');b.innerHTML='&#10005; Não veio'}},4000);
+    return;
+  }
+  b.disabled=true;
+  var r=await post('/api/reservas/acao',corpo);
+  if(!r.ok){alert(r.erro||'não deu pra registrar');b.disabled=false;return}
+  carregarRes();
+}
 document.getElementById('app').addEventListener('click',async function(ev){
   var b=ev.target.closest&&ev.target.closest('button[data-a]');
   if(!b)return;
-  var id=Number(b.getAttribute('data-id')),a=b.getAttribute('data-a'),corpo={id:id,acao:a};
-  var x=E.filter(function(y){return Number(y.id)===id})[0];
-  if(a==='sentou'){var mi=document.getElementById('mn'+id);corpo.mesa=mi?(Number(dig(mi.value))||null):null}
+  var a=b.getAttribute('data-a'),rid=b.getAttribute('data-r');
+  if(rid)return acaoReserva(b,rid,a);
+  var id=b.getAttribute('data-id'),corpo={id:id,acao:a};
+  var x=E.filter(function(y){return String(y.id)===id})[0];
+  if(a==='sentou'){var mi=document.getElementById('mn'+id);corpo.mesa=mi?dig(mi.value):''}
   if(a==='desistiu'&&!b.getAttribute('data-ok')){
     b.setAttribute('data-ok','1');b.textContent='Confirmar?';
     setTimeout(function(){if(b.isConnected){b.removeAttribute('data-ok');b.innerHTML='&#10005; Desistiu'}},4000);
@@ -15460,7 +15554,10 @@ document.getElementById('app').addEventListener('click',async function(ev){
   b.disabled=true;
   var r=await post('/api/espera/acao',corpo);
   if(!r.ok){alert(r.erro||'não deu');b.disabled=false;return}
-  if(a==='chamar'&&x&&dig(x.telefone)){
+  // O "mesa pronta" sai pelo WhatsApp oficial lá da nuvem. Só quando ele NÃO
+  // sai (template fora do ar, telefone curto) é que abre o wa.me na mão —
+  // senão o cliente recebia a mesma mensagem duas vezes.
+  if(a==='chamar'&&x&&dig(x.telefone)&&r.zap!=='enviado'){
     var z=dig(x.telefone);z=z.length>11?z:'55'+z;
     window.open('https://wa.me/'+z+'?text='+encodeURIComponent('Oi '+(x.nome||'')+'! Sua mesa no '+LOJA+' está pronta. Pode vir até a recepção 🎉'),'_blank');
   }
@@ -23844,6 +23941,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/reservas') {
       const n = await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
+        id: r.id,
         hora: String(r.hora || '').slice(0, 5), nome: r.nome, pessoas: r.pessoas, area: r.area,
         mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status, telefone: r.telefone,
         observacao: r.observacao, preferencias: r.preferencias, bebida: r.bebida,
@@ -23903,6 +24001,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
     if (p === '/api/espera') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaLista())); }
     if (req.method === 'POST' && p === '/api/espera/novo') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaNovo(body))); }
+    if (req.method === 'POST' && p === '/api/reservas/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaAcao(body))); }
     if (req.method === 'POST' && p === '/api/espera/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaAcao(body))); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
