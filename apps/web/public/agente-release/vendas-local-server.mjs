@@ -5091,9 +5091,42 @@ async function recebimentosRetidos({ mesa = null, dias = 30 } = {}) {
       AND criado_em > now() - (${String(Math.max(1, Number(dias) || 30))} || ' days')::interval
       AND (${mesa == null} OR numero=${mesa == null ? -1 : Number(mesa)})
     ORDER BY criado_em DESC`;
-  return r.map((x) => ({ id: Number(x.id), numero: Number(x.numero), valor: Number(x.valor) || 0, forma: x.forma,
+  const out = r.map((x) => ({ id: Number(x.id), numero: Number(x.numero), valor: Number(x.valor) || 0, forma: x.forma,
     origem: x.origem, nsu: x.nsu, motivo: x.erro, criado_em: x.criado_em, quando: x.quando_transacao,
     conta_alvo: x.conta_alvo == null ? null : Number(x.conta_alvo) }));
+  // SITUAÇÃO DA CONTA DE ORIGEM (Tabuará, mesa 10, 29/09/2026): a conta 5000211
+  // fechou QUITADA à mão (1 "Débito" de R$ 1.661,89) e 3 cartões da fila da LIO
+  // chegaram no dia seguinte. O caixa via R$ 1.181,89 em vermelho sem saber que
+  // esse dinheiro já estava lá dentro. Origem quitada = retido duplicado (ou
+  // cobrança em dobro, aí estorna na maquininha): nos dois casos, descartar.
+  for (const x of out) x.alvo = x.conta_alvo == null ? null : await situacaoDaConta(x.conta_alvo);
+  return out;
+}
+/** {fechada, total, pago, quitada} de uma conta, ou null. Cache de 60s (erro
+ *  também): a grade do caixa chama /api/venda/abertas a cada poucos segundos e
+ *  conta fechada quase não muda — e Firebird fora não pode travar a grade. */
+const situacaoContaCache = new Map();
+async function situacaoDaConta(ped) {
+  const k = Number(ped);
+  const c = situacaoContaCache.get(k);
+  if (c && c.expira > Date.now()) return c.v;
+  let v = null;
+  try {
+    let fechada = false, total = 0, achou = false;
+    if (nativo()) {
+      const [x] = await sql`SELECT fechada_em, COALESCE(valor_total,0) t FROM comanda WHERE codigo=${k} AND cancelada_em IS NULL`;
+      if (x) { achou = true; fechada = !!x.fechada_em; total = Number(x.t) || 0; }
+    } else {
+      const r = await qi(`SELECT FIRST 1 VALORTOTAL, DATAFECHAMENTO FROM PEDIDOS WHERE CODIGO=${k} AND DATADELETE IS NULL`);
+      if (r.ok && r.rows.length) { achou = true; fechada = r.rows[0].DATAFECHAMENTO != null; total = Number(r.rows[0].VALORTOTAL) || 0; }
+    }
+    if (achou) {
+      const pago = +(await fbPagoDoPedido(k)).toFixed(2);
+      v = { fechada, total: +total.toFixed(2), pago, quitada: fechada && total > 0 && pago >= total - 0.009 };
+    }
+  } catch { v = null; }
+  situacaoContaCache.set(k, { v, expira: Date.now() + 60e3 });
+  return v;
 }
 async function apiContaPagar(body) {
   const nsuTxt = String(body.nsu || '').replace(/\D/g, '').replace(/^0+/, '');
@@ -20288,17 +20321,49 @@ function pgLinha(m){
    recusou de propósito: entrar na conta de quem sentou depois é cobrar do
    cliente errado. Fica aqui, vermelho, até alguém do caixa mandar pra conta
    certa (reabrindo a antiga, se precisar) ou descartar com motivo. */
+/* Toque abre a lista com ✕ Descartar ALI MESMO: a conta de origem quase sempre
+   já fechou e a mesa está vazia — e o Descartar só existia dentro de uma conta
+   aberta naquele número (Tabuará, mesa 10, 29/09/2026: sem ninguém na mesa e a
+   conta velha sem Reabrir, o caixa ficou 7 dias olhando R$ 1.181,89 na faixa). */
+var RETIDO_ABERTO=false;
 function retidoHtml(){
   var s=MESAS&&MESAS.retidos;
-  if(!s||!(s.n>0))return '';
-  return '<div class="pixsb" onclick="retidoVer()">⛔ '+s.n+' recebimento'+(s.n>1?'s':'')+' RETIDO'+(s.n>1?'S':'')+' (cobrado fora da conta) — '+brl(s.valor)+' · toque pra ver</div>';
+  if(!s||!(s.n>0)){RETIDO_ABERTO=false;return ''}
+  var h='<div class="pixsb" onclick="retidoVer()">⛔ '+s.n+' recebimento'+(s.n>1?'s':'')+' RETIDO'+(s.n>1?'S':'')+' (cobrado fora da conta) — '+brl(s.valor)+' · toque pra '+(RETIDO_ABERTO?'fechar':'ver')+'</div>';
+  if(!RETIDO_ABERTO||!s.lista)return h;
+  var abertos=(MESAS.mesas||[]).concat(MESAS.comandas||[]).map(function(m){return Number(m.numero)});
+  s.lista.forEach(function(x){
+    var hh=x.quando?new Date(x.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    var num=(x.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+x.numero;
+    h+='<div class="ban err"><b>'+num+' · '+brl(x.valor)+'</b>'+(x.forma?' · '+esc(x.forma):'')+(hh?' · cobrado '+hh:'')+(x.nsu?' · NSU '+esc(x.nsu):'')+
+      (x.motivo?'<div style="font-weight:600">'+esc(x.motivo)+'</div>':'')+retidoDica(x)+
+      '<a class="sair" onclick="descartarRetidoLista('+x.id+')">✕ Descartar</a>'+
+      (abertos.indexOf(x.numero)>=0?' &nbsp; <a class="sair" onclick="carregar('+x.numero+')">▶ Abrir '+num+'</a>':'')+
+      '</div>';
+  });
+  return h;
+}
+/* o que a conta de origem diz sobre esse dinheiro */
+function retidoDica(x){
+  var a=x.alvo;if(!a)return '';
+  if(a.quitada)return '<div>✅ A conta '+x.conta_alvo+' fechou QUITADA ('+brl(a.pago)+' de '+brl(a.total)+'): esse dinheiro já está nela, lançado à mão — ou foi cobrado 2 vezes (aí estorne na maquininha). Nos dois casos: descarte.</div>';
+  if(a.fechada&&a.total-a.pago>0.009)return '<div>⚠️ A conta '+x.conta_alvo+' fechou DEVENDO '+brl(a.total-a.pago)+': esse dinheiro é dela — reabra e lance lá.</div>';
+  return '';
 }
 function retidoVer(){
-  var s=MESAS&&MESAS.retidos;if(!s||!s.lista)return;
-  alert('RECEBIMENTO COBRADO QUE NÃO ENTROU EM CONTA NENHUMA\\n(o dinheiro existe; a conta aberta agora nasceu DEPOIS da cobrança)\\n\\nAbra a mesa e use "Lançar NESTA conta" na conta certa — se a certa já fechou, reabra ela antes.\\n\\n'+s.lista.map(function(x){
-    var hh=x.quando?new Date(x.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
-    return (x.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+x.numero+' · '+brl(x.valor)+(hh?' · cobrado '+hh:'')+(x.nsu?' · NSU '+x.nsu:'')+(x.motivo?'\\n   ↳ '+x.motivo:'');
-  }).join('\\n\\n'));
+  RETIDO_ABERTO=!RETIDO_ABERTO;
+  var el=document.getElementById('lista');if(el)el.innerHTML=chips();
+}
+async function descartarRetidoLista(id){
+  var s=MESAS&&MESAS.retidos,x=((s&&s.lista)||[]).filter(function(y){return y.id===id})[0];
+  var sug=x&&x.alvo&&x.alvo.quitada?'já lançado à mão na conta '+x.conta_alvo+' (fechou quitada)':'';
+  var m=prompt('Descartar este recebimento retido?\\n\\nSó descarte se ele já foi lançado à mão ou estornado na maquininha.\\n\\nMotivo:',sug);
+  if(m===null)return; m=String(m).trim();
+  if(!m){alert('Diga o motivo');return}
+  var r=await jpost('/api/caixa/retido',{id:id,acao:'descartar',motivo:m});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  await listar();
+  if(TELA==='conta'&&MESA)carregar(MESA,PEDALVO);
 }
 function pixSbHtml(){
   var s=MESAS&&MESAS.pix_sem_baixa;
@@ -20699,7 +20764,7 @@ function pinta(el){
   (c.recebimentos_retidos||[]).forEach(function(rt){
     var hh=rt.quando?new Date(rt.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
     h+='<div class="ban err">⛔ RECEBIMENTO DE '+brl(rt.valor)+(hh?' COBRADO EM '+hh:'')+' RETIDO — não entrou em conta nenhuma'+
-      (rt.nsu?' (NSU '+esc(rt.nsu)+')':'')+'. '+(rt.motivo?'<span style="font-weight:600">'+esc(rt.motivo)+'</span> ':'')+
+      (rt.nsu?' (NSU '+esc(rt.nsu)+')':'')+'. '+(rt.motivo?'<span style="font-weight:600">'+esc(rt.motivo)+'</span> ':'')+retidoDica(rt)+
       '<a class="sair" onclick="lancarRetido('+rt.id+')">▶ Lançar NESTA conta</a> '+
       '<a class="sair" onclick="descartarRetido('+rt.id+')">✕ Descartar</a></div>';
   });
