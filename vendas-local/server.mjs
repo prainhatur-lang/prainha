@@ -12279,6 +12279,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
 <a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
 <a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
+<a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — recepção</small></span></a>
 <button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
 <a href="/gerente"><i>👔</i><span>Gerente</span></a>
 <hr><a href="/tablet"><i>⚙</i><span>Configurar<small>tela cheia / atualizar</small></span></a>
@@ -12833,37 +12834,11 @@ async function kds(){
 }
 // Sempre o mesmo formato: item · mesa · hora. É por isso que a marca guarda
 // o número — a comanda fecha e some do espelho, o histórico não pode perder.
-// RESERVAS DE HOJE no topo da lateral: quem ainda vai chegar, em ordem de
-// hora. Chegando em até 30 min fica em destaque; as já sentadas viram só um
-// contador (a comanda delas já aparece na fila).
-function reservasHTML(r){
-  if(!r||!r.ok||!r.reservas)return '';
-  var agora=new Date(),minAgora=agora.getHours()*60+agora.getMinutes();
-  var vem=r.reservas.filter(function(x){return x.status!=='sentada'});
-  var sent=r.reservas.length-vem.length;
-  var pesVem=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
-  var h='<h3>📅 Reservas hoje'+(vem.length?' · '+vem.length+' ('+pesVem+' pes.)':'')+'</h3>';
-  if(!vem.length)return h+'<div class="vaziinho">'+(sent?sent+' já sentada(s) — nenhuma por chegar':'nenhuma reserva por chegar')+'</div>';
-  h+=vem.map(function(x){
-    var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0),falta=min-minAgora;
-    var perto=falta<=30;
-    var quando=falta<0?'atrasada '+(-falta)+'min':(falta<=90?'em '+falta+'min':'');
-    var onde=(x.area||'')+(x.mesa?' · mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:''):'');
-    return '<div class="hi"'+(perto?' style="background:#fff4e0"':'')+'><div class="n">'+
-      '<b style="color:var(--gold2)">'+esc(x.hora)+'</b> · '+(Number(x.pessoas)||'?')+' pes. — '+esc(x.nome||'')+'</div>'+
-      '<div class="m">'+(onde?'<span>'+esc(onde)+'</span>':'')+(quando?'<b>'+quando+'</b>':'')+
-      (x.status==='pendente'?'<span>não confirmada</span>':'')+'</div></div>';
-  }).join('');
-  if(sent)h+='<div class="vaziinho" style="padding:8px 15px">+ '+sent+' já sentada(s)</div>';
-  return h;
-}
 async function histLateral(url){
   var el=document.getElementById('hist');if(!el)return;
-  var rp=fetch('/api/kds/reservas',{cache:'no-store'}).then(function(x){return x.json()}).catch(function(){return null});
   var d;try{d=await (await fetch(url,{cache:'no-store'})).json()}catch(e){return}
-  var rv=await rp;
   var its=d.itens||[];
-  el.innerHTML=reservasHTML(rv)+'<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
+  el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
     var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
     return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div>'+
       (i.opcoes&&i.opcoes.length?'<div class="op">'+i.opcoes.map(function(o){return '<div>↳ '+esc(o)+'</div>'}).join('')+'</div>':'')+
@@ -15101,6 +15076,118 @@ async function apiSaidaConsultar(token) {
 // Quem pagou a conta manda este link no zap pra quem vai embora antes. A pessoa
 // abre, mostra o QR na catraca e passa. E' o MESMO codigo da mesa: cada leitura
 // consome uma passagem, entao mandar pra tres pessoas nao cria tres passes.
+// ================= RESERVAS DO DIA NA RECEPÇÃO (/reservas) =================
+// Antes isto morava na lateral do KDS, mas ali só atrapalhava: o KDS é dos
+// pratos que saem. Quem precisa da lista é a RECEPÇÃO — o cliente chega
+// dizendo um nome e ela tem que achar a reserva, ver a mesa guardada, o
+// pedido especial e se a reserva foi paga. Por isso a tela é de busca (nome,
+// telefone ou mesa), não de "fila". Só leitura: quem muda o status da reserva
+// é o Concilia (sentar aloca mesa e solta a bebida do lounge).
+const RESERVAS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reservas de hoje — ${LOJA_NOME}</title><style>
+:root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
+.barra{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.barra b{font-size:16px}
+.cnt{color:var(--mut);font-size:13px;margin-right:auto}
+#q{flex:1 1 230px;min-width:150px;font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+button{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 14px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+button.seg{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:600}
+button.seg.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+button.g{background:#5b5b66}
+.wrap{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(315px,1fr));gap:12px;align-items:start}
+.rs{background:#fff;border:1px solid var(--line);border-left:5px solid #d6d6de;border-radius:12px;padding:12px 14px}
+.rs.perto{border-left-color:var(--gold2);background:#fff9f3}
+.rs.atras{border-left-color:#b91c1c;background:#fff2f2}
+.rs.sent{opacity:.6}
+.rs .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rs .h{font-size:25px;font-weight:800;line-height:1;color:var(--gold2)}
+.rs .pes{font-size:15px;font-weight:700}
+.rs .nm{font-size:18px;font-weight:700;margin-top:5px;word-break:break-word}
+.tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 8px;border-radius:999px;background:#ececf1;color:var(--mut);white-space:nowrap}
+.tag.blue{background:#e3edff;color:#1d4ed8}.tag.green{background:#e4f7e7;color:#15803d}.tag.amb{background:#fff1dc;color:#b45309}.tag.red{background:#ffe4e4;color:#b91c1c}
+.li{margin-top:7px;font-size:14.5px;color:var(--mut);display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.li b{color:var(--ink);font-weight:700}
+a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
+.obs{margin-top:8px;background:#f5f5f8;border-radius:9px;padding:8px 10px;font-size:14px;line-height:1.4}
+.obs div+div{margin-top:4px}
+.vazio{padding:46px 16px;text-align:center;color:var(--mut)}
+.erro{margin:14px;padding:11px 14px;border-radius:10px;background:#fff1f1;color:#b91c1c;font-size:14px}
+</style></head><body>
+<div class="barra"><b>📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<input id="q" placeholder="nome, telefone ou mesa" oninput="pinta()" autocomplete="off">
+<button class="seg on" id="f_vem" onclick="filtro(1)">Por chegar</button>
+<button class="seg" id="f_sentada" onclick="filtro(2)">Sentadas</button>
+<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button>
+<button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
+<a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<div id="app" class="vazio">carregando…</div>
+<script>
+var R=[],F='vem',AVISO='';
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function dig(s){return String(s==null?'':s).replace(/[^0-9]/g,'')}
+function chave(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')}
+function brl(v){var n=Number(v);return isNaN(n)?'':n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
+function filtro(n){F=n===2?'sentada':(n===3?'todas':'vem');
+  ['vem','sentada','todas'].forEach(function(k){document.getElementById('f_'+k).className='seg'+(F===k?' on':'')});pinta()}
+function fone(t){
+  var d=dig(t);if(!d)return '';
+  var z=d.length>11?d:'55'+d;
+  var vis=d.length>=11?'('+d.slice(0,2)+') '+d.slice(2,7)+'-'+d.slice(7)
+    :(d.length===10?'('+d.slice(0,2)+') '+d.slice(2,6)+'-'+d.slice(6):d);
+  return '<a class="zap" href="https://wa.me/'+z+'" target="_blank" rel="noopener">&#128172; '+esc(vis)+'</a>';
+}
+function cartao(x){
+  var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0);
+  var ag=new Date(),falta=min-(ag.getHours()*60+ag.getMinutes());
+  var sentada=x.status==='sentada';
+  var cls=sentada?'sent':(falta<-10?'atras':(falta<=30?'perto':''));
+  var quando=sentada?'':(falta<0?'atrasada '+(-falta)+' min':(falta<=120?'em '+falta+' min':''));
+  var st=sentada?'<span class="tag green">sentada</span>'
+    :(x.status==='confirmada'?'<span class="tag blue">confirmada</span>':'<span class="tag amb">não confirmada</span>');
+  var onde=x.mesa?('mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:'')):'';
+  var h='<div class="rs '+cls+'"><div class="top"><span class="h">'+esc(x.hora||'--:--')+'</span>'+
+    '<span class="pes">'+(Number(x.pessoas)||'?')+' pessoas</span>'+st+
+    (quando?'<span class="tag '+(falta<0?'red':'amb')+'">'+quando+'</span>':'')+'</div>'+
+    '<div class="nm">'+esc(x.nome||'(sem nome)')+'</div><div class="li">'+
+    (x.area?'<b>'+esc(x.area)+'</b>':'')+(onde?'<b>'+esc(onde)+'</b>':'<span>sem mesa marcada</span>')+
+    (Number(x.valor)>0?'<span class="tag green">pago '+brl(x.valor)+'</span>':'')+
+    (x.canal?'<span>via '+esc(x.canal)+'</span>':'')+'</div>';
+  if(dig(x.telefone))h+='<div class="li">'+fone(x.telefone)+'</div>';
+  var ex='';
+  if(x.bebida)ex+='<div>&#127864; '+esc(x.bebida)+(Number(x.bebida_qtd)>0?' ('+x.bebida_qtd+' un.)':'')+' — já escolhida na reserva</div>';
+  if(x.observacao)ex+='<div>&#128221; '+esc(x.observacao)+'</div>';
+  if(x.preferencias)ex+='<div>&#11088; gosta de: '+esc(x.preferencias)+'</div>';
+  if(ex)h+='<div class="obs">'+ex+'</div>';
+  return h+'</div>';
+}
+function pinta(){
+  var q=chave(document.getElementById('q').value.trim()),qd=dig(document.getElementById('q').value);
+  var L=R.filter(function(x){
+    if(F==='vem'&&x.status==='sentada')return false;
+    if(F==='sentada'&&x.status!=='sentada')return false;
+    if(!q)return true;
+    if(qd&&dig(x.telefone).indexOf(qd)>=0)return true;
+    return chave(x.nome).indexOf(q)>=0||chave(x.mesa).indexOf(q)>=0||chave(x.area).indexOf(q)>=0;
+  });
+  var vem=R.filter(function(x){return x.status!=='sentada'});
+  var pes=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
+  document.getElementById('cnt').textContent=R.length?(vem.length+' por chegar ('+pes+' pessoas) · '+(R.length-vem.length)+' sentada(s)'):'nenhuma reserva hoje';
+  var app=document.getElementById('app');
+  var topo=AVISO?'<div class="erro">'+esc(AVISO)+'</div>':'';
+  if(!L.length){app.className='';app.innerHTML=topo+'<div class="vazio">'+(R.length?'nada com esse filtro':'nenhuma reserva pra hoje')+'</div>';return}
+  app.className='';
+  app.innerHTML=topo+'<div class="wrap">'+L.map(cartao).join('')+'</div>';
+}
+async function carregar(){
+  var d;try{d=await (await fetch('/api/reservas',{cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  R=(d&&d.reservas)||[];
+  AVISO=d&&d.ok?(d.velho?'mostrando a última lista que deu pra baixar (o Concilia não respondeu agora)':''):('não deu pra falar com o Concilia: '+((d&&d.erro)||'sem resposta'));
+  pinta();
+}
+carregar();setInterval(carregar,30000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)carregar()});
+</script></body></html>`;
 const PASSE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Passe de saida — ${LOJA_NOME}</title><style>
@@ -23322,17 +23409,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
-    // Reservas de hoje no KDS: a cozinha/bar se prepara pra leva que vem
-    // (mesa grande às 20h = adiantar mise en place). Sem telefone — só o que
-    // a praça precisa. Vem do mesmo cache de 10s do painel do gerente.
-    if (p === '/api/kds/reservas') {
+    // RESERVAS DE HOJE PRA RECEPÇÃO (/reservas). Saiu do KDS — lá é só o que
+    // a praça produziu — e virou tela própria no ☰, do lado do QR das mesas.
+    // Quem recebe o cliente precisa achar a reserva pelo nome/telefone, ver a
+    // mesa e o pedido especial; por isso aqui vai TUDO (inclusive telefone),
+    // ao contrário do que ia pro KDS. Vem do mesmo cache de 10s do gerente.
+    if (p === '/api/reservas') {
       const n = await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
         hora: String(r.hora || '').slice(0, 5), nome: r.nome, pessoas: r.pessoas, area: r.area,
-        mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status,
+        mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status, telefone: r.telefone,
+        observacao: r.observacao, preferencias: r.preferencias, bebida: r.bebida,
+        bebida_qtd: r.bebida_qtd, valor: r.valor, canal: r.canal,
       }));
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), reservas }));
+      return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), erro: (n && n.erro) || null, hoje: (n && n.hoje) || null, reservas }));
     }
     if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiKds(Number(u.searchParams.get('area') || 0)))); }
     // ?area ausente = todas as praças (compatibilidade). Cuidado: Number('')
@@ -23381,6 +23472,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
+    if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
     // uma vez só. Fica na LAN da loja, não na internet.

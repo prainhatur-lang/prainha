@@ -99,6 +99,15 @@ export async function GET(request: Request) {
       area: schema.reserva.area,
       mesa: schema.reserva.mesa,
       mesa_juntada: schema.reserva.mesaJuntada,
+      // O que a RECEPÇÃO da loja precisa pra identificar quem chegou (tela
+      // /reservas do vendas-local): o pedido especial, o gosto do cliente, a
+      // bebida já escolhida e se a reserva foi paga (lounge).
+      observacao: schema.reserva.observacao,
+      preferencias: schema.reserva.preferencias,
+      bebida: schema.reserva.bebidaPedido,
+      bebida_qtd: schema.reserva.bebidaComboQtd,
+      valor: schema.reserva.valor,
+      canal: schema.reserva.canal,
     })
     .from(schema.reserva)
     .where(
