@@ -14541,28 +14541,30 @@ function pinta(){
 /* ---- ETIQUETA 50x30 (XD-210 / PT-260) ----
    Mesmo esquema da etiqueta de validade do KDS: 8 pontos/mm, área = etiqueta − 2mm
    (48×28mm = 384×224 pontos), paisagem sem girar, TSPL BITMAP modo 0.
-   O QR vai com módulo de pixel inteiro (nada de SVG escalado: borra e o celular erra). */
-var W=384,H=224;
+   O QR vai com módulo de pixel inteiro (nada de SVG escalado: borra e o celular erra).
+   P = respiro de 2mm em volta de tudo (colado na borda ficava apertado e o
+   corte/ajuste lateral comia o QR). */
+var W=384,H=224,P=16;
 function cabe(g,t,peso,max,larg){var fs=max;g.font=peso+' '+fs+'px Arial, Helvetica, sans-serif';
   while(fs>8&&g.measureText(t).width>larg){fs--;g.font=peso+' '+fs+'px Arial, Helvetica, sans-serif'}return fs}
 function desenha(m){
   var cv=document.createElement('canvas');cv.width=W;cv.height=H;var g=cv.getContext('2d');
   g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.textBaseline='alphabetic';
-  var n=m.mat.length,mod=Math.floor((H-12)/n),q=n*mod,qx=8,qy=Math.round((H-q)/2);
+  var n=m.mat.length,mod=Math.floor((H-2*P)/n),q=n*mod,qx=P,qy=Math.round((H-q)/2);
   for(var y=0;y<n;y++)for(var x=0;x<n;x++)if(m.mat[y].charAt(x)==='1')g.fillRect(qx+x*mod,qy+y*mod,mod,mod);
-  var x0=qx+q+14,lg=W-x0-6,cx=x0+lg/2;g.textAlign='center';
+  var x0=qx+q+12,lg=W-x0-P,cx=x0+lg/2;g.textAlign='center';
   // nome da casa em até 2 linhas: "PRAINHA" / "MAR E GRILL"
   var nome=LOJA.toUpperCase(),ls=[nome],cut=nome.indexOf(' ');
   if(nome.length>12&&cut>0)ls=[nome.slice(0,cut),nome.slice(cut+1)];
   var fsN=99;ls.forEach(function(l){fsN=Math.min(fsN,cabe(g,l,'700',19,lg))});
-  g.font='700 '+fsN+'px Arial, Helvetica, sans-serif';var y=6+fsN;
+  g.font='700 '+fsN+'px Arial, Helvetica, sans-serif';var y=P+fsN-2;
   ls.forEach(function(l){g.fillText(l,cx,y);y+=fsN+2});
   g.fillRect(x0+lg*0.2,y+1,lg*0.6,2);y+=6;
-  var fsM=cabe(g,'MESA','800',22,lg);g.fillText('MESA',cx,y+fsM);y+=fsM;
-  var num=String(m.numero),baixo=44,fsX=cabe(g,num,'900',H-baixo-y-4,lg);
+  var fsM=cabe(g,'MESA','800',20,lg);g.fillText('MESA',cx,y+fsM);y+=fsM;
+  var num=String(m.numero),baixo=P+36,fsX=cabe(g,num,'900',H-baixo-y-4,lg);
   g.fillText(num,cx,y+4+fsX*0.92);
-  var f1=cabe(g,'Aponte a câmera','700',16,lg);g.fillText('Aponte a câmera',cx,H-baixo+18);
-  cabe(g,'cardápio · pedir · conta','500',14,lg);g.fillText('cardápio · pedir · conta',cx,H-baixo+38);
+  cabe(g,'Aponte a câmera','700',15,lg);g.fillText('Aponte a câmera',cx,H-baixo+16);
+  cabe(g,'cardápio · pedir · conta','500',13,lg);g.fillText('cardápio · pedir · conta',cx,H-P-1);
   return cv;
 }
 function bits(cv){var d=cv.getContext('2d').getImageData(0,0,W,H).data,wb=W/8,o=new Uint8Array(wb*H);
