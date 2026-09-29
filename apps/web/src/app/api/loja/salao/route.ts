@@ -222,9 +222,13 @@ type AvaliacaoNova = {
  *  opcional, NUNCA condição pro drink (Google proíbe avaliação incentivada). */
 async function avaliacaoNova(f: string, b: AvaliacaoNova) {
   const nota = Number(b.nota);
+  // CPF é do DRINK, não da avaliação. Quem só quer reclamar/elogiar (tela
+  // "Avaliar" do QR da mesa) manda sem CPF e sem mês — o índice único
+  // (filial, cpf, mes_ref) é parcial (WHERE cpf IS NOT NULL), então avaliação
+  // sem CPF nunca esbarra na trava do um-drink-por-mês.
   const cpf = String(b.cpf || '').replace(/\D/g, '');
-  const mes = String(b.mes || '');
-  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5) || cpf.length !== 11 || !/^\d{4}-\d{2}$/.test(mes)) {
+  const mes = String(b.mes || '') || hojeBr().slice(0, 7);
+  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5) || (cpf && cpf.length !== 11) || !/^\d{4}-\d{2}$/.test(mes)) {
     return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
   }
   const { db, schema } = await import('@concilia/db');
@@ -251,7 +255,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
       foiPraGoogle: alta && !!(fil.googleUrl || fil.tripUrl),
       // nota alta nasce resolvida; baixa entra no painel pra equipe ligar
       status: alta ? 'resolvido' : 'novo',
-      cpf,
+      cpf: cpf || null,
       mesRef: mes,
       brinde: txt(b.brinde, 200),
       mesa,
@@ -260,7 +264,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
     .onConflictDoNothing()
     .returning({ id: schema.avaliacao.id });
   let id = nova?.id ?? null;
-  if (!id) {
+  if (!id && cpf) {
     // reenvio: já está aqui — devolve o id pra loja parar de tentar
     const { and } = await import('drizzle-orm');
     const [ja] = await db

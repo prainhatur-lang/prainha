@@ -551,6 +551,14 @@ async function initSchema() {
     nome text, whatsapp text, mesa integer, brinde_pdv integer, brinde_nome text,
     pedido_fb bigint, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid,
     UNIQUE (cpf, mes))`;
+  // AVALIAÇÃO SEM DRINK (tela "Avaliar" do QR da mesa): elogio ou reclamação,
+  // sem CPF e sem brinde. Nota baixa vira chamado de reclamação na hora E sobe
+  // pra retaguarda (/avaliacoes do Concilia) — a fila `nuvem_em` reenvia
+  // sozinha quando a internet volta.
+  await sql`CREATE TABLE IF NOT EXISTS avaliacao_livre (id bigserial PRIMARY KEY,
+    nota integer NOT NULL, assunto text, comentario text, nome text, whatsapp text,
+    mesa integer, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_avaliacao_livre_fila ON avaliacao_livre (nuvem_em, id)`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -4087,6 +4095,81 @@ async function apiProdutoFoto(body) {
     ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
       tam=EXCLUDED.tam, atualizado=now()`;
   return { ok: true, tam: buf.length };
+}
+
+// ---- FOTO É POR CASA. O CÓDIGO NÃO ATRAVESSA. ----
+// `produto_foto` é chaveada pelo PRODUTOS.CODIGO do Consumer DESTA casa, e cada
+// casa numera o próprio catálogo. Copiar a pasta de fotos de uma casa pra outra
+// (o `--fotos`, que vai por número de arquivo) embaralha tudo em silêncio: foi
+// o que aconteceu na Prainha Mar — o código 1361 é Fanta Lata Zero lá e
+// Limoncello no Bar, então a Fanta passou a mostrar um licor. Eram 75 fotos,
+// praticamente todas trocadas, e ninguém percebe olhando o banco.
+// Pra trazer foto de outra casa use ISTO, que casa pelo NOME do produto.
+const chaveFoto = (nome) => semAcento(nome).replace(/[^a-z0-9]+/g, ' ').trim();
+/** O que ESTA casa tem de foto, pra outra casa poder puxar casando pelo nome. */
+async function apiFotosCatalogo() {
+  const rows = await sql`SELECT DISTINCT ON (p.produto_codigo) p.produto_codigo, p.nome
+    FROM produto_local p JOIN produto_foto f ON f.produto_codigo = p.produto_codigo
+    ORDER BY p.produto_codigo, p.nome`;
+  return { ok: true, loja: LOJA_NOME, fotos: rows.map((r) => ({ codigo: Number(r.produto_codigo), nome: r.nome })) };
+}
+/** Puxa as fotos de outra casa casando pelo NOME (nunca pelo código).
+ *  `aplicar` falso = só a prévia; `limpar` apaga as fotos de hoje antes (é o
+ *  caso de quem já foi contaminado por uma cópia por código). */
+async function apiFotosImportar(body) {
+  const origem = String(body.origem || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^\s]+$/.test(origem)) return { ok: false, erro: 'endereço da outra casa inválido' };
+  let cat;
+  try {
+    const r = await fetch(origem + '/api/fotos/catalogo', { signal: AbortSignal.timeout(20000) });
+    cat = await r.json();
+  } catch (e) { return { ok: false, erro: 'não alcancei ' + origem + ' (' + e.message + ')' }; }
+  if (!cat || !cat.ok || !Array.isArray(cat.fotos)) return { ok: false, erro: 'a outra casa não respondeu o catálogo de fotos' };
+  // nome repetido nos dois lados é ambíguo — melhor não adivinhar do que errar
+  const porNome = new Map(), ambiguo = new Set();
+  for (const f of cat.fotos) {
+    const k = chaveFoto(f.nome);
+    if (!k) continue;
+    if (porNome.has(k)) ambiguo.add(k); else porNome.set(k, f);
+  }
+  const locais = await sql`SELECT DISTINCT ON (produto_codigo) produto_codigo, nome,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local ORDER BY produto_codigo, nome`;
+  const pares = [], semPar = [];
+  for (const l of locais) {
+    const k = chaveFoto(l.nome);
+    const o = !ambiguo.has(k) && porNome.get(k);
+    if (o) pares.push({ codigo: Number(l.produto_codigo), nome: l.nome, de_codigo: o.codigo, de_nome: o.nome, tem_foto: l.tem_foto });
+    else semPar.push({ codigo: Number(l.produto_codigo), nome: l.nome, tem_foto: l.tem_foto });
+  }
+  const resumo = { ok: true, loja_origem: cat.loja || origem, na_origem: cat.fotos.length,
+    casaram: pares.length, sem_par: semPar.length, ambiguos: ambiguo.size,
+    amostra: pares.slice(0, 40), sem_par_amostra: semPar.filter((x) => x.tem_foto).slice(0, 40) };
+  if (!body.aplicar) return { ...resumo, previa: true };
+  if (body.limpar) await sql`DELETE FROM produto_foto`;
+  let ok = 0, falhou = 0;
+  for (const par of pares) {
+    try {
+      const r = await fetch(origem + '/produto-foto/' + par.de_codigo, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) { falhou++; continue; }
+      const mime = String(r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length || buf.length > 3_000_000) { falhou++; continue; }
+      await sql`INSERT INTO produto_foto (produto_codigo, mime, bytes, tam, atualizado)
+          VALUES (${par.codigo}, ${mime}, ${buf}, ${buf.length}, now())
+        ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
+          tam=EXCLUDED.tam, atualizado=now()`;
+      ok++;
+    } catch { falhou++; }
+  }
+  return { ...resumo, previa: false, importadas: ok, falharam: falhou, limpou: !!body.limpar };
+}
+/** Apaga TODAS as fotos desta casa (quando vieram trocadas de outra casa). */
+async function apiFotosLimpar(body) {
+  if (String(body.confirmar || '') !== 'APAGAR') return { ok: false, erro: 'confirmação faltando' };
+  const [t] = await sql`SELECT count(*) n FROM produto_foto`;
+  await sql`DELETE FROM produto_foto`;
+  return { ok: true, apagadas: Number(t.n) };
 }
 
 /** As variantes de um produto — só as que dá pra vender aparecem em primeiro. */
@@ -12279,6 +12362,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
 <a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
 <a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
+<a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — recepção</small></span></a>
 <button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
 <a href="/gerente"><i>👔</i><span>Gerente</span></a>
 <hr><a href="/tablet"><i>⚙</i><span>Configurar<small>tela cheia / atualizar</small></span></a>
@@ -12833,37 +12917,11 @@ async function kds(){
 }
 // Sempre o mesmo formato: item · mesa · hora. É por isso que a marca guarda
 // o número — a comanda fecha e some do espelho, o histórico não pode perder.
-// RESERVAS DE HOJE no topo da lateral: quem ainda vai chegar, em ordem de
-// hora. Chegando em até 30 min fica em destaque; as já sentadas viram só um
-// contador (a comanda delas já aparece na fila).
-function reservasHTML(r){
-  if(!r||!r.ok||!r.reservas)return '';
-  var agora=new Date(),minAgora=agora.getHours()*60+agora.getMinutes();
-  var vem=r.reservas.filter(function(x){return x.status!=='sentada'});
-  var sent=r.reservas.length-vem.length;
-  var pesVem=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
-  var h='<h3>📅 Reservas hoje'+(vem.length?' · '+vem.length+' ('+pesVem+' pes.)':'')+'</h3>';
-  if(!vem.length)return h+'<div class="vaziinho">'+(sent?sent+' já sentada(s) — nenhuma por chegar':'nenhuma reserva por chegar')+'</div>';
-  h+=vem.map(function(x){
-    var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0),falta=min-minAgora;
-    var perto=falta<=30;
-    var quando=falta<0?'atrasada '+(-falta)+'min':(falta<=90?'em '+falta+'min':'');
-    var onde=(x.area||'')+(x.mesa?' · mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:''):'');
-    return '<div class="hi"'+(perto?' style="background:#fff4e0"':'')+'><div class="n">'+
-      '<b style="color:var(--gold2)">'+esc(x.hora)+'</b> · '+(Number(x.pessoas)||'?')+' pes. — '+esc(x.nome||'')+'</div>'+
-      '<div class="m">'+(onde?'<span>'+esc(onde)+'</span>':'')+(quando?'<b>'+quando+'</b>':'')+
-      (x.status==='pendente'?'<span>não confirmada</span>':'')+'</div></div>';
-  }).join('');
-  if(sent)h+='<div class="vaziinho" style="padding:8px 15px">+ '+sent+' já sentada(s)</div>';
-  return h;
-}
 async function histLateral(url){
   var el=document.getElementById('hist');if(!el)return;
-  var rp=fetch('/api/kds/reservas',{cache:'no-store'}).then(function(x){return x.json()}).catch(function(){return null});
   var d;try{d=await (await fetch(url,{cache:'no-store'})).json()}catch(e){return}
-  var rv=await rp;
   var its=d.itens||[];
-  el.innerHTML=reservasHTML(rv)+'<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
+  el.innerHTML='<h3>Últimos que saíram</h3>'+(its.length?its.map(function(i){
     var t=i.quando?new Date(i.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
     return '<div class="hi"><div class="n">'+esc(i.nome||'item')+'</div>'+
       (i.opcoes&&i.opcoes.length?'<div class="op">'+i.opcoes.map(function(o){return '<div>↳ '+esc(o)+'</div>'}).join('')+'</div>':'')+
@@ -14237,6 +14295,47 @@ async function apiMesaAvaliar(body) {
   try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
   return { ok: true, brinde: op.nome, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
 }
+// ============ AVALIAR SEM DRINK (reclamação / elogio do QR da mesa) ============
+// O drink é um PROGRAMA (um por CPF por mês); avaliar não pode depender dele.
+// Aqui não pede CPF, não lança nada na conta e funciona com a mesa já fechada
+// — que é justamente quando muita gente reclama. Nota baixa faz duas coisas:
+//   1) chamado de RECLAMAÇÃO na loja (pisca no KDS e no celular do gerente);
+//   2) avaliação na retaguarda (/avaliacoes), status 'novo', pra dar retorno.
+async function apiMesaAvaliacaoLivre(body) {
+  const nota = Number(body.nota);
+  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5)) return { ok: false, erro: 'Escolha de 1 a 5 estrelas.' };
+  const numero = body.mesa == null || body.mesa === '' ? null : Number(body.mesa);
+  if (numero != null && !(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
+  const assunto = ASSUNTOS[String(body.assunto || '')] ? String(body.assunto) : null;
+  const txt = (v, n) => { const t = String(v || '').trim(); return t ? t.slice(0, n) : null; };
+  const comentario = txt(body.comentario, 2000);
+  const [reg] = await sql`INSERT INTO avaliacao_livre (nota, assunto, comentario, nome, whatsapp, mesa)
+    VALUES (${nota}, ${assunto}, ${comentario}, ${txt(body.nome, 200)},
+            ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}) RETURNING id`;
+  // nota baixa = a equipe tem que saber AGORA, não quando alguém abrir o painel
+  if (nota <= 3) {
+    await apiChamadoCriar({ mesa: numero, tipo: 'reclamacao', origem: 'avaliacao-qr', nota,
+      assunto: assunto || 'outro',
+      texto: nota + '★' + (assunto ? ' — ' + ASSUNTOS[assunto] : '') + (comentario ? ' — ' + comentario : '') }).catch(() => {});
+  }
+  let nv = null;
+  try { nv = await Promise.race([livreParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
+  return { ok: true, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+}
+async function livreParaNuvem(id) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  const [a] = await sql`SELECT * FROM avaliacao_livre WHERE id=${id} AND nuvem_em IS NULL`;
+  if (!a) return null;
+  // o assunto vai junto do comentário: na retaguarda o que resolve é ler
+  const com = [a.assunto ? ASSUNTOS[a.assunto] : null, a.comentario].filter(Boolean).join(' — ') || null;
+  const j = await salaoNuvemPost({ tipo: 'avaliacao_nova', nota: a.nota, comentario: com,
+    nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa, criado_em: a.criado_em });
+  if (j && j.ok) {
+    await sql`UPDATE avaliacao_livre SET nuvem_em=now(), nuvem_id=${j.id || null} WHERE id=${id}`;
+    return j;
+  }
+  return null;
+}
 // cópia pra nuvem (/avaliacoes do Concilia). Falhou? a fila tenta de novo.
 async function brindeParaNuvem(id) {
   if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
@@ -14255,6 +14354,8 @@ async function loopBrindeNuvem() {
   const pend = await sql`SELECT id FROM avaliacao_brinde WHERE nuvem_em IS NULL AND (pedido_fb IS NOT NULL OR brinde_pdv IS NULL)
     ORDER BY id LIMIT 20`;
   for (const p of pend) await brindeParaNuvem(p.id).catch(() => {});
+  const livres = await sql`SELECT id FROM avaliacao_livre WHERE nuvem_em IS NULL ORDER BY id LIMIT 20`;
+  for (const p of livres) await livreParaNuvem(p.id).catch(() => {});
 }
 
 // ---- QR CODES das mesas (pra imprimir e colar) ----
@@ -15101,6 +15202,118 @@ async function apiSaidaConsultar(token) {
 // Quem pagou a conta manda este link no zap pra quem vai embora antes. A pessoa
 // abre, mostra o QR na catraca e passa. E' o MESMO codigo da mesa: cada leitura
 // consome uma passagem, entao mandar pra tres pessoas nao cria tres passes.
+// ================= RESERVAS DO DIA NA RECEPÇÃO (/reservas) =================
+// Antes isto morava na lateral do KDS, mas ali só atrapalhava: o KDS é dos
+// pratos que saem. Quem precisa da lista é a RECEPÇÃO — o cliente chega
+// dizendo um nome e ela tem que achar a reserva, ver a mesa guardada, o
+// pedido especial e se a reserva foi paga. Por isso a tela é de busca (nome,
+// telefone ou mesa), não de "fila". Só leitura: quem muda o status da reserva
+// é o Concilia (sentar aloca mesa e solta a bebida do lounge).
+const RESERVAS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reservas de hoje — ${LOJA_NOME}</title><style>
+:root{--ink:#16161a;--mut:#6e6e78;--line:#dcdce3;--gold2:#e0651a}
+*{box-sizing:border-box}body{margin:0;background:#ececed;color:var(--ink);font-family:'Outfit',-apple-system,system-ui,sans-serif}
+.barra{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.barra b{font-size:16px}
+.cnt{color:var(--mut);font-size:13px;margin-right:auto}
+#q{flex:1 1 230px;min-width:150px;font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+button{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 14px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+button.seg{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:600}
+button.seg.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+button.g{background:#5b5b66}
+.wrap{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(315px,1fr));gap:12px;align-items:start}
+.rs{background:#fff;border:1px solid var(--line);border-left:5px solid #d6d6de;border-radius:12px;padding:12px 14px}
+.rs.perto{border-left-color:var(--gold2);background:#fff9f3}
+.rs.atras{border-left-color:#b91c1c;background:#fff2f2}
+.rs.sent{opacity:.6}
+.rs .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rs .h{font-size:25px;font-weight:800;line-height:1;color:var(--gold2)}
+.rs .pes{font-size:15px;font-weight:700}
+.rs .nm{font-size:18px;font-weight:700;margin-top:5px;word-break:break-word}
+.tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 8px;border-radius:999px;background:#ececf1;color:var(--mut);white-space:nowrap}
+.tag.blue{background:#e3edff;color:#1d4ed8}.tag.green{background:#e4f7e7;color:#15803d}.tag.amb{background:#fff1dc;color:#b45309}.tag.red{background:#ffe4e4;color:#b91c1c}
+.li{margin-top:7px;font-size:14.5px;color:var(--mut);display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.li b{color:var(--ink);font-weight:700}
+a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
+.obs{margin-top:8px;background:#f5f5f8;border-radius:9px;padding:8px 10px;font-size:14px;line-height:1.4}
+.obs div+div{margin-top:4px}
+.vazio{padding:46px 16px;text-align:center;color:var(--mut)}
+.erro{margin:14px;padding:11px 14px;border-radius:10px;background:#fff1f1;color:#b91c1c;font-size:14px}
+</style></head><body>
+<div class="barra"><b>📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
+<input id="q" placeholder="nome, telefone ou mesa" oninput="pinta()" autocomplete="off">
+<button class="seg on" id="f_vem" onclick="filtro(1)">Por chegar</button>
+<button class="seg" id="f_sentada" onclick="filtro(2)">Sentadas</button>
+<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button>
+<button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
+<a href="/" style="text-decoration:none"><button class="g">KDS</button></a></div>
+<div id="app" class="vazio">carregando…</div>
+<script>
+var R=[],F='vem',AVISO='';
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function dig(s){return String(s==null?'':s).replace(/[^0-9]/g,'')}
+function chave(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')}
+function brl(v){var n=Number(v);return isNaN(n)?'':n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
+function filtro(n){F=n===2?'sentada':(n===3?'todas':'vem');
+  ['vem','sentada','todas'].forEach(function(k){document.getElementById('f_'+k).className='seg'+(F===k?' on':'')});pinta()}
+function fone(t){
+  var d=dig(t);if(!d)return '';
+  var z=d.length>11?d:'55'+d;
+  var vis=d.length>=11?'('+d.slice(0,2)+') '+d.slice(2,7)+'-'+d.slice(7)
+    :(d.length===10?'('+d.slice(0,2)+') '+d.slice(2,6)+'-'+d.slice(6):d);
+  return '<a class="zap" href="https://wa.me/'+z+'" target="_blank" rel="noopener">&#128172; '+esc(vis)+'</a>';
+}
+function cartao(x){
+  var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0);
+  var ag=new Date(),falta=min-(ag.getHours()*60+ag.getMinutes());
+  var sentada=x.status==='sentada';
+  var cls=sentada?'sent':(falta<-10?'atras':(falta<=30?'perto':''));
+  var quando=sentada?'':(falta<0?'atrasada '+(-falta)+' min':(falta<=120?'em '+falta+' min':''));
+  var st=sentada?'<span class="tag green">sentada</span>'
+    :(x.status==='confirmada'?'<span class="tag blue">confirmada</span>':'<span class="tag amb">não confirmada</span>');
+  var onde=x.mesa?('mesa '+x.mesa+(x.mesa_juntada?'+'+x.mesa_juntada:'')):'';
+  var h='<div class="rs '+cls+'"><div class="top"><span class="h">'+esc(x.hora||'--:--')+'</span>'+
+    '<span class="pes">'+(Number(x.pessoas)||'?')+' pessoas</span>'+st+
+    (quando?'<span class="tag '+(falta<0?'red':'amb')+'">'+quando+'</span>':'')+'</div>'+
+    '<div class="nm">'+esc(x.nome||'(sem nome)')+'</div><div class="li">'+
+    (x.area?'<b>'+esc(x.area)+'</b>':'')+(onde?'<b>'+esc(onde)+'</b>':'<span>sem mesa marcada</span>')+
+    (Number(x.valor)>0?'<span class="tag green">pago '+brl(x.valor)+'</span>':'')+
+    (x.canal?'<span>via '+esc(x.canal)+'</span>':'')+'</div>';
+  if(dig(x.telefone))h+='<div class="li">'+fone(x.telefone)+'</div>';
+  var ex='';
+  if(x.bebida)ex+='<div>&#127864; '+esc(x.bebida)+(Number(x.bebida_qtd)>0?' ('+x.bebida_qtd+' un.)':'')+' — já escolhida na reserva</div>';
+  if(x.observacao)ex+='<div>&#128221; '+esc(x.observacao)+'</div>';
+  if(x.preferencias)ex+='<div>&#11088; gosta de: '+esc(x.preferencias)+'</div>';
+  if(ex)h+='<div class="obs">'+ex+'</div>';
+  return h+'</div>';
+}
+function pinta(){
+  var q=chave(document.getElementById('q').value.trim()),qd=dig(document.getElementById('q').value);
+  var L=R.filter(function(x){
+    if(F==='vem'&&x.status==='sentada')return false;
+    if(F==='sentada'&&x.status!=='sentada')return false;
+    if(!q)return true;
+    if(qd&&dig(x.telefone).indexOf(qd)>=0)return true;
+    return chave(x.nome).indexOf(q)>=0||chave(x.mesa).indexOf(q)>=0||chave(x.area).indexOf(q)>=0;
+  });
+  var vem=R.filter(function(x){return x.status!=='sentada'});
+  var pes=vem.reduce(function(a,x){return a+(Number(x.pessoas)||0)},0);
+  document.getElementById('cnt').textContent=R.length?(vem.length+' por chegar ('+pes+' pessoas) · '+(R.length-vem.length)+' sentada(s)'):'nenhuma reserva hoje';
+  var app=document.getElementById('app');
+  var topo=AVISO?'<div class="erro">'+esc(AVISO)+'</div>':'';
+  if(!L.length){app.className='';app.innerHTML=topo+'<div class="vazio">'+(R.length?'nada com esse filtro':'nenhuma reserva pra hoje')+'</div>';return}
+  app.className='';
+  app.innerHTML=topo+'<div class="wrap">'+L.map(cartao).join('')+'</div>';
+}
+async function carregar(){
+  var d;try{d=await (await fetch('/api/reservas',{cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  R=(d&&d.reservas)||[];
+  AVISO=d&&d.ok?(d.velho?'mostrando a última lista que deu pra baixar (o Concilia não respondeu agora)':''):('não deu pra falar com o Concilia: '+((d&&d.erro)||'sem resposta'));
+  pinta();
+}
+carregar();setInterval(carregar,30000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)carregar()});
+</script></body></html>`;
 const PASSE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Passe de saida — ${LOJA_NOME}</title><style>
@@ -16059,13 +16272,24 @@ input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9p
 .cb.herda{border-style:dashed}
 .vazio{padding:50px 20px;text-align:center;color:var(--mut)}
 .dica{background:#fff7e3;border:1px solid #f0d68f;color:#8a4b06;border-radius:11px;padding:10px 13px;font-size:13px;line-height:1.45;margin-bottom:14px}
+.mod{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-start;justify-content:center;padding:24px 14px;overflow:auto}
+.mod .bx{background:#fff;border-radius:16px;max-width:760px;width:100%;padding:20px 22px}
+.mod h2{margin:0 0 6px;font-size:19px}
+.mod .b{display:block;width:100%;margin-top:10px;background:var(--gold2);color:#fff;border:0;border-radius:11px;padding:12px;font:inherit;font-size:15px;font-weight:700;cursor:pointer}
+.mod .b.g{background:#5b5b66}.mod .b.r{background:var(--red)}
+.mod select,.mod input{width:100%;font:inherit;font-size:15px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-top:6px}
+.par{display:flex;gap:10px;align-items:center;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)}
+.par img{width:38px;height:38px;border-radius:7px;object-fit:cover;background:#eee;flex:none}
+.par b{flex:1}.par span{color:var(--mut)}
+.res{max-height:320px;overflow:auto;margin-top:12px}
 </style></head><body>
 <header><a class="back" href="/">◂ Produção</a><h1>Produtos <b>·</b> onde aparece</h1>
 <input type="search" id="q" placeholder="buscar produto…" oninput="buscar(this.value)">
 <select id="so" onchange="carrega()" style="font:inherit;padding:8px;border-radius:9px;border:1px solid var(--line)">
   <option value="">todos</option><option value="sem-foto">sem foto</option><option value="ajustados">já ajustados</option>
 </select>
-<span class="grow"></span><span id="cnt" class="back"></span></header>
+<span class="grow"></span><button class="back" onclick="painelFotos()">🖼 Fotos de outra casa</button>
+<span id="cnt" class="back"></span></header>
 <div class="wrap">
 <div class="dica"><b>Tracejado</b> = herdado do Consumer. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
 Clicando de novo volta ao herdado. Clique na foto pra trocar.</div>
@@ -16131,6 +16355,58 @@ document.getElementById('arq').addEventListener('change',async function(ev){
   };
   img.src=url;
 });
+// ---- FOTO DE OUTRA CASA (casa pelo NOME, nunca pelo código) ----
+// O código do produto é de cada casa. Copiar a pasta de fotos de uma pra outra
+// (o --fotos, que vai por número) trocou 75 fotos na Prainha Mar sem avisar
+// ninguém: a Fanta mostrava um licor. Aqui o par é feito pelo nome e a prévia
+// mostra o que vai virar o quê ANTES de gravar.
+var CASAS=[['https://bar.tailb22e0d.ts.net','01 Prainha Bar'],
+  ['https://tabuara.tailb22e0d.ts.net','02 Tabuará'],
+  ['https://mar.tailb22e0d.ts.net','03 Prainha Mar']];
+var PREVIA=null;
+function painelFotos(){
+  var op=CASAS.map(function(c){return '<option value="'+c[0]+'">'+c[1]+'</option>'}).join('');
+  var d=document.createElement('div');d.className='mod';d.id='modf';
+  d.innerHTML='<div class="bx"><h2>Trazer fotos de outra casa</h2>'+
+    '<div class="dica" style="margin:8px 0 0">O par é feito pelo <b>NOME</b> do produto. Nunca pelo código — o código é de cada casa, e foi assim que as fotos da Prainha Mar saíram trocadas.</div>'+
+    '<div style="margin-top:12px;font-size:13px;color:var(--mut)">De qual casa?</div>'+
+    '<select id="fcasa">'+op+'</select>'+
+    '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px">'+
+      '<input type="checkbox" id="flimpar" style="width:auto;margin:0"> apagar as fotos que estão aqui hoje antes de trazer</label>'+
+    '<button class="b" onclick="fotosPrevia()">Ver a prévia</button>'+
+    '<div id="fres"></div>'+
+    '<button class="b g" onclick="fechaFotos()">Fechar</button></div>';
+  document.body.appendChild(d);
+}
+function fechaFotos(){var d=document.getElementById('modf');if(d)d.remove();PREVIA=null;carrega()}
+async function fotosPrevia(){
+  var org=document.getElementById('fcasa').value, r=document.getElementById('fres');
+  r.innerHTML='<div style="margin-top:12px;color:var(--mut)">falando com a outra casa…</div>';
+  var d;try{d=await (await fetch('/api/fotos/importar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({origem:org,aplicar:false})})).json()}catch(e){d={ok:false,erro:'sem resposta'}}
+  if(!d.ok){r.innerHTML='<div class="dica" style="background:#fdeaea;border-color:#f1b0a8;color:#a3271b;margin-top:12px">'+esc(d.erro)+'</div>';return}
+  PREVIA=d;
+  var linhas=(d.amostra||[]).map(function(x){
+    return '<div class="par"><img src="'+org+'/produto-foto/'+x.de_codigo+'" loading="lazy" alt="">'+
+      '<b>'+esc(x.nome)+'</b><span>← '+esc(x.de_nome)+'</span></div>';
+  }).join('');
+  r.innerHTML='<div class="dica" style="margin-top:12px">'+d.casaram+' produto(s) casaram pelo nome com <b>'+esc(d.loja_origem)+'</b> ('+d.na_origem+' fotos lá). '+
+    d.sem_par+' sem par'+(d.ambiguos?', '+d.ambiguos+' nome(s) repetido(s) ignorado(s)':'')+'.</div>'+
+    '<div class="res">'+linhas+'</div>'+
+    (d.casaram?'<button class="b" onclick="fotosAplicar()">Trazer as '+d.casaram+' fotos agora</button>':'');
+}
+async function fotosAplicar(){
+  var org=document.getElementById('fcasa').value, lim=document.getElementById('flimpar').checked;
+  if(lim&&!confirm('Isso APAGA todas as fotos desta casa e traz as de '+org+'. Confirma?'))return;
+  var r=document.getElementById('fres');
+  r.innerHTML='<div style="margin-top:12px;color:var(--mut)">trazendo as fotos… (pode levar um minuto)</div>';
+  var d;try{d=await (await fetch('/api/fotos/importar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({origem:org,aplicar:true,limpar:lim})})).json()}catch(e){d={ok:false,erro:'sem resposta'}}
+  if(!d.ok){r.innerHTML='<div class="dica" style="background:#fdeaea;border-color:#f1b0a8;color:#a3271b;margin-top:12px">'+esc(d.erro)+'</div>';return}
+  r.innerHTML='<div class="dica" style="background:#eafaf0;border-color:#bfe9cf;color:#0f8a3e;margin-top:12px">'+
+    '✓ '+d.importadas+' foto(s) trazida(s)'+(d.falharam?', '+d.falharam+' falharam':'')+(d.limpou?' · as antigas foram apagadas':'')+'.</div>';
+  carrega();
+}
 carrega();
 </script></body></html>`;
 
@@ -16931,6 +17207,7 @@ body{padding-bottom:120px}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
 /* seletor do que pagar (mesa toda x cada comanda): cada opção mostra o valor,
    pra pessoa escolher sem ter que fazer conta de cabeça */
+.segs.assuntos .seg{flex:1 1 46%;min-width:132px;text-align:left;padding:12px;font-size:14.5px}
 .segs.alvos{gap:8px;margin:10px 0 2px}
 .segs.alvos .seg{flex:1 1 46%;min-width:130px;text-align:left;padding:11px 12px;line-height:1.2;color:var(--ink)}
 .segs.alvos .seg small{display:block;color:var(--mut);font-size:12px;font-weight:400;margin-top:3px}
@@ -17158,9 +17435,10 @@ async function inicio(){
       '<button class="tile gar" onclick="chamar()"><i>🔔</i>Chamar garçom<small>ele vem na hora</small></button>'+
       '<button class="tile pix" onclick="telaPix()"><i>💳</i>Pagar a conta<small>Pix ou cartão</small></button>'+
       (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>⭐</i>O de sempre<small>o que você mais pede</small></button>':'')+
+      '<button class="tile" onclick="telaAvaliar()"><i>⭐</i>Avaliar<small>elogio, reclamação ou sugestão</small></button>'+
       (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
     '</div>'+
-    '<button class="lnk" onclick="telaProblema()">Relatar um problema</button>';
+    '<button class="lnk" onclick="telaProblema()">Relatar um problema agora</button>';
   app(h);renderCarrinho();
 }
 function nomesBrinde(){
@@ -17179,18 +17457,93 @@ function nomeComum(l){ if(!l.length)return ''; if(l.length===1)return l[0].nome;
 var AV=null;
 var NOTAS=['','Não gostei 😕','Podia ser melhor','Foi ok 🙂','Gostei muito! 😄','Perfeito! 🤩'];
 function passos(k){var h='<div class="passos">';for(var i=1;i<=3;i++)h+='<i'+(i<=k?' class="on"':'')+'></i>';return h+'</div>'}
+// O DRINK É UM PROGRAMA, AVALIAR NÃO DEPENDE DELE. Enquanto a tela das
+// estrelas só existia junto do brinde, quem queria reclamar não tinha por onde
+// — e reclamação é o que mais importa ouvir. Agora: nota 4-5 vira convite pro
+// Google/TripAdvisor; nota 1-3 vai pro gerente na hora e pra retaguarda.
+function temDrink(){ return !!(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()) }
 function telaAvaliar(){
-  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(!jaAvaliouAqui()&&EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
-  var h=passos(1)+'<h1>Como está sendo sua experiência?</h1>'+
-    '<div class="mut">Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹</div>'+
+  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(!jaAvaliouAqui()&&EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null,assunto:null};
+  var h=(temDrink()?passos(1):'')+'<h1>Como está sendo sua experiência?</h1>'+
+    '<div class="mut">Sua opinião vai direto pra gerência.'+(temDrink()?' No fim, você escolhe seu drink 🍹':'')+'</div>'+
     '<div class="estrelas">';
   for(var i=1;i<=5;i++)h+='<button'+(i<=AV.nota?' class="on"':'')+' onclick="avNota('+i+')">⭐</button>';
   h+='</div><div class="nlab" id="nlab">'+NOTAS[AV.nota]+'</div>'+
     '<textarea id="avc" maxlength="2000" placeholder="Quer contar mais? Comida, atendimento, ambiente… (opcional)"></textarea>'+
-    '<button class="b" id="av1" onclick="avPasso2()"'+(AV.nota?'':' style="opacity:.45"')+'>Continuar</button>'+
+    '<button class="b" id="av1" onclick="avSeguir()"'+(AV.nota?'':' style="opacity:.45"')+'>Continuar</button>'+
     '<button class="lnk" onclick="inicio()">Voltar</button>';
   app(h);
   document.getElementById('avc').value=AV.comentario;
+}
+// quem dá nota baixa não pode cair numa tela de CPF: primeiro a gente ouve
+function avSeguir(){
+  var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
+  if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
+  if(AV.nota<=3)return avBaixa();
+  if(temDrink())return avPasso2();
+  return avEnviarLivre();
+}
+// NOTA 1-3: o que houve, e como a gente te responde. Nada obrigatório —
+// exigir dado de quem está insatisfeito é o jeito mais rápido de perder a
+// reclamação (e ela vira nota no Google).
+var AVASS=[['demora','⏱ Demorou'],['errado','🍽 Veio errado'],['frio','🌡 Veio frio'],
+  ['faltou','➖ Faltou algo'],['salao','🧹 Mesa / louça / limpeza'],['outro','💬 Outro']];
+function avBaixa(){
+  var chip=function(a){return '<button class="seg'+(AV.assunto===a[0]?' on':'')+'" onclick="avAss(\\''+a[0]+'\\')">'+a[1]+'</button>'};
+  app('<h1>Poxa, sentimos muito 😔</h1>'+
+    '<div class="mut">Conta pra gente o que houve — vai direto pro gerente, agora.</div>'+
+    '<div class="tit2">O que foi?</div>'+
+    '<div class="segs assuntos">'+AVASS.map(chip).join('')+'</div>'+
+    '<textarea id="avc2" maxlength="2000" placeholder="O que aconteceu? (quanto mais detalhe, melhor a gente resolve)"></textarea>'+
+    '<div class="tit2">Seu nome <span class="mut">(opcional)</span></div>'+
+    '<input id="avn" maxlength="60" placeholder="como te chamar">'+
+    '<div class="tit2">WhatsApp <span class="mut">(opcional — é por onde a gente te responde)</span></div>'+
+    '<input id="avz" inputmode="tel" maxlength="16" placeholder="(79) 9 0000-0000">'+
+    '<button class="b" id="avlivre" onclick="avEnviarLivre()">Enviar pra gerência</button>'+
+    (MESA?'<button class="lnk" onclick="telaProblema()">É um problema com um prato ou bebida agora →</button>':'')+
+    '<button class="lnk" onclick="telaAvaliar()">Voltar</button>');
+  document.getElementById('avc2').value=AV.comentario||'';
+  document.getElementById('avn').value=AV.nome||'';
+  document.getElementById('avz').value=AV.zap||'';
+}
+function avAss(k){
+  var t=document.getElementById('avc2'); if(t)AV.comentario=t.value;
+  var n=document.getElementById('avn'); if(n)AV.nome=n.value;
+  var z=document.getElementById('avz'); if(z)AV.zap=z.value;
+  AV.assunto=(AV.assunto===k?null:k); avBaixa();
+}
+// Envio SEM CPF e SEM drink: serve pra nota alta (só o convite do Google) e
+// pra nota baixa (chamado na loja + retaguarda). Não mexe na conta da mesa,
+// então funciona até com a mesa já fechada.
+async function avEnviarLivre(){
+  var t=document.getElementById('avc2'); if(t)AV.comentario=t.value;
+  var n=document.getElementById('avn'); if(n)AV.nome=n.value;
+  var z=document.getElementById('avz'); if(z)AV.zap=z.value;
+  var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
+  if(AV.nota<=3&&!AV.assunto&&!String(AV.comentario||'').trim()){
+    alert('Toque no que houve, ou escreva pra gente.');return;
+  }
+  var bt=document.getElementById('avlivre')||document.getElementById('av1')||{};
+  bt.disabled=true; bt.textContent='Enviando…';
+  var r;
+  try{ r=await post('/api/mesa/avaliacao',{mesa:MESA?Number(MESA):null,nota:AV.nota,
+    assunto:AV.assunto,comentario:AV.comentario,nome:AV.nome,whatsapp:AV.zap}); }
+  catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
+  if(!r.ok){bt.disabled=false;bt.textContent='Enviar';alert(r.erro||'Não deu certo. Chame o garçom.');return}
+  var nota=AV.nota; AV=null;
+  var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
+  if(nota<=3){
+    app('<div class="ok"><div class="t">✓ Recebemos</div>'+
+      '<div class="mut" style="margin-top:8px">O gerente já foi avisado e vem falar com você. Obrigado por contar — é assim que a gente melhora.</div></div>'+
+      '<button class="b" onclick="inicio()">Voltar ao início</button>');
+    return;
+  }
+  app('<div class="festa"><div class="em">💛</div><h1>Obrigado pela avaliação!</h1>'+
+    '<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div></div>'+
+    ((r.google_url||r.trip_url)?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
+      '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
+      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
+    '<button class="b" onclick="inicio()">Voltar ao início</button>');
 }
 function avNota(n){
   AV.comentario=(document.getElementById('avc')||{}).value||AV.comentario;
@@ -23322,17 +23675,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
-    // Reservas de hoje no KDS: a cozinha/bar se prepara pra leva que vem
-    // (mesa grande às 20h = adiantar mise en place). Sem telefone — só o que
-    // a praça precisa. Vem do mesmo cache de 10s do painel do gerente.
-    if (p === '/api/kds/reservas') {
+    // RESERVAS DE HOJE PRA RECEPÇÃO (/reservas). Saiu do KDS — lá é só o que
+    // a praça produziu — e virou tela própria no ☰, do lado do QR das mesas.
+    // Quem recebe o cliente precisa achar a reserva pelo nome/telefone, ver a
+    // mesa e o pedido especial; por isso aqui vai TUDO (inclusive telefone),
+    // ao contrário do que ia pro KDS. Vem do mesmo cache de 10s do gerente.
+    if (p === '/api/reservas') {
       const n = await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
         hora: String(r.hora || '').slice(0, 5), nome: r.nome, pessoas: r.pessoas, area: r.area,
-        mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status,
+        mesa: r.mesa, mesa_juntada: r.mesa_juntada, status: r.status, telefone: r.telefone,
+        observacao: r.observacao, preferencias: r.preferencias, bebida: r.bebida,
+        bebida_qtd: r.bebida_qtd, valor: r.valor, canal: r.canal,
       }));
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), reservas }));
+      return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), erro: (n && n.erro) || null, hoje: (n && n.hoje) || null, reservas }));
     }
     if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiKds(Number(u.searchParams.get('area') || 0)))); }
     // ?area ausente = todas as praças (compatibilidade). Cuidado: Number('')
@@ -23378,9 +23735,11 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
+    if (req.method === 'POST' && p === '/api/mesa/avaliacao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoLivre(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
+    if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
     // uma vez só. Fica na LAN da loja, não na internet.
@@ -23534,6 +23893,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/produtos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutos(u.searchParams.get('q') || '', u.searchParams.get('so') || ''))); }
     if (req.method === 'POST' && p === '/api/produto/salvar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoSalvar(body))); }
     if (req.method === 'POST' && p === '/api/produto/foto') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoFoto(body))); }
+    if (p === '/api/fotos/catalogo') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosCatalogo())); }
+    if (req.method === 'POST' && p === '/api/fotos/importar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosImportar(body))); }
+    if (req.method === 'POST' && p === '/api/fotos/limpar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosLimpar(body))); }
     if (p === '/produtos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUTOS_HTML); }
     if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
     if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
@@ -23546,6 +23908,11 @@ const server = http.createServer(async (req, res) => {
 // Importa as fotos que o Consumer exporta (<PRODUTOS.CODIGO>.jpg numa pasta).
 //   node server.mjs --fotos C:\\fotos-produto
 // Roda, importa e sai — não sobe o servidor.
+// ⚠️ A PASTA TEM QUE SER DO CONSUMER DESTA CASA. O nome do arquivo é o
+// PRODUTOS.CODIGO, e cada casa numera o catálogo do seu jeito: rodar isto com a
+// pasta de outra casa importa tudo "com sucesso" e troca as fotos em silêncio
+// (Prainha Mar, set/2026). Pra copiar de outra casa existe /api/fotos/importar,
+// que casa pelo NOME. Por isso o import abaixo mostra o nome de cada produto.
 async function importarFotos(dir) {
   await initSchema();
   const arqs = readdirSync(dir).filter((f) => /^\d+\.(jpg|jpeg|png|webp)$/i.test(f));
@@ -23562,6 +23929,10 @@ async function importarFotos(dir) {
       VALUES (${cod}, ${mime}, ${b}, ${b.length}, now())
       ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
         tam=EXCLUDED.tam, atualizado=now()`;
+    // o nome sai no log: se vier "1361.jpg -> Fanta Lata Zero" e o arquivo for
+    // um licor, dá pra parar antes de contaminar o catálogo inteiro
+    const [pl] = await sql`SELECT nome FROM produto_local WHERE produto_codigo=${cod} LIMIT 1`;
+    if (ok < 15) console.log('[fotos] ' + f + ' -> ' + (pl?.nome || '(código não existe nesta casa!)'));
     ok++;
   }
   const t = (await sql`SELECT count(*) n, sum(tam) b FROM produto_foto`)[0];

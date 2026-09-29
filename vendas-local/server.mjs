@@ -551,6 +551,14 @@ async function initSchema() {
     nome text, whatsapp text, mesa integer, brinde_pdv integer, brinde_nome text,
     pedido_fb bigint, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid,
     UNIQUE (cpf, mes))`;
+  // AVALIAÇÃO SEM DRINK (tela "Avaliar" do QR da mesa): elogio ou reclamação,
+  // sem CPF e sem brinde. Nota baixa vira chamado de reclamação na hora E sobe
+  // pra retaguarda (/avaliacoes do Concilia) — a fila `nuvem_em` reenvia
+  // sozinha quando a internet volta.
+  await sql`CREATE TABLE IF NOT EXISTS avaliacao_livre (id bigserial PRIMARY KEY,
+    nota integer NOT NULL, assunto text, comentario text, nome text, whatsapp text,
+    mesa integer, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_avaliacao_livre_fila ON avaliacao_livre (nuvem_em, id)`;
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
     de_numero integer NOT NULL, para_numero integer NOT NULL, tipo text NOT NULL,
     itens_movidos integer DEFAULT 0, por text, pedido_de integer, pedido_para integer,
@@ -4087,6 +4095,81 @@ async function apiProdutoFoto(body) {
     ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
       tam=EXCLUDED.tam, atualizado=now()`;
   return { ok: true, tam: buf.length };
+}
+
+// ---- FOTO É POR CASA. O CÓDIGO NÃO ATRAVESSA. ----
+// `produto_foto` é chaveada pelo PRODUTOS.CODIGO do Consumer DESTA casa, e cada
+// casa numera o próprio catálogo. Copiar a pasta de fotos de uma casa pra outra
+// (o `--fotos`, que vai por número de arquivo) embaralha tudo em silêncio: foi
+// o que aconteceu na Prainha Mar — o código 1361 é Fanta Lata Zero lá e
+// Limoncello no Bar, então a Fanta passou a mostrar um licor. Eram 75 fotos,
+// praticamente todas trocadas, e ninguém percebe olhando o banco.
+// Pra trazer foto de outra casa use ISTO, que casa pelo NOME do produto.
+const chaveFoto = (nome) => semAcento(nome).replace(/[^a-z0-9]+/g, ' ').trim();
+/** O que ESTA casa tem de foto, pra outra casa poder puxar casando pelo nome. */
+async function apiFotosCatalogo() {
+  const rows = await sql`SELECT DISTINCT ON (p.produto_codigo) p.produto_codigo, p.nome
+    FROM produto_local p JOIN produto_foto f ON f.produto_codigo = p.produto_codigo
+    ORDER BY p.produto_codigo, p.nome`;
+  return { ok: true, loja: LOJA_NOME, fotos: rows.map((r) => ({ codigo: Number(r.produto_codigo), nome: r.nome })) };
+}
+/** Puxa as fotos de outra casa casando pelo NOME (nunca pelo código).
+ *  `aplicar` falso = só a prévia; `limpar` apaga as fotos de hoje antes (é o
+ *  caso de quem já foi contaminado por uma cópia por código). */
+async function apiFotosImportar(body) {
+  const origem = String(body.origem || '').trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^\s]+$/.test(origem)) return { ok: false, erro: 'endereço da outra casa inválido' };
+  let cat;
+  try {
+    const r = await fetch(origem + '/api/fotos/catalogo', { signal: AbortSignal.timeout(20000) });
+    cat = await r.json();
+  } catch (e) { return { ok: false, erro: 'não alcancei ' + origem + ' (' + e.message + ')' }; }
+  if (!cat || !cat.ok || !Array.isArray(cat.fotos)) return { ok: false, erro: 'a outra casa não respondeu o catálogo de fotos' };
+  // nome repetido nos dois lados é ambíguo — melhor não adivinhar do que errar
+  const porNome = new Map(), ambiguo = new Set();
+  for (const f of cat.fotos) {
+    const k = chaveFoto(f.nome);
+    if (!k) continue;
+    if (porNome.has(k)) ambiguo.add(k); else porNome.set(k, f);
+  }
+  const locais = await sql`SELECT DISTINCT ON (produto_codigo) produto_codigo, nome,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local ORDER BY produto_codigo, nome`;
+  const pares = [], semPar = [];
+  for (const l of locais) {
+    const k = chaveFoto(l.nome);
+    const o = !ambiguo.has(k) && porNome.get(k);
+    if (o) pares.push({ codigo: Number(l.produto_codigo), nome: l.nome, de_codigo: o.codigo, de_nome: o.nome, tem_foto: l.tem_foto });
+    else semPar.push({ codigo: Number(l.produto_codigo), nome: l.nome, tem_foto: l.tem_foto });
+  }
+  const resumo = { ok: true, loja_origem: cat.loja || origem, na_origem: cat.fotos.length,
+    casaram: pares.length, sem_par: semPar.length, ambiguos: ambiguo.size,
+    amostra: pares.slice(0, 40), sem_par_amostra: semPar.filter((x) => x.tem_foto).slice(0, 40) };
+  if (!body.aplicar) return { ...resumo, previa: true };
+  if (body.limpar) await sql`DELETE FROM produto_foto`;
+  let ok = 0, falhou = 0;
+  for (const par of pares) {
+    try {
+      const r = await fetch(origem + '/produto-foto/' + par.de_codigo, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) { falhou++; continue; }
+      const mime = String(r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length || buf.length > 3_000_000) { falhou++; continue; }
+      await sql`INSERT INTO produto_foto (produto_codigo, mime, bytes, tam, atualizado)
+          VALUES (${par.codigo}, ${mime}, ${buf}, ${buf.length}, now())
+        ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
+          tam=EXCLUDED.tam, atualizado=now()`;
+      ok++;
+    } catch { falhou++; }
+  }
+  return { ...resumo, previa: false, importadas: ok, falharam: falhou, limpou: !!body.limpar };
+}
+/** Apaga TODAS as fotos desta casa (quando vieram trocadas de outra casa). */
+async function apiFotosLimpar(body) {
+  if (String(body.confirmar || '') !== 'APAGAR') return { ok: false, erro: 'confirmação faltando' };
+  const [t] = await sql`SELECT count(*) n FROM produto_foto`;
+  await sql`DELETE FROM produto_foto`;
+  return { ok: true, apagadas: Number(t.n) };
 }
 
 /** As variantes de um produto — só as que dá pra vender aparecem em primeiro. */
@@ -14212,6 +14295,47 @@ async function apiMesaAvaliar(body) {
   try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
   return { ok: true, brinde: op.nome, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
 }
+// ============ AVALIAR SEM DRINK (reclamação / elogio do QR da mesa) ============
+// O drink é um PROGRAMA (um por CPF por mês); avaliar não pode depender dele.
+// Aqui não pede CPF, não lança nada na conta e funciona com a mesa já fechada
+// — que é justamente quando muita gente reclama. Nota baixa faz duas coisas:
+//   1) chamado de RECLAMAÇÃO na loja (pisca no KDS e no celular do gerente);
+//   2) avaliação na retaguarda (/avaliacoes), status 'novo', pra dar retorno.
+async function apiMesaAvaliacaoLivre(body) {
+  const nota = Number(body.nota);
+  if (!(Number.isInteger(nota) && nota >= 1 && nota <= 5)) return { ok: false, erro: 'Escolha de 1 a 5 estrelas.' };
+  const numero = body.mesa == null || body.mesa === '' ? null : Number(body.mesa);
+  if (numero != null && !(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
+  const assunto = ASSUNTOS[String(body.assunto || '')] ? String(body.assunto) : null;
+  const txt = (v, n) => { const t = String(v || '').trim(); return t ? t.slice(0, n) : null; };
+  const comentario = txt(body.comentario, 2000);
+  const [reg] = await sql`INSERT INTO avaliacao_livre (nota, assunto, comentario, nome, whatsapp, mesa)
+    VALUES (${nota}, ${assunto}, ${comentario}, ${txt(body.nome, 200)},
+            ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}) RETURNING id`;
+  // nota baixa = a equipe tem que saber AGORA, não quando alguém abrir o painel
+  if (nota <= 3) {
+    await apiChamadoCriar({ mesa: numero, tipo: 'reclamacao', origem: 'avaliacao-qr', nota,
+      assunto: assunto || 'outro',
+      texto: nota + '★' + (assunto ? ' — ' + ASSUNTOS[assunto] : '') + (comentario ? ' — ' + comentario : '') }).catch(() => {});
+  }
+  let nv = null;
+  try { nv = await Promise.race([livreParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
+  return { ok: true, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+}
+async function livreParaNuvem(id) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  const [a] = await sql`SELECT * FROM avaliacao_livre WHERE id=${id} AND nuvem_em IS NULL`;
+  if (!a) return null;
+  // o assunto vai junto do comentário: na retaguarda o que resolve é ler
+  const com = [a.assunto ? ASSUNTOS[a.assunto] : null, a.comentario].filter(Boolean).join(' — ') || null;
+  const j = await salaoNuvemPost({ tipo: 'avaliacao_nova', nota: a.nota, comentario: com,
+    nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa, criado_em: a.criado_em });
+  if (j && j.ok) {
+    await sql`UPDATE avaliacao_livre SET nuvem_em=now(), nuvem_id=${j.id || null} WHERE id=${id}`;
+    return j;
+  }
+  return null;
+}
 // cópia pra nuvem (/avaliacoes do Concilia). Falhou? a fila tenta de novo.
 async function brindeParaNuvem(id) {
   if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
@@ -14230,6 +14354,8 @@ async function loopBrindeNuvem() {
   const pend = await sql`SELECT id FROM avaliacao_brinde WHERE nuvem_em IS NULL AND (pedido_fb IS NOT NULL OR brinde_pdv IS NULL)
     ORDER BY id LIMIT 20`;
   for (const p of pend) await brindeParaNuvem(p.id).catch(() => {});
+  const livres = await sql`SELECT id FROM avaliacao_livre WHERE nuvem_em IS NULL ORDER BY id LIMIT 20`;
+  for (const p of livres) await livreParaNuvem(p.id).catch(() => {});
 }
 
 // ---- QR CODES das mesas (pra imprimir e colar) ----
@@ -16146,13 +16272,24 @@ input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9p
 .cb.herda{border-style:dashed}
 .vazio{padding:50px 20px;text-align:center;color:var(--mut)}
 .dica{background:#fff7e3;border:1px solid #f0d68f;color:#8a4b06;border-radius:11px;padding:10px 13px;font-size:13px;line-height:1.45;margin-bottom:14px}
+.mod{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-start;justify-content:center;padding:24px 14px;overflow:auto}
+.mod .bx{background:#fff;border-radius:16px;max-width:760px;width:100%;padding:20px 22px}
+.mod h2{margin:0 0 6px;font-size:19px}
+.mod .b{display:block;width:100%;margin-top:10px;background:var(--gold2);color:#fff;border:0;border-radius:11px;padding:12px;font:inherit;font-size:15px;font-weight:700;cursor:pointer}
+.mod .b.g{background:#5b5b66}.mod .b.r{background:var(--red)}
+.mod select,.mod input{width:100%;font:inherit;font-size:15px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-top:6px}
+.par{display:flex;gap:10px;align-items:center;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)}
+.par img{width:38px;height:38px;border-radius:7px;object-fit:cover;background:#eee;flex:none}
+.par b{flex:1}.par span{color:var(--mut)}
+.res{max-height:320px;overflow:auto;margin-top:12px}
 </style></head><body>
 <header><a class="back" href="/">◂ Produção</a><h1>Produtos <b>·</b> onde aparece</h1>
 <input type="search" id="q" placeholder="buscar produto…" oninput="buscar(this.value)">
 <select id="so" onchange="carrega()" style="font:inherit;padding:8px;border-radius:9px;border:1px solid var(--line)">
   <option value="">todos</option><option value="sem-foto">sem foto</option><option value="ajustados">já ajustados</option>
 </select>
-<span class="grow"></span><span id="cnt" class="back"></span></header>
+<span class="grow"></span><button class="back" onclick="painelFotos()">🖼 Fotos de outra casa</button>
+<span id="cnt" class="back"></span></header>
 <div class="wrap">
 <div class="dica"><b>Tracejado</b> = herdado do Consumer. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
 Clicando de novo volta ao herdado. Clique na foto pra trocar.</div>
@@ -16218,6 +16355,58 @@ document.getElementById('arq').addEventListener('change',async function(ev){
   };
   img.src=url;
 });
+// ---- FOTO DE OUTRA CASA (casa pelo NOME, nunca pelo código) ----
+// O código do produto é de cada casa. Copiar a pasta de fotos de uma pra outra
+// (o --fotos, que vai por número) trocou 75 fotos na Prainha Mar sem avisar
+// ninguém: a Fanta mostrava um licor. Aqui o par é feito pelo nome e a prévia
+// mostra o que vai virar o quê ANTES de gravar.
+var CASAS=[['https://bar.tailb22e0d.ts.net','01 Prainha Bar'],
+  ['https://tabuara.tailb22e0d.ts.net','02 Tabuará'],
+  ['https://mar.tailb22e0d.ts.net','03 Prainha Mar']];
+var PREVIA=null;
+function painelFotos(){
+  var op=CASAS.map(function(c){return '<option value="'+c[0]+'">'+c[1]+'</option>'}).join('');
+  var d=document.createElement('div');d.className='mod';d.id='modf';
+  d.innerHTML='<div class="bx"><h2>Trazer fotos de outra casa</h2>'+
+    '<div class="dica" style="margin:8px 0 0">O par é feito pelo <b>NOME</b> do produto. Nunca pelo código — o código é de cada casa, e foi assim que as fotos da Prainha Mar saíram trocadas.</div>'+
+    '<div style="margin-top:12px;font-size:13px;color:var(--mut)">De qual casa?</div>'+
+    '<select id="fcasa">'+op+'</select>'+
+    '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px">'+
+      '<input type="checkbox" id="flimpar" style="width:auto;margin:0"> apagar as fotos que estão aqui hoje antes de trazer</label>'+
+    '<button class="b" onclick="fotosPrevia()">Ver a prévia</button>'+
+    '<div id="fres"></div>'+
+    '<button class="b g" onclick="fechaFotos()">Fechar</button></div>';
+  document.body.appendChild(d);
+}
+function fechaFotos(){var d=document.getElementById('modf');if(d)d.remove();PREVIA=null;carrega()}
+async function fotosPrevia(){
+  var org=document.getElementById('fcasa').value, r=document.getElementById('fres');
+  r.innerHTML='<div style="margin-top:12px;color:var(--mut)">falando com a outra casa…</div>';
+  var d;try{d=await (await fetch('/api/fotos/importar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({origem:org,aplicar:false})})).json()}catch(e){d={ok:false,erro:'sem resposta'}}
+  if(!d.ok){r.innerHTML='<div class="dica" style="background:#fdeaea;border-color:#f1b0a8;color:#a3271b;margin-top:12px">'+esc(d.erro)+'</div>';return}
+  PREVIA=d;
+  var linhas=(d.amostra||[]).map(function(x){
+    return '<div class="par"><img src="'+org+'/produto-foto/'+x.de_codigo+'" loading="lazy" alt="">'+
+      '<b>'+esc(x.nome)+'</b><span>← '+esc(x.de_nome)+'</span></div>';
+  }).join('');
+  r.innerHTML='<div class="dica" style="margin-top:12px">'+d.casaram+' produto(s) casaram pelo nome com <b>'+esc(d.loja_origem)+'</b> ('+d.na_origem+' fotos lá). '+
+    d.sem_par+' sem par'+(d.ambiguos?', '+d.ambiguos+' nome(s) repetido(s) ignorado(s)':'')+'.</div>'+
+    '<div class="res">'+linhas+'</div>'+
+    (d.casaram?'<button class="b" onclick="fotosAplicar()">Trazer as '+d.casaram+' fotos agora</button>':'');
+}
+async function fotosAplicar(){
+  var org=document.getElementById('fcasa').value, lim=document.getElementById('flimpar').checked;
+  if(lim&&!confirm('Isso APAGA todas as fotos desta casa e traz as de '+org+'. Confirma?'))return;
+  var r=document.getElementById('fres');
+  r.innerHTML='<div style="margin-top:12px;color:var(--mut)">trazendo as fotos… (pode levar um minuto)</div>';
+  var d;try{d=await (await fetch('/api/fotos/importar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({origem:org,aplicar:true,limpar:lim})})).json()}catch(e){d={ok:false,erro:'sem resposta'}}
+  if(!d.ok){r.innerHTML='<div class="dica" style="background:#fdeaea;border-color:#f1b0a8;color:#a3271b;margin-top:12px">'+esc(d.erro)+'</div>';return}
+  r.innerHTML='<div class="dica" style="background:#eafaf0;border-color:#bfe9cf;color:#0f8a3e;margin-top:12px">'+
+    '✓ '+d.importadas+' foto(s) trazida(s)'+(d.falharam?', '+d.falharam+' falharam':'')+(d.limpou?' · as antigas foram apagadas':'')+'.</div>';
+  carrega();
+}
 carrega();
 </script></body></html>`;
 
@@ -17018,6 +17207,7 @@ body{padding-bottom:120px}
 .seg.on{border-color:var(--gold2);background:rgba(224,101,26,.09);color:var(--gold2);font-weight:700}
 /* seletor do que pagar (mesa toda x cada comanda): cada opção mostra o valor,
    pra pessoa escolher sem ter que fazer conta de cabeça */
+.segs.assuntos .seg{flex:1 1 46%;min-width:132px;text-align:left;padding:12px;font-size:14.5px}
 .segs.alvos{gap:8px;margin:10px 0 2px}
 .segs.alvos .seg{flex:1 1 46%;min-width:130px;text-align:left;padding:11px 12px;line-height:1.2;color:var(--ink)}
 .segs.alvos .seg small{display:block;color:var(--mut);font-size:12px;font-weight:400;margin-top:3px}
@@ -17245,9 +17435,10 @@ async function inicio(){
       '<button class="tile gar" onclick="chamar()"><i>🔔</i>Chamar garçom<small>ele vem na hora</small></button>'+
       '<button class="tile pix" onclick="telaPix()"><i>💳</i>Pagar a conta<small>Pix ou cartão</small></button>'+
       (EU&&EU.identificado&&EU.itens&&EU.itens.length?'<button class="tile" onclick="telaHistorico()"><i>⭐</i>O de sempre<small>o que você mais pede</small></button>':'')+
+      '<button class="tile" onclick="telaAvaliar()"><i>⭐</i>Avaliar<small>elogio, reclamação ou sugestão</small></button>'+
       (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
     '</div>'+
-    '<button class="lnk" onclick="telaProblema()">Relatar um problema</button>';
+    '<button class="lnk" onclick="telaProblema()">Relatar um problema agora</button>';
   app(h);renderCarrinho();
 }
 function nomesBrinde(){
@@ -17266,18 +17457,93 @@ function nomeComum(l){ if(!l.length)return ''; if(l.length===1)return l[0].nome;
 var AV=null;
 var NOTAS=['','Não gostei 😕','Podia ser melhor','Foi ok 🙂','Gostei muito! 😄','Perfeito! 🤩'];
 function passos(k){var h='<div class="passos">';for(var i=1;i<=3;i++)h+='<i'+(i<=k?' class="on"':'')+'></i>';return h+'</div>'}
+// O DRINK É UM PROGRAMA, AVALIAR NÃO DEPENDE DELE. Enquanto a tela das
+// estrelas só existia junto do brinde, quem queria reclamar não tinha por onde
+// — e reclamação é o que mais importa ouvir. Agora: nota 4-5 vira convite pro
+// Google/TripAdvisor; nota 1-3 vai pro gerente na hora e pra retaguarda.
+function temDrink(){ return !!(MESA&&BRINDE&&BRINDE.ativo&&!jaAvaliouAqui()) }
 function telaAvaliar(){
-  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(!jaAvaliouAqui()&&EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null};
-  var h=passos(1)+'<h1>Como está sendo sua experiência?</h1>'+
-    '<div class="mut">Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹</div>'+
+  if(!AV)AV={nota:0,comentario:'',cpf:'',nome:(!jaAvaliouAqui()&&EU&&EU.identificado&&EU.nome)||'',zap:'',tipo:null,pdv:null,assunto:null};
+  var h=(temDrink()?passos(1):'')+'<h1>Como está sendo sua experiência?</h1>'+
+    '<div class="mut">Sua opinião vai direto pra gerência.'+(temDrink()?' No fim, você escolhe seu drink 🍹':'')+'</div>'+
     '<div class="estrelas">';
   for(var i=1;i<=5;i++)h+='<button'+(i<=AV.nota?' class="on"':'')+' onclick="avNota('+i+')">⭐</button>';
   h+='</div><div class="nlab" id="nlab">'+NOTAS[AV.nota]+'</div>'+
     '<textarea id="avc" maxlength="2000" placeholder="Quer contar mais? Comida, atendimento, ambiente… (opcional)"></textarea>'+
-    '<button class="b" id="av1" onclick="avPasso2()"'+(AV.nota?'':' style="opacity:.45"')+'>Continuar</button>'+
+    '<button class="b" id="av1" onclick="avSeguir()"'+(AV.nota?'':' style="opacity:.45"')+'>Continuar</button>'+
     '<button class="lnk" onclick="inicio()">Voltar</button>';
   app(h);
   document.getElementById('avc').value=AV.comentario;
+}
+// quem dá nota baixa não pode cair numa tela de CPF: primeiro a gente ouve
+function avSeguir(){
+  var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
+  if(!AV.nota){alert('Toque nas estrelas pra dar sua nota.');return}
+  if(AV.nota<=3)return avBaixa();
+  if(temDrink())return avPasso2();
+  return avEnviarLivre();
+}
+// NOTA 1-3: o que houve, e como a gente te responde. Nada obrigatório —
+// exigir dado de quem está insatisfeito é o jeito mais rápido de perder a
+// reclamação (e ela vira nota no Google).
+var AVASS=[['demora','⏱ Demorou'],['errado','🍽 Veio errado'],['frio','🌡 Veio frio'],
+  ['faltou','➖ Faltou algo'],['salao','🧹 Mesa / louça / limpeza'],['outro','💬 Outro']];
+function avBaixa(){
+  var chip=function(a){return '<button class="seg'+(AV.assunto===a[0]?' on':'')+'" onclick="avAss(\\''+a[0]+'\\')">'+a[1]+'</button>'};
+  app('<h1>Poxa, sentimos muito 😔</h1>'+
+    '<div class="mut">Conta pra gente o que houve — vai direto pro gerente, agora.</div>'+
+    '<div class="tit2">O que foi?</div>'+
+    '<div class="segs assuntos">'+AVASS.map(chip).join('')+'</div>'+
+    '<textarea id="avc2" maxlength="2000" placeholder="O que aconteceu? (quanto mais detalhe, melhor a gente resolve)"></textarea>'+
+    '<div class="tit2">Seu nome <span class="mut">(opcional)</span></div>'+
+    '<input id="avn" maxlength="60" placeholder="como te chamar">'+
+    '<div class="tit2">WhatsApp <span class="mut">(opcional — é por onde a gente te responde)</span></div>'+
+    '<input id="avz" inputmode="tel" maxlength="16" placeholder="(79) 9 0000-0000">'+
+    '<button class="b" id="avlivre" onclick="avEnviarLivre()">Enviar pra gerência</button>'+
+    (MESA?'<button class="lnk" onclick="telaProblema()">É um problema com um prato ou bebida agora →</button>':'')+
+    '<button class="lnk" onclick="telaAvaliar()">Voltar</button>');
+  document.getElementById('avc2').value=AV.comentario||'';
+  document.getElementById('avn').value=AV.nome||'';
+  document.getElementById('avz').value=AV.zap||'';
+}
+function avAss(k){
+  var t=document.getElementById('avc2'); if(t)AV.comentario=t.value;
+  var n=document.getElementById('avn'); if(n)AV.nome=n.value;
+  var z=document.getElementById('avz'); if(z)AV.zap=z.value;
+  AV.assunto=(AV.assunto===k?null:k); avBaixa();
+}
+// Envio SEM CPF e SEM drink: serve pra nota alta (só o convite do Google) e
+// pra nota baixa (chamado na loja + retaguarda). Não mexe na conta da mesa,
+// então funciona até com a mesa já fechada.
+async function avEnviarLivre(){
+  var t=document.getElementById('avc2'); if(t)AV.comentario=t.value;
+  var n=document.getElementById('avn'); if(n)AV.nome=n.value;
+  var z=document.getElementById('avz'); if(z)AV.zap=z.value;
+  var c=document.getElementById('avc'); if(c)AV.comentario=c.value;
+  if(AV.nota<=3&&!AV.assunto&&!String(AV.comentario||'').trim()){
+    alert('Toque no que houve, ou escreva pra gente.');return;
+  }
+  var bt=document.getElementById('avlivre')||document.getElementById('av1')||{};
+  bt.disabled=true; bt.textContent='Enviando…';
+  var r;
+  try{ r=await post('/api/mesa/avaliacao',{mesa:MESA?Number(MESA):null,nota:AV.nota,
+    assunto:AV.assunto,comentario:AV.comentario,nome:AV.nome,whatsapp:AV.zap}); }
+  catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
+  if(!r.ok){bt.disabled=false;bt.textContent='Enviar';alert(r.erro||'Não deu certo. Chame o garçom.');return}
+  var nota=AV.nota; AV=null;
+  var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
+  if(nota<=3){
+    app('<div class="ok"><div class="t">✓ Recebemos</div>'+
+      '<div class="mut" style="margin-top:8px">O gerente já foi avisado e vem falar com você. Obrigado por contar — é assim que a gente melhora.</div></div>'+
+      '<button class="b" onclick="inicio()">Voltar ao início</button>');
+    return;
+  }
+  app('<div class="festa"><div class="em">💛</div><h1>Obrigado pela avaliação!</h1>'+
+    '<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div></div>'+
+    ((r.google_url||r.trip_url)?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
+      '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
+      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
+    '<button class="b" onclick="inicio()">Voltar ao início</button>');
 }
 function avNota(n){
   AV.comentario=(document.getElementById('avc')||{}).value||AV.comentario;
@@ -23469,6 +23735,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
+    if (req.method === 'POST' && p === '/api/mesa/avaliacao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoLivre(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
@@ -23626,6 +23893,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/produtos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutos(u.searchParams.get('q') || '', u.searchParams.get('so') || ''))); }
     if (req.method === 'POST' && p === '/api/produto/salvar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoSalvar(body))); }
     if (req.method === 'POST' && p === '/api/produto/foto') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoFoto(body))); }
+    if (p === '/api/fotos/catalogo') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosCatalogo())); }
+    if (req.method === 'POST' && p === '/api/fotos/importar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosImportar(body))); }
+    if (req.method === 'POST' && p === '/api/fotos/limpar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosLimpar(body))); }
     if (p === '/produtos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUTOS_HTML); }
     if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
     if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
@@ -23638,6 +23908,11 @@ const server = http.createServer(async (req, res) => {
 // Importa as fotos que o Consumer exporta (<PRODUTOS.CODIGO>.jpg numa pasta).
 //   node server.mjs --fotos C:\\fotos-produto
 // Roda, importa e sai — não sobe o servidor.
+// ⚠️ A PASTA TEM QUE SER DO CONSUMER DESTA CASA. O nome do arquivo é o
+// PRODUTOS.CODIGO, e cada casa numera o catálogo do seu jeito: rodar isto com a
+// pasta de outra casa importa tudo "com sucesso" e troca as fotos em silêncio
+// (Prainha Mar, set/2026). Pra copiar de outra casa existe /api/fotos/importar,
+// que casa pelo NOME. Por isso o import abaixo mostra o nome de cada produto.
 async function importarFotos(dir) {
   await initSchema();
   const arqs = readdirSync(dir).filter((f) => /^\d+\.(jpg|jpeg|png|webp)$/i.test(f));
@@ -23654,6 +23929,10 @@ async function importarFotos(dir) {
       VALUES (${cod}, ${mime}, ${b}, ${b.length}, now())
       ON CONFLICT (produto_codigo) DO UPDATE SET mime=EXCLUDED.mime, bytes=EXCLUDED.bytes,
         tam=EXCLUDED.tam, atualizado=now()`;
+    // o nome sai no log: se vier "1361.jpg -> Fanta Lata Zero" e o arquivo for
+    // um licor, dá pra parar antes de contaminar o catálogo inteiro
+    const [pl] = await sql`SELECT nome FROM produto_local WHERE produto_codigo=${cod} LIMIT 1`;
+    if (ok < 15) console.log('[fotos] ' + f + ' -> ' + (pl?.nome || '(código não existe nesta casa!)'));
     ok++;
   }
   const t = (await sql`SELECT count(*) n, sum(tam) b FROM produto_foto`)[0];
