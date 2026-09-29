@@ -19,7 +19,14 @@ interface UploadResposta {
   matches: MatchResult[];
 }
 
-export function UploadEspelho({ folhaId }: { folhaId: string }) {
+export function UploadEspelho({
+  folhaId,
+  pontoProprioDesde,
+}: {
+  folhaId: string;
+  /** Semana que cruza a virada: dias a partir dessa data vêm do ponto facial. */
+  pontoProprioDesde?: string | null;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [file, setFile] = useState<File | null>(null);
@@ -55,6 +62,12 @@ export function UploadEspelho({ folhaId }: { folhaId: string }) {
       <h2 className="mb-3 text-base font-semibold text-slate-900">
         📥 Espelho de ponto (XLSX da Stelanto)
       </h2>
+      {pontoProprioDesde && (
+        <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+          Dias a partir de {pontoProprioDesde.split('-').reverse().join('/')} vêm do ponto facial — o
+          espelho só entra nos dias anteriores.
+        </p>
+      )}
 
       <div className="flex items-center gap-3">
         <input

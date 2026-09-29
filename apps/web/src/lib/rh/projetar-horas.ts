@@ -11,6 +11,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import { calcularDia, type Batida } from './calcular-ponto';
 import { semanaContemDia } from '@/lib/folha/semana';
+import { diaDoPontoProprio } from './ponto-vigencia';
 
 export interface ResultadoProjecao {
   diasCalculados: number;
@@ -67,6 +68,10 @@ export async function projetarPontoEmFolhaHoras(
         target: [schema.pontoDia.filialId, schema.pontoDia.funcionarioId, schema.pontoDia.dia],
         set: { totalMin: calc.totalMin, status: calc.status, pares: calc.pares, calculadoEm: new Date() },
       });
+
+    // Antes da virada a folha usa o espelho da Stelanto — o ponto_dia fica
+    // calculado (tela de ponto), mas não entra em folha_horas.
+    if (!diaDoPontoProprio(dia)) continue;
 
     const fornecedorId = await resolverFornecedor(filialId, funcionarioId);
     if (!fornecedorId) {

@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { fuzzyMatchPessoa, parseEspelho } from '@/lib/folha/parse-espelho';
+import { diaDoPontoProprio } from '@/lib/rh/ponto-vigencia';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient();
@@ -47,7 +48,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!file) return new NextResponse('Arquivo faltando', { status: 400 });
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const horasPorPessoa = parseEspelho(buf, folha.dataInicio);
+  // A partir da virada (01/10/2026) quem manda é o ponto facial: dias dessa
+  // data em diante que vierem no XLSX são descartados.
+  const horasPorPessoa = parseEspelho(buf, folha.dataInicio).map((h) => ({
+    ...h,
+    horasPorDia: Object.fromEntries(
+      Object.entries(h.horasPorDia).filter(([dia]) => !diaDoPontoProprio(dia)),
+    ),
+  }));
 
   // Pessoas vinculadas pra fazer match
   const pessoas = await db
