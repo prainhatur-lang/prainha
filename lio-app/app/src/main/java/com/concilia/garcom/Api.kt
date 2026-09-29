@@ -177,11 +177,13 @@ object Api {
     data class FilialNuvem(val id: String, val nome: String, val url: String)
 
     /** Filiais (com túnel) da empresa — GET <Concilia>/api/app/filiais?empresa=<codigo>.
-     *  É o que substitui digitar a URL do túnel na mão. Lança em erro de rede/código. */
+     *  É o que substitui digitar a URL do túnel na mão. Lança em erro de rede/código.
+     *  Vai no CONCILIA_BASE (nuvem), nunca no API_BASE: este é o servidor da loja
+     *  (IP da LAN), e de outra rede a busca só dava timeout. */
     fun filiaisDaEmpresa(codigo: String): Pair<String, List<FilialNuvem>> {
         val c = codigo.trim().lowercase()
         // http() direto (não getJson): em 404/400 o corpo traz o motivo em português.
-        val (code, resp) = http("GET", BuildConfig.API_BASE.trimEnd('/') + "/api/app/filiais?empresa=" + URLEncoder.encode(c, "UTF-8"))
+        val (code, resp) = http("GET", BuildConfig.CONCILIA_BASE.trimEnd('/') + "/api/app/filiais?empresa=" + URLEncoder.encode(c, "UTF-8"))
         val j = try { JSONObject(resp) } catch (_: Exception) { JSONObject() }
         if (code !in 200..299 || !j.optBoolean("ok")) throw IOException(j.optString("erro", "Concilia respondeu $code"))
         val arr = j.optJSONArray("filiais")

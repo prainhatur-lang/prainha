@@ -20,6 +20,11 @@ fun conf(name: String, default: String = ""): String =
         ?: default
 
 val apiBase = conf("API_BASE", "https://app.prainhabar.com")
+// Base do CONCILIA na nuvem — usada SÓ pra buscar as filiais pelo código da
+// empresa (/api/app/filiais). Separada do API_BASE de propósito: o API_BASE é
+// o servidor da LOJA (IP da LAN nos builds de teste), e com ele a busca do
+// código morria tentando o IP do Bar de dentro da rede da Mar.
+val conciliaBase = conf("CONCILIA_BASE", "https://app.prainhabar.com")
 val cieloClientId = conf("CIELO_CLIENT_ID")
 val cieloAccessToken = conf("CIELO_ACCESS_TOKEN")
 
@@ -129,9 +134,13 @@ android {
         // cada uma; escolhe a filial e pronto (nunca mais digita a URL do Funnel).
         // O híbrido local×Funnel continua igual. Serve pra revenda (cada empresa
         // tem o seu código no mesmo Concilia). "Outro servidor…" segue como opção.
-        versionCode = 47
-        versionName = "1.10.23"
+        // 1.10.24: a busca pelo CÓDIGO DA EMPRESA fala com o Concilia na nuvem
+        // (CONCILIA_BASE), não com o API_BASE — que aponta pro IP da loja e
+        // fazia o "Buscar" morrer em timeout no 10.0.0.252 fora da rede do Bar.
+        versionCode = 48
+        versionName = "1.10.24"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
+        buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
 
     // Um build por ADQUIRENTE (= por máquina). `./gradlew assembleCieloRelease`
