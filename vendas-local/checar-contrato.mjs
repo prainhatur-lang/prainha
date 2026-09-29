@@ -6,7 +6,7 @@
 //  escritas em CONTRATO.md. Se alguma quebrou, ele diz qual e por quê.
 //
 //    node checar-contrato.mjs                      (usa http://localhost:8790)
-//    node checar-contrato.mjs http://192.168.10.60:8790
+//    node checar-contrato.mjs http://192.168.0.100:8790
 //
 //  Sai com código 1 se qualquer promessa falhou — dá pra prender num script
 //  de deploy: se não passar, não sobe.

@@ -44,7 +44,7 @@ object Session {
     // que mostra o nome que o próprio servidor reporta.
     val SERVIDORES = listOf(
         Pair("Prainha Bar (10.0.0.252)", "http://10.0.0.252:8790"),
-        Pair("Tabuará (192.168.10.60)", "http://192.168.10.60:8790"),
+        Pair("Tabuará (192.168.0.100)", "http://192.168.0.100:8790"),
         Pair("Prainha Mar (192.168.4.100)", "http://192.168.4.100:8790"),
     )
 
