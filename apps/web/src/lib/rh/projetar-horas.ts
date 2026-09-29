@@ -71,7 +71,7 @@ export async function projetarPontoEmFolhaHoras(
 
     // Antes da virada a folha usa o espelho da Stelanto — o ponto_dia fica
     // calculado (tela de ponto), mas não entra em folha_horas.
-    if (!diaDoPontoProprio(dia)) continue;
+    if (!diaDoPontoProprio(filialId, dia)) continue;
 
     const fornecedorId = await resolverFornecedor(filialId, funcionarioId);
     if (!fornecedorId) {

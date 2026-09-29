@@ -48,12 +48,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!file) return new NextResponse('Arquivo faltando', { status: 400 });
 
   const buf = Buffer.from(await file.arrayBuffer());
-  // A partir da virada (01/10/2026) quem manda é o ponto facial: dias dessa
+  // A partir da virada da casa (lib/rh/ponto-vigencia) quem manda é o ponto facial: dias dessa
   // data em diante que vierem no XLSX são descartados.
   const horasPorPessoa = parseEspelho(buf, folha.dataInicio).map((h) => ({
     ...h,
     horasPorDia: Object.fromEntries(
-      Object.entries(h.horasPorDia).filter(([dia]) => !diaDoPontoProprio(dia)),
+      Object.entries(h.horasPorDia).filter(([dia]) => !diaDoPontoProprio(folha.filialId, dia)),
     ),
   }));
 

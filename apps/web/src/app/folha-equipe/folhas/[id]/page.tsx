@@ -10,7 +10,7 @@ import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
 import { RecalcularPontoButton } from './recalcular-ponto-button';
-import { PONTO_PROPRIO_DESDE, diaDoPontoProprio } from '@/lib/rh/ponto-vigencia';
+import { diaDoPontoProprio, pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { CalculoFechar } from './calculo-fechar';
 import { PerdasManager } from './perdas-manager';
 
@@ -374,14 +374,14 @@ export default async function FolhaDetalhePage(props: {
         {/* Upload do espelho de ponto */}
         {folha.status === 'aberta' && (
           <div className="mb-6 space-y-3">
-            {/* Espelho só até 30/09; ponto facial de 01/10 em diante. */}
-            {!diaDoPontoProprio(folha.dataInicio) && (
+            {/* Espelho só antes da virada da casa; ponto facial dali em diante. */}
+            {!diaDoPontoProprio(folha.filialId, folha.dataInicio) && (
               <UploadEspelho
                 folhaId={folha.id}
-                pontoProprioDesde={diaDoPontoProprio(folha.dataFim) ? PONTO_PROPRIO_DESDE : null}
+                pontoProprioDesde={diaDoPontoProprio(folha.filialId, folha.dataFim) ? pontoProprioDesde(folha.filialId) : null}
               />
             )}
-            {diaDoPontoProprio(folha.dataFim) && <RecalcularPontoButton folhaId={folha.id} />}
+            {diaDoPontoProprio(folha.filialId, folha.dataFim) && <RecalcularPontoButton folhaId={folha.id} />}
           </div>
         )}
 
