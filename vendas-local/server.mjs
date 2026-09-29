@@ -15325,6 +15325,8 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .jt button{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:13px;font-weight:600}
 .jt button.on{border-color:var(--gold2);background:#fff4ea;color:#9a4508}
 .jt button.mais{border-style:dashed;color:var(--mut);font-weight:500}
+.btns .sv{background:#15803d}
+.jt .naosalvo{color:#b45309;font-weight:700}
 </style></head><body>
 <div class="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
 <button class="seg on" id="t_res" onclick="aba('res')">📅 Reservas</button>
@@ -15465,6 +15467,32 @@ function juntaHtml(x){
 function montaJunta(id){
   var el=document.getElementById('rj'+id),x=achaRes(id);
   if(el&&x)el.innerHTML=juntaHtml(x);
+  pintaSalvar(id);
+}
+// Escolher no seletor NÃO grava nada — quem grava é o botão. Ele só aparece
+// quando a mesa (ou a junção) está diferente do que já está salvo, pra não
+// virar mais um botão no meio dos outros. Enquanto tiver mudança pendente o
+// repaint de 30s também não passa por cima da escolha.
+function mudouMesa(x){
+  if(!x)return false;
+  var s=document.getElementById('rm'+x.id);
+  if(s&&String(s.value).trim()!==String(x.mesa||'').trim())return true;
+  if(JUNT[x.id]===undefined)return false;
+  var a=JUNT[x.id].slice().sort().join(','),b=listaMesas(x.mesa_juntada).slice().sort().join(',');
+  return a!==b;
+}
+function temMudanca(){
+  for(var i=0;i<R.length;i++)if(mudouMesa(R[i]))return true;
+  return false;
+}
+function pintaSalvar(id){
+  var b=document.getElementById('rsv'+id),x=achaRes(id);
+  if(!b||!x)return;
+  var m=mudouMesa(x);
+  if(x.status!=='sentada')b.hidden=!m;
+  var el=document.getElementById('rj'+id);
+  if(m&&el&&el.innerHTML.indexOf('naosalvo')<0)
+    el.innerHTML+=' <span class="naosalvo">&#9679; ainda não salvo</span>';
 }
 // A recepção ADMINISTRA a reserva daqui. Na hora que o cliente chega é comum a
 // mesa mudar — quem sentar com a mesa trocada manda as duas coisas de uma vez.
@@ -15475,10 +15503,11 @@ function botoesRes(x){
     return '<div class="btns"><button class="seg" data-r="'+x.id+'" data-a="confirmar">&#8617; desfazer (ele chegou)</button></div>';
   var b='<div class="btns">'+selMesa(x);
   if(x.status==='sentada')
-    b+='<button class="seg" data-r="'+x.id+'" data-a="mesa">Trocar mesa</button>'+
+    b+='<button class="sv" id="rsv'+x.id+'" data-r="'+x.id+'" data-a="mesa">Trocar mesa</button>'+
        '<button class="seg" data-r="'+x.id+'" data-a="confirmar">&#8617; desfazer</button>';
   else
-    b+='<button data-r="'+x.id+'" data-a="sentar">&#10003; Sentou</button>'+
+    b+='<button class="sv" id="rsv'+x.id+'" data-r="'+x.id+'" data-a="mesa" hidden>&#10003; Salvar mesa</button>'+
+       '<button data-r="'+x.id+'" data-a="sentar">&#10003; Sentou</button>'+
        (x.status==='pendente'?'<button class="seg" data-r="'+x.id+'" data-a="confirmar">Confirmar</button>':'')+
        '<button class="seg" data-r="'+x.id+'" data-a="no_show">&#10005; Não veio</button>'+
        '<input class="mn hr" id="rh'+x.id+'" type="time" value="'+esc(x.hora||'')+'">'+
@@ -15506,7 +15535,10 @@ function digitando(){
   var e=document.activeElement;
   if(e&&e.classList&&e.classList.contains('mn'))return true;
   if(e&&e.closest&&e.closest('.jt'))return true;
-  return Date.now()-MEXEU<20000;
+  if(Date.now()-MEXEU<20000)return true;
+  // mesa escolhida e não salva: segura por até 5 min (depois manda a verdade
+  // da nuvem, senão um cartão esquecido congelava a lista inteira)
+  return Date.now()-MEXEU<300000&&temMudanca();
 }
 function mins(t){ if(!t)return 0; var d=new Date(t); return Math.max(0,Math.round((Date.now()-d.getTime())/60000)) }
 function naFila(x){ return x.status==='aguardando'||x.status==='chamado' }
@@ -15673,6 +15705,7 @@ async function acaoReserva(b,id,a){
   b.disabled=true;
   var r=await post('/api/reservas/acao',corpo);
   if(!r.ok){alert(r.erro||'não deu pra registrar');b.disabled=false;return}
+  delete JUNT[id];delete ABRE[id];MEXEU=0; // gravou: volta a mandar a nuvem
   carregarRes();
 }
 // trocar a mesa no select zera a junção: as vizinhas da mesa antiga não são
@@ -15685,10 +15718,13 @@ document.getElementById('app').addEventListener('change',function(ev){
   if(sel.classList.contains('mn'))MEXEU=Date.now();
   if(!sel.getAttribute||!sel.getAttribute('data-sel'))return;
   var id=sel.getAttribute('data-sel');
-  JUNT[id]=[];montaJunta(id);
+  JUNT[id]=[];montaJunta(id);pintaSalvar(id);
 });
 document.getElementById('app').addEventListener('input',function(ev){
-  if(ev.target&&ev.target.classList&&ev.target.classList.contains('mn'))MEXEU=Date.now();
+  var t=ev.target;
+  if(!t||!t.classList||!t.classList.contains('mn'))return;
+  MEXEU=Date.now();
+  if(t.id&&t.id.indexOf('rm')===0)pintaSalvar(t.id.slice(2));
 });
 document.getElementById('app').addEventListener('click',async function(ev){
   var j=ev.target.closest&&ev.target.closest('button[data-j],button[data-t]');
