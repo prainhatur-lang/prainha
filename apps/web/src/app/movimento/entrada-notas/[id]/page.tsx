@@ -304,6 +304,14 @@ export default async function NotaDetalhePage(props: {
               )}
             </div>
             <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>
+            {algumLancado && (
+              <Link
+                href={`/movimento/transferencias/nova?notaId=${id}`}
+                className="mt-2 inline-block rounded-md border border-sky-300 bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-800 hover:bg-sky-100"
+              >
+                ↔ Transferir pra outra casa
+              </Link>
+            )}
           </div>
           <BotoesCabecalho
             notaId={id}

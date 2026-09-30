@@ -30,6 +30,8 @@ const TIPO_LABEL: Record<string, { label: string; cls: string; ehEntrada: boolea
   SAIDA_DEVOLUCAO: { label: 'Devol. saída', cls: 'bg-rose-50 text-rose-600', ehEntrada: false },
   SAIDA_AJUSTE: { label: 'Ajuste −', cls: 'bg-violet-50 text-violet-700', ehEntrada: false },
   PERDA: { label: 'Perda', cls: 'bg-rose-200 text-rose-900', ehEntrada: false },
+  ENTRADA_TRANSFERENCIA: { label: 'Transf. recebida', cls: 'bg-teal-100 text-teal-800', ehEntrada: true },
+  SAIDA_TRANSFERENCIA: { label: 'Transf. enviada', cls: 'bg-orange-100 text-orange-800', ehEntrada: false },
 };
 
 export function AbaSaldo({

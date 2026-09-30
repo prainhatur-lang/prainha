@@ -191,6 +191,11 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/movimento/entrada-notas',
             perm: 'nota_compra.read',
           },
+          {
+            label: 'Transferências entre casas',
+            href: '/movimento/transferencias',
+            perm: 'nota_compra.read',
+          },
         ],
       },
       {
