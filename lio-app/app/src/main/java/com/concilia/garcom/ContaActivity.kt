@@ -892,7 +892,6 @@ class ContaActivity : AppCompatActivity() {
         var dlg: AlertDialog? = null
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
-        var valorDig: Double? = null
 
         val valorTxt = TextView(this)
         valorTxt.textSize = 34f
@@ -934,7 +933,7 @@ class ContaActivity : AppCompatActivity() {
             val svc = Math.round(itens * gorj) / 100.0
             // canônico do Consumer: itens + serviço − desconto + acréscimo − pago
             val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
-            val cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
+            val cobrar = Math.round(resta / partes * 100) / 100.0
             return Triple(svc, resta, cobrar)
         }
         fun pinta() {
@@ -943,7 +942,6 @@ class ContaActivity : AppCompatActivity() {
             // o valor cobrado vai escrito NO BOTÃO — não há como confirmar sem ler
             dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.text = "💳 Cobrar ${Cupom.brl(cobrar)}"
             subTxt.text = when {
-                valorDig != null -> "valor digitado — o resto continua na conta"
                 partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
                 else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
                     (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
@@ -955,49 +953,36 @@ class ContaActivity : AppCompatActivity() {
                 b.setTextColor(if (p == gorj) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
             }
             partesBtns.forEach { (k, b) ->
-                val on = k == partes && valorDig == null
+                val on = k == partes
                 b.setBackgroundColor(if (on) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
                 b.setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
             }
         }
 
-        // DINHEIRO EM CENTAVOS, padrão de maquininha: digita SÓ números e o
-        // campo se formata sozinho (550 → R$ 5,50). O teclado numérico da LIO
-        // não tem vírgula, e o parse antigo tratava ponto como milhar — "5.50"
-        // virava 550 e cobrava a conta inteira (bug real em campo, 20/08).
-        val digIn = campo("Ou digite o valor (só números — 550 = R$ 5,50)", android.text.InputType.TYPE_CLASS_NUMBER)
-        digIn.addTextChangedListener(object : android.text.TextWatcher {
-            private var editando = false
-            override fun afterTextChanged(s: android.text.Editable?) {
-                if (editando) return
-                editando = true
-                val dig = (s?.toString() ?: "").filter { it.isDigit() }.trimStart('0').take(9)
-                val cents = dig.toLongOrNull() ?: 0L
-                valorDig = if (cents > 0) cents / 100.0 else null
-                val txt = if (cents > 0) Cupom.brl(cents / 100.0) else ""
-                digIn.setText(txt)
-                digIn.setSelection(txt.length)
-                editando = false
-                pinta()
-            }
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
-        })
+        // OUTRO VALOR (pagar só uma parte — "conta de 200, um quer pagar 150",
+        // 30/09): era um campo de texto no FIM do diálogo, sem rolagem — na
+        // telinha da maquininha o teclado do Android podia cobrir o campo e
+        // o Cobrar, e digitar 150 dava R$ 1,50. Agora é um botão logo abaixo
+        // do valor que abre um teclado PRÓPRIO (dialogOutroValor).
+        val outroBtn = Button(this)
+        outroBtn.text = "✏️ Outro valor (pagar só uma parte)"
+        outroBtn.textSize = 15f
+        outroBtn.isAllCaps = false
+        outroBtn.setTypeface(null, android.graphics.Typeface.BOLD)
+        outroBtn.setBackgroundColor(0xFFE0F2FE.toInt())
+        outroBtn.setTextColor(0xFF0C7091.toInt())
+        outroBtn.minHeight = dp(52)
 
         val gorjRow = chipRow()
         listOf(10, 15).forEach { p ->
             val b = chip(gorjRow, "$p%")
-            // trocar o % do serviço NÃO apaga o valor que o garçom digitou —
-            // era assim que um parcial virava a conta inteira (mesa 3, 05/09)
             b.setOnClickListener { gorj = p; pinta() }
             gorjBtns.add(p to b)
         }
         val partesRow = chipRow()
         (1..6).forEach { k ->
             val b = chip(partesRow, "$k")
-            // dividir substitui o valor digitado — e limpa o campo, pra tela e
-            // cobrança dizerem a mesma coisa
-            b.setOnClickListener { partes = k; valorDig = null; digIn.setText(""); pinta() }
+            b.setOnClickListener { partes = k; pinta() }
             partesBtns.add(k to b)
         }
 
@@ -1037,28 +1022,42 @@ class ContaActivity : AppCompatActivity() {
             }
         }
 
+        val ehComandaAlvo = Session.ehComanda(this, alvo)
+        val nomeAlvo = texto?.optStringOrNull("nome")
+        val rotuloAlvo = if (ehComandaAlvo) "Comanda $alvo" else "Mesa $alvo"
+        outroBtn.setOnClickListener {
+            // teto = o que falta com o serviço escolhido nos chips agora
+            val (_, resta, _) = calc()
+            dialogOutroValor(rotuloAlvo, resta, "com $gorj% de serviço") { centavos ->
+                dlg?.dismiss()
+                cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos)
+            }
+        }
+
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
-        box.setPadding(dp(20), dp(8), dp(20), 0)
+        box.setPadding(dp(20), dp(8), dp(20), dp(8))
         val views = mutableListOf<View>()
         if (alvos.size > 1) { views.add(rotulo("Receber de")); views.add(alvoRow) }
         views.addAll(listOf(
-            valorTxt, subTxt,
+            valorTxt, subTxt, outroBtn,
             rotulo("Serviço"), gorjRow,
             rotulo("Dividir por"), partesRow,
-            digIn,
         ))
         views.forEach {
-            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            if (it === outroBtn) lp.topMargin = dp(8)
+            box.addView(it, lp)
         }
         pinta()
+        // rolagem: com "Receber de" + chips o diálogo passa da altura da
+        // telinha — sem ela, o que ficava embaixo era cortado sem aviso
+        val rolagem = android.widget.ScrollView(this)
+        rolagem.addView(box)
 
-        val ehComandaAlvo = Session.ehComanda(this, alvo)
-        val nomeAlvo = texto?.optStringOrNull("nome")
         dlg = AlertDialog.Builder(this)
-            .setTitle("Receber — " + (if (ehComandaAlvo) "Comanda $alvo" else "Mesa $alvo") +
-                (nomeAlvo?.let { " · $it" } ?: ""))
-            .setView(box)
+            .setTitle("Receber — " + rotuloAlvo + (nomeAlvo?.let { " · $it" } ?: ""))
+            .setView(rolagem)
             .setPositiveButton("💳 Cobrar") { _, _ ->
                 val (_, _, cobrar) = calc()
                 if (cobrar <= 0.009) Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
@@ -1068,6 +1067,138 @@ class ContaActivity : AppCompatActivity() {
             .create()
         dlg?.show()
         pinta() // o botão só existe depois do show(): carimba o valor nele
+    }
+
+    // ---- OUTRO VALOR: teclado próprio pro pagamento parcial ----
+    // Visor em centavos, como a maquininha: 1 5 0 + 00 (ou 1 5 0 0 0) =
+    // R$ 150,00. Sem vírgula de propósito — o parse com ponto de um campo
+    // antigo fez "5.50" virar 550 e cobrar a conta inteira (20/08). O valor
+    // mora só aqui e é cobrado daqui: nada no Receber (serviço, dividir)
+    // troca o parcial pela conta inteira no caminho (mesa 3, 05/09). Acima
+    // do que falta o Cobrar trava — antes o excesso era cortado calado.
+    private fun dialogOutroValor(titulo: String, resta: Double, obs: String, onCobrar: (Long) -> Unit) {
+        val restaCents = Math.round(resta * 100)
+        if (restaCents <= 0) {
+            Toast.makeText(this, "Nada a cobrar — a conta já está paga", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val max = 99_999_999L // R$ 999.999,99
+        var cents = 0L
+        var enviado = false
+        var dlg: AlertDialog? = null
+
+        val visor = TextView(this)
+        visor.textSize = 38f
+        visor.setTypeface(null, android.graphics.Typeface.BOLD)
+        visor.gravity = android.view.Gravity.CENTER
+        val aviso = TextView(this)
+        aviso.textSize = 13f
+        aviso.gravity = android.view.Gravity.CENTER
+        aviso.setPadding(0, 0, 0, dp(8))
+
+        fun pinta() {
+            val acima = cents > restaCents
+            val ok = cents in 1..restaCents
+            visor.text = Cupom.brl(cents / 100.0)
+            visor.setTextColor(if (acima) 0xFFDC2626.toInt() else 0xFF111827.toInt())
+            aviso.setTextColor(if (acima) 0xFFDC2626.toInt() else 0xFF6B7280.toInt())
+            aviso.text = when {
+                cents == 0L -> "Falta ${Cupom.brl(resta)} ($obs)\nDigite como na maquininha: 1 5 0 00 = R$ 150,00"
+                acima -> "Maior que o que falta (${Cupom.brl(resta)})"
+                cents == restaCents -> "Quita a conta"
+                else -> "O resto (${Cupom.brl((restaCents - cents) / 100.0)}) continua na conta"
+            }
+            dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.let { b ->
+                b.isEnabled = ok
+                b.text = if (ok) "💳 Cobrar ${Cupom.brl(cents / 100.0)}" else "💳 Cobrar"
+            }
+        }
+        fun digito(d: Int) {
+            val n = cents * 10 + d
+            if (n <= max) cents = n
+        }
+        fun apaga() { cents /= 10 }
+
+        fun fundo(cor: Int): android.graphics.drawable.Drawable {
+            val g = android.graphics.drawable.GradientDrawable()
+            g.setColor(cor)
+            g.cornerRadius = dp(8).toFloat()
+            // ripple: o toque aparece na tecla (cor chapada não dá retorno)
+            return android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x33000000), g, null)
+        }
+        fun tecla(row: LinearLayout, rot: String, cor: Int, acao: () -> Unit): Button {
+            val b = Button(this)
+            b.text = rot
+            b.textSize = 24f
+            b.isAllCaps = false
+            b.setTextColor(0xFF111827.toInt())
+            b.background = fundo(cor)
+            val lp = LinearLayout.LayoutParams(0, dp(58))
+            lp.weight = 1f
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3))
+            b.layoutParams = lp
+            b.setOnClickListener { v ->
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                acao(); pinta()
+            }
+            row.addView(b)
+            return b
+        }
+        val teclado = LinearLayout(this)
+        teclado.orientation = LinearLayout.VERTICAL
+        listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("00", "0", "←")).forEach { linha ->
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            linha.forEach { t ->
+                when (t) {
+                    "←" -> {
+                        val b = tecla(row, t, 0xFFFDE68A.toInt()) { apaga() }
+                        // segurar o ← zera o visor
+                        b.setOnLongClickListener { cents = 0; pinta(); true }
+                    }
+                    "00" -> tecla(row, t, 0xFFF3F4F6.toInt()) { digito(0); digito(0) }
+                    else -> tecla(row, t, 0xFFF3F4F6.toInt()) { digito(t.toInt()) }
+                }
+            }
+            teclado.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(16), dp(4), dp(16), dp(4))
+        listOf<View>(visor, aviso, teclado).forEach {
+            box.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val rolagem = android.widget.ScrollView(this)
+        rolagem.addView(box)
+
+        dlg = AlertDialog.Builder(this)
+            .setTitle("Outro valor — $titulo")
+            .setView(rolagem)
+            .setPositiveButton("💳 Cobrar") { _, _ ->
+                if (!enviado && cents in 1..restaCents) { enviado = true; onCobrar(cents) }
+            }
+            .setNegativeButton("Voltar", null)
+            .create()
+        // toque fora não perde o que foi digitado
+        dlg?.setCanceledOnTouchOutside(false)
+        // terminal com teclado físico (alguns POS da Rede): números e apagar
+        dlg?.setOnKeyListener { _, code, ev ->
+            if (ev.action != android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            when (code) {
+                in android.view.KeyEvent.KEYCODE_0..android.view.KeyEvent.KEYCODE_9 -> {
+                    digito(code - android.view.KeyEvent.KEYCODE_0); pinta(); true
+                }
+                in android.view.KeyEvent.KEYCODE_NUMPAD_0..android.view.KeyEvent.KEYCODE_NUMPAD_9 -> {
+                    digito(code - android.view.KeyEvent.KEYCODE_NUMPAD_0); pinta(); true
+                }
+                android.view.KeyEvent.KEYCODE_DEL -> { apaga(); pinta(); true }
+                else -> false
+            }
+        }
+        dlg?.show()
+        pinta() // o botão só existe depois do show()
     }
 
     // ---- RECEBER TUDO: mesa + comandas numa passada só ----

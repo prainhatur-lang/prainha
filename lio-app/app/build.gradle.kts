@@ -145,8 +145,14 @@ android {
         // com 4G ligado (Wi-Fi sem internet validada virava rota pelo chip);
         // o IP local fica amarrado ao servidor que o informou. Cabeçalho das
         // mesas mostra "⚡ rede local"/"☁️ internet" e o toque no nome mede.
-        versionCode = 49
-        versionName = "1.10.25"
+        // 1.10.26: PAGAR SÓ UMA PARTE ("conta de 200, um quer pagar 150") — o
+        // campo "Ou digite o valor" ficava no fim do Receber, sem rolagem, e o
+        // teclado do Android podia cobrir o campo e o Cobrar; agora o botão
+        // "✏️ Outro valor" logo abaixo do valor abre um teclado próprio (visor
+        // grande, tecla 00, trava acima do que falta, cobra direto). Receber
+        // com rolagem. Tabuará no 192.168.0.100 na lista de reserva.
+        versionCode = 50
+        versionName = "1.10.26"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
