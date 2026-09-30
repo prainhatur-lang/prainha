@@ -892,6 +892,7 @@ class ContaActivity : AppCompatActivity() {
         var dlg: AlertDialog? = null
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
+        var valorDig: Double? = null
 
         val valorTxt = TextView(this)
         valorTxt.textSize = 34f
@@ -933,7 +934,7 @@ class ContaActivity : AppCompatActivity() {
             val svc = Math.round(itens * gorj) / 100.0
             // canônico do Consumer: itens + serviço − desconto + acréscimo − pago
             val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
-            val cobrar = Math.round(resta / partes * 100) / 100.0
+            val cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
             return Triple(svc, resta, cobrar)
         }
         fun pinta() {
@@ -942,6 +943,7 @@ class ContaActivity : AppCompatActivity() {
             // o valor cobrado vai escrito NO BOTÃO — não há como confirmar sem ler
             dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.text = "💳 Cobrar ${Cupom.brl(cobrar)}"
             subTxt.text = when {
+                valorDig != null -> "valor digitado — o resto continua na conta"
                 partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
                 else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
                     (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
@@ -953,17 +955,41 @@ class ContaActivity : AppCompatActivity() {
                 b.setTextColor(if (p == gorj) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
             }
             partesBtns.forEach { (k, b) ->
-                val on = k == partes
+                val on = k == partes && valorDig == null
                 b.setBackgroundColor(if (on) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
                 b.setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
             }
         }
 
+        // DINHEIRO EM CENTAVOS, padrão de maquininha: digita SÓ números e o
+        // campo se formata sozinho (550 → R$ 5,50). O teclado numérico da LIO
+        // não tem vírgula, e o parse antigo tratava ponto como milhar — "5.50"
+        // virava 550 e cobrava a conta inteira (bug real em campo, 20/08).
+        val digIn = campo("Ou digite o valor (só números — 550 = R$ 5,50)", android.text.InputType.TYPE_CLASS_NUMBER)
+        digIn.addTextChangedListener(object : android.text.TextWatcher {
+            private var editando = false
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (editando) return
+                editando = true
+                val dig = (s?.toString() ?: "").filter { it.isDigit() }.trimStart('0').take(9)
+                val cents = dig.toLongOrNull() ?: 0L
+                valorDig = if (cents > 0) cents / 100.0 else null
+                val txt = if (cents > 0) Cupom.brl(cents / 100.0) else ""
+                digIn.setText(txt)
+                digIn.setSelection(txt.length)
+                editando = false
+                pinta()
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, x: Int) {}
+        })
+
         // OUTRO VALOR (pagar só uma parte — "conta de 200, um quer pagar 150",
-        // 30/09): era um campo de texto no FIM do diálogo, sem rolagem — na
-        // telinha da maquininha o teclado do Android podia cobrir o campo e
-        // o Cobrar, e digitar 150 dava R$ 1,50. Agora é um botão logo abaixo
-        // do valor que abre um teclado PRÓPRIO (dialogOutroValor).
+        // 30/09): ATALHO A MAIS, ao lado do campo "Ou digite o valor" — que
+        // continua igual, no mesmo lugar (a 1.10.26 trocou o campo por este
+        // botão e o dono cobrou: o que já funciona não sai). O botão abre um
+        // teclado PRÓPRIO (dialogOutroValor), que o teclado do Android não
+        // cobre e onde 1 5 0 + 00 = R$ 150,00.
         val outroBtn = Button(this)
         outroBtn.text = "✏️ Outro valor (pagar só uma parte)"
         outroBtn.textSize = 15f
@@ -976,13 +1002,17 @@ class ContaActivity : AppCompatActivity() {
         val gorjRow = chipRow()
         listOf(10, 15).forEach { p ->
             val b = chip(gorjRow, "$p%")
+            // trocar o % do serviço NÃO apaga o valor que o garçom digitou —
+            // era assim que um parcial virava a conta inteira (mesa 3, 05/09)
             b.setOnClickListener { gorj = p; pinta() }
             gorjBtns.add(p to b)
         }
         val partesRow = chipRow()
         (1..6).forEach { k ->
             val b = chip(partesRow, "$k")
-            b.setOnClickListener { partes = k; pinta() }
+            // dividir substitui o valor digitado — e limpa o campo, pra tela e
+            // cobrança dizerem a mesma coisa
+            b.setOnClickListener { partes = k; valorDig = null; digIn.setText(""); pinta() }
             partesBtns.add(k to b)
         }
 
@@ -1043,6 +1073,7 @@ class ContaActivity : AppCompatActivity() {
             valorTxt, subTxt, outroBtn,
             rotulo("Serviço"), gorjRow,
             rotulo("Dividir por"), partesRow,
+            digIn,
         ))
         views.forEach {
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -1051,7 +1082,8 @@ class ContaActivity : AppCompatActivity() {
         }
         pinta()
         // rolagem: com "Receber de" + chips o diálogo passa da altura da
-        // telinha — sem ela, o que ficava embaixo era cortado sem aviso
+        // telinha — sem ela, o que ficava embaixo (o campo "Ou digite o
+        // valor") era cortado sem aviso ou ficava atrás do teclado
         val rolagem = android.widget.ScrollView(this)
         rolagem.addView(box)
 
@@ -1071,8 +1103,9 @@ class ContaActivity : AppCompatActivity() {
 
     // ---- OUTRO VALOR: teclado próprio pro pagamento parcial ----
     // Visor em centavos, como a maquininha: 1 5 0 + 00 (ou 1 5 0 0 0) =
-    // R$ 150,00. Sem vírgula de propósito — o parse com ponto de um campo
-    // antigo fez "5.50" virar 550 e cobrar a conta inteira (20/08). O valor
+    // R$ 150,00. Sem vírgula de propósito — o parse com ponto da 1ª versão
+    // do "Ou digite o valor" fez "5.50" virar 550 e cobrar a conta inteira
+    // (20/08). O valor
     // mora só aqui e é cobrado daqui: nada no Receber (serviço, dividir)
     // troca o parcial pela conta inteira no caminho (mesa 3, 05/09). Acima
     // do que falta o Cobrar trava — antes o excesso era cortado calado.

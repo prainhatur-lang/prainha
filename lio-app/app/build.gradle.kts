@@ -151,8 +151,13 @@ android {
         // "✏️ Outro valor" logo abaixo do valor abre um teclado próprio (visor
         // grande, tecla 00, trava acima do que falta, cobra direto). Receber
         // com rolagem. Tabuará no 192.168.0.100 na lista de reserva.
-        versionCode = 50
-        versionName = "1.10.26"
+        // 1.10.27: o campo "Ou digite o valor" VOLTA igual à 1.10.25 (mesmo
+        // lugar, centavos, % do serviço mantém, dividir limpa) — a 1.10.26
+        // tinha trocado o campo pelo botão, e o que já funciona não sai. O
+        // "✏️ Outro valor" fica só como atalho a mais; a rolagem garante que o
+        // campo aparece mesmo com "Receber de" e o teclado aberto.
+        versionCode = 51
+        versionName = "1.10.27"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
