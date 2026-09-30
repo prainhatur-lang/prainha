@@ -207,3 +207,16 @@ O que foi diferente da 0001:
 - iFood: o Gestor de Pedidos roda nessa máquina; pedido do iFood que entrava
   pelo Consumer não entra mais no PDV (integração própria do vendas-local
   existe mas está desligada/sem homologação).
+
+## Prainha Mar (filial 03, WIN-7K46SHVGT1L, 192.168.4.100) — FEITO 30/09/2026 17:33
+Última casa a virar. Gatilho: usuária criada em Caixa → Usuários não abria caixa
+("não achei seu usuário no Consumer") — release 40e9b0e6 cria espelho INATIVO no
+USUARIOS pra isso, e a migração não sobrescreve usuário nosso com esse espelho.
+Rodado pelo dono em dois um-liners (passo 1: `--migrar-consumer` e
+`--so-caixas --dias 3` com o ambiente do start.bat; passo 2: token do
+`AGENTE_TOKEN`/`api.token`, BANCO/AGENTE_TOKEN trocados no start.bat, cópia em
+`start-antes-proprio.bat`, restart). Números: 4 clientes, 2 usuários do Consumer
+(10 ativos no total), 2 caixas (1 aberto, da Sara, R$ 33 no débito). Antes do
+flip o catálogo da nuvem batia 1:1 com o servidor (598 produtos, mesmos preços).
+Firebird ficou LIGADO (só consulta). Mesa 100 (R$ 1.110, de 24/09) ficou
+espelhada do Consumer — cancelar na tela de mesas se for lixo.
