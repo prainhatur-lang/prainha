@@ -1,6 +1,6 @@
 // POST /api/transferencias — transfere mercadoria de uma casa pra outra.
 // Body: { filialOrigemId, filialDestinoId, data?, notaCompraId?, observacao?,
-//         itens: [{ produtoOrigemId, produtoDestinoId, quantidade, custoUnitario? }] }
+//         itens: [{ produtoOrigemId, produtoDestinoId (null = cadastra no destino), quantidade, custoUnitario? }] }
 // Regra em @/lib/transferencia (custo médio da origem; conta a pagar no destino).
 
 import { NextResponse } from 'next/server';
@@ -22,7 +22,7 @@ const Body = z.object({
     .array(
       z.object({
         produtoOrigemId: z.string().uuid(),
-        produtoDestinoId: z.string().uuid(),
+        produtoDestinoId: z.string().uuid().nullable(),
         quantidade: z.number().positive(),
         custoUnitario: z.number().positive().optional(),
       }),

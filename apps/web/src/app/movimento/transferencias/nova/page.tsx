@@ -81,6 +81,26 @@ export default async function NovaTransferenciaPage(props: {
   const produtosDestino: Record<string, ProdOpc[]> = {};
   for (const d of destinos) produtosDestino[d.id] = prods.filter((p) => p.filialId === d.id).map(toOpc);
 
+  // De/para salvo (produto da origem → produto em cada casa que recebe)
+  const depara: Record<string, Record<string, string>> = {};
+  if (destinos.length && produtosOrigem.length) {
+    const rows = await db
+      .select({
+        o: schema.produtoDeparaFilial.produtoOrigemId,
+        f: schema.produtoDeparaFilial.filialDestinoId,
+        d: schema.produtoDeparaFilial.produtoDestinoId,
+      })
+      .from(schema.produtoDeparaFilial)
+      .innerJoin(schema.produto, eq(schema.produto.id, schema.produtoDeparaFilial.produtoOrigemId))
+      .where(
+        and(
+          eq(schema.produto.filialId, origem.id),
+          inArray(schema.produtoDeparaFilial.filialDestinoId, destinos.map((d) => d.id)),
+        ),
+      );
+    for (const r of rows) (depara[r.f] ??= {})[r.o] = r.d;
+  }
+
   // Itens que a nota colocou no estoque (movimentos ENTRADA_COMPRA, já na
   // unidade do produto)
   let itensIniciais: ItemInicial[] = [];
@@ -152,6 +172,7 @@ export default async function NovaTransferenciaPage(props: {
             destinos={destinos.map((d) => ({ id: d.id, nome: d.nome }))}
             produtosOrigem={produtosOrigem}
             produtosDestino={produtosDestino}
+            depara={depara}
             itensIniciais={itensIniciais}
             notaCompraId={nota?.id ?? null}
             hoje={hojeBr()}

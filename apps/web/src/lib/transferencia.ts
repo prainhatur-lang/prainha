@@ -35,11 +35,112 @@ async function filiaisComAcesso(userId: string, ids: string[]): Promise<Set<stri
 
 export interface ItemTransfInput {
   produtoOrigemId: string;
-  produtoDestinoId: string;
+  /** null = o produto não existe na casa que recebe: cadastra lá (cópia do
+   *  cadastro da origem, só estoque) e grava o de/para. */
+  produtoDestinoId: string | null;
   quantidade: number;
   /** Só vale quando o custo médio da origem está zerado (CMV zerado em
    *  26/09/2026) — aí o usuário informa o custo. */
   custoUnitario?: number;
+}
+
+type ItemResolvido = ItemTransfInput & { produtoDestinoId: string };
+
+/** Item sem produto no destino: usa o de/para salvo; se não tiver, cadastra
+ *  na casa que recebe copiando o cadastro da origem. Nasce como INSUMO da
+ *  nuvem (só estoque — não entra no cardápio do PDV, que exige variante). */
+async function resolverDestinos(
+  tx: ExecDb,
+  itens: ItemTransfInput[],
+  filialOrigemId: string,
+  filialDestinoId: string,
+): Promise<ItemResolvido[]> {
+  const faltam = [...new Set(itens.filter((i) => !i.produtoDestinoId).map((i) => i.produtoOrigemId))];
+  const criados = new Map<string, string>();
+  if (faltam.length) {
+    const dp = await tx
+      .select({ o: schema.produtoDeparaFilial.produtoOrigemId, d: schema.produtoDeparaFilial.produtoDestinoId })
+      .from(schema.produtoDeparaFilial)
+      .where(
+        and(
+          inArray(schema.produtoDeparaFilial.produtoOrigemId, faltam),
+          eq(schema.produtoDeparaFilial.filialDestinoId, filialDestinoId),
+        ),
+      );
+    for (const r of dp) criados.set(r.o, r.d);
+    const origens = await tx
+      .select()
+      .from(schema.produto)
+      .where(and(inArray(schema.produto.id, faltam), eq(schema.produto.filialId, filialOrigemId)));
+    for (const po of origens) {
+      if (criados.has(po.id)) continue;
+      const [novo] = await tx
+        .insert(schema.produto)
+        .values({
+          filialId: filialDestinoId,
+          codigoExterno: null,
+          nome: po.nome,
+          descricao: po.descricao,
+          tipo: 'INSUMO',
+          unidadeEstoque: po.unidadeEstoque,
+          controlaEstoque: true,
+          estoqueControlado: true,
+          criadoNaNuvem: true,
+          descontinuado: false,
+          estoqueAtual: '0',
+          precoCusto: '0',
+          itemPorKg: po.itemPorKg,
+          pesoUnitarioPadraoKg: po.pesoUnitarioPadraoKg,
+          volumeUnitarioMl: po.volumeUnitarioMl,
+          categoriaCompras: po.categoriaCompras,
+          descricaoCompra: po.descricaoCompra,
+          ncm: po.ncm,
+          cest: po.cest,
+        })
+        .returning({ id: schema.produto.id });
+      if (!novo) throw new Error('falha ao cadastrar produto no destino');
+      criados.set(po.id, novo.id);
+    }
+  }
+  return itens.map((i) => {
+    const d = i.produtoDestinoId ?? criados.get(i.produtoOrigemId);
+    if (!d) throw new RecusaTransf('produto de origem não é da casa que envia');
+    return { ...i, produtoDestinoId: d };
+  });
+}
+
+/** Grava o de/para nas duas direções (A→B e B→A): da próxima vez a tela já
+ *  acha o produto, mesmo com nome diferente. Escolha nova sobrescreve. */
+async function gravarDepara(
+  tx: ExecDb,
+  itens: ItemResolvido[],
+  filialOrigemId: string,
+  filialDestinoId: string,
+  userId: string,
+) {
+  const pares = new Map<string, { produtoOrigemId: string; filialDestinoId: string; produtoDestinoId: string }>();
+  for (const i of itens) {
+    pares.set(`${i.produtoOrigemId}|${filialDestinoId}`, {
+      produtoOrigemId: i.produtoOrigemId,
+      filialDestinoId,
+      produtoDestinoId: i.produtoDestinoId,
+    });
+    pares.set(`${i.produtoDestinoId}|${filialOrigemId}`, {
+      produtoOrigemId: i.produtoDestinoId,
+      filialDestinoId: filialOrigemId,
+      produtoDestinoId: i.produtoOrigemId,
+    });
+  }
+  const agora = new Date();
+  for (const v of pares.values()) {
+    await tx
+      .insert(schema.produtoDeparaFilial)
+      .values({ ...v, atualizadoPor: userId, atualizadoEm: agora })
+      .onConflictDoUpdate({
+        target: [schema.produtoDeparaFilial.produtoOrigemId, schema.produtoDeparaFilial.filialDestinoId],
+        set: { produtoDestinoId: v.produtoDestinoId, atualizadoPor: userId, atualizadoEm: agora },
+      });
+  }
 }
 
 export async function criarTransferencia(opts: {
@@ -67,7 +168,8 @@ export async function criarTransferencia(opts: {
     .limit(1);
 
   return db.transaction(async (tx) => {
-    const ids = [...new Set(opts.itens.flatMap((i) => [i.produtoOrigemId, i.produtoDestinoId]))];
+    const itens = await resolverDestinos(tx, opts.itens, filialOrigemId, filialDestinoId);
+    const ids = [...new Set(itens.flatMap((i) => [i.produtoOrigemId, i.produtoDestinoId]))];
     const prods = await tx
       .select({
         id: schema.produto.id,
@@ -81,12 +183,12 @@ export async function criarTransferencia(opts: {
     const porId = new Map(prods.map((p) => [p.id, p]));
 
     const linhas: Array<{
-      it: ItemTransfInput;
+      it: ItemResolvido;
       nome: string;
       custo: number;
       valor: number;
     }> = [];
-    for (const it of opts.itens) {
+    for (const it of itens) {
       const po = porId.get(it.produtoOrigemId);
       const pd = porId.get(it.produtoDestinoId);
       if (!po || po.filialId !== filialOrigemId) throw new RecusaTransf('produto de origem não é da casa que envia');
@@ -187,6 +289,8 @@ export async function criarTransferencia(opts: {
       .update(schema.transferenciaFilial)
       .set({ contaPagarId: conta?.id ?? null })
       .where(eq(schema.transferenciaFilial.id, transf.id));
+
+    await gravarDepara(tx, itens, filialOrigemId, filialDestinoId, userId);
 
     return { id: transf.id, numero: transf.numero, valorTotal };
   });

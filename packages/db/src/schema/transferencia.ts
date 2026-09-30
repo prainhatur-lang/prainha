@@ -11,7 +11,7 @@
 // diferença, na casa que deve (origem='ENCONTRO_CONTAS'), paga de verdade.
 
 import { sql } from 'drizzle-orm';
-import { date, index, numeric, pgTable, serial, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { date, index, numeric, pgTable, serial, text, timestamp, unique, uuid, varchar } from 'drizzle-orm/pg-core';
 import { filial } from './tenant';
 import { produto } from './vendas';
 import { notaCompra } from './notas';
@@ -105,5 +105,30 @@ export const encontroContas = pgTable(
   },
   (t) => ({
     compIdx: index('idx_encontro_comp').on(t.competencia),
+  }),
+);
+
+/** DE/PARA de produto entre casas: o mesmo item com nome diferente em cada
+ *  casa ("Picanha Black Angus" no Bar = "Picanha Angus kg" na Mar). Gravado
+ *  sozinho a cada transferência (as duas direções), e é o primeiro lugar onde
+ *  a tela procura o produto na casa que recebe. */
+export const produtoDeparaFilial = pgTable(
+  'produto_depara_filial',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    produtoOrigemId: uuid('produto_origem_id')
+      .notNull()
+      .references(() => produto.id, { onDelete: 'cascade' }),
+    filialDestinoId: uuid('filial_destino_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    produtoDestinoId: uuid('produto_destino_id')
+      .notNull()
+      .references(() => produto.id, { onDelete: 'cascade' }),
+    atualizadoPor: uuid('atualizado_por'),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniq: unique('uq_depara_origem_destino').on(t.produtoOrigemId, t.filialDestinoId),
   }),
 );

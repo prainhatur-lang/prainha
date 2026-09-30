@@ -148,6 +148,7 @@
     "migrate:fornecedor-grupo": "tsx scripts/migrate-fornecedor-grupo.ts",
     "migrate:volume-unitario": "tsx scripts/migrate-volume-unitario.ts",
     "migrate:transferencia": "tsx scripts/migrate-transferencia.ts",
+    "migrate:depara-filial": "tsx scripts/migrate-depara-filial.ts",
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts"
   },
   "dependencies": {

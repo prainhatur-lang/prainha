@@ -29,9 +29,16 @@ const norm = (s: string) =>
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const numBr = (s: string) => Number(String(s).replace(/\./g, '').replace(',', '.'));
 
-/** Mesmo produto na outra casa: nome normalizado + unidade; senão só o nome. */
-function acharNoDestino(p: ProdOpc | undefined, lista: ProdOpc[]): string | null {
+/** Mesmo produto na outra casa: de/para salvo; senão nome normalizado +
+ *  unidade; senão só o nome. null = não existe lá (cadastra ao transferir). */
+function acharNoDestino(
+  p: ProdOpc | undefined,
+  lista: ProdOpc[],
+  depara: Record<string, string> = {},
+): string | null {
   if (!p) return null;
+  const salvo = depara[p.id];
+  if (salvo && lista.some((d) => d.id === salvo)) return salvo;
   const n = norm(p.nome);
   return (
     lista.find((d) => norm(d.nome) === n && d.unidade === p.unidade)?.id ??
@@ -51,6 +58,8 @@ export function NovaTransferenciaForm(props: {
   destinos: Array<{ id: string; nome: string }>;
   produtosOrigem: ProdOpc[];
   produtosDestino: Record<string, ProdOpc[]>;
+  /** destinoId → produtoOrigemId → produtoDestinoId */
+  depara: Record<string, Record<string, string>>;
   itensIniciais: ItemInicial[];
   notaCompraId: string | null;
   hoje: string;
@@ -60,6 +69,7 @@ export function NovaTransferenciaForm(props: {
   const [destinoId, setDestinoId] = useState(props.destinos[0]?.id ?? '');
   const listaDestino = props.produtosDestino[destinoId] ?? [];
   const destinoPor = useMemo(() => new Map(listaDestino.map((p) => [p.id, p])), [listaDestino]);
+  const deparaDestino = props.depara[destinoId] ?? {};
 
   const [seq, setSeq] = useState(props.itensIniciais.length);
   const [linhas, setLinhas] = useState<Linha[]>(() =>
@@ -71,6 +81,7 @@ export function NovaTransferenciaForm(props: {
         produtoDestinoId: acharNoDestino(
           origemPor.get(i.produtoOrigemId),
           props.produtosDestino[props.destinos[0]?.id ?? ''] ?? [],
+          props.depara[props.destinos[0]?.id ?? ''],
         ),
         quantidade: String(Math.round(i.quantidade * 1000) / 1000).replace('.', ','),
         custoInformado: '',
@@ -87,13 +98,15 @@ export function NovaTransferenciaForm(props: {
   function trocarDestino(id: string) {
     setDestinoId(id);
     const lista = props.produtosDestino[id] ?? [];
-    setLinhas((ls) => ls.map((l) => ({ ...l, produtoDestinoId: acharNoDestino(origemPor.get(l.produtoOrigemId), lista) })));
+    setLinhas((ls) =>
+      ls.map((l) => ({ ...l, produtoDestinoId: acharNoDestino(origemPor.get(l.produtoOrigemId), lista, props.depara[id]) })),
+    );
   }
 
   function adicionar(p: ProdOpc) {
     setLinhas((ls) => [
       ...ls,
-      { key: seq, produtoOrigemId: p.id, produtoDestinoId: acharNoDestino(p, listaDestino), quantidade: '', custoInformado: '' },
+      { key: seq, produtoOrigemId: p.id, produtoDestinoId: acharNoDestino(p, listaDestino, deparaDestino), quantidade: '', custoInformado: '' },
     ]);
     setSeq((s) => s + 1);
     setBusca('');
@@ -107,14 +120,16 @@ export function NovaTransferenciaForm(props: {
     return { l, po, q, custo, valor, semCusto: !po || po.custo <= 0 };
   });
   const total = calc.reduce((s, c) => s + c.valor, 0);
-  const pendencias = calc.filter((c) => !(c.q > 0) || !(c.custo > 0) || !c.l.produtoDestinoId);
+  const pendencias = calc.filter((c) => !(c.q > 0) || !(c.custo > 0));
+  const aCadastrar = calc.filter((c) => !c.l.produtoDestinoId).length;
   const nomeDestino = props.destinos.find((d) => d.id === destinoId)?.nome ?? '';
 
   async function salvar() {
     setErro(null);
     if (!linhas.length) return setErro('Adicione pelo menos um produto.');
-    if (pendencias.length) return setErro('Tem item sem quantidade, sem custo ou sem produto na casa de destino.');
-    if (!confirm(`Transferir ${linhas.length} item(ns) (${brl(total)}) pra ${nomeDestino}? ${nomeDestino} fica devendo esse valor.`)) return;
+    if (pendencias.length) return setErro('Tem item sem quantidade ou sem custo.');
+    const avisoCad = aCadastrar ? `\n\n${aCadastrar} produto(s) não existem em ${nomeDestino} e vão ser cadastrados lá.` : '';
+    if (!confirm(`Transferir ${linhas.length} item(ns) (${brl(total)}) pra ${nomeDestino}? ${nomeDestino} fica devendo esse valor.${avisoCad}`)) return;
     setBusy(true);
     const r = await fetch('/api/transferencias', {
       method: 'POST',
@@ -298,6 +313,19 @@ export function NovaTransferenciaForm(props: {
                           <li>
                             <button
                               type="button"
+                              onClick={() => {
+                                setLinhas((ls) => ls.map((x) => (x.key === l.key ? { ...x, produtoDestinoId: null } : x)));
+                                setTrocando(null);
+                                setBuscaDest('');
+                              }}
+                              className="w-full border-t border-slate-100 px-3 py-1.5 text-left text-xs text-emerald-700 hover:bg-slate-50"
+                            >
+                              ➕ não existe — cadastrar em {nomeDestino}
+                            </button>
+                          </li>
+                          <li>
+                            <button
+                              type="button"
                               onClick={() => setTrocando(null)}
                               className="w-full px-3 py-1.5 text-left text-xs text-slate-500 hover:bg-slate-50"
                             >
@@ -318,22 +346,31 @@ export function NovaTransferenciaForm(props: {
                       >
                         <span className="text-slate-800">{pd.nome}</span>{' '}
                         <span className="text-xs text-slate-500">({pd.unidade})</span>
+                        {deparaDestino[l.produtoOrigemId] === pd.id && po && norm(po.nome) !== norm(pd.nome) && (
+                          <span className="ml-1 rounded bg-sky-100 px-1 text-[10px] text-sky-800">de/para</span>
+                        )}
                         {po && pd.unidade !== po.unidade && (
                           <div className="text-[10px] text-amber-700">⚠ unidade diferente ({po.unidade} → {pd.unidade})</div>
                         )}
                         <div className="text-[10px] text-sky-700">trocar</div>
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTrocando(l.key);
-                          setBuscaDest(po?.nome.split(' ').slice(0, 2).join(' ') ?? '');
-                        }}
-                        className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-800"
-                      >
-                        não achei — escolher produto
-                      </button>
+                      <div>
+                        <div className="text-xs text-emerald-800">
+                          ➕ não achei em {nomeDestino} — <b>cadastra lá</b> ao transferir
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTrocando(l.key);
+                            setBuscaDest(po?.nome.split(' ').slice(0, 2).join(' ') ?? '');
+                          }}
+                          className="mt-1 rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800"
+                          title="O produto existe lá com outro nome? Escolha — fica salvo como de/para"
+                        >
+                          existe com outro nome? escolher (de/para)
+                        </button>
+                      </div>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right">
