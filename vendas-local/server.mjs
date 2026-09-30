@@ -21294,7 +21294,21 @@ function manForma(f){
 }
 /* Câmera do tablet: só existe em contexto seguro (https). Se não der, avisa e
    oferece o celular — em vez de deixar o caixa preso numa tela morta. */
+/* Trocar a foto APAGA a anterior: foto, token, leitura e o NSU que veio dela.
+   Antes "tirar outra" deixava tudo de pé e o caixa confirmava com o papel
+   velho (30/09). NSU digitado à mão é do caixa — só limpa o que a IA pôs. */
+function manDescartar(){
+  manParar();
+  if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
+  var campo=document.getElementById('mnsu');
+  var nsuIa=MAN.dados&&MAN.dados.nsu?String(MAN.dados.nsu).replace(/\\D/g,''):'';
+  if(campo&&nsuIa&&campo.value.replace(/\\D/g,'')===nsuIa)campo.value='';
+  MAN.foto=null; MAN.arquivo=null; MAN.token=null; MAN.dados=null;
+  var box=document.getElementById('mcbox'); if(box)box.innerHTML='';
+  manEstado();
+}
 async function manCamera(){
+  manDescartar();
   var box=document.getElementById('mcbox'); if(!box)return;
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     box.innerHTML='<div class="mut" style="margin-top:8px">Este tablet não libera a câmera aqui (precisa do modo seguro). Use <b>Pelo meu celular</b>.</div>';
@@ -21326,7 +21340,7 @@ async function manClicar(){
     valor:numBr((document.getElementById('mv')||{}).value)});
   if(r&&r.ok){MAN.arquivo=r.arquivo;MAN.foto=null;MAN.token=r.token;manLido(r.arquivo,r.dados,'tablet')}
   else{box.innerHTML='<img src="'+MAN.foto+'" style="width:100%;border-radius:12px;margin-top:8px">'+
-    '<div class="mut">✓ foto pronta</div><button class="seg" onclick="manCamera()">tirar outra</button>'}
+    '<div class="mut">✓ foto pronta</div><button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>'}
   manEstado();
 }
 /* O QUE A IA LEU NO PAPEL. Preenche o NSU sozinho (é o número que casa com o
@@ -21340,13 +21354,13 @@ function manLido(arquivo, d, origem){
   var vindo='<div class="mut">✓ comprovante '+(origem==='tablet'?'anexado':'recebido do celular')+'</div>';
   if(origem==='lendo'){
     box.innerHTML=img+'<div class="mut">✓ comprovante recebido do celular · 🔎 lendo NSU e valor…</div>'+
-      '<button class="seg" onclick="manCamera()">tirar outra</button>';
+      '<button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
     return;
   }
   if(!d||d.confianca==='erro'){
     box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — pode confirmar assim mesmo'+
       (d&&d.observacao?' ('+esc(d.observacao)+')':'')+'</div>'+
-      '<button class="seg" onclick="manCamera()">tirar outra</button>';
+      '<button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
     return;
   }
   var nsu=(d.nsu||'').replace(/\\D/g,'');
@@ -21371,7 +21385,7 @@ function manLido(arquivo, d, origem){
       (d.pagador?'<div class="mut">pagador: '+esc(d.pagador)+'</div>':'')+
       (d.dataHora?'<div class="mut">'+esc(d.dataHora)+'</div>':'')+
       avisos+
-    '</div><button class="seg" onclick="manCamera()">tirar outra</button>';
+    '</div><button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
 }
 function manUsarValor(v){
   var mv=document.getElementById('mv'); if(!mv)return;
@@ -21379,6 +21393,7 @@ function manUsarValor(v){
 }
 /* Celular do caixa: QR com um link de 10 minutos. A foto chega aqui sozinha. */
 async function manCelular(externo){
+  manDescartar();
   var box=document.getElementById('mcbox'); if(!box)return;
   box.innerHTML='<div class="mut" style="margin-top:8px">gerando o link…</div>';
   var r=await jpost('/api/caixa/comprovante',{numero:MESA,forma:MAN.forma,valor:numBr((document.getElementById('mv')||{}).value),externo:externo===true});
