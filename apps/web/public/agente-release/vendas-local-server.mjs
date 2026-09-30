@@ -10226,17 +10226,20 @@ function dadosObj(v) {
 async function apiComprovanteStatus(t, numero = null, forma = null) {
   const tok = String(t || '').slice(0, 40);
   const [row] = tok
-    ? await sql`SELECT arquivo, enviado_em, aberto_em, dados FROM comprovante_token WHERE token=${tok}`
+    ? await sql`SELECT arquivo, enviado_em, aberto_em, dados, criado_em FROM comprovante_token WHERE token=${tok}`
     : [null];
   if (row && row.arquivo) {
     return { ok: true, chegou: true, arquivo: row.arquivo, abriu: true, token: tok, dados: dadosObj(row.dados) };
   }
   const n = Number(numero) || 0;
+  // Só vale foto enviada DEPOIS deste QR: sem isso, "tirar outra" pelo celular
+  // devolvia na hora a foto anterior da mesma mesa (ainda não usada) — 30/09.
   if (n) {
     const [outro] = await sql`SELECT token, arquivo, dados FROM comprovante_token
       WHERE numero=${n} AND arquivo IS NOT NULL AND usado_em IS NULL
         AND criado_em > now() - interval '30 minutes'
         AND (${forma}::text IS NULL OR forma=${forma}::text)
+        AND enviado_em >= ${row?.criado_em || new Date(0)}
       ORDER BY enviado_em DESC LIMIT 1`;
     if (outro) return { ok: true, chegou: true, arquivo: outro.arquivo, abriu: true, token: outro.token, dados: dadosObj(outro.dados) };
   }
