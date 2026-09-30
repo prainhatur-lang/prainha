@@ -21247,7 +21247,7 @@ function telaManual(el){
     '<div class="card"><div class="tit" style="margin-top:0">Recebimento manual · mesa '+MESA+'</div>'+
     '<div class="mut">Falta <b>'+brl(c.falta||0)+'</b>. Pode receber em partes — cada entrada com seu comprovante.</div>'+
     '<div class="row" style="margin-top:10px" id="mchips">'+chips+'</div>'+
-    '<input id="mv" class="num" inputmode="decimal" placeholder="quanto entrou?" readonly onclick="kpAlvo(this)" style="margin-top:10px">'+kpHtml('mv')+
+    '<div id="mvbox"><input id="mv" class="num" inputmode="decimal" placeholder="quanto entrou?" readonly onclick="kpAlvo(this)" style="margin-top:10px">'+kpHtml('mv')+'</div>'+
     '<div id="mcomp"></div>'+
     '<button class="big" id="mok" onclick="manConfirmar()">Confirmar recebimento</button>'+
     '<div id="merr" class="err"></div></div>';
@@ -21261,7 +21261,7 @@ function manEstado(){
   var v=numBr((document.getElementById('mv')||{}).value);
   var temFoto=!!(MAN.foto||MAN.arquivo);
   var precisa=MAN.forma!=='dinheiro';
-  var falta = !(v>0) ? 'digite o valor' : (precisa&&!temFoto ? 'falta o comprovante' : null);
+  var falta = precisa&&!temFoto ? 'tire a foto do comprovante' : (!(v>0) ? 'digite o valor' : null);
   b.disabled=!!falta;
   b.style.opacity=falta?'.45':'1';
   b.style.background=falta?'#94a3b8':'';
@@ -21274,6 +21274,11 @@ function manForma(f){
     b.classList.toggle('on', b.textContent.toLowerCase().indexOf(f==='dinheiro'?'dinheiro':f==='pix'?'pix':f==='credito'?'crédito':'débito')>=0);
   });
   var box=document.getElementById('mcomp'); if(!box)return;
+  // Cartão/Pix: o caixa só tira a foto — valor e NSU saem do papel. Os campos
+  // só aparecem se a leitura falhar ou se ele tocar em "corrigir" (30/09).
+  var mvb=document.getElementById('mvbox'), mv0=document.getElementById('mv');
+  if(mvb)mvb.style.display=f==='dinheiro'?'':'none';
+  if(mv0&&f!=='dinheiro')mv0.value='';
   if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; manEstado(); return }
   // NSU: cartão manual SEM o NSU não tem par na conciliação e o caixa não
   // fecha sozinho (caso do pedido 158633, 20/08). O número está impresso no
@@ -21281,8 +21286,8 @@ function manForma(f){
   // Pix na casa SEMPRE passa pela maquininha (regra do dono: não se aceita Pix
   // direto na conta) — então Pix sem NSU é erro igual cartão sem NSU.
   var nsuHtml=(f==='credito'||f==='debito'||f==='pix')
-    ? '<div class="mut" style="margin-top:12px"><b>NSU do comprovante (obrigatório)</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
-      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto costuma preencher sozinha" style="margin-top:6px">'
+    ? '<div id="mnsubox" style="display:none"><div class="mut" style="margin-top:12px"><b>NSU do comprovante (obrigatório)</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
+      '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto costuma preencher sozinha" style="margin-top:6px"></div>'
     : '';
   box.innerHTML=nsuHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
@@ -21297,8 +21302,12 @@ function manForma(f){
 /* Trocar a foto APAGA a anterior: foto, token, leitura e o NSU que veio dela.
    Antes "tirar outra" deixava tudo de pé e o caixa confirmava com o papel
    velho (30/09). NSU digitado à mão é do caixa — só limpa o que a IA pôs. */
+function manCampos(mostrar){
+  ['mvbox','mnsubox'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display=mostrar?'':'none'});
+}
 function manDescartar(){
   manParar();
+  if(MAN.forma!=='dinheiro'){var mv=document.getElementById('mv');if(mv)mv.value='';manCampos(false)}
   if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
   var campo=document.getElementById('mnsu');
   var nsuIa=MAN.dados&&MAN.dados.nsu?String(MAN.dados.nsu).replace(/\\D/g,''):'';
@@ -21358,29 +21367,32 @@ function manLido(arquivo, d, origem){
     return;
   }
   if(!d||d.confianca==='erro'){
-    box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — pode confirmar assim mesmo'+
+    manCampos(true);
+    box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — digite o valor e o NSU acima'+
       (d&&d.observacao?' ('+esc(d.observacao)+')':'')+'</div>'+
       '<button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
     return;
   }
   var nsu=(d.nsu||'').replace(/\\D/g,'');
   var campo=document.getElementById('mnsu');
-  if(campo&&nsu&&!campo.value)campo.value=nsu;
+  if(campo&&nsu)campo.value=nsu;
   var linha=[d.operadora,d.tipo,d.bandeira,d.valor!=null?brl(d.valor):null].filter(Boolean).join(' · ');
   var vLido=d.valor, vDig=numBr((document.getElementById('mv')||{}).value);
   var avisos='';
   if(d.via==='loja')avisos+='<div style="color:#0f8a3e;font-weight:600">✅ VIA LOJA</div>';
   else if(d.via==='cliente')avisos+='<div style="color:var(--red);font-weight:600">⚠️ é a VIA DO CLIENTE — a via da loja é a que prova o recebimento</div>';
-  if(vLido!=null&&vDig>0&&Math.abs(vLido-vDig)>0.009)
-    avisos+='<div style="color:var(--red);font-weight:600">⚠️ o papel diz '+brl(vLido)+' e você digitou '+brl(vDig)+'</div>';
-  // campo vazio: o valor do papel entra sozinho (quem digitou, manda)
-  if(vLido!=null&&!(vDig>0)){manUsarValor(vLido);avisos+='<div class="mut">valor '+brl(vLido)+' preenchido pelo papel</div>'}
+  // o papel manda: valor e NSU entram sozinhos. Faltou algum? abre os campos.
+  if(vLido!=null)manUsarValor(vLido);
+  if(vLido==null||(campo&&!nsu)){manCampos(true);
+    avisos+='<div style="color:var(--red);font-weight:600">⚠️ não li '+(vLido==null&&campo&&!nsu?'o valor nem o NSU':vLido==null?'o valor':'o NSU')+' — digite acima</div>'}
+  else avisos+='<div class="mut"><a class="sair" onclick="manCampos(true)">corrigir valor/NSU</a></div>';
   if(d.confianca==='baixa')avisos+='<div class="mut">⚠️ foto difícil de ler — confira o NSU</div>';
   if(d.observacao)avisos+='<div class="mut">'+esc(d.observacao)+'</div>';
   box.innerHTML=img+vindo+
     '<div class="card" style="margin:8px 0;padding:10px">'+
       (linha?'<div><b>'+esc(linha)+'</b></div>':'')+
-      (nsu?'<div class="mut">NSU/DOC <b>'+esc(nsu)+'</b>'+(campo?' — preenchido':'')+'</div>':'<div class="mut">NSU não encontrado no papel</div>')+
+      (vLido!=null?'<div style="font-size:20px;font-weight:700;margin-top:4px">'+brl(vLido)+'</div>':'')+
+      (nsu?'<div class="mut">NSU/DOC <b>'+esc(nsu)+'</b></div>':'<div class="mut">NSU não encontrado no papel</div>')+
       (d.idPix?'<div class="mut" style="word-break:break-all">Pix '+esc(d.idPix)+'</div>':'')+
       (d.pagador?'<div class="mut">pagador: '+esc(d.pagador)+'</div>':'')+
       (d.dataHora?'<div class="mut">'+esc(d.dataHora)+'</div>':'')+
@@ -21452,13 +21464,14 @@ async function manConfirmar(){
   manEstado();
   var v=numBr((document.getElementById('mv')||{}).value);
   var e=document.getElementById('merr'); e.textContent='';
-  if(!(v>0)){e.textContent='digite o valor que entrou';return}
+  if(!(v>0)){manCampos(true);e.textContent='digite o valor que entrou';return}
   if(MAN.forma!=='dinheiro'&&!MAN.foto&&!MAN.arquivo){e.textContent='anexe a foto do comprovante';return}
   var nsu=((document.getElementById('mnsu')||{}).value||'').replace(/\\D/g,'');
   // NSU é obrigatório (o servidor também barra). Sem ele o pagamento não tem
   // par na conciliação e o caixa de quem recebeu não fecha sozinho.
   if((MAN.forma==='credito'||MAN.forma==='debito'||MAN.forma==='pix')&&!nsu){
     e.textContent='digite o NSU do comprovante (número DOC/NSU no papel da maquininha)';
+    manCampos(true);
     var cn=document.getElementById('mnsu'); if(cn){cn.style.borderColor='#dc2626';cn.focus()}
     return;
   }
