@@ -7722,8 +7722,45 @@ async function fbUsuarioCodigo(login) {
     return { codigo: null, nome: T(g?.nome) || l, login: l };
   }
   const r = await qi(`SELECT FIRST 1 CODIGO, TRIM(COALESCE(NOME,'')) NOME FROM VWUSUARIOS WHERE ATIVO='S' AND LOWER(TRIM(LOGIN))='${fbEsc(String(login || '').toLowerCase())}'`);
-  if (!r.ok || !r.rows.length) return null;
+  if (!r.ok) return null;
+  if (!r.rows.length) return fbEspelhoDoLocal(login);
   return { codigo: Number(r.rows[0].CODIGO), nome: T(r.rows[0].NOME) };
+}
+/** USUÁRIO NOSSO numa casa COM Consumer. O caixa mora no Consumer
+ *  (CAIXA.CODIGOUSUARIO) e quem foi criado em Caixa → Usuários não existe lá:
+ *  entrava, via as mesas, e "Abrir caixa" dizia "não achei seu usuário no
+ *  Consumer" (Prainha Mar, 30/09). Aqui ganha um cadastro-ESPELHO no Consumer,
+ *  INATIVO e sem senha: serve só pra ser dono do caixa. Inativo de propósito —
+ *  permsDoUsuario lê só ATIVO='S', então as permissões continuam vindo do
+ *  usuario_local, e ninguém entra no Consumer desktop com ele. */
+const espelhoCriando = new Map();
+async function fbEspelhoDoLocal(login) {
+  const l = String(login || '').trim().toLowerCase();
+  if (!l) return null;
+  const [loc] = await sql`SELECT nome, ativo FROM usuario_local WHERE lower(login)=${l}`;
+  if (!loc || loc.ativo === false) return null;
+  const nome = T(loc.nome) || l;
+  const achar = async () => {
+    const g = await qi(`SELECT FIRST 1 CODIGO FROM USUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(l)}' ORDER BY CODIGO`);
+    return g.ok && g.rows.length ? { codigo: Number(g.rows[0].CODIGO), nome } : null;
+  };
+  const ja = await achar();
+  if (ja) return ja;
+  if (!/^[a-z0-9_.]{2,20}$/.test(l)) return null; // login que o Consumer não aceita
+  // dois pedidos ao mesmo tempo (tela + maquininha) não criam dois espelhos
+  if (!espelhoCriando.has(l)) {
+    espelhoCriando.set(l, (async () => {
+      try {
+        await fbEquipeCriar({ nome, login: l, tipo: 'Atendente' });
+        const q = await qi(`UPDATE USUARIOS SET ATIVO='N' WHERE LOWER(TRIM(LOGIN))='${fbEsc(l)}'`);
+        if (!q.ok) console.error('[espelho] inativar ' + l + ': ' + q.err);
+        console.log(`[espelho] ${l} (usuário nosso) ganhou cadastro-espelho inativo no Consumer pro caixa`);
+      } catch (e) { console.error('[espelho] ' + l + ':', e.message); }
+      finally { espelhoCriando.delete(l); }
+    })());
+  }
+  await espelhoCriando.get(l);
+  return achar();
 }
 async function fbCaixaDoOperador(login) {
   if (nativo()) {
@@ -8648,7 +8685,9 @@ async function apiUsuarioLocalSalvar(body, quem) {
   // login que já existe no Consumer fica com o Consumer — dois cadastros com
   // o mesmo nome é confusão garantida na hora de apurar quem fez o quê
   let doPdv = null;
-  if (!nativo()) try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
+  const jaLocal = (await sql`SELECT 1 FROM usuario_local WHERE login=${login}`).length > 0;
+  // o espelho inativo (fbEspelhoDoLocal) do próprio usuário nosso não conta
+  if (!nativo() && !jaLocal) try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
   if (doPdv?.ok && doPdv.rows.length) return { ok: false, erro: `"${login}" já existe no Consumer — use outro nome ou dê a permissão por lá` };
   const ja = (await sql`SELECT login FROM usuario_local WHERE login=${login}`)[0];
   if (!ja && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
@@ -25450,7 +25489,9 @@ async function migrarConsumer() {
       VALUES (${login}, ${codigo}, ${T(x.NOME) || login}, ${lista}, ${T(x.TIPO).toUpperCase() === 'ADMINISTRADOR'},
         ${String(x.ATIVO || '').trim().toUpperCase() === 'S'}, 'migrar-consumer')
       ON CONFLICT (login) DO UPDATE SET codigo=EXCLUDED.codigo, nome=EXCLUDED.nome, perms=EXCLUDED.perms,
-        admin=EXCLUDED.admin, ativo=EXCLUDED.ativo`;
+        admin=EXCLUDED.admin, ativo=EXCLUDED.ativo
+      -- espelho INATIVO de usuário nosso (fbEspelhoDoLocal) não apaga o nosso
+      WHERE EXCLUDED.ativo OR usuario_local.criado_por IS NOT DISTINCT FROM 'migrar-consumer'`;
     nUsu++;
   }
   console.log(`[migrar] usuários: ${nUsu} em usuario_local (PIN de cada um preservado em garcom_pin)`);
