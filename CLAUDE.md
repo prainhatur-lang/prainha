@@ -22,6 +22,17 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
    - **CREATE TABLE nova → SEMPRE terminar com `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY`** (ENABLE, nunca FORCE). Sem isso a anon key do Supabase lê/escreve a tabela via PostgREST (aconteceu 2x: jun + ago/2026 — as tabelas da Nina/eventos vazaram). Conserto rápido: `pnpm --filter @concilia/db migrate:rls` (idempotente, pega todas).
 4. **Timezone BRT.** Use os helpers de `@/lib/datas` (`hojeBr()`, `diasAtrasBr(n)`, `dateToBrYmd`) — NUNCA `new Date().toISOString().slice(0,10)` (bug recorrente em prod). `diasAtrasBr(-1)` = amanhã.
 5. **Typecheck antes de commitar:** `pnpm --filter @concilia/web typecheck`.
+6. **O que já funciona NÃO sai.** Toda mudança é ADITIVA: o jeito antigo continua
+   igual (mesmo lugar, mesmo comportamento) e o novo entra ao lado. Nunca remover,
+   trocar ou esconder campo, botão, rota, fluxo ou permissão em uso pra "melhorar":
+   isso só com pedido explícito do dono. Antes de mexer num fluxo existente, liste o
+   que ele faz hoje e confirme no diff que continua fazendo (`git diff` sem linha `-`
+   de lógica antiga). Mudança de acesso/permissão confere que quem já entrava e
+   lançava continua entrando e lançando. Casos: a 1.10.26 da maquininha trocou o
+   campo "Ou digite o valor" por um botão (30/09); acessos por check barraram o
+   garçom de lançar (29/09); login pela nuvem da 1.10.24 prendeu a LIO no túnel.
+   Release de LIO/vendas-local só sai depois de conferir: lançar, receber inteiro,
+   parcial digitado, dividir, TUDO (mesa+comandas), fechar conta e rota local ⚡.
 
 ## Multi-tenant & permissões
 - Hierarquia: `organizacao → filial → dados`. Toda query filtra por `filialId`.
