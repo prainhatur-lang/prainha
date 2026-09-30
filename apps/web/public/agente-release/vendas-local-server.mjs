@@ -2868,8 +2868,22 @@ async function pgPagoDoPedido(ped) {
 //   VALORTOTAL       ↔ valor_total          DATADELETE  ↔ cancelado_em
 //   TOTALDESCONTO    ↔ total_desconto       NOMEPRODUTO ↔ nome
 //   TOTALACRESCIMO   ↔ total_acrescimo
+/** Conta que veio do Consumer (espelho de antes da virada pro banco próprio —
+ *  mesa 100 da Prainha Mar, 30/09) não tem total_itens/total_servico: o
+ *  desconto em % dava "valor inválido" (é % sobre os itens). Completa só o que
+ *  falta, a partir dos itens, SEM mexer no valor_total que veio de lá. */
+async function pgCompletarTotais(ped) {
+  await sql`UPDATE comanda c SET
+      total_itens = s.v,
+      total_servico = COALESCE(c.total_servico, GREATEST(0, COALESCE(c.valor_total,0) - s.v
+        + COALESCE(c.total_desconto,0) - COALESCE(c.total_acrescimo,0) - COALESCE(c.valor_entrega,0)))
+    FROM (SELECT COALESCE(SUM(valor_total),0) v FROM comanda_item
+          WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL) s
+    WHERE c.codigo=${Number(ped)} AND c.total_itens IS NULL`;
+}
 async function pedTotais(ped) {
   if (nativo()) {
+    await pgCompletarTotais(ped).catch(() => {});
     const [r] = await sql`SELECT COALESCE(total_itens,0) i, COALESCE(total_servico,0) s,
         COALESCE(valor_total,0) t, COALESCE(total_desconto,0) d, COALESCE(total_acrescimo,0) a
       FROM comanda WHERE codigo=${Number(ped)}`;
@@ -2886,6 +2900,7 @@ async function pedTotais(ped) {
 /** Cabeçalho da comanda no formato das colunas do PEDIDOS (I,S,D,A,T,NOME,CS) —
  *  as telas que já leem assim não precisam de dois caminhos. */
 async function pgCabecalhoPedido(ped) {
+  await pgCompletarTotais(ped).catch(() => {});
   const [r] = await sql`SELECT COALESCE(total_itens,0) i, COALESCE(total_servico,0) s, COALESCE(total_desconto,0) d,
       COALESCE(total_acrescimo,0) a, COALESCE(valor_total,0) t, COALESCE(nome,'') nome, COALESCE(conta_pedida,false) cs
     FROM comanda WHERE codigo=${Number(ped)}`;
