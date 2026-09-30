@@ -10203,10 +10203,17 @@ async function apiComprovanteEnviar(body) {
   // Foto de DEVOLUÇÃO (garrafa devolvida) não é comprovante — não tem o que ler.
   if (row.forma !== 'devolucao') {
     lerComprovanteNaNuvem(arq).then(async (d) => {
-      if (d) await sql`UPDATE comprovante_token SET dados=${JSON.stringify(d)} WHERE token=${t}`;
+      if (d) await sql`UPDATE comprovante_token SET dados=${sql.json(d)} WHERE token=${t}`;
     }).catch(() => {});
   }
   return { ok: true };
+}
+/** jsonb gravado com JSON.stringify volta como STRING (o driver codifica duas
+ *  vezes). Foi o que fazia a foto do celular chegar "sem NSU" em 30/09: a tela
+ *  recebia texto, não objeto. A escrita agora usa sql.json; isto lê os antigos. */
+function dadosObj(v) {
+  if (v && typeof v === 'string') { try { v = JSON.parse(v); } catch { return null; } }
+  return v && typeof v === 'object' ? v : null;
 }
 /** Chegou comprovante? Pergunta pelo TOKEN e, se não veio nele, POR MESA.
  *
@@ -10222,7 +10229,7 @@ async function apiComprovanteStatus(t, numero = null, forma = null) {
     ? await sql`SELECT arquivo, enviado_em, aberto_em, dados FROM comprovante_token WHERE token=${tok}`
     : [null];
   if (row && row.arquivo) {
-    return { ok: true, chegou: true, arquivo: row.arquivo, abriu: true, token: tok, dados: row.dados || null };
+    return { ok: true, chegou: true, arquivo: row.arquivo, abriu: true, token: tok, dados: dadosObj(row.dados) };
   }
   const n = Number(numero) || 0;
   if (n) {
@@ -10231,7 +10238,7 @@ async function apiComprovanteStatus(t, numero = null, forma = null) {
         AND criado_em > now() - interval '30 minutes'
         AND (${forma}::text IS NULL OR forma=${forma}::text)
       ORDER BY enviado_em DESC LIMIT 1`;
-    if (outro) return { ok: true, chegou: true, arquivo: outro.arquivo, abriu: true, token: outro.token, dados: outro.dados || null };
+    if (outro) return { ok: true, chegou: true, arquivo: outro.arquivo, abriu: true, token: outro.token, dados: dadosObj(outro.dados) };
   }
   if (!row) return { ok: false, erro: 'token desconhecido' };
   return { ok: true, chegou: false, arquivo: null, abriu: !!row.aberto_em, token: tok };
@@ -10254,7 +10261,7 @@ async function apiComprovanteFoto(body, quem) {
     VALUES (${token}, ${numero}, ${Number(body.valor) || null}, ${String(body.forma || '')},
       ${arq}, ${quem?.login || null}, now(), now())`;
   const dados = String(body.forma || '') === 'devolucao' ? null : await lerComprovanteNaNuvem(arq);
-  if (dados) await sql`UPDATE comprovante_token SET dados=${JSON.stringify(dados)} WHERE token=${token}`;
+  if (dados) await sql`UPDATE comprovante_token SET dados=${sql.json(dados)} WHERE token=${token}`;
   return { ok: true, token, arquivo: arq, dados: dados || null };
 }
 /** Registra o recebimento e devolve quanto ainda falta na conta. */
@@ -10368,7 +10375,7 @@ async function apiCaixaReceberManual(body, quem) {
         ${arquivo}, ${body.nsu ? String(body.nsu).slice(0, 30) : null}, ${quem.login},
         ${d?.operadora || null}, ${d?.bandeira || null}, ${d?.tipo || null}, ${d?.via || null},
         ${d?.autorizacao || null}, ${d?.valor ?? null}, ${d?.idPix || null},
-        ${d ? JSON.stringify(d) : null})`;
+        ${d ? sql.json(d) : null})`;
   } catch (e) { console.error('[manual] índice do comprovante:', e.message); }
   // quitou = fecha a conta, igual ao recebimento em dinheiro
   if (r.quitada) {
@@ -21328,6 +21335,11 @@ function manLido(arquivo, d, origem){
   MAN.dados=d||null;
   var img='<img src="/foto/'+esc(arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">';
   var vindo='<div class="mut">✓ comprovante '+(origem==='tablet'?'anexado':'recebido do celular')+'</div>';
+  if(origem==='lendo'){
+    box.innerHTML=img+'<div class="mut">✓ comprovante recebido do celular · 🔎 lendo NSU e valor…</div>'+
+      '<button class="seg" onclick="manCamera()">tirar outra</button>';
+    return;
+  }
   if(!d||d.confianca==='erro'){
     box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — pode confirmar assim mesmo'+
       (d&&d.observacao?' ('+esc(d.observacao)+')':'')+'</div>'+
@@ -21344,8 +21356,8 @@ function manLido(arquivo, d, origem){
   else if(d.via==='cliente')avisos+='<div style="color:var(--red);font-weight:600">⚠️ é a VIA DO CLIENTE — a via da loja é a que prova o recebimento</div>';
   if(vLido!=null&&vDig>0&&Math.abs(vLido-vDig)>0.009)
     avisos+='<div style="color:var(--red);font-weight:600">⚠️ o papel diz '+brl(vLido)+' e você digitou '+brl(vDig)+'</div>';
-  if(vLido!=null&&!(vDig>0))
-    avisos+='<div class="mut">o papel diz '+brl(vLido)+' — <a class="sair" onclick="manUsarValor('+vLido+')">usar esse valor</a></div>';
+  // campo vazio: o valor do papel entra sozinho (quem digitou, manda)
+  if(vLido!=null&&!(vDig>0)){manUsarValor(vLido);avisos+='<div class="mut">valor '+brl(vLido)+' preenchido pelo papel</div>'}
   if(d.confianca==='baixa')avisos+='<div class="mut">⚠️ foto difícil de ler — confira o NSU</div>';
   if(d.observacao)avisos+='<div class="mut">'+esc(d.observacao)+'</div>';
   box.innerHTML=img+vindo+
@@ -21394,14 +21406,20 @@ async function manCelular(externo){
         if(cs)cs.innerHTML='<b style="color:var(--red)">sua sessão caiu — entre no caixa de novo</b>';return}
       if(st.ok&&st.chegou){
         manParar(); MAN.arquivo=st.arquivo;
-        manLido(st.arquivo, st.dados, 'celular');
+        if(st.token)MAN.token=st.token;
         manEstado();
-        // a leitura roda em segundo plano no servidor: se ainda não veio,
-        // busca de novo uma vez, senão o caixa perde o NSU automático
-        if(!st.dados)setTimeout(async function(){
-          try{var s2=await jget('/api/caixa/comprovante?t='+encodeURIComponent(MAN.token)+'&n='+MESA);
-            if(s2&&s2.ok&&s2.dados)manLido(s2.arquivo||MAN.arquivo,s2.dados,'celular')}catch(e){}
-        },6000);
+        if(st.dados){manLido(st.arquivo, st.dados, 'celular');manEstado();return}
+        // a leitura roda em segundo plano no servidor (a IA leva 3-20 s):
+        // espera por ela até ~30 s, senão o caixa perde o NSU automático
+        manLido(st.arquivo, null, 'lendo');
+        var tent=0, tk=MAN.token;
+        MAN.poll=setInterval(async function(){
+          if(MAN.token!==tk){clearInterval(MAN.poll);return}
+          tent++;
+          try{var s2=await jget('/api/caixa/comprovante?t='+encodeURIComponent(tk)+'&n='+MESA);
+            if(s2&&s2.ok&&s2.dados){manParar();manLido(s2.arquivo||MAN.arquivo,s2.dados,'celular');manEstado();return}}catch(e){}
+          if(tent>=15){manParar();manLido(MAN.arquivo,null,'celular')}
+        },2000);
         return;
       }
       // o celular ABRIU o link mas a foto não veio: quase sempre é o celular
