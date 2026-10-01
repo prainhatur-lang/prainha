@@ -20,6 +20,10 @@ interface Props {
   grade: Celula[];
 }
 
+// O horário digitado é o da loja (BRT, sem horário de verão). Vai com o fuso
+// explícito: sem ele o servidor (UTC) gravava a batida 3 horas antes.
+const FUSO_BR = '-03:00';
+
 function fmtHM(min: number): string {
   return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
 }
@@ -201,13 +205,13 @@ function ModalCorrecao({
     const body: Record<string, unknown> = { funcionarioId, dia, acao, justificativa: justificativa.trim() };
     if (acao === 'inclusao') {
       if (!hora) { setErro('Informe o horário.'); return; }
-      body.quando = `${dia}T${hora}:00`;
+      body.quando = `${dia}T${hora}:00${FUSO_BR}`;
       body.tipo = tipo;
     } else {
       body.batidaId = batidaAlvo!.id;
       if (acao === 'alteracao') {
         if (!hora) { setErro('Informe o horário.'); return; }
-        body.quando = `${dia}T${hora}:00`;
+        body.quando = `${dia}T${hora}:00${FUSO_BR}`;
         body.tipo = tipo;
       }
     }

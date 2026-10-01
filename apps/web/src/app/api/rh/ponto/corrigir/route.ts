@@ -22,6 +22,14 @@ const Body = z.object({
   justificativa: z.string().min(10).max(500),
 });
 
+/** Horário digitado na tela é o da loja (BRT). Se chegar sem fuso (aba aberta
+ *  com a tela antiga), assume -03:00 — o servidor roda em UTC e gravaria a
+ *  batida 3 horas antes. */
+function quandoBr(s: string): Date {
+  const temFuso = /(Z|[+-]\d{2}:?\d{2})$/i.test(s);
+  return new Date(temFuso ? s : `${s}-03:00`);
+}
+
 export async function POST(req: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -40,6 +48,10 @@ export async function POST(req: Request) {
   }
   if (d.acao !== 'inclusao' && !d.batidaId) {
     return NextResponse.json({ error: 'batidaId é obrigatório pra alterar/excluir' }, { status: 400 });
+  }
+  const quando = d.quando ? quandoBr(d.quando) : null;
+  if (d.acao !== 'exclusao' && (!quando || Number.isNaN(quando.getTime()))) {
+    return NextResponse.json({ error: 'horário inválido' }, { status: 400 });
   }
 
   const [func] = await db
@@ -66,14 +78,14 @@ export async function POST(req: Request) {
       .values({
         filialId: func.filialId,
         funcionarioId: d.funcionarioId,
-        quando: new Date(d.quando!),
+        quando: quando!,
         diaOperacional: d.dia,
         tipo: d.tipo!,
         origem: 'correcao',
       })
       .returning({ id: schema.pontoBatida.id });
     batidaId = criada.id;
-    valorDepois = { quando: d.quando!, tipo: d.tipo! };
+    valorDepois = { quando: quando!.toISOString(), tipo: d.tipo! };
   } else {
     const [atual] = await db
       .select()
@@ -87,9 +99,9 @@ export async function POST(req: Request) {
     if (d.acao === 'alteracao') {
       await db
         .update(schema.pontoBatida)
-        .set({ quando: new Date(d.quando!), tipo: d.tipo!, origem: 'correcao' })
+        .set({ quando: quando!, tipo: d.tipo!, origem: 'correcao' })
         .where(eq(schema.pontoBatida.id, atual.id));
-      valorDepois = { quando: d.quando!, tipo: d.tipo! };
+      valorDepois = { quando: quando!.toISOString(), tipo: d.tipo! };
     } else {
       await db
         .update(schema.pontoBatida)
