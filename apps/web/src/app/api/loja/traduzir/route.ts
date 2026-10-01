@@ -68,65 +68,83 @@ const SCHEMA = {
   },
 } as const;
 
-/** Claude quando ANTHROPIC_API_KEY existe; senão gpt-4o via OPENAI_API_KEY
- *  (mesma ordem da interpretação de cotação). Devolve o JSON como string. */
+async function viaClaude(key: string, userMsg: string): Promise<string> {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: process.env.TRADUCAO_MODELO || 'claude-opus-5',
+      max_tokens: 16000,
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: SCHEMA },
+      },
+      system: SYSTEM,
+      messages: [{ role: 'user', content: userMsg }],
+    }),
+  });
+  if (!resp.ok) {
+    const errTxt = await resp.text().catch(() => '');
+    throw new Error(`Claude HTTP ${resp.status}: ${errTxt.slice(0, 300)}`);
+  }
+  const data = (await resp.json()) as {
+    stop_reason?: string;
+    content?: Array<{ type: string; text?: string }>;
+  };
+  if (data.stop_reason === 'refusal') throw new Error('Claude recusou o texto');
+  const texto = data.content?.find((b) => b.type === 'text')?.text;
+  if (!texto) throw new Error('Claude nao devolveu texto');
+  return texto;
+}
+
+async function viaOpenAI(key: string, userMsg: string): Promise<string> {
+  const client = new OpenAI({ apiKey: key });
+  const resp = await client.chat.completions.create({
+    model: 'gpt-4o',
+    max_tokens: 16000,
+    messages: [
+      { role: 'system', content: SYSTEM },
+      { role: 'user', content: userMsg },
+    ],
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'traducoes', strict: true, schema: SCHEMA as unknown as Record<string, unknown> },
+    },
+  });
+  const msg = resp.choices[0]?.message;
+  if (msg?.refusal) throw new Error('gpt-4o recusou o texto');
+  if (!msg?.content) throw new Error('gpt-4o nao devolveu texto');
+  return msg.content;
+}
+
+/** Claude quando ANTHROPIC_API_KEY existe; gpt-4o (OPENAI_API_KEY) quando não
+ *  existe OU quando o Claude falha (sem crédito, fora do ar) — o cardápio não
+ *  fica sem tradução por causa de uma das duas. Devolve o JSON como string. */
 async function chamarIA(userMsg: string): Promise<string> {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': anthropicKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: process.env.TRADUCAO_MODELO || 'claude-opus-5',
-        max_tokens: 16000,
-        output_config: {
-          effort: 'low',
-          format: { type: 'json_schema', schema: SCHEMA },
-        },
-        system: SYSTEM,
-        messages: [{ role: 'user', content: userMsg }],
-      }),
-    });
-    if (!resp.ok) {
-      const errTxt = await resp.text().catch(() => '');
-      throw new Error(`Claude HTTP ${resp.status}: ${errTxt.slice(0, 300)}`);
-    }
-    const data = (await resp.json()) as {
-      stop_reason?: string;
-      content?: Array<{ type: string; text?: string }>;
-    };
-    if (data.stop_reason === 'refusal') throw new Error('Claude recusou o texto');
-    const texto = data.content?.find((b) => b.type === 'text')?.text;
-    if (!texto) throw new Error('Claude nao devolveu texto');
-    return texto;
-  }
-
   const openaiKey = process.env.OPENAI_API_KEY;
-  if (openaiKey) {
-    const client = new OpenAI({ apiKey: openaiKey });
-    const resp = await client.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 16000,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: userMsg },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'traducoes', strict: true, schema: SCHEMA as unknown as Record<string, unknown> },
-      },
-    });
-    const msg = resp.choices[0]?.message;
-    if (msg?.refusal) throw new Error('gpt-4o recusou o texto');
-    if (!msg?.content) throw new Error('gpt-4o nao devolveu texto');
-    return msg.content;
+  if (!anthropicKey && !openaiKey) {
+    throw new Error('Nenhuma chave de IA configurada (ANTHROPIC_API_KEY ou OPENAI_API_KEY) na Vercel.');
   }
-
-  throw new Error('Nenhuma chave de IA configurada (ANTHROPIC_API_KEY ou OPENAI_API_KEY) na Vercel.');
+  let erroClaude: unknown = null;
+  if (anthropicKey) {
+    try {
+      return await viaClaude(anthropicKey, userMsg);
+    } catch (e) {
+      if (!openaiKey) throw e;
+      erroClaude = e;
+    }
+  }
+  try {
+    return await viaOpenAI(openaiKey!, userMsg);
+  } catch (e) {
+    const a = erroClaude instanceof Error ? `${erroClaude.message} · ` : '';
+    throw new Error(`${a}${e instanceof Error ? e.message : 'falha no gpt-4o'}`);
+  }
 }
 
 export async function POST(request: Request) {
