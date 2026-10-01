@@ -44,6 +44,17 @@ export default async function NotaDetalhePage(props: {
     .limit(1);
   if (!link) notFound();
 
+  // Nota que NÓS emitimos (NF-e de transferência entre casas): o estoque
+  // entra pelo recebimento da transferência — lançar aqui dobraria a entrada.
+  const [nfeTransf] = nota.chave
+    ? await db
+        .select({ transferenciaId: schema.nfeEmitida.transferenciaId, numero: schema.transferenciaFilial.numero })
+        .from(schema.nfeEmitida)
+        .leftJoin(schema.transferenciaFilial, eq(schema.transferenciaFilial.id, schema.nfeEmitida.transferenciaId))
+        .where(eq(schema.nfeEmitida.chave, nota.chave))
+        .limit(1)
+    : [];
+
   const itens = await db
     .select({
       id: schema.notaCompraItem.id,
@@ -304,6 +315,16 @@ export default async function NotaDetalhePage(props: {
               )}
             </div>
             <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>
+            {nfeTransf?.transferenciaId && (
+              <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                ⚠️ Esta é a nota fiscal da <b>transferência #{nfeTransf.numero}</b> entre casas. O estoque entra pelo
+                recebimento da transferência —{' '}
+                <Link href={`/movimento/transferencias/${nfeTransf.transferenciaId}/nfe`} className="underline">
+                  ver a transferência
+                </Link>
+                . Não lance os itens por aqui, senão a entrada fica em dobro.
+              </p>
+            )}
             {algumLancado && (
               <Link
                 href={`/movimento/transferencias/nova?notaId=${id}`}

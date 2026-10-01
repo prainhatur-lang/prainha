@@ -649,6 +649,22 @@ export async function cancelarTransferencia(opts: { id: string; userId: string; 
       }
       if (t.status !== 'ABERTA') throw new RecusaTransf(`transferência já está ${t.status.toLowerCase()}`);
     }
+    // Nota fiscal autorizada em produção: cancela a nota antes (senão fica
+    // NF-e válida na SEFAZ de uma mercadoria que não saiu).
+    const [nfe] = await tx
+      .select({ numero: schema.nfeEmitida.numero })
+      .from(schema.nfeEmitida)
+      .where(
+        and(
+          eq(schema.nfeEmitida.transferenciaId, id),
+          eq(schema.nfeEmitida.status, 'AUTORIZADA'),
+          eq(schema.nfeEmitida.ambiente, 1),
+        ),
+      )
+      .limit(1);
+    if (nfe) {
+      throw new RecusaTransf(`essa transferência tem nota fiscal autorizada (NF-e nº ${nfe.numero}) — cancele a nota antes`);
+    }
     if (t.contaPagarId) {
       const baixas = await tx
         .select({ id: schema.contaPagarBaixa.id })

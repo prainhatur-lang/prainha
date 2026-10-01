@@ -21,6 +21,12 @@ const CA_SEFAZ = [...rootCertificates, ...CADEIA_ICP_BRASIL];
 
 const BASE_PROD = 'https://nfce.svrs.rs.gov.br/ws';
 const BASE_HOM = 'https://nfce-homologacao.svrs.rs.gov.br/ws';
+// NF-e (modelo 55) — mesma SVRS, outro host; os caminhos dos serviços são iguais.
+const BASE_PROD_NFE = 'https://nfe.svrs.rs.gov.br/ws';
+const BASE_HOM_NFE = 'https://nfe-homologacao.svrs.rs.gov.br/ws';
+
+/** Modelo do documento: 65 = NFC-e (padrão de todas as funções), 55 = NF-e. */
+export type ModeloDoc = 55 | 65;
 
 const WS = {
   autorizacao: {
@@ -57,9 +63,17 @@ function postSoap(opts: {
   tpAmb: 1 | 2;
   dados: string;
   pem: PemCert;
+  modelo?: ModeloDoc;
 }): Promise<string> {
   const ws = WS[opts.servico];
-  const base = opts.tpAmb === 1 ? BASE_PROD : BASE_HOM;
+  const base =
+    opts.modelo === 55
+      ? opts.tpAmb === 1
+        ? BASE_PROD_NFE
+        : BASE_HOM_NFE
+      : opts.tpAmb === 1
+        ? BASE_PROD
+        : BASE_HOM;
   const u = new URL(base + ws.path);
   const envelope =
     `<?xml version="1.0" encoding="utf-8"?>` +
@@ -184,6 +198,7 @@ export async function enviarNfce(opts: {
   tpAmb: 1 | 2;
   pem: PemCert;
   idLote?: number;
+  modelo?: ModeloDoc;
 }): Promise<RetornoAutorizacao> {
   const idLote = opts.idLote ?? Math.floor(Date.now() / 1000);
   const enviNFe =
@@ -192,7 +207,7 @@ export async function enviarNfce(opts: {
     opts.nfeAssinada +
     `</enviNFe>`;
 
-  const body = await postSoap({ servico: 'autorizacao', tpAmb: opts.tpAmb, dados: enviNFe, pem: opts.pem });
+  const body = await postSoap({ servico: 'autorizacao', tpAmb: opts.tpAmb, dados: enviNFe, pem: opts.pem, modelo: opts.modelo });
   const parsed = parsear(body);
   const ret = acharNo(parsed, 'retEnviNFe');
   if (!ret) throw new Error(`resposta SEFAZ sem retEnviNFe: ${body.replace(/\s+/g, ' ').slice(0, 300)}`);
@@ -217,13 +232,14 @@ export async function consultarChave(opts: {
   chave: string;
   tpAmb: 1 | 2;
   pem: PemCert;
+  modelo?: ModeloDoc;
 }): Promise<RetornoConsulta> {
   const consSitNFe =
     `<consSitNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">` +
     `<tpAmb>${opts.tpAmb}</tpAmb><xServ>CONSULTAR</xServ><chNFe>${opts.chave}</chNFe>` +
     `</consSitNFe>`;
 
-  const body = await postSoap({ servico: 'consulta', tpAmb: opts.tpAmb, dados: consSitNFe, pem: opts.pem });
+  const body = await postSoap({ servico: 'consulta', tpAmb: opts.tpAmb, dados: consSitNFe, pem: opts.pem, modelo: opts.modelo });
   const parsed = parsear(body);
   const ret = acharNo(parsed, 'retConsSitNFe');
   if (!ret) throw new Error(`resposta SEFAZ sem retConsSitNFe: ${body.replace(/\s+/g, ' ').slice(0, 300)}`);
@@ -283,6 +299,7 @@ export async function cancelarNfce(opts: {
   tpAmb: 1 | 2;
   pem: PemCert;
   nSeqEvento?: number;
+  modelo?: ModeloDoc;
 }): Promise<RetornoEventoNfce> {
   const seq = opts.nSeqEvento ?? 1;
   const id = `ID110111${opts.chave}${String(seq).padStart(2, '0')}`;
@@ -316,7 +333,7 @@ export async function cancelarNfce(opts: {
     eventoAssinado +
     `</envEvento>`;
 
-  const body = await postSoap({ servico: 'evento', tpAmb: opts.tpAmb, dados: envEvento, pem: opts.pem });
+  const body = await postSoap({ servico: 'evento', tpAmb: opts.tpAmb, dados: envEvento, pem: opts.pem, modelo: opts.modelo });
   const parsed = parsear(body);
   const retEv = acharNo(parsed, 'retEvento');
   const inf = retEv ? acharNo(retEv, 'infEvento') : null;
@@ -383,12 +400,13 @@ export async function statusServico(opts: {
   cUF: number;
   tpAmb: 1 | 2;
   pem: PemCert;
+  modelo?: ModeloDoc;
 }): Promise<{ cStat: string; xMotivo: string; tMed: string | null }> {
   const cons =
     `<consStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">` +
     `<tpAmb>${opts.tpAmb}</tpAmb><cUF>${opts.cUF}</cUF><xServ>STATUS</xServ>` +
     `</consStatServ>`;
-  const body = await postSoap({ servico: 'status', tpAmb: opts.tpAmb, dados: cons, pem: opts.pem });
+  const body = await postSoap({ servico: 'status', tpAmb: opts.tpAmb, dados: cons, pem: opts.pem, modelo: opts.modelo });
   const parsed = parsear(body);
   const ret = acharNo(parsed, 'retConsStatServ');
   return {

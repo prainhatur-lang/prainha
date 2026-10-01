@@ -224,6 +224,19 @@ export interface FiscalConfig {
   padraoItem?: FiscalPadraoItem;
   /** Responsável técnico (infRespTec). Opcional; algumas UFs exigem. */
   respTec?: { cnpj: string; contato: string; email: string; fone: string };
+  /** NF-e (modelo 55) de transferência entre casas. Tudo opcional. */
+  nfe?: FiscalNfeConfig;
+}
+
+export interface FiscalNfeConfig {
+  /** Série da NF-e modelo 55 (padrão 1). Troque se outro sistema já usa a 1. */
+  serie?: number;
+  /** Ambiente só da NF-e (padrão: o mesmo da NFC-e). */
+  ambiente?: 1 | 2;
+  /** CFOP da transferência (padrão 5152). */
+  cfop?: string;
+  /** CSOSN da transferência (padrão 400 — não tributada pelo Simples). */
+  csosn?: string;
 }
 
 /** Faixa de taxa de entrega por distância em linha reta (km). */

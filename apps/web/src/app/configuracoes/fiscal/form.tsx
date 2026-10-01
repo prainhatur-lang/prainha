@@ -119,6 +119,29 @@ export function FiscalForm({
     }
   }
 
+  async function testarNfe() {
+    setTestando(true);
+    setMsg(null);
+    try {
+      const r = await fetch('/api/nfe/testar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId }),
+      });
+      const j = await r.json();
+      const falta = j.pendencias?.length ? ` · falta: ${j.pendencias.join('; ')}` : '';
+      setMsg(
+        j.ok
+          ? { ok: true, texto: `✓ NF-e (modelo 55) OK na SEFAZ (${j.cStat} ${j.xMotivo}) — ambiente ${j.ambiente}, série ${j.serie}${falta}` }
+          : { ok: false, texto: `NF-e falhou: ${j.erro ?? `${j.cStat} ${j.xMotivo}`}${falta}` },
+      );
+    } catch (e) {
+      setMsg({ ok: false, texto: `Erro: ${(e as Error).message}` });
+    } finally {
+      setTestando(false);
+    }
+  }
+
   async function testar() {
     setTestando(true);
     setMsg(null);
@@ -265,6 +288,14 @@ export function FiscalForm({
           className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
         >
           {testando ? 'Testando…' : '📡 Testar conexão SEFAZ'}
+        </button>
+        <button
+          onClick={testarNfe}
+          disabled={testando}
+          title="NF-e modelo 55 — a nota de transferência entre casas"
+          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        >
+          {testando ? 'Testando…' : '🧾 Testar NF-e (transferência)'}
         </button>
         {msg && (
           <span className={`text-xs font-medium ${msg.ok ? 'text-emerald-700' : 'text-rose-700'}`}>

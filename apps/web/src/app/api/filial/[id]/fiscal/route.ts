@@ -43,6 +43,14 @@ const Body = z.object({
       origem: z.string().regex(/^[0-8]$/).optional(),
     })
     .optional(),
+  nfe: z
+    .object({
+      serie: z.number().int().min(1).max(999).optional(),
+      ambiente: z.union([z.literal(1), z.literal(2)]).optional(),
+      cfop: z.string().regex(/^5\d{3}$/).optional(),
+      csosn: z.string().regex(/^\d{3}$/).optional(),
+    })
+    .optional(),
   respTec: z
     .object({
       cnpj: z.string().regex(/^\d{14}$/),
@@ -82,9 +90,18 @@ export async function PATCH(
     );
   }
 
+  // A tela não manda o bloco `nfe` (NF-e de transferência) — preserva o que
+  // já está salvo pra salvar a config da NFC-e não apagar a da NF-e.
+  const [atual] = await db
+    .select({ cfg: schema.filial.fiscalConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, id))
+    .limit(1);
+  const nfe = parsed.data.nfe ?? atual?.cfg?.nfe;
+
   const [updated] = await db
     .update(schema.filial)
-    .set({ fiscalConfig: parsed.data })
+    .set({ fiscalConfig: { ...parsed.data, ...(nfe ? { nfe } : {}) } })
     .where(eq(schema.filial.id, id))
     .returning({ id: schema.filial.id });
 

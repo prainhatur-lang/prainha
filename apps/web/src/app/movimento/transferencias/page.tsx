@@ -13,6 +13,8 @@ import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { compLabel } from '@/lib/transferencia';
 import { CancelarTransfButton } from './cancelar-btn';
+import { nfesDasTransferencias } from '@/lib/nfe/emitir';
+import { EmitirNfeButton } from './nfe-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +102,9 @@ export default async function TransferenciasPage(props: {
     a.push(it);
     itensPor.set(it.transferenciaId, a);
   }
+
+  // Nota fiscal (NF-e) de cada transferência — opcional, emitida por quem enviou
+  const nfes = await nfesDasTransferencias(idsItens);
 
   const todasFiliais = await db.select({ id: schema.filial.id, nome: schema.filial.nome }).from(schema.filial);
   const nome = new Map(todasFiliais.map((f) => [f.id, f.nome]));
@@ -281,6 +286,8 @@ export default async function TransferenciasPage(props: {
                 const enviou = t.filialOrigemId === filial.id;
                 const its = itensPor.get(t.id) ?? [];
                 const b = BADGE[t.status] ?? { label: t.status, cls: 'bg-slate-100 text-slate-700' };
+                const nf = nfes.get(t.id);
+                const nfValida = nf?.status === 'AUTORIZADA' && nf.ambiente === 1;
                 return (
                   <tr key={t.id} className="border-t border-slate-100 align-top">
                     <td className="px-3 py-2 font-mono text-xs text-slate-500">{t.numero}</td>
@@ -314,8 +321,26 @@ export default async function TransferenciasPage(props: {
                     <td className="px-3 py-2 text-right font-semibold">{brl(t.valorTotal)}</td>
                     <td className="px-3 py-2">
                       <span className={`rounded px-2 py-0.5 text-xs ${b.cls}`}>{b.label}</span>
+                      {nf && (
+                        <Link
+                          href={`/movimento/transferencias/${t.id}/nfe`}
+                          title={nf.status === 'REJEITADA' ? `${nf.cstat ?? ''} ${nf.xmotivo ?? ''}` : nf.chave}
+                          className={`mt-1 block whitespace-nowrap text-xs underline ${
+                            nf.status === 'AUTORIZADA' ? 'text-indigo-700' : nf.status === 'CANCELADA' ? 'text-slate-400' : 'text-rose-700'
+                          }`}
+                        >
+                          🧾 NF-e {nf.numero}
+                          {nf.ambiente !== 1 ? ' (teste)' : ''}
+                          {nf.status === 'AUTORIZADA' ? '' : ` — ${nf.status.toLowerCase()}`}
+                        </Link>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right">
+                      {enviou && t.status !== 'CANCELADA' && !nfValida && (
+                        <div className="mb-1">
+                          <EmitirNfeButton id={t.id} numero={t.numero} />
+                        </div>
+                      )}
                       {t.status === 'ABERTA' && <CancelarTransfButton id={t.id} numero={t.numero} />}
                       {t.status === 'ENVIADA' && (
                         <div className="flex flex-col items-end gap-1">

@@ -34,13 +34,15 @@ export function montarChave(p: {
   /** 1 = emissão normal. */
   tpEmis?: number;
   cnf: string;
+  /** Modelo do documento: '65' NFC-e (padrão) ou '55' NF-e. */
+  mod?: '55' | '65';
 }): string {
   const aamm = p.dhEmi.slice(2, 4) + p.dhEmi.slice(5, 7);
   const sem = [
     String(p.cUF).padStart(2, '0'),
     aamm,
     p.cnpj.replace(/\D/g, '').padStart(14, '0'),
-    '65',
+    p.mod ?? '65',
     String(p.serie).padStart(3, '0'),
     String(p.numero).padStart(9, '0'),
     String(p.tpEmis ?? 1),

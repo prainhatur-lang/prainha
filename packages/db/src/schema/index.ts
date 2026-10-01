@@ -44,3 +44,4 @@ export * from './balanco';
 export * from './fidelidade';
 export * from './loja-saude';
 export * from './transferencia';
+export * from './nfe';

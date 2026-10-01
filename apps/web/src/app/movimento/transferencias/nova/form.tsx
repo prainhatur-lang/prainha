@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { PerguntaNfe } from '../nfe-btn';
 
 export interface ProdOpc {
   id: string;
@@ -192,6 +193,7 @@ export function NovaTransferenciaForm(props: {
               : `Já entrou no estoque de ${nomeDestino}, que ficou devendo esse valor (compensa no encontro de contas do mês).`}
           </p>
         </div>
+        <PerguntaNfe id={feito.id} numero={feito.numero} urlLista={urlLista} />
         <div className="flex flex-wrap gap-2">
           <a
             href={urlLista}
