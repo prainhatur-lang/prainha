@@ -8982,6 +8982,28 @@ async function apiPontoCadastrarRosto(body) {
     atualizado_em=now() WHERE funcionario_id=${funcionarioId}`;
   return { ok: true, nome: pessoa.nome };
 }
+// Tempos do reconhecimento medidos no próprio tablet (30/09/2026, "o ponto
+// ainda está muito lento na hora da foto"): o KDS manda junto com a batida
+// quanto levou pra abrir, o detector e as redes por quadro, quantos quadros e
+// o tempo do rosto na frente até bater. Fica na memória (últimas 40) e sobe no
+// diagnóstico da loja (loja_diagnostico.dados->vendasLocal->pontoFacial). Só
+// número/texto curto — nunca foto nem descritor. Nunca derruba a batida.
+const PONTO_FACIAL_TEMPOS = [];
+function pontoFacialTempos(diag, r) {
+  try {
+    if (!diag || typeof diag !== 'object' || Array.isArray(diag)) return;
+    const x = { em: new Date().toISOString(), ok: !!(r && r.ok), tipo: (r && r.tipo) || null, cooldown: !!(r && r.cooldown) };
+    for (const [k, v] of Object.entries(diag).slice(0, 30)) {
+      if (!/^[a-z_]{1,30}$/.test(k) || k in x) continue;
+      if (typeof v === 'number' && Number.isFinite(v)) x[k] = Math.round(v);
+      else if (typeof v === 'boolean') x[k] = v;
+      else if (typeof v === 'string') x[k] = v.slice(0, 40);
+    }
+    PONTO_FACIAL_TEMPOS.push(x);
+    if (PONTO_FACIAL_TEMPOS.length > 40) PONTO_FACIAL_TEMPOS.shift();
+    console.log(`[ponto] facial ${x.ok ? x.tipo : x.cooldown ? 'cooldown' : 'erro'}: motor ${x.motor ?? '?'}, ${x.quadros ?? '?'} quadro(s), detector ${x.ms_detector ?? '?'} ms, redes ${x.ms_redes ?? '?'} ms, rosto→batida ${x.ms_rosto_ate_bater ?? '?'} ms, abrir ${x.ms_abrir ?? '?'} ms`);
+  } catch {}
+}
 // POST /api/ponto/bater-facial {funcionario_id} — sem PIN: o reconhecimento
 // JÁ aconteceu no navegador. Tipo (entrada/saída) é decidido AQUI, no
 // servidor, a partir da última batida real — nunca confia no que o cliente
@@ -9715,6 +9737,7 @@ async function loopDiagNuvem() {
     const d = await diagWindows();
     if (!d) return;
     d.vendasLocal = { subiuEm: new Date(Date.now() - process.uptime() * 1000).toISOString(), node: process.version };
+    if (PONTO_FACIAL_TEMPOS.length) d.vendasLocal.pontoFacial = PONTO_FACIAL_TEMPOS.slice(-30);
     const e = Math.floor(Date.now() / 1000) + 120;
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/diagnostico`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -13081,7 +13104,38 @@ var PF_PREP=null, PF_MOTOR='';
 var PF_LIMIAR=0.45, PF_FOLGA=0.07, PF_SEGUIDOS=3, PF_INCERTO_MAX=8;
 var PF_SEQ=null, PF_INCERTO=0, PF_AMOSTRAS=[], PF_FECHA_T=null;
 function PF_OPTS(){ return new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5}); }
-function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t)e.textContent=t; }
+function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t){ e.textContent=t; return true; } return false; }
+/* Velocidade na hora da foto (30/09/2026, "ainda está muito lento"): cada volta
+   rodava o detector DUAS vezes (a 2a num quadro novo, só pra emendar pontos do
+   rosto + descritor), dormia 30 ms e ainda esperava o próximo tique fixo de
+   250 ms — no tablet, x3 quadros seguidos, isso somava segundos. E o <video>
+   passado direto pro face-api espera um evento 'load' que vídeo nunca dispara:
+   quadro ainda não pronto = loop parado até fechar e abrir o Ponto.
+   Agora: 1 quadro por volta copiado pro canvas; detector, pontos do rosto e
+   descritor leem a MESMA imagem e a MESMA caixa; com rosto chegando ou já
+   batendo com alguém o próximo quadro sai assim que o anterior termina.
+   Regras de aceite iguais.
+   PF_TEMPOS mede no aparelho e sobe junto com a batida (diagnóstico da loja).
+   Tempos em performance.now(): a hora do tablet pode ser acertada no meio (já
+   teve aparelho 18h atrasado) e o Date.now() pula junto. */
+var PF_QUADRO=null, PF_TEMPOS=null, PF_TICK_T0=0, PF_TICK_ID=0;
+function pfQuadro(video){
+  var w=video.videoWidth, h=video.videoHeight;
+  if (!PF_QUADRO) PF_QUADRO=document.createElement('canvas');
+  if (PF_QUADRO.width!==w||PF_QUADRO.height!==h) { PF_QUADRO.width=w; PF_QUADRO.height=h; }
+  // willReadFrequently igual ao que o face-api usa nos canvas dele (a 1a
+  // chamada fixa o tipo): leitura de pixels rápida, sem ida e volta à GPU
+  PF_QUADRO.getContext('2d',{willReadFrequently:true}).drawImage(video,0,0,w,h);
+  return PF_QUADRO;
+}
+function pfDiag(){
+  var t=PF_TEMPOS||{}, v=document.getElementById('pfVideo'), ag=performance.now();
+  function med(s,n){ return n?Math.round(s/n):null; }
+  return {motor:PF_MOTOR||null, via:t.via||'reconhecimento', modelos_prontos:!!t.modelosProntos, camera_reuso:!!t.reuso,
+    ms_abrir:t.pronto==null?null:t.pronto, ms_desde_abrir:t.t0?Math.round(ag-t.t0):null, ms_rosto_ate_bater:t.rosto?Math.round(ag-t.rosto):null,
+    deteccoes:t.nDet||0, ms_detector:med(t.msDet||0,t.nDet), quadros:t.n||0, ms_redes:med(t.msRedes||0,t.n),
+    incertos:t.inc||0, video:v&&v.videoWidth?v.videoWidth+'x'+v.videoHeight:null};
+}
 /* Carrega a lib + modelos UMA vez e aquece as redes (a 1a inferencia compila
    shaders/aloca memoria e leva segundos). Roda em segundo plano logo que o KDS
    abre, entao o toque no Ponto ja encontra tudo pronto.
@@ -13147,6 +13201,7 @@ async function abrirPontoFacial(){
   document.getElementById('pfExtra').innerHTML='';
   PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false;
   PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[]; clearTimeout(PF_FECHA_T);
+  PF_TEMPOS={t0:performance.now(), modelosProntos:PF_MODELOS_OK};
   // Em http://IP:8790 o navegador nem expoe navigator.mediaDevices — antes o
   // erro saia como "Cannot read properties of undefined". Leva pro https.
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -13181,8 +13236,17 @@ async function abrirPontoFacial(){
     // WebView (Fully Kiosk) nem sempre respeita o autoplay: sem play() o video
     // fica sem quadro, videoWidth=0 e o pfTick nunca reconhece ninguem.
     try { await video.play(); } catch(x) {}
+    // fecharam o Ponto enquanto carregava: não liga o reconhecimento escondido
+    // (nem deixa a câmera própria acesa)
+    if (!document.getElementById('pfModal').classList.contains('on')) {
+      if (PF_STREAM && PF_STREAM_PROPRIO) PF_STREAM.getTracks().forEach(function(t){t.stop();});
+      PF_STREAM=null; PF_STREAM_PROPRIO=false; video.srcObject=null;
+      return;
+    }
     clearInterval(PF_LOOP);
     PF_LOOP=setInterval(pfTick,250);
+    if (PF_TEMPOS) { PF_TEMPOS.pronto=Math.round(performance.now()-PF_TEMPOS.t0); PF_TEMPOS.reuso=!!reuso; }
+    pfTick(); // 1a volta já, sem esperar o 1o tique de 250 ms
   } catch(e) {
     var nome=e&&e.name;
     document.getElementById('pfStatus').textContent='Não consegui abrir a câmera';
@@ -13200,20 +13264,51 @@ function pfMedia(lista){
 }
 function pfAmostra(desc){ PF_AMOSTRAS.push(desc); if (PF_AMOSTRAS.length>5) PF_AMOSTRAS.shift(); }
 async function pfTick(){
+  // volta pendurada (erro lá dentro do face-api não rejeita a promessa, ela
+  // fica pendente pra sempre): passados 20 s solta a trava em vez de o
+  // reconhecimento parar até fechar e abrir o Ponto
+  if (PF_PROCESSANDO && PF_TICK_T0 && performance.now()-PF_TICK_T0>20000) PF_PROCESSANDO=false;
   if (PF_OCUPADO||PF_PROCESSANDO||PF_CADASTRANDO) return;
+  var modal=document.getElementById('pfModal');
+  // Ponto fechado (ou laço já parado): não reconhece escondido
+  if (!PF_LOOP||!modal||!modal.classList.contains('on')) return;
   var video=document.getElementById('pfVideo');
   if (!video||!video.videoWidth) return;
-  PF_PROCESSANDO=true;
+  // WebView que não respeitou o play(): tenta de novo. Sem quadro pronto
+  // (câmera acordando) pula a volta — o <video> direto no face-api ficava
+  // esperando um evento 'load' que vídeo não dispara e o laço morria
+  if (video.paused) { try { var pp=video.play(); if (pp&&pp.catch) pp.catch(function(){}); } catch(x) {} }
+  if (video.readyState<2) return;
+  // tique fixo caindo logo depois de uma volta encadeada: deixa pra encadeada
+  // (quadros a ~120 ms um do outro no mínimo — os 3 seguidos não saem colados)
+  if (PF_TICK_T0 && performance.now()-PF_TICK_T0<110) return;
+  var loop=PF_LOOP, eu=++PF_TICK_ID, t0=performance.now(), pressa=false, tm=PF_TEMPOS||(PF_TEMPOS={});
+  PF_PROCESSANDO=true; PF_TICK_T0=t0;
   try {
+    var quadro=pfQuadro(video);
     // 1o so o detector (barato, 224px). As redes pesadas (landmarks +
     // descritor) so rodam quando TEM rosto — e a tela avisa antes, pra
     // ninguem achar que travou.
-    var achou=await faceapi.detectSingleFace(video, PF_OPTS());
+    var achou=await faceapi.detectSingleFace(quadro, PF_OPTS());
+    // fecharam/reabriram o Ponto (ou a trava foi solta) no meio da volta: descarta
+    if (eu!==PF_TICK_ID||loop!==PF_LOOP) return;
+    tm.nDet=(tm.nDet||0)+1; tm.msDet=(tm.msDet||0)+(performance.now()-t0);
     if (!achou) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
-    if (achou.box.width < video.videoWidth*0.18) { pfSt('Chegue mais perto da câmera'); PF_SEQ=null; return; }
-    if (!PF_SEQ) pfSt('Reconhecendo… fique parado');
-    await new Promise(function(r){ setTimeout(r,30); }); // deixa pintar o texto
-    var det=await faceapi.detectSingleFace(video, PF_OPTS()).withFaceLandmarks().withFaceDescriptor();
+    if (achou.box.width < quadro.width*0.18) { pfSt('Chegue mais perto da câmera'); PF_SEQ=null; pressa=true; return; }
+    // mesma nota mínima de antes (0.7), só que conferida ANTES das redes
+    // pesadas: quadro que ia ser descartado não gasta landmarks + descritor
+    if (achou.score < 0.7) { pfSt('Fique parado, de frente pra câmera'); PF_SEQ=null; pressa=true; return; }
+    if (!tm.rosto) tm.rosto=performance.now();
+    if (!PF_SEQ && pfSt('Reconhecendo… fique parado'))
+      await new Promise(function(r){ setTimeout(r,30); }); // deixa pintar o texto
+    // landmarks + descritor na MESMA imagem e com a MESMA caixa do detector:
+    // é o que detectSingleFace().withFaceLandmarks().withFaceDescriptor()
+    // faz por dentro, só que sem rodar o detector de novo num quadro novo
+    var t1=performance.now();
+    var det=await new faceapi.DetectSingleFaceLandmarksTask(
+      Promise.resolve(faceapi.extendWithFaceDetection({}, achou)), quadro, false).withFaceDescriptor();
+    if (eu!==PF_TICK_ID||loop!==PF_LOOP) return;
+    tm.n=(tm.n||0)+1; tm.msRedes=(tm.msRedes||0)+(performance.now()-t1);
     if (!det) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
     if (det.detection.score < 0.7) { pfSt('Fique parado, de frente pra câmera'); PF_SEQ=null; return; }
     pfAmostra(det.descriptor);
@@ -13233,23 +13328,37 @@ async function pfTick(){
       if (PF_SEQ && PF_SEQ.fid===melhor.pessoa.funcionario_id) PF_SEQ.n++;
       else PF_SEQ={fid:melhor.pessoa.funcionario_id, n:1};
       if (PF_SEQ.n>=PF_SEGUIDOS) { PF_SEQ=null; PF_OCUPADO=true; await pfBater(melhor.pessoa); PF_OCUPADO=false; }
-      else pfSt('Reconhecendo… fique parado');
+      else { pfSt('Reconhecendo… fique parado'); pressa=true; }
       return;
     }
     // não bateu com ninguém com segurança: insiste uns quadros (luz, ângulo)
     // antes de oferecer o cadastro
-    PF_SEQ=null; PF_INCERTO++;
+    PF_SEQ=null; PF_INCERTO++; tm.inc=(tm.inc||0)+1;
     pfSt('Não tenho certeza… fique parado, de frente');
     if (PF_INCERTO>=PF_INCERTO_MAX && PF_AMOSTRAS.length>=3) { PF_INCERTO=0; pfMostraListaCadastro(pfMedia(PF_AMOSTRAS)); }
-  } finally { PF_PROCESSANDO=false; }
+  } finally {
+    // volta velha (Ponto reaberto, trava solta pelo vigia) não mexe na trava da atual
+    if (eu===PF_TICK_ID) {
+      PF_PROCESSANDO=false;
+      // No caminho de bater (rosto chegando, ou já batendo com alguém) o
+      // próximo quadro sai assim que este termina, sem esperar o tique fixo
+      // de 250 ms — mas nunca a menos de 120 ms do anterior, pros 3 seguidos
+      // não saírem colados. Ninguém na frente, quadro incerto e cadastro seguem
+      // no ritmo de antes (o limite de incertos e as amostras da média do
+      // cadastro continuam cobrindo o mesmo tempo).
+      if (pressa && loop===PF_LOOP && !PF_OCUPADO && !PF_CADASTRANDO)
+        setTimeout(function(){ if (loop===PF_LOOP) pfTick(); }, Math.max(15, 120-(performance.now()-t0)));
+    }
+  }
 }
 async function pfBater(pessoa){
-  clearInterval(PF_LOOP);
+  clearInterval(PF_LOOP); PF_LOOP=null;
+  var dg=null; try { dg=pfDiag(); } catch(x) {}
   document.getElementById('pfStatus').textContent='Registrando o ponto de '+pessoa.nome+'…';
   var r;
   try {
     r=await (await fetch('/api/ponto/bater-facial',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({funcionario_id:pessoa.funcionario_id})})).json();
+      body:JSON.stringify({funcionario_id:pessoa.funcionario_id, diag:dg})})).json();
   } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
   if (r.ok) {
     // A pessoa TEM que ver se foi entrada ou saída — grande, com cor e hora.
@@ -13295,7 +13404,7 @@ async function pfNaoSouEu(batidaId){
   // câmera provavelmente ainda não tem cadastro — abre a lista com a média
   // dos quadros que acabaram de ser lidos.
   var desc=PF_AMOSTRAS.length?pfMedia(PF_AMOSTRAS):null;
-  if (!desc) { document.getElementById('pfStatus').textContent='Desfeito. Olhe para a câmera de novo'; PF_LOOP=setInterval(pfTick,250); return; }
+  if (!desc) { document.getElementById('pfStatus').textContent='Desfeito. Olhe para a câmera de novo'; if (PF_TEMPOS) PF_TEMPOS.rosto=null; PF_LOOP=setInterval(pfTick,250); return; }
   pfMostraListaCadastro(desc);
   document.getElementById('pfStatus').textContent='Desfeito ✓ — nada foi registrado';
   document.getElementById('pfSub').textContent='toque seu nome pra cadastrar seu rosto (se já tem cadastro, feche e tente de novo)';
@@ -13339,6 +13448,7 @@ async function pfCadastrar(funcionarioId){
     try { localStorage.removeItem('acesso_ponto'); } catch(x) {}
   } catch(e) {}
   PF_CADASTRANDO=null;
+  if (PF_TEMPOS) PF_TEMPOS.via='cadastro';
   await pfBater(pessoa||{funcionario_id:funcionarioId, nome:'você'});
 }
 function pfPedeLiberacao(funcionarioId, pessoa){
@@ -24839,7 +24949,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/ponto/pessoas') return res.end(JSON.stringify(await apiPontoPessoas()));
       if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/cadastrar-rosto') return res.end(JSON.stringify(await apiPontoCadastrarRosto(await readBody(req))));
-      if (req.method === 'POST' && p === '/api/ponto/bater-facial') return res.end(JSON.stringify(await apiPontoBaterFacial(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ponto/bater-facial') { const b = await readBody(req); const r = await apiPontoBaterFacial(b); pontoFacialTempos(b && b.diag, r); return res.end(JSON.stringify(r)); }
       if (req.method === 'POST' && p === '/api/ponto/anular') return res.end(JSON.stringify(await apiPontoAnular(await readBody(req))));
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
