@@ -9,6 +9,8 @@ export interface ProdOpc {
   unidade: string;
   custo: number;
   saldo: number;
+  /** Descontinuado ("* Excluído *"): fica fora das buscas e do casamento automático */
+  inativo?: boolean;
 }
 export interface ItemInicial {
   produtoOrigemId: string;
@@ -41,8 +43,8 @@ function acharNoDestino(
   if (salvo && lista.some((d) => d.id === salvo)) return salvo;
   const n = norm(p.nome);
   return (
-    lista.find((d) => norm(d.nome) === n && d.unidade === p.unidade)?.id ??
-    lista.find((d) => norm(d.nome) === n)?.id ??
+    lista.find((d) => !d.inativo && norm(d.nome) === n && d.unidade === p.unidade)?.id ??
+    lista.find((d) => !d.inativo && norm(d.nome) === n)?.id ??
     null
   );
 }
@@ -50,7 +52,7 @@ function acharNoDestino(
 function buscar(lista: ProdOpc[], q: string, max = 12): ProdOpc[] {
   const ws = norm(q).split(' ').filter(Boolean);
   if (!ws.length) return [];
-  return lista.filter((p) => ws.every((w) => norm(p.nome).includes(w))).slice(0, max);
+  return lista.filter((p) => !p.inativo && ws.every((w) => norm(p.nome).includes(w))).slice(0, max);
 }
 
 export function NovaTransferenciaForm(props: {
@@ -294,7 +296,7 @@ export function NovaTransferenciaForm(props: {
                           placeholder={`buscar em ${nomeDestino}…`}
                           className="w-full rounded border border-slate-300 px-2 py-1"
                         />
-                        <ul className="absolute left-3 right-3 z-10 mt-1 max-h-60 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                        <ul className="mt-1 max-h-60 overflow-auto rounded-md border border-slate-200 bg-white shadow-sm">
                           {achadosDest.map((d) => (
                             <li key={d.id}>
                               <button

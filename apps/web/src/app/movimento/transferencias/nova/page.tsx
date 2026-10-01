@@ -58,6 +58,7 @@ export default async function NovaTransferenciaPage(props: {
     unidade: schema.produto.unidadeEstoque,
     custo: schema.produto.precoCusto,
     saldo: schema.produto.estoqueAtual,
+    descontinuado: schema.produto.descontinuado,
   };
   const prods = await db
     .select(cols)
@@ -76,6 +77,7 @@ export default async function NovaTransferenciaPage(props: {
     unidade: p.unidade,
     custo: Number(p.custo ?? 0),
     saldo: Number(p.saldo ?? 0),
+    inativo: p.descontinuado === true,
   });
   const produtosOrigem = prods.filter((p) => p.filialId === origem.id).map(toOpc);
   const produtosDestino: Record<string, ProdOpc[]> = {};
