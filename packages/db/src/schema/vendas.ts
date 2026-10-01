@@ -99,6 +99,10 @@ export const produto = pgTable(
     descricaoCompra: varchar('descricao_compra', { length: 200 }),
     /** Criado só na nuvem (não veio do Consumer) — útil pra insumos. */
     criadoNaNuvem: boolean('criado_na_nuvem').notNull().default(false),
+    /** Não entra na base da taxa de serviço (os 10%) — couvert, recreação,
+     *  ingresso. O item soma no consumo, só fica fora da conta do serviço.
+     *  Vai pra loja pelo /api/loja/catalogo-nuvem. */
+    semTaxaServico: boolean('sem_taxa_servico').notNull().default(false),
 
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

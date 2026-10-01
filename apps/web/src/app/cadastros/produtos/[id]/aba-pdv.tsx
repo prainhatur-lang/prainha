@@ -93,6 +93,8 @@ interface Props {
   estoqueControlado: boolean | null;
   descontinuado: boolean | null;
   codigoEtiqueta: string | null;
+  /** Fora da base da taxa de serviço (os 10%). Mora na nuvem, não na fila. */
+  semTaxaServico?: boolean | null;
   etiquetas: Array<{ codigo: number; nome: string }>;
   variantes: VariantePdv[];
   pendentes: PendentePdv[];
@@ -152,6 +154,38 @@ export function AbaPdv(p: Props) {
   const [etiqueta, setEtiqueta] = useState(p.codigoEtiqueta ?? '');
   const [salvando, setSalvando] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+  const [semServico, setSemServico] = useState(!!p.semTaxaServico);
+  const [msgServico, setMsgServico] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Não passa pela fila: o dono desta marca é a nuvem, e a loja pega no
+  // próximo catálogo (alguns minutos).
+  async function salvarServico(novo: boolean) {
+    setSemServico(novo);
+    setMsgServico(null);
+    try {
+      const r = await fetch(`/api/produtos/${p.produtoId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ semTaxaServico: novo }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setSemServico(!novo);
+        setMsgServico({ ok: false, texto: j.error || 'não deu pra salvar' });
+        return;
+      }
+      setMsgServico({
+        ok: true,
+        texto: novo
+          ? 'Salvo — a loja para de cobrar os 10% deste produto nos próximos lançamentos (em alguns minutos).'
+          : 'Salvo — este produto volta a entrar nos 10% nos próximos lançamentos.',
+      });
+      router.refresh();
+    } catch {
+      setSemServico(!novo);
+      setMsgServico({ ok: false, texto: 'sem conexão' });
+    }
+  }
 
   const semPdv = p.codigoExterno == null;
   // Cada pergunta/opção se registra aqui; o botão único junta só o que mudou.
@@ -326,6 +360,28 @@ export function AbaPdv(p: Props) {
         >
           {salvando === 'produto' ? 'enviando…' : 'Salvar dados do produto'}
         </button>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">Taxa de serviço</h2>
+        <label className="mt-3 flex items-start gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={semServico}
+            onChange={(e) => salvarServico(e.target.checked)}
+          />
+          <span>
+            Não cobra taxa de serviço (10%)
+            <span className="block text-xs text-slate-500">
+              Para couvert, recreação, ingresso. O item entra na conta normalmente, só fica fora da
+              base dos 10%. Vale pros itens lançados depois que a loja atualizar o cardápio.
+            </span>
+          </span>
+        </label>
+        {msgServico && (
+          <p className={`mt-2 text-xs ${msgServico.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msgServico.texto}</p>
+        )}
       </div>
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">

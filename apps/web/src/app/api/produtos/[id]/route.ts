@@ -34,6 +34,7 @@ const Body = z.object({
   descontinuado: z.boolean().optional(),
   tipo: z.enum(TIPOS).optional(),
   pesoUnitarioPadraoKg: z.number().positive().nullable().optional(),
+  semTaxaServico: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -83,7 +84,7 @@ export async function PATCH(
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
-  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg } = parsed.data;
+  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg, semTaxaServico } = parsed.data;
   const set: Record<string, unknown> = {};
   if (unidadeEstoque !== undefined) set.unidadeEstoque = unidadeEstoque;
   if (controlaEstoque !== undefined) set.controlaEstoque = controlaEstoque;
@@ -91,6 +92,7 @@ export async function PATCH(
   if (estoqueMaximo !== undefined) set.estoqueMaximo = estoqueMaximo !== null ? estoqueMaximo.toFixed(3) : null;
   if (descontinuado !== undefined) set.descontinuado = descontinuado;
   if (tipo !== undefined) set.tipo = tipo;
+  if (semTaxaServico !== undefined) set.semTaxaServico = semTaxaServico;
   if (pesoUnitarioPadraoKg !== undefined) {
     set.pesoUnitarioPadraoKg =
       pesoUnitarioPadraoKg !== null ? pesoUnitarioPadraoKg.toFixed(4) : null;

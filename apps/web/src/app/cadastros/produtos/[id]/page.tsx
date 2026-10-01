@@ -646,6 +646,7 @@ export default async function ProdutoDetalhePage(props: {
               estoqueControlado={produto.estoqueControlado}
               descontinuado={produto.descontinuado}
               codigoEtiqueta={produto.codigoEtiqueta}
+              semTaxaServico={produto.semTaxaServico}
               etiquetas={etiquetasPdv}
               variantes={variantesPdv.map((v) => ({
                 codigo: v.codigo,

@@ -25,6 +25,7 @@ interface Produto {
   criadoNaNuvem: boolean;
   estoqueAtual?: string | null;
   pesoUnitarioPadraoKg?: string | null;
+  semTaxaServico?: boolean | null;
 }
 
 export function EditarProdutoButton({ produto }: { produto: Produto }) {
@@ -44,6 +45,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
   const [pesoUn, setPesoUn] = useState(
     produto.pesoUnitarioPadraoKg ? String(Number(produto.pesoUnitarioPadraoKg)) : '',
   );
+  const [semServico, setSemServico] = useState(produto.semTaxaServico ?? false);
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -85,6 +87,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
     if (unidade !== produto.unidadeEstoque) body.unidadeEstoque = unidade;
     if (controla !== produto.controlaEstoque) body.controlaEstoque = controla;
     if (descontinuado !== (produto.descontinuado ?? false)) body.descontinuado = descontinuado;
+    if (semServico !== (produto.semTaxaServico ?? false)) body.semTaxaServico = semServico;
 
     const minAtual = produto.estoqueMinimo ? Number(produto.estoqueMinimo) : 0;
     const minNovo = estoqueMinimo.trim() ? Number(estoqueMinimo.replace(',', '.')) : 0;
@@ -289,6 +292,22 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
                 onChange={(e) => setDescontinuado(e.target.checked)}
               />
               Descontinuado
+            </label>
+
+            <label className="flex items-start gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={semServico}
+                onChange={(e) => setSemServico(e.target.checked)}
+              />
+              <span>
+                Não cobra taxa de serviço (10%)
+                <span className="block text-[10px] text-slate-500">
+                  Couvert, recreação, ingresso: o item entra na conta, mas fica fora da base dos 10%.
+                  Vale pros itens lançados depois que a loja atualizar o cardápio (alguns minutos).
+                </span>
+              </span>
             </label>
 
             {erro && (

@@ -314,6 +314,10 @@ async function initSchemaNativo() {
   await addCol('comanda_item', 'cancelado_em timestamptz');
   await addCol('comanda_item', 'cancelado_por text');
   await addCol('comanda_item', 'criado_por text');
+  // produto marcado na nuvem como "não cobra taxa de serviço" (couvert,
+  // recreação): a marca é COPIADA pro item na hora do lançamento — mudar o
+  // cadastro depois não mexe em conta que já está aberta.
+  await addCol('comanda_item', 'sem_servico boolean DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS pagamento_local (codigo bigint PRIMARY KEY, pedido bigint, forma_codigo integer,
     valor numeric, caixa_codigo bigint, nsu text, autorizacao text, bandeira text, observacao text,
     conta_corrente bigint, quando timestamptz DEFAULT now(), cancelado_em timestamptz)`;
@@ -413,6 +417,7 @@ async function initSchema() {
   // quantidade em estoque (null = produto sem controle de estoque no Consumer)
   await addCol('produto_local', 'estoque numeric');
   await addCol('produto_local', 'cardapio_digital boolean DEFAULT true');
+  await addCol('produto_local', 'sem_servico boolean DEFAULT false');
   // grupos que a CASA decidiu esconder do cliente, independente do Consumer
   // (ex.: "Artistas" vem marcado como cardapio digital la, mas nao e' pra mesa)
   await sql`CREATE TABLE IF NOT EXISTS grupo_oculto (categoria text PRIMARY KEY, criado_em timestamptz DEFAULT now())`;
@@ -427,6 +432,8 @@ async function initSchema() {
   // NFC-e no modo próprio: a classificação fiscal vem junto com o catálogo
   await addCol('produto_nuvem', 'ncm text');
   await addCol('produto_nuvem', 'cfop text');
+  // fora da base dos 10% (vem do cadastro da nuvem)
+  await addCol('produto_nuvem', 'sem_servico boolean DEFAULT false');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -2794,12 +2801,16 @@ async function pgInserirItem(ped, it) {
   const vt = +(Number(it.preco) * Number(it.qtd)).toFixed(2);
   const pdvCod = it.codigo_pdv == null ? null : Number(it.codigo_pdv);
   const [pl] = pdvCod == null ? [null]
-    : await sql`SELECT area_codigo FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
+    : await sql`SELECT area_codigo, sem_servico FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
   let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
+  // produto que não cobra os 10% (cadastro da nuvem): a marca vai no item
+  let semServico = !!pl && pl.sem_servico === true;
   // complemento vai na praça do item-pai, sempre (ver herdarPracaDoPai)
   if (Number(it.tipo) === 2 && it.codigo_pai != null) {
-    const [pai] = await sql`SELECT area_codigo FROM comanda_item WHERE item_codigo=${Number(it.codigo_pai)} LIMIT 1`;
+    const [pai] = await sql`SELECT area_codigo, sem_servico FROM comanda_item WHERE item_codigo=${Number(it.codigo_pai)} LIMIT 1`;
     if (pai) area = pai.area_codigo == null ? null : Number(pai.area_codigo);
+    // complemento de item sem serviço também fica fora dos 10%
+    if (pai && pai.sem_servico === true) semServico = true;
   }
   // item que ninguém produz (couvert) entra já baixado: some do KDS e para de
   // contar atraso, sem sumir da conta — mesma regra que o espelho aplicava.
@@ -2808,18 +2819,30 @@ async function pgInserirItem(ped, it) {
   const baixado = fora.length > 0 && fora.some((t) => nm.includes(t));
   const agora = new Date();
   await sql`INSERT INTO comanda_item (item_codigo, codigo_pai, comanda_codigo, codigo_pdv, produto_codigo,
-      nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por)
+      nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por, sem_servico)
     VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${pdvCod}, ${it.produto_codigo ?? null},
       ${nomeItem}, ${Number(it.qtd)}, ${Number(it.preco)}, ${vt}, ${it.tipo ?? 1}, ${detalhes}, ${area},
-      ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null})`;
+      ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null}, ${semServico})`;
   return cod;
+}
+/** Quanto do pedido é de produto que NÃO cobra taxa de serviço (couvert,
+ *  recreação — marcado no cadastro da nuvem). Sai da base dos 10%; o item
+ *  continua somando no consumo. Conta sem nenhum item assim devolve 0 e tudo
+ *  segue como sempre foi. */
+async function pgIsentoServico(ped) {
+  const [r] = await sql`SELECT COALESCE(SUM(valor_total),0) v FROM comanda_item
+    WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL AND sem_servico IS TRUE`;
+  return Number(r && r.v) || 0;
 }
 async function pgAtualizarTotal(ped) {
   const [s1] = await sql`SELECT COALESCE(SUM(valor_total),0) v FROM comanda_item
     WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL`;
   const itens = Number(s1.v) || 0;
   const isento = await servicoIsento(ped).catch(() => false);
-  const svc = !isento && TAXA_SERVICO > 0 && itens > 0 ? +(itens * TAXA_SERVICO / 100).toFixed(2) : 0;
+  // base dos 10% = itens menos os de produto que não cobra serviço
+  const fora = await pgIsentoServico(ped).catch(() => 0);
+  const base = fora > 0 ? Math.max(0, +(itens - fora).toFixed(2)) : itens;
+  const svc = !isento && TAXA_SERVICO > 0 && base > 0 ? +(base * TAXA_SERVICO / 100).toFixed(2) : 0;
   // ⚠️ os dois primeiros parâmetros da soma precisam de cast explícito: sem
   // tipo conhecido dos dois lados, o Postgres não resolve qual operador '+'
   // usar ("operator is not unique: unknown + unknown"). COALESCE(...) já
@@ -3259,7 +3282,8 @@ async function fbAplicarServico(ped) {
   const p = await pedTotais(ped);
   if (!p) return 0;
   if (p.servico > 0.009) return p.servico;
-  const svc = +(p.itens * TAXA_SERVICO / 100).toFixed(2);
+  const fora = nativo() ? await pgIsentoServico(ped).catch(() => 0) : 0;
+  const svc = +((fora > 0 ? Math.max(0, p.itens - fora) : p.itens) * TAXA_SERVICO / 100).toFixed(2);
   if (!(svc > 0)) return 0;
   const ok = await pedGravarTotais(ped, { servico: svc, total: +(p.total + svc).toFixed(2) });
   return ok ? svc : 0;
@@ -4872,7 +4896,7 @@ async function apiVendaEnviar(body) {
 // ---- API de CONTA / PAGAMENTO (Fase 2) ----
 // A conta lê do Consumer (fonte da verdade do total e do que já foi pago) —
 // assim nunca cobramos a mais por causa de espelho atrasado.
-async function apiConta(numero) {
+async function apiConta(numero, appLio = false) {
   const n = Number(numero);
   if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const ped = await fbAcharPedido(n);
@@ -4892,7 +4916,18 @@ async function apiConta(numero) {
     if (!cab.ok) throw new Error('FB pedido: ' + cab.err);
   }
   const total = Number(cab.rows[0]?.VALORTOTAL) || 0;
-  const servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
+  let servico = Number(cab.rows[0]?.TOTALSERVICO) || 0;
+  // CONTA COM PRODUTO QUE NÃO COBRA SERVIÇO, vista pelo app da maquininha (até
+  // a 1.10.27): ele refaz a conta como (total − serviço) × 1,10 no "Receber
+  // TUDO" e estima +10% quando o serviço vem zerado. Com item isento isso
+  // cobraria 10% a mais sobre o couvert/recreação. Aqui o serviço vai na
+  // proporção que faz a conta DELE fechar no total verdadeiro — o total e o
+  // saldo não mudam. Só nesse caso; conta sem item isento vai como sempre.
+  if (appLio && nativo() && TAXA_SERVICO > 0 && total > 0.009
+      && (await pgIsentoServico(ped).catch(() => 0)) > 0.009
+      && !(await servicoIsento(ped).catch(() => false))) {
+    servico = +(total - baseQueFecha(total)).toFixed(2);
+  }
   const pago = await fbPagoDoPedido(ped);
   const mesa = n >= COMANDA_DE ? (await sql`SELECT mesa FROM mesa_comanda WHERE comanda=${n} AND fechada_em IS NULL`)[0]?.mesa ?? null : n;
   // conta pedida: e' o que apaga o botao de lancar e acende o "liberar"
@@ -7594,11 +7629,25 @@ async function apiCaixaCancelarItem(body, quem) {
   // e a mesa continua ABERTA — travar aqui era só atrito): o item leva junto a
   // fatia PROPORCIONAL do serviço, por delta — a fórmula nunca é refeita.
   const itensAtual = p.itens, servAtual = p.servico;
+  // item de produto que não cobra serviço não leva fatia nenhuma dos 10%, e
+  // os outros levam a fatia sobre a BASE (itens que pagam serviço). Conta sem
+  // item isento: base = itens e a conta é a de sempre.
+  const foraTotal = await pgIsentoServico(ped).catch(() => 0);
+  let valorFora = 0;
+  if (foraTotal > 0.009) {
+    const marc = await sql`SELECT item_codigo, valor_total FROM comanda_item
+      WHERE item_codigo = ANY(${alvos.map((x) => x.codigo)}) AND sem_servico IS TRUE`;
+    valorFora = parcial
+      ? (marc.some((m) => Number(m.item_codigo) === item) ? valor : 0)
+      : marc.reduce((t, m) => t + (Number(m.valor_total) || 0), 0);
+  }
+  const baseAtual = foraTotal > 0.009 ? Math.max(0, +(itensAtual - foraTotal).toFixed(2)) : itensAtual;
+  const valorBase = valorFora > 0 ? Math.max(0, +(valor - valorFora).toFixed(2)) : valor;
   let servDelta = 0;
-  if (servAtual > 0.009 && itensAtual > 0.009) {
-    servDelta = +(valor * (servAtual / itensAtual)).toFixed(2);
+  if (servAtual > 0.009 && baseAtual > 0.009) {
+    servDelta = +(valorBase * (servAtual / baseAtual)).toFixed(2);
     // cancelou o último item (ou arredondou além): zera o serviço sem sobra de centavos
-    if (itensAtual - valor <= 0.009 || servDelta > servAtual) servDelta = servAtual;
+    if (valorBase > 0.009 && (baseAtual - valorBase <= 0.009 || servDelta > servAtual)) servDelta = servAtual;
   }
   const novoItens = +(itensAtual - valor).toFixed(2);
   const novoServ = +(servAtual - servDelta).toFixed(2);
@@ -10442,16 +10491,16 @@ async function loopCatalogoNuvem() {
     await sql.begin(async (t) => {
       for (const p of j.produtos) {
         await t`INSERT INTO produto_nuvem (codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-            comanda_mobile, cardapio_digital, categoria, descricao, saldo, ncm, cfop, atualizado)
+            comanda_mobile, cardapio_digital, categoria, descricao, saldo, ncm, cfop, sem_servico, atualizado)
           VALUES (${Number(p.codigo_pdv)}, ${Number(p.produto_codigo)}, ${p.nome || ''}, ${p.tamanho || null},
             ${Number(p.preco) || 0}, ${p.area_codigo == null ? null : Number(p.area_codigo)},
             ${p.comanda_mobile !== false}, ${!!p.cardapio_digital}, ${p.categoria || null},
-            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, ${p.ncm || null}, ${p.cfop || null}, now())
+            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, ${p.ncm || null}, ${p.cfop || null}, ${p.sem_servico === true}, now())
           ON CONFLICT (codigo_pdv) DO UPDATE SET produto_codigo=EXCLUDED.produto_codigo, nome=EXCLUDED.nome,
             tamanho=EXCLUDED.tamanho, preco=EXCLUDED.preco, area_codigo=EXCLUDED.area_codigo,
             comanda_mobile=EXCLUDED.comanda_mobile, cardapio_digital=EXCLUDED.cardapio_digital,
             categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, saldo=EXCLUDED.saldo,
-            ncm=EXCLUDED.ncm, cfop=EXCLUDED.cfop, atualizado=now()`;
+            ncm=EXCLUDED.ncm, cfop=EXCLUDED.cfop, sem_servico=EXCLUDED.sem_servico, atualizado=now()`;
       }
       // pausado/descontinuado na nuvem some daqui — a resposta é a lista inteira
       if (codigos.length) await t`DELETE FROM produto_nuvem WHERE NOT (codigo_pdv = ANY(${codigos}))`;
@@ -10507,7 +10556,7 @@ async function loopCatalogoNuvem() {
  *  muda: garçom, KDS, caixa e cliente continuam lendo a mesma tabela. */
 async function catalogoNativo() {
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-      comanda_mobile, cardapio_digital, categoria, descricao, saldo FROM produto_nuvem`;
+      comanda_mobile, cardapio_digital, categoria, descricao, saldo, sem_servico FROM produto_nuvem`;
   if (!rows.length) { console.error('[catalogo] nuvem não mandou nada — mantendo o cardápio atual'); return; }
   const redir = await mapaRedirPracas();
   const porItem = await mapaItemPraca();
@@ -10525,13 +10574,14 @@ async function catalogoNativo() {
       preco: Number(x.preco) || 0, area_codigo: area, comanda_mobile: x.comanda_mobile !== false,
       nome_busca: nm, categoria: x.categoria || 'Outros', categoria_ordem: 999,
       sem_estoque: saldo != null && saldo <= 0, estoque: saldo,
-      cardapio_digital: !!x.cardapio_digital, descricao: x.descricao || null, preparo: null };
+      cardapio_digital: !!x.cardapio_digital, descricao: x.descricao || null, preparo: null,
+      sem_servico: x.sem_servico === true };
   });
   await sql.begin(async (t) => {
     await t`TRUNCATE produto_local`;
     await t`INSERT INTO produto_local ${t(linhas, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco',
       'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque',
-      'cardapio_digital', 'descricao', 'preparo')}`;
+      'cardapio_digital', 'descricao', 'preparo', 'sem_servico')}`;
   });
   console.log('[catalogo] modo próprio: ' + linhas.length + ' itens no cardápio da loja');
 }
@@ -14524,7 +14574,7 @@ async function telaReceber(alvo){
 function moedaR(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}
 function rcbCalc(){
   var c=RCB.conta,itens=Number(c.total||0);
-  var gorj=+(itens*RCB.gorj/100).toFixed(2);
+  var gorj=+((c.base_servico!=null?Number(c.base_servico):itens)*RCB.gorj/100).toFixed(2);
   var resta=Math.max(0,+((itens+gorj-Number(c.desconto||0)+Number(c.acrescimo||0))-Number(c.pago||0)).toFixed(2));
   var cobrar=(RCB.valor!=null)?Math.min(RCB.valor,resta):+(resta/RCB.partes).toFixed(2);
   return {itens:itens,gorj:gorj,resta:resta,cobrar:cobrar};
@@ -16063,7 +16113,10 @@ function valorDaCobranca(conta, body) {
     : Math.max(padrao, Math.min(30, Number(body.gorjeta_pct) || 0));
   // desconto/acréscimo do pedido entram aqui (antes eram ignorados e a conta
   // com desconto do caixa era cobrada cheia no Pix). Serviço segue sobre os itens.
-  const comGorjeta = +(itens * (1 + pct / 100) - Number(conta.desconto || 0) + Number(conta.acrescimo || 0)).toFixed(2);
+  // item de produto que não cobra serviço fica fora da gorjeta (base_servico)
+  const base = conta.base_servico == null ? itens : Number(conta.base_servico) || 0;
+  const comGorjeta = +((base === itens ? itens * (1 + pct / 100) : itens + base * pct / 100)
+    - Number(conta.desconto || 0) + Number(conta.acrescimo || 0)).toFixed(2);
   const restaTotal = Math.max(0, +(comGorjeta - Number(conta.pago || 0)).toFixed(2));
   if (restaTotal <= 0) return { erro: 'essa conta já está paga' };
   // divisão: paga 1/N do que falta
@@ -17535,6 +17588,19 @@ async function apiCaixaRetido(body, quem) {
 // resolve hoje: abre no navegador, imprime em qualquer impressora, ou só mostra.
 /** Taxa de serviço da casa (CONFIG.TAXASERVICO do Consumer, hoje 10%). */
 const TAXA_SERVICO = Number(process.env.TAXA_SERVICO ?? 10);
+/** Valor x em que x + (x × taxa%) fecha no `alvo`, arredondando como o app da
+ *  maquininha arredonda. Nem todo centavo é alcançável (a cada 11 um pula):
+ *  aí fica o primeiro que cobre o alvo — 1 centavo a mais fecha a conta, 1 a
+ *  menos deixaria saldo de R$ 0,01 pendurado. */
+function baseQueFecha(alvo) {
+  const a = Math.round(Number(alvo) * 100);
+  if (!(a > 0)) return 0;
+  const f = (k) => k + Math.round(k * TAXA_SERVICO / 100);
+  let c = Math.round(a / (1 + TAXA_SERVICO / 100));
+  while (c > 0 && f(c - 1) >= a) c--;
+  while (f(c) < a) c++;
+  return c / 100;
+}
 // Desconto/acréscimo do PEDIDO (TOTALDESCONTO/TOTALACRESCIMO do Consumer), ao
 // vivo — o espelho `comanda` só tem o VALORTOTAL. Falhou o Firebird = 0 (a
 // conta abre, só sem o ajuste).
@@ -17546,12 +17612,12 @@ async function fbAjustesPedido(codigo) {
     return { desconto: +(Number(x?.D) || 0).toFixed(2), acrescimo: +(Number(x?.A) || 0).toFixed(2) };
   } catch { return { desconto: 0, acrescimo: 0 }; }
 }
-async function apiContaTexto(numero, modoApp = false, comFiado = false) {
+async function apiContaTexto(numero, modoApp = false, comFiado = false, appLio = modoApp) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo, numero, nome, valor_total, subtotal_pago, data_abertura, qtd_pessoas
     FROM comanda WHERE numero=${n} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   if (!c) return { ok: false, erro: 'não há conta aberta no número ' + n };
-  const itens = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
+  const itens = await sql`SELECT nome, quantidade, valor_total, tipo, detalhes, sem_servico FROM comanda_item
     WHERE comanda_codigo=${c.codigo} AND cancelado_em IS NULL ORDER BY criado NULLS LAST, id`;
   // nome: a identificacao nova ganha da tabela antiga de vinculo
   const ident = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${n} AND fechada_em IS NULL`)[0];
@@ -17571,7 +17637,20 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
   const aj = await fbAjustesPedido(c.codigo);
   const F = 1 + TAXA_SERVICO / 100;
   const fold = (bruto, a) => modoApp ? +(bruto - (a.desconto - a.acrescimo) / F).toFixed(2) : bruto;
-  const totalBase = fold(total, aj);
+  // PRODUTO QUE NÃO COBRA SERVIÇO (couvert, recreação): fica fora da base dos
+  // 10%. As telas daqui recebem `base_servico` e fazem itens + base×%. O app
+  // da maquininha (qualquer versão até a 1.10.27) só sabe fazer `total`×1,10:
+  // pra ele a parte isenta entra dobrada no `total`, do mesmo jeito do
+  // desconto acima — total×F continua dando o valor certo a cobrar.
+  const foraDe = (lista) => lista.filter((i) => Number(i.tipo) !== 8 && i.sem_servico === true)
+    .reduce((s, i) => s + Number(i.valor_total || 0), 0);
+  const dobraFora = (bruto, fora) => appLio && fora > 0
+    ? baseQueFecha(bruto + Math.max(0, bruto - fora) * TAXA_SERVICO / 100) : bruto;
+  const baseDe = (dobrado, fora) => appLio || !(fora > 0) ? dobrado : Math.max(0, +(dobrado - fora).toFixed(2));
+  const foraMesa = foraDe(itens);
+  const totalApp = dobraFora(total, foraMesa);
+  const totalBase = fold(totalApp, aj);
+  const baseMesa = baseDe(totalBase, foraMesa);
 
   // Comandas da mesa: cada pessoa vê o SEU subtotal, com os 10% já calculados.
   // Sem isso, na hora de dividir a conta a mesa faz a conta de cabeça e erra.
@@ -17588,7 +17667,7 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
       // Os ITENS da comanda vão junto: sem eles o cupom mostrava só um total
       // solto ("302 — R$ 17,60") e a pessoa não tinha como conferir o que
       // consumiu. Conferência de consumo sem o consumo descrito não confere nada.
-      const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes FROM comanda_item
+      const its = cc.codigo == null ? [] : await sql`SELECT nome, quantidade, valor_total, tipo, detalhes, sem_servico FROM comanda_item
         WHERE comanda_codigo=${cc.codigo} AND cancelado_em IS NULL ORDER BY criado NULLS LAST, id`;
       const sub = its.filter((i) => Number(i.tipo) !== 8).reduce((s, i) => s + Number(i.valor_total || 0), 0); // inclui complemento com preço (ver total da mesa acima)
       const idc = (await sql`SELECT nome_curto FROM identificacao WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
@@ -17601,20 +17680,23 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
       // mesa não sabia. Cada comanda é um PEDIDOS próprio no Consumer, com
       // seu SUBTOTALPAGO; é ele que diz o que já foi quitado ali.
       const ajC = cc.codigo == null ? { desconto: 0, acrescimo: 0 } : await fbAjustesPedido(cc.codigo);
-      const subBase = fold(sub, ajC);
-      const svcC = +(subBase * TAXA_SERVICO / 100).toFixed(2);
-      const comSvc = modoApp ? +(subBase + svcC).toFixed(2) : +(sub + svcC - ajC.desconto + ajC.acrescimo).toFixed(2);
+      const foraC = foraDe(its);
+      const subApp = dobraFora(sub, foraC);
+      const subBase = fold(subApp, ajC);
+      const baseC = baseDe(subBase, foraC);
+      const svcC = +(baseC * TAXA_SERVICO / 100).toFixed(2);
+      const comSvc = modoApp ? +(subBase + svcC).toFixed(2) : +(subApp + svcC - ajC.desconto + ajC.acrescimo).toFixed(2);
       const pagoC = Number(cc.subtotal_pago || 0);
       const restaC = Math.max(0, +(comSvc - pagoC).toFixed(2));
       comandas.push({ numero: Number(v.comanda), nome: idc?.nome_curto || v.nome_curto || cc.nome || null,
         itens: its, transferencia: tr,
-        subtotal: subBase, servico: svcC, desconto: modoApp ? 0 : ajC.desconto, acrescimo: modoApp ? 0 : ajC.acrescimo,
+        subtotal: subBase, base_servico: baseC, servico: svcC, desconto: modoApp ? 0 : ajC.desconto, acrescimo: modoApp ? 0 : ajC.acrescimo,
         com_servico: comSvc,
         pago: pagoC, resta: restaC, quitada: pagoC > 0 && restaC <= 0.009 });
     }
   }
-  const servico = +(totalBase * TAXA_SERVICO / 100).toFixed(2);
-  const comServico = modoApp ? +(totalBase + servico).toFixed(2) : +(total + servico - aj.desconto + aj.acrescimo).toFixed(2);
+  const servico = +(baseMesa * TAXA_SERVICO / 100).toFixed(2);
+  const comServico = modoApp ? +(totalBase + servico).toFixed(2) : +(totalApp + servico - aj.desconto + aj.acrescimo).toFixed(2);
   // ⚠️ O total da MESA é só do que foi lançado NELA. Cada comanda é uma conta
   // separada no Consumer (PEDIDOS próprio), então o consumo dela NÃO entra
   // aqui. O cupom mostrava "TOTAL 327,80" com uma comanda de 17,60 pendurada
@@ -17654,7 +17736,7 @@ async function apiContaTexto(numero, modoApp = false, comFiado = false) {
   return { ok: true, numero: n, nome: quem?.nome_curto || c.nome || null, abertura: c.data_abertura, fiado,
     pessoas: c.qtd_pessoas, itens, comandas, pagamentos,
     total: totalBase, desconto: modoApp ? 0 : aj.desconto, acrescimo: modoApp ? 0 : aj.acrescimo,
-    taxa_servico: TAXA_SERVICO, servico, com_servico: comServico,
+    taxa_servico: TAXA_SERVICO, base_servico: baseMesa, servico, com_servico: comServico,
     total_comandas: +totalComandas.toFixed(2), geral,
     pago_comandas: +pagoComandas.toFixed(2), pago_geral: pagoGeral,
     falta_geral: Math.max(0, +(geral - pagoGeral).toFixed(2)),
@@ -20051,7 +20133,7 @@ async function setAlvoPg(num){
 var CONTA=null;
 function calcPagar(){
   var itens=CONTA.total||0;
-  var gorj=+(itens*PGGORJ/100).toFixed(2);
+  var gorj=+((CONTA.base_servico!=null?Number(CONTA.base_servico):itens)*PGGORJ/100).toFixed(2);
   var total=+(itens+gorj-Number(CONTA.desconto||0)+Number(CONTA.acrescimo||0)).toFixed(2);
   var resta=Math.max(0,+(total-(CONTA.pago||0)).toFixed(2));
   // A divisão é sempre sobre o que FALTA, não sobre o total: numa conta
@@ -25688,7 +25770,7 @@ const server = http.createServer(async (req, res) => {
       // Abriu a mesa = o garçom foi até lá → limpa o 🔔 dela (o app não tem
       // botão "Vou lá"; abrir a conta É o atendimento). Fire-and-forget.
       atenderChamadoGarcom(n, 'conta-aberta').catch(() => {});
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n)));
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n, /Dalvik/i.test(String(req.headers['user-agent'] || '')))));
     }
     // ⚠️ EXIGE SESSÃO. Até 31/08 esta rota chamava apiContaPagar com o corpo
     // CRU e sem autenticação nenhuma — e o Funnel a expõe na internet. Como
@@ -25889,14 +25971,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/conta/texto') {
       // app antigo da maquininha (HttpURLConnection = UA Dalvik, sem o header
       // x-concilia-app) recebe o desconto dobrado no `total` (ver apiContaTexto)
-      const modoApp = /Dalvik/i.test(String(req.headers['user-agent'] || '')) && !req.headers['x-concilia-app'];
+      const appLio = /Dalvik/i.test(String(req.headers['user-agent'] || ''));
+      const modoApp = appLio && !req.headers['x-concilia-app'];
       // FIADO só pra quem está LOGADO (maquininha do garçom, tela do caixa).
       // Esta rota é aberta na rede da loja de propósito — é o celular do
       // cliente que a usa. Sem a trava, qualquer um no Wi-Fi digitava um
       // número de mesa e via a dívida de quem estava sentado nela.
       const quemPede = await garcomDaRequisicao(req, u).catch(() => null);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0, modoApp, !!quemPede)));
+      return res.end(JSON.stringify(await apiContaTexto(u.searchParams.get('n') || 0, modoApp, !!quemPede, appLio)));
     }
     if (p.startsWith('/api/ifood')) {
       res.writeHead(200, { 'content-type': 'application/json' });
