@@ -567,6 +567,8 @@ async function initSchema() {
     grupo text NOT NULL, numero integer, criado_em timestamptz DEFAULT now())`;
   await sql`CREATE INDEX IF NOT EXISTS ix_item_junto_grupo ON item_junto(grupo)`;
   await sql`CREATE TABLE IF NOT EXISTS observacao_sugerida (categoria text, texto text)`;
+  // cardápio da mesa em outros idiomas: o texto em português e a tradução (en/fr/es/it)
+  await sql`CREATE TABLE IF NOT EXISTS traducao (pt text NOT NULL, idioma text NOT NULL, texto text NOT NULL, PRIMARY KEY (pt, idioma))`;
   // AVALIE E GANHE UM DRINK: a trava "um por CPF por mês" mora aqui (UNIQUE,
   // atômico). A nuvem recebe a cópia depois (nuvem_em) — sem internet a regra vale igual.
   await sql`CREATE TABLE IF NOT EXISTS avaliacao_brinde (id bigserial PRIMARY KEY,
@@ -17943,6 +17945,7 @@ hr{border:0;border-top:1px dashed #9a9aa5;margin:9px 0}
      cliente (rede fraca na mesa) parecia "não aparece nada". Pedido do dono,
      23/08. -->
 <div id="app"><div class="erro">carregando sua conta…</div></div>
+<script src="/mesa/i18n.js?v=${VERSAO}"></script>
 <script>
 var N=new URLSearchParams(location.search).get('n');
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
@@ -19004,6 +19007,800 @@ carregar();
 
 // ---- /mesa?n=12 — o que o CLIENTE vê no QR da mesa ----
 // Fica no servidor da loja: funciona no Wi-Fi da casa sem depender de internet.
+// ---- CARDÁPIO DA MESA EM OUTROS IDIOMAS (inglês, francês, espanhol, italiano) ----
+// O português continua sendo a tela de sempre: nada aqui mexe no que a página
+// escreve. O motor (I18N_MOTOR, servido em /mesa/i18n.js) roda AO LADO dela e
+// troca o texto que aparece — nó por nó — quando o cliente escolhe outro idioma.
+// O que vai pra cozinha, pro KDS e pra conta continua em português: o pedido sai
+// das variáveis da página, não do que está escrito na tela.
+//
+// Duas fontes de tradução:
+//   · I18N_UI — as frases da INTERFACE, traduzidas à mão aqui embaixo. A chave é
+//     o texto exato em português; onde entra número (mesa, valor, hora) a chave
+//     leva '#' no lugar e a tradução também, na mesma ordem.
+//   · tabela `traducao` — o CATÁLOGO (grupo, produto, tamanho, descrição,
+//     pergunta, opção, observação sugerida). Quem traduz é a nuvem
+//     (/api/loja/traduzir), em lotes, uma vez por texto; a loja guarda e serve
+//     daqui, então funciona com a internet fora.
+// Ordem das colunas: [inglês, francês, espanhol, italiano].
+const I18N_IDIOMAS = ['en', 'fr', 'es', 'it'];
+const I18N_UI = {
+  // sessão / QR
+  'Escaneie o QR da mesa': ['Scan the table QR code', 'Scannez le QR code de la table', 'Escanea el QR de la mesa', 'Scansiona il QR del tavolo'],
+  'Escaneie o QR da mesa pra continuar.': ['Scan the table QR code to continue.', 'Scannez le QR code de la table pour continuer.', 'Escanea el QR de la mesa para continuar.', 'Scansiona il QR del tavolo per continuare.'],
+  'Seu carrinho foi limpo por segurança — o pedido precisa ir pra conta certa.': ['Your cart was cleared for safety — the order has to go to the right bill.', 'Votre panier a été vidé par sécurité — la commande doit aller sur la bonne addition.', 'Tu carrito se vació por seguridad — el pedido tiene que ir a la cuenta correcta.', 'Il carrello è stato svuotato per sicurezza — l’ordine deve andare sul conto giusto.'],
+  'É rápido: aponte a câmera pro código que está na sua mesa.': ['It’s quick: point your camera at the code on your table.', 'C’est rapide : pointez l’appareil photo vers le code sur votre table.', 'Es rápido: apunta la cámara al código que está en tu mesa.', 'È veloce: inquadra con la fotocamera il codice sul tuo tavolo.'],
+  'A conta desta mesa foi fechada. Escaneie o QR pra começar outra.': ['This table’s bill was closed. Scan the QR code to start a new one.', 'L’addition de cette table a été clôturée. Scannez le QR code pour en ouvrir une autre.', 'La cuenta de esta mesa se cerró. Escanea el QR para empezar otra.', 'Il conto di questo tavolo è stato chiuso. Scansiona il QR per iniziarne un altro.'],
+  'Essa mesa foi fechada e aberta de novo. Escaneie o QR pra continuar.': ['This table was closed and opened again. Scan the QR code to continue.', 'Cette table a été clôturée puis rouverte. Scannez le QR code pour continuer.', 'Esta mesa se cerró y se abrió de nuevo. Escanea el QR para continuar.', 'Questo tavolo è stato chiuso e riaperto. Scansiona il QR per continuare.'],
+  'Faz mais de # minutos que você abriu. Escaneie o QR pra continuar.': ['It’s been over # minutes since you opened this page. Scan the QR code to continue.', 'Vous avez ouvert cette page il y a plus de # minutes. Scannez le QR code pour continuer.', 'Hace más de # minutos que abriste. Escanea el QR para continuar.', 'Sono passati più di # minuti da quando hai aperto. Scansiona il QR per continuare.'],
+  // capa
+  'Bom dia 👋': ['Good morning 👋', 'Bonjour 👋', 'Buenos días 👋', 'Buongiorno 👋'],
+  'Boa tarde 👋': ['Good afternoon 👋', 'Bon après-midi 👋', 'Buenas tardes 👋', 'Buon pomeriggio 👋'],
+  'Boa noite 👋': ['Good evening 👋', 'Bonsoir 👋', 'Buenas noches 👋', 'Buonasera 👋'],
+  'Bom dia,': ['Good morning,', 'Bonjour,', 'Buenos días,', 'Buongiorno,'],
+  'Boa tarde,': ['Good afternoon,', 'Bon après-midi,', 'Buenas tardes,', 'Buon pomeriggio,'],
+  'Boa noite,': ['Good evening,', 'Bonsoir,', 'Buenas noches,', 'Buonasera,'],
+  '📍 Mesa #': ['📍 Table #', '📍 Table #', '📍 Mesa #', '📍 Tavolo #'],
+  'Mesa #': ['Table #', 'Table #', 'Mesa #', 'Tavolo #'],
+  'mesa #': ['table #', 'table #', 'mesa #', 'tavolo #'],
+  'Mesa': ['Table', 'Table', 'Mesa', 'Tavolo'],
+  'mesa': ['table', 'table', 'mesa', 'tavolo'],
+  'Comanda': ['Tab', 'Note', 'Comanda', 'Comanda'],
+  'comanda': ['tab', 'note', 'comanda', 'comanda'],
+  'Comanda #': ['Tab #', 'Note #', 'Comanda #', 'Comanda #'],
+  'comanda #': ['tab #', 'note #', 'comanda #', 'comanda #'],
+  'COMANDA #': ['TAB #', 'NOTE #', 'COMANDA #', 'COMANDA #'],
+  'número da sua mesa': ['your table number', 'numéro de votre table', 'número de tu mesa', 'numero del tuo tavolo'],
+  'Mais alguém da mesa quer avaliar?': ['Anyone else at the table want to rate us?', 'Quelqu’un d’autre à table veut donner son avis ?', '¿Alguien más de la mesa quiere opinar?', 'Qualcun altro al tavolo vuole lasciare un voto?'],
+  'cada pessoa ganha o seu drink': ['each person gets their own drink', 'chaque personne reçoit son cocktail', 'cada persona gana su trago', 'ogni persona riceve il suo drink'],
+  'Avalie e ganhe um drink': ['Rate us and get a free drink', 'Donnez votre avis et gagnez un cocktail', 'Opina y gana un trago', 'Lascia un voto e ricevi un drink'],
+  'Como está sendo sua experiência?': ['How is your experience so far?', 'Comment se passe votre expérience ?', '¿Cómo está siendo tu experiencia?', 'Come sta andando la tua esperienza?'],
+  'elogio, reclamação ou sugestão — vai direto pra gerência': ['praise, complaint or suggestion — it goes straight to the manager', 'compliment, réclamation ou suggestion — directement à la direction', 'elogio, queja o sugerencia — va directo a la gerencia', 'complimento, reclamo o suggerimento — arriva subito alla direzione'],
+  'Avaliar agora': ['Rate now', 'Donner mon avis', 'Opinar ahora', 'Vota ora'],
+  '🍽 Ver cardápio e pedir': ['🍽 See the menu and order', '🍽 Voir la carte et commander', '🍽 Ver la carta y pedir', '🍽 Vedi il menù e ordina'],
+  'O que já pedi': ['What I’ve ordered', 'Mes commandes', 'Lo que ya pedí', 'Cosa ho ordinato'],
+  'acompanhe seus pedidos': ['track your orders', 'suivez vos commandes', 'sigue tus pedidos', 'segui i tuoi ordini'],
+  'Minha conta': ['My bill', 'Mon addition', 'Mi cuenta', 'Il mio conto'],
+  'veja o total': ['see the total', 'voir le total', 'ver el total', 'vedi il totale'],
+  'Chamar garçom': ['Call the waiter', 'Appeler le serveur', 'Llamar al camarero', 'Chiama il cameriere'],
+  'ele vem na hora': ['he’ll come right away', 'il arrive tout de suite', 'viene enseguida', 'arriva subito'],
+  'Problema no pedido': ['Problem with my order', 'Problème de commande', 'Problema con el pedido', 'Problema con l’ordine'],
+  'demorou, faltou, veio errado': ['late, missing, wrong item', 'retard, oubli, erreur', 'tardó, faltó, vino mal', 'in ritardo, mancante, sbagliato'],
+  'Pagar a conta': ['Pay the bill', 'Payer l’addition', 'Pagar la cuenta', 'Paga il conto'],
+  'pelo Pix, sem esperar': ['by Pix, no waiting', 'par Pix, sans attendre', 'por Pix, sin esperar', 'con Pix, senza attese'],
+  'O de sempre': ['My usual', 'Comme d’habitude', 'Lo de siempre', 'Il solito'],
+  'o que você mais pede': ['what you order most', 'ce que vous commandez le plus', 'lo que más pides', 'quello che ordini di più'],
+  'Me identificar': ['Identify myself', 'M’identifier', 'Identificarme', 'Identificarmi'],
+  'opcional': ['optional', 'facultatif', 'opcional', 'facoltativo'],
+  // avaliação
+  'Não gostei 😕': ['Didn’t like it 😕', 'Je n’ai pas aimé 😕', 'No me gustó 😕', 'Non mi è piaciuto 😕'],
+  'Podia ser melhor': ['Could be better', 'Peut mieux faire', 'Podría ser mejor', 'Poteva andare meglio'],
+  'Foi ok 🙂': ['It was ok 🙂', 'C’était correct 🙂', 'Estuvo bien 🙂', 'È andata bene 🙂'],
+  'Gostei muito! 😄': ['Really liked it! 😄', 'J’ai beaucoup aimé ! 😄', '¡Me gustó mucho! 😄', 'Mi è piaciuto molto! 😄'],
+  'Perfeito! 🤩': ['Perfect! 🤩', 'Parfait ! 🤩', '¡Perfecto! 🤩', 'Perfetto! 🤩'],
+  'Sua opinião vai direto pra gerência.': ['Your feedback goes straight to the manager.', 'Votre avis va directement à la direction.', 'Tu opinión va directo a la gerencia.', 'La tua opinione arriva subito alla direzione.'],
+  'Sua opinião vai direto pra gerência. No fim, você escolhe seu drink 🍹': ['Your feedback goes straight to the manager. At the end, you pick your drink 🍹', 'Votre avis va directement à la direction. À la fin, vous choisissez votre cocktail 🍹', 'Tu opinión va directo a la gerencia. Al final, eliges tu trago 🍹', 'La tua opinione arriva subito alla direzione. Alla fine scegli il tuo drink 🍹'],
+  'Quer contar mais? Comida, atendimento, ambiente… (opcional)': ['Want to tell us more? Food, service, atmosphere… (optional)', 'Envie d’en dire plus ? Cuisine, service, ambiance… (facultatif)', '¿Quieres contar más? Comida, atención, ambiente… (opcional)', 'Vuoi dirci di più? Cibo, servizio, atmosfera… (facoltativo)'],
+  'Continuar': ['Continue', 'Continuer', 'Continuar', 'Continua'],
+  'Voltar': ['Back', 'Retour', 'Volver', 'Indietro'],
+  '◂ Voltar': ['◂ Back', '◂ Retour', '◂ Volver', '◂ Indietro'],
+  'Toque nas estrelas pra dar sua nota.': ['Tap the stars to give your rating.', 'Touchez les étoiles pour donner votre note.', 'Toca las estrellas para dar tu nota.', 'Tocca le stelle per dare il tuo voto.'],
+  'Toque no que houve, ou escreva pra gente.': ['Tap what happened, or write to us.', 'Touchez ce qui s’est passé, ou écrivez-nous.', 'Toca lo que pasó, o escríbenos.', 'Tocca cosa è successo, oppure scrivici.'],
+  'Confira o CPF.': ['Please check the CPF.', 'Vérifiez le CPF.', 'Revisa el CPF.', 'Controlla il CPF.'],
+  'Escolha o sabor.': ['Choose the flavour.', 'Choisissez le parfum.', 'Elige el sabor.', 'Scegli il gusto.'],
+  'Escolha o seu drink.': ['Choose your drink.', 'Choisissez votre cocktail.', 'Elige tu trago.', 'Scegli il tuo drink.'],
+  '⏱ Demorou': ['⏱ Took too long', '⏱ Trop long', '⏱ Tardó', '⏱ Troppo lento'],
+  '🍽 Veio errado': ['🍽 Wrong item', '🍽 Erreur de plat', '🍽 Vino mal', '🍽 Piatto sbagliato'],
+  '🌡 Veio frio': ['🌡 Came cold', '🌡 Arrivé froid', '🌡 Vino frío', '🌡 Arrivato freddo'],
+  '➖ Faltou algo': ['➖ Something missing', '➖ Il manque quelque chose', '➖ Faltó algo', '➖ Manca qualcosa'],
+  '🧹 Mesa / louça / limpeza': ['🧹 Table / dishes / cleanliness', '🧹 Table / vaisselle / propreté', '🧹 Mesa / vajilla / limpieza', '🧹 Tavolo / stoviglie / pulizia'],
+  '💬 Outro': ['💬 Other', '💬 Autre', '💬 Otro', '💬 Altro'],
+  'Qual foi?': ['Which one?', 'Lequel ?', '¿Cuál fue?', 'Quale?'],
+  'Toque no que teve problema. Pode marcar mais de um.': ['Tap what had a problem. You can select more than one.', 'Touchez ce qui a posé problème. Vous pouvez en cocher plusieurs.', 'Toca lo que tuvo problema. Puedes marcar más de uno.', 'Tocca ciò che ha avuto un problema. Puoi selezionarne più di uno.'],
+  'já entregue': ['already delivered', 'déjà servi', 'ya entregado', 'già consegnato'],
+  'pronto, saindo': ['ready, on its way', 'prêt, il arrive', 'listo, saliendo', 'pronto, in arrivo'],
+  'em produção': ['being prepared', 'en préparation', 'en preparación', 'in preparazione'],
+  'há #min': ['# min ago', 'il y a # min', 'hace # min', '# min fa'],
+  'há # min': ['# min ago', 'il y a # min', 'hace # min', '# min fa'],
+  'Poxa, sentimos muito 😔': ['Oh no, we’re really sorry 😔', 'Oh, nous sommes vraiment désolés 😔', 'Vaya, lo sentimos mucho 😔', 'Oh no, ci dispiace molto 😔'],
+  'Conta pra gente o que houve — vai direto pro gerente, agora.': ['Tell us what happened — it goes straight to the manager, right now.', 'Dites-nous ce qui s’est passé — c’est transmis au gérant, tout de suite.', 'Cuéntanos qué pasó — va directo al gerente, ahora.', 'Raccontaci cosa è successo — arriva subito al responsabile.'],
+  'O que foi?': ['What was it?', 'Qu’est-ce que c’était ?', '¿Qué fue?', 'Cos’è stato?'],
+  'O que aconteceu? (quanto mais detalhe, melhor a gente resolve)': ['What happened? (the more detail, the better we can fix it)', 'Que s’est-il passé ? (plus il y a de détails, mieux nous pouvons agir)', '¿Qué pasó? (cuanto más detalle, mejor lo resolvemos)', 'Cos’è successo? (più dettagli ci dai, meglio risolviamo)'],
+  'Seu nome': ['Your name', 'Votre nom', 'Tu nombre', 'Il tuo nome'],
+  '(opcional)': ['(optional)', '(facultatif)', '(opcional)', '(facoltativo)'],
+  'como te chamar': ['what should we call you', 'comment vous appeler', 'cómo llamarte', 'come ti chiami'],
+  '(opcional — é por onde a gente te responde)': ['(optional — that’s how we’ll reply to you)', '(facultatif — c’est par là que nous vous répondrons)', '(opcional — es por donde te respondemos)', '(facoltativo — è dove ti rispondiamo)'],
+  'Enviar pra gerência': ['Send to the manager', 'Envoyer à la direction', 'Enviar a la gerencia', 'Invia alla direzione'],
+  'É um problema com um prato ou bebida agora →': ['It’s a problem with a dish or drink right now →', 'C’est un problème avec un plat ou une boisson maintenant →', 'Es un problema con un plato o bebida ahora →', 'È un problema con un piatto o una bevanda adesso →'],
+  'Enviando…': ['Sending…', 'Envoi…', 'Enviando…', 'Invio…'],
+  'Enviar': ['Send', 'Envoyer', 'Enviar', 'Invia'],
+  'Sem conexão. Tente de novo.': ['No connection. Try again.', 'Pas de connexion. Réessayez.', 'Sin conexión. Inténtalo de nuevo.', 'Nessuna connessione. Riprova.'],
+  'Não deu certo. Chame o garçom.': ['That didn’t work. Please call the waiter.', 'Ça n’a pas marché. Appelez le serveur.', 'No funcionó. Llama al camarero.', 'Non ha funzionato. Chiama il cameriere.'],
+  '✓ Recebemos': ['✓ Received', '✓ Bien reçu', '✓ Recibido', '✓ Ricevuto'],
+  'O gerente já foi avisado e vem falar com você. Obrigado por contar — é assim que a gente melhora.': ['The manager has been notified and will come to talk to you. Thanks for telling us — that’s how we get better.', 'Le gérant a été prévenu et vient vous voir. Merci de nous l’avoir dit — c’est ainsi que nous progressons.', 'El gerente ya fue avisado y viene a hablar contigo. Gracias por contarlo — así es como mejoramos.', 'Il responsabile è stato avvisato e viene a parlarti. Grazie per avercelo detto — è così che miglioriamo.'],
+  'Voltar ao início': ['Back to start', 'Retour à l’accueil', 'Volver al inicio', 'Torna all’inizio'],
+  'Obrigado pela avaliação!': ['Thanks for your rating!', 'Merci pour votre avis !', '¡Gracias por tu opinión!', 'Grazie per il tuo voto!'],
+  'Sua opinião já chegou na gerência. Valeu demais!': ['Your feedback has reached the manager. Thank you so much!', 'Votre avis est arrivé à la direction. Merci beaucoup !', 'Tu opinión ya llegó a la gerencia. ¡Muchísimas gracias!', 'La tua opinione è arrivata alla direzione. Grazie mille!'],
+  'Nos faça uma grande gentileza?': ['Would you do us a big favour?', 'Vous nous rendriez un grand service ?', '¿Nos haces un gran favor?', 'Ci fai un grande favore?'],
+  'Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.': ['Show the world how much you enjoyed our place! Your review on Google or TripAdvisor helps a lot of people find us.', 'Montrez au monde combien vous avez aimé notre lieu ! Votre avis sur Google ou TripAdvisor aide beaucoup de gens à nous découvrir.', '¡Muéstrale al mundo cuánto te gustó nuestro lugar! Tu reseña en Google o TripAdvisor ayuda a mucha gente a descubrirnos.', 'Mostra al mondo quanto ti è piaciuto il nostro locale! La tua recensione su Google o TripAdvisor aiuta tante persone a scoprirci.'],
+  '⭐ Avaliar no Google': ['⭐ Review on Google', '⭐ Donner un avis sur Google', '⭐ Opinar en Google', '⭐ Recensisci su Google'],
+  '🦉 Avaliar no TripAdvisor': ['🦉 Review on TripAdvisor', '🦉 Donner un avis sur TripAdvisor', '🦉 Opinar en TripAdvisor', '🦉 Recensisci su TripAdvisor'],
+  'Quem está avaliando?': ['Who is rating?', 'Qui donne son avis ?', '¿Quién está opinando?', 'Chi sta votando?'],
+  'É um drink por pessoa a cada mês — o CPF serve só pra isso.': ['It’s one drink per person each month — the CPF (Brazilian tax ID) is only used for that.', 'C’est un cocktail par personne chaque mois — le CPF (identifiant fiscal brésilien) ne sert qu’à cela.', 'Es un trago por persona cada mes — el CPF (documento fiscal brasileño) sirve solo para eso.', 'È un drink a persona al mese — il CPF (codice fiscale brasiliano) serve solo a questo.'],
+  'Esse CPF não confere. Dê uma olhada nos números.': ['That CPF doesn’t look right. Please check the numbers.', 'Ce CPF n’est pas valide. Vérifiez les chiffres.', 'Ese CPF no es válido. Revisa los números.', 'Questo CPF non è valido. Controlla i numeri.'],
+  'conferindo…': ['checking…', 'vérification…', 'comprobando…', 'verifica…'],
+  'Olá,': ['Hello,', 'Bonjour,', 'Hola,', 'Ciao,'],
+  'Escolha seu drink 🍹': ['Choose your drink 🍹', 'Choisissez votre cocktail 🍹', 'Elige tu trago 🍹', 'Scegli il tuo drink 🍹'],
+  'Por nossa conta! Ele entra na sua mesa e o garçom já traz.': ['It’s on us! It goes on your table and the waiter brings it right over.', 'C’est offert ! Il est ajouté à votre table et le serveur vous l’apporte.', '¡Invita la casa! Entra en tu mesa y el camarero ya te lo trae.', 'Offre la casa! Viene aggiunto al tuo tavolo e il cameriere te lo porta subito.'],
+  'Com álcool': ['With alcohol', 'Avec alcool', 'Con alcohol', 'Alcolico'],
+  'Sem álcool': ['Alcohol-free', 'Sans alcool', 'Sin alcohol', 'Analcolico'],
+  'com álcool': ['with alcohol', 'avec alcool', 'con alcohol', 'alcolico'],
+  'sem álcool': ['alcohol-free', 'sans alcool', 'sin alcohol', 'analcolico'],
+  'Qual sabor?': ['Which flavour?', 'Quel parfum ?', '¿Qué sabor?', 'Che gusto?'],
+  'Enviar avaliação e ganhar meu drink': ['Send my rating and get my drink', 'Envoyer mon avis et recevoir mon cocktail', 'Enviar mi opinión y ganar mi trago', 'Invia il voto e ricevi il mio drink'],
+  'Não quero drink, só enviar a avaliação': ['No drink, just send my rating', 'Pas de cocktail, envoyer seulement mon avis', 'No quiero trago, solo enviar mi opinión', 'Niente drink, invia solo il voto'],
+  'Obrigado de novo!': ['Thanks again!', 'Merci encore !', '¡Gracias de nuevo!', 'Grazie ancora!'],
+  'Seu': ['Your', 'Votre', 'Tu', 'Il tuo'],
+  'já foi pedido e chega na sua mesa, por nossa conta.': ['has been ordered and is coming to your table, on the house.', 'a été commandé et arrive à votre table, c’est offert.', 'ya fue pedido y llega a tu mesa, invita la casa.', 'è stato ordinato e arriva al tuo tavolo, offre la casa.'],
+  // cadastro
+  'Seu cadastro': ['Your details', 'Vos coordonnées', 'Tus datos', 'I tuoi dati'],
+  'Precisamos do seu CPF pra abrir a conta. O nome vem sozinho.': ['We need your CPF (Brazilian tax ID) to open the bill. Your name fills in by itself.', 'Nous avons besoin de votre CPF (identifiant fiscal brésilien) pour ouvrir l’addition. Le nom se remplit tout seul.', 'Necesitamos tu CPF (documento fiscal brasileño) para abrir la cuenta. El nombre aparece solo.', 'Ci serve il tuo CPF (codice fiscale brasiliano) per aprire il conto. Il nome compare da solo.'],
+  '(obrigatório)': ['(required)', '(obligatoire)', '(obligatorio)', '(obbligatorio)'],
+  'Digite o CPF — o nome vem sozinho.': ['Type the CPF — the name fills in by itself.', 'Saisissez le CPF — le nom se remplit tout seul.', 'Escribe el CPF — el nombre aparece solo.', 'Inserisci il CPF — il nome compare da solo.'],
+  'Digite o CPF que o nome vem sozinho.': ['Type the CPF and the name fills in by itself.', 'Saisissez le CPF et le nom se remplit tout seul.', 'Escribe el CPF y el nombre aparece solo.', 'Inserisci il CPF e il nome compare da solo.'],
+  'Agora não': ['Not now', 'Pas maintenant', 'Ahora no', 'Non ora'],
+  'consultando…': ['looking up…', 'recherche…', 'consultando…', 'ricerca…'],
+  'CPF inválido': ['Invalid CPF', 'CPF invalide', 'CPF inválido', 'CPF non valido'],
+  'A consulta não respondeu agora. Tente de novo em alguns segundos.': ['The lookup didn’t respond. Try again in a few seconds.', 'La recherche n’a pas répondu. Réessayez dans quelques secondes.', 'La consulta no respondió. Inténtalo de nuevo en unos segundos.', 'La ricerca non ha risposto. Riprova tra qualche secondo.'],
+  'Consultar de novo': ['Look up again', 'Rechercher à nouveau', 'Consultar de nuevo', 'Cerca di nuovo'],
+  'Não achei nome para este CPF. Confira o número.': ['No name found for this CPF. Please check the number.', 'Aucun nom trouvé pour ce CPF. Vérifiez le numéro.', 'No encontré nombre para este CPF. Revisa el número.', 'Nessun nome trovato per questo CPF. Controlla il numero.'],
+  'temos o final #': ['we have the one ending in #', 'nous avons celui finissant par #', 'tenemos el que termina en #', 'abbiamo quello che finisce per #'],
+  'Com DDD. É por aqui que avisamos quando seu pedido sai e quando sua reserva está pronta.': ['With area code. This is how we let you know when your order is out and when your reservation is ready.', 'Avec l’indicatif. C’est par là que nous vous prévenons quand votre commande sort et quand votre réservation est prête.', 'Con código de área. Por aquí te avisamos cuando sale tu pedido y cuando tu reserva está lista.', 'Con prefisso. È qui che ti avvisiamo quando il tuo ordine esce e quando la prenotazione è pronta.'],
+  'Salvar': ['Save', 'Enregistrer', 'Guardar', 'Salva'],
+  'Com DDD. Usamos pra avisar de reserva e mesa pronta.': ['With area code. We use it to let you know about reservations and when your table is ready.', 'Avec l’indicatif. Nous l’utilisons pour vous prévenir des réservations et quand la table est prête.', 'Con código de área. Lo usamos para avisarte de reservas y mesa lista.', 'Con prefisso. Lo usiamo per avvisarti di prenotazioni e tavolo pronto.'],
+  'Falta o DDD — comece pelo 79, 11, 21…': ['The area code is missing — start with 79, 11, 21…', 'Il manque l’indicatif — commencez par 79, 11, 21…', 'Falta el código de área — empieza por 79, 11, 21…', 'Manca il prefisso — inizia con 79, 11, 21…'],
+  'Número muito longo': ['Number too long', 'Numéro trop long', 'Número demasiado largo', 'Numero troppo lungo'],
+  'O CPF é obrigatório pra abrir a conta.': ['The CPF is required to open the bill.', 'Le CPF est obligatoire pour ouvrir l’addition.', 'El CPF es obligatorio para abrir la cuenta.', 'Il CPF è obbligatorio per aprire il conto.'],
+  'Digite o CPF e espere o nome aparecer.': ['Type the CPF and wait for the name to appear.', 'Saisissez le CPF et attendez que le nom apparaisse.', 'Escribe el CPF y espera a que aparezca el nombre.', 'Inserisci il CPF e attendi che compaia il nome.'],
+  'O WhatsApp precisa do DDD (ex.: 79 seguido do número)': ['WhatsApp needs the area code (e.g. 79 followed by the number)', 'WhatsApp nécessite l’indicatif (ex. : 79 suivi du numéro)', 'El WhatsApp necesita el código de área (ej.: 79 seguido del número)', 'WhatsApp richiede il prefisso (es.: 79 seguito dal numero)'],
+  // o de sempre
+  'O que você sempre pede': ['What you always order', 'Ce que vous commandez toujours', 'Lo que siempre pides', 'Quello che ordini sempre'],
+  '# visitas': ['# visits', '# visites', '# visitas', '# visite'],
+  '# visita': ['# visit', '# visite', '# visita', '# visita'],
+  'toque pra adicionar': ['tap to add', 'touchez pour ajouter', 'toca para añadir', 'tocca per aggiungere'],
+  'indisponível': ['unavailable', 'indisponible', 'no disponible', 'non disponibile'],
+  // cardápio
+  'Cardápio': ['Menu', 'Carte', 'Carta', 'Menù'],
+  'buscar…': ['search…', 'rechercher…', 'buscar…', 'cerca…'],
+  'carregando…': ['loading…', 'chargement…', 'cargando…', 'caricamento…'],
+  'Não consegui carregar o cardápio.': ['Couldn’t load the menu.', 'Impossible de charger la carte.', 'No pude cargar la carta.', 'Impossibile caricare il menù.'],
+  'servidor respondeu #': ['server replied #', 'le serveur a répondu #', 'el servidor respondió #', 'il server ha risposto #'],
+  'Tentar de novo': ['Try again', 'Réessayer', 'Intentar de nuevo', 'Riprova'],
+  'Nenhum grupo disponível agora.': ['No category available right now.', 'Aucune catégorie disponible pour le moment.', 'Ninguna categoría disponible ahora.', 'Nessuna categoria disponibile al momento.'],
+  '# grupos': ['# categories', '# catégories', '# categorías', '# categorie'],
+  '# grupo': ['# category', '# catégorie', '# categoría', '# categoria'],
+  'role a tela pra ver todos ↓': ['scroll down to see them all ↓', 'faites défiler pour tout voir ↓', 'desliza para verlas todas ↓', 'scorri per vederle tutte ↓'],
+  '# itens': ['# items', '# articles', '# artículos', '# articoli'],
+  '# item': ['# item', '# article', '# artículo', '# articolo'],
+  '# items': ['# items', '# articles', '# artículos', '# articoli'],
+  '◂ grupos': ['◂ categories', '◂ catégories', '◂ categorías', '◂ categorie'],
+  'Saiba mais': ['Learn more', 'En savoir plus', 'Saber más', 'Scopri di più'],
+  'Pedir': ['Order', 'Commander', 'Pedir', 'Ordina'],
+  '# opções': ['# options', '# options', '# opciones', '# opzioni'],
+  'nada encontrado': ['nothing found', 'aucun résultat', 'nada encontrado', 'nessun risultato'],
+  'toque em qualquer lugar pra fechar': ['tap anywhere to close', 'touchez n’importe où pour fermer', 'toca en cualquier lugar para cerrar', 'tocca ovunque per chiudere'],
+  'fechar': ['close', 'fermer', 'cerrar', 'chiudi'],
+  'sem opções disponíveis agora': ['no options available right now', 'aucune option disponible pour le moment', 'sin opciones disponibles ahora', 'nessuna opzione disponibile al momento'],
+  'R$ # a R$ #': ['R$ # to R$ #', 'R$ # à R$ #', 'R$ # a R$ #', 'R$ # a R$ #'],
+  // perguntas / observações
+  'Escolha': ['Choose', 'Choisissez', 'Elige', 'Scegli'],
+  'escolha #': ['choose #', 'choisissez-en #', 'elige #', 'scegline #'],
+  'pelo menos #': ['at least #', 'au moins #', 'al menos #', 'almeno #'],
+  'de # a #': ['from # to #', 'de # à #', 'de # a #', 'da # a #'],
+  '# de #': ['# of #', '# sur #', '# de #', '# di #'],
+  'Adicionar ao pedido': ['Add to order', 'Ajouter à la commande', 'Añadir al pedido', 'Aggiungi all’ordine'],
+  'Cancelar': ['Cancel', 'Annuler', 'Cancelar', 'Annulla'],
+  'Escolha no máximo #.': ['Choose at most #.', 'Choisissez-en # au maximum.', 'Elige como máximo #.', 'Scegline al massimo #.'],
+  'Escolha pelo menos #.': ['Choose at least #.', 'Choisissez-en au moins #.', 'Elige al menos #.', 'Scegline almeno #.'],
+  'Quer pedir de algum jeito?': ['Any special request?', 'Une demande particulière ?', '¿Quieres pedirlo de alguna forma?', 'Qualche richiesta particolare?'],
+  'ou escreva aqui (ex.: sem cebola)': ['or write here (e.g. no onion)', 'ou écrivez ici (ex. : sans oignon)', 'o escribe aquí (ej.: sin cebolla)', 'oppure scrivi qui (es.: senza cipolla)'],
+  // carrinho
+  '⇄ sai junto': ['⇄ served together', '⇄ servi ensemble', '⇄ sale junto', '⇄ servito insieme'],
+  'servir junto': ['serve together', 'servir ensemble', 'servir junto', 'servire insieme'],
+  'vão sair ao mesmo tempo. Os outros vêm assim que ficarem prontos.': ['will come out at the same time. The others come as soon as they’re ready.', 'sortiront en même temps. Les autres arrivent dès qu’ils sont prêts.', 'saldrán al mismo tiempo. Los demás llegan en cuanto estén listos.', 'usciranno insieme. Gli altri arrivano appena pronti.'],
+  'vão sair ao mesmo tempo.': ['will come out at the same time.', 'sortiront en même temps.', 'saldrán al mismo tiempo.', 'usciranno insieme.'],
+  'Quer que algo chegue junto com outro item? Toque no': ['Want something to arrive together with another item? Tap the', 'Vous voulez qu’un article arrive avec un autre ? Touchez le', '¿Quieres que algo llegue junto con otro artículo? Toca el', 'Vuoi che qualcosa arrivi insieme a un altro articolo? Tocca il'],
+  'dos dois.': ['on both.', 'des deux.', 'de los dos.', 'di entrambi.'],
+  'Revisar e enviar': ['Review and send', 'Vérifier et envoyer', 'Revisar y enviar', 'Controlla e invia'],
+  // revisão / envio
+  'Confira seu pedido': ['Check your order', 'Vérifiez votre commande', 'Revisa tu pedido', 'Controlla il tuo ordine'],
+  'Mesa # — depois de enviar, a produção já começa a preparar': ['Table # — once you send it, the kitchen starts preparing right away', 'Table # — une fois envoyée, la cuisine commence à préparer', 'Mesa # — al enviar, la cocina ya empieza a preparar', 'Tavolo # — dopo l’invio, la cucina inizia subito a preparare'],
+  '⇄ sai junto com os outros marcados': ['⇄ served together with the other marked items', '⇄ servi avec les autres articles marqués', '⇄ sale junto con los otros marcados', '⇄ servito insieme agli altri selezionati'],
+  'tirar': ['remove', 'retirer', 'quitar', 'rimuovi'],
+  'total': ['total', 'total', 'total', 'totale'],
+  'Confirmar e enviar': ['Confirm and send', 'Confirmer et envoyer', 'Confirmar y enviar', 'Conferma e invia'],
+  'Voltar e ajustar': ['Go back and adjust', 'Revenir et modifier', 'Volver y ajustar', 'Torna indietro e modifica'],
+  'Enviando pedido…': ['Sending order…', 'Envoi de la commande…', 'Enviando pedido…', 'Invio dell’ordine…'],
+  'não consegui enviar': ['couldn’t send it', 'envoi impossible', 'no pude enviarlo', 'invio non riuscito'],
+  'PEDIDO ENVIADO': ['ORDER SENT', 'COMMANDE ENVOYÉE', 'PEDIDO ENVIADO', 'ORDINE INVIATO'],
+  'PARA A PRODUÇÃO': ['TO THE KITCHEN', 'EN CUISINE', 'A LA COCINA', 'IN CUCINA'],
+  'Ver o que já pedi': ['See what I’ve ordered', 'Voir mes commandes', 'Ver lo que ya pedí', 'Vedi cosa ho ordinato'],
+  // já pedido
+  'O que você já pediu': ['What you’ve ordered', 'Ce que vous avez commandé', 'Lo que ya pediste', 'Cosa hai ordinato'],
+  '# a caminho': ['# on the way', '# en route', '# en camino', '# in arrivo'],
+  'ao vivo': ['live', 'en direct', 'en vivo', 'in diretta'],
+  'pedido às #': ['ordered at #', 'commandé à #', 'pedido a las #', 'ordinato alle #'],
+  'pronto às #': ['ready at #', 'prêt à #', 'listo a las #', 'pronto alle #'],
+  'entregue às #': ['delivered at #', 'servi à #', 'entregado a las #', 'consegnato alle #'],
+  'pronto, a caminho': ['ready, on its way', 'prêt, il arrive', 'listo, en camino', 'pronto, in arrivo'],
+  'já na mesa': ['already at the table', 'déjà à table', 'ya en la mesa', 'già al tavolo'],
+  'nada pedido ainda': ['nothing ordered yet', 'rien commandé pour l’instant', 'nada pedido todavía', 'ancora nessun ordine'],
+  'Pedir mais': ['Order more', 'Commander autre chose', 'Pedir más', 'Ordina altro'],
+  '⚠️ Demorando ou veio errado?': ['⚠️ Taking too long or wrong item?', '⚠️ Trop long ou erreur ?', '⚠️ ¿Tarda o vino mal?', '⚠️ In ritardo o sbagliato?'],
+  'avise a cozinha e o gerente na hora': ['alert the kitchen and the manager right away', 'prévenez la cuisine et le gérant tout de suite', 'avisa a la cocina y al gerente al instante', 'avvisa subito la cucina e il responsabile'],
+  // pagamento
+  'Pagar': ['Pay', 'Payer', 'Pagar', 'Paga'],
+  'carregando sua conta…': ['loading your bill…', 'chargement de votre addition…', 'cargando tu cuenta…', 'caricamento del conto…'],
+  'Conta não encontrada': ['Bill not found', 'Addition introuvable', 'Cuenta no encontrada', 'Conto non trovato'],
+  'não consegui abrir essa conta': ['couldn’t open this bill', 'impossible d’ouvrir cette addition', 'no pude abrir esta cuenta', 'impossibile aprire questo conto'],
+  'Depois deste pagamento ainda faltam R$ # na conta.': ['After this payment, R$ # will still be due on the bill.', 'Après ce paiement, il restera R$ # sur l’addition.', 'Después de este pago aún faltan R$ # en la cuenta.', 'Dopo questo pagamento restano ancora R$ # sul conto.'],
+  'Isto quita a conta.': ['This settles the bill.', 'Cela règle l’addition.', 'Esto liquida la cuenta.', 'Questo salda il conto.'],
+  'O que você vai pagar': ['What you’re paying', 'Ce que vous payez', 'Lo que vas a pagar', 'Cosa paghi'],
+  'A mesa toda': ['The whole table', 'Toute la table', 'Toda la mesa', 'Tutto il tavolo'],
+  'sua parte': ['your share', 'votre part', 'tu parte', 'la tua parte'],
+  'conta de R$ # dividida por #': ['bill of R$ # split by #', 'addition de R$ # divisée par #', 'cuenta de R$ # dividida entre #', 'conto di R$ # diviso per #'],
+  'dividido por #': ['split by #', 'divisé par #', 'dividido entre #', 'diviso per #'],
+  'total a pagar': ['total to pay', 'total à payer', 'total a pagar', 'totale da pagare'],
+  'Consumo': ['Items', 'Consommation', 'Consumo', 'Consumazioni'],
+  'já pago': ['already paid', 'déjà payé', 'ya pagado', 'già pagato'],
+  'Serviço': ['Service', 'Service', 'Servicio', 'Servizio'],
+  'Serviço #%': ['Service #%', 'Service #%', 'Servicio #%', 'Servizio #%'],
+  'Desconto': ['Discount', 'Remise', 'Descuento', 'Sconto'],
+  'Acréscimo': ['Surcharge', 'Supplément', 'Recargo', 'Supplemento'],
+  'Dividir por': ['Split by', 'Diviser par', 'Dividir entre', 'Dividi per'],
+  'Ou digite quanto você vai pagar': ['Or type how much you’ll pay', 'Ou saisissez le montant que vous payez', 'O escribe cuánto vas a pagar', 'Oppure scrivi quanto paghi'],
+  'Já pago nesta conta': ['Already paid on this bill', 'Déjà payé sur cette addition', 'Ya pagado en esta cuenta', 'Già pagato su questo conto'],
+  'pagamento': ['payment', 'paiement', 'pago', 'pagamento'],
+  'ainda falta': ['still due', 'reste à payer', 'aún falta', 'resta ancora'],
+  'Cada pessoa paga a sua e a conta vai baixando sozinha. Quem pagar por último acerta a diferença.': ['Each person pays their share and the bill goes down by itself. Whoever pays last settles the difference.', 'Chacun paie sa part et l’addition diminue toute seule. Le dernier à payer règle la différence.', 'Cada persona paga lo suyo y la cuenta va bajando sola. Quien pague al final ajusta la diferencia.', 'Ognuno paga la sua parte e il conto scende da solo. Chi paga per ultimo salda la differenza.'],
+  '🧾 Ver o detalhe da conta': ['🧾 See the bill details', '🧾 Voir le détail de l’addition', '🧾 Ver el detalle de la cuenta', '🧾 Vedi il dettaglio del conto'],
+  '🧾 Ver o detalhe da comanda #': ['🧾 See the details of tab #', '🧾 Voir le détail de la note #', '🧾 Ver el detalle de la comanda #', '🧾 Vedi il dettaglio della comanda #'],
+  'Pagamento pela tela ainda não está ligado.': ['On-screen payment isn’t enabled yet.', 'Le paiement à l’écran n’est pas encore activé.', 'El pago por pantalla aún no está activado.', 'Il pagamento da schermo non è ancora attivo.'],
+  'Chame o garçom.': ['Please call the waiter.', 'Appelez le serveur.', 'Llama al camarero.', 'Chiama il cameriere.'],
+  '🔔 Chamar o garçom': ['🔔 Call the waiter', '🔔 Appeler le serveur', '🔔 Llamar al camarero', '🔔 Chiama il cameriere'],
+  'Pagar com Pix': ['Pay with Pix', 'Payer par Pix', 'Pagar con Pix', 'Paga con Pix'],
+  'Tem o Cartão Prainha?': ['Do you have the Prainha Card?', 'Vous avez la Carte Prainha ?', '¿Tienes la Tarjeta Prainha?', 'Hai la Carta Prainha?'],
+  'Digite o código de 4 letras do seu cartão (na Wallet do celular) e o desconto já sai no Pix.': ['Type the 4-letter code from your card (in your phone’s Wallet) and the discount is applied to the Pix.', 'Saisissez le code à 4 lettres de votre carte (dans le Wallet du téléphone) et la remise s’applique au Pix.', 'Escribe el código de 4 letras de tu tarjeta (en la Wallet del móvil) y el descuento ya sale en el Pix.', 'Inserisci il codice di 4 lettere della tua carta (nel Wallet del telefono) e lo sconto viene applicato al Pix.'],
+  'Gerar o Pix': ['Generate the Pix', 'Générer le Pix', 'Generar el Pix', 'Genera il Pix'],
+  'o código aparece na tela': ['the code appears on screen', 'le code s’affiche à l’écran', 'el código aparece en pantalla', 'il codice appare sullo schermo'],
+  'cai na hora': ['clears instantly', 'crédité instantanément', 'entra al instante', 'accreditato all’istante'],
+  'indisponível agora': ['unavailable right now', 'indisponible pour le moment', 'no disponible ahora', 'non disponibile al momento'],
+  'gerando o código…': ['generating the code…', 'génération du code…', 'generando el código…', 'generazione del codice…'],
+  'não consegui gerar': ['couldn’t generate it', 'génération impossible', 'no pude generarlo', 'generazione non riuscita'],
+  'Pix gerado': ['Pix generated', 'Pix généré', 'Pix generado', 'Pix generato'],
+  'Conta sem o cartão': ['Bill without the card', 'Addition sans la carte', 'Cuenta sin la tarjeta', 'Conto senza la carta'],
+  'Desconto #% (com +#% de dia de semana)': ['Discount #% (including +#% weekday bonus)', 'Remise #% (dont +#% en semaine)', 'Descuento #% (con +#% de día de semana)', 'Sconto #% (con +#% infrasettimanale)'],
+  'Desconto #%': ['Discount #%', 'Remise #%', 'Descuento #%', 'Sconto #%'],
+  'Depois do pagamento o seu cartão ganha um código novo.': ['After the payment your card gets a new code.', 'Après le paiement, votre carte reçoit un nouveau code.', 'Después del pago tu tarjeta recibe un código nuevo.', 'Dopo il pagamento la tua carta riceve un nuovo codice.'],
+  'Ou copie o código:': ['Or copy the code:', 'Ou copiez le code :', 'O copia el código:', 'Oppure copia il codice:'],
+  'Copiar código': ['Copy code', 'Copier le code', 'Copiar código', 'Copia codice'],
+  'aguardando o pagamento…': ['waiting for the payment…', 'en attente du paiement…', 'esperando el pago…', 'in attesa del pagamento…'],
+  '✓ Copiado — cole no app do banco': ['✓ Copied — paste it in your banking app', '✓ Copié — collez-le dans l’appli de votre banque', '✓ Copiado — pégalo en la app del banco', '✓ Copiato — incollalo nell’app della banca'],
+  'segure no código acima e escolha Copiar': ['press and hold the code above and choose Copy', 'appuyez longuement sur le code ci-dessus et choisissez Copier', 'mantén pulsado el código de arriba y elige Copiar', 'tieni premuto il codice qui sopra e scegli Copia'],
+  // comprovante
+  'COMPROVANTE DE PAGAMENTO': ['PAYMENT RECEIPT', 'REÇU DE PAIEMENT', 'COMPROBANTE DE PAGO', 'RICEVUTA DI PAGAMENTO'],
+  'não é documento fiscal': ['not a tax invoice', 'n’est pas un document fiscal', 'no es documento fiscal', 'non è un documento fiscale'],
+  'Forma': ['Method', 'Mode', 'Forma', 'Metodo'],
+  'PAGO': ['PAID', 'PAYÉ', 'PAGADO', 'PAGATO'],
+  'Consumo da mesa': ['Table total', 'Consommation de la table', 'Consumo de la mesa', 'Consumazioni del tavolo'],
+  'Total pago': ['Total paid', 'Total payé', 'Total pagado', 'Totale pagato'],
+  '✓ CONTA QUITADA': ['✓ BILL SETTLED', '✓ ADDITION RÉGLÉE', '✓ CUENTA LIQUIDADA', '✓ CONTO SALDATO'],
+  'Ainda falta R$ #': ['Still due: R$ #', 'Reste à payer : R$ #', 'Aún falta R$ #', 'Restano ancora R$ #'],
+  '💾 Guardar / enviar': ['💾 Save / share', '💾 Enregistrer / envoyer', '💾 Guardar / enviar', '💾 Salva / invia'],
+  '📄 Ver comprovante': ['📄 See receipt', '📄 Voir le reçu', '📄 Ver comprobante', '📄 Vedi ricevuta'],
+  // pós-pagamento / saída
+  '✓ Pagamento confirmado': ['✓ Payment confirmed', '✓ Paiement confirmé', '✓ Pago confirmado', '✓ Pagamento confermato'],
+  'Obrigado! Entrou na conta da mesa.': ['Thank you! It was applied to the table’s bill.', 'Merci ! Le paiement a été appliqué à l’addition de la table.', '¡Gracias! Entró en la cuenta de la mesa.', 'Grazie! È stato registrato sul conto del tavolo.'],
+  'Ainda falta nesta conta': ['Still due on this bill', 'Reste à payer sur cette addition', 'Aún falta en esta cuenta', 'Resta ancora su questo conto'],
+  'O': ['The', 'Le', 'El', 'Il'],
+  'passe de saída': ['exit pass', 'pass de sortie', 'pase de salida', 'pass di uscita'],
+  'sai quando a conta zerar. Quem ainda não pagou pode pagar pelo QR da mesa, ou chamar o garçom.': ['is issued once the bill is fully paid. Anyone who hasn’t paid yet can pay through the table QR code, or call the waiter.', 'est délivré une fois l’addition entièrement réglée. Ceux qui n’ont pas encore payé peuvent le faire via le QR code de la table, ou appeler le serveur.', 'sale cuando la cuenta quede en cero. Quien aún no pagó puede pagar por el QR de la mesa, o llamar al camarero.', 'viene emesso quando il conto è saldato. Chi non ha ancora pagato può farlo dal QR del tavolo, oppure chiamare il cameriere.'],
+  'Pagar o que falta': ['Pay what’s left', 'Payer le reste', 'Pagar lo que falta', 'Paga il resto'],
+  'Obrigado! Falta só uma coisa.': ['Thank you! Just one more thing.', 'Merci ! Encore une petite chose.', '¡Gracias! Falta solo una cosa.', 'Grazie! Manca solo una cosa.'],
+  'Quem sai com você?': ['Who is leaving with you?', 'Qui sort avec vous ?', '¿Quién sale contigo?', 'Chi esce con te?'],
+  'É o que a catraca vai liberar na saída. Crianças de até 10 anos passam com o responsável e não precisam ser contadas.': ['This is what the turnstile will let through at the exit. Children up to 10 go through with their guardian and don’t need to be counted.', 'C’est ce que le tourniquet laissera passer à la sortie. Les enfants jusqu’à 10 ans passent avec leur accompagnant et n’ont pas besoin d’être comptés.', 'Es lo que el torniquete va a liberar en la salida. Los niños de hasta 10 años pasan con su responsable y no hace falta contarlos.', 'È ciò che il tornello lascerà passare all’uscita. I bambini fino a 10 anni passano con l’accompagnatore e non vanno contati.'],
+  'Adultos': ['Adults', 'Adultes', 'Adultos', 'Adulti'],
+  'Crianças acima de 10 anos': ['Children over 10', 'Enfants de plus de 10 ans', 'Niños mayores de 10 años', 'Bambini sopra i 10 anni'],
+  'Veio de carro?': ['Did you come by car?', 'Vous êtes venu en voiture ?', '¿Viniste en coche?', 'Sei venuto in auto?'],
+  'A cancela do estacionamento lê a placa. Sem a placa aqui, o carro para na saída e precisa chamar alguém.': ['The parking gate reads the licence plate. Without the plate here, the car stops at the exit and you’ll need to call someone.', 'La barrière du parking lit la plaque. Sans la plaque ici, la voiture reste bloquée à la sortie et il faut appeler quelqu’un.', 'La barrera del estacionamiento lee la matrícula. Sin la matrícula aquí, el coche se detiene en la salida y hay que llamar a alguien.', 'La sbarra del parcheggio legge la targa. Senza la targa qui, l’auto si ferma all’uscita e bisogna chiamare qualcuno.'],
+  'Carros': ['Cars', 'Voitures', 'Coches', 'Auto'],
+  'Gerar meu QR de saída': ['Generate my exit QR code', 'Générer mon QR code de sortie', 'Generar mi QR de salida', 'Genera il mio QR di uscita'],
+  'Confira a placa do carro #. São # caracteres, como ABC#D# ou ABC#.': ['Check the plate of car #. It has # characters, like ABC#D# or ABC#.', 'Vérifiez la plaque de la voiture #. Elle a # caractères, comme ABC#D# ou ABC#.', 'Revisa la matrícula del coche #. Son # caracteres, como ABC#D# o ABC#.', 'Controlla la targa dell’auto #. Sono # caratteri, come ABC#D# o ABC#.'],
+  'Seu QR de saída': ['Your exit QR code', 'Votre QR code de sortie', 'Tu QR de salida', 'Il tuo QR di uscita'],
+  'É': ['It’s', 'C’est', 'Es', 'È'],
+  'um código só': ['a single code', 'un seul code', 'un solo código', 'un solo codice'],
+  'pra mesa toda. Na catraca, cada pessoa encosta e passa — uma de cada vez.': ['for the whole table. At the turnstile, each person scans and goes through — one at a time.', 'pour toute la table. Au tourniquet, chaque personne le présente et passe — une à la fois.', 'para toda la mesa. En el torniquete, cada persona lo acerca y pasa — una a la vez.', 'per tutto il tavolo. Al tornello ognuno lo avvicina e passa — uno alla volta.'],
+  'Carros liberados na cancela': ['Cars cleared at the gate', 'Voitures autorisées à la barrière', 'Coches liberados en la barrera', 'Auto autorizzate alla sbarra'],
+  'Vale por # minutos.': ['Valid for # minutes.', 'Valable # minutes.', 'Vale por # minutos.', 'Valido per # minuti.'],
+  'Enviar no WhatsApp': ['Send on WhatsApp', 'Envoyer sur WhatsApp', 'Enviar por WhatsApp', 'Invia su WhatsApp'],
+  'Salvar a imagem do QR': ['Save the QR image', 'Enregistrer l’image du QR code', 'Guardar la imagen del QR', 'Salva l’immagine del QR'],
+  'Pra mandar o': ['To send the', 'Pour envoyer le', 'Para enviar el', 'Per inviare il'],
+  'pra alguém: segure o dedo na imagem acima e escolha': ['to someone: press and hold the image above and choose', 'à quelqu’un : appuyez longuement sur l’image ci-dessus et choisissez', 'a alguien: mantén el dedo sobre la imagen de arriba y elige', 'a qualcuno: tieni premuto sull’immagine qui sopra e scegli'],
+  'Compartilhar': ['Share', 'Partager', 'Compartir', 'Condividi'],
+  '. Se preferir, o botão do WhatsApp manda o': ['. If you prefer, the WhatsApp button sends the', '. Si vous préférez, le bouton WhatsApp envoie le', '. Si prefieres, el botón de WhatsApp envía el', '. Se preferisci, il pulsante WhatsApp invia il'],
+  'código': ['code', 'code', 'código', 'codice'],
+  '— na catraca ele vale igual.': ['— it works just the same at the turnstile.', '— il fonctionne pareil au tourniquet.', '— en el torniquete vale igual.', '— al tornello vale lo stesso.'],
+  'de': ['of', 'sur', 'de', 'di'],
+  'já passaram': ['have gone through', 'sont déjà passés', 'ya pasaron', 'sono già passati'],
+  '✓ Todos passaram': ['✓ Everyone has gone through', '✓ Tout le monde est passé', '✓ Todos pasaron', '✓ Sono passati tutti'],
+  'Obrigado pela visita! Volte sempre.': ['Thanks for visiting! Come back soon.', 'Merci de votre visite ! Revenez quand vous voulez.', '¡Gracias por la visita! Vuelve siempre.', 'Grazie della visita! Torna presto.'],
+  'Fechar': ['Close', 'Fermer', 'Cerrar', 'Chiudi'],
+  // chamar garçom / problema no pedido
+  'Digite o número da mesa': ['Type the table number', 'Saisissez le numéro de la table', 'Escribe el número de la mesa', 'Inserisci il numero del tavolo'],
+  '✓ Garçom avisado': ['✓ Waiter notified', '✓ Serveur prévenu', '✓ Camarero avisado', '✓ Cameriere avvisato'],
+  'Ele já está a caminho da mesa #.': ['He’s already on his way to table #.', 'Il est déjà en route vers la table #.', 'Ya va camino a la mesa #.', 'Sta già arrivando al tavolo #.'],
+  'O que aconteceu?': ['What happened?', 'Que s’est-il passé ?', '¿Qué pasó?', 'Cos’è successo?'],
+  'Escolha o assunto — a equipe é avisada na hora.': ['Choose the subject — the team is notified right away.', 'Choisissez le sujet — l’équipe est prévenue tout de suite.', 'Elige el asunto — el equipo es avisado al instante.', 'Scegli l’argomento — lo staff viene avvisato subito.'],
+  '⏱ Está demorando': ['⏱ It’s taking too long', '⏱ C’est trop long', '⏱ Está tardando', '⏱ Ci sta mettendo troppo'],
+  '➖ Faltou alguma coisa': ['➖ Something is missing', '➖ Il manque quelque chose', '➖ Faltó algo', '➖ Manca qualcosa'],
+  '🧹 Mesa, louça ou limpeza': ['🧹 Table, dishes or cleanliness', '🧹 Table, vaisselle ou propreté', '🧹 Mesa, vajilla o limpieza', '🧹 Tavolo, stoviglie o pulizia'],
+  '💬 Outro assunto': ['💬 Something else', '💬 Autre sujet', '💬 Otro asunto', '💬 Altro'],
+  'O que está demorando?': ['What is taking too long?', 'Qu’est-ce qui tarde ?', '¿Qué está tardando?', 'Cosa è in ritardo?'],
+  'O que veio errado?': ['What came wrong?', 'Qu’est-ce qui est arrivé par erreur ?', '¿Qué vino mal?', 'Cosa è arrivato sbagliato?'],
+  'O que veio frio?': ['What came cold?', 'Qu’est-ce qui est arrivé froid ?', '¿Qué vino frío?', 'Cosa è arrivato freddo?'],
+  'O que faltou?': ['What is missing?', 'Qu’est-ce qui manque ?', '¿Qué faltó?', 'Cosa manca?'],
+  'carregando o seu pedido…': ['loading your order…', 'chargement de votre commande…', 'cargando tu pedido…', 'caricamento del tuo ordine…'],
+  'Não achei nada em produção agora. Se mesmo assim está esperando, escreva abaixo.': ['Nothing is being prepared right now. If you’re still waiting, write below.', 'Rien n’est en préparation pour le moment. Si vous attendez quand même, écrivez ci-dessous.', 'No encontré nada en preparación ahora. Si aun así estás esperando, escribe abajo.', 'Non c’è nulla in preparazione al momento. Se stai ancora aspettando, scrivi qui sotto.'],
+  'Não achei itens no seu pedido. Escreva abaixo o que houve.': ['No items found in your order. Write below what happened.', 'Aucun article trouvé dans votre commande. Écrivez ci-dessous ce qui s’est passé.', 'No encontré artículos en tu pedido. Escribe abajo qué pasó.', 'Nessun articolo trovato nel tuo ordine. Scrivi qui sotto cosa è successo.'],
+  'Toque no que tem problema. Pode marcar mais de um.': ['Tap what has a problem. You can select more than one.', 'Touchez ce qui pose problème. Vous pouvez en cocher plusieurs.', 'Toca lo que tiene problema. Puedes marcar más de uno.', 'Tocca ciò che ha un problema. Puoi selezionarne più di uno.'],
+  'quer contar mais alguma coisa? (opcional)': ['anything else you want to tell us? (optional)', 'autre chose à nous dire ? (facultatif)', '¿quieres contar algo más? (opcional)', 'vuoi dirci altro? (facoltativo)'],
+  'Avisar a equipe': ['Notify the team', 'Prévenir l’équipe', 'Avisar al equipo', 'Avvisa lo staff'],
+  'Mesa, louça ou limpeza': ['Table, dishes or cleanliness', 'Table, vaisselle ou propreté', 'Mesa, vajilla o limpieza', 'Tavolo, stoviglie o pulizia'],
+  'Conta pra gente': ['Tell us', 'Dites-nous', 'Cuéntanos', 'Raccontaci'],
+  'Escreva o que houve — alguém vai até a sua mesa.': ['Write what happened — someone will come to your table.', 'Écrivez ce qui s’est passé — quelqu’un viendra à votre table.', 'Escribe qué pasó — alguien irá a tu mesa.', 'Scrivi cosa è successo — qualcuno verrà al tuo tavolo.'],
+  'ex.: falta talher, mesa suja': ['e.g. missing cutlery, dirty table', 'ex. : couverts manquants, table sale', 'ej.: faltan cubiertos, mesa sucia', 'es.: mancano le posate, tavolo sporco'],
+  'o que aconteceu?': ['what happened?', 'que s’est-il passé ?', '¿qué pasó?', 'cos’è successo?'],
+  'Toque no item com problema, ou escreva o que houve.': ['Tap the item with the problem, or write what happened.', 'Touchez l’article concerné, ou écrivez ce qui s’est passé.', 'Toca el artículo con problema, o escribe qué pasó.', 'Tocca l’articolo con il problema, oppure scrivi cosa è successo.'],
+  'Escreva o que houve.': ['Write what happened.', 'Écrivez ce qui s’est passé.', 'Escribe qué pasó.', 'Scrivi cosa è successo.'],
+  'Desculpe pelo transtorno. A cozinha já foi avisada e o seu pedido passa na frente.': ['Sorry for the trouble. The kitchen has been notified and your order moves to the front.', 'Désolés pour le désagrément. La cuisine a été prévenue et votre commande passe en priorité.', 'Disculpa las molestias. La cocina ya fue avisada y tu pedido pasa adelante.', 'Ci scusiamo per il disagio. La cucina è stata avvisata e il tuo ordine passa avanti.'],
+  'Desculpe pelo transtorno. A equipe já foi avisada e vem falar com você.': ['Sorry for the trouble. The team has been notified and will come to talk to you.', 'Désolés pour le désagrément. L’équipe a été prévenue et vient vous voir.', 'Disculpa las molestias. El equipo ya fue avisado y viene a hablar contigo.', 'Ci scusiamo per il disagio. Lo staff è stato avvisato e viene a parlarti.'],
+  'O que avisamos': ['What we reported', 'Ce que nous avons signalé', 'Lo que avisamos', 'Cosa abbiamo segnalato'],
+  // conta (/conta/ver)
+  'Conta': ['Bill', 'Addition', 'Cuenta', 'Conto'],
+  '🖨 Imprimir': ['🖨 Print', '🖨 Imprimer', '🖨 Imprimir', '🖨 Stampa'],
+  'Sem conexão agora.': ['No connection right now.', 'Pas de connexion pour le moment.', 'Sin conexión ahora.', 'Nessuna connessione al momento.'],
+  'CONFERÊNCIA DE CONSUMO': ['BILL CHECK', 'DÉTAIL DE LA CONSOMMATION', 'DETALLE DE CONSUMO', 'RIEPILOGO CONSUMAZIONI'],
+  'Cliente': ['Guest', 'Client', 'Cliente', 'Cliente'],
+  'Pessoas': ['People', 'Personnes', 'Personas', 'Persone'],
+  'Subtotal': ['Subtotal', 'Sous-total', 'Subtotal', 'Subtotale'],
+  'TOTAL': ['TOTAL', 'TOTAL', 'TOTAL', 'TOTALE'],
+  'A PAGAR': ['TO PAY', 'À PAYER', 'A PAGAR', 'DA PAGARE'],
+  'sem consumo lançado': ['nothing ordered yet', 'aucune consommation', 'sin consumo registrado', 'nessuna consumazione'],
+  '# + # serv.': ['# + # service', '# + # service', '# + # serv.', '# + # serv.'],
+  'falta nesta comanda': ['due on this tab', 'reste sur cette note', 'falta en esta comanda', 'resta su questa comanda'],
+  'TOTAL GERAL': ['GRAND TOTAL', 'TOTAL GÉNÉRAL', 'TOTAL GENERAL', 'TOTALE GENERALE'],
+  'AINDA FALTA': ['STILL DUE', 'RESTE À PAYER', 'AÚN FALTA', 'RESTA ANCORA'],
+  'Serviço de #% incluso no total.': ['#% service charge included in the total.', 'Service de #% inclus dans le total.', 'Servicio de #% incluido en el total.', 'Servizio del #% incluso nel totale.'],
+  'Obrigado pela preferência!': ['Thank you for choosing us!', 'Merci de votre visite !', '¡Gracias por tu preferencia!', 'Grazie per averci scelto!'],
+  // avisos que vêm do servidor da loja
+  '1 itens': ['1 item', '1 article', '1 artículo', '1 articolo'],
+  '1 grupos': ['1 category', '1 catégorie', '1 categoría', '1 categoria'],
+  '1 visitas': ['1 visit', '1 visite', '1 visita', '1 visita'],
+  '# item(ns)': ['# item(s)', '# article(s)', '# artículo(s)', '# articolo/i'],
+  'não há conta aberta no número #': ['there is no open bill for number #', 'aucune addition ouverte pour le numéro #', 'no hay cuenta abierta en el número #', 'nessun conto aperto per il numero #'],
+  'mesa inválida': ['invalid table', 'table invalide', 'mesa inválida', 'tavolo non valido'],
+  'Escolha de # a # estrelas.': ['Choose from # to # stars.', 'Choisissez de # à # étoiles.', 'Elige de # a # estrellas.', 'Scegli da # a # stelle.'],
+  'CPF inválido.': ['Invalid CPF.', 'CPF invalide.', 'CPF inválido.', 'CPF non valido.'],
+  'O drink da avaliação não está disponível agora.': ['The free drink isn’t available right now.', 'Le cocktail offert n’est pas disponible pour le moment.', 'El trago de la opinión no está disponible ahora.', 'Il drink omaggio non è disponibile al momento.'],
+  'Este CPF já avaliou a casa este mês. Volte no mês que vem! 💛': ['This CPF has already rated us this month. Come back next month! 💛', 'Ce CPF a déjà donné son avis ce mois-ci. Revenez le mois prochain ! 💛', 'Este CPF ya opinó este mes. ¡Vuelve el mes que viene! 💛', 'Questo CPF ha già votato questo mese. Torna il mese prossimo! 💛'],
+  'sem itens': ['no items', 'aucun article', 'sin artículos', 'nessun articolo'],
+  'Pix na tela ainda não está habilitado nesta casa.': ['On-screen Pix isn’t enabled here yet.', 'Le Pix à l’écran n’est pas encore activé ici.', 'El Pix en pantalla aún no está habilitado aquí.', 'Il Pix da schermo non è ancora attivo qui.'],
+  'cobrança não encontrada': ['charge not found', 'paiement introuvable', 'cobro no encontrado', 'addebito non trovato'],
+  'Pix não habilitado': ['Pix not enabled', 'Pix non activé', 'Pix no habilitado', 'Pix non attivo'],
+  'informe pelo menos # pessoa': ['enter at least # person', 'indiquez au moins # personne', 'indica al menos # persona', 'indica almeno # persona'],
+  'não encontrado': ['not found', 'introuvable', 'no encontrado', 'non trovato'],
+  'passe vencido': ['pass expired', 'pass expiré', 'pase vencido', 'pass scaduto'],
+  'número inválido': ['invalid number', 'numéro invalide', 'número inválido', 'numero non valido'],
+  'informe o nome': ['enter the name', 'indiquez le nom', 'indica el nombre', 'inserisci il nome'],
+  'produto inválido': ['invalid product', 'produit invalide', 'producto inválido', 'prodotto non valido'],
+};
+// Frases com NOME no meio (produto, cliente). Regex sobre o texto em português;
+// na saída, $n repete o trecho como veio e %n passa o trecho pelo dicionário.
+const I18N_PAD = [
+  ['^(\\d+)x (.+)$', ['$1x %2', '$1x %2', '$1x %2', '$1x %2']],
+  ['^✓ (.+)$', ['✓ %1', '✓ %1', '✓ %1', '✓ %1']],
+  ['^✎ (.+)$', ['✎ %1', '✎ %1', '✎ %1', '✎ %1']],
+  ['^\\+ (.+)$', ['+ %1', '+ %1', '+ %1', '+ %1']],
+  ['^\\[(.+)\\]$', ['[%1]', '[%1]', '[%1]', '[%1]']],
+  ['^(.+) — por nossa conta$', ['%1 — on the house', '%1 — c’est offert', '%1 — invita la casa', '%1 — offre la casa']],
+  ['^Olá, (.+)! Cartão (.+)$', ['Hello, $1! $2 card', 'Bonjour, $1 ! Carte $2', '¡Hola, $1! Tarjeta $2', 'Ciao, $1! Carta $2']],
+  ['^Olá, (.+)!$', ['Hello, $1!', 'Bonjour, $1 !', '¡Hola, $1!', 'Ciao, $1!']],
+  ['^(.+) — PAGO$', ['%1 — PAID', '%1 — PAYÉ', '%1 — PAGADO', '%1 — PAGATO']],
+  ['^"(.+)" não está disponível para pedido pelo celular\\. Chame o garçom\\.$', ['"%1" can’t be ordered from the phone. Please call the waiter.', '« %1 » ne peut pas être commandé depuis le téléphone. Appelez le serveur.', '"%1" no está disponible para pedir desde el móvil. Llama al camarero.', '"%1" non si può ordinare dal telefono. Chiama il cameriere.']],
+  ['^Esta (mesa|comanda) já está no nome de (.+)$', ['This %1 is already under the name of $2', 'Cette %1 est déjà au nom de $2', 'Esta %1 ya está a nombre de $2', 'Questo/a %1 è già a nome di $2']],
+  ['^transferida da (comanda|mesa) (\\d+) às ([\\d:]+) por (.+)$', ['moved from %1 $2 at $3 by $4', 'transférée de la %1 $2 à $3 par $4', 'transferida de la %1 $2 a las $3 por $4', 'trasferita da %1 $2 alle $3 da $4']],
+];
+
+// O MOTOR — vai pro navegador do cliente (servido em /mesa/i18n.js). É uma
+// função comum, fora de qualquer página-template: aqui dentro crase e barra
+// invertida valem como em qualquer JavaScript. Não usa nada do servidor.
+function I18N_MOTOR(VERSAO) {
+  var LANGS = [['pt', '🇧🇷', 'Português'], ['en', '🇬🇧', 'English'], ['fr', '🇫🇷', 'Français'], ['es', '🇪🇸', 'Español'], ['it', '🇮🇹', 'Italiano']];
+  var CONVITE = { en: 'See this menu in English', fr: 'Voir cette carte en français', es: 'Ver esta carta en español', it: 'Vedi questo menù in italiano' };
+  var OU = { en: ' or ', fr: ' ou ', es: ' o ', it: ' o ' };
+  var RE_NUM = /\d+(?:[.,:]\d+)*/g;
+  function valido(l) { for (var i = 0; i < LANGS.length; i++) if (LANGS[i][0] === l) return true; return false; }
+  function tem(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+
+  var lang = 'pt', escolheu = false;
+  try { var salvo = localStorage.getItem('idioma'); if (salvo && valido(salvo)) { lang = salvo; escolheu = true; } } catch (e) {}
+  try {
+    var daUrl = (new URLSearchParams(location.search).get('lang') || '').toLowerCase().slice(0, 2);
+    if (daUrl && valido(daUrl)) { lang = daUrl; escolheu = true; try { localStorage.setItem('idioma', daUrl); } catch (e) {} }
+  } catch (e) {}
+
+  var D = null;            // dicionário do idioma em uso: {ui, cat, catMin}
+  var PAD = [];            // padrões com nome no meio, já compilados
+  var sujo = false;        // já houve tradução na tela? (voltar ao português precisa desfazer)
+  var NOS = new WeakMap(); // nó de texto → {pt, out}
+  var ATR = new WeakMap(); // elemento → {atributo: {pt, out}}
+  var FALTA = {};          // o que ficou em português (só na memória, pra conferência)
+
+  function base(k) {
+    if (tem(D.ui, k)) return D.ui[k];
+    if (tem(D.cat, k)) return D.cat[k];
+    var min = k.toLowerCase();
+    if (tem(D.catMin, min)) return D.catMin[min];
+    var nums = k.match(RE_NUM);
+    if (nums) {
+      var n = k.replace(RE_NUM, '#');
+      if (tem(D.ui, n)) { var i = 0; return D.ui[n].replace(/#/g, function () { return i < nums.length ? nums[i++] : '#'; }); }
+    }
+    return null;
+  }
+  function padroes(k, nivel) {
+    if (nivel > 4) return null;
+    for (var i = 0; i < PAD.length; i++) {
+      var m = PAD[i][0].exec(k);
+      if (!m) continue;
+      return PAD[i][1].replace(/([$%])(\d)/g, function (_, tipo, n) {
+        var g = m[+n] || '';
+        return tipo === '$' ? g : pedaco(g, nivel + 1, true);
+      });
+    }
+    return null;
+  }
+  // dentro=true: trecho que veio de um padrão (lista de nomes, de observações)
+  function pedaco(k, nivel, dentro) {
+    var v = base(k);
+    if (v != null) return v;
+    v = padroes(k, nivel);
+    if (v != null) return v;
+    if (nivel > 4) return k;
+    var seps = dentro ? [' · ', ', ', ' ou '] : [' · '];
+    for (var i = 0; i < seps.length; i++) {
+      if (k.indexOf(seps[i]) > 0) {
+        var junta = seps[i] === ' ou ' ? OU[lang] : seps[i];
+        return k.split(seps[i]).map(function (p) { return tr(p, nivel + 1, dentro); }).join(junta);
+      }
+    }
+    // "nome tamanho" numa linha só (o que já foi pedido, a conta): o maior
+    // começo que o catálogo conhece, e o resto se também conhecer
+    for (var j = k.lastIndexOf(' '); j > 0; j = k.lastIndexOf(' ', j - 1)) {
+      var cab = k.slice(0, j), cabMin = cab.toLowerCase();
+      var vc = tem(D.cat, cab) ? D.cat[cab] : (tem(D.catMin, cabMin) ? D.catMin[cabMin] : null);
+      if (vc == null) continue;
+      var resto = k.slice(j + 1), vr = base(resto);
+      return vc + ' ' + (vr != null ? vr : resto);
+    }
+    return k;
+  }
+  function tr(s, nivel, dentro) {
+    var m = /^([\s·]*)([\s\S]*?)([\s·]*)$/.exec(s);
+    var k = m[2];
+    if (!k) return s;
+    var v = pedaco(k, nivel || 0, !!dentro);
+    if (v === k && !nivel && /[A-Za-zÀ-ÿ]{3}/.test(k)) FALTA[k] = 1;
+    return m[1] + v + m[3];
+  }
+
+  function fora(el) {
+    for (; el && el.nodeType === 1; el = el.parentNode) {
+      var t = el.tagName;
+      if (t === 'SCRIPT' || t === 'STYLE' || t === 'TEXTAREA') return true;
+      if (el.id === 'cp' || el.id === 'i18n-bar') return true;
+      if (t === 'H1' && el.parentNode && el.parentNode.classList && el.parentNode.classList.contains('hero')) return true;   // o nome da casa
+      var c = el.classList;
+      if (c && (c.contains('codigo') || c.contains('i18n-o'))) return true;
+    }
+    return false;
+  }
+  // No cardápio, o nome traduzido leva o original embaixo: é o que o cliente
+  // aponta pro garçom e o que sai escrito na conta.
+  function original(n, p, pt, out) {
+    if (!p.classList || !p.classList.contains('pn') || p.firstChild !== n) return;
+    if (!p.closest || !p.closest('.pr.cp')) return;
+    var velho = p.querySelector('.i18n-o');
+    if (velho) velho.remove();
+    if (out === pt) return;
+    var o = document.createElement('small');
+    o.className = 'i18n-o';
+    o.textContent = pt.trim();
+    p.insertBefore(o, p.querySelector('.pv,.pdesc'));
+  }
+  function no(n) {
+    var p = n.parentNode;
+    if (!p || fora(p)) return;
+    var cur = n.nodeValue, st = NOS.get(n);
+    var pt = (st && st.out === cur) ? st.pt : cur;
+    var out = (lang === 'pt' || !D) ? pt : tr(pt);
+    if (out !== cur) n.nodeValue = out;
+    NOS.set(n, { pt: pt, out: out });
+    original(n, p, pt, out);
+  }
+  var ATRIBS = ['placeholder', 'title', 'aria-label'];
+  function atributos(el) {
+    if (!el.getAttribute || el.id === 'i18n-bar' || (el.closest && el.closest('#i18n-bar'))) return;
+    for (var i = 0; i < ATRIBS.length; i++) {
+      var a = ATRIBS[i];
+      if (!el.hasAttribute(a)) continue;
+      var cur = el.getAttribute(a), m = ATR.get(el) || {}, st = m[a];
+      var pt = (st && st.out === cur) ? st.pt : cur;
+      var out = (lang === 'pt' || !D) ? pt : tr(pt);
+      if (out !== cur) el.setAttribute(a, out);
+      m[a] = { pt: pt, out: out };
+      ATR.set(el, m);
+    }
+  }
+  function varre(raiz) {
+    if (raiz.nodeType === 3) return no(raiz);
+    if (raiz.nodeType !== 1) return;
+    var w = document.createTreeWalker(raiz, NodeFilter.SHOW_TEXT, null), lista = [], n;
+    while ((n = w.nextNode())) lista.push(n);
+    for (var i = 0; i < lista.length; i++) no(lista[i]);
+    atributos(raiz);
+    var els = raiz.querySelectorAll('[placeholder],[title],[aria-label]');
+    for (var j = 0; j < els.length; j++) atributos(els[j]);
+  }
+
+  // ---- a barra de idiomas: só na capa, acima dela ----
+  function desenha(b) {
+    var h = '';
+    var doAparelho = '';
+    try { doAparelho = String(navigator.language || '').toLowerCase().slice(0, 2); } catch (e) {}
+    if (!escolheu && CONVITE[doAparelho]) {
+      for (var k = 0; k < LANGS.length; k++) if (LANGS[k][0] === doAparelho) {
+        h += '<button type="button" class="i18n-convite" data-l="' + doAparelho + '">' + LANGS[k][1] + ' ' + CONVITE[doAparelho] + ' ›</button>';
+      }
+    }
+    h += '<div class="i18n-linha">';
+    for (var i = 0; i < LANGS.length; i++) {
+      h += '<button type="button" data-l="' + LANGS[i][0] + '" title="' + LANGS[i][2] + '"' + (LANGS[i][0] === lang ? ' class="on"' : '') + '>' +
+        LANGS[i][1] + ' ' + LANGS[i][0].toUpperCase() + '</button>';
+    }
+    b.innerHTML = h + '</div>';
+  }
+  function barra() {
+    var app = document.getElementById('app');
+    var b = document.getElementById('i18n-bar');
+    var capa = app && app.querySelector('.hero');
+    if (!capa) { if (b) b.style.display = 'none'; return; }
+    if (!b) {
+      var st = document.createElement('style');
+      st.textContent = '#i18n-bar{max-width:460px;margin:0 auto;padding:12px 20px 0}' +
+        '#i18n-bar .i18n-linha{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}' +
+        '#i18n-bar button{border:1px solid #e3e3e9;background:#fff;color:#6e6e78;border-radius:999px;font:inherit;font-size:12.5px;font-weight:600;padding:6px 10px;cursor:pointer;line-height:1.2}' +
+        '#i18n-bar button.on{background:#1b1b20;border-color:#1b1b20;color:#fff}' +
+        '#i18n-bar .i18n-convite{display:block;width:100%;margin-bottom:8px;padding:12px 14px;font-size:15px;border-radius:14px;background:#1b1b20;border-color:#1b1b20;color:#fff;text-align:left}' +
+        '#i18n-bar+#app{padding-top:14px}' +
+        '.i18n-o{display:block;color:#9a9aa5;font-size:11px;font-weight:400;font-style:italic;line-height:1.3;margin-top:1px}';
+      document.head.appendChild(st);
+      b = document.createElement('div');
+      b.id = 'i18n-bar';
+      b.setAttribute('translate', 'no');
+      b.addEventListener('click', function (ev) {
+        var t = ev.target && ev.target.closest ? ev.target.closest('[data-l]') : null;
+        if (t) escolher(t.getAttribute('data-l'));
+      });
+      app.parentNode.insertBefore(b, app);
+      desenha(b);
+    }
+    b.style.display = '';
+  }
+
+  function usa(l, d) {
+    if (l !== lang || !d || !d.ui) return;
+    var catMin = {}, cat = d.cat || {};
+    for (var k in cat) if (tem(cat, k)) catMin[k.toLowerCase()] = cat[k];
+    D = { ui: d.ui, cat: cat, catMin: catMin };
+    PAD = [];
+    for (var i = 0; i < (d.pad || []).length; i++) {
+      try { PAD.push([new RegExp(d.pad[i][0]), d.pad[i][1]]); } catch (e) {}
+    }
+    sujo = true;
+    tudo();
+  }
+  function tudo() {
+    if (!document.body) return;
+    varre(document.body);
+    if (lang === 'pt') sujo = false;
+    obs.takeRecords();
+  }
+  function carrega(l) {
+    var chave = 'i18n:' + l, guardado = null;
+    try { guardado = JSON.parse(localStorage.getItem(chave) || 'null'); } catch (e) {}
+    if (guardado && guardado.v === VERSAO && guardado.d) usa(l, guardado.d); else guardado = null;
+    // o catálogo vai sendo traduzido aos poucos: o que está guardado serve na
+    // hora, e a cada 5 minutos busca de novo pra pegar o que entrou.
+    if (guardado && Date.now() - guardado.t < 5 * 60 * 1000) return;
+    fetch('/api/mesa/traducoes?lang=' + l, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) return;
+      try { localStorage.setItem(chave, JSON.stringify({ v: VERSAO, t: Date.now(), d: d })); } catch (e) {}
+      usa(l, d);
+    }).catch(function () {});
+  }
+  function escolher(l) {
+    if (!valido(l)) return;
+    lang = l; escolheu = true;
+    try { localStorage.setItem('idioma', l); } catch (e) {}
+    try { document.documentElement.lang = l === 'pt' ? 'pt-br' : l; } catch (e) {}
+    var b = document.getElementById('i18n-bar');
+    if (b) desenha(b);
+    if (l === 'pt') { D = null; tudo(); return; }
+    D = null;
+    carrega(l);
+  }
+
+  // Tudo que a página escrever daqui pra frente passa por aqui. Em português
+  // (e sem nada traduzido na tela) não há o que fazer: só cuida da barra.
+  var obs = new MutationObserver(function (recs) {
+    if ((lang !== 'pt' && D) || sujo) {
+      for (var i = 0; i < recs.length; i++) {
+        var r = recs[i];
+        if (r.type === 'characterData') no(r.target);
+        else if (r.type === 'attributes') atributos(r.target);
+        else for (var j = 0; j < r.addedNodes.length; j++) varre(r.addedNodes[j]);
+      }
+    }
+    barra();
+    obs.takeRecords();
+  });
+  obs.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATRIBS });
+
+  // avisos (alert) também saem no idioma do cliente
+  var alerta = window.alert;
+  window.alert = function (m) { return alerta.call(window, (lang !== 'pt' && D) ? tr(String(m)) : m); };
+  // a busca do cardápio avisa o idioma: o servidor acha também pelo nome traduzido
+  var busca = window.fetch;
+  window.fetch = function (u, o) {
+    try { if (lang !== 'pt' && typeof u === 'string' && u.indexOf('/api/venda/busca?') === 0) u += '&lang=' + lang; } catch (e) {}
+    return busca.call(window, u, o);
+  };
+
+  window.I18N = { idioma: function () { return lang; }, escolher: escolher, falta: FALTA };
+  if (lang !== 'pt') { try { document.documentElement.lang = lang; } catch (e) {} carrega(lang); }
+  barra();
+}
+const I18N_JS = '(' + I18N_MOTOR.toString() + ')(' + JSON.stringify(VERSAO) + ');';
+
+// O dicionário de um idioma, pronto pra tela: interface + padrões + catálogo.
+// Fica 1 minuto na memória — a mesa inteira abre o cardápio ao mesmo tempo.
+let i18nCache = {};
+async function i18nDicionario(lang) {
+  const i = I18N_IDIOMAS.indexOf(String(lang || '').toLowerCase().slice(0, 2));
+  if (i < 0) return null;
+  const l = I18N_IDIOMAS[i];
+  const c = i18nCache[l];
+  if (c && Date.now() - c.em < 60 * 1000) return c;
+  const ui = {};
+  for (const [pt, t] of Object.entries(I18N_UI)) if (t[i] && t[i] !== pt) ui[pt] = t[i];
+  const pad = I18N_PAD.map(([re, t]) => [re, t[i]]);
+  const cat = {};
+  for (const r of await sql`SELECT pt, texto FROM traducao WHERE idioma = ${l} AND texto <> pt`) cat[r.pt] = r.texto;
+  const novo = { em: Date.now(), cat, corpo: JSON.stringify({ ok: true, lang: l, ui, pad, cat }) };
+  i18nCache[l] = novo;
+  return novo;
+}
+async function apiMesaTraducoes(lang) {
+  const d = await i18nDicionario(lang);
+  return d ? d.corpo : JSON.stringify({ ok: false, erro: 'idioma inválido' });
+}
+// Busca do cliente em outro idioma: além do que a busca de sempre acha pelo
+// nome em português, acha pelo nome (ou grupo) TRADUZIDO — quem digita "beer"
+// recebe as cervejas. Soma no fim da lista; a busca original não muda.
+async function apiVendaBuscaIdioma(termo, cliente, lang) {
+  const normal = await apiVendaBusca(termo, cliente);
+  const d = await i18nDicionario(lang).catch(() => null);
+  const t = semAcento(String(termo || '').trim());
+  if (!d || t.length < 2) return normal;
+  const pts = [];
+  for (const [pt, texto] of Object.entries(d.cat)) {
+    if (semAcento(texto).includes(t)) pts.push(pt);
+    if (pts.length >= 300) break;
+  }
+  if (!pts.length) return normal;
+  const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local WHERE (btrim(nome) = ANY(${pts}) OR btrim(categoria) = ANY(${pts})) ${soCliente(cliente)}
+    ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
+  const chave = (x) => (x.grupo || x.produto_codigo != null ? 'p' + x.produto_codigo : 'v' + x.codigo_pdv);
+  const ja = new Set(normal.produtos.map(chave));
+  return { produtos: normal.produtos.concat(agruparVariantes(rows).filter((x) => !ja.has(chave(x)))) };
+}
+
+// ---- tradução do catálogo: a loja pede à nuvem só o que ainda não tem ----
+// Texto que o CLIENTE vê no cardápio: grupo, produto, tamanho, descrição,
+// pergunta, opção e observação sugerida. O que a casa escondeu do cardápio
+// digital não entra. A marca de "já traduzido" é a linha do italiano (o último
+// dos quatro; o lote grava os quatro juntos).
+async function i18nFaltando(limite) {
+  const rows = await sql`SELECT t FROM (
+      SELECT DISTINCT btrim(x.t) AS t FROM (
+        SELECT categoria AS t FROM produto_local WHERE TRUE ${soCliente(true)}
+        UNION ALL SELECT nome FROM produto_local WHERE TRUE ${soCliente(true)}
+        UNION ALL SELECT tamanho FROM produto_local WHERE TRUE ${soCliente(true)}
+        UNION ALL SELECT descricao FROM produto_local WHERE TRUE ${soCliente(true)}
+        UNION ALL SELECT texto FROM wizard_pergunta
+        UNION ALL SELECT nome FROM wizard_opcao
+        UNION ALL SELECT texto FROM observacao_sugerida
+      ) x WHERE x.t IS NOT NULL
+    ) y
+    WHERE length(t) BETWEEN 2 AND 600 AND t ~ '[A-Za-zÀ-ÿ]{2}'
+      AND NOT EXISTS (SELECT 1 FROM traducao tr WHERE tr.pt = y.t AND tr.idioma = 'it')
+    ORDER BY length(t), t LIMIT ${limite}`;
+  return rows.map((r) => r.t);
+}
+async function i18nPedirNuvem(textos) {
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('traduzir', e) });
+  const r = await fetch(`${PAGAR_MESA_URL}/api/loja/traduzir?${qs}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ textos }), signal: AbortSignal.timeout(100000),
+  });
+  const d = await r.json().catch(() => null);
+  if (!r.ok || !d?.ok || !Array.isArray(d.traducoes)) throw new Error(d?.erro || `nuvem respondeu ${r.status}`);
+  return d.traducoes;
+}
+let i18nRodando = false;
+const i18nTentativas = new Map();     // texto que a nuvem devolveu vazio → quantas vezes
+async function loopTraducao() {
+  if (i18nRodando || !grupoDisponivel()) return;
+  i18nRodando = true;
+  try {
+    let total = 0;
+    for (let volta = 0; volta < 25; volta++) {
+      const falta = await i18nFaltando(30);
+      if (!falta.length) break;
+      const trs = await i18nPedirNuvem(falta);
+      const linhas = [];
+      for (let k = 0; k < falta.length; k++) {
+        const pt = falta[k];
+        let t = trs[k];
+        if (!t || !I18N_IDIOMAS.every((l) => String(t[l] ?? '').trim())) {
+          // veio faltando: tenta de novo nas próximas voltas; na 3ª desiste e
+          // fica o português mesmo (senão o mesmo texto seria pedido pra sempre)
+          const n = (i18nTentativas.get(pt) || 0) + 1;
+          i18nTentativas.set(pt, n);
+          if (n < 3) continue;
+          t = t || {};
+        }
+        for (const l of I18N_IDIOMAS) linhas.push({ pt, idioma: l, texto: String(t[l] ?? '').trim().slice(0, 1200) || pt });
+      }
+      if (!linhas.length) break;
+      await sql`INSERT INTO traducao ${sql(linhas, 'pt', 'idioma', 'texto')}
+        ON CONFLICT (pt, idioma) DO UPDATE SET texto = EXCLUDED.texto`;
+      total += linhas.length / I18N_IDIOMAS.length;
+      i18nCache = {};
+    }
+    if (total) console.log(`[traducao] ${total} texto(s) do cardápio traduzido(s)`);
+  } catch (e) {
+    console.error('[traducao]', e.message);
+  } finally {
+    i18nRodando = false;
+  }
+}
+
+
 const MESA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${LOJA_NOME}</title><style>
 :root{--bg:#f2f2f5;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--line:#e3e3e9}
@@ -19279,6 +20076,7 @@ textarea{width:100%;font:inherit;font-size:16px;padding:14px;border:1px solid va
 .festa h1{font-size:25px;margin:10px 0 8px}
 
 </style></head><body><div class="wrap" id="app"></div>
+<script src="/mesa/i18n.js?v=${VERSAO}"></script>
 <script>
 var MESA=new URLSearchParams(location.search).get('n');
 // ---- sessao da mesa ----
@@ -25956,6 +26754,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(await comPracaViva(a == null || a === '' ? null : Number(a), apiEntrega)));
     }
+    if (p === '/mesa/i18n.js') { res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' }); return res.end(I18N_JS); }
+    if (p === '/api/mesa/traducoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(await apiMesaTraducoes(u.searchParams.get('lang'))); }
+    // busca do cliente em outro idioma (só quando a tela manda lang=); sem lang, segue a de sempre logo abaixo
+    if (p === '/api/venda/busca' && u.searchParams.get('lang')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBuscaIdioma(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('lang')))); }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
@@ -26475,6 +27277,8 @@ async function main() {
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
   loopCatalogoNuvem().catch(() => {});
   setInterval(() => loopCatalogoNuvem().catch(() => {}), 5 * 60 * 1000);
+  setTimeout(() => loopTraducao().catch(() => {}), 2 * 60 * 1000);
+  setInterval(() => loopTraducao().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
