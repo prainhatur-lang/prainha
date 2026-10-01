@@ -114,9 +114,13 @@ export function msgConfirmacao(ck: {
 }
 
 /** Msg 4 — entrou de novo no mesmo dia (zap já confirmado, sem QR). */
-export function msgEntrou(criancas: string, hora: string, mesa: number | null): string {
+export function msgEntrou(criancas: string, hora: string, mesa: number | null, linkCamera?: string | null): string {
   const verbo = plural(criancas) ? 'entraram' : 'entrou';
-  return `✅ ${criancas} ${verbo} no Espaço Kids às ${hora}${mesa ? `, mesa ${mesa}` : ''}.`;
+  const msg = `✅ ${criancas} ${verbo} no Espaço Kids às ${hora}${mesa ? `, mesa ${mesa}` : ''}.`;
+  // O link da câmera vigiada (/kids/ver, da loja) é um por entrada e morre
+  // quando a criança sai — quem volta no mesmo dia precisa do novo. O link
+  // fixo antigo o responsável já tem da confirmação, então não repete.
+  return linkCamera && linkCamera.includes('/kids/ver?') ? `${msg}\n📹 Veja o espaço ao vivo: ${linkCamera}` : msg;
 }
 
 export const MSG_CODIGO_NAO_ACHADO = 'Não achei esse código. Peça pra monitora mostrar o QR de novo.';

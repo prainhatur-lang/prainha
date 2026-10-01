@@ -11639,6 +11639,11 @@ async function kidsCfg() {
     // Lança sozinho na conta da mesa quando a criança entra (decisão do dono,
     // 01/10/2026). Liga por padrão; o gerente desliga no ⚙ e volta ao manual.
     auto_mesa: (await cfgGet('kids_auto_mesa', '1')) !== '0',
+    // Câmera vigiada (link que só mostra enquanto a criança está dentro).
+    // Vazio = segue valendo o camera_link fixo, como sempre foi.
+    cam_id: await cfgGet('kids_cam_id', ''),
+    cam_nome: await cfgGet('kids_cam_nome', ''),
+    url_publica: kidsUrlPublica({ url_publica: await cfgGet('kids_url_publica', '') }),
   };
 }
 /** Registra o check-in na nuvem e anota o resultado na entrada. Nunca lança:
@@ -11654,7 +11659,7 @@ async function kidsRegistraNuvem(entradaId) {
     r = await kidsNuvem('checkin', {
       codigo: e.codigo, telefone: e.responsavel_tel, responsavel: e.responsavel_nome,
       criancas: cs.map((c) => ({ nome: c.nome, idade: c.idade == null ? null : Number(c.idade) })),
-      mesa: e.mesa, link_camera: cfg.camera_link || null });
+      mesa: e.mesa, link_camera: kidsLinkCamera(cfg, e.codigo) });
   } catch (err) { r = { ok: false, erro: err.message }; }
   if (!r.ok) {
     await sql`UPDATE kids_entrada SET nuvem_ok=false, nuvem_erro=${String(r.erro || '').slice(0, 200)}
@@ -11985,6 +11990,7 @@ async function apiKidsSaida(body, quem) {
     WHERE c.id=${cid} AND c.saiu_em IS NULL`;
   if (!c) return { ok: false, erro: 'essa criança já saiu' };
   await sql`UPDATE kids_crianca SET saiu_em=now(), saiu_por=${quem.login} WHERE id=${cid} AND saiu_em IS NULL`;
+  kidsVerCache.delete(String(c.codigo)); // a câmera do responsável corta na hora, sem esperar o cache
   const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca
     WHERE entrada_id=${Number(c.eid)} AND saiu_em IS NULL`;
   const ultima = n === 0;
@@ -12042,8 +12048,241 @@ async function apiKidsConfig(body, quem) {
     await cfgSet('kids_preco', String(body.preco).trim() ? v.toFixed(2) : '0');
   }
   if (body.auto_mesa !== undefined) await cfgSet('kids_auto_mesa', body.auto_mesa ? '1' : '0');
+  if (body.cam_id !== undefined) {
+    const id = String(body.cam_id || '').trim();
+    if (id && !KIDS_CAM_ID_OK.test(id)) return { ok: false, erro: 'câmera inválida' };
+    if (id) {
+      // Sem endereço público o link não abre no celular do pai — avisa agora,
+      // no ⚙, e não na hora em que a família está na porta.
+      const pr = await kidsProtect();
+      if (!pr.ok) return { ok: false, erro: pr.erro };
+      const base = kidsUrlPublica(pr);
+      if (!base) return { ok: false, erro: 'esta loja não tem endereço público (https) cadastrado na nuvem — sem ele o link não abre no celular dos pais' };
+      await cfgSet('kids_url_publica', base);
+    }
+    await cfgSet('kids_cam_id', id);
+    await cfgSet('kids_cam_nome', id ? String(body.cam_nome || '').trim().slice(0, 80) : '');
+  }
   return { ok: true, cfg: await kidsCfg() };
 }
+
+// ---- CÂMERA DO KIDS PROS PAIS — só enquanto a criança está dentro ----
+// O link do "Compartilhar transmissão" do Protect (kids_camera_link) vale pra
+// sempre: quem recebeu continua vendo o espaço depois de ir embora. Aqui o pai
+// recebe um link DESTA loja (/kids/ver?c=<código>&k=<assinatura>) e é a loja
+// que busca a imagem no Protect (Integration API, GET /cameras/{id}/snapshot)
+// e entrega um quadro por segundo. Saiu a última criança da entrada, o link
+// para de mostrar na hora — quem decide é o kids_crianca daqui, não a nuvem.
+// A chave do Protect mora cifrada na nuvem (a mesma do alarme) e a loja pede
+// por /api/loja/kids/protect; fica só em memória.
+const KIDS_CAM_ID_OK = /^[\w-]{6,64}$/;
+const PROTECT_PORTA = Number(process.env.PROTECT_PORTA) || 443;
+let kidsProtectCache = { em: 0, v: null };
+async function kidsProtect() {
+  if (process.env.KIDS_PROTECT_HOST && process.env.KIDS_PROTECT_CHAVE) {
+    return { ok: true, host: process.env.KIDS_PROTECT_HOST, chave: process.env.KIDS_PROTECT_CHAVE, url_publica: '' };
+  }
+  if (kidsProtectCache.v && Date.now() - kidsProtectCache.em < 10 * 60 * 1000) return kidsProtectCache.v;
+  let r;
+  try { r = await kidsNuvem('protect', {}, 'GET'); } catch (e) { r = { ok: false, erro: e.message }; }
+  if (r && r.ok && PROTECT_HOST_OK.test(String(r.host || '')) && r.chave) {
+    kidsProtectCache = { em: Date.now(), v: { ok: true, host: String(r.host), chave: String(r.chave), url_publica: String(r.url_publica || '') } };
+    return kidsProtectCache.v;
+  }
+  // Nuvem fora do ar no meio da noite: segue com a última chave que veio.
+  if (kidsProtectCache.v) return kidsProtectCache.v;
+  return { ok: false, erro: (r && r.erro) || 'UniFi Protect não cadastrado na nuvem (Configurações → Energia → gatilho de alarme)' };
+}
+function kidsUrlPublica(pr) {
+  const env = String(process.env.URL_PUBLICA || '').replace(/\/+$/, '');
+  if (/^https:\/\/\S+$/.test(env)) return env;
+  const nuvem = String((pr && pr.url_publica) || '').replace(/\/+$/, '');
+  return /^https:\/\/\S+$/.test(nuvem) ? nuvem : '';
+}
+/** GET binário na Integration API do Protect (o protectReq só fala JSON). */
+function protectBin(host, chave, caminho) {
+  return new Promise((resolve, reject) => {
+    const r = https.request({
+      hostname: host, port: PROTECT_PORTA, method: 'GET', path: '/proxy/protect/integration/v1' + caminho,
+      headers: { 'X-API-KEY': chave, accept: 'image/jpeg' },
+      rejectUnauthorized: false, timeout: 8000,
+    }, (res) => {
+      const partes = [];
+      let total = 0;
+      res.on('data', (c) => { total += c.length; if (total <= 4 * 1024 * 1024) partes.push(c); });
+      res.on('end', () => {
+        const corpo = Buffer.concat(partes);
+        if (res.statusCode >= 400) return reject(new Error(`Protect ${res.statusCode}: ${corpo.toString('utf8').slice(0, 200)}`));
+        if (!corpo.length) return reject(new Error('Protect devolveu imagem vazia'));
+        resolve({ tipo: String(res.headers['content-type'] || 'image/jpeg'), corpo });
+      });
+    });
+    r.on('timeout', () => r.destroy(new Error('Protect não respondeu (timeout)')));
+    r.on('error', reject);
+    r.end();
+  });
+}
+function protectJson(host, chave, caminho) {
+  return protectBin(host, chave, caminho).then((x) => JSON.parse(x.corpo.toString('utf8')));
+}
+/** Câmeras do Protect, pro gerente escolher a do kids no ⚙. */
+async function apiKidsCameras(quem) {
+  if (!(await ehGerente(quem.login))) return { ok: false, erro: 'só o gerente escolhe a câmera' };
+  const pr = await kidsProtect();
+  if (!pr.ok) return { ok: false, erro: pr.erro };
+  try {
+    const lista = await protectJson(pr.host, pr.chave, '/cameras');
+    const cams = (Array.isArray(lista) ? lista : (lista && lista.data) || [])
+      .map((c) => ({ id: String(c.id || ''), nome: String(c.name || c.id || ''), ligada: String(c.state || '').toUpperCase() === 'CONNECTED' }))
+      .filter((c) => KIDS_CAM_ID_OK.test(c.id));
+    return { ok: true, cameras: cams };
+  } catch (e) { return { ok: false, erro: e.message }; }
+}
+// Um quadro serve todos os pais que estão olhando: o Protect é consultado no
+// máximo 1x por segundo, não importa quantos celulares estejam abertos.
+const kidsQuadros = new Map(); // camId -> { em, tipo, corpo, pend }
+async function kidsQuadro(camId) {
+  let q = kidsQuadros.get(camId);
+  if (!q) { q = { em: 0, tipo: '', corpo: null, pend: null }; kidsQuadros.set(camId, q); }
+  if (q.corpo && Date.now() - q.em < 900) return q;
+  if (!q.pend) {
+    q.pend = (async () => {
+      const pr = await kidsProtect();
+      if (!pr.ok) throw new Error(pr.erro);
+      const img = await protectBin(pr.host, pr.chave, '/cameras/' + encodeURIComponent(camId) + '/snapshot?highQuality=false');
+      q.tipo = /^image\//.test(img.tipo) ? img.tipo : 'image/jpeg'; q.corpo = img.corpo; q.em = Date.now();
+    })().finally(() => { q.pend = null; });
+  }
+  try { await q.pend; }
+  catch (e) { if (!(q.corpo && Date.now() - q.em < 10000)) throw e; } // tropeço do Protect: repete o último por até 10 s
+  return q;
+}
+function kidsVerAssina(codigo) {
+  return createHmac('sha256', GARCOM_SECRET || '').update('kids-ver|' + codigo).digest('hex').slice(0, 20);
+}
+/** Link que vai no WhatsApp do responsável: o da câmera vigiada quando o
+ *  gerente escolheu uma; senão o link fixo do Protect, como sempre foi. */
+function kidsLinkCamera(cfg, codigo) {
+  if (cfg.cam_id && cfg.url_publica) return `${cfg.url_publica}/kids/ver?c=${codigo}&k=${kidsVerAssina(codigo)}`;
+  return cfg.camera_link || null;
+}
+/** A entrada desse link ainda tem criança dentro? null = link inválido. */
+const kidsVerCache = new Map(); // codigo -> { em, v }
+async function kidsVerEntrada(u) {
+  const codigo = String(u.searchParams.get('c') || '').toUpperCase();
+  const k = String(u.searchParams.get('k') || '');
+  if (!/^[A-Z0-9]{4,8}$/.test(codigo) || k.length !== 20) return null;
+  const a = Buffer.from(kidsVerAssina(codigo)); const b = Buffer.from(k);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const c = kidsVerCache.get(codigo);
+  if (c && Date.now() - c.em < 3000) return c.v;
+  const dentro = await sql`SELECT c.nome, c.idade FROM kids_crianca c JOIN kids_entrada e ON e.id=c.entrada_id
+    WHERE e.codigo=${codigo} AND c.saiu_em IS NULL AND c.entrou_em > now() - interval '18 hours' ORDER BY c.id`;
+  const v = { codigo, ativo: dentro.length > 0,
+    criancas: kidsLista(dentro.map((x) => ({ nome: x.nome, idade: x.idade == null ? null : Number(x.idade) }))) };
+  if (kidsVerCache.size > 500) kidsVerCache.clear();
+  kidsVerCache.set(codigo, { em: Date.now(), v });
+  return v;
+}
+async function apiKidsVerEstado(u) {
+  const v = await kidsVerEntrada(u);
+  if (!v) return { ok: false, erro: 'link inválido' };
+  const camId = await cfgGet('kids_cam_id', '');
+  return { ok: true, ativo: v.ativo && !!camId, criancas: v.criancas, loja: LOJA_NOME };
+}
+/** Devolve o quadro (JPEG) ou um JSON de erro com status que a página entende:
+ *  403 link inválido · 410 a criança já saiu · 503 câmera fora. */
+async function kidsVerQuadro(u, res) {
+  const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
+  const v = await kidsVerEntrada(u);
+  if (!v) return json(403, { ok: false, erro: 'link inválido' });
+  if (!v.ativo) return json(410, { ok: false, encerrado: true });
+  const camId = await cfgGet('kids_cam_id', '');
+  if (!camId) return json(410, { ok: false, encerrado: true });
+  try {
+    const q = await kidsQuadro(camId);
+    res.writeHead(200, { 'content-type': q.tipo, 'content-length': q.corpo.length, 'cache-control': 'no-store' });
+    res.end(q.corpo);
+  } catch (e) {
+    console.log('[kids] câmera: ' + e.message);
+    json(503, { ok: false, erro: 'câmera indisponível' });
+  }
+}
+/** Prévia no ⚙ (gerente logado): confere a câmera antes de salvar. */
+async function kidsQuadroTeste(u, quem, res) {
+  const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
+  if (!(await ehGerente(quem.login))) return json(403, { ok: false, erro: 'só o gerente' });
+  const camId = String(u.searchParams.get('cam') || '');
+  if (!KIDS_CAM_ID_OK.test(camId)) return json(400, { ok: false, erro: 'câmera inválida' });
+  try {
+    const q = await kidsQuadro(camId);
+    res.writeHead(200, { 'content-type': q.tipo, 'content-length': q.corpo.length, 'cache-control': 'no-store' });
+    res.end(q.corpo);
+  } catch (e) { json(503, { ok: false, erro: e.message }); }
+}
+
+// Página que o responsável abre pelo link do WhatsApp. Um quadro por segundo
+// (foto atrás de foto, sem player): abre em qualquer celular, sem aplicativo.
+const KIDS_VER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<title>Espaço Kids ao vivo</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;background:#0b1220;color:#e8eefc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:14px 14px 28px}
+h1{font-size:18px;margin:4px 0 2px}.sub{color:#9fb0d0;font-size:14px;margin-bottom:12px}
+.tela{position:relative;background:#000;border-radius:14px;overflow:hidden;min-height:200px;display:flex;align-items:center;justify-content:center}
+.tela img{display:block;width:100%;height:auto}
+.vivo{position:absolute;top:10px;left:10px;background:rgba(220,38,38,.92);color:#fff;font-size:12px;font-weight:700;padding:4px 9px;border-radius:999px;letter-spacing:.4px}
+.aviso{padding:38px 18px;text-align:center;color:#c9d6f2;font-size:16px;line-height:1.45}
+.aviso b{display:block;font-size:20px;color:#fff;margin-bottom:6px}
+.pe{color:#7f90b3;font-size:12.5px;margin-top:12px;line-height:1.5}
+</style></head><body><div class="wrap">
+<h1>🧸 Espaço Kids ao vivo</h1><div class="sub" id="sub">abrindo a câmera…</div>
+<div class="tela" id="tela"><div class="aviso" id="av">abrindo a câmera…</div></div>
+<div class="pe">A imagem atualiza a cada segundo e é só para você acompanhar: não grave nem compartilhe, há outras crianças no espaço. O link deixa de funcionar quando a criança sai.</div>
+</div><script>
+var Q=location.search,FIM=false,FALHAS=0,IMG=null,URLANT=null,T=null;
+function $(i){return document.getElementById(i)}
+function txt(el,s){el.textContent=s}
+function aviso(tit,msg){
+  var t=$('tela');t.innerHTML='';IMG=null;
+  var d=document.createElement('div');d.className='aviso';
+  var b=document.createElement('b');txt(b,tit);d.appendChild(b);d.appendChild(document.createTextNode(msg));t.appendChild(d)}
+function fim(){
+  FIM=true;if(T)clearTimeout(T);
+  txt($('sub'),'transmissão encerrada');
+  aviso('A visita terminou','A câmera só fica disponível enquanto a criança está no Espaço Kids. Até a próxima!')}
+function mostra(blob){
+  var u=URL.createObjectURL(blob);
+  if(!IMG){var t=$('tela');t.innerHTML='';IMG=document.createElement('img');IMG.alt='câmera do Espaço Kids';t.appendChild(IMG);
+    var v=document.createElement('div');v.className='vivo';txt(v,'● AO VIVO');t.appendChild(v)}
+  IMG.src=u;if(URLANT)URL.revokeObjectURL(URLANT);URLANT=u}
+async function quadro(){
+  if(FIM)return;
+  if(document.hidden){T=setTimeout(quadro,1500);return}
+  var espera=1000;
+  try{
+    var r=await fetch('/api/kids-ver/quadro'+Q+'&r='+Date.now(),{cache:'no-store'});
+    if(r.status===410){fim();return}
+    if(r.status===403){FIM=true;txt($('sub'),'');aviso('Link inválido','Peça um novo link na recepção do Espaço Kids.');return}
+    if(!r.ok)throw new Error('http '+r.status);
+    mostra(await r.blob());FALHAS=0}
+  catch(e){FALHAS++;espera=Math.min(8000,1500*FALHAS);
+    if(FALHAS>=3&&!IMG)aviso('Câmera indisponível agora','Estamos tentando de novo…');
+    if(FALHAS>=6&&IMG)aviso('Câmera indisponível agora','Estamos tentando de novo…')}
+  T=setTimeout(quadro,espera)}
+async function inicio(){
+  try{
+    var r=await fetch('/api/kids-ver/estado'+Q,{cache:'no-store'});var j=await r.json();
+    if(!j.ok){FIM=true;txt($('sub'),'');aviso('Link inválido','Peça um novo link na recepção do Espaço Kids.');return}
+    if(!j.ativo){fim();return}
+    txt($('sub'),(j.criancas?j.criancas+' · ':'')+(j.loja||''))}
+  catch(e){}
+  quadro()}
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&!FIM){if(T)clearTimeout(T);quadro()}});
+inicio();
+</script></body></html>`;
 
 // ---- COBRANÇA DO ESPAÇO ----
 // A cobrança é da ENTRADA (a família), não da criança: quem paga é o
@@ -24767,13 +25006,24 @@ function telaHist(el){
 function irCfg(){
   var c=(E&&E.cfg)||{};
   CFG={camera_link:c.camera_link||'',alerta_min:c.alerta_min||5,pdv:c.pdv||0,
-    pdv_nome:c.pdv_nome||'',preco:c.preco_manual?String(c.preco_manual).replace('.',','):'',auto_mesa:c.auto_mesa!==false};
-  PRODS=null;ERRO='';TELA='cfg';render()}
+    pdv_nome:c.pdv_nome||'',preco:c.preco_manual?String(c.preco_manual).replace('.',','):'',auto_mesa:c.auto_mesa!==false,
+    cam_id:c.cam_id||'',cam_nome:c.cam_nome||''};
+  PRODS=null;CAMS=null;CAMERRO='';ERRO='';TELA='cfg';render()}
 function telaCfg(el){
   var c=(E&&E.cfg)||{};
   var h='<div class="card"><div class="tit" style="margin-top:0">Configuração do Espaço Kids</div>'+
     '<div class="mut">Link da câmera ao vivo (UniFi Protect → Compartilhar transmissão). Vai junto com a confirmação no WhatsApp do responsável.</div>'+
     '<input id="cl" placeholder="https://..." style="margin-top:8px" value="'+esc(CFG.camera_link)+'" oninput="CFG.camera_link=this.value">'+
+    '<div class="tit">Câmera só enquanto a criança está dentro</div>'+
+    '<div class="mut">Escolha a câmera do espaço: cada responsável recebe um link próprio no WhatsApp, que mostra a imagem ao vivo e <b>para de funcionar quando a criança sai</b>. Com uma câmera escolhida aqui, é esse link que vai na mensagem (o link fixo de cima fica guardado, sem uso).</div>'+
+    (CFG.cam_id?'<div class="bal" style="margin-top:8px">📹 <b>'+esc(CFG.cam_nome||CFG.cam_id)+'</b> · <a class="sair" onclick="CFG.cam_id=\\'\\';CFG.cam_nome=\\'\\';render()">tirar</a></div>'+
+      '<img alt="" src="/api/kids/quadro-teste?cam='+encodeURIComponent(CFG.cam_id)+'&t='+encodeURIComponent(TOK||'')+'&r='+Date.now()+'" style="width:100%;border-radius:12px;margin-top:8px;background:#111;min-height:60px" onerror="this.style.display=\\'none\\'">':'')+
+    '<button class="big g" onclick="buscarCams()">'+(CFG.cam_id?'Trocar a câmera':'Escolher a câmera')+'</button>'+
+    (CAMS?(CAMS.length?CAMS.map(function(x,i){
+        return '<div class="hoje"><span>📹 '+esc(x.nome)+(x.ligada?'':' <span class="mut">(desligada)</span>')+'</span>'+
+          '<span><a class="sair" onclick="escolherCam('+i+')">usar</a></span></div>'}).join('')
+      :'<div class="mut">nenhuma câmera encontrada no Protect</div>'):'')+
+    (CAMERRO?'<div class="err">'+esc(CAMERRO)+'</div>':'')+
     '<div class="tit">Avisar depois de quantos minutos sem resposta?</div>'+
     '<input id="am" class="num" inputmode="numeric" maxlength="2" value="'+esc(CFG.alerta_min)+'" oninput="CFG.alerta_min=this.value">'+
     '<div class="tit">Cobrança da recreação</div>'+
@@ -24808,9 +25058,17 @@ async function buscarProd(q){
 function escolherProd(cod){
   var p=(PRODS||[]).filter(function(x){return x.codigo_pdv===cod})[0];
   CFG.pdv=cod;CFG.pdv_nome=p?p.nome:'';PRODS=null;render()}
+var CAMS=null,CAMERRO='';
+async function buscarCams(){
+  CAMERRO='';var r=null;try{r=await jget('/api/kids/cameras')}catch(e){r={ok:false,erro:'sem resposta do servidor'}}
+  if(r&&r.ok){CAMS=r.cameras||[]}else{CAMS=null;CAMERRO=(r&&r.erro)||'não consegui listar as câmeras'}
+  render()}
+function escolherCam(i){
+  var x=(CAMS||[])[i];if(!x)return;
+  CFG.cam_id=x.id;CFG.cam_nome=x.nome;CAMS=null;render()}
 async function salvarCfg(){
   var r=await jpost('/api/kids/config',{camera_link:CFG.camera_link,alerta_min:CFG.alerta_min,
-    pdv:CFG.pdv,preco:CFG.preco,auto_mesa:!!CFG.auto_mesa});
+    pdv:CFG.pdv,preco:CFG.preco,auto_mesa:!!CFG.auto_mesa,cam_id:CFG.cam_id||'',cam_nome:CFG.cam_nome||''});
   if(!r.ok){ERRO=r.erro||'não salvou';render();return}
   ERRO='';TELA='lista';await puxar()}
 
@@ -26461,6 +26719,16 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
+    // ---- CÂMERA DO KIDS pros pais: sem login, vale a assinatura do link e
+    // só enquanto a criança daquela entrada está dentro ----
+    if (p === '/kids/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); return res.end(KIDS_VER_HTML); }
+    if (p === '/api/kids-ver/quadro') return kidsVerQuadro(u, res);
+    if (p === '/api/kids-ver/estado') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(await apiKidsVerEstado(u))); }
+    if (p === '/api/kids/quadro-teste') {
+      const quem = await kidsDaRequisicao(req, u);
+      if (!quem) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, sem_sessao: true })); }
+      return kidsQuadroTeste(u, quem, res);
+    }
     // ---- ESPAÇO KIDS: tablet da monitora (mesmo login do garçom) ----
     if (p.startsWith('/api/kids/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -26473,6 +26741,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/kids/historico') return res.end(JSON.stringify(await apiKidsHistorico(u)));
       if (p === '/api/kids/cobranca') return res.end(JSON.stringify(await apiKidsCobrancaStatus(u)));
       if (p === '/api/kids/produtos') return res.end(JSON.stringify(await apiKidsProdutos(u)));
+      if (p === '/api/kids/cameras') return res.end(JSON.stringify(await apiKidsCameras(quem)));
       if (req.method === 'POST') {
         const b = await readBody(req);
         if (p === '/api/kids/entrada') return res.end(JSON.stringify(await apiKidsEntrada(b, quem)));

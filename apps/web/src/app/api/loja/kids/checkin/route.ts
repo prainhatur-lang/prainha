@@ -100,7 +100,7 @@ export async function POST(request: Request) {
   if (jaConfirmado) {
     await enviarParaResponsavel(
       { id, phoneNumberId: numero.phoneNumberId, telefoneConfirmado: anterior!.telefoneConfirmado! },
-      msgEntrou(criancas, horaAgoraBr(), mesa),
+      msgEntrou(criancas, horaAgoraBr(), mesa, linkCamera),
     );
   }
 
