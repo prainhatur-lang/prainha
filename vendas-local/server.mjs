@@ -622,6 +622,10 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS cartao_cobranca (ref text PRIMARY KEY, mesa integer, valor numeric,
     criado_em timestamptz DEFAULT now(), expira_em timestamptz, pago_em timestamptz, autorizacao text)`;
   await sql`CREATE TABLE IF NOT EXISTS praca_config (area_codigo integer PRIMARY KEY, minutos integer NOT NULL)`;
+  // PRAÇA QUE SAIU DO CADASTRO (banco próprio): de = código que sumiu, para =
+  // praça que ficou com os produtos dela (NULL = nenhuma). O tablet que estava
+  // aberto na antiga é levado pra nova. Vazia = nada muda em lugar nenhum.
+  await sql`CREATE TABLE IF NOT EXISTS praca_mudou (de integer PRIMARY KEY, para integer, nome text, em timestamptz DEFAULT now())`;
   // FECHAMENTO DE CAIXA: o que o operador DECLAROU × o que o sistema tinha,
   // forma a forma. O Consumer só guarda o dinheiro (SALDOFINALINFORMADO); a
   // conferência de cartão/Pix é nossa e é o que permite cobrar diferença.
@@ -10548,6 +10552,11 @@ async function loopCatalogoNuvem() {
       + (nativo() ? ` · ${(j.areas || []).length} praças · ${(j.observacoes || []).length} observações`
         + ` · ${((j.wizard || {}).perguntas || []).length} perguntas` : ' da nuvem no cardápio'));
     if (nativo()) await catalogoNativo();
+    // praça que a nuvem deixou de mandar sai daqui também (só com lista em mãos)
+    if (nativo() && Array.isArray(j.areas) && j.areas.length) {
+      await podarPracas(j.areas.map((x) => Number(x.codigo)).filter(Number.isFinite))
+        .catch((err) => console.error('[pracas]', err.message));
+    }
   } catch (err) { console.error('[catalogo-nuvem]', err.message); }
   finally { catalogoNuvemRodando = false; }
 }
@@ -12441,6 +12450,102 @@ function contaNoKds() {
     AND c.fechada_em > now() - interval '60 minutes' AND ci.criado >= c.fechada_em - interval '30 minutes')))`;
 }
 
+// ---- PRAÇA QUE SAIU DO CADASTRO DA CASA (banco próprio) ----
+// No Firebird o espelho já apagava a praça que o Consumer apagou. No banco
+// próprio a lista vem da nuvem e só acrescentava: a Prainha Mar ficou com as
+// praças do Bar (01/10). Aqui a loja apaga a que a nuvem deixou de mandar —
+// só quando nenhum produto do cardápio aponta mais pra ela — e leva junto o
+// que está aberto, pra nenhum pedido sumir da tela de ninguém.
+let pracaMudouMapa = null;
+async function pracasQueMudaram() {
+  if (!pracaMudouMapa) {
+    const rows = await sql`SELECT de, para FROM praca_mudou`;
+    pracaMudouMapa = new Map(rows.map((r) => [Number(r.de), r.para == null ? null : Number(r.para)]));
+  }
+  return pracaMudouMapa;
+}
+/** A praça que vale hoje pra um código pedido pela tela. */
+async function pracaViva(cod) {
+  const igual = { cod, mudou: false, sumiu: false };
+  if (cod == null || !(cod > 0)) return igual;
+  const mapa = await pracasQueMudaram();
+  if (!mapa.has(cod)) return igual;
+  let atual = cod;
+  for (let i = 0; i < 5 && mapa.has(atual); i++) {
+    const para = mapa.get(atual);
+    if (para == null) return { cod, mudou: false, sumiu: true };
+    atual = para;
+  }
+  return { cod: atual, mudou: atual !== cod, sumiu: false };
+}
+/** Tablet aberto numa praça que saiu recebe a fila da praça que ficou no lugar
+ *  (e o aviso pra tela trocar de endereço). Praça normal: resposta idêntica. */
+async function comPracaViva(cod, consulta) {
+  const pv = await pracaViva(cod);
+  const d = await consulta(pv.cod);
+  if (d && typeof d === 'object') {
+    if (pv.mudou) d.mudou_para = pv.cod;
+    else if (pv.sumiu) d.sumiu = true;
+  }
+  return d;
+}
+async function podarPracas(vivas) {
+  if (!nativo() || !Array.isArray(vivas) || !vivas.length) return;
+  const fora = await sql`SELECT codigo, nome FROM area WHERE NOT (codigo = ANY(${vivas}))`;
+  if (!fora.length && !(await pracasQueMudaram()).size) return;   // casa em dia: nada a fazer
+  const saiu = [];
+  await sql.begin(async (t) => {
+    // praça que voltou pro cadastro deixa de ser "mudou"
+    await t`DELETE FROM praca_mudou WHERE de = ANY(${vivas})`;
+    for (const a of fora) {
+      const x = Number(a.codigo);
+      // produto do cardápio ainda aponta pra ela: cadastro pela metade, fica como está
+      const [usa] = await t`SELECT 1 AS x FROM produto_local WHERE area_codigo = ${x}
+        UNION ALL SELECT 1 FROM produto_nuvem WHERE area_codigo = ${x} LIMIT 1`;
+      if (usa) continue;
+      // pra onde foram os produtos que ela fazia: a praça de hoje do que saiu por ela
+      const [dest] = await t`SELECT pl.area_codigo AS para, count(*) AS n
+        FROM comanda_item ci JOIN produto_local pl ON pl.codigo_pdv = ci.codigo_pdv
+        WHERE ci.area_codigo = ${x} AND pl.area_codigo = ANY(${vivas}) AND ci.criado > now() - interval '30 days'
+        GROUP BY pl.area_codigo ORDER BY n DESC, pl.area_codigo LIMIT 1`;
+      const para = dest ? Number(dest.para) : null;
+      await t`INSERT INTO praca_mudou (de, para, nome, em) VALUES (${x}, ${para}, ${a.nome}, now())
+        ON CONFLICT (de) DO UPDATE SET para = EXCLUDED.para, nome = EXCLUDED.nome, em = now()`;
+      await t`DELETE FROM area WHERE codigo = ${x}`;
+      saiu.push(`${x} ${String(a.nome || '').trim()} -> ${para == null ? 'sem praça' : para}`);
+    }
+  });
+  pracaMudouMapa = null;
+  if (saiu.length) console.log('[pracas] saiu do cadastro: ' + saiu.join(' · '));
+  // O QUE ESTÁ ABERTO VAI JUNTO (a cada puxada, enquanto houver praça que saiu):
+  // 1) o item vai pra praça de hoje do produto; sem ela, pra que ficou no lugar
+  const m1 = await sql`UPDATE comanda_item ci SET area_codigo = COALESCE(
+      (SELECT pl.area_codigo FROM produto_local pl WHERE pl.codigo_pdv = ci.codigo_pdv
+         AND pl.area_codigo IN (SELECT codigo FROM area) LIMIT 1), pm.para)
+    FROM praca_mudou pm, comanda c
+    WHERE ci.area_codigo = pm.de AND c.codigo = ci.comanda_codigo
+      AND ci.cancelado_em IS NULL AND ci.entregue IS NULL
+      AND NOT (ci.tipo = 2 AND ci.codigo_pai IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM marca m WHERE m.item_codigo = ci.item_codigo AND m.entregue_em IS NOT NULL)
+      AND ${contaNoKds()}`;
+  // 2) complemento acompanha o item-pai, sempre
+  let m2 = 0;
+  for (let i = 0; i < 5; i++) {
+    const r = await sql`UPDATE comanda_item ci SET area_codigo = p.area_codigo
+      FROM comanda_item p, comanda c
+      WHERE ci.tipo = 2 AND ci.codigo_pai = p.item_codigo AND c.codigo = ci.comanda_codigo
+        AND ci.area_codigo IN (SELECT de FROM praca_mudou)
+        AND ci.area_codigo IS DISTINCT FROM p.area_codigo
+        AND ci.cancelado_em IS NULL AND ${contaNoKds()}`;
+    m2 += r.count;
+    if (!r.count) break;
+  }
+  // 3) reclamação aberta que apontava pra praça que saiu: avisa todas
+  await sql`UPDATE chamado SET areas = NULL
+    WHERE atendido_em IS NULL AND areas && ARRAY(SELECT de FROM praca_mudou)`;
+  if (m1.count || m2) console.log(`[pracas] ${m1.count} item(ns) e ${m2} complemento(s) abertos mudaram de praça`);
+}
+
 async function apiAreas() {
   const ocultas = await pracasOcultas();
   const rows = await sql`
@@ -13469,6 +13574,8 @@ function checaNovos(d){var atuais=new Set();(d.comandas||[]).forEach(function(c)
   _vistos=atuais;if(novo)apitar()}
 function irSelecao(){AREA=null;_vistos=null;history.replaceState(0,'','/');setView(selecao)}
 function irArea(cod){AREA={cod:cod};_vistos=null;history.replaceState(0,'','/?area='+cod);setView(kds)}
+// praça que saiu do cadastro: a tela vai sozinha pra que ficou no lugar (ou pra lista)
+function pracaMudou(d,ir,lista){if(d&&d.mudou_para!=null&&Number(d.mudou_para)!==Number(AREA.cod)){ir(Number(d.mudou_para));return true}if(d&&d.sumiu){lista();return true}return false}
 /* ---- CÂMERA: quem tocou a tela ----
    Sem login no KDS o tablet fica na praça e qualquer um encosta. A foto é a
    única referência de quem apertou.
@@ -14052,6 +14159,7 @@ async function selecao(){
 async function kds(){
   ligaCamera();   // quem baixar aqui fica registrado; a tela NÃO espera por ela
   var d=await (await fetch('/api/kds?area='+AREA.cod,{cache:'no-store'})).json();
+  if(pracaMudou(d,irArea,irSelecao))return;
   ESPERANDO=d.esperando||[];
   checaNovos(d); // pedido novo na área -> apita
   checaAtraso(d); // comanda estourou o prazo -> alarme grave e repetido
@@ -14195,6 +14303,7 @@ async function selecaoEntrega(){
 async function entrega(){
   ligaCamera();   // idem: quem entregou fica registrado
   var d=await (await fetch('/api/entrega?area='+AREA.cod,{cache:'no-store'})).json();
+  if(pracaMudou(d,irAreaEntrega,irSelecaoEntrega))return;
   checaNovos(d); // prato novo pronto -> apita no tablet da entrega também
   checaReclamacao(d);
   var nome=(d.comandas[0]&&d.comandas[0].itens[0]&&d.comandas[0].itens[0].area_nome)||AREANOME[AREA.cod]||'';
@@ -25838,14 +25947,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), erro: (n && n.erro) || null, hoje: (n && n.hoje) || null, reservas, areas }));
     }
-    if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiKds(Number(u.searchParams.get('area') || 0)))); }
+    if (p === '/api/kds') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await comPracaViva(Number(u.searchParams.get('area') || 0), apiKds))); }
     // ?area ausente = todas as praças (compatibilidade). Cuidado: Number('')
     // e Number(null) dão 0, que aqui significa "sem praça definida" — por isso
     // o teste é pela AUSÊNCIA do parâmetro, não pelo valor.
     if (p === '/api/entrega') {
       const a = u.searchParams.get('area');
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiEntrega(a == null || a === '' ? null : Number(a))));
+      return res.end(JSON.stringify(await comPracaViva(a == null || a === '' ? null : Number(a), apiEntrega)));
     }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1'))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
@@ -25858,9 +25967,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/historico') {
       const a = u.searchParams.get('area');
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify(await apiHistorico(
+      return res.end(JSON.stringify(await comPracaViva(
         a == null || a === '' ? null : Number(a),
-        u.searchParams.get('modo') || 'producao',
+        (c) => apiHistorico(c, u.searchParams.get('modo') || 'producao'),
       )));
     }
     // Rota compatível com QR codes impressos: /Cardapio/Login/Mesa/129 → cardápio da mesa 129
@@ -25879,7 +25988,7 @@ const server = http.createServer(async (req, res) => {
     }
   if (p === '/api/chamados') { res.writeHead(200, { 'content-type': 'application/json' });
       const aq = u.searchParams.get('area');
-      return res.end(JSON.stringify(await apiChamados(aq == null || aq === '' ? null : Number(aq)))); }
+      return res.end(JSON.stringify(await comPracaViva(aq == null || aq === '' ? null : Number(aq), apiChamados))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
     if (req.method === 'POST' && p === '/api/mesa/avaliacao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoLivre(body))); }

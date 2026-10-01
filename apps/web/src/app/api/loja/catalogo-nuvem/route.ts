@@ -84,7 +84,8 @@ export async function GET(request: Request) {
   const [areas, observacoes, perguntas, opcoes, ligacoes] = tudo
     ? await Promise.all([
         db.select({ codigo: schema.areaProducao.codigoExterno, nome: schema.areaProducao.nome })
-          .from(schema.areaProducao).where(eq(schema.areaProducao.filialId, f)),
+          // só praça ATIVA: a que a casa não usa (ativa=false) deixa de ir e a loja apaga
+          .from(schema.areaProducao).where(and(eq(schema.areaProducao.filialId, f), eq(schema.areaProducao.ativa, true))),
         db.select({ categoria: schema.observacaoPdv.categoria, texto: schema.observacaoPdv.texto })
           .from(schema.observacaoPdv).where(eq(schema.observacaoPdv.filialId, f)),
         db.select({ codigo: schema.wizardPergunta.codigoExterno, texto: schema.wizardPergunta.texto,
