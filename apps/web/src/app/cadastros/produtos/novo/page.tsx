@@ -6,7 +6,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { FormNovoProduto } from './formulario';
 
@@ -34,7 +34,8 @@ export default async function NovoProdutoPage(props: {
     db
       .select({ codigo: schema.areaProducao.codigoExterno, nome: schema.areaProducao.nome })
       .from(schema.areaProducao)
-      .where(eq(schema.areaProducao.filialId, filial.id))
+      // só as praças que a casa usa (a inativa não existe mais na loja)
+      .where(and(eq(schema.areaProducao.filialId, filial.id), eq(schema.areaProducao.ativa, true)))
       .orderBy(asc(schema.areaProducao.nome)),
   ]);
 

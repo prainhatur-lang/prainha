@@ -74,7 +74,8 @@ export async function POST(req: Request) {
     const [c] = await db
       .select({ x: schema.areaProducao.codigoExterno })
       .from(schema.areaProducao)
-      .where(and(eq(schema.areaProducao.filialId, b.filialId), eq(schema.areaProducao.codigoExterno, b.codigoCozinha)))
+      .where(and(eq(schema.areaProducao.filialId, b.filialId), eq(schema.areaProducao.codigoExterno, b.codigoCozinha),
+        eq(schema.areaProducao.ativa, true)))
       .limit(1);
     if (!c) return NextResponse.json({ error: 'praça não existe nesta filial' }, { status: 400 });
   }
