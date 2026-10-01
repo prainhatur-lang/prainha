@@ -5563,6 +5563,8 @@ function apiConfig() {
     auto_update: AUTO_UPDATE ? 'on' : 'off',
     banco: BANCO, // 'firebird' (Consumer) ou 'proprio' — o runbook do flip confere aqui
     auto_update_estado: autoUpdateEstado,
+    // vigia do túnel (reinicia o Tailscale sozinho quando a nuvem para de alcançar a loja) — só o resumo
+    vigia_tunel: vigiaTunelResumo(),
     // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
     adquirente: ADQUIRENTE_LOJA };
 }
@@ -9738,6 +9740,7 @@ async function loopDiagNuvem() {
     if (!d) return;
     d.vendasLocal = { subiuEm: new Date(Date.now() - process.uptime() * 1000).toISOString(), node: process.version };
     if (PONTO_FACIAL_TEMPOS.length) d.vendasLocal.pontoFacial = PONTO_FACIAL_TEMPOS.slice(-30);
+    d.vendasLocal.vigiaTunel = vigiaTunelParaDiag();
     const e = Math.floor(Date.now() / 1000) + 120;
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/diagnostico`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -9750,6 +9753,427 @@ async function loopDiagNuvem() {
   } catch (err) { console.error('[diag] nuvem:', err.message); }
   finally { diagNuvemRodando = false; }
 }
+// ---- VIGIA DO TÚNEL: a loja percebe que sumiu pra fora e reinicia o Tailscale ----
+// O Funnel (https://<casa>.tailb22e0d.ts.net → 127.0.0.1:8790) é por onde a
+// nuvem fala com esta máquina (conferência de caixa, alarme) e por onde entra
+// a maquininha que está fora do Wi-Fi. De 28/09 a 01/10/2026 ele caiu 4 vezes
+// (Mar 2x, Tabuará 2x), sempre igual: vendas-local vivo, Tailscale "online",
+// funnel ligado — e de fora o relay derrubando o TLS (curl 35 / ECONNRESET).
+// O remédio foi sempre `Restart-Service Tailscale`, colado à mão no servidor;
+// em 01/10 dois servidores foram desligados na tomada por causa disso.
+// Agora o próprio servidor faz.
+//
+// Roda SOZINHO e mexe num serviço do Windows, então erra pra cautela:
+//   1. De 2 em 2 min pergunta pra nuvem (POST /api/loja/tunel, assinado igual
+//      ao diagnóstico): "você me alcança pelo endereço do cadastro?" — só de
+//      fora dá pra ver. Nuvem sem responder, sem internet aqui, resposta sem
+//      veredito = inconclusivo: não conta e não faz nada.
+//   2. Só age com 3 "não" SEGUIDOS (~5 min). Se a nuvem não alcança NENHUMA
+//      casa, o problema não é desta máquina: espera 30 min antes de contar.
+//   3. Antes de reiniciar confere por conta própria: pede a própria
+//      /api/versao pelos relays públicos. Veio → o túnel está de pé e é a
+//      nuvem que não chega: não reinicia (só se ela insistir por 30 min).
+//   4. Tailscale deslogado ou desligado à mão (NeedsLogin/Stopped): reiniciar
+//      não resolve — só registra.
+//   5. Intervalo crescente entre tentativas: 15, 30, 60, 120 e 240 min. Volta
+//      pro começo depois de 30 min de túnel bom.
+// O reinício é `net stop Tailscale` + `net start Tailscale` chamados daqui com
+// execFile comum, como o diagnóstico do Windows (o que nunca rodou do contexto
+// da tarefa agendada foi powershell DETACHED — ver o auto-update). Antes de
+// parar grava em disco que TEM que ligar de novo: se este processo morrer no
+// meio, o próximo termina o serviço. Não mexe na config do Funnel, não roda
+// `tailscale up`, não aceita ordem de fora: a conta e a decisão são daqui.
+// O que aconteceu fica em vigia-tunel.json (20 últimos eventos) e sobe no
+// diagnóstico da nuvem (loja_diagnostico → vendasLocal.vigiaTunel).
+// Desligar: VIGIA_TUNEL=off no start.bat (esta loja) ou na Vercel (todas).
+const VIGIA_TUNEL = String(process.env.VIGIA_TUNEL || '').trim().toLowerCase() !== 'off';
+const VIGIA_TUNEL_POLL_MS = 2 * 60 * 1000;
+const VIGIA_TUNEL_FALHAS = 3;   // "não" seguidos da nuvem pra agir (~5 min)
+const VIGIA_TUNEL_GERAIS = 15;  // ciclos de "caiu pra todas as casas" antes de contar (~30 min)
+const VIGIA_TUNEL_TEIMA = 15;   // "não" seguidos que passam por cima do autoteste (~30 min)
+const VIGIA_TUNEL_ESPERA_MIN = [15, 30, 60, 120, 240]; // distância mínima do reinício anterior (1º, 2º, …)
+const VIGIA_TUNEL_BOM_MS = 30 * 60 * 1000;     // túnel bom por 30 min: a escada volta pro começo
+const VIGIA_TUNEL_ELO_MS = 7 * 60 * 1000;      // "não" mais longe que isto do anterior não é seguido
+const VIGIA_TUNEL_RETRATO_MS = 30 * 60 * 1000; // retrato da máquina com tudo bem
+// Os 4 relays do Funnel — os mesmos de RELAYS_FUNNEL_SONDA na nuvem (apps/web/src/lib/caixa-loja.ts).
+const VIGIA_TUNEL_RELAYS = ['199.38.181.54', '209.177.145.137', '209.177.145.97', '209.177.145.192'];
+const VIGIA_TUNEL_CLI = 'C:\\Program Files\\Tailscale\\tailscale.exe';
+const VIGIA_TUNEL_ARQ = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vigia-tunel.json');
+const vigiaTunel = {
+  estado: 'ainda não ligou', cicloEm: null, alcancavel: null, motivo: '', outras: null,
+  falhas: 0, gerais: 0, ultimaFalhaEm: 0, caiuEm: 0, serio: false, bomDesde: 0, piscadas: 0,
+  calou: '', naoReiniciou: '', religarAvisado: false, retrato: null, retratoEm: 0,
+  // o que vai pro disco (vigia-tunel.json):
+  reinicios: 0, ultimoReinicioEm: 0, pendenteLigar: false, dns: null, historico: [],
+};
+
+function vigiaTunelExe(nome) {
+  const p = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', nome);
+  return existsSync(p) ? p : nome;
+}
+/** Roda um executável do Windows e devolve o que saiu. Nunca lança nem fica
+ *  pendurado: além do timeout do execFile tem um relógio próprio (o net.exe
+ *  chama o net1.exe, que herda a saída e seguraria o callback). */
+function vigiaTunelExec(exe, args, ms) {
+  return new Promise((ok) => {
+    let fim = false;
+    const acaba = (r) => { if (fim) return; fim = true; clearTimeout(relogio); ok(r); };
+    const relogio = setTimeout(() => acaba({ codigo: -1, saida: '', erro: 'sem resposta em ' + Math.round(ms / 1000) + ' s' }), ms + 5000);
+    try {
+      execFile(exe, args, { timeout: ms, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
+        acaba({ codigo: !err ? 0 : (typeof err.code === 'number' ? err.code : -1), saida: String(out || ''),
+          erro: (String(errOut || '') + (err && typeof err.code !== 'number' ? ' ' + err.message : '')).trim() });
+      });
+    } catch (e) { acaba({ codigo: -1, saida: '', erro: String((e && e.message) || e) }); }
+  });
+}
+/** Recorte curto do que um comando respondeu, só ASCII (o net e o sc falam na
+ *  página de código do console: acento chega como lixo). */
+function vigiaTunelRecorte(r) {
+  return ('rc=' + r.codigo + ' ' + r.saida + ' ' + r.erro).replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+/** Estado do serviço no Windows. Não depende do idioma: os nomes dos estados
+ *  (RUNNING, STOPPED…) e "PID" saem iguais no sc em português. */
+async function vigiaTunelServico() {
+  const r = await vigiaTunelExec(vigiaTunelExe('sc.exe'), ['queryex', 'Tailscale'], 15000);
+  const txt = r.saida + '\n' + r.erro;
+  const est = /:\s*[1-7]\s+(STOPPED|START_PENDING|STOP_PENDING|RUNNING|CONTINUE_PENDING|PAUSE_PENDING|PAUSED)\b/.exec(txt);
+  const pid = /\bPID\s*:\s*(\d+)/.exec(txt);
+  return { estado: est ? est[1] : null, pid: (pid && Number(pid[1])) || null,
+    // 1060 = o serviço não existe nesta máquina
+    existe: est ? true : (/\b1060\b/.test(txt) ? false : null) };
+}
+/** O que o próprio Tailscale diz de si (mesma chamada do urlExterna). null = o
+ *  serviço não respondeu. */
+async function vigiaTunelStatus() {
+  const r = await vigiaTunelExec(VIGIA_TUNEL_CLI, ['status', '--json'], 8000);
+  try {
+    const j = JSON.parse(r.saida);
+    const eu = j.Self || {};
+    return { backend: String(j.BackendState || '') || null, online: eu.Online === true, relay: eu.Relay || null,
+      dns: String(eu.DNSName || '').replace(/\.+$/, '').toLowerCase() || null,
+      chaveExpira: eu.KeyExpiry || null, versao: String(j.Version || '').slice(0, 40) || null,
+      saude: Array.isArray(j.Health) ? j.Health.slice(0, 5).map((x) => String(x).slice(0, 160)) : [] };
+  } catch { return null; }
+}
+/** O Funnel está na config do Tailscale? 'permanente' (--bg, sobrevive ao
+ *  reinício), 'temporario' (janela aberta), 'nao', ou null se não deu pra ler.
+ *  Só informa — o vigia não decide por isto. */
+async function vigiaTunelFunnel() {
+  const r = await vigiaTunelExec(VIGIA_TUNEL_CLI, ['serve', 'status', '--json'], 8000);
+  try {
+    const j = JSON.parse(r.saida);
+    const tem = (o) => !!(o && o.AllowFunnel && Object.values(o.AllowFunnel).some((x) => x === true));
+    if (tem(j)) return 'permanente';
+    if (j && j.Foreground && Object.values(j.Foreground).some(tem)) return 'temporario';
+    return 'nao';
+  } catch { return null; }
+}
+/** AUTOTESTE: esta máquina pede a PRÓPRIA /api/versao pelos relays públicos do
+ *  Funnel (IP do relay, nome da casa no SNI — o mesmo caminho de quem vem de
+ *  fora; pelo nome não serve, o DNS do Tailscale devolveria o IP interno). Só
+ *  vale se a resposta trouxer a versão DESTE servidor. Nunca lança. */
+function vigiaTunelAutoteste(nome) {
+  return new Promise((fim) => {
+    if (!nome) return fim({ ok: null, erro: 'sem o nome desta máquina no Tailscale' });
+    const erros = [];
+    const pedidos = [];
+    let faltam = VIGIA_TUNEL_RELAYS.length;
+    let acabou = false;
+    const termina = (r) => {
+      if (acabou) return;
+      acabou = true; clearTimeout(guarda);
+      for (const q of pedidos) { try { q.destroy(); } catch {} }
+      fim(r);
+    };
+    const guarda = setTimeout(() => termina({ ok: false, erro: 'sem resposta em 12 s' }), 12000);
+    for (const ip of VIGIA_TUNEL_RELAYS) {
+      let feito = false;
+      const falhou = (m) => {
+        if (feito) return;
+        feito = true; erros.push(ip + ' ' + m);
+        if (--faltam <= 0) termina({ ok: false, erro: erros.join('; ').slice(0, 200) });
+      };
+      try {
+        const req = https.request({ host: ip, port: 443, servername: nome, method: 'GET', path: '/api/versao',
+          headers: { host: nome }, agent: false, timeout: 8000 }, (res) => {
+          let corpo = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => { if (corpo.length < 4000) corpo += c; });
+          res.on('end', () => {
+            if (corpo.includes(VERSAO)) { feito = true; termina({ ok: true, via: ip }); }
+            else falhou('HTTP ' + res.statusCode + ' sem a minha versão');
+          });
+          res.on('error', (e) => falhou(String(e.code || e.message)));
+        });
+        pedidos.push(req);
+        req.on('timeout', () => req.destroy(new Error('sem resposta em 8 s')));
+        req.on('error', (e) => falhou(String(e.code || e.message)));
+        req.end();
+      } catch (e) { falhou(String((e && e.message) || e)); }
+    }
+  });
+}
+/** Retrato da máquina: serviço, o que o Tailscale diz, o Funnel e (se pedido)
+ *  o autoteste. Guarda em vigiaTunel.retrato e aprende o nome da máquina. */
+async function vigiaTunelRetratar(comAutoteste) {
+  const v = vigiaTunel;
+  const [servico, status, funnel] = await Promise.all([vigiaTunelServico(), vigiaTunelStatus(), vigiaTunelFunnel()]);
+  if (status && status.dns && status.dns !== v.dns) { v.dns = status.dns; vigiaTunelSalvar(); }
+  const autoteste = comAutoteste ? await vigiaTunelAutoteste(v.dns) : null;
+  let usuario = null;
+  try { usuario = os.userInfo().username; } catch {}
+  v.retratoEm = Date.now();
+  v.retrato = { em: new Date().toISOString(), usuario, servico: servico.estado, pid: servico.pid, existe: servico.existe,
+    ...(status || { backend: null }), funnel, autoteste };
+  return v.retrato;
+}
+function vigiaTunelResumoRetrato(f) {
+  return f ? { servico: f.servico, pid: f.pid, backend: f.backend || null, online: f.online === true, relay: f.relay || null,
+    autoteste: f.autoteste ? f.autoteste.ok : null } : null;
+}
+function vigiaTunelSalvar() {
+  const v = vigiaTunel;
+  try {
+    const txt = JSON.stringify({ reinicios: v.reinicios, ultimoReinicioEm: v.ultimoReinicioEm, pendenteLigar: v.pendenteLigar,
+      dns: v.dns, historico: v.historico });
+    // troca atômica: queda no meio da gravação não pode perder o "tem que ligar de novo"
+    try { writeFileSync(VIGIA_TUNEL_ARQ + '.tmp', txt); renameSync(VIGIA_TUNEL_ARQ + '.tmp', VIGIA_TUNEL_ARQ); }
+    catch { writeFileSync(VIGIA_TUNEL_ARQ, txt); }
+  } catch (e) { console.error('[tunel] não gravei o vigia-tunel.json: ' + e.message); }
+}
+function vigiaTunelCarregar() {
+  try {
+    if (!existsSync(VIGIA_TUNEL_ARQ)) return;
+    const j = JSON.parse(readFileSync(VIGIA_TUNEL_ARQ, 'utf8'));
+    const v = vigiaTunel;
+    const quando = Number(j.ultimoReinicioEm);
+    v.reinicios = Math.max(0, Math.min(50, Math.floor(Number(j.reinicios) || 0)));
+    v.ultimoReinicioEm = quando > 0 && quando < 8e15 ? quando : 0; // fora disso nem vira data
+    v.pendenteLigar = j.pendenteLigar === true;
+    v.dns = typeof j.dns === 'string' && j.dns ? j.dns.slice(0, 253) : null;
+    v.historico = Array.isArray(j.historico) ? j.historico.filter((x) => x && typeof x === 'object').slice(-20) : [];
+  } catch (e) { console.error('[tunel] vigia-tunel.json ilegível, começo do zero: ' + e.message); }
+}
+function vigiaTunelRegistrar(ev) {
+  const v = vigiaTunel;
+  v.historico.push(ev);
+  if (v.historico.length > 20) v.historico = v.historico.slice(-20);
+  vigiaTunelSalvar();
+}
+/** Tinha motivo pra reiniciar e NÃO reiniciou. Registra uma vez por motivo. */
+function vigiaTunelCalar(chave, texto) {
+  const v = vigiaTunel;
+  v.naoReiniciou = texto;
+  if (v.calou === chave) return;
+  v.calou = chave;
+  console.log('[tunel] não reinicio o Tailscale: ' + texto);
+  vigiaTunelRegistrar({ tipo: 'nao-reiniciou', em: new Date().toISOString(), porque: texto, motivo: v.motivo, falhas: v.falhas });
+}
+/** Manda o diagnóstico pra nuvem sem esperar a hora cheia (depois de um evento). */
+function vigiaTunelDiagLogo(ms) { setTimeout(() => loopDiagNuvem().catch(() => {}), ms); }
+/** Liga o serviço e confere. Quem manda é o estado no sc; sem ele, vale o que o
+ *  net disse (0 = ligou, 2182 = já estava ligado). */
+async function vigiaTunelLigar(tentativas) {
+  let s = await vigiaTunelServico();
+  let ligar = null;
+  for (let i = 0; i < tentativas && s.estado !== 'RUNNING'; i++) {
+    if (i) await sleep(5000);
+    if (s.estado !== 'START_PENDING') ligar = await vigiaTunelExec(vigiaTunelExe('net.exe'), ['start', 'Tailscale'], 60000);
+    for (let k = 0; k < 10; k++) {
+      s = await vigiaTunelServico();
+      if (s.estado !== 'START_PENDING') break;
+      await sleep(2000);
+    }
+    if (!s.estado && ligar && (ligar.codigo === 0 || /\b2182\b/.test(ligar.saida + ' ' + ligar.erro))) s = { ...s, estado: 'RUNNING' };
+  }
+  return { ligou: s.estado === 'RUNNING', servico: s, ligar };
+}
+/** O remédio: para e liga o serviço do Tailscale. Devolve true se voltou a rodar. */
+async function vigiaTunelReiniciar(porque) {
+  const v = vigiaTunel;
+  const ev = { tipo: 'reinicio', em: new Date().toISOString(), porque, motivo: v.motivo, falhas: v.falhas, tentativa: v.reinicios + 1,
+    antes: vigiaTunelResumoRetrato(v.retrato) };
+  console.log('[tunel] ' + porque + ' — reiniciando o serviço do Tailscale (tentativa ' + ev.tentativa + ')');
+  const s0 = await vigiaTunelServico();
+  // Grava ANTES de parar: se este processo morrer no meio, o próximo liga.
+  v.pendenteLigar = true; v.religarAvisado = false; v.ultimoReinicioEm = Date.now(); v.reinicios++;
+  v.calou = ''; v.naoReiniciou = '';
+  vigiaTunelSalvar();
+  const parar = await vigiaTunelExec(vigiaTunelExe('net.exe'), ['stop', 'Tailscale', '/y'], 90000);
+  ev.parar = vigiaTunelRecorte(parar); // o que o Windows respondeu fica no histórico
+  let s = await vigiaTunelServico();
+  for (let k = 0; k < 10 && s.estado === 'STOP_PENDING'; k++) { await sleep(2000); s = await vigiaTunelServico(); }
+  // "o mesmo de antes": não parou, e não é um processo novo (o Windows religando sozinho)
+  const mesmo = (x, pid) => !!x.estado && x.estado !== 'STOPPED' && (!x.pid || !pid || x.pid === pid);
+  let preso = mesmo(s, s0.pid);
+  if (preso && s.pid) {
+    // Não parou por bem (travado, ou sem permissão): derruba o processo do serviço.
+    const alvo = s.pid;
+    ev.matou = vigiaTunelRecorte(await vigiaTunelExec(vigiaTunelExe('taskkill.exe'), ['/F', '/T', '/PID', String(alvo)], 20000));
+    await sleep(3000);
+    s = await vigiaTunelServico();
+    preso = mesmo(s, alvo);
+  }
+  if (preso) {
+    // RUNNING = a ordem de parar nem pegou: nada ficou por ligar. Parando
+    // (STOP_PENDING) fica pendente — quando terminar de parar, o ciclo liga.
+    if (s.estado === 'RUNNING') v.pendenteLigar = false;
+    v.falhas = 0; v.gerais = 0;
+    ev.resultado = 'nao-parou'; ev.servico = s.estado;
+    console.error('[tunel] não consegui parar o serviço do Tailscale (' + s.estado + '): ' + ev.parar);
+    vigiaTunelRegistrar(ev); vigiaTunelDiagLogo(60 * 1000);
+    return false;
+  }
+  const l = await vigiaTunelLigar(3);
+  if (l.ligou) v.pendenteLigar = false;
+  ev.resultado = l.ligou ? 'ok' : 'nao-ligou';
+  if (l.ligar) ev.ligar = vigiaTunelRecorte(l.ligar);
+  // o Tailscale leva uns 20 s pra se apresentar de novo; os relays voltam aos poucos (~3 min)
+  await sleep(20000);
+  ev.depois = vigiaTunelResumoRetrato(await vigiaTunelRetratar(false));
+  v.falhas = 0; v.gerais = 0;
+  if (l.ligou) console.log('[tunel] serviço do Tailscale reiniciado (PID ' + s0.pid + ' → ' + l.servico.pid + ')');
+  else console.error('[tunel] o serviço do Tailscale PAROU E NÃO LIGOU — tento ligar de novo a cada ciclo');
+  vigiaTunelRegistrar(ev); vigiaTunelDiagLogo(3 * 60 * 1000);
+  return l.ligou;
+}
+/** A pergunta pra nuvem. Devolve sempre um objeto; alcancavel só vale se for
+ *  true ou false de verdade — o resto é inconclusivo. Nunca lança. */
+async function vigiaTunelPerguntar() {
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/tunel`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('tunel', e), dns: vigiaTunel.dns || undefined }),
+      signal: AbortSignal.timeout(28000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j || j.ok !== true) return { alcancavel: null, motivo: 'a nuvem recusou a pergunta (' + String((j && j.erro) || 'HTTP ' + r.status).slice(0, 80) + ')' };
+    return j;
+  } catch (err) { return { alcancavel: null, motivo: 'a nuvem não respondeu (' + String((err && err.message) || err).slice(0, 80) + ')' }; }
+}
+function vigiaTunelBom(r) {
+  const v = vigiaTunel;
+  const agora = Date.now();
+  if (v.caiuEm) {
+    const durou = Math.round((agora - v.caiuEm) / 1000);
+    const depois = v.ultimoReinicioEm >= v.caiuEm;
+    if (v.serio || depois) {
+      console.log('[tunel] a nuvem voltou a alcançar a loja (' + Math.round(durou / 60) + ' min fora' + (depois ? ', depois de reiniciar o Tailscale)' : ', sem reiniciar nada)'));
+      vigiaTunelRegistrar({ tipo: 'voltou', em: new Date().toISOString(), durou_s: durou, depoisDeReinicio: depois, via: String(r.via || '').slice(0, 60) });
+      vigiaTunelDiagLogo(10 * 1000);
+    } else v.piscadas++; // sumiu por 1 ou 2 ciclos e voltou sozinho
+  }
+  v.alcancavel = true; v.motivo = String(r.motivo || '').slice(0, 200); v.outras = null;
+  v.falhas = 0; v.gerais = 0; v.ultimaFalhaEm = 0; v.caiuEm = 0; v.serio = false; v.calou = ''; v.naoReiniciou = '';
+  if (!v.bomDesde) v.bomDesde = agora;
+  if (v.reinicios && agora - v.bomDesde >= VIGIA_TUNEL_BOM_MS) { v.reinicios = 0; vigiaTunelSalvar(); }
+}
+async function vigiaTunelRuim(r) {
+  const v = vigiaTunel;
+  const agora = Date.now();
+  v.alcancavel = false; v.bomDesde = 0; v.naoReiniciou = '';
+  v.motivo = String(r.motivo || '').slice(0, 200);
+  v.outras = r.outras && typeof r.outras === 'object' ? { total: Number(r.outras.total) || 0, alcancaveis: Number(r.outras.alcancaveis) || 0 } : null;
+  if (!v.caiuEm) v.caiuEm = agora;
+  if (v.ultimaFalhaEm && agora - v.ultimaFalhaEm > VIGIA_TUNEL_ELO_MS) { v.falhas = 0; v.gerais = 0; }
+  v.ultimaFalhaEm = agora;
+  if (v.outras && v.outras.total > 0 && v.outras.alcancaveis === 0) {
+    v.gerais++;
+    if (v.gerais >= VIGIA_TUNEL_FALHAS) v.serio = true;
+    if (v.gerais <= VIGIA_TUNEL_GERAIS) {
+      return vigiaTunelCalar('geral', 'a nuvem não alcança NENHUMA das casas — o problema não é desta máquina; só começo a contar depois de 30 min assim');
+    }
+  } else v.gerais = 0;
+  v.falhas++;
+  if (v.falhas === 1) console.log('[tunel] a nuvem não alcança a loja pelo endereço público: ' + v.motivo);
+  // retrato fresco a cada "não": é o que explica a queda depois
+  const foto = await vigiaTunelRetratar(true);
+  if (v.falhas < VIGIA_TUNEL_FALHAS) return;
+  v.serio = true;
+  if (foto.existe === false) return vigiaTunelCalar('sem-servico', 'não existe serviço Tailscale nesta máquina');
+  if (['NeedsLogin', 'NeedsMachineAuth', 'Stopped'].includes(foto.backend)) {
+    return vigiaTunelCalar('estado-' + foto.backend, 'o Tailscale está em ' + foto.backend + ' (deslogado ou desligado à mão): reiniciar não resolve, precisa de alguém na máquina');
+  }
+  // 15 min depois do 1º reinício, 30 do 2º… (relógio que andou pra trás não segura o vigia)
+  const espera = VIGIA_TUNEL_ESPERA_MIN[Math.max(0, Math.min(v.reinicios, VIGIA_TUNEL_ESPERA_MIN.length) - 1)] * 60 * 1000;
+  const desde = agora - v.ultimoReinicioEm;
+  if (v.ultimoReinicioEm && desde > -5 * 60 * 1000 && desde < espera) {
+    return vigiaTunelCalar('intervalo', 'já reiniciei há ' + Math.max(0, Math.round(desde / 60000)) + ' min; a próxima tentativa é só com ' + espera / 60000 + ' min');
+  }
+  const daquiResponde = !!(foto.autoteste && foto.autoteste.ok === true);
+  if (daquiResponde && v.falhas < VIGIA_TUNEL_TEIMA) {
+    return vigiaTunelCalar('autoteste', 'a nuvem diz que não alcança, mas daqui o endereço responde pelos relays: o túnel está de pé; só reinicio se ela insistir por 30 min');
+  }
+  const min = Math.max(1, Math.round((agora - v.caiuEm) / 60000));
+  await vigiaTunelReiniciar('a nuvem não alcança a loja há ' + min + ' min (' + v.falhas + ' "não" seguidos)'
+    + (daquiResponde ? ', e insiste mesmo com o endereço respondendo daqui' : ''));
+}
+/** Uma passada do vigia. */
+async function vigiaTunelCiclo() {
+  const v = vigiaTunel;
+  // 0) Primeiro o que é nosso: serviço que ESTE vigia parou e não viu voltar.
+  if (v.pendenteLigar) {
+    const l = await vigiaTunelLigar(1);
+    if (l.ligou) v.pendenteLigar = false;
+    if (l.ligou || !v.religarAvisado) {
+      v.religarAvisado = !l.ligou;
+      console.log('[tunel] ' + (l.ligou ? 'o serviço do Tailscale que eu tinha parado está rodando' : 'o serviço do Tailscale que eu parei ainda NÃO ligou — tento de novo a cada ciclo'));
+      vigiaTunelRegistrar({ tipo: 'religar', em: new Date().toISOString(), ligou: l.ligou, servico: l.servico.estado,
+        ...(l.ligar ? { ligar: vigiaTunelRecorte(l.ligar) } : {}) });
+    }
+  }
+  // 1) Retrato da máquina no 1º ciclo e de 30 em 30 min — com o autoteste, pra
+  //    saber de antemão se ele funciona nesta rede.
+  if (!v.retrato || Date.now() - v.retratoEm >= VIGIA_TUNEL_RETRATO_MS) await vigiaTunelRetratar(true);
+  // 2) A pergunta.
+  const r = await vigiaTunelPerguntar();
+  v.cicloEm = new Date().toISOString();
+  if (r.alcancavel === true) return vigiaTunelBom(r);
+  if (r.alcancavel === false) return vigiaTunelRuim(r);
+  v.alcancavel = null; v.motivo = String(r.motivo || 'a nuvem respondeu sem veredito').slice(0, 200);
+}
+let vigiaTunelRodando = false;
+async function loopVigiaTunel() {
+  if (vigiaTunelRodando) return;
+  vigiaTunelRodando = true;
+  try { await vigiaTunelCiclo(); }
+  catch (e) { console.error('[tunel] ' + ((e && e.message) || e)); }
+  finally { vigiaTunelRodando = false; setTimeout(loopVigiaTunel, VIGIA_TUNEL_POLL_MS); }
+}
+function vigiaTunelPartida() {
+  const v = vigiaTunel;
+  try {
+    if (!VIGIA_TUNEL) { v.estado = 'off'; console.log('[tunel] vigia desligado (VIGIA_TUNEL=off)'); return; }
+    if (process.platform !== 'win32') { v.estado = 'nao-e-windows'; return; }
+    if (!FILIAL_ID || !PAGAR_MESA_SECRET) { v.estado = 'sem-config'; return; }
+    vigiaTunelCarregar();
+    v.estado = 'on';
+    console.log('[tunel] vigia ligado: pergunta pra nuvem de 2 em 2 min se ela alcança a loja');
+    // 75 s: o diagnóstico dos 2 min já sobe com o primeiro retrato. Se ficou
+    // serviço por ligar (o processo morreu no meio de um reinício), não espera.
+    setTimeout(loopVigiaTunel, v.pendenteLigar ? 20 * 1000 : 75 * 1000);
+  } catch (e) { v.estado = 'erro'; console.error('[tunel] não liguei o vigia: ' + ((e && e.message) || e)); }
+}
+/** Resumo pro /api/config (rota aberta: nada de PID, versão ou chave aqui).
+ *  Nunca lança — a maquininha depende dessa rota. */
+function vigiaTunelResumo() {
+  try {
+    const v = vigiaTunel;
+    return { estado: v.estado, ciclo_em: v.cicloEm, alcancavel: v.alcancavel, falhas: v.falhas,
+      reinicio_em: v.ultimoReinicioEm ? new Date(v.ultimoReinicioEm).toISOString() : null };
+  } catch { return { estado: 'erro' }; }
+}
+/** O que sobe no diagnóstico da nuvem (canal assinado). Nunca lança. */
+function vigiaTunelParaDiag() {
+  try {
+    const v = vigiaTunel;
+    return { ...vigiaTunelResumo(), motivo: v.motivo, naoReiniciou: v.naoReiniciou, outras: v.outras, gerais: v.gerais,
+      reinicios: v.reinicios, pendenteLigar: v.pendenteLigar, piscadas: v.piscadas, dns: v.dns, retrato: v.retrato, historico: v.historico };
+  } catch { return null; }
+}
+// ---- fim do vigia do túnel ----
 // ---- MARCAS DO KDS → NUVEM: tempos de pronto/entregue no espelho do pedido ----
 // A tabela `marca` (pronto_em/entregue_em por item) só existe aqui. Sobe em
 // lotes de 300 por minuto, cursor pelo GREATEST dos dois timestamps. A nuvem
@@ -25829,6 +26253,8 @@ async function main() {
   // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois de hora em hora
   setTimeout(() => loopDiagNuvem().catch(() => {}), 120 * 1000);
   setInterval(() => loopDiagNuvem().catch(() => {}), 60 * 60 * 1000);
+  // vigia do túnel: se a nuvem parar de alcançar a loja pelo Funnel, reinicia o serviço do Tailscale sozinho
+  vigiaTunelPartida();
   // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
   setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
   setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);

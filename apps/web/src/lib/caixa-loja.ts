@@ -223,3 +223,157 @@ function descreverFalha(err: unknown): string {
   const detalhe = codigoDe(err) || cause?.message;
   return detalhe ? `${err.message} (${detalhe})` : err.message;
 }
+
+// ---------------------------------------------------------------------------
+// VIGIA DO TÚNEL (01/10/2026). O Funnel de uma casa caiu 4 vezes em 4 dias
+// (Mar 28/09 e 29/09, Tabuará 29/09 e 01/10), sempre com a mesma cara: o
+// vendas-local vivo, o Tailscale "online" na máquina e, de fora, o relay
+// derrubando o TLS (ECONNRESET / curl 35). O remédio foi sempre reiniciar o
+// serviço do Tailscale na loja — e gente desligando o servidor na tomada pra
+// isso. Aqui é o lado da NUVEM do vigia: a loja pergunta (POST /api/loja/tunel)
+// "você me alcança por fora?" e, com vários "não" seguidos, reinicia o
+// Tailscale sozinha (server.mjs → vigiaTunelCiclo).
+//
+// A sonda só bate no endereço que está no cadastro da filial (caixa_url),
+// nunca em URL vinda do pedido. Qualquer resposta HTTP conta como viva: o
+// relay do Funnel só repassa TCP pelo SNI e o TLS termina na máquina da loja,
+// então resposta = a máquina está no ar por aquele caminho.
+// ---------------------------------------------------------------------------
+
+/** Os 4 relays do Funnel vistos em 29/09/2026 (o DNS de cada casa devolve 2
+ *  deles). Depois de um restart do Tailscale eles voltam um por um (~3 min):
+ *  basta UM responder pra casa contar como alcançável. */
+const RELAYS_FUNNEL_SONDA = [...INGRESS_FUNNEL, '209.177.145.97', '209.177.145.192'];
+
+export type SondaTunel = {
+  /** true = a nuvem alcança a loja; false = não alcança por nenhum caminho;
+   *  null = não deu pra concluir (a loja NÃO age). */
+  alcancavel: boolean | null;
+  motivo?: string;
+  via?: string;
+  ms: number;
+  /** Só quando a casa não respondeu: as outras casas da organização, pra loja
+   *  separar "sou eu" de "caiu pra todo mundo" (nuvem ou Tailscale fora). */
+  outras?: { total: number; alcancaveis: number };
+};
+
+type RespostaTunel = { ok: boolean; via?: string; erro?: string };
+
+function baseDe(url: string | null | undefined): string | null {
+  const u = url?.trim();
+  return u ? u.replace(/\/+$/, '') : null;
+}
+
+function hostDe(url: string | null | undefined): string | null {
+  try {
+    return url ? new URL(url).hostname.toLowerCase().replace(/\.+$/, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+function falhaDaSonda(err: unknown, ms: number): string {
+  const cause = err instanceof Error ? (err as Error & { cause?: { name?: string } }).cause : undefined;
+  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError' || cause?.name === 'TimeoutError')) {
+    return `sem resposta em ${Math.round(ms / 1000)} s`;
+  }
+  return descreverFalha(err);
+}
+
+/** Pelo nome, do jeito que a nuvem chama a loja no dia a dia. Nunca lança. */
+async function tunelPeloNome(base: string, ms: number): Promise<RespostaTunel> {
+  try {
+    const r = await fetch(`${base}/api/versao`, { cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(ms) });
+    await r.body?.cancel().catch(() => undefined);
+    return { ok: true, via: `nome (HTTP ${r.status})` };
+  } catch (err) {
+    return { ok: false, erro: falhaDaSonda(err, ms) };
+  }
+}
+
+/** Direto nos relays, com o nome no SNI (e no IP que o DoH devolver, se for
+ *  um que a lista não conhece). Cobre o DNS da Vercel sem o nome (07/09) e a
+ *  volta relay por relay depois de um restart. Nunca lança. */
+async function tunelPelosIps(base: string, ms: number, comDoH: boolean): Promise<RespostaTunel> {
+  const url = `${base}/api/versao`;
+  const t0 = Date.now();
+  const resta = () => Math.max(1000, ms - (Date.now() - t0));
+  const tentar = (ip: string) =>
+    pedirNoIp(url, ip, 'GET', undefined, resta()).then((resp) => `IP ${ip} (HTTP ${resp.status})`);
+  const tentativas: Promise<string>[] = RELAYS_FUNNEL_SONDA.map(tentar);
+  if (comDoH) {
+    tentativas.push(
+      resolverPorDoH(new URL(url).hostname, 3000).then((d) => {
+        if (!d.ip || RELAYS_FUNNEL_SONDA.includes(d.ip)) throw new Error('DoH sem IP novo');
+        return tentar(d.ip);
+      }),
+    );
+  }
+  try {
+    return { ok: true, via: await Promise.any(tentativas) };
+  } catch (err) {
+    const erros = err instanceof AggregateError ? err.errors : [err];
+    return { ok: false, erro: falhaDaSonda(erros[0], ms) };
+  }
+}
+
+/** As outras casas da mesma organização respondem? (controle) */
+async function outrasCasasRespondem(organizacaoId: string, filialId: string, host: string): Promise<{ total: number; alcancaveis: number }> {
+  const irmas = await db
+    .select({ id: schema.filial.id, url: schema.filial.caixaUrl })
+    .from(schema.filial)
+    .where(eq(schema.filial.organizacaoId, organizacaoId));
+  const bases = new Map<string, string>();
+  for (const i of irmas) {
+    const b = baseDe(i.url);
+    const h = hostDe(b);
+    if (i.id !== filialId && b && h && h !== host && h.endsWith('.ts.net')) bases.set(h, b);
+  }
+  const res = await Promise.all(
+    [...bases.values()].map(async (b) => {
+      const nome = await tunelPeloNome(b, 5000);
+      return nome.ok ? nome : tunelPelosIps(b, 3000, false);
+    }),
+  );
+  return { total: res.length, alcancaveis: res.filter((r) => r.ok).length };
+}
+
+/** A nuvem alcança o vendas-local desta filial pelo endereço público? `dnsDaLoja`
+ *  é o nome que a máquina tem no Tailscale (ela manda): se não bate com o
+ *  cadastro, a resposta é null — reiniciar o Tailscale não conserta cadastro.
+ *  Cabe em ~17 s no pior caso (a rota tem maxDuration 30). Nunca lança. */
+export async function sondarTunelLoja(filialId: string, dnsDaLoja?: string | null): Promise<SondaTunel> {
+  const t0 = Date.now();
+  const fim = (r: Omit<SondaTunel, 'ms'>): SondaTunel => ({ ...r, ms: Date.now() - t0 });
+  try {
+    const [f] = await db
+      .select({ url: schema.filial.caixaUrl, org: schema.filial.organizacaoId })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filialId))
+      .limit(1);
+    const base = baseDe(f?.url);
+    const host = hostDe(base);
+    if (!f || !base || !host) {
+      return fim({ alcancavel: null, motivo: 'a filial não tem endereço público (caixa_url) no cadastro' });
+    }
+    if (!host.endsWith('.ts.net')) {
+      return fim({ alcancavel: null, motivo: 'o endereço público desta filial não é do Tailscale' });
+    }
+    const daLoja = String(dnsDaLoja || '').trim().toLowerCase().replace(/\.+$/, '');
+    if (daLoja && daLoja !== host) {
+      return fim({ alcancavel: null, motivo: `o cadastro aponta pra ${host}, mas esta máquina é ${daLoja} no Tailscale` });
+    }
+    const nome = await tunelPeloNome(base, 8000);
+    if (nome.ok) return fim({ alcancavel: true, via: nome.via });
+    // Pelo nome não foi. Em paralelo: direto nos relays e o controle (as
+    // outras casas respondem?). Se algum relay atender, a casa está viva.
+    const [ips, outras] = await Promise.all([
+      tunelPelosIps(base, 8000, true),
+      outrasCasasRespondem(f.org, filialId, host).catch(() => undefined),
+    ]);
+    if (ips.ok) return fim({ alcancavel: true, via: ips.via, motivo: `pelo nome não foi (${nome.erro})` });
+    return fim({ alcancavel: false, motivo: `${nome.erro}; nos relays: ${ips.erro}`, outras });
+  } catch (err) {
+    return fim({ alcancavel: null, motivo: 'a sonda falhou: ' + (err instanceof Error ? err.message : 'erro') });
+  }
+}

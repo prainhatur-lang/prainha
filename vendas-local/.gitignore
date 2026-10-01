@@ -5,3 +5,5 @@ cert/
 ._*
 .DS_Store
 aplicar-versao.txt
+vigia-tunel.json
+vigia-tunel.json.tmp
