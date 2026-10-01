@@ -11148,6 +11148,9 @@ async function kidsCfg() {
     pdv, pdv_ok: !!prod, pdv_nome: prod ? (prod.nome + (prod.tamanho ? ' ' + prod.tamanho : '')) : '',
     preco_manual: manual, preco, cobra: preco > 0,
     pix_ok: pixStatus().disponivel,
+    // Lança sozinho na conta da mesa quando a criança entra (decisão do dono,
+    // 01/10/2026). Liga por padrão; o gerente desliga no ⚙ e volta ao manual.
+    auto_mesa: (await cfgGet('kids_auto_mesa', '1')) !== '0',
   };
 }
 /** Registra o check-in na nuvem e anota o resultado na entrada. Nunca lança:
@@ -11280,8 +11283,13 @@ async function apiKidsEstado() {
       chamada: ultima ? { ha_min: espera, motivo: ultima.motivo || '',
         erro: ultima.erro || '', vezes: chamadas.length } : null,
       resposta: resp ? { texto: resp.texto || '', ha_min: minDe(resp.criado_em) } : null,
-      cobranca: kidsCobResumo(cobs.filter((x) => Number(x.entrada_id) === Number(c.entrada_id)).pop()),
+      cobranca: kidsCobResumo(kidsCobJunta(cobs.filter((x) => Number(x.entrada_id) === Number(c.entrada_id)))),
       criancas_entrada: Number((nEnt.find((x) => Number(x.entrada_id) === Number(c.entrada_id)) || {}).n) || 1,
+      // irmão que entrou depois e ainda não foi pra conta da mesa
+      falta_mesa: kidsFaltaDe(cobs.filter((x) => Number(x.entrada_id) === Number(c.entrada_id)),
+        Number((nEnt.find((x) => Number(x.entrada_id) === Number(c.entrada_id)) || {}).n) || 1),
+      // o lançamento automático falhou (conta pedida, mesa errada…): a tela diz por quê
+      cobranca_erro: ((meus.filter((x) => x.tipo === 'cobranca').pop() || {}).erro) || '',
       alerta: !!(ultima && !resp && espera >= cfg.alerta_min),
       escalado: meus.some((x) => x.tipo === 'escalada' && Number(x.crianca_id) === Number(c.id)
         && (!ultima || new Date(x.criado_em) >= new Date(ultima.criado_em))),
@@ -11378,7 +11386,8 @@ async function apiKidsEntrada(body, quem) {
     await sql`INSERT INTO kids_crianca (entrada_id, nome, idade, observacao)
       VALUES (${entradaId}, ${c.nome}, ${c.idade}, ${c.observacao})`;
   }
-  return await kidsQrDaEntrada(entradaId, true);
+  const lancamento = await kidsAutoMesa(entradaId, quem);
+  return { ...(await kidsQrDaEntrada(entradaId, true)), lancamento };
 }
 /** Monta a tela do QR — e, se pedido, registra na nuvem (trocando o código
  *  quando ele já existe lá: o 409 é o jeito da nuvem dizer "esse já é de outro"). */
@@ -11412,7 +11421,7 @@ async function apiKidsQrNovo(body) {
   return await kidsQrDaEntrada(id, true);
 }
 /** Irmão que chegou depois: entra na MESMA entrada (mesmo zap, mesma mesa). */
-async function apiKidsCrianca(body) {
+async function apiKidsCrianca(body, quem) {
   const id = Number(body.entrada_id);
   const cs = kidsValidaCriancas([body]);
   if (!id || !cs.length) return { ok: false, erro: 'informe o nome da criança' };
@@ -11425,7 +11434,10 @@ async function apiKidsCrianca(body) {
   if (e.zap_status === 'confirmado') {
     await kidsEnviar(e.codigo, `✅ ${kidsLista([c])} entrou no Espaço Kids às ${kidsHora()}${e.mesa ? `, mesa ${e.mesa}` : ''}.`);
   }
-  return { ok: true, entrada_id: id };
+  // Irmão também brinca: entra na conta da mesa junto. Só quando a família
+  // ainda não foi cobrada ou foi cobrada NA MESA — Pix e cortesia ficam como estão.
+  const lancamento = quem ? await kidsAutoMesa(id, quem) : null;
+  return { ok: true, entrada_id: id, lancamento };
 }
 
 // ---- chamar / escalar / saída ----
@@ -11532,6 +11544,7 @@ async function apiKidsConfig(body, quem) {
     if (String(body.preco).trim() && !(v >= 0 && v <= 999)) return { ok: false, erro: 'preço inválido' };
     await cfgSet('kids_preco', String(body.preco).trim() ? v.toFixed(2) : '0');
   }
+  if (body.auto_mesa !== undefined) await cfgSet('kids_auto_mesa', body.auto_mesa ? '1' : '0');
   return { ok: true, cfg: await kidsCfg() };
 }
 
@@ -11554,6 +11567,54 @@ function kidsCobResumo(c) {
     pendente: c.modo === 'pix' && !pago,
   };
 }
+/** Várias linhas "na mesa" da mesma família (entrada + irmão que chegou depois)
+ *  viram UMA na tela: o valor é a soma do que entrou na conta. */
+function kidsCobJunta(rows) {
+  if (!rows || !rows.length) return null;
+  const ult = rows[rows.length - 1];
+  if (rows.length < 2 || !rows.every((x) => x.modo === 'mesa')) return ult;
+  return { ...ult, valor: +rows.reduce((a, x) => a + (Number(x.valor) || 0), 0).toFixed(2),
+    criancas: rows.reduce((a, x) => a + (Number(x.criancas) || 0), 0) };
+}
+/** Quantas crianças da entrada ainda não estão na conta da mesa. Só faz
+ *  sentido quando a família já está sendo cobrada na mesa. */
+function kidsFaltaDe(rows, total) {
+  if (!rows || !rows.length || !rows.every((x) => x.modo === 'mesa')) return 0;
+  return Math.max(0, (Number(total) || 0) - rows.reduce((a, x) => a + (Number(x.criancas) || 0), 0));
+}
+async function kidsFaltaNaMesa(entradaId) {
+  const eid = Number(entradaId);
+  const rows = await sql`SELECT modo, criancas FROM kids_cobranca WHERE entrada_id=${eid} AND cancelada_em IS NULL`;
+  const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca WHERE entrada_id=${eid}`;
+  return kidsFaltaDe(rows, n);
+}
+/** LANÇAMENTO AUTOMÁTICO: criança entrou → a recreação cai na conta da mesa,
+ *  pelo mesmo caminho do botão "Lançar na mesa" (apiKidsCobrar). Nunca lança
+ *  exceção e nunca barra a entrada: a criança entra de qualquer jeito, e o que
+ *  não deu pra lançar fica escrito no card com o botão de cobrar à mão. */
+async function kidsAutoMesa(entradaId, quem) {
+  const eid = Number(entradaId);
+  try {
+    const cfg = await kidsCfg();
+    if (!cfg.auto_mesa || !cfg.pdv_ok) return null;
+    const [e] = await sql`SELECT mesa FROM kids_entrada WHERE id=${eid}`;
+    if (!e) return null;
+    const viva = await kidsCobrancaViva(eid);
+    if (viva && viva.modo !== 'mesa') return null; // Pix/cortesia: não mexe
+    let r;
+    if (!e.mesa) r = { ok: false, erro: 'entrada sem mesa — cobre no Pix ou diga a mesa no botão de cobrar' };
+    else r = await apiKidsCobrar({ entrada_id: eid, modo: 'mesa' }, quem);
+    if (r.ok) return { ok: true, cobranca: r.cobranca };
+    if (r.ja_tem) return null;
+    const erro = String(r.erro || 'não deu pra lançar').slice(0, 200);
+    await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, erro, por)
+      VALUES (${eid}, 'cobranca', ${'não lançou na conta' + (e.mesa ? ' da mesa ' + e.mesa : '')}, ${erro}, ${quem.login})`;
+    return { ok: false, erro };
+  } catch (err) {
+    console.error('[kids] lançamento automático falhou:', err.message);
+    return { ok: false, erro: String(err.message || err).slice(0, 200) };
+  }
+}
 async function kidsCobrancaViva(entradaId) {
   const [c] = await sql`SELECT * FROM kids_cobranca WHERE entrada_id=${Number(entradaId)}
     AND cancelada_em IS NULL ORDER BY id DESC LIMIT 1`;
@@ -11568,7 +11629,10 @@ async function apiKidsCobrar(body, quem) {
   // Cobrança viva barra a segunda: sem isto, dois toques no botão (ou duas
   // monitoras no mesmo tablet) lançavam a recreação duas vezes na conta.
   const viva = await kidsCobrancaViva(eid);
-  if (viva) {
+  // Família já na conta da mesa + irmão que entrou depois: lança SÓ o que
+  // falta, na mesma mesa. Qualquer outro caso de cobrança viva barra, como sempre.
+  const faltaMesa = (viva && viva.modo === 'mesa' && modo === 'mesa') ? await kidsFaltaNaMesa(eid) : 0;
+  if (viva && !(faltaMesa > 0)) {
     return { ok: false, ja_tem: true, cobranca: kidsCobResumo(viva),
       erro: viva.modo === 'pix' && !viva.pago_em
         ? 'já existe um Pix aberto pra essa família. Cancele o Pix antes de cobrar de outro jeito.'
@@ -11577,7 +11641,7 @@ async function apiKidsCobrar(body, quem) {
   // Conta TODAS as crianças da entrada, inclusive as que já saíram: a recreação
   // foi usada, e o irmão que saiu mais cedo não sai de graça.
   const [{ n: nc }] = await sql`SELECT COUNT(*)::int AS n FROM kids_crianca WHERE entrada_id=${eid}`;
-  const criancas = Math.max(1, Number(nc) || 1);
+  const criancas = faltaMesa > 0 ? faltaMesa : Math.max(1, Number(nc) || 1);
   const cfg = await kidsCfg();
   const ger = await ehGerente(quem.login);
   const sugerido = +(Number(cfg.preco) * criancas).toFixed(2);
@@ -11600,7 +11664,7 @@ async function apiKidsCobrar(body, quem) {
   const obs = String(body.obs || '').trim().slice(0, 200) || null;
 
   if (modo === 'mesa') {
-    const mesa = Number(body.mesa || e.mesa || 0);
+    const mesa = Number(body.mesa || e.mesa || (viva && viva.mesa) || 0);
     if (!(mesa >= 1)) return { ok: false, erro: 'diga em que mesa lançar' };
     const r = await apiVendaEnviar({ numero: mesa, _garcom: quem.login, _garcom_nome: quem.nome,
       itens: [{ codigo_pdv: cfg.pdv, qtd: criancas, obs: 'Espaço Kids · ' + e.codigo }] });
@@ -11612,7 +11676,7 @@ async function apiKidsCobrar(body, quem) {
     if (!e.mesa) await sql`UPDATE kids_entrada SET mesa=${mesa} WHERE id=${eid}`;
     await sql`INSERT INTO kids_evento (entrada_id, tipo, texto, por)
       VALUES (${eid}, 'cobranca', ${impMoeda(vreal) + ' lançado na conta da mesa ' + mesa}, ${quem.login})`;
-    return { ok: true, cobranca: kidsCobResumo(c) };
+    return { ok: true, cobranca: kidsCobResumo(c), criancas };
   }
 
   if (modo === 'cortesia') {
@@ -11700,7 +11764,7 @@ async function apiKidsHistorico(u) {
   const diaBr = (d) => new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
   let itens = entradas.map((e) => {
     const cs = criancas.filter((c) => Number(c.entrada_id) === Number(e.id));
-    const cob = cobs.filter((c) => Number(c.entrada_id) === Number(e.id)).pop();
+    const cob = kidsCobJunta(cobs.filter((c) => Number(c.entrada_id) === Number(e.id)));
     const saidas = cs.map((c) => c.saiu_em).filter(Boolean);
     const fim = cs.every((c) => c.saiu_em) && saidas.length
       ? saidas.map((x) => new Date(x).getTime()).sort((a, b) => b - a)[0] : null;
@@ -22928,6 +22992,7 @@ function telaLista(el){
   var h='';
   if(E.nuvem&&E.nuvem.ligada&&!E.nuvem.ok)h+='<div class="aviso">Sem conexão com a nuvem'+(E.nuvem.erro?' ('+esc(E.nuvem.erro)+')':'')+'. Entrada e saída funcionam; o WhatsApp volta sozinho.</div>';
   if(E.nuvem&&!E.nuvem.ligada)h+='<div class="aviso">Esta loja está sem a chave da nuvem — o WhatsApp do Kids não vai funcionar. Fale com o suporte.</div>';
+  if(GER&&E.cfg&&!E.cfg.cobra)h+='<div class="aviso">O Espaço Kids está <b>sem preço</b>: nada vai pra conta da mesa. Cadastre o produto no PDV e escolha ele no ⚙.</div>';
   h+='<div class="row"><button class="big" onclick="novaEntrada()">+ Nova entrada</button>'+
     '<button class="big g" onclick="irHist()">&#128220; Histórico</button></div>';
   var vistos={};
@@ -22953,7 +23018,11 @@ function telaLista(el){
        diferentes */
     if(!vistos[c.entrada_id]){vistos[c.entrada_id]=1;
       if(c.cobranca){h+=cobLinha(c.cobranca);
-        if(c.cobranca.pendente)h+='<div class="acts"><button class="big o" onclick="verQr('+c.cobranca.id+')">📱 Mostrar o QR de novo</button></div>'}
+        if(c.cobranca.pendente)h+='<div class="acts"><button class="big o" onclick="verQr('+c.cobranca.id+')">📱 Mostrar o QR de novo</button></div>';
+        if(c.falta_mesa>0)h+=(c.cobranca_erro?'<div class="errbox">Não lançou na conta: '+esc(c.cobranca_erro)+'</div>':'')+
+          '<div class="acts"><button class="big o" onclick="cobrarDaLista('+c.entrada_id+','+c.falta_mesa+')">💰 Falta lançar '+c.falta_mesa+' criança'+(c.falta_mesa>1?'s':'')+' na mesa</button></div>'}
+      else if(E.cfg.cobra&&c.cobranca_erro)h+='<div class="errbox">Não lançou na conta: '+esc(c.cobranca_erro)+'</div>'+
+        '<div class="acts"><button class="big o" onclick="cobrarDaLista('+c.entrada_id+')">💰 Cobrar '+rs((E.cfg.preco||0)*(c.criancas_entrada||1))+'</button></div>';
       else if(E.cfg.cobra)h+='<div class="acts"><button class="big o" onclick="cobrarDaLista('+c.entrada_id+')">💰 Cobrar '+rs((E.cfg.preco||0)*(c.criancas_entrada||1))+'</button></div>'}
     if(SAIU===c.id)h+='<div class="card" style="margin:10px 0 0;background:#fff7e8"><b>'+esc(c.nome)+' está saindo?</b>'+
       '<div class="row" style="margin-top:8px"><button class="big" onclick="confirmarSaida('+c.id+')">Sim, saiu</button>'+
@@ -23083,6 +23152,9 @@ function telaQr(el){
   if(!QR){TELA='lista';return render()}
   var ok=QR.zap_status==='confirmado';
   var h='<div class="card">';
+  var L=QR.lancamento;
+  if(L&&L.ok&&L.cobranca)h+='<div class="bal" style="margin:0 0 10px"><b>✅ '+rs(L.cobranca.valor)+'</b> lançado '+esc(L.cobranca.rotulo)+'</div>';
+  if(L&&!L.ok)h+='<div class="errbox" style="margin:0 0 10px">A recreação NÃO foi pra conta: '+esc(L.erro||'')+'. Cobre pelo botão 💰 na lista.</div>';
   if(ok){
     h+='<div class="kn">✅ WhatsApp confirmado</div>'+
       '<div class="mut" style="margin-top:6px">'+esc(QR.responsavel)+(QR.tel_confirmado?' · '+telBr(QR.tel_confirmado):'')+'</div>'+
@@ -23121,10 +23193,11 @@ function cobLinha(cob){
   var ic=cob.pendente?'⏳':(cob.modo==='cortesia'?'🎁':'✅');
   return '<div style="margin-top:8px;font-weight:700;color:'+cor+'">'+ic+' '+rs(cob.valor)+' · '+esc(cob.rotulo)+
     (cob.por?' <span class="mut" style="font-weight:400">('+esc(cob.por)+')</span>':'')+'</div>'}
-function cobrarDaLista(eid){
+function cobrarDaLista(eid,falta){
   var c=E.dentro.filter(function(x){return x.entrada_id===eid})[0];if(!c)return;
-  abrirCobranca({entrada_id:c.entrada_id,codigo:c.codigo,mesa:c.mesa,
-    responsavel:c.responsavel,criancas_entrada:c.criancas_entrada||1})}
+  /* falta>0 = família já na conta da mesa; só o irmão que entrou depois */
+  abrirCobranca({entrada_id:c.entrada_id,codigo:c.codigo,mesa:(falta&&c.cobranca&&c.cobranca.mesa)||c.mesa,
+    responsavel:c.responsavel,criancas_entrada:falta||c.criancas_entrada||1,so_mesa:!!falta})}
 function abrirCobranca(a){
   var cfg=(E&&E.cfg)||{};
   COB=a;COBERR='';COBVAL='';COBMESA=a.mesa?String(a.mesa):'';
@@ -23141,7 +23214,7 @@ function telaCob(el){
     ((Number(cfg.preco)||0)>0?' · '+rs(cfg.preco)+' cada':'')+'</div>'+
     '<div class="kn" style="margin-top:6px">'+rs(sug)+'</div>'+
     '<div class="row3" style="margin-top:10px">'+ms.map(function(m){
-      var off=(m[0]==='mesa'&&!cfg.pdv_ok)||(m[0]==='pix'&&!cfg.pix_ok)||(m[0]==='cortesia'&&!GER);
+      var off=(m[0]==='mesa'&&!cfg.pdv_ok)||(m[0]==='pix'&&!cfg.pix_ok)||(m[0]==='cortesia'&&!GER)||(COB.so_mesa&&m[0]!=='mesa');
       return '<button class="seg'+(COBMODO===m[0]?' on':'')+'"'+(off?' disabled style="opacity:.35"':'')+
         ' onclick="COBMODO=\\''+m[0]+'\\';COBERR=\\'\\';render()">'+m[1]+'</button>'}).join('')+'</div>';
   if(COBMODO==='mesa'){
@@ -23264,7 +23337,7 @@ function telaHist(el){
 function irCfg(){
   var c=(E&&E.cfg)||{};
   CFG={camera_link:c.camera_link||'',alerta_min:c.alerta_min||5,pdv:c.pdv||0,
-    pdv_nome:c.pdv_nome||'',preco:c.preco_manual?String(c.preco_manual).replace('.',','):''};
+    pdv_nome:c.pdv_nome||'',preco:c.preco_manual?String(c.preco_manual).replace('.',','):'',auto_mesa:c.auto_mesa!==false};
   PRODS=null;ERRO='';TELA='cfg';render()}
 function telaCfg(el){
   var c=(E&&E.cfg)||{};
@@ -23283,7 +23356,11 @@ function telaCfg(el){
       return '<div class="hoje"><span>'+esc(x.nome)+' <span class="mut">#'+x.codigo_pdv+'</span></span>'+
         '<span><b>'+rs(x.preco)+'</b> · <a class="sair" onclick="escolherProd('+x.codigo_pdv+')">usar</a></span></div>'}).join('')
     :'<div class="mut">nenhum produto com esse nome</div>';
-  h+='<div class="tit">Preço por criança, sem produto do PDV</div>'+
+  h+='<div class="tit">Lançar na conta da mesa sozinho?</div>'+
+    '<div class="mut">Ligado: quando a criança entra, a recreação já cai na conta da mesa (uma por criança; irmão que entra depois também). Precisa do produto do PDV escolhido acima e da mesa na entrada. Desligado: só pelo botão 💰 Cobrar.</div>'+
+    '<div class="row" style="margin-top:8px"><button class="seg'+(CFG.auto_mesa?' on':'')+'" onclick="CFG.auto_mesa=true;render()">Na entrada, automático</button>'+
+    '<button class="seg'+(!CFG.auto_mesa?' on':'')+'" onclick="CFG.auto_mesa=false;render()">Só no botão</button></div>'+
+    '<div class="tit">Preço por criança, sem produto do PDV</div>'+
     '<div class="mut">Vale quando nenhum produto foi escolhido. Zero = a casa não cobra e o botão de cobrar nem aparece.</div>'+
     '<input id="pv" class="num" inputmode="decimal" placeholder="0,00" value="'+esc(CFG.preco)+'" oninput="CFG.preco=this.value">'+
     '<div class="mut" style="margin-top:10px">Hoje: '+(c.cobra
@@ -23303,7 +23380,7 @@ function escolherProd(cod){
   CFG.pdv=cod;CFG.pdv_nome=p?p.nome:'';PRODS=null;render()}
 async function salvarCfg(){
   var r=await jpost('/api/kids/config',{camera_link:CFG.camera_link,alerta_min:CFG.alerta_min,
-    pdv:CFG.pdv,preco:CFG.preco});
+    pdv:CFG.pdv,preco:CFG.preco,auto_mesa:!!CFG.auto_mesa});
   if(!r.ok){ERRO=r.erro||'não salvou';render();return}
   ERRO='';TELA='lista';await puxar()}
 
@@ -24970,7 +25047,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         if (p === '/api/kids/entrada') return res.end(JSON.stringify(await apiKidsEntrada(b, quem)));
         if (p === '/api/kids/qr-novo') return res.end(JSON.stringify(await apiKidsQrNovo(b)));
-        if (p === '/api/kids/crianca') return res.end(JSON.stringify(await apiKidsCrianca(b)));
+        if (p === '/api/kids/crianca') return res.end(JSON.stringify(await apiKidsCrianca(b, quem)));
         if (p === '/api/kids/chamar') return res.end(JSON.stringify(await apiKidsChamar(b, quem)));
         if (p === '/api/kids/escalar') return res.end(JSON.stringify(await apiKidsEscalar(b, quem)));
         if (p === '/api/kids/saida') return res.end(JSON.stringify(await apiKidsSaida(b, quem)));
