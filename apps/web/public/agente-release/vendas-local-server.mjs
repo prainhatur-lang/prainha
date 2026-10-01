@@ -18196,7 +18196,7 @@ function lojaHtml(){
   if(d.pausas.length){
     d.pausas.forEach(function(x){
       h+='<div class="l"><div class="nm">Pausada'+(x.descricao?': '+esc(x.descricao):'')+'<small>até '+esc(String(x.fim||'').slice(11,16))+'</small></div>'+
-        '<button class="b g" onclick="retomar(\''+x.id+'\')">voltar a receber</button></div>';
+        '<button class="b g" onclick="retomar(\\''+x.id+'\\')">voltar a receber</button></div>';
     });
   }else{
     h+='<div class="l"><div class="nm">Pausar o recebimento<small>o iFood reabre sozinho na hora marcada; o horário de funcionamento não muda</small></div>'+
@@ -24595,9 +24595,9 @@ function brEditor(){
     var lst=BRLISTA[k];
     return '<div class="l"><div class="nm"><b>'+rot+'</b><small>'+dica+'</small>'+
       '<div class="row" style="margin-top:6px;gap:6px"><input id="br'+k+'" value="'+esc(val)+'" maxlength="80" style="flex:1;min-width:0">'+
-      '<button class="b" onclick="brBusca(\''+k+'\')">🔎 Buscar</button></div>'+
+      '<button class="b" onclick="brBusca(\\''+k+'\\')">🔎 Buscar</button></div>'+
       (lst?('<div class="grid" style="margin-top:6px">'+(lst.length
-        ? lst.map(function(pr){return '<button class="tec brp" onclick="brPega(\''+k+'\',this.dataset.n)" data-n="'+esc(pr.nome)+'"><b>'+esc(pr.nome)+'</b><span>'+esc(pr.categoria||'')+(pr.sem_estoque?' · SEM ESTOQUE':'')+'</span></button>'}).join('')
+        ? lst.map(function(pr){return '<button class="tec brp" onclick="brPega(\\''+k+'\\',this.dataset.n)" data-n="'+esc(pr.nome)+'"><b>'+esc(pr.nome)+'</b><span>'+esc(pr.categoria||'')+(pr.sem_estoque?' · SEM ESTOQUE':'')+'</span></button>'}).join('')
         : '<div class="mut">Nada com esse nome no cardápio desta casa.</div>')+'</div>'):'')+
       '</div></div>';
   };
