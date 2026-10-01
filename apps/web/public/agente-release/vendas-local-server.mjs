@@ -6851,8 +6851,11 @@ async function ehRecepcao(login) {
 // tela — até lá segue aberta como sempre, pra atualização não travar a
 // cozinha no meio do serviço. Bater o ponto nunca pede login.
 // Gerente não entra aqui: marcar alguém gerente não fecha porta nenhuma.
-const ACESSOS_TELA = ['producao', 'etiqueta', 'qrcode', 'reservas', 'ponto'];
-const ACESSO_NOME = { producao: 'Produção', etiqueta: 'Etiqueta', qrcode: 'QR Codes das mesas', reservas: 'Reservas', ponto: 'Ponto (cadastro de rosto)' };
+// Espaço Kids (/kids) entra na mesma régua: sempre pediu login + PIN e aceitava
+// qualquer login ativo da casa; segue assim até alguém ganhar o check — daí só
+// quem tem o check (ou é gerente) entra (kidsPodeEntrar).
+const ACESSOS_TELA = ['producao', 'etiqueta', 'qrcode', 'reservas', 'ponto', 'kids'];
+const ACESSO_NOME = { producao: 'Produção', etiqueta: 'Etiqueta', qrcode: 'QR Codes das mesas', reservas: 'Reservas', ponto: 'Ponto (cadastro de rosto)', kids: 'Espaço Kids' };
 /** o check existe e a pessoa não está desativada aqui */
 async function acessoMarcado(login, a) {
   try {
@@ -11686,6 +11689,7 @@ async function apiKidsEntrar(body) {
   let p;
   try { p = await permsDoUsuario(login); } catch (e) { return { ok: false, erro: e.message }; }
   if (!p.ok) return { ok: false, erro: 'Login não encontrado. Fale com o gerente.' };
+  if (!(await kidsPodeEntrar(login))) return { ok: false, erro: 'Este login não tem acesso ao Espaço Kids. O administrador marca em Caixa → Usuários.' };
   const [atual] = await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`;
   if (!atual) {
     const pin2 = String(body.pin2 || '').replace(/\D/g, '');
@@ -11710,8 +11714,16 @@ async function kidsDaRequisicao(req, u) {
   try {
     const p = await permsDoUsuario(v.login);
     if (!p.ok) return null;
+    if (!(await kidsPodeEntrar(v.login))) return null;
     return { login: v.login, nome: p.nome || v.login };
   } catch { return { login: v.login, nome: v.login }; }
+}
+/** Check "Espaço Kids" de Caixa → Usuários. Sem ninguém marcado, entra qualquer
+ *  login ativo da casa (como sempre foi); com alguém marcado, só quem tem o
+ *  check ou é gerente. */
+async function kidsPodeEntrar(login) {
+  if (!(await portaFechada('kids'))) return true;
+  return temAcessoTela(login, 'kids');
 }
 async function apiKidsSessao(req, u) {
   const q = await kidsDaRequisicao(req, u);
@@ -23607,8 +23619,12 @@ function usuEditar(l){USU_ED=l;telaUsu(document.getElementById('main'))}
 var ACS=[['caixa','🧰','Caixa','recebe, desconto, gaveta, fecha o caixa'],['garcom','📱','Garçom','comanda no celular'],
   ['producao','👨‍🍳','Produção','chef manda fazer pros cozinheiros'],['etiqueta','🏷','Etiqueta','etiqueta de validade na cozinha'],
   ['qrcode','🔳','QR Codes das mesas','imprimir os QR das mesas'],['reservas','📅','Reservas','recepção e lista de espera'],
-  ['ponto','🕐','Ponto','libera o cadastro de rosto (bater o ponto é livre)'],['gerente','👔','Gerente','autoriza cancelamento, fiado — entra em tudo']];
+  ['ponto','🕐','Ponto','libera o cadastro de rosto (bater o ponto é livre)'],
+  ['kids','🧸','Espaço Kids','monitora: entrada, saída e cobrança das crianças'],
+  ['gerente','👔','Gerente','autoriza cancelamento, fiado — entra em tudo']];
 var TELAS_PORTA={etiqueta:1,qrcode:1,ponto:1};
+/* o Kids sempre pediu login; sem ninguém marcado, qualquer login da casa entra */
+var TELAS_AVISO={kids:'hoje entra qualquer login da casa; marcar alguém deixa só os marcados (e o gerente)'};
 function acsHtml(u){
   var tem={};(u.acessos||[]).forEach(function(a){tem[a]=1});
   if(u.consumer&&u.gerente)tem.gerente=1;
@@ -23616,6 +23632,7 @@ function acsHtml(u){
   return ACS.map(function(a){
     var trava=u.consumer&&(a[0]==='caixa'||a[0]==='garcom'||a[0]==='gerente');
     var aviso=TELAS_PORTA[a[0]]&&!fech[a[0]]?' <span style="color:var(--orange,#c2410c)">· hoje aberta a todos; marcar alguém passa a pedir login</span>':'';
+    if(TELAS_AVISO[a[0]]&&!fech[a[0]])aviso=' <span style="color:var(--orange,#c2410c)">· '+TELAS_AVISO[a[0]]+'</span>';
     return '<label style="display:flex;gap:12px;align-items:center;padding:10px 2px;border-bottom:1px solid var(--line);opacity:'+(trava?.6:1)+'">'+
       '<input type="checkbox" class="u_ac" value="'+a[0]+'"'+(tem[a[0]]?' checked':'')+(trava?' disabled data-trava="1"':'')+
       ' onchange="acsGer()" style="width:24px;height:24px;flex:none">'+
