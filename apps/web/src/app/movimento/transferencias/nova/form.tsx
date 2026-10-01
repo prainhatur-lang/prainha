@@ -11,6 +11,9 @@ export interface ProdOpc {
   saldo: number;
   /** Descontinuado ("* Excluído *"): fica fora das buscas e do casamento automático */
   inativo?: boolean;
+  /** Sem custo médio: custo estimado (última compra / outra casa) e de onde veio */
+  custoEstimado?: number;
+  fonteEstimativa?: string;
 }
 export interface ItemInicial {
   produtoOrigemId: string;
@@ -30,6 +33,11 @@ const norm = (s: string) =>
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const numBr = (s: string) => Number(String(s).replace(/\./g, '').replace(',', '.'));
+/** custo estimado → texto do campo ("12,5") */
+const custoTxt = (p: ProdOpc | undefined) =>
+  p && p.custo <= 0 && p.custoEstimado && p.custoEstimado > 0
+    ? String(Math.round(p.custoEstimado * 10000) / 10000).replace('.', ',')
+    : '';
 
 /** Mesmo produto na outra casa: de/para salvo; senão nome normalizado +
  *  unidade; senão só o nome. null = não existe lá (cadastra ao transferir). */
@@ -57,7 +65,10 @@ function buscar(lista: ProdOpc[], q: string, max = 12): ProdOpc[] {
 
 export function NovaTransferenciaForm(props: {
   origemId: string;
-  destinos: Array<{ id: string; nome: string }>;
+  /** semAcesso: casa da mesma empresa que o usuário não acessa — só dá pra
+   *  enviar; quem recebe confere e dá a entrada. */
+  destinos: Array<{ id: string; nome: string; semAcesso?: boolean }>;
+  origemNome?: string;
   produtosOrigem: ProdOpc[];
   produtosDestino: Record<string, ProdOpc[]>;
   /** destinoId → produtoOrigemId → produtoDestinoId */
@@ -86,7 +97,7 @@ export function NovaTransferenciaForm(props: {
           props.depara[props.destinos[0]?.id ?? ''],
         ),
         quantidade: String(Math.round(i.quantidade * 1000) / 1000).replace('.', ','),
-        custoInformado: '',
+        custoInformado: custoTxt(origemPor.get(i.produtoOrigemId)),
       })),
   );
   const [busca, setBusca] = useState('');
@@ -96,6 +107,12 @@ export function NovaTransferenciaForm(props: {
   const [obs, setObs] = useState('');
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Vindo de uma nota lançada a mercadoria já está na outra casa (nota no CNPJ
+  // errado): entra direto. Avulsa: vai em trânsito e a casa que recebe confere.
+  const [jaEstaLa, setJaEstaLa] = useState(!!props.notaCompraId);
+  const [feito, setFeito] = useState<{ id: string; numero: number; status: string; valorTotal: number } | null>(null);
+  const semAcessoDestino = props.destinos.find((d) => d.id === destinoId)?.semAcesso === true;
+  const entradaImediata = jaEstaLa && !semAcessoDestino;
 
   function trocarDestino(id: string) {
     setDestinoId(id);
@@ -108,7 +125,7 @@ export function NovaTransferenciaForm(props: {
   function adicionar(p: ProdOpc) {
     setLinhas((ls) => [
       ...ls,
-      { key: seq, produtoOrigemId: p.id, produtoDestinoId: acharNoDestino(p, listaDestino, deparaDestino), quantidade: '', custoInformado: '' },
+      { key: seq, produtoOrigemId: p.id, produtoDestinoId: acharNoDestino(p, listaDestino, deparaDestino), quantidade: '', custoInformado: custoTxt(p) },
     ]);
     setSeq((s) => s + 1);
     setBusca('');
@@ -131,7 +148,10 @@ export function NovaTransferenciaForm(props: {
     if (!linhas.length) return setErro('Adicione pelo menos um produto.');
     if (pendencias.length) return setErro('Tem item sem quantidade ou sem custo.');
     const avisoCad = aCadastrar ? `\n\n${aCadastrar} produto(s) não existem em ${nomeDestino} e vão ser cadastrados lá.` : '';
-    if (!confirm(`Transferir ${linhas.length} item(ns) (${brl(total)}) pra ${nomeDestino}? ${nomeDestino} fica devendo esse valor.${avisoCad}`)) return;
+    const pergunta = entradaImediata
+      ? `Transferir ${linhas.length} item(ns) (${brl(total)}) pra ${nomeDestino}? Entra no estoque de lá agora e ${nomeDestino} fica devendo esse valor.`
+      : `Enviar ${linhas.length} item(ns) (${brl(total)}) pra ${nomeDestino}? Sai do estoque daqui agora; ${nomeDestino} confere quando chegar e aí entra no estoque de lá.`;
+    if (!confirm(`${pergunta}${avisoCad}`)) return;
     setBusy(true);
     const r = await fetch('/api/transferencias', {
       method: 'POST',
@@ -142,6 +162,7 @@ export function NovaTransferenciaForm(props: {
         data,
         notaCompraId: props.notaCompraId,
         observacao: obs || null,
+        entradaImediata,
         itens: calc.map((c) => ({
           produtoOrigemId: c.l.produtoOrigemId,
           produtoDestinoId: c.l.produtoDestinoId,
@@ -153,8 +174,34 @@ export function NovaTransferenciaForm(props: {
     const j = await r.json().catch(() => ({}));
     setBusy(false);
     if (!r.ok) return setErro(j.error ?? 'Erro ao salvar');
-    router.push(`/movimento/transferencias?filialId=${props.origemId}&comp=${data.slice(0, 7)}`);
+    setFeito({ id: j.id, numero: j.numero, status: j.status, valorTotal: Number(j.valorTotal ?? total) });
     router.refresh();
+  }
+  const urlLista = `/movimento/transferencias?filialId=${props.origemId}&comp=${data.slice(0, 7)}`;
+
+  if (feito) {
+    return (
+      <div className="mt-6 space-y-4 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+        <div>
+          <p className="text-lg font-semibold text-emerald-900">
+            ✓ Transferência #{feito.numero} registrada — {brl(feito.valorTotal)}
+          </p>
+          <p className="mt-1 text-sm text-emerald-900">
+            {feito.status === 'ENVIADA'
+              ? `Saiu do estoque${props.origemNome ? ` de ${props.origemNome}` : ''} e está em trânsito. ${nomeDestino} confere a mercadoria em Transferências → "A receber" e aí ela entra no estoque de lá.`
+              : `Já entrou no estoque de ${nomeDestino}, que ficou devendo esse valor (compensa no encontro de contas do mês).`}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <a
+            href={urlLista}
+            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          >
+            Ver transferências
+          </a>
+        </div>
+      </div>
+    );
   }
 
   const achados = buscar(props.produtosOrigem, busca);
@@ -215,7 +262,8 @@ export function NovaTransferenciaForm(props: {
                 >
                   <span>{p.nome}</span>
                   <span className="whitespace-nowrap text-xs text-slate-500">
-                    saldo {p.saldo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} {p.unidade} · {p.custo > 0 ? brl(p.custo) : 'sem custo'}
+                    saldo {p.saldo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} {p.unidade} ·{' '}
+                    {p.custo > 0 ? brl(p.custo) : p.custoEstimado && p.custoEstimado > 0 ? `~${brl(p.custoEstimado)} (estimado)` : 'sem custo'}
                   </span>
                 </button>
               </li>
@@ -230,7 +278,7 @@ export function NovaTransferenciaForm(props: {
             <tr>
               <th className="px-3 py-2">Produto (sai)</th>
               <th className="px-3 py-2">Qtd</th>
-              <th className="px-3 py-2 text-right">Custo médio</th>
+              <th className="px-3 py-2 text-right">Custo</th>
               <th className="px-3 py-2 text-right">Valor</th>
               <th className="px-3 py-2">Entra em {nomeDestino} como</th>
               <th className="px-3 py-2"></th>
@@ -279,7 +327,11 @@ export function NovaTransferenciaForm(props: {
                           }
                           className="w-24 rounded border border-amber-400 bg-amber-50 px-2 py-1 text-right"
                         />
-                        <div className="text-[10px] text-amber-700">sem custo médio — informe</div>
+                        <div className="text-[10px] text-amber-700">
+                          {po?.custoEstimado && po.custoEstimado > 0
+                            ? `estimado (${po.fonteEstimativa ?? 'estimativa'}) — pode ajustar`
+                            : 'sem custo médio — informe'}
+                        </div>
                       </div>
                     ) : (
                       brl(custo)
@@ -402,6 +454,26 @@ export function NovaTransferenciaForm(props: {
         </table>
       </div>
 
+      <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white p-4 text-sm">
+        <input
+          type="checkbox"
+          checked={entradaImediata}
+          disabled={semAcessoDestino}
+          onChange={(e) => setJaEstaLa(e.target.checked)}
+          className="mt-0.5 h-4 w-4"
+        />
+        <span>
+          <span className="font-medium text-slate-800">
+            A mercadoria já está em {nomeDestino} — dar entrada no estoque de lá agora (sem conferência)
+          </span>
+          <span className="block text-xs text-slate-500">
+            {semAcessoDestino
+              ? `Você não tem acesso a ${nomeDestino}: a transferência vai em trânsito e ${nomeDestino} confere e dá a entrada.`
+              : `Desmarcado: sai daqui agora e fica em trânsito; ${nomeDestino} confere os itens quando chegar e aí entra no estoque de lá.`}
+          </span>
+        </span>
+      </label>
+
       {erro && <p className="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700">{erro}</p>}
       <div className="flex justify-end">
         <button
@@ -409,7 +481,7 @@ export function NovaTransferenciaForm(props: {
           disabled={busy || !linhas.length}
           className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
         >
-          {busy ? 'Transferindo…' : `Transferir ${total > 0 ? brl(total) : ''}`}
+          {busy ? 'Transferindo…' : `${entradaImediata ? 'Transferir' : 'Enviar pra conferência'} ${total > 0 ? brl(total) : ''}`}
         </button>
       </div>
     </div>

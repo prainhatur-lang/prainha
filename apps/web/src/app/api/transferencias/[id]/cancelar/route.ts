@@ -1,6 +1,7 @@
 // POST /api/transferencias/[id]/cancelar — só ABERTA (antes do encontro) e
 // sem baixa na conta: devolve o estoque pra origem, tira do destino e apaga a
-// conta a pagar do destino.
+// conta a pagar do destino. ENVIADA (em trânsito): quem enviou cancela ou quem
+// ia receber recusa — só devolve o estoque pra origem.
 
 import { NextResponse } from 'next/server';
 import { exigirPermApi } from '@/lib/exigir-perm';

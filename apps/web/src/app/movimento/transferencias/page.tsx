@@ -17,6 +17,7 @@ import { CancelarTransfButton } from './cancelar-btn';
 export const dynamic = 'force-dynamic';
 
 const BADGE: Record<string, { label: string; cls: string }> = {
+  ENVIADA: { label: 'Em trânsito', cls: 'bg-sky-100 text-sky-800' },
   ABERTA: { label: 'Em aberto', cls: 'bg-amber-100 text-amber-800' },
   COMPENSADA: { label: 'Compensada', cls: 'bg-emerald-100 text-emerald-800' },
   CANCELADA: { label: 'Cancelada', cls: 'bg-slate-200 text-slate-600' },
@@ -63,7 +64,26 @@ export default async function TransferenciasPage(props: {
     )
     .orderBy(desc(schema.transferenciaFilial.data), desc(schema.transferenciaFilial.numero));
 
-  const itens = lista.length
+  // Em trânsito (ENVIADA) de/pra esta casa, de qualquer mês: quem recebe
+  // confere e dá entrada; quem enviou acompanha.
+  const emTransito = await db
+    .select()
+    .from(schema.transferenciaFilial)
+    .where(
+      and(
+        eq(schema.transferenciaFilial.status, 'ENVIADA'),
+        or(
+          eq(schema.transferenciaFilial.filialOrigemId, filial.id),
+          eq(schema.transferenciaFilial.filialDestinoId, filial.id),
+        ),
+      ),
+    )
+    .orderBy(desc(schema.transferenciaFilial.data), desc(schema.transferenciaFilial.numero));
+  const aConferir = emTransito.filter((t) => t.filialDestinoId === filial.id);
+  const aCaminho = emTransito.filter((t) => t.filialOrigemId === filial.id);
+
+  const idsItens = [...new Set([...lista, ...emTransito].map((t) => t.id))];
+  const itens = idsItens.length
     ? await db
         .select({
           transferenciaId: schema.transferenciaFilialItem.transferenciaId,
@@ -72,7 +92,7 @@ export default async function TransferenciasPage(props: {
           valorTotal: schema.transferenciaFilialItem.valorTotal,
         })
         .from(schema.transferenciaFilialItem)
-        .where(inArray(schema.transferenciaFilialItem.transferenciaId, lista.map((t) => t.id)))
+        .where(inArray(schema.transferenciaFilialItem.transferenciaId, idsItens))
     : [];
   const itensPor = new Map<string, typeof itens>();
   for (const it of itens) {
@@ -108,8 +128,8 @@ export default async function TransferenciasPage(props: {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Transferências entre casas</h1>
             <p className="mt-1 max-w-2xl text-sm text-slate-600">
-              Mercadoria que sai de uma casa pra outra pelo custo médio de quem envia. Quem recebe fica
-              devendo (conta a pagar); no fim do mês o encontro de contas compensa e sobra uma conta só
+              Mercadoria que sai de uma casa pra outra pelo custo médio de quem envia. Quem recebe confere,
+              dá entrada no estoque e fica devendo (conta a pagar); no fim do mês o encontro de contas compensa e sobra uma conta só
               com a diferença.
             </p>
           </div>
@@ -145,6 +165,60 @@ export default async function TransferenciasPage(props: {
                 {f.nome}
               </Link>
             ))}
+          </div>
+        )}
+
+        {aConferir.length > 0 && (
+          <div className="mt-4 rounded-xl border border-sky-300 bg-sky-50 p-4">
+            <p className="text-sm font-semibold text-sky-900">
+              📦 A receber em {filial.nome} — {aConferir.length} transferência(s) a caminho
+            </p>
+            <p className="text-xs text-sky-800">
+              Quando a mercadoria chegar, confira os itens: só aí ela entra no estoque daqui.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {aConferir.map((t) => {
+                const its = itensPor.get(t.id) ?? [];
+                return (
+                  <li key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-white px-3 py-2">
+                    <div className="text-sm">
+                      <span className="font-mono text-xs text-slate-500">#{t.numero}</span>{' '}
+                      <span className="font-medium text-slate-800">de {nome.get(t.filialOrigemId)}</span>{' '}
+                      <span className="text-slate-500">· enviada em {dataBr(t.data)} · {its.length} item(ns) · {brl(t.valorTotal)}</span>
+                      <div className="text-xs text-slate-500">
+                        {its.slice(0, 3).map((i) => `${Number(i.quantidade).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} × ${i.descricao}`).join(' · ')}
+                        {its.length > 3 ? ` · +${its.length - 3}` : ''}
+                      </div>
+                    </div>
+                    <Link
+                      href={`/movimento/transferencias/${t.id}/receber`}
+                      className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800"
+                    >
+                      Conferir e receber
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
+        {aCaminho.length > 0 && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-sm font-semibold text-slate-800">
+              🚚 Enviadas por {filial.nome}, aguardando conferência — {aCaminho.length}
+            </p>
+            <ul className="mt-2 space-y-1 text-sm">
+              {aCaminho.map((t) => (
+                <li key={t.id} className="flex flex-wrap items-center justify-between gap-3">
+                  <span>
+                    <span className="font-mono text-xs text-slate-500">#{t.numero}</span> pra {nome.get(t.filialDestinoId)}{' '}
+                    <span className="text-slate-500">· {dataBr(t.data)} · {brl(t.valorTotal)}</span>
+                  </span>
+                  <CancelarTransfButton id={t.id} numero={t.numero} emTransito />
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -214,6 +288,8 @@ export default async function TransferenciasPage(props: {
                     <td className="px-3 py-2 whitespace-nowrap">
                       {enviou ? (
                         <span className="text-emerald-700">→ enviou pra {nome.get(t.filialDestinoId)}</span>
+                      ) : t.status === 'ENVIADA' ? (
+                        <span className="text-sky-700">← a caminho, de {nome.get(t.filialOrigemId)}</span>
                       ) : (
                         <span className="text-rose-700">← recebeu de {nome.get(t.filialOrigemId)}</span>
                       )}
@@ -231,6 +307,9 @@ export default async function TransferenciasPage(props: {
                       ))}
                       {its.length > 4 && <div className="text-slate-400">+{its.length - 4} itens</div>}
                       {t.observacao && <div className="mt-1 italic text-slate-400">{t.observacao}</div>}
+                      {t.observacaoRecebimento && (
+                        <div className="mt-1 italic text-slate-400">recebimento: {t.observacaoRecebimento}</div>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right font-semibold">{brl(t.valorTotal)}</td>
                     <td className="px-3 py-2">
@@ -238,6 +317,19 @@ export default async function TransferenciasPage(props: {
                     </td>
                     <td className="px-3 py-2 text-right">
                       {t.status === 'ABERTA' && <CancelarTransfButton id={t.id} numero={t.numero} />}
+                      {t.status === 'ENVIADA' && (
+                        <div className="flex flex-col items-end gap-1">
+                          {!enviou && (
+                            <Link
+                              href={`/movimento/transferencias/${t.id}/receber`}
+                              className="rounded bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-800"
+                            >
+                              Conferir e receber
+                            </Link>
+                          )}
+                          <CancelarTransfButton id={t.id} numero={t.numero} emTransito />
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

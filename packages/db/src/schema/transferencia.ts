@@ -11,7 +11,7 @@
 // diferença, na casa que deve (origem='ENCONTRO_CONTAS'), paga de verdade.
 
 import { sql } from 'drizzle-orm';
-import { date, index, numeric, pgTable, serial, text, timestamp, unique, uuid, varchar } from 'drizzle-orm/pg-core';
+import { boolean, date, index, numeric, pgTable, serial, text, timestamp, unique, uuid, varchar } from 'drizzle-orm/pg-core';
 import { filial } from './tenant';
 import { produto } from './vendas';
 import { notaCompra } from './notas';
@@ -36,7 +36,10 @@ export const transferenciaFilial = pgTable(
     notaCompraId: uuid('nota_compra_id').references(() => notaCompra.id, { onDelete: 'set null' }),
     /** Conta a pagar gerada no DESTINO (uuid raw — evita ciclo de import) */
     contaPagarId: uuid('conta_pagar_id'),
-    /** ABERTA | COMPENSADA | CANCELADA */
+    /** ENVIADA | ABERTA | COMPENSADA | CANCELADA.
+     *  ENVIADA = em trânsito: já saiu do estoque da origem, mas a casa que
+     *  recebe ainda não conferiu — sem entrada no destino e sem conta a pagar.
+     *  Ao conferir (receberTransferencia) vira ABERTA. */
     status: varchar('status', { length: 12 }).notNull().default('ABERTA'),
     encontroId: uuid('encontro_id'),
     observacao: text('observacao'),
@@ -44,6 +47,10 @@ export const transferenciaFilial = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     canceladoPor: uuid('cancelado_por'),
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    /** Conferência na casa que recebe (quando deu entrada no estoque) */
+    recebidaEm: timestamp('recebida_em', { withTimezone: true }),
+    recebidaPor: uuid('recebida_por'),
+    observacaoRecebimento: text('observacao_recebimento'),
   },
   (t) => ({
     origemIdx: index('idx_transf_origem').on(t.filialOrigemId, t.competencia),
@@ -73,6 +80,12 @@ export const transferenciaFilialItem = pgTable(
     valorTotal: numeric('valor_total', { precision: 14, scale: 2 }).notNull(),
     movSaidaId: uuid('mov_saida_id'),
     movEntradaId: uuid('mov_entrada_id'),
+    /** O que a casa que recebe conferiu (null = ainda não conferiu, ou
+     *  transferência antiga com entrada direta = quantidade). A diferença
+     *  volta pro estoque da origem. */
+    quantidadeRecebida: numeric('quantidade_recebida', { precision: 14, scale: 4 }),
+    /** Origem estava sem custo médio: o custo é estimado/informado */
+    custoEstimado: boolean('custo_estimado').notNull().default(false),
   },
   (t) => ({
     transfIdx: index('idx_transf_item_transf').on(t.transferenciaId),

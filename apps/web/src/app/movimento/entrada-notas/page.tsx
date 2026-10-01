@@ -197,6 +197,17 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
 
+  // Transferências de outra casa a caminho desta (aguardando conferência)
+  const [transfACaminho] = await db
+    .select({ n: count() })
+    .from(schema.transferenciaFilial)
+    .where(
+      and(
+        eq(schema.transferenciaFilial.filialDestinoId, filialSelecionada.id),
+        eq(schema.transferenciaFilial.status, 'ENVIADA'),
+      ),
+    );
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -210,6 +221,19 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
           </Link>
           .
         </p>
+
+        {(transfACaminho?.n ?? 0) > 0 && (
+          <Link
+            href={`/movimento/transferencias?filialId=${filialSelecionada.id}`}
+            className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-900 hover:bg-sky-100"
+          >
+            <span>
+              📦 <b>{transfACaminho?.n} transferência(s)</b> de outra casa a caminho de {filialSelecionada.nome} —
+              confira os itens pra dar entrada no estoque.
+            </span>
+            <span className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white">Conferir e receber</span>
+          </Link>
+        )}
 
         {/* Seletor de filial */}
         {filiais.length > 1 && (

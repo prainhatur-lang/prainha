@@ -10,6 +10,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
+import { estimarCustos } from '@/lib/transferencia';
 import { NovaTransferenciaForm, type ProdOpc, type ItemInicial } from './form';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,28 @@ export default async function NovaTransferenciaPage(props: {
   const sel = await escolherFilial(filiais, nota?.filialId ?? sp.filialId);
   if (!sel) redirect('/movimento/transferencias');
   const origem = sel;
-  const destinos = filiais.filter((f) => f.id !== origem.id && f.cnpj !== CNPJ_TESTE);
+  // Casas que recebem: as que o usuário acessa + as outras da mesma
+  // organização (pra essas só dá pra ENVIAR — quem recebe confere e dá entrada).
+  const [orgOrigem] = await db
+    .select({ org: schema.filial.organizacaoId })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, origem.id))
+    .limit(1);
+  const daOrg = orgOrigem
+    ? await db
+        .select({ id: schema.filial.id, nome: schema.filial.nome, cnpj: schema.filial.cnpj })
+        .from(schema.filial)
+        .where(eq(schema.filial.organizacaoId, orgOrigem.org))
+        .orderBy(asc(schema.filial.cnpj))
+    : [];
+  const destinos: Array<{ id: string; nome: string; semAcesso: boolean }> = [
+    ...filiais
+      .filter((f) => f.id !== origem.id && f.cnpj !== CNPJ_TESTE)
+      .map((f) => ({ id: f.id, nome: f.nome, semAcesso: false })),
+    ...daOrg
+      .filter((f) => f.id !== origem.id && f.cnpj !== CNPJ_TESTE && !filiais.some((x) => x.id === f.id))
+      .map((f) => ({ id: f.id, nome: f.nome, semAcesso: true })),
+  ];
 
   const cols = {
     id: schema.produto.id,
@@ -79,7 +101,15 @@ export default async function NovaTransferenciaPage(props: {
     saldo: Number(p.saldo ?? 0),
     inativo: p.descontinuado === true,
   });
-  const produtosOrigem = prods.filter((p) => p.filialId === origem.id).map(toOpc);
+  // Produto da origem sem custo médio: já leva um custo estimado pra tela
+  const estimados = await estimarCustos(origem.id);
+  const produtosOrigem = prods
+    .filter((p) => p.filialId === origem.id)
+    .map(toOpc)
+    .map((p) => {
+      const e = p.custo > 0 ? undefined : estimados.get(p.id);
+      return e ? { ...p, custoEstimado: e.custo, fonteEstimativa: e.fonte } : p;
+    });
   const produtosDestino: Record<string, ProdOpc[]> = {};
   for (const d of destinos) produtosDestino[d.id] = prods.filter((p) => p.filialId === d.id).map(toOpc);
 
@@ -135,8 +165,9 @@ export default async function NovaTransferenciaPage(props: {
         </Link>
         <h1 className="mt-2 text-2xl font-bold text-slate-900">Nova transferência</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Sai do estoque de <b>{origem.nome}</b> pelo custo médio e entra na casa escolhida. A casa que
-          recebe fica com uma conta a pagar pra {origem.nome}, compensada no encontro de contas do mês.
+          Sai do estoque de <b>{origem.nome}</b> pelo custo médio. A casa que recebe confere a mercadoria
+          e aí ela entra no estoque de lá, com uma conta a pagar pra {origem.nome}, compensada no encontro
+          de contas do mês. É uma transferência simples (só financeiro); a nota fiscal é opcional.
         </p>
         {nota && (
           <p className="mt-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800">
@@ -167,11 +198,12 @@ export default async function NovaTransferenciaPage(props: {
         )}
 
         {destinos.length === 0 ? (
-          <p className="mt-6 text-sm text-slate-500">Você não tem acesso a outra casa pra receber.</p>
+          <p className="mt-6 text-sm text-slate-500">Não há outra casa pra receber.</p>
         ) : (
           <NovaTransferenciaForm
             origemId={origem.id}
-            destinos={destinos.map((d) => ({ id: d.id, nome: d.nome }))}
+            destinos={destinos}
+            origemNome={origem.nome}
             produtosOrigem={produtosOrigem}
             produtosDestino={produtosDestino}
             depara={depara}
