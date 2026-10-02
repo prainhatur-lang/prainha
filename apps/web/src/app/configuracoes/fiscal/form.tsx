@@ -67,6 +67,13 @@ export function FiscalForm({
         ...patch,
       },
     }));
+  const n = cfg.normal;
+  const setNormal = (patch: Partial<NonNullable<FiscalConfig['normal']>>) =>
+    setCfg((c: FiscalConfig) => ({ ...c, normal: { ...(c.normal ?? {}), ...patch } }));
+  const numOuVazio = (v: string) => {
+    const x = Number(v.replace(',', '.'));
+    return v.trim() !== '' && Number.isFinite(x) ? x : undefined;
+  };
   const setPadrao = (patch: Partial<NonNullable<FiscalConfig['padraoItem']>>) =>
     setCfg((c: FiscalConfig) => ({
       ...c,
@@ -84,7 +91,8 @@ export function FiscalForm({
         razaoSocial: cfg.razaoSocial ?? '',
         nomeFantasia: cfg.nomeFantasia || undefined,
         ie: String(cfg.ie ?? '').replace(/\D/g, ''),
-        crt: 1,
+        crt: cfg.crt === 3 ? 3 : 1,
+        normal: cfg.normal,
         endereco: {
           ...cfg.endereco,
           cep: String(cfg.endereco?.cep ?? '').replace(/\D/g, ''),
@@ -230,9 +238,32 @@ export function FiscalForm({
           onChange={(v) => set({ ie: v })}
           mono
         />
-        <div className="sm:col-span-2 text-xs text-slate-500 self-end pb-2">
-          Regime: <b>Simples Nacional (CRT 1)</b> — único suportado.
-        </div>
+        <label className="block sm:col-span-2">
+          <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Regime tributário (nota de venda e de transferência)
+          </span>
+          <select
+            value={String(cfg.crt ?? 1)}
+            onChange={(ev) => {
+              const crt = ev.target.value === '3' ? 3 : 1;
+              // o regime da casa vale pra tudo: a NF-e de transferência acompanha
+              setCfg((c: FiscalConfig) => ({
+                ...c,
+                crt,
+                nfe: { ...(c.nfe ?? {}), crt },
+                // PIS/COFINS do não cumulativo já vêm preenchidos; o ICMS é do contador
+                normal:
+                  crt === 3
+                    ? { cstPis: '01', aliqPis: 1.65, cstCofins: '01', aliqCofins: 7.6, cstSemPisCofins: '04', ...(c.normal ?? {}) }
+                    : c.normal,
+              }));
+            }}
+            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
+          >
+            <option value="1">Simples Nacional (CRT 1)</option>
+            <option value="3">Regime normal — Lucro Real / Presumido (CRT 3)</option>
+          </select>
+        </label>
         <label className="block sm:col-span-2">
           <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
             Regime na NF-e de transferência
@@ -247,6 +278,67 @@ export function FiscalForm({
           </select>
         </label>
       </div>
+
+      {cfg.crt === 3 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+          <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-900">
+            Tributação da venda no regime normal (Lucro Real) — números do contador
+          </h4>
+          <p className="mb-3 text-[11px] text-amber-900">
+            Vale pra toda NFC-e emitida depois de salvar. Sem o CST e a alíquota do ICMS a config não salva.
+            Item com ICMS-ST já recolhido (CFOP 5405) sai sozinho com CST 60.
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-500">CST do ICMS</span>
+              <select
+                value={n?.cstIcms ?? ''}
+                onChange={(ev) => setNormal({ cstIcms: ev.target.value || undefined })}
+                className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
+              >
+                <option value="">— escolha —</option>
+                <option value="00">00 — tributada integralmente</option>
+                <option value="20">20 — com redução da base</option>
+                <option value="40">40 — isenta</option>
+                <option value="41">41 — não tributada</option>
+              </select>
+            </label>
+            <Campo label="Alíquota ICMS (%)" valor={n?.aliqIcms != null ? String(n.aliqIcms) : ''} onChange={(v) => setNormal({ aliqIcms: numOuVazio(v) })} mono />
+            <Campo label="Redução da base (%) — CST 20" valor={n?.redBcIcms != null ? String(n.redBcIcms) : ''} onChange={(v) => setNormal({ redBcIcms: numOuVazio(v) })} mono />
+            <div />
+            <Campo label="CST do PIS" valor={n?.cstPis ?? ''} onChange={(v) => setNormal({ cstPis: v.replace(/\D/g, '').slice(0, 2) })} mono />
+            <Campo label="Alíquota PIS (%)" valor={n?.aliqPis != null ? String(n.aliqPis) : ''} onChange={(v) => setNormal({ aliqPis: numOuVazio(v) })} mono />
+            <Campo label="CST da COFINS" valor={n?.cstCofins ?? ''} onChange={(v) => setNormal({ cstCofins: v.replace(/\D/g, '').slice(0, 2) })} mono />
+            <Campo label="Alíquota COFINS (%)" valor={n?.aliqCofins != null ? String(n.aliqCofins) : ''} onChange={(v) => setNormal({ aliqCofins: numOuVazio(v) })} mono />
+            <Campo
+              label="NCMs sem PIS/COFINS na venda (monofásico) — separados por vírgula"
+              valor={(n?.ncmSemPisCofins ?? []).join(', ')}
+              onChange={(v) =>
+                setNormal({
+                  ncmSemPisCofins: v
+                    .split(/[,;\s]+/)
+                    .map((x) => x.replace(/\D/g, ''))
+                    .filter((x) => x.length >= 2 && x.length <= 8),
+                })
+              }
+              placeholder="ex.: 2202, 2203, 22011000"
+              largura="col-span-2 sm:col-span-3"
+              mono
+            />
+            <Campo label="CST desses itens" valor={n?.cstSemPisCofins ?? '04'} onChange={(v) => setNormal({ cstSemPisCofins: v.replace(/\D/g, '').slice(0, 2) })} mono />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-700">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={!!n?.servicoNaBase} onChange={(ev) => setNormal({ servicoNaBase: ev.target.checked })} />
+              Os 10% de serviço entram na base dos impostos
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={n?.icmsForaDaBasePisCofins !== false} onChange={(ev) => setNormal({ icmsForaDaBasePisCofins: ev.target.checked })} />
+              Tirar o ICMS da base do PIS/COFINS
+            </label>
+          </div>
+        </div>
+      )}
 
       <div>
         <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">

@@ -226,6 +226,34 @@ export interface FiscalConfig {
   respTec?: { cnpj: string; contato: string; email: string; fone: string };
   /** NF-e (modelo 55) de transferência entre casas. Tudo opcional. */
   nfe?: FiscalNfeConfig;
+  /** Tributação da venda quando a casa é do regime normal (`crt` 3 — Lucro
+   *  Real/Presumido). Obrigatório com crt 3; ignorado no Simples. */
+  normal?: FiscalNormalConfig;
+}
+
+/** Parâmetros do contador pra NFC-e no regime normal (Lucro Real/Presumido). */
+export interface FiscalNormalConfig {
+  /** CST do ICMS da venda comum: 00 integral, 20 base reduzida, 40 isenta,
+   *  41 não tributada. Item com ICMS-ST já recolhido (CFOP 5405) sai com 60. */
+  cstIcms?: string;
+  /** Alíquota do ICMS em % (CST 00 e 20). */
+  aliqIcms?: number;
+  /** Redução da base de cálculo do ICMS em % (CST 20). */
+  redBcIcms?: number;
+  /** CST do PIS e da COFINS da venda comum (01 = alíquota básica). */
+  cstPis?: string;
+  cstCofins?: string;
+  /** Alíquotas em % (não cumulativo: 1,65 e 7,60). */
+  aliqPis?: number;
+  aliqCofins?: number;
+  /** NCMs (ou começo de NCM) que saem sem PIS/COFINS na venda — bebida
+   *  monofásica/alíquota zero — e o CST que levam (padrão 04). */
+  ncmSemPisCofins?: string[];
+  cstSemPisCofins?: string;
+  /** O serviço/acréscimo (vOutro, os 10%) entra na base do ICMS e do PIS/COFINS? Padrão não. */
+  servicoNaBase?: boolean;
+  /** Tira o ICMS da base do PIS/COFINS (Lei 14.592/2023). Padrão sim. */
+  icmsForaDaBasePisCofins?: boolean;
 }
 
 export interface FiscalNfeConfig {

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { pendenciasRegimeNormal } from '@/lib/nfce/xml';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -53,6 +54,21 @@ const Body = z.object({
       cst: z.string().regex(/^\d{2}$/).optional(),
     })
     .optional(),
+  normal: z
+    .object({
+      cstIcms: z.string().regex(/^\d{2}$/).optional(),
+      aliqIcms: z.number().min(0).max(100).optional(),
+      redBcIcms: z.number().min(0).max(100).optional(),
+      cstPis: z.string().regex(/^\d{2}$/).optional(),
+      cstCofins: z.string().regex(/^\d{2}$/).optional(),
+      aliqPis: z.number().min(0).max(100).optional(),
+      aliqCofins: z.number().min(0).max(100).optional(),
+      ncmSemPisCofins: z.array(z.string().regex(/^\d{2,8}$/)).max(200).optional(),
+      cstSemPisCofins: z.string().regex(/^\d{2}$/).optional(),
+      servicoNaBase: z.boolean().optional(),
+      icmsForaDaBasePisCofins: z.boolean().optional(),
+    })
+    .optional(),
   respTec: z
     .object({
       cnpj: z.string().regex(/^\d{14}$/),
@@ -92,6 +108,18 @@ export async function PATCH(
     );
   }
 
+  // Regime normal (Lucro Real) só entra com os parâmetros do contador
+  // completos — senão a NFC-e da loja pararia de sair no meio do serviço.
+  if (parsed.data.crt === 3) {
+    const falta = pendenciasRegimeNormal(parsed.data.normal);
+    if (falta.length) {
+      return NextResponse.json(
+        { error: `pra salvar no regime normal falta: ${falta.join('; ')}` },
+        { status: 400 },
+      );
+    }
+  }
+
   // A tela só manda do bloco `nfe` (NF-e de transferência) o regime — o resto
   // que já está salvo (série, CFOP…) é preservado: o que vem entra por cima.
   const [atual] = await db
@@ -102,9 +130,12 @@ export async function PATCH(
   const nfe =
     parsed.data.nfe || atual?.cfg?.nfe ? { ...(atual?.cfg?.nfe ?? {}), ...(parsed.data.nfe ?? {}) } : undefined;
 
+  // parâmetros do regime normal ficam guardados mesmo salvando como Simples
+  const normal = parsed.data.normal ?? atual?.cfg?.normal;
+
   const [updated] = await db
     .update(schema.filial)
-    .set({ fiscalConfig: { ...parsed.data, ...(nfe ? { nfe } : {}) } })
+    .set({ fiscalConfig: { ...parsed.data, ...(nfe ? { nfe } : {}), ...(normal ? { normal } : {}) } })
     .where(eq(schema.filial.id, id))
     .returning({ id: schema.filial.id });
 

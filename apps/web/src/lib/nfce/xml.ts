@@ -1,18 +1,50 @@
 // Montagem do XML da NFC-e (modelo 65, layout 4.00).
 //
-// Regras que este builder assume (Prainha = Simples Nacional):
+// Regras que este builder assume:
 //  - CRT 1 (Simples) → ICMSSN102 (CSOSN 102) ou ICMSSN500 (CSOSN 500, bebidas
-//    com ICMS-ST já recolhido na compra). CRT 3 não é suportado — erro claro.
-//  - PIS/COFINS omitidos (grupos opcionais no schema 4.00 — praxe em NFC-e
-//    do Simples; a receita do Simples é pelo DAS, não destacada aqui).
+//    com ICMS-ST já recolhido na compra). PIS/COFINS omitidos (grupos opcionais
+//    no schema 4.00 — praxe em NFC-e do Simples; a receita é pelo DAS).
+//  - CRT 3 (regime normal — a Prainha Turismo é Lucro Real) → ICMS por CST
+//    (00/20/40/41; 60 pro item com ST já recolhido) e PIS/COFINS destacados,
+//    tudo com os parâmetros do contador em `fiscalConfig.normal`. Sem esses
+//    parâmetros a emissão não sai (erro claro) — nada de alíquota no chute.
 //  - vUnCom derivado de vProd/qCom com 10 casas → nunca cai na rejeição 629
 //    (vProd difere de qCom × vUnCom), mesmo com os arredondamentos do Consumer.
 //  - Em HOMOLOGAÇÃO o xProd do 1º item vira o texto fixo exigido pela SEFAZ.
 //  - Sem quebras de linha/indentação: c14n da assinatura é sensível a isso
 //    (mesmo padrão do sefaz-evento.ts que já roda em produção).
 
-import type { FiscalConfig } from '@concilia/db/schema';
+import type { FiscalConfig, FiscalNormalConfig } from '@concilia/db/schema';
 import { montarChave, gerarCnf, agoraBrtIso } from './chave';
+
+const CST_ICMS_NORMAL = ['00', '20', '40', '41'];
+const CST_PISCOFINS_ALIQ = ['01', '02'];
+const CST_PISCOFINS_NT = ['04', '05', '06', '07', '08', '09'];
+
+/** O que falta nos parâmetros do regime normal (crt 3). Vazio = pronto. */
+export function pendenciasRegimeNormal(n: FiscalNormalConfig | null | undefined): string[] {
+  const p: string[] = [];
+  const cst = String(n?.cstIcms ?? '');
+  if (!CST_ICMS_NORMAL.includes(cst)) p.push('CST do ICMS (00, 20, 40 ou 41)');
+  if ((cst === '00' || cst === '20') && !(Number(n?.aliqIcms) > 0)) p.push('alíquota do ICMS');
+  if (cst === '20' && !(Number(n?.redBcIcms) > 0 && Number(n?.redBcIcms) < 100)) p.push('redução da base do ICMS (%)');
+  for (const [nome, c, a] of [
+    ['PIS', n?.cstPis, n?.aliqPis],
+    ['COFINS', n?.cstCofins, n?.aliqCofins],
+  ] as const) {
+    const s = String(c ?? '');
+    if (!CST_PISCOFINS_ALIQ.includes(s) && !CST_PISCOFINS_NT.includes(s)) p.push(`CST do ${nome} (01, 02 ou 04 a 09)`);
+    else if (CST_PISCOFINS_ALIQ.includes(s) && !(Number(a) > 0)) p.push(`alíquota do ${nome}`);
+  }
+  const semPc = String(n?.cstSemPisCofins ?? '04');
+  if (!CST_PISCOFINS_NT.includes(semPc)) p.push('CST dos itens sem PIS/COFINS (04 a 09)');
+  return p;
+}
+
+/** Percentual com 2 a 4 casas (TDec_0302a04). */
+function fPct(n: number): string {
+  return (Math.round(n * 10000) / 10000).toFixed(4).replace(/(\.\d\d\d*?)0+$/, '$1');
+}
 
 export interface NfceItem {
   codigo: string;
@@ -125,8 +157,14 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
   const cfg = dados.config;
   const end = cfg.endereco;
   if (!end) throw new Error('config fiscal sem endereço');
-  if ((cfg.crt ?? 1) !== 1) {
-    throw new Error('emissão só suporta CRT 1 (Simples Nacional) por ora');
+  const crt = cfg.crt ?? 1;
+  if (crt !== 1 && crt !== 3) {
+    throw new Error('emissão só suporta CRT 1 (Simples Nacional) ou 3 (regime normal)');
+  }
+  const normal = crt === 3 ? (cfg.normal ?? {}) : null;
+  if (normal) {
+    const falta = pendenciasRegimeNormal(normal);
+    if (falta.length) throw new Error(`regime normal sem os parâmetros do contador: ${falta.join('; ')}`);
   }
   const ie = String(cfg.ie ?? '').replace(/\D/g, '');
   if (!ie) throw new Error('config fiscal sem inscrição estadual');
@@ -167,6 +205,11 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
   let vProdT = 0;
   let vDescT = 0;
   let vOutroT = 0;
+  // só no regime normal (no Simples ficam zerados, como sempre foram)
+  let vBcT = 0;
+  let vIcmsT = 0;
+  let vPisT = 0;
+  let vCofinsT = 0;
 
   const dets = itens
     .map((item, idx) => {
@@ -186,10 +229,62 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
         dados.tpAmb === 2 && n === 1 ? XPROD_HOMOLOGACAO : texto(item.descricao, 120) || 'ITEM';
       const uCom = texto(item.unidade || 'UN', 6) || 'UN';
 
-      const icms =
+      let icms =
         csosn === '500'
           ? `<ICMSSN500><orig>${orig}</orig><CSOSN>500</CSOSN></ICMSSN500>`
           : `<ICMSSN102><orig>${orig}</orig><CSOSN>${csosn}</CSOSN></ICMSSN102>`;
+      let pisCofins = '';
+
+      if (normal) {
+        // base da operação: o que o cliente paga pelo item (o serviço só entra se o contador mandar)
+        const base = r2(vProd - vDesc + (normal.servicoNaBase ? vOutro : 0));
+        let vIcms = 0;
+        // ST já recolhido na compra (CFOP 5405, ou o item veio marcado com CSOSN 500)
+        if (csosn === '500') {
+          icms = `<ICMS60><orig>${orig}</orig><CST>60</CST></ICMS60>`;
+        } else if (normal.cstIcms === '00') {
+          const p = Number(normal.aliqIcms);
+          vIcms = r2((base * p) / 100);
+          vBcT = r2(vBcT + base);
+          icms =
+            `<ICMS00><orig>${orig}</orig><CST>00</CST><modBC>3</modBC>` +
+            `${tag('vBC', f2(base))}${tag('pICMS', fPct(p))}${tag('vICMS', f2(vIcms))}</ICMS00>`;
+        } else if (normal.cstIcms === '20') {
+          const p = Number(normal.aliqIcms);
+          const red = Number(normal.redBcIcms);
+          const vBc = r2(base * (1 - red / 100));
+          vIcms = r2((vBc * p) / 100);
+          vBcT = r2(vBcT + vBc);
+          icms =
+            `<ICMS20><orig>${orig}</orig><CST>20</CST><modBC>3</modBC>${tag('pRedBC', fPct(red))}` +
+            `${tag('vBC', f2(vBc))}${tag('pICMS', fPct(p))}${tag('vICMS', f2(vIcms))}</ICMS20>`;
+        } else {
+          icms = `<ICMS40><orig>${orig}</orig><CST>${normal.cstIcms}</CST></ICMS40>`;
+        }
+        vIcmsT = r2(vIcmsT + vIcms);
+
+        const semPc = (normal.ncmSemPisCofins ?? [])
+          .map((x) => String(x).replace(/\D/g, ''))
+          .some((x) => x.length >= 2 && ncm.startsWith(x));
+        const basePc = Math.max(0, r2(base - (normal.icmsForaDaBasePisCofins === false ? 0 : vIcms)));
+        const grupo = (nome: 'PIS' | 'COFINS', cstCfg: string | undefined, aliq: number | undefined) => {
+          const cst = semPc ? String(normal.cstSemPisCofins ?? '04') : String(cstCfg);
+          if (!CST_PISCOFINS_ALIQ.includes(cst)) return { xml: `<${nome}><${nome}NT><CST>${cst}</CST></${nome}NT></${nome}>`, v: 0 };
+          const p = Number(aliq);
+          const v = r2((basePc * p) / 100);
+          return {
+            xml:
+              `<${nome}><${nome}Aliq><CST>${cst}</CST>${tag('vBC', f2(basePc))}` +
+              `${tag(`p${nome}`, fPct(p))}${tag(`v${nome}`, f2(v))}</${nome}Aliq></${nome}>`,
+            v,
+          };
+        };
+        const pis = grupo('PIS', normal.cstPis, normal.aliqPis);
+        const cof = grupo('COFINS', normal.cstCofins, normal.aliqCofins);
+        vPisT = r2(vPisT + pis.v);
+        vCofinsT = r2(vCofinsT + cof.v);
+        pisCofins = pis.xml + cof.xml;
+      }
 
       return (
         `<det nItem="${n}">` +
@@ -211,7 +306,7 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
         (vOutro > 0 ? tag('vOutro', f2(vOutro)) : '') +
         `<indTot>1</indTot>` +
         `</prod>` +
-        `<imposto><ICMS>${icms}</ICMS></imposto>` +
+        `<imposto><ICMS>${icms}</ICMS>${pisCofins}</imposto>` +
         `</det>`
       );
     })
@@ -291,7 +386,7 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
     (end.fone ? tag('fone', end.fone.replace(/\D/g, '')) : '') +
     `</enderEmit>` +
     tag('IE', ie) +
-    tag('CRT', cfg.crt ?? 1) +
+    tag('CRT', crt) +
     `</emit>`;
 
   const doc = String(dados.destDocumento ?? '').replace(/\D/g, '');
@@ -301,12 +396,12 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
 
   const total =
     `<total><ICMSTot>` +
-    `<vBC>0.00</vBC><vICMS>0.00</vICMS><vICMSDeson>0.00</vICMSDeson>` +
+    `<vBC>${f2(vBcT)}</vBC><vICMS>${f2(vIcmsT)}</vICMS><vICMSDeson>0.00</vICMSDeson>` +
     `<vFCP>0.00</vFCP><vBCST>0.00</vBCST><vST>0.00</vST><vFCPST>0.00</vFCPST><vFCPSTRet>0.00</vFCPSTRet>` +
     tag('vProd', f2(vProdT)) +
     `<vFrete>0.00</vFrete><vSeg>0.00</vSeg>` +
     tag('vDesc', f2(vDescT)) +
-    `<vII>0.00</vII><vIPI>0.00</vIPI><vIPIDevol>0.00</vIPIDevol><vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>` +
+    `<vII>0.00</vII><vIPI>0.00</vIPI><vIPIDevol>0.00</vIPIDevol><vPIS>${f2(vPisT)}</vPIS><vCOFINS>${f2(vCofinsT)}</vCOFINS>` +
     tag('vOutro', f2(vOutroT)) +
     tag('vNF', f2(vNF)) +
     `</ICMSTot></total>`;

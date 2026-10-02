@@ -17,7 +17,7 @@ import { decifrarSenha } from '@/lib/certificado';
 import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 import { extrairPem, type PemCert } from '@/lib/sefaz-evento';
 import { UF_CODIGO } from '@/lib/sefaz-dfe';
-import { montarXmlNfce, inserirSupl } from './xml';
+import { montarXmlNfce, inserirSupl, pendenciasRegimeNormal } from './xml';
 import { montarQrCode } from './qrcode';
 import { assinarNfe } from './assinar';
 import { enviarNfce, consultarChave, type ProtocoloNfce } from './sefaz';
@@ -81,7 +81,11 @@ export function pendenciasConfig(cfg: FiscalConfig | null | undefined): string[]
   const amb = cfg?.ambiente === 1 ? 1 : 2;
   if (amb === 1 && (!cfg?.cscId || !cfg?.cscToken)) p.push('CSC de produção (id + token)');
   if (amb === 2 && (!cfg?.cscIdHom || !cfg?.cscTokenHom)) p.push('CSC de homologação (id + token)');
-  if ((cfg?.crt ?? 1) !== 1) p.push('CRT diferente de Simples Nacional não suportado');
+  const crt = cfg?.crt ?? 1;
+  if (crt === 3) {
+    // regime normal (Lucro Real/Presumido): só emite com os parâmetros do contador
+    for (const f of pendenciasRegimeNormal(cfg?.normal)) p.push(`regime normal: ${f}`);
+  } else if (crt !== 1) p.push('regime tributário (CRT) não suportado');
   return p;
 }
 
