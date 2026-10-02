@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface Props {
   token: string;
@@ -44,6 +44,18 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
   const [comentario, setComentario] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [abrirGoogle, setAbrirGoogle] = useState(true);
+
+  // Nota alta já vai pro Google (pedido do dono, 02/10/2026): só o botão,
+  // quase ninguém tocava. A tela agradece, avisa e abre o Google sozinha; os
+  // botões continuam ali pra quem voltar, e "Agora não" cancela.
+  useEffect(() => {
+    if (fase !== 'alta' || !googleUrl || !abrirGoogle) return;
+    const t = setTimeout(() => {
+      window.location.href = googleUrl;
+    }, 3500);
+    return () => clearTimeout(t);
+  }, [fase, googleUrl, abrirGoogle]);
 
   async function registrar(payload: {
     nota: number;
@@ -154,6 +166,18 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
               >
                 🦉 Avaliar no TripAdvisor
               </a>
+            )}
+            {googleUrl && abrirGoogle && (
+              <div className="pt-2">
+                <p className="text-xs text-slate-500">Abrindo o Google pra você avaliar…</p>
+                <button
+                  type="button"
+                  onClick={() => setAbrirGoogle(false)}
+                  className="mt-1 text-xs text-slate-400 underline"
+                >
+                  Agora não
+                </button>
+              </div>
             )}
           </div>
         ) : (

@@ -15886,7 +15886,7 @@ async function apiMesaAvaliar(body) {
   if (!op) {
     let nv = null;
     try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-    return { ok: true, brinde: null, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+    return { ok: true, brinde: null, ...(await convitesAvaliacao(nv, nota)) };
   }
   const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
     junto: false, _cliente: true, _brinde: true });
@@ -15902,7 +15902,25 @@ async function apiMesaAvaliar(body) {
   let nv = null;
   // espera a nuvem no máx. 4s (só pelos links do Google/Trip); se demorar, a fila reenvia
   try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-  return { ok: true, brinde: op.nome, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+  return { ok: true, brinde: op.nome, ...(await convitesAvaliacao(nv, nota)) };
+}
+// NOTA 4-5 TEM QUE CHEGAR NO GOOGLE. O link vinha só na resposta da nuvem, e
+// a tela espera a nuvem no máx. 4s: internet lenta = cliente satisfeito sem
+// convite nenhum. Agora a loja guarda o último link que a nuvem mandou e usa
+// ele quando ela demora (02/10/2026 — "nossas avaliações não estão indo pro
+// Google"). Resposta da nuvem sempre manda: se o dono tirar o link, some aqui.
+async function convitesAvaliacao(nv, nota) {
+  if (nv && nv.ok) {
+    if (nota >= 4) {
+      await cfgSet('aval_google_url', nv.google_url || '').catch(() => {});
+      await cfgSet('aval_trip_url', nv.trip_url || '').catch(() => {});
+    }
+    return { google_url: nv.google_url || null, trip_url: nv.trip_url || null };
+  }
+  if (!(nota >= 4)) return { google_url: null, trip_url: null };
+  const g = await cfgGet('aval_google_url').catch(() => '');
+  const t = await cfgGet('aval_trip_url').catch(() => '');
+  return { google_url: g || null, trip_url: t || null };
 }
 // ============ AVALIAR SEM DRINK (reclamação / elogio do QR da mesa) ============
 // O drink é um PROGRAMA (um por CPF por mês); avaliar não pode depender dele.
@@ -15935,7 +15953,7 @@ async function apiMesaAvaliacaoLivre(body) {
   }
   let nv = null;
   try { nv = await Promise.race([livreParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-  return { ok: true, google_url: nv?.google_url || null, trip_url: nv?.trip_url || null };
+  return { ok: true, ...(await convitesAvaliacao(nv, nota)) };
 }
 async function livreParaNuvem(id) {
   if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
@@ -19374,6 +19392,8 @@ const I18N_UI = {
   'Sua opinião já chegou na gerência. Valeu demais!': ['Your feedback has reached the manager. Thank you so much!', 'Votre avis est arrivé à la direction. Merci beaucoup !', 'Tu opinión ya llegó a la gerencia. ¡Muchísimas gracias!', 'La tua opinione è arrivata alla direzione. Grazie mille!'],
   'Nos faça uma grande gentileza?': ['Would you do us a big favour?', 'Vous nous rendriez un grand service ?', '¿Nos haces un gran favor?', 'Ci fai un grande favore?'],
   'Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.': ['Show the world how much you enjoyed our place! Your review on Google or TripAdvisor helps a lot of people find us.', 'Montrez au monde combien vous avez aimé notre lieu ! Votre avis sur Google ou TripAdvisor aide beaucoup de gens à nous découvrir.', '¡Muéstrale al mundo cuánto te gustó nuestro lugar! Tu reseña en Google o TripAdvisor ayuda a mucha gente a descubrirnos.', 'Mostra al mondo quanto ti è piaciuto il nostro locale! La tua recensione su Google o TripAdvisor aiuta tante persone a scoprirci.'],
+  'Abrindo o Google pra você avaliar…': ['Opening Google so you can leave your review…', 'Ouverture de Google pour laisser votre avis…', 'Abriendo Google para que dejes tu reseña…', 'Apertura di Google per lasciare la tua recensione…'],
+  'Agora não': ['Not now', 'Pas maintenant', 'Ahora no', 'Non ora'],
   '⭐ Avaliar no Google': ['⭐ Review on Google', '⭐ Donner un avis sur Google', '⭐ Opinar en Google', '⭐ Recensisci su Google'],
   '🦉 Avaliar no TripAdvisor': ['🦉 Review on TripAdvisor', '🦉 Donner un avis sur TripAdvisor', '🦉 Opinar en TripAdvisor', '🦉 Recensisci su TripAdvisor'],
   'Quem está avaliando?': ['Who is rating?', 'Qui donne son avis ?', '¿Quién está opinando?', 'Chi sta votando?'],
@@ -20614,8 +20634,26 @@ async function avEnviarLivre(){
     '<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div></div>'+
     ((r.google_url||r.trip_url)?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
-      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
+      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+avGoAviso(r.google_url)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
+  avGoogleAuto(r.google_url,3500);
+}
+// NOTA 4-5 JÁ VAI PRO GOOGLE (pedido do dono, 02/10/2026): o botão sozinho
+// quase ninguém tocava. A tela do obrigado aparece, avisa e abre o Google
+// sozinha; os botões continuam ali pra quem voltar. "Agora não" cancela, e
+// se a pessoa sair desta tela antes o aviso some e nada abre.
+var AVGO=null;
+function avGoAviso(u){
+  return u?'<div id="avgo"><div class="mut" style="margin-top:12px">Abrindo o Google pra você avaliar…</div>'+
+    '<button class="lnk" onclick="avGoCancela()">Agora não</button></div>':'';
+}
+function avGoogleAuto(u,ms){
+  clearTimeout(AVGO); if(!u)return;
+  AVGO=setTimeout(function(){ if(document.getElementById('avgo'))location.href=u },ms);
+}
+function avGoCancela(){
+  clearTimeout(AVGO);
+  var e=document.getElementById('avgo'); if(e&&e.parentNode)e.parentNode.removeChild(e);
 }
 function avNota(n){
   AV.comentario=(document.getElementById('avc')||{}).value||AV.comentario;
@@ -20715,8 +20753,10 @@ async function avEnviar(semDrink){
       :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
     ((r.google_url||r.trip_url)&&nota>=4?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
-      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+'</div>':'')+
+      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+avGoAviso(r.google_url)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
+  // um pouco mais de tempo aqui: a pessoa precisa ler que o drink está vindo
+  if(nota>=4)avGoogleAuto(r.google_url,5000);
 }
 // ---- cadastro do cliente (tudo opcional) ----
 // telaCadastro({alvo, depois, motivo, exigeDoc})
