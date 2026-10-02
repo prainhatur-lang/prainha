@@ -10,7 +10,7 @@
 
 import { db, schema } from '@concilia/db';
 import type { FiscalConfig } from '@concilia/db/schema';
-import { and, desc, eq, inArray, sql as dsql } from 'drizzle-orm';
+import { and, desc, eq, inArray, max, sql as dsql } from 'drizzle-orm';
 import { contextoFiscal } from '@/lib/nfce/emitir';
 import { assinarNfe } from '@/lib/nfce/assinar';
 import { enviarNfce, consultarChave, cancelarNfce, statusServico, type ProtocoloNfce } from '@/lib/nfce/sefaz';
@@ -57,6 +57,23 @@ export function parametrosNfe(cfg: FiscalConfig | null | undefined, forcarHomolo
   const tpAmb: 1 | 2 = forcarHomologacao ? 2 : amb === 1 ? 1 : 2;
   return { serie, tpAmb };
 }
+
+/** Série em uso na casa: a da config, se alguém fixou; senão a mais alta que
+ *  a casa já abriu aqui (começa na 1). A série sobe sozinha quando a SEFAZ
+ *  mostra que outro sistema já usou a numeração (rejeição 539) — o Prainha Bar
+ *  tinha NF-e série 1 nº 1 de jan/2020, de antes do Concilia. */
+async function serieEmUso(filialId: string, cfg: FiscalConfig | null | undefined, tpAmb: number): Promise<number> {
+  const daConfig = parametrosNfe(cfg).serie;
+  if (cfg?.nfe?.serie && cfg.nfe.serie > 0) return daConfig;
+  const [r] = await db
+    .select({ s: max(schema.nfeNumeracao.serie) })
+    .from(schema.nfeNumeracao)
+    .where(and(eq(schema.nfeNumeracao.filialId, filialId), eq(schema.nfeNumeracao.ambiente, tpAmb)));
+  return Math.max(daConfig, r?.s ?? 0);
+}
+
+/** Quantas séries seguidas a emissão tenta quando a numeração já foi usada fora daqui. */
+const MAX_TROCAS_SERIE = 3;
 
 async function temAcesso(userId: string, filialId: string): Promise<boolean> {
   const [a] = await db
@@ -171,6 +188,7 @@ async function itensDaTransferencia(transferenciaId: string, recebida: boolean):
 export async function emitirNfeTransferencia(
   opts: { transferenciaId: string; userId: string; homologacao?: boolean },
   tentativa = 0,
+  trocasSerie = 0,
 ): Promise<EmitirNfeResultado> {
   const [t] = await db
     .select()
@@ -197,7 +215,8 @@ export async function emitirNfeTransferencia(
   const pd = pendenciasNfe(dest.cfg);
   if (pd.length) return { ok: false, erro: `config fiscal de ${dest.nome} incompleta: ${pd.join('; ')}` };
 
-  const { serie, tpAmb } = parametrosNfe(ctx.cfg, opts.homologacao === true);
+  const { tpAmb } = parametrosNfe(ctx.cfg, opts.homologacao === true);
+  const serie = await serieEmUso(t.filialOrigemId, ctx.cfg, tpAmb);
   const modelo = 55 as const;
 
   // nota "viva" dessa transferência nesse ambiente?
@@ -312,7 +331,7 @@ export async function emitirNfeTransferencia(
     if (!inseridos[0]) {
       // corrida: outro clique entrou primeiro — reprocessa uma vez
       if (tentativa >= 1) return { ok: false, erro: 'emissão simultânea da mesma nota — tente de novo' };
-      return emitirNfeTransferencia(opts, tentativa + 1);
+      return emitirNfeTransferencia(opts, tentativa + 1, trocasSerie);
     }
     rowId = inseridos[0].id;
   }
@@ -355,6 +374,33 @@ export async function emitirNfeTransferencia(
     .update(schema.nfeEmitida)
     .set({ status: 'REJEITADA', cstat: cstatRej || null, xmotivo: xmotivoRej || null, atualizadoEm: new Date() })
     .where(eq(schema.nfeEmitida.id, rowId));
+
+  // 539 = esse número da série já existe na SEFAZ com OUTRA chave. Se a chave
+  // não é nossa, a numeração é de outro sistema (nota antiga da casa) e não dá
+  // pra saber onde ela parou: abre a série seguinte e emite nela. Série fixada
+  // na config não troca sozinha.
+  if (cstatRej === '539' && !(ctx.cfg?.nfe?.serie && ctx.cfg.nfe.serie > 0)) {
+    const chaveDeFora = /chNFe:\s*(\d{44})/.exec(xmotivoRej ?? '')?.[1];
+    const [nossa] = chaveDeFora
+      ? await db
+          .select({ id: schema.nfeEmitida.id })
+          .from(schema.nfeEmitida)
+          .where(eq(schema.nfeEmitida.chave, chaveDeFora))
+          .limit(1)
+      : [];
+    if (chaveDeFora && !nossa && trocasSerie < MAX_TROCAS_SERIE && serie < 889) {
+      await db
+        .insert(schema.nfeNumeracao)
+        .values({ filialId: t.filialOrigemId, serie: serie + 1, ambiente: tpAmb, ultimoNumero: 0 })
+        .onConflictDoNothing();
+      return emitirNfeTransferencia(opts, 0, trocasSerie + 1);
+    }
+    return {
+      ok: false,
+      cstat: cstatRej,
+      erro: `SEFAZ rejeitou (539): a série ${serie} da NF-e desta casa já tem o número ${numero} emitido por outro sistema. ${xmotivoRej}`,
+    };
+  }
   return { ok: false, cstat: cstatRej, erro: `SEFAZ rejeitou (${cstatRej}): ${xmotivoRej}` };
 }
 
@@ -409,7 +455,8 @@ export async function cancelarNfeEmitida(opts: {
 export async function testarNfe(filialId: string) {
   const ctxR = await contextoFiscal(filialId, { paraEmitir: false });
   if (!ctxR.ok) return { ok: false as const, erro: ctxR.erro };
-  const { serie, tpAmb } = parametrosNfe(ctxR.ctx.cfg);
+  const { tpAmb } = parametrosNfe(ctxR.ctx.cfg);
+  const serie = await serieEmUso(filialId, ctxR.ctx.cfg, tpAmb);
   const pendencias = pendenciasNfe(ctxR.ctx.cfg);
   try {
     const st = await statusServico({ cUF: ctxR.ctx.cUF, tpAmb, pem: ctxR.ctx.pem, modelo: 55 });
