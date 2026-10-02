@@ -209,6 +209,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
 
   const totalFaturado = Number(stats?.total ?? 0);
   const totalDesconto = Number(stats?.totalDesconto ?? 0);
+  const totalServico = Number(stats?.totalServico ?? 0);
 
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
@@ -289,6 +290,12 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
               Faturamento
             </p>
             <p className="mt-1 text-2xl font-bold text-emerald-900">{brl(Number(stats?.total ?? 0))}</p>
+            {totalServico > 0 && (
+              <p className="mt-1 text-[11px] leading-snug text-emerald-800">
+                Da casa <strong className="font-mono">{brl(totalFaturado - totalServico)}</strong>
+                {' + '}10% da equipe <strong className="font-mono">{brl(totalServico)}</strong>
+              </p>
+            )}
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-slate-600">
@@ -296,11 +303,14 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
             </p>
             <p className="mt-1 text-2xl font-bold text-slate-900">{brl(ticketMedio)}</p>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-600">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-amber-800">
               Gorjetas
             </p>
-            <p className="mt-1 text-2xl font-bold text-slate-900">{brl(Number(stats?.totalServico ?? 0))}</p>
+            <p className="mt-1 text-2xl font-bold text-amber-900">{brl(Number(stats?.totalServico ?? 0))}</p>
+            <p className="mt-1 text-[11px] leading-snug text-amber-800">
+              10% de serviço · vai para os funcionários, não é receita da casa
+            </p>
           </div>
         </div>
 
@@ -322,7 +332,8 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
               <span className="text-emerald-800">
                 Faturamento <strong className="font-mono">{brl(totalFaturado)}</strong>{' '}
                 <span className="text-xs">
-                  (já sem os descontos, com {brl(Number(stats?.totalServico ?? 0))} de serviço)
+                  (já sem os descontos; {brl(totalFaturado - totalServico)} da casa +{' '}
+                  {brl(totalServico)} dos 10% da equipe)
                 </span>
               </span>
             </div>
