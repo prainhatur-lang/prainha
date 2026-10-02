@@ -305,6 +305,20 @@ async function tratarPayload(payload: string, from: string | null) {
     return;
   }
 
+  // --- Campanha de convite: "Não quero receber". token = campanha_convite.token.
+  // Quem recusa sai de TODAS as campanhas (o envio em lote confere o telefone). ---
+  if (acao === 'camp_nao') {
+    const upd = await db
+      .update(schema.campanhaConvite)
+      .set({ recusadoEm: sql`now()` })
+      .where(and(eq(schema.campanhaConvite.token, token), sql`${schema.campanhaConvite.recusadoEm} IS NULL`))
+      .returning({ id: schema.campanhaConvite.id });
+    if (upd.length && from) {
+      await enviarTextoWhatsApp(from, 'Tudo bem, não vamos mais te mandar convites. Obrigado e até a próxima! 🌅').catch(() => {});
+    }
+    return;
+  }
+
   if (acao !== 'confirmar' && acao !== 'cancelar') return;
 
   // Pre-select pra auditoria saber o status ANTERIOR (o update sobrescreve).

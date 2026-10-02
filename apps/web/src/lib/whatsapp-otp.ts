@@ -457,3 +457,47 @@ export async function enviarConfirmacaoReserva(
   });
   return resp.ok;
 }
+
+/** Convite de CAMPANHA (template de MARKETING, ex.: abertura da Prainha Mar).
+ *  O template tem: cabeçalho de IMAGEM, corpo com {{1}} = primeiro nome,
+ *  botão [0] de URL dinâmica https://app.prainhabar.com/convite/{{1}} (token
+ *  do convidado) e botão [1] de resposta rápida "Não quero receber" (payload
+ *  camp_nao:<token> — o webhook marca recusado_em). Devolve o id da mensagem
+ *  na Meta; lança com o corpo do erro quando a Meta recusa. */
+export function campanhaWhatsAppConfigurada(): boolean {
+  return !!((process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META) && process.env.WHATSAPP_PHONE_ID);
+}
+
+export async function enviarConviteCampanha(
+  telefone: string,
+  vars: { template: string; nome: string; token: string; imagemUrl: string; lang?: string },
+): Promise<string | null> {
+  if (!campanhaWhatsAppConfigurada()) throw new Error('WhatsApp não configurado (token/phone id)');
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
+  const resp = await fetch(`https://graph.facebook.com/${ver}/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: telefone,
+      type: 'template',
+      template: {
+        name: vars.template,
+        language: { code: vars.lang || 'pt_BR' },
+        components: [
+          { type: 'header', parameters: [{ type: 'image', image: { link: vars.imagemUrl } }] },
+          { type: 'body', parameters: [{ type: 'text', text: vars.nome }] },
+          { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: vars.token }] },
+          { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `camp_nao:${vars.token}` }] },
+        ],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  const j = (await resp.json().catch(() => null)) as { messages?: Array<{ id?: string }> } | null;
+  return j?.messages?.[0]?.id ?? null;
+}

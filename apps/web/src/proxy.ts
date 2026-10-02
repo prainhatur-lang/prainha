@@ -166,7 +166,10 @@ export async function proxy(request: NextRequest) {
     isPrainhaMarPublico ||
     isCanalPublico ||
     isClimaPublico ||
-    isCartaoPublico;
+    isCartaoPublico ||
+    // /convite/[token] é o link do botão do convite de campanha (zap): registra
+    // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
+    path.startsWith('/convite/');
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

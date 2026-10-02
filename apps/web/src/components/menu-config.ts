@@ -146,6 +146,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Avaliações', href: '/avaliacoes', perm: 'avaliacao.read' },
           { label: 'Cadastro de clientes', href: '/cadastros/clientes', perm: 'reserva.read' },
           { label: 'Cartão fidelidade', href: '/fidelidade', perm: 'fidelidade.read' },
+          { label: 'Convite por WhatsApp', href: '/campanha', perm: 'fidelidade.read' },
         ],
       },
       {
