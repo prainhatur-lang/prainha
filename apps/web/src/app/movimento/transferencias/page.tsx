@@ -220,7 +220,12 @@ export default async function TransferenciasPage(props: {
                     <span className="font-mono text-xs text-slate-500">#{t.numero}</span> pra {nome.get(t.filialDestinoId)}{' '}
                     <span className="text-slate-500">· {dataBr(t.data)} · {brl(t.valorTotal)}</span>
                   </span>
-                  <CancelarTransfButton id={t.id} numero={t.numero} emTransito />
+                  <span className="flex items-center gap-2">
+                    {!(nfes.get(t.id)?.status === 'AUTORIZADA' && nfes.get(t.id)?.ambiente === 1) && (
+                      <EmitirNfeButton id={t.id} numero={t.numero} />
+                    )}
+                    <CancelarTransfButton id={t.id} numero={t.numero} emTransito />
+                  </span>
                 </li>
               ))}
             </ul>
