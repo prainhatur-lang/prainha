@@ -248,7 +248,7 @@ export default async function DanfeNfePage(props: {
           <table className="w-full border-collapse text-[10px]">
             <thead>
               <tr className="text-[7px] uppercase">
-                {['Cód.', 'Descrição', 'NCM', 'CSOSN', 'CFOP', 'Un.', 'Qtd.', 'V. unit.', 'V. total'].map((h, i) => (
+                {['Cód.', 'Descrição', 'NCM', itens.some((x) => x.cst) ? 'CST' : 'CSOSN', 'CFOP', 'Un.', 'Qtd.', 'V. unit.', 'V. total'].map((h, i) => (
                   <th key={h} className={`border border-black px-1 py-0.5 font-normal ${i >= 6 ? 'text-right' : 'text-left'}`}>
                     {h}
                   </th>
@@ -261,7 +261,7 @@ export default async function DanfeNfePage(props: {
                   <td className="border border-black px-1">{i.codigo}</td>
                   <td className="border border-black px-1">{i.descricao}</td>
                   <td className="border border-black px-1">{i.ncm}</td>
-                  <td className="border border-black px-1">{i.csosn}</td>
+                  <td className="border border-black px-1">{i.cst ?? i.csosn}</td>
                   <td className="border border-black px-1">{i.cfop}</td>
                   <td className="border border-black px-1">{i.unidade}</td>
                   <td className="border border-black px-1 text-right">{num(i.quantidade, 3)}</td>

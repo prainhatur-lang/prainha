@@ -14,7 +14,7 @@ import { and, desc, eq, inArray, max, sql as dsql } from 'drizzle-orm';
 import { contextoFiscal } from '@/lib/nfce/emitir';
 import { assinarNfe } from '@/lib/nfce/assinar';
 import { enviarNfce, consultarChave, cancelarNfce, statusServico, type ProtocoloNfce } from '@/lib/nfce/sefaz';
-import { montarXmlNfeTransferencia, pendenciasNfe, type NfeTransfItem } from './xml';
+import { montarXmlNfeTransferencia, pendenciasNfe, regimeNfe, type NfeTransfItem } from './xml';
 
 type NfeRow = typeof schema.nfeEmitida.$inferSelect;
 
@@ -268,10 +268,16 @@ export async function emitirNfeTransferencia(
       : await alocarNumero(t.filialOrigemId, serie, tpAmb);
 
   const itens = await itensDaTransferencia(t.id, t.status !== 'ENVIADA');
+  // A frase do Simples só entra em nota de casa do Simples. No regime normal
+  // (Lucro Real) vai o fundamento da não incidência do ICMS.
   const infoExtra =
-    `Transferencia ${t.numero} entre estabelecimentos do mesmo titular, sem cobranca. ` +
-    `Documento emitido por ME ou EPP optante pelo Simples Nacional. ` +
-    `Nao gera direito a credito fiscal de IPI.`;
+    regimeNfe(ctx.cfg) === 3
+      ? `Transferencia ${t.numero} entre estabelecimentos do mesmo titular, sem cobranca. ` +
+        `Nao incidencia do ICMS - LC 87/96, art. 12, par. 4. ` +
+        `Sem transferencia de credito de ICMS.`
+      : `Transferencia ${t.numero} entre estabelecimentos do mesmo titular, sem cobranca. ` +
+        `Documento emitido por ME ou EPP optante pelo Simples Nacional. ` +
+        `Nao gera direito a credito fiscal de IPI.`;
 
   let montado;
   try {
@@ -466,6 +472,7 @@ export async function testarNfe(filialId: string) {
       xMotivo: st.xMotivo,
       ambiente: tpAmb === 1 ? 'produção' : 'homologação',
       serie,
+      regime: regimeNfe(ctxR.ctx.cfg) === 3 ? 'regime normal (CRT 3)' : 'Simples Nacional (CRT 1)',
       pendencias,
     };
   } catch (e) {

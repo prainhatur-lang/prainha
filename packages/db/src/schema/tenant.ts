@@ -237,6 +237,12 @@ export interface FiscalNfeConfig {
   cfop?: string;
   /** CSOSN da transferência (padrão 400 — não tributada pelo Simples). */
   csosn?: string;
+  /** Regime tributário SÓ da NF-e (padrão: o `crt` da casa). 3 = regime normal
+   *  (Lucro Real/Presumido) — a Prainha Turismo é Lucro Real. Fica separado do
+   *  `crt` de cima porque a NFC-e ainda só monta o XML do Simples. */
+  crt?: 1 | 3;
+  /** CST do ICMS da transferência no regime normal (padrão 41 — não tributada). */
+  cst?: string;
 }
 
 /** Faixa de taxa de entrega por distância em linha reta (km). */

@@ -34,6 +34,8 @@ export interface NfeItemSnapshot {
   ncm: string;
   cfop: string;
   csosn: string;
+  /** CST do ICMS quando a nota saiu pelo regime normal (CRT 3). */
+  cst?: string;
 }
 
 export const nfeEmitida = pgTable(

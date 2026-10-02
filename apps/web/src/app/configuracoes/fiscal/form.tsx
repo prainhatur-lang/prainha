@@ -99,6 +99,8 @@ export function FiscalForm({
         cscTokenHom: cfg.cscTokenHom || undefined,
         padraoItem: cfg.padraoItem,
         respTec: cfg.respTec?.cnpj ? cfg.respTec : undefined,
+        // só o regime da NF-e sai daqui; série/CFOP salvos são preservados na API
+        nfe: cfg.nfe?.crt ? { crt: cfg.nfe.crt } : undefined,
       };
       const r = await fetch(`/api/filial/${filialId}/fiscal`, {
         method: 'PATCH',
@@ -132,7 +134,7 @@ export function FiscalForm({
       const falta = j.pendencias?.length ? ` · falta: ${j.pendencias.join('; ')}` : '';
       setMsg(
         j.ok
-          ? { ok: true, texto: `✓ NF-e (modelo 55) OK na SEFAZ (${j.cStat} ${j.xMotivo}) — ambiente ${j.ambiente}, série ${j.serie}${falta}` }
+          ? { ok: true, texto: `✓ NF-e (modelo 55) OK na SEFAZ (${j.cStat} ${j.xMotivo}) — ambiente ${j.ambiente}, série ${j.serie}${j.regime ? `, ${j.regime}` : ''}${falta}` }
           : { ok: false, texto: `NF-e falhou: ${j.erro ?? `${j.cStat} ${j.xMotivo}`}${falta}` },
       );
     } catch (e) {
@@ -231,6 +233,19 @@ export function FiscalForm({
         <div className="sm:col-span-2 text-xs text-slate-500 self-end pb-2">
           Regime: <b>Simples Nacional (CRT 1)</b> — único suportado.
         </div>
+        <label className="block sm:col-span-2">
+          <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Regime na NF-e de transferência
+          </span>
+          <select
+            value={String(cfg.nfe?.crt ?? cfg.crt ?? 1)}
+            onChange={(ev) => set({ nfe: { ...(cfg.nfe ?? {}), crt: ev.target.value === '3' ? 3 : 1 } })}
+            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
+          >
+            <option value="1">Simples Nacional (CRT 1)</option>
+            <option value="3">Regime normal — Lucro Real / Presumido (CRT 3)</option>
+          </select>
+        </label>
       </div>
 
       <div>

@@ -1,10 +1,14 @@
 // Montagem do XML da NF-e (modelo 55, layout 4.00) de TRANSFERÊNCIA entre
 // casas da mesma empresa (Bar → Mar etc.).
 //
-// O que este builder assume (Prainha = Simples Nacional, mesma UF):
+// O que este builder assume (mesma UF):
 //  - CRT 1 → ICMSSN102 com CSOSN 400 (não tributada pelo Simples) e CFOP 5152
 //    (transferência de mercadoria adquirida de terceiros). Os dois saem da
 //    config (`fiscalConfig.nfe`) se o contador pedir outro.
+//  - CRT 3 (regime normal — a Prainha Turismo é Lucro Real) → ICMS40 com CST 41
+//    (não tributada: transferência entre estabelecimentos do mesmo titular não
+//    é fato gerador, LC 87/96 art. 12 §4º). Sem destaque nem transferência de
+//    crédito de ICMS. O regime da NF-e vem de `fiscalConfig.nfe.crt`.
 //  - PIS/COFINS CST 08 (operação sem incidência): transferência não é receita.
 //  - Sem cobrança: pagamento tPag 90 ("sem pagamento"), vPag 0.00.
 //  - Destinatário completo (CNPJ, IE, endereço) — é a outra casa.
@@ -43,6 +47,8 @@ export interface DadosNfeTransf {
   itens: NfeTransfItem[];
   cfop?: string;
   csosn?: string;
+  /** CST do ICMS (só no regime normal, CRT 3). */
+  cst?: string;
   infoExtra?: string | null;
 }
 
@@ -55,7 +61,10 @@ export interface NfeItemMontado {
   valorTotal: number;
   ncm: string;
   cfop: string;
+  /** Preenchido quando a nota sai pelo Simples (CRT 1); vazio no regime normal. */
   csosn: string;
+  /** CST do ICMS quando a nota sai pelo regime normal (CRT 3). */
+  cst?: string;
 }
 
 export interface XmlNfeMontado {
@@ -113,6 +122,12 @@ function ncmValido(ncm: string | null | undefined): string | null {
   return /^\d{8}$/.test(d) && d !== '00000000' ? d : null;
 }
 
+/** Regime tributário que vai na NF-e da casa: o `nfe.crt` se alguém marcou,
+ *  senão o `crt` geral (que a NFC-e usa), senão Simples. */
+export function regimeNfe(cfg: FiscalConfig | null | undefined): number {
+  return cfg?.nfe?.crt ?? cfg?.crt ?? 1;
+}
+
 /** O que falta na config fiscal de uma casa pra ela entrar numa NF-e
  *  (como emitente ou destinatária). Não depende do liga/desliga da NFC-e
  *  nem de CSC. Vazio = pronta. */
@@ -123,7 +138,8 @@ export function pendenciasNfe(cfg: FiscalConfig | null | undefined): string[] {
   const e = cfg?.endereco;
   if (!e?.logradouro || !e?.bairro || !e?.codigoMunicipio || !e?.municipio || !e?.uf || !e?.cep)
     p.push('endereço fiscal completo');
-  if ((cfg?.crt ?? 1) !== 1) p.push('CRT diferente de Simples Nacional não suportado');
+  const crt = regimeNfe(cfg);
+  if (crt !== 1 && crt !== 3) p.push('regime tributário (CRT) não suportado — use 1 (Simples) ou 3 (regime normal)');
   return p;
 }
 
@@ -166,11 +182,21 @@ export function montarXmlNfeTransferencia(dados: DadosNfeTransf): XmlNfeMontado 
 
   const cfop = String(dados.cfop ?? emi.nfe?.cfop ?? '5152').replace(/\D/g, '');
   if (!/^5\d{3}$/.test(cfop)) throw new Error(`CFOP inválido pra transferência dentro do estado: ${cfop}`);
+  const normal = regimeNfe(emi) === 3;
   const csosn = String(dados.csosn ?? emi.nfe?.csosn ?? '400').replace(/\D/g, '');
   // ICMSSN102 só carrega 102/103/300/400 — os outros têm grupo próprio (ST, crédito)
-  if (!['102', '103', '300', '400'].includes(csosn)) {
+  if (!normal && !['102', '103', '300', '400'].includes(csosn)) {
     throw new Error(`CSOSN ${csosn} não é suportado na nota de transferência (use 102, 103, 300 ou 400)`);
   }
+  const cst = String(dados.cst ?? emi.nfe?.cst ?? '41').replace(/\D/g, '').padStart(2, '0');
+  // ICMS40 só carrega 40/41/50 (sem imposto). CST com destaque (00, 20, 90…)
+  // precisa de base e alíquota, que esta nota não calcula.
+  if (normal && !['40', '41', '50'].includes(cst)) {
+    throw new Error(`CST ${cst} não é suportado na nota de transferência (use 40, 41 ou 50 — sem destaque de ICMS)`);
+  }
+  const icms = normal
+    ? `<ICMS><ICMS40><orig>ORIGEM</orig><CST>${cst}</CST></ICMS40></ICMS>`
+    : `<ICMS><ICMSSN102><orig>ORIGEM</orig><CSOSN>${csosn}</CSOSN></ICMSSN102></ICMS>`;
   const ncmPadrao = ncmValido(emi.padraoItem?.ncm) ?? '21069090';
   const origem = String(emi.padraoItem?.origem ?? '0').replace(/\D/g, '') || '0';
 
@@ -203,7 +229,8 @@ export function montarXmlNfeTransferencia(dados: DadosNfeTransf): XmlNfeMontado 
         valorTotal: vProd,
         ncm,
         cfop,
-        csosn,
+        csosn: normal ? '' : csosn,
+        ...(normal ? { cst } : {}),
       });
       return (
         `<det nItem="${n}">` +
@@ -224,7 +251,7 @@ export function montarXmlNfeTransferencia(dados: DadosNfeTransf): XmlNfeMontado 
         `<indTot>1</indTot>` +
         `</prod>` +
         `<imposto>` +
-        `<ICMS><ICMSSN102><orig>${origem}</orig><CSOSN>${csosn}</CSOSN></ICMSSN102></ICMS>` +
+        icms.replace('ORIGEM', origem) +
         `<PIS><PISNT><CST>08</CST></PISNT></PIS>` +
         `<COFINS><COFINSNT><CST>08</CST></COFINSNT></COFINS>` +
         `</imposto>` +
@@ -266,7 +293,7 @@ export function montarXmlNfeTransferencia(dados: DadosNfeTransf): XmlNfeMontado 
     (emi.nomeFantasia ? tag('xFant', texto(emi.nomeFantasia, 60)) : '') +
     endereco('enderEmit', emi) +
     tag('IE', String(emi.ie).replace(/\D/g, '')) +
-    tag('CRT', emi.crt ?? 1) +
+    tag('CRT', normal ? 3 : (emi.crt ?? 1)) +
     `</emit>`;
 
   const dest =
