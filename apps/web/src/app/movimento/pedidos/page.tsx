@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, count, desc, eq, gte, isNull, lte, sql, sum, ne } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNull, lte, sql, sum, ne } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -105,6 +105,29 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     .orderBy(desc(schema.pedido.dataFechamento))
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
+
+  // Mesmo período nas outras casas do usuário, lado a lado.
+  const comparativo =
+    filiais.length > 1
+      ? await db
+          .select({
+            filialId: schema.pedido.filialId,
+            qtd: count(),
+            total: sum(schema.pedido.valorTotal),
+            totalServico: sum(schema.pedido.totalServico),
+            totalDesconto: sum(schema.pedido.totalDesconto),
+          })
+          .from(schema.pedido)
+          .where(
+            and(
+              inArray(schema.pedido.filialId, filiais.map((f) => f.id)),
+              isNull(schema.pedido.dataDelete),
+              gte(schema.pedido.dataFechamento, dtIni),
+              lte(schema.pedido.dataFechamento, dtFim),
+            ),
+          )
+          .groupBy(schema.pedido.filialId)
+      : [];
 
   // Top produtos no período (valor, volume, margem)
   const whereItens = and(
@@ -211,6 +234,15 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
   const totalDesconto = Number(stats?.totalDesconto ?? 0);
   const totalServico = Number(stats?.totalServico ?? 0);
 
+  // Trocar de casa mantém o período escolhido (antes voltava pros 7 dias padrão).
+  const hrefFilial = (id: string) => {
+    const qs = new URLSearchParams();
+    qs.set('filialId', id);
+    if (sp.dataIni) qs.set('dataIni', dataIni);
+    if (sp.dataFim) qs.set('dataFim', dataFim);
+    return `/movimento/pedidos?${qs.toString()}`;
+  };
+
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
     qs.set('filialId', filialSelecionada.id);
@@ -236,7 +268,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
             {filiais.map((f) => (
               <Link
                 key={f.id}
-                href={`/movimento/pedidos?filialId=${f.id}`}
+                href={hrefFilial(f.id)}
                 className={`rounded-md border px-3 py-1 text-xs ${
                   f.id === filialSelecionada.id
                     ? 'border-slate-900 bg-slate-900 text-white'
@@ -353,6 +385,60 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                 </Link>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Comparação das casas no mesmo período */}
+        {filiais.length > 1 && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">Comparação das casas no período</h2>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Casa</th>
+                  <th className="px-4 py-2 text-right">Pedidos</th>
+                  <th className="px-4 py-2 text-right">Faturamento</th>
+                  <th className="px-4 py-2 text-right">Da casa</th>
+                  <th className="px-4 py-2 text-right">10% da equipe</th>
+                  <th className="px-4 py-2 text-right">Descontos</th>
+                  <th className="px-4 py-2 text-right">Ticket médio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filiais.map((f) => {
+                  const c = comparativo.find((x) => x.filialId === f.id);
+                  const qtd = Number(c?.qtd ?? 0);
+                  const total = Number(c?.total ?? 0);
+                  const servico = Number(c?.totalServico ?? 0);
+                  const desconto = Number(c?.totalDesconto ?? 0);
+                  const atual = f.id === filialSelecionada.id;
+                  return (
+                    <tr key={f.id} className={`border-t border-slate-100 ${atual ? 'bg-emerald-50/60' : ''}`}>
+                      <td className="px-4 py-2 text-xs">
+                        <Link
+                          href={hrefFilial(f.id)}
+                          className={`underline-offset-2 hover:underline ${atual ? 'font-semibold text-slate-900' : 'text-sky-700'}`}
+                        >
+                          {f.nome}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">{int(qtd)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-xs font-medium text-slate-900">{brl(total)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-emerald-800">{brl(total - servico)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-amber-800">{brl(servico)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-rose-600">
+                        {desconto > 0 ? `-${brl(desconto)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                        {qtd > 0 ? brl(total / qtd) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
 
