@@ -63,9 +63,25 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
       totalItens: sum(schema.pedido.valorTotalItens),
       totalServico: sum(schema.pedido.totalServico),
       totalDesconto: sum(schema.pedido.totalDesconto),
+      qtdComDesconto: sql<string>`COUNT(*) FILTER (WHERE COALESCE(${schema.pedido.totalDesconto}, 0) > 0)`,
     })
     .from(schema.pedido)
     .where(where);
+
+  // Descontos do período: o Faturamento (valor_total) já vem com eles abatidos,
+  // então conta 100% de desconto (cortesia, consumo da casa) aparece com R$ 0.
+  const maioresDescontos = await db
+    .select({
+      id: schema.pedido.id,
+      codigoExterno: schema.pedido.codigoExterno,
+      numero: schema.pedido.numero,
+      totalDesconto: schema.pedido.totalDesconto,
+      valorTotal: schema.pedido.valorTotal,
+    })
+    .from(schema.pedido)
+    .where(and(where, sql`COALESCE(${schema.pedido.totalDesconto}, 0) > 0`))
+    .orderBy(desc(schema.pedido.totalDesconto))
+    .limit(8);
 
   const pedidos = await db
     .select({
@@ -191,6 +207,9 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     ? Number(stats?.total ?? 0) / Number(stats?.qtd ?? 0)
     : 0;
 
+  const totalFaturado = Number(stats?.total ?? 0);
+  const totalDesconto = Number(stats?.totalDesconto ?? 0);
+
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
     qs.set('filialId', filialSelecionada.id);
@@ -284,6 +303,47 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
             <p className="mt-1 text-2xl font-bold text-slate-900">{brl(Number(stats?.totalServico ?? 0))}</p>
           </div>
         </div>
+
+        {/* Descontos: quanto foi vendido cheio e quanto ficou de fora do faturamento */}
+        {totalDesconto > 0 && (
+          <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
+              <span className="text-slate-700">
+                Vendido cheio{' '}
+                <strong className="font-mono text-slate-900">{brl(totalFaturado + totalDesconto)}</strong>
+              </span>
+              <span className="text-rose-700">
+                Descontos{' '}
+                <strong className="font-mono">-{brl(totalDesconto)}</strong>{' '}
+                <span className="text-xs">
+                  em {int(Number(stats?.qtdComDesconto ?? 0))} pedido(s)
+                </span>
+              </span>
+              <span className="text-emerald-800">
+                Faturamento <strong className="font-mono">{brl(totalFaturado)}</strong>{' '}
+                <span className="text-xs">
+                  (já sem os descontos, com {brl(Number(stats?.totalServico ?? 0))} de serviço)
+                </span>
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {maioresDescontos.map((p) => (
+                <Link
+                  key={p.id}
+                  href={`/movimento/pedidos/${p.id}`}
+                  className="rounded-md border border-rose-200 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-rose-100"
+                  title="Abrir o espelho do pedido"
+                >
+                  {p.numero != null ? `Mesa ${p.numero}` : `#${p.codigoExterno}`}{' '}
+                  <span className="font-mono text-rose-700">-{brl(p.totalDesconto)}</span>
+                  {Number(p.valorTotal ?? 0) === 0 && (
+                    <span className="ml-1 text-[10px] text-slate-500">conta zerada</span>
+                  )}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Top produtos: valor, volume, margem */}
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
