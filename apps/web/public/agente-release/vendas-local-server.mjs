@@ -4149,6 +4149,67 @@ async function apiProdutoSalvar(body) {
       caixa=EXCLUDED.caixa, delivery=EXCLUDED.delivery, atualizado=now()`;
   return { ok: true };
 }
+// ---- PAUSAR: tira um TAMANHO (ou o produto inteiro) de venda ----
+// Mesmo modelo da aba PDV do Concilia: a pausa mora no tamanho e entra na fila
+// produto_alteracao da nuvem. Aqui a loja pede a pausa e, em seguida, roda a
+// própria fila (loopProdutoFila) — é o caminho de sempre, só que sem esperar o
+// minuto do ciclo. Pausado some do catálogo da loja, então a lista dos
+// pausados vem da nuvem: sem ela não haveria como voltar a vender daqui.
+async function produtoPausaNuvem(metodo, dados) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem chave da nuvem' };
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const s = nfceAssina('produto', e);
+    let r;
+    if (metodo === 'GET') {
+      const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s, q: String(dados.q || '') });
+      r = await fetch(`${PAGAR_MESA_URL}/api/loja/produto-pausa?${qs}`, { signal: AbortSignal.timeout(10000) });
+    } else {
+      r = await fetch(`${PAGAR_MESA_URL}/api/loja/produto-pausa`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e, s, ...dados }), signal: AbortSignal.timeout(12000) });
+    }
+    const j = await r.json().catch(() => null);
+    return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida da nuvem (' + r.status + ')' };
+  } catch (err) { return { ok: false, erro: 'nuvem: ' + err.message }; }
+}
+/** Os tamanhos pausados da casa (com a foto que a loja já tem). */
+async function apiProdutosPausados(termo) {
+  const j = await produtoPausaNuvem('GET', { q: String(termo || '').trim() });
+  if (!j.ok || !Array.isArray(j.produtos)) return { ok: false, erro: j.erro || 'a nuvem não respondeu' };
+  let fotos = new Set();
+  try { fotos = new Set((await sql`SELECT produto_codigo FROM produto_foto`).map((x) => Number(x.produto_codigo))); } catch {}
+  return { ok: true, produtos: j.produtos.map((x) => ({ ...x, tem_foto: fotos.has(Number(x.produto_codigo)) })) };
+}
+/** POST /api/produto/pausar {codigo_pdv, produto_codigo, todos, pausado}
+ *  todos=true vale pro produto inteiro (todos os tamanhos). */
+async function apiProdutoPausar(body, quem) {
+  if (body.pausado !== true && body.pausado !== false) return { ok: false, erro: 'faltou dizer se é pra pausar ou voltar a vender' };
+  const pausar = body.pausado === true;
+  const pdv = Number(body.codigo_pdv), prod = Number(body.produto_codigo);
+  const alvo = body.todos === true && prod > 0 ? { produto: prod } : pdv > 0 ? { codigos: [pdv] } : null;
+  if (!alvo) return { ok: false, erro: 'produto inválido' };
+  const j = await produtoPausaNuvem('POST', { ...alvo, pausado: pausar, por: quem || null });
+  if (!j.ok) return { ok: false, erro: j.erro || 'a nuvem não aceitou' };
+  const cods = (Array.isArray(j.variantes) ? j.variantes : []).map(Number).filter(Number.isFinite);
+  // Pausou: sai do cardápio da loja JÁ — garçom não lança o que acabou.
+  // (o catálogo é remontado logo abaixo; isto só cobre o intervalo)
+  if (pausar && cods.length) {
+    await sql`DELETE FROM produto_local WHERE codigo_pdv = ANY(${cods})`.catch((err) => console.error('[pausa] local:', err.message));
+  }
+  // Roda a fila agora em vez de esperar o ciclo de 1 min. Se o laço já está
+  // no meio de uma volta, espera ele sair pra esta alteração não ficar pra trás.
+  const catalogoOcupado = catalogoNuvemRodando;
+  for (let i = 0; i < 24 && produtoFilaRodando; i++) await new Promise((ok) => setTimeout(ok, 250));
+  await loopProdutoFila().catch((err) => console.error('[pausa] fila:', err.message));
+  // o catálogo estava sendo puxado na hora? aquela volta trouxe o dado velho
+  if (catalogoOcupado && nativo()) {
+    for (let i = 0; i < 40 && catalogoNuvemRodando; i++) await new Promise((ok) => setTimeout(ok, 250));
+    await loopCatalogoNuvem().catch((err) => console.error('[pausa] catálogo:', err.message));
+  }
+  console.log('[pausa] ' + (pausar ? 'PAUSOU' : 'voltou a vender') + ' ' + (j.nome || '') + ' · '
+    + cods.length + ' tamanho(s)' + (quem ? ' · por ' + quem : ''));
+  return { ok: true, pausado: pausar, tamanhos: cods.length, mudou: Number(j.enfileirados) || 0, nome: j.nome || null };
+}
 /** Troca a foto do PRODUTO (vale pra todas as variantes dele). */
 async function apiProdutoFoto(body) {
   const prod = Number(body.produto_codigo);
@@ -18733,6 +18794,12 @@ input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9p
 .cb.on{border-color:var(--green2);background:#eafaf0;color:var(--green2);font-weight:700}
 .cb.off{border-color:var(--red);background:#fdeaea;color:var(--red);font-weight:700}
 .cb.herda{border-style:dashed}
+.cb.pz{border-color:#b45309;background:#fff7e3;color:#b45309;font-weight:700}
+.cb.vt{border-color:var(--green2);background:var(--green2);color:#fff;font-weight:700}
+.pi.pzd{background:#fafafb;border-style:dashed}
+.pi.pzd .n{color:var(--mut)}
+.selo{display:inline-block;background:#fff7e3;border:1px solid #f0d68f;color:#8a4b06;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px}
+.tst{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#1b1b20;color:#fff;border-radius:12px;padding:11px 16px;font-size:14px;z-index:30;max-width:92vw;text-align:center}
 .vazio{padding:50px 20px;text-align:center;color:var(--mut)}
 .dica{background:#fff7e3;border:1px solid #f0d68f;color:#8a4b06;border-radius:11px;padding:10px 13px;font-size:13px;line-height:1.45;margin-bottom:14px}
 .mod{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-start;justify-content:center;padding:24px 14px;overflow:auto}
@@ -18756,6 +18823,8 @@ input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9p
 <div class="wrap">
 <div class="dica"><b>Tracejado</b> = herdado do Consumer. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
 Clicando de novo volta ao herdado. Clique na foto pra trocar.</div>
+<div class="dica"><b>⏸ Pausar</b> tira o item de venda em todo lugar (garçom, caixa e cliente) — só um <b>tamanho</b> ou o <b>produto inteiro</b>.
+Não apaga nada. Pra voltar a vender, escolha <b>⏸ pausados</b> no filtro lá em cima.</div>
 <div id="app" class="vazio">carregando…</div></div>
 <input type="file" id="arq" accept="image/*" style="display:none">
 <script>
@@ -18869,6 +18938,70 @@ async function fotosAplicar(){
   r.innerHTML='<div class="dica" style="background:#eafaf0;border-color:#bfe9cf;color:#0f8a3e;margin-top:12px">'+
     '✓ '+d.importadas+' foto(s) trazida(s)'+(d.falharam?', '+d.falharam+' falharam':'')+(d.limpou?' · as antigas foram apagadas':'')+'.</div>';
   carrega();
+}
+// ---- PAUSAR / VOLTAR A VENDER (por tamanho ou o produto inteiro) ----
+// O que já existia fica igual: a lista de sempre só ganha um botão a mais, e
+// o filtro ganha a opção "pausados" (que vem da nuvem — pausado some daqui).
+document.getElementById('so').add(new Option('⏸ pausados','pausados'));
+var PZ=null, carregaAntes=carrega;
+carrega=async function(){
+  if(document.getElementById('so').value==='pausados')return carregaPausados();
+  await carregaAntes();
+  var itens=document.querySelectorAll('#app .pi');
+  for(var i=0;i<itens.length;i++){
+    var cn=itens[i].querySelector('.cn');if(!cn)continue;
+    var b=document.createElement('button');b.className='cb pz';b.textContent='⏸ Pausar';
+    b.setAttribute('onclick','pzAbre('+i+',true)');cn.appendChild(b);
+  }
+};
+async function carregaPausados(){
+  var q=document.getElementById('q').value, app=document.getElementById('app');
+  var d;try{d=await (await fetch('/api/produtos/pausados?q='+encodeURIComponent(q),{cache:'no-store'})).json()}catch(e){d={ok:false,erro:'sem resposta do servidor da loja'}}
+  if(document.getElementById('so').value!=='pausados')return;
+  if(!d.ok){LISTA=[];document.getElementById('cnt').textContent='';app.className='vazio';app.textContent=d.erro||'não consegui ler os pausados';return}
+  LISTA=d.produtos||[];
+  document.getElementById('cnt').textContent=LISTA.length+' pausados';
+  if(!LISTA.length){app.className='vazio';app.innerHTML='nenhum produto pausado';return}
+  app.className='';
+  app.innerHTML=LISTA.map(function(p,ix){
+    return '<div class="pi pzd">'+
+      (p.tem_foto?'<img src="/produto-foto/'+p.produto_codigo+'" alt="">':'<div class="semf">sem<br>foto</div>')+
+      '<span class="n">'+esc(p.nome)+(p.tamanho?' <b>'+esc(p.tamanho)+'</b>':'')+'<span class="selo">PAUSADO</span>'+
+        '<small>'+esc(p.categoria||'')+' · R$ '+Number(p.preco).toLocaleString('pt-BR',{minimumFractionDigits:2})+
+        (p.pausado_em?' · desde '+esc(p.pausado_em):'')+'</small></span>'+
+      '<span class="cn"><button class="cb vt" onclick="pzAbre('+ix+',false)">▶ Voltar a vender</button></span></div>';
+  }).join('');
+}
+function pzAbre(ix,pausar){
+  var p=LISTA[ix];if(!p)return;
+  PZ={p:p,pausar:pausar};
+  var nome=esc(p.nome)+(p.tamanho?' <b>'+esc(p.tamanho)+'</b>':'');
+  var d=document.createElement('div');d.className='mod';d.id='modpz';
+  d.innerHTML='<div class="bx" style="max-width:460px"><h2>'+(pausar?'Pausar ':'Voltar a vender ')+nome+'?</h2>'+
+    '<div style="font-size:14px;color:var(--mut);line-height:1.45">'+(pausar
+      ?'Pausado sai do cardápio do garçom, do caixa e do cliente até alguém voltar a vender. Não apaga nada.'
+      :'Volta pro cardápio do garçom, do caixa e do cliente.')+'</div>'+
+    (p.tamanho
+      ?'<button class="b" onclick="pzVai(false)">'+(pausar?'Pausar só o tamanho ':'Voltar só o tamanho ')+esc(p.tamanho)+'</button>'+
+       '<button class="b '+(pausar?'r':'')+'" onclick="pzVai(true)">'+(pausar?'Pausar TODOS os tamanhos':'Voltar TODOS os tamanhos')+'</button>'
+      :'<button class="b" onclick="pzVai(false)">'+(pausar?'Pausar':'Voltar a vender')+'</button>')+
+    '<div id="pzmsg" style="margin-top:10px;font-size:13.5px;color:var(--red)"></div>'+
+    '<button class="b g" onclick="pzFecha()">Cancelar</button></div>';
+  document.body.appendChild(d);
+}
+function pzFecha(){var d=document.getElementById('modpz');if(d)d.remove();PZ=null}
+async function pzVai(todos){
+  if(!PZ||PZ.indo)return;PZ.indo=true;
+  var m=document.getElementById('pzmsg');m.style.color='var(--mut)';m.textContent=PZ.pausar?'pausando…':'voltando a vender…';
+  var r;try{r=await (await fetch('/api/produto/pausar',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({codigo_pdv:PZ.p.codigo_pdv,produto_codigo:PZ.p.produto_codigo,todos:!!todos,pausado:PZ.pausar})})).json()}catch(e){r={ok:false,erro:'sem resposta do servidor da loja'}}
+  if(!r.ok){PZ.indo=false;m.style.color='var(--red)';m.textContent=r.erro||'não deu';return}
+  var txt=(PZ.pausar?'⏸ Pausado: ':'▶ Voltou a vender: ')+PZ.p.nome+(todos?' (todos os tamanhos)':(PZ.p.tamanho?' '+PZ.p.tamanho:''));
+  pzFecha();pzAviso(txt);carrega();
+}
+function pzAviso(t){
+  var a=document.createElement('div');a.className='tst';a.textContent=t;document.body.appendChild(a);
+  setTimeout(function(){a.remove()},3500);
 }
 carrega();
 </script></body></html>`;
@@ -27541,6 +27674,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/produtos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutos(u.searchParams.get('q') || '', u.searchParams.get('so') || ''))); }
     if (req.method === 'POST' && p === '/api/produto/salvar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoSalvar(body))); }
     if (req.method === 'POST' && p === '/api/produto/foto') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoFoto(body))); }
+    if (p === '/api/produtos/pausados') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutosPausados(u.searchParams.get('q') || ''))); }
+    if (req.method === 'POST' && p === '/api/produto/pausar') {
+      const body = await readBody(req);
+      // tela aberta como as outras do cadastro; se quem toca está logado em alguma tela da loja, o nome vai junto
+      let quem = null;
+      try { const v = garcomVerificaToken(String(req.headers['x-garcom'] || '')); if (v) quem = v.login; } catch {}
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiProdutoPausar(body, quem)));
+    }
     if (p === '/api/fotos/catalogo') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosCatalogo())); }
     if (req.method === 'POST' && p === '/api/fotos/importar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosImportar(body))); }
     if (req.method === 'POST' && p === '/api/fotos/limpar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosLimpar(body))); }
