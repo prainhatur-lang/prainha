@@ -55,6 +55,8 @@ export async function GET(request: Request) {
       // motor de baixa trata, e é o que o garçom precisa ver como "esgotou"
       saldo: schema.produto.estoqueAtual,
       controla: schema.produto.controlaEstoque,
+      produtoId: schema.produto.id,
+      varianteId: schema.produtoVariante.id,
     })
     .from(schema.produtoVariante)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.produtoVariante.produtoId))
@@ -77,6 +79,52 @@ export async function GET(request: Request) {
       ),
     )
     .limit(tudo ? 8000 : 2000);
+
+  // Prato que sai do INSUMO (ficha técnica): quem tem estoque é o insumo, não
+  // o prato. Em 03/10/2026 o Prato Kids da Prainha Mar aparecia esgotado com
+  // saldo próprio 0 e 20 "File kids" no estoque; a batata frita, com -8 e 50
+  // do insumo. O saldo próprio continua valendo quando é positivo (a lata de
+  // Coca tem o estoque nela mesma); zerado, só é esgotado se o insumo também
+  // estiver. Sem conta de unidade (kg × g): basta o insumo ter saldo.
+  const temInsumo = new Set<string>();
+  const faltaInsumo = new Set<string>();
+  {
+    const insumo = (await import('drizzle-orm/pg-core')).alias(schema.produto, 'insumo');
+    const ficha = await db
+      .select({
+        produtoId: schema.fichaTecnica.produtoId,
+        varianteId: schema.fichaTecnica.varianteId,
+        saldo: insumo.estoqueAtual,
+      })
+      .from(schema.fichaTecnica)
+      .innerJoin(insumo, eq(insumo.id, schema.fichaTecnica.insumoId))
+      .where(
+        and(
+          eq(schema.fichaTecnica.filialId, f),
+          eq(schema.fichaTecnica.baixaEstoque, true),
+          eq(insumo.controlaEstoque, true),
+        ),
+      );
+    for (const l of ficha) {
+      // linha sem tamanho vale pro produto inteiro; com tamanho, só pra ele
+      const chave = l.varianteId ? `v:${l.varianteId}` : `p:${l.produtoId}`;
+      // insumo que nunca teve entrada (saldo null) não diz nada
+      if (l.saldo == null) continue;
+      if (Number(l.saldo) > 0) temInsumo.add(chave);
+      else faltaInsumo.add(chave);
+    }
+  }
+  const saldoPraLoja = (l: { controla: boolean | null; saldo: string | null; produtoId: string; varianteId: string }) => {
+    if (!l.controla) return null;
+    const proprio = Number(l.saldo ?? 0);
+    if (proprio > 0) return proprio;
+    const chaves = [`p:${l.produtoId}`, `v:${l.varianteId}`];
+    const tem = chaves.some((c) => temInsumo.has(c));
+    const falta = chaves.some((c) => faltaInsumo.has(c));
+    // tem insumo e nenhum zerado → disponível, sem número (o saldo é do insumo)
+    if (tem && !falta) return null;
+    return proprio;
+  };
 
   // No modo próprio a loja perde TODO o resto do cardápio junto com o
   // Firebird: as praças (COZINHAS), as observações prontas e o wizard. Vão no
@@ -124,7 +172,7 @@ export async function GET(request: Request) {
       sem_servico: l.sem_servico === true,
       // sem_estoque só faz sentido em produto que controla estoque; no resto
       // fica null e a tela não mostra número nenhum (mesma regra do Firebird)
-      saldo: l.controla ? Number(l.saldo ?? 0) : null,
+      saldo: saldoPraLoja(l),
     })),
   });
 }
