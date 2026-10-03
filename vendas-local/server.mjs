@@ -13878,6 +13878,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
 <a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
 <a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
+<a href="/produtos"><i>🍽</i><span>Produtos<small>pausar, voltar a vender, onde aparece e foto</small></span></a>
 <a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — pede login da recepção</small></span></a>
 <button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
 <a href="/gerente"><i>👔</i><span>Gerente</span></a>
