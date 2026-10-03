@@ -43,7 +43,11 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
     );
   }
   const filial = filialResolvida;
-  const tipo = sp.tipo === 'INSUMO' ? 'INSUMO' : 'VENDA_SIMPLES';
+  // VARIANTE = produto com tamanhos (caipirosca por fruta, dose/garrafa, gin,
+  // moqueca por tamanho). Não aparecia em nenhuma aba: em 02/10/2026 o dono
+  // procurou a caipirosca da Prainha Mar pra desligar e não achou — 136
+  // produtos da Mar estavam fora da curadoria.
+  const tipo = sp.tipo === 'INSUMO' ? 'INSUMO' : sp.tipo === 'VARIANTE' ? 'VARIANTE' : 'VENDA_SIMPLES';
 
   const produtos = await db
     .select({
@@ -184,6 +188,16 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
             }`}
           >
             Insumos
+          </a>
+          <a
+            href={`/cadastros/produtos/ativar?filialId=${filial.id}&tipo=VARIANTE`}
+            className={`rounded-md border px-3 py-1.5 ${
+              tipo === 'VARIANTE'
+                ? 'border-slate-900 bg-slate-900 text-white'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            Com tamanhos (drinks, doses, garrafas)
           </a>
         </div>
 
