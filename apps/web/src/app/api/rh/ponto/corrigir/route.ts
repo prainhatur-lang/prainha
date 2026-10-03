@@ -8,6 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
+import { conflitoOutraCasa } from '@/lib/rh/conflito-casas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -96,6 +97,10 @@ export async function POST(req: Request) {
   let valorDepois: { quando: string; tipo: string } | null = null;
 
   if (d.acao === 'inclusao') {
+    const conflito = await conflitoOutraCasa({
+      funcionarioId: d.funcionarioId, filialId: filialTela, dia: d.dia, quando: quando!, tipo: d.tipo!,
+    });
+    if (conflito) return NextResponse.json({ error: conflito }, { status: 409 });
     const [criada] = await db
       .insert(schema.pontoBatida)
       .values({
@@ -124,6 +129,10 @@ export async function POST(req: Request) {
     batidaId = atual.id;
 
     if (d.acao === 'alteracao') {
+      const conflito = await conflitoOutraCasa({
+        funcionarioId: d.funcionarioId, filialId: atual.filialId, dia: d.dia, quando: quando!, tipo: d.tipo!, batidaId: atual.id,
+      });
+      if (conflito) return NextResponse.json({ error: conflito }, { status: 409 });
       await db
         .update(schema.pontoBatida)
         .set({ quando: quando!, tipo: d.tipo!, origem: 'correcao' })
