@@ -16911,6 +16911,40 @@ async function apiReservaAcao(body, quem) {
   });
 }
 
+// ---- NOVA RESERVA pela recepção (mesmo modelo do "Nova reserva" do Concilia) ----
+// A reserva nasce na nuvem, com as MESMAS regras do painel: pendente até o
+// cliente confirmar, mesa não entra em duas reservas, hora limite do espaço.
+// A loja só repassa assinado, com o nome de quem está logado na recepção.
+async function apiReservaMapa(data) {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) ? String(data) : '';
+  return salaoNuvemPost({ tipo: 'reserva_mapa', data: d });
+}
+async function apiReservaQuem(body) {
+  const q = soDig(body && body.q).slice(0, 14);
+  if (q.length < 8) return { ok: true, achou: false, curto: true };
+  return salaoNuvemPost({ tipo: 'reserva_quem', q });
+}
+async function apiReservaNova(body, quem) {
+  const clienteNome = String(body.clienteNome || '').trim().slice(0, 200);
+  if (!clienteNome) return { ok: false, erro: 'diga o nome do cliente' };
+  const data = String(body.data || ''), hora = String(body.hora || '').slice(0, 5);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return { ok: false, erro: 'escolha a data' };
+  if (!/^\d{2}:\d{2}$/.test(hora)) return { ok: false, erro: 'escolha a hora' };
+  const mesa = String(body.mesa || '').trim().slice(0, 20);
+  const juntadas = mesa && Array.isArray(body.mesasJuntadas)
+    ? body.mesasJuntadas.map((m) => String(m || '').trim()).filter(Boolean).slice(0, 12)
+    : [];
+  return salaoNuvemPost({
+    tipo: 'reserva_nova', clienteNome,
+    clienteTelefone: String(body.clienteTelefone || '').trim().slice(0, 30),
+    pessoas: Math.max(1, Math.min(999, Math.round(Number(body.pessoas) || 1))),
+    data, hora, canal: String(body.canal || 'outro'),
+    area: String(body.area || '').trim().slice(0, 100), mesa, mesasJuntadas: juntadas,
+    observacao: String(body.observacao || '').trim().slice(0, 2000),
+    por: quem ? 'recepção (loja): ' + quem : 'recepção (loja)',
+  });
+}
+
 // ---- QUEM ENTRA NA RECEPÇÃO (/reservas) ----
 // Mesma régua do /gerente e do /producao: login + PIN da loja (garcom_pin),
 // primeira vez cria com pin2. A tela mexe em reserva de cliente e dispara
@@ -17016,11 +17050,39 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .jt button.mais{border-style:dashed;color:var(--mut);font-weight:500}
 .btns .sv{background:#15803d}
 .jt .naosalvo{color:#b45309;font-weight:700}
+.nres{background:#fff;border-bottom:1px solid var(--line);padding:12px 16px}
+.nres .nt{font-size:15px;font-weight:800;margin-bottom:8px}
+.nres .ng{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;max-width:1000px}
+.nres .c2{grid-column:span 2}
+.nres .c4{grid-column:1/-1}
+.nres input,.nres select{width:100%;font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
+.nres input.bad{border-color:#e11d48;color:#e11d48}
+.nres input.casa{border-color:#38bdf8}
+.nres .qm{max-width:1000px;margin-top:8px;border:1px solid #bae6fd;background:#f0f9ff;color:#0c4a6e;border-radius:10px;padding:9px 11px;font-size:13.5px;line-height:1.5}
+.nres .qm .fi{background:#fef3c7;color:#92400e;border-radius:6px;padding:1px 7px;font-weight:700;margin-left:6px}
+.nres .qm button{background:#fff;color:#075985;border:1px solid #7dd3fc;border-radius:7px;padding:3px 9px;font-size:13px;font-weight:600;margin-left:6px}
+.nres .qm .at{color:#92400e;margin-top:4px}
+.nres .pv{margin-top:8px;font-size:13px;color:var(--mut)}
+.nres .hl{margin-top:8px;font-size:13.5px;color:#e11d48}
+.nres .nj{max-width:1000px;margin-top:8px;border:1px solid var(--line);background:#f7f7f9;border-radius:10px;padding:9px 11px;font-size:13.5px;color:var(--mut)}
+.nres .nj.baixa{border-color:#fcd34d;background:#fffbeb;color:#92400e}
+.nres .nj .ch{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.nres .nj .ch button{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:13px;font-weight:600}
+.nres .nj .ch button.on{border-color:var(--gold2);background:#fff4ea;color:#9a4508}
+.nres .nj .sm{margin-top:7px;font-weight:700}
+.nres .nj .sm.cabe{color:#15803d}.nres .nj .sm.falta{color:#b45309}
+.nres .nerr{margin-top:8px;font-size:13.5px;color:#b91c1c;min-height:0}
+.nres .nb{margin-top:10px;display:flex;gap:8px;max-width:1000px}
+.nres .nb #nr_ok{flex:1;padding:12px;font-size:16px;background:var(--ink)}
+.nres .nb button:disabled{opacity:.45;cursor:not-allowed}
+.okm{margin:14px 14px 0;padding:11px 14px;border-radius:10px;background:#e4f7e7;color:#15803d;font-size:14px;font-weight:600}
+@media(max-width:640px){.nres .ng{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style></head><body>
 <div class="barra" id="barra"><b id="tit">📅 Reservas de hoje</b><span class="cnt" id="cnt">carregando…</span>
 <span class="eu" id="eu"></span>
 <button class="seg on" id="t_res" onclick="aba('res')">📅 Reservas</button>
 <button class="seg" id="t_esp" onclick="aba('esp')">⏳ Lista de espera</button>
+<button id="b_nr" onclick="nrAbrir()" title="criar uma reserva nova (mesmo modelo do Concilia)">+ Nova reserva</button>
 <button class="g" onclick="carregar()" title="atualizar">&#8635;</button>
 <a href="/" style="text-decoration:none"><button class="g" title="tela inicial do Concilia Loja">&#9776; Início</button></a></div>
 <div class="barra sub" id="subres">
@@ -17035,6 +17097,27 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <input id="eo" placeholder="observação (ex.: aniversário)" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <button onclick="esperaNovo()">+ Colocar na fila</button>
 <div class="areas" id="eareas"></div></div>
+<div class="nres" id="nres" style="display:none">
+<div class="nt">Nova reserva</div>
+<div class="ng">
+<input class="c2" id="nr_tel" placeholder="WhatsApp ou CPF — busca quem já é de casa" inputmode="tel" autocomplete="off" oninput="nrTel()">
+<input class="c2" id="nr_nome" placeholder="Nome do cliente" autocomplete="off" oninput="nrPinta()">
+<input id="nr_pes" type="number" min="1" value="2" placeholder="Pessoas" title="quantas pessoas" oninput="nrPinta()">
+<input id="nr_data" type="date" title="dia da reserva" onchange="nrMapa()">
+<input id="nr_hora" type="time" value="17:00" title="hora da reserva" oninput="nrPinta()">
+<select id="nr_canal" title="Canal: como o cliente chegou até a reserva">
+<option value="telefone">Ligação</option><option value="balcao">Balcão</option><option value="instagram">Instagram</option>
+<option value="site">Site</option><option value="google">Google</option><option value="outro">Outro</option></select>
+<select class="c2" id="nr_area" onchange="NR.junt=[];nrMesas()"><option value="">Espaço…</option></select>
+<select class="c2" id="nr_mesa" onchange="NR.junt=[];nrPinta()"><option value="">Mesa…</option></select>
+<input class="c4" id="nr_obs" placeholder="Observação" autocomplete="off">
+</div>
+<div id="nr_quem"></div>
+<div id="nr_av"></div>
+<div class="nerr" id="nr_err"></div>
+<div class="nb"><button class="seg" onclick="nrFechar()">Fechar</button><button id="nr_ok" onclick="nrCriar()" disabled>Criar reserva</button></div>
+</div>
+<div class="okm" id="nrmsg" style="display:none"></div>
 <div id="app" class="vazio">carregando…</div>
 <script>
 var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',AREAS=[],LOJA='${LOJA_NOME}';
@@ -17219,6 +17302,7 @@ function aba(k){
   document.getElementById('tit').textContent=k==='esp'?'⏳ Lista de espera':'📅 Reservas de hoje';
   document.getElementById('subres').style.display=k==='esp'?'none':'';
   document.getElementById('novo').style.display=k==='esp'?'':'none';
+  if(k==='esp')nrFechar();
   pinta();
   if(k==='esp')document.getElementById('en').focus();
 }
@@ -17477,10 +17561,153 @@ async function carregarRes(){
   AVISO=d&&d.ok?(d.velho?'mostrando a última lista que deu pra baixar (o Concilia não respondeu agora)':''):('não deu pra falar com o Concilia: '+((d&&d.erro)||'sem resposta'));
   pinta();
 }
+/* ---- NOVA RESERVA: mesmos campos e regras do "Nova reserva" do Concilia ---- */
+// Fica fora do #app de proposito: a lista repinta a cada 30s e nao pode
+// apagar o que a recepcao esta digitando.
+var NR={aberto:false,areas:[],junt:[],quem:null,tmr:null,salvando:false,seq:0,msg:null};
+function nrHoje(){var d=new Date();function z(n){return (n<10?'0':'')+n}return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())}
+function nrBr(ymd){var p=String(ymd||'').split('-');return p.length===3?p[2]+'/'+p[1]:String(ymd||'')}
+function nrAbrir(){
+  if(ABA!=='res')aba('res');
+  NR.aberto=true;$('nres').style.display='';$('nrmsg').style.display='none';
+  $('nr_data').min=nrHoje();
+  if(!$('nr_data').value||$('nr_data').value<nrHoje())$('nr_data').value=nrHoje();
+  nrMapa();nrPinta();$('nr_tel').focus();
+}
+function nrFechar(){NR.aberto=false;$('nres').style.display='none'}
+function nrLimpar(){
+  ['nr_tel','nr_nome','nr_obs'].forEach(function(k){$(k).value=''});
+  $('nr_pes').value='2';$('nr_hora').value='17:00';$('nr_canal').value='telefone';
+  $('nr_data').value=nrHoje();$('nr_area').value='';$('nr_mesa').value='';
+  NR.junt=[];NR.quem=null;$('nr_err').textContent='';nrQuemPinta();nrMesas();
+}
+// Mapa de mesas da DATA escolhida (a nuvem diz o que esta livre naquele dia).
+async function nrMapa(){
+  var data=$('nr_data').value||nrHoje(),seq=++NR.seq,d;
+  try{d=await (await fetch('/api/reservas/mapa?data='+encodeURIComponent(data),{headers:hdrs(),cache:'no-store'})).json()}
+  catch(e){d={ok:false,erro:'sem resposta do servidor da loja'}}
+  if(seq!==NR.seq)return;
+  if(d&&d.sem_sessao)return telaLogin('Sua sessão venceu — entre de novo.');
+  if(!d||!d.ok){$('nr_err').textContent='o mapa de mesas não carregou: '+((d&&d.erro)||'sem resposta')+' — dá pra criar sem mesa.';NR.areas=[]}
+  else{NR.areas=(d.areas||[]).filter(function(a){return a&&a.nome&&!a.somenteEventos});
+    if($('nr_err').textContent.indexOf('o mapa de mesas')===0)$('nr_err').textContent=''}
+  var s=$('nr_area'),at=s.value;
+  s.innerHTML='<option value="">Espaço…</option>'+NR.areas.map(function(a){
+    return '<option value="'+esc(a.nome)+'">'+esc(a.nome)+(a.horaLimite?' (até '+esc(a.horaLimite)+')':'')+'</option>'}).join('');
+  s.value=at;if(s.value!==at)s.value='';
+  nrMesas();
+}
+function nrAreaSel(){var n=$('nr_area').value;if(!n)return null;
+  for(var i=0;i<NR.areas.length;i++)if(NR.areas[i].nome===n)return NR.areas[i];return null}
+function nrLivres(){var a=nrAreaSel();return a?(a.mesas||[]).filter(function(m){return m.livre}):[]}
+function nrMesas(){
+  var L=nrLivres(),s=$('nr_mesa'),at=s.value;
+  s.innerHTML='<option value="">Mesa…</option>'+L.map(function(m){
+    return '<option value="'+esc(m.numero)+'">Mesa '+esc(m.numero)+' ('+m.lugares+' lug)</option>'}).join('');
+  s.value=at;if(s.value!==at)s.value='';
+  s.disabled=!nrAreaSel();
+  NR.junt=NR.junt.filter(function(n){return n!==s.value&&L.some(function(m){return m.numero===n})});
+  if(!s.value)NR.junt=[];
+  nrPinta();
+}
+function nrPinta(){
+  var a=nrAreaSel(),hora=$('nr_hora').value,pes=Number($('nr_pes').value)||0,h='';
+  var inval=!!(a&&a.horaLimite&&hora&&hora>a.horaLimite);
+  $('nr_hora').className=inval?'bad':'';
+  if(inval)h+='<div class="hl">'+esc(a.nome)+' aceita reserva de mesa só até '+esc(a.horaLimite)+' — escolha um horário mais cedo (a ideia é o pessoal chegar antes 😉).</div>';
+  var mesa=$('nr_mesa').value,L=nrLivres(),ms=null;
+  L.forEach(function(m){if(m.numero===mesa)ms=m});
+  if(ms&&L.length>1){
+    var cap=ms.lugares,nomes=[ms.numero];
+    L.forEach(function(m){if(NR.junt.indexOf(m.numero)>=0){cap+=m.lugares;nomes.push(m.numero)}});
+    var baixa=pes>cap;
+    h+='<div class="nj'+(baixa?' baixa':'')+'">'+(baixa
+      ?'A Mesa '+esc(ms.numero)+' tem '+ms.lugares+' lugares, mas a reserva é pra '+pes+' pessoas. Marque as mesas do lado dela pra juntar:'
+      :'Grupo grande? Marque as mesas do lado da '+esc(ms.numero)+' pra juntar numa reserva só:')+
+      '<div class="ch">'+L.filter(function(m){return m.numero!==mesa}).map(function(m){
+        return '<button type="button" class="'+(NR.junt.indexOf(m.numero)>=0?'on':'')+'" data-nj="'+esc(m.numero)+'">Mesa '+esc(m.numero)+' ('+m.lugares+' lug)</button>'}).join('')+'</div>'+
+      (nomes.length>1?'<div class="sm '+(baixa?'falta':'cabe')+'">Mesa '+esc(nomes.join(' + '))+' = '+cap+' lugares'+(baixa?' — ainda não cabe, marque mais uma.':' ✓')+'</div>':'')+
+      '</div>';
+  }
+  $('nr_av').innerHTML=h;
+  $('nr_ok').disabled=NR.salvando||!$('nr_nome').value.trim()||inval;
+  $('nr_ok').textContent=NR.salvando?'Salvando…':'Criar reserva';
+}
+$('nr_av').addEventListener('click',function(ev){
+  var t=ev.target;if(!t||!t.getAttribute)return;
+  var n=t.getAttribute('data-nj');if(!n)return;
+  var i=NR.junt.indexOf(n);if(i>=0)NR.junt.splice(i,1);else NR.junt.push(n);
+  nrPinta();
+});
+// CADASTRO UNICO na entrada: o telefone (ou CPF) diz quem e a pessoa antes do
+// nome — ja e de casa, quantas reservas fez, se deve fiado, se ja tem reserva.
+function nrTel(){
+  if(NR.tmr)clearTimeout(NR.tmr);
+  var d=dig($('nr_tel').value);
+  if(d.length<8){NR.quem=null;nrQuemPinta();return}
+  NR.tmr=setTimeout(async function(){
+    var r=await post('/api/reservas/quem',{q:d});
+    if(!r||!r.ok)return; // busca é conveniência — não trava a criação
+    if(dig($('nr_tel').value)!==d)return;
+    NR.quem=r;
+    if(r.achou&&r.por==='cpf'&&r.telefone)$('nr_tel').value=r.telefone;
+    if(r.achou&&r.nome&&!$('nr_nome').value.trim())$('nr_nome').value=r.nome;
+    nrQuemPinta();nrPinta();
+  },450);
+}
+function nrUsarNome(){if(NR.quem&&NR.quem.nome){$('nr_nome').value=NR.quem.nome;nrQuemPinta();nrPinta()}}
+function nrQuemPinta(){
+  var q=NR.quem,el=$('nr_quem');
+  $('nr_tel').className='c2'+(q&&q.achou?' casa':'');
+  if(!q||q.curto){el.innerHTML='';return}
+  if(!q.achou){el.innerHTML='<div class="pv">Primeira vez desse telefone por aqui — sem cadastro ainda.</div>';return}
+  var v=Number(q.visitas)||0;
+  var h='<div class="qm">✓ Já é de casa: <b>'+esc(q.nome||'sem nome no cadastro')+'</b>';
+  if(v>0)h+=' · '+v+' reserva'+(v>1?'s':'')+' antes'+(q.ultima?' (última '+nrBr(q.ultima)+')':'');
+  if(q.clientePdv)h+=' · cliente do PDV';
+  if(q.contato&&(q.contato.reservas>0||q.contato.filas>0)){
+    var pt=[];
+    if(q.contato.reservas>0)pt.push(q.contato.reservas+' reserva'+(q.contato.reservas>1?'s':''));
+    if(q.contato.filas>0)pt.push(q.contato.filas+' fila de espera');
+    h+=' · histórico do '+esc(q.contato.origem==='tagme'?'Tagme':q.contato.origem)+': '+pt.join(' + ');
+  }
+  if(Number(q.fiadoSaldo)>0)h+='<span class="fi">deve '+brl(q.fiadoSaldo)+' no fiado</span>';
+  if(q.nome&&q.nome!==$('nr_nome').value)h+='<button type="button" onclick="nrUsarNome()">usar &quot;'+esc(q.nome)+'&quot;</button>';
+  if(q.ativas&&q.ativas.length)h+='<div class="at">⚠ Já tem reserva ativa: '+q.ativas.map(function(a){
+    return nrBr(a.data)+' '+esc(a.hora)+' ('+esc(a.status)+')'}).join(' · ')+' — confira antes de criar outra.</div>';
+  el.innerHTML=h+'</div>';
+}
+async function nrCriar(){
+  if(NR.salvando)return;
+  var nome=$('nr_nome').value.trim();
+  if(!nome){$('nr_nome').focus();return}
+  var dia=$('nr_data').value,hora=$('nr_hora').value,mesa=$('nr_mesa').value;
+  if(!dia||!hora){$('nr_err').textContent='escolha a data e a hora';return}
+  NR.salvando=true;$('nr_err').textContent='';nrPinta();
+  var r=await post('/api/reservas/nova',{clienteNome:nome,clienteTelefone:$('nr_tel').value.trim(),
+    pessoas:Number($('nr_pes').value)||1,data:dia,hora:hora,canal:$('nr_canal').value,
+    area:$('nr_area').value,mesa:mesa,mesasJuntadas:mesa?NR.junt:[],observacao:$('nr_obs').value});
+  NR.salvando=false;
+  if(!r||!r.ok){
+    if(r&&r.sem_sessao)return;
+    $('nr_err').textContent=(r&&r.erro)||'não deu pra criar a reserva';
+    nrPinta();nrMapa(); // a mesa pode ter sido pega agora: atualiza o que está livre
+    return;
+  }
+  var hj=dia===nrHoje();
+  nrLimpar();nrFechar();
+  var m=$('nrmsg');
+  m.textContent='✓ Reserva de '+nome+' criada pra '+(hj?'hoje':nrBr(dia))+' às '+hora+(hj?'.':' — ela aparece nesta tela no dia. No Concilia já está na agenda.');
+  m.style.display='';
+  if(NR.msg)clearTimeout(NR.msg);
+  NR.msg=setTimeout(function(){m.style.display='none'},12000);
+  MEXEU=0;carregarRes();
+}
 /* ---- porta de entrada ---- */
 function telaLogin(msg){
   if(TMR){clearInterval(TMR);TMR=null}
   $('barra').style.display='none';$('subres').style.display='none';$('novo').style.display='none';
+  $('nres').style.display='none';$('nrmsg').style.display='none';NR.aberto=false;
   $('eu').innerHTML='';
   var el=$('app');el.className='';
   el.innerHTML='<div class="login"><div class="lt">&#128197; Reservas &amp; lista de espera</div>'+
@@ -27078,6 +27305,17 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ ok: false, erro: 'Entre com seu login pra ver as reservas.', sem_sessao: true }));
       }
     }
+    // Nova reserva pela recepção: mesma porta (login + PIN) das outras ações.
+    if (!RECEP && (p === '/api/reservas/nova' || p === '/api/reservas/quem' || p === '/api/reservas/mapa')) {
+      RECEP = await recepcaoDaRequisicao(req, u);
+      if (!RECEP) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, erro: 'Entre com seu login pra criar reserva.', sem_sessao: true }));
+      }
+    }
+    if (p === '/api/reservas/mapa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaMapa(u.searchParams.get('data')))); }
+    if (req.method === 'POST' && p === '/api/reservas/quem') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaQuem(body))); }
+    if (req.method === 'POST' && p === '/api/reservas/nova') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaNova(body, RECEP && (RECEP.nome || RECEP.login)))); }
     if (p === '/api/reservas') {
       const n = await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({

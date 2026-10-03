@@ -199,6 +199,10 @@ export async function POST(request: Request) {
   }
   if (body.tipo === 'avaliacao_nova') return avaliacaoNova(String(body.f), body as unknown as AvaliacaoNova);
   if (body.tipo === 'espera_nova') return esperaNova(String(body.f), body as unknown as EsperaNova);
+  // NOVA RESERVA pela recepção da loja — mesmo modelo do painel (/reservas).
+  if (body.tipo === 'reserva_mapa') return reservaMapa(String(body.f), body as unknown as { data?: string });
+  if (body.tipo === 'reserva_quem') return reservaQuem(String(body.f), body as unknown as { q?: string });
+  if (body.tipo === 'reserva_nova') return reservaNova(String(body.f), body as unknown as ReservaNova);
   const id = String(body.id || '');
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ ok: false, erro: 'id inválido' }, { status: 400 });
@@ -505,4 +509,150 @@ async function esperaNova(f: string, b: EsperaNova) {
     })
     .returning({ id: schema.listaEspera.id });
   return NextResponse.json({ ok: true, id: nova?.id ?? null });
+}
+
+/** Mapa de mesas de UMA DATA (não só hoje) pro formulário de Nova reserva da
+ *  loja: áreas ativas com a hora limite e cada mesa marcada livre/ocupada —
+ *  mesma conta do painel (reserva ativa da data + comanda aberta se for hoje). */
+async function reservaMapa(f: string, b: { data?: string }) {
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(String(b.data || '')) ? String(b.data) : hojeBr();
+  const { db, schema } = await import('@concilia/db');
+  const { eq } = await import('drizzle-orm');
+  const { mesasOcupadas } = await import('@/lib/reservas/mesa-disponivel');
+  const [fil] = await db
+    .select({ reservaConfig: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, f))
+    .limit(1);
+  const cfg = (fil?.reservaConfig?.areas ?? []).filter((a) => a.ativo !== false);
+  const areas = [];
+  for (const a of cfg) {
+    const numeros = (a.mesas ?? []).map((m) => String(m.numero).trim());
+    const ocupadas = await mesasOcupadas({ filialId: f, data, area: a.nome, mesasValidas: numeros });
+    areas.push({
+      nome: a.nome,
+      horaLimite: a.horaLimite ?? null,
+      somenteEventos: a.somenteEventos === true,
+      mesas: (a.mesas ?? []).map((m) => {
+        const numero = String(m.numero).trim();
+        return { numero, lugares: Number(m.lugares) || 0, juntavel: m.juntavel === true, livre: !ocupadas.has(numero) };
+      }),
+    });
+  }
+  return NextResponse.json({ ok: true, data, hoje: hojeBr(), areas });
+}
+
+/** "Já é de casa?" — mesma resposta do GET /api/reservas/quem do painel. */
+async function reservaQuem(f: string, b: { q?: string }) {
+  const { quemEhDaReserva } = await import('@/lib/reservas/quem');
+  return NextResponse.json(await quemEhDaReserva(f, String(b.q || '')));
+}
+
+type ReservaNova = {
+  clienteNome?: string; clienteTelefone?: string | null; pessoas?: number; data?: string; hora?: string;
+  canal?: string; area?: string | null; mesa?: string | null; mesasJuntadas?: string[]; observacao?: string | null;
+  por?: string;
+};
+const CANAIS_RESERVA = new Set(['google', 'instagram', 'site', 'telefone', 'balcao', 'widget', 'outro']);
+
+/** Recepção criou uma RESERVA pela tela da loja. Mesmas regras do POST
+ *  /api/reservas (painel): nasce pendente, não deixa mesa em duas reservas,
+ *  respeita "somente eventos" e a hora limite do espaço, liga ao cliente
+ *  único pelo telefone. Fica registrado quem lançou (reserva_alteracao). */
+async function reservaNova(f: string, b: ReservaNova) {
+  const clienteNome = String(b.clienteNome || '').trim();
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(String(b.data || '')) ? String(b.data) : null;
+  const hora = /^\d{2}:\d{2}$/.test(String(b.hora || '')) ? String(b.hora) : null;
+  if (!clienteNome || !data || !hora) {
+    return NextResponse.json({ ok: false, erro: 'nome, data e hora são obrigatórios' }, { status: 400 });
+  }
+  if (data < hojeBr()) {
+    return NextResponse.json({ ok: false, erro: 'essa data já passou' }, { status: 400 });
+  }
+  const nPes = Math.round(Number(b.pessoas));
+  const pessoas = Number.isFinite(nPes) && nPes > 0 ? Math.min(nPes, 999) : 1;
+  const canal = CANAIS_RESERVA.has(String(b.canal)) ? String(b.canal) : 'outro';
+  const txt = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+  const area = txt(b.area, 100);
+  const mesa = txt(b.mesa, 20);
+  const { serializeJuntadas } = await import('@/lib/reservas/mesas-juntadas');
+  const mesaJuntada = serializeJuntadas(
+    Array.isArray(b.mesasJuntadas) ? b.mesasJuntadas.filter((x): x is string => typeof x === 'string') : [],
+    mesa,
+  );
+  const todasMesas = mesasDaReserva(mesa, mesaJuntada);
+
+  const { db, schema } = await import('@concilia/db');
+  const { eq } = await import('drizzle-orm');
+  let espacoCfg: { somenteEventos?: boolean; horaLimite?: string | null; mesas?: Array<{ numero: string | number }> } | undefined;
+  if (area) {
+    const [fil] = await db
+      .select({ reservaConfig: schema.filial.reservaConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, f))
+      .limit(1);
+    espacoCfg = fil?.reservaConfig?.areas?.find((a) => a.nome === area);
+    if (!espacoCfg) return NextResponse.json({ ok: false, erro: `espaço ${area} não existe` }, { status: 400 });
+  }
+  const mesasValidas = espacoCfg?.mesas?.map((m) => String(m.numero).trim());
+  if (mesa && area) {
+    const fora = todasMesas.filter((m) => !mesasValidas?.includes(m));
+    if (fora.length) {
+      return NextResponse.json({ ok: false, erro: `Mesa ${fora.join('/')} não é de ${area}.` }, { status: 400 });
+    }
+    const { mesasEstaoLivres } = await import('@/lib/reservas/mesa-disponivel');
+    const livre = await mesasEstaoLivres({ filialId: f, data, area, mesas: todasMesas, mesasValidas });
+    if (!livre) {
+      return NextResponse.json(
+        { ok: false, erro: `Mesa ${todasMesas.join('/')} já está ocupada em ${area} nessa data.` },
+        { status: 409 },
+      );
+    }
+  }
+  if (area) {
+    if (espacoCfg?.somenteEventos) {
+      return NextResponse.json({ ok: false, erro: `${area} está disponível somente para eventos` }, { status: 400 });
+    }
+    if (espacoCfg?.horaLimite && hora > espacoCfg.horaLimite) {
+      return NextResponse.json(
+        { ok: false, erro: `${area} aceita reserva de mesa só até ${espacoCfg.horaLimite}` },
+        { status: 400 },
+      );
+    }
+  }
+
+  const telefone = txt(b.clienteTelefone, 30);
+  const { ligacaoDaReserva } = await import('@/lib/cliente-unico');
+  const [nova] = await db
+    .insert(schema.reserva)
+    .values({
+      filialId: f,
+      clienteNome: clienteNome.slice(0, 200),
+      clienteTelefone: telefone,
+      ...(await ligacaoDaReserva(f, { telefone })),
+      pessoas,
+      data,
+      hora,
+      status: 'pendente',
+      area,
+      mesa,
+      mesaJuntada,
+      canal,
+      observacao: txt(b.observacao, 2000),
+    })
+    .returning({ id: schema.reserva.id });
+
+  // Quem lançou — a reserva não tem coluna de autor; fica no histórico dela.
+  try {
+    const { registrarAlteracoesReserva } = await import('@/lib/reservas/alteracoes');
+    await registrarAlteracoesReserva(
+      nova.id,
+      { status: null },
+      { status: 'pendente' },
+      { tipo: 'equipe', nome: String(b.por || 'recepção (loja)').slice(0, 120) },
+    );
+  } catch {
+    /* histórico é best-effort: a reserva já está criada */
+  }
+  return NextResponse.json({ ok: true, id: nova.id });
 }
