@@ -170,6 +170,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
         )}
 
         <PontoManager
+          filialId={filialSelecionada.id}
           dias={dias.map((d) => ({ iso: d, label: nomeDia(d) }))}
           funcionarios={funcionarios}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}

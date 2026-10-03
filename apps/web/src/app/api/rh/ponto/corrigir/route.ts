@@ -14,6 +14,10 @@ export const runtime = 'nodejs';
 
 const Body = z.object({
   funcionarioId: z.string().uuid(),
+  // Casa que está aberta na tela. Quem circula entre lojas tem cadastro numa
+  // casa e bate ponto em outra: sem isso a inclusão caía na casa do cadastro e
+  // sumia da grade (Isabel, 02/10/2026 — lançada 5x na Bar, olhando a Mar).
+  filialId: z.string().uuid().optional(),
   dia: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   acao: z.enum(['inclusao', 'alteracao', 'exclusao']),
   batidaId: z.string().uuid().optional(),
@@ -61,12 +65,31 @@ export async function POST(req: Request) {
     .limit(1);
   if (!func) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
 
+  // Sem filialId (aba aberta com a tela antiga) vale a casa do cadastro, como sempre foi.
+  const filialTela = d.filialId ?? func.filialId;
+  if (filialTela !== func.filialId) {
+    const [vinculo] = await db
+      .select({ id: schema.funcionarioFilialExtra.id })
+      .from(schema.funcionarioFilialExtra)
+      .where(
+        and(
+          eq(schema.funcionarioFilialExtra.funcionarioId, d.funcionarioId),
+          eq(schema.funcionarioFilialExtra.filialId, filialTela),
+        ),
+      )
+      .limit(1);
+    if (!vinculo) return NextResponse.json({ error: 'funcionário não é desta filial' }, { status: 400 });
+  }
+
   const [acesso] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
-    .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, func.filialId)))
+    .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialTela)))
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+
+  // Casa onde a batida mora — é ela que recalcula as horas do dia.
+  let filialBatida = filialTela;
 
   let batidaId: string | null = null;
   let valorAntes: { quando: string; tipo: string } | null = null;
@@ -76,7 +99,7 @@ export async function POST(req: Request) {
     const [criada] = await db
       .insert(schema.pontoBatida)
       .values({
-        filialId: func.filialId,
+        filialId: filialTela,
         funcionarioId: d.funcionarioId,
         quando: quando!,
         diaOperacional: d.dia,
@@ -93,6 +116,10 @@ export async function POST(req: Request) {
       .where(and(eq(schema.pontoBatida.id, d.batidaId!), eq(schema.pontoBatida.funcionarioId, d.funcionarioId)))
       .limit(1);
     if (!atual) return NextResponse.json({ error: 'batida não encontrada' }, { status: 404 });
+    if (atual.filialId !== filialTela && atual.filialId !== func.filialId) {
+      return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+    }
+    filialBatida = atual.filialId;
     valorAntes = { quando: atual.quando.toISOString(), tipo: atual.tipo };
     batidaId = atual.id;
 
@@ -112,7 +139,7 @@ export async function POST(req: Request) {
   }
 
   await db.insert(schema.pontoBatidaAjuste).values({
-    filialId: func.filialId,
+    filialId: filialBatida,
     funcionarioId: d.funcionarioId,
     batidaId,
     dia: d.dia,
@@ -123,6 +150,6 @@ export async function POST(req: Request) {
     usuarioId: user.id,
   });
 
-  const resultado = await projetarPontoEmFolhaHoras(func.filialId, d.dia, d.dia);
+  const resultado = await projetarPontoEmFolhaHoras(filialBatida, d.dia, d.dia);
   return NextResponse.json({ ok: true, ...resultado });
 }

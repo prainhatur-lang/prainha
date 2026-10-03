@@ -15,6 +15,8 @@ interface Celula {
   status: string;
 }
 interface Props {
+  /** Casa aberta na tela: a correção grava nela, não na casa do cadastro. */
+  filialId: string;
   dias: { iso: string; label: string }[];
   funcionarios: { id: string; nome: string; temRosto: boolean }[];
   grade: Celula[];
@@ -32,7 +34,7 @@ function fmtHora(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export function PontoManager({ dias, funcionarios, grade }: Props) {
+export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
   const router = useRouter();
   const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
   const byChave = new Map(grade.map((c) => [c.chave, c]));
@@ -136,6 +138,7 @@ export function PontoManager({ dias, funcionarios, grade }: Props) {
 
       {modal && (
         <ModalCorrecao
+          filialId={filialId}
           funcionarioId={modal.funcionarioId}
           funcionarioNome={modal.funcionarioNome}
           dia={modal.dia}
@@ -152,6 +155,7 @@ export function PontoManager({ dias, funcionarios, grade }: Props) {
 }
 
 function ModalCorrecao({
+  filialId,
   funcionarioId,
   funcionarioNome,
   dia,
@@ -159,6 +163,7 @@ function ModalCorrecao({
   onClose,
   onSalvo,
 }: {
+  filialId: string;
   funcionarioId: string;
   funcionarioNome: string;
   dia: string;
@@ -202,7 +207,7 @@ function ModalCorrecao({
       setErro('Justificativa precisa de pelo menos 10 caracteres.');
       return;
     }
-    const body: Record<string, unknown> = { funcionarioId, dia, acao, justificativa: justificativa.trim() };
+    const body: Record<string, unknown> = { funcionarioId, filialId, dia, acao, justificativa: justificativa.trim() };
     if (acao === 'inclusao') {
       if (!hora) { setErro('Informe o horário.'); return; }
       body.quando = `${dia}T${hora}:00${FUSO_BR}`;
