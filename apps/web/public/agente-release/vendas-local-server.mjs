@@ -13721,18 +13721,23 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 @keyframes pisca{50%{opacity:.35}}
 .ptime{font-size:11px;color:var(--mut);margin-left:6px;white-space:nowrap}
 /* ---- PONTO por reconhecimento facial ---- */
-#pfModal{position:fixed;inset:0;background:rgba(10,10,14,.94);z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff;padding:24px}
+/* Tela BRANCA (02/10/2026): no escuro o reconhecimento confundia gente — a
+   própria tela vira a luz no rosto. A câmera aparece só dentro do molde oval,
+   pra pessoa encaixar o rosto; o resto fica branco. */
+#pfModal{position:fixed;inset:0;background:#fff;z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;color:#111;padding:24px}
 #pfModal.on{display:flex}
-#pfModal video{width:min(88vw,460px);border-radius:20px;transform:scaleX(-1);background:#000}
+.pfoval{width:min(39vh,66vw,300px);height:min(52vh,88vw,400px);border-radius:50%;overflow:hidden;border:7px solid #1b1b20;background:#e5e5ea;flex:none}
+.pfoval.ok{border-color:#16a34a}
+#pfModal video{width:100%;height:100%;object-fit:cover;display:block;transform:scaleX(-1);background:#e5e5ea}
 .pfstatus{margin-top:18px;font-size:21px;font-weight:700;text-align:center;max-width:460px}
-.pfsub{margin-top:6px;font-size:14px;color:#c8c8d0;text-align:center}
-.pfclose{position:absolute;top:18px;right:18px;background:rgba(255,255,255,.14);border:none;color:#fff;width:44px;height:44px;border-radius:50%;font-size:20px;cursor:pointer}
+.pfsub{margin-top:6px;font-size:14px;color:#55555f;text-align:center}
+.pfclose{position:absolute;top:18px;right:18px;background:rgba(0,0,0,.1);border:none;color:#111;width:44px;height:44px;border-radius:50%;font-size:20px;cursor:pointer}
 .pflist{margin-top:14px;max-height:38vh;overflow:auto;width:min(88vw,460px);display:grid;gap:8px}
-.pflist button{background:#fff;color:#1b1b20;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
+.pflist button{background:#f1f1f4;color:#1b1b20;border:1px solid #d4d4dc;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
 .pfconfirm{font-size:27px;font-weight:800;text-align:center;border:3px solid currentColor;border-radius:16px;padding:14px 22px}
 .pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
-.pfconfirm.saida{color:#f59e0b}.pfconfirm.entrada{color:#22c55e}
-.pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:none;font-size:15px;margin-top:14px}
+.pfconfirm.saida{color:#b45309}.pfconfirm.entrada{color:#15803d}
+.pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:1px solid #b4b4be;background:#fff;color:#111;font-size:15px;margin-top:14px}
 .menubtn{font-size:20px;padding:5px 12px;font-weight:700}
 #menuCasa{display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25)}
 #menuCasa.on{display:block}
@@ -13779,7 +13784,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 </script>
 <div id="pfModal">
   <button class="pfclose" onclick="fecharPontoFacial()">✕</button>
-  <video id="pfVideo" autoplay playsinline muted></video>
+  <div class="pfoval" id="pfOval"><video id="pfVideo" autoplay playsinline muted></video></div>
   <div class="pfstatus" id="pfStatus">Carregando…</div>
   <div class="pfsub" id="pfSub"></div>
   <div id="pfExtra"></div>
@@ -14002,7 +14007,21 @@ var PF_PREP=null, PF_MOTOR='';
 var PF_LIMIAR=0.45, PF_FOLGA=0.07, PF_SEGUIDOS=3, PF_INCERTO_MAX=8;
 var PF_SEQ=null, PF_INCERTO=0, PF_AMOSTRAS=[], PF_FECHA_T=null;
 function PF_OPTS(){ return new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5}); }
-function pfSt(t){ var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t){ e.textContent=t; return true; } return false; }
+function pfSt(t){
+  var o=document.getElementById('pfOval'); if (o) o.className='pfoval'+(t.indexOf('Reconhecendo')===0?' ok':'');
+  var e=document.getElementById('pfStatus'); if(e&&e.textContent!==t){ e.textContent=t; return true; } return false;
+}
+/* Brilho no máximo enquanto o Ponto está aberto (tablet no Fully Kiosk com a
+   interface JavaScript ligada); ao fechar volta o brilho que estava. Fora do
+   Fully não faz nada. */
+var PF_BRILHO=null;
+function pfBrilho(liga){
+  try {
+    if (!window.fully||!fully.setScreenBrightness) return;
+    if (liga) { if (PF_BRILHO==null) PF_BRILHO=fully.getScreenBrightness(); fully.setScreenBrightness(255); }
+    else if (PF_BRILHO!=null) { fully.setScreenBrightness(PF_BRILHO); PF_BRILHO=null; }
+  } catch(x) {}
+}
 /* Velocidade na hora da foto (30/09/2026, "ainda está muito lento"): cada volta
    rodava o detector DUAS vezes (a 2a num quadro novo, só pra emendar pontos do
    rosto + descritor), dormia 30 ms e ainda esperava o próximo tique fixo de
@@ -14094,6 +14113,7 @@ function pfCarregaScript(src){
 }
 async function abrirPontoFacial(){
   document.getElementById('pfModal').classList.add('on');
+  pfBrilho(true);
   document.getElementById('pfStatus').textContent='Carregando reconhecimento facial…';
   document.getElementById('pfSub').textContent='';
   document.getElementById('pfExtra').innerHTML='';
@@ -14121,7 +14141,7 @@ async function abrirPontoFacial(){
       return {funcionario_id:p.funcionario_id, nome:p.nome, descriptor:new Float32Array(p.face_descriptor)};
     });
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
-    pfSt('Olhe para a câmera');
+    pfSt('Encaixe o rosto no molde');
     document.getElementById('pfSub').textContent=(PF_MOTOR==='cpu'?'modo lento (cpu)':'');
     // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
     // stream da mesma camera falha em varios tablets Android (NotReadableError)
@@ -14191,7 +14211,7 @@ async function pfTick(){
     // fecharam/reabriram o Ponto (ou a trava foi solta) no meio da volta: descarta
     if (eu!==PF_TICK_ID||loop!==PF_LOOP) return;
     tm.nDet=(tm.nDet||0)+1; tm.msDet=(tm.msDet||0)+(performance.now()-t0);
-    if (!achou) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
+    if (!achou) { pfSt('Encaixe o rosto no molde'); PF_SEQ=null; return; }
     if (achou.box.width < quadro.width*0.18) { pfSt('Chegue mais perto da câmera'); PF_SEQ=null; pressa=true; return; }
     // mesma nota mínima de antes (0.7), só que conferida ANTES das redes
     // pesadas: quadro que ia ser descartado não gasta landmarks + descritor
@@ -14207,7 +14227,7 @@ async function pfTick(){
       Promise.resolve(faceapi.extendWithFaceDetection({}, achou)), quadro, false).withFaceDescriptor();
     if (eu!==PF_TICK_ID||loop!==PF_LOOP) return;
     tm.n=(tm.n||0)+1; tm.msRedes=(tm.msRedes||0)+(performance.now()-t1);
-    if (!det) { pfSt('Olhe para a câmera'); PF_SEQ=null; return; }
+    if (!det) { pfSt('Encaixe o rosto no molde'); PF_SEQ=null; return; }
     if (det.detection.score < 0.7) { pfSt('Fique parado, de frente pra câmera'); PF_SEQ=null; return; }
     pfAmostra(det.descriptor);
     if (!PF_ROSTOS.length) {
@@ -14323,7 +14343,7 @@ function pfFiltra(){
   var lista=(PF_SEM_ROSTO||[]).filter(function(p){return !termo||p.nome.toLowerCase().indexOf(termo)>=0});
   var el=document.getElementById('pfLista');
   el.innerHTML=lista.map(function(p){return '<button data-fid="'+esc(p.funcionario_id)+'">'+esc(p.nome)+'</button>';})
-    .join('') || '<div style="color:#aaa;padding:10px">nenhum nome encontrado</div>';
+    .join('') || '<div style="color:#666;padding:10px">nenhum nome encontrado</div>';
   el.querySelectorAll('button').forEach(function(btn){
     btn.onclick=function(){ pfCadastrar(btn.getAttribute('data-fid')); };
   });
@@ -14358,7 +14378,7 @@ function pfPedeLiberacao(funcionarioId, pessoa){
     '<input class="pfbusca" id="pfLibP" placeholder="PIN" type="password" inputmode="numeric" maxlength="8">'+
     '<input class="pfbusca" id="pfLibP2" placeholder="repita o PIN" type="password" inputmode="numeric" maxlength="8" style="display:none">'+
     '<button class="pfbusca" id="pfLibB" style="cursor:pointer;font-weight:700">Liberar cadastro</button>'+
-    '<div id="pfLibE" style="color:#fca5a5;margin-top:6px"></div>';
+    '<div id="pfLibE" style="color:#b91c1c;margin-top:6px"></div>';
   document.getElementById('pfLibB').onclick=async function(){
     var b={a:'ponto',login:document.getElementById('pfLibL').value.trim(),pin:document.getElementById('pfLibP').value,pin2:document.getElementById('pfLibP2').value};
     var r;
@@ -14377,6 +14397,7 @@ function fecharPontoFacial(){
   PF_STREAM=null; PF_STREAM_PROPRIO=false;
   var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
   document.getElementById('pfModal').classList.remove('on');
+  pfBrilho(false);
 }
 // Tablet deitado e baixo: o menu passava da borda e o Gerente/Configurar
 // ficavam inalcancaveis (nao rolava). Agora ele so vai ate onde a tela vai
