@@ -9,6 +9,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
 import { conflitoOutraCasa } from '@/lib/rh/conflito-casas';
+import { horaMinutoBr, madrugadaDoDia, msgMadrugadaFutura, quandoNoDiaOperacional } from '@/lib/rh/dia-operacional';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -54,9 +55,17 @@ export async function POST(req: Request) {
   if (d.acao !== 'inclusao' && !d.batidaId) {
     return NextResponse.json({ error: 'batidaId é obrigatório pra alterar/excluir' }, { status: 400 });
   }
-  const quando = d.quando ? quandoBr(d.quando) : null;
+  // O dia do ponto vira às 05:00 (como na loja): hora antes disso na coluna do
+  // dia D é a madrugada de D+1 — quem entrou à noite e saiu depois da
+  // meia-noite. A tela já manda o dia certo; aba aberta com a tela antiga manda
+  // o próprio D, e aqui vai pro dia seguinte.
+  const quando = d.quando ? quandoNoDiaOperacional(d.dia, quandoBr(d.quando)) : null;
   if (d.acao !== 'exclusao' && (!quando || Number.isNaN(quando.getTime()))) {
     return NextResponse.json({ error: 'horário inválido' }, { status: 400 });
+  }
+  // Madrugada que ainda não chegou não entra: a batida ficaria no futuro.
+  if (d.acao !== 'exclusao' && quando && madrugadaDoDia(d.dia, quando) && quando.getTime() > Date.now()) {
+    return NextResponse.json({ error: msgMadrugadaFutura(d.dia, horaMinutoBr(quando)) }, { status: 400 });
   }
 
   const [func] = await db

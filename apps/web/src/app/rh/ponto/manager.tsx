@@ -2,6 +2,14 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import {
+  dataDaHora,
+  diaMes,
+  horaDeMadrugada,
+  madrugadaDoDia,
+  msgMadrugadaFutura,
+  somarDias,
+} from '@/lib/rh/dia-operacional';
 
 interface BatidaCrua {
   id: string;
@@ -248,17 +256,24 @@ function ModalCorrecao({
       return;
     }
     const body: Record<string, unknown> = { funcionarioId, filialId, dia, acao, justificativa: justificativa.trim() };
+    // O dia do ponto vira às 05:00: hora antes disso é a madrugada do dia
+    // seguinte (quem entrou à noite e saiu depois da meia-noite). Com o próprio
+    // dia da coluna a saída ficava 24 h adiantada, na frente das entradas.
     if (acao === 'inclusao') {
       if (!hora) { setErro('Informe o horário.'); return; }
-      body.quando = `${dia}T${hora}:00${FUSO_BR}`;
+      body.quando = `${dataDaHora(dia, hora)}T${hora}:00${FUSO_BR}`;
       body.tipo = tipo;
     } else {
       body.batidaId = batidaAlvo!.id;
       if (acao === 'alteracao') {
         if (!hora) { setErro('Informe o horário.'); return; }
-        body.quando = `${dia}T${hora}:00${FUSO_BR}`;
+        body.quando = `${dataDaHora(dia, hora)}T${hora}:00${FUSO_BR}`;
         body.tipo = tipo;
       }
+    }
+    if (typeof body.quando === 'string' && horaDeMadrugada(hora) && new Date(body.quando).getTime() > Date.now()) {
+      setErro(msgMadrugadaFutura(dia, hora));
+      return;
     }
     setSalvando(true);
     try {
@@ -298,6 +313,9 @@ function ModalCorrecao({
                   <li key={b.id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-sm">
                     <span>
                       {b.tipo === 'entrada' ? 'Entrada' : 'Saída'} — <span className="font-mono">{fmtHora(b.quando)}</span>
+                      {madrugadaDoDia(dia, new Date(b.quando)) && (
+                        <span className="ml-1.5 text-xs text-slate-400">🌙 madrugada de {diaMes(somarDias(dia, 1))}</span>
+                      )}
                     </span>
                     <span className="flex gap-2">
                       <button type="button" onClick={() => iniciarAlteracao(b)} className="text-xs text-blue-600 hover:underline">
@@ -347,6 +365,12 @@ function ModalCorrecao({
                   />
                 </label>
               </div>
+            )}
+            {acao !== 'exclusao' && horaDeMadrugada(hora) && (
+              <p className="rounded-md bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
+                🌙 Depois da meia-noite: grava como <span className="font-mono">{hora}</span> de{' '}
+                {diaMes(somarDias(dia, 1))} e conta no dia {diaMes(dia)}.
+              </p>
             )}
             {acao === 'exclusao' && (
               <p className="text-sm text-slate-600">
