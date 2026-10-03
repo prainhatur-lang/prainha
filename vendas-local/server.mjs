@@ -9102,11 +9102,52 @@ async function apiPontoCadastrarRosto(body) {
   }
   const pessoa = (await sql`SELECT nome FROM ponto_funcionario WHERE funcionario_id=${funcionarioId} AND ativo`)[0];
   if (!pessoa) return { ok: false, erro: 'funcionário não encontrado ou inativo' };
+  // Rosto parecido demais com o de OUTRA pessoa não entra (03/10/2026: nas 3
+  // casas metade dos rostos tinha um vizinho a menos de 0,52 — cadastro feito
+  // no escuro ou de longe; o tablet ficava em "não tenho certeza" e, nos pares
+  // abaixo de 0,45, batia o ponto do outro). Só confere quando o tablet pede
+  // (confere:true): página antiga ainda aberta segue cadastrando como sempre.
+  let vizinho = null;
+  try {
+    const outros = await sql`SELECT nome, face_descriptor FROM ponto_funcionario
+      WHERE ativo AND face_descriptor IS NOT NULL AND funcionario_id <> ${funcionarioId}`;
+    for (const o of outros) {
+      const dist = pontoDistRosto(descriptor, o.face_descriptor);
+      if (dist != null && (!vizinho || dist < vizinho.dist)) vizinho = { dist, nome: o.nome };
+    }
+  } catch {}
+  const primeiro = (n) => String(n || '').trim().split(/\s+/)[0].slice(0, 20);
+  if (body.confere === true && vizinho && vizinho.dist < PONTO_ROSTO_PARECIDO) {
+    pontoFacialEvento({ via: 'cadastro_recusado', quem: primeiro(pessoa.nome), parecido: primeiro(vizinho.nome), dist_c: Math.round(vizinho.dist * 100) });
+    return { ok: false, parecido: true, nome_parecido: vizinho.nome, dist: Math.round(vizinho.dist * 100) / 100,
+      erro: `o rosto ficou parecido com o de ${vizinho.nome}` };
+  }
   // sql.json(), NUNCA JSON.stringify() — o driver postgres dupla-codifica
   // colunas jsonb quando a string já vem pronta (vide GOTCHA no CLAUDE.md).
   await sql`UPDATE ponto_funcionario SET face_descriptor=${sql.json(descriptor)}, face_sync_pendente=true,
     atualizado_em=now() WHERE funcionario_id=${funcionarioId}`;
+  pontoFacialEvento({ via: 'cadastro_rosto', quem: primeiro(pessoa.nome), vizinho_c: vizinho ? Math.round(vizinho.dist * 100) : null,
+    fotos: Number.isFinite(Number(body.fotos)) ? Number(body.fotos) : null });
   return { ok: true, nome: pessoa.nome };
+}
+// Distância entre dois rostos (a mesma conta do tablet); null se algum dos dois
+// não é um descritor de 128 números. 0,52 = 0,45 (limiar) + 0,07 (folga) do
+// tablet: vizinho mais perto que isso deixa a pessoa em "não tenho certeza".
+const PONTO_ROSTO_PARECIDO = 0.52;
+function pontoDistRosto(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 128 || b.length !== 128) return null;
+  let s = 0;
+  for (let i = 0; i < 128; i++) { const d = Number(a[i]) - Number(b[i]); s += d * d; }
+  return Number.isFinite(s) ? Math.sqrt(s) : null;
+}
+// Cadastro de rosto (aceito ou recusado) na mesma fila do diagnóstico das
+// batidas — só primeiro nome e número, nunca foto nem descritor.
+function pontoFacialEvento(x) {
+  try {
+    PONTO_FACIAL_TEMPOS.push({ em: new Date().toISOString(), ok: false, tipo: null, cooldown: false, ...x });
+    if (PONTO_FACIAL_TEMPOS.length > 40) PONTO_FACIAL_TEMPOS.shift();
+    console.log(`[ponto] facial ${x.via}: ${x.quem || '?'}${x.parecido ? ` parecido com ${x.parecido} (${(x.dist_c / 100).toFixed(2)})` : x.vizinho_c != null ? `, vizinho mais perto a ${(x.vizinho_c / 100).toFixed(2)}` : ''}`);
+  } catch {}
 }
 // Tempos do reconhecimento medidos no próprio tablet (30/09/2026, "o ponto
 // ainda está muito lento na hora da foto"): o KDS manda junto com a batida
@@ -9127,7 +9168,7 @@ function pontoFacialTempos(diag, r) {
     }
     PONTO_FACIAL_TEMPOS.push(x);
     if (PONTO_FACIAL_TEMPOS.length > 40) PONTO_FACIAL_TEMPOS.shift();
-    console.log(`[ponto] facial ${x.ok ? x.tipo : x.cooldown ? 'cooldown' : 'erro'}: motor ${x.motor ?? '?'}, ${x.quadros ?? '?'} quadro(s), detector ${x.ms_detector ?? '?'} ms, redes ${x.ms_redes ?? '?'} ms, rosto→batida ${x.ms_rosto_ate_bater ?? '?'} ms, abrir ${x.ms_abrir ?? '?'} ms`);
+    console.log(`[ponto] facial ${x.ok ? x.tipo : x.cooldown ? 'cooldown' : x.via === 'sem_batida' ? 'sem batida' : 'erro'}: motor ${x.motor ?? '?'}, ${x.quadros ?? '?'} quadro(s), detector ${x.ms_detector ?? '?'} ms, redes ${x.ms_redes ?? '?'} ms, rosto→batida ${x.ms_rosto_ate_bater ?? '?'} ms, abrir ${x.ms_abrir ?? '?'} ms`);
   } catch {}
 }
 // POST /api/ponto/bater-facial {funcionario_id} — sem PIN: o reconhecimento
@@ -14222,7 +14263,12 @@ function pfDiag(){
   return {motor:PF_MOTOR||null, via:t.via||'reconhecimento', modelos_prontos:!!t.modelosProntos, camera_reuso:!!t.reuso,
     ms_abrir:t.pronto==null?null:t.pronto, ms_desde_abrir:t.t0?Math.round(ag-t.t0):null, ms_rosto_ate_bater:t.rosto?Math.round(ag-t.rosto):null,
     deteccoes:t.nDet||0, ms_detector:med(t.msDet||0,t.nDet), quadros:t.n||0, ms_redes:med(t.msRedes||0,t.n),
-    incertos:t.inc||0, video:v&&v.videoWidth?v.videoWidth+'x'+v.videoHeight:null};
+    incertos:t.inc||0, video:v&&v.videoWidth?v.videoWidth+'x'+v.videoHeight:null,
+    // distâncias x100 (o servidor arredonda número): média dos quadros que
+    // bateram, o melhor quadro da sessão e a folga dele pro 2o mais parecido;
+    // ambiguos = perto de alguém mas colado no vizinho; longe = de ninguém
+    dist_c:med(t.sDist||0,t.nOk), melhor_c:t.melhorC==null?null:t.melhorC, folga_c:t.folgaC==null?null:t.folgaC,
+    ambiguos:t.amb||0, longe:t.longe||0, lista:!!t.lista, cad_fotos:t.cadFotos==null?null:t.cadFotos, cad_tentativas:t.cadTent||0};
 }
 /* Carrega a lib + modelos UMA vez e aquece as redes (a 1a inferencia compila
    shaders/aloca memoria e leva segundos). Roda em segundo plano logo que o KDS
@@ -14288,7 +14334,7 @@ async function abrirPontoFacial(){
   document.getElementById('pfStatus').textContent='Carregando reconhecimento facial…';
   document.getElementById('pfSub').textContent='';
   document.getElementById('pfExtra').innerHTML='';
-  PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false;
+  PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CAD_OK=null;
   PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[]; clearTimeout(PF_FECHA_T);
   PF_TEMPOS={t0:performance.now(), modelosProntos:PF_MODELOS_OK};
   // Em http://IP:8790 o navegador nem expoe navigator.mediaDevices — antes o
@@ -14413,6 +14459,11 @@ async function pfTick(){
       else if (!segundo||dist<segundo.dist) segundo={dist:dist, pessoa:PF_ROSTOS[i]};
     }
     var folga=segundo?(segundo.dist-melhor.dist):1;
+    // só medida pro diagnóstico (não decide nada)
+    var dC=Math.round(melhor.dist*100);
+    if (tm.melhorC==null||dC<tm.melhorC) { tm.melhorC=dC; tm.folgaC=Math.round(folga*100); }
+    if (melhor.dist<PF_LIMIAR && folga>=PF_FOLGA) { tm.nOk=(tm.nOk||0)+1; tm.sDist=(tm.sDist||0)+dC; }
+    else if (melhor.dist<PF_LIMIAR) tm.amb=(tm.amb||0)+1; else tm.longe=(tm.longe||0)+1;
     if (melhor.dist<PF_LIMIAR && folga>=PF_FOLGA) {
       PF_INCERTO=0;
       if (PF_SEQ && PF_SEQ.fid===melhor.pessoa.funcionario_id) PF_SEQ.n++;
@@ -14444,6 +14495,7 @@ async function pfTick(){
 async function pfBater(pessoa){
   clearInterval(PF_LOOP); PF_LOOP=null;
   var dg=null; try { dg=pfDiag(); } catch(x) {}
+  if (PF_TEMPOS) PF_TEMPOS.bateu=true;
   document.getElementById('pfStatus').textContent='Registrando o ponto de '+pessoa.nome+'…';
   var r;
   try {
@@ -14502,6 +14554,7 @@ async function pfNaoSouEu(batidaId){
 function pfMostraListaCadastro(descriptor){
   if (PF_CADASTRANDO) return; // já mostrando a lista — não repinta a cada tick
   PF_CADASTRANDO=descriptor;
+  if (PF_TEMPOS) PF_TEMPOS.lista=true;
   document.getElementById('pfStatus').textContent='Não te reconheci ainda';
   document.getElementById('pfSub').textContent='primeira vez? toque seu nome';
   document.getElementById('pfExtra').innerHTML=
@@ -14592,26 +14645,115 @@ function pfFiltra(){
     btn.onclick=function(){ pfCadastrar(btn.getAttribute('data-fid')); };
   });
 }
+/* Foto própria do cadastro (03/10/2026, "ainda com dificuldades de bater o
+   ponto"): o rosto guardado era a média dos quadros de ANTES da lista de nomes
+   — justamente os que o tablet não reconheceu, valendo rosto pequeno (18% da
+   largura) e nota 0.7. Cadastro feito no escuro ou de longe sai parecido com o
+   de todo mundo: nas 3 casas metade dos rostos tinha um vizinho colado, o
+   tablet ficava em "não tenho certeza" e às vezes batia o ponto do outro.
+   Agora, depois de tocar o nome, tira PF_CAD_FOTOS fotos novas, de perto e
+   nítidas, que combinem entre si; e o servidor recusa rosto parecido demais
+   com o de outra pessoa (tenta mais uma vez; se repetir, o ponto é registrado
+   como sempre, mas o rosto não fica guardado e a tela manda avisar o gerente).
+   Se em PF_CAD_MS não sair foto boa, vale a média de antes, como sempre foi.
+   As regras de BATER o ponto (limiar, folga, quadros seguidos) não mudam. */
+var PF_CAD_LARG=0.24, PF_CAD_NOTA=0.8, PF_CAD_FOTOS=5, PF_CAD_IGUAL=0.4, PF_CAD_MS=15000;
+var PF_CAD_OK=null;
+function pfEspera(p, ms){
+  return Promise.race([Promise.resolve(p), new Promise(function(r){ setTimeout(function(){ r(null); }, ms); })]);
+}
+// devolve o rosto (média das fotos), null se não saiu foto boa a tempo, ou
+// false se fecharam o Ponto no meio
+async function pfCapturaCadastro(pessoa, tent){
+  var video=document.getElementById('pfVideo'), modal=document.getElementById('pfModal');
+  var nome=String((pessoa&&pessoa.nome)||'').split(' ')[0]||'seu rosto', fotos=[], t0=performance.now();
+  var eu=PF_CADASTRANDO, tm=PF_TEMPOS||(PF_TEMPOS={});
+  document.getElementById('pfSub').textContent=tent>1?
+    'ficou parecido com o de outra pessoa — chegue bem perto, com luz no rosto':'bem de perto, de frente, com luz no rosto';
+  pfSt('Cadastrando '+nome+': olhe pra câmera');
+  while (performance.now()-t0<PF_CAD_MS) {
+    if (!modal.classList.contains('on')||PF_CADASTRANDO!==eu) return false;
+    var ti=performance.now();
+    try {
+      if (video&&video.videoWidth&&video.readyState>=2) {
+        var quadro=pfQuadro(video);
+        var achou=await pfEspera(faceapi.detectSingleFace(quadro, PF_OPTS()), 5000);
+        if (!achou) pfSt('Cadastrando '+nome+': encaixe o rosto no molde');
+        else if (achou.box.width<quadro.width*PF_CAD_LARG) pfSt('Cadastrando '+nome+': chegue mais perto da câmera');
+        else if (achou.score<PF_CAD_NOTA) pfSt('Cadastrando '+nome+': fique parado, de frente, com luz no rosto');
+        else {
+          var det=await pfEspera(new faceapi.DetectSingleFaceLandmarksTask(
+            Promise.resolve(faceapi.extendWithFaceDetection({}, achou)), quadro, false).withFaceDescriptor(), 8000);
+          if (det&&det.descriptor) {
+            // foto que destoa das anteriores (mexeu, entrou outra pessoa): recomeça
+            if (fotos.length && faceapi.euclideanDistance(det.descriptor, pfMedia(fotos))>PF_CAD_IGUAL) fotos=[];
+            fotos.push(det.descriptor);
+            pfSt('Cadastrando '+nome+': foto '+fotos.length+' de '+PF_CAD_FOTOS+' — fique parado');
+            if (fotos.length>=PF_CAD_FOTOS) break;
+          }
+        }
+      }
+    } catch(x) {}
+    await new Promise(function(r){ setTimeout(r, Math.max(30, 200-(performance.now()-ti))); });
+  }
+  if (!modal.classList.contains('on')||PF_CADASTRANDO!==eu) return false;
+  tm.cadFotos=fotos.length;
+  return fotos.length>=3?pfMedia(fotos):null;
+}
 async function pfCadastrar(funcionarioId){
-  var descriptor=PF_CADASTRANDO;
+  var antes=PF_CADASTRANDO;
+  if (!antes) return;
   var pessoa=null;
   for (var i=0;i<(PF_SEM_ROSTO||[]).length;i++) if (PF_SEM_ROSTO[i].funcionario_id===funcionarioId) pessoa=PF_SEM_ROSTO[i];
   document.getElementById('pfExtra').innerHTML='';
-  document.getElementById('pfStatus').textContent='Cadastrando seu rosto…';
-  document.getElementById('pfSub').textContent='';
-  try {
-    var tk=''; try { tk=localStorage.getItem('acesso_ponto')||''; } catch(x) {}
-    var rc=await fetch('/api/ponto/cadastrar-rosto',{method:'POST',headers:{'content-type':'application/json','x-garcom':tk},
-      body:JSON.stringify({funcionario_id:funcionarioId, descriptor:Array.from(descriptor)})});
-    // Porta do Ponto fechada (alguém tem o check "Ponto" em Caixa → Usuários):
-    // rosto novo só com quem libera — senão qualquer um cadastra a cara no nome do outro
-    if (rc.status===401) { pfPedeLiberacao(funcionarioId, pessoa); return; }
-    // liberação vale pra UM cadastro — tablet da cozinha não fica liberado 16h
-    try { localStorage.removeItem('acesso_ponto'); } catch(x) {}
-  } catch(e) {}
+  clearTimeout(PF_LISTA_T);
+  var recusa=null, tent=0, tm=PF_TEMPOS||(PF_TEMPOS={});
+  for (;;) {
+    tent++;
+    var descriptor, nFotos=null;
+    // voltando da liberação (login + PIN): a foto já foi tirada, não tira de novo
+    if (PF_CAD_OK && PF_CAD_OK.fid===funcionarioId) { descriptor=PF_CAD_OK.descriptor; nFotos=PF_CAD_OK.fotos; }
+    else {
+      tm.cadTent=(tm.cadTent||0)+1;
+      var cap=await pfCapturaCadastro(pessoa, tent);
+      if (cap===false) return;
+      descriptor=cap||antes; nFotos=cap?(tm.cadFotos||0):0;
+      PF_CAD_OK={fid:funcionarioId, descriptor:descriptor, fotos:nFotos};
+    }
+    document.getElementById('pfStatus').textContent='Cadastrando seu rosto…';
+    document.getElementById('pfSub').textContent='';
+    recusa=null;
+    try {
+      var tk=''; try { tk=localStorage.getItem('acesso_ponto')||''; } catch(x) {}
+      var rc=await fetch('/api/ponto/cadastrar-rosto',{method:'POST',headers:{'content-type':'application/json','x-garcom':tk},
+        body:JSON.stringify({funcionario_id:funcionarioId, descriptor:Array.from(descriptor), confere:true, fotos:nFotos})});
+      // Porta do Ponto fechada (alguém tem o check "Ponto" em Caixa → Usuários):
+      // rosto novo só com quem libera — senão qualquer um cadastra a cara no nome do outro
+      if (rc.status===401) { pfPedeLiberacao(funcionarioId, pessoa); return; }
+      var jr=null; try { jr=await rc.json(); } catch(x) {}
+      if (jr&&jr.parecido) {
+        recusa=jr; PF_CAD_OK=null;
+        // 1a recusa: tira as fotos de novo (a liberação segue valendo)
+        if (tent<2 && PF_CADASTRANDO===antes) continue;
+      }
+      // liberação vale pra UM cadastro — tablet da cozinha não fica liberado 16h
+      try { localStorage.removeItem('acesso_ponto'); } catch(x) {}
+    } catch(e) {}
+    break;
+  }
+  PF_CAD_OK=null;
   PF_CADASTRANDO=null;
-  if (PF_TEMPOS) PF_TEMPOS.via='cadastro';
+  tm.via=recusa?'cadastro_recusado':'cadastro';
   await pfBater(pessoa||{funcionario_id:funcionarioId, nome:'você'});
+  if (recusa && document.getElementById('pfModal').classList.contains('on')) {
+    // o ponto foi registrado pelo nome, como sempre; só o rosto não ficou
+    var av=document.createElement('div');
+    av.style.cssText='margin-top:10px;padding:10px 12px;border-radius:10px;background:#fef3c7;color:#92400e;font-weight:700;max-width:520px;text-align:center';
+    av.textContent='Seu rosto NÃO foi cadastrado: ficou parecido com o de '+(recusa.nome_parecido||'outra pessoa')+
+      '. Avise o gerente — na próxima vez, de perto e com luz no rosto.';
+    document.getElementById('pfExtra').appendChild(av);
+    if (PF_FECHA_T) { clearTimeout(PF_FECHA_T); PF_FECHA_T=setTimeout(fecharPontoFacial, 15000); }
+  }
 }
 function pfPedeLiberacao(funcionarioId, pessoa){
   clearTimeout(PF_FECHA_T);
@@ -14635,6 +14777,15 @@ function pfPedeLiberacao(funcionarioId, pessoa){
   setTimeout(function(){ var i=document.getElementById('pfLibL'); if(i) i.focus(); },50);
 }
 function fecharPontoFacial(){
+  // teve rosto na frente e fechou sem bater: manda só o diagnóstico
+  try {
+    if (PF_TEMPOS && PF_TEMPOS.rosto && !PF_TEMPOS.bateu) {
+      var dg=pfDiag(); dg.via='sem_batida'; PF_TEMPOS.bateu=true;
+      fetch('/api/ponto/facial-diag',{method:'POST',headers:{'content-type':'application/json'},keepalive:true,
+        body:JSON.stringify({diag:dg})}).catch(function(){});
+    }
+  } catch(x) {}
+  PF_CAD_OK=null;
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
   clearTimeout(PF_FECHA_T); PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[];
   clearTimeout(PF_LISTA_T);
@@ -27347,6 +27498,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/cadastrar-rosto') return res.end(JSON.stringify(await apiPontoCadastrarRosto(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/bater-facial') { const b = await readBody(req); const r = await apiPontoBaterFacial(b); pontoFacialTempos(b && b.diag, r); return res.end(JSON.stringify(r)); }
+      // Ponto fechado sem bater (rosto na frente e nada): só o diagnóstico, pra
+      // dar pra medir quem desiste e por quê (rosto ambíguo × longe do cadastro).
+      if (req.method === 'POST' && p === '/api/ponto/facial-diag') { const b = await readBody(req); pontoFacialTempos(b && b.diag, { ok: false }); return res.end(JSON.stringify({ ok: true })); }
       if (req.method === 'POST' && p === '/api/ponto/anular') return res.end(JSON.stringify(await apiPontoAnular(await readBody(req))));
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
