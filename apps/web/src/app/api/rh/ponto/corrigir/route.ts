@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
 import { conflitoOutraCasa } from '@/lib/rh/conflito-casas';
@@ -159,6 +159,44 @@ export async function POST(req: Request) {
     usuarioId: user.id,
   });
 
+  // Incluir ou excluir muda a ordem do dia: o relógio alterna entrada/saída
+  // pela sequência, então quem esqueceu de bater a primeira entrada fica com
+  // tudo trocado dali pra frente. Refaz a alternância (1ª = entrada) e deixa
+  // cada troca na auditoria. Alteração não mexe: ali o RH escolheu o tipo.
+  let reordenadas = 0;
+  if (d.acao !== 'alteracao') {
+    const doDia = await db
+      .select({ id: schema.pontoBatida.id, quando: schema.pontoBatida.quando, tipo: schema.pontoBatida.tipo })
+      .from(schema.pontoBatida)
+      .where(
+        and(
+          eq(schema.pontoBatida.filialId, filialBatida),
+          eq(schema.pontoBatida.funcionarioId, d.funcionarioId),
+          eq(schema.pontoBatida.diaOperacional, d.dia),
+          isNull(schema.pontoBatida.excluidaEm),
+        ),
+      )
+      .orderBy(asc(schema.pontoBatida.quando));
+    for (const [i, b] of doDia.entries()) {
+      const certo = i % 2 === 0 ? 'entrada' : 'saida';
+      if (b.tipo === certo) continue;
+      // origem 'correcao' faz a troca descer pra loja (ver api/loja/ponto).
+      await db.update(schema.pontoBatida).set({ tipo: certo, origem: 'correcao' }).where(eq(schema.pontoBatida.id, b.id));
+      await db.insert(schema.pontoBatidaAjuste).values({
+        filialId: filialBatida,
+        funcionarioId: d.funcionarioId,
+        batidaId: b.id,
+        dia: d.dia,
+        acao: 'alteracao',
+        valorAntes: { quando: b.quando.toISOString(), tipo: b.tipo },
+        valorDepois: { quando: b.quando.toISOString(), tipo: certo },
+        justificativa: `Sequência reajustada: ${d.justificativa}`.slice(0, 500),
+        usuarioId: user.id,
+      });
+      reordenadas++;
+    }
+  }
+
   const resultado = await projetarPontoEmFolhaHoras(filialBatida, d.dia, d.dia);
-  return NextResponse.json({ ok: true, ...resultado });
+  return NextResponse.json({ ok: true, reordenadas, ...resultado });
 }
