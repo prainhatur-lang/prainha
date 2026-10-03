@@ -96,6 +96,10 @@ interface Props {
   /** Fora da base da taxa de serviço (os 10%). Mora na nuvem, não na fila. */
   semTaxaServico?: boolean | null;
   etiquetas: Array<{ codigo: number; nome: string }>;
+  /** Praça do KDS onde o produto é produzido (codigo da area_producao). */
+  codigoCozinha?: number | null;
+  /** Praças em uso na casa. */
+  pracas?: Array<{ codigo: number; nome: string }>;
   variantes: VariantePdv[];
   pendentes: PendentePdv[];
   perguntas: PerguntaPdv[];
@@ -152,6 +156,7 @@ export function AbaPdv(p: Props) {
   const [estMin, setEstMin] = useState(p.estoqueMinimo ? String(Number(p.estoqueMinimo)) : '');
   const [descont, setDescont] = useState(!!p.descontinuado);
   const [etiqueta, setEtiqueta] = useState(p.codigoEtiqueta ?? '');
+  const [praca, setPraca] = useState(p.codigoCozinha != null ? String(p.codigoCozinha) : '');
   const [salvando, setSalvando] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
@@ -324,6 +329,19 @@ export function AbaPdv(p: Props) {
             </select>
           </div>
           <div>
+            <label className={rotulo} htmlFor="pdv-praca">Praça no KDS (onde produz)</label>
+            <select id="pdv-praca" value={praca} onChange={(e) => setPraca(e.target.value)} className={campo}>
+              <option value="">— sem praça</option>
+              {/* praça antiga do cadastro, que a casa não usa mais: mostra pra não trocar sem querer */}
+              {praca !== '' && !(p.pracas ?? []).some((a) => String(a.codigo) === praca) && (
+                <option value={praca}>praça {praca} (fora de uso)</option>
+              )}
+              {(p.pracas ?? []).map((a) => (
+                <option key={a.codigo} value={String(a.codigo)}>{a.nome}</option>
+              ))}
+            </select>
+          </div>
+          <div>
             <label className={rotulo} htmlFor="pdv-custo">Preço de custo</label>
             <input id="pdv-custo" value={custo} onChange={(e) => setCusto(e.target.value)} inputMode="decimal" className={campo} />
           </div>
@@ -354,6 +372,7 @@ export function AbaPdv(p: Props) {
               estoque_minimo: estMin,
               descontinuado: descont,
               categoria: etiqueta === '' ? null : etiqueta,
+              cozinha: praca === '' ? null : praca,
             })
           }
           className="mt-4 rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"

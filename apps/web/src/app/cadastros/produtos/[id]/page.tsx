@@ -297,6 +297,16 @@ export default async function ProdutoDetalhePage(props: {
           .orderBy(asc(schema.produtoEtiqueta.nome))
       : [];
 
+  // Praças do KDS em uso na casa (a inativa não existe mais na loja).
+  const pracasPdv =
+    aba === 'pdv'
+      ? await db
+          .select({ codigo: schema.areaProducao.codigoExterno, nome: schema.areaProducao.nome })
+          .from(schema.areaProducao)
+          .where(and(eq(schema.areaProducao.filialId, produto.filialId), eq(schema.areaProducao.ativa, true)))
+          .orderBy(asc(schema.areaProducao.nome))
+      : [];
+
   const pendentesPdv =
     aba === 'pdv'
       ? await db
@@ -648,6 +658,8 @@ export default async function ProdutoDetalhePage(props: {
               codigoEtiqueta={produto.codigoEtiqueta}
               semTaxaServico={produto.semTaxaServico}
               etiquetas={etiquetasPdv}
+              codigoCozinha={produto.codigoCozinha}
+              pracas={pracasPdv}
               variantes={variantesPdv.map((v) => ({
                 codigo: v.codigo,
                 tamanho: v.tamanho ?? null,
