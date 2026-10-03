@@ -39,6 +39,12 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
   const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
   const byChave = new Map(grade.map((c) => [c.chave, c]));
   const [apagando, setApagando] = useState<string | null>(null);
+  // Depois de apagar um rosto: o que cada loja respondeu ao aviso da nuvem
+  // (a loja só pegava a mudança no pull dela, de 3 em 3 min — 03/10/2026, Sara).
+  const [avisoRosto, setAvisoRosto] = useState<{
+    nome: string;
+    lojas: { nome: string; avisada: boolean; atualizada: boolean }[];
+  } | null>(null);
 
   async function apagarRosto(funcionarioId: string, nome: string) {
     if (!confirm(`Apagar o rosto cadastrado de ${nome}?\n\nA câmera do ponto deixa de reconhecer essa pessoa; na próxima vez ela escolhe o nome e cadastra de novo.`)) return;
@@ -50,6 +56,7 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
         body: JSON.stringify({ funcionarioId }),
       });
       const j = await res.json().catch(() => null);
+      if (res.ok) setAvisoRosto({ nome, lojas: Array.isArray(j?.lojas) ? j.lojas : [] });
       if (!res.ok) alert(j?.error ?? 'Erro ao apagar o rosto');
       else router.refresh();
     } finally {
@@ -67,6 +74,39 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white">
+      {avisoRosto && (
+        <div className="flex items-start justify-between gap-3 rounded-t-xl border-b border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <div>
+            <p className="font-medium">Rosto de {avisoRosto.nome} apagado.</p>
+            <p className="mt-0.5 text-xs text-emerald-800">
+              No tablet do Ponto: rosto no molde → “Não te reconheci ainda” → tocar no nome pra cadastrar de novo.
+            </p>
+            {avisoRosto.lojas.length === 0 ? (
+              <p className="mt-1.5 text-xs text-amber-800">As lojas pegam a mudança sozinhas em até 3 min.</p>
+            ) : (
+              <ul className="mt-1.5 space-y-0.5 text-xs">
+                {avisoRosto.lojas.map((l) => (
+                  <li key={l.nome} className={l.atualizada ? 'text-emerald-800' : 'text-amber-800'}>
+                    {l.atualizada
+                      ? `✓ ${l.nome}: já atualizou — o nome já está na lista do tablet`
+                      : l.avisada
+                        ? `… ${l.nome}: avisada, atualiza em instantes`
+                        : `⏳ ${l.nome}: não respondeu agora — pega sozinha em até 3 min`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setAvisoRosto(null)}
+            aria-label="Fechar aviso"
+            className="rounded px-1.5 text-base leading-none text-emerald-700 hover:bg-emerald-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500">

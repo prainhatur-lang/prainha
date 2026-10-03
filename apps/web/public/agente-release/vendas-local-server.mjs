@@ -9069,7 +9069,10 @@ function diaOperacionalDe(d) {
 }
 // GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
 // + face_descriptor de quem já tem, pro reconhecimento comparar no navegador.
-async function apiPontoPessoas() {
+// `marca` = impressão digital de quem está no roster e de quem tem rosto. A
+// lista de nomes do ponto facial manda a marca que já tem (?marca=) e, se nada
+// mudou, recebe só { igual: true } em vez dos rostos todos de novo.
+async function apiPontoPessoas(marcaCliente) {
   const hoje = diaOperacionalDe(new Date());
   const pessoas = await sql`SELECT funcionario_id, nome, setor, cargo, face_descriptor FROM ponto_funcionario WHERE ativo ORDER BY nome`;
   const batidas = await sql`SELECT funcionario_id, tipo, quando FROM ponto_batida
@@ -9083,7 +9086,9 @@ async function apiPontoPessoas() {
       dentro, desde: dentro ? ultima.quando : null,
       tem_rosto: !!p.face_descriptor, face_descriptor: p.face_descriptor || null };
   });
-  return { ok: true, pessoas: out };
+  const marca = createHash('md5').update(JSON.stringify(out.map((p) => [p.funcionario_id, p.nome, p.face_descriptor]))).digest('hex');
+  if (marcaCliente && marcaCliente === marca) return { ok: true, igual: true, marca };
+  return { ok: true, pessoas: out, marca };
 }
 // POST /api/ponto/cadastrar-rosto {funcionario_id, descriptor} — só na
 // PRIMEIRA vez que a câmera não reconhece ninguém pra aquela pessoa. Marca
@@ -9341,16 +9346,35 @@ async function loopPontoNuvem() {
 // Pull: roster ativo da filial. Só desativa quem a nuvem não mandou mais —
 // nunca deleta, pro PIN sobreviver a uma reativação.
 let pontoRosterRodando = false;
+// 03/10/2026 (Sara): o rosto foi apagado no /rh/ponto e ela foi bater o ponto
+// antes do pull seguinte (é de 3 em 3 min) — a loja ainda tinha o rosto velho
+// e o nome dela não vinha na lista de quem cadastra. O pull de 3 min continua
+// igual; estes três guardam quando ele rodou, pra dar pra pedir um na hora
+// (pontoRosterJa / pontoRosterFresco, logo abaixo).
+let pontoRosterOkEm = 0, pontoRosterTentouEm = 0, pontoRosterFim = null;
 async function loopPontoRoster() {
   if (pontoRosterRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
   pontoRosterRodando = true;
+  const comecou = Date.now();
+  pontoRosterTentouEm = comecou;
+  let solta;
+  pontoRosterFim = new Promise((r) => { solta = r; });
   try {
+    // O pull pedido na hora roda colado no cadastro de rosto. Quem cadastrou e
+    // já subiu pra nuvem (loopFaceSync) entre a leitura do roster lá e o upsert
+    // aqui chegaria com rosto nulo e sem a pendência — perdia o rosto até o
+    // pull seguinte. Por isso guarda, ANTES de ler a nuvem, quem estava
+    // pendente e a hora do banco.
+    const [{ agora: inicioDb }] = await sql`SELECT now()::text AS agora`;
+    const jaPendentes = new Set((await sql`SELECT funcionario_id FROM ponto_funcionario WHERE face_sync_pendente`)
+      .map((x) => String(x.funcionario_id).toLowerCase()));
     const e = Math.floor(Date.now() / 1000) + 120;
     const qs = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('ponto', e) });
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto?${qs}`, { signal: AbortSignal.timeout(10000) });
     const j = await r.json().catch(() => null);
     if (!j?.ok || !Array.isArray(j.pessoas)) return;
     for (const p of j.pessoas) {
+      const eraPendente = jaPendentes.has(String(p.funcionario_id).toLowerCase());
       // face_descriptor: a nuvem manda. Rosto nulo lá = apagado no /rh/ponto
       // (cadastro errado) — só não apaga cadastro local ainda não sincronizado
       // (face_sync_pendente, loopFaceSync sobe daqui a pouco).
@@ -9359,11 +9383,13 @@ async function loopPontoRoster() {
           ${p.face_descriptor ? sql.json(p.face_descriptor) : null}, now())
         ON CONFLICT (funcionario_id) DO UPDATE SET nome=EXCLUDED.nome, cpf=EXCLUDED.cpf, setor=EXCLUDED.setor,
           cargo=EXCLUDED.cargo, login_local=EXCLUDED.login_local, ativo=true,
-          face_descriptor=CASE WHEN EXCLUDED.face_descriptor IS NULL AND ponto_funcionario.face_sync_pendente
+          face_descriptor=CASE WHEN EXCLUDED.face_descriptor IS NULL AND (ponto_funcionario.face_sync_pendente
+              OR ${eraPendente}::boolean OR ponto_funcionario.atualizado_em > ${inicioDb}::timestamptz)
             THEN ponto_funcionario.face_descriptor ELSE EXCLUDED.face_descriptor END, atualizado_em=now()`;
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
+    pontoRosterOkEm = comecou; // roster e rostos já valem; o que vem abaixo são as correções de batida
     // Correções do RH no /rh/ponto (dias recentes) valem aqui também —
     // senão a próxima batida facial sai com o tipo trocado.
     const uuidOk = (v) => /^[0-9a-f-]{36}$/i.test(String(v || ''));
@@ -9401,7 +9427,37 @@ async function loopPontoRoster() {
       }
     }
   } catch (err) { console.error('[ponto] roster:', err.message); }
-  finally { pontoRosterRodando = false; }
+  finally { pontoRosterRodando = false; pontoRosterFim = null; solta(); }
+}
+// Um pull que COMEÇA depois desta chamada — o que estiver no meio pode ter lido
+// a nuvem antes da mudança que motivou o pedido, então espera ele acabar e roda
+// outro. Pedidos simultâneos dividem o mesmo pull. Devolve true se trouxe o
+// roster da nuvem (false = nuvem fora do ar / loja sem FILIAL_ID).
+let pontoRosterProx = null;
+function pontoRosterJa() {
+  if (!pontoRosterProx) {
+    const noMeio = pontoRosterFim;
+    pontoRosterProx = (async () => {
+      await noMeio; // sem pull no meio (null) também cede a vez: o reset abaixo roda depois da atribuição acima
+      pontoRosterProx = null;
+      const t0 = Date.now();
+      await loopPontoRoster();
+      return pontoRosterOkEm >= t0;
+    })();
+  }
+  return pontoRosterProx;
+}
+// GET /api/ponto/pessoas?atualizar=1 — a lista de nomes do ponto facial pede o
+// roster fresco quando aparece na tela. A rota não tem login, então é contida:
+// no máximo um pull a cada 15 s (deu certo ou não) e espera no máximo 4 s —
+// passou disso, responde com o que tem e o tablet pergunta de novo em 6 s.
+async function pontoRosterFresco() {
+  if (Date.now() - pontoRosterOkEm < 15000) return;
+  if (!pontoRosterRodando && Date.now() - pontoRosterTentouEm < 15000) return;
+  await Promise.race([
+    Promise.resolve(pontoRosterFim || pontoRosterJa()).catch(() => {}),
+    new Promise((r) => setTimeout(r, 4000)),
+  ]);
 }
 
 // ---- SYNC NATIVO → NUVEM (modo próprio) ----
@@ -13795,6 +13851,10 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfclose{position:absolute;top:18px;right:18px;background:rgba(0,0,0,.1);border:none;color:#111;width:44px;height:44px;border-radius:50%;font-size:20px;cursor:pointer}
 .pflist{margin-top:14px;max-height:38vh;overflow:auto;width:min(88vw,460px);display:grid;gap:8px}
 .pflist button{background:#f1f1f4;color:#1b1b20;border:1px solid #d4d4dc;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;text-align:left}
+/* nome que chegou com a lista já na tela (rosto apagado no /rh/ponto) e a
+   trava de 1,2 s nos toques logo depois de a lista ser repintada */
+.pflist button.pfnovo{background:#dcfce7;border-color:#16a34a;box-shadow:inset 0 0 0 1px #16a34a}
+.pflist.pftrava button{opacity:.55}
 .pfconfirm{font-size:27px;font-weight:800;text-align:center;border:3px solid currentColor;border-radius:16px;padding:14px 22px}
 .pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
 .pfconfirm.saida{color:#b45309}.pfconfirm.entrada{color:#15803d}
@@ -14067,6 +14127,17 @@ var PF_PREP=null, PF_MOTOR='';
    Cadastro guarda a MÉDIA dos últimos quadros, não 1 quadro solto. */
 var PF_LIMIAR=0.45, PF_FOLGA=0.07, PF_SEGUIDOS=3, PF_INCERTO_MAX=8;
 var PF_SEQ=null, PF_INCERTO=0, PF_AMOSTRAS=[], PF_FECHA_T=null;
+/* Lista de nomes sempre em dia (03/10/2026: apagaram o rosto da Sara no
+   /rh/ponto e, quando ela chegou no tablet, o nome dela não estava na lista —
+   a loja só ficava sabendo no pull de 3 em 3 min e o tablet só lia a lista ao
+   abrir o Ponto). Com a lista na tela, pergunta pro servidor da loja de 6 em
+   6 s; nos 3 min depois do último toque pede também o roster fresco da nuvem
+   (atualizar=1). Nome que chega entra pintado de verde.
+   Tocar no nome cadastra direto — por isso a lista só é repintada quando CHEGA
+   nome (nome que sai não mexe em nada, fica como sempre foi), nunca com o dedo
+   nela, e os toques ficam travados 1,2 s depois de repintar: ninguém cadastra
+   o rosto no nome do vizinho porque a linha desceu na hora do toque. */
+var PF_MARCA='', PF_LISTA_T=null, PF_LISTA_ATE=0, PF_TOQUE_T=0, PF_LISTA_SEQ=0, PF_PINTA=0, PF_LISTA_TRAVA=0, PF_NOVOS={};
 function PF_OPTS(){ return new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.5}); }
 function pfSt(t){
   var o=document.getElementById('pfOval'); if (o) o.className='pfoval'+(t.indexOf('Reconhecendo')===0?' ok':'');
@@ -14202,6 +14273,7 @@ async function abrirPontoFacial(){
       return {funcionario_id:p.funcionario_id, nome:p.nome, descriptor:new Float32Array(p.face_descriptor)};
     });
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
+    PF_MARCA=d.marca||'';
     pfSt('Encaixe o rosto no molde');
     document.getElementById('pfSub').textContent=(PF_MOTOR==='cpu'?'modo lento (cpu)':'');
     // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
@@ -14398,6 +14470,78 @@ function pfMostraListaCadastro(descriptor){
     '<div class="pflist" id="pfLista"></div>';
   document.getElementById('pfBusca').addEventListener('input', pfFiltra);
   pfFiltra();
+  pfListaLiga();
+}
+function pfListaNaTela(){
+  var m=document.getElementById('pfModal');
+  return !!PF_CADASTRANDO && !!m && m.classList.contains('on') && !!document.getElementById('pfLista');
+}
+function pfListaToque(){ PF_TOQUE_T=performance.now(); PF_LISTA_ATE=PF_TOQUE_T+180000; }
+function pfListaMarcaNovos(){
+  var el=document.getElementById('pfLista'); if (!el) return;
+  el.querySelectorAll('button').forEach(function(btn){
+    if (PF_NOVOS[btn.getAttribute('data-fid')]) btn.classList.add('pfnovo');
+  });
+}
+// liga a conferência quando a lista aparece (a lista é recriada a cada vez,
+// então os ouvintes abaixo nunca ficam em dobro)
+function pfListaLiga(){
+  PF_LISTA_SEQ++; PF_PINTA++; PF_NOVOS={}; PF_LISTA_TRAVA=0;
+  var el=document.getElementById('pfLista'), busca=document.getElementById('pfBusca');
+  if (!el) return;
+  ['pointerdown','touchstart','touchmove','scroll'].forEach(function(ev){ el.addEventListener(ev, pfListaToque, {passive:true}); });
+  // toque que cai logo depois de a lista repintar não chega no botão
+  el.addEventListener('click', function(ev){
+    if (performance.now()<PF_LISTA_TRAVA) { ev.stopPropagation(); ev.preventDefault(); }
+  }, true);
+  // entra depois do pfFiltra da busca: repinta o verde no que ele redesenhou
+  if (busca) busca.addEventListener('input', function(){ pfListaToque(); pfListaMarcaNovos(); });
+  PF_LISTA_ATE=performance.now()+180000;
+  pfListaConfere();
+}
+function pfListaConfere(){
+  clearTimeout(PF_LISTA_T);
+  if (!pfListaNaTela()) return;
+  var seq=PF_LISTA_SEQ;
+  fetch('/api/ponto/pessoas?'+(performance.now()<PF_LISTA_ATE?'atualizar=1&':'')+'marca='+encodeURIComponent(PF_MARCA),{cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (seq!==PF_LISTA_SEQ || !pfListaNaTela() || !d || !d.ok || d.igual || !Array.isArray(d.pessoas)) return;
+      var sem=d.pessoas.filter(function(p){return !p.tem_rosto});
+      var tinha={}, novos={}, n=0, i;
+      for (i=0;i<(PF_SEM_ROSTO||[]).length;i++) tinha[PF_SEM_ROSTO[i].funcionario_id]=1;
+      for (i=0;i<sem.length;i++) if (!tinha[sem[i].funcionario_id]) { novos[sem[i].funcionario_id]=1; n++; }
+      // só saiu nome (cadastrou em outro tablet, foi desligado): a lista fica
+      // parada como sempre ficou — guarda a marca pra não baixar tudo de novo
+      if (!n) { PF_MARCA=d.marca||''; return; }
+      pfListaRepinta(sem, novos, d.marca||'', ++PF_PINTA);
+    })
+    .catch(function(){})
+    .then(function(){
+      if (seq===PF_LISTA_SEQ && pfListaNaTela()) PF_LISTA_T=setTimeout(pfListaConfere,6000);
+    });
+}
+function pfListaRepinta(sem, novos, marca, pinta){
+  if (pinta!==PF_PINTA || !pfListaNaTela()) return;
+  // dedo na lista (rolando, escolhendo, digitando a busca): espera parar
+  if (performance.now()-PF_TOQUE_T<900) { setTimeout(function(){ pfListaRepinta(sem, novos, marca, pinta); },400); return; }
+  var el=document.getElementById('pfLista'), topo=el.scrollTop, k;
+  PF_SEM_ROSTO=sem; PF_MARCA=marca;
+  for (k in novos) PF_NOVOS[k]=1;
+  PF_LISTA_TRAVA=performance.now()+1200;
+  pfFiltra();
+  el.scrollTop=topo;
+  pfListaMarcaNovos();
+  // nome novo fora da parte visível: rola só a lista até ele
+  var b=null;
+  el.querySelectorAll('button').forEach(function(btn){ if (!b && novos[btn.getAttribute('data-fid')]) b=btn; });
+  if (b) {
+    var rb=b.getBoundingClientRect(), rl=el.getBoundingClientRect();
+    if (rb.top<rl.top) el.scrollTop-=(rl.top-rb.top)+8;
+    else if (rb.bottom>rl.bottom) el.scrollTop+=(rb.bottom-rl.bottom)+8;
+  }
+  el.classList.add('pftrava');
+  setTimeout(function(){ el.classList.remove('pftrava'); },1200);
 }
 function pfFiltra(){
   var termo=(document.getElementById('pfBusca')||{value:''}).value.trim().toLowerCase();
@@ -14454,6 +14598,7 @@ function pfPedeLiberacao(funcionarioId, pessoa){
 function fecharPontoFacial(){
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
   clearTimeout(PF_FECHA_T); PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[];
+  clearTimeout(PF_LISTA_T);
   if (PF_STREAM && PF_STREAM_PROPRIO) PF_STREAM.getTracks().forEach(function(t){t.stop();});
   PF_STREAM=null; PF_STREAM_PROPRIO=false;
   var v=document.getElementById('pfVideo'); if (v) v.srcObject=null;
@@ -26972,6 +27117,26 @@ const server = http.createServer(async (req, res) => {
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
+    // ---- PONTO pelo CENTRAL — assinado (escopo 'ponto-roster', separado do
+    // 'ponto' que a loja usa pra falar com a nuvem: a assinatura de um sentido
+    // não vale no outro). POST /api/central/ponto/roster = "mudou o roster,
+    // puxa agora": a nuvem chama quando apagam um rosto no /rh/ponto, pra
+    // pessoa não chegar no tablet antes do pull de 3 em 3 min (03/10/2026,
+    // Sara). Não recebe nem devolve dado de ninguém — só dispara o pull de
+    // sempre e diz se ele trouxe o roster.
+    if (p.startsWith('/api/central/ponto/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method !== 'POST') return res.end(JSON.stringify({ ok: false, erro: 'use POST' }));
+      if (!centralAssinou(u, 'ponto-roster')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      if (p === '/api/central/ponto/roster') {
+        const atualizado = await Promise.race([
+          pontoRosterJa().catch(() => false),
+          new Promise((r) => setTimeout(() => r(null), 5000)),
+        ]);
+        return res.end(JSON.stringify({ ok: true, atualizado: atualizado === true }));
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     if (req.method === 'POST' && p === '/api/marca') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await marcar(body))); }
     // quem baixou o quê: lista e a foto em si
     if (p === '/api/baixas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiBaixas(u.searchParams.get('n'), u.searchParams.get('area')))); }
@@ -27132,6 +27297,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (p.startsWith('/api/ponto/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
+      // lista de nomes do ponto facial: ?atualizar=1 puxa o roster da nuvem antes
+      // de responder (contido — ver pontoRosterFresco) e ?marca= evita mandar de
+      // novo o que o tablet já tem. Sem parâmetro, segue na linha de baixo como sempre.
+      if (p === '/api/ponto/pessoas' && (u.searchParams.has('atualizar') || u.searchParams.has('marca'))) {
+        if (u.searchParams.get('atualizar') === '1') await pontoRosterFresco();
+        return res.end(JSON.stringify(await apiPontoPessoas(u.searchParams.get('marca'))));
+      }
       if (p === '/api/ponto/pessoas') return res.end(JSON.stringify(await apiPontoPessoas()));
       if (req.method === 'POST' && p === '/api/ponto/bater') return res.end(JSON.stringify(await apiPontoBater(await readBody(req))));
       if (req.method === 'POST' && p === '/api/ponto/cadastrar-rosto') return res.end(JSON.stringify(await apiPontoCadastrarRosto(await readBody(req))));

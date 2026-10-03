@@ -1,15 +1,24 @@
 // Apaga o rosto cadastrado no ponto facial (ex: alguém se cadastrou tocando
 // no nome de outra pessoa). A loja pega no próximo pull do roster: rosto
 // nulo na nuvem + já sincronizado lá = apagado (vendas-local loopPontoRoster).
+//
+// O pull da loja é de 3 em 3 min. Pra pessoa não chegar no tablet antes dele
+// (03/10/2026, Sara: o nome dela não vinha na lista de quem cadastra), depois
+// de apagar a nuvem avisa as lojas onde a pessoa bate ponto — lotação principal
+// + vínculos extras, a mesma regra do roster — pra puxarem na hora. O aviso é
+// só um empurrão: se a loja não responde, o rosto já foi apagado do mesmo jeito
+// e ela pega no pull de sempre. `lojas` na resposta diz o que cada uma respondeu.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
+import { avisarLojaRosterPonto } from '@/lib/ponto-loja';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 30; // cada loja segura o aviso até 5 s enquanto puxa o roster
 
 const Body = z.object({ funcionarioId: z.string().uuid() });
 
@@ -42,5 +51,32 @@ export async function POST(req: Request) {
     .update(schema.funcionario)
     .set({ faceDescriptor: null, atualizadoEm: new Date() })
     .where(eq(schema.funcionario.id, parsed.data.funcionarioId));
-  return NextResponse.json({ ok: true });
+
+  // Daqui pra baixo nada derruba a resposta: o rosto já foi apagado.
+  let lojas: { nome: string; avisada: boolean; atualizada: boolean }[] = [];
+  try {
+    const extras = await db
+      .select({ filialId: schema.funcionarioFilialExtra.filialId })
+      .from(schema.funcionarioFilialExtra)
+      .where(eq(schema.funcionarioFilialExtra.funcionarioId, parsed.data.funcionarioId));
+    const filialIds = [...new Set([func.filialId, ...extras.map((x) => x.filialId)])];
+    const nomes = await db
+      .select({ id: schema.filial.id, nome: schema.filial.nome })
+      .from(schema.filial)
+      .where(inArray(schema.filial.id, filialIds));
+    lojas = await Promise.all(
+      filialIds.map(async (filialId) => {
+        const r = await avisarLojaRosterPonto(filialId);
+        if (!r.ok) console.warn(`[ponto] aviso de roster não chegou na loja ${filialId.slice(0, 8)}: ${r.erro}`);
+        return {
+          nome: nomes.find((n) => n.id === filialId)?.nome ?? 'loja',
+          avisada: r.ok,
+          atualizada: r.ok && r.atualizado,
+        };
+      }),
+    );
+  } catch (err) {
+    console.warn('[ponto] aviso de roster às lojas falhou:', err instanceof Error ? err.message : err);
+  }
+  return NextResponse.json({ ok: true, lojas });
 }
