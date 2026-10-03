@@ -12722,8 +12722,46 @@ const ITENS_FORA_KDS_PADRAO = 'couvert,lounge taxa';
 // Conserta cadastro torto sem mexer no Consumer: "BATATA FRITA" (a duplicada
 // em maiúsculas) está sem cozinha e caía no balde órfão. Formato "nome>praça".
 const ITENS_PRACA_PADRAO = 'batata frita>coz petisco';
+// ---- ESPAÇO KIDS NÃO É DE PRAÇA NENHUMA ----
+// A recreação é lançada na conta pela monitora (/kids): não tem cozinha, e caía
+// no balde laranja "Sem praça definida" do KDS pedindo baixa (03/10/2026).
+// Vale pelo nome "Espaço Kids" e pelo produto escolhido no ⚙ do /kids, e não
+// depende do cfg 'itens_fora_kds' — casa com a lista mexida também fica certa.
+// ⚠️ Só "espaco kids": "kids" sozinho pegaria Prato Kids e Filé Kids, que são comida.
+const ITENS_FORA_KDS_SEMPRE = ['espaco kids'];
+async function itensForaKdsSempre() {
+  const out = ITENS_FORA_KDS_SEMPRE.slice();
+  try {
+    const pdv = Number(await cfgGet('kids_pdv', '0')) || 0;
+    if (pdv) {
+      const [p] = await sql`SELECT nome FROM produto_local WHERE codigo_pdv=${pdv}`;
+      const nm = semAcento(String(p?.nome || '').trim());
+      if (nm.length >= 6 && !out.includes(nm)) out.push(nm);
+    }
+  } catch { /* sem o produto, o nome fixo já resolve */ }
+  return out;
+}
+/** O que JÁ está aberto no KDS e é item que ninguém produz (lançado antes da
+ *  regra): baixa agora. Só conta aberta e só o que ainda não foi baixado. */
+async function baixarAbertosForaKds() {
+  const fora = await itensForaKds();
+  if (!fora.length) return;
+  const abertos = await sql`SELECT ci.item_codigo, ci.nome FROM comanda_item ci
+    JOIN comanda c ON c.codigo = ci.comanda_codigo
+    WHERE c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
+      AND (ci.produzido IS NULL OR ci.entregue IS NULL)`;
+  const ids = abertos.filter((i) => { const nm = semAcento(i.nome || ''); return fora.some((t) => nm.includes(t)); })
+    .map((i) => Number(i.item_codigo));
+  if (!ids.length) return;
+  const r = await sql`UPDATE comanda_item SET produzido = COALESCE(produzido, criado, now()),
+      entregue = COALESCE(entregue, criado, now()) WHERE item_codigo = ANY(${ids})`;
+  console.log('[fora-kds] ' + r.count + ' item(ns) aberto(s) que ninguém produz baixado(s)');
+}
 async function itensForaKds() {
   const txt = await cfgGet('itens_fora_kds', ITENS_FORA_KDS_PADRAO);
+  // + os que valem SEMPRE (Espaço Kids), mesmo com a lista da casa personalizada
+  const sempre = await itensForaKdsSempre();
+  if (sempre.length) return [...new Set([...String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean), ...sempre])];
   return String(txt).split(',').map((x) => semAcento(x.trim())).filter(Boolean);
 }
 // ---- COMPLEMENTO VAI COM O ITEM-PAI ----
@@ -28103,6 +28141,7 @@ async function main() {
   }
   await initSchema(); console.log('[schema] ok');
   await alinharComplementosAbertos().catch((e) => console.error('[complemento] ' + e.message));
+  await baixarAbertosForaKds().catch((e) => console.error('[fora-kds] ' + e.message));
   await carregarGarcomSecret().catch((e) => console.error('[garcom] segredo: ' + e.message));
   // limpa nome de colaborador que a busca antiga gravou como se fosse cliente
   // ⚠️ Os dois sao INDEPENDENTES: encadear o segundo no fim do primeiro fazia
