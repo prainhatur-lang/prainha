@@ -36,7 +36,7 @@ export async function GET(request: Request) {
   }
   const q = (sp.get('q') || '').trim().slice(0, 60);
   const { db, schema } = await import('@concilia/db');
-  const { and, eq, isNull, isNotNull, gt, asc, sql } = await import('drizzle-orm');
+  const { and, eq, isNull, isNotNull, gt, asc, desc, sql } = await import('drizzle-orm');
 
   const linhas = await db
     .select({
@@ -69,7 +69,9 @@ export async function GET(request: Request) {
         ...(q ? [sql`extensions.unaccent(${schema.produto.nome}) ILIKE extensions.unaccent(${'%' + q + '%'})`] : []),
       ),
     )
-    .orderBy(asc(schema.produto.nome), asc(schema.produtoTamanho.descricao))
+    // o que pausou por último em cima: as casas têm centenas de pausados antigos
+    // e o de hoje não pode ficar depois do corte de 300
+    .orderBy(desc(schema.produtoVariante.dataPausado), asc(schema.produto.nome), asc(schema.produtoTamanho.descricao))
     .limit(300);
 
   return NextResponse.json({
