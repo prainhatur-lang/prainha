@@ -12366,6 +12366,71 @@ async function kidsVerQuadro(u, res) {
     json(503, { ok: false, erro: 'câmera indisponível' });
   }
 }
+/** GET cru no Protect pro diagnóstico: devolve status/tipo/tamanho em vez de
+ *  estourar, pra dar pra ver de fora o que o console respondeu de verdade. */
+function protectCru(host, chave, caminho) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const r = https.request({
+      hostname: host, port: PROTECT_PORTA, method: 'GET', path: '/proxy/protect/integration/v1' + caminho,
+      headers: { 'X-API-KEY': chave, accept: '*/*' }, rejectUnauthorized: false, timeout: 8000,
+    }, (res) => {
+      const partes = []; let total = 0;
+      res.on('data', (c) => { total += c.length; if (total <= 4 * 1024 * 1024) partes.push(c); });
+      res.on('end', () => resolve({ status: res.statusCode, tipo: String(res.headers['content-type'] || ''), bytes: total, ms: Date.now() - t0, corpo: Buffer.concat(partes) }));
+    });
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+    r.on('error', (e) => resolve({ status: 0, erro: e.message, ms: Date.now() - t0, corpo: Buffer.alloc(0) }));
+    r.end();
+  });
+}
+/** Diagnóstico da câmera do kids pelo CENTRAL (assinado, escopo 'kids-cam'):
+ *  o que está salvo, o que o Protect lista e se a foto de cada câmera sai.
+ *  Nunca devolve a chave. */
+async function kidsCamDiag() {
+  const cfg = {
+    cam_id: await cfgGet('kids_cam_id', ''), cam_nome: await cfgGet('kids_cam_nome', ''),
+    url_publica: await cfgGet('kids_url_publica', ''), tem_link_fixo: !!(await cfgGet('kids_camera_link', '')),
+  };
+  const pr = await kidsProtect();
+  if (!pr.ok) return { ok: false, cfg, erro: pr.erro };
+  const out = { ok: true, cfg, host: pr.host, url_publica: kidsUrlPublica(pr) };
+  const l = await protectCru(pr.host, pr.chave, '/cameras');
+  out.lista = { status: l.status, tipo: l.tipo, bytes: l.bytes, ms: l.ms, erro: l.erro };
+  let cams = [];
+  try { const j = JSON.parse(l.corpo.toString('utf8')); cams = Array.isArray(j) ? j : (j && j.data) || []; if (!Array.isArray(j)) out.lista.chaves = Object.keys(j || {}).slice(0, 20); }
+  catch { out.lista.texto = l.corpo.toString('utf8').slice(0, 300); }
+  out.cameras = [];
+  for (const c of cams.slice(0, 16)) {
+    const id = String((c && c.id) || '');
+    const item = { id, nome: String((c && c.name) || ''), estado: String((c && c.state) || ''), modelo: String((c && (c.modelKey || c.type)) || ''), id_ok: KIDS_CAM_ID_OK.test(id) };
+    if (item.id_ok) {
+      for (const sufixo of ['/snapshot?highQuality=false', '/snapshot']) {
+        const f = await protectCru(pr.host, pr.chave, '/cameras/' + encodeURIComponent(id) + sufixo);
+        item['foto' + (sufixo.includes('?') ? '' : '_sem_param')] = { status: f.status, tipo: f.tipo, bytes: f.bytes, ms: f.ms, erro: f.erro,
+          texto: /^image\//.test(f.tipo || '') ? undefined : f.corpo.toString('utf8').slice(0, 200) };
+        if (f.status === 200 && /^image\//.test(f.tipo || '')) break;
+      }
+    }
+    out.cameras.push(item);
+  }
+  return out;
+}
+/** Escolhe a câmera pelo CENTRAL — o mesmo que o gerente faz no ⚙ do /kids. */
+async function kidsCamEscolher(body) {
+  const id = String((body && body.cam_id) || '').trim();
+  if (!KIDS_CAM_ID_OK.test(id)) return { ok: false, erro: 'câmera inválida' };
+  const pr = await kidsProtect();
+  if (!pr.ok) return { ok: false, erro: pr.erro };
+  const base = kidsUrlPublica(pr);
+  if (!base) return { ok: false, erro: 'esta loja não tem endereço público (https) cadastrado na nuvem' };
+  try { await kidsQuadro(id); } catch (e) { return { ok: false, erro: 'a foto dessa câmera não saiu: ' + e.message }; }
+  await cfgSet('kids_url_publica', base);
+  await cfgSet('kids_cam_id', id);
+  await cfgSet('kids_cam_nome', String((body && body.cam_nome) || '').trim().slice(0, 80));
+  console.log('[kids] câmera escolhida pelo central: ' + id);
+  return { ok: true, cfg: await kidsCfg() };
+}
 /** Prévia no ⚙ (gerente logado): confere a câmera antes de salvar. */
 async function kidsQuadroTeste(u, quem, res) {
   const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
@@ -27257,6 +27322,19 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
+    // ---- CÂMERA DO KIDS pelo CENTRAL — assinado (escopo 'kids-cam').
+    // GET /api/central/kids-cam/diag · POST /api/central/kids-cam/escolher {cam_id, cam_nome}
+    if (p.startsWith('/api/central/kids-cam/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!centralAssinou(u, 'kids-cam')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      try {
+        if (p === '/api/central/kids-cam/diag') return res.end(JSON.stringify(await kidsCamDiag()));
+        if (req.method === 'POST' && p === '/api/central/kids-cam/escolher') return res.end(JSON.stringify(await kidsCamEscolher(await readBody(req))));
+        return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, erro: e.message }));
+      }
     }
     // ---- ALARME do UniFi Protect pelo CENTRAL — assinado (escopo 'alarme').
     // POST /api/central/alarme/{status|ligar|desligar} {host, chave}
