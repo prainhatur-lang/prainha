@@ -5,6 +5,12 @@
 #   ./instalar.sh                      TV do quintal da Prainha Mar (192.168.4.153)
 #   ./instalar.sh 192.168.4.200        outra TV
 #   ./instalar.sh 192.168.4.153 uma    manda uma vez, tira a foto e sai
+#   ./instalar.sh 192.168.4.200 uma 4  manda e ja deixa a TV na praca de codigo 4
+#
+# A praca e opcional: sem ela a TV mostra a lista e escolhe-se com o controle
+# (ou depois, com a tecla *). Fica gravada na TV. Os codigos da casa saem em
+# http://<servidor da loja>:8790/api/areas - na Prainha Mar: 1 PRINCIPAL,
+# 3 BAR, 4 ENTRADAS/SOBREMESAS. Varias: 1,4. Todas: todas.
 #
 # Antes, na TV: ligar o modo desenvolvedor pelo controle (Home 3x, Cima 2x,
 # Direita, Esquerda, Direita, Esquerda, Direita), aceitar e criar uma senha.
@@ -19,6 +25,7 @@
 
 TV="${1:-192.168.4.153}"
 MODO="${2:-espera}"
+PRACA="${3:-}"
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 APP="$AQUI/app"
 SAIDA="$AQUI/saida"
@@ -88,7 +95,14 @@ foto() {
 }
 
 manda
-[ $? -eq 2 ] && exit 1
+R=$?
+[ $R -eq 2 ] && exit 1
+# praca pedida na linha de comando: abre o KDS dizendo qual e (a TV guarda)
+if [ $R -eq 0 ] && [ -n "$PRACA" ]; then
+  sleep 6
+  cod=$(curl -s -m 6 -o /dev/null -w '%{http_code}' -X POST "http://$TV:8060/launch/dev?area=$PRACA")
+  diz "praca $PRACA: a TV respondeu http $cod"
+fi
 sleep 8
 foto
 [ "$MODO" = "uma" ] && exit 0
