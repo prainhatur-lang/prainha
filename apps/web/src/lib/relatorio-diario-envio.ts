@@ -416,6 +416,7 @@ async function janelaAberta(organizacaoId: string, telefone: string): Promise<st
 }
 
 export interface EnvioRegistrado {
+  id: string;
   dia: string;
   telefone: string;
   canal: string;
@@ -427,7 +428,7 @@ export interface EnvioRegistrado {
 
 export async function ultimosEnvios(organizacaoId: string, limite = 12): Promise<EnvioRegistrado[]> {
   return (await db.execute(sql`
-    SELECT dia::text AS dia, telefone, canal, origem, ok, erro,
+    SELECT id::text AS id, dia::text AS dia, telefone, canal, origem, ok, erro,
            to_char(criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS quando
       FROM relatorio_diario_envio
      WHERE organizacao_id = ${organizacaoId}::uuid

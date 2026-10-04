@@ -6,8 +6,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatFone, pareceFixo } from '@/lib/format';
+import { explicarErroWhatsapp, motivoErroWhatsapp } from '@/lib/whatsapp-erros';
 
 interface Envio {
+  id: string;
   dia: string;
   telefone: string;
   canal: string;
@@ -57,6 +59,8 @@ const ORIGEM: Record<string, string> = {
   pedido: 'pedido por mensagem',
 };
 
+const espera = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
+
 function diaCurto(ymd: string): string {
   const [, m, d] = ymd.split('-');
   return `${d}/${m}`;
@@ -78,6 +82,25 @@ export function EnvioCard({
   const [salvando, setSalvando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
+  // "Enviar agora": a Meta aceita o envio e só depois, pelo webhook, diz se recusou
+  // a entrega (04/10: "Enviado" em verde e a mensagem barrada por falta de pagamento).
+  // A tela guarda quais envios já existiam e confere os novos antes de dizer que foi.
+  const [conferencia, setConferencia] = useState<{
+    antes: string[];
+    fase: 'aguardando' | 'pronto';
+    txtOk: string;
+  } | null>(null);
+  const ultimoPorFone = new Map<string, Envio>();
+  if (conferencia) {
+    for (const e of envios) {
+      if (conferencia.antes.includes(e.id) || e.canal === 'toque') continue;
+      if (!ultimoPorFone.has(e.telefone)) ultimoPorFone.set(e.telefone, e);
+    }
+  }
+  const recusados = [...ultimoPorFone.values()].filter((e) => !e.ok);
+  // Último envio da casa barrado por pagamento: vale pra tudo que a casa inicia.
+  const ultimoDaCasa = envios.find((e) => e.canal !== 'toque');
+  const semPagamento = !!ultimoDaCasa && !ultimoDaCasa.ok && motivoErroWhatsapp(ultimoDaCasa.erro) === 'pagamento';
   // O que a tela acabou de saber da Meta vale até o servidor mandar o modelo de novo
   // (router.refresh) — senão o cartão ficava em "ainda não criado" depois de aprovado.
   const [modeloLocal, setModeloLocal] = useState<{ de: Modelo; valor: Modelo } | null>(null);
@@ -100,6 +123,7 @@ export function EnvioCard({
   async function salvar() {
     setSalvando(true);
     setMsg(null);
+    setConferencia(null);
     try {
       const r = await fetch('/api/relatorios/diario/config', {
         method: 'POST',
@@ -125,6 +149,9 @@ export function EnvioCard({
     if (!window.confirm(`Mandar agora o relatório de ${diaRotulo} pros números cadastrados?`)) return;
     setEnviando(true);
     setMsg(null);
+    setConferencia(null);
+    const antes = envios.map((e) => e.id);
+    let acompanhar = false;
     try {
       const r = await fetch('/api/relatorios/diario/enviar', {
         method: 'POST',
@@ -147,14 +174,16 @@ export function EnvioCard({
         });
       } else {
         const soAviso = res.every((x) => x.canal === 'modelo');
-        setMsg({
-          tom: 'ok',
-          txt: !soAviso
+        setConferencia({
+          antes,
+          fase: 'aguardando',
+          txtOk: !soAviso
             ? 'Relatório enviado no WhatsApp.'
             : semBotao
               ? 'Enviado o aviso com os números do dia — responda "relatório" na conversa pra receber o relatório completo.'
               : 'Enviado o aviso com o botão "Ver resumo" — toque nele no WhatsApp pra receber o relatório completo.',
         });
+        acompanhar = true;
       }
       router.refresh();
     } catch {
@@ -162,6 +191,14 @@ export function EnvioCard({
     } finally {
       setEnviando(false);
     }
+    if (!acompanhar) return;
+    // A recusa chega em segundos; relê os envios antes de dar por entregue.
+    for (const ms of [4000, 6000, 6000]) {
+      await espera(ms);
+      router.refresh();
+    }
+    await espera(1500);
+    setConferencia((c) => (c && c.antes === antes ? { ...c, fase: 'pronto' } : c));
   }
 
   async function criarModelo() {
@@ -281,7 +318,34 @@ export function EnvioCard({
             {msg && (
               <span className={`text-xs ${msg.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msg.txt}</span>
             )}
+            {conferencia && recusados.length === 0 && (
+              <span className={`text-xs ${conferencia.fase === 'pronto' ? 'text-emerald-700' : 'text-slate-500'}`}>
+                {conferencia.fase === 'pronto' ? conferencia.txtOk : 'A Meta aceitou o envio — conferindo se entregou…'}
+              </span>
+            )}
           </div>
+          {conferencia && recusados.length > 0 && (
+            <p className="mt-2 text-xs text-rose-700">
+              <strong>Não chegou.</strong>{' '}
+              {recusados
+                .map((e) => `${formatFone(e.telefone)}: ${explicarErroWhatsapp(e.erro) ?? e.erro ?? 'a Meta recusou a entrega'}`)
+                .join(' · ')}
+            </p>
+          )}
+          {semPagamento && (
+            <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+              <p>
+                <strong>A Meta está barrando as mensagens que a casa inicia:</strong> a conta do WhatsApp está sem forma
+                de pagamento válida (ou sem saldo). Vale pra tudo que sai sem o cliente ter escrito antes — este
+                relatório, lembrete de reserva, cotação, pedido de compra.
+              </p>
+              <p className="mt-1">
+                Acerto na Meta: Gerenciador do WhatsApp → Visão geral → <strong>Adicionar forma de pagamento</strong>.
+                Depois toque em <strong>Enviar agora</strong> pra conferir. Enquanto isso, escrever{' '}
+                <strong>relatório</strong> pro WhatsApp da casa traz o relatório completo, de graça.
+              </p>
+            </div>
+          )}
           <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
             Regra do WhatsApp: mensagem longa só entra até 24 h depois que a pessoa falou com o número da casa. Fora
             disso vai um aviso curto com os números do dia (modelo <code>{modelo.nome}</code>).{' '}
@@ -369,13 +433,20 @@ export function EnvioCard({
             <p className="mt-1 text-xs text-slate-400">Nenhum envio ainda.</p>
           ) : (
             <ul className="mt-1 divide-y divide-slate-100 text-xs">
-              {envios.map((e, i) => (
-                <li key={i} className="flex items-start justify-between gap-3 py-1.5">
+              {envios.map((e) => (
+                <li key={e.id} className="flex items-start justify-between gap-3 py-1.5">
                   <span className="text-slate-700">
                     <span className="text-slate-400">{e.quando}</span> · {formatFone(e.telefone)} ·{' '}
                     {CANAL[e.canal] ?? e.canal} de {diaCurto(e.dia)}
                     <span className="text-slate-400"> ({ORIGEM[e.origem] ?? e.origem})</span>
-                    {!e.ok && e.erro ? <span className="block text-rose-700">{e.erro}</span> : null}
+                    {!e.ok && e.erro ? (
+                      <span className="block text-rose-700">
+                        {explicarErroWhatsapp(e.erro) ?? e.erro}
+                        {explicarErroWhatsapp(e.erro) ? (
+                          <span className="block text-[10px] text-slate-400">{e.erro}</span>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </span>
                   <span className={e.ok ? 'shrink-0 text-emerald-700' : 'shrink-0 text-rose-700'}>
                     {e.ok ? 'ok' : 'falhou'}

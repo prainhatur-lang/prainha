@@ -22,6 +22,7 @@ import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
 import { enviarTexto } from '@/lib/atendimento/zap';
 import { tratarKids } from '@/lib/kids';
+import { textoErroStatus, type ErroStatusMeta } from '@/lib/whatsapp-erros';
 import {
   reconhecerPedidoRelatorio,
   responderPedidoRelatorio,
@@ -75,14 +76,15 @@ export async function POST(req: Request) {
             metadata?: { phone_number_id?: string; display_phone_number?: string };
             contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>;
             messages?: unknown[];
-            statuses?: Array<{ id?: string; status?: string; errors?: Array<{ title?: string; message?: string }> }>;
+            statuses?: Array<{ id?: string; status?: string; errors?: ErroStatusMeta[] }>;
           };
         })?.value;
 
         // Status de entrega/leitura das mensagens que enviamos
         for (const st of value?.statuses ?? []) {
           if (!st.id || !st.status) continue;
-          const erro = st.errors?.[0] ? `${st.errors[0].title ?? ''} ${st.errors[0].message ?? ''}`.trim() : null;
+          // código na frente e sem repetir título/mensagem (a recusa por pagamento vinha 2x)
+          const erro = st.errors?.[0] ? textoErroStatus(st.errors[0]) || null : null;
           await registrarStatusEnvio(st.id, st.status, erro).catch(() => {});
           // Relatório diário: texto que não entrou (janela de 24 h fechada sem
           // a gente saber) é trocado pelo modelo aprovado.
