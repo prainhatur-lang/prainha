@@ -247,6 +247,26 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     return `/movimento/pedidos?${qs.toString()}`;
   };
 
+  // Períodos prontos (em BRT, a partir de hojeBr — nunca new Date().toISOString()).
+  const hoje = hojeBr();
+  const [anoH, mesH] = hoje.split('-').map(Number);
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const anoAnt = mesH === 1 ? anoH - 1 : anoH;
+  const mesAnt = mesH === 1 ? 12 : mesH - 1;
+  // dia 0 do mês atual = último dia do mês anterior (UTC só pra contar dias, sem fuso)
+  const fimMesAnt = new Date(Date.UTC(anoH, mesH - 1, 0)).getUTCDate();
+  const periodos = [
+    { rotulo: 'Hoje', ini: hoje, fim: hoje },
+    { rotulo: 'Ontem', ini: diasAtrasBr(1), fim: diasAtrasBr(1) },
+    { rotulo: '7 dias', ini: diasAtrasBr(6), fim: hoje },
+    { rotulo: 'Este mês', ini: `${anoH}-${p2(mesH)}-01`, fim: hoje },
+    { rotulo: 'Mês passado', ini: `${anoAnt}-${p2(mesAnt)}-01`, fim: `${anoAnt}-${p2(mesAnt)}-${p2(fimMesAnt)}` },
+  ].map((x) => ({
+    ...x,
+    ativo: x.ini === dataIni && x.fim === dataFim,
+    href: `/movimento/pedidos?${new URLSearchParams({ filialId: filialSelecionada.id, dataIni: x.ini, dataFim: x.fim }).toString()}`,
+  }));
+
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
     qs.set('filialId', filialSelecionada.id);
@@ -285,7 +305,25 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
           </div>
         )}
 
-        <form method="GET" className="mt-4 flex flex-wrap items-end gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-slate-600">Período:</span>
+          {periodos.map((x) => (
+            <Link
+              key={x.rotulo}
+              href={x.href}
+              className={
+                x.ativo
+                  ? 'rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-medium text-white'
+                  : 'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50'
+              }
+            >
+              {x.rotulo}
+            </Link>
+          ))}
+        </div>
+
+        {/* key: sem ela os campos de data não acompanham o período clicado acima */}
+        <form key={`${dataIni}_${dataFim}`} method="GET" className="mt-3 flex flex-wrap items-end gap-2">
           <input type="hidden" name="filialId" value={filialSelecionada.id} />
           <label className="text-xs text-slate-600">
             De
