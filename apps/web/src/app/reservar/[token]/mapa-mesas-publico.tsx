@@ -378,15 +378,15 @@ export function MapaTabuaraPublico({
  *    └ banco do fundo
  *
  *   VARANDA (depois do corredor, ao lado do Espaço Kids)
- *      59  60  61  62
- *      56  57  58  (55)
- *      50  51  52  53  54   ← mureta da calçada
+ *      58  59  60  61
+ *      55  56  57  (54)
+ *      50  51  52  53       ← mureta da calçada (a antiga 50 saiu: 51 virou 50)
  *
- * Redondas: 6 e 20 (8 lugares), 19 e 55 (12 lugares). A área escolhida no
+ * Redondas: 6 e 20 (8 lugares), 19 e 54 (12 lugares). A área escolhida no
  * seletor é a clicável; a outra aparece apagada, só pra situar. Mesa fora
  * desta planta (cadastro antigo/novo) aparece em "outras mesas".
  */
-const MAR_REDONDAS = new Set(['6', '19', '20', '55']);
+const MAR_REDONDAS = new Set(['6', '19', '20', '54']);
 const MAR_ENTRADA = [
   ['10', '11', '12', '13'],
   ['6', '7', '8', '9'],
@@ -398,9 +398,9 @@ const MAR_MEIO = [
 ];
 const MAR_CORREDOR = ['22', '23', '24', '25', '26', '27'];
 const MAR_VARANDA = [
-  ['59', '60', '61', '62'],
-  ['56', '57', '58', '55'],
-  ['50', '51', '52', '53', '54'],
+  ['58', '59', '60', '61'],
+  ['55', '56', '57', '54'],
+  ['50', '51', '52', '53'],
 ];
 
 /** Largura em px da planta na tela — fixa, pra mesa ter tamanho de dedo no

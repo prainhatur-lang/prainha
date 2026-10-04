@@ -236,16 +236,16 @@ function DeckELounges({
 /**
  * Prainha Mar como planta real (mapa 0410 do dono, 04/10/2026) — mesma
  * disposição do `MapaMarPublico` da reserva pública: entrada (1-13), em
- * frente ao bar (14-21), corredor (22-27) e varanda (50-62). Redondas: 6 e
- * 20 (8 lug), 19 e 55 (12 lug). Mesa fora da planta cai em "outras mesas".
+ * frente ao bar (14-21), corredor (22-27) e varanda (50-61). Redondas: 6 e
+ * 20 (8 lug), 19 e 54 (12 lug). Mesa fora da planta cai em "outras mesas".
  */
 const FILIAL_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
-const MAR_REDONDAS = new Set(['6', '19', '20', '55']);
+const MAR_REDONDAS = new Set(['6', '19', '20', '54']);
 const MAR_BLOCOS: { titulo: string; linhas: string[][] }[] = [
   { titulo: 'Salão · entrada (1 a 5 no banco)', linhas: [['10', '11', '12', '13'], ['6', '7', '8', '9'], ['1', '2', '3', '4', '5']] },
   { titulo: 'Salão · em frente ao bar (14 a 18 no banco da janela)', linhas: [['19', '20', '21'], ['14', '15', '16', '17', '18']] },
   { titulo: 'Salão · corredor (banco)', linhas: [['22', '23', '24', '25', '26', '27']] },
-  { titulo: 'Varanda (50 a 54 na mureta da calçada)', linhas: [['59', '60', '61', '62'], ['56', '57', '58', '55'], ['50', '51', '52', '53', '54']] },
+  { titulo: 'Varanda (50 a 53 na mureta da calçada)', linhas: [['58', '59', '60', '61'], ['55', '56', '57', '54'], ['50', '51', '52', '53']] },
 ];
 
 function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { salao: Mesa[]; varanda: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
@@ -315,7 +315,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
         <span className="text-xs text-slate-500">{livres}/{todas.length} livres</span>
       </div>
       <div className="mt-0.5 flex items-center justify-between gap-2">
-        <p className="text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 55 (12 lugares)</p>
+        <p className="text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 54 (12 lugares)</p>
         <button
           type="button"
           onClick={() => setModo(modo === 'planta' ? 'blocos' : 'planta')}

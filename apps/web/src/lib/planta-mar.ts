@@ -2,12 +2,12 @@
 // "mapa 0410" que o dono mandou em 04/10/2026 (planta do arquiteto com as mesas
 // numeradas por ele), recortada no prédio. As posições saem do PDF: centro do
 // número de cada mesa, em % da largura/altura da imagem. As redondas (6, 19,
-// 20, 55) ficam um pouco à direita do número, em cima da mesa desenhada.
+// 20, 54) ficam um pouco à direita do número, em cima da mesa desenhada.
 //
 // Usada no mapa de Reservas (/reservas → Mapa) e na reserva pública.
 
 export const PLANTA_MAR = {
-  src: '/prainhamar/planta-mesas.png',
+  src: '/prainhamar/planta-mesas.png?v=2',
   largura: 2400,
   altura: 1256,
   /** Lado da mesa comum e da redonda, em % da largura da planta. */
@@ -15,7 +15,7 @@ export const PLANTA_MAR = {
   ladoRedondaPct: 3.8,
 } as const;
 
-export const PLANTA_MAR_REDONDAS = new Set(['6', '19', '20', '55']);
+export const PLANTA_MAR_REDONDAS = new Set(['6', '19', '20', '54']);
 
 /** numero da mesa → [x%, y%] do centro na planta. */
 export const PLANTA_MAR_MESAS: Record<string, [number, number]> = {
@@ -51,19 +51,19 @@ export const PLANTA_MAR_MESAS: Record<string, [number, number]> = {
   '25': [69.91, 45.62],
   '26': [73.25, 41.72],
   '27': [76.28, 37.93],
-  // varanda · mureta da calçada
-  '50': [79.41, 35.21],
-  '51': [83.41, 30.77],
-  '52': [86.01, 27.87],
-  '53': [89.78, 23.73],
-  '54': [92.97, 19.7],
-  '55': [95.45, 12.49],
+  // varanda · mureta da calçada (a antiga 50 saiu em 04/10/2026: a 51 virou
+  // 50 e assim por diante — a última é a 61)
+  '50': [83.41, 30.77],
+  '51': [86.01, 27.87],
+  '52': [89.78, 23.73],
+  '53': [92.97, 19.7],
+  '54': [95.45, 12.49],
   // varanda · meio e fundo
-  '56': [82.14, 21.78],
-  '57': [86.01, 18.11],
-  '58': [91.15, 12.6],
-  '59': [80.43, 15.21],
-  '60': [84.24, 11.12],
-  '61': [87.52, 7.16],
-  '62': [90.22, 4.14],
+  '55': [82.14, 21.78],
+  '56': [86.01, 18.11],
+  '57': [91.15, 12.6],
+  '58': [80.43, 15.21],
+  '59': [84.24, 11.12],
+  '60': [87.52, 7.16],
+  '61': [90.22, 4.14],
 };
