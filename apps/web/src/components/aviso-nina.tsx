@@ -56,6 +56,7 @@ function esperaTxt(desde: string | null): string {
 
 export function AvisoNina() {
   const [pendentes, setPendentes] = useState<Pendente[]>([]);
+  const [antigas, setAntigas] = useState(0);
   const [recolhido, setRecolhido] = useState(false);
   const [notif, setNotif] = useState<'default' | 'granted' | 'denied' | 'sem'>('sem');
   const vistosRef = useRef<Set<string>>(new Set());
@@ -82,6 +83,7 @@ export function AvisoNina() {
         if (cancel) return;
         const lista: Pendente[] = Array.isArray(d?.pendentes) ? d.pendentes : [];
         setPendentes(lista);
+        setAntigas(Number(d?.antigas) || 0);
 
         const novos = lista.filter((p) => !vistosRef.current.has(p.id));
         vistosRef.current = new Set(lista.map((p) => p.id));
@@ -128,7 +130,18 @@ export function AvisoNina() {
     document.title = pendentes.length > 0 ? `(${pendentes.length}) ${tituloRef.current}` : tituloRef.current;
   }, [pendentes.length]);
 
-  if (pendentes.length === 0) return null;
+  // Só conversa parada há mais de 1 dia: sem bipe, só um lembrete discreto.
+  if (pendentes.length === 0) {
+    if (antigas === 0) return null;
+    return (
+      <a
+        href="/atendimento"
+        className="fixed bottom-4 right-4 z-50 rounded-full border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 shadow-lg hover:bg-rose-50"
+      >
+        ⚠ {antigas === 1 ? '1 conversa sem resposta há mais de 1 dia' : `${antigas} conversas sem resposta há mais de 1 dia`}
+      </a>
+    );
+  }
 
   if (recolhido) {
     return (
@@ -167,6 +180,11 @@ export function AvisoNina() {
           </li>
         ))}
       </ul>
+      {antigas > 0 && (
+        <a href="/atendimento" className="block border-t border-slate-100 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50">
+          ⚠ Mais {antigas} sem resposta há mais de 1 dia — ver todas
+        </a>
+      )}
       {notif === 'default' && (
         <button
           type="button"

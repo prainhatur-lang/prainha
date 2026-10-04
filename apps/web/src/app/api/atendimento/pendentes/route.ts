@@ -6,6 +6,10 @@
 // (depois disso a janela do WhatsApp fecha) e a última mensagem NÃO é da
 // equipe — assim que alguém responde, sai da lista; se o cliente escrever de
 // novo, volta.
+//
+// `antigas` = quantas conversas estão na mesma situação há MAIS de 24h. Não
+// entram na lista (nem no bipe), mas o cartão mostra o número pra ninguém
+// achar que está tudo respondido.
 
 import { NextResponse } from 'next/server';
 import { db } from '@concilia/db';
@@ -21,7 +25,7 @@ export async function GET() {
   if (error) return error;
 
   const filiais = await filiaisDoUsuario(user.id);
-  if (filiais.length === 0) return NextResponse.json({ pendentes: [] });
+  if (filiais.length === 0) return NextResponse.json({ pendentes: [], antigas: 0 });
   const ids = sql.join(filiais.map((f) => sql`${f.id}::uuid`), sql`, `);
 
   const rows = (await db.execute(sql`
@@ -43,8 +47,22 @@ export async function GET() {
     motivo_transferencia: string | null; ultima_msg_cliente_em: string | null;
   }>;
 
+  const antigasRows = (await db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM atendimento_conversa c
+    WHERE c.filial_id IN (${ids})
+      AND c.status = 'humano'
+      AND (c.ultima_msg_cliente_em IS NULL OR c.ultima_msg_cliente_em <= now() - interval '24 hours')
+      AND COALESCE((
+        SELECT m.autor FROM atendimento_mensagem m
+        WHERE m.conversa_id = c.id
+        ORDER BY m.criado_em DESC LIMIT 1
+      ), 'cliente') <> 'equipe'
+  `)) as unknown as Array<{ n: number }>;
+
   const nomes = new Map(filiais.map((f) => [f.id, f.nome]));
   return NextResponse.json({
+    antigas: Number(antigasRows[0]?.n ?? 0),
     pendentes: rows.map((r) => ({
       id: r.id,
       nome: r.nome_cliente || r.telefone,
