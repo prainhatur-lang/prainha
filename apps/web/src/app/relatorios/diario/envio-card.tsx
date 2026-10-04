@@ -234,8 +234,8 @@ export function EnvioCard({
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
             Regra do WhatsApp: mensagem longa só entra até 24 h depois que a pessoa falou com o número da casa. Fora
-            disso vai o aviso curto do modelo <code>{modelo.nome}</code> com o botão &quot;Ver resumo&quot; — um toque
-            e o relatório completo chega.
+            disso vai um aviso curto com o botão &quot;Ver resumo&quot; (modelo <code>{modelo.nome}</code>): um toque e
+            o relatório completo chega.
           </p>
           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
             <p>
