@@ -341,6 +341,9 @@ export function EnvioCard({
               </p>
               <p className="mt-1">
                 Acerto na Meta: Gerenciador do WhatsApp → Visão geral → <strong>Adicionar forma de pagamento</strong>.
+                Se já tiver valor em aberto, é em Cobrança e pagamentos → Contas do WhatsApp Business → a conta do
+                número da casa → <strong>Pagar agora</strong> (cada conta do WhatsApp tem o cartão dela; saldo de
+                anúncio ou cartão de outra conta não vale).
                 Depois toque em <strong>Enviar agora</strong> pra conferir. Enquanto isso, escrever{' '}
                 <strong>relatório</strong> pro WhatsApp da casa traz o relatório completo, de graça.
               </p>
