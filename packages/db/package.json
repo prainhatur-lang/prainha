@@ -153,7 +153,8 @@
     "migrate:transferencia-recebimento": "tsx scripts/migrate-transferencia-recebimento.ts",
     "migrate:nfe-transferencia": "tsx scripts/migrate-nfe-transferencia.ts",
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts",
-    "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts"
+    "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts",
+    "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

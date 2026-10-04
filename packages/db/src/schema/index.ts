@@ -46,3 +46,4 @@ export * from './campanha';
 export * from './loja-saude';
 export * from './transferencia';
 export * from './nfe';
+export * from './relatorio-diario';

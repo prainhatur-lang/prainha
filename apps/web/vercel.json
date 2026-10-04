@@ -39,6 +39,10 @@
     {
       "path": "/api/cron/alarme-desligar",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/relatorio-diario",
+      "schedule": "0 10 * * *"
     }
   ]
 }

@@ -23,6 +23,11 @@ import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturame
 import { enviarTexto } from '@/lib/atendimento/zap';
 import { tratarKids } from '@/lib/kids';
 import {
+  reconhecerPedidoRelatorio,
+  responderPedidoRelatorio,
+  registrarFalhaRelatorio,
+} from '@/lib/relatorio-diario-envio';
+import {
   registrarEntrada,
   processarEntrada,
   registrarStatusEnvio,
@@ -79,6 +84,12 @@ export async function POST(req: Request) {
           if (!st.id || !st.status) continue;
           const erro = st.errors?.[0] ? `${st.errors[0].title ?? ''} ${st.errors[0].message ?? ''}`.trim() : null;
           await registrarStatusEnvio(st.id, st.status, erro).catch(() => {});
+          // Relatório diário: texto que não entrou (janela de 24 h fechada sem
+          // a gente saber) é trocado pelo modelo aprovado.
+          if (st.status === 'failed') {
+            const idFalho = st.id;
+            after(() => registrarFalhaRelatorio(idFalho, erro).catch(() => {}));
+          }
         }
 
         const mensagens = value?.messages ?? [];
@@ -100,6 +111,21 @@ export async function POST(req: Request) {
           // Resposta de botao de template (quick_reply) chega como type 'button'.
           // Botao interativo (lista/reply) chega como 'interactive'.
           const payload = msg.button?.payload ?? msg.interactive?.button_reply?.id ?? '';
+          // Relatório diário das casas: toque no botão "Ver resumo" do modelo, ou
+          // um destinatário do relatório escrevendo "relatório". Só pega quem está
+          // na lista de destinatários — todo o resto segue o fluxo de sempre.
+          const pedidoRelatorio = await reconhecerPedidoRelatorio({
+            id: msg.id,
+            from: msg.from,
+            payload,
+            textoBotao: msg.button?.text,
+            texto: msg.type === 'text' ? msg.text?.body : undefined,
+            phoneNumberId: value?.metadata?.phone_number_id,
+          }).catch(() => null);
+          if (pedidoRelatorio) {
+            after(() => responderPedidoRelatorio(pedidoRelatorio));
+            continue;
+          }
           if (payload) {
             await tratarPayload(payload, msg.from ?? null);
             continue;

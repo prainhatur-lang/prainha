@@ -46,6 +46,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Meu painel', href: '/' },
           { label: 'Dashboard analítico', href: '/dashboard', perm: 'dashboard.read' },
           { label: 'Balanço do dia', href: '/balanco', perm: 'dashboard.read' },
+          { label: 'Relatório diário das casas', href: '/relatorios/diario', perm: 'relatorio.read' },
           { label: 'Relatório consolidado', href: '/relatorio', perm: 'relatorio.read' },
         ],
       },
