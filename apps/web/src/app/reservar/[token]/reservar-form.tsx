@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
-import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, MapaTabuaraPublico, type MesaPublica } from './mapa-mesas-publico';
+import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, MapaTabuaraPublico, MapaMarPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
   nome: string;
@@ -25,7 +25,7 @@ interface Props {
   /** Emoji da casa (Prainha = pôr do sol, Tabuará = taça). */
   emoji: string;
   /** Planta específica do mapa de mesas da casa (null = grid simples). */
-  layoutMesas: 'tabuara' | null;
+  layoutMesas: 'tabuara' | 'mar' | null;
   /** A reserva abre pedindo o CPF e identifica a pessoa (config da filial). */
   pedirCpf: boolean;
   /** Mostra "Placa do carro" (casa com estacionamento). */
@@ -86,7 +86,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   const [mesasVizinhas, setMesasVizinhas] = useState<MesaPublica[]>([]);
   const [mesaEscolhida, setMesaEscolhida] = useState('');
   const areaVizinha =
-    layoutMesas === 'tabuara'
+    layoutMesas === 'tabuara' || layoutMesas === 'mar'
       ? espaco === 'Salão'
         ? 'Varanda'
         : espaco === 'Varanda'
@@ -734,6 +734,15 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         </div>
         {layoutMesas === 'tabuara' ? (
           <MapaTabuaraPublico
+            areaAtual={espaco}
+            salao={espaco === 'Salão' ? mesas : mesasVizinhas}
+            varanda={espaco === 'Varanda' ? mesas : mesasVizinhas}
+            pessoas={pessoas}
+            selecionada={mesaEscolhida}
+            onSelecionar={setMesaEscolhida}
+          />
+        ) : layoutMesas === 'mar' && (espaco === 'Salão' || espaco === 'Varanda') ? (
+          <MapaMarPublico
             areaAtual={espaco}
             salao={espaco === 'Salão' ? mesas : mesasVizinhas}
             varanda={espaco === 'Varanda' ? mesas : mesasVizinhas}

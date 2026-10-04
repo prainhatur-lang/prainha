@@ -363,3 +363,128 @@ export function MapaTabuaraPublico({
     </div>
   );
 }
+
+/**
+ * Prainha Mar (Shopping Praia Sul) como planta real — numeração do dono em
+ * 04/10/2026 (mapa 0410), olhando da entrada:
+ *
+ *   ENTRADA / SALÃO          MEIO (em frente ao bar)     CORREDOR (banco)
+ *      10  11  12  13          (19)  (20)  21            22 23 24 25 26 27
+ *   (6)  7   8   9             14  15  16  17  18
+ *    1   2   3   4   5         └ banco da janela
+ *    └ banco do fundo
+ *
+ *   VARANDA (depois do corredor, ao lado do Espaço Kids)
+ *      59  60  61  62
+ *      56  57  58  (55)
+ *      50  51  52  53  54   ← mureta da calçada
+ *
+ * Redondas: 6 e 20 (8 lugares), 19 e 55 (12 lugares). A área escolhida no
+ * seletor é a clicável; a outra aparece apagada, só pra situar. Mesa fora
+ * desta planta (cadastro antigo/novo) aparece em "outras mesas".
+ */
+const MAR_REDONDAS = new Set(['6', '19', '20', '55']);
+const MAR_ENTRADA = [
+  ['10', '11', '12', '13'],
+  ['6', '7', '8', '9'],
+  ['1', '2', '3', '4', '5'],
+];
+const MAR_MEIO = [
+  ['19', '20', '21'],
+  ['14', '15', '16', '17', '18'],
+];
+const MAR_CORREDOR = ['22', '23', '24', '25', '26', '27'];
+const MAR_VARANDA = [
+  ['59', '60', '61', '62'],
+  ['56', '57', '58', '55'],
+  ['50', '51', '52', '53', '54'],
+];
+
+export function MapaMarPublico({
+  areaAtual,
+  salao,
+  varanda,
+  pessoas,
+  selecionada,
+  onSelecionar,
+}: {
+  areaAtual: string;
+  salao: MesaPublica[];
+  varanda: MesaPublica[];
+  pessoas: number;
+  selecionada: string;
+  onSelecionar: (numero: string) => void;
+}) {
+  const todas = [...salao, ...varanda];
+  if (todas.length === 0) return null;
+
+  const naPlanta = new Set([...MAR_ENTRADA.flat(), ...MAR_MEIO.flat(), ...MAR_CORREDOR, ...MAR_VARANDA.flat()]);
+  const foraDaPlanta = todas.filter((m) => !naPlanta.has(m.numero));
+
+  const botao = (numero: string) => {
+    const mesa = todas.find((x) => x.numero === numero);
+    if (!mesa) return null;
+    const doSalao = salao.some((x) => x.numero === numero);
+    const contexto = doSalao ? areaAtual !== 'Salão' : areaAtual !== 'Varanda';
+    return (
+      <MesaBotao
+        key={numero}
+        mesa={mesa}
+        pessoas={pessoas}
+        selecionada={selecionada}
+        onSelecionar={onSelecionar}
+        contexto={contexto}
+        redonda={MAR_REDONDAS.has(numero)}
+      />
+    );
+  };
+  const linhas = (ls: string[][]) => (
+    <div className="flex flex-col gap-1.5">
+      {ls.map((linha, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          {linha.map((n) => botao(n))}
+        </div>
+      ))}
+    </div>
+  );
+  const titulo = (t: string) => <p className="mb-1.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">{t}</p>;
+  const bloco = 'mt-3 border-t border-[var(--rsv-mesa-line)] pt-3';
+
+  return (
+    <div className="mt-1.5 rounded-xl border border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
+        Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
+      </p>
+      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">
+        da entrada pro fundo: salão, corredor e varanda · as redondas são as mesas grandes
+      </p>
+
+      <div className="mt-2 overflow-x-auto pb-1">
+        <div>
+          {titulo('salão · entrada (1 a 5 no banco)')}
+          {linhas(MAR_ENTRADA)}
+        </div>
+        <div className={bloco}>
+          {titulo('salão · em frente ao bar (14 a 18 no banco da janela)')}
+          {linhas(MAR_MEIO)}
+        </div>
+        <div className={bloco}>
+          {titulo('salão · corredor (banco)')}
+          {linhas([MAR_CORREDOR])}
+        </div>
+        <div className={bloco}>
+          {titulo('varanda (50 a 54 na mureta da calçada)')}
+          {linhas(MAR_VARANDA)}
+        </div>
+
+        {foraDaPlanta.length > 0 && (
+          <div className="mt-3 border-t border-dashed border-[var(--rsv-mesa-line)] pt-3">
+            <p className="mb-1.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">outras mesas</p>
+            <div className="flex flex-wrap gap-1.5">{foraDaPlanta.map((m) => botao(m.numero))}</div>
+          </div>
+        )}
+      </div>
+      <Legenda comContexto />
+    </div>
+  );
+}

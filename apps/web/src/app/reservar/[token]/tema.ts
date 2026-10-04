@@ -19,7 +19,7 @@ export interface TemaReserva {
   /** Emoji da tela de sucesso e dos avisos de horário. */
   emoji: string;
   /** Planta específica pro mapa de mesas. Ausente = grid simples. */
-  layoutMesas?: 'tabuara';
+  layoutMesas?: 'tabuara' | 'mar';
   vars: Record<string, string>;
 }
 
@@ -149,6 +149,7 @@ const MAR: TemaReserva = {
   bullets: ['🦐 Frutos do mar e moquecas', '🔥 Carnes na brasa', '📍 Shopping Praia Sul, loja 198'],
   convite: 'frutos do mar e brasa 🦐',
   emoji: '🦐',
+  layoutMesas: 'mar',
   vars: {
     '--rsv-bg':
       'linear-gradient(180deg,#0f2138 0%,#1E3A5F 34%,#2c4d73 58%,#b8661f 86%,#DD6A10 100%)',
