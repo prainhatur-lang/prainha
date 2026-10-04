@@ -9575,6 +9575,10 @@ async function loopPedidoNativoNuvem() {
       codigoExterno: Number(it.item_codigo),
       codigoPedidoExterno: Number(it.comanda_codigo),
       codigoProdutoExterno: it.codigo_pdv == null ? null : Number(it.codigo_pdv),
+      // codigo_pdv é o código do TAMANHO (variante), não do produto: a nuvem
+      // resolve o produto-pai a partir daqui (sem isto a venda caía no produto
+      // que por acaso tinha o mesmo número — Prainha GT virou vinho, 04/10).
+      codigoVarianteExterno: it.codigo_pdv == null ? null : Number(it.codigo_pdv),
       nomeProduto: it.nome || null,
       quantidade: it.quantidade == null ? null : Number(it.quantidade),
       valorUnitario: it.valor_unitario == null ? null : Number(it.valor_unitario),

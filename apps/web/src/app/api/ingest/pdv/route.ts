@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
-import { eq, sql as drizzleSql } from 'drizzle-orm';
+import { and, eq, inArray, sql as drizzleSql } from 'drizzle-orm';
 import { processarBaixaEstoque } from './baixa-estoque';
 import { sincronizarContaReceberCanal } from './conta-receber-canal';
 
@@ -71,6 +71,9 @@ const PedidoItemSchema = z.object({
   codigoExterno: z.number().int(),
   codigoPedidoExterno: z.number().int(),
   codigoProdutoExterno: z.number().int().nullable(),
+  // TAMANHO vendido (produto_variante.codigo_externo). O PDV próprio da loja só
+  // conhece esse código; o produto-pai é resolvido aqui.
+  codigoVarianteExterno: z.number().int().nullable().optional(),
   nomeProduto: z.string().nullable(),
   quantidade: z.number().nullable(),
   valorUnitario: z.number().nullable(),
@@ -406,11 +409,45 @@ async function handle(req: Request) {
   }
 
   if (pedidoItens?.length) {
+    // PDV próprio (vendas-local sem Consumer) manda o código do TAMANHO no campo
+    // do produto — "Prainha GT" (tamanho 990) caía no produto 990, um vinho, e a
+    // baixa de estoque ia junto (04/10/2026). Item nativo = veio com
+    // codigoVarianteExterno, ou (loja ainda na versão antiga) código de item
+    // ≥ 5.000.000 sem versaoReg. Nesses, o produto sai da variante; sem variante
+    // conhecida fica nulo — melhor sem produto do que no produto errado.
+    const varianteDoItem = (it: (typeof pedidoItens)[number]): number | null => {
+      if (it.codigoVarianteExterno != null) return it.codigoVarianteExterno;
+      if (it.versaoReg == null && it.codigoExterno >= 5_000_000) return it.codigoProdutoExterno;
+      return null;
+    };
+    const codigosVariante = [
+      ...new Set(pedidoItens.map(varianteDoItem).filter((c): c is number => c != null)),
+    ];
+    const produtoDaVariante = new Map<number, number | null>();
+    if (codigosVariante.length) {
+      const vs = await db
+        .select({
+          codigo: schema.produtoVariante.codigoExterno,
+          produto: schema.produtoVariante.codigoProdutoExterno,
+        })
+        .from(schema.produtoVariante)
+        .where(
+          and(
+            eq(schema.produtoVariante.filialId, filial.id),
+            inArray(schema.produtoVariante.codigoExterno, codigosVariante),
+          ),
+        );
+      for (const v of vs) produtoDaVariante.set(v.codigo, v.produto);
+    }
     const rows = pedidoItens.map((it) => ({
       filialId: filial.id,
       codigoExterno: it.codigoExterno,
       codigoPedidoExterno: it.codigoPedidoExterno,
-      codigoProdutoExterno: it.codigoProdutoExterno,
+      codigoProdutoExterno:
+        varianteDoItem(it) != null
+          ? (produtoDaVariante.get(varianteDoItem(it) as number) ?? null)
+          : it.codigoProdutoExterno,
+      codigoVarianteExterno: varianteDoItem(it),
       nomeProduto: truncar(it.nomeProduto, 200),
       quantidade: toNumStr(it.quantidade),
       valorUnitario: toNumStr(it.valorUnitario),
@@ -441,6 +478,7 @@ async function handle(req: Request) {
           set: {
             codigoPedidoExterno: drizzleSql`excluded.codigo_pedido_externo`,
             codigoProdutoExterno: drizzleSql`excluded.codigo_produto_externo`,
+            codigoVarianteExterno: drizzleSql`COALESCE(excluded.codigo_variante_externo, ${schema.pedidoItem.codigoVarianteExterno})`,
             nomeProduto: drizzleSql`excluded.nome_produto`,
             quantidade: drizzleSql`excluded.quantidade`,
             valorUnitario: drizzleSql`excluded.valor_unitario`,
