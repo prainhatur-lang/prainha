@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Quem conversa com o servidor da loja. Roda fora da tela (Task): busca a
+     fila de 5 em 5 s, junta as pracas e entrega pra tela um retrato ja pronto
+     pra desenhar (campo "modelo"). -->
+<component name="KdsTask" extends="Task">
+  <interface>
+    <field id="args" type="assocarray" />
+    <!-- a tela pede: "" = voltar pra lista de pracas; "1" / "1,3" / "todas" = mostrar -->
+    <field id="escolha" type="string" alwaysNotify="true" />
+    <field id="prefsom" type="string" alwaysNotify="true" />
+    <!-- o que a tela desenha -->
+    <field id="modelo" type="assocarray" />
+    <field id="som" type="boolean" value="true" />
+    <field id="colunas" type="integer" value="0" />
+    <field id="parado" type="integer" value="0" />
+    <field id="somnovo" type="integer" value="0" />
+    <field id="somalarme" type="integer" value="0" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/source/util.brs" />
+  <script type="text/brightscript" uri="pkg:/components/KdsTask.brs" />
+</component>

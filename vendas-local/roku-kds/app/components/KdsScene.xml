@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- A tela da TV: so desenha o retrato que a KdsTask entrega (campo "modelo").
+     Desenhada em 1280x720; a TV estica sozinha se for maior. -->
+<component name="KdsScene" extends="Scene">
+  <interface>
+    <field id="sair" type="boolean" value="false" alwaysNotify="true" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/source/util.brs" />
+  <script type="text/brightscript" uri="pkg:/components/KdsScene.brs" />
+  <children>
+    <Rectangle id="fundo" width="1280" height="720" color="0x0b0d12FF" />
+    <Group id="fila" />
+    <Group id="avisos" />
+    <Group id="cab" />
+    <Group id="sel" />
+    <Group id="toast" visible="false" />
+    <Timer id="tique" repeat="true" duration="1" />
+    <Audio id="audio" />
+    <SoundEffect id="fxnovo" uri="pkg:/sounds/novo.wav" />
+    <SoundEffect id="fxalarme" uri="pkg:/sounds/alarme.wav" />
+    <KdsTask id="tarefa" />
+  </children>
+</component>
