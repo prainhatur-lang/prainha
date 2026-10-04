@@ -46,11 +46,17 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     );
   }
 
+  // TODAS AS CASAS juntas (?filialId=todas): soma só as filiais que o usuário acessa.
+  const todas = sp.filialId === 'todas' && filiais.length > 1;
+  const idsFiliais = todas ? filiais.map((f) => f.id) : [filialSelecionada.id];
+  const filialParam = todas ? 'todas' : filialSelecionada.id;
+  const nomeCasa = (id: string) => filiais.find((f) => f.id === id)?.nome ?? '';
+
   const dtIni = new Date(dataIni + 'T00:00:00-03:00');
   const dtFim = new Date(dataFim + 'T23:59:59-03:00');
 
   const where = and(
-    eq(schema.pedido.filialId, filialSelecionada.id),
+    inArray(schema.pedido.filialId, idsFiliais),
     isNull(schema.pedido.dataDelete),
     gte(schema.pedido.dataFechamento, dtIni),
     lte(schema.pedido.dataFechamento, dtFim),
@@ -73,6 +79,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
   const maioresDescontos = await db
     .select({
       id: schema.pedido.id,
+      filialId: schema.pedido.filialId,
       codigoExterno: schema.pedido.codigoExterno,
       numero: schema.pedido.numero,
       totalDesconto: schema.pedido.totalDesconto,
@@ -86,6 +93,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
   const pedidos = await db
     .select({
       id: schema.pedido.id,
+      filialId: schema.pedido.filialId,
       codigoExterno: schema.pedido.codigoExterno,
       numero: schema.pedido.numero,
       dataAbertura: schema.pedido.dataAbertura,
@@ -131,7 +139,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
 
   // Top produtos no período (valor, volume, margem)
   const whereItens = and(
-    eq(schema.pedido.filialId, filialSelecionada.id),
+    inArray(schema.pedido.filialId, idsFiliais),
     isNull(schema.pedidoItem.dataDelete),
     isNull(schema.pedido.dataDelete),
     gte(schema.pedido.dataFechamento, dtIni),
@@ -209,6 +217,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
   const estoqueBaixo = await db
     .select({
       id: schema.produto.id,
+      filialId: schema.produto.filialId,
       nome: schema.produto.nome,
       categoria: schema.produto.categoriaCompras,
       unidade: schema.produto.unidadeEstoque,
@@ -218,7 +227,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     .from(schema.produto)
     .where(
       and(
-        eq(schema.produto.filialId, filialSelecionada.id),
+        inArray(schema.produto.filialId, idsFiliais),
         eq(schema.produto.controlaEstoque, true),
         sql`${schema.produto.categoriaCompras} IS NOT NULL`,
         sql`${schema.produto.estoqueMinimo} IS NOT NULL`,
@@ -264,12 +273,12 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
   ].map((x) => ({
     ...x,
     ativo: x.ini === dataIni && x.fim === dataFim,
-    href: `/movimento/pedidos?${new URLSearchParams({ filialId: filialSelecionada.id, dataIni: x.ini, dataFim: x.fim }).toString()}`,
+    href: `/movimento/pedidos?${new URLSearchParams({ filialId: filialParam, dataIni: x.ini, dataFim: x.fim }).toString()}`,
   }));
 
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
-    qs.set('filialId', filialSelecionada.id);
+    qs.set('filialId', filialParam);
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
     if (p > 0) qs.set('page', String(p));
@@ -283,7 +292,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
       <section className="mx-auto max-w-7xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Pedidos / Vendas</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Histórico de pedidos do PDV na {filialSelecionada.nome}.
+          Histórico de pedidos do PDV {todas ? 'em todas as casas juntas' : `na ${filialSelecionada.nome}`}.
         </p>
 
         {filiais.length > 1 && (
@@ -294,7 +303,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                 key={f.id}
                 href={hrefFilial(f.id)}
                 className={`rounded-md border px-3 py-1 text-xs ${
-                  f.id === filialSelecionada.id
+                  !todas && f.id === filialSelecionada.id
                     ? 'border-slate-900 bg-slate-900 text-white'
                     : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                 }`}
@@ -302,6 +311,16 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                 {f.nome}
               </Link>
             ))}
+            <Link
+              href={hrefFilial('todas')}
+              className={`rounded-md border px-3 py-1 text-xs ${
+                todas
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Todas juntas
+            </Link>
           </div>
         )}
 
@@ -324,7 +343,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
 
         {/* key: sem ela os campos de data não acompanham o período clicado acima */}
         <form key={`${dataIni}_${dataFim}`} method="GET" className="mt-3 flex flex-wrap items-end gap-2">
-          <input type="hidden" name="filialId" value={filialSelecionada.id} />
+          <input type="hidden" name="filialId" value={filialParam} />
           <label className="text-xs text-slate-600">
             De
             <input
@@ -420,6 +439,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                   className="rounded-md border border-rose-200 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-rose-100"
                   title="Abrir o espelho do pedido"
                 >
+                  {todas && <span className="mr-1 text-[10px] text-slate-500">{nomeCasa(p.filialId)}</span>}
                   {p.numero != null ? `Mesa ${p.numero}` : `#${p.codigoExterno}`}{' '}
                   <span className="font-mono text-rose-700">-{brl(p.totalDesconto)}</span>
                   {Number(p.valorTotal ?? 0) === 0 && (
@@ -456,7 +476,7 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                   const total = Number(c?.total ?? 0);
                   const servico = Number(c?.totalServico ?? 0);
                   const desconto = Number(c?.totalDesconto ?? 0);
-                  const atual = f.id === filialSelecionada.id;
+                  const atual = !todas && f.id === filialSelecionada.id;
                   return (
                     <tr key={f.id} className={`border-t border-slate-100 ${atual ? 'bg-emerald-50/60' : ''}`}>
                       <td className="px-4 py-2 text-xs">
@@ -622,7 +642,10 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
               ) : (
                 estoqueBaixo.map((p) => (
                   <tr key={p.id} className="border-t border-slate-100">
-                    <td className="px-4 py-2 text-xs text-slate-800">{p.nome ?? '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-800">
+                      {p.nome ?? '—'}
+                      {todas && <span className="ml-1.5 text-[10px] text-slate-500">{nomeCasa(p.filialId)}</span>}
+                    </td>
                     <td className="px-4 py-2 text-xs text-slate-500">{p.categoria ?? '—'}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-rose-600">
                       {Number(p.atual ?? 0).toFixed(2)}
@@ -680,6 +703,9 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
                       </Link>
                       {p.numero != null && (
                         <span className="ml-1.5 text-[10px] text-slate-400">mesa {p.numero}</span>
+                      )}
+                      {todas && (
+                        <span className="ml-1.5 text-[10px] text-slate-500">{nomeCasa(p.filialId)}</span>
                       )}
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-700">
