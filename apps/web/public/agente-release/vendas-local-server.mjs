@@ -12403,7 +12403,7 @@ async function kidsCamDiag() {
   out.cameras = [];
   for (const c of cams.slice(0, 16)) {
     const id = String((c && c.id) || '');
-    const item = { id, nome: String((c && c.name) || ''), estado: String((c && c.state) || ''), modelo: String((c && (c.modelKey || c.type)) || ''), id_ok: KIDS_CAM_ID_OK.test(id) };
+    const item = { id, nome: String((c && c.name) || ''), estado: String((c && c.state) || ''), modelo: String((c && (c.modelKey || c.type)) || ''), mac: String((c && c.mac) || ''), id_ok: KIDS_CAM_ID_OK.test(id) };
     if (item.id_ok) {
       for (const sufixo of ['/snapshot?highQuality=false', '/snapshot']) {
         const f = await protectCru(pr.host, pr.chave, '/cameras/' + encodeURIComponent(id) + sufixo);
@@ -27325,6 +27325,18 @@ const server = http.createServer(async (req, res) => {
     }
     // ---- CÂMERA DO KIDS pelo CENTRAL — assinado (escopo 'kids-cam').
     // GET /api/central/kids-cam/diag · POST /api/central/kids-cam/escolher {cam_id, cam_nome}
+    // GET /api/central/kids-cam/foto?cam=<id> devolve o JPEG (pra identificar a câmera de fora).
+    if (p === '/api/central/kids-cam/foto') {
+      const jf = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
+      if (!centralAssinou(u, 'kids-cam')) return jf(403, { ok: false, erro: 'assinatura inválida' });
+      const camF = String(u.searchParams.get('cam') || '');
+      if (!KIDS_CAM_ID_OK.test(camF)) return jf(400, { ok: false, erro: 'câmera inválida' });
+      try {
+        const q = await kidsQuadro(camF);
+        res.writeHead(200, { 'content-type': q.tipo, 'content-length': q.corpo.length, 'cache-control': 'no-store' });
+        return res.end(q.corpo);
+      } catch (e) { return jf(503, { ok: false, erro: e.message }); }
+    }
     if (p.startsWith('/api/central/kids-cam/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (!centralAssinou(u, 'kids-cam')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
