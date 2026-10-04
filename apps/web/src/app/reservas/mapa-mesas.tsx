@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+import { PLANTA_MAR, PLANTA_MAR_MESAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
 import type { FilialOpt, Mesa } from './reservas-client';
 
 // Mapa visual de mesas por espaco. 1a versao: colunas de 4 (rio na frente/topo),
@@ -247,6 +249,8 @@ const MAR_BLOCOS: { titulo: string; linhas: string[][] }[] = [
 ];
 
 function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { salao: Mesa[]; varanda: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
+  // 'planta' = a planta física (foto do dono); 'blocos' = a grade de antes.
+  const [modo, setModo] = useState<'planta' | 'blocos'>('planta');
   const todas = [...salao, ...varanda];
   const naPlanta = new Set(MAR_BLOCOS.flatMap((b) => b.linhas.flat()));
   const fora = todas.filter((m) => !naPlanta.has(m.numero));
@@ -267,14 +271,94 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
     (mm) => !ocupadas.has(`${filialId}:${mm.numero}`) && !ocupadasConsumer.has(`${filialId}:${mm.numero}`),
   ).length;
 
+  // Mesa em cima da planta física (foto do dono). Tamanho em cqw = % da
+  // largura da planta, então acompanha a tela.
+  const pino = (mesa: Mesa) => {
+    const pos = PLANTA_MAR_MESAS[mesa.numero];
+    if (!pos) return null;
+    const info = reservasPorMesa[`${filialId}:${mesa.numero}`];
+    const walkIn = !info && ocupadasConsumer.has(`${filialId}:${mesa.numero}`);
+    const redonda = PLANTA_MAR_REDONDAS.has(mesa.numero);
+    const lado = `${redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct}cqw`;
+    return (
+      <div
+        key={mesa.numero}
+        title={
+          info
+            ? `Mesa ${mesa.numero} · ${info.nome} · ${info.hora} · ${info.pessoas} pessoa(s)`
+            : walkIn
+              ? `Mesa ${mesa.numero} · ocupada no sistema (sem reserva)`
+              : `Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''} · livre`
+        }
+        style={{ left: `${pos[0]}%`, top: `${pos[1]}%`, width: lado, height: lado, fontSize: '0.95cqw' }}
+        className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center border text-center shadow-sm ${redonda ? 'rounded-full' : 'rounded-md'} ${
+          info
+            ? 'border-rose-400 bg-rose-200 text-rose-900'
+            : walkIn
+              ? 'border-orange-400 bg-orange-200 text-orange-900'
+              : corLugares(mesa.lugares)
+        }`}
+      >
+        <span className="font-bold leading-none">{mesa.numero}</span>
+        {redonda && <span className="mt-[0.1cqw] text-[0.7em] leading-none opacity-80">{mesa.lugares} lug</span>}
+      </div>
+    );
+  };
+  const reservadas = todas
+    .map((m) => ({ m, info: reservasPorMesa[`${filialId}:${m.numero}`] }))
+    .filter((x): x is { m: Mesa; info: ReservaInfo } => !!x.info);
+
   return (
     <div className="mt-4">
       <div className="flex items-baseline justify-between">
         <h4 className="text-sm font-semibold text-slate-800">Salão + Varanda</h4>
         <span className="text-xs text-slate-500">{livres}/{todas.length} livres</span>
       </div>
-      <p className="mt-0.5 text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 55 (12 lugares)</p>
-      <div className="mt-1 flex flex-wrap gap-x-6 gap-y-3 rounded-lg bg-slate-50 p-2">
+      <div className="mt-0.5 flex items-center justify-between gap-2">
+        <p className="text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 55 (12 lugares)</p>
+        <button
+          type="button"
+          onClick={() => setModo(modo === 'planta' ? 'blocos' : 'planta')}
+          className="shrink-0 rounded-full border border-slate-300 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+        >
+          {modo === 'planta' ? 'ver em blocos' : 'ver na planta'}
+        </button>
+      </div>
+      {modo === 'planta' && (
+        <div className="mt-1 rounded-lg bg-slate-50 p-2">
+          <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+            <div
+              className="relative w-full min-w-[1100px]"
+              style={{ aspectRatio: `${PLANTA_MAR.largura} / ${PLANTA_MAR.altura}`, containerType: 'inline-size' }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={PLANTA_MAR.src}
+                alt="Planta da Prainha Mar com as mesas"
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full select-none opacity-70"
+              />
+              {todas.map((m) => pino(m))}
+            </div>
+          </div>
+          {reservadas.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-slate-700">
+              {reservadas.map(({ m, info }) => (
+                <span key={m.numero} className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5">
+                  <b>Mesa {m.numero}</b> · {info.nome.split(' ')[0]} · {info.hora} · {info.pessoas}p
+                </span>
+              ))}
+            </div>
+          )}
+          {fora.length > 0 && (
+            <div className="mt-2">
+              <div className="mb-1 text-[10px] font-medium text-slate-500">Outras mesas (fora da planta)</div>
+              <div className="flex flex-wrap gap-1.5">{fora.map((m) => card(m.numero))}</div>
+            </div>
+          )}
+        </div>
+      )}
+      <div className={`mt-1 flex flex-wrap gap-x-6 gap-y-3 rounded-lg bg-slate-50 p-2 ${modo === 'planta' ? 'hidden' : ''}`}>
         {MAR_BLOCOS.map((b) => (
           <div key={b.titulo}>
             <div className="mb-1 text-[10px] font-medium text-slate-500">{b.titulo}</div>

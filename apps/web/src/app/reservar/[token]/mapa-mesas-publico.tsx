@@ -1,5 +1,8 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
+import { PLANTA_MAR, PLANTA_MAR_MESAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
+
 export interface MesaPublica {
   numero: string;
   lugares: number;
@@ -400,6 +403,111 @@ const MAR_VARANDA = [
   ['50', '51', '52', '53', '54'],
 ];
 
+/** Largura em px da planta na tela — fixa, pra mesa ter tamanho de dedo no
+ *  celular; a janela rola (arrasta) e já abre no espaço escolhido. */
+const MAR_PLANTA_PX = 1280;
+/** Pra onde a janela rola ao abrir cada espaço: [x%, y%] da planta. */
+const MAR_FOCO: Record<string, [number, number]> = { 'Salão': [27, 82], Varanda: [86, 18] };
+
+function PlantaMarPublica({
+  areaAtual,
+  salao,
+  varanda,
+  pessoas,
+  selecionada,
+  onSelecionar,
+}: {
+  areaAtual: string;
+  salao: MesaPublica[];
+  varanda: MesaPublica[];
+  pessoas: number;
+  selecionada: string;
+  onSelecionar: (numero: string) => void;
+}) {
+  const janela = useRef<HTMLDivElement>(null);
+  const alturaPx = Math.round((MAR_PLANTA_PX * PLANTA_MAR.altura) / PLANTA_MAR.largura);
+
+  useEffect(() => {
+    const el = janela.current;
+    const foco = MAR_FOCO[areaAtual];
+    if (!el || !foco) return;
+    el.scrollTo({
+      left: Math.max(0, (MAR_PLANTA_PX * foco[0]) / 100 - el.clientWidth / 2),
+      top: Math.max(0, (alturaPx * foco[1]) / 100 - el.clientHeight / 2),
+    });
+  }, [areaAtual, alturaPx]);
+
+  const pino = (mesa: MesaPublica, doSalao: boolean) => {
+    const pos = PLANTA_MAR_MESAS[mesa.numero];
+    if (!pos) return null;
+    const contexto = doSalao ? areaAtual !== 'Salão' : areaAtual !== 'Varanda';
+    const redonda = PLANTA_MAR_REDONDAS.has(mesa.numero);
+    const lado = Math.round((MAR_PLANTA_PX * (redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct)) / 100);
+    const cabe = mesa.lugares >= pessoas;
+    const clicavel = !contexto && mesa.livre && cabe;
+    const sel = !contexto && selecionada === mesa.numero;
+    return (
+      <button
+        key={mesa.numero}
+        type="button"
+        disabled={!clicavel}
+        onClick={() => onSelecionar(sel ? '' : mesa.numero)}
+        title={
+          contexto
+            ? `Mesa ${mesa.numero} · outro espaço`
+            : !mesa.livre
+              ? `Mesa ${mesa.numero} · ocupada`
+              : !cabe
+                ? `Mesa ${mesa.numero} · ${mesa.lugares} lugares — não cabe ${pessoas} pessoa(s)`
+                : `Mesa ${mesa.numero} · ${mesa.lugares} lugares`
+        }
+        style={{ left: `${pos[0]}%`, top: `${pos[1]}%`, width: lado, height: lado }}
+        className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center border text-center transition ${redonda ? 'rounded-full' : 'rounded-md'} ${
+          sel
+            ? 'z-10 border-[var(--rsv-mesa-sel)] bg-[var(--rsv-mesa-sel)] text-[var(--rsv-mesa-sel-ink)] shadow-md'
+            : contexto
+              ? 'cursor-not-allowed border-dashed border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-panel)] text-[var(--rsv-mesa-dim-ink)]'
+              : !mesa.livre
+                ? 'cursor-not-allowed border-[var(--rsv-mesa-ocupada-line)] bg-[var(--rsv-mesa-ocupada)] text-[var(--rsv-mesa-ocupada-ink)]'
+                : !cabe
+                  ? 'cursor-not-allowed border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-off)] text-[var(--rsv-mesa-off-ink)]'
+                  : 'border-[var(--rsv-gold)] bg-[var(--rsv-mesa-livre)] text-[var(--rsv-mesa-livre-ink)] shadow-sm active:bg-[var(--rsv-welcome-bg)]'
+        }`}
+      >
+        <span className="text-xs font-bold leading-none">{mesa.numero}</span>
+        {redonda && <span className="mt-0.5 text-[8px] leading-none opacity-80">{mesa.lugares} lug</span>}
+      </button>
+    );
+  };
+
+  const escolhida = [...salao, ...varanda].find((m) => m.numero === selecionada);
+
+  return (
+    <>
+      <div
+        ref={janela}
+        className="mt-2 max-h-[22rem] overflow-auto overscroll-contain rounded-lg border border-[var(--rsv-mesa-line)] bg-white"
+      >
+        <div className="relative" style={{ width: MAR_PLANTA_PX, height: alturaPx }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={PLANTA_MAR.src}
+            alt="Planta da Prainha Mar com as mesas"
+            draggable={false}
+            className="pointer-events-none absolute inset-0 h-full w-full select-none opacity-70"
+          />
+          {salao.map((m) => pino(m, true))}
+          {varanda.map((m) => pino(m, false))}
+        </div>
+      </div>
+      <p className="mt-1 text-[10px] text-[var(--rsv-mesa-off-ink)]">
+        ↔ arraste a planta pra ver o resto da casa
+        {escolhida ? ` · escolhida: mesa ${escolhida.numero} (${escolhida.lugares} lugares)` : ''}
+      </p>
+    </>
+  );
+}
+
 export function MapaMarPublico({
   areaAtual,
   salao,
@@ -415,6 +523,8 @@ export function MapaMarPublico({
   selecionada: string;
   onSelecionar: (numero: string) => void;
 }) {
+  // 'planta' = a planta física (foto do dono); 'lista' = os blocos de antes.
+  const [modo, setModo] = useState<'planta' | 'lista'>('planta');
   const todas = [...salao, ...varanda];
   if (todas.length === 0) return null;
 
@@ -455,11 +565,39 @@ export function MapaMarPublico({
       <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
         Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
       </p>
-      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">
-        da entrada pro fundo: salão, corredor e varanda · as redondas são as mesas grandes
-      </p>
+      <div className="mt-0.5 flex items-center justify-between gap-2">
+        <p className="text-[10px] text-[var(--rsv-mesa-off-ink)]">
+          da entrada pro fundo: salão, corredor e varanda · as redondas são as mesas grandes
+        </p>
+        <button
+          type="button"
+          onClick={() => setModo(modo === 'planta' ? 'lista' : 'planta')}
+          className="shrink-0 rounded-full border border-[var(--rsv-mesa-line)] px-2 py-0.5 text-[10px] text-[var(--rsv-muted)]"
+        >
+          {modo === 'planta' ? 'ver em lista' : 'ver na planta'}
+        </button>
+      </div>
 
-      <div className="mt-2 overflow-x-auto pb-1">
+      {modo === 'planta' && (
+        <>
+          <PlantaMarPublica
+            areaAtual={areaAtual}
+            salao={salao}
+            varanda={varanda}
+            pessoas={pessoas}
+            selecionada={selecionada}
+            onSelecionar={onSelecionar}
+          />
+          {foraDaPlanta.length > 0 && (
+            <div className="mt-2 border-t border-dashed border-[var(--rsv-mesa-line)] pt-2">
+              <p className="mb-1.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">outras mesas</p>
+              <div className="flex flex-wrap gap-1.5">{foraDaPlanta.map((m) => botao(m.numero))}</div>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className={`mt-2 overflow-x-auto pb-1 ${modo === 'planta' ? 'hidden' : ''}`}>
         <div>
           {titulo('salão · entrada (1 a 5 no banco)')}
           {linhas(MAR_ENTRADA)}
