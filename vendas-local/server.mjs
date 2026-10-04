@@ -12346,7 +12346,8 @@ async function apiKidsVerEstado(u) {
   const v = await kidsVerEntrada(u);
   if (!v) return { ok: false, erro: 'link inválido' };
   const camId = await cfgGet('kids_cam_id', '');
-  return { ok: true, ativo: v.ativo && !!camId, criancas: v.criancas, loja: LOJA_NOME };
+  return { ok: true, ativo: v.ativo && !!camId, criancas: v.criancas, loja: LOJA_NOME,
+    video: !!(await kidsRtsp()) && !!kidsFfmpeg() && kidsVid.falhas < 6 };
 }
 /** Devolve o quadro (JPEG) ou um JSON de erro com status que a página entende:
  *  403 link inválido · 410 a criança já saiu · 503 câmera fora. */
@@ -12431,6 +12432,131 @@ async function kidsCamEscolher(body) {
   console.log('[kids] câmera escolhida pelo central: ' + id);
   return { ok: true, cfg: await kidsCfg() };
 }
+// ---- VÍDEO da câmera do kids (opcional) ----
+// A câmera já entrega H.264 pelo RTSPS do Protect; o ffmpeg só reempacota em
+// HLS (-c copy, sem converter), ligado quando um pai abre o link e desligado
+// 45 s depois do último pedido. Sem endereço de vídeo salvo, sem ffmpeg na
+// máquina ou com o vídeo falhando, a página segue na foto por segundo.
+const KIDS_RTSP_OK = /^rtsps?:\/\/(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d{2,5}\/[A-Za-z0-9]{6,64}(\?enableSrtp)?$/;
+const KIDS_VID_DIR = path.join(os.tmpdir(), 'prainha-kids-hls');
+const kidsVid = { proc: null, pedido: 0, falhas: 0, proxima: 0, erro: '', log: [], tentativa: 0, iniciou: 0 };
+let kidsFfmpegAchado; // undefined = ainda não procurou · '' = não tem
+function kidsFfmpeg() {
+  if (kidsFfmpegAchado !== undefined && (kidsFfmpegAchado || Date.now() - kidsFfmpeg.em < 60000)) return kidsFfmpegAchado;
+  kidsFfmpeg.em = Date.now();
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const cands = [process.env.FFMPEG, path.join(dir, 'ffmpeg', 'ffmpeg.exe'), path.join(dir, 'ffmpeg.exe'),
+    '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg'].filter(Boolean);
+  kidsFfmpegAchado = cands.find((c) => { try { return existsSync(c); } catch { return false; } }) || '';
+  return kidsFfmpegAchado;
+}
+async function kidsRtsp() {
+  if (process.env.KIDS_CAM_RTSP) return process.env.KIDS_CAM_RTSP;
+  const v = await cfgGet('kids_cam_rtsp', '');
+  return KIDS_RTSP_OK.test(v) ? v : '';
+}
+/** Do mesmo endereço saem as variações que o Protect aceita: como veio,
+ *  sem SRTP, e o RTSP simples da porta 7447. Falhou uma, tenta a próxima. */
+function kidsRtspVariantes(url) {
+  const m = /^rtsps:\/\/([\d.]+):\d+\/([A-Za-z0-9]+)/.exec(url);
+  if (!m) return [url];
+  return [...new Set([url, url.replace(/\?enableSrtp$/, ''), 'rtsp://' + m[1] + ':7447/' + m[2]])];
+}
+function kidsVidPara() {
+  const p = kidsVid.proc; kidsVid.proc = null;
+  if (p) { try { p.kill(); } catch {} }
+}
+process.on('exit', kidsVidPara);
+/** Liga o ffmpeg se ainda não está ligado. true = há (ou vai haver) vídeo. */
+async function kidsVidGarante() {
+  const url = await kidsRtsp();
+  const bin = kidsFfmpeg();
+  if (!url || !bin) return false;
+  kidsVid.pedido = Date.now();
+  if (kidsVid.proc) return true;
+  if (Date.now() < kidsVid.proxima) return false;
+  try { rmSync(KIDS_VID_DIR, { recursive: true, force: true }); } catch {}
+  try { mkdirSync(KIDS_VID_DIR, { recursive: true }); } catch {}
+  const vars = kidsRtspVariantes(url);
+  const fonte = vars[kidsVid.tentativa % vars.length];
+  const args = ['-hide_banner', '-loglevel', 'warning'];
+  if (/^rtsp/.test(fonte)) args.push('-rtsp_transport', 'tcp'); else args.push('-re', '-stream_loop', '-1');
+  args.push('-i', fonte, '-t', '3600', '-an', '-c:v', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
+    '-hls_flags', 'delete_segments+omit_endlist+independent_segments',
+    '-hls_segment_filename', path.join(KIDS_VID_DIR, 's%05d.ts'), path.join(KIDS_VID_DIR, 'v.m3u8'));
+  let proc;
+  try { proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true }); }
+  catch (e) { kidsVid.erro = e.message; kidsVid.proxima = Date.now() + 60000; return false; }
+  kidsVid.proc = proc; kidsVid.iniciou = Date.now(); kidsVid.log = [];
+  const mascara = (t) => String(t).replace(/(rtsps?:\/\/[\d.]+:\d+\/)[A-Za-z0-9]+/g, '$1***');
+  proc.stderr.on('data', (d) => { kidsVid.log.push(mascara(d).slice(0, 300)); if (kidsVid.log.length > 12) kidsVid.log.shift(); });
+  proc.on('error', (e) => { kidsVid.erro = e.message; });
+  proc.on('exit', (code) => {
+    const durou = Date.now() - kidsVid.iniciou;
+    if (kidsVid.proc === proc) kidsVid.proc = null; else return; // parado de propósito
+    if (durou < 20000) { // caiu logo: endereço não serviu — tenta a próxima variação
+      kidsVid.falhas++; kidsVid.tentativa++;
+      kidsVid.erro = 'ffmpeg saiu (' + code + ') em ' + Math.round(durou / 1000) + ' s: ' + kidsVid.log.slice(-3).join(' | ');
+      kidsVid.proxima = Date.now() + Math.min(120000, 4000 * kidsVid.falhas);
+      console.log('[kids] vídeo: ' + kidsVid.erro);
+    } else { kidsVid.falhas = 0; }
+  });
+  console.log('[kids] vídeo ligado (variação ' + (kidsVid.tentativa % vars.length) + ')');
+  return true;
+}
+setInterval(() => {
+  if (kidsVid.proc && Date.now() - kidsVid.pedido > 45000) { kidsVidPara(); console.log('[kids] vídeo desligado (ninguém assistindo)'); }
+}, 10000).unref();
+/** Lista do vídeo pro pai: 403 inválido · 410 saiu · 503 ainda não tem vídeo. */
+async function kidsVerVideo(u, res) {
+  const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
+  const v = await kidsVerEntrada(u);
+  if (!v) return json(403, { ok: false, erro: 'link inválido' });
+  if (!v.ativo || !(await cfgGet('kids_cam_id', ''))) return json(410, { ok: false, encerrado: true });
+  if (!(await kidsVidGarante())) return json(503, { ok: false, erro: 'sem vídeo' });
+  let lista;
+  try { lista = readFileSync(path.join(KIDS_VID_DIR, 'v.m3u8'), 'utf8'); } catch { return json(503, { ok: false, erro: 'vídeo abrindo' }); }
+  const q = '&c=' + encodeURIComponent(v.codigo) + '&k=' + encodeURIComponent(String(u.searchParams.get('k') || ''));
+  const linhas = lista.split(/\r?\n/).map((l) => (/^[^#].*\.ts$/.test(l.trim()) ? '/api/kids-ver/seg?f=' + path.basename(l.trim()) + q : l));
+  if (!linhas.some((l) => l.startsWith('/api/kids-ver/seg'))) return json(503, { ok: false, erro: 'vídeo abrindo' });
+  res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-store' });
+  res.end(linhas.join('\n'));
+}
+async function kidsVerSeg(u, res) {
+  const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
+  const v = await kidsVerEntrada(u);
+  if (!v) return json(403, { ok: false, erro: 'link inválido' });
+  if (!v.ativo) return json(410, { ok: false, encerrado: true });
+  const f = String(u.searchParams.get('f') || '');
+  if (!/^s\d{5,9}\.ts$/.test(f)) return json(400, { ok: false, erro: 'pedaço inválido' });
+  kidsVid.pedido = Date.now();
+  let corpo;
+  try { corpo = readFileSync(path.join(KIDS_VID_DIR, f)); } catch { return json(404, { ok: false, erro: 'pedaço já saiu' }); }
+  res.writeHead(200, { 'content-type': 'video/mp2t', 'content-length': corpo.length, 'cache-control': 'no-store' });
+  res.end(corpo);
+}
+async function kidsVidEstado() {
+  let arquivos = [];
+  try { arquivos = readdirSync(KIDS_VID_DIR); } catch {}
+  return { endereco_salvo: !!(await kidsRtsp()), ffmpeg: kidsFfmpeg() ? 'achado' : 'não instalado', rodando: !!kidsVid.proc,
+    ha_s: kidsVid.proc ? Math.round((Date.now() - kidsVid.iniciou) / 1000) : 0, falhas: kidsVid.falhas, variacao: kidsVid.tentativa,
+    erro: kidsVid.erro, log: kidsVid.log.slice(-6), lista: arquivos.includes('v.m3u8'), pedacos: arquivos.filter((x) => x.endsWith('.ts')).length };
+}
+/** Pelo CENTRAL: grava o endereço de vídeo (RTSPS) e/ou o link fixo de reserva. */
+async function kidsCamVideoSalvar(body) {
+  if (body && body.rtsp !== undefined) {
+    const r = String(body.rtsp || '').trim();
+    if (r && !KIDS_RTSP_OK.test(r)) return { ok: false, erro: 'endereço de vídeo inválido (rtsps://IP-da-rede:porta/código)' };
+    await cfgSet('kids_cam_rtsp', r);
+    kidsVidPara(); kidsVid.falhas = 0; kidsVid.tentativa = 0; kidsVid.proxima = 0; kidsVid.erro = '';
+  }
+  if (body && body.camera_link !== undefined) {
+    const link = String(body.camera_link || '').trim();
+    if (link && !/^https:\/\/\S+$/.test(link)) return { ok: false, erro: 'o link tem que começar com https://' };
+    await cfgSet('kids_camera_link', link.slice(0, 500));
+  }
+  return { ok: true, video: await kidsVidEstado() };
+}
 /** Prévia no ⚙ (gerente logado): confere a câmera antes de salvar. */
 async function kidsQuadroTeste(u, quem, res) {
   const json = (st, o) => { res.writeHead(st, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(o)); };
@@ -12455,7 +12581,7 @@ const KIDS_VER_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="ut
 .wrap{max-width:900px;margin:0 auto;padding:14px 14px 28px}
 h1{font-size:18px;margin:4px 0 2px}.sub{color:#9fb0d0;font-size:14px;margin-bottom:12px}
 .tela{position:relative;background:#000;border-radius:14px;overflow:hidden;min-height:200px;display:flex;align-items:center;justify-content:center}
-.tela img{display:block;width:100%;height:auto}
+.tela img,.tela video{display:block;width:100%;height:auto}
 .vivo{position:absolute;top:10px;left:10px;background:rgba(220,38,38,.92);color:#fff;font-size:12px;font-weight:700;padding:4px 9px;border-radius:999px;letter-spacing:.4px}
 .aviso{padding:38px 18px;text-align:center;color:#c9d6f2;font-size:16px;line-height:1.45}
 .aviso b{display:block;font-size:20px;color:#fff;margin-bottom:6px}
@@ -12463,9 +12589,10 @@ h1{font-size:18px;margin:4px 0 2px}.sub{color:#9fb0d0;font-size:14px;margin-bott
 </style></head><body><div class="wrap">
 <h1>🧸 Espaço Kids ao vivo</h1><div class="sub" id="sub">abrindo a câmera…</div>
 <div class="tela" id="tela"><div class="aviso" id="av">abrindo a câmera…</div></div>
-<div class="pe">A imagem atualiza a cada segundo e é só para você acompanhar: não grave nem compartilhe, há outras crianças no espaço. O link deixa de funcionar quando a criança sai.</div>
+<div class="pe">A imagem é ao vivo (pode chegar com alguns segundos de atraso) e é só para você acompanhar: não grave nem compartilhe, há outras crianças no espaço. O link deixa de funcionar quando a criança sai.</div>
 </div><script>
 var Q=location.search,FIM=false,FALHAS=0,IMG=null,URLANT=null,T=null;
+var VID=null,HLS=null,MODO='foto',VIDOK=0,VTENT=0,TV=null,TEMVID=false,TENTANDO=false;
 function $(i){return document.getElementById(i)}
 function txt(el,s){el.textContent=s}
 function aviso(tit,msg){
@@ -12473,7 +12600,7 @@ function aviso(tit,msg){
   var d=document.createElement('div');d.className='aviso';
   var b=document.createElement('b');txt(b,tit);d.appendChild(b);d.appendChild(document.createTextNode(msg));t.appendChild(d)}
 function fim(){
-  FIM=true;if(T)clearTimeout(T);
+  FIM=true;if(T)clearTimeout(T);if(TV)clearTimeout(TV);vidSolta();
   txt($('sub'),'transmissão encerrada');
   aviso('A visita terminou','A câmera só fica disponível enquanto a criança está no Espaço Kids. Até a próxima!')}
 function mostra(blob){
@@ -12481,8 +12608,59 @@ function mostra(blob){
   if(!IMG){var t=$('tela');t.innerHTML='';IMG=document.createElement('img');IMG.alt='câmera do Espaço Kids';t.appendChild(IMG);
     var v=document.createElement('div');v.className='vivo';txt(v,'● AO VIVO');t.appendChild(v)}
   IMG.src=u;if(URLANT)URL.revokeObjectURL(URLANT);URLANT=u}
+function vidSolta(){
+  if(HLS){try{HLS.destroy()}catch(e){}HLS=null}
+  if(VID){try{VID.pause();VID.removeAttribute('src');VID.load()}catch(e){}if(VID.parentNode)VID.parentNode.removeChild(VID);VID=null}}
+function voltaFoto(){
+  if(MODO!=='video')return;
+  MODO='foto';vidSolta();IMG=null;$('tela').innerHTML='';aviso('','abrindo a câmera…');
+  if(T)clearTimeout(T);quadro();
+  if(VTENT<4){if(TV)clearTimeout(TV);TV=setTimeout(videoTenta,20000)}}
+function viraVideo(){
+  if(FIM||MODO==='video'||!VID)return;
+  MODO='video';VIDOK=Date.now();if(T)clearTimeout(T);
+  var t=$('tela');t.innerHTML='';IMG=null;VID.style.display='block';t.appendChild(VID);
+  var v=document.createElement('div');v.className='vivo';txt(v,'● AO VIVO');t.appendChild(v);
+  var p=VID.play();if(p&&p.catch)p.catch(function(){})}
+function carregaHls(){
+  return new Promise(function(ok){
+    if(window.Hls){ok(true);return}
+    var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
+    s.onload=function(){ok(!!window.Hls)};s.onerror=function(){ok(false)};document.head.appendChild(s)})}
+async function videoTenta(){
+  if(FIM||MODO==='video'||document.hidden||TENTANDO)return;
+  VTENT++;TENTANDO=true;
+  try{
+    var url='/api/kids-ver/video.m3u8'+Q,pronto=false;
+    for(var i=0;i<12&&!pronto&&!FIM;i++){
+      var r=await fetch(url+'&r='+Date.now(),{cache:'no-store'});
+      if(r.status===410){TENTANDO=false;fim();return}
+      if(r.status===403){TENTANDO=false;return}
+      if(r.ok)pronto=true;else await new Promise(function(f){setTimeout(f,2000)})}
+    if(!pronto||FIM){TENTANDO=false;return}
+    vidSolta();
+    VID=document.createElement('video');VID.muted=true;VID.autoplay=true;VID.playsInline=true;
+    VID.setAttribute('playsinline','');VID.setAttribute('muted','');VID.style.display='none';
+    VID.addEventListener('playing',viraVideo);
+    VID.addEventListener('timeupdate',function(){VIDOK=Date.now()});
+    VID.addEventListener('error',function(){if(MODO==='video')voltaFoto();else vidSolta()});
+    document.body.appendChild(VID);
+    if(await carregaHls()&&window.Hls.isSupported()){
+      HLS=new window.Hls({liveSyncDurationCount:2,manifestLoadingMaxRetry:2});
+      HLS.on(window.Hls.Events.ERROR,function(ev,d){if(d&&d.fatal){if(MODO==='video')voltaFoto();else vidSolta()}});
+      HLS.loadSource(url);HLS.attachMedia(VID);
+      HLS.on(window.Hls.Events.MANIFEST_PARSED,function(){var p=VID.play();if(p&&p.catch)p.catch(function(){})})}
+    else if(VID.canPlayType('application/vnd.apple.mpegurl')){VID.src=url;var p=VID.play();if(p&&p.catch)p.catch(function(){})}
+    else vidSolta()}
+  catch(e){}
+  TENTANDO=false}
+setInterval(async function(){
+  if(FIM||MODO!=='video'||document.hidden)return;
+  if(Date.now()-VIDOK>12000){voltaFoto();return}
+  try{var r=await fetch('/api/kids-ver/estado'+Q,{cache:'no-store'});var j=await r.json();if(j.ok&&!j.ativo)fim()}catch(e){}
+},5000);
 async function quadro(){
-  if(FIM)return;
+  if(FIM||MODO==='video')return;
   if(document.hidden){T=setTimeout(quadro,1500);return}
   var espera=1000;
   try{
@@ -12490,7 +12668,8 @@ async function quadro(){
     if(r.status===410){fim();return}
     if(r.status===403){FIM=true;txt($('sub'),'');aviso('Link inválido','Peça um novo link na recepção do Espaço Kids.');return}
     if(!r.ok)throw new Error('http '+r.status);
-    mostra(await r.blob());FALHAS=0}
+    var b=await r.blob();if(MODO==='video')return;
+    mostra(b);FALHAS=0}
   catch(e){FALHAS++;espera=Math.min(8000,1500*FALHAS);
     if(FALHAS>=3&&!IMG)aviso('Câmera indisponível agora','Estamos tentando de novo…');
     if(FALHAS>=6&&IMG)aviso('Câmera indisponível agora','Estamos tentando de novo…')}
@@ -12500,10 +12679,15 @@ async function inicio(){
     var r=await fetch('/api/kids-ver/estado'+Q,{cache:'no-store'});var j=await r.json();
     if(!j.ok){FIM=true;txt($('sub'),'');aviso('Link inválido','Peça um novo link na recepção do Espaço Kids.');return}
     if(!j.ativo){fim();return}
-    txt($('sub'),(j.criancas?j.criancas+' · ':'')+(j.loja||''))}
+    txt($('sub'),(j.criancas?j.criancas+' · ':'')+(j.loja||''));
+    if(j.video){TEMVID=true;setTimeout(videoTenta,300)}}
   catch(e){}
   quadro()}
-document.addEventListener('visibilitychange',function(){if(!document.hidden&&!FIM){if(T)clearTimeout(T);quadro()}});
+document.addEventListener('visibilitychange',function(){
+  if(FIM)return;
+  if(document.hidden){if(MODO==='video')voltaFoto();return}
+  if(T)clearTimeout(T);quadro();
+  if(TEMVID&&MODO==='foto'&&VTENT<4){if(TV)clearTimeout(TV);TV=setTimeout(videoTenta,1500)}});
 inicio();
 </script></body></html>`;
 
@@ -27342,6 +27526,9 @@ const server = http.createServer(async (req, res) => {
       if (!centralAssinou(u, 'kids-cam')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
       try {
         if (p === '/api/central/kids-cam/diag') return res.end(JSON.stringify(await kidsCamDiag()));
+        if (req.method === 'POST' && p === '/api/central/kids-cam/video') return res.end(JSON.stringify(await kidsCamVideoSalvar(await readBody(req))));
+        if (p === '/api/central/kids-cam/video-estado') return res.end(JSON.stringify({ ok: true, video: await kidsVidEstado() }));
+        if (p === '/api/central/kids-cam/video-teste') { const ligou = await kidsVidGarante(); return res.end(JSON.stringify({ ok: true, ligou, video: await kidsVidEstado() })); }
         if (req.method === 'POST' && p === '/api/central/kids-cam/escolher') return res.end(JSON.stringify(await kidsCamEscolher(await readBody(req))));
         return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
       } catch (e) {
@@ -27599,6 +27786,8 @@ const server = http.createServer(async (req, res) => {
     // só enquanto a criança daquela entrada está dentro ----
     if (p === '/kids/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); return res.end(KIDS_VER_HTML); }
     if (p === '/api/kids-ver/quadro') return kidsVerQuadro(u, res);
+    if (p === '/api/kids-ver/video.m3u8') return kidsVerVideo(u, res);
+    if (p === '/api/kids-ver/seg') return kidsVerSeg(u, res);
     if (p === '/api/kids-ver/estado') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(await apiKidsVerEstado(u))); }
     if (p === '/api/kids/quadro-teste') {
       const quem = await kidsDaRequisicao(req, u);
