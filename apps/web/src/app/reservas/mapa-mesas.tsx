@@ -290,7 +290,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
               ? `Mesa ${mesa.numero} · ocupada no sistema (sem reserva)`
               : `Mesa ${mesa.numero} · ${mesa.lugares} lugares${mesa.juntavel ? ' · juntável' : ''} · livre`
         }
-        style={{ left: `${pos[0]}%`, top: `${pos[1]}%`, width: lado, height: lado, fontSize: '0.95cqw' }}
+        style={{ left: `${pos[0]}%`, top: `${pos[1]}%`, width: lado, height: lado, fontSize: '1.2cqw' }}
         className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center border text-center shadow-sm ${redonda ? 'rounded-full' : 'rounded-md'} ${
           info
             ? 'border-rose-400 bg-rose-200 text-rose-900'
@@ -328,7 +328,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
         <div className="mt-1 rounded-lg bg-slate-50 p-2">
           <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
             <div
-              className="relative w-full min-w-[1100px]"
+              className="relative w-full min-w-[820px]"
               style={{ aspectRatio: `${PLANTA_MAR.largura} / ${PLANTA_MAR.altura}`, containerType: 'inline-size' }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
