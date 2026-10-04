@@ -15274,6 +15274,521 @@ setInterval(async function(){
 },60000);
 </script></body></html>`;
 
+// ---- /tv — KDS pra TV FIXA (só exibição, tela cheia, sem histórico) ----
+// A TV da cozinha/bar não é o tablet: ninguém toca nela. Mostra os PEDIDOS com
+// os PRODUTOS A PRODUZIR em letra grande, ocupando a tela inteira e sem rolar
+// (quando não cabe, pagina sozinha) — sem a lateral "Últimos que saíram" e sem
+// botão nenhum. A BAIXA continua no tablet: "pronto" exige foto e TV não tem
+// câmera. Usa as MESMAS APIs do tablet (/api/areas e /api/kds), então a fila é
+// exatamente a mesma — o tablet (/ e /entrega) não muda em nada.
+//   /tv              → escolhe a praça (setas + OK do controle); a TV lembra a
+//                      escolha e da próxima vez /tv já abre direto nela
+//   /tv?area=3       → fixa na praça 3       /tv?area=3,5 → duas praças juntas
+//   /tv?area=todas   → todas as praças       &colunas=4 (fixa o tamanho)  &som=0
+// ⚠️ NAVEGADOR DE SMART TV É VELHO (Philco e cia.): o JavaScript daqui é ES5 DE
+// PROPÓSITO — var, function, XMLHttpRequest; sem seta, async, fetch, Set,
+// padStart, crase. CSS sem variável, sem grid e sem flex (tabela + colunas com
+// prefixo -webkit-). Não "modernizar": a tela para de abrir na TV.
+const TV_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/app.webmanifest?t=tv"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
+<title>${LOJA_NOME} — TV da produção</title><style>
+html{font-size:20px}
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0b0d12;color:#f4f5f7;font-family:Outfit,Arial,Helvetica,sans-serif}
+*{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box}
+a{color:inherit;text-decoration:none}
+body.semcursor,body.semcursor *{cursor:none}
+@-webkit-keyframes pisca{0%{opacity:1}50%{opacity:.5}100%{opacity:1}}
+@keyframes pisca{0%{opacity:1}50%{opacity:.5}100%{opacity:1}}
+#tela,#sel{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;display:none}
+/* cabeçalho: uma linha só (tabela — flex não existe em TV velha) */
+#cab{position:absolute;left:0;top:0;width:100%;background:#151922;border-bottom:2px solid #2a3040;font-size:22px;z-index:3}
+#topo{display:table;width:100%}
+#topo>div{display:table-cell;vertical-align:middle;white-space:nowrap;padding:.3em .35em}
+#topo>div.nm{width:100%;max-width:0;overflow:hidden;text-overflow:ellipsis;padding-left:.7em;font-size:1.5em;font-weight:800}
+.nm .lj{color:#8f98ad;font-weight:600;font-size:.6em;margin-right:.7em}.nm .lj b{color:#ff8a3d}
+.ct{color:#cfd5e2;font-weight:600}.ct b{color:#fff;font-size:1.25em}
+.chip{display:inline-block;border-radius:2em;padding:.12em .7em;font-weight:800;font-size:.85em;background:#2a3040;color:#cfd5e2;border:2px solid transparent}
+.chip.verm{background:#b91c1c;color:#fff}
+.chip.amar{background:#ffd24a;color:#1b1400}
+a.chip:focus,a.chip:hover{border-color:#ffd24a;outline:none}
+.vivo{color:#cfd5e2;font-size:.85em;font-weight:600}
+.dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;margin-right:.35em;background:#22c55e}.dot.off{background:#ef4444}
+#tHora{font-size:1.7em;font-weight:800;letter-spacing:.02em}
+#topo>div#tHora{padding-right:.6em}
+#semcon{display:none;background:#b91c1c;color:#fff;font-weight:800;text-align:center;padding:.25em .6em}
+/* faixas de aviso — só leitura (quem dá "ok, vi" / "resolvido" é o tablet) */
+.av{padding:.3em .7em;font-weight:800;font-size:1.15em;line-height:1.2;border-top:2px solid #0b0d12}
+.av small{display:block;font-size:.72em;font-weight:600;opacity:.92}
+.av.can{background:#7f1d1d;color:#fff}
+.av.rec{background:#dc2626;color:#fff;-webkit-animation:pisca 1.4s infinite;animation:pisca 1.4s infinite}
+.av.jun{background:#0c4a6e;color:#e0f2fe;font-size:.95em;font-weight:600}
+/* fila: colunas que enchem de cima pra baixo; o que passa da tela vira página */
+#fila{position:absolute;left:0;top:0;bottom:0;width:100%;overflow:hidden}
+#cols{position:absolute;left:0;top:0;-webkit-column-count:4;-moz-column-count:4;column-count:4;-webkit-column-fill:auto;-moz-column-fill:auto;column-fill:auto}
+#vazio{position:absolute;left:0;width:100%;top:30%;text-align:center;color:#5b6478;font-size:2.6rem;font-weight:700;display:none}
+#vazio small{display:block;font-size:1.15rem;font-weight:500;margin-top:.5em}
+.cd{display:block;margin:0 0 .5rem;background:#1b2030;border:.14rem solid #39415a;border-radius:.6rem;overflow:hidden;-webkit-column-break-inside:avoid;page-break-inside:avoid;break-inside:avoid}
+.ch{display:table;width:100%;background:#2d3654}
+.ch>span{display:table-cell;vertical-align:middle;padding:.3rem .55rem}
+.ch .ps{width:1%;white-space:nowrap;font-size:1rem;font-weight:700;opacity:.8;padding-right:0}
+.ch .rt{font-size:1.65rem;font-weight:800;line-height:1.05}
+.ch .tm{width:1%;white-space:nowrap;text-align:right;font-size:1.45rem;font-weight:800}
+.cd.delivery .ch{background:#1d4ed8}
+.cd.balcao .ch{background:#6d28d9}
+.cd.atr{border-color:#f97316}.cd.atr .ch{background:#c2410c}
+.cd.crit{border-color:#ef4444}.cd.crit .ch{background:#b91c1c;-webkit-animation:pisca 1.2s infinite;animation:pisca 1.2s infinite}
+.cd.recl{border-color:#ef4444;border-width:.24rem}
+.cb{padding:.3rem .55rem .05rem;line-height:1.5}
+.cn{color:#aab2c5;font-size:.95rem;font-weight:600;margin-right:.45rem}
+.bg{display:inline-block;border-radius:.3rem;padding:0 .4rem;font-size:.88rem;font-weight:800;margin:0 .25rem .2rem 0;background:#39415a;color:#fff;white-space:nowrap}
+.bg.cr{background:#dc2626}.bg.at{background:#ea580c}.bg.pg{background:#7c3aed}.bg.jt{background:#0369a1}.bg.dl{background:#1d4ed8}.bg.vi{background:#475569}
+.pr{background:#11162a;color:#aab4ff;font-size:.85rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:.12rem .55rem;border-top:1px solid #2a3040}
+.pr.at{color:#fdba74}.pr.cr{color:#fca5a5}
+.it{display:table;table-layout:fixed;width:100%;border-top:1px solid #2a3040}
+.it>span{display:table-cell;vertical-align:top;padding:.28rem 0}
+.it .q{width:3.4rem;white-space:nowrap;padding-left:.55rem;padding-right:.45rem;font-size:1.3rem;font-weight:800;color:#ffd24a;text-align:right}
+.it .n{padding-right:.55rem;font-size:1.3rem;font-weight:700;line-height:1.15;word-wrap:break-word}
+.it.sub{border-top:0}.it.sub>span{padding-top:0}
+.it.sub .q{color:#8f98ad}
+.it.sub .n{font-size:1.02rem;font-weight:600;color:#cfd5e2}
+.it.seg{background:#3b2a0a}
+.it.rcl{background:#3f1217}
+.mod{display:table;margin-top:.18rem;background:#ffd24a;color:#1b1400;font-size:1.02rem;font-weight:800;line-height:1.15;border-radius:.25rem;padding:.1rem .4rem}
+.sg{margin-top:.15rem;color:#fdba74;font-size:.85rem;font-weight:800}
+.pa{margin-top:.1rem;color:#7dd3fc;font-size:.82rem;font-weight:700}
+.rc{margin-top:.1rem;color:#fca5a5;font-size:.85rem;font-weight:800}
+/* escolha da praça: links de verdade — o controle da TV foca e dá OK sem ajuda */
+#sel{overflow:auto;padding:1.5em 2em;font-size:24px}
+#sel h1{font-size:1.5em;margin:0 0 .25em}#sel h1 b{color:#ff8a3d}
+#sel p{color:#8f98ad;margin:0 0 1em;font-size:.85em;line-height:1.35}
+.ab{display:inline-block;vertical-align:top;width:23%;min-width:9em;margin:0 1.5% 1em 0;padding:.8em .9em;background:#1b2030;border:.18em solid #39415a;border-radius:.6em}
+.ab b{display:block;font-size:1.25em;line-height:1.1;word-wrap:break-word}
+.ab span{display:block;color:#8f98ad;margin-top:.35em;font-size:.85em}
+.ab span i{font-style:normal;color:#ffd24a;font-weight:800;font-size:1.4em}
+.ab.tem{border-color:#5b6bd6}
+.ab.todas{background:#252c40}
+.ab:focus,.ab:hover{border-color:#ffd24a;background:#2b3350;outline:none}
+#selMsg{color:#fca5a5;font-weight:700}
+</style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js')['catch'](function(){});</script></head><body>
+<div id="sel"><h1>${LOJA_HTML} · TV da produção</h1>
+<p>Escolha o que esta TV vai mostrar — setas e OK do controle, ou o mouse. A TV guarda a escolha: da próxima vez este mesmo endereço já abre direto na praça.</p>
+<div id="selLista"></div><p id="selMsg"></p></div>
+<div id="tela"><div id="cab"><div id="topo">
+<div class="nm"><span class="lj">${LOJA_HTML}</span><span id="tPraca"></span></div>
+<div class="ct" id="tCont"></div>
+<div id="tEstC" style="display:none"><span class="chip verm" id="tEst"></span></div>
+<div id="tPagC" style="display:none"><span class="chip amar" id="tPag"></span></div>
+<div id="tCheiaC" style="display:none"><a href="#" class="chip amar" id="tCheia" onclick="return false">tela cheia: aperte OK</a></div>
+<div><a href="#" class="chip" id="tSom" onclick="return somClique()"></a></div>
+<div><a href="/tv?escolher=1" class="chip" id="tTroca">trocar praça</a></div>
+<div class="vivo" id="tVivo"></div>
+<div id="tHora"></div>
+</div><div id="semcon"></div><div id="avisos"></div></div>
+<div id="fila"><div id="cols"></div><div id="vazio">Nada a produzir agora<small>os pedidos aparecem aqui sozinhos</small></div></div></div>
+<script>
+var VERSAO_MINHA='${VERSAO}';
+var COMANDA_DE=${COMANDA_DE};
+var LOJA=${JSON.stringify(LOJA_NOME).split('<').join('\\u003c')};
+// fuso do servidor da loja: a hora da TV sai certa mesmo com o relógio/fuso da TV errado
+var FUSO_MIN=${-new Date().getTimezoneOffset()};
+function el(i){return document.getElementById(i)}
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')};
+function dois(n){n=Math.floor(n);return (n<10?'0':'')+n}
+function fmtMin(m){if(m==null)return '';m=Number(m);return m<60?m+' min':Math.floor(m/60)+'h'+dois(m%60)}
+function escPraca(n){return esc(n).split('/').join('/<wbr>')}
+function qs(k){var s=String(location.search||'').replace('?','').split('&');
+  for(var i=0;i<s.length;i++){var p=s[i].split('='),a='',b='';
+    try{a=decodeURIComponent(p[0]||'');b=decodeURIComponent((p[1]||'').split('+').join(' '))}catch(e){}
+    if(a===k)return b}
+  return null}
+function guarda(k,v){try{if(v==null)localStorage.removeItem(k);else localStorage.setItem(k,v)}catch(e){}}
+function lembra(k){try{return localStorage.getItem(k)}catch(e){return null}}
+// só mexe no DOM quando o conteúdo muda — TV fraca trava redesenhando à toa,
+// e a página da fila não volta pro começo a cada consulta
+var _poe={};
+function poe(id,h){if(_poe[id]===h)return false;_poe[id]=h;var e=el(id);if(e)e.innerHTML=h;return true}
+
+// ---- rede: XMLHttpRequest com prazo (fetch/Promise não existem em TV velha) ----
+var SKEW=0; // relógio do servidor − relógio da TV (cabeçalho Date da resposta)
+function pega(url,cb){var x=new XMLHttpRequest(),fim=false;
+  function f(e,d){if(fim)return;fim=true;cb(e,d)}
+  try{
+    x.open('GET',url+(url.indexOf('?')<0?'?':'&')+'_='+Date.now(),true);
+    try{x.timeout=7000}catch(e0){}
+    x.onreadystatechange=function(){if(x.readyState!==4)return;
+      if(x.status!==200)return f('http '+x.status);
+      try{var h=x.getResponseHeader('Date'),t=h?Date.parse(h):NaN;
+        if(!isNaN(t)){var s=t-Date.now();if(Math.abs(s-SKEW)>2000)SKEW=s}}catch(e1){}
+      var d;try{d=JSON.parse(x.responseText)}catch(e2){return f('json')}
+      f(null,d)};
+    x.ontimeout=function(){f('tempo')};x.onerror=function(){f('rede')};
+    x.send(null);
+  }catch(e3){f('erro')}
+  setTimeout(function(){if(!fim){try{x.abort()}catch(e4){}f('tempo')}},9000)}
+function hm(ms){var d=new Date(ms+FUSO_MIN*60000);return dois(d.getUTCHours())+':'+dois(d.getUTCMinutes())}
+function hora(iso){var t=Date.parse(iso);return isNaN(t)?'':hm(t)}
+
+// ---- o que esta TV mostra (vem do endereço) ----
+var Q_AREA=qs('area'),TODAS=false,AREAS=[],COLFIX=0,EXTRA='';
+(function(){
+  var c=parseInt(qs('colunas'),10);if(c>=1&&c<=8)COLFIX=c;
+  if(COLFIX)EXTRA+='&colunas='+COLFIX;
+  if(qs('som')==='0')EXTRA+='&som=0';
+  if(Q_AREA==null||Q_AREA==='')return;
+  if(Q_AREA==='todas'){TODAS=true;return}
+  var ps=Q_AREA.split(',');
+  for(var i=0;i<ps.length;i++){var n=parseInt(ps[i],10);if(!isNaN(n)&&n>=0&&AREAS.indexOf(n)<0)AREAS.push(n)}
+})();
+var MODO=(TODAS||AREAS.length)?'fila':'sel';
+
+// ---- som: os mesmos avisos do tablet (pedido novo, prazo estourado, reclamação) ----
+var SOM=lembra('tv_som')!=='0';
+if(qs('som')==='0')SOM=false;
+var _ctx=null,_destravouEm=0;
+function temSom(){return !!(window.AudioContext||window.webkitAudioContext)}
+function somTravado(){return !_ctx||_ctx.state==='suspended'}
+function _tone(t,f,off,dur){var o=_ctx.createOscillator(),g=_ctx.createGain();o.type='square';o.frequency.value=f;
+  g.gain.setValueAtTime(0.0001,t+off);g.gain.exponentialRampToValueAtTime(0.5,t+off+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+off+dur);
+  o.connect(g);g.connect(_ctx.destination);o.start(t+off);o.stop(t+off+dur+0.05)}
+function apitar(){if(!SOM||!temSom())return;try{_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
+  if(_ctx.state==='suspended')_ctx.resume();var t=_ctx.currentTime;
+  _tone(t,880,0,0.45);_tone(t,1318.5,0.22,0.5);_tone(t,880,0.8,0.45);_tone(t,1318.5,1.02,0.6);}catch(e){}}
+function alarmar(){if(!SOM||!temSom())return;try{_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
+  if(_ctx.state==='suspended')_ctx.resume();var t=_ctx.currentTime;
+  for(var k=0;k<5;k++){var o=_ctx.createOscillator(),g=_ctx.createGain(),b=t+k*0.42;
+    o.type='sawtooth';o.frequency.setValueAtTime(300,b);o.frequency.linearRampToValueAtTime(620,b+0.3);
+    g.gain.setValueAtTime(0.0001,b);g.gain.exponentialRampToValueAtTime(0.95,b+0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001,b+0.34);
+    o.connect(g);g.connect(_ctx.destination);o.start(b);o.stop(b+0.4)}}catch(e){}}
+function pintaSom(){var b=el('tSom');if(!b)return;
+  var t=!temSom()?'sem som nesta TV':(!SOM?'som desligado':(somTravado()?'som: aperte OK':'som ligado'));
+  if(poe('tSom',t))b.className='chip'+(SOM&&temSom()&&somTravado()?' amar':'');}
+// navegador só deixa tocar depois de um toque/tecla: qualquer OK do controle destrava
+function destrava(){if(!SOM||!temSom())return;
+  try{var era=somTravado();_ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
+    if(_ctx.state==='suspended'&&_ctx.resume){var p=_ctx.resume();if(p&&p.then)p.then(pintaSom,function(){})}
+    if(era)_destravouEm=Date.now()}catch(e){}
+  pintaSom()}
+function somClique(){
+  // o OK que acabou de DESTRAVAR o som não pode, no mesmo aperto, desligar
+  if(SOM&&(somTravado()||Date.now()-_destravouEm<1500)){destrava();return false}
+  SOM=!SOM;guarda('tv_som',SOM?'1':'0');if(SOM){destrava();apitar()}pintaSom();return false}
+
+// ---- tela cheia ----
+// Navegador nenhum entra em tela cheia sozinho: precisa de UM aperto (OK do
+// controle, clique, toque). Qualquer tecla serve, e o aviso amarelo no topo
+// fica até entrar. Instalada como app / em modo quiosque já abre cheia.
+function cheia(){return !!(document.fullscreenElement||document.webkitFullscreenElement||document.mozFullScreenElement||document.msFullscreenElement)}
+function pedeCheia(){var e=document.documentElement;return e.requestFullscreen||e.webkitRequestFullscreen||e.webkitRequestFullScreen||e.mozRequestFullScreen||e.msRequestFullscreen||null}
+function jaCobre(){
+  try{if(window.matchMedia&&(window.matchMedia('(display-mode: fullscreen)').matches||window.matchMedia('(display-mode: standalone)').matches))return true}catch(e){}
+  return !!(window.screen&&window.innerHeight>=screen.height-4&&window.innerWidth>=screen.width-4)}
+function entraCheia(){if(cheia()||jaCobre())return;var f=pedeCheia();if(!f)return;var e=document.documentElement;
+  try{var p=f.call(e,{navigationUI:'hide'});if(p&&p['catch'])p['catch'](function(){})}catch(e1){try{f.call(e)}catch(e2){}}}
+var _cheiaVis=null,_cheiaFalhas=0;
+function pintaCheia(){var c=el('tCheiaC');if(!c)return;var v=!!pedeCheia()&&document.fullscreenEnabled!==false&&_cheiaFalhas<2&&!cheia()&&!jaCobre();
+  if(v===_cheiaVis)return;_cheiaVis=v;c.style.display=v?'table-cell':'none'}
+// tela não apaga (só existe em https/localhost; fora disso não faz nada)
+var _wl=null;
+function acorda(){try{if(navigator.wakeLock&&navigator.wakeLock.request&&!_wl){
+  navigator.wakeLock.request('screen').then(function(l){_wl=l;if(l&&l.addEventListener)l.addEventListener('release',function(){_wl=null})},function(){})}}catch(e){}}
+function gesto(){var tentou=!!pedeCheia()&&!cheia()&&!jaCobre();entraCheia();destrava();acorda();
+  // navegador que tem a função mas não obedece (TV travada pelo fabricante): depois
+  // de 2 apertos sem efeito o aviso amarelo sai, em vez de pedir o impossível pra sempre
+  setTimeout(function(){if(tentou){if(cheia()||jaCobre())_cheiaFalhas=0;else _cheiaFalhas++}pintaCheia()},700)}
+// o ponteiro do mouse some depois de 4 s parado
+var _curT=null;
+function cursor(){var b=document.body;if(b.className)b.className='';if(_curT)clearTimeout(_curT);_curT=setTimeout(function(){b.className='semcursor'},4000)}
+
+// ---- junta as praças desta TV numa fila só ----
+// Um cartão por PEDIDO (mesa + via). Com mais de uma praça na mesma TV os itens
+// vêm separados por praça dentro do cartão. Reclamação e cancelado aparecem uma
+// vez só, mesmo que venham na resposta de várias praças.
+function junta(rs){
+  var J={lista:[],nItens:0,esperando:[],recs:[],cans:[],online:true,nomes:[],multi:(TODAS||AREAS.length>1)};
+  var mapa={},recId={},canId={},espId={},i,j;
+  for(i=0;i<rs.length;i++){var r=rs[i];if(!r)continue;
+    var pn=(r.area&&r.area.nome)||'';
+    J.nomes.push(pn);
+    J.nItens+=Number(r.nItens)||0;
+    if(r.online===false)J.online=false;
+    var cs=r.comandas||[];
+    for(j=0;j<cs.length;j++){var c=cs[j],k=c.codigo+':'+(c.rodada||0),m=mapa[k];
+      if(!m){m=mapa[k]={codigo:c.codigo,rodada:c.rodada||0,numero:c.numero,nome:c.nome,tipo:c.tipo||'mesa',rotulo:c.rotulo,
+          chegada:c.chegada,fechada_em:c.fechada_em,fechada_min:c.fechada_min,paga:c.paga,espera_min:c.espera_min,prazo_min:c.prazo_min,
+          atrasado:!!c.atrasado,critico:!!c.critico,reclamou:!!c.reclamou,grupos:[],ord:J.lista.length};
+        J.lista.push(m)}
+      else{
+        if(c.espera_min!=null&&(m.espera_min==null||c.espera_min>m.espera_min))m.espera_min=c.espera_min;
+        if(c.chegada&&(!m.chegada||Date.parse(c.chegada)<Date.parse(m.chegada)))m.chegada=c.chegada;
+        if(c.atrasado)m.atrasado=true;if(c.critico)m.critico=true;if(c.reclamou)m.reclamou=true}
+      m.grupos.push({praca:pn,itens:c.itens||[],atrasado:!!c.atrasado,critico:!!c.critico})}
+    var es=r.esperando||[];
+    for(j=0;j<es.length;j++){if(espId[es[j].item_codigo])continue;espId[es[j].item_codigo]=1;J.esperando.push(es[j])}
+    var cc=r.cancelados||[];
+    for(j=0;j<cc.length;j++){if(canId[cc[j].id])continue;canId[cc[j].id]=1;J.cans.push(cc[j])}
+    // reclamação: o servidor conta o que falta DAQUELA praça (producao/passe) —
+    // somando as praças desta TV dá o retrato do que ela enxerga
+    var rr=r.reclamacoes||[];
+    for(j=0;j<rr.length;j++){var q=rr[j],a=recId[q.id];
+      if(!a){a=recId[q.id]={id:q.id,mesa:q.mesa,texto:q.texto,ha_min:q.ha_min,producao:null,passe:null,passe_min:null};J.recs.push(a)}
+      if(q.producao!=null){a.producao=(a.producao||0)+Number(q.producao);a.passe=(a.passe||0)+(Number(q.passe)||0);
+        if(q.passe_min!=null&&(a.passe_min==null||q.passe_min>a.passe_min))a.passe_min=q.passe_min}}
+  }
+  // uma praça só: a ordem é a do servidor (reclamou primeiro, depois quem chegou
+  // antes). Várias: refaz o mesmo critério com tudo junto.
+  if(J.multi)J.lista.sort(function(x,y){
+    var rx=x.reclamou?0:1,ry=y.reclamou?0:1;if(rx!==ry)return rx-ry;
+    var tx=x.chegada?Date.parse(x.chegada):Infinity,ty=y.chegada?Date.parse(y.chegada):Infinity;
+    if(tx!==ty)return tx<ty?-1:1;return x.ord-y.ord});
+  return J}
+
+// ---- desenho ----
+var ESPERANDO=[];
+function esperandoNesta(numero){for(var i=0;i<ESPERANDO.length;i++)if(Number(ESPERANDO[i].numero)===Number(numero))return true;return false}
+function itemHTML(i){
+  if(Number(i.tipo)===2) // complemento (molho, acompanhamento): sai junto com o prato de cima
+    return '<div class="it sub"><span class="q">+</span><span class="n">'+esc(i.nome)+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+'</span></div>';
+  var par='';
+  if(i.esperando_par)par='<div class="sg">O PAR JÁ ESTÁ PRONTO no '+esc(i.esperando_par.praca)+
+    (i.esperando_par.item?' ('+esc(i.esperando_par.item)+')':'')+' — este item está segurando</div>';
+  else if(i.pareado)par='<div class="pa">sai junto com outra praça</div>';
+  var rec=i.reclamado?'<div class="rc">cliente reclamou</div>':'';
+  return '<div class="it'+(i.esperando_par?' seg':'')+(i.reclamado?' rcl':'')+'"><span class="q">'+(Number(i.quantidade)||1)+'x</span>'+
+    '<span class="n">'+esc(i.nome)+rec+(i.modificado?'<div class="mod">'+esc(i.detalhes)+'</div>':'')+par+'</span></div>'}
+function cartao(c,idx,multi){
+  var b='',its='',g,i;
+  if(c.nome)b+='<span class="cn">'+esc(c.nome)+'</span>';
+  if(c.tipo==='delivery')b+='<span class="bg dl">delivery</span>';
+  // prazo é por praça: com as praças juntas no cartão o número sai da etiqueta
+  var pz=(c.grupos.length===1&&c.prazo_min)?c.prazo_min:0;
+  if(c.critico)b+='<span class="bg cr">ESTOUROU'+(pz?' · prazo '+pz+'min':'')+'</span>';
+  else if(c.atrasado)b+='<span class="bg at">atrasado'+(pz?' · '+pz+'min':'')+'</span>';
+  if(c.reclamou)b+='<span class="bg cr">RECLAMOU · adiantar</span>';
+  if(c.fechada_em)b+='<span class="bg pg">'+(c.paga?'já pagou':'conta fechada')+(c.fechada_min>0?' · há '+c.fechada_min+'min':'')+'</span>';
+  if(esperandoNesta(c.numero))b+='<span class="bg jt">sai junto</span>';
+  if(c.rodada>0&&c.chegada)b+='<span class="bg vi">'+(c.rodada+1)+'ª via · '+hora(c.chegada)+'</span>';
+  for(g=0;g<c.grupos.length;g++){var gr=c.grupos[g];
+    if(multi)its+='<div class="pr'+(gr.critico?' cr':(gr.atrasado?' at':''))+'">'+esc(gr.praca)+(gr.critico?' · estourou':(gr.atrasado?' · atrasado':''))+'</div>';
+    for(i=0;i<gr.itens.length;i++)its+=itemHTML(gr.itens[i])}
+  return '<div class="cd '+esc(c.tipo)+(c.critico?' crit':(c.atrasado?' atr':''))+(c.reclamou?' recl':'')+'">'+
+    '<div class="ch"><span class="ps">'+(idx+1)+'º</span><span class="rt">'+esc(c.rotulo)+'</span>'+
+    '<span class="tm">'+(c.espera_min!=null?fmtMin(c.espera_min):'')+'</span></div>'+
+    (b?'<div class="cb">'+b+'</div>':'')+its+'</div>'}
+function ondeFica(n){return (Number(n)>=COMANDA_DE?'COMANDA ':'MESA ')+n}
+// mesmo critério do tablet (ver recAcao lá): "adiante" pra quem já fez não resolve
+function recAcao(r){
+  if(r.producao==null)return 'adiante o que for dessa mesa.';
+  if(r.producao>0)return 'adiante o que for dessa mesa'+(r.passe>0?' ('+r.passe+' já pronto no passe)':'')+'.';
+  if(r.passe>0)return 'já está pronto, PARADO NO PASSE'+(r.passe_min>0?' há '+r.passe_min+' min':'')+' — chame quem entrega.';
+  return 'nada dessa mesa pendente aqui — confira com o garçom.'}
+// no máximo 3 de cada: faixa demais empurra a fila pra fora da tela
+function avisosHTML(J){
+  var h='',i,n,cs=J.cans,rr=J.recs,es=J.esperando;
+  n=Math.min(cs.length,3);
+  for(i=0;i<n;i++){var c=cs[i];
+    h+='<div class="av can">'+ondeFica(c.numero)+' — '+(c.status_item==='pedido'?'PEDIDO INTEIRO CANCELADO':('CANCELADO: '+esc(c.nome||'item')))+
+      '<small>'+(c.min_atras>0?('há '+c.min_atras+' min'):'agora')+(c.motivo?' · '+esc(c.motivo):'')+' — NÃO produzir — tirar da fila</small></div>'}
+  if(cs.length>n)h+='<div class="av can"><small>+ '+(cs.length-n)+' cancelado(s) — veja no tablet</small></div>';
+  n=Math.min(rr.length,3);
+  for(i=0;i<n;i++){var r=rr[i];
+    h+='<div class="av rec">'+(r.mesa?ondeFica(r.mesa):'SEM MESA')+' RECLAMOU'+(r.ha_min>0?' · há '+fmtMin(r.ha_min):'')+
+      '<small>'+(r.texto?esc(r.texto):'Cliente reclamou')+' — '+recAcao(r)+'</small></div>'}
+  if(rr.length>n)h+='<div class="av rec"><small>+ '+(rr.length-n)+' reclamação(ões) — veja no tablet</small></div>';
+  if(es.length){var t=[];n=Math.min(es.length,3);
+    for(i=0;i<n;i++)t.push('<b>'+esc(es[i].item)+'</b> ('+(Number(es[i].numero)>=COMANDA_DE?'comanda ':'mesa ')+es[i].numero+') — o par já saiu no '+esc(es[i].praca||'outra praça'));
+    h+='<div class="av jun">SAI JUNTO — '+t.join(' · ')+(es.length>n?' · + '+(es.length-n):'')+'</div>'}
+  return h}
+
+// ---- avisos sonoros ----
+var _vistos=null,_crit={},_alarmeEm=0,_recs=null;
+function checaNovos(J){var at={},novo=false,i,j,k;
+  for(i=0;i<J.lista.length;i++){var gs=J.lista[i].grupos;
+    for(j=0;j<gs.length;j++){var its=gs[j].itens;
+      for(k=0;k<its.length;k++){var c=its[k].item_codigo;if(c==null)continue;at[c]=1;if(_vistos&&!_vistos[c])novo=true}}}
+  _vistos=at;if(novo)apitar()} // primeira carga não apita
+// estourou o prazo: alarma na hora e repete a cada 45 s enquanto houver — não deixa "acostumar"
+function checaAtraso(J){var at={},tem=false,nova=false,i;
+  for(i=0;i<J.lista.length;i++){var c=J.lista[i];if(!c.critico)continue;var k=c.codigo+':'+c.rodada;at[k]=1;tem=true;if(!_crit[k])nova=true}
+  _crit=at;
+  if(!tem)return;
+  if(nova||Date.now()-_alarmeEm>=45000){_alarmeEm=Date.now();alarmar()}}
+function checaReclamacao(J){var ids={},nova=false,i;
+  for(i=0;i<J.recs.length;i++){var id=J.recs[i].id;ids[id]=1;if(_recs&&!_recs[id])nova=true}
+  _recs=ids;if(nova)alarmar()}
+
+// ---- encaixe na tela: letra o maior possível, sem rolagem ----
+// As colunas enchem de cima pra baixo. Tenta 3, 4 e 5 colunas (TV em pé: 2 e 3)
+// e fica com a PRIMEIRA em que tudo cabe — pouco pedido, letra enorme. Se nem na
+// última couber, o que sobra vira páginas que se revezam sozinhas.
+var NPAG=1,PAG=0,PASSO=0,PAD=0,_pagT=null;
+function tam(){var d=document.documentElement;return {w:window.innerWidth||d.clientWidth||1280,h:window.innerHeight||d.clientHeight||720}}
+function mede(n,W,H){
+  var c=el('cols'),rem=W/(n*20),gap=rem*0.5,cw,chh;
+  PAD=rem*0.5;cw=W-2*PAD;chh=H-2*PAD;if(chh<40)chh=40;
+  document.documentElement.style.fontSize=rem+'px';
+  c.style.top=PAD+'px';c.style.width=cw+'px';c.style.height=chh+'px';
+  c.style.webkitColumnCount=n;c.style.MozColumnCount=n;c.style.columnCount=n;
+  c.style.webkitColumnGap=gap+'px';c.style.MozColumnGap=gap+'px';c.style.columnGap=gap+'px';
+  PASSO=cw+gap;
+  var u=c.lastChild;if(!u||!u.getBoundingClientRect)return 1;
+  var colW=(cw-(n-1)*gap)/n,a=c.getBoundingClientRect(),b=u.getBoundingClientRect();
+  return Math.max(1,Math.round((b.right-a.left+gap)/(colW+gap)))} // quantas colunas o conteúdo ocupou
+function desloca(){var c=el('cols');c.style.left=(PAD-PAG*PASSO)+'px';
+  if(poe('tPag',NPAG>1?('página '+(PAG+1)+' de '+NPAG):''))el('tPagC').style.display=NPAG>1?'table-cell':'none'}
+function agendaPag(){if(_pagT)clearTimeout(_pagT);_pagT=null;if(NPAG<=1)return;
+  // a primeira página (os mais antigos/urgentes) fica mais tempo
+  _pagT=setTimeout(function(){_pagT=null;viraPag(1)},PAG===0?12000:8000)}
+function viraPag(d){if(NPAG<=1)return;PAG=(PAG+d+NPAG)%NPAG;var c=el('cols');
+  c.style.webkitTransition='left .5s';c.style.transition='left .5s';desloca();agendaPag()}
+function ajusta(){
+  if(MODO!=='fila')return;
+  var t=tam(),W=t.w,cab=el('cab'),c=el('cols');
+  c.style.webkitTransition='none';c.style.transition='none';
+  cab.style.fontSize=Math.max(12,Math.round(W/84))+'px';
+  var topo=cab.offsetHeight,H=t.h-topo;
+  el('fila').style.top=topo+'px';
+  var cand=COLFIX?[COLFIX]:(W>=t.h?[3,4,5]:[2,3]),n=cand[0],usado=1,i;
+  for(i=0;i<cand.length;i++){n=cand[i];usado=mede(n,W,H);if(usado<=n)break}
+  NPAG=Math.max(1,Math.ceil(usado/n));if(PAG>=NPAG)PAG=0;
+  desloca();
+  if(NPAG<=1){if(_pagT){clearTimeout(_pagT);_pagT=null}}else if(!_pagT)agendaPag()}
+
+// ---- consulta: a mesma fila do tablet, de 5 em 5 s ----
+function carregaAreas(cods,cb){
+  if(!cods.length)return cb(null,[]);
+  var rs=[],falta=cods.length,erro=null;
+  function um(i){pega('/api/kds?area='+cods[i],function(e,d){if(e)erro=erro||e;else rs[i]=d;if(--falta===0)cb(erro,rs)})}
+  for(var i=0;i<cods.length;i++)um(i)}
+function carrega(cb){
+  if(!TODAS)return carregaAreas(AREAS,cb);
+  // todas: as praças com algo a produzir ou parado no passe (a conta da
+  // reclamação precisa das duas) + a "sem praça", que também traz os cancelados
+  pega('/api/areas',function(e,d){
+    if(e)return cb(e);
+    var cods=[],as=(d&&d.areas)||[],i;
+    for(i=0;i<as.length;i++){var n=Number(as[i].codigo);
+      if((Number(as[i].a_produzir)>0||Number(as[i].a_entregar)>0)&&cods.indexOf(n)<0)cods.push(n)}
+    if(cods.indexOf(0)<0)cods.push(0);
+    carregaAreas(cods,cb)})}
+// praça que saiu do cadastro: a TV vai sozinha pra que ficou no lugar (ou pra lista)
+function trocaPraca(rs){
+  if(TODAS)return false;
+  var mudou=false,novas=[],i;
+  for(i=0;i<AREAS.length;i++){var d=rs[i],p=AREAS[i];
+    if(d&&d.sumiu){mudou=true;continue}
+    if(d&&d.mudou_para!=null&&Number(d.mudou_para)!==p){mudou=true;p=Number(d.mudou_para)}
+    if(novas.indexOf(p)<0)novas.push(p)}
+  if(!mudou)return false;
+  if(novas.length){guarda('tv_area',novas.join(','));location.replace('/tv?area='+novas.join(',')+EXTRA)}
+  else{guarda('tv_area',null);location.replace('/tv?escolher=1'+EXTRA)}
+  return true}
+var OCUP=false,ULT_OK=0,INICIO=Date.now(),PRIMEIRA=true,_titulo='';
+function pinta(rs){
+  var J=junta(rs),h='',crit=0,i;
+  checaNovos(J);checaAtraso(J);checaReclamacao(J);
+  ESPERANDO=J.esperando;
+  for(i=0;i<J.lista.length;i++){if(J.lista[i].critico)crit++;h+=cartao(J.lista[i],i,J.multi)}
+  var nome=TODAS?'Todas as praças':J.nomes.join(' + ');
+  if(nome&&nome!==_titulo){_titulo=nome;try{document.title=nome+' — TV '+LOJA}catch(e){}}
+  poe('tPraca',escPraca(nome));
+  poe('tCont','<b>'+J.nItens+'</b> a produzir · <b>'+J.lista.length+'</b> '+(J.lista.length===1?'pedido':'pedidos'));
+  if(poe('tEst',crit?(crit+(crit===1?' estourou o prazo':' estouraram o prazo')):''))el('tEstC').style.display=crit?'table-cell':'none';
+  poe('tVivo','<span class="dot'+(J.online?'':' off')+'"></span>'+(J.online?'ao vivo':'offline'));
+  var m1=poe('avisos',avisosHTML(J)),m2=poe('cols',h);
+  if(m2||PRIMEIRA)el('vazio').style.display=J.lista.length?'none':'block';
+  if(m1||m2||PRIMEIRA){PRIMEIRA=false;ajusta()}}
+// servidor da loja não responde: a fila fica na tela, com o aviso de que pode estar velha
+function pintaCon(erroTela){
+  var parado=Math.floor((Date.now()-(ULT_OK||INICIO))/1000),m='';
+  if(erroTela)m='ERRO NA TELA: '+esc(erroTela);
+  else if(parado>=25)m='SEM CONEXÃO com o servidor da loja há '+(parado<120?parado+' s':Math.floor(parado/60)+' min')+' — a fila abaixo pode estar desatualizada';
+  poe('semcon',m);
+  if(!!m!==_conVis){_conVis=!!m;el('semcon').style.display=m?'block':'none';ajusta()}}
+var _erroTela='',_conVis=false;
+function ciclo(){
+  if(OCUP)return;OCUP=true;
+  carrega(function(e,rs){OCUP=false;
+    if(e)return;
+    if(trocaPraca(rs))return;
+    ULT_OK=Date.now();
+    try{pinta(rs);_erroTela=''}catch(err){_erroTela=String((err&&err.message)||err)}
+    pintaCon(_erroTela)})}
+function relogio(){poe('tHora',hm(Date.now()+SKEW));if(MODO==='fila'){pintaCon(_erroTela);pintaCheia()}}
+
+// ---- escolha da praça ----
+var SEL_H='';
+function ajustaSel(){el('sel').style.fontSize=Math.max(13,Math.round(tam().w/64))+'px'}
+function carregaSel(){pega('/api/areas',function(e,d){
+  if(e){poe('selMsg','Sem conexão com o servidor da loja — tentando de novo…');return}
+  poe('selMsg','');
+  var as=((d&&d.areas)||[]).slice(0),h='',tot=0,i;
+  // ordem fixa (nome) — a do servidor muda com o movimento e o botão fugiria do foco
+  as.sort(function(x,y){if(!!x.orfa!==!!y.orfa)return x.orfa?1:-1;return String(x.nome)<String(y.nome)?-1:(String(x.nome)>String(y.nome)?1:0)});
+  for(i=0;i<as.length;i++){var n=Number(as[i].a_produzir)||0;tot+=n;
+    h+='<a class="ab'+(n>0?' tem':'')+'" href="/tv?area='+Number(as[i].codigo)+EXTRA+'"><b>'+escPraca(as[i].nome)+'</b><span><i>'+n+'</i> a produzir</span></a>'}
+  h+='<a class="ab todas" href="/tv?area=todas'+EXTRA+'"><b>Todas as praças juntas</b><span><i>'+tot+'</i> a produzir</span></a>';
+  if(h===SEL_H)return;
+  var ls=el('selLista').getElementsByTagName('a'),foco=0;
+  for(i=0;i<ls.length;i++)if(ls[i]===document.activeElement)foco=i;
+  SEL_H=h;el('selLista').innerHTML=h;
+  ls=el('selLista').getElementsByTagName('a');
+  if(ls.length){try{ls[foco<ls.length?foco:0].focus()}catch(x){}}})}
+// setas do controle: vai pro botão mais próximo naquela direção
+function move(dir){
+  var ls=el('selLista').getElementsByTagName('a'),cur=document.activeElement,i,best=null,bd=1e9,achou=false;
+  for(i=0;i<ls.length;i++)if(ls[i]===cur)achou=true;
+  if(!achou){if(ls[0])ls[0].focus();return}
+  var r=cur.getBoundingClientRect(),cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
+  for(i=0;i<ls.length;i++){if(ls[i]===cur)continue;
+    var q=ls[i].getBoundingClientRect(),dx=(q.left+q.right)/2-cx,dy=(q.top+q.bottom)/2-cy,ok,d;
+    if(dir===37){ok=dx<-5;d=-dx+Math.abs(dy)*3}
+    else if(dir===39){ok=dx>5;d=dx+Math.abs(dy)*3}
+    else if(dir===38){ok=dy<-5;d=-dy+Math.abs(dx)*3}
+    else{ok=dy>5;d=dy+Math.abs(dx)*3}
+    if(ok&&d<bd){bd=d;best=ls[i]}}
+  if(best)best.focus()}
+
+// ---- teclas / toques ----
+document.addEventListener('keydown',function(ev){ev=ev||window.event;var k=ev.keyCode||ev.which;
+  // Esc/F1–F12 e atalho com Ctrl/Alt/Cmd são do navegador (Esc sai da tela cheia — não pode voltar sozinha)
+  if(k===27||(k>=112&&k<=123)||ev.ctrlKey||ev.altKey||ev.metaKey)return;
+  if(MODO==='sel'){if(k>=37&&k<=40){move(k);if(ev.preventDefault)ev.preventDefault()}}
+  else if(k===39)viraPag(1);
+  else if(k===37)viraPag(-1);
+  gesto()},false);
+document.addEventListener('click',gesto,false);
+document.addEventListener('touchend',gesto,false);
+document.addEventListener('mousemove',cursor,false);
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')acorda()},false);
+var _rszT=null;
+window.onresize=function(){if(_rszT)clearTimeout(_rszT);_rszT=setTimeout(function(){ajusta();ajustaSel();pintaCheia()},200)};
+
+// ---- partida ----
+(function(){
+  if(MODO==='sel'){
+    // /tv sem praça: volta pra última que ESTA TV mostrou (digitar endereço no
+    // controle é um castigo). "trocar praça" vem com ?escolher=1 e cai na lista.
+    var ult=lembra('tv_area');
+    if(ult&&qs('escolher')==null){location.replace('/tv?area='+encodeURIComponent(ult).split('%2C').join(',')+(EXTRA||lembra('tv_extra')||''));return}
+    el('sel').style.display='block';ajustaSel();carregaSel();setInterval(carregaSel,8000);
+  }else{
+    guarda('tv_area',TODAS?'todas':AREAS.join(','));guarda('tv_extra',EXTRA);
+    el('tela').style.display='block';
+    el('tTroca').href='/tv?escolher=1'+EXTRA;
+    poe('tPraca',TODAS?'Todas as praças':'…');
+    pintaSom();pintaCheia();ajusta();ciclo();setInterval(ciclo,5000);
+  }
+  relogio();setInterval(relogio,1000);cursor();acorda();
+  // VERSAO NOVA NO SERVIDOR: a tela é uma página só e ficaria rodando o código
+  // velho pra sempre. Recarrega sozinha — a resposta do /api/versao acabou de
+  // provar que o servidor novo já está de pé (recarregar com ele fora deixaria a
+  // TV parada numa página de erro, sem ninguém pra apertar "tentar de novo").
+  setInterval(function(){pega('/api/versao',function(e,v){
+    if(e||!v||!v.versao||v.versao===VERSAO_MINHA)return;
+    location.reload()})},60000);
+})();
+</script></body></html>`;
+
 // ---- /venda — tela do garçom (mobile) ----
 const VENDA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="manifest" href="/app.webmanifest?t=venda"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Venda</title><style>
@@ -26191,6 +26706,7 @@ ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
     <div class="end"><span id="e2"></span><button onclick="ir('e2')">abrir</button><button onclick="copiar('e2',this)">copiar</button></div>
     <div class="end"><span id="e3"></span><button onclick="ir('e3')">abrir</button><button onclick="copiar('e3',this)">copiar</button></div>
     <div class="end"><span id="e4"></span><button onclick="ir('e4')">abrir</button><button onclick="copiar('e4',this)">copiar</button></div>
+    <div class="end"><span id="e5"></span><button onclick="ir('e5')">abrir</button><button onclick="copiar('e5',this)">copiar</button></div>
   </div>
   <div class="card"><div class="tit">Não conseguiu de jeito nenhum?</div>
     <div class="mut">Instale o app <b>Fully Kiosk Browser</b> (grátis, Play Store), abra as configurações dele, ponha o endereço do caixa em <b>Start URL</b> e ligue o <b>Kiosk Mode</b>. Ele abre em tela cheia sempre, trava o tablet no sistema e reabre sozinho se cair.</div>
@@ -26256,6 +26772,7 @@ document.getElementById('e1').textContent=base+'/caixa';
 document.getElementById('e2').textContent=base+'/';
 document.getElementById('e3').textContent=base+'/entrega';
 document.getElementById('e4').textContent=base+'/venda';
+document.getElementById('e5').textContent=base+'/tv';
 pinta();setInterval(pinta,3000);
 </script></body></html>`;
 
@@ -27441,6 +27958,7 @@ const server = http.createServer(async (req, res) => {
         venda: { nome: LOJA_NOME + ' Garçom', start: '/venda' },
         entrega: { nome: LOJA_NOME + ' Entrega', start: '/entrega' },
         ponto: { nome: LOJA_NOME + ' Ponto', start: '/ponto' },
+        tv: { nome: LOJA_NOME + ' TV', start: '/tv' },
         kds: { nome: LOJA_NOME + ' Produção', start: '/' } };
       const cfg = TELAS[t] || TELAS.kds;
       res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
@@ -28055,6 +28573,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
+    if (p === '/tv') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TV_HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
     // RESERVAS DE HOJE PRA RECEPÇÃO (/reservas). Saiu do KDS — lá é só o que
@@ -28391,7 +28910,7 @@ function conferirTelas() {
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
     '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML, '/ponto': PONTO_HTML,
-    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML, '/producao': PRODUCAO_HTML };
+    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML, '/producao': PRODUCAO_HTML, '/tv': TV_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
