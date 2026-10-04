@@ -4,8 +4,10 @@
 // nunca as duas no mesmo dia.
 const PONTO_PROPRIO_DESDE_PADRAO = '2026-10-01';
 const PONTO_PROPRIO_DESDE_POR_FILIAL: Record<string, string> = {
-  // 03 Prainha Mar começou antes das outras.
-  'e899dae2-38bf-4f3f-9149-7effd059fab8': '2026-09-30',
+  // 03 Prainha Mar começou antes das outras. Era 30/09; passou pra 28/09
+  // (04/10/2026, pedido do dono): o relatório do sistema antigo veio zerado em
+  // 28 e 29/09 e o pessoal já tinha batido esses dias no ponto próprio.
+  'e899dae2-38bf-4f3f-9149-7effd059fab8': '2026-09-28',
 };
 
 /** Primeiro dia (YYYY-MM-DD) em que a filial usa o ponto próprio na folha. */
