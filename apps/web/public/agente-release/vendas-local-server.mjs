@@ -13,6 +13,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync, openSync, renameSync } from 'node:fs';
@@ -5667,6 +5668,8 @@ function apiConfig() {
     auto_update_estado: autoUpdateEstado,
     // vigia do túnel (reinicia o Tailscale sozinho quando a nuvem para de alcançar a loja) — só o resumo
     vigia_tunel: vigiaTunelResumo(),
+    // TV Roku do KDS (o servidor abre o KDS nela sozinho) — só o resumo
+    tv_kds: tvKdsResumo(),
     // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
     adquirente: ADQUIRENTE_LOJA };
 }
@@ -9961,6 +9964,7 @@ async function loopDiagNuvem() {
     d.vendasLocal = { subiuEm: new Date(Date.now() - process.uptime() * 1000).toISOString(), node: process.version };
     if (PONTO_FACIAL_TEMPOS.length) d.vendasLocal.pontoFacial = PONTO_FACIAL_TEMPOS.slice(-30);
     d.vendasLocal.vigiaTunel = vigiaTunelParaDiag();
+    d.vendasLocal.tvKds = tvKdsParaDiag();
     const e = Math.floor(Date.now() / 1000) + 120;
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/diagnostico`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -10394,6 +10398,295 @@ function vigiaTunelParaDiag() {
   } catch { return null; }
 }
 // ---- fim do vigia do túnel ----
+// ---- TV DO KDS (Roku): o servidor abre o KDS na TV sozinho ----
+// TV Roku não tem navegador: o KDS dela é um canal próprio (vendas-local/roku-kds)
+// que busca /api/areas e /api/kds daqui. Ninguém cadastra IP: o canal manda o
+// cabeçalho X-Kds-Tv: roku (e o User-Agent "Roku/…"), e é por essa busca que o
+// servidor fica sabendo o endereço da TV — depois de conferir, na porta 8060
+// dela (o controle por rede da Roku), que é uma Roku de verdade.
+// Daí pra frente, de 20 em 20 s, pra cada TV conhecida que NÃO está buscando
+// pedido: pergunta se está ligada e o que está na tela. Ligada e parada na tela
+// inicial em duas perguntas seguidas → manda abrir o canal. Em outro aplicativo
+// ou entrada (HDMI, antena): não mexe — alguém pôs aquilo lá de propósito.
+// TV que trocou de IP (DHCP) é reencontrada pela descoberta da rede (SSDP),
+// casando pelo número de série — só procura quando uma TV conhecida some.
+// Loja sem TV Roku: o laço acorda e volta a dormir, sem banco e sem rede.
+// Desligar: TV_KDS=off no start.bat, ou POST /api/tv-kds {abrir:'off'} (caixa).
+const TV_KDS = String(process.env.TV_KDS || '').trim().toLowerCase() !== 'off';
+const TV_KDS_POLL_MS = 20 * 1000;
+const TV_KDS_VIVA_MS = 30 * 1000;   // buscou pedido há menos que isto = o KDS está aberto nela
+const TV_KDS_MAX = 8;               // TVs por loja (e endereços esperando conferência)
+const TV_KDS_RECUSA_MS = 10 * 60 * 1000;             // endereço que não era Roku: só confere de novo depois disto
+const TV_KDS_ESQUECE_MS = 45 * 24 * 60 * 60 * 1000;  // TV que não busca pedido há 45 dias sai da lista
+const TV_KDS_BUSCA_MS = 5 * 60 * 1000;               // distância mínima entre duas procuras na rede
+const tvKds = { estado: 'ainda não ligou', abrir: true, abrirLidoEm: 0, cicloEm: null, buscaEm: 0,
+  tvs: new Map(), candidatas: new Map(), recusadas: new Map() };
+
+function tvKdsIpLan(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || ''));
+  if (!m || m.slice(1).some((x) => Number(x) > 255)) return false;
+  const a = Number(m[1]), b = Number(m[2]);
+  return a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
+/** Chamado em toda busca de /api/kds e /api/areas (o tablet também passa por
+ *  aqui, de 5 em 5 s): barato, sem banco, nunca lança. O endereço vem do
+ *  socket — nunca de cabeçalho, que qualquer um escreve. */
+function tvKdsMarcar(req) {
+  try {
+    if (tvKds.estado !== 'on') return;
+    const h = req.headers || {};
+    if (String(h['x-kds-tv'] || '').toLowerCase() !== 'roku' && !/^Roku\//.test(String(h['user-agent'] || ''))) return;
+    const ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+    if (!tvKdsIpLan(ip)) return;
+    const agora = Date.now();
+    const tv = tvKds.tvs.get(ip);
+    if (tv) { tv.vistaEm = agora; return; }
+    // endereço novo: só entra na lista depois que o vigia conferir que é uma Roku
+    if (agora - (tvKds.recusadas.get(ip) || 0) < TV_KDS_RECUSA_MS) return;
+    if (tvKds.candidatas.has(ip) || tvKds.candidatas.size < TV_KDS_MAX) tvKds.candidatas.set(ip, agora);
+  } catch {}
+}
+/** Fala com o controle por rede da TV (porta 8060). Nunca lança nem fica
+ *  pendurado. http cru de propósito: o fetch manda cabeçalhos de navegador. */
+function tvKdsPede(ip, caminho, metodo = 'GET') {
+  return new Promise((ok) => {
+    let fim = false, rq = null;
+    const acaba = (v) => { if (fim) return; fim = true; clearTimeout(relogio); ok(v); };
+    const relogio = setTimeout(() => { try { rq && rq.destroy(); } catch {} acaba({ status: 0, texto: '', erro: 'demorou' }); }, 8000);
+    try {
+      rq = http.request({ host: ip, port: 8060, path: caminho, method: metodo, timeout: 4000, agent: false,
+        headers: metodo === 'POST' ? { 'content-length': 0 } : {} }, (rs) => {
+        let t = '';
+        rs.setEncoding('utf8');
+        rs.on('data', (c) => { if (t.length < 20000) t += c; });
+        rs.on('end', () => acaba({ status: rs.statusCode || 0, texto: t }));
+        rs.on('error', () => acaba({ status: 0, texto: '', erro: 'resposta cortada' }));
+      });
+      rq.on('timeout', () => { try { rq.destroy(new Error('sem resposta')); } catch {} });
+      rq.on('error', (e) => acaba({ status: 0, texto: '', erro: String((e && (e.code || e.message)) || e).slice(0, 60) }));
+      rq.end();
+    } catch (e) { acaba({ status: 0, texto: '', erro: String((e && e.message) || e).slice(0, 60) }); }
+  });
+}
+const tvKdsTag = (xml, tag) => { const m = new RegExp('<' + tag + '>([^<]*)</' + tag + '>').exec(xml || ''); return m ? m[1].trim() : ''; };
+/** Quem é o aparelho nesse endereço. null = não respondeu ou não é Roku. */
+async function tvKdsQuem(ip) {
+  const r = await tvKdsPede(ip, '/query/device-info');
+  if (r.status !== 200 || !/<device-info>/.test(r.texto)) return null;
+  const serie = tvKdsTag(r.texto, 'serial-number');
+  if (!serie) return null;
+  return { serie, nome: (tvKdsTag(r.texto, 'user-device-name') || tvKdsTag(r.texto, 'friendly-device-name') || 'Roku').slice(0, 60),
+    // aparelho sem <power-mode> (os de caixinha) está sempre ligado
+    energia: tvKdsTag(r.texto, 'power-mode') || 'PowerOn', dev: tvKdsTag(r.texto, 'developer-enabled') === 'true' };
+}
+/** O que está na tela: 'kds' | 'inicial' | 'outro' | '' (não respondeu). */
+async function tvKdsTela(ip) {
+  const r = await tvKdsPede(ip, '/query/active-app');
+  const m = r.status === 200 ? /<app\b([^>]*)>([^<]*)<\/app>/.exec(r.texto) : null;
+  if (!m) return { tela: '', nome: '' };
+  const id = (/\bid="([^"]*)"/.exec(m[1]) || [])[1] || '';
+  const tipo = (/\btype="([^"]*)"/.exec(m[1]) || [])[1] || '';
+  const nome = m[2].trim().slice(0, 60);
+  if (id === 'dev') return { tela: 'kds', nome }; // o canal instalado pelo modo desenvolvedor é o KDS
+  // tela inicial: a Roku responde <app>Roku</app>, sem id (com o protetor de tela vem um <screensaver> junto)
+  if (!id || tipo === 'home') return { tela: 'inicial', nome };
+  return { tela: 'outro', nome };
+}
+/** Procura Rokus na rede (SSDP). Devolve [{ip, serie}]. Nunca lança; o socket
+ *  vive 3,5 s e tem tratador de erro (socket UDP sem ele derruba o processo). */
+function tvKdsProcurar() {
+  return new Promise((ok) => {
+    const achadas = new Map();
+    let s = null, fim = false;
+    const acaba = () => { if (fim) return; fim = true; try { s && s.close(); } catch {} ok([...achadas.values()]); };
+    try {
+      s = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      s.on('error', acaba);
+      s.on('message', (m, r) => {
+        try {
+          const serie = (/USN:\s*uuid:roku:ecp:([A-Za-z0-9]+)/i.exec(String(m)) || [])[1];
+          if (serie && tvKdsIpLan(r.address)) achadas.set(serie, { ip: r.address, serie });
+        } catch {}
+      });
+      const msg = Buffer.from('M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 2\r\nST: roku:ecp\r\n\r\n');
+      const manda = () => { try { if (!fim) s.send(msg, 1900, '239.255.255.250', () => {}); } catch {} };
+      // amarrado no IP da rede da loja: sem isso o Windows pode mandar a pergunta pela placa do Tailscale
+      s.bind(0, lanIp() || undefined, () => { manda(); setTimeout(manda, 700); });
+      setTimeout(acaba, 3500);
+    } catch { acaba(); }
+  });
+}
+async function tvKdsGravar() {
+  try {
+    const agora = Date.now();
+    const lista = [...tvKds.tvs.values()].map((t) => { t.gravadaEm = agora; return { ip: t.ip, serie: t.serie, nome: t.nome, vistaEm: t.vistaEm }; });
+    await cfgSet('tv_roku', JSON.stringify(lista));
+  } catch (e) { console.error('[tv-kds] não gravei a lista de TVs: ' + ((e && e.message) || e)); }
+}
+function tvKdsNova(ip, serie, nome, vistaEm) {
+  return { ip, serie, nome, vistaEm: Number(vistaEm) || 0, gravadaEm: 0, situacao: 'conhecida', energia: '', naTela: '', dev: null,
+    checadaEm: null, naInicial: 0, sumida: 0, abriuEm: 0, aberturas: 0, seguidas: 0, esperaAte: 0, ultimoStatus: null, erro: '' };
+}
+async function tvKdsCarregar() {
+  // a chave de desligar primeiro e à parte: lista estragada não pode religar o que o dono desligou
+  try {
+    tvKds.abrir = String(await cfgGet('tv_kds_abrir', 'on')).trim().toLowerCase() !== 'off';
+    tvKds.abrirLidoEm = Date.now();
+  } catch (e) { console.error('[tv-kds] não li a chave tv_kds_abrir: ' + ((e && e.message) || e)); }
+  try {
+    const lista = JSON.parse(await cfgGet('tv_roku', '[]'));
+    for (const t of Array.isArray(lista) ? lista.slice(0, TV_KDS_MAX) : []) {
+      if (t && tvKdsIpLan(t.ip) && t.serie) tvKds.tvs.set(t.ip, tvKdsNova(t.ip, String(t.serie), String(t.nome || 'Roku').slice(0, 60), t.vistaEm));
+    }
+  } catch (e) { console.error('[tv-kds] não li a lista de TVs: ' + ((e && e.message) || e)); }
+}
+/** Uma passada do vigia. */
+async function tvKdsCiclo() {
+  const v = tvKds;
+  v.cicloEm = new Date().toISOString();
+  if (!v.tvs.size && !v.candidatas.size) return;
+  // 1) endereço novo que buscou pedido com a marca da TV: confere e guarda
+  const novas = [...v.candidatas];
+  v.candidatas.clear();
+  let mudou = false;
+  for (const [ip, em] of novas) {
+    if (v.tvs.has(ip)) { v.tvs.get(ip).vistaEm = em; continue; }
+    const q = await tvKdsQuem(ip);
+    if (!q) {
+      if (v.recusadas.size >= 64) v.recusadas.clear();
+      v.recusadas.set(ip, Date.now());
+      continue;
+    }
+    // a mesma TV com endereço novo: troca o endereço em vez de duplicar
+    for (const [ipVelho, t] of [...v.tvs]) if (t.serie === q.serie) v.tvs.delete(ipVelho);
+    if (v.tvs.size >= TV_KDS_MAX) continue;
+    v.tvs.set(ip, tvKdsNova(ip, q.serie, q.nome, em));
+    mudou = true;
+    console.log('[tv-kds] TV do KDS conhecida: ' + q.nome + ' em ' + ip + ' — passo a abrir o KDS nela quando ligar');
+  }
+  if (!v.tvs.size) return;
+  // 2) a chave de desligar mora no banco: relê 1x por minuto
+  if (Date.now() - v.abrirLidoEm > 60 * 1000) {
+    v.abrirLidoEm = Date.now();
+    try { v.abrir = String(await cfgGet('tv_kds_abrir', 'on')).trim().toLowerCase() !== 'off'; } catch {}
+  }
+  // 3) cada TV conhecida
+  let sumiu = false;
+  for (const tv of [...v.tvs.values()]) {
+    const agora = Date.now();
+    if (tv.vistaEm && agora - tv.vistaEm > TV_KDS_ESQUECE_MS) {
+      v.tvs.delete(tv.ip); mudou = true;
+      console.log('[tv-kds] esqueci a TV ' + tv.nome + ' (' + tv.ip + '): 45 dias sem buscar pedido');
+      continue;
+    }
+    if (tv.vistaEm - tv.gravadaEm > 6 * 60 * 60 * 1000) mudou = true;
+    if (agora - tv.vistaEm < TV_KDS_VIVA_MS) {
+      tv.situacao = 'kds'; tv.naInicial = 0; tv.sumida = 0; tv.seguidas = 0; tv.esperaAte = 0; tv.erro = '';
+      continue;
+    }
+    const q = await tvKdsQuem(tv.ip);
+    tv.checadaEm = new Date().toISOString();
+    if (!q || q.serie !== tv.serie) {
+      tv.situacao = q ? 'outro aparelho neste endereço' : 'sem resposta (desligada da tomada ou fora da rede)';
+      tv.naInicial = 0; tv.sumida++; if (tv.sumida >= 3) sumiu = true;
+      continue;
+    }
+    tv.sumida = 0; tv.energia = q.energia; tv.dev = q.dev;
+    if (q.nome && q.nome !== tv.nome) { tv.nome = q.nome; mudou = true; }
+    if (q.energia !== 'PowerOn') { tv.situacao = 'desligada'; tv.naInicial = 0; continue; }
+    const t = await tvKdsTela(tv.ip);
+    tv.naTela = t.nome;
+    if (t.tela !== 'inicial') {
+      tv.situacao = t.tela === 'kds' ? 'KDS aberto, sem buscar pedido deste servidor' : t.tela === 'outro' ? 'em outro aplicativo ou entrada: não mexo' : 'não disse o que está na tela';
+      tv.naInicial = 0;
+      continue;
+    }
+    tv.naInicial++;
+    if (!v.abrir) { tv.situacao = 'na tela inicial (abrir sozinho está desligado)'; continue; }
+    if (!q.dev) { tv.situacao = 'na tela inicial, mas o modo desenvolvedor da TV está desligado: o KDS não está instalado'; continue; }
+    tv.situacao = 'na tela inicial';
+    if (tv.naInicial < 2 || agora < tv.esperaAte) continue;
+    const r = await tvKdsPede(tv.ip, '/launch/dev', 'POST');
+    tv.abriuEm = Date.now(); tv.aberturas++; tv.seguidas++; tv.naInicial = 0; tv.ultimoStatus = r.status;
+    // abriu e a TV não voltou a buscar pedido: depois da 3ª seguida, só de 10 em 10 min
+    tv.esperaAte = tv.abriuEm + (tv.seguidas >= 3 ? 10 * 60 * 1000 : 60 * 1000);
+    if (r.status >= 200 && r.status < 300) {
+      tv.erro = ''; tv.situacao = 'mandei abrir o KDS';
+      console.log('[tv-kds] abri o KDS na TV ' + tv.nome + ' (' + tv.ip + ')');
+    } else {
+      const antes = tv.erro;
+      tv.erro = r.status === 403 ? 'a TV recusou (controle por aplicativos desligado nela)' : r.status === 404 ? 'o KDS não está instalado na TV' : 'a TV não aceitou o pedido (' + (r.status || r.erro || '?') + ')';
+      tv.situacao = 'não consegui abrir o KDS: ' + tv.erro;
+      if (antes !== tv.erro) console.error('[tv-kds] ' + tv.nome + ' (' + tv.ip + '): ' + tv.erro);
+    }
+  }
+  // 4) TV conhecida sumiu do endereço: procura pela rede e casa pelo número de série
+  if (sumiu && Date.now() - v.buscaEm > TV_KDS_BUSCA_MS) {
+    v.buscaEm = Date.now();
+    const achadas = await tvKdsProcurar();
+    for (const a of achadas) {
+      const tv = [...v.tvs.values()].find((t) => t.serie === a.serie && t.ip !== a.ip && t.sumida >= 3);
+      if (!tv || v.tvs.has(a.ip)) continue;
+      console.log('[tv-kds] a TV ' + tv.nome + ' mudou de endereço: ' + tv.ip + ' → ' + a.ip);
+      v.tvs.delete(tv.ip); tv.ip = a.ip; tv.sumida = 0; v.tvs.set(a.ip, tv); mudou = true;
+    }
+  }
+  if (mudou) await tvKdsGravar();
+}
+let tvKdsRodando = false;
+async function loopTvKds() {
+  if (tvKdsRodando) return;
+  tvKdsRodando = true;
+  try { await tvKdsCiclo(); }
+  catch (e) { console.error('[tv-kds] ' + ((e && e.message) || e)); }
+  finally { tvKdsRodando = false; setTimeout(loopTvKds, TV_KDS_POLL_MS); }
+}
+function tvKdsPartida() {
+  const v = tvKds;
+  try {
+    if (!TV_KDS) { v.estado = 'off'; console.log('[tv-kds] vigia da TV desligado (TV_KDS=off)'); return; }
+    v.estado = 'on';
+    tvKdsCarregar().catch(() => {}).finally(() => setTimeout(loopTvKds, 30 * 1000));
+  } catch (e) { v.estado = 'erro'; console.error('[tv-kds] não liguei o vigia da TV: ' + ((e && e.message) || e)); }
+}
+const tvKdsIso = (ms) => (ms ? new Date(ms).toISOString() : null);
+/** Resumo pro /api/config (rota aberta: sem endereço nem número de série).
+ *  Nunca lança — a maquininha depende dessa rota. */
+function tvKdsResumo() {
+  try {
+    const v = tvKds;
+    return { estado: v.estado, abrir: v.abrir ? 'on' : 'off', ciclo_em: v.cicloEm,
+      tvs: [...v.tvs.values()].map((t) => ({ nome: t.nome, situacao: t.situacao, vista_em: tvKdsIso(t.vistaEm), abriu_em: tvKdsIso(t.abriuEm), aberturas: t.aberturas })) };
+  } catch { return { estado: 'erro' }; }
+}
+/** Tudo: sobe no diagnóstico da nuvem (canal assinado) e responde ao
+ *  GET /api/tv-kds de quem está na rede da loja. Nunca lança. */
+function tvKdsParaDiag() {
+  try {
+    const v = tvKds;
+    return { estado: v.estado, abrir: v.abrir ? 'on' : 'off', ciclo_em: v.cicloEm, procurou_em: tvKdsIso(v.buscaEm), esperando_conferencia: v.candidatas.size,
+      tvs: [...v.tvs.values()].map((t) => ({ nome: t.nome, ip: t.ip, serie: t.serie, situacao: t.situacao, energia: t.energia, na_tela: t.naTela, modo_dev: t.dev,
+        vista_em: tvKdsIso(t.vistaEm), checada_em: t.checadaEm, abriu_em: tvKdsIso(t.abriuEm), aberturas: t.aberturas, seguidas: t.seguidas, status: t.ultimoStatus, erro: t.erro, sumida: t.sumida })) };
+  } catch { return null; }
+}
+/** GET /api/tv-kds: o estado (com endereço só pra quem está na rede da loja). */
+function apiTvKds(req) {
+  const ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  return { ok: true, ...(tvKdsIpLan(ip) ? tvKdsParaDiag() : tvKdsResumo()) };
+}
+/** POST /api/tv-kds (sessão de caixa): {abrir:'on'|'off'} liga/desliga o abrir
+ *  sozinho; {esquecer:'<ip>'} tira uma TV da lista (ela volta se buscar pedido). */
+async function apiTvKdsSalvar(body) {
+  const b = body || {};
+  if (b.abrir != null) {
+    const liga = String(b.abrir).trim().toLowerCase() !== 'off';
+    await cfgSet('tv_kds_abrir', liga ? 'on' : 'off');
+    tvKds.abrir = liga; tvKds.abrirLidoEm = Date.now();
+  }
+  if (b.esquecer != null && tvKds.tvs.delete(String(b.esquecer).trim())) await tvKdsGravar();
+  return { ok: true, ...tvKdsParaDiag() };
+}
+// ---- fim da TV do KDS ----
 // ---- MARCAS DO KDS → NUVEM: tempos de pronto/entregue no espelho do pedido ----
 // A tabela `marca` (pronto_em/entregue_em por item) só existe aqui. Sobe em
 // lotes de 300 por minuto, cursor pelo GREATEST dos dois timestamps. A nuvem
@@ -28573,6 +28866,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/api/conta/conferir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiContaConferir(body.pagamento_id))); }
     if (p === '/' || p === '/entrega') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(HTML); }
+    // TV Roku do KDS: a busca que chega com a marca da TV ensina o endereço dela ao vigia (que abre o KDS nela sozinho)
+    if (p === '/api/kds' || p === '/api/areas') tvKdsMarcar(req);
+    if (p === '/api/tv-kds') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.method !== 'POST') return res.end(JSON.stringify(apiTvKds(req)));
+      if (!(await caixaDaRequisicao(req, u))) return res.end(JSON.stringify({ ok: false, erro: 'Entre no caixa de novo.', sem_sessao: true }));
+      return res.end(JSON.stringify(await apiTvKdsSalvar(await readBody(req))));
+    }
     if (p === '/tv') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TV_HTML); }
     if (p === '/venda') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VENDA_HTML); }
     if (p === '/api/areas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiAreas())); }
@@ -29144,6 +29445,8 @@ async function main() {
   setInterval(() => loopDiagNuvem().catch(() => {}), 60 * 60 * 1000);
   // vigia do túnel: se a nuvem parar de alcançar a loja pelo Funnel, reinicia o serviço do Tailscale sozinho
   vigiaTunelPartida();
+  // TV Roku do KDS: ligada e parada na tela inicial → o servidor manda abrir o KDS nela
+  tvKdsPartida();
   // balanço do dia pro Concilia (/balanco): 10 em 10 min, a primeira ~1 min após subir
   setTimeout(() => loopBalancoNuvem().catch(() => {}), 70 * 1000);
   setInterval(() => loopBalancoNuvem().catch(() => {}), 10 * 60 * 1000);
