@@ -361,13 +361,14 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
           </div>
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-emerald-700">
-              Faturamento
+              Faturamento da casa
             </p>
-            <p className="mt-1 text-2xl font-bold text-emerald-900">{brl(Number(stats?.total ?? 0))}</p>
+            {/* o número grande é o da casa (sem os 10%); o total com serviço fica embaixo */}
+            <p className="mt-1 text-2xl font-bold text-emerald-900">{brl(Number(stats?.total ?? 0) - totalServico)}</p>
             {totalServico > 0 && (
               <p className="mt-1 text-[11px] leading-snug text-emerald-800">
-                Da casa <strong className="font-mono">{brl(totalFaturado - totalServico)}</strong>
-                {' + '}10% da equipe <strong className="font-mono">{brl(totalServico)}</strong>
+                + 10% da equipe <strong className="font-mono">{brl(totalServico)}</strong>
+                {' = '}total <strong className="font-mono">{brl(totalFaturado)}</strong>
               </p>
             )}
           </div>
