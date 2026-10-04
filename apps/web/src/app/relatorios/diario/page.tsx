@@ -29,6 +29,11 @@ import {
 } from '@/lib/relatorio-diario-envio';
 import { EnvioCard } from './envio-card';
 
+/** "1 mesa", "2 mesas". */
+function pl(n: number, um: string, varios: string): string {
+  return `${n} ${n === 1 ? um : varios}`;
+}
+
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
@@ -105,11 +110,11 @@ function Casa({ c }: { c: RelatorioCasa }) {
         <KPI label="Ticket por conta" valor={brl(c.movimento.ticket)} sub={`serviço ${brl(c.movimento.servico)}`} />
         <KPI
           label="Cancelado por demora"
-          valor={c.cancelamentos.demora.itens ? `${c.cancelamentos.demora.itens} itens` : 'nenhum'}
+          valor={c.cancelamentos.demora.itens ? pl(c.cancelamentos.demora.itens, 'item', 'itens') : 'nenhum'}
           sub={
             c.cancelamentos.demora.itens
-              ? `${brl(c.cancelamentos.demora.valor)} em ${c.cancelamentos.demora.mesas} mesas, ${c.cancelamentos.demora.de}–${c.cancelamentos.demora.ate}`
-              : `${c.cancelamentos.itens} cancelamentos no dia (${brl(c.cancelamentos.valor)})`
+              ? `${brl(c.cancelamentos.demora.valor)} em ${pl(c.cancelamentos.demora.mesas, 'mesa', 'mesas')}, ${c.cancelamentos.demora.de}–${c.cancelamentos.demora.ate}`
+              : `${pl(c.cancelamentos.itens, 'cancelamento', 'cancelamentos')} no dia (${brl(c.cancelamentos.valor)})`
           }
           cor={c.cancelamentos.demora.itens ? 'text-rose-700' : 'text-emerald-700'}
         />
@@ -153,7 +158,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
                     <td className="py-1">{p.nome}</td>
                     <td className="py-1 text-right">{p.contas}</td>
                     <td className="py-1 text-right">{brl(p.total)}</td>
-                    <td className="py-1 text-right">{p.pico ? `${p.pico} mesas${p.picoHora ? ` ${p.picoHora}` : ''}` : '—'}</td>
+                    <td className="py-1 text-right">{p.pico ? `${pl(p.pico, 'mesa', 'mesas')}${p.picoHora ? ` ${p.picoHora}` : ''}` : '—'}</td>
                     <td className="py-1 text-right">{p.garconsNoPico}</td>
                     <td className="py-1 text-right">{p.cozinhaNoPico}</td>
                   </tr>
@@ -166,7 +171,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
           </p>
           <div className="mt-3 flex h-16 items-end gap-1">
             {c.porHora.map((h) => (
-              <div key={h.hora} className="flex flex-1 flex-col items-center gap-1" title={`${h.hora}h — ${h.contas} contas, ${brl(h.total)}`}>
+              <div key={h.hora} className="flex flex-1 flex-col items-center gap-1" title={`${h.hora}h — ${pl(h.contas, 'conta', 'contas')}, ${brl(h.total)}`}>
                 <div className="w-full rounded-sm bg-sky-500/70" style={{ height: `${Math.max(3, (h.total / maiorHora) * 48)}px` }} />
                 <span className="text-[9px] text-slate-400">{h.hora}</span>
               </div>
@@ -178,7 +183,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
           titulo={`Equipe no ponto (${c.equipe.total})`}
           nota={
             c.equipe.semCargo > 0
-              ? `${c.equipe.semCargo} pessoas sem cargo no cadastro — preencha o cargo em RH pra entrarem na função certa. Só aparece quem bateu ponto.`
+              ? `${pl(c.equipe.semCargo, 'pessoa', 'pessoas')} sem cargo no cadastro — preencha o cargo em RH pra entrarem na função certa. Só aparece quem bateu ponto.`
               : 'Só aparece quem bateu ponto.'
           }
         >
@@ -205,7 +210,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
           )}
         </Bloco>
 
-        <Bloco titulo={`Cancelamentos (${c.cancelamentos.itens} itens · ${brl(c.cancelamentos.valor)})`}>
+        <Bloco titulo={`Cancelamentos (${pl(c.cancelamentos.itens, 'item', 'itens')} · ${brl(c.cancelamentos.valor)})`}>
           {c.cancelamentos.itens === 0 ? (
             <p className="text-slate-400">Nenhum item cancelado.</p>
           ) : (
@@ -215,7 +220,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
                   <li key={m.motivo} className="flex justify-between gap-3">
                     <span>{m.motivo}</span>
                     <span className="shrink-0 text-slate-500">
-                      {m.itens} itens · {brl(m.valor)} · {m.mesas} mesas
+                      {pl(m.itens, 'item', 'itens')} · {brl(m.valor)} · {pl(m.mesas, 'mesa', 'mesas')}
                     </span>
                   </li>
                 ))}
@@ -333,12 +338,14 @@ function Casa({ c }: { c: RelatorioCasa }) {
             ))}
             {c.reservas.total > 0 && (
               <li>
-                Reservas: {c.reservas.total} ({c.reservas.pessoas} pessoas) · {c.reservas.sentadas} vieram ·{' '}
-                {c.reservas.noShow} faltaram
-                {c.reservas.canceladas > 0 ? ` · ${c.reservas.canceladas} canceladas antes` : ''}
+                Reservas: {c.reservas.total} ({pl(c.reservas.pessoas, 'pessoa', 'pessoas')}) ·{' '}
+                {pl(c.reservas.sentadas, 'veio', 'vieram')} · {pl(c.reservas.noShow, 'faltou', 'faltaram')}
+                {c.reservas.canceladas > 0
+                  ? ` · ${pl(c.reservas.canceladas, 'cancelada antes', 'canceladas antes')}`
+                  : ''}
               </li>
             )}
-            {c.listaEspera > 0 && <li>Lista de espera: {c.listaEspera} nomes</li>}
+            {c.listaEspera > 0 && <li>Lista de espera: {pl(c.listaEspera, 'nome', 'nomes')}</li>}
             {c.quedas.map((k, i) => (
               <li key={`q${i}`}>
                 Loja fora do ar às {k.hora} por {k.minutos} min
@@ -463,7 +470,7 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
               <KPI label="Equipe no ponto" valor={int(noPonto)} sub="quem bateu ponto no dia" />
               <KPI
                 label="Cancelado por demora"
-                valor={demoraItens ? `${demoraItens} itens` : 'nenhum'}
+                valor={demoraItens ? pl(demoraItens, 'item', 'itens') : 'nenhum'}
                 sub={demoraItens ? brl(demoraValor) : undefined}
                 cor={demoraItens ? 'text-rose-700' : 'text-emerald-700'}
               />

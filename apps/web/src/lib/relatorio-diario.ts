@@ -706,7 +706,7 @@ export async function montarRelatorioCasa(
   }
   const falta = porMotivo.find((m) => /falta/i.test(m.motivo));
   if (falta && falta.itens >= 3) {
-    atencao.push(`${falta.itens} itens cancelados por produto em falta (${reais(falta.valor)})`);
+    atencao.push(`${pl(falta.itens, 'item cancelado', 'itens cancelados')} por produto em falta (${reais(falta.valor)})`);
   }
   for (const a of avaliacoes.baixas.slice(0, 3)) {
     atencao.push(
