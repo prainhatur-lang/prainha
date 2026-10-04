@@ -141,12 +141,17 @@ function sleep(ms: number): Promise<void> {
 
 // Fechos-muleta que o modelo insiste em colar no fim ("se precisar estou
 // aqui!") — a regra do prompt segura ~80%; a tesoura garante os 100%.
-// A pergunta legítima de conclusão ("posso ajudar em mais algo?") passa.
+// "Posso ajudar em mais algo?" também sai (04/10) — ver os dois últimos padrões.
 const FECHOS_REPETITIVOS = [
   /\s*\b(se (você )?(precisar|quiser)|qualquer (coisa|dúvida)|caso (precise|queira))[^.!?\n]*[.!?…]*\s*$/i,
   /\s*\b(estou|estarei|fico) (aqui|à disposição|por aqui|a postos|sempre por aqui)[^.!?\n]*[.!?…]*\s*$/i,
   /\s*\bé só (chamar|avisar|me chamar|falar|mandar mensagem)[^.!?\n]*[.!?…]*\s*$/i,
   /\s*\bconte comigo[^.!?\n]*[.!?…]*\s*$/i,
+  // "Mais alguma coisa em que eu possa ajudar?" / "Posso ajudar com mais alguma
+  // coisa?" colado no fim de TODA resposta (pedido do Elison 04/10: entrega
+  // que é IA e corta a conversa). Sai a frase final inteira.
+  /(^|(?<=[.!?…\n]))\s*[^.!?…\n]*\b(mais alguma (coisa|d[úu]vida)|algo mais|mais algo|em que mais|no que mais)\b[^.!?…\n]*\b(ajud|auxili)[^.!?…\n]*[.!?…]*\s*$/i,
+  /(^|(?<=[.!?…\n]))\s*[^.!?…\n]*\b(ajud|auxili)[^.!?…\n]*\b(mais alguma (coisa|d[úu]vida)|algo mais|mais algo|em mais nada)\b[^.!?…\n]*[.!?…]*\s*$/i,
 ];
 
 // EMOJI (regra do Elison desde 08/08: emoji repetido entrega robô e "expulsa
