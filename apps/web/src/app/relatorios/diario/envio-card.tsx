@@ -21,6 +21,9 @@ interface Modelo {
   nome: string;
   situacao: 'aprovado' | 'em_analise' | 'recusado' | 'nao_existe' | 'indisponivel';
   detalhe: string | null;
+  /** como o modelo está na Meta: posição do botão "Ver resumo" (null = sem botão) */
+  botaoIndice?: number | null;
+  textoPadrao?: boolean;
 }
 
 interface Props {
@@ -43,7 +46,7 @@ const SITUACAO: Record<Modelo['situacao'], { rotulo: string; cor: string }> = {
 };
 
 const CANAL: Record<string, string> = {
-  modelo: 'aviso com o botão "Ver resumo"',
+  modelo: 'aviso curto (modelo)',
   texto: 'relatório completo',
   toque: 'pediu o relatório',
 };
@@ -75,8 +78,17 @@ export function EnvioCard({
   const [salvando, setSalvando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
-  const [modelo, setModelo] = useState(modeloInicial);
+  // O que a tela acabou de saber da Meta vale até o servidor mandar o modelo de novo
+  // (router.refresh) — senão o cartão ficava em "ainda não criado" depois de aprovado.
+  const [modeloLocal, setModeloLocal] = useState<{ de: Modelo; valor: Modelo } | null>(null);
+  const modelo = modeloLocal && modeloLocal.de === modeloInicial ? modeloLocal.valor : modeloInicial;
+  const setModelo = (valor: Modelo) => setModeloLocal({ de: modeloInicial, valor });
+  const existe = modelo.situacao === 'aprovado' || modelo.situacao === 'em_analise' || modelo.situacao === 'recusado';
+  /** modelo criado na mão, sem o botão de resposta rápida */
+  const semBotao = existe && modelo.botaoIndice === null;
   const [criando, setCriando] = useState(false);
+  const [corrigindo, setCorrigindo] = useState(false);
+  const [conferindo, setConferindo] = useState(false);
   const [msgModelo, setMsgModelo] = useState<string | null>(null);
 
   const linhas = texto
@@ -137,9 +149,11 @@ export function EnvioCard({
         const soAviso = res.every((x) => x.canal === 'modelo');
         setMsg({
           tom: 'ok',
-          txt: soAviso
-            ? 'Enviado o aviso com o botão "Ver resumo" — toque nele no WhatsApp pra receber o relatório completo.'
-            : 'Relatório enviado no WhatsApp.',
+          txt: !soAviso
+            ? 'Relatório enviado no WhatsApp.'
+            : semBotao
+              ? 'Enviado o aviso com os números do dia — responda "relatório" na conversa pra receber o relatório completo.'
+              : 'Enviado o aviso com o botão "Ver resumo" — toque nele no WhatsApp pra receber o relatório completo.',
         });
       }
       router.refresh();
@@ -168,6 +182,42 @@ export function EnvioCard({
       setMsgModelo('Sem conexão — tente de novo.');
     } finally {
       setCriando(false);
+    }
+  }
+
+  async function corrigirModelo() {
+    if (
+      !window.confirm(
+        `Pôr o botão "Ver resumo" no modelo "${modelo.nome}"? A Meta analisa de novo (costuma levar minutos); enquanto isso o aviso só entra pra quem falou com o número da casa nas últimas 24 h.`,
+      )
+    )
+      return;
+    setCorrigindo(true);
+    setMsgModelo(null);
+    try {
+      const r = await fetch('/api/relatorios/diario/modelo', { method: 'PATCH' });
+      const j = (await r.json().catch(() => null)) as { error?: string; modelo?: Modelo } | null;
+      if (j?.modelo && j.modelo.situacao !== 'indisponivel') setModelo(j.modelo);
+      if (!r.ok) setMsgModelo(j?.error ?? 'A Meta não aceitou a correção.');
+    } catch {
+      setMsgModelo('Sem conexão — tente de novo.');
+    } finally {
+      setCorrigindo(false);
+    }
+  }
+
+  async function conferirModelo() {
+    setConferindo(true);
+    setMsgModelo(null);
+    try {
+      const r = await fetch('/api/relatorios/diario/modelo', { cache: 'no-store' });
+      const j = (await r.json().catch(() => null)) as { error?: string; modelo?: Modelo } | null;
+      if (j?.modelo) setModelo(j.modelo);
+      else setMsgModelo(j?.error ?? 'Não consegui consultar a Meta.');
+    } catch {
+      setMsgModelo('Sem conexão — tente de novo.');
+    } finally {
+      setConferindo(false);
     }
   }
 
@@ -234,14 +284,24 @@ export function EnvioCard({
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
             Regra do WhatsApp: mensagem longa só entra até 24 h depois que a pessoa falou com o número da casa. Fora
-            disso vai um aviso curto com o botão &quot;Ver resumo&quot; (modelo <code>{modelo.nome}</code>): um toque e
-            o relatório completo chega.
+            disso vai um aviso curto com os números do dia (modelo <code>{modelo.nome}</code>).{' '}
+            {semBotao
+              ? 'Respondendo "relatório" na conversa, o relatório completo chega.'
+              : 'Um toque no botão "Ver resumo" e o relatório completo chega.'}
           </p>
           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
             <p>
               Modelo <code>{modelo.nome}</code>:{' '}
               <strong className={SITUACAO[modelo.situacao].cor}>{SITUACAO[modelo.situacao].rotulo}</strong>
-              {modelo.detalhe ? <span className="text-slate-500"> — {modelo.detalhe}</span> : null}
+              {modelo.detalhe ? <span className="text-slate-500"> — {modelo.detalhe}</span> : null}{' '}
+              <button
+                type="button"
+                onClick={conferirModelo}
+                disabled={conferindo}
+                className="text-slate-500 underline hover:text-slate-700 disabled:opacity-50"
+              >
+                {conferindo ? 'conferindo…' : 'conferir de novo'}
+              </button>
             </p>
             {modelo.situacao === 'aprovado' && (
               <p className="mt-1 text-slate-500">O aviso das 07:00 chega mesmo sem conversa aberta.</p>
@@ -260,11 +320,34 @@ export function EnvioCard({
                     ? ' Recusado se resolve no painel da Meta (editar e reenviar o modelo).'
                     : ''}
                 </p>
-                <pre className="mt-2 whitespace-pre-wrap rounded border border-slate-200 bg-white p-2 font-sans text-[11px] text-slate-600">
+                <p className="mt-2 text-slate-500">Texto do corpo:</p>
+                <pre className="mt-1 whitespace-pre-wrap rounded border border-slate-200 bg-white p-2 font-sans text-[11px] text-slate-600">
                   {textoModelo}
-                  {'\n\n[ botão: Ver resumo ]'}
                 </pre>
+                <p className="mt-1 text-slate-500">
+                  Mais um botão de <strong>resposta rápida</strong> escrito <strong>Ver resumo</strong> (na Meta: Botões
+                  → Adicionar botão — não vai no texto do corpo).
+                </p>
               </>
+            )}
+            {semBotao && (
+              <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+                <p>
+                  O modelo está na Meta <strong>sem o botão &quot;Ver resumo&quot;</strong>. O aviso das 07:00 chega do
+                  mesmo jeito, com os números do dia; pra receber o relatório completo, responda{' '}
+                  <strong>relatório</strong> na conversa.
+                </p>
+                {modelo.situacao !== 'em_analise' && (
+                  <button
+                    type="button"
+                    onClick={corrigirModelo}
+                    disabled={corrigindo}
+                    className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    {corrigindo ? 'Corrigindo…' : 'Corrigir modelo (pôr o botão)'}
+                  </button>
+                )}
+              </div>
             )}
             {modelo.situacao === 'nao_existe' && (
               <button

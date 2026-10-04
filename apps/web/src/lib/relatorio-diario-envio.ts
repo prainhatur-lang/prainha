@@ -115,6 +115,62 @@ export interface EstadoModelo {
   nome: string;
   situacao: SituacaoModelo;
   detalhe: string | null;
+  // Como o modelo foi criado na Meta (só vem quando ele existe). Quem cria na mão
+  // pelo painel pode deixar sem o botão — o envio se molda ao que existe.
+  id?: string;
+  idioma?: string;
+  /** quantas variáveis ({{1}}, {{2}}…) o corpo tem */
+  variaveis?: number;
+  /** posição do botão de resposta rápida; null = o modelo não tem botão */
+  botaoIndice?: number | null;
+  /** o corpo é exatamente o TEXTO_MODELO */
+  textoPadrao?: boolean;
+}
+
+interface ComponenteMeta {
+  type?: string;
+  text?: string;
+  buttons?: Array<{ type?: string; text?: string }>;
+}
+
+function estruturaDe(componentes: ComponenteMeta[] | undefined) {
+  const tipo = (c: { type?: string }) => (c.type ?? '').toUpperCase();
+  const corpo = componentes?.find((c) => tipo(c) === 'BODY')?.text ?? '';
+  const botoes = componentes?.find((c) => tipo(c) === 'BUTTONS')?.buttons ?? [];
+  const i = botoes.findIndex((b) => tipo(b) === 'QUICK_REPLY');
+  return {
+    variaveis: new Set(corpo.match(/\{\{\s*\d+\s*\}\}/g) ?? []).size,
+    botaoIndice: i >= 0 ? i : null,
+    textoPadrao: corpo.trim() === TEXTO_MODELO,
+  };
+}
+
+/** Corpo + botão do modelo, do jeito que o sistema cria e conserta. */
+function componentesPadrao() {
+  return [
+    {
+      type: 'BODY',
+      text: TEXTO_MODELO,
+      example: {
+        body_text: [
+          [
+            'sábado 03/10',
+            'Prainha Bar R$ 9.469 (44 contas) · Tabuará R$ 5.046 (11 contas) · Prainha Mar R$ 19.206 (78 contas) · Total R$ 33.722',
+          ],
+        ],
+      },
+    },
+    { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: BOTAO_MODELO }] },
+  ];
+}
+
+// O envio consulta a estrutura do modelo; 1 min de memória cobre o lote das 07:00.
+let modeloLembrado: { quando: number; valor: EstadoModelo } | null = null;
+async function modeloParaEnvio(): Promise<EstadoModelo> {
+  if (modeloLembrado && Date.now() - modeloLembrado.quando < 60_000) return modeloLembrado.valor;
+  const valor = await estadoDoModelo();
+  if (valor.situacao !== 'indisponivel') modeloLembrado = { quando: Date.now(), valor };
+  return valor;
 }
 
 /** Como o modelo está na Meta agora (aprovado, em análise, recusado, não existe). */
@@ -124,11 +180,21 @@ export async function estadoDoModelo(): Promise<EstadoModelo> {
   try {
     const waba = await wabaDoRemetente();
     const resp = await fetch(
-      `https://graph.facebook.com/${versaoApi()}/${waba}/message_templates?name=${encodeURIComponent(nome)}&fields=name,status,language,rejected_reason&limit=50`,
+      `https://graph.facebook.com/${versaoApi()}/${waba}/message_templates?name=${encodeURIComponent(nome)}&fields=id,name,status,language,rejected_reason,components&limit=50`,
       { headers: { Authorization: `Bearer ${token()}` }, cache: 'no-store', signal: AbortSignal.timeout(5000) },
     );
     const json = (await resp.json().catch(() => null)) as
-      | { data?: Array<{ name?: string; status?: string; language?: string; rejected_reason?: string }>; error?: { message?: string } }
+      | {
+          data?: Array<{
+            id?: string;
+            name?: string;
+            status?: string;
+            language?: string;
+            rejected_reason?: string;
+            components?: ComponenteMeta[];
+          }>;
+          error?: { message?: string };
+        }
       | null;
     if (!resp.ok) return { nome, situacao: 'indisponivel', detalhe: json?.error?.message ?? `HTTP ${resp.status}` };
     // `name` na Meta é "contém" — fica só o nome exato, de preferência em pt_BR.
@@ -136,10 +202,11 @@ export async function estadoDoModelo(): Promise<EstadoModelo> {
     const t = iguais.find((x) => x.language === 'pt_BR') ?? iguais[0];
     if (!t) return { nome, situacao: 'nao_existe', detalhe: null };
     const st = (t.status ?? '').toUpperCase();
-    if (st === 'APPROVED') return { nome, situacao: 'aprovado', detalhe: null };
-    if (st === 'PENDING' || st === 'IN_APPEAL') return { nome, situacao: 'em_analise', detalhe: null };
+    const como = { id: t.id, idioma: t.language, ...estruturaDe(t.components) };
+    if (st === 'APPROVED') return { nome, situacao: 'aprovado', detalhe: null, ...como };
+    if (st === 'PENDING' || st === 'IN_APPEAL') return { nome, situacao: 'em_analise', detalhe: null, ...como };
     const motivo = t.rejected_reason && t.rejected_reason !== 'NONE' ? ` (${t.rejected_reason})` : '';
-    return { nome, situacao: 'recusado', detalhe: `${st}${motivo}` };
+    return { nome, situacao: 'recusado', detalhe: `${st}${motivo}`, ...como };
   } catch (e) {
     return { nome, situacao: 'indisponivel', detalhe: e instanceof Error ? e.message : String(e) };
   }
@@ -159,21 +226,7 @@ export async function criarModelo(): Promise<EstadoModelo> {
         name: nome,
         language: 'pt_BR',
         category: 'UTILITY',
-        components: [
-          {
-            type: 'BODY',
-            text: TEXTO_MODELO,
-            example: {
-              body_text: [
-                [
-                  'sábado 03/10',
-                  'Prainha Bar R$ 9.469 (44 contas) · Tabuará R$ 5.046 (11 contas) · Prainha Mar R$ 19.206 (78 contas) · Total R$ 33.722',
-                ],
-              ],
-            },
-          },
-          { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: BOTAO_MODELO }] },
-        ],
+        components: componentesPadrao(),
       }),
       signal: AbortSignal.timeout(15000),
     });
@@ -187,12 +240,48 @@ export async function criarModelo(): Promise<EstadoModelo> {
         detalhe: json?.error?.error_user_msg ?? json?.error?.message ?? `HTTP ${resp.status}`,
       };
     }
+    modeloLembrado = null;
+    const como = { variaveis: 2, botaoIndice: 0, textoPadrao: true };
     const st = (json?.status ?? '').toUpperCase();
-    if (st === 'APPROVED') return { nome, situacao: 'aprovado', detalhe: null };
-    if (st === 'REJECTED') return { nome, situacao: 'recusado', detalhe: st };
-    return { nome, situacao: 'em_analise', detalhe: null };
+    if (st === 'APPROVED') return { nome, situacao: 'aprovado', detalhe: null, ...como };
+    if (st === 'REJECTED') return { nome, situacao: 'recusado', detalhe: st, ...como };
+    return { nome, situacao: 'em_analise', detalhe: null, ...como };
   } catch (e) {
     return { nome, situacao: 'indisponivel', detalhe: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Conserta o modelo que já existe na Meta: põe o texto padrão e o botão "Ver
+ * resumo" (o dono aperta na tela). A Meta analisa de novo — costuma levar minutos.
+ */
+export async function corrigirModelo(): Promise<EstadoModelo> {
+  const atual = await estadoDoModelo();
+  if (!atual.id) return atual;
+  if (atual.botaoIndice != null && atual.textoPadrao) return atual;
+  try {
+    const resp = await fetch(`https://graph.facebook.com/${versaoApi()}/${atual.id}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ components: componentesPadrao() }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const json = (await resp.json().catch(() => null)) as
+      | { success?: boolean; error?: { message?: string; error_user_msg?: string } }
+      | null;
+    if (!resp.ok) {
+      return {
+        ...atual,
+        situacao: 'indisponivel',
+        detalhe: json?.error?.error_user_msg ?? json?.error?.message ?? `HTTP ${resp.status}`,
+      };
+    }
+    modeloLembrado = null;
+    const depois = await estadoDoModelo();
+    if (depois.situacao !== 'indisponivel') return depois;
+    return { ...atual, situacao: 'em_analise', detalhe: null, variaveis: 2, botaoIndice: 0, textoPadrao: true };
+  } catch (e) {
+    return { ...atual, situacao: 'indisponivel', detalhe: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -354,7 +443,11 @@ export async function ultimosEnvios(organizacaoId: string, limite = 12): Promise
 /** Variável de modelo da Meta: sem quebra de linha, sem tab, sem 4+ espaços. */
 const limpa = (s: string, max: number) => s.replace(/\s+/g, ' ').trim().slice(0, max);
 
-/** Modelo `relatorio_diario`: {{1}} = dia, {{2}} = resumo de uma linha, botão "Ver resumo". */
+/**
+ * Modelo `relatorio_diario`: {{1}} = dia, {{2}} = resumo de uma linha, botão "Ver resumo".
+ * O envio se molda ao modelo que existe na Meta: criado na mão sem o botão (04/10
+ * deu #132018), vai só o corpo e o detalhe chega respondendo "relatório".
+ */
 async function enviarModelo(
   para: string,
   dia: string,
@@ -364,41 +457,48 @@ async function enviarModelo(
   if (!token() || !phoneNumberId) {
     return { waMessageId: null, erro: 'WhatsApp não configurado (token / phone id)', phoneNumberId };
   }
-  try {
-    const resp = await fetch(
-      `https://graph.facebook.com/${versaoApi()}/${phoneNumberId}/messages`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to: para,
-          type: 'template',
-          template: {
-            name: nomeModelo(),
-            language: { code: 'pt_BR' },
-            components: [
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: limpa(rotuloDia(dia), 60) },
-                  { type: 'text', text: limpa(resumo, 600) },
-                ],
-              },
-              {
-                type: 'button',
-                sub_type: 'quick_reply',
-                index: '0',
-                parameters: [{ type: 'payload', payload: `relatorio:${dia}` }],
-              },
-            ],
-          },
-        }),
-      },
-    );
+  const modelo = await modeloParaEnvio();
+  const conhecido = modelo.variaveis != null;
+  const valores = [limpa(rotuloDia(dia), 60), limpa(resumo, 600)];
+  const nVariaveis = conhecido ? (modelo.variaveis as number) : 2;
+
+  const tentar = async (botaoIndice: number | null) => {
+    const components: unknown[] = [];
+    if (nVariaveis > 0) {
+      components.push({
+        type: 'body',
+        parameters: Array.from({ length: nVariaveis }, (_, i) => ({ type: 'text', text: valores[i] ?? '-' })),
+      });
+    }
+    if (botaoIndice != null) {
+      components.push({
+        type: 'button',
+        sub_type: 'quick_reply',
+        index: String(botaoIndice),
+        parameters: [{ type: 'payload', payload: `relatorio:${dia}` }],
+      });
+    }
+    const resp = await fetch(`https://graph.facebook.com/${versaoApi()}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: para,
+        type: 'template',
+        template: { name: nomeModelo(), language: { code: modelo.idioma || 'pt_BR' }, components },
+      }),
+    });
     const json = (await resp.json().catch(() => null)) as
       | { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } }
       | null;
+    return { resp, json };
+  };
+
+  try {
+    let { resp, json } = await tentar(conhecido ? (modelo.botaoIndice ?? null) : 0);
+    // Sem saber como o modelo é (a Meta não respondeu a consulta), o erro de
+    // parâmetro costuma ser o botão que não existe: tenta de novo só com o corpo.
+    if (!resp.ok && !conhecido && json?.error?.code !== 132001) ({ resp, json } = await tentar(null));
     if (!resp.ok) {
       const msg = json?.error?.message ?? 'erro desconhecido';
       // 132001 = o modelo ainda não existe/não foi aprovado nessa conta.
@@ -603,6 +703,8 @@ export async function reconhecerPedidoRelatorio(msg: {
     dia = ultimoDiaFechado();
   } else if (!msg.payload && msg.texto) {
     dia = diaPedidoNoTexto(msg.texto);
+    // modelo sem botão: quem lê "Ver resumo" no aviso costuma digitar isso mesmo
+    if (!dia && /^ver (o )?resumo[.!]*$/i.test(msg.texto.trim())) dia = ultimoDiaFechado();
     origem = 'pedido';
   }
   if (!dia) return null;
