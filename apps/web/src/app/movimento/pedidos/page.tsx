@@ -137,6 +137,10 @@ export default async function PedidosPage(props: { searchParams: Promise<SP> }) 
     gte(schema.pedido.dataFechamento, dtIni),
     lte(schema.pedido.dataFechamento, dtFim),
     ne(schema.pedidoItem.codigoItemPedidoTipo, 4), // exclui cortesia se for esse codigo
+    // Resposta de pergunta sem preço ("1 copo", "Ao ponto", "com gelo") não é
+    // produto: é observação do item-pai (tipo 2, R$ 0). Dominava o ranking de
+    // volume. Complemento COBRADO (adicional) continua contando.
+    sql`NOT (${schema.pedidoItem.codigoItemPedidoTipo} = 2 AND COALESCE(${schema.pedidoItem.valorTotal}, 0) = 0)`,
   );
 
   const valorProdutoSum = sql<number>`COALESCE(SUM(${schema.pedidoItem.valorTotal}), 0)`;
