@@ -81,6 +81,19 @@ function dataBr(ymd: string): string {
   return ymd.split('-').reverse().join('/');
 }
 
+const DIAS_DA_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+function diaDaSemana(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return DIAS_DA_SEMANA[new Date(y, m - 1, d).getDay()];
+}
+
+/** Feriado que cai de segunda a sexta: continua sendo dia de semana (no nome
+ *  do dia e no valor da taxa), só a janela de reserva é a de feriado. */
+function feriadoEmDiaDeSemana(ymd: string): boolean {
+  return !!(FERIADOS[ymd] ?? FERIADOS[ymd.slice(5)]) && !ehFimDeSemana(ymd);
+}
+
 // Nomes que NÃO são nome de gente — o modelo já mandou "[Nome do cliente]" e
 // "Cliente" como se fossem (14/08/2026: a reserva da Beatriz foi pro painel
 // sem nome nenhum, recepção sem saber quem era). Placeholder vira vazio e o
@@ -171,8 +184,13 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
     } else {
       livres = 'disponível';
     }
+    // O valor DESSA data sai pronto (mesma conta do site: sábado e domingo
+    // pagam sabDom, o resto diasUteis — feriado em dia de semana é dia útil).
+    // Só com a tabela, a Nina cobrou "R$ 250 por ser sábado" num feriado de
+    // sexta (caso Rafa, 05/10/2026) — o site cobraria R$ 100.
     const taxa = area.taxaReserva
-      ? ` — TEM TAXA (R$ ${area.taxaReserva.diasUteis} dia útil / R$ ${area.taxaReserva.sabDom} sáb-dom): NÃO criar por aqui, mandar o link do site`
+      ? ` — TEM TAXA (R$ ${area.taxaReserva.diasUteis} dia útil / R$ ${area.taxaReserva.sabDom} sáb-dom): NÃO criar por aqui, mandar o link do site` +
+        `. VALOR NESSA DATA (${diaDaSemana(data)}): R$ ${ehFimDeSemana(data) ? area.taxaReserva.sabDom : area.taxaReserva.diasUteis}${feriadoEmDiaDeSemana(data) ? ' — feriado em dia de semana paga o valor de dia útil' : ''} — é o que o site cobra; informe ESSE valor, não o outro`
       : '';
     const limiteHora = area.horaLimite ? ` (reserva só até ${area.horaLimite})` : '';
     linhas.push(`- ${area.nome}: ${livres}${limiteHora}${taxa}`);
@@ -212,7 +230,7 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
       ? `PROCURA DESSE DIA: ALTA — ${motivo}. É PROIBIDO dizer que o dia "vai estar tranquilo" ou garantir mesa na chegada à tarde: seja honesta — a expectativa é de casa cheia, a recomendação é RESERVAR dentro da janela da manhã enquanto há vaga, e quem for chegar à tarde deve vir CEDO porque é ordem de chegada e pode ter espera. `
       : `PROCURA DESSE DIA até agora: ${motivo}. Mesmo assim, NUNCA prometa que o dia "vai estar tranquilo" — movimento futuro ninguém garante; ofereça a reserva da manhã como garantia e explique que a tarde é ordem de chegada. `;
   }
-  return `Disponibilidade pra ${dataBr(data)}:\n${linhas.join('\n')}\n${procura}${jan}Reserva comum é gratuita hoje.`;
+  return `Disponibilidade pra ${dataBr(data)} (${diaDaSemana(data)}${feriadoEmDiaDeSemana(data) ? ' — é feriado, mas continua sendo ' + diaDaSemana(data) + ': não chame de sábado nem de domingo' : ''}):\n${linhas.join('\n')}\n${procura}${jan}Reserva comum é gratuita hoje.`;
 }
 
 /** Onde fica uma mesa (área + lugares) — pra "mesa X fica em qual parte?". */

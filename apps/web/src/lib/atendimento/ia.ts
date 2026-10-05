@@ -9,6 +9,8 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 import { linkCardapio, FILIAL_TABUARA } from './cardapio';
+import { horarioFoiCombinado, jaAvisouDiaCheio } from './horario-combinado';
+import { hojeBr } from '@/lib/datas';
 
 export interface MsgHistorico {
   direcao: string; // entrada | saida
@@ -278,6 +280,9 @@ ${duasCasas
 - CLIENTE PERGUNTA SE TEM RESERVA (telefone dele): se não encontrar nada, NÃO transfira — ofereça CRIAR UMA AGORA. "Não encontrei reserva ativa no seu nome — quer fazer uma agora? Qual dia e hora você prefere?" Depois: pergunte quantas pessoas e área (Areia/Deck/Lounge). Você cria a reserva COM criar_reserva (telefone dele como CPF/identificador, se ele der o CPF use, se não use só o telefone).
 - ANTES de criar, confirme os dados em UMA frase ("Fechando então: sábado 15/08, 12h, 4 pessoas na Areia, no CPF final 123 — posso confirmar?"). Só chame criar_reserva depois do sim do cliente.
 - NUNCA diga "vou confirmar/fazer sua reserva" antes da ferramenta retornar RESERVA CRIADA — a confirmação vem DEPOIS do resultado, nunca como promessa.
+- HORÁRIO É DO CLIENTE: você NUNCA escolhe o horário sozinha. Dizer "entre 9h30 e 11h30" ou "até as 17h" é dar a JANELA, não combinar horário — é PROIBIDO pegar a ponta da faixa e criar. Se o cliente ainda não disse a que horas vem, pergunte ("que horas vocês pretendem chegar?") ou proponha UM horário e espere o sim. O sistema RECUSA criar_reserva com horário que o cliente não disse nem aceitou (caso Rafa, 05/10: reserva criada às 09h30 sem ninguém falar de horário — ele queria 11h30).
+- AVISO É UMA VEZ SÓ: feriado, casa cheia, "reserve de manhã", "à tarde é ordem de chegada", "reserva liberada até tal hora" — você diz UMA vez na conversa. Depois que o cliente já leu, NÃO repita nas respostas seguintes, mesmo que a consulta de disponibilidade traga o alerta de novo (ela traz sempre; é informação pra VOCÊ). Cada resposta responde o que ele acabou de dizer e pede o próximo dado que falta — nada de abrir toda mensagem com o mesmo parágrafo.
+- DIA DA SEMANA E TAXA: use o dia da semana e o VALOR NESSA DATA que a consulta de disponibilidade devolver. Feriado NÃO vira sábado nem domingo: feriado numa sexta-feira é sexta-feira, e a taxa de área paga é a de dia útil. Nunca diga "por ser sábado" de um dia que não é sábado.
 - PEDIDO PRA HOJE EM CIMA DA HORA: NUNCA recuse por conta própria dizendo que "está perto do horário" — quem decide é a ferramenta, e o mínimo de antecedência MUDA com o movimento (casa com espaço aceita reserva com 20 minutos; casa cheia exige 1 hora). Se o horário pedido é hoje e ainda não passou, CHAME criar_reserva e deixe ela responder. Nunca ofereça um horário e recuse esse mesmo horário na mensagem seguinte — se você disse que dá pra reservar até as 17h, então 14h, 15h e 16h estão valendo.
 - QUANDO A RESERVA DE HOJE NÃO DÁ MAIS (ferramenta recusou / janela fechou / lotado): a mensagem NUNCA é só "não dá" — a casa CONTINUA RECEBENDO por ordem de chegada. Diga isso como convite e OFEREÇA a LISTA DE ESPERA: "quer que eu já coloque seu nome na fila da recepção? Quando você chegar, é só se apresentar que te chamam assim que vagar mesa". Cliente topou → colete nome + quantas pessoas e chame entrar_lista_espera; confirme a posição na fila. Seja honesta que a fila anda conforme as mesas vagam, sem hora garantida.
 ${duasCasas
@@ -912,16 +917,38 @@ Como usar, SEM EXCEÇÃO:
           leadRegistrado = true;
         } else if (tc.function.name === 'consultar_disponibilidade_reserva') {
           resultado = await params.executores.consultarDisponibilidade(String(args.data ?? ''));
+          // A consulta devolve o alerta de dia cheio TODA vez, e o modelo o
+          // recitava em toda resposta (caso Rafa, 05/10/2026: seis mensagens
+          // seguidas abrindo com o mesmo parágrafo do feriado). Se a conversa
+          // já tem esse aviso pra essa data, o resultado diz pra não repetir.
+          if (jaAvisouDiaCheio(params.historico, String(args.data ?? ''))) {
+            resultado +=
+              '\n\nVOCÊ JÁ DEU O AVISO DE DIA CHEIO PRA ESSA DATA NESTA CONVERSA (feriado / casa cheia / reservar de manhã / tarde por ordem de chegada). O cliente já leu: NÃO repita esse aviso nesta resposta. Responda só o que ele acabou de dizer e peça o próximo dado que falta.';
+          }
         } else if (tc.function.name === 'criar_reserva') {
-          resultado = await params.executores.criarReserva({
-            data: String(args.data ?? ''),
-            hora: String(args.hora ?? ''),
-            pessoas: Number(args.pessoas) || 0,
-            area: String(args.area ?? ''),
-            cpf: String(args.cpf ?? '') || null,
-            nome: String(args.nome ?? '') || null,
-            observacao: String(args.observacao ?? '') || null,
+          // Horário é do cliente: o modelo já criou reserva na ponta da faixa
+          // que ele mesmo citou ("entre 9h30 e 11h30" → 09:30; "até as 17h" →
+          // 17:00) sem ninguém ter falado de horário — 16 das 87 reservas que
+          // a Nina criou em 45 dias. A regra do prompt ("confirme antes de
+          // criar") não bastou; aqui a criação só segue com horário que o
+          // cliente disse ou aceitou.
+          const horaPedida = String(args.hora ?? '');
+          const combinado = horarioFoiCombinado({
+            hora: horaPedida,
+            historico: params.historico,
+            paraHoje: String(args.data ?? '') === hojeBr(),
           });
+          resultado = combinado
+            ? await params.executores.criarReserva({
+                data: String(args.data ?? ''),
+                hora: horaPedida,
+                pessoas: Number(args.pessoas) || 0,
+                area: String(args.area ?? ''),
+                cpf: String(args.cpf ?? '') || null,
+                nome: String(args.nome ?? '') || null,
+                observacao: String(args.observacao ?? '') || null,
+              })
+            : `NÃO CRIEI A RESERVA AINDA — falta combinar o horário. O cliente não disse nem aceitou ${horaPedida} nesta conversa (você citou uma faixa ou escolheu sozinha). NÃO diga que a reserva está feita. Nesta resposta, pergunte a que horas ele pretende chegar OU proponha UM horário só ("posso marcar pras ${horaPedida.replace(':', 'h')}?") e espere a resposta dele; os outros dados você já tem, não peça de novo. Quando ele responder, chame criar_reserva com o horário que ELE confirmou.`;
         } else if (tc.function.name === 'listar_opcoes_orcamento_evento') {
           resultado = await params.executores.listarOpcoesOrcamento();
         } else if (tc.function.name === 'gerar_orcamento_evento') {
