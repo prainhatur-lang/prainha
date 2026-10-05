@@ -296,6 +296,48 @@ async function reservasAtivas(filialId: string, ident: IdentReserva) {
     .limit(5);
 }
 
+type ReservasAtivas = NonNullable<Awaited<ReturnType<typeof reservasAtivas>>>;
+
+/** Segunda tentativa quando o telefone/CPF que o MODELO passou não achou nada.
+ *
+ *  Caso Rafa (05/10/2026): a reserva tinha sido criada 30 s antes NESTE mesmo
+ *  telefone, o cliente pediu pra trocar o horário e a Nina mandou na ferramenta
+ *  um identificador que não batia — a resposta foi "nenhuma reserva ativa…
+ *  transfira pra equipe" e ela passou pra equipe uma reserva que estava ali
+ *  (duas vezes; na terceira, sem identificador, remarcou na hora).
+ *
+ *  - `trocadas`: o MESMO número informado, lido no outro papel (CPF no campo
+ *    do telefone e vice-versa) — continua sendo o dado que foi informado,
+ *    então quem chama segue com elas.
+ *  - `daConversa`: nada bateu, mas o telefone da conversa tem reserva ativa.
+ *    Quem chama NÃO mexe nela sozinho (o cliente pode estar falando da reserva
+ *    de outra pessoa): mostra pra Nina e ela chama de novo sem identificador. */
+async function reservasPlanoB(
+  filialId: string,
+  p: { telefoneConversa: string; telefoneReserva?: string | null; cpfReserva?: string | null },
+): Promise<{ trocadas: ReservasAtivas | null; daConversa: ReservasAtivas | null }> {
+  const tel = (p.telefoneReserva ?? '').replace(/\D/g, '');
+  const cpf = (p.cpfReserva ?? '').replace(/\D/g, '');
+  const tentativas: IdentReserva[] = [];
+  if (tel.length >= 8) tentativas.push({ telefone: tel }); // CPF válido tinha passado na frente do telefone
+  if (tel.length === 11) tentativas.push({ cpf: tel }); // CPF no campo do telefone
+  if (cpf.length >= 10) tentativas.push({ telefone: cpf }); // telefone no campo do CPF
+  for (const ident of tentativas) {
+    const achou = await reservasAtivas(filialId, ident);
+    if (achou && achou.length > 0) return { trocadas: achou, daConversa: null };
+  }
+  const daConversa = await reservasAtivas(filialId, { telefone: p.telefoneConversa });
+  return { trocadas: null, daConversa: daConversa && daConversa.length > 0 ? daConversa : null };
+}
+
+function avisoReservaDaConversa(ativas: ReservasAtivas, comoSeguir: string): string {
+  const linhas = ativas.map(
+    (r) =>
+      `- ${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area}, ${r.pessoas} pessoa(s), em nome de ${(r.nome ?? 'cliente').split(' ')[0]}${rotuloPago(r)}`,
+  );
+  return `Com o telefone/CPF que você passou NÃO achei reserva — mas o telefone DESTA conversa tem reserva ativa:\n${linhas.join('\n')}\nSe é dessa que o cliente está falando (ele reservou por aqui, ou não citou outro número), ${comoSeguir} SEM telefone_reserva e SEM cpf_reserva — esses campos são só pra reserva feita por OUTRA pessoa/número. NÃO transfira e NÃO diga que a reserva não existe. Só se ele falava da reserva de outra pessoa: confira com ele o número (DDD + 9 dígitos) ou o CPF de quem reservou.`;
+}
+
 function rotuloPago(r: { pagamentoStatus: string | null; pagamentoValor: string | null }): string {
   return r.pagamentoStatus === 'pago' ? ` — LOUNGE PAGO (R$ ${Number(r.pagamentoValor ?? 0).toFixed(2)}, sem tolerância de horário, a mesa é do cliente o dia todo)` : '';
 }
@@ -310,8 +352,16 @@ export async function localizarReservaWhatsApp(p: {
   cpf?: string | null;
 }): Promise<string> {
   const ident: IdentReserva = p.cpf || p.telefone ? { telefone: p.telefone, cpf: p.cpf } : { telefone: p.telefoneConversa };
-  if (!identNormalizado(ident)) return 'Identificador inválido: preciso de um telefone com DDD ou um CPF de 11 dígitos. Peça de novo ao cliente.';
-  const ativas = await reservasAtivas(p.filialId, ident);
+  const identValido = !!identNormalizado(ident);
+  let ativas = identValido ? await reservasAtivas(p.filialId, ident) : null;
+  if ((p.cpf || p.telefone) && (!ativas || ativas.length === 0)) {
+    const b = await reservasPlanoB(p.filialId, { telefoneConversa: p.telefoneConversa, telefoneReserva: p.telefone, cpfReserva: p.cpf });
+    if (b.trocadas) ativas = b.trocadas;
+    else if (b.daConversa) {
+      return avisoReservaDaConversa(b.daConversa, 'siga com ela: pra alterar ou cancelar chame remarcar_reserva / cancelar_reserva');
+    }
+  }
+  if (!identValido && !ativas) return 'Identificador inválido: preciso de um telefone com DDD ou um CPF de 11 dígitos. Peça de novo ao cliente.';
   if (!ativas || ativas.length === 0) {
     return 'Nenhuma reserva ativa (de hoje em diante) nesse telefone/CPF. Confira o número com o cliente (DDD + 9 dígitos) ou peça o CPF de quem fez a reserva. Se ele garantir que existe e nada aparecer, transfira pra equipe.';
   }
@@ -337,7 +387,12 @@ export async function cancelarReservaWhatsApp(p: {
   cpfReserva?: string | null;
 }): Promise<string> {
   const ident: IdentReserva = p.cpfReserva || p.telefoneReserva ? { telefone: p.telefoneReserva, cpf: p.cpfReserva } : { telefone: p.telefone };
-  const ativas = await reservasAtivas(p.filialId, ident);
+  let ativas = await reservasAtivas(p.filialId, ident);
+  if ((p.cpfReserva || p.telefoneReserva) && (!ativas || ativas.length === 0)) {
+    const b = await reservasPlanoB(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (b.trocadas) ativas = b.trocadas;
+    else if (b.daConversa) return avisoReservaDaConversa(b.daConversa, 'chame cancelar_reserva DE NOVO AGORA');
+  }
   if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
 
   if (ativas.length === 0) {
@@ -810,7 +865,12 @@ export async function remarcarReservaWhatsApp(p: {
   cpfReserva?: string | null;
 }): Promise<string> {
   const ident: IdentReserva = p.cpfReserva || p.telefoneReserva ? { telefone: p.telefoneReserva, cpf: p.cpfReserva } : { telefone: p.telefone };
-  const ativas = await reservasAtivas(p.filialId, ident);
+  let ativas = await reservasAtivas(p.filialId, ident);
+  if ((p.cpfReserva || p.telefoneReserva) && (!ativas || ativas.length === 0)) {
+    const b = await reservasPlanoB(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (b.trocadas) ativas = b.trocadas;
+    else if (b.daConversa) return avisoReservaDaConversa(b.daConversa, 'chame remarcar_reserva DE NOVO AGORA');
+  }
   if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
   if (ativas.length === 0) {
     return 'Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';

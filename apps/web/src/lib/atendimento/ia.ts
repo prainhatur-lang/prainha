@@ -465,8 +465,8 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           nova_hora: { type: 'string', description: 'HH:MM novo, se o horário mudou' },
           novas_pessoas: { type: 'number', description: 'nova quantidade de pessoas, se mudou' },
           nova_area: { type: 'string', description: 'nova área (Areia ou Deck Superior), se mudou' },
-          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa (veio de localizar_reserva)' },
-          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF' },
+          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa (veio de localizar_reserva). Reserva feita NESTA conversa/neste número: deixe VAZIO' },
+          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF em localizar_reserva (reserva de OUTRO número). Reserva feita nesta conversa: deixe VAZIO, mesmo que o cliente tenha dado o CPF ao reservar' },
         },
       },
     },
@@ -496,8 +496,8 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'object',
         properties: {
           data: { type: 'string', description: 'YYYY-MM-DD da reserva a cancelar (omitir se o cliente só tem uma)' },
-          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa' },
-          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF' },
+          telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa. Reserva deste número: deixe VAZIO' },
+          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF em localizar_reserva (reserva de OUTRO número). Reserva deste número: deixe VAZIO' },
         },
       },
     },
@@ -566,6 +566,11 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     },
   },
 ];
+
+/** Telefone/CPF não vai inteiro pro log: fica o final e o tamanho. */
+function semDigitosLongos(s: string): string {
+  return s.replace(/\d{6,}/g, (d) => `…${d.slice(-4)}(${d.length}d)`);
+}
 
 function historicoParaMensagens(
   historico: MsgHistorico[],
@@ -996,6 +1001,17 @@ Como usar, SEM EXCEÇÃO:
       } catch (e) {
         resultado = `erro: ${e instanceof Error ? e.message : String(e)}`;
       }
+      // Rastro da ferramenta no log do servidor. Sem ele não dá pra saber o que
+      // a Nina tentou quando diz "não achei" (caso Rafa, 05/10/2026: passou pra
+      // equipe uma reserva que existia e não havia como ver o que ela mandou).
+      // Sequência longa de dígitos (telefone/CPF) sai só com o final.
+      console.log(
+        '[nina] ferramenta %s filial=%s args=%s -> %s',
+        tc.function.name,
+        params.filialId.slice(0, 8),
+        semDigitosLongos(tc.function.arguments || '{}').slice(0, 400),
+        semDigitosLongos(resultado).replace(/\s+/g, ' ').slice(0, 300),
+      );
       mensagens.push({ role: 'tool', tool_call_id: tc.id, content: resultado });
     }
   }
