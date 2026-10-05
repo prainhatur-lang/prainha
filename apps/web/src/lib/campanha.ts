@@ -188,8 +188,20 @@ export async function enviarLote(c: Campanha, qtd: number, grupo?: string | null
   let enviados = 0;
   const falhas: ResultadoLote['falhas'] = [];
   let parou: string | null = null;
+  // Cada envio leva ~1 s e a função morre em 60 s: perto do fim devolve o que
+  // sobrou pra fila (senão ficaria marcado como enviado sem ter saído).
+  const prazo = Date.now() + 42_000;
+  const devolver = async (ids: string[]) => {
+    if (ids.length) {
+      await db.execute(sql`UPDATE campanha_convite SET enviado_em = NULL WHERE id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    }
+  };
   for (let i = 0; i < lote.length; i++) {
     const l = lote[i];
+    if (Date.now() > prazo) {
+      await devolver(lote.slice(i).map((x) => x.id));
+      break;
+    }
     try {
       const waId = await enviarConviteCampanha(`55${l.telefone}`, {
         template: c.template, nome: primeiroNome(l.nome), token: l.token, imagemUrl: c.imagemUrl,
