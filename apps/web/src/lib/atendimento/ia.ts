@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 import { linkCardapio, FILIAL_TABUARA } from './cardapio';
 import { horarioFoiCombinado, jaAvisouDiaCheio } from './horario-combinado';
+import { terracoDescritoSemEsclarecer, recadoTerraco, reservaSeguradaTerraco } from './terraco-vidro';
 import { hojeBr } from '@/lib/datas';
 
 export interface MsgHistorico {
@@ -274,7 +275,8 @@ ${ehTabuara
 - UMA reserva por pessoa por dia: antes de criar de novo pro mesmo dia, lembre do que você já fez nesta conversa. Se a ferramenta disser que o telefone já tem reserva, NÃO insista — a mesa dele já está garantida (confirme isso) e, se ele quiser outro horário, remarque.
 ${duasCasas
     ? `- Ofereça as áreas pelo clima, como quem convida: mesa na areia de frente pro rio e pertinho do parque (Areia), vista do alto no Deck Superior, ou o lounge exclusivo com garçom só do grupo (esse tem taxa e fecha pelo site).
-- SÓ EXISTEM TRÊS ÁREAS DE RESERVA: Areia, Deck Superior e Lounges. É PROIBIDO oferecer, prometer ou citar qualquer outro espaço como reservável — em especial o TERRAÇO, que está fechado pro dia a dia e só recebe evento fechado (a ferramenta recusaria; se você prometer, o cliente aparece e não tem mesa). A área alta que recebe reserva chama DECK SUPERIOR: nunca a chame de "Terraço" nem de "área superior". Se o cliente pedir o Terraço pra uma mesa comum, explique com carinho que ele hoje é só pra eventos e ofereça o Deck Superior, que também é elevado, coberto e com vista do rio.`
+- SÓ EXISTEM TRÊS ÁREAS DE RESERVA: Areia, Deck Superior e Lounges. É PROIBIDO oferecer, prometer ou citar qualquer outro espaço como reservável — em especial o TERRAÇO, que está fechado pro dia a dia e só recebe evento fechado (a ferramenta recusaria; se você prometer, o cliente aparece e não tem mesa). A área alta que recebe reserva chama DECK SUPERIOR: nunca a chame de "Terraço" nem de "área superior". Se o cliente pedir o Terraço pra uma mesa comum, explique com carinho que ele hoje é só pra eventos e ofereça o Deck Superior, que também é elevado, coberto e com vista do rio.
+- O "RESTAURANTE DE VIDRO" É O TERRAÇO: no alto do Prainha Bar ficam DOIS ambientes diferentes. O TERRAÇO é o restaurante FECHADO COM VIDRO, climatizado — é dele que o cliente fala quando diz "restaurante de vidro", "o envidraçado", "o de vidro lá em cima", "o restaurante climatizado / com ar" e, quase sempre, "restaurante de cima" ou "restaurante superior". O DECK SUPERIOR é um deck ABERTO, coberto com telhado e ventiladores — não é salão fechado nem climatizado. Cliente descreveu o de vidro → é PROIBIDO responder "você está falando do Deck Superior": diga que esse é o Terraço, que hoje só abre pra evento fechado, e ofereça o Deck Superior deixando claro que é OUTRO ambiente (aberto, coberto, com vista do rio). Só siga pra reserva depois que ele souber disso e topar. Disse só "restaurante de cima" sem falar de vidro → pergunte qual dos dois ele tem em mente antes de reservar (caso Ulisses, 06/10: pediu "o restaurante de vidro, na parte superior" e ouviu "você está falando do Deck Superior").`
     : `- As áreas reserváveis são SÓ as que consultar_disponibilidade_reserva devolver — é PROIBIDO oferecer ou prometer espaço que não esteja lá. Descreva cada área pelo que os blocos de conhecimento disserem.`}
 - PRIMEIRO PASSO OBRIGATÓRIO de QUALQUER conversa de reserva: assim que a DATA aparecer, chame consultar_disponibilidade_reserva daquela data ANTES de opinar sobre movimento, vaga, horário ou "como vai estar" — a linha PROCURA DESSE DIA diz se é feriadão/verão/casa enchendo, e é a ÚNICA base permitida pra falar do movimento de um dia futuro. Carnaval, Semana Santa, São João, feriadões e verão LOTAM a casa: nesses dias venda a reserva da manhã como garantia, nunca "vem tranquila".
 - CLIENTE PERGUNTA SE TEM RESERVA (telefone dele): se não encontrar nada, NÃO transfira — ofereça CRIAR UMA AGORA. "Não encontrei reserva ativa no seu nome — quer fazer uma agora? Qual dia e hora você prefere?" Depois: pergunte quantas pessoas e área (Areia/Deck/Lounge). Você cria a reserva COM criar_reserva (telefone dele como CPF/identificador, se ele der o CPF use, se não use só o telefone).
@@ -872,6 +874,18 @@ Como usar, SEM EXCEÇÃO:
     });
   }
 
+  // "RESTAURANTE DE VIDRO" = TERRAÇO (06/10/2026, caso Ulisses): o cliente
+  // pediu "o restaurante de vidro, na parte superior" e a Nina respondeu "você
+  // está falando do Deck Superior" — o de vidro é o Terraço, fechado pro dia a
+  // dia. Enquanto a casa não tiver dito isso a ele, o recado vai por último e
+  // a criação da reserva fica segurada (mais abaixo). Só no número do Prainha
+  // Bar: as outras casas não têm Terraço.
+  const terracoPendente =
+    modo === 'cliente' && params.duasCasas !== false ? terracoDescritoSemEsclarecer(params.historico) : null;
+  if (terracoPendente) {
+    mensagens.push({ role: 'system', content: recadoTerraco(terracoPendente) });
+  }
+
   let transferiu = false;
   let leadRegistrado = false;
 
@@ -925,6 +939,11 @@ Como usar, SEM EXCEÇÃO:
             resultado +=
               '\n\nVOCÊ JÁ DEU O AVISO DE DIA CHEIO PRA ESSA DATA NESTA CONVERSA (feriado / casa cheia / reservar de manhã / tarde por ordem de chegada). O cliente já leu: NÃO repita esse aviso nesta resposta. Responda só o que ele acabou de dizer e peça o próximo dado que falta.';
           }
+        } else if (tc.function.name === 'criar_reserva' && terracoPendente) {
+          // Pediu o restaurante de vidro e ainda não soube que é o Terraço
+          // (fechado): reserva no Deck agora é cliente chegando no lugar errado.
+          console.log('[nina] reserva segurada: restaurante de vidro sem esclarecer', terracoPendente);
+          resultado = reservaSeguradaTerraco(terracoPendente);
         } else if (tc.function.name === 'criar_reserva') {
           // Horário é do cliente: o modelo já criou reserva na ponta da faixa
           // que ele mesmo citou ("entre 9h30 e 11h30" → 09:30; "até as 17h" →
