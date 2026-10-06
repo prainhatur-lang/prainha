@@ -10,6 +10,8 @@ import { eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 import { pendenciasConfig } from '@/lib/nfce/emitir';
+import { LogoFilial } from './logo';
+import { logoDaFilial } from '@/lib/logo-filial';
 import { FiscalForm } from './form';
 
 export const dynamic = 'force-dynamic';
@@ -86,6 +88,7 @@ export default async function FiscalConfigPage() {
                     ))}
                   </ul>
                 )}
+                <LogoFilial filialId={f.id} atual={logoDaFilial(f.id, f.cfg)} enviada={!!f.cfg?.logoUrl} />
                 <div className="mt-5">
                   <FiscalForm filialId={f.id} inicial={f.cfg ?? null} />
                 </div>

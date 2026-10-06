@@ -135,7 +135,15 @@ export async function PATCH(
 
   const [updated] = await db
     .update(schema.filial)
-    .set({ fiscalConfig: { ...parsed.data, ...(nfe ? { nfe } : {}), ...(normal ? { normal } : {}) } })
+    .set({
+      fiscalConfig: {
+        ...parsed.data,
+        ...(nfe ? { nfe } : {}),
+        ...(normal ? { normal } : {}),
+        // a logo sobe por /fiscal/logo — salvar a config não pode apagá-la
+        ...(atual?.cfg?.logoUrl ? { logoUrl: atual.cfg.logoUrl } : {}),
+      },
+    })
     .where(eq(schema.filial.id, id))
     .returning({ id: schema.filial.id });
 

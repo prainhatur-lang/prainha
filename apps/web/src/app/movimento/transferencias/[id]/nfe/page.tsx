@@ -2,6 +2,7 @@
 // Mostra a nota de PRODUÇÃO autorizada; sem ela, a mais recente (homologação,
 // rejeitada, cancelada) com o estado bem claro. ?nfeId=… abre uma específica.
 
+import { logoDaFilial } from '@/lib/logo-filial';
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { db, schema } from '@concilia/db';
@@ -114,6 +115,7 @@ export default async function DanfeNfePage(props: {
   const emit = filiais.find((f) => f.id === t.filialOrigemId);
   const dest = filiais.find((f) => f.id === t.filialDestinoId);
   if (!emit || !dest) notFound();
+  const logo = logoDaFilial(emit.id, emit.cfg);
 
   const autorizada = nota.status === 'AUTORIZADA';
   const homolog = nota.ambiente !== 1;
@@ -167,6 +169,10 @@ export default async function DanfeNfePage(props: {
 
           <div className="grid grid-cols-[1fr_120px_1.1fr]">
             <div className="border border-black p-2">
+              {logo && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={logo} alt="" className="float-right ml-2 h-14 w-14 object-contain" />
+              )}
               <div className="text-[7px] uppercase text-slate-700">Identificação do emitente</div>
               <div className="text-sm font-bold leading-tight">{emit.cfg?.razaoSocial ?? emit.nome}</div>
               {emit.cfg?.nomeFantasia && <div className="text-[11px]">{emit.cfg.nomeFantasia}</div>}

@@ -2,6 +2,7 @@
 // O caixa da loja imprime só na emissão; reimpressão é AQUI, sem prazo.
 // Renderiza os mesmos blocos do cupom (48 col) + QR em SVG, formatado 80mm.
 
+import { logoDaFilial } from '@/lib/logo-filial';
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
@@ -61,6 +62,7 @@ export default async function DanfePage({ params }: { params: Promise<{ id: stri
     .where(eq(schema.filial.id, nota.filialId))
     .limit(1);
   if (!fil?.cfg?.endereco) notFound();
+  const logo = logoDaFilial(nota.filialId, fil.cfg);
 
   const blocos = montarDanfeBlocos(dadosDanfeDaNota(nota, fil.cfg, fil.cnpj), 48);
 
@@ -74,6 +76,10 @@ export default async function DanfePage({ params }: { params: Promise<{ id: stri
           </a>
         </div>
         <div className="cupom bg-white px-4 py-5 shadow print:shadow-none">
+          {logo && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logo} alt="" className="mx-auto mb-1 h-16 w-16 object-contain" />
+          )}
           {blocos.map((b, i) => {
             if (b.qr) {
               const svg = new QRCode({

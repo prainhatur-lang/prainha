@@ -3,6 +3,7 @@
 // valendo; a NF-e referencia a chave dele (CFOP 5929). ?nfeId=… abre uma
 // tentativa específica (teste, rejeitada, cancelada).
 
+import { logoDaFilial } from '@/lib/logo-filial';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { db, schema } from '@concilia/db';
@@ -67,6 +68,7 @@ export default async function NfeDoCupomPage(props: {
     .where(eq(schema.filial.id, cupom.filialId))
     .limit(1);
   if (!emit) notFound();
+  const logo = logoDaFilial(cupom.filialId, emit.cfg);
 
   const todas = await nfesDoCupom(cupom.id);
   const valendo = todas.find((n) => n.ambiente === 1 && n.status === 'AUTORIZADA') ?? null;
@@ -187,6 +189,10 @@ export default async function NfeDoCupomPage(props: {
 
               <div className="grid grid-cols-[1fr_120px_1.1fr]">
                 <div className="border border-black p-2">
+                  {logo && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={logo} alt="" className="float-right ml-2 h-14 w-14 object-contain" />
+                  )}
                   <div className="text-[7px] uppercase text-slate-700">Identificação do emitente</div>
                   <div className="text-sm font-bold leading-tight">{emit.cfg?.razaoSocial ?? emit.nome}</div>
                   {emit.cfg?.nomeFantasia && <div className="text-[11px]">{emit.cfg.nomeFantasia}</div>}

@@ -222,6 +222,8 @@ export interface FiscalConfig {
   cscIdHom?: string;
   cscTokenHom?: string;
   padraoItem?: FiscalPadraoItem;
+  /** Logo da casa no cabeçalho das notas (DANFE). Sobe em Configurações → Fiscal. */
+  logoUrl?: string;
   /** Responsável técnico (infRespTec). Opcional; algumas UFs exigem. */
   respTec?: { cnpj: string; contato: string; email: string; fone: string };
   /** NF-e (modelo 55) de transferência entre casas. Tudo opcional. */
