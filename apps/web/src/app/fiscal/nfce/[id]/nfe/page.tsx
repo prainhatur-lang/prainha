@@ -191,13 +191,13 @@ export default async function NfeDoCupomPage(props: {
                 <div className="border border-black p-2">
                   {logo && (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={logo} alt="" className="float-right ml-2 h-14 w-14 object-contain" />
+                    <img src={logo} alt="" className="float-left mr-3 h-[88px] w-[88px] object-contain" />
                   )}
                   <div className="text-[7px] uppercase text-slate-700">Identificação do emitente</div>
-                  <div className="text-sm font-bold leading-tight">{emit.cfg?.razaoSocial ?? emit.nome}</div>
-                  {emit.cfg?.nomeFantasia && <div className="text-[11px]">{emit.cfg.nomeFantasia}</div>}
+                  <div className={`${logo ? 'mt-1 text-[11px]' : 'text-sm'} font-bold leading-tight`}>{emit.cfg?.razaoSocial ?? emit.nome}</div>
+                  {emit.cfg?.nomeFantasia && <div className={logo ? 'text-[10px]' : 'text-[11px]'}>{emit.cfg.nomeFantasia}</div>}
                   {enderecoLinhas(emit.cfg).map((l) => (
-                    <div key={l} className="text-[10px] leading-tight">{l}</div>
+                    <div key={l} className={`${logo ? 'text-[9px]' : 'text-[10px]'} leading-tight`}>{l}</div>
                   ))}
                 </div>
                 <div className="border border-black p-1 text-center">
