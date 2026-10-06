@@ -25615,6 +25615,9 @@ async function tiraServico(tirar){
 async function fecharConta(){
   var r=await jpost('/api/caixa/fechar',alvo({numero:MESA}));
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
+  // pedido de canal (iFood/site): concluído, sai da grade. A nota dele é o
+  // botão 🧾 Nota fiscal do próprio pedido — não a oferta por número de mesa.
+  if(r.canal){FLASH='✓ Pedido concluído.';voltarMesas();listar();return}
   FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
   nfceOferecer(MESA,function(){voltarMesas();listar()});
 }
@@ -28821,7 +28824,19 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p !== '/api/caixa/imprimir') {
         const espia = await readBody(req).catch(() => ({}));
         if (Number(espia?.ped) < 0) {
-          const [pi] = await sql`SELECT pago_online FROM ifood_pedido WHERE seq=${-Number(espia.ped)}`;
+          const [pi] = await sql`SELECT id, origem, pago_online, pago_entrega_em, concluido_em, cancelado_em FROM ifood_pedido WHERE seq=${-Number(espia.ped)}`;
+          // FECHAR pedido de canal JÁ PAGO: não há o que receber, o ato é só
+          // dar o pedido por concluído pra ele sair da grade. Retirada paga no
+          // site não passa pelo entregador, então ninguém concluía e o card
+          // ficava "✓ PAGO" por dois dias (Tabuará, S10, 06/10).
+          if (p === '/api/caixa/fechar' && pi && !pi.cancelado_em && (pi.pago_online || pi.pago_entrega_em)) {
+            if (!pi.concluido_em) {
+              await sql`UPDATE ifood_pedido SET concluido_em=now() WHERE id=${pi.id}`;
+              if (pi.origem === 'site') await avisarNuvemSite(pi.id, 'concluido').catch(() => {});
+            }
+            await projetarIfood().catch(() => {});
+            return res.end(JSON.stringify({ ok: true, fechada: true, canal: true }));
+          }
           return res.end(JSON.stringify({ ok: false,
             erro: pi?.pago_online === false
               ? 'Pedido do iFood a receber NA ENTREGA: quem leva recebe na porta, não passa pelo caixa.'
