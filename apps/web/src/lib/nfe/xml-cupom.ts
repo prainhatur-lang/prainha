@@ -353,7 +353,10 @@ export function montarXmlNfeCupom(dados: DadosNfeCupom): XmlNfeMontado {
     `<vII>0.00</vII><vIPI>0.00</vIPI><vIPIDevol>0.00</vIPIDevol><vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>` +
     tag('vOutro', f2(vOutroT)) +
     tag('vNF', f2(vNF)) +
-    `</ICMSTot></total>`;
+    `</ICMSTot>` +
+    // total de IBS/CBS (rejeição 1119 sem ele): nada tributado nesta nota
+    (normal ? `<IBSCBSTot><vBCIBSCBS>0.00</vBCIBSCBS></IBSCBSTot>` : '') +
+    `</total>`;
 
   // 9 = sem transporte (consumo no local)
   const transp = `<transp><modFrete>9</modFrete></transp>`;
