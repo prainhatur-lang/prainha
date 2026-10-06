@@ -186,6 +186,15 @@ export function montarXmlNfeCupom(dados: DadosNfeCupom): XmlNfeMontado {
   if (normal && !['90', '40', '41', '50'].includes(cst)) {
     throw new Error(`CST ${cst} não é suportado na nota de cupom (use 90, 40, 41 ou 50 — sem novo destaque de ICMS)`);
   }
+  // IBS/CBS (reforma tributária): regime normal é obrigado a informar o grupo
+  // (rejeição 1115). Esta nota não é operação nova — a venda é a do cupom —,
+  // então vai como não incidência (CST 410 / cClassTrib 410999), sem valor.
+  const cstIbs = so(emi.nfe?.cupomCstIbsCbs) || '410';
+  const classTrib = so(emi.nfe?.cupomClassTrib) || '410999';
+  if (!/^\d{3}$/.test(cstIbs) || !/^\d{6}$/.test(classTrib)) {
+    throw new Error('CST/cClassTrib de IBS-CBS inválido pra nota de cupom (CST 3 dígitos, cClassTrib 6)');
+  }
+  const ibsCbs = normal ? `<IBSCBS><CST>${cstIbs}</CST><cClassTrib>${classTrib}</cClassTrib></IBSCBS>` : '';
   const csosnFixo = so(emi.nfe?.cupomCsosn);
   const SN_OK = ['102', '103', '300', '400', '500'];
   if (!normal && csosnFixo && !SN_OK.includes(csosnFixo)) {
@@ -277,6 +286,7 @@ export function montarXmlNfeCupom(dados: DadosNfeCupom): XmlNfeMontado {
         `<imposto>` +
         icms +
         pisCofins +
+        ibsCbs +
         `</imposto>` +
         `</det>`
       );

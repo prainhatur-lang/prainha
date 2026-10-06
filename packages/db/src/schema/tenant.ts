@@ -284,6 +284,11 @@ export interface FiscalNfeConfig {
    *  complementares). Padrão false. Decisão do contador — a SEFAZ veda a
    *  referência a NFC-e em produção a partir de 14/12/2026 (NT 2026.002). */
   cupomSemReferencia?: boolean;
+  /** NF-e de cupom no regime normal: CST de IBS/CBS (padrão 410 — não
+   *  incidência; a operação tributada é a do cupom). */
+  cupomCstIbsCbs?: string;
+  /** NF-e de cupom no regime normal: cClassTrib de IBS/CBS (padrão 410999). */
+  cupomClassTrib?: string;
 }
 
 /** Faixa de taxa de entrega por distância em linha reta (km). */
