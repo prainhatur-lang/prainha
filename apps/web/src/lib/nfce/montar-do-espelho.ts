@@ -120,6 +120,7 @@ export async function montarNfceDoEspelho(
       totalServico: schema.pedido.totalServico,
       totalAcrescimo: schema.pedido.totalAcrescimo,
       dataFechamento: schema.pedido.dataFechamento,
+      clienteFiado: schema.pedido.codigoClienteFiadoExterno,
     })
     .from(schema.pedido)
     .where(
@@ -244,6 +245,12 @@ export async function montarNfceDoEspelho(
     const vFiado = r2c(num(cc?.credito ?? 0));
     if (vFiado > 0) {
       pagamentos.push({ tPag: '05', valor: Math.min(vFiado, r2c(alvo - somaPg)) });
+      temFiado = true;
+    } else if (ped.clienteFiado != null) {
+      // Casa em banco próprio (sem Consumer): o fiado não gera linha em
+      // movimento_conta_corrente — o sinal é o cliente de fiado no pedido
+      // fechado com parte (ou tudo) sem pagamento. O que falta vai como 05.
+      pagamentos.push({ tPag: '05', valor: r2c(alvo - somaPg) });
       temFiado = true;
     }
   }
