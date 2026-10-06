@@ -386,8 +386,10 @@ export default async function NfcePage({
               </p>
             )}
             <div className="mt-2 grid grid-cols-1 gap-1">
-              {semNota.map((p, i) => (
-                <div key={i} className="flex items-center justify-between gap-2 rounded border border-slate-100 px-3 py-1.5 text-xs">
+              {semNota.map((p) => (
+                // chave = o pedido (não a posição): quando um pedido ganha nota e sai
+                // da lista, o "✓ nota N" não pode escorregar pro pedido de baixo
+                <div key={`${p.filial_id}:${p.codigo_externo}`} className="flex items-center justify-between gap-2 rounded border border-slate-100 px-3 py-1.5 text-xs">
                   <span className="min-w-0 truncate text-slate-700">
                     {nomePorFilial.get(p.filial_id) ?? ''} · {p.numero ? `mesa/comanda ${p.numero}` : `pedido ${p.codigo_externo}`} · {p.fechado_em}
                   </span>
