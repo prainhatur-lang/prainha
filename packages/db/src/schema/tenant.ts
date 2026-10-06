@@ -271,6 +271,15 @@ export interface FiscalNfeConfig {
   crt?: 1 | 3;
   /** CST do ICMS da transferência no regime normal (padrão 41 — não tributada). */
   cst?: string;
+  /** NF-e emitida a partir de um cupom (NFC-e) — CFOP (padrão 5929). */
+  cupomCfop?: string;
+  /** NF-e de cupom no regime normal: CST do ICMS (padrão 90, sem destaque —
+   *  o imposto da venda é o do cupom). Aceita 90, 40, 41 ou 50. */
+  cupomCst?: string;
+  /** NF-e de cupom no Simples: CSOSN (padrão: o mesmo do item no cupom). */
+  cupomCsosn?: string;
+  /** NF-e de cupom: CST de PIS/COFINS (padrão 49 — outras saídas, sem valor). */
+  cupomCstPisCofins?: string;
 }
 
 /** Faixa de taxa de entrega por distância em linha reta (km). */

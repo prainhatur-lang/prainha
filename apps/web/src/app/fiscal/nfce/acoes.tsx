@@ -93,6 +93,13 @@ export function AcoesNota({
           >
             ver
           </a>
+          <a
+            href={`/fiscal/nfce/${id}/nfe`}
+            className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+            title="Cliente pediu nota grande? Emite a NF-e (modelo 55) deste cupom no CNPJ/CPF dele"
+          >
+            🧾 NF-e
+          </a>
         </>
       )}
       {temXml && (

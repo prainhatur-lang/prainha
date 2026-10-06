@@ -22,6 +22,7 @@ import {
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 import { transferenciaFilial } from './transferencia';
+import { nfceEmitida } from './nfce';
 
 /** Item da nota (snapshot do que foi pro XML). */
 export interface NfeItemSnapshot {
@@ -36,6 +37,29 @@ export interface NfeItemSnapshot {
   csosn: string;
   /** CST do ICMS quando a nota saiu pelo regime normal (CRT 3). */
   cst?: string;
+  /** Só na NF-e que substitui cupom: desconto e acréscimo (serviço) do item. */
+  valorDesconto?: number;
+  valorOutro?: number;
+}
+
+/** Destinatário de fora (cliente) — NF-e emitida a partir de um cupom (NFC-e). */
+export interface NfeDestinatarioSnapshot {
+  /** CPF (11) ou CNPJ (14), só dígitos. */
+  documento: string;
+  nome: string;
+  /** Inscrição estadual, quando o cliente é contribuinte do ICMS. */
+  ie?: string;
+  email?: string;
+  logradouro: string;
+  numero: string;
+  complemento?: string;
+  bairro: string;
+  /** Código IBGE do município (7 dígitos). */
+  codigoMunicipio: string;
+  municipio: string;
+  uf: string;
+  cep: string;
+  fone?: string;
 }
 
 export const nfeEmitida = pgTable(
@@ -67,6 +91,12 @@ export const nfeEmitida = pgTable(
     /** Casa destinatária */
     filialDestinoId: uuid('filial_destino_id').references(() => filial.id, { onDelete: 'set null' }),
     destCnpj: varchar('dest_cnpj', { length: 14 }),
+    /** NF-e emitida a partir de um cupom: a NFC-e de origem (referenciada no XML). */
+    nfceOrigemId: uuid('nfce_origem_id').references(() => nfceEmitida.id, { onDelete: 'set null' }),
+    /** Chave (44) do cupom referenciado em <NFref>. */
+    chaveReferenciada: varchar('chave_referenciada', { length: 44 }),
+    /** Cliente destinatário (só na nota de cupom; na transferência é a outra casa). */
+    dest: jsonb('dest').$type<NfeDestinatarioSnapshot>(),
     naturezaOperacao: varchar('natureza_operacao', { length: 60 }).notNull(),
     valorTotal: numeric('valor_total', { precision: 14, scale: 2 }).notNull(),
     itens: jsonb('itens').$type<NfeItemSnapshot[]>().notNull(),
@@ -85,6 +115,11 @@ export const nfeEmitida = pgTable(
     transfVivaUq: uniqueIndex('nfe_transf_viva_uq')
       .on(t.transferenciaId, t.ambiente)
       .where(sql`status IN ('PENDENTE', 'AUTORIZADA') AND transferencia_id IS NOT NULL`),
+    /** 1 NF-e "viva" por cupom e ambiente — cancelada libera nova. */
+    cupomVivaUq: uniqueIndex('nfe_cupom_viva_uq')
+      .on(t.nfceOrigemId, t.ambiente)
+      .where(sql`status IN ('PENDENTE', 'AUTORIZADA') AND nfce_origem_id IS NOT NULL`),
+    cupomIdx: index('nfe_cupom_idx').on(t.nfceOrigemId),
     transfIdx: index('nfe_transf_idx').on(t.transferenciaId),
     filialIdx: index('nfe_filial_idx').on(t.filialId, t.criadoEm),
   }),

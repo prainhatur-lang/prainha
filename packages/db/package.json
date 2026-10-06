@@ -155,7 +155,8 @@
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts",
     "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts",
     "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts",
-    "migrate:cancelamento-lancado": "tsx scripts/migrate-cancelamento-lancado.ts"
+    "migrate:cancelamento-lancado": "tsx scripts/migrate-cancelamento-lancado.ts",
+    "migrate:nfe-cupom": "tsx scripts/migrate-nfe-cupom.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

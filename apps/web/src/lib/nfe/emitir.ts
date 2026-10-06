@@ -39,7 +39,7 @@ export type EmitirNfeResultado =
       transitorio?: boolean;
     };
 
-const resumo = (r: NfeRow): NfeResumo => ({
+export const resumo = (r: NfeRow): NfeResumo => ({
   id: r.id,
   chave: r.chave,
   numero: r.numero,
@@ -62,7 +62,7 @@ export function parametrosNfe(cfg: FiscalConfig | null | undefined, forcarHomolo
  *  a casa já abriu aqui (começa na 1). A série sobe sozinha quando a SEFAZ
  *  mostra que outro sistema já usou a numeração (rejeição 539) — o Prainha Bar
  *  tinha NF-e série 1 nº 1 de jan/2020, de antes do Concilia. */
-async function serieEmUso(filialId: string, cfg: FiscalConfig | null | undefined, tpAmb: number): Promise<number> {
+export async function serieEmUso(filialId: string, cfg: FiscalConfig | null | undefined, tpAmb: number): Promise<number> {
   const daConfig = parametrosNfe(cfg).serie;
   if (cfg?.nfe?.serie && cfg.nfe.serie > 0) return daConfig;
   const [r] = await db
@@ -73,9 +73,9 @@ async function serieEmUso(filialId: string, cfg: FiscalConfig | null | undefined
 }
 
 /** Quantas séries seguidas a emissão tenta quando a numeração já foi usada fora daqui. */
-const MAX_TROCAS_SERIE = 3;
+export const MAX_TROCAS_SERIE = 3;
 
-async function temAcesso(userId: string, filialId: string): Promise<boolean> {
+export async function temAcesso(userId: string, filialId: string): Promise<boolean> {
   const [a] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
@@ -95,7 +95,7 @@ function montarNfeProc(nfeAssinada: string, protXml: string | null): string | nu
   );
 }
 
-async function marcarAutorizada(rowId: string, prot: ProtocoloNfce, nfeAssinada: string | null): Promise<NfeRow> {
+export async function marcarAutorizada(rowId: string, prot: ProtocoloNfce, nfeAssinada: string | null): Promise<NfeRow> {
   const [r] = await db
     .update(schema.nfeEmitida)
     .set({
@@ -114,7 +114,7 @@ async function marcarAutorizada(rowId: string, prot: ProtocoloNfce, nfeAssinada:
 }
 
 /** Próximo número da série (atômico — upsert com incremento). */
-async function alocarNumero(filialId: string, serie: number, ambiente: number): Promise<number> {
+export async function alocarNumero(filialId: string, serie: number, ambiente: number): Promise<number> {
   const [r] = await db
     .insert(schema.nfeNumeracao)
     .values({ filialId, serie, ambiente, ultimoNumero: 1 })
