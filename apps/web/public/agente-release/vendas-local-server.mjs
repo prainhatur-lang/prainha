@@ -7668,6 +7668,19 @@ async function apiCaixaAjuste(body, quem) {
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
+  // TIRAR O DESCONTO: desfaz o que foi lançado (valor errado, desconto na mesa
+  // errada). Mesmo caminho do aplicar, pelo delta: o total volta exatamente o
+  // que o desconto tinha tirado. Antes só dava pra "compensar" com acréscimo.
+  if (tipo === 'tirar_desconto') {
+    const delta = +Number(p.desconto || 0).toFixed(2);
+    if (!(delta > 0)) return { ok: false, erro: 'esta conta não tem desconto' };
+    const novoTot = +(total + delta).toFixed(2);
+    const ok = await pedGravarTotais(ped, { desconto: 0, pctDesconto: 0, total: novoTot });
+    if (!ok) return { ok: false, erro: 'não deu pra tirar o desconto' };
+    console.log(`[caixa] desconto de R$ ${delta.toFixed(2)} retirado do pedido ${ped} (${n}) por ${quem.nome || quem.login || '?'}`);
+    espelho().catch(() => {});
+    return { ok: true, tipo, delta, novo_total: novoTot };
+  }
   return { ok: false, erro: 'tipo inválido' };
 }
 
@@ -24989,7 +25002,9 @@ function pinta(el){
   else if(c.subtotal>0)h+='<div class="tot"><span style="color:var(--red)">Serviço (10%) retirado'+
     (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(0)">cobrar</a>':'')+
     '</span><b>—</b></div>';
-  if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
+  if(c.desconto>0)h+='<div class="tot desc"><span>Desconto'+
+    (PODE.desconto&&!ehEntrega()?' <a class="sair" style="font-size:12px" onclick="tiraDesconto()">tirar</a>':'')+
+    '</span><b>− '+brl(c.desconto)+'</b></div>';
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
   // LANÇAMENTO A LANÇAMENTO, com o ✕ pra quem pode excluir recebimento (31 no
@@ -25570,6 +25585,13 @@ async function receber(){
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
 }
+async function tiraDesconto(){
+  var c=CONTA; if(!c||!(c.desconto>0))return;
+  if(!confirm('Tirar o desconto de '+brl(c.desconto)+' desta conta?\\n\\nO total volta a cobrar esse valor.'))return;
+  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'tirar_desconto'}));
+  if(!r.ok){alert(r.erro||'não deu');return}
+  await carregar(MESA,PEDALVO);
+}
 async function tiraServico(tirar){
   var t=(tirar===1||tirar===true);
   if(t&&!confirm('Tirar os 10% de serviço desta conta? O cliente não vai pagar a taxa.'))return;
@@ -25593,6 +25615,9 @@ async function tiraServico(tirar){
 async function fecharConta(){
   var r=await jpost('/api/caixa/fechar',alvo({numero:MESA}));
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
+  // pedido de canal (iFood/site): concluído, sai da grade. A nota dele é o
+  // botão 🧾 Nota fiscal do próprio pedido — não a oferta por número de mesa.
+  if(r.canal){FLASH='✓ Pedido concluído.';voltarMesas();listar();return}
   FLASH='✓ Conta da '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' fechada — liberada.';
   nfceOferecer(MESA,function(){voltarMesas();listar()});
 }
@@ -28799,7 +28824,19 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p !== '/api/caixa/imprimir') {
         const espia = await readBody(req).catch(() => ({}));
         if (Number(espia?.ped) < 0) {
-          const [pi] = await sql`SELECT pago_online FROM ifood_pedido WHERE seq=${-Number(espia.ped)}`;
+          const [pi] = await sql`SELECT id, origem, pago_online, pago_entrega_em, concluido_em, cancelado_em FROM ifood_pedido WHERE seq=${-Number(espia.ped)}`;
+          // FECHAR pedido de canal JÁ PAGO: não há o que receber, o ato é só
+          // dar o pedido por concluído pra ele sair da grade. Retirada paga no
+          // site não passa pelo entregador, então ninguém concluía e o card
+          // ficava "✓ PAGO" por dois dias (Tabuará, S10, 06/10).
+          if (p === '/api/caixa/fechar' && pi && !pi.cancelado_em && (pi.pago_online || pi.pago_entrega_em)) {
+            if (!pi.concluido_em) {
+              await sql`UPDATE ifood_pedido SET concluido_em=now() WHERE id=${pi.id}`;
+              if (pi.origem === 'site') await avisarNuvemSite(pi.id, 'concluido').catch(() => {});
+            }
+            await projetarIfood().catch(() => {});
+            return res.end(JSON.stringify({ ok: true, fechada: true, canal: true }));
+          }
           return res.end(JSON.stringify({ ok: false,
             erro: pi?.pago_online === false
               ? 'Pedido do iFood a receber NA ENTREGA: quem leva recebe na porta, não passa pelo caixa.'
