@@ -3301,6 +3301,7 @@ async function servicoIsento(ped) {
   return r[0]?.acao === 'tirou';
 }
 async function fbAplicarServico(ped) {
+  if (Number(ped) < 0) return 0; // pedido de canal (iFood/site) não tem 10%
   if (await servicoIsento(ped)) return 0;
   if (!(TAXA_SERVICO > 0)) return 0;
   const p = await pedTotais(ped);
@@ -7399,6 +7400,9 @@ async function apiCaixaConta(n, pedRaw) {
   const agora = Date.now();
   const ped = await pedidoAlvo(num, pedRaw);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
+  // achou pelo número 0 a projeção de um pedido de canal (código negativo):
+  // é a conta do iFood/site — nunca a conta comum, que colocaria 10% nela
+  if (ped < 0) return contaIfoodCaixa(ped);
   // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
   await fbAplicarServico(ped).catch(() => {});
   const p = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
@@ -26351,8 +26355,12 @@ setInterval(function(){
   if(document.hidden||!TOK||TELA==='login')return;
   listar();
   TICK++;if(TICK%3===0){cxEstado();if(TELA==='home')fechadasCx()} // banner do caixa a cada 30s
-  if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA).then(function(c){
-    if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)){CONTA=c;pintaMain()}}).catch(function(){});
+  // ENTREGA (iFood/site) só é endereçável pelo código do pedido: sem o ped a
+  // renovação caía em "qualquer conta do número 0" e a tela trocava sozinha de
+  // "pago no site" pra uma conta comum com 10% (Tabuará, 06/10). Mesa segue igual.
+  var pedTmr=PEDALVO;
+  if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA+(pedTmr?'&ped='+pedTmr:'')).then(function(c){
+    if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)&&PEDALVO===pedTmr){CONTA=c;pintaMain()}}).catch(function(){});
 },10000);
 // versão nova no servidor -> recarrega, mas nunca no meio de uma conta aberta
 var VERSAO_MINHA='${VERSAO}';
