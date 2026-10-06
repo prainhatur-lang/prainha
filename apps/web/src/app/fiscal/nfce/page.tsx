@@ -4,10 +4,12 @@
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, lte, sql } from 'drizzle-orm';
+import { brDateEnd, brDateStart } from '@/lib/datas';
 import { AppHeader } from '@/components/app-header';
 import { formatarDocumento } from '@/lib/nfce/documento';
 import { AcoesNota } from './acoes';
+import { FiltroDocumento } from './filtro-documento';
 import { EmitirPedido } from './emitir-pedido';
 import { XmlsDownload } from './xmls-download';
 
@@ -122,20 +124,66 @@ function dataBr(d: Date | null): string {
   }).format(d);
 }
 
-export default async function NfcePage() {
+const STATUS = ['AUTORIZADA', 'PENDENTE', 'REJEITADA', 'ERRO', 'CANCELADA', 'INUTILIZADA'];
+
+export default async function NfcePage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await exigirPermPage('nfce.read');
   const filiais = await filiaisDoUsuario(user.id);
   const ids = filiais.map((f) => f.id);
   const nomePorFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
+  // ---- filtros da lista (tudo opcional; sem filtro = as 200 últimas, como sempre) ----
+  const sp = await searchParams;
+  const um = (k: string) => {
+    const v = sp[k];
+    return (Array.isArray(v) ? v[0] : v)?.trim() ?? '';
+  };
+  const ymd = (v: string) => (/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '');
+  const f = {
+    de: ymd(um('de')),
+    ate: ymd(um('ate')),
+    casa: ids.includes(um('casa')) ? um('casa') : '',
+    status: STATUS.includes(um('status')) ? um('status') : '',
+    numero: um('numero').replace(/\D/g, '').slice(0, 9),
+    mesa: um('mesa').slice(0, 20),
+    nfe: um('nfe') === 'sim' || um('nfe') === 'nao' ? um('nfe') : '',
+    amb: um('amb') === '1' || um('amb') === '2' ? um('amb') : '',
+  };
+  const filtrando = Object.values(f).some(Boolean);
+  // NF-e (nota grande, produção) autorizada pro cupom da linha
+  const nfeDoCupom = (extra = sql``) => sql`EXISTS (
+    SELECT 1 FROM nfe_emitida x
+     WHERE x.nfce_origem_id = ${schema.nfceEmitida.id}
+       AND x.status = 'AUTORIZADA' AND x.ambiente = 1 ${extra})`;
+  const cond = [inArray(schema.nfceEmitida.filialId, ids)];
+  if (f.de) cond.push(gte(schema.nfceEmitida.criadoEm, brDateStart(f.de)));
+  if (f.ate) cond.push(lte(schema.nfceEmitida.criadoEm, brDateEnd(f.ate)));
+  if (f.casa) cond.push(eq(schema.nfceEmitida.filialId, f.casa));
+  if (f.status) cond.push(eq(schema.nfceEmitida.status, f.status));
+  if (f.amb) cond.push(eq(schema.nfceEmitida.ambiente, Number(f.amb)));
+  if (f.mesa) cond.push(ilike(schema.nfceEmitida.mesa, `%${f.mesa}%`));
+  // número: o do cupom ou o da NF-e que saiu dele
+  if (f.numero) {
+    const n = Number(f.numero);
+    cond.push(sql`(${schema.nfceEmitida.numero} = ${n} OR ${nfeDoCupom(sql`AND x.numero = ${n}`)})`);
+  }
+  if (f.nfe === 'sim') cond.push(nfeDoCupom());
+  if (f.nfe === 'nao') cond.push(sql`NOT ${nfeDoCupom()}`);
+  const LIMITE = filtrando ? 1000 : 200;
+
   const notas = ids.length
     ? await db
         .select()
         .from(schema.nfceEmitida)
-        .where(inArray(schema.nfceEmitida.filialId, ids))
+        .where(and(...cond))
         .orderBy(desc(schema.nfceEmitida.criadoEm))
-        .limit(200)
+        .limit(LIMITE)
     : [];
+  const somaFiltro = notas.reduce((t, n) => t + (n.status === 'AUTORIZADA' ? Number(n.valorTotal) : 0), 0);
 
   // NF-e (nota grande, produção) já autorizada pra cada cupom da lista: vira o
   // selo verde na linha e traz o CPF/CNPJ de quem recebeu a nota.
@@ -310,7 +358,82 @@ export default async function NfcePage() {
           </div>
         </div>
 
-        <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+        {/* ---- filtros da lista ---- */}
+        <form id="notas" method="get" action="/fiscal/nfce#notas" className="mt-6 scroll-mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-slate-900">🔎 Procurar nota</h3>
+            <span className="text-xs text-slate-500">
+              {filtrando
+                ? `${notas.length} nota${notas.length === 1 ? '' : 's'} · ${brl(somaFiltro)} autorizado${notas.length === LIMITE ? ` · mostrando as ${LIMITE} mais recentes, aperte o filtro` : ''}`
+                : `as ${LIMITE} mais recentes`}
+            </span>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+            <label className="text-[11px] font-medium text-slate-600">
+              De
+              <input type="date" name="de" defaultValue={f.de} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              Até
+              <input type="date" name="ate" defaultValue={f.ate} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              Filial
+              <select name="casa" defaultValue={f.casa} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                <option value="">todas</option>
+                {filiais.map((x) => (
+                  <option key={x.id} value={x.id}>{x.nome}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              Status
+              <select name="status" defaultValue={f.status} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                <option value="">todos</option>
+                {STATUS.map((x) => (
+                  <option key={x} value={x}>{x.toLowerCase()}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              Nº da nota (cupom ou NF-e)
+              <input name="numero" inputMode="numeric" defaultValue={f.numero} placeholder="ex.: 734" className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </label>
+            <FiltroDocumento />
+            <label className="text-[11px] font-medium text-slate-600">
+              Mesa
+              <input name="mesa" defaultValue={f.mesa} placeholder="ex.: 110" className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              NF-e (nota grande)
+              <select name="nfe" defaultValue={f.nfe} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                <option value="">tanto faz</option>
+                <option value="sim">já tem NF-e</option>
+                <option value="nao">sem NF-e</option>
+              </select>
+            </label>
+            <label className="text-[11px] font-medium text-slate-600">
+              Ambiente
+              <select name="amb" defaultValue={f.amb} className="mt-0.5 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                <option value="">todos</option>
+                <option value="1">produção</option>
+                <option value="2">teste (homologação)</option>
+              </select>
+            </label>
+            <div className="flex items-end gap-2">
+              <button className="rounded-md bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-700">
+                Filtrar
+              </button>
+              {filtrando && (
+                <a href="/fiscal/nfce#notas" className="text-xs text-slate-500 underline">
+                  limpar
+                </a>
+              )}
+            </div>
+          </div>
+        </form>
+
+        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-xs">
             <thead className="bg-slate-100 text-left">
               <tr>
@@ -327,7 +450,11 @@ export default async function NfcePage() {
             </thead>
             <tbody>
               {notas.map((n) => (
-                <tr key={n.id} className="border-t border-slate-100 align-top">
+                <tr
+                  key={n.id}
+                  data-doc={n.destDocumento ?? nfePorCupom.get(n.id)?.dest?.documento ?? ''}
+                  className="border-t border-slate-100 align-top"
+                >
                   <td className="px-3 py-2 whitespace-nowrap text-slate-600">
                     {dataBr(n.autorizadaEm ?? n.criadoEm)}
                     {n.ambiente === 2 && (
@@ -383,7 +510,9 @@ export default async function NfcePage() {
               {notas.length === 0 && (
                 <tr>
                   <td colSpan={9} className="px-3 py-8 text-center text-slate-500">
-                    Nenhuma nota. Ative a emissão em Config fiscal e feche uma conta no caixa.
+                    {filtrando
+                      ? 'Nenhuma nota com esse filtro.'
+                      : 'Nenhuma nota. Ative a emissão em Config fiscal e feche uma conta no caixa.'}
                   </td>
                 </tr>
               )}
