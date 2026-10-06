@@ -52,6 +52,30 @@ export function normalizarDestinatario(d: Partial<NfeDestinatarioSnapshot>): Nfe
   };
 }
 
+/**
+ * Guarda o cadastro do cliente do jeito que foi conferido na tela (por empresa),
+ * pra próxima busca do CPF/CNPJ já trazer certo. Nunca derruba a emissão.
+ */
+export async function salvarDestinatario(filialId: string, dest: NfeDestinatarioSnapshot, userId: string): Promise<void> {
+  try {
+    const [f] = await db
+      .select({ org: schema.filial.organizacaoId })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, filialId))
+      .limit(1);
+    if (!f) return;
+    await db
+      .insert(schema.nfeDestinatario)
+      .values({ organizacaoId: f.org, documento: dest.documento, dados: dest, atualizadoPor: userId })
+      .onConflictDoUpdate({
+        target: [schema.nfeDestinatario.organizacaoId, schema.nfeDestinatario.documento],
+        set: { dados: dest, atualizadoPor: userId, atualizadoEm: new Date() },
+      });
+  } catch (e) {
+    console.error('[nfe] salvarDestinatario', (e as Error).message);
+  }
+}
+
 /** Rejeições da SEFAZ pra NF-e que referencia NFC-e (modelo 65). */
 const REJ_REFERENCIA = new Set(['679', '375']);
 const AVISO_TESTE_SEM_REF =
@@ -101,6 +125,9 @@ export async function emitirNfeDoCupom(
   if (dest.documento === ctx.cnpj.replace(/\D/g, '')) {
     return { ok: false, erro: 'o cliente tem o mesmo CNPJ da casa — não cabe nota fiscal pra ela mesma' };
   }
+
+  // cadastro conferido fica guardado (teste ou nota de verdade)
+  if (tentativa === 0 && trocasSerie === 0 && !opts.semReferencia) await salvarDestinatario(cupom.filialId, dest, opts.userId);
 
   const serie = await serieEmUso(cupom.filialId, ctx.cfg, tpAmb);
   const modelo = 55 as const;

@@ -66,9 +66,22 @@ export async function GET(req: Request) {
     }
     if (cep) {
       if (cep.length !== 8) return NextResponse.json({ error: 'CEP inválido' }, { status: 400 });
-      const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(12000) });
-      const j = r.ok ? ((await r.json()) as Record<string, unknown>) : null;
-      if (!j || j.erro) return NextResponse.json({ error: 'CEP não encontrado — preencha na mão' }, { status: 404 });
+      // ViaCEP (base dos Correios); CEP novo às vezes só aparece no OpenCEP, que
+      // devolve os mesmos campos
+      let j: Record<string, unknown> | null = null;
+      for (const u of [`https://viacep.com.br/ws/${cep}/json/`, `https://opencep.com/v1/${cep}`]) {
+        try {
+          const r = await fetch(u, { signal: AbortSignal.timeout(8000) });
+          const c = r.ok ? ((await r.json()) as Record<string, unknown>) : null;
+          if (c && !c.erro && !c.error && str(c.localidade)) {
+            j = c;
+            break;
+          }
+        } catch {
+          /* tenta a próxima */
+        }
+      }
+      if (!j) return NextResponse.json({ error: 'CEP não encontrado — preencha na mão' }, { status: 404 });
       return NextResponse.json({
         ok: true,
         dados: {
@@ -104,6 +117,27 @@ export async function POST(req: Request) {
       .where(eq(schema.usuarioFilial.usuarioId, user.id))
   ).map((f) => f.id);
   if (!filiais.length) return NextResponse.json({ error: 'sem casa liberada' }, { status: 403 });
+
+  // 0) cadastro fiscal guardado — o que foi conferido/corrigido na última nota
+  const [salvo] = await db
+    .select({ dados: schema.nfeDestinatario.dados })
+    .from(schema.nfeDestinatario)
+    .innerJoin(schema.filial, eq(schema.filial.organizacaoId, schema.nfeDestinatario.organizacaoId))
+    .where(and(inArray(schema.filial.id, filiais), eq(schema.nfeDestinatario.documento, cpf)))
+    .orderBy(desc(schema.nfeDestinatario.atualizadoEm))
+    .limit(1);
+  const g = salvo?.dados;
+  if (g?.nome) {
+    return NextResponse.json({
+      ok: true,
+      origem: 'cadastro salvo na última nota',
+      dados: {
+        nome: g.nome, ie: g.ie ?? '', email: g.email ?? '', fone: g.fone ?? '', cep: g.cep,
+        logradouro: g.logradouro, numero: g.numero, complemento: g.complemento ?? '', bairro: g.bairro,
+        municipio: g.municipio, uf: g.uf, codigoMunicipio: g.codigoMunicipio,
+      },
+    });
+  }
 
   // 1) nota já emitida pra esse CPF — cadastro completo, já conferido por alguém
   const [nota] = await db

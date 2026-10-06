@@ -20,7 +20,7 @@ import {
   primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { filial } from './tenant';
+import { filial, organizacao } from './tenant';
 import { transferenciaFilial } from './transferencia';
 import { nfceEmitida } from './nfce';
 
@@ -138,5 +138,29 @@ export const nfeNumeracao = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.filialId, t.serie, t.ambiente] }),
+  }),
+);
+
+/**
+ * Cadastro fiscal do cliente da NF-e, por empresa: o que foi conferido/corrigido
+ * na tela do conversor (cupom → nota). Fica separado do `cliente` do PDV, que é
+ * espelho do caixa (o mesmo CPF aparece em vários cadastros lá) — a busca do
+ * conversor olha aqui primeiro.
+ */
+export const nfeDestinatario = pgTable(
+  'nfe_destinatario',
+  {
+    organizacaoId: uuid('organizacao_id')
+      .notNull()
+      .references(() => organizacao.id, { onDelete: 'cascade' }),
+    /** CPF (11) ou CNPJ (14), só dígitos. */
+    documento: varchar('documento', { length: 14 }).notNull(),
+    dados: jsonb('dados').$type<NfeDestinatarioSnapshot>().notNull(),
+    atualizadoPor: uuid('atualizado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.organizacaoId, t.documento] }),
   }),
 );

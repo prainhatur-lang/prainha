@@ -51,8 +51,9 @@ export function FormNfeCupom({
   const set = (k: keyof DestForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((a) => ({ ...a, [k]: e.target.value }));
 
-  async function buscar(tipo: 'cnpj' | 'cep') {
-    const v = so(tipo === 'cnpj' ? f.documento : f.cep);
+  // cepNovo: o CEP acabou de ser trocado — busca por ele e o endereço antigo sai
+  async function buscar(tipo: 'cnpj' | 'cep', cepNovo?: string) {
+    const v = so(cepNovo ?? (tipo === 'cnpj' ? f.documento : f.cep));
     const ehCpf = tipo === 'cnpj' && v.length === 11;
     if (tipo === 'cnpj' && v.length !== 14 && !ehCpf) return;
     if (tipo === 'cep' && v.length !== 8) return;
@@ -76,12 +77,23 @@ export function FormNfeCupom({
       // só preenche o que veio; não apaga o que já foi digitado
       setF((a) => {
         const n: Record<string, string> = { ...a };
+        if (cepNovo) {
+          // endereço é do CEP novo: rua/bairro/cidade trocam, número e complemento eram do antigo
+          const d = j.dados as Record<string, string>;
+          if ((d.logradouro ?? '') !== a.logradouro) {
+            n.numero = '';
+            n.complemento = '';
+          }
+          n.logradouro = d.logradouro ?? '';
+          n.bairro = d.bairro ?? '';
+        }
         for (const [k, val] of Object.entries(j.dados as Record<string, string>)) {
           if (val && k in n) n[k] = val;
         }
         return n as unknown as DestForm;
       });
-      setOutros(ehCpf && Array.isArray(j.outros) ? j.outros : []);
+      if (tipo === 'cnpj') setOutros(ehCpf && Array.isArray(j.outros) ? j.outros : []);
+      if (cepNovo) setAviso('Endereço atualizado pelo CEP — confira o número e o complemento.');
       if (ehCpf) setAviso(`Dados puxados do ${j.origem ?? 'cadastro'} — confira antes de emitir.`);
       if (j.situacao && j.situacao !== 'ATIVA') setAviso(`Atenção: na Receita este CNPJ está ${j.situacao}.`);
     } catch {
@@ -174,7 +186,12 @@ export function FormNfeCupom({
           <input
             className={campo}
             value={f.cep}
-            onChange={set('cep')}
+            onChange={(e) => {
+              set('cep')(e);
+              // CEP trocado por outro completo: já puxa o endereço novo
+              const novo = so(e.target.value);
+              if (novo.length === 8 && novo !== so(f.cep)) void buscar('cep', novo);
+            }}
             onBlur={() => (!f.logradouro || !f.codigoMunicipio) && buscar('cep')}
             inputMode="numeric"
           />
