@@ -7668,6 +7668,19 @@ async function apiCaixaAjuste(body, quem) {
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
+  // TIRAR O DESCONTO: desfaz o que foi lançado (valor errado, desconto na mesa
+  // errada). Mesmo caminho do aplicar, pelo delta: o total volta exatamente o
+  // que o desconto tinha tirado. Antes só dava pra "compensar" com acréscimo.
+  if (tipo === 'tirar_desconto') {
+    const delta = +Number(p.desconto || 0).toFixed(2);
+    if (!(delta > 0)) return { ok: false, erro: 'esta conta não tem desconto' };
+    const novoTot = +(total + delta).toFixed(2);
+    const ok = await pedGravarTotais(ped, { desconto: 0, pctDesconto: 0, total: novoTot });
+    if (!ok) return { ok: false, erro: 'não deu pra tirar o desconto' };
+    console.log(`[caixa] desconto de R$ ${delta.toFixed(2)} retirado do pedido ${ped} (${n}) por ${quem.nome || quem.login || '?'}`);
+    espelho().catch(() => {});
+    return { ok: true, tipo, delta, novo_total: novoTot };
+  }
   return { ok: false, erro: 'tipo inválido' };
 }
 
@@ -24989,7 +25002,9 @@ function pinta(el){
   else if(c.subtotal>0)h+='<div class="tot"><span style="color:var(--red)">Serviço (10%) retirado'+
     (PODE.desconto?' <a class="sair" style="font-size:12px" onclick="tiraServico(0)">cobrar</a>':'')+
     '</span><b>—</b></div>';
-  if(c.desconto>0)h+='<div class="tot desc"><span>Desconto</span><b>− '+brl(c.desconto)+'</b></div>';
+  if(c.desconto>0)h+='<div class="tot desc"><span>Desconto'+
+    (PODE.desconto&&!ehEntrega()?' <a class="sair" style="font-size:12px" onclick="tiraDesconto()">tirar</a>':'')+
+    '</span><b>− '+brl(c.desconto)+'</b></div>';
   if(c.acrescimo>0)h+='<div class="tot acr"><span>Acréscimo</span><b>+ '+brl(c.acrescimo)+'</b></div>';
   if(c.pago>0)h+='<div class="tot"><span>Já pago</span><b>− '+brl(c.pago)+'</b></div>';
   // LANÇAMENTO A LANÇAMENTO, com o ✕ pra quem pode excluir recebimento (31 no
@@ -25569,6 +25584,13 @@ async function receber(){
   }
   if(r.fechada){FLASH='✓ Recebido e conta fechada — '+(MESA>=${COMANDA_DE}?'comanda ':'mesa ')+MESA+' liberada.';nfceOferecer(MESA,function(){voltarMesas();listar()});return}
   await carregar(MESA);
+}
+async function tiraDesconto(){
+  var c=CONTA; if(!c||!(c.desconto>0))return;
+  if(!confirm('Tirar o desconto de '+brl(c.desconto)+' desta conta?\\n\\nO total volta a cobrar esse valor.'))return;
+  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'tirar_desconto'}));
+  if(!r.ok){alert(r.erro||'não deu');return}
+  await carregar(MESA,PEDALVO);
 }
 async function tiraServico(tirar){
   var t=(tirar===1||tirar===true);
