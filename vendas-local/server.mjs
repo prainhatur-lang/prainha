@@ -1985,8 +1985,15 @@ async function projetarIfood() {
 // app_config e expõe no /api/config — o app escolhe o módulo (Lio = Cielo,
 // Rede = Laranjinha Smart). Nuvem fora do ar: vale o último valor gravado.
 let ADQUIRENTE_LOJA = 'cielo';
+// ---- COMANDA SEM CADASTRO, escolhido no Concilia por filial (mesma consulta) ----
+// Desligado (padrão) = a regra de sempre: comanda só abre e só recebe item com
+// nome + CPF ou WhatsApp. Ligado = a casa aceita comanda sem identificar
+// ninguém (abrir, lançar e receber item transferido). Quem QUISER identificar
+// continua podendo, do mesmo jeito. Nuvem fora do ar: vale o último gravado.
+let COMANDA_SEM_CADASTRO = false;
 async function puxarAdquirente() {
   try { ADQUIRENTE_LOJA = (await cfgGet('adquirente', 'cielo')) === 'rede' ? 'rede' : 'cielo'; } catch {}
+  try { COMANDA_SEM_CADASTRO = (await cfgGet('comanda_sem_cadastro', '0')) === '1'; } catch {}
   if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
   const e = Math.floor(Date.now() / 1000) + 120;
   const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
@@ -1999,6 +2006,12 @@ async function puxarAdquirente() {
     console.log(`[adquirente] maquininha desta filial: ${ADQUIRENTE_LOJA} -> ${novo} (Concilia)`);
     ADQUIRENTE_LOJA = novo;
     try { await cfgSet('adquirente', novo); } catch {}
+  }
+  // nuvem antiga não manda o campo: não mexe no que está gravado
+  if (c && c.ok && typeof c.comanda_sem_cadastro === 'boolean' && c.comanda_sem_cadastro !== COMANDA_SEM_CADASTRO) {
+    console.log(`[comanda] cadastro pra abrir/lançar: ${c.comanda_sem_cadastro ? 'dispensado' : 'exigido'} (Concilia)`);
+    COMANDA_SEM_CADASTRO = c.comanda_sem_cadastro;
+    try { await cfgSet('comanda_sem_cadastro', COMANDA_SEM_CADASTRO ? '1' : '0'); } catch {}
   }
 }
 async function puxarConfigIfood() {
@@ -4519,7 +4532,7 @@ async function apiVendaVincular(body) {
   // Vale so na CRIACAO: comanda que ja existe pode ser atualizada sem reenviar
   // tudo (mudar de mesa, completar o telefone depois).
   const jaExiste = (await sql`SELECT 1 FROM mesa_comanda WHERE comanda=${comanda} AND fechada_em IS NULL`).length > 0;
-  if (!jaExiste) {
+  if (!jaExiste && !COMANDA_SEM_CADASTRO) {
     const temNome = String(body.nome || '').trim().length > 1;
     const temDoc = !!(body.cpf || body.telefone || body.contato_fb);
     if (!temNome || !temDoc) {
@@ -4826,7 +4839,7 @@ async function apiVendaEnviar(body) {
   // A trava fica AQUI, no lançamento, e não na tela de abrir: cobre todos os
   // caminhos de uma vez — garçom, celular do cliente, qualquer um.
   // Mesa não exige: quem senta na mesa está à vista e paga antes de sair.
-  if (ehComanda && !(await comandaIdentificada(numero))) {
+  if (ehComanda && !COMANDA_SEM_CADASTRO && !(await comandaIdentificada(numero))) {
     return { ok: false, precisa_cadastro: true, numero,
       erro: `A comanda ${numero} não tem cadastro. Identifique quem vai usar antes de lançar.` };
   }
@@ -5675,7 +5688,9 @@ function apiConfig() {
     // TV Roku do KDS (o servidor abre o KDS nela sozinho) — só o resumo
     tv_kds: tvKdsResumo(),
     // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
-    adquirente: ADQUIRENTE_LOJA };
+    adquirente: ADQUIRENTE_LOJA,
+    // comanda abre e recebe item sem nome/CPF/WhatsApp — escolhido no Concilia (Configurações)
+    comanda_sem_cadastro: COMANDA_SEM_CADASTRO };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -8897,7 +8912,7 @@ async function apiCaixaTransferirItens(body, quem) {
   // transferência criava conta anônima do nada), e levar TUDO é a mesa
   // inteira indo pra dentro de uma comanda — isso é o inverso da hierarquia
   // e está bloqueado no /api/venda/transferir também.
-  if (para >= COMANDA_DE && !(await comandaIdentificada(para))) {
+  if (para >= COMANDA_DE && !COMANDA_SEM_CADASTRO && !(await comandaIdentificada(para))) {
     return { ok: false, precisa_cadastro: true, numero: para,
       erro: `a comanda ${para} não tem cadastro. Identifique quem vai usar antes de mandar item pra ela.` };
   }

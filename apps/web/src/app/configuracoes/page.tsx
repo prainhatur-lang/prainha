@@ -121,6 +121,7 @@ export default async function ConfiguracoesPage() {
           taxas: schema.filial.taxas,
           toleranciaAutoAceite: schema.filial.toleranciaAutoAceite,
           adquirenteMaquininha: schema.filial.adquirenteMaquininha,
+          comandaSemCadastro: schema.filial.comandaSemCadastro,
           parametrosConciliacao: schema.filial.parametrosConciliacao,
         })
         .from(schema.filial)
@@ -170,6 +171,7 @@ export default async function ConfiguracoesPage() {
                       taxas={taxas}
                       toleranciaAutoAceite={Number(f.toleranciaAutoAceite ?? 0.90)}
                       adquirenteMaquininha={f.adquirenteMaquininha === 'rede' ? 'rede' : 'cielo'}
+                      comandaSemCadastro={f.comandaSemCadastro === true}
                     />
                   </div>
 

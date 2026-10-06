@@ -1,6 +1,6 @@
 // Qual ADQUIRENTE a maquininha do garçom usa nesta filial — a LOJA puxa daqui.
 //
-//   GET ?f=<filial>&e=<expira>&s=<assinatura>  →  { ok, adquirente: 'cielo'|'rede' }
+//   GET ?f=<filial>&e=<expira>&s=<assinatura>  →  { ok, adquirente: 'cielo'|'rede', comanda_sem_cadastro }
 //
 // Mesma assinatura HMAC dos outros /api/loja/* (PAGAR_MESA_SECRET, [f, e]).
 // A escolha é feita em Configurações → Filiais (campo "Adquirente da
@@ -36,10 +36,12 @@ export async function GET(request: Request) {
   if (!confere([f, String(e)], s)) return NextResponse.json({ ok: false, erro: 'assinatura' }, { status: 403 });
 
   const [row] = await db
-    .select({ adq: schema.filial.adquirenteMaquininha })
+    .select({ adq: schema.filial.adquirenteMaquininha, semCadastro: schema.filial.comandaSemCadastro })
     .from(schema.filial)
     .where(eq(schema.filial.id, f))
     .limit(1);
   const adquirente = row?.adq === 'rede' ? 'rede' : 'cielo';
-  return NextResponse.json({ ok: true, adquirente });
+  // Comanda sem cadastro (Configurações → "Cadastro na comanda"): vai na mesma
+  // consulta pra loja não ganhar mais um ciclo.
+  return NextResponse.json({ ok: true, adquirente, comanda_sem_cadastro: row?.semCadastro === true });
 }

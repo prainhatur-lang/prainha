@@ -430,6 +430,11 @@ export const filial = pgTable(
      *  existe) ou 'rede' (Laranjinha Smart — integração em andamento). A loja
      *  puxa isto (/api/loja/adquirente) e o app escolhe o módulo de pagamento. */
     adquirenteMaquininha: text('adquirente_maquininha').default('cielo'),
+    /** Comanda SEM cadastro nesta filial: true = a loja abre comanda e lança
+     *  item sem nome/CPF/WhatsApp (maquininha, celular do garçom). false
+     *  (padrão) = a regra de sempre, comanda só com dono. A loja puxa junto
+     *  do adquirente (/api/loja/adquirente). */
+    comandaSemCadastro: boolean('comanda_sem_cadastro').notNull().default(false),
     /** Adquirente da cobrança ONLINE desta filial (Pix/cartão nas reservas,
      *  orçamentos, delivery, pagar-mesa): 'cielo' (e-commerce Cielo) ou 'rede'
      *  (e.Rede). Separado da maquininha: a loja pode migrar um canal por vez. */
