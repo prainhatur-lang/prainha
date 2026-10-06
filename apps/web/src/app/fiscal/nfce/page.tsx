@@ -513,7 +513,6 @@ export default async function NfcePage({
                 <th className="px-3 py-2 font-medium text-slate-700">Status</th>
                 <th className="px-3 py-2 text-right font-medium text-slate-700">Valor</th>
                 <th className="px-3 py-2 font-medium text-slate-700">CPF/CNPJ</th>
-                <th className="px-3 py-2 font-medium text-slate-700">Retorno SEFAZ</th>
                 <th className="px-3 py-2 font-medium text-slate-700">Ações</th>
               </tr>
             </thead>
@@ -540,9 +539,17 @@ export default async function NfcePage({
                   <td className="px-3 py-2">
                     <span
                       className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${CORES[n.status] ?? 'bg-slate-100 text-slate-700'}`}
+                      title={n.cstat ? `${n.cstat} — ${n.xmotivo ?? ''}` : (n.erro ?? undefined)}
                     >
                       {n.status}
                     </span>
+                    {/* a coluna "Retorno SEFAZ" saiu (o status já diz); o motivo só
+                        aparece quando a nota NÃO passou, que é quando ele importa */}
+                    {n.status !== 'AUTORIZADA' && n.status !== 'CANCELADA' && (n.cstat || n.erro) && (
+                      <div className="mt-1 max-w-[260px] text-[11px] leading-tight text-slate-500">
+                        {n.cstat ? `${n.cstat} — ${n.xmotivo ?? ''}` : n.erro}
+                      </div>
+                    )}
                     {nfePorCupom.get(n.id) && (
                       <a
                         href={`/fiscal/nfce/${n.id}/nfe`}
@@ -563,9 +570,6 @@ export default async function NfcePage({
                         ? formatarDocumento(nfePorCupom.get(n.id)!.dest!.documento)
                         : '—'}
                   </td>
-                  <td className="max-w-[260px] px-3 py-2 text-slate-600">
-                    {n.cstat ? `${n.cstat} — ${n.xmotivo ?? ''}` : (n.erro ?? '—')}
-                  </td>
                   <td className="px-3 py-2">
                     <AcoesNota
                       id={n.id}
@@ -578,7 +582,7 @@ export default async function NfcePage({
               ))}
               {notas.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-slate-500">
+                  <td colSpan={8} className="px-3 py-8 text-center text-slate-500">
                     {filtrando
                       ? 'Nenhuma nota com esse filtro.'
                       : 'Nenhuma nota. Ative a emissão em Config fiscal e feche uma conta no caixa.'}
