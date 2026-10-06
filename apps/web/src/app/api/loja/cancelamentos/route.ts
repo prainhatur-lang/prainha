@@ -29,6 +29,8 @@ function autoriza(f: string, e: number, s: string) {
 const Linha = z.object({
   id: z.coerce.number().int().positive(),
   quando: z.string().min(10),
+  /** hora em que o item foi lançado na conta (loja a partir de 06/10/2026) */
+  lancado_em: z.string().nullable().optional(),
   login: z.string().max(60).nullable().optional(),
   gerente: z.string().max(60).nullable().optional(),
   numero: z.coerce.number().int().nullable().optional(),
@@ -68,6 +70,7 @@ export async function POST(request: Request) {
       filialId: f,
       idLocal: c.id,
       quando: new Date(c.quando),
+      lancadoEm: c.lancado_em && !Number.isNaN(new Date(c.lancado_em).getTime()) ? new Date(c.lancado_em) : null,
       tipo: c.item_codigo == null || c.status_item === 'pedido' ? 'pedido' : 'item',
       login: c.login ?? null,
       gerente: c.gerente ?? null,
@@ -91,6 +94,8 @@ export async function POST(request: Request) {
         target: [schema.cancelamentoItem.filialId, schema.cancelamentoItem.idLocal],
         set: {
           quando: sql`excluded.quando`,
+          // reenvio de loja antiga (sem a hora) não apaga a que já chegou
+          lancadoEm: sql`COALESCE(excluded.lancado_em, cancelamento_item.lancado_em)`,
           tipo: sql`excluded.tipo`,
           login: sql`excluded.login`,
           gerente: sql`excluded.gerente`,

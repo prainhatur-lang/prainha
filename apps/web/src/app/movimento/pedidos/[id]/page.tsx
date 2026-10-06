@@ -85,6 +85,7 @@ export default async function EspelhoPedidoPage(props: { params: Promise<{ id: s
   const cancelamentos = await db
     .select({
       quando: schema.cancelamentoItem.quando,
+      lancadoEm: schema.cancelamentoItem.lancadoEm,
       tipo: schema.cancelamentoItem.tipo,
       login: schema.cancelamentoItem.login,
       gerente: schema.cancelamentoItem.gerente,
@@ -278,7 +279,8 @@ export default async function EspelhoPedidoPage(props: { params: Promise<{ id: s
             <table className="mt-2 w-full text-xs">
               <thead className="text-left text-[10px] uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="py-1 pr-3">Quando</th>
+                  <th className="py-1 pr-3">Lançado</th>
+                  <th className="py-1 pr-3">Cancelado</th>
                   <th className="py-1 pr-3">O quê</th>
                   <th className="py-1 pr-3 text-right">Valor</th>
                   <th className="py-1 pr-3">Situação do item</th>
@@ -289,6 +291,7 @@ export default async function EspelhoPedidoPage(props: { params: Promise<{ id: s
               <tbody>
                 {cancelamentos.map((c, i) => (
                   <tr key={i} className="border-t border-slate-100">
+                    <td className="py-1.5 pr-3 font-mono text-slate-500">{c.lancadoEm ? dataHora(c.lancadoEm) : '—'}</td>
                     <td className="py-1.5 pr-3 font-mono">{dataHora(c.quando)}</td>
                     <td className="py-1.5 pr-3">{c.tipo === 'pedido' ? 'PEDIDO INTEIRO' : c.nome ?? '—'}</td>
                     <td className="py-1.5 pr-3 text-right font-mono">

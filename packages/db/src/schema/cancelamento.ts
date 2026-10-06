@@ -33,6 +33,9 @@ export const cancelamentoItem = pgTable(
     /** cancelamento.id na loja */
     idLocal: bigint('id_local', { mode: 'number' }).notNull(),
     quando: timestamp('quando', { withTimezone: true }).notNull(),
+    /** quando o item foi LANÇADO na conta (pedido inteiro = o primeiro item).
+     *  Nulo = a loja não mandou (cancelamento de antes de 06/10/2026). */
+    lancadoEm: timestamp('lancado_em', { withTimezone: true }),
     /** item · pedido (pedido inteiro) */
     tipo: varchar('tipo', { length: 10 }).notNull(),
     /** quem cancelou (login do caixa) */

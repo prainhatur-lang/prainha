@@ -164,7 +164,8 @@ export interface RelatorioCasa {
     demora: { itens: number; valor: number; mesas: number; de: string | null; ate: string | null };
     /** mesas em que o cancelado por demora passou do que a mesa pagou */
     mesasQueDesistiram: Array<{ numero: number; cancelado: number; pago: number | null; hora: string }>;
-    maiores: Array<{ hora: string; numero: number | null; nome: string; valor: number; motivo: string; quem: string | null }>;
+    /** `hora` = cancelamento; `lancado` = quando o item entrou na conta (nulo se a loja não mandou) */
+    maiores: Array<{ hora: string; lancado: string | null; numero: number | null; nome: string; valor: number; motivo: string; quem: string | null }>;
   };
   kds: {
     itens: number;
@@ -411,6 +412,7 @@ export async function montarRelatorioCasa(
     `),
     q<{
       hora: string;
+      lancado: string | null;
       numero: number | null;
       nome: string | null;
       valor: number;
@@ -419,6 +421,13 @@ export async function montarRelatorioCasa(
       gerente: string | null;
     }>(sql`
       SELECT to_char(c.quando AT TIME ZONE ${TZ}, 'HH24:MI') AS hora,
+             -- hora do lançamento: a que a loja mandou; sem ela, a do item que
+             -- sobrou na conta (cancelamento parcial, "1 de 3×")
+             to_char(coalesce(c.lancado_em, (
+               SELECT min(pi.data_hora_cadastro) FROM pedido_item pi
+                WHERE pi.filial_id = c.filial_id AND pi.codigo_externo = c.item_codigo
+                  AND pi.data_hora_cadastro <= c.quando
+             )) AT TIME ZONE ${TZ}, 'HH24:MI') AS lancado,
              c.numero, c.nome, coalesce(c.valor, 0)::float8 AS valor, c.motivo, c.login, c.gerente
         FROM cancelamento_item c
        WHERE c.filial_id = ${F} AND c.quando >= ${ini}::timestamptz AND c.quando < ${fim}::timestamptz
@@ -641,6 +650,7 @@ export async function montarRelatorioCasa(
       .slice(0, 5)
       .map((c) => ({
         hora: c.hora,
+        lancado: c.lancado ?? null,
         numero: c.numero,
         nome: c.nome ?? '?',
         valor: num(c.valor),

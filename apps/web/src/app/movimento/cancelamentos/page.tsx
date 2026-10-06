@@ -87,6 +87,13 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
     .select({
       id: c.id,
       quando: c.quando,
+      // hora do lançamento: a que a loja mandou; sem ela, a do item que sobrou
+      // na conta (cancelamento parcial). Nome da tabela por extenso: o drizzle
+      // tira o qualificador em select de uma tabela só e a subconsulta se confundiria.
+      lancadoEm: sql<Date | null>`coalesce(cancelamento_item.lancado_em, (
+        SELECT min(pi.data_hora_cadastro) FROM pedido_item pi
+         WHERE pi.filial_id = cancelamento_item.filial_id AND pi.codigo_externo = cancelamento_item.item_codigo
+           AND pi.data_hora_cadastro <= cancelamento_item.quando))`.mapWith(c.quando),
       tipo: c.tipo,
       login: c.login,
       gerente: c.gerente,
@@ -285,7 +292,8 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-4 py-2">Quando</th>
+                <th className="px-4 py-2">Lançado</th>
+                <th className="px-4 py-2">Cancelado</th>
                 <th className="px-4 py-2">Mesa/comanda</th>
                 <th className="px-4 py-2">Item</th>
                 <th className="px-4 py-2 text-right">Valor</th>
@@ -298,7 +306,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
             <tbody>
               {linhas.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-500">
                     {Number(totalFilial) === 0
                       ? 'A loja ainda não enviou nenhum cancelamento pra nuvem — isso depende do vendas-local atualizado rodando lá.'
                       : 'Nenhum cancelamento nesse filtro.'}
@@ -309,6 +317,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                   const prod = jaProduzido(l.statusItem);
                   return (
                     <tr key={l.id} className={`border-t border-slate-100 ${l.tipo === 'pedido' ? 'bg-rose-50/40' : prod ? 'bg-amber-50/40' : ''}`}>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{l.lancadoEm ? formatDateTime(l.lancadoEm) : '—'}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">{formatDateTime(l.quando)}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">{l.numero ?? '—'}</td>
                       <td className="px-4 py-2 text-xs text-slate-800">

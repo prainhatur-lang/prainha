@@ -237,7 +237,8 @@ function Casa({ c }: { c: RelatorioCasa }) {
                 <ul className="mt-3 space-y-1 text-xs text-slate-500">
                   {c.cancelamentos.maiores.map((m, i) => (
                     <li key={i}>
-                      {m.hora} · mesa {m.numero ?? '—'} · {m.nome} · {brl(m.valor)} · {m.motivo}
+                      {m.lancado ? `lançado ${m.lancado} · cancelado ${m.hora}` : `cancelado ${m.hora}`} · mesa {m.numero ?? '—'} · {m.nome} ·{' '}
+                      {brl(m.valor)} · {m.motivo}
                       {m.quem ? ` · ${m.quem}` : ''}
                     </li>
                   ))}

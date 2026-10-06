@@ -776,6 +776,10 @@ async function initSchema() {
   // já resolveu ficava olhando alarme velho (dono, 19/08).
   await addCol('cancelamento', 'visto_em timestamptz');
   await addCol('cancelamento', 'visto_por text');
+  // HORA DO LANÇAMENTO do item cancelado (dono, 06/10): o relatório mostra
+  // "lançado 14:43 · cancelado 15:48" — quanto tempo o item ficou na conta.
+  // Item = comanda_item.criado; pedido inteiro = o primeiro item da conta.
+  await addCol('cancelamento', 'lancado_em timestamptz');
   // CONSERTO RETROATIVO das cascas que a transferência cancelou antes de existir
   // o estado "esvaziada". Cancelar conta SEMPRE deixa linha em `cancelamento`
   // ("PEDIDO INTEIRO", item_codigo nulo) — sem essa linha, com transferência
@@ -7742,12 +7746,14 @@ async function apiCaixaCancelarItem(body, quem) {
     servico: Math.max(0, novoServ), total: Math.max(0, novoTot) });
   if (!ru) return { ok: false, erro: 'o item saiu, mas o total não atualizou' };
   const nomeLog = (parcial ? qtdCanc + ' de ' + qtdLinha + '× ' : '') + principal.nome;
-  const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade FROM comanda_item
+  const areaRows = await sql`SELECT item_codigo, area_codigo, nome, quantidade, criado FROM comanda_item
     WHERE item_codigo = ANY(${alvos.map((x) => x.codigo)})`;
   // praça do item que saiu: o aviso acende só na cozinha dona dele
   const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto})`;
+  // hora em que o item foi lançado (vai pro relatório ao lado da hora do cancelamento)
+  const lancadoEm = areaRows.find((a) => Number(a.item_codigo) === item)?.criado ?? null;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto}, ${lancadoEm})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -7796,10 +7802,12 @@ async function apiCaixaCancelarPedido(body, quem) {
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     WHERE c.numero=${numero} AND c.fechada_em IS NULL AND c.cancelada_em IS NULL AND ci.cancelado_em IS NULL
       AND ci.tipo IS DISTINCT FROM 2 AND ci.produzido IS NULL AND ci.entregue IS NULL`;
+  // pedido inteiro: a hora do lançamento é a do PRIMEIRO item da conta
+  const lancadoEm = (await sql`SELECT MIN(criado) AS lancado FROM comanda_item WHERE comanda_codigo=${Number(ped)}`.catch(() => []))[0]?.lancado ?? null;
   const rd = await pedApagar(ped);
   if (!rd) return { ok: false, erro: 'não deu pra excluir o pedido' };
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo)
-    VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)})`;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, lancado_em)
+    VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)}, ${lancadoEm})`;
   cupomCancelado(vivos, numero).catch(() => {});
   espelho().catch(() => {});
   return { ok: true, valor: tot };
@@ -9853,13 +9861,51 @@ async function loopComandosNuvem() {
 // Manda em lotes de 200 por minuto, guardando até que id já foi; a nuvem faz
 // upsert por (filial, id) — reenviar não duplica. Mesma assinatura HMAC da
 // fila de fiado ([FILIAL_ID,'cancel',e]).
+/** UMA VEZ SÓ: os cancelamentos de antes da coluna `lancado_em` ganham a hora
+ *  do lançamento a partir do comanda_item que ainda está no banco, e os dos
+ *  últimos 60 dias que já tinham subido sobem de novo (sem foto — a nuvem
+ *  mantém a que tem) pra nuvem aprender a hora. Falhou = tenta no minuto seguinte. */
+async function cancelLancadoRetro() {
+  if ((await cfgGet('cancel_lancado_retro', '')) === '1') return;
+  await sql`UPDATE cancelamento k SET lancado_em = ci.criado FROM comanda_item ci
+    WHERE k.lancado_em IS NULL AND k.item_codigo IS NOT NULL AND ci.item_codigo = k.item_codigo
+      AND ci.criado IS NOT NULL AND ci.criado <= k.quando`;
+  await sql`UPDATE cancelamento k SET lancado_em = x.lancado
+    FROM (SELECT comanda_codigo, MIN(criado) AS lancado FROM comanda_item WHERE criado IS NOT NULL GROUP BY comanda_codigo) x
+    WHERE k.lancado_em IS NULL AND k.item_codigo IS NULL AND x.comanda_codigo = k.pedido_fb AND x.lancado <= k.quando`;
+  const ate = Number(await cfgGet('cancel_nuvem_ate', '0')) || 0;
+  let cursor = 0, total = 0;
+  for (;;) {
+    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, lancado_em
+      FROM cancelamento WHERE id > ${cursor} AND id <= ${ate} AND lancado_em IS NOT NULL AND quando > now() - interval '60 days'
+      ORDER BY id LIMIT 200`;
+    if (!rows.length) break;
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/cancelamentos`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('cancel', e), cancelamentos: rows.map((x) => ({
+        id: Number(x.id), quando: x.quando, login: x.login, gerente: x.gerente, numero: x.numero,
+        pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
+        nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
+        motivo: x.motivo, area_codigo: x.area_codigo, lancado_em: x.lancado_em })) }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) throw new Error('nuvem recusou o reenvio: ' + (j?.erro || r.status));
+    cursor = Number(rows[rows.length - 1].id);
+    total += rows.length;
+  }
+  await cfgSet('cancel_lancado_retro', '1');
+  console.log(`[cancel] hora do lançamento: ${total} cancelamento(s) antigo(s) reenviado(s) pra nuvem`);
+}
 let cancelNuvemRodando = false;
 async function loopCancelNuvem() {
   if (cancelNuvemRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
   cancelNuvemRodando = true;
   try {
+    await cancelLancadoRetro().catch((err) => console.error('[cancel] hora do lançamento (retro):', err.message));
     const desde = Number(await cfgGet('cancel_nuvem_ate', '0')) || 0;
-    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto
+    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em
       FROM cancelamento WHERE id > ${desde} ORDER BY id LIMIT 200`;
     if (!rows.length) return;
     // A foto da devolução vai junto (base64). A Vercel aceita ~4,5 MB por
@@ -9879,7 +9925,7 @@ async function loopCancelNuvem() {
         id: Number(x.id), quando: x.quando, login: x.login, gerente: x.gerente, numero: x.numero,
         pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
         nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
-        motivo: x.motivo, area_codigo: x.area_codigo,
+        motivo: x.motivo, area_codigo: x.area_codigo, lancado_em: x.lancado_em ?? null,
         foto_b64, foto_mime: foto_b64 ? 'image/jpeg' : null });
       if (foto_b64) bytes += foto_b64.length;
     }
