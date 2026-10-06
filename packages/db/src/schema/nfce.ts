@@ -55,6 +55,8 @@ export interface NfcePagamentoSnapshot {
   tBand?: string;
   /** NSU/autorização da maquininha (cAut). */
   cAut?: string;
+  /** Descrição do meio de pagamento — obrigatória na SEFAZ quando tPag = 99. */
+  xPag?: string;
 }
 
 export const nfceEmitida = pgTable(

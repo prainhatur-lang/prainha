@@ -392,6 +392,7 @@ export async function emitirNfcePedido(
         valor: p.valor,
         tBand: p.tBand,
         cAut: p.cAut,
+        xPag: p.xPag,
       })),
       valorTroco: input.valorTroco,
       infoExtra: input.infoExtra,

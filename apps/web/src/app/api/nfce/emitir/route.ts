@@ -44,6 +44,7 @@ const Pagamento = z.object({
   valor: z.number().positive(),
   tBand: z.string().regex(/^\d{2}$/).optional(),
   cAut: z.string().max(40).optional(),
+  xPag: z.string().max(60).optional(),
 });
 
 const Body = z.object({

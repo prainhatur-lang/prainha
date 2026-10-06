@@ -67,6 +67,8 @@ export interface NfcePagamento {
   valor: number;
   tBand?: string;
   cAut?: string;
+  /** Descrição do meio de pagamento (só vai no XML quando tPag = 99). */
+  xPag?: string;
 }
 
 export interface DadosNfce {
@@ -340,7 +342,9 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
           (p.cAut ? tag('cAut', texto(p.cAut, 20)) : '') +
           `</card>`
         : '';
-      return `<detPag><indPag>0</indPag>${tag('tPag', tPag)}${tag('vPag', f2(p.valor))}${card}</detPag>`;
+      // tPag 99 (outros) sem xPag volta com a rejeição 441
+      const xPag = tPag === '99' ? tag('xPag', texto(p.xPag || 'Outros', 60)) : '';
+      return `<detPag><indPag>0</indPag>${tag('tPag', tPag)}${xPag}${tag('vPag', f2(p.valor))}${card}</detPag>`;
     })
     .join('');
 

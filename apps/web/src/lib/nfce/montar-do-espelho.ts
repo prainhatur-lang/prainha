@@ -73,6 +73,11 @@ const TPAG_POR_DESCRICAO: Record<string, string> = {
   'Transferência bancária, Carteira Digital': '18',
   'Programa de fidelidade, Cashback, Crédito Virtual': '19',
   'Pix Manual': '20', // PIX estático (chave fixa)
+  // nomes do banco próprio (vendas-local sem Consumer) — sem eles o botão
+  // Emitir mandava 99 e a SEFAZ devolvia a rejeição 441
+  'Crédito': '03',
+  'Débito': '04',
+  'Pix': '17',
 };
 
 function tPagDe(descricao: string | null): string {
@@ -207,6 +212,8 @@ export async function montarNfceDoEspelho(
     .map((g) => {
       const tPag = tPagDe(g.forma);
       const out: EmitirInput['pagamentos'][number] = { tPag, valor: r2c(num(g.valor)) };
+      // 99 (outros) exige a descrição do meio de pagamento (rejeição 441)
+      if (tPag === '99') out.xPag = String(g.forma ?? '').trim() || 'Outros';
       if (tPag === '03' || tPag === '04') {
         const band = tBandDe(g.bandeira);
         if (band) out.tBand = band;
