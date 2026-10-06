@@ -49,13 +49,21 @@ export function FormNfeCupom({
 
   async function buscar(tipo: 'cnpj' | 'cep') {
     const v = so(tipo === 'cnpj' ? f.documento : f.cep);
-    if (tipo === 'cnpj' && v.length !== 14) return;
+    const ehCpf = tipo === 'cnpj' && v.length === 11;
+    if (tipo === 'cnpj' && v.length !== 14 && !ehCpf) return;
     if (tipo === 'cep' && v.length !== 8) return;
     setOcupado(tipo);
     setErro(null);
     setAviso(null);
     try {
-      const r = await fetch(`/api/nfe/consulta-destinatario?${tipo}=${v}`);
+      // CPF não tem consulta na Receita: procura no cadastro da casa (vai no corpo, não na URL)
+      const r = ehCpf
+        ? await fetch('/api/nfe/consulta-destinatario', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cpf: v }),
+          })
+        : await fetch(`/api/nfe/consulta-destinatario?${tipo}=${v}`);
       const j = await r.json();
       if (!r.ok) {
         setAviso(j.error ?? 'não achei — preencha na mão');
@@ -69,6 +77,7 @@ export function FormNfeCupom({
         }
         return n as unknown as DestForm;
       });
+      if (ehCpf) setAviso(`Dados puxados do ${j.origem ?? 'cadastro'} — confira antes de emitir.`);
       if (j.situacao && j.situacao !== 'ATIVA') setAviso(`Atenção: na Receita este CNPJ está ${j.situacao}.`);
     } catch {
       setAviso('consulta fora do ar — preencha na mão');
@@ -112,6 +121,7 @@ export function FormNfeCupom({
   }
 
   const ehCnpj = so(f.documento).length === 14;
+  const ehCpfDigitado = so(f.documento).length === 11;
 
   return (
     <div className="no-print w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -130,9 +140,9 @@ export function FormNfeCupom({
             <button
               type="button"
               onClick={() => buscar('cnpj')}
-              disabled={!ehCnpj || !!ocupado}
+              disabled={(!ehCnpj && !ehCpfDigitado) || !!ocupado}
               className="mt-0.5 rounded-md border border-slate-300 px-2 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-              title="Puxa razão social e endereço da Receita (só CNPJ)"
+              title="CNPJ: puxa razão social e endereço da Receita. CPF: procura no cadastro de clientes da casa"
             >
               {ocupado === 'cnpj' ? '…' : 'buscar'}
             </button>

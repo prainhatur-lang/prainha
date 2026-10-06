@@ -4,7 +4,10 @@
 
 import { NextResponse } from 'next/server';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { validarCnpj } from '@/lib/nfce/documento';
+import { validarCnpj, validarCpf } from '@/lib/nfce/documento';
+import { db, schema } from '@concilia/db';
+import type { NfeDestinatarioSnapshot } from '@concilia/db/schema';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -82,4 +85,88 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'consulta fora do ar — preencha na mão' }, { status: 503 });
   }
   return NextResponse.json({ error: 'informe cnpj ou cep' }, { status: 400 });
+}
+
+// POST { cpf } — CPF não tem consulta pública na Receita: procura no que a
+// casa já tem (nota já emitida pra esse CPF, depois o cadastro de clientes das
+// casas que o usuário acessa). Vai no corpo, não na URL, pra não deixar CPF em log.
+export async function POST(req: Request) {
+  const { user, error } = await exigirPermApi('nfce.read');
+  if (error) return error;
+  const body = (await req.json().catch(() => null)) as { cpf?: unknown } | null;
+  const cpf = so(body?.cpf);
+  if (!validarCpf(cpf)) return NextResponse.json({ error: 'CPF inválido' }, { status: 400 });
+
+  const filiais = (
+    await db
+      .select({ id: schema.usuarioFilial.filialId })
+      .from(schema.usuarioFilial)
+      .where(eq(schema.usuarioFilial.usuarioId, user.id))
+  ).map((f) => f.id);
+  if (!filiais.length) return NextResponse.json({ error: 'sem casa liberada' }, { status: 403 });
+
+  // 1) nota já emitida pra esse CPF — cadastro completo, já conferido por alguém
+  const [nota] = await db
+    .select({ dest: schema.nfeEmitida.dest })
+    .from(schema.nfeEmitida)
+    .where(and(inArray(schema.nfeEmitida.filialId, filiais), sql`${schema.nfeEmitida.dest}->>'documento' = ${cpf}`))
+    .orderBy(desc(schema.nfeEmitida.criadoEm))
+    .limit(1);
+  const d = nota?.dest as NfeDestinatarioSnapshot | null | undefined;
+  if (d?.nome) {
+    return NextResponse.json({
+      ok: true,
+      origem: 'nota anterior',
+      dados: {
+        nome: d.nome, ie: d.ie ?? '', email: d.email ?? '', fone: d.fone ?? '', cep: d.cep,
+        logradouro: d.logradouro, numero: d.numero, complemento: d.complemento ?? '', bairro: d.bairro,
+        municipio: d.municipio, uf: d.uf, codigoMunicipio: d.codigoMunicipio,
+      },
+    });
+  }
+
+  // 2) cadastro de clientes (PDV): o mais completo primeiro
+  const clientes = await db
+    .select()
+    .from(schema.cliente)
+    .where(and(inArray(schema.cliente.filialId, filiais), eq(schema.cliente.cpfOuCnpj, cpf), isNull(schema.cliente.dataDelete)))
+    .limit(30);
+  const peso = (c: (typeof clientes)[number]) =>
+    (str(c.endereco) ? 4 : 0) + (so(c.cep).length === 8 ? 2 : 0) + (str(c.cidade) ? 1 : 0) + (str(c.nome).includes(' ') ? 1 : 0);
+  const c = clientes.filter((x) => str(x.nome) && !str(x.nome).startsWith('*')).sort((a, b) => peso(b) - peso(a))[0];
+  if (!c) {
+    return NextResponse.json(
+      { error: 'CPF não tem consulta na Receita e não achei esse cliente no cadastro — preencha na mão (o CEP puxa o endereço)' },
+      { status: 404 },
+    );
+  }
+  const cep = so(c.cep);
+  let ibge = '';
+  let via: Record<string, unknown> | null = null;
+  if (cep.length === 8) {
+    try {
+      const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(8000) });
+      via = r.ok ? ((await r.json()) as Record<string, unknown>) : null;
+      if (via && !via.erro) ibge = so(via.ibge);
+    } catch {
+      /* sem o código da cidade — quem emite completa */
+    }
+  }
+  return NextResponse.json({
+    ok: true,
+    origem: 'cadastro de clientes',
+    dados: {
+      nome: str(c.nome),
+      email: str(c.email).toLowerCase(),
+      fone: so(c.celular) || so(c.telefone),
+      cep: cep.length === 8 ? cep : '',
+      logradouro: str(c.endereco) || str(via?.logradouro),
+      numero: str(c.numero),
+      complemento: str(c.complemento),
+      bairro: str(c.bairro) || str(via?.bairro),
+      municipio: str(c.cidade) || str(via?.localidade),
+      uf: str(c.uf).toUpperCase() || str(via?.uf),
+      codigoMunicipio: ibge,
+    },
+  });
 }
