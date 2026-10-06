@@ -52,11 +52,24 @@ export function normalizarDestinatario(d: Partial<NfeDestinatarioSnapshot>): Nfe
   };
 }
 
+/** Rejeições da SEFAZ pra NF-e que referencia NFC-e (modelo 65). */
+const REJ_REFERENCIA = new Set(['679', '375']);
+const AVISO_TESTE_SEM_REF =
+  'Teste autorizado SEM a referência ao cupom: o ambiente de teste da SEFAZ já recusa NF-e que aponta pra NFC-e ' +
+  '(rejeição 679, regra que entra em produção em 14/12/2026). O resto da nota passou. A nota de verdade vai COM a referência.';
+
 const dataBr = (d: Date | null) =>
   d ? d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '';
 
 export async function emitirNfeDoCupom(
-  opts: { nfceId: string; userId: string; destinatario: Partial<NfeDestinatarioSnapshot>; homologacao?: boolean },
+  opts: {
+    nfceId: string;
+    userId: string;
+    destinatario: Partial<NfeDestinatarioSnapshot>;
+    homologacao?: boolean;
+    /** Uso interno: reenvio do TESTE sem <NFref> depois da rejeição 679/375. */
+    semReferencia?: boolean;
+  },
   tentativa = 0,
   trocasSerie = 0,
 ): Promise<EmitirNfeResultado> {
@@ -91,6 +104,7 @@ export async function emitirNfeDoCupom(
 
   const serie = await serieEmUso(cupom.filialId, ctx.cfg, tpAmb);
   const modelo = 55 as const;
+  const semReferencia = opts.semReferencia === true || ctx.cfg?.nfe?.cupomSemReferencia === true;
 
   // nota "viva" desse cupom nesse ambiente?
   const [viva] = await db
@@ -175,6 +189,7 @@ export async function emitirNfeDoCupom(
       serie,
       numero,
       chaveCupom: cupom.chave,
+      semReferencia,
       itens,
       infoExtra,
     });
@@ -253,7 +268,12 @@ export async function emitirNfeDoCupom(
 
   const prot = retorno.prot;
   if (prot?.cStat === '100') {
-    return { ok: true, jaExistia: false, nota: resumo(await marcarAutorizada(rowId, prot, nfeAssinada)) };
+    return {
+      ok: true,
+      jaExistia: false,
+      nota: resumo(await marcarAutorizada(rowId, prot, nfeAssinada)),
+      ...(opts.semReferencia ? { aviso: AVISO_TESTE_SEM_REF } : {}),
+    };
   }
 
   // 204 = duplicidade (a chave JÁ está lá — o envio anterior chegou): adota
@@ -298,6 +318,19 @@ export async function emitirNfeDoCupom(
       ok: false,
       cstat: cstatRej,
       erro: `SEFAZ rejeitou (539): a série ${serie} da NF-e desta casa já tem o número ${numero} emitido por outro sistema. ${xmotivoRej}`,
+    };
+  }
+  // 679/375 = a SEFAZ não aceitou a NF-e apontar pra uma NFC-e (NT 2026.002,
+  // regra BA02-35). No TESTE a regra já vale; em produção, só de 14/12/2026 em
+  // diante. No teste reenvia sem a referência, pra conferir o resto da nota.
+  if (REJ_REFERENCIA.has(cstatRej ?? '') && !semReferencia) {
+    if (tpAmb === 2) return emitirNfeDoCupom({ ...opts, semReferencia: true }, 0, trocasSerie);
+    return {
+      ok: false,
+      cstat: cstatRej,
+      erro:
+        `SEFAZ rejeitou (${cstatRej}): ${xmotivoRej} — a SEFAZ não aceita mais NF-e que referencia cupom (NFC-e) ` +
+        `(NT 2026.002). Fale com o contador: daqui pra frente o CNPJ do cliente vai no próprio cupom.`,
     };
   }
   return { ok: false, cstat: cstatRej, erro: `SEFAZ rejeitou (${cstatRej}): ${xmotivoRej}` };

@@ -89,6 +89,12 @@ export interface DadosNfeCupom {
   numero: number;
   /** Chave (44) da NFC-e que originou a nota. */
   chaveCupom: string;
+  /**
+   * Não leva <NFref> (a chave do cupom fica só nas informações complementares).
+   * O ambiente de teste da SEFAZ já recusa NF-e que referencia NFC-e (NT
+   * 2026.002, regra BA02-35 — em produção a partir de 14/12/2026).
+   */
+  semReferencia?: boolean;
   itens: NfeCupomItem[];
   infoExtra?: string;
   dhEmi?: string;
@@ -299,7 +305,7 @@ export function montarXmlNfeCupom(dados: DadosNfeCupom): XmlNfeMontado {
     `<indPres>1</indPres>` +
     `<procEmi>0</procEmi>` +
     tag('verProc', 'concilia 1.0') +
-    `<NFref>${tag('refNFe', chaveCupom)}</NFref>` +
+    (dados.semReferencia ? '' : `<NFref>${tag('refNFe', chaveCupom)}</NFref>`) +
     `</ide>`;
 
   const emit =

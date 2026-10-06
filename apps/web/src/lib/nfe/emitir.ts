@@ -30,7 +30,7 @@ export interface NfeResumo {
 }
 
 export type EmitirNfeResultado =
-  | { ok: true; jaExistia: boolean; nota: NfeResumo }
+  | { ok: true; jaExistia: boolean; nota: NfeResumo; /** Recado pra quem emitiu (a nota saiu, mas com ressalva). */ aviso?: string }
   | {
       ok: false;
       erro: string;

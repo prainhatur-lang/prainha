@@ -280,6 +280,10 @@ export interface FiscalNfeConfig {
   cupomCsosn?: string;
   /** NF-e de cupom: CST de PIS/COFINS (padrão 49 — outras saídas, sem valor). */
   cupomCstPisCofins?: string;
+  /** NF-e de cupom sem <NFref> (chave do cupom só nas informações
+   *  complementares). Padrão false. Decisão do contador — a SEFAZ veda a
+   *  referência a NFC-e em produção a partir de 14/12/2026 (NT 2026.002). */
+  cupomSemReferencia?: boolean;
 }
 
 /** Faixa de taxa de entrega por distância em linha reta (km). */

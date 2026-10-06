@@ -101,6 +101,7 @@ export function FormNfeCupom({
         router.refresh();
         return;
       }
+      if (j.aviso) window.alert(j.aviso);
       router.push(`/fiscal/nfce/${nfceId}/nfe?nfeId=${j.nota.id}`);
       router.refresh();
     } catch {

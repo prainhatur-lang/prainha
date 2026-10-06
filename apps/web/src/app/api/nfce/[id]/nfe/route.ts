@@ -52,5 +52,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       { status: r.transitorio ? 503 : 400 },
     );
   }
-  return NextResponse.json({ ok: true, jaExistia: r.jaExistia, nota: r.nota });
+  return NextResponse.json({ ok: true, jaExistia: r.jaExistia, nota: r.nota, aviso: r.aviso });
 }

@@ -22,9 +22,26 @@ export async function GET(req: Request) {
   try {
     if (cnpj) {
       if (!validarCnpj(cnpj)) return NextResponse.json({ error: 'CNPJ inválido' }, { status: 400 });
-      const r = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { signal: AbortSignal.timeout(12000) });
-      if (!r.ok) return NextResponse.json({ error: 'CNPJ não encontrado na Receita — preencha na mão' }, { status: 404 });
-      const j = (await r.json()) as Record<string, unknown>;
+      // A BrasilAPI recusa chamada da Vercel sem User-Agent; a Minha Receita
+      // devolve os mesmos campos e entra de reserva.
+      let j: Record<string, unknown> | null = null;
+      for (const base of ['https://brasilapi.com.br/api/cnpj/v1/', 'https://minhareceita.org/']) {
+        try {
+          const r = await fetch(`${base}${cnpj}`, {
+            headers: { 'User-Agent': 'concilia-prainha/1.0 (app.prainhabar.com)', Accept: 'application/json' },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (!r.ok) continue;
+          const c = (await r.json()) as Record<string, unknown>;
+          if (str(c.razao_social)) {
+            j = c;
+            break;
+          }
+        } catch {
+          /* tenta a próxima */
+        }
+      }
+      if (!j) return NextResponse.json({ error: 'CNPJ não encontrado na Receita — preencha na mão' }, { status: 404 });
       const tipo = str(j.descricao_tipo_de_logradouro);
       return NextResponse.json({
         ok: true,
