@@ -4,7 +4,7 @@
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { desc, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { formatarDocumento } from '@/lib/nfce/documento';
 import { AcoesNota } from './acoes';
@@ -136,6 +136,27 @@ export default async function NfcePage() {
         .orderBy(desc(schema.nfceEmitida.criadoEm))
         .limit(200)
     : [];
+
+  // NF-e (nota grande, produção) já autorizada pra cada cupom da lista: vira o
+  // selo verde na linha e traz o CPF/CNPJ de quem recebeu a nota.
+  const nfes = notas.length
+    ? await db
+        .select({
+          origem: schema.nfeEmitida.nfceOrigemId,
+          numero: schema.nfeEmitida.numero,
+          serie: schema.nfeEmitida.serie,
+          dest: schema.nfeEmitida.dest,
+        })
+        .from(schema.nfeEmitida)
+        .where(
+          and(
+            inArray(schema.nfeEmitida.nfceOrigemId, notas.map((n) => n.id)),
+            eq(schema.nfeEmitida.status, 'AUTORIZADA'),
+            eq(schema.nfeEmitida.ambiente, 1),
+          ),
+        )
+    : [];
+  const nfePorCupom = new Map(nfes.map((x) => [x.origem, x]));
 
   const resumo = ids.length
     ? await db
@@ -326,12 +347,25 @@ export default async function NfcePage() {
                     >
                       {n.status}
                     </span>
+                    {nfePorCupom.get(n.id) && (
+                      <a
+                        href={`/fiscal/nfce/${n.id}/nfe`}
+                        className="ml-1 whitespace-nowrap rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700"
+                        title="Este cupom já tem NF-e (nota grande) autorizada — toque pra abrir, não precisa emitir de novo"
+                      >
+                        ✓ NF-e {nfePorCupom.get(n.id)!.numero}/{nfePorCupom.get(n.id)!.serie}
+                      </a>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-slate-900">
                     {brl(Number(n.valorTotal))}
                   </td>
                   <td className="px-3 py-2 font-mono text-slate-600">
-                    {n.destDocumento ? formatarDocumento(n.destDocumento) : '—'}
+                    {n.destDocumento
+                      ? formatarDocumento(n.destDocumento)
+                      : nfePorCupom.get(n.id)?.dest?.documento
+                        ? formatarDocumento(nfePorCupom.get(n.id)!.dest!.documento)
+                        : '—'}
                   </td>
                   <td className="max-w-[260px] px-3 py-2 text-slate-600">
                     {n.cstat ? `${n.cstat} — ${n.xmotivo ?? ''}` : (n.erro ?? '—')}
