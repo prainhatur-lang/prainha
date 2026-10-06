@@ -6657,6 +6657,46 @@ async function fbEquipeAtivo(usuario, ativo) {
   if (!r.ok) throw new Error('FB ativar/desativar: ' + r.err);
   console.log(`[equipe] usuário ${u} ${ativo ? 'ativado' : 'desativado'}`);
 }
+/** Celular que a casa JA TEM pra este CPF — quem identifica so com o CPF nao
+ *  precisa digitar o numero de novo. Ordem: cadastro da casa, quem ja foi
+ *  identificado aqui com o mesmo CPF, e o que a consulta paga trouxe (cache).
+ *  Sem numero com DDD em nenhum lugar devolve null: a identificacao segue so
+ *  com o CPF. Nunca consulta nada fora nem cobra — e' so leitura local. */
+async function telefoneDoCpf(cpf, contatoFb) {
+  const c = soDig(cpf || '');
+  const serve = (t) => { const d = soDig(t || ''); return d.length >= 10 && d.length <= 15 ? d : null; };
+  try {
+    if (nativo()) {
+      const rows = contatoFb
+        ? await sql`SELECT telefone FROM cliente_local WHERE codigo=${Number(contatoFb)}`
+        : (c.length === 11 ? await sql`SELECT telefone FROM cliente_local WHERE ativo AND regexp_replace(COALESCE(cpf,''),'\\D','','g')=${c} ORDER BY codigo DESC` : []);
+      for (const x of rows) { const t = serve(x.telefone); if (t) return t; }
+    } else if (contatoFb || c.length === 11) {
+      const r = await qi(`SELECT FONECELULAR, FONEPRINCIPAL FROM CONTATOS WHERE DATADELETE IS NULL AND ` +
+        (contatoFb ? `CODIGO=${Number(contatoFb)}`
+          : `TRIM(COALESCE(TIPO,''))='CF' AND REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') = '${c}' ORDER BY CODIGO DESC`));
+      if (r.ok) for (const x of r.rows) { const t = serve(x.FONECELULAR) || serve(x.FONEPRINCIPAL); if (t) return t; }
+    }
+  } catch { /* cadastro fora do ar: tenta as outras fontes */ }
+  if (c.length !== 11) return null;
+  try {
+    const ja = await sql`SELECT telefone FROM identificacao WHERE cpf=${c} AND telefone IS NOT NULL ORDER BY criado_em DESC LIMIT 5`;
+    for (const x of ja) { const t = serve(x.telefone); if (t) return t; }
+    const h = createHash('sha256').update(c).digest('hex');
+    const sp = (await sql`SELECT telefone FROM spc_cache WHERE cpf_hash=${h}`)[0];
+    return serve(sp?.telefone);
+  } catch { return null; }
+}
+/** Acrescenta `telefone_fim` (so os 4 ultimos) na resposta da consulta por CPF:
+ *  as telas mostram "ja temos o numero (final 1234)" e nao pedem de novo. O
+ *  numero inteiro NAO sai por aqui — esta consulta nao exige login. */
+async function comFimDoTelefone(resp, cpf) {
+  if (resp && resp.nome && !resp.telefone_fim) {
+    const t = await telefoneDoCpf(cpf, resp.contato_fb).catch(() => null);
+    if (t) resp.telefone_fim = t.slice(-4);
+  }
+  return resp;
+}
 async function apiVendaIdentificar(cpf, telefone) {
   // CPF ou WhatsApp — o que a pessoa tiver
   if (telefone && !cpf) {
@@ -6696,25 +6736,25 @@ async function apiVendaIdentificar(cpf, telefone) {
     // (Em 02/08 os 34 CPFs duplicados da base tiveram o documento removido —
     // os clientes e o historico ficaram; so o CPF saiu.)
     if (local?.fonte === 'ambiguo') duplicado = local.candidatos;
-    else if (local && local.fonte !== 'so_colaborador') return { ok: true, ...local, nome_curto: nomeCurto(local.nome) };
+    else if (local && local.fonte !== 'so_colaborador') return comFimDoTelefone({ ok: true, ...local, nome_curto: nomeCurto(local.nome) }, cpf);
   } catch (e) { return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) }; }
   // 2º) quem já identificamos em alguma mesa antes, mesmo sem cadastrar no
   //     Consumer. Sem isto, essa pessoa seria consultada (e cobrada) de novo.
   const jaVisto = duplicado ? null : (await sql`SELECT nome, contato_fb FROM identificacao
     WHERE cpf=${soDig(cpf)} AND nome IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)[0];
-  if (jaVisto?.nome) return { ok: true, nome: jaVisto.nome, contato_fb: jaVisto.contato_fb ?? null,
-    fonte: 'ja-atendido', nome_curto: nomeCurto(jaVisto.nome) };
+  if (jaVisto?.nome) return comFimDoTelefone({ ok: true, nome: jaVisto.nome, contato_fb: jaVisto.contato_fb ?? null,
+    fonte: 'ja-atendido', nome_curto: nomeCurto(jaVisto.nome) }, cpf);
   // 3º) base do GRUPO: quem já foi identificado em QUALQUER filial. Um cliente
   //     conhecido no Tabuará não pode ser consultado de novo na Prainha Bar.
   try {
     const grupo = duplicado ? null : await clienteDoGrupo(cpf);
-    if (grupo) return { ok: true, nome: grupo.nome, fonte: 'grupo',
-      telefone_fim: grupo.telefone_fim, nome_curto: nomeCurto(grupo.nome) };
+    if (grupo) return comFimDoTelefone({ ok: true, nome: grupo.nome, fonte: 'grupo',
+      telefone_fim: grupo.telefone_fim, nome_curto: nomeCurto(grupo.nome) }, cpf);
   } catch { /* sem internet: segue pro SPC, que também precisaria dela */ }
   // 4º) só agora o SPC — e ele ainda passa pelo próprio cache antes de cobrar
   try {
     const ext = await consultarCpfExterno(cpf);
-    if (ext) return { ok: true, ...ext, nome_curto: nomeCurto(ext.nome) };
+    if (ext) return comFimDoTelefone({ ok: true, ...ext, nome_curto: nomeCurto(ext.nome) }, cpf);
   } catch (e) {
     return { ok: true, nome: null, fonte: 'erro', aviso: String(e.message).slice(0, 120) };
   }
@@ -6731,6 +6771,11 @@ async function apiIdentificarSalvar(body) {
   if (!nome) return { ok: false, erro: 'informe o nome' };
   const curto = nomeCurto(nome);
   let contatoFb = body.contato_fb ? Number(body.contato_fb) : null;
+  // SO O CPF BASTA. Veio CPF e nao veio telefone: usa o celular que a casa ja
+  // tem pra essa pessoa (cadastro, visita anterior, consulta). Nao tem em lugar
+  // nenhum -> grava sem telefone, como sempre. Vale pra maquininha, garcom e QR.
+  let telSalvo = tel;
+  if (!telSalvo && cpf) telSalvo = await telefoneDoCpf(cpf, contatoFb).catch(() => null);
   // Cliente novo: cadastra no Consumer pra existir na próxima visita
   if (!contatoFb && body.cadastrar) {
     // recupera o que o SPC ja trouxe pra este CPF (cache — nao consulta de novo)
@@ -6740,7 +6785,7 @@ async function apiIdentificarSalvar(body) {
       ex = (await sql`SELECT nascimento, endereco, cidade, uf, cep, telefone FROM spc_cache
         WHERE cpf_hash=${h}`)[0] || {};
     }
-    try { contatoFb = await fbCriarContato({ nome, cpf, telefone: tel || ex.telefone,
+    try { contatoFb = await fbCriarContato({ nome, cpf, telefone: telSalvo || ex.telefone,
       nascimento: ex.nascimento ? new Date(ex.nascimento).toISOString().slice(0, 10) : null,
       endereco: ex.endereco, cidade: ex.cidade, uf: ex.uf, cep: ex.cep }); }
     catch (e) { return { ok: false, erro: e.message }; }
@@ -6767,7 +6812,7 @@ async function apiIdentificarSalvar(body) {
     }
   }
   await sql`INSERT INTO identificacao (numero, cpf, telefone, nome, nome_curto, contato_fb)
-      VALUES (${numero}, ${cpf}, ${tel}, ${nome}, ${curto}, ${contatoFb})
+      VALUES (${numero}, ${cpf}, ${telSalvo}, ${nome}, ${curto}, ${contatoFb})
     ON CONFLICT (numero) DO UPDATE SET cpf=COALESCE(EXCLUDED.cpf, identificacao.cpf),
       telefone=COALESCE(EXCLUDED.telefone, identificacao.telefone),
       nome=EXCLUDED.nome, nome_curto=EXCLUDED.nome_curto,
@@ -6778,8 +6823,9 @@ async function apiIdentificarSalvar(body) {
     if (ped) await fbIdentificarPedido(ped, { nome: curto, cpf, contatoFb });
   } catch (e) { console.error('[identificar] write-back:', e.message); }
   // leva pra base do grupo: identificou aqui, é conhecido nas outras filiais
-  publicarNoGrupo({ cpf, nome, telefone: tel, origem: contatoFb ? 'consumer' : 'manual' });
-  return { ok: true, numero, nome_curto: curto, contato_fb: contatoFb, cadastrado: !!(body.cadastrar && contatoFb) };
+  publicarNoGrupo({ cpf, nome, telefone: telSalvo, origem: contatoFb ? 'consumer' : 'manual' });
+  return { ok: true, numero, nome_curto: curto, contato_fb: contatoFb, cadastrado: !!(body.cadastrar && contatoFb),
+    telefone_fim: telSalvo ? telSalvo.slice(-4) : null };
 }
 
 // ================== LOGIN DO GARÇOM (PIN próprio) ==================
@@ -16715,6 +16761,7 @@ function passo2(telFim){
   if(telFim){
     p2.innerHTML='<div class="tit" style="margin-top:16px">WhatsApp</div>'+
       '<div class="mut">Já temos o número desta pessoa (final '+esc(String(telFim).slice(-4))+') — não precisa digitar.</div>'+
+      '<label class="chk"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>'+
       '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>'+
       '<div style="margin-top:10px;text-align:right"><a style="color:var(--mut);text-decoration:underline;cursor:pointer" onclick="trocarZap()">trocar o número</a></div>';
     return;
