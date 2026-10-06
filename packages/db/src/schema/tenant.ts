@@ -435,6 +435,8 @@ export const filial = pgTable(
      *  (padrão) = a regra de sempre, comanda só com dono. A loja puxa junto
      *  do adquirente (/api/loja/adquirente). */
     comandaSemCadastro: boolean('comanda_sem_cadastro').notNull().default(false),
+  /** Identificação da comanda só pelo CPF: a loja não pede WhatsApp e comanda nova exige CPF. */
+  comandaSoCpf: boolean('comanda_so_cpf').notNull().default(false),
     /** Adquirente da cobrança ONLINE desta filial (Pix/cartão nas reservas,
      *  orçamentos, delivery, pagar-mesa): 'cielo' (e-commerce Cielo) ou 'rede'
      *  (e.Rede). Separado da maquininha: a loja pode migrar um canal por vez. */

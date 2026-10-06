@@ -37,6 +37,7 @@ const Body = z.object({
   adquirenteMaquininha: z.enum(['cielo', 'rede']).optional(),
   adquirenteOnline: z.enum(['cielo', 'rede']).optional(),
   comandaSemCadastro: z.boolean().optional(),
+  comandaSoCpf: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -73,8 +74,8 @@ export async function PATCH(
     );
   }
 
-  const { ecs, default: def, toleranciaAutoAceite, adquirenteMaquininha, adquirenteOnline, comandaSemCadastro } = parsed.data;
-  const setFields: { taxas: { ecs: typeof ecs; default: typeof def }; toleranciaAutoAceite?: string; adquirenteMaquininha?: string; adquirenteOnline?: string; comandaSemCadastro?: boolean } = {
+  const { ecs, default: def, toleranciaAutoAceite, adquirenteMaquininha, adquirenteOnline, comandaSemCadastro, comandaSoCpf } = parsed.data;
+  const setFields: { taxas: { ecs: typeof ecs; default: typeof def }; toleranciaAutoAceite?: string; adquirenteMaquininha?: string; adquirenteOnline?: string; comandaSemCadastro?: boolean; comandaSoCpf?: boolean } = {
     taxas: { ecs, default: def },
   };
   if (toleranciaAutoAceite !== undefined) {
@@ -88,6 +89,9 @@ export async function PATCH(
   }
   if (comandaSemCadastro !== undefined) {
     setFields.comandaSemCadastro = comandaSemCadastro;
+  }
+  if (comandaSoCpf !== undefined) {
+    setFields.comandaSoCpf = comandaSoCpf;
   }
 
   const [updated] = await db

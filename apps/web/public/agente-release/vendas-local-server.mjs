@@ -1991,9 +1991,17 @@ let ADQUIRENTE_LOJA = 'cielo';
 // ninguém (abrir, lançar e receber item transferido). Quem QUISER identificar
 // continua podendo, do mesmo jeito. Nuvem fora do ar: vale o último gravado.
 let COMANDA_SEM_CADASTRO = false;
+// ---- SO CPF, tambem por filial (mesma consulta) ----
+// Ligado = a casa identifica pelo CPF e ponto: comanda nova so abre com o CPF
+// (WhatsApp sozinho nao serve) e as telas do garcom e do QR nao pedem o
+// WhatsApp — o celular entra sozinho quando a casa ja tem (telefoneDoCpf).
+// Desligado (padrao) = tudo como sempre. Com "sem cadastro" ligado junto, a
+// comanda abre sem ninguem e so o campo de WhatsApp some.
+let COMANDA_SO_CPF = false;
 async function puxarAdquirente() {
   try { ADQUIRENTE_LOJA = (await cfgGet('adquirente', 'cielo')) === 'rede' ? 'rede' : 'cielo'; } catch {}
   try { COMANDA_SEM_CADASTRO = (await cfgGet('comanda_sem_cadastro', '0')) === '1'; } catch {}
+  try { COMANDA_SO_CPF = (await cfgGet('comanda_so_cpf', '0')) === '1'; } catch {}
   if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) return;
   const e = Math.floor(Date.now() / 1000) + 120;
   const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e)].join('|')).digest('hex');
@@ -2012,6 +2020,11 @@ async function puxarAdquirente() {
     console.log(`[comanda] cadastro pra abrir/lançar: ${c.comanda_sem_cadastro ? 'dispensado' : 'exigido'} (Concilia)`);
     COMANDA_SEM_CADASTRO = c.comanda_sem_cadastro;
     try { await cfgSet('comanda_sem_cadastro', COMANDA_SEM_CADASTRO ? '1' : '0'); } catch {}
+  }
+  if (c && c.ok && typeof c.comanda_so_cpf === 'boolean' && c.comanda_so_cpf !== COMANDA_SO_CPF) {
+    console.log(`[comanda] identificação: ${c.comanda_so_cpf ? 'só CPF' : 'CPF ou WhatsApp'} (Concilia)`);
+    COMANDA_SO_CPF = c.comanda_so_cpf;
+    try { await cfgSet('comanda_so_cpf', COMANDA_SO_CPF ? '1' : '0'); } catch {}
   }
 }
 async function puxarConfigIfood() {
@@ -3301,6 +3314,7 @@ async function servicoIsento(ped) {
   return r[0]?.acao === 'tirou';
 }
 async function fbAplicarServico(ped) {
+  if (Number(ped) < 0) return 0; // pedido de canal (iFood/site) não tem 10%
   if (await servicoIsento(ped)) return 0;
   if (!(TAXA_SERVICO > 0)) return 0;
   const p = await pedTotais(ped);
@@ -4539,6 +4553,11 @@ async function apiVendaVincular(body) {
       return { ok: false, precisa_dono: true,
         erro: 'A comanda ' + comanda + ' precisa do nome e do CPF (ou WhatsApp) de quem vai usar. Comanda sem dono não abre.' };
     }
+    // casa que identifica SO pelo CPF: WhatsApp sozinho nao abre comanda
+    if (COMANDA_SO_CPF && !cpfValido(soDig(body.cpf || ''))) {
+      return { ok: false, precisa_dono: true,
+        erro: 'A comanda ' + comanda + ' precisa do CPF de quem vai usar. Digite o CPF — o WhatsApp pode ficar em branco.' };
+    }
   }
   // Quem está na comanda (opcional): CPF válido + nome do cadastro ou digitado.
   const cpf = body.cpf ? soDig(body.cpf) : null;
@@ -5690,7 +5709,9 @@ function apiConfig() {
     // cielo | rede — escolhido no Concilia (Configurações → Filiais); o app usa
     adquirente: ADQUIRENTE_LOJA,
     // comanda abre e recebe item sem nome/CPF/WhatsApp — escolhido no Concilia (Configurações)
-    comanda_sem_cadastro: COMANDA_SEM_CADASTRO };
+    comanda_sem_cadastro: COMANDA_SEM_CADASTRO,
+    // identificação só pelo CPF (sem pedir WhatsApp) — idem
+    comanda_so_cpf: COMANDA_SO_CPF };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -6691,6 +6712,8 @@ async function telefoneDoCpf(cpf, contatoFb) {
  *  as telas mostram "ja temos o numero (final 1234)" e nao pedem de novo. O
  *  numero inteiro NAO sai por aqui — esta consulta nao exige login. */
 async function comFimDoTelefone(resp, cpf) {
+  // casa "so CPF": avisa a tela pra nao pedir o WhatsApp
+  if (resp && COMANDA_SO_CPF) resp.so_cpf = true;
   if (resp && resp.nome && !resp.telefone_fim) {
     const t = await telefoneDoCpf(cpf, resp.contato_fb).catch(() => null);
     if (t) resp.telefone_fim = t.slice(-4);
@@ -7399,6 +7422,9 @@ async function apiCaixaConta(n, pedRaw) {
   const agora = Date.now();
   const ped = await pedidoAlvo(num, pedRaw);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + num };
+  // achou pelo número 0 a projeção de um pedido de canal (código negativo):
+  // é a conta do iFood/site — nunca a conta comum, que colocaria 10% nela
+  if (ped < 0) return contaIfoodCaixa(ped);
   // mesa aberta pelo Consumer pode chegar aqui sem os 10%: garante na entrada
   await fbAplicarServico(ped).catch(() => {});
   const p = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T, TRIM(COALESCE(NOME,'')) NOME FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
@@ -16754,8 +16780,16 @@ function cancelarIdent(){ NOVACOMANDA=null; carregarMesa(); }
 // ganhou 34 CPFs duplicados com nomes diferentes).
 // Se a consulta nao trouxer nome, a tela DIZ isso e nao deixa salvar — comanda
 // sem dono e' o que a gente esta justamente evitando.
-function passo2(telFim){
+function passo2(telFim,soCpf){
   var p2=document.getElementById('passo2');if(!p2)return;
+  // CASA "SO CPF" (Concilia -> Configurações): não pede WhatsApp. O número que
+  // a casa já tem entra sozinho no servidor; não tendo, salva sem.
+  if(soCpf){
+    p2.innerHTML='<label class="chk" style="margin-top:16px"><input type="checkbox" id="ncad" checked> cadastrar pra próxima visita</label>'+
+      '<button class="big" style="margin-top:12px" onclick="salvarCliente()">Salvar</button>'+
+      (telFim?'<div class="mut" style="margin-top:8px">Já temos o WhatsApp desta pessoa (final '+esc(String(telFim).slice(-4))+').</div>':'');
+    return;
+  }
   // JÁ TEM WHATSAPP CADASTRADO -> não pede de novo (pedido do dono): mostra o
   // final que a casa tem e segue. Trocar o número é um toque, pra quem mudou.
   if(telFim){
@@ -16864,7 +16898,7 @@ function olhaCpf(v,inp){
     if(r.nome){CPFINFO=r;
       q.innerHTML='<b style="color:#0f8a3e">'+esc(r.nome)+'</b>'+
         ' <span class="mut">· '+fonteTexto(r.fonte)+'</span>';
-      passo2(r.telefone_fim);}
+      passo2(r.telefone_fim,r.so_cpf);}
     else if(r.fonte==='erro'){
       q.innerHTML='<span style="color:#b45309">A consulta não respondeu agora.</span>';
       semNome('Sem o nome não dá pra abrir. Tente de novo em alguns segundos.'+
@@ -22714,7 +22748,7 @@ function olhaCpfCli(v,inp){
     if(r.nome){
       CADINFO=r;
       q.innerHTML='Olá, <b style="color:#0f8a3e">'+esc(r.nome_curto)+'</b>!';
-      passo2Cli(r.telefone_fim);
+      passo2Cli(r.telefone_fim,r.so_cpf);
     } else if(r.fonte==='erro'){
       q.innerHTML='<span style="color:#b45309">A consulta não respondeu agora. Tente de novo em alguns segundos.</span>';
       if(p2)p2.innerHTML='<button class="b g" onclick="olhaCpfCli(document.getElementById(\\'ccpf\\').value,document.getElementById(\\'ccpf\\'))">Consultar de novo</button>';
@@ -22729,8 +22763,10 @@ function olhaCpfCli(v,inp){
 // Igual a tela do garcom: o cliente NAO digita nome. Ele digita o CPF, o nome
 // vem da consulta (cadastro da casa ou SPC), e embaixo o WhatsApp. Sao dois
 // campos e pronto.
-function passo2Cli(telFim){
+function passo2Cli(telFim,soCpf){
   var p2=document.getElementById('cpasso2');if(!p2)return;
+  // casa "só CPF": não pede WhatsApp — é só confirmar
+  if(soCpf){p2.innerHTML='<button class="b" onclick="salvarCadastro()">Salvar</button>';return}
   p2.innerHTML='<div class="tit2">WhatsApp'+(telFim?' <span class="mut">· temos o final '+esc(String(telFim).slice(-4))+'</span>':'')+'</div>'+
     '<input id="czap" inputmode="numeric" placeholder="(79) 90000-0000" oninput="olhaZap(this.value)">'+
     '<div id="czapmsg" class="mut" style="margin-top:6px">Com DDD. É por aqui que avisamos quando seu pedido sai e quando sua reserva está pronta.</div>'+
@@ -26351,8 +26387,12 @@ setInterval(function(){
   if(document.hidden||!TOK||TELA==='login')return;
   listar();
   TICK++;if(TICK%3===0){cxEstado();if(TELA==='home')fechadasCx()} // banner do caixa a cada 30s
-  if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA).then(function(c){
-    if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)){CONTA=c;pintaMain()}}).catch(function(){});
+  // ENTREGA (iFood/site) só é endereçável pelo código do pedido: sem o ped a
+  // renovação caía em "qualquer conta do número 0" e a tela trocava sozinha de
+  // "pago no site" pra uma conta comum com 10% (Tabuará, 06/10). Mesa segue igual.
+  var pedTmr=PEDALVO;
+  if(TELA==='conta'&&MESA!=null)jget('/api/caixa/conta?n='+MESA+(pedTmr?'&ped='+pedTmr:'')).then(function(c){
+    if(c&&c.ok&&TELA==='conta'&&Number(c.numero)===Number(MESA)&&PEDALVO===pedTmr){CONTA=c;pintaMain()}}).catch(function(){});
 },10000);
 // versão nova no servidor -> recarrega, mas nunca no meio de uma conta aberta
 var VERSAO_MINHA='${VERSAO}';

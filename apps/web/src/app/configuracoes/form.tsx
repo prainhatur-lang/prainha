@@ -29,12 +29,14 @@ export function ConfiguracoesForm({
   toleranciaAutoAceite: tolInicial,
   adquirenteMaquininha: adqInicial = 'cielo',
   comandaSemCadastro: semCadInicial = false,
+  comandaSoCpf: soCpfInicial = false,
 }: {
   filialId: string;
   taxas: TaxasFilial;
   toleranciaAutoAceite: number;
   adquirenteMaquininha?: 'cielo' | 'rede';
   comandaSemCadastro?: boolean;
+  comandaSoCpf?: boolean;
 }) {
   const router = useRouter();
   const [ecs, setEcs] = useState<EstabelecimentoConfig[]>(taxasInicial.ecs ?? []);
@@ -44,6 +46,7 @@ export function ConfiguracoesForm({
   const [tolAuto, setTolAuto] = useState<number>(tolInicial ?? 0.90);
   const [adq, setAdq] = useState<'cielo' | 'rede'>(adqInicial);
   const [semCad, setSemCad] = useState<boolean>(semCadInicial);
+  const [soCpf, setSoCpf] = useState<boolean>(soCpfInicial);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
@@ -71,7 +74,7 @@ export function ConfiguracoesForm({
       const r = await fetch(`/api/filial/${filialId}/taxas`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ecs, default: defaultT, toleranciaAutoAceite: tolAuto, adquirenteMaquininha: adq, comandaSemCadastro: semCad }),
+        body: JSON.stringify({ ecs, default: defaultT, toleranciaAutoAceite: tolAuto, adquirenteMaquininha: adq, comandaSemCadastro: semCad, comandaSoCpf: soCpf }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -125,6 +128,20 @@ export function ConfiguracoesForm({
           Desmarcado, a comanda só abre e só recebe item com nome + CPF ou WhatsApp de quem vai usar.
           Marcado, a loja aceita a comanda sem identificar ninguém — quem quiser identificar continua podendo.
           A loja pega esta escolha sozinha em poucos minutos, depois de salvar.
+        </p>
+        <label className="mt-3 flex items-center gap-2 text-sm text-slate-800">
+          <input
+            type="checkbox"
+            checked={soCpf}
+            onChange={(ev) => setSoCpf(ev.target.checked)}
+            className="h-4 w-4 rounded border-slate-300"
+          />
+          Identificar só pelo CPF (não pedir WhatsApp)
+        </label>
+        <p className="mt-2 text-xs text-slate-500">
+          Marcado, a comanda nova só abre com o CPF e as telas do garçom e do QR da mesa não pedem o
+          WhatsApp — o celular entra sozinho quando a casa já tem. Na maquininha o campo de WhatsApp
+          continua aparecendo, mas pode ficar em branco.
         </p>
       </div>
 
