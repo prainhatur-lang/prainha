@@ -133,29 +133,29 @@ export async function POST(req: Request) {
     .limit(30);
   const peso = (c: (typeof clientes)[number]) =>
     (str(c.endereco) ? 4 : 0) + (so(c.cep).length === 8 ? 2 : 0) + (str(c.cidade) ? 1 : 0) + (str(c.nome).includes(' ') ? 1 : 0);
-  const c = clientes.filter((x) => str(x.nome) && !str(x.nome).startsWith('*')).sort((a, b) => peso(b) - peso(a))[0];
-  if (!c) {
+  const candidatos = clientes
+    .filter((x) => str(x.nome) && !str(x.nome).startsWith('*'))
+    .sort((a, b) => peso(b) - peso(a))
+    .slice(0, 5);
+  if (!candidatos.length) {
     return NextResponse.json(
       { error: 'CPF não tem consulta na Receita e não achei esse cliente no cadastro — preencha na mão (o CEP puxa o endereço)' },
       { status: 404 },
     );
   }
-  const cep = so(c.cep);
-  let ibge = '';
-  let via: Record<string, unknown> | null = null;
-  if (cep.length === 8) {
-    try {
-      const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(8000) });
-      via = r.ok ? ((await r.json()) as Record<string, unknown>) : null;
-      if (via && !via.erro) ibge = so(via.ibge);
-    } catch {
-      /* sem o código da cidade — quem emite completa */
+  const montar = async (c: (typeof clientes)[number]) => {
+    const cep = so(c.cep);
+    let via: Record<string, unknown> | null = null;
+    if (cep.length === 8) {
+      try {
+        const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(8000) });
+        const j = r.ok ? ((await r.json()) as Record<string, unknown>) : null;
+        via = j && !j.erro ? j : null;
+      } catch {
+        /* sem o código da cidade — quem emite completa */
+      }
     }
-  }
-  return NextResponse.json({
-    ok: true,
-    origem: 'cadastro de clientes',
-    dados: {
+    return {
       nome: str(c.nome),
       email: str(c.email).toLowerCase(),
       fone: so(c.celular) || so(c.telefone),
@@ -166,7 +166,11 @@ export async function POST(req: Request) {
       bairro: str(c.bairro) || str(via?.bairro),
       municipio: str(c.cidade) || str(via?.localidade),
       uf: str(c.uf).toUpperCase() || str(via?.uf),
-      codigoMunicipio: ibge,
-    },
-  });
+      codigoMunicipio: so(via?.ibge),
+    };
+  };
+  // o cadastro do PDV pode ter o mesmo CPF em mais de um cliente: devolve o mais
+  // completo e os outros pra quem emite escolher
+  const [dados, ...outros] = await Promise.all(candidatos.map(montar));
+  return NextResponse.json({ ok: true, origem: 'cadastro de clientes', dados, outros });
 }

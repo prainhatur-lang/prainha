@@ -44,6 +44,10 @@ export function FormNfeCupom({
   const [ocupado, setOcupado] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  // mesmo CPF em mais de um cadastro do PDV: os outros ficam pra escolher
+  const [outros, setOutros] = useState<Record<string, string>[]>([]);
+  const usarCadastro = (dados: Record<string, string>) =>
+    setF((a) => ({ ...a, ...Object.fromEntries(Object.entries(dados).filter(([k]) => k in a)) }) as DestForm);
   const set = (k: keyof DestForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((a) => ({ ...a, [k]: e.target.value }));
 
@@ -77,6 +81,7 @@ export function FormNfeCupom({
         }
         return n as unknown as DestForm;
       });
+      setOutros(ehCpf && Array.isArray(j.outros) ? j.outros : []);
       if (ehCpf) setAviso(`Dados puxados do ${j.origem ?? 'cadastro'} — confira antes de emitir.`);
       if (j.situacao && j.situacao !== 'ATIVA') setAviso(`Atenção: na Receita este CNPJ está ${j.situacao}.`);
     } catch {
@@ -211,6 +216,22 @@ export function FormNfeCupom({
       </div>
 
       {aviso && <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">{aviso}</p>}
+      {outros.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+          Outros cadastros com esse CPF:
+          {outros.map((o, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => usarCadastro(o)}
+              className="rounded-md border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-100"
+              title={[o.logradouro, o.numero, o.bairro, o.municipio].filter(Boolean).join(', ') || 'sem endereço'}
+            >
+              {o.nome}
+            </button>
+          ))}
+        </div>
+      )}
       {erro && <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">{erro}</p>}
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
