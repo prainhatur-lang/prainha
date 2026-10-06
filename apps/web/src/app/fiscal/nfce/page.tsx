@@ -80,15 +80,24 @@ async function cobertura(filialIds: string[]): Promise<CoberturaDia[]> {
   return r as unknown as CoberturaDia[];
 }
 
-async function pedidosSemNota(filialIds: string[]): Promise<PedidoSemNota[]> {
+/** Sem período = últimas 48h (como sempre). Com período (de/até), busca os
+ *  pedidos fechados naqueles dias — pra emitir nota de pedido antigo. */
+async function pedidosSemNota(
+  filialIds: string[],
+  periodo?: { de: Date; ate: Date; mesa?: number },
+): Promise<PedidoSemNota[]> {
   if (!filialIds.length) return [];
+  const quando = periodo
+    ? sql`p.data_fechamento >= ${periodo.de.toISOString()}::timestamptz AND p.data_fechamento <= ${periodo.ate.toISOString()}::timestamptz`
+    : sql`p.data_fechamento >= now() - interval '48 hours'`;
+  const mesa = periodo?.mesa ? sql`AND p.numero = ${periodo.mesa}` : sql``;
   const r = await db.execute(sql`
     SELECT p.filial_id::text AS filial_id, p.numero, p.codigo_externo,
-           to_char(p.data_fechamento AT TIME ZONE 'America/Maceio', 'DD/MM HH24:MI') AS fechado_em,
+           to_char(p.data_fechamento AT TIME ZONE 'America/Maceio', ${periodo ? 'DD/MM/YY HH24:MI' : 'DD/MM HH24:MI'}) AS fechado_em,
            COALESCE(p.valor_total, 0)::text AS valor
     FROM pedido p
     WHERE p.filial_id IN ${filialIds}
-      AND p.data_fechamento >= now() - interval '48 hours'
+      AND ${quando} ${mesa}
       AND COALESCE(p.valor_total, 0) > 0
       AND NOT EXISTS (SELECT 1 FROM nfce_emitida n
         WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
@@ -97,7 +106,7 @@ async function pedidosSemNota(filialIds: string[]): Promise<PedidoSemNota[]> {
         WHERE nv.filial_id = p.filial_id AND nv.tipo = 'NFCE'
           AND nv.codigo_pedido_externo = p.codigo_externo)
     ORDER BY p.data_fechamento DESC
-    LIMIT 60
+    LIMIT ${periodo ? 300 : 60}
   `);
   return r as unknown as PedidoSemNota[];
 }
@@ -221,7 +230,25 @@ export default async function NfcePage({
   const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const pendentesFiscais = notas.filter((n) => n.status === 'REJEITADA' || n.status === 'ERRO');
   const cob = await cobertura(ids);
-  const semNota = await pedidosSemNota(ids);
+  // pedidos sem nota: 48h por padrão; com período, os de dias anteriores
+  const sn = {
+    de: ymd(um('snDe')),
+    ate: ymd(um('snAte')),
+    casa: ids.includes(um('snCasa')) ? um('snCasa') : '',
+    mesa: um('snMesa').replace(/\D/g, '').slice(0, 6),
+  };
+  const snPeriodo = !!(sn.de || sn.ate);
+  const semNota = await pedidosSemNota(
+    sn.casa ? [sn.casa] : ids,
+    snPeriodo
+      ? {
+          de: brDateStart(sn.de || sn.ate),
+          ate: brDateEnd(sn.ate || sn.de),
+          mesa: sn.mesa ? Number(sn.mesa) : undefined,
+        }
+      : undefined,
+  );
+  const dBr = (v: string) => v.split('-').reverse().join('/');
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -313,11 +340,51 @@ export default async function NfcePage({
           </table>
         </div>
 
-        {semNota.length > 0 && (
-          <details className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        {(semNota.length > 0 || snPeriodo || ids.length > 0) && (
+          <details id="sem-nota" open={snPeriodo} className="mt-4 scroll-mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <summary className="cursor-pointer text-sm font-semibold text-slate-800">
-              Pedidos sem nota nas últimas 48h ({semNota.length}) — clique pra ver
+              {snPeriodo
+                ? `Pedidos sem nota de ${dBr(sn.de || sn.ate)}${sn.ate && sn.de && sn.ate !== sn.de ? ` a ${dBr(sn.ate)}` : ''} (${semNota.length}${semNota.length === 300 ? ', os 300 mais recentes' : ''})`
+                : `Pedidos sem nota nas últimas 48h (${semNota.length}) — clique pra ver`}
             </summary>
+            {/* pedido de dias anteriores: escolhe o período e a lista troca */}
+            <form method="get" action="/fiscal/nfce#sem-nota" className="mt-3 flex flex-wrap items-end gap-3 rounded-lg bg-slate-50 px-3 py-2">
+              <span className="pb-1 text-xs font-medium text-slate-700">Pedido de outro dia:</span>
+              <label className="text-[11px] font-medium text-slate-600">
+                De
+                <input type="date" name="snDe" defaultValue={sn.de} className="mt-0.5 block rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900" />
+              </label>
+              <label className="text-[11px] font-medium text-slate-600">
+                Até
+                <input type="date" name="snAte" defaultValue={sn.ate} className="mt-0.5 block rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900" />
+              </label>
+              <label className="text-[11px] font-medium text-slate-600">
+                Filial
+                <select name="snCasa" defaultValue={sn.casa} className="mt-0.5 block rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900">
+                  <option value="">todas</option>
+                  {filiais.map((x) => (
+                    <option key={x.id} value={x.id}>{x.nome}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-[11px] font-medium text-slate-600">
+                Mesa/comanda
+                <input name="snMesa" inputMode="numeric" defaultValue={sn.mesa} placeholder="opcional" className="mt-0.5 block w-24 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900" />
+              </label>
+              <button className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700">
+                Buscar
+              </button>
+              {snPeriodo && (
+                <a href="/fiscal/nfce#sem-nota" className="pb-1 text-xs text-slate-500 underline">
+                  voltar pras últimas 48h
+                </a>
+              )}
+            </form>
+            {semNota.length === 0 && (
+              <p className="mt-3 text-xs text-slate-500">
+                {snPeriodo ? 'Nenhum pedido sem nota nesse período.' : 'Nenhum pedido sem nota nas últimas 48h.'}
+              </p>
+            )}
             <div className="mt-2 grid grid-cols-1 gap-1">
               {semNota.map((p, i) => (
                 <div key={i} className="flex items-center justify-between gap-2 rounded border border-slate-100 px-3 py-1.5 text-xs">
