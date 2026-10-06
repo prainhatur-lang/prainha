@@ -179,7 +179,10 @@ export function montarXmlNfeCupom(dados: DadosNfeCupom): XmlNfeMontado {
   if (!/^5\d{3}$/.test(cfop)) throw new Error(`CFOP inválido pra nota de cupom: ${cfop}`);
 
   const normal = regimeNfe(emi) === 3;
-  const cst = (so(emi.nfe?.cupomCst) || '90').padStart(2, '0');
+  // Cliente sem inscrição estadual (não contribuinte): a SEFAZ recusa o CST 90
+  // (rejeição 508) — vai 41 (não tributada nesta nota; o imposto é o do cupom).
+  const cstPadrao = so(dados.destinatario.ie) ? '90' : '41';
+  const cst = (so(emi.nfe?.cupomCst) || cstPadrao).padStart(2, '0');
   if (normal && !['90', '40', '41', '50'].includes(cst)) {
     throw new Error(`CST ${cst} não é suportado na nota de cupom (use 90, 40, 41 ou 50 — sem novo destaque de ICMS)`);
   }
