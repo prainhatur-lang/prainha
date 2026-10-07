@@ -9643,15 +9643,26 @@ async function loopPedidoNativoNuvem() {
     // dado financeiro; e evita reenviar o mesmo pedido a cada item novo.
     const comandas = await sql`SELECT codigo, numero, nome, contato_codigo, fiado_codigo,
         valor_total, subtotal_pago, total_desconto, percentual_desconto, total_acrescimo,
-        total_servico, percentual_servico, valor_entrega, qtd_pessoas, data_abertura, fechada_em
-      FROM comanda WHERE fechada_em IS NOT NULL AND sync_nuvem_em IS NULL
-        AND esvaziada_em IS NULL
+        total_servico, percentual_servico, valor_entrega, qtd_pessoas, data_abertura, fechada_em,
+        cancelada_em, sync_nuvem_em
+      FROM comanda WHERE esvaziada_em IS NULL AND (
+          (fechada_em IS NOT NULL AND sync_nuvem_em IS NULL)
+          -- CONTA QUE MUDOU DEPOIS DE SUBIR (Tabuará mesa 13, 06/10): fechou, subiu,
+          -- foi reaberta, tiraram o desconto e fechou de novo — a nuvem ficava com a
+          -- primeira versão pra sempre (relatório acusando desconto que não existe
+          -- mais). Fechou de novo depois do envio = sobe de novo; cancelada depois
+          -- do envio = sobe marcada como apagada.
+          OR (fechada_em IS NOT NULL AND sync_nuvem_em IS NOT NULL AND fechada_em > sync_nuvem_em)
+          OR (cancelada_em IS NOT NULL AND sync_nuvem_em IS NOT NULL AND cancelada_em > sync_nuvem_em))
       ORDER BY fechada_em LIMIT 100`;
     if (!comandas.length) return;
     const codigos = comandas.map((c) => Number(c.codigo));
+    // reenvio: item cancelado depois do primeiro envio vai junto, marcado como apagado
+    const reenvio = comandas.filter((c) => c.sync_nuvem_em).map((c) => Number(c.codigo));
     const itens = await sql`SELECT item_codigo, codigo_pai, comanda_codigo, codigo_pdv, nome,
-        quantidade, valor_unitario, valor_total, tipo, detalhes, criado
-      FROM comanda_item WHERE comanda_codigo = ANY(${codigos}) AND cancelado_em IS NULL`;
+        quantidade, valor_unitario, valor_total, tipo, detalhes, criado, cancelado_em
+      FROM comanda_item WHERE comanda_codigo = ANY(${codigos})
+        AND (cancelado_em IS NULL OR comanda_codigo = ANY(${reenvio}))`;
     const pedidos = comandas.map((c) => ({
       codigoExterno: Number(c.codigo),
       numero: c.numero == null ? null : Number(c.numero),
@@ -9679,7 +9690,7 @@ async function loopPedidoNativoNuvem() {
       tag: null,
       codigoPedidoOrigem: null,
       codigoCupom: null,
-      dataDelete: null,
+      dataDelete: c.sync_nuvem_em && c.cancelada_em ? new Date(c.cancelada_em).toISOString() : null,
       versaoReg: null,
     }));
     const pedidoItens = itens.map((it) => ({
@@ -9705,7 +9716,7 @@ async function loopPedidoNativoNuvem() {
       codigoPagamento: null,
       codigoColaborador: null,
       dataHoraCadastro: it.criado ? new Date(it.criado).toISOString() : null,
-      dataDelete: null,
+      dataDelete: it.cancelado_em ? new Date(it.cancelado_em).toISOString() : null,
       detalhes: it.detalhes || null,
       versaoReg: null,
     }));
