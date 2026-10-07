@@ -77,7 +77,7 @@ export default async function OuvidoriaPage(props: { searchParams: Promise<SP> }
   ]);
 
   const h = await headers();
-  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/+$/, '') || `${h.get('x-forwarded-proto') ?? 'https'}://${h.get('host')}`;
+  const base = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/+$/, '') || `${h.get('x-forwarded-proto') ?? 'https'}://${h.get('host')}`;
   const linkCanal = filialToken?.ouvidoriaToken ? `${base}/canal/${filialToken.ouvidoriaToken}` : null;
 
   const paramsBase = (overrides: Partial<SP>) => {

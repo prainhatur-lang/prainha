@@ -71,7 +71,7 @@ export default async function ClimaPage(props: { searchParams: Promise<SP> }) {
   const mesAtual = meses[meses.length - 1];
 
   const h = await headers();
-  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/+$/, '') || `${h.get('x-forwarded-proto') ?? 'https'}://${h.get('host')}`;
+  const base = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/+$/, '') || `${h.get('x-forwarded-proto') ?? 'https'}://${h.get('host')}`;
   const linkClima = filialToken?.climaToken ? `${base}/clima/${filialToken.climaToken}` : null;
 
   const maxTotal = Math.max(1, ...meses.map((m) => m.total));

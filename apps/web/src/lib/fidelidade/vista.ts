@@ -7,7 +7,7 @@ import { formatarNumero } from './codigo';
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
 export function baseUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || 'https://app.prainhabar.com').replace(/\/+$/, '');
+  return (process.env.NEXT_PUBLIC_APP_URL?.trim() || 'https://app.prainhabar.com').replace(/\/+$/, '');
 }
 
 export interface VistaCartao {
