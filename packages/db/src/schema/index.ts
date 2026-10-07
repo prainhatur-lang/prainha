@@ -47,3 +47,4 @@ export * from './loja-saude';
 export * from './transferencia';
 export * from './nfe';
 export * from './relatorio-diario';
+export * from './faturamento-historico';

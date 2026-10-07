@@ -137,6 +137,17 @@ export const PERMISSOES: PermissaoDef[] = [
     acao: 'exportar',
     descricao: 'Exportar relatórios',
   },
+  // Permissão própria (fora de relatorio.*) de propósito: é número do dono —
+  // o faturamento de todas as casas, ano a ano. Não entra em Gerente nem em
+  // Financeiro (ver a exclusão no grupo Gerente abaixo) e a aba ainda pede
+  // senha própria (lib/faturamento-acesso.ts).
+  {
+    codigo: 'faturamento_historico.read',
+    modulo: 'faturamento_historico',
+    acao: 'read',
+    descricao: 'Ver histórico de faturamento (VGV) — aba com senha do dono',
+    escopo: 'organizacao',
+  },
 
   // === Configuracoes ===
   {
@@ -283,7 +294,9 @@ export const GRUPOS_SISTEMA: Array<{
           // seguro; clima.comentarios (texto livre individual) segue a
           // mesma régua da ouvidoria.
           !c.startsWith('ouvidoria.') &&
-          c !== 'clima.comentarios',
+          c !== 'clima.comentarios' &&
+          // Histórico de faturamento (VGV) é só do dono.
+          !c.startsWith('faturamento_historico.'),
       ),
   },
   {

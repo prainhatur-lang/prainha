@@ -331,6 +331,11 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/relatorios/fechamento-mensal',
             perm: 'relatorio.read',
           },
+          {
+            label: 'Histórico de faturamento (VGV)',
+            href: '/relatorios/historico-faturamento',
+            perm: 'faturamento_historico.read',
+          },
         ],
       },
     ],

@@ -200,7 +200,10 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
       // turno — o link/menu não pode nem aparecer pra ele. Ver
       // catalogo-permissoes.ts (grupo Gerente tem a mesma exclusão).
       !permission.startsWith('ouvidoria.') &&
-      permission !== 'clima.comentarios'
+      permission !== 'clima.comentarios' &&
+      // Histórico de faturamento (VGV) é só do dono — mesma exclusão do
+      // grupo Gerente no catálogo.
+      !permission.startsWith('faturamento_historico.')
     ) {
       return true;
     }

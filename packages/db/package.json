@@ -160,7 +160,8 @@
     "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts",
     "migrate:cancelamento-lancado": "tsx scripts/migrate-cancelamento-lancado.ts",
     "migrate:nfe-cupom": "tsx scripts/migrate-nfe-cupom.ts",
-    "migrate:nfe-destinatario": "tsx scripts/migrate-nfe-destinatario.ts"
+    "migrate:nfe-destinatario": "tsx scripts/migrate-nfe-destinatario.ts",
+    "migrate:faturamento-historico": "tsx scripts/migrate-faturamento-historico.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
