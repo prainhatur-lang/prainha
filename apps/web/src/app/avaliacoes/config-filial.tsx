@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { linkAutomatico, type DestinoAvaliacao } from '@/lib/avaliacao-destino';
 
 interface Stats {
   total: number;
@@ -16,6 +18,8 @@ interface Props {
   googleUrl: string | null;
   tripadvisorUrl: string | null;
   corte: number;
+  /** Pra onde a nota alta leva o cliente. */
+  destino: DestinoAvaliacao;
   podeConfigurar: boolean;
   stats: Stats | null;
 }
@@ -27,6 +31,7 @@ export function ConfigFilial({
   googleUrl: googleInicial,
   tripadvisorUrl: tripInicial,
   corte: corteInicial,
+  destino: destinoInicial,
   podeConfigurar,
   stats,
 }: Props) {
@@ -34,6 +39,8 @@ export function ConfigFilial({
   const [google, setGoogle] = useState(googleInicial ?? '');
   const [trip, setTrip] = useState(tripInicial ?? '');
   const [corte, setCorte] = useState(corteInicial);
+  const [destino, setDestino] = useState<DestinoAvaliacao>(destinoInicial);
+  const router = useRouter();
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [origem, setOrigem] = useState('');
@@ -66,6 +73,7 @@ export function ConfigFilial({
           googleReviewUrl: google,
           tripadvisorReviewUrl: trip,
           notaCorteGoogle: corte,
+          avaliacaoDestino: destino,
         }),
       });
       if (!r.ok) {
@@ -74,6 +82,9 @@ export function ConfigFilial({
         return;
       }
       setEditando(false);
+      // recarrega os dados do servidor: o "Cancelar" de uma próxima edição
+      // volta pro que está salvo, não pro que a página carregou
+      router.refresh();
     } catch (e) {
       setErro((e as Error).message);
     } finally {
@@ -84,6 +95,23 @@ export function ConfigFilial({
   function copiar() {
     if (link) navigator.clipboard?.writeText(link).catch(() => {});
   }
+
+  // Resumo do que acontece na nota alta, pro card dizer sem abrir o Configurar.
+  // Com Google de destino os textos do formulário ficam como sempre foram.
+  const plataforma =
+    destino === 'tripadvisor' ? 'TripAdvisor' : destino === 'escolher' ? 'Google/TripAdvisor' : 'Google';
+  const notasAltas = corte >= 5 ? 'Nota 5' : corte === 4 ? 'Nota 4 e 5' : `Nota ${corte} a 5`;
+  const auto = linkAutomatico(destino, google.trim() || null, trip.trim() || null);
+  const resumoDestino =
+    destino === 'escolher'
+      ? google.trim() || trip.trim()
+        ? 'o cliente escolhe no botão (nada abre sozinho)'
+        : 'sem link cadastrado — só agradece'
+      : auto
+        ? `abre o ${auto.nome} sozinho${
+            auto.nome === 'Google' && destino === 'tripadvisor' ? ' (falta o link do TripAdvisor)' : ''
+          }`
+        : `falta o link do ${plataforma} — nada abre sozinho`;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -101,6 +129,9 @@ export function ConfigFilial({
           ) : (
             <p className="mt-0.5 text-xs text-slate-400">sem avaliações ainda</p>
           )}
+          <p className="mt-0.5 text-xs text-slate-500">
+            {notasAltas} → {resumoDestino}
+          </p>
         </div>
         {podeConfigurar && !editando && (
           <button
@@ -141,17 +172,35 @@ export function ConfigFilial({
           </div>
           <div>
             <label className="text-xs font-medium text-slate-600">
-              A partir de qual nota direcionar pro Google
+              A partir de qual nota direcionar pro {plataforma}
             </label>
             <select
               value={corte}
               onChange={(e) => setCorte(Number(e.target.value))}
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-sky-500 focus:outline-none"
             >
-              <option value={4}>Nota 4 e 5 → Google (1-3 ficam internas)</option>
-              <option value={5}>Só nota 5 → Google (1-4 ficam internas)</option>
-              <option value={3}>Nota 3, 4 e 5 → Google (1-2 ficam internas)</option>
+              <option value={4}>Nota 4 e 5 → {plataforma} (1-3 ficam internas)</option>
+              <option value={5}>Só nota 5 → {plataforma} (1-4 ficam internas)</option>
+              <option value={3}>Nota 3, 4 e 5 → {plataforma} (1-2 ficam internas)</option>
             </select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600">
+              Pra onde levar o cliente que deu nota alta
+            </label>
+            <select
+              value={destino}
+              onChange={(e) => setDestino(e.target.value as DestinoAvaliacao)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-sky-500 focus:outline-none"
+            >
+              <option value="google">Google — abre sozinho (TripAdvisor fica no botão)</option>
+              <option value="tripadvisor">TripAdvisor — abre sozinho (Google fica no botão)</option>
+              <option value="escolher">Não abrir sozinho — o cliente escolhe no botão</option>
+            </select>
+            <p className="mt-1 text-[10px] text-slate-400">
+              Os dois botões aparecem sempre. Aqui você escolhe qual abre sozinho depois do
+              obrigado — vale pro QR daqui e pro QR da mesa.
+            </p>
           </div>
           {erro && <p className="text-xs text-rose-600">{erro}</p>}
           <div className="flex gap-2">
@@ -168,6 +217,7 @@ export function ConfigFilial({
                 setGoogle(googleInicial ?? '');
                 setTrip(tripInicial ?? '');
                 setCorte(corteInicial);
+                setDestino(destinoInicial);
                 setErro(null);
               }}
               className="rounded-md px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200"

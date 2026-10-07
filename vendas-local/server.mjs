@@ -17553,18 +17553,24 @@ async function apiMesaAvaliar(body) {
 // convite nenhum. Agora a loja guarda o último link que a nuvem mandou e usa
 // ele quando ela demora (02/10/2026 — "nossas avaliações não estão indo pro
 // Google"). Resposta da nuvem sempre manda: se o dono tirar o link, some aqui.
+// PRA ONDE LEVAR (07/10/2026): o dono escolhe por casa, em /avaliacoes, qual
+// dos dois abre sozinho — 'google' (o de sempre), 'tripadvisor' ou 'escolher'
+// (nenhum; o cliente toca no botão). Vem da nuvem em `destino` e fica guardado
+// igual aos links; sem ele a tela segue abrindo o Google.
 async function convitesAvaliacao(nv, nota) {
   if (nv && nv.ok) {
     if (nota >= 4) {
       await cfgSet('aval_google_url', nv.google_url || '').catch(() => {});
       await cfgSet('aval_trip_url', nv.trip_url || '').catch(() => {});
     }
-    return { google_url: nv.google_url || null, trip_url: nv.trip_url || null };
+    if (nv.destino) await cfgSet('aval_destino', String(nv.destino)).catch(() => {});
+    return { google_url: nv.google_url || null, trip_url: nv.trip_url || null, destino: nv.destino || null };
   }
   if (!(nota >= 4)) return { google_url: null, trip_url: null };
   const g = await cfgGet('aval_google_url').catch(() => '');
   const t = await cfgGet('aval_trip_url').catch(() => '');
-  return { google_url: g || null, trip_url: t || null };
+  const d = await cfgGet('aval_destino').catch(() => '');
+  return { google_url: g || null, trip_url: t || null, destino: d || null };
 }
 // ============ AVALIAR SEM DRINK (reclamação / elogio do QR da mesa) ============
 // O drink é um PROGRAMA (um por CPF por mês); avaliar não pode depender dele.
@@ -21336,6 +21342,7 @@ const I18N_UI = {
   'Nos faça uma grande gentileza?': ['Would you do us a big favour?', 'Vous nous rendriez un grand service ?', '¿Nos haces un gran favor?', 'Ci fai un grande favore?'],
   'Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.': ['Show the world how much you enjoyed our place! Your review on Google or TripAdvisor helps a lot of people find us.', 'Montrez au monde combien vous avez aimé notre lieu ! Votre avis sur Google ou TripAdvisor aide beaucoup de gens à nous découvrir.', '¡Muéstrale al mundo cuánto te gustó nuestro lugar! Tu reseña en Google o TripAdvisor ayuda a mucha gente a descubrirnos.', 'Mostra al mondo quanto ti è piaciuto il nostro locale! La tua recensione su Google o TripAdvisor aiuta tante persone a scoprirci.'],
   'Abrindo o Google pra você avaliar…': ['Opening Google so you can leave your review…', 'Ouverture de Google pour laisser votre avis…', 'Abriendo Google para que dejes tu reseña…', 'Apertura di Google per lasciare la tua recensione…'],
+  'Abrindo o TripAdvisor pra você avaliar…': ['Opening TripAdvisor so you can leave your review…', 'Ouverture de TripAdvisor pour laisser votre avis…', 'Abriendo TripAdvisor para que dejes tu reseña…', 'Apertura di TripAdvisor per lasciare la tua recensione…'],
   'Agora não': ['Not now', 'Pas maintenant', 'Ahora no', 'Non ora'],
   '⭐ Avaliar no Google': ['⭐ Review on Google', '⭐ Donner un avis sur Google', '⭐ Opinar en Google', '⭐ Recensisci su Google'],
   '🦉 Avaliar no TripAdvisor': ['🦉 Review on TripAdvisor', '🦉 Donner un avis sur TripAdvisor', '🦉 Opinar en TripAdvisor', '🦉 Recensisci su TripAdvisor'],
@@ -22577,17 +22584,30 @@ async function avEnviarLivre(){
     '<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div></div>'+
     ((r.google_url||r.trip_url)?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
-      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+avGoAviso(r.google_url)+'</div>':'')+
+      avBotoes(r,lk)+avGoAviso(avDest(r).u,avDest(r).n)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
-  avGoogleAuto(r.google_url,3500);
+  avGoogleAuto(avDest(r).u,3500);
 }
 // NOTA 4-5 JÁ VAI PRO GOOGLE (pedido do dono, 02/10/2026): o botão sozinho
 // quase ninguém tocava. A tela do obrigado aparece, avisa e abre o Google
 // sozinha; os botões continuam ali pra quem voltar. "Agora não" cancela, e
 // se a pessoa sair desta tela antes o aviso some e nada abre.
 var AVGO=null;
-function avGoAviso(u){
-  return u?'<div id="avgo"><div class="mut" style="margin-top:12px">Abrindo o Google pra você avaliar…</div>'+
+// PRA ONDE LEVAR é escolha da casa (r.destino, vem de /avaliacoes na nuvem):
+// 'tripadvisor' abre o TripAdvisor, 'escolher' não abre nenhum, e qualquer
+// outra coisa (ou nada) abre o Google, como sempre. TripAdvisor escolhido sem
+// link cai no Google. Os dois botões continuam; o escolhido vem primeiro.
+function avDest(r){
+  if(r.destino==='escolher')return {u:'',n:''};
+  if(r.destino==='tripadvisor'&&r.trip_url)return {u:r.trip_url,n:'TripAdvisor'};
+  return {u:r.google_url||'',n:'Google'};
+}
+function avBotoes(r,lk){
+  var g=lk(r.google_url,'⭐ Avaliar no Google'), t=lk(r.trip_url,'🦉 Avaliar no TripAdvisor');
+  return avDest(r).n==='TripAdvisor'?t+g:g+t;
+}
+function avGoAviso(u,n){
+  return u?'<div id="avgo"><div class="mut" style="margin-top:12px">'+(n==='TripAdvisor'?'Abrindo o TripAdvisor pra você avaliar…':'Abrindo o Google pra você avaliar…')+'</div>'+
     '<button class="lnk" onclick="avGoCancela()">Agora não</button></div>':'';
 }
 function avGoogleAuto(u,ms){
@@ -22696,10 +22716,10 @@ async function avEnviar(semDrink){
       :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
     ((r.google_url||r.trip_url)&&nota>=4?'<div class="convite"><div class="em">🥹💛</div><b>Nos faça uma grande gentileza?</b>'+
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
-      lk(r.google_url,'⭐ Avaliar no Google')+lk(r.trip_url,'🦉 Avaliar no TripAdvisor')+avGoAviso(r.google_url)+'</div>':'')+
+      avBotoes(r,lk)+avGoAviso(avDest(r).u,avDest(r).n)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
   // um pouco mais de tempo aqui: a pessoa precisa ler que o drink está vindo
-  if(nota>=4)avGoogleAuto(r.google_url,5000);
+  if(nota>=4)avGoogleAuto(avDest(r).u,5000);
 }
 // ---- cadastro do cliente (tudo opcional) ----
 // telaCadastro({alvo, depois, motivo, exigeDoc})

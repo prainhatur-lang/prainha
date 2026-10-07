@@ -12,6 +12,7 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ConfigFilial } from './config-filial';
+import { normalizarDestino } from '@/lib/avaliacao-destino';
 import { ListaAvaliacoes, type AvaliacaoItem } from './lista';
 
 export const dynamic = 'force-dynamic';
@@ -48,6 +49,7 @@ export default async function AvaliacoesPage() {
             googleReviewUrl: schema.filial.googleReviewUrl,
             tripadvisorReviewUrl: schema.filial.tripadvisorReviewUrl,
             notaCorteGoogle: schema.filial.notaCorteGoogle,
+            avaliacaoDestino: schema.filial.avaliacaoDestino,
           })
           .from(schema.filial)
           .where(inArray(schema.filial.id, filialIds))
@@ -112,7 +114,8 @@ export default async function AvaliacoesPage() {
       <section className="mx-auto max-w-5xl px-6 py-10">
         <h1 className="text-2xl font-bold text-slate-900">Avaliações de clientes</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Notas baixas viram contato pra equipe resolver. Notas altas são direcionadas ao Google.
+          Notas baixas viram contato pra equipe resolver. Notas altas são direcionadas ao Google
+          {' '}ou ao TripAdvisor — o destino é escolhido por filial em ⚙️ Configurar.
         </p>
 
         {/* Config + QR por filial */}
@@ -128,6 +131,7 @@ export default async function AvaliacoesPage() {
                 googleUrl={f.googleReviewUrl}
                 tripadvisorUrl={f.tripadvisorReviewUrl}
                 corte={f.notaCorteGoogle}
+                destino={normalizarDestino(f.avaliacaoDestino)}
                 podeConfigurar={podeConfigurar}
                 stats={
                   s

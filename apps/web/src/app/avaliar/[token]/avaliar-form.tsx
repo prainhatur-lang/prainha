@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { linkAutomatico, type DestinoAvaliacao } from '@/lib/avaliacao-destino';
 
 interface Props {
   token: string;
@@ -8,6 +9,8 @@ interface Props {
   corte: number;
   googleUrl: string | null;
   tripadvisorUrl: string | null;
+  /** Pra onde a nota alta leva (config da filial). Sem o campo = Google. */
+  destino?: DestinoAvaliacao;
   origem: string | null;
 }
 
@@ -35,7 +38,15 @@ function Estrela({
   );
 }
 
-export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUrl, origem }: Props) {
+export function AvaliarForm({
+  token,
+  nomeFilial,
+  corte,
+  googleUrl,
+  tripadvisorUrl,
+  destino = 'google',
+  origem,
+}: Props) {
   const [fase, setFase] = useState<Fase>('nota');
   const [nota, setNota] = useState(0);
   const [hover, setHover] = useState(0);
@@ -49,13 +60,17 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
   // Nota alta já vai pro Google (pedido do dono, 02/10/2026): só o botão,
   // quase ninguém tocava. A tela agradece, avisa e abre o Google sozinha; os
   // botões continuam ali pra quem voltar, e "Agora não" cancela.
+  // Qual abre sozinho é escolha da filial (07/10/2026): Google (o de sempre),
+  // TripAdvisor, ou nenhum — aí o cliente toca no botão que quiser.
+  const auto = linkAutomatico(destino, googleUrl, tripadvisorUrl);
+  const autoUrl = auto?.url ?? null;
   useEffect(() => {
-    if (fase !== 'alta' || !googleUrl || !abrirGoogle) return;
+    if (fase !== 'alta' || !autoUrl || !abrirGoogle) return;
     const t = setTimeout(() => {
-      window.location.href = googleUrl;
+      window.location.href = autoUrl;
     }, 3500);
     return () => clearTimeout(t);
-  }, [fase, googleUrl, abrirGoogle]);
+  }, [fase, autoUrl, abrirGoogle]);
 
   async function registrar(payload: {
     nota: number;
@@ -138,6 +153,16 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
 
   // === Tela nota alta: convida pro Google ===
   if (fase === 'alta') {
+    const botaoTripadvisor = tripadvisorUrl && (
+      <a
+        href={tripadvisorUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700"
+      >
+        🦉 Avaliar no TripAdvisor
+      </a>
+    );
     return (
       <div className={card}>
         <div className="text-5xl">🙏</div>
@@ -147,6 +172,8 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
         </p>
         {googleUrl || tripadvisorUrl ? (
           <div className="mt-5 space-y-2">
+            {/* o destino que a filial escolheu vem primeiro */}
+            {auto?.nome === 'TripAdvisor' && botaoTripadvisor}
             {googleUrl && (
               <a
                 href={googleUrl}
@@ -157,19 +184,10 @@ export function AvaliarForm({ token, nomeFilial, corte, googleUrl, tripadvisorUr
                 ⭐ Avaliar no Google
               </a>
             )}
-            {tripadvisorUrl && (
-              <a
-                href={tripadvisorUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700"
-              >
-                🦉 Avaliar no TripAdvisor
-              </a>
-            )}
-            {googleUrl && abrirGoogle && (
+            {auto?.nome !== 'TripAdvisor' && botaoTripadvisor}
+            {auto && abrirGoogle && (
               <div className="pt-2">
-                <p className="text-xs text-slate-500">Abrindo o Google pra você avaliar…</p>
+                <p className="text-xs text-slate-500">Abrindo o {auto.nome} pra você avaliar…</p>
                 <button
                   type="button"
                   onClick={() => setAbrirGoogle(false)}

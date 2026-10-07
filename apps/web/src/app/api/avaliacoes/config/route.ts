@@ -1,11 +1,14 @@
 // PUT /api/avaliacoes/config — configura avaliacoes de uma filial:
 // link do Google e nota de corte do gating. Requer avaliacao.configurar.
+// `avaliacaoDestino` (opcional) escolhe pra onde a nota alta leva o cliente;
+// quem não manda o campo não mexe nele.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { DESTINOS_AVALIACAO, type DestinoAvaliacao } from '@/lib/avaliacao-destino';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,6 +42,22 @@ export async function PUT(request: Request) {
   const googleUrl = g.url;
   const tripadvisorUrl = t.url;
 
+  // Destino da nota alta. Campo ausente = não muda (o formulário antigo não
+  // mandava). TripAdvisor como destino sem o link dele não leva a lugar nenhum.
+  let destino: DestinoAvaliacao | undefined;
+  if (body?.avaliacaoDestino !== undefined) {
+    if (!(DESTINOS_AVALIACAO as readonly unknown[]).includes(body.avaliacaoDestino)) {
+      return NextResponse.json({ error: 'destino inválido' }, { status: 400 });
+    }
+    destino = body.avaliacaoDestino as DestinoAvaliacao;
+    if (destino === 'tripadvisor' && !tripadvisorUrl) {
+      return NextResponse.json(
+        { error: 'pra levar o cliente ao TripAdvisor, preencha o link do TripAdvisor' },
+        { status: 400 },
+      );
+    }
+  }
+
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
   if (!filialIds.includes(filialId)) {
@@ -47,7 +66,12 @@ export async function PUT(request: Request) {
 
   await db
     .update(schema.filial)
-    .set({ googleReviewUrl: googleUrl, tripadvisorReviewUrl: tripadvisorUrl, notaCorteGoogle: corte })
+    .set({
+      googleReviewUrl: googleUrl,
+      tripadvisorReviewUrl: tripadvisorUrl,
+      notaCorteGoogle: corte,
+      ...(destino ? { avaliacaoDestino: destino } : {}),
+    })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filialIds)));
 
   return NextResponse.json({ ok: true });

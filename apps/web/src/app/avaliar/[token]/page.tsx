@@ -4,12 +4,14 @@
 // Fluxo (gating pela filial.notaCorteGoogle):
 //   - cliente toca 1-5 estrelas
 //   - nota >= corte -> convida a publicar no Google (filial.googleReviewUrl)
+//     ou no TripAdvisor; filial.avaliacaoDestino diz qual abre sozinho
 //   - nota <  corte -> coleta nome + whatsapp + comentario pra equipe resolver
 
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { AvaliarForm } from './avaliar-form';
+import { normalizarDestino } from '@/lib/avaliacao-destino';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +30,7 @@ export default async function AvaliarPage(props: {
       googleReviewUrl: schema.filial.googleReviewUrl,
       tripadvisorReviewUrl: schema.filial.tripadvisorReviewUrl,
       notaCorteGoogle: schema.filial.notaCorteGoogle,
+      avaliacaoDestino: schema.filial.avaliacaoDestino,
     })
     .from(schema.filial)
     .where(eq(schema.filial.avaliacaoToken, token))
@@ -43,6 +46,7 @@ export default async function AvaliarPage(props: {
           corte={filial.notaCorteGoogle}
           googleUrl={filial.googleReviewUrl}
           tripadvisorUrl={filial.tripadvisorReviewUrl}
+          destino={normalizarDestino(filial.avaliacaoDestino)}
           origem={origem ?? null}
         />
       </div>

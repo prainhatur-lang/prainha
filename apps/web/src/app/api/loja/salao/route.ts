@@ -437,7 +437,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
   const { db, schema } = await import('@concilia/db');
   const { eq } = await import('drizzle-orm');
   const [fil] = await db
-    .select({ googleUrl: schema.filial.googleReviewUrl, tripUrl: schema.filial.tripadvisorReviewUrl, corte: schema.filial.notaCorteGoogle })
+    .select({ googleUrl: schema.filial.googleReviewUrl, tripUrl: schema.filial.tripadvisorReviewUrl, corte: schema.filial.notaCorteGoogle, destino: schema.filial.avaliacaoDestino })
     .from(schema.filial)
     .where(eq(schema.filial.id, f))
     .limit(1);
@@ -482,6 +482,9 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
     id,
     google_url: alta ? fil.googleUrl ?? null : null,
     trip_url: alta ? fil.tripUrl ?? null : null,
+    // pra onde a nota alta leva ('google' | 'tripadvisor' | 'escolher') — a
+    // loja antiga ignora o campo e segue abrindo o Google
+    destino: fil.destino ?? 'google',
   });
 }
 

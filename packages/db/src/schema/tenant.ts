@@ -424,6 +424,11 @@ export const filial = pgTable(
     /** Link de avaliacao do TripAdvisor desta filial (UserReviewEdit). Segundo
      *  destino opcional na tela de nota alta. */
     tripadvisorReviewUrl: text('tripadvisor_review_url'),
+    /** Pra onde a nota alta LEVA o cliente, por filial: 'google' (abre o Google
+     *  sozinho — o que sempre foi), 'tripadvisor' (abre o TripAdvisor sozinho)
+     *  ou 'escolher' (nada abre sozinho, o cliente toca no botão). Os dois
+     *  botões aparecem sempre; isto só decide qual abre sozinho. */
+    avaliacaoDestino: text('avaliacao_destino').notNull().default('google'),
     /** URL pública da loja (Tailscale Funnel) pra a Conferência de Caixa do web
      *  falar com o vendas-local (assinado). Ex.: https://xxx.ts.net. Null = não
      *  configurada — a conferência dessa filial fica indisponível. */
