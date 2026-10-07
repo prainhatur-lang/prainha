@@ -702,7 +702,8 @@ export function Relatorio({
   if (inicioDoEscopo(h, ids) === null) {
     return (
       <p className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
-        {unidade ? `${unidade.nome} ainda não tem` : 'Ainda não há'} nenhum mês com número.
+        {unidade ? `${unidade.nome} ainda não tem` : 'Ainda não há'} nenhum mês com número. Lance os valores em
+        “Lançar e corrigir”, logo abaixo.
       </p>
     );
   }

@@ -747,6 +747,16 @@ export async function excluirEvento(id: string, orgId: string, ex: Exec = db): P
   return rows.length > 0;
 }
 
+/** Nome sem acento, sem maiúscula e sem espaço sobrando — pra achar unidade repetida. */
+function chaveNome(nome: string): string {
+  return nome
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * Unidade nova no VGV. Com `filialId`, o PDV responde de `sistemaDesde` em
  * diante; sem, é unidade de fora (só lançamento). Devolve o id, ou o motivo.
@@ -758,6 +768,12 @@ export async function criarUnidade(
   sistemaDesde: string | null,
   ex: Exec = db,
 ): Promise<{ id: string } | { erro: 'nome-repetido' | 'filial-em-uso' | 'filial-de-fora' }> {
+  // "aquaarena" e "AquaArena", "Tabuara" e "Tabuará": é a mesma unidade. A trava
+  // do banco só pega o nome idêntico, então a comparação folgada é feita aqui.
+  const nomes = (await ex.execute(sql`
+    SELECT nome FROM faturamento_unidade WHERE organizacao_id = ${orgId}::uuid
+  `)) as unknown as Array<{ nome: string }>;
+  if (nomes.some((n) => chaveNome(n.nome) === chaveNome(nome))) return { erro: 'nome-repetido' };
   if (filialId) {
     const f = (await ex.execute(sql`
       SELECT (SELECT count(*) FROM filial

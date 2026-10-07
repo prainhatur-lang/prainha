@@ -15,12 +15,15 @@ import {
   organizacoesDoUsuario,
 } from '@/lib/faturamento-acesso';
 import { PERM_HISTORICO, sessaoAcesso } from '@/lib/faturamento-acesso-sessao';
-import { carregarHistorico, pendencias } from '@/lib/faturamento-historico';
-import { faixasDeMeses, rotuloMes, rotuloPeriodo } from '@/lib/faturamento-meses';
+import { carregarHistorico, filiaisForaDoVgv, pendencias } from '@/lib/faturamento-historico';
+import { chaveMes, faixasDeMeses, partesMes, rotuloMes, rotuloPeriodo } from '@/lib/faturamento-meses';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { BarraAcesso, Cadeado, Cofre } from './acesso';
+import { EventosCard, type EventoItem } from './eventos-card';
+import { LancamentosGrid, type UnidadeGrade } from './lancamentos-grid';
 import { Relatorio, listaNomes } from './relatorio';
+import { AvisoPendencias, UnidadesCard, type ItemPendencia, type UnidadeItem } from './unidades';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,12 +108,54 @@ export default async function HistoricoFaturamentoPage(props: {
   }
   const abertaAte = sessao.abertaAte;
 
-  const h = await carregarHistorico(org.id);
+  const [h, foraDoVgv] = await Promise.all([carregarHistorico(org.id), filiaisForaDoVgv(org.id)]);
   const unidade = typeof sp.u === 'string' ? (h.unidades.find((u) => u.id === sp.u) ?? null) : null;
   const ids = unidade ? [unidade.id] : h.unidades.map((u) => u.id);
   const comEventos = sp.ev !== '0';
   const temEventos = h.lancamentos.some((l) => l.tipo === 'EXTRA' && ids.includes(l.unidadeId));
   const emBranco = pendencias(h).filter((p) => ids.includes(p.unidade.id));
+
+  // O que os cartões de lançar e corrigir recebem: só dado simples (eles rodam
+  // no navegador; o histórico inteiro não atravessa).
+  const itensPendencia: ItemPendencia[] = emBranco.map((p) => ({
+    unidadeId: p.unidade.id,
+    nome: p.unidade.nome,
+    meses: listaNomes(faixasDeMeses(p.meses).map((faixa) => rotuloPeriodo(faixa))),
+    desde: p.blocoFinalDesde,
+  }));
+  const grade: UnidadeGrade[] = h.unidades.map((u) => {
+    const valores: Record<string, number> = {};
+    for (const [mes, c] of h.celulas.get(u.id) ?? []) {
+      if (c.fonte === 'pdv' && c.base !== null) valores[mes] = c.base;
+    }
+    for (const l of h.lancamentos) {
+      if (l.unidadeId !== u.id || l.tipo !== 'TOTAL') continue;
+      const mes = chaveMes(l.ano, l.mes);
+      if (!(mes in valores)) valores[mes] = l.valor;
+    }
+    return { id: u.id, nome: u.nome, pdvDesde: u.filialId !== null ? u.sistemaDesde : null, valores };
+  });
+  const nomeDaUnidade = new Map(h.unidades.map((u) => [u.id, u.nome]));
+  const eventos: EventoItem[] = h.lancamentos
+    .filter((l) => l.tipo === 'EXTRA')
+    .map((l) => ({
+      id: l.id,
+      unidade: nomeDaUnidade.get(l.unidadeId) ?? '—',
+      mes: chaveMes(l.ano, l.mes),
+      valor: l.valor,
+      observacao: l.observacao,
+    }))
+    .sort((a, b) => (a.mes < b.mes ? 1 : a.mes > b.mes ? -1 : 0));
+  const unidadesDoVgv: UnidadeItem[] = h.unidades.map((u) => ({
+    id: u.id,
+    nome: u.nome,
+    origem: u.filialId !== null && u.sistemaDesde ? `PDV desde ${rotuloMes(u.sistemaDesde)}` : 'Digitado mês a mês',
+    encerradaDesde: u.encerradaDesde,
+  }));
+  // Só casa que o próprio usuário enxerga pode virar unidade com PDV.
+  const filiaisLivres = foraDoVgv.filter((f) => filiais.some((x) => x.id === f.id));
+  const anoMin = partesMes(h.primeiroMes).ano;
+  const unidadeInicial = unidade?.id ?? emBranco[0]?.unidade.id ?? h.unidades[0]?.id ?? '';
 
   const link = (unidadeId: string | null, eventos: boolean): string => {
     const q = new URLSearchParams();
@@ -172,22 +217,7 @@ export default async function HistoricoFaturamentoPage(props: {
           )}
         </div>
 
-        {emBranco.length > 0 && (
-          <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            <p className="font-medium">Meses sem número lançado</p>
-            <ul className="mt-1 space-y-0.5">
-              {emBranco.map((p) => (
-                <li key={p.unidade.id}>
-                  <b className="font-medium">{p.unidade.nome}:</b>{' '}
-                  {listaNomes(faixasDeMeses(p.meses).map((faixa) => rotuloPeriodo(faixa)))}.
-                </li>
-              ))}
-            </ul>
-            <p className="mt-2 text-xs text-amber-800">
-              Enquanto estiverem em branco, esses meses ficam fora da comparação — dos dois lados.
-            </p>
-          </div>
-        )}
+        <AvisoPendencias organizacaoId={org.id} itens={itensPendencia} />
 
         <div className="mt-6">
           <Relatorio
@@ -206,6 +236,44 @@ export default async function HistoricoFaturamentoPage(props: {
             )}
           />
         </div>
+
+        <section id="lancar" className="mt-10 scroll-mt-6">
+          <h2 className="text-lg font-semibold text-slate-900">Lançar e corrigir</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            O que passa pelo PDV entra sozinho. Aqui você digita o resto: meses antigos, unidade sem sistema e
+            eventos e festas. Salvou, o relatório acima já refaz a conta.
+          </p>
+          <div className="mt-4 space-y-6">
+            {h.unidades.length > 0 && (
+              <>
+                <LancamentosGrid
+                  key={unidade?.id ?? 'todas'}
+                  organizacaoId={org.id}
+                  unidades={grade}
+                  anoMin={anoMin}
+                  mesAtual={h.mesAtual}
+                  unidadeInicial={unidadeInicial}
+                />
+                <EventosCard
+                  key={`ev:${unidade?.id ?? 'todas'}`}
+                  organizacaoId={org.id}
+                  eventos={eventos}
+                  unidades={h.unidades.map((u) => ({ id: u.id, nome: u.nome }))}
+                  mesAtual={h.mesAtual}
+                  anoMin={anoMin}
+                  unidadeInicial={unidade?.id ?? h.unidades[0]?.id ?? ''}
+                />
+              </>
+            )}
+            <UnidadesCard
+              organizacaoId={org.id}
+              unidades={unidadesDoVgv}
+              filiaisLivres={filiaisLivres}
+              mesAtual={h.mesAtual}
+              anoMin={anoMin}
+            />
+          </div>
+        </section>
 
         <p className="mt-6 text-[11px] leading-relaxed text-slate-400">
           Dados até hoje; {rotuloMes(h.mesAtual)} ainda está em andamento.
