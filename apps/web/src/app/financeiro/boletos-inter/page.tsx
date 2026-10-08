@@ -1,11 +1,13 @@
 // /financeiro/boletos-inter — boletos pagos (ou agendados) pela conta do Inter,
 // lidos direto da API do banco (pagamento-boleto.read), cruzados com Contas a
 // pagar. O Inter não expõe o DDA pendente; isso aqui é o que já foi pago ou
-// agendado. Só leitura: a tela não grava nada.
+// agendado. A tela só lê; a baixa das contas em aberto é pelo botão, que usa a
+// mesma rota de baixa da tela da conta.
 
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
@@ -19,6 +21,7 @@ import {
   resolverCredenciaisInterPagamentos,
   type InterPagamento,
 } from '@/lib/inter';
+import { BaixarBoleto, BaixarBoletosLote, type BoletoBaixa } from './baixar-boletos';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -88,6 +91,9 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
             valor: schema.contaPagar.valor,
             dataVencimento: schema.contaPagar.dataVencimento,
             dataPagamento: schema.contaPagar.dataPagamento,
+            valorPago: schema.contaPagar.valorPago,
+            jurosMulta: schema.contaPagar.jurosMulta,
+            origem: schema.contaPagar.origem,
             descricao: schema.contaPagar.descricao,
             fornecedorNome: schema.fornecedor.nome,
             fornecedorCnpj: schema.fornecedor.cnpjOuCpf,
@@ -122,8 +128,39 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
       null;
     if (conta) usadas.add(conta.id);
     const situacao: Situacao = !conta ? 'sem' : conta.dataPagamento ? 'paga' : 'aberta';
-    return { p, conta, situacao };
+    // Baixa pronta pra conta em aberto: quita o saldo na data em que o banco
+    // pagou; o que o banco pagou acima do saldo entra como juros. Conta do
+    // Consumer é baixada no PDV (a rota recusa), então fica sem botão.
+    let baixa: BoletoBaixa | null = null;
+    let conferir = false;
+    if (conta && situacao === 'aberta' && conta.origem !== 'CONSUMER' && p.dataPagamento) {
+      const saldo =
+        (centavos(conta.valor) - (centavos(conta.valorPago) - centavos(conta.jurosMulta))) / 100;
+      const pagoBanco = Number(p.valorPago ?? p.valorNominal ?? 0);
+      if (saldo > 0) {
+        baixa = {
+          contaId: conta.id,
+          data: p.dataPagamento.slice(0, 10),
+          valor: saldo,
+          juros: Math.max(0, Math.round((pagoBanco - saldo) * 100) / 100),
+          observacao: `Boleto pago no Inter (${p.codigoTransacao})`,
+          rotulo: `${p.nomeBeneficiario ?? conta.fornecedorNome ?? 'boleto'} venc. ${conta.dataVencimento.split('-').reverse().join('/')}`,
+        };
+        // vencimento da conta diferente do boleto: casou só por valor + CNPJ,
+        // pode ser outra conta do mesmo fornecedor. Fica fora do lote.
+        conferir =
+          conta.dataVencimento !== p.dataVencimentoTitulo &&
+          conta.dataVencimento !== p.dataVencimentoDigitada;
+      }
+    }
+    // juros/multa: o que o banco pagou acima do valor do título
+    const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
+    return { p, conta, situacao, baixa, conferir, jurosBanco };
   });
+  const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
+  const lote = podeBaixar
+    ? linhas.filter((l) => l.baixa && !l.conferir).map((l) => l.baixa!)
+    : [];
 
   const resumo = { paga: { q: 0, v: 0 }, aberta: { q: 0, v: 0 }, sem: { q: 0, v: 0 } };
   let total = 0;
@@ -133,6 +170,8 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     resumo[l.situacao].v += v;
     total += v;
   }
+  const comJuros = linhas.filter((l) => l.jurosBanco > 0);
+  const totalJuros = comJuros.reduce((s, l) => s + l.jurosBanco, 0);
   const visiveis = ver === 'todos' ? linhas : linhas.filter((l) => l.situacao === ver);
 
   function href(next: Partial<SP>): string {
@@ -290,6 +329,18 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                   />
                 </div>
 
+                {totalJuros > 0 && (
+                  <p className="mt-3 text-xs text-slate-600">
+                    <span className="rounded bg-rose-100 px-1.5 py-0.5 font-semibold text-rose-800">
+                      {brl(totalJuros)} de juros
+                    </span>{' '}
+                    em {int(comJuros.length)} {comJuros.length === 1 ? 'boleto pago' : 'boletos pagos'}{' '}
+                    acima do valor do título.
+                  </p>
+                )}
+
+                <BaixarBoletosLote boletos={lote} />
+
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -311,7 +362,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -332,6 +383,13 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                             </td>
                             <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
                               {brl(p.valorPago)}
+                              {jurosBanco > 0 && (
+                                <span className="mt-0.5 block">
+                                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                                    + {brl(jurosBanco)} juros
+                                  </span>
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-2 text-xs text-slate-600">
                               {p.statusPagamento === 'REALIZADO'
@@ -355,6 +413,17 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               ) : (
                                 <span className="inline-flex rounded-md bg-rose-100 px-2 py-0.5 text-rose-800">
                                   sem conta lançada
+                                </span>
+                              )}
+                              {podeBaixar && baixa && <BaixarBoleto boleto={baixa} />}
+                              {baixa && conferir && (
+                                <span className="ml-1.5 text-[10px] text-amber-700">
+                                  vencimento diferente, confira
+                                </span>
+                              )}
+                              {situacao === 'aberta' && conta?.origem === 'CONSUMER' && (
+                                <span className="ml-1.5 text-[10px] text-slate-500">
+                                  conta do Consumer, baixa no PDV
                                 </span>
                               )}
                             </td>
