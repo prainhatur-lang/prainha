@@ -141,6 +141,9 @@ class ContaActivity : AppCompatActivity() {
                 runOnUiThread {
                     vazio.visibility = View.VISIBLE
                     vazio.text = e.message ?: "Erro ao carregar a conta"
+                    // sem isto o botão ficava com o texto de antes da falha
+                    // ("Aguardando pagamento…" depois de uma cobrança)
+                    atualizarBotoes()
                 }
             }
         }.start()
@@ -1457,7 +1460,36 @@ class ContaActivity : AppCompatActivity() {
         }
     }
 
+    // Antes de chamar o cartão, confere se a conta segue aberta. A tela pode
+    // estar velha: a mesa foi transferida ou fechada no caixa enquanto o garçom
+    // estava nela (Tabuará 08/10: mesa 14 → 50, cartão passou na 14). Só barra
+    // quando o servidor DIZ que não há conta; sem resposta, cobra como sempre —
+    // o recebimento vai pra fila e o servidor resolve.
     private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long) {
+        cobrando = true
+        atualizarBotoes()
+        val base = Session.servidor(this)
+        Thread {
+            val aberta = Api.contaAberta(base, alvo)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (aberta == false) {
+                    cobrando = false
+                    carregar()
+                    val rot = if (Session.ehComanda(this, alvo)) "A comanda $alvo" else "A mesa $alvo"
+                    AlertDialog.Builder(this)
+                        .setTitle("Conta não está mais aberta")
+                        .setMessage("$rot não tem conta aberta agora — foi fechada ou transferida pra outra mesa.\n\nNÃO passei o cartão. Volte pras mesas e abra a mesa certa.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                } else {
+                    cobrarNoTerminalJa(alvo, linhas, valorCentavos)
+                }
+            }
+        }.start()
+    }
+
+    private fun cobrarNoTerminalJa(alvo: Int, linhas: List<Linha>, valorCentavos: Long) {
         cobrando = true
         atualizarBotoes()
 

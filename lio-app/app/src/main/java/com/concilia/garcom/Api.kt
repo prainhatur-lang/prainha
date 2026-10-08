@@ -241,6 +241,23 @@ object Api {
         code in 200..299
     } catch (_: Exception) { false }
 
+    /** A conta do número segue ABERTA agora? true/false pelo que o servidor
+     *  disse; null = não deu pra saber (rede, servidor fora). Rápida e nunca
+     *  lança: roda na frente da cobrança, pra não passar cartão por uma tela
+     *  de mesa que já foi fechada ou transferida. */
+    fun contaAberta(base: String, numero: Int, timeoutMs: Int = 4000): Boolean? = try {
+        val (code, resp) = http("GET", "$base/api/conta?n=$numero", readTimeoutMs = timeoutMs, connectTimeoutMs = timeoutMs)
+        if (code !in 200..299) null else {
+            val j = JSONObject(resp)
+            val erro = j.optString("erro", "")
+            when {
+                j.optBoolean("ok") -> true
+                erro.contains("nenhuma comanda aberta") || erro.contains("não há conta aberta") -> false
+                else -> null
+            }
+        }
+    } catch (_: Exception) { null }
+
     /** Diagnóstico (toque no nome, nas mesas): quanto `base` leva pra responder. */
     fun tempoResposta(base: String): String {
         val t0 = SystemClock.elapsedRealtime()
@@ -315,6 +332,9 @@ object Api {
         if (!j.optBoolean("ok")) {
             val erro = j.optString("erro", "")
             if (erro.contains("não há conta aberta")) return null
+            // É assim que o servidor responde pra mesa sem conta (vazia, fechada
+            // ou transferida). Como exceção, a tela ficava com a conta antiga.
+            if (erro.contains("nenhuma comanda aberta")) return null
             throw IOException(erro.ifBlank { "Erro ao carregar a conta" })
         }
         val itens = j.optJSONArray("itens") ?: JSONArray()
