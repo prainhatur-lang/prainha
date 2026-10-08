@@ -21,6 +21,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { hojeBr } from '@/lib/datas';
+import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,6 +76,7 @@ export async function POST(req: Request) {
       .limit(1);
     if (!cat) return NextResponse.json({ error: 'categoria não é da filial' }, { status: 400 });
   }
+  let fornecedorId = b.fornecedorId ?? null;
   if (b.fornecedorId) {
     const [forn] = await db
       .select({ id: schema.fornecedor.id })
@@ -86,7 +88,15 @@ export async function POST(req: Request) {
         ),
       )
       .limit(1);
-    if (!forn) return NextResponse.json({ error: 'fornecedor não é da filial' }, { status: 400 });
+    if (!forn) {
+      // Cadastro único: fornecedor de outra casa da organização → cria/acha a
+      // linha desta casa e lança nela (sem pôr na lista de compras).
+      try {
+        fornecedorId = await garantirFornecedorNaFilial(b.fornecedorId, b.filialId, db, { ativarCompras: false });
+      } catch {
+        return NextResponse.json({ error: 'fornecedor não é da filial' }, { status: 400 });
+      }
+    }
   }
 
   const lancamento = b.dataLancamento ?? hojeBr();
@@ -96,7 +106,7 @@ export async function POST(req: Request) {
     .insert(schema.contaPagar)
     .values({
       filialId: b.filialId,
-      fornecedorId: b.fornecedorId ?? null,
+      fornecedorId,
       categoriaId: b.categoriaId ?? null,
       descricao: b.descricao,
       observacao: b.observacao ?? null,

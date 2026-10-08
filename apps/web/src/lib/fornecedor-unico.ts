@@ -147,7 +147,11 @@ export async function garantirFornecedorNaFilial(
   fornecedorId: string,
   filialId: string,
   exec: Exec = db,
+  // Lançar conta/nota pra um fornecedor de outra casa NÃO o põe na lista de
+  // compras desta: passa `ativarCompras: false`. O padrão (cotação) segue ligando.
+  opts: { ativarCompras?: boolean } = {},
 ): Promise<string> {
+  const ativarCompras = opts.ativarCompras ?? true;
   const [src] = await exec
     .select()
     .from(schema.fornecedor)
@@ -190,7 +194,7 @@ export async function garantirFornecedorNaFilial(
       .update(schema.fornecedor)
       .set({
         grupoEconomicoId: grupo,
-        ativoCompras: true,
+        ...(ativarCompras ? { ativoCompras: true } : {}),
         foneWhatsapp: sql`coalesce(nullif(${schema.fornecedor.foneWhatsapp}, ''), ${src.foneWhatsapp})`,
         email: sql`coalesce(nullif(${schema.fornecedor.email}, ''), ${src.email})`,
         categoriaCompras: sql`coalesce(${schema.fornecedor.categoriaCompras}, ${src.categoriaCompras})`,
@@ -220,7 +224,7 @@ export async function garantirFornecedorNaFilial(
         foneWhatsapp: src.foneWhatsapp,
         foneSecundario: src.foneSecundario,
         rgOuIe: src.rgOuIe,
-        ativoCompras: true,
+        ativoCompras: ativarCompras,
         geral: src.geral,
         categoriaCompras: src.categoriaCompras,
         valorPedidoMinimo: src.valorPedidoMinimo,
@@ -318,3 +322,42 @@ export async function outrasCasasDe(ids: string[]): Promise<Map<string, string[]
   return out;
 }
 
+
+/** Lista de fornecedores pra LANÇAR (conta a pagar) numa casa, como cadastro
+ *  único: os da própria casa (todos, como sempre) + as empresas que só existem
+ *  nas outras casas da organização, uma linha por empresa. Escolher uma de
+ *  outra casa cria a linha desta na hora (garantirFornecedorNaFilial na rota). */
+export async function fornecedoresParaLancar(
+  filialId: string,
+): Promise<Array<{ id: string; nome: string | null; casa: string | null }>> {
+  const rows = await db.execute(sql`
+    WITH org AS (SELECT organizacao_id FROM filial WHERE id = ${filialId}),
+    f AS (
+      SELECT fo.id, fo.nome, fo.filial_id, fo.sincronizado_em, fi.nome AS casa,
+        fo.grupo_economico_id::text AS g,
+        ${chaveDocSql(sql`fo.cnpj_ou_cpf`)} AS c,
+        upper(trim(coalesce(fo.nome, ''))) AS n
+      FROM fornecedor fo JOIN filial fi ON fi.id = fo.filial_id
+      WHERE fi.organizacao_id = (SELECT organizacao_id FROM org)
+        AND fo.data_delete IS NULL
+        AND coalesce(fo.nome, '') NOT ILIKE '%excluído%'
+        AND coalesce(fo.nome, '') NOT ILIKE '%excluido%'
+    ),
+    aqui AS (SELECT g, c, n FROM f WHERE filial_id = ${filialId}),
+    fora AS (
+      SELECT DISTINCT ON (coalesce(g, c, 'n' || n)) id, nome, casa
+      FROM f
+      WHERE filial_id <> ${filialId} AND n <> ''
+        AND (g IS NULL OR g NOT IN (SELECT g FROM aqui WHERE g IS NOT NULL))
+        AND (c IS NULL OR c NOT IN (SELECT c FROM aqui WHERE c IS NOT NULL))
+        AND n NOT IN (SELECT n FROM aqui)
+      ORDER BY coalesce(g, c, 'n' || n), sincronizado_em DESC
+    )
+    SELECT id::text, nome, NULL::text AS casa FROM f WHERE filial_id = ${filialId}
+    UNION ALL
+    SELECT id::text, nome, casa FROM fora
+  `);
+  return (rows as unknown as Array<{ id: string; nome: string | null; casa: string | null }>)
+    .map((r) => ({ id: String(r.id), nome: r.nome ?? null, casa: r.casa ?? null }))
+    .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'));
+}

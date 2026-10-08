@@ -7,7 +7,8 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, ilike, inArray, isNull, not } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { AppHeader } from '@/components/app-header';
 import { EditarContaForm } from './form';
 
@@ -95,18 +96,9 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
     }
   }
 
-  const fornecedores = await db
-    .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome })
-    .from(schema.fornecedor)
-    .where(
-      and(
-        eq(schema.fornecedor.filialId, filial.id),
-        isNull(schema.fornecedor.dataDelete),
-        not(ilike(schema.fornecedor.nome, '%*excluído%')),
-        not(ilike(schema.fornecedor.nome, '%excluido%')),
-      ),
-    )
-    .orderBy(asc(schema.fornecedor.nome));
+  // Cadastro único: os fornecedores desta casa + os que só existem nas outras
+  // casas (a rota cria a linha daqui quando um deles é escolhido).
+  const fornecedores = await fornecedoresParaLancar(filial.id);
   const fornecedorAtual = conta.fornecedorId
     ? fornecedores.find((f) => f.id === conta.fornecedorId)
     : undefined;

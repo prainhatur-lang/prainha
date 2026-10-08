@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,13 +91,22 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       .limit(1);
     if (!cat) return NextResponse.json({ error: 'categoria não é da filial' }, { status: 400 });
   }
+  let fornecedorId = b.fornecedorId ?? null;
   if (b.fornecedorId) {
     const [forn] = await db
       .select({ id: schema.fornecedor.id })
       .from(schema.fornecedor)
       .where(and(eq(schema.fornecedor.id, b.fornecedorId), eq(schema.fornecedor.filialId, conta.filialId)))
       .limit(1);
-    if (!forn) return NextResponse.json({ error: 'fornecedor não é da filial' }, { status: 400 });
+    if (!forn) {
+      // Cadastro único: fornecedor de outra casa da organização → cria/acha a
+      // linha desta casa e lança nela (sem pôr na lista de compras).
+      try {
+        fornecedorId = await garantirFornecedorNaFilial(b.fornecedorId, conta.filialId, db, { ativarCompras: false });
+      } catch {
+        return NextResponse.json({ error: 'fornecedor não é da filial' }, { status: 400 });
+      }
+    }
   }
 
   // Valor não pode ficar menor que o já pago (senão o histórico vira mentira)
@@ -126,7 +136,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       valor: b.valor.toFixed(2),
       dataVencimento: b.dataVencimento,
       competencia: b.dataVencimento.slice(0, 7),
-      fornecedorId: b.fornecedorId ?? null,
+      fornecedorId,
       categoriaId: b.categoriaId ?? null,
       observacao: b.observacao ?? null,
       ...(b.dataLancamento

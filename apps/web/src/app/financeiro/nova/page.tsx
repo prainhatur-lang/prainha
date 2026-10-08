@@ -8,7 +8,8 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, ilike, isNull, not, inArray } from 'drizzle-orm';
+import { and, asc, eq, isNull, inArray } from 'drizzle-orm';
+import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { AppHeader } from '@/components/app-header';
 import { NovaContaForm } from './form';
 
@@ -58,18 +59,9 @@ export default async function NovaContaPage(props: {
         .map((c) => ({ id: c.id, nome: c.descricao ?? `(${c.codigoExterno})` })),
     }));
 
-  const fornecedores = await db
-    .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome })
-    .from(schema.fornecedor)
-    .where(
-      and(
-        eq(schema.fornecedor.filialId, filial.id),
-        isNull(schema.fornecedor.dataDelete),
-        not(ilike(schema.fornecedor.nome, '%*excluído%')),
-        not(ilike(schema.fornecedor.nome, '%excluido%')),
-      ),
-    )
-    .orderBy(asc(schema.fornecedor.nome));
+  // Cadastro único: os fornecedores desta casa + os que só existem nas outras
+  // casas (a rota cria a linha daqui quando um deles é escolhido).
+  const fornecedores = await fornecedoresParaLancar(filial.id);
 
   return (
     <main className="min-h-screen bg-slate-50">
