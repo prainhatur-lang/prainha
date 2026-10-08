@@ -5240,7 +5240,36 @@ async function contaDoRecebimento(n, ped0, body) {
   }
   const alvo = await contaNoInstante(n, t.quando);
   if (alvo && alvo.aberta) return { ped: alvo.codigo, desviado: ped0 || null, quando: t, alvo };
+  // A conta daquele horário fechou porque a MESA INTEIRA foi transferida
+  // (Tabuará, 08/10/2026: mesa 14 → 50 às 14:01, a maquininha ainda na tela da
+  // 14 cobrou R$ 354,70 às 14:06 e o cartão ficou retido com o cliente na
+  // frente). Os itens que esse dinheiro paga estão na conta de destino: se ela
+  // segue aberta, o recebimento entra nela.
+  if (alvo) {
+    const tr = await contaTransferidaAberta(alvo.codigo);
+    if (tr) return { ped: tr.ped, numero: tr.numero, transferida_de: alvo.codigo, quando: t, alvo };
+  }
   return { retido: true, quando: t, alvo, ped0 };
+}
+/** Pra onde foi a conta `codigo` quando a mesa inteira foi transferida: segue
+ *  a trilha (tipo 'mesa', últimas 24 h) até a conta que está ABERTA agora.
+ *  {ped, numero} ou null. Erro de banco SOBE (quem chama recusa). */
+async function contaTransferidaAberta(codigo) {
+  let atual = Number(codigo);
+  if (!(atual > 0)) return null;
+  const vistos = new Set([atual]);
+  for (let i = 0; i < 5; i++) {
+    const [tr] = await sql`SELECT para_numero, pedido_para FROM transferencia
+      WHERE tipo='mesa' AND pedido_de=${atual} AND pedido_para IS NOT NULL
+        AND criado_em > now() - interval '24 hours' ORDER BY id DESC LIMIT 1`;
+    if (!tr) return null;
+    const para = Number(tr.pedido_para), num = Number(tr.para_numero);
+    if (!(para > 0) || vistos.has(para)) return null;
+    if (await pedAbertoDoNumero(para, num)) return { ped: para, numero: num };
+    vistos.add(para);
+    atual = para;
+  }
+  return null;
 }
 /** Guarda um recebimento que não achou conta legítima. Idempotente por
  *  (número, valor, NSU): o app reenvia a fila a cada onResume — não pode
@@ -5276,6 +5305,8 @@ async function recebimentosRetidos({ mesa = null, dias = 30 } = {}) {
   // esse dinheiro já estava lá dentro. Origem quitada = retido duplicado (ou
   // cobrança em dobro, aí estorna na maquininha): nos dois casos, descartar.
   for (const x of out) x.alvo = x.conta_alvo == null ? null : await situacaoDaConta(x.conta_alvo);
+  // conta de origem transferida de mesa e ainda aberta lá: o caixa lança direto
+  for (const x of out) x.transferida = x.conta_alvo == null ? null : await contaTransferidaAberta(x.conta_alvo).catch(() => null);
   return out;
 }
 /** {fechada, total, pago, quitada} de uma conta, ou null. Cache de 60s (erro
@@ -5348,7 +5379,7 @@ async function apiContaPagar(body) {
   try { return await p; } finally { pagarEmVoo.delete(k); }
 }
 async function apiContaPagarSemTrava(body) {
-  const n = Number(body.numero);
+  let n = Number(body.numero);
   const valor = +Number(body.valor || 0).toFixed(2);
   const forma = String(body.forma || '').toLowerCase(); // dinheiro|credito|debito|pix
   const modo = String(body.modo || 'manual').toLowerCase(); // manual|lio
@@ -5385,6 +5416,7 @@ async function apiContaPagarSemTrava(body) {
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
   let ped = await pedidoAlvo(n, body.ped);
+  let seguiu = null; // a conta foi transferida de mesa e o recebimento foi atrás
   // ⚠️⚠️ TRAVA DA CONTA CERTA (ver contaDoRecebimento): dinheiro cobrado ANTES
   // desta conta existir não entra nela. É o que faltou em 07/09/2026 na mesa
   // 10 — Pix da véspera reenviado pela fila do app pagando a conta do cliente
@@ -5412,7 +5444,12 @@ async function apiContaPagarSemTrava(body) {
       return { ok: false, retido: true, ja_registrado: true, pagamento_id: id,
         erro: `${motivo} O valor ficou guardado e aparece em VERMELHO no caixa — quem está no caixa lança na conta certa (reabrindo, se precisar).` };
     }
-    if (alvo.ped && Number(alvo.ped) !== Number(ped || 0)) {
+    if (alvo.transferida_de && alvo.numero) {
+      console.error(`[pagar] recebimento do número ${n} (conta ${alvo.transferida_de}, transferida) segue pra conta ${alvo.ped} no número ${alvo.numero}, R$ ${valor.toFixed(2)}`);
+      n = Number(alvo.numero);
+      ped = Number(alvo.ped);
+      seguiu = { de_numero: Number(body.numero), de_conta: Number(alvo.transferida_de) };
+    } else if (alvo.ped && Number(alvo.ped) !== Number(ped || 0)) {
       console.error(`[pagar] recebimento de ${alvo.quando ? alvo.quando.quando.toISOString() : '?'} desviado da conta ${ped || '-'} pra ${alvo.ped} (a que estava aberta na cobrança), número ${n}, R$ ${valor.toFixed(2)}`);
       ped = Number(alvo.ped);
     }
@@ -5469,7 +5506,8 @@ async function apiContaPagarSemTrava(body) {
     const pagoAgora = await fbPagoDoPedido(ped);
     const totalPed = (await pedTotais(ped))?.total || 0;
     return { ok: true, pagamento_id: log.id, pagamento_fb: pagFb, pago: +pagoAgora.toFixed(2),
-      saldo: +(totalPed - pagoAgora).toFixed(2), quitada: pagoAgora >= totalPed - 0.01 };
+      saldo: +(totalPed - pagoAgora).toFixed(2), quitada: pagoAgora >= totalPed - 0.01,
+      ...(seguiu ? { transferida: { ...seguiu, numero: n, pedido: ped } } : {}) };
   } catch (e) {
     await sql`UPDATE venda_pagamento SET status='erro', erro=${String(e.message).slice(0, 300)} WHERE id=${log.id}`;
     return { ok: false, erro: e.message, pagamento_id: log.id };
@@ -5615,8 +5653,11 @@ async function apiLioPagarSemTrava(body, garcom) {
   // o pedido do jeito que o Consumer fecha e libera a mesa/comanda na hora.
   if (r.ok && r.quitada) {
     try {
-      const f = await apiCaixaFechar(n, body.ped); r.fechada = !!f.ok;
-      if (!f.ok) console.error(`[lio] mesa ${n} quitada mas NÃO fechou: ${f.erro || '?'}`);
+      const f = r.transferida
+        ? await apiCaixaFechar(r.transferida.numero, r.transferida.pedido)
+        : await apiCaixaFechar(n, body.ped);
+      r.fechada = !!f.ok;
+      if (!f.ok) console.error(`[lio] mesa ${r.transferida ? r.transferida.numero : n} quitada mas NÃO fechou: ${f.erro || '?'}`);
     } catch (e) { r.fechada = false; console.error(`[lio] mesa ${n} quitada mas NÃO fechou: ${e.message}`); }
     // entrega (número 0 + pedido explícito) recebida na porta
     if (n === 0 && Number(body.ped) > 0) await deliveryPagoNaPorta(Number(body.ped), garcom.login).catch((e) => console.error('[entrega] pago na porta:', e.message));
@@ -24644,12 +24685,14 @@ function retidoHtml(){
       (x.motivo?'<div style="font-weight:600">'+esc(x.motivo)+'</div>':'')+retidoDica(x)+
       '<a class="sair" onclick="descartarRetidoLista('+x.id+')">✕ Descartar</a>'+
       (abertos.indexOf(x.numero)>=0?' &nbsp; <a class="sair" onclick="carregar('+x.numero+')">▶ Abrir '+num+'</a>':'')+
+      (x.transferida?' &nbsp; <a class="sair" onclick="lancarRetidoEm('+x.id+','+Number(x.transferida.numero)+','+Number(x.transferida.ped)+')">▶ Lançar na '+(x.transferida.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+x.transferida.numero+'</a>':'')+
       '</div>';
   });
   return h;
 }
 /* o que a conta de origem diz sobre esse dinheiro */
 function retidoDica(x){
+  if(x.transferida)return '<div>➡️ A conta '+x.conta_alvo+' foi transferida pra '+(x.transferida.numero>=${COMANDA_DE}?'Comanda ':'Mesa ')+x.transferida.numero+', que está aberta: esse dinheiro é de lá.</div>';
   var a=x.alvo;if(!a)return '';
   if(a.quitada)return '<div>✅ A conta '+x.conta_alvo+' fechou QUITADA ('+brl(a.pago)+' de '+brl(a.total)+'): esse dinheiro já está nela, lançado à mão — ou foi cobrado 2 vezes (aí estorne na maquininha). Nos dois casos: descarte.</div>';
   if(a.fechada&&a.total-a.pago>0.009)return '<div>⚠️ A conta '+x.conta_alvo+' fechou DEVENDO '+brl(a.total-a.pago)+': esse dinheiro é dela — reabra e lance lá.</div>';
@@ -24819,6 +24862,13 @@ async function baixarPixCx(txid){
   }
   if(!r.ok){alert(r.erro||'não deu');return}
   carregar(MESA,PEDALVO);
+}
+async function lancarRetidoEm(id,numero,ped){
+  if(!confirm('Lançar este recebimento na conta '+ped+' (número '+numero+')?\\n\\nA conta em que ele foi cobrado foi transferida pra lá.'))return;
+  var r=await jpost('/api/caixa/retido',{id:id,acao:'lancar',numero:numero,ped:ped});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  RETIDO_ABERTO=false;
+  carregar(numero,ped);
 }
 async function lancarRetido(id){
   if(!confirm('Lançar este recebimento NESTA conta?\\n\\nConfira o comprovante: ele foi cobrado ANTES desta conta abrir. Se for de um cliente anterior, reabra a conta dele e lance lá.'))return;
