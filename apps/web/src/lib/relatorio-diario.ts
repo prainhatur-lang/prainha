@@ -340,10 +340,12 @@ export async function montarRelatorioCasa(
         FROM generate_series(${ini}::timestamptz, ${fim}::timestamptz - interval '30 minutes', interval '30 minutes') AS t(h)
        ORDER BY 1
     `),
-    q<{ forma: string; qtd: number; valor: number }>(sql`
-      SELECT coalesce(forma_efetiva, forma_pagamento, '?') AS forma,
+    q<{ forma: string; qtd: number; valor: number; sem_conta: number }>(sql`
+      SELECT coalesce(forma_efetiva, forma_pagamento,
+                      CASE WHEN codigo_pedido_externo IS NULL THEN 'Fiado/permuta (baixa)' END, '?') AS forma,
              count(*)::int AS qtd,
-             coalesce(sum(valor), 0)::float8 AS valor
+             coalesce(sum(valor), 0)::float8 AS valor,
+             coalesce(sum(valor) FILTER (WHERE codigo_pedido_externo IS NULL), 0)::float8 AS sem_conta
         FROM pagamento
        WHERE filial_id = ${F}
          AND data_pagamento >= ${ini}::timestamptz AND data_pagamento < ${fim}::timestamptz
@@ -572,6 +574,9 @@ export async function montarRelatorioCasa(
   }
   const pagamentos = [...pagMap.values()].sort((a, b) => b.valor - a.valor);
   const recebido = pagamentos.reduce((s, p) => s + p.valor, 0);
+  // Recebimento sem conta = baixa de fiado/permuta (dívida antiga quitada hoje).
+  // Entra no recebido, mas não é venda do dia: fica fora da comparação com as contas.
+  const recebidoSemConta = pagRows.reduce((s, p) => s + num(p.sem_conta), 0);
 
   // --- Praças + tempos do KDS --------------------------------------------------
   const pracaMap = new Map<string, { nome: string; codigo: number | null; itens: number; valor: number; tempos: number[] }>();
@@ -734,9 +739,13 @@ export async function montarRelatorioCasa(
     const queda = Math.round((1 - movimento.total / semanaPassada.total) * 100);
     atencao.push(`Faturamento ${queda}% abaixo do mesmo dia da semana passada (${reais(semanaPassada.total, false)})`);
   }
-  if (Math.abs(recebido - movimento.total) >= 50 && movimento.contas > 0) {
-    const dif = recebido - movimento.total;
-    atencao.push(`Recebido no caixa ${reais(recebido)}: ${reais(Math.abs(dif))} ${dif > 0 ? 'a mais' : 'a menos'} que o total das contas`);
+  const recebidoDasContas = recebido - recebidoSemConta;
+  if (Math.abs(recebidoDasContas - movimento.total) >= 50 && movimento.contas > 0) {
+    const dif = recebidoDasContas - movimento.total;
+    atencao.push(`Recebido no caixa ${reais(recebidoDasContas)}: ${reais(Math.abs(dif))} ${dif > 0 ? 'a mais' : 'a menos'} que o total das contas`);
+  }
+  if (recebidoSemConta >= 0.01) {
+    atencao.push(`${reais(recebidoSemConta)} de baixa de fiado/permuta lançada no dia — não é venda de hoje e ficou fora da comparação acima`);
   }
   if (jornadasLongas.length) {
     atencao.push(
