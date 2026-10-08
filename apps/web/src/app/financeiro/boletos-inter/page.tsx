@@ -76,9 +76,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     }
   }
 
-  const cancelados = pagamentos.filter((p) => p.statusPagamento === 'CANCELADO').length;
+  // CANCELADO, AGENDADO_CANCELADO etc.: o dinheiro não saiu
+  const cancelado = (p: InterPagamento) => (p.statusPagamento ?? '').includes('CANCEL');
+  const cancelados = pagamentos.filter(cancelado).length;
   const validos = pagamentos
-    .filter((p) => p.statusPagamento !== 'CANCELADO')
+    .filter((p) => !cancelado(p))
     .sort((a, b) => (b.dataPagamento ?? '').localeCompare(a.dataPagamento ?? ''));
 
   // Contas a pagar da casa numa janela larga em volta do período (o boleto pode
@@ -192,6 +194,13 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
   }
   const comJuros = linhas.filter((l) => l.jurosBanco > 0);
   const totalJuros = comJuros.reduce((s, l) => s + l.jurosBanco, 0);
+  // por que uma conta em aberto fica fora do "baixar todas"
+  const abertas = linhas.filter((l) => l.situacao === 'aberta');
+  const foraLote = {
+    consumer: abertas.filter((l) => l.conta?.origem === 'CONSUMER').length,
+    outraCasa: abertas.filter((l) => l.baixa && l.outraCasa).length,
+    conferir: abertas.filter((l) => l.baixa && !l.outraCasa && l.conferir).length,
+  };
   const deOutraCasa = linhas.filter((l) => l.outraCasa);
   const totalOutraCasa = deOutraCasa.reduce(
     (s, l) => s + Number(l.p.valorPago ?? l.p.valorNominal ?? 0),
@@ -377,6 +386,18 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                 )}
 
                 <BaixarBoletosLote boletos={lote} />
+                {podeBaixar && abertas.length > lote.length && (
+                  <p className="mt-2 text-xs text-slate-600">
+                    Das {int(abertas.length)} em aberto, {int(abertas.length - lote.length)} ficam
+                    fora do botão de baixar todas:
+                    {foraLote.consumer > 0 &&
+                      ` ${int(foraLote.consumer)} do Consumer (a baixa é no PDV);`}
+                    {foraLote.outraCasa > 0 &&
+                      ` ${int(foraLote.outraCasa)} de outra casa (baixe pela linha);`}
+                    {foraLote.conferir > 0 &&
+                      ` ${int(foraLote.conferir)} com vencimento diferente do boleto (confira e baixe pela linha);`}
+                  </p>
+                )}
 
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                   <table className="w-full text-sm">
