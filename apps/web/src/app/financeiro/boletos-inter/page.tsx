@@ -1,0 +1,409 @@
+// /financeiro/boletos-inter — boletos pagos (ou agendados) pela conta do Inter,
+// lidos direto da API do banco (pagamento-boleto.read), cruzados com Contas a
+// pagar. O Inter não expõe o DDA pendente; isso aqui é o que já foi pago ou
+// agendado. Só leitura: a tela não grava nada.
+
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import { exigirPerm } from '@/lib/exigir-perm';
+import { createClient } from '@/lib/supabase/server';
+import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
+import { db, schema } from '@concilia/db';
+import { and, eq, gte, isNull, lte } from 'drizzle-orm';
+import { AppHeader } from '@/components/app-header';
+import { brl, formatDate, int } from '@/lib/format';
+import { hojeBr, diasAtrasBr } from '@/lib/datas';
+import {
+  buscarPagamentosInter,
+  resolverCredenciaisInterPagamentos,
+  type InterPagamento,
+} from '@/lib/inter';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+interface SP {
+  filialId?: string;
+  dataIni?: string;
+  dataFim?: string;
+  ver?: string;
+}
+
+type Situacao = 'paga' | 'aberta' | 'sem';
+
+const soDigitos = (v: string | null | undefined) => (v ?? '').replace(/\D/g, '');
+const centavos = (v: number | string | null | undefined) => Math.round(Number(v ?? 0) * 100);
+
+/** Soma dias a um YYYY-MM-DD sem passar por fuso. */
+function somaDias(ymd: string, n: number): string {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+export default async function BoletosInterPage(props: { searchParams: Promise<SP> }) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+  await exigirPerm(user.id, 'conta_pagar.read');
+
+  const sp = await props.searchParams;
+  const filiais = await filiaisDoUsuario(user.id);
+  const escolhida = await escolherFilial(filiais, sp.filialId);
+
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  const dataFim = sp.dataFim && ymd.test(sp.dataFim) ? sp.dataFim : hojeBr();
+  const dataIni = sp.dataIni && ymd.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(15);
+  const ver: 'todos' | Situacao = (['paga', 'aberta', 'sem'] as const).includes(sp.ver as Situacao)
+    ? (sp.ver as Situacao)
+    : 'todos';
+
+  const cred = escolhida ? resolverCredenciaisInterPagamentos(escolhida.id) : null;
+
+  let erro: string | null = null;
+  let pagamentos: InterPagamento[] = [];
+  if (escolhida && cred) {
+    try {
+      pagamentos = await buscarPagamentosInter(cred, dataIni, dataFim);
+    } catch (e) {
+      erro = (e as Error).message;
+    }
+  }
+
+  const cancelados = pagamentos.filter((p) => p.statusPagamento === 'CANCELADO').length;
+  const validos = pagamentos
+    .filter((p) => p.statusPagamento !== 'CANCELADO')
+    .sort((a, b) => (b.dataPagamento ?? '').localeCompare(a.dataPagamento ?? ''));
+
+  // Contas a pagar da casa numa janela larga em volta do período (o boleto pode
+  // ter sido lançado com vencimento bem antes ou depois do dia em que foi pago).
+  const contas =
+    escolhida && validos.length > 0
+      ? await db
+          .select({
+            id: schema.contaPagar.id,
+            valor: schema.contaPagar.valor,
+            dataVencimento: schema.contaPagar.dataVencimento,
+            dataPagamento: schema.contaPagar.dataPagamento,
+            descricao: schema.contaPagar.descricao,
+            fornecedorNome: schema.fornecedor.nome,
+            fornecedorCnpj: schema.fornecedor.cnpjOuCpf,
+          })
+          .from(schema.contaPagar)
+          .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+          .where(
+            and(
+              eq(schema.contaPagar.filialId, escolhida.id),
+              isNull(schema.contaPagar.dataDelete),
+              gte(schema.contaPagar.dataVencimento, somaDias(dataIni, -60)),
+              lte(schema.contaPagar.dataVencimento, somaDias(dataFim, 60)),
+            ),
+          )
+      : [];
+
+  // Casa cada boleto com UMA conta: mesmo valor (o do título ou o pago, com
+  // juros) e mesmo CNPJ do fornecedor; sem CNPJ batendo, mesmo valor e mesmo
+  // vencimento. Conta já usada não casa de novo.
+  const usadas = new Set<string>();
+  const linhas = validos.map((p) => {
+    const valores = new Set([centavos(p.valorNominal), centavos(p.valorPago)]);
+    const cnpj = soDigitos(p.cpfCnpjBeneficiario);
+    const candidatas = contas.filter((c) => !usadas.has(c.id) && valores.has(centavos(c.valor)));
+    const conta =
+      candidatas.find((c) => cnpj && soDigitos(c.fornecedorCnpj) === cnpj) ??
+      candidatas.find(
+        (c) =>
+          c.dataVencimento === p.dataVencimentoTitulo ||
+          c.dataVencimento === p.dataVencimentoDigitada,
+      ) ??
+      null;
+    if (conta) usadas.add(conta.id);
+    const situacao: Situacao = !conta ? 'sem' : conta.dataPagamento ? 'paga' : 'aberta';
+    return { p, conta, situacao };
+  });
+
+  const resumo = { paga: { q: 0, v: 0 }, aberta: { q: 0, v: 0 }, sem: { q: 0, v: 0 } };
+  let total = 0;
+  for (const l of linhas) {
+    const v = Number(l.p.valorPago ?? l.p.valorNominal ?? 0);
+    resumo[l.situacao].q += 1;
+    resumo[l.situacao].v += v;
+    total += v;
+  }
+  const visiveis = ver === 'todos' ? linhas : linhas.filter((l) => l.situacao === ver);
+
+  function href(next: Partial<SP>): string {
+    const qs = new URLSearchParams();
+    if (escolhida) qs.set('filialId', escolhida.id);
+    qs.set('dataIni', next.dataIni ?? dataIni);
+    qs.set('dataFim', next.dataFim ?? dataFim);
+    const v = next.ver ?? ver;
+    if (v !== 'todos') qs.set('ver', v);
+    return `/financeiro/boletos-inter?${qs.toString()}`;
+  }
+
+  const hoje = hojeBr();
+
+  return (
+    <main className="min-h-screen bg-slate-50">
+      <AppHeader userEmail={user.email} />
+      <section className="mx-auto max-w-7xl px-6 py-10">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-slate-900">Boletos pagos no Inter</h1>
+          <Link
+            href={`/financeiro${escolhida ? `?filialId=${escolhida.id}` : ''}`}
+            className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            ← Contas a pagar
+          </Link>
+        </div>
+        <p className="mt-1 text-sm text-slate-600">
+          Boletos que a conta do Inter pagou ou agendou no período, lidos direto do banco e
+          comparados com Contas a pagar. O boleto que ainda está pendente no DDA o Inter não
+          informa.
+        </p>
+
+        {filiais.length > 1 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-slate-500">Filial:</span>
+            {filiais.map((f) => (
+              <Link
+                key={f.id}
+                href={`/financeiro/boletos-inter?filialId=${f.id}`}
+                className={`rounded-md border px-3 py-1 text-xs ${
+                  f.id === escolhida?.id
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {f.nome}
+              </Link>
+            ))}
+          </div>
+        )}
+
+        {!escolhida ? (
+          <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>
+        ) : !cred ? (
+          <p className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            A conta do Inter dessa casa ainda não tem a consulta de pagamentos ligada no Concilia.
+          </p>
+        ) : (
+          <>
+            <form
+              action="/financeiro/boletos-inter"
+              method="GET"
+              className="mt-6 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+            >
+              <input type="hidden" name="filialId" value={escolhida.id} />
+              {ver !== 'todos' && <input type="hidden" name="ver" value={ver} />}
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  De
+                </label>
+                <input
+                  type="date"
+                  name="dataIni"
+                  defaultValue={dataIni}
+                  className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Até
+                </label>
+                <input
+                  type="date"
+                  name="dataFim"
+                  defaultValue={dataFim}
+                  className="mt-1 rounded-md border border-slate-300 px-2 py-1.5 font-mono text-sm"
+                />
+              </div>
+              <button
+                type="submit"
+                className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                Aplicar
+              </button>
+              <div className="ml-auto flex flex-wrap items-center gap-1">
+                {(
+                  [
+                    ['Hoje', hoje],
+                    ['7d', diasAtrasBr(7)],
+                    ['15d', diasAtrasBr(15)],
+                    ['30d', diasAtrasBr(30)],
+                    ['Este mês', hoje.slice(0, 7) + '-01'],
+                  ] as Array<[string, string]>
+                ).map(([label, ini]) => (
+                  <Link
+                    key={label}
+                    href={href({ dataIni: ini, dataFim: hoje })}
+                    className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50"
+                  >
+                    {label}
+                  </Link>
+                ))}
+              </div>
+            </form>
+
+            {erro ? (
+              <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+                O Inter não respondeu à consulta: <span className="font-mono text-xs">{erro}</span>
+              </p>
+            ) : (
+              <>
+                <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Cartao
+                    label="Boletos no período"
+                    qtd={linhas.length}
+                    valor={total}
+                    cor="border-slate-200 bg-white"
+                    href={href({ ver: 'todos' })}
+                    ativo={ver === 'todos'}
+                  />
+                  <Cartao
+                    label="Lançado e baixado"
+                    qtd={resumo.paga.q}
+                    valor={resumo.paga.v}
+                    cor="border-emerald-200 bg-emerald-50"
+                    href={href({ ver: 'paga' })}
+                    ativo={ver === 'paga'}
+                  />
+                  <Cartao
+                    label="Pago no banco, aberto aqui"
+                    qtd={resumo.aberta.q}
+                    valor={resumo.aberta.v}
+                    cor="border-amber-200 bg-amber-50"
+                    href={href({ ver: 'aberta' })}
+                    ativo={ver === 'aberta'}
+                  />
+                  <Cartao
+                    label="Sem conta lançada"
+                    qtd={resumo.sem.q}
+                    valor={resumo.sem.v}
+                    cor="border-rose-200 bg-rose-50"
+                    href={href({ ver: 'sem' })}
+                    ativo={ver === 'sem'}
+                  />
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-2">Pago em</th>
+                        <th className="px-4 py-2">Vencimento</th>
+                        <th className="px-4 py-2">Favorecido</th>
+                        <th className="px-4 py-2 text-right">Valor do boleto</th>
+                        <th className="px-4 py-2 text-right">Valor pago</th>
+                        <th className="px-4 py-2">No banco</th>
+                        <th className="px-4 py-2">Em Contas a pagar</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visiveis.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500">
+                            Nenhum boleto nesse filtro.
+                          </td>
+                        </tr>
+                      ) : (
+                        visiveis.map(({ p, conta, situacao }) => (
+                          <tr key={p.codigoTransacao} className="border-t border-slate-100">
+                            <td className="px-4 py-2 font-mono text-xs text-slate-700">
+                              {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
+                            </td>
+                            <td className="px-4 py-2 font-mono text-xs text-slate-500">
+                              {p.dataVencimentoTitulo ? formatDate(p.dataVencimentoTitulo) : '—'}
+                            </td>
+                            <td className="px-4 py-2 text-xs text-slate-800">
+                              {p.nomeBeneficiario ?? '—'}
+                              {p.cpfCnpjBeneficiario && (
+                                <span className="ml-1.5 font-mono text-[10px] text-slate-400">
+                                  {p.cpfCnpjBeneficiario}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono text-xs text-slate-600">
+                              {brl(p.valorNominal)}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
+                              {brl(p.valorPago)}
+                            </td>
+                            <td className="px-4 py-2 text-xs text-slate-600">
+                              {p.statusPagamento === 'REALIZADO'
+                                ? 'pago'
+                                : (p.statusPagamento ?? '—').toLowerCase()}
+                            </td>
+                            <td className="px-4 py-2 text-xs">
+                              {conta ? (
+                                <Link
+                                  href={`/financeiro/conta/${conta.id}`}
+                                  className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 hover:underline ${
+                                    situacao === 'paga'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}
+                                  title={`${conta.fornecedorNome ?? 'sem fornecedor'} — ${conta.descricao ?? ''}`}
+                                >
+                                  {situacao === 'paga' ? '✓ baixada' : '⚠ em aberto'} · venc.{' '}
+                                  {formatDate(conta.dataVencimento)}
+                                </Link>
+                              ) : (
+                                <span className="inline-flex rounded-md bg-rose-100 px-2 py-0.5 text-rose-800">
+                                  sem conta lançada
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                  {cancelados > 0 && (
+                    <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+                      {int(cancelados)}{' '}
+                      {cancelados === 1 ? 'pagamento cancelado' : 'pagamentos cancelados'} no banco
+                      ficaram de fora.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function Cartao({
+  label,
+  qtd,
+  valor,
+  cor,
+  href,
+  ativo,
+}: {
+  label: string;
+  qtd: number;
+  valor: number;
+  cor: string;
+  href: string;
+  ativo: boolean;
+}) {
+  return (
+    <Link href={href}>
+      <div
+        className={`rounded-xl border p-4 hover:shadow-sm ${cor} ${ativo ? 'ring-2 ring-slate-900' : ''}`}
+      >
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-600">{label}</p>
+        <p className="mt-1 text-2xl font-bold text-slate-900">{int(qtd)}</p>
+        <p className="text-xs text-slate-700">{brl(valor)}</p>
+      </div>
+    </Link>
+  );
+}

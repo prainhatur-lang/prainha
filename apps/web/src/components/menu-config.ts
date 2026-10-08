@@ -250,6 +250,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Financeiro',
         links: [
           { label: 'Contas a pagar', href: '/financeiro', perm: 'conta_pagar.read' },
+          { label: 'Boletos pagos no Inter', href: '/financeiro/boletos-inter', perm: 'conta_pagar.read' },
           { label: 'Contas a receber', href: '/financeiro/receber', perm: 'conta_receber.read' },
           { label: 'A receber de canais (iFood)', href: '/financeiro/receber-canal', perm: 'conta_receber.read' },
           { label: 'Faturamento do iFood', href: '/ifood/financeiro', perm: 'conta_receber.read' },

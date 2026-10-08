@@ -353,6 +353,12 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold text-slate-900">Financeiro — Contas a pagar</h1>
           <Link
+            href={`/financeiro/boletos-inter${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
+            className="ml-auto shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Boletos pagos no Inter
+          </Link>
+          <Link
             href={`/financeiro/nova${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
             className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
           >

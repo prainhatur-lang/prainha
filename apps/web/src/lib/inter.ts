@@ -54,6 +54,25 @@ export function resolverCredenciaisInter(filialId: string): InterCredenciais | n
   return contasConfiguradas().find((c) => c.filialId === filialId)?.cred ?? null;
 }
 
+/**
+ * Credencial pra consultar PAGAMENTOS (escopo pagamento-boleto.read). É uma
+ * integração à parte no Inter, em `INTER_<SUFIXO>_PAG_*`; o extrato segue na
+ * integração de sempre. Sem a de pagamentos configurada, devolve null.
+ */
+export function resolverCredenciaisInterPagamentos(filialId: string): InterCredenciais | null {
+  for (const p of ['INTER', 'INTER_TABUARA']) {
+    if (process.env[`${p}_FILIAL_ID`] !== filialId) continue;
+    const clientId = process.env[`${p}_PAG_CLIENT_ID`]?.trim();
+    const clientSecret = process.env[`${p}_PAG_CLIENT_SECRET`]?.trim();
+    const certB64 = process.env[`${p}_PAG_CERT_B64`]?.trim();
+    const keyB64 = process.env[`${p}_PAG_KEY_B64`]?.trim();
+    if (clientId && clientSecret && certB64 && keyB64) {
+      return { clientId, clientSecret, certB64, keyB64 };
+    }
+  }
+  return null;
+}
+
 function certAgente(cred: InterCredenciais): https.Agent {
   return new https.Agent({
     cert: Buffer.from(cred.certB64, 'base64'),
@@ -103,15 +122,16 @@ function requestJson<T>(opts: {
 // Cache de token por clientId — cada conta tem o seu.
 const tokenCache = new Map<string, { token: string; expiraEm: number }>();
 
-async function getAccessToken(cred: InterCredenciais): Promise<string> {
-  const cached = tokenCache.get(cred.clientId);
+async function getAccessToken(cred: InterCredenciais, scope = 'extrato.read'): Promise<string> {
+  const chaveCache = scope === 'extrato.read' ? cred.clientId : `${cred.clientId}|${scope}`;
+  const cached = tokenCache.get(chaveCache);
   if (cached && cached.expiraEm > Date.now()) return cached.token;
 
   const body = new URLSearchParams({
     client_id: cred.clientId,
     client_secret: cred.clientSecret,
     grant_type: 'client_credentials',
-    scope: 'extrato.read',
+    scope,
   }).toString();
 
   const { status, data } = await requestJson<{ access_token: string; expires_in: number; error?: string }>({
@@ -125,7 +145,7 @@ async function getAccessToken(cred: InterCredenciais): Promise<string> {
     throw new Error(`Inter OAuth erro (${status}): ${JSON.stringify(data)}`);
   }
 
-  tokenCache.set(cred.clientId, { token: data.access_token, expiraEm: Date.now() + (data.expires_in - 60) * 1000 });
+  tokenCache.set(chaveCache, { token: data.access_token, expiraEm: Date.now() + (data.expires_in - 60) * 1000 });
   return data.access_token;
 }
 
@@ -146,6 +166,42 @@ export async function buscarExtratoInter(
     throw new Error(`Inter extrato erro (${status}): ${JSON.stringify(data)}`);
   }
   return data.transacoes ?? [];
+}
+
+/** Pagamento de boleto/convênio feito ou agendado pela conta (GET /banking/v2/pagamento). */
+export interface InterPagamento {
+  codigoTransacao: string;
+  nsu?: string;
+  codigoBarra?: string;
+  tipo?: string;
+  dataVencimentoDigitada?: string; // YYYY-MM-DD
+  dataVencimentoTitulo?: string; // YYYY-MM-DD
+  dataInclusao?: string; // DD/MM/YYYY HH:mm:ss
+  dataPagamento?: string; // YYYY-MM-DD
+  valorPago?: number;
+  valorNominal?: number;
+  statusPagamento?: string; // REALIZADO, CANCELADO, AGENDADO, ...
+  cpfCnpjBeneficiario?: string;
+  nomeBeneficiario?: string;
+}
+
+/** Boletos pagos ou agendados no período. Só leitura (pagamento-boleto.read). */
+export async function buscarPagamentosInter(
+  cred: InterCredenciais,
+  dataInicio: string,
+  dataFim: string,
+): Promise<InterPagamento[]> {
+  const token = await getAccessToken(cred, 'pagamento-boleto.read');
+  const { status, data } = await requestJson<InterPagamento[] | { title?: string }>({
+    method: 'GET',
+    path: `/banking/v2/pagamento?dataInicio=${dataInicio}&dataFim=${dataFim}`,
+    authorization: `Bearer ${token}`,
+    cred,
+  });
+  if (status !== 200 || !Array.isArray(data)) {
+    throw new Error(`Inter pagamentos erro (${status}): ${JSON.stringify(data)}`);
+  }
+  return data;
 }
 
 /**
