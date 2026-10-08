@@ -60,8 +60,12 @@ export function resolverCredenciaisInter(filialId: string): InterCredenciais | n
  * integração de sempre. Sem a de pagamentos configurada, devolve null.
  */
 export function resolverCredenciaisInterPagamentos(filialId: string): InterCredenciais | null {
-  for (const p of ['INTER', 'INTER_TABUARA']) {
-    if (process.env[`${p}_FILIAL_ID`] !== filialId) continue;
+  // A Prainha Mar não tem integração de extrato (nem INTER_MAR_FILIAL_ID); a de
+  // pagamentos dela entra só com INTER_MAR_PAG_*, amarrada à filial 03.
+  const PRAINHA_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
+  for (const p of ['INTER', 'INTER_TABUARA', 'INTER_MAR']) {
+    const dona = process.env[`${p}_FILIAL_ID`]?.trim() || (p === 'INTER_MAR' ? PRAINHA_MAR : '');
+    if (dona !== filialId) continue;
     const clientId = process.env[`${p}_PAG_CLIENT_ID`]?.trim();
     const clientSecret = process.env[`${p}_PAG_CLIENT_SECRET`]?.trim();
     const certB64 = process.env[`${p}_PAG_CERT_B64`]?.trim();
