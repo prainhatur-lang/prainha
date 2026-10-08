@@ -6,7 +6,7 @@
 // Dia passado: a última foto daquele dia = o balanço final.
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -211,7 +211,18 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
         .from(schema.listaEspera)
         .where(and(eq(schema.listaEspera.filialId, f.id), gte(schema.listaEspera.criadoEm, ini), lte(schema.listaEspera.criadoEm, fim)));
 
+      // Baixa de fiado/permuta com forma de pagamento entra no "caixa" da foto da
+      // loja, mas é dívida antiga quitada — não é venda do dia (Pinheiro, 07/10).
+      const fl = schema.fiadoLancamento;
+      const baixas = await db
+        .select({ valor: sql<number>`${fl.valor}::float8`, quando: fl.aplicadoEm })
+        .from(fl)
+        .where(and(eq(fl.filialId, f.id), eq(fl.tipo, 'pagamento'), eq(fl.status, 'aplicado'),
+          isNotNull(fl.pagamentoCodigo), gte(fl.aplicadoEm, ini), lte(fl.aplicadoEm, fim)));
+      const baixaAte = (t: Date) => baixas.reduce((s, x) => s + (x.quando && x.quando <= t ? x.valor : 0), 0);
+
       return {
+        baixaAte,
         filial: f,
         ultimo: ultimo ? { ...ultimo, dados: ultimo.dados as BalancoDados } : null,
         linha,
@@ -266,7 +277,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
 
         {casas.length === 0 && <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>}
 
-        {casas.map(({ filial, ultimo, linha, av, rs, es }) => {
+        {casas.map(({ filial, ultimo, linha, av, rs, es, baixaAte }) => {
           const d = ultimo?.dados;
           const idadeMin = ultimo ? Math.round((Date.now() - ultimo.capturadoEm.getTime()) / 60000) : null;
           const velho = ehHoje && idadeMin != null && idadeMin > 25;
@@ -274,6 +285,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
           const ms = d?.mesas ?? null;
           const at = d?.atrasos ?? null;
           const cx = d?.caixa ?? null;
+          const baixaFiado = ultimo ? baixaAte(ultimo.capturadoEm) : 0;
           const ca = d?.cancelamentos;
           const et = d?.estornos;
           const re = d?.reaberturas;
@@ -354,7 +366,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                     />
                     <Kpi
                       titulo="Recebido no caixa"
-                      valor={cx ? brl(cx.total) : '—'}
+                      valor={cx ? brl(cx.total - baixaFiado) : '—'}
                       sub={
                         cx && (
                           <>
@@ -366,6 +378,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                               </span>
                             ))}
                             {cx.caixas_abertos > 0 && <> · {cx.caixas_abertos} caixa{cx.caixas_abertos === 1 ? '' : 's'} aberto{cx.caixas_abertos === 1 ? '' : 's'}</>}
+                            {baixaFiado > 0 && <> · fora daqui: {brl(baixaFiado)} de baixa de fiado/permuta (as formas ao lado ainda somam ela)</>}
                           </>
                         )
                       }
@@ -681,7 +694,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                                 <td className="py-1 pr-2 text-right tabular-nums">{l.cancelamentos ?? '—'}</td>
                                 <td className="py-1 pr-2 text-right tabular-nums">{l.estornos ?? '—'}</td>
                                 <td className="py-1 pr-2 text-right tabular-nums">{l.reclamacoes ?? '—'}</td>
-                                <td className="py-1 text-right tabular-nums">{l.recebido != null ? brl(l.recebido) : '—'}</td>
+                                <td className="py-1 text-right tabular-nums">{l.recebido != null ? brl(l.recebido - baixaAte(l.capturadoEm)) : '—'}</td>
                               </tr>
                             ))}
                           </tbody>
